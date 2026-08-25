@@ -16,6 +16,13 @@ from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.user import User
 from app.services.chat_transcript import append_session_event
+from app.services.session_user_checkpoint import (
+    event_role as shared_event_role,
+    is_human_input_checkpoint,
+    is_human_input_row,
+    user_checkpoint_content,
+    user_checkpoint_events,
+)
 from app.services.session_workspace_snapshot import (
     clone_workspace_snapshot_for_session,
     delete_workspace_snapshot,
@@ -59,13 +66,10 @@ def _uuid(value: uuid.UUID | str) -> uuid.UUID:
 
 
 def _event_role(event: ChatTranscriptEvent) -> str | None:
-    metadata = getattr(event, "metadata_json", None) or {}
-    role = metadata.get("role")
-    if isinstance(role, str) and role:
-        return role
+    shared_role = shared_event_role(event)
+    if shared_role:
+        return shared_role
     event_type = getattr(event, "event_type", None)
-    if event_type == "user_message":
-        return "user"
     if event_type == "assistant_message":
         return "assistant"
     if event_type in {"tool_call", "tool_result"}:
@@ -87,6 +91,8 @@ def _prefix_includes_anchor(mode: str, *, anchor: ChatTranscriptEvent | None = N
 
 def _draft_content_for_anchor(mode: str, anchor: ChatTranscriptEvent) -> str:
     if _event_role(anchor) == "user" and mode in {"fork", "branch"}:
+        if is_human_input_checkpoint(anchor):
+            return user_checkpoint_content(anchor)
         return (getattr(anchor, "content", None) or "").strip()
     return ""
 
@@ -216,12 +222,34 @@ async def _copy_prefix_events(
     source_session: ChatSession,
     mode: str,
     events: list[ChatTranscriptEvent],
+    anchor: ChatTranscriptEvent | None = None,
+    include_anchor: bool = False,
 ) -> tuple[list[str], dict[str, str]]:
     copied_event_ids: list[str] = []
     copied_event_map: dict[str, str] = {}
     previous_new_event_id: uuid.UUID | None = None
+    authoritative_user_ids = {str(event.id) for event in user_checkpoint_events(events)}
+    anchor_item_id = (
+        str(getattr(anchor, "item_id", "") or "") if anchor is not None and is_human_input_checkpoint(anchor) else None
+    )
     for event in events:
+        if is_human_input_row(event):
+            event_item_id = str(getattr(event, "item_id", "") or "")
+            # The anchored HumanInput item carries its exact content as the
+            # draft when the prefix excludes it; superseded accepted bytes and
+            # state facts never enter the branch prefix — only the item's
+            # latest content lifecycle does. An explicit include-anchor
+            # override (fork side threads) opts the anchored item back in.
+            if anchor_item_id and not include_anchor and event_item_id == anchor_item_id:
+                continue
+            if str(event.id) not in authoritative_user_ids:
+                continue
         role = _event_role(event)
+        content = (
+            user_checkpoint_content(event)
+            if is_human_input_checkpoint(event)
+            else (getattr(event, "content", None) or "")
+        )
         result = await append_session_event(
             db=db,
             agent_id=agent.id,
@@ -229,7 +257,7 @@ async def _copy_prefix_events(
             session_id=branch_session.id,
             actor_type=getattr(event, "actor_type", None) or "system",
             event_type=getattr(event, "event_type", None) or "event",
-            content=getattr(event, "content", None) or "",
+            content=content,
             role=role,
             t0_role=_event_t0_role(event, role),
             user_id=getattr(user, "id", None),
@@ -380,15 +408,16 @@ async def create_conversation_branch(
                 run_request=None,
             )
 
+    include_anchor = (
+        include_anchor_override
+        if include_anchor_override is not None
+        else _prefix_includes_anchor(mode_text, anchor=anchor)
+    )
     prefix_events = await _load_prefix_events(
         db=db,
         source_session_id=source_session.id,
         anchor=anchor,
-        include_anchor=(
-            include_anchor_override
-            if include_anchor_override is not None
-            else _prefix_includes_anchor(mode_text, anchor=anchor)
-        ),
+        include_anchor=include_anchor,
     )
     root_session_id = getattr(source_session, "root_session_id", None) or source_session.id
     now = datetime.now(timezone.utc)
@@ -467,6 +496,8 @@ async def create_conversation_branch(
         source_session=source_session,
         mode=mode_text,
         events=prefix_events,
+        anchor=anchor,
+        include_anchor=include_anchor,
     )
     await _remap_branch_workspace_snapshots(
         branch_session,
@@ -539,9 +570,9 @@ async def create_conversation_branch(
         )
     elif mode_text == "regenerate":
         last_user = _last_user_event(prefix_events)
-        if last_user is None or not (last_user.content or "").strip():
+        if last_user is None or not user_checkpoint_content(last_user).strip():
             raise HTTPException(status_code=400, detail="regenerate requires a prior user message")
-        prompt = last_user.content or ""
+        prompt = user_checkpoint_content(last_user)
         run_request = BranchRunRequest(
             content=prompt,
             display_content=prompt,

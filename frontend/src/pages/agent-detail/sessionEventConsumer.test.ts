@@ -427,6 +427,76 @@ describe('canonical Session event consumer', () => {
     expect(messages.filter((message) => message.content === 'exact bytes')).toHaveLength(1);
   });
 
+  it('keeps HumanInput item identity separate from the accepted/revised checkpoint event id across lifecycles', () => {
+    const humanInputEvent = (sequence: number, lifecycle: string, payload: Record<string, unknown>): SessionEventV2 => ({
+      ...event(sequence, 'completed'),
+      ordinal: undefined,
+      item_id: 'input-1',
+      item_kind: 'human_input',
+      kind: `human_input.${lifecycle}`,
+      lifecycle,
+      payload_schema: `hive.session.payload.human_input.${lifecycle}.v2`,
+      scope: { level: 'session', session_id: 'session-1', thread_id: 'session-1' },
+      actor: { type: 'user', id: 'user-1' },
+      payload,
+    } as SessionEventV2);
+    const accepted = humanInputEvent(1, 'accepted', { content_parts: [{ type: 'text', text: 'J-06 hello' }] });
+    const revised = humanInputEvent(2, 'revised', { content_parts: [{ type: 'text', text: 'J-06 hello v2' }] });
+    const queued = humanInputEvent(3, 'queued', { state: 'queued' });
+    const bound = humanInputEvent(4, 'bound', { round_id: 'round-1' });
+    const applied = humanInputEvent(5, 'applied', { turn_id: 'turn-1' });
+
+    const midStore = replay([accepted]);
+    const midUser = projectSessionEventStoreToMessages(midStore).find((message) => message.role === 'user');
+    expect(midUser).toMatchObject({
+      id: 'input-1',
+      transcriptEventId: 'event-1',
+      content: 'J-06 hello',
+    });
+
+    const store = replay([accepted, revised, queued, bound, applied]);
+    const messages = projectSessionEventStoreToMessages(store);
+    const userMessages = messages.filter((message) => message.role === 'user');
+    expect(userMessages).toHaveLength(1);
+    expect(userMessages[0]).toMatchObject({
+      id: 'input-1',
+      transcriptEventId: 'event-2',
+      content: 'J-06 hello v2',
+    });
+  });
+
+  it('projects the assistant final transcriptEventId as the completed event id, not the item id', () => {
+    const finalStarted = { ...event(1, 'started') };
+    const finalCompleted: SessionEventV2 = {
+      ...event(2, 'completed'),
+      item_id: 'final-item-1',
+      item_kind: 'assistant_final',
+      kind: 'assistant_final.completed',
+      lifecycle: 'completed',
+      payload_schema: 'hive.session.payload.assistant_final.completed.v2',
+      payload: {
+        phase: 'final',
+        render_owner_id: 'render-owner-1',
+        zero_copy: true,
+        source_blocks: [
+          { item_id: 'assistant-1', block_index: 0, content_hash: 'hash-1' },
+        ],
+      },
+    } as SessionEventV2;
+
+    const store = replay([finalStarted, finalCompleted]);
+    const messages = projectSessionEventStoreToMessages(store);
+    const assistantFinal = messages.find((message) => message.role === 'assistant');
+
+    // The branch/regenerate API anchors on an actual ChatTranscriptEvent id;
+    // the completed event id is the durable anchor, never the item id.
+    expect(assistantFinal).toMatchObject({
+      id: 'render-owner-1',
+      transcriptEventId: 'event-2',
+    });
+    expect(assistantFinal?.transcriptEventId).not.toBe('final-item-1');
+  });
+
   it('projects a tool call and its exactly-one result as one stable timeline message', () => {
     const toolCall: SessionEventV2 = {
       ...event(1, 'started'),

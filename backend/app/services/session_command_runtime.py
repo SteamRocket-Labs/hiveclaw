@@ -28,6 +28,16 @@ from app.memory.t0.ledger import T0SessionEvent, replay_t0_session_events_tail
 from app.runtime.hooks import HookEvent, emit_hook
 from app.services.chat_transcript import append_session_event, read_transcript_revision
 from app.services.conversation_branch_service import create_conversation_branch
+from app.services.session_user_checkpoint import (
+    event_item_kind,
+    event_lifecycle,
+    event_role as shared_event_role,
+    is_assistant_final_message,
+    is_human_input_checkpoint,
+    is_human_input_row,
+    user_checkpoint_content,
+    user_checkpoint_events,
+)
 from app.services.memory_service import _generate_session_summary, _wrap_compressed_summary
 from app.services.session_workspace_snapshot import (
     finalize_workspace_restore,
@@ -152,8 +162,8 @@ def _event_payload(event: ChatTranscriptEvent | T0SessionEvent) -> dict[str, Any
         "sequence": event.sequence,
         "event_type": event.event_type,
         "actor_type": getattr(event, "actor_type", None) or _event_metadata(event).get("actor_type"),
-        "role": _event_metadata(event).get("role") or getattr(event, "role", None),
-        "content": event.content or "",
+        "role": shared_event_role(event) or getattr(event, "role", None),
+        "content": user_checkpoint_content(event) if is_human_input_row(event) else (event.content or ""),
         "metadata": _event_metadata(event),
         "created_at": _created_at_value(event),
         "truth_path": str(getattr(event, "truth_path", None) or "") or None,
@@ -253,13 +263,10 @@ def _run_request_payload(run_request: Any | None) -> dict[str, Any] | None:
 
 
 def _event_role(event: ChatTranscriptEvent | T0SessionEvent) -> str | None:
-    metadata = _event_metadata(event)
-    role = metadata.get("role")
-    if isinstance(role, str) and role:
-        return role
+    shared_role = shared_event_role(event)
+    if shared_role:
+        return shared_role
     event_type = getattr(event, "event_type", None)
-    if event_type == "user_message":
-        return "user"
     if event_type == "assistant_message":
         return "assistant"
     if event_type in {"tool_call", "tool_result"}:
@@ -269,11 +276,35 @@ def _event_role(event: ChatTranscriptEvent | T0SessionEvent) -> str | None:
 
 def _is_replayable_turn_event(event: ChatTranscriptEvent | T0SessionEvent) -> bool:
     event_type = getattr(event, "event_type", None)
-    if event_type not in _REPLAYABLE_TURN_EVENT_TYPES:
-        return False
-    if event_type == "assistant_message" and not (getattr(event, "content", None) or "").strip():
-        return False
-    return True
+    if event_type in _REPLAYABLE_TURN_EVENT_TYPES:
+        if event_type == "assistant_message" and not (getattr(event, "content", None) or "").strip():
+            return False
+        return True
+    # Session V2 parity, typed by item kind/lifecycle only: an authoritative
+    # HumanInput checkpoint and a completed assistant final mirror the legacy
+    # user_message/assistant_message tails; tool rounds and assistant deltas
+    # mirror the legacy tool_call/tool_result/assistant_delta tails. A
+    # zero-copy final carries its bytes in source blocks, so replayability
+    # must not depend on inline content.
+    if is_human_input_checkpoint(event):
+        return bool(user_checkpoint_content(event).strip())
+    if is_assistant_final_message(event):
+        return True
+    item_kind = event_item_kind(event)
+    if item_kind in {"tool_call", "tool_result"}:
+        return True
+    return item_kind == "assistant_text" and event_lifecycle(event) == "delta"
+
+
+def _is_interrupted_tail_event(event: ChatTranscriptEvent | T0SessionEvent) -> bool:
+    if getattr(event, "event_type", None) in _INTERRUPTED_TAIL_EVENT_TYPES:
+        return True
+    if is_human_input_checkpoint(event):
+        return True
+    item_kind = event_item_kind(event)
+    if item_kind in {"tool_call", "tool_result"}:
+        return True
+    return item_kind == "assistant_text" and event_lifecycle(event) == "delta"
 
 
 def _last_replayable_turn_event(
@@ -288,9 +319,7 @@ def _last_replayable_turn_event(
 def _user_checkpoint_events(
     events: list[ChatTranscriptEvent | T0SessionEvent],
 ) -> list[ChatTranscriptEvent | T0SessionEvent]:
-    return [
-        event for event in events if _event_role(event) == "user" and (getattr(event, "content", None) or "").strip()
-    ]
+    return user_checkpoint_events(events)
 
 
 def _checkpoint_payload(event: ChatTranscriptEvent | T0SessionEvent, *, turn_index: int) -> dict[str, Any]:
@@ -298,6 +327,8 @@ def _checkpoint_payload(event: ChatTranscriptEvent | T0SessionEvent, *, turn_ind
     payload["checkpoint_event_id"] = _event_anchor_id(event)
     payload["turn_index"] = turn_index
     payload["checkpoint_type"] = "user_message"
+    payload["role"] = "user"
+    payload["content"] = user_checkpoint_content(event)
     return payload
 
 
@@ -535,7 +566,24 @@ def _event_to_summary_message(event: ChatTranscriptEvent | T0SessionEvent) -> di
 
 
 def _events_to_summary_messages(events: list[ChatTranscriptEvent | T0SessionEvent]) -> list[dict[str, str]]:
-    return [message for event in events if (message := _event_to_summary_message(event)) is not None]
+    # Session V2 parity: one authoritative HumanInput checkpoint per item with
+    # its exact rendered content enters the compact summary; superseded
+    # accepted bytes and queued/bound/applied state rows never do. Legacy rows
+    # keep their exact V1 projection and ordering.
+    checkpoint_row_ids = {_event_anchor_id(event) for event in user_checkpoint_events(events)}
+    messages: list[dict[str, str]] = []
+    for event in events:
+        if is_human_input_row(event):
+            if _event_anchor_id(event) in checkpoint_row_ids:
+                content = user_checkpoint_content(event)
+                # Strip decides emptiness only; the appended bytes stay exact.
+                if content.strip():
+                    messages.append({"role": "user", "content": content})
+            continue
+        message = _event_to_summary_message(event)
+        if message is not None:
+            messages.append(message)
+    return messages
 
 
 def _assistant_copy_candidates(
@@ -749,7 +797,7 @@ async def _handle_resume(context: SessionCommandContext, session: ChatSession, _
     events, truth_source = await _load_events(context.db, agent=context.agent, session=session)
     last_turn_event = _last_replayable_turn_event(events)
     checkpoints = _user_checkpoint_events(events)
-    interrupted = bool(last_turn_event and last_turn_event.event_type in _INTERRUPTED_TAIL_EVENT_TYPES)
+    interrupted = bool(last_turn_event and _is_interrupted_tail_event(last_turn_event))
     resume_checkpoint = checkpoints[-1] if interrupted and checkpoints else None
     return _typed_result(
         command="resume",

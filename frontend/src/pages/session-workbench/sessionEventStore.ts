@@ -67,6 +67,12 @@ export type SessionItemV2 = {
   first_sequence: number;
   last_sequence: number;
   last_ordinal?: number;
+  /** Event id of the latest content-bearing user lifecycle (accepted/revised);
+   * HumanInput item identity stays `id` — branch/rewind anchors need the real event id. */
+  checkpointEventId?: string;
+  /** Event id of the assistant_final.completed lifecycle (may be zero-copy);
+   * branch/regenerate anchors need the real event id, never the item id. */
+  completedEventId?: string;
 };
 
 export type ProjectionSyncState = {
@@ -258,8 +264,12 @@ function reduceContiguous(store: SessionEventStore, event: SessionEventV2): Sess
     ignoredEventIds = [...ignoredEventIds, event.event_id];
   } else {
     const contentDelta = sessionPayloadContent(event.payload);
+    // Snapshots replace, deltas append. A HumanInput revision replaces too:
+    // the revised lifecycle carries the item's full new content, not a suffix.
+    const replacesContent = event.lifecycle === 'snapshot'
+      || (event.item_kind === 'human_input' && (event.lifecycle === 'accepted' || event.lifecycle === 'revised'));
     const content = prior
-      ? event.lifecycle === 'snapshot' ? contentDelta : `${prior.content}${contentDelta}`
+      ? replacesContent ? contentDelta : `${prior.content}${contentDelta}`
       : contentDelta;
     const sourceBlocks = Array.isArray(event.payload.source_blocks)
       ? event.payload.source_blocks as SessionItemV2['source_blocks']
@@ -286,6 +296,14 @@ function reduceContiguous(store: SessionEventStore, event: SessionEventV2): Sess
         occurredAt: prior?.occurredAt ?? event.occurred_at,
         first_sequence: prior?.first_sequence ?? event.sequence, last_sequence: event.sequence,
         last_ordinal: ordinal ?? prior?.last_ordinal,
+        checkpointEventId:
+          event.item_kind === 'human_input' && (event.lifecycle === 'accepted' || event.lifecycle === 'revised')
+            ? event.event_id
+            : prior?.checkpointEventId,
+        completedEventId:
+          event.item_kind === 'assistant_final' && event.lifecycle === 'completed'
+            ? event.event_id
+            : prior?.completedEventId,
       },
     };
   }

@@ -489,19 +489,36 @@ async function exerciseDomain(
       break;
     }
     case 'J-06': {
-      const anchor = base.transcript.find((item) => item.event_type === 'user_message');
-      expect(anchor?.id).toBeTruthy();
+      const canonical = await responseJson<Array<Record<string, unknown>>>(
+        await context.ownerApi.get(
+          `/api/agents/${context.agentId}/sessions/${sessionId}/transcript?schema_version=2`,
+        ),
+        'read canonical V2 transcript',
+      );
+      const anchor = canonical.find(
+        (item) =>
+          item.item_kind === 'human_input'
+          && item.lifecycle === 'accepted'
+          && String((item.actor as Record<string, unknown> | undefined)?.type || '') === 'user',
+      );
+      expect(anchor?.event_id).toBeTruthy();
+      const anchorEventId = String(anchor?.event_id);
+      const anchorPayload = (anchor?.payload as Record<string, unknown> | undefined) || {};
+      expect(JSON.stringify(anchorPayload.content_parts)).toContain('J-06 exercise the production journey contract');
       const branch = await responseJson<Record<string, unknown>>(
         await context.ownerApi.post(`/api/agents/${context.agentId}/sessions/${sessionId}/branches`, {
           data: {
             mode: 'branch',
-            anchor_event_id: anchor?.id,
+            anchor_event_id: anchorEventId,
             title: `J-06 branch ${suffix}`,
             start_run: false,
           },
         }),
         'create session branch',
       );
+      const branchInfo = (branch.branch as Record<string, unknown>) || {};
+      expect(String(branchInfo.anchor_event_id)).toBe(anchorEventId);
+      expect(String(branchInfo.draft_content)).toBe('J-06 exercise the production journey contract.');
       const lineage = await responseJson<Array<Record<string, unknown>>>(
         await context.ownerApi.get(`/api/agents/${context.agentId}/sessions/${String((branch.session as Record<string, unknown>).id)}/lineage`),
         'read branch lineage',
@@ -509,6 +526,7 @@ async function exerciseDomain(
       expect(lineage.length).toBeGreaterThanOrEqual(2);
       domain.branch = branch;
       domain.lineage = lineage;
+      domain.anchor = anchor;
       break;
     }
     case 'J-07': {

@@ -615,3 +615,302 @@ async def test_worktree_create_hook_can_block_branch_before_mutation(monkeypatch
 
     assert getattr(exc_info.value, "status_code", None) == 409
     assert db.added == []
+
+
+def _v2_event(
+    *,
+    session_id,
+    sequence,
+    item_id=None,
+    item_kind="human_input",
+    lifecycle="accepted",
+    content_parts=None,
+):
+    resolved_item = item_id or uuid4()
+    if content_parts is None:
+        content_parts = [{"type": "text", "text": f"v2 prompt {sequence}"}] if item_kind == "human_input" else []
+    return SimpleNamespace(
+        id=uuid4(),
+        sequence=sequence,
+        item_id=resolved_item,
+        tenant_id=uuid4(),
+        agent_id=uuid4(),
+        session_id=session_id,
+        run_id=None,
+        parent_event_id=None,
+        root_session_id=None,
+        parent_session_id=None,
+        message_id=uuid4(),
+        actor_type="user" if item_kind == "human_input" else "assistant",
+        event_type=f"{item_kind}.{lifecycle}",
+        item_kind=item_kind,
+        lifecycle=lifecycle,
+        visibility_scope="direct_user",
+        listed_surface="chat",
+        content="",
+        parts_json=None,
+        metadata_json={
+            "v2_payload": (
+                {"input_id": str(resolved_item), "content_parts": content_parts}
+                if item_kind == "human_input"
+                else {"phase": "final"}
+            ),
+            "actor": {"type": "user" if item_kind == "human_input" else "assistant"},
+        },
+        created_at=datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc),
+    )
+
+
+def _branch_source_session(agent_id, tenant_id, user_id):
+    from datetime import datetime as _datetime
+
+    source_session_id = uuid4()
+    session = SimpleNamespace(
+        id=source_session_id,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        title="Original",
+        parent_session_id=None,
+        root_session_id=None,
+        source_channel="web",
+        session_kind="human_chat",
+        actor_type="user",
+        runtime_source="web_chat",
+        visibility_scope="direct_user",
+        listed_surface="chat",
+        created_at=_datetime(2026, 8, 26, 11, 0, tzinfo=timezone.utc),
+        last_message_at=_datetime(2026, 8, 26, 11, 30, tzinfo=timezone.utc),
+        transcript_metadata_json={},
+    )
+    return source_session_id, session
+
+
+@pytest.mark.asyncio
+async def test_branch_at_v2_human_input_checkpoint_uses_exact_draft_and_skips_anchor(monkeypatch):
+    from app.services.conversation_branch_service import create_conversation_branch
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    source_session_id, source_session = _branch_source_session(agent_id, tenant_id, user_id)
+    earlier = _event(
+        session_id=source_session_id,
+        sequence=2,
+        event_type="assistant_message",
+        role="assistant",
+        content="prior answer",
+    )
+    anchor = _v2_event(
+        session_id=source_session_id,
+        sequence=10,
+        content_parts=[{"type": "text", "text": "J-06 exercise the production journey contract."}],
+    )
+    db = _FakeDB(anchor=anchor, prefix=[earlier])
+    copied = []
+
+    async def fake_append_session_event(**kwargs):
+        copied.append(kwargs)
+        return SimpleNamespace(
+            event_id=uuid4(), sequence=kwargs.get("sequence", 1), message_id=kwargs.get("message_id")
+        )
+
+    monkeypatch.setattr("app.services.conversation_branch_service.append_session_event", fake_append_session_event)
+
+    result = await create_conversation_branch(
+        db=db,
+        agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+        user=SimpleNamespace(id=user_id),
+        source_session=source_session,
+        mode="branch",
+        anchor_event_id=anchor.id,
+        title="J-06 branch",
+    )
+
+    assert result.branch["draft_content"] == "J-06 exercise the production journey contract."
+    assert result.branch["anchor_event_id"] == str(anchor.id)
+    assert [kwargs.get("event_type") for kwargs in copied] == ["assistant_message"]
+    branch_session = db.added[0]
+    assert branch_session.parent_session_id == source_session_id
+    assert branch_session.root_session_id == source_session_id
+
+
+@pytest.mark.asyncio
+async def test_branch_at_revised_v2_checkpoint_does_not_copy_superseded_accepted_bytes(monkeypatch):
+    from app.services.conversation_branch_service import create_conversation_branch
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    source_session_id, source_session = _branch_source_session(agent_id, tenant_id, user_id)
+    item_id = uuid4()
+    # Production order: a revision replaces an unbound input, so the revised
+    # lifecycle directly follows its superseded accepted row.
+    accepted = _v2_event(
+        session_id=source_session_id,
+        sequence=1,
+        item_id=item_id,
+        content_parts=[{"type": "text", "text": "superseded draft"}],
+    )
+    anchor = _v2_event(
+        session_id=source_session_id,
+        sequence=2,
+        item_id=item_id,
+        lifecycle="revised",
+        content_parts=[{"type": "text", "text": "revised exact prompt"}],
+    )
+    db = _FakeDB(anchor=anchor, prefix=[accepted])
+    copied = []
+
+    async def fake_append_session_event(**kwargs):
+        copied.append(kwargs)
+        return SimpleNamespace(
+            event_id=uuid4(), sequence=kwargs.get("sequence", 1), message_id=kwargs.get("message_id")
+        )
+
+    monkeypatch.setattr("app.services.conversation_branch_service.append_session_event", fake_append_session_event)
+
+    result = await create_conversation_branch(
+        db=db,
+        agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+        user=SimpleNamespace(id=user_id),
+        source_session=source_session,
+        mode="branch",
+        anchor_event_id=anchor.id,
+    )
+
+    assert result.branch["draft_content"] == "revised exact prompt"
+    assert copied == []
+
+
+@pytest.mark.asyncio
+async def test_branch_prefix_copy_renders_v2_human_input_content_once_per_item(monkeypatch):
+    from app.services.conversation_branch_service import create_conversation_branch
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    source_session_id, source_session = _branch_source_session(agent_id, tenant_id, user_id)
+    item_id = uuid4()
+    accepted = _v2_event(
+        session_id=source_session_id,
+        sequence=2,
+        item_id=item_id,
+        content_parts=[{"type": "text", "text": "old prompt"}],
+    )
+    revised = _v2_event(
+        session_id=source_session_id,
+        sequence=5,
+        item_id=item_id,
+        lifecycle="revised",
+        content_parts=[{"type": "text", "text": "new prompt"}],
+    )
+    answer = _event(
+        session_id=source_session_id,
+        sequence=8,
+        event_type="assistant_message",
+        role="assistant",
+        content="answer",
+    )
+    anchor = _event(
+        session_id=source_session_id,
+        sequence=10,
+        event_type="assistant_message",
+        role="assistant",
+        content="latest answer",
+    )
+    db = _FakeDB(anchor=anchor, prefix=[accepted, revised, answer])
+    copied = []
+
+    async def fake_append_session_event(**kwargs):
+        copied.append(kwargs)
+        return SimpleNamespace(
+            event_id=uuid4(), sequence=kwargs.get("sequence", 1), message_id=kwargs.get("message_id")
+        )
+
+    monkeypatch.setattr("app.services.conversation_branch_service.append_session_event", fake_append_session_event)
+
+    await create_conversation_branch(
+        db=db,
+        agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+        user=SimpleNamespace(id=user_id),
+        source_session=source_session,
+        mode="branch",
+        anchor_event_id=anchor.id,
+    )
+
+    assert [kwargs.get("event_type") for kwargs in copied] == ["human_input.revised", "assistant_message"]
+    assert copied[0]["content"] == "new prompt"
+    assert copied[0]["role"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_regenerate_from_v2_assistant_final_uses_latest_v2_user_prompt(monkeypatch):
+    from app.services.conversation_branch_service import create_conversation_branch
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    source_session_id, source_session = _branch_source_session(agent_id, tenant_id, user_id)
+    user_prompt = _v2_event(
+        session_id=source_session_id,
+        sequence=1,
+        content_parts=[{"type": "text", "text": "v2 user prompt exact"}],
+    )
+    anchor = _v2_event(session_id=source_session_id, sequence=10, item_kind="assistant_final", lifecycle="completed")
+    db = _FakeDB(anchor=anchor, prefix=[user_prompt])
+    copied = []
+
+    async def fake_append_session_event(**kwargs):
+        copied.append(kwargs)
+        return SimpleNamespace(
+            event_id=uuid4(), sequence=kwargs.get("sequence", 1), message_id=kwargs.get("message_id")
+        )
+
+    monkeypatch.setattr("app.services.conversation_branch_service.append_session_event", fake_append_session_event)
+
+    result = await create_conversation_branch(
+        db=db,
+        agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+        user=SimpleNamespace(id=user_id),
+        source_session=source_session,
+        mode="regenerate",
+        anchor_event_id=anchor.id,
+    )
+
+    assert result.run_request is not None
+    assert result.run_request.content == "v2 user prompt exact"
+    assert result.run_request.append_user_message is False
+    assert result.run_request.extra_metadata["regenerate_prompt"] == "v2 user prompt exact"
+
+
+@pytest.mark.asyncio
+async def test_branch_draft_renders_single_part_content_key_exact_bytes(monkeypatch):
+    from app.services.conversation_branch_service import create_conversation_branch
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    source_session_id, source_session = _branch_source_session(agent_id, tenant_id, user_id)
+    anchor = _v2_event(
+        session_id=source_session_id,
+        sequence=1,
+        content_parts=[{"type": "text", "content": "exact-api-bytes"}],
+    )
+    db = _FakeDB(anchor=anchor, prefix=[])
+
+    async def fake_append_session_event(**_kwargs):
+        return SimpleNamespace(event_id=uuid4(), sequence=1, message_id=None)
+
+    monkeypatch.setattr("app.services.conversation_branch_service.append_session_event", fake_append_session_event)
+
+    result = await create_conversation_branch(
+        db=db,
+        agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+        user=SimpleNamespace(id=user_id),
+        source_session=source_session,
+        mode="branch",
+        anchor_event_id=anchor.id,
+    )
+
+    assert result.branch["draft_content"] == "exact-api-bytes"

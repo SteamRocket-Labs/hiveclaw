@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
+from app.services.session_user_checkpoint import user_checkpoint_content, user_checkpoint_events
 
 
 def _str_or_none(value: Any) -> str | None:
@@ -22,13 +23,11 @@ def _metadata(session: ChatSession) -> dict[str, Any]:
     return dict(getattr(session, "transcript_metadata_json", None) or {})
 
 
-def _event_checkpoint(event: ChatTranscriptEvent) -> dict[str, Any] | None:
-    if event.event_type != "user_message":
-        return None
+def _event_checkpoint(event: ChatTranscriptEvent) -> dict[str, Any]:
     return {
         "checkpoint_event_id": str(event.id),
         "sequence": int(event.sequence),
-        "content_preview": (event.content or "")[:240],
+        "content_preview": user_checkpoint_content(event)[:240],
         "created_at": event.created_at.isoformat() if getattr(event, "created_at", None) else None,
     }
 
@@ -59,7 +58,7 @@ def build_session_index(
     meta = _metadata(session)
     assembly_state = runtime_assembly_metadata(meta)
     events = sorted(transcript_events or [], key=lambda item: int(item.sequence))
-    checkpoints = [checkpoint for event in events if (checkpoint := _event_checkpoint(event)) is not None]
+    checkpoints = [_event_checkpoint(event) for event in user_checkpoint_events(events)]
     dynamic_tools = list(meta.get("dynamic_tools") or assembly_state.get("available_deferred_tools") or [])
     indexed_t0_segments = list(t0_segments if t0_segments is not None else meta.get("t0_segments") or [])
     return {

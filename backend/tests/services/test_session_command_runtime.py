@@ -1701,3 +1701,360 @@ async def test_load_events_returns_latest_t0_window_not_earliest(monkeypatch, tm
     assert truth_source == "t0_events_jsonl_fallback"
     assert [event.sequence for event in events] == list(range(21, 31))
     assert events[-1].content == "m30"
+
+
+def _v2_input_row(
+    session: ChatSession,
+    *,
+    sequence: int,
+    item_id,
+    lifecycle: str = "accepted",
+    content_parts: list[dict] | None = None,
+) -> ChatTranscriptEvent:
+    parts = content_parts if content_parts is not None else [{"type": "text", "text": f"v2 prompt {sequence}"}]
+    return ChatTranscriptEvent(
+        id=uuid4(),
+        sequence=sequence,
+        tenant_id=session.tenant_id,
+        agent_id=session.agent_id,
+        session_id=session.id,
+        item_id=item_id,
+        actor_type="user",
+        event_type=f"human_input.{lifecycle}",
+        item_kind="human_input",
+        lifecycle=lifecycle,
+        visibility_scope="direct_user",
+        listed_surface="chat",
+        content="",
+        metadata_json={
+            "v2_payload": {"input_id": str(item_id), "content_parts": parts},
+            "actor": {"type": "user"},
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_checkpoints_list_v2_human_inputs_deduped_with_exact_content():
+    from app.services.session_command_runtime import execute_session_command
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    item_one = uuid4()
+    item_two = uuid4()
+    accepted_one = _v2_input_row(
+        session, sequence=1, item_id=item_one, content_parts=[{"type": "text", "text": "first draft"}]
+    )
+    revised_one = _v2_input_row(
+        session,
+        sequence=4,
+        item_id=item_one,
+        lifecycle="revised",
+        content_parts=[{"type": "text", "text": "first revised exact"}],
+    )
+    queued_one = _v2_input_row(session, sequence=8, item_id=item_one, lifecycle="queued")
+    bound_one = _v2_input_row(session, sequence=12, item_id=item_one, lifecycle="bound")
+    applied_one = _v2_input_row(session, sequence=21, item_id=item_one, lifecycle="applied")
+    accepted_two = _v2_input_row(
+        session, sequence=30, item_id=item_two, content_parts=[{"type": "text", "text": "second prompt"}]
+    )
+    db = _DB(session, _db_rows(accepted_one, revised_one, queued_one, bound_one, applied_one, accepted_two))
+
+    result = await _run_session_command(
+        execute_session_command,
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="checkpoints",
+        session_id=session.id,
+        arguments={},
+    )
+
+    assert result["checkpoint_count"] == 2
+    assert [item["checkpoint_event_id"] for item in result["checkpoints"]] == [
+        str(revised_one.id),
+        str(accepted_two.id),
+    ]
+    assert [item["content"] for item in result["checkpoints"]] == ["first revised exact", "second prompt"]
+    assert [item["role"] for item in result["checkpoints"]] == ["user", "user"]
+    assert [item["sequence"] for item in result["checkpoints"]] == [4, 30]
+    assert [item["turn_index"] for item in result["checkpoints"]] == [1, 2]
+
+
+def _v2_final_row(session: ChatSession, *, sequence: int, item_id, content: str) -> ChatTranscriptEvent:
+    return ChatTranscriptEvent(
+        id=uuid4(),
+        sequence=sequence,
+        tenant_id=session.tenant_id,
+        agent_id=session.agent_id,
+        session_id=session.id,
+        item_id=item_id,
+        actor_type="assistant",
+        event_type="assistant_final.completed",
+        item_kind="assistant_final",
+        lifecycle="completed",
+        visibility_scope="direct_user",
+        listed_surface="chat",
+        content=content,
+        metadata_json={
+            "v2_payload": {"phase": "final", "content": content},
+            "actor": {"type": "assistant"},
+        },
+    )
+
+
+def _v2_tool_row(session: ChatSession, *, sequence: int, item_id, kind: str) -> ChatTranscriptEvent:
+    return ChatTranscriptEvent(
+        id=uuid4(),
+        sequence=sequence,
+        tenant_id=session.tenant_id,
+        agent_id=session.agent_id,
+        session_id=session.id,
+        item_id=item_id,
+        actor_type="assistant",
+        event_type=f"{kind}.completed",
+        item_kind=kind,
+        lifecycle="completed",
+        visibility_scope="direct_user",
+        listed_surface="chat",
+        content="",
+        metadata_json={
+            "v2_payload": {"invocation_id": str(item_id)},
+            "actor": {"type": "assistant"},
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_compact_summary_includes_authoritative_v2_user_prompt_with_exact_content(monkeypatch):
+    from app.services.session_command_runtime import execute_session_command
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    item = uuid4()
+    accepted = _v2_input_row(session, sequence=1, item_id=item, content_parts=[{"type": "text", "text": "first draft"}])
+    revised = _v2_input_row(
+        session,
+        sequence=2,
+        item_id=item,
+        lifecycle="revised",
+        content_parts=[{"type": "text", "text": "first revised exact"}],
+    )
+    queued = _v2_input_row(session, sequence=3, item_id=item, lifecycle="queued")
+    bound = _v2_input_row(session, sequence=4, item_id=item, lifecycle="bound")
+    applied = _v2_input_row(session, sequence=5, item_id=item, lifecycle="applied")
+    final = _v2_final_row(session, sequence=6, item_id=uuid4(), content="final answer")
+    db = _DB(session, _db_rows(accepted, revised, queued, bound, applied, final))
+    captured: dict[str, object] = {}
+
+    async def fake_generate(messages, *_args, **_kwargs):
+        captured["messages"] = list(messages)
+        return "compressed summary"
+
+    def fake_wrap(summary_text):
+        return {"role": "system", "content": f"compressed: {summary_text}"}
+
+    monkeypatch.setattr("app.services.session_command_runtime._generate_session_summary", fake_generate)
+    monkeypatch.setattr("app.services.session_command_runtime._wrap_compressed_summary", fake_wrap)
+
+    result = await _run_session_command(
+        execute_session_command,
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="compact",
+        session_id=session.id,
+        arguments={},
+    )
+
+    assert result["action"] == "compacted_context_installed"
+    assert captured["messages"] == [
+        {"role": "user", "content": "first revised exact"},
+        {"role": "assistant", "content": "final answer"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resume_recognizes_v2_human_input_tail_as_interrupted_replayable():
+    from app.services.session_command_runtime import execute_session_command
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    accepted = _v2_input_row(
+        session, sequence=1, item_id=uuid4(), content_parts=[{"type": "text", "text": "do the thing"}]
+    )
+    db = _DB(session, _db_rows(accepted))
+
+    result = await _run_session_command(
+        execute_session_command,
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="resume",
+        session_id=session.id,
+        arguments={},
+    )
+
+    assert result["interrupted"] is True
+    assert result["last_replayable_event"]["id"] == str(accepted.id)
+    assert result["resume_from_checkpoint_event_id"] == str(accepted.id)
+    assert result["last_replayable_event"]["role"] == "user"
+    assert result["last_replayable_event"]["content"] == "do the thing"
+
+
+@pytest.mark.asyncio
+async def test_resume_recognizes_v2_assistant_final_tail_as_completed_replayable():
+    from app.services.session_command_runtime import execute_session_command
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    accepted = _v2_input_row(
+        session, sequence=1, item_id=uuid4(), content_parts=[{"type": "text", "text": "do the thing"}]
+    )
+    final = _v2_final_row(session, sequence=2, item_id=uuid4(), content="done answer")
+    db = _DB(session, _db_rows(accepted, final))
+
+    result = await _run_session_command(
+        execute_session_command,
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="resume",
+        session_id=session.id,
+        arguments={},
+    )
+
+    assert result["interrupted"] is False
+    assert result["last_replayable_event"]["id"] == str(final.id)
+    # V1 contract: a completed tail offers no resume-from checkpoint.
+    assert result["resume_from_checkpoint_event_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_resume_treats_v2_tool_tail_as_interrupted_replayable():
+    from app.services.session_command_runtime import execute_session_command
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    accepted = _v2_input_row(session, sequence=1, item_id=uuid4(), content_parts=[{"type": "text", "text": "run it"}])
+    tool_call = _v2_tool_row(session, sequence=2, item_id=uuid4(), kind="tool_call")
+    tool_result = _v2_tool_row(session, sequence=3, item_id=uuid4(), kind="tool_result")
+    db = _DB(session, _db_rows(accepted, tool_call, tool_result))
+
+    result = await _run_session_command(
+        execute_session_command,
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="resume",
+        session_id=session.id,
+        arguments={},
+    )
+
+    assert result["interrupted"] is True
+    assert result["last_replayable_event"]["id"] == str(tool_result.id)
+
+
+def _v2_zero_copy_final_row(session: ChatSession, *, sequence: int, item_id) -> ChatTranscriptEvent:
+    """Real production terminal shape: zero-copy final with empty inline content
+    whose bytes live in source blocks, and a completed event id distinct from
+    the item id."""
+    return ChatTranscriptEvent(
+        id=uuid4(),
+        sequence=sequence,
+        tenant_id=session.tenant_id,
+        agent_id=session.agent_id,
+        session_id=session.id,
+        item_id=item_id,
+        actor_type="assistant",
+        event_type="assistant_final.completed",
+        item_kind="assistant_final",
+        lifecycle="completed",
+        visibility_scope="direct_user",
+        listed_surface="chat",
+        content="",
+        metadata_json={
+            "v2_payload": {
+                "phase": "final",
+                "zero_copy": True,
+                "source_blocks": [
+                    {"item_id": str(uuid4()), "block_index": 0, "content_hash": "hash-0"},
+                ],
+            },
+            "actor": {"type": "assistant"},
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_resume_recognizes_zero_copy_assistant_final_tail_without_inline_content():
+    from app.services.session_command_runtime import execute_session_command
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    accepted = _v2_input_row(
+        session, sequence=1, item_id=uuid4(), content_parts=[{"type": "text", "text": "do the thing"}]
+    )
+    final = _v2_zero_copy_final_row(session, sequence=27, item_id=uuid4())
+    db = _DB(session, _db_rows(accepted, final))
+
+    result = await _run_session_command(
+        execute_session_command,
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="resume",
+        session_id=session.id,
+        arguments={},
+    )
+
+    assert result["interrupted"] is False
+    assert result["last_replayable_event"]["id"] == str(final.id)
+
+
+@pytest.mark.asyncio
+async def test_compact_summary_preserves_exact_v2_user_bytes(monkeypatch):
+    from app.services.session_command_runtime import execute_session_command
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    exact_text = "  exact bytes  \n"
+    accepted = _v2_input_row(session, sequence=1, item_id=uuid4(), content_parts=[{"type": "text", "text": exact_text}])
+    db = _DB(session, _db_rows(accepted))
+    captured: dict[str, object] = {}
+
+    async def fake_generate(messages, *_args, **_kwargs):
+        captured["messages"] = list(messages)
+        return "compressed summary"
+
+    monkeypatch.setattr("app.services.session_command_runtime._generate_session_summary", fake_generate)
+    monkeypatch.setattr(
+        "app.services.session_command_runtime._wrap_compressed_summary",
+        lambda text: {"role": "system", "content": text},
+    )
+
+    result = await _run_session_command(
+        execute_session_command,
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="compact",
+        session_id=session.id,
+        arguments={},
+    )
+
+    assert result["action"] == "compacted_context_installed"
+    assert captured["messages"] == [{"role": "user", "content": exact_text}]

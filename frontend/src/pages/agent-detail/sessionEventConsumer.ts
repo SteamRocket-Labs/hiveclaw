@@ -117,7 +117,10 @@ function projectCanonicalItem(
       role: 'user',
       content: itemDisplayContent(item),
       id: item.id,
-      transcriptEventId: item.id,
+      // Item identity and the durable checkpoint anchor are distinct: the
+      // branch/rewind API needs an actual ChatTranscriptEvent id, never the
+      // input item id.
+      transcriptEventId: item.checkpointEventId ?? null,
       timestamp: item.occurredAt,
       sessionItem: item,
     };
@@ -127,7 +130,9 @@ function projectCanonicalItem(
       role: 'assistant',
       content: finalDisplayContent(item, store),
       id: item.renderOwnerId || item.id,
-      transcriptEventId: item.id,
+      // Branch/regenerate anchor on the actual completed event id (zero-copy
+      // finals included); the item id is not a transcript event id.
+      transcriptEventId: item.completedEventId ?? null,
       timestamp: item.occurredAt,
       artifacts: extractArtifactParts(item.payload),
       sessionItem: item,

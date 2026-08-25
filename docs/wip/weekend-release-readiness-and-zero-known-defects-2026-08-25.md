@@ -764,7 +764,7 @@ Rollback / recovery:
 
 | RC | Defect/Task | zCode commit | Targeted tests | Codex verdict | Production run 1 | Production run 2 | Seven-atom status | Remaining |
 |---|---|---|---|---|---|---|---|---|
-| RC-00 | UI-001/002/003/004、SHELL-001、A2A-001 read-model、UI-005(D1/D2/auth出口) + Codex FAIL 六项 correction | `e04f6fee`（主包）、`6e2ff99d`（Agent Detail 面 + Codex 基线）、`fix(rc-00): close Codex review findings`（review-fail correction，hash 见 git log 该 subject） | 见 §7.1 验证块（frontend 141 files / 837 tests；backend 定向 148+26+197；i18n gates 0；build 预算过；ruff check + format 全过） | Codex 首轮 FAIL（六项已 correction，verdict 待复评 = pending） | 已授权未执行 | 已授权未执行 | 局部闭环（Fix Candidate）：Input/Authority/Execution/Evidence 有当前代码路径与回归；Recovery/Consumption 待生产 E2E；Acceptance 缺生产两遍 | D3/D4/D5 未复现；全量 backend 回归留 RC-09；生产 E2E 待执行（owner 已授权 gates 后两次三服务部署） |
+| RC-00 | UI-001/002/003/004、SHELL-001、A2A-001 read-model、UI-005(D1/D2/auth出口) + Codex FAIL 六项 correction | `e04f6fee`（主包）、`6e2ff99d`（Agent Detail 面 + Codex 基线）、`b0c1a95c`（review-fail correction） | 见 §7.1 验证块（frontend 141 files / 837 tests；backend 定向 148+26+197；i18n gates 0；build 预算过；ruff check + format 全过） | Codex 首轮 FAIL（六项已 correction，verdict 待复评 = pending） | 已授权未执行 | 已授权未执行 | 局部闭环（Fix Candidate）：Input/Authority/Execution/Evidence 有当前代码路径与回归；Recovery/Consumption 待生产 E2E；Acceptance 缺生产两遍 | D3/D4/D5 未复现；全量 backend 回归留 RC-09；生产 E2E 待执行（owner 已授权 gates 后两次三服务部署） |
 | RC-01 | 待开工 | — | — | — | — | — | Breakpoint | PDF queued/segments/Agent citation |
 | RC-02 | 待开工 | — | — | — | — | — | Missing/Breakpoint | admin file intake + preview + proposal |
 | RC-03 | 待开工 | — | — | — | — | — | Partial loop | async push + long result + UI evidence |

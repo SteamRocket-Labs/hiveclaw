@@ -123,6 +123,10 @@ class Settings(BaseSettings):
     # shared upload ceiling (mirrors DocumentConversionService's 50 MiB).
     PERSONAL_KB_CONVERSION_TIMEOUT_SECONDS: float = 120.0
     PERSONAL_KB_MAX_UPLOAD_BYTES: int = 50 * 1024 * 1024
+    # Company Knowledge direct file import: same physical bounds for the
+    # admin intake (bounded multipart read + worker-side conversion).
+    COMPANY_KB_CONVERSION_TIMEOUT_SECONDS: float = 120.0
+    COMPANY_KB_MAX_UPLOAD_BYTES: int = 50 * 1024 * 1024
     # Startup repair for legacy chat sessions that predate the canonical
     # chat_transcript_events + memory/t0 session ledger path. Runs inside the
     # backend container so Railway's /data/agents volume is available.

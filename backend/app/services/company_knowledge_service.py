@@ -8,6 +8,7 @@ remain deterministic platform responsibilities.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -20,6 +21,7 @@ from typing import Any
 
 from sqlalchemy import and_, func, or_, select, text
 
+from app.config import get_settings
 from app.database import tenant_scoped_session
 from app.models.company_knowledge import (
     CompanyKnowledgeEvidence,
@@ -56,6 +58,7 @@ from app.services.company_knowledge_permissions import (
     resolve_company_knowledge_permission,
 )
 from app.services.personal_knowledge_ingest import (
+    _safe_filename,
     clean_title,
     normalize_markdown,
     segment_markdown,
@@ -66,6 +69,9 @@ from app.services.privacy_layer import canonicalize_sensitivity, sensitivity_ran
 _EVIDENCE_KINDS = frozenset(
     {"document", "structured_record", "event", "living_object_revision", "external_immutable_ref"}
 )
+# Direct file import accepts exactly the formats with real conversion
+# vertical proof (PDF, DOCX, Markdown, plain text).
+_DIRECT_IMPORT_EXTENSIONS = frozenset({".pdf", ".docx", ".md", ".markdown", ".txt"})
 _PROPOSAL_KINDS = frozenset(
     {"knowledge", "ontology", "combined", "personal_promotion", "living_object", "legacy_import"}
 )
@@ -244,11 +250,162 @@ class CompanyKnowledgeImportRecoverySummary:
     job_refs: tuple[tuple[uuid.UUID, uuid.UUID], ...]
 
 
+class CompanyKnowledgeImportError(Exception):
+    """Typed import-pipeline failure carrying one exact machine code.
+
+    The code is the user-facing error contract; raw exception prose never
+    becomes UI state.
+    """
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class CompanyKnowledgeJobConflict(Exception):
+    """Typed lifecycle conflict (cancel/retry/preview/proposal) with an exact machine code."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyKnowledgeImportJobSummary:
+    """User-consumable read model for one import job (raw row stays operator evidence)."""
+
+    job_id: uuid.UUID
+    status: str
+    lifecycle_status: str
+    attempt_count: int
+    max_attempts: int
+    terminal: bool
+    retryable: bool
+    cancellable: bool
+    error_code: str | None
+    title: str
+    source_filename: str | None
+    namespace: str
+    sensitivity: str
+    source_id: uuid.UUID | None
+    evidence_id: uuid.UUID | None
+    document_id: uuid.UUID | None
+    proposal_id: uuid.UUID | None
+    idempotency_key: str
+    cancelled_at: str | None
+    created_at: Any
+    updated_at: Any
+    completed_at: Any
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyKnowledgeImportPreviewSegment:
+    segment_id: uuid.UUID
+    position: int
+    heading_path: list[str]
+    content: str
+    token_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyKnowledgeImportPreview:
+    """Pre-publication segment preview for a completed import (admin-only)."""
+
+    job_id: uuid.UUID
+    document_id: uuid.UUID
+    evidence_id: uuid.UUID | None
+    source_id: uuid.UUID | None
+    proposal_id: uuid.UUID | None
+    title: str
+    namespace: str
+    sensitivity: str
+    segments: list[CompanyKnowledgeImportPreviewSegment]
+
+
+_JOB_LIFECYCLE_BY_RAW_STATUS = {
+    "queued": "queued",
+    "running": "running",
+    "completed": "completed",
+    "failed": "failed",
+    "cancelled": "cancelled",
+    "held": "held",
+}
+
+# Permanent failure codes: retrying cannot change the outcome (bad input,
+# missing evidence, exhausted budget). Conversion failures and timeouts stay
+# retryable; a missing spool is recovered by re-uploading as a new import.
+_PERMANENT_IMPORT_ERROR_CODES = frozenset(
+    {
+        "unsupported_file_type",
+        "source_missing",
+        "import_payload_invalid",
+        "company_knowledge_import_attempts_exhausted",
+    }
+)
+
+
+def company_import_job_view(job: Any) -> CompanyKnowledgeImportJobSummary:
+    """Derive the lifecycle read model from the durable job row (no schema change)."""
+    request = dict(getattr(job, "request_json", {}) or {})
+    status = str(getattr(job, "status", "") or "")
+    lifecycle_status = _JOB_LIFECYCLE_BY_RAW_STATUS.get(status, status)
+    terminal = lifecycle_status not in {"queued", "running"}
+    attempt_count = int(getattr(job, "attempt_count", 0) or 0)
+    max_attempts = int(getattr(job, "max_attempts", 0) or 0)
+    error_code = getattr(job, "last_error_code", None)
+    direct_file = dict(request.get("direct_file_import") or {})
+    return CompanyKnowledgeImportJobSummary(
+        job_id=getattr(job, "id", None),
+        status=status,
+        lifecycle_status=lifecycle_status,
+        attempt_count=attempt_count,
+        max_attempts=max_attempts,
+        terminal=terminal,
+        retryable=(
+            lifecycle_status in {"failed", "cancelled"}
+            and attempt_count < max_attempts
+            and error_code not in _PERMANENT_IMPORT_ERROR_CODES
+        ),
+        cancellable=lifecycle_status == "queued",
+        error_code=error_code,
+        title=str(request.get("title") or ""),
+        source_filename=direct_file.get("source_filename"),
+        namespace=str(request.get("proposed_namespace") or ""),
+        sensitivity=str(request.get("proposed_sensitivity") or ""),
+        source_id=getattr(job, "source_id", None),
+        evidence_id=getattr(job, "evidence_id", None),
+        document_id=getattr(job, "document_id", None),
+        proposal_id=getattr(job, "proposal_id", None),
+        idempotency_key=str(getattr(job, "idempotency_key", "") or ""),
+        cancelled_at=str(request.get("cancelled_at") or "") or None,
+        created_at=getattr(job, "created_at", None),
+        updated_at=getattr(job, "updated_at", None),
+        completed_at=getattr(job, "completed_at", None),
+    )
+
+
 class CompanyKnowledgeService:
     """Company authority service shared by API handlers and background workers."""
 
-    def __init__(self, *, data_root: str | Path) -> None:
+    def __init__(
+        self,
+        *,
+        data_root: str | Path,
+        conversion_service: Any | None = None,
+        conversion_timeout_seconds: float | None = None,
+    ) -> None:
         self._data_root = Path(data_root).expanduser().resolve()
+        self._conversion_service_override = conversion_service
+        if conversion_timeout_seconds is None:
+            conversion_timeout_seconds = float(get_settings().COMPANY_KB_CONVERSION_TIMEOUT_SECONDS)
+        self._conversion_timeout_seconds = max(0.001, float(conversion_timeout_seconds))
+
+    def _conversion_service(self) -> Any:
+        if self._conversion_service_override is not None:
+            return self._conversion_service_override
+        from app.services.document_conversion import DocumentConversionService
+
+        return DocumentConversionService()
 
     @staticmethod
     async def _require_permission(
@@ -565,6 +722,261 @@ class CompanyKnowledgeService:
         )
         return job
 
+    async def queue_direct_file_import(
+        self,
+        session: Any,
+        *,
+        principal: CompanyKnowledgePrincipal,
+        source_contract_id: uuid.UUID,
+        source_contract_version: int,
+        filename: str,
+        data: bytes,
+        source_mime_type: str | None,
+        title: str,
+        proposed_namespace: str,
+        proposed_sensitivity: str,
+        purpose: str,
+        source_acl_snapshot: dict[str, Any],
+        idempotency_key: str,
+        trace_id: str,
+    ) -> CompanyKnowledgeImportJob:
+        """Queue one admin file upload for worker-side conversion and ingest.
+
+        Only the vertically proven formats are accepted (PDF, DOCX, Markdown,
+        plain text); anything else is rejected at the boundary with a typed
+        code. The raw source bytes are spooled durably; conversion runs inside
+        the worker, never inside the request transaction.
+        """
+        safe_name = _safe_filename(filename)
+        extension = Path(safe_name).suffix.lower()
+        if extension not in _DIRECT_IMPORT_EXTENSIONS:
+            raise CompanyKnowledgeImportError("unsupported_file_type")
+        if not data:
+            raise CompanyKnowledgeImportError("import_payload_invalid")
+        if not idempotency_key.strip():
+            raise ValueError("idempotency_key_required")
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {"lock_key": (f"company-knowledge-import:{principal.tenant_id}:{idempotency_key}")},
+        )
+        contract = (
+            await session.execute(
+                select(CompanyKnowledgeSourceContract)
+                .where(
+                    CompanyKnowledgeSourceContract.id == source_contract_id,
+                    CompanyKnowledgeSourceContract.tenant_id == principal.tenant_id,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if contract is None:
+            raise LookupError("company_source_contract_not_found")
+        if contract.status != "active" or contract.version != int(source_contract_version):
+            raise ValueError("company_source_contract_not_active")
+        if proposed_namespace not in set(contract.allowed_namespaces_json or []):
+            raise PermissionError("company_source_namespace_not_allowed")
+        sensitivity = canonicalize_sensitivity(proposed_sensitivity).value
+        if sensitivity_rank(sensitivity) < sensitivity_rank(contract.default_sensitivity):
+            raise ValueError("company_source_declassification_not_allowed")
+        if not source_acl_snapshot:
+            raise ValueError("company_source_acl_snapshot_required")
+        source_acl_hash = _hash_json(source_acl_snapshot)
+        resource = CompanyKnowledgeResource(
+            tenant_id=principal.tenant_id,
+            resource_type="company_knowledge_namespace",
+            resource_id=None,
+            resource_key=f"namespace:{proposed_namespace}",
+            namespace=proposed_namespace,
+            sensitivity=sensitivity,
+            source_acl_snapshot_hash=source_acl_hash,
+            source_acl=dict(source_acl_snapshot),
+            evidence_access_complete=True,
+            publication_status=None,
+        )
+        policy = await self._require_permission(
+            session,
+            principal=principal,
+            resource=resource,
+            action="propose",
+        )
+
+        artifact_hash = hashlib.sha256(data).hexdigest()
+        request_hash = _hash_json(
+            {
+                "import_kind": "direct_file",
+                "source_contract_id": str(contract.id),
+                "source_contract_version": contract.version,
+                "source_filename": safe_name,
+                "artifact_hash": artifact_hash,
+                "proposed_namespace": proposed_namespace,
+                "proposed_sensitivity": sensitivity,
+                "source_acl_snapshot_hash": source_acl_hash,
+                "principal": principal.evidence(),
+            }
+        )
+        existing = (
+            await session.execute(
+                select(CompanyKnowledgeImportJob)
+                .where(
+                    CompanyKnowledgeImportJob.tenant_id == principal.tenant_id,
+                    CompanyKnowledgeImportJob.idempotency_key == idempotency_key,
+                )
+                .limit(1)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            if existing.request_hash != request_hash:
+                raise ValueError("company_knowledge_import_idempotency_conflict")
+            return existing
+
+        evidence_id = uuid.uuid4()
+        spool_path = (
+            self._data_root
+            / "companies"
+            / str(principal.tenant_id)
+            / "knowledge"
+            / "imports"
+            / artifact_hash[:2]
+            / f"{evidence_id}-{artifact_hash}{extension}"
+        )
+        _atomic_write(spool_path, data)
+        source_revision = artifact_hash[:16]
+        serialized_request = {
+            "import_kind": "direct_file",
+            "direct_file_import": {
+                "source_filename": safe_name,
+                "source_mime_type": str(source_mime_type or ""),
+            },
+            "evidence_kind": "document",
+            "source_item_id": f"file:{safe_name}",
+            "source_revision": source_revision,
+            "title": clean_title(title),
+            "proposed_namespace": proposed_namespace,
+            "proposed_sensitivity": sensitivity,
+            "purpose": str(purpose or ""),
+            "source_acl_snapshot": dict(source_acl_snapshot),
+            "source_acl_snapshot_hash": source_acl_hash,
+            "coverage_ledger": {"complete": True, "covered_units": 1, "total_units": 1},
+            "permission_decision": policy,
+            "principal": principal.evidence(),
+            "evidence_id": str(evidence_id),
+            "artifact_ref": str(spool_path),
+            "artifact_hash": artifact_hash,
+            "occurred_at": None,
+            "effective_from": None,
+            "effective_until": None,
+            "observed_at": _utcnow().isoformat(),
+            "cursor": {},
+            "sequence": None,
+        }
+        now = _utcnow()
+        job = CompanyKnowledgeImportJob(
+            tenant_id=principal.tenant_id,
+            source_contract_id=contract.id,
+            source_contract_version=contract.version,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+            request_json=serialized_request,
+            artifact_ref=str(spool_path),
+            artifact_hash=artifact_hash,
+            status="queued",
+            available_at=now,
+            attempt_count=0,
+            max_attempts=5,
+            created_by_type=principal.actor_type,
+            created_by_id=principal.actor_id,
+            accountable_user_id=principal.accountable_user_id,
+            trace_id=trace_id,
+        )
+        session.add(job)
+        await session.flush()
+        await append_company_knowledge_event(
+            session,
+            event_input=_event_input(
+                principal=principal,
+                event_type="company_knowledge.import_queued",
+                resource_type="import_job",
+                resource_id=job.id,
+                resource_version=1,
+                source_refs=(f"company-source-contract://{contract.id}",),
+                source_hash=artifact_hash,
+                policy_snapshot=policy,
+                trace_id=trace_id,
+                idempotency_key=f"{idempotency_key}:queued",
+                outcome="queued",
+                payload={"job_id": str(job.id), "artifact_hash": artifact_hash, "import_kind": "direct_file"},
+                occurred_at=now,
+            ),
+        )
+        return job
+
+    async def _convert_direct_file_payload(
+        self,
+        session: Any,
+        *,
+        job: CompanyKnowledgeImportJob,
+        request: dict[str, Any],
+        payload: bytes,
+        tenant_id: uuid.UUID,
+    ) -> tuple[bytes, Path]:
+        """Convert spooled source bytes to canonical Markdown in the worker.
+
+        The blocking converter runs off the event loop under an explicit
+        physical timeout; failures raise typed codes (conversion_timeout /
+        conversion_failed). On success the job's artifact points at the
+        canonical Markdown and a conversion receipt preserves the source hash.
+        """
+        direct_file = dict(request.get("direct_file_import") or {})
+        filename = str(direct_file.get("source_filename") or "upload.bin")
+        mime = str(direct_file.get("source_mime_type") or "") or "application/octet-stream"
+        converter = self._conversion_service()
+        try:
+            conversion = await asyncio.wait_for(
+                asyncio.to_thread(
+                    converter.convert_bytes,
+                    data=payload,
+                    filename=filename,
+                    workspace_root=self._data_root / "companies" / str(tenant_id) / "knowledge" / "conversion",
+                    source_uri=f"company-import://{job.id}/source",
+                    source_mime_type=mime,
+                    tenant_id=tenant_id,
+                    agent_id=None,
+                    user_id=job.accountable_user_id,
+                    mode="auto",
+                    force_refresh=False,
+                ),
+                timeout=self._conversion_timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            raise CompanyKnowledgeImportError("conversion_timeout") from exc
+        except Exception as exc:
+            raise CompanyKnowledgeImportError("conversion_failed") from exc
+        canonical = normalize_markdown(str(getattr(conversion, "markdown", "") or ""))
+        if not canonical:
+            raise CompanyKnowledgeImportError("conversion_failed")
+        canonical_bytes = canonical.encode("utf-8")
+        canonical_hash = hashlib.sha256(canonical_bytes).hexdigest()
+        canonical_path = company_knowledge_artifact_path(
+            self._data_root,
+            tenant_id=tenant_id,
+            evidence_id=uuid.UUID(str(request["evidence_id"])),
+            content_hash=canonical_hash,
+            suffix=".md",
+        )
+        _atomic_write(canonical_path, canonical_bytes)
+        request["conversion_receipt"] = {
+            "engine": str(getattr(conversion, "engine", "") or ""),
+            "source_sha256": hashlib.sha256(payload).hexdigest(),
+            "warnings": list(getattr(conversion, "warnings", ()) or []),
+            "converted_at": _utcnow().isoformat(),
+        }
+        job.artifact_ref = str(canonical_path)
+        job.artifact_hash = canonical_hash
+        job.request_json = request
+        await session.flush()
+        return canonical_bytes, canonical_path
+
     async def _complete_promotion_handoff(
         self,
         session: Any,
@@ -701,8 +1113,16 @@ class CompanyKnowledgeService:
             if job.status in {"held", "cancelled"}:
                 raise RuntimeError(f"company_knowledge_import_job_{job.status}")
             if job.attempt_count >= job.max_attempts:
+                # Crash at the final attempt (stale running, expired claim):
+                # terminalize in this same claim transaction — the commit makes
+                # it durable; raising here would roll it back and leak a
+                # permanently running row.
                 job.status = "failed"
-                raise RuntimeError("company_knowledge_import_attempts_exhausted")
+                job.last_error_code = "company_knowledge_import_attempts_exhausted"
+                job.last_error = None
+                job.claim_token = None
+                job.claim_expires_at = None
+                return job
             job.status = "running"
             job.claim_token = claim_token
             job.claim_expires_at = now + timedelta(minutes=5)
@@ -731,9 +1151,23 @@ class CompanyKnowledgeService:
                     raise RuntimeError("company_knowledge_import_claim_lost")
                 request = dict(job.request_json)
                 artifact = _ensure_relative_to(Path(str(job.artifact_ref)), self._data_root)
+                if not artifact.exists():
+                    raise CompanyKnowledgeImportError("source_missing")
                 payload = artifact.read_bytes()
                 if hashlib.sha256(payload).hexdigest() != job.artifact_hash:
                     raise ValueError("company_knowledge_import_artifact_hash_mismatch")
+                if isinstance(request.get("direct_file_import"), dict) and not request.get("conversion_receipt"):
+                    # Direct file import: the spooled source bytes convert in
+                    # the worker (never in the request transaction). A stored
+                    # conversion receipt marks the artifact as already-canonical
+                    # so a retry never reconverts it.
+                    payload, artifact = await self._convert_direct_file_payload(
+                        session,
+                        job=job,
+                        request=request,
+                        payload=payload,
+                        tenant_id=tenant_id,
+                    )
                 contract = (
                     await session.execute(
                         select(CompanyKnowledgeSourceContract).where(
@@ -1034,7 +1468,7 @@ class CompanyKnowledgeService:
                     failed.available_at = _utcnow() + timedelta(seconds=min(300, 2**failed.attempt_count))
                     failed.claim_token = None
                     failed.claim_expires_at = None
-                    failed.last_error_code = type(exc).__name__
+                    failed.last_error_code = str(getattr(exc, "code", "") or "") or type(exc).__name__
                     failed.last_error = str(exc)[:4000]
             raise
 
@@ -1057,12 +1491,15 @@ class CompanyKnowledgeService:
                     CompanyKnowledgeImportJob.id,
                 )
                 .where(
-                    CompanyKnowledgeImportJob.attempt_count < CompanyKnowledgeImportJob.max_attempts,
                     or_(
                         and_(
                             CompanyKnowledgeImportJob.status.in_(("queued", "failed")),
                             CompanyKnowledgeImportJob.available_at <= now,
+                            CompanyKnowledgeImportJob.attempt_count < CompanyKnowledgeImportJob.max_attempts,
                         ),
+                        # Stale running is recovered at any attempt count: a
+                        # crash at the final attempt must be terminalized, not
+                        # filtered out and left permanently running.
                         and_(
                             CompanyKnowledgeImportJob.status == "running",
                             CompanyKnowledgeImportJob.claim_expires_at.is_not(None),
@@ -1091,6 +1528,8 @@ class CompanyKnowledgeService:
                 )
                 if job.status == "completed":
                     completed += 1
+                elif job.status == "failed":
+                    failed += 1
                 else:
                     skipped += 1
             except RuntimeError as exc:
@@ -1110,6 +1549,315 @@ class CompanyKnowledgeService:
             skipped=skipped,
             job_refs=refs,
         )
+
+    async def list_import_jobs(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        limit: int = 50,
+    ) -> list[CompanyKnowledgeImportJobSummary]:
+        rows = (
+            (
+                await session.execute(
+                    select(CompanyKnowledgeImportJob)
+                    .where(CompanyKnowledgeImportJob.tenant_id == tenant_id)
+                    .order_by(CompanyKnowledgeImportJob.created_at.desc())
+                    .limit(max(1, int(limit or 50)))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [company_import_job_view(job) for job in rows]
+
+    async def get_import_job_summary(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        job_id: uuid.UUID,
+    ) -> CompanyKnowledgeImportJobSummary | None:
+        job = (
+            await session.execute(
+                select(CompanyKnowledgeImportJob).where(
+                    CompanyKnowledgeImportJob.id == job_id,
+                    CompanyKnowledgeImportJob.tenant_id == tenant_id,
+                )
+            )
+        ).scalar_one_or_none()
+        return company_import_job_view(job) if job is not None else None
+
+    async def retry_import_job(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        job_id: uuid.UUID,
+    ) -> CompanyKnowledgeImportJobSummary:
+        """Requeue a failed/cancelled job without running any work.
+
+        The retry only commits the queued transition and clears the stale
+        terminal fields; the caller schedules the asynchronous worker. The
+        attempt ceiling and permanent failure codes reject with typed
+        conflicts instead of a futile requeue.
+        """
+        job = (
+            await session.execute(
+                select(CompanyKnowledgeImportJob)
+                .where(
+                    CompanyKnowledgeImportJob.id == job_id,
+                    CompanyKnowledgeImportJob.tenant_id == tenant_id,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if job is None:
+            raise LookupError("company_knowledge_import_job_not_found")
+        status = str(job.status or "")
+        if status not in {"failed", "cancelled"}:
+            raise CompanyKnowledgeJobConflict("not_retryable")
+        if int(job.attempt_count or 0) >= int(job.max_attempts or 0):
+            raise CompanyKnowledgeJobConflict("retry_attempt_limit")
+        if str(job.last_error_code or "") in _PERMANENT_IMPORT_ERROR_CODES:
+            raise CompanyKnowledgeJobConflict("not_retryable")
+        job.status = "queued"
+        job.available_at = _utcnow()
+        job.claim_token = None
+        job.claim_expires_at = None
+        job.last_error = None
+        job.last_error_code = None
+        request = dict(job.request_json or {})
+        request.pop("cancelled_at", None)
+        request["retried_at"] = _utcnow().isoformat()
+        job.request_json = request
+        await session.flush()
+        refresh = getattr(session, "refresh", None)
+        if refresh is not None:
+            await refresh(job)
+        return company_import_job_view(job)
+
+    async def cancel_import_job(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        job_id: uuid.UUID,
+    ) -> CompanyKnowledgeImportJobSummary:
+        """Cancel a queued job; running/terminal states reject with typed conflicts."""
+        job = (
+            await session.execute(
+                select(CompanyKnowledgeImportJob)
+                .where(
+                    CompanyKnowledgeImportJob.id == job_id,
+                    CompanyKnowledgeImportJob.tenant_id == tenant_id,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if job is None:
+            raise LookupError("company_knowledge_import_job_not_found")
+        status = str(job.status or "")
+        if status != "queued":
+            code = "not_cancellable_while_running" if status == "running" else "not_cancellable_terminal"
+            raise CompanyKnowledgeJobConflict(code)
+        job.status = "cancelled"
+        job.claim_token = None
+        job.claim_expires_at = None
+        cancelled_at = _utcnow().isoformat()
+        request = dict(job.request_json or {})
+        request["cancelled_at"] = cancelled_at
+        job.request_json = request
+        await session.flush()
+        refresh = getattr(session, "refresh", None)
+        if refresh is not None:
+            await refresh(job)
+        return company_import_job_view(job)
+
+    async def get_import_job_preview(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        job_id: uuid.UUID,
+    ) -> CompanyKnowledgeImportPreview | None:
+        """Pre-publication segment preview for a completed import job."""
+        job = (
+            await session.execute(
+                select(CompanyKnowledgeImportJob).where(
+                    CompanyKnowledgeImportJob.id == job_id,
+                    CompanyKnowledgeImportJob.tenant_id == tenant_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if job is None:
+            return None
+        if str(job.status or "") != "completed" or job.document_id is None:
+            raise CompanyKnowledgeJobConflict("preview_requires_completed")
+        document = (
+            await session.execute(
+                select(KnowledgeDocument).where(
+                    KnowledgeDocument.id == job.document_id,
+                    KnowledgeDocument.tenant_id == tenant_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if document is None:
+            raise CompanyKnowledgeJobConflict("preview_requires_completed")
+        request = dict(job.request_json or {})
+        segments = (
+            (
+                await session.execute(
+                    select(KnowledgeSegment)
+                    .where(KnowledgeSegment.document_id == document.id)
+                    .order_by(KnowledgeSegment.position.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return CompanyKnowledgeImportPreview(
+            job_id=job.id,
+            document_id=document.id,
+            evidence_id=job.evidence_id,
+            source_id=job.source_id,
+            proposal_id=job.proposal_id,
+            title=str(document.title or ""),
+            namespace=str(request.get("proposed_namespace") or ""),
+            sensitivity=str(document.sensitivity or ""),
+            segments=[
+                CompanyKnowledgeImportPreviewSegment(
+                    segment_id=segment.id,
+                    position=int(segment.position or 0),
+                    heading_path=list(segment.heading_path_json or []),
+                    content=str(segment.content or ""),
+                    token_count=int(segment.token_count or 0),
+                )
+                for segment in segments
+            ],
+        )
+
+    async def create_proposal_from_import(
+        self,
+        session: Any,
+        *,
+        principal: CompanyKnowledgePrincipal,
+        job_id: uuid.UUID,
+        trace_id: str,
+    ) -> CompanyKnowledgeProposal:
+        """Create + submit the review proposal for a completed import.
+
+        Idempotent: the proposal binds the job's exact evidence/document and a
+        deterministic idempotency key; a repeated call returns the existing
+        proposal. The document produced by the import is the canonical
+        candidate — no second copy is materialized.
+        """
+        job = (
+            await session.execute(
+                select(CompanyKnowledgeImportJob)
+                .where(
+                    CompanyKnowledgeImportJob.id == job_id,
+                    CompanyKnowledgeImportJob.tenant_id == principal.tenant_id,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if job is None:
+            raise LookupError("company_knowledge_import_job_not_found")
+        if job.proposal_id is not None:
+            existing = (
+                await session.execute(
+                    select(CompanyKnowledgeProposal).where(
+                        CompanyKnowledgeProposal.id == job.proposal_id,
+                        CompanyKnowledgeProposal.tenant_id == principal.tenant_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                return existing
+        if (
+            str(job.status or "") != "completed"
+            or job.document_id is None
+            or job.source_id is None
+            or job.evidence_id is None
+        ):
+            raise CompanyKnowledgeJobConflict("proposal_requires_completed_import")
+        document = (
+            await session.execute(
+                select(KnowledgeDocument).where(
+                    KnowledgeDocument.id == job.document_id,
+                    KnowledgeDocument.tenant_id == principal.tenant_id,
+                )
+            )
+        ).scalar_one()
+        request = dict(job.request_json or {})
+        evidence_ref = f"company-evidence://{job.evidence_id}"
+        proposal = await self.create_proposal(
+            session,
+            principal=principal,
+            request=CompanyKnowledgeProposalRequest(
+                proposal_kind="knowledge",
+                source_id=job.source_id,
+                source_document_id=job.document_id,
+                source_revision_ref=f"company-import://{job.id}",
+                baseline_publication_id=None,
+                baseline_version=None,
+                proposed_patch={
+                    "operation": "direct_import",
+                    "origin": "direct_import",
+                    "title": str(document.title or ""),
+                    "content_hash": str(document.canonical_md_sha256 or ""),
+                    "content_ref": f"company-import://{job.id}/candidate",
+                    "reason": str(request.get("purpose") or ""),
+                },
+                proposed_namespace=str(request.get("proposed_namespace") or ""),
+                proposed_sensitivity=str(request.get("proposed_sensitivity") or "internal"),
+                source_refs=(evidence_ref,),
+                source_coverage=dict(
+                    request.get("coverage_ledger") or {"complete": True, "covered_units": 1, "total_units": 1}
+                ),
+                conflict_candidates=(),
+                ontology_mapping={},
+                risk_level="normal",
+                required_review_policy=default_company_knowledge_review_policy(
+                    proposed_sensitivity=str(request.get("proposed_sensitivity") or "internal"),
+                    risk_level="normal",
+                    created_by_type=principal.actor_type,
+                ),
+                idempotency_key=f"{job.idempotency_key}:direct-import-proposal",
+                trace_id=trace_id,
+            ),
+        )
+        if proposal.status == "draft":
+            proposal = await self.submit_proposal(
+                session,
+                principal=principal,
+                proposal_id=proposal.id,
+                expected_state_version=proposal.state_version,
+                trace_id=trace_id,
+            )
+        elif proposal.status != "submitted":
+            raise RuntimeError("company_knowledge_direct_import_proposal_state_conflict")
+        job.proposal_id = proposal.id
+        await session.flush()
+        await append_company_knowledge_event(
+            session,
+            event_input=_event_input(
+                principal=principal,
+                event_type="company_knowledge.direct_import_proposal_submitted",
+                resource_type="import_job",
+                resource_id=job.id,
+                resource_version=job.attempt_count,
+                source_refs=(evidence_ref,),
+                source_hash=str(document.canonical_md_sha256 or ""),
+                policy_snapshot=dict(request.get("permission_decision") or {}),
+                trace_id=trace_id,
+                idempotency_key=f"{job.idempotency_key}:direct-import-proposal-submitted",
+                outcome="submitted",
+                payload={"proposal_id": str(proposal.id), "origin": "direct_import"},
+            ),
+        )
+        return proposal
 
     async def create_proposal(
         self,

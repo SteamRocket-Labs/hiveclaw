@@ -241,3 +241,131 @@ describe('companyKnowledgeApi', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// RC-02: direct file import + import job lifecycle client contract
+// ---------------------------------------------------------------------------
+
+const jobSummaryBody = {
+  job_id: 'job-1',
+  status: 'queued',
+  lifecycle_status: 'queued',
+  attempt_count: 0,
+  max_attempts: 5,
+  terminal: false,
+  retryable: false,
+  cancellable: true,
+  error_code: null,
+  title: 'Runbook',
+  source_filename: 'runbook.pdf',
+  namespace: 'company/general',
+  sensitivity: 'internal',
+  source_id: null,
+  evidence_id: null,
+  document_id: null,
+  proposal_id: null,
+  idempotency_key: 'ckb-test',
+  cancelled_at: null,
+  created_at: null,
+  updated_at: null,
+  completed_at: null,
+};
+
+describe('companyKnowledgeApi direct import endpoints', () => {
+  it('lists and creates source contracts for the managed file intake', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse([{ id: 'contract-1', stable_source_id: 'company-file-upload', status: 'active', version: 1 }]))
+      .mockResolvedValueOnce(jsonResponse({ id: 'contract-1', stable_source_id: 'company-file-upload', status: 'active', version: 1 }));
+
+    const contracts = await companyKnowledgeApi.listSourceContracts();
+    const created = await companyKnowledgeApi.createSourceContract({
+      stable_source_id: 'company-file-upload',
+      accountable_steward_ref: 'role:org_admin',
+      allowed_namespaces: ['company/general'],
+      default_sensitivity: 'PL1_public',
+    });
+
+    expect(requestOf(0).url).toBe('/api/knowledge/company/source-contracts');
+    expect(contracts[0]).toMatchObject({ contractKey: 'contract-1', stableSourceId: 'company-file-upload', status: 'active' });
+    const createInit = requestOf(1);
+    expect(createInit.url).toBe('/api/knowledge/company/source-contracts');
+    expect(createInit.init.method).toBe('POST');
+    const payload = JSON.parse(String(createInit.init.body));
+    expect(payload.source_kind).toBe('managed_file');
+    expect(payload.provider_kind).toBe('manual_upload');
+    expect(payload.ingest_mode).toBe('manual');
+    expect(payload.allowed_namespaces).toEqual(['company/general']);
+    expect(created.contractKey).toBe('contract-1');
+  });
+
+  it('uploads one file as multipart form data and returns the queued job summary', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(jobSummaryBody, 202));
+
+    const file = new File(['# Runbook'], 'runbook.md', { type: 'text/markdown' });
+    const result = await companyKnowledgeApi.uploadCompanyImportFile(file, {
+      source_contract_id: 'contract-1',
+      source_contract_version: 1,
+      title: 'Runbook',
+      proposed_namespace: 'company/general',
+      proposed_sensitivity: 'internal',
+      purpose: 'RC-02',
+      idempotency_key: 'ckb-upload-1',
+    });
+
+    const init = requestOf(0);
+    expect(init.url).toBe('/api/knowledge/company/imports/file');
+    expect(init.init.method).toBe('POST');
+    expect(init.init.body).toBeInstanceOf(FormData);
+    const form = init.init.body as FormData;
+    expect(form.get('source_contract_id')).toBe('contract-1');
+    expect(form.get('proposed_namespace')).toBe('company/general');
+    expect(form.get('idempotency_key')).toBe('ckb-upload-1');
+    expect(result.lifecycleStatus).toBe('queued');
+    expect(result.cancellable).toBe(true);
+    expect(result.maxAttempts).toBe(5);
+  });
+
+  it('lists import jobs and exposes the lifecycle read model', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ jobs: [jobSummaryBody] }));
+
+    const jobs = await companyKnowledgeApi.listCompanyImportJobs();
+
+    expect(requestOf(0).url).toBe('/api/knowledge/company/import-jobs?limit=50');
+    expect(jobs[0]).toMatchObject({ jobKey: 'job-1', lifecycleStatus: 'queued', cancellable: true });
+  });
+
+  it('retries, cancels, previews, and creates proposals through the lifecycle endpoints', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ ...jobSummaryBody, status: 'failed', lifecycle_status: 'failed', terminal: true, retryable: true, cancellable: false, error_code: 'conversion_timeout' }))
+      .mockResolvedValueOnce(jsonResponse({ ...jobSummaryBody, status: 'cancelled', lifecycle_status: 'cancelled', terminal: true, cancellable: false, cancelled_at: '2026-08-25T01:02:03+00:00' }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          job_id: 'job-1',
+          document_id: 'doc-1',
+          evidence_id: 'ev-1',
+          source_id: 'src-1',
+          proposal_id: null,
+          title: 'Runbook',
+          namespace: 'company/general',
+          sensitivity: 'internal',
+          segments: [{ segment_id: 'seg-1', position: 0, heading_path: ['Runbook'], content: 'marker', token_count: 3 }],
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ id: 'proposal-1', status: 'submitted', proposal_kind: 'knowledge' }));
+
+    const retried = await companyKnowledgeApi.retryCompanyImportJob('job-1');
+    const cancelled = await companyKnowledgeApi.cancelCompanyImportJob('job-1');
+    const preview = await companyKnowledgeApi.getCompanyImportPreview('job-1');
+    const proposal = await companyKnowledgeApi.createProposalFromImport('job-1');
+
+    expect(requestOf(0).url).toBe('/api/knowledge/company/import-jobs/job-1/retry');
+    expect(retried.retryable).toBe(true);
+    expect(requestOf(1).url).toBe('/api/knowledge/company/import-jobs/job-1/cancel');
+    expect(cancelled.cancelledAt).toBe('2026-08-25T01:02:03+00:00');
+    expect(requestOf(2).url).toBe('/api/knowledge/company/import-jobs/job-1/preview');
+    expect(preview.segments[0]).toMatchObject({ segmentKey: 'seg-1', content: 'marker' });
+    expect(requestOf(3).url).toBe('/api/knowledge/company/import-jobs/job-1/create-proposal');
+    expect(proposal.proposalKey).toBe('proposal-1');
+    expect(proposal.status).toBe('submitted');
+  });
+});

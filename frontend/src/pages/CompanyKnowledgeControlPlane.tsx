@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -14,6 +14,8 @@ import {
 import { agentApi } from '../api/domains/agents';
 import {
   companyKnowledgeApi,
+  type CompanyImportJobSummary,
+  type CompanyImportPreview,
   type CompanyKnowledgeAccessRule,
   type CompanyKnowledgeArea,
   type CompanyKnowledgeAudience,
@@ -24,6 +26,7 @@ import {
   type CompanyKnowledgeReviewWorkspace,
   type CompanyKnowledgeSensitivity,
   type CompanyOntologyStatus,
+  type CompanySourceContractSummary,
   type LegacyKnowledgeCandidate,
 } from '../api/domains/companyKnowledge';
 import { enterpriseApi } from '../api/domains/enterprise';
@@ -750,6 +753,338 @@ function SectionError({ onRetry }: { onRetry: () => void }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// RC-02: direct file import wizard (admin intake lane)
+// ---------------------------------------------------------------------------
+
+const directImportFormats = [
+  { labelKey: 'companyKnowledge.directImport.formatPdf', fallback: 'PDF', helper: 'pdf' },
+  { labelKey: 'companyKnowledge.directImport.formatDocx', fallback: 'Word / DOCX', helper: 'docx' },
+  { labelKey: 'companyKnowledge.directImport.formatMarkdown', fallback: 'Markdown', helper: 'md · txt' },
+] as const;
+
+function companyImportLifecycleLabel(lifecycleStatus: string, t: ReturnType<typeof useTranslation>['t']): string {
+  switch (lifecycleStatus) {
+    case 'queued':
+      return t('companyKnowledge.directImport.statusQueued', 'Queued');
+    case 'running':
+      return t('companyKnowledge.directImport.statusRunning', 'Running');
+    case 'completed':
+      return t('companyKnowledge.directImport.statusCompleted', 'Completed');
+    case 'failed':
+      return t('companyKnowledge.directImport.statusFailed', 'Failed');
+    case 'cancelled':
+      return t('companyKnowledge.directImport.statusCancelled', 'Cancelled');
+    case 'held':
+      return t('companyKnowledge.directImport.statusHeld', 'On hold');
+    default:
+      return t('companyKnowledge.directImport.statusUnknown', 'Status unavailable');
+  }
+}
+
+function companyImportErrorLabel(errorCode: string | null, t: ReturnType<typeof useTranslation>['t']): string | null {
+  if (!errorCode) return null;
+  switch (errorCode) {
+    case 'conversion_failed':
+      return t('companyKnowledge.directImport.errorConversionFailed', 'The file could not be converted.');
+    case 'conversion_timeout':
+      return t('companyKnowledge.directImport.errorConversionTimeout', 'Conversion timed out; you can retry.');
+    case 'source_missing':
+      return t('companyKnowledge.directImport.errorSourceMissing', 'The uploaded source is no longer available.');
+    case 'unsupported_file_type':
+      return t('companyKnowledge.directImport.errorUnsupportedFileType', 'This file type is not supported.');
+    case 'import_payload_invalid':
+      return t('companyKnowledge.directImport.errorImportPayloadInvalid', 'The import request was invalid.');
+    case 'company_knowledge_import_attempts_exhausted':
+      return t('companyKnowledge.directImport.errorAttemptLimit', 'Retry limit reached.');
+    case 'worker_error':
+    case 'import_failed':
+      return t('companyKnowledge.directImport.errorImportFailed', 'Import failed with an unspecified error.');
+    default:
+      return t('companyKnowledge.directImport.errorUnknown', 'Import failed with an unspecified error.');
+  }
+}
+
+function companyImportActionErrorLabel(code: string | null, t: ReturnType<typeof useTranslation>['t']): string {
+  switch (code) {
+    case 'upload_too_large':
+      return t('companyKnowledge.directImport.actionUploadTooLarge', 'The file is too large to import.');
+    case 'not_retryable':
+      return t('companyKnowledge.directImport.actionNotRetryable', 'This import cannot be retried now.');
+    case 'retry_attempt_limit':
+      return t('companyKnowledge.directImport.actionRetryAttemptLimit', 'Retry limit reached.');
+    case 'not_cancellable_while_running':
+      return t('companyKnowledge.directImport.actionNotCancellableRunning', 'A running import cannot be cancelled.');
+    case 'not_cancellable_terminal':
+      return t('companyKnowledge.directImport.actionNotCancellableTerminal', 'This import has already finished.');
+    case 'preview_requires_completed':
+      return t('companyKnowledge.directImport.actionPreviewRequiresCompleted', 'Preview is available once the import completes.');
+    case 'proposal_requires_completed_import':
+      return t('companyKnowledge.directImport.actionProposalRequiresCompleted', 'A proposal can be created once the import completes.');
+    case 'company_knowledge_admin_required':
+      return t('companyKnowledge.directImport.actionAdminRequired', 'A company admin must perform this action.');
+    default:
+      return t('companyKnowledge.directImport.actionUnknown', 'The action could not be completed.');
+  }
+}
+
+/** Map any action failure to one bounded code for the alert surface. */
+export function companyImportActionErrorCode(error: unknown): string {
+  const data = (error as { data?: unknown } | null)?.data;
+  if (data && typeof data === 'object' && 'code' in data) {
+    const code = (data as { code?: unknown }).code;
+    if (typeof code === 'string' && code) return code;
+  }
+  return 'unknown';
+}
+
+export function DirectImportWizard({
+  contracts,
+  jobs,
+  uploading,
+  actionError,
+  busyJobKey,
+  previewJobKey,
+  preview,
+  onUpload,
+  onSelectContract,
+  onCreateContract,
+  onRetryJob,
+  onCancelJob,
+  onPreview,
+  onCreateProposal,
+}: {
+  contracts: CompanySourceContractSummary[];
+  jobs: CompanyImportJobSummary[];
+  uploading: boolean;
+  actionError: string | null;
+  busyJobKey: string | null;
+  previewJobKey: string | null;
+  preview: CompanyImportPreview | null;
+  onUpload: (input: { file: File; contract: CompanySourceContractSummary; title: string; purpose: string }) => void;
+  onSelectContract: (contractKey: string) => void;
+  onCreateContract: (input: { stable_source_id: string; allowed_namespaces: string[]; default_sensitivity: string }) => void;
+  onRetryJob: (jobKey: string) => void;
+  onCancelJob: (jobKey: string) => void;
+  onPreview: (jobKey: string) => void;
+  onCreateProposal: (jobKey: string) => void;
+}) {
+  const { t } = useTranslation();
+  const activeContracts = contracts.filter((contract) => contract.status === 'active');
+  const [selectedContractKey, setSelectedContractKey] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const [title, setTitle] = useState('');
+  const [purpose, setPurpose] = useState('');
+  const [newContractName, setNewContractName] = useState('');
+  const selectedContract =
+    activeContracts.find((contract) => contract.contractKey === selectedContractKey) ?? activeContracts[0] ?? null;
+  const namespace = selectedContract?.allowedNamespaces[0] ?? 'company/general';
+  const canUpload = Boolean(file && selectedContract && title.trim() && !uploading);
+
+  return (
+    <section className="company-control-panel">
+      <div className="company-control-panel-head">
+        <div>
+          <h2>{t('companyKnowledge.directImport.title', 'Import company files')}</h2>
+          <p>
+            {t(
+              'companyKnowledge.directImport.description',
+              'Upload a document, review the converted segments, then submit it for the same human review as every publication.',
+            )}
+          </p>
+        </div>
+      </div>
+
+      {actionError && (
+        <div className="company-control-error" role="alert">
+          {companyImportActionErrorLabel(actionError, t)}
+        </div>
+      )}
+
+      <form
+        className="company-control-form"
+        onSubmit={(event: FormEvent) => {
+          event.preventDefault();
+          if (file && selectedContract && title.trim()) {
+            onUpload({ file, contract: selectedContract, title: title.trim(), purpose: purpose.trim() });
+          }
+        }}
+      >
+        {activeContracts.length === 0 ? (
+          <div className="company-control-form-grid">
+            <label>
+              <span>{t('companyKnowledge.directImport.contractName', 'Source contract name')}</span>
+              <input
+                value={newContractName}
+                maxLength={300}
+                onChange={(event) => setNewContractName(event.target.value)}
+                placeholder={t('companyKnowledge.directImport.contractNamePlaceholder', 'company-file-upload')}
+              />
+            </label>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              disabled={!newContractName.trim() || uploading}
+              onClick={() =>
+                onCreateContract({
+                  stable_source_id: newContractName.trim(),
+                  allowed_namespaces: ['company/general'],
+                  default_sensitivity: 'PL1_public',
+                })
+              }
+            >
+              {t('companyKnowledge.directImport.createContract', 'Create source contract')}
+            </button>
+          </div>
+        ) : (
+          <label>
+            <span>{t('companyKnowledge.directImport.sourceContract', 'Source contract')}</span>
+            <select
+              value={selectedContract?.contractKey ?? ''}
+              onChange={(event) => {
+                setSelectedContractKey(event.target.value);
+                onSelectContract(event.target.value);
+              }}
+            >
+              {activeContracts.map((contract) => (
+                <option key={contract.contractKey} value={contract.contractKey}>
+                  {contract.stableSourceId} · v{contract.version}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
+        <div className="personal-kb-format-grid">
+          {directImportFormats.map((format) => {
+            const formatLabels: Record<(typeof directImportFormats)[number]['labelKey'], string> = {
+              'companyKnowledge.directImport.formatPdf': t('companyKnowledge.directImport.formatPdf', 'PDF'),
+              'companyKnowledge.directImport.formatDocx': t('companyKnowledge.directImport.formatDocx', 'Word / DOCX'),
+              'companyKnowledge.directImport.formatMarkdown': t('companyKnowledge.directImport.formatMarkdown', 'Markdown'),
+            };
+            return (
+              <span key={format.labelKey}>
+                <strong>{formatLabels[format.labelKey]}</strong>
+                <small>{format.helper}</small>
+              </span>
+            );
+          })}
+        </div>
+
+        <label>
+          <span>{t('companyKnowledge.directImport.fileLabel', 'File')}</span>
+          <input
+            type="file"
+            onChange={(event) => {
+              const next = event.target.files?.[0] ?? null;
+              setFile(next);
+              if (next && !title.trim()) setTitle(next.name.replace(/\.[^.]+$/, ''));
+            }}
+          />
+        </label>
+        <label>
+          <span>{t('companyKnowledge.directImport.companyTitle', 'Company title')}</span>
+          <input value={title} maxLength={300} onChange={(event) => setTitle(event.target.value)} />
+        </label>
+        <label>
+          <span>{t('companyKnowledge.directImport.purpose', 'Purpose (optional)')}</span>
+          <textarea value={purpose} rows={2} maxLength={1000} onChange={(event) => setPurpose(event.target.value)} />
+        </label>
+        <button type="submit" className="btn btn-primary btn-sm" disabled={!canUpload}>
+          {uploading
+            ? t('companyKnowledge.directImport.uploading', 'Uploading...')
+            : t('companyKnowledge.directImport.upload', 'Import file')}
+        </button>
+      </form>
+
+      <div className="company-control-subsection">
+        <h3>{t('companyKnowledge.directImport.jobsTitle', 'Import jobs')}</h3>
+        {jobs.length === 0 ? (
+          <div className="company-control-empty">{t('companyKnowledge.directImport.jobsEmpty', 'No import jobs yet.')}</div>
+        ) : (
+          jobs.map((job) => {
+            const errorLabel = companyImportErrorLabel(job.errorCode, t);
+            const isCompleted = job.lifecycleStatus === 'completed' && job.documentKey;
+            return (
+              <article key={job.jobKey} className="company-control-row">
+                <div>
+                  <strong>{job.title || job.sourceFilename || job.jobKey}</strong>
+                  <span>
+                    {job.sourceFilename ? `${job.sourceFilename} · ` : ''}
+                    {companyImportLifecycleLabel(job.lifecycleStatus, t)} · {t('companyKnowledge.directImport.attempts', 'attempts')} {job.attemptCount}/{job.maxAttempts}
+                  </span>
+                  {errorLabel && <small>{errorLabel}</small>}
+                </div>
+                <span className="company-control-row-actions">
+                  {job.cancellable && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      disabled={busyJobKey === job.jobKey}
+                      onClick={() => onCancelJob(job.jobKey)}
+                    >
+                      {t('companyKnowledge.directImport.cancel', 'Cancel')}
+                    </button>
+                  )}
+                  {job.retryable && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      disabled={busyJobKey === job.jobKey}
+                      onClick={() => onRetryJob(job.jobKey)}
+                    >
+                      {t('companyKnowledge.directImport.retry', 'Retry')}
+                    </button>
+                  )}
+                  {isCompleted && !job.proposalKey && (
+                    <>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => onPreview(job.jobKey)}
+                      >
+                        {t('companyKnowledge.directImport.preview', 'Preview')}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        disabled={busyJobKey === job.jobKey}
+                        onClick={() => onCreateProposal(job.jobKey)}
+                      >
+                        {t('companyKnowledge.directImport.createProposal', 'Create proposal')}
+                      </button>
+                    </>
+                  )}
+                  {job.proposalKey && (
+                    <span className="ui-chip">{t('companyKnowledge.directImport.submittedForReview', 'Submitted for review')}</span>
+                  )}
+                </span>
+              </article>
+            );
+          })
+        )}
+      </div>
+
+      {preview && previewJobKey && (
+        <div className="company-control-subsection">
+          <h3>{t('companyKnowledge.directImport.previewTitle', 'Segment preview')}</h3>
+          <div className="company-control-preview">
+            <strong>{preview.title}</strong>
+            {preview.segments.map((segment) => (
+              <div key={segment.segmentKey} className="company-control-preview-segment">
+                <span>
+                  #{segment.position + 1} {segment.headingPath.join(' / ')} · {segment.tokenCount} tok
+                </span>
+                <p>{segment.content}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function CompanyKnowledgeControlPlane() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -760,10 +1095,35 @@ export default function CompanyKnowledgeControlPlane() {
   const [lifecycleBusyKey, setLifecycleBusyKey] = useState<string | null>(null);
   const [accessReason, setAccessReason] = useState('');
   const [lifecycleReason, setLifecycleReason] = useState('');
+  const [importBusyJobKey, setImportBusyJobKey] = useState<string | null>(null);
+  const [importActionError, setImportActionError] = useState<string | null>(null);
+  const [importSelectedContractKey, setImportSelectedContractKey] = useState('');
+  const [previewJobKey, setPreviewJobKey] = useState<string | null>(null);
 
   const intakesQuery = useQuery({
     queryKey: ['company-knowledge-intakes'],
     queryFn: () => companyKnowledgeApi.listIntakes(),
+  });
+  const sourceContractsQuery = useQuery({
+    queryKey: ['company-knowledge-source-contracts'],
+    queryFn: () => companyKnowledgeApi.listSourceContracts(),
+    enabled: activeLane === 'intake',
+  });
+  const importJobsQuery = useQuery({
+    queryKey: ['company-knowledge-import-jobs'],
+    queryFn: () => companyKnowledgeApi.listCompanyImportJobs(),
+    enabled: activeLane === 'intake',
+    // Lifecycle-aware polling: refresh only while any job is queued/running.
+    refetchInterval: (query) => {
+      const jobs = query.state.data ?? [];
+      return jobs.some((job) => job.lifecycleStatus === 'queued' || job.lifecycleStatus === 'running') ? 3000 : false;
+    },
+  });
+  const importJobs = importJobsQuery.data ?? [];
+  const previewQuery = useQuery({
+    queryKey: ['company-knowledge-import-preview', previewJobKey],
+    queryFn: () => companyKnowledgeApi.getCompanyImportPreview(previewJobKey as string),
+    enabled: Boolean(previewJobKey),
   });
   const legacyCandidatesQuery = useQuery({
     queryKey: ['company-knowledge-legacy-candidates'],
@@ -833,6 +1193,98 @@ export default function CompanyKnowledgeControlPlane() {
     void queryClient.invalidateQueries({ queryKey: ['company-knowledge-publication-lifecycle'] });
     void queryClient.invalidateQueries({ queryKey: ['company-knowledge-library'] });
   };
+
+  // When an import job transitions to a terminal lifecycle state, the intake,
+  // review, publication, and library read models refresh without a reload.
+  const importTerminalSignature = importJobs
+    .filter((job) => job.lifecycleStatus !== 'queued' && job.lifecycleStatus !== 'running')
+    .map((job) => `${job.jobKey}:${job.lifecycleStatus}`)
+    .sort()
+    .join('|');
+  const previousImportTerminalRef = useRef<string | null>(null);
+  useEffect(() => {
+    const previous = previousImportTerminalRef.current;
+    previousImportTerminalRef.current = importTerminalSignature;
+    if (previous === null || previous === importTerminalSignature) return;
+    invalidateCompanyKnowledge();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [importTerminalSignature]);
+
+  const uploadImportMutation = useMutation({
+    mutationFn: (input: { file: File; contract: CompanySourceContractSummary; title: string; purpose: string }) =>
+      companyKnowledgeApi.uploadCompanyImportFile(input.file, {
+        source_contract_id: input.contract.contractKey,
+        source_contract_version: input.contract.version,
+        title: input.title,
+        proposed_namespace: input.contract.allowedNamespaces[0] ?? 'company/general',
+        proposed_sensitivity: 'internal',
+        purpose: input.purpose,
+        idempotency_key: `company-import-${crypto.randomUUID()}`,
+      }),
+    onMutate: () => setImportActionError(null),
+    onSuccess: () => {
+      setImportActionError(null);
+      void queryClient.invalidateQueries({ queryKey: ['company-knowledge-import-jobs'] });
+    },
+    onError: (error) => setImportActionError(companyImportActionErrorCode(error)),
+  });
+  const createContractMutation = useMutation({
+    mutationFn: (input: { stable_source_id: string; allowed_namespaces: string[]; default_sensitivity: string }) =>
+      companyKnowledgeApi.createSourceContract({
+        stable_source_id: input.stable_source_id,
+        accountable_steward_ref: 'role:org_admin',
+        allowed_namespaces: input.allowed_namespaces,
+        default_sensitivity: input.default_sensitivity,
+      }),
+    onMutate: () => setImportActionError(null),
+    onSuccess: (contract) => {
+      setImportActionError(null);
+      setImportSelectedContractKey(contract.contractKey);
+      void queryClient.invalidateQueries({ queryKey: ['company-knowledge-source-contracts'] });
+    },
+    onError: (error) => setImportActionError(companyImportActionErrorCode(error)),
+  });
+  const retryImportJobMutation = useMutation({
+    mutationFn: (jobKey: string) => companyKnowledgeApi.retryCompanyImportJob(jobKey),
+    onMutate: () => setImportActionError(null),
+    onSuccess: () => {
+      setImportBusyJobKey(null);
+      setImportActionError(null);
+      void queryClient.invalidateQueries({ queryKey: ['company-knowledge-import-jobs'] });
+    },
+    onError: (error) => {
+      setImportBusyJobKey(null);
+      setImportActionError(companyImportActionErrorCode(error));
+    },
+  });
+  const cancelImportJobMutation = useMutation({
+    mutationFn: (jobKey: string) => companyKnowledgeApi.cancelCompanyImportJob(jobKey),
+    onMutate: () => setImportActionError(null),
+    onSuccess: () => {
+      setImportBusyJobKey(null);
+      setImportActionError(null);
+      void queryClient.invalidateQueries({ queryKey: ['company-knowledge-import-jobs'] });
+    },
+    onError: (error) => {
+      setImportBusyJobKey(null);
+      setImportActionError(companyImportActionErrorCode(error));
+    },
+  });
+  const createProposalMutation = useMutation({
+    mutationFn: (jobKey: string) => companyKnowledgeApi.createProposalFromImport(jobKey),
+    onMutate: () => setImportActionError(null),
+    onSuccess: () => {
+      setImportBusyJobKey(null);
+      setImportActionError(null);
+      setPreviewJobKey(null);
+      invalidateCompanyKnowledge();
+      void queryClient.invalidateQueries({ queryKey: ['company-knowledge-import-jobs'] });
+    },
+    onError: (error) => {
+      setImportBusyJobKey(null);
+      setImportActionError(companyImportActionErrorCode(error));
+    },
+  });
 
   const legacyMutation = useMutation({
     mutationFn: companyKnowledgeApi.submitLegacy,
@@ -986,6 +1438,31 @@ export default function CompanyKnowledgeControlPlane() {
 
       {activeLane === 'intake' && (
         <div className="company-control-grid">
+          <DirectImportWizard
+            contracts={sourceContractsQuery.data ?? []}
+            jobs={importJobs}
+            uploading={uploadImportMutation.isPending || createContractMutation.isPending}
+            actionError={importActionError}
+            busyJobKey={importBusyJobKey}
+            previewJobKey={previewJobKey}
+            preview={previewQuery.data ?? null}
+            onUpload={(input) => uploadImportMutation.mutate(input)}
+            onSelectContract={setImportSelectedContractKey}
+            onCreateContract={(input) => createContractMutation.mutate(input)}
+            onRetryJob={(jobKey) => {
+              setImportBusyJobKey(jobKey);
+              retryImportJobMutation.mutate(jobKey);
+            }}
+            onCancelJob={(jobKey) => {
+              setImportBusyJobKey(jobKey);
+              cancelImportJobMutation.mutate(jobKey);
+            }}
+            onPreview={(jobKey) => setPreviewJobKey(jobKey)}
+            onCreateProposal={(jobKey) => {
+              setImportBusyJobKey(jobKey);
+              createProposalMutation.mutate(jobKey);
+            }}
+          />
           <section className="company-control-panel">
             <div className="company-control-panel-head">
               <div>

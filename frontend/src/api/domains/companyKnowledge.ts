@@ -1,4 +1,4 @@
-import { get, post } from '../core';
+import { get, post, upload } from '../core';
 
 export type CompanyKnowledgeArea =
   | 'general'
@@ -227,6 +227,75 @@ function rawCandidateMarkdown(patch: Record<string, unknown>): string {
     if (typeof value === 'string') return value;
   }
   return '';
+}
+
+export interface CompanySourceContractSummary {
+  contractKey: string;
+  stableSourceId: string;
+  status: string;
+  version: number;
+  allowedNamespaces: string[];
+  defaultSensitivity: string;
+}
+
+export interface CompanyImportJobSummary {
+  jobKey: string;
+  status: string;
+  lifecycleStatus: string;
+  attemptCount: number;
+  maxAttempts: number;
+  terminal: boolean;
+  retryable: boolean;
+  cancellable: boolean;
+  errorCode: string | null;
+  title: string;
+  sourceFilename: string | null;
+  namespace: string;
+  sensitivity: string;
+  documentKey: string | null;
+  proposalKey: string | null;
+  cancelledAt: string | null;
+}
+
+export interface CompanyImportPreviewSegment {
+  segmentKey: string;
+  position: number;
+  headingPath: string[];
+  content: string;
+  tokenCount: number;
+}
+
+export interface CompanyImportPreview {
+  jobKey: string;
+  documentKey: string;
+  evidenceKey: string | null;
+  sourceKey: string | null;
+  proposalKey: string | null;
+  title: string;
+  namespace: string;
+  sensitivity: string;
+  segments: CompanyImportPreviewSegment[];
+}
+
+function importJobSummary(raw: Record<string, unknown>): CompanyImportJobSummary {
+  return {
+    jobKey: String(raw.job_id || ''),
+    status: String(raw.status || ''),
+    lifecycleStatus: String(raw.lifecycle_status || ''),
+    attemptCount: Number(raw.attempt_count || 0),
+    maxAttempts: Number(raw.max_attempts || 0),
+    terminal: Boolean(raw.terminal),
+    retryable: Boolean(raw.retryable),
+    cancellable: Boolean(raw.cancellable),
+    errorCode: raw.error_code ? String(raw.error_code) : null,
+    title: String(raw.title || ''),
+    sourceFilename: raw.source_filename ? String(raw.source_filename) : null,
+    namespace: String(raw.namespace || ''),
+    sensitivity: String(raw.sensitivity || ''),
+    documentKey: raw.document_id ? String(raw.document_id) : null,
+    proposalKey: raw.proposal_id ? String(raw.proposal_id) : null,
+    cancelledAt: raw.cancelled_at ? String(raw.cancelled_at) : null,
+  };
 }
 
 export const companyKnowledgeApi = {
@@ -551,8 +620,152 @@ export const companyKnowledgeApi = {
     });
   },
 
-  async getOntologyStatus(): Promise<CompanyOntologyStatus> {
-    const [installations, releases, capabilities] = await Promise.all([
+  async listSourceContracts(): Promise<CompanySourceContractSummary[]> {
+    const raw = await get<Array<Record<string, unknown>>>('/knowledge/company/source-contracts');
+    const rows = Array.isArray(raw) ? raw : [];
+    return rows.map((row) => ({
+      contractKey: String(row.id || ''),
+      stableSourceId: String(row.stable_source_id || ''),
+      status: String(row.status || ''),
+      version: Number(row.version || 1),
+      allowedNamespaces: Array.isArray(row.allowed_namespaces_json)
+        ? (row.allowed_namespaces_json as unknown[]).map(String)
+        : [],
+      defaultSensitivity: String(row.default_sensitivity || ''),
+    }));
+  },
+
+  async createSourceContract(input: {
+    stable_source_id: string;
+    accountable_steward_ref: string;
+    allowed_namespaces: string[];
+    default_sensitivity: string;
+  }): Promise<CompanySourceContractSummary> {
+    const ref = requestRef('company-source-contract');
+    const raw = await post<Record<string, unknown>>('/knowledge/company/source-contracts', {
+      source_kind: 'managed_file',
+      provider_kind: 'manual_upload',
+      stable_source_id: input.stable_source_id.trim(),
+      owner_principal_ref: 'role:org_admin',
+      accountable_steward_ref: input.accountable_steward_ref.trim() || 'role:org_admin',
+      connection_ref: null,
+      schema_ref: null,
+      schema_version: null,
+      identity_keys: ['source_item_id'],
+      relation_keys: [],
+      ingest_mode: 'manual',
+      cursor_kind: null,
+      cursor_policy: {},
+      watermark_field: null,
+      temporal_mapping: { observed_at: 'ingest_time' },
+      source_acl_mapping_policy: { mode: 'required_snapshot' },
+      default_sensitivity: input.default_sensitivity,
+      export_policy: { allowed: false },
+      retention_policy: { class: 'company_record' },
+      legal_hold_policy: { supported: true },
+      allowed_namespaces: input.allowed_namespaces,
+      precedence_policy_ref: null,
+      acceptance_suite_ref: null,
+      idempotency_policy: { key: 'source_item_id+revision' },
+      idempotency_key: ref,
+      trace_id: ref,
+    });
+    return {
+      contractKey: String(raw.id || ''),
+      stableSourceId: String(raw.stable_source_id || input.stable_source_id),
+      status: String(raw.status || 'active'),
+      version: Number(raw.version || 1),
+      allowedNamespaces: input.allowed_namespaces,
+      defaultSensitivity: input.default_sensitivity,
+    };
+  },
+
+  async uploadCompanyImportFile(
+    file: File,
+    options: {
+      source_contract_id: string;
+      source_contract_version: number;
+      title: string;
+      proposed_namespace: string;
+      proposed_sensitivity: string;
+      purpose: string;
+      idempotency_key: string;
+    },
+  ): Promise<CompanyImportJobSummary> {
+    const raw = await upload<Record<string, unknown>>('/knowledge/company/imports/file', file, {
+      source_contract_id: options.source_contract_id,
+      source_contract_version: String(options.source_contract_version),
+      title: options.title,
+      proposed_namespace: options.proposed_namespace,
+      proposed_sensitivity: options.proposed_sensitivity,
+      purpose: options.purpose,
+      idempotency_key: options.idempotency_key,
+    });
+    return importJobSummary(raw);
+  },
+
+  async listCompanyImportJobs(limit = 50): Promise<CompanyImportJobSummary[]> {
+    const raw = await get<{ jobs?: Array<Record<string, unknown>> }>(
+      `/knowledge/company/import-jobs?limit=${limit}`,
+    );
+    return (raw.jobs ?? []).map(importJobSummary);
+  },
+
+  async retryCompanyImportJob(jobKey: string): Promise<CompanyImportJobSummary> {
+    const raw = await post<Record<string, unknown>>(
+      `/knowledge/company/import-jobs/${encodeURIComponent(jobKey)}/retry`,
+      {},
+    );
+    return importJobSummary(raw);
+  },
+
+  async cancelCompanyImportJob(jobKey: string): Promise<CompanyImportJobSummary> {
+    const raw = await post<Record<string, unknown>>(
+      `/knowledge/company/import-jobs/${encodeURIComponent(jobKey)}/cancel`,
+      {},
+    );
+    return importJobSummary(raw);
+  },
+
+  async getCompanyImportPreview(jobKey: string): Promise<CompanyImportPreview> {
+    const raw = await get<Record<string, unknown>>(
+      `/knowledge/company/import-jobs/${encodeURIComponent(jobKey)}/preview`,
+    );
+    const segments = Array.isArray(raw.segments) ? raw.segments : [];
+    return {
+      jobKey: String(raw.job_id || jobKey),
+      documentKey: String(raw.document_id || ''),
+      evidenceKey: raw.evidence_id ? String(raw.evidence_id) : null,
+      sourceKey: raw.source_id ? String(raw.source_id) : null,
+      proposalKey: raw.proposal_id ? String(raw.proposal_id) : null,
+      title: String(raw.title || ''),
+      namespace: String(raw.namespace || ''),
+      sensitivity: String(raw.sensitivity || ''),
+      segments: segments.map((segment) => {
+        const row = segment as Record<string, unknown>;
+        return {
+          segmentKey: String(row.segment_id || ''),
+          position: Number(row.position || 0),
+          headingPath: Array.isArray(row.heading_path) ? (row.heading_path as unknown[]).map(String) : [],
+          content: String(row.content || ''),
+          tokenCount: Number(row.token_count || 0),
+        };
+      }),
+    };
+  },
+
+  async createProposalFromImport(jobKey: string): Promise<{ proposalKey: string; status: string }> {
+    const raw = await post<Record<string, unknown>>(
+      `/knowledge/company/import-jobs/${encodeURIComponent(jobKey)}/create-proposal`,
+      {},
+    );
+    return {
+      proposalKey: String(raw.id || ''),
+      status: String(raw.status || ''),
+    };
+  },
+
+  async getOntologyStatus(): Promise<CompanyOntologyStatus> {    const [installations, releases, capabilities] = await Promise.all([
       get<{ installations?: Array<Record<string, unknown>> }>(
         '/knowledge/company/ontology/package-installations',
       ),

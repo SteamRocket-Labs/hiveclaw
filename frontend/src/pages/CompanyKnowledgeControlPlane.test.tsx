@@ -9,6 +9,7 @@ vi.mock('react-i18next', () => ({
 
 import {
   AccessRulesView,
+  DirectImportWizard,
   IntakeQueueView,
   KnowledgeLifecycleView,
   OntologyStatusView,
@@ -197,5 +198,153 @@ describe('Company Knowledge control-plane business projections', () => {
 
     expect(accessMarkup).toContain('disabled=""');
     expect(lifecycleMarkup).toContain('disabled=""');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RC-02: direct import wizard surface (failing-first)
+// ---------------------------------------------------------------------------
+
+const baseJob = {
+  jobKey: 'job-1',
+  status: 'queued',
+  lifecycleStatus: 'queued' as string,
+  attemptCount: 0,
+  maxAttempts: 5,
+  terminal: false,
+  retryable: false,
+  cancellable: true,
+  errorCode: null as string | null,
+  title: 'Runbook',
+  sourceFilename: 'runbook.pdf',
+  namespace: 'company/general',
+  sensitivity: 'internal',
+  documentKey: null as string | null,
+  proposalKey: null as string | null,
+  cancelledAt: null as string | null,
+};
+
+const wizardProps = {
+  contracts: [
+    {
+      contractKey: 'contract-1',
+      stableSourceId: 'company-file-upload',
+      status: 'active',
+      version: 1,
+      allowedNamespaces: ['company/general'],
+      defaultSensitivity: 'PL1_public',
+    },
+  ],
+  jobs: [] as Array<typeof baseJob>,
+  uploading: false,
+  actionError: null as string | null,
+  busyJobKey: null as string | null,
+  previewJobKey: null as string | null,
+  preview: null as import('../api/domains/companyKnowledge').CompanyImportPreview | null,
+  onUpload: () => {},
+  onSelectContract: () => {},
+  onCreateContract: () => {},
+  onRetryJob: () => {},
+  onCancelJob: () => {},
+  onPreview: () => {},
+  onCreateProposal: () => {},
+};
+
+describe('Company Knowledge direct import wizard', () => {
+  it('renders only the vertically proven formats and a contract selector', () => {
+    const markup = renderToStaticMarkup(<DirectImportWizard {...wizardProps} />);
+
+    expect(markup).toContain('PDF');
+    expect(markup).toContain('Word / DOCX');
+    expect(markup).toContain('Markdown');
+    for (const forbidden of ['csv', 'html', 'audio', 'video', 'image', 'xlsx', 'pptx']) {
+      expect(markup.toLowerCase()).not.toContain(forbidden);
+    }
+    expect(markup).toContain('company-file-upload');
+    expect(markup).toContain('type="file"');
+  });
+
+  it('shows lifecycle labels with cancel for queued jobs and no retry', () => {
+    const markup = renderToStaticMarkup(<DirectImportWizard {...wizardProps} jobs={[baseJob]} />);
+
+    expect(markup).toContain('Runbook');
+    expect(markup).toContain('runbook.pdf');
+    expect(markup).toContain('Queued');
+    expect(markup).toContain('>Cancel<');
+    expect(markup).not.toContain('>Retry<');
+    expect(markup).not.toContain('>queued<');
+  });
+
+  it('shows retry for a failed retryable job with a localized typed error', () => {
+    const markup = renderToStaticMarkup(
+      <DirectImportWizard
+        {...wizardProps}
+        jobs={[{ ...baseJob, status: 'failed', lifecycleStatus: 'failed', terminal: true, retryable: true, cancellable: false, attemptCount: 1, errorCode: 'conversion_timeout' }]}
+      />,
+    );
+
+    expect(markup).toContain('Failed');
+    expect(markup).toContain('Conversion timed out; you can retry.');
+    expect(markup).toContain('>Retry<');
+    expect(markup).not.toContain('conversion_timeout');
+  });
+
+  it('maps unknown lifecycle and error codes to one neutral label without leaking raw codes', () => {
+    const markup = renderToStaticMarkup(
+      <DirectImportWizard
+        {...wizardProps}
+        jobs={[{ ...baseJob, status: 'mystery_state', lifecycleStatus: 'mystery_state', terminal: true, cancellable: false, errorCode: 'totally_unknown_code' }]}
+      />,
+    );
+
+    expect(markup).toContain('Status unavailable');
+    expect(markup).toContain('Import failed with an unspecified error.');
+    expect(markup).not.toContain('mystery_state');
+    expect(markup).not.toContain('totally_unknown_code');
+  });
+
+  it('offers preview and create proposal only for completed jobs, and shows the linked proposal state', () => {
+    const completed = {
+      ...baseJob,
+      status: 'completed',
+      lifecycleStatus: 'completed',
+      terminal: true,
+      cancellable: false,
+      documentKey: 'doc-1',
+    };
+    const withProposal = { ...completed, proposalKey: 'proposal-1' };
+    const markup = renderToStaticMarkup(<DirectImportWizard {...wizardProps} jobs={[completed, { ...withProposal, jobKey: 'job-2' }]} />);
+
+    expect(markup).toContain('Preview');
+    expect(markup).toContain('Create proposal');
+    expect(markup).toContain('Submitted for review');
+  });
+
+  it('renders preview segments and action errors as alerts without raw codes', () => {
+    const markup = renderToStaticMarkup(
+      <DirectImportWizard
+        {...wizardProps}
+        jobs={[{ ...baseJob, status: 'completed', lifecycleStatus: 'completed', terminal: true, cancellable: false, documentKey: 'doc-1' }]}
+        previewJobKey="job-1"
+        preview={{
+          jobKey: 'job-1',
+          documentKey: 'doc-1',
+          evidenceKey: 'ev-1',
+          sourceKey: 'src-1',
+          proposalKey: null,
+          title: 'Runbook',
+          namespace: 'company/general',
+          sensitivity: 'internal',
+          segments: [{ segmentKey: 'seg-1', position: 0, headingPath: ['Runbook', 'Table'], content: 'marker content', tokenCount: 4 }],
+        }}
+        actionError="retry_attempt_limit"
+      />,
+    );
+
+    expect(markup).toContain('marker content');
+    expect(markup).toContain('Runbook / Table');
+    expect(markup).toContain('role="alert"');
+    expect(markup).toContain('Retry limit reached.');
+    expect(markup).not.toContain('retry_attempt_limit');
   });
 });

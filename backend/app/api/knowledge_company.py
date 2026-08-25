@@ -8,7 +8,7 @@ from typing import Any, Literal
 import uuid
 
 import anyio
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
@@ -19,7 +19,6 @@ from app.core.security import get_current_user
 from app.core.tenant_scope import resolve_and_pin_tenant_scope
 from app.database import async_session, get_db
 from app.models.company_knowledge import (
-    CompanyKnowledgeImportJob,
     CompanyKnowledgeSourceContract,
 )
 from app.models.company_ontology import (
@@ -58,6 +57,8 @@ from app.services.company_knowledge_promotion import (
 )
 from app.services.company_knowledge_service import (
     CompanyEvidenceIngestRequest,
+    CompanyKnowledgeImportError,
+    CompanyKnowledgeJobConflict,
     CompanyKnowledgeMaterializationRequest,
     CompanyKnowledgeProposalRequest,
     CompanyKnowledgeReviewRequest,
@@ -81,6 +82,8 @@ from app.services.company_ontology_service import (
 
 
 router = APIRouter(prefix="/knowledge/company", tags=["company-knowledge"])
+
+COMPANY_KB_MAX_UPLOAD_BYTES = get_settings().COMPANY_KB_MAX_UPLOAD_BYTES
 
 
 def _service() -> CompanyKnowledgeService:
@@ -140,6 +143,10 @@ async def _call(awaitable: Any) -> Any:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="company_ontology_engine_unavailable",
         ) from exc
+    except CompanyKnowledgeImportError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": exc.code}) from exc
+    except CompanyKnowledgeJobConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": exc.code}) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except LookupError as exc:
@@ -526,6 +533,40 @@ def _require_legacy_promotion_admin(current_user: User) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="legacy_company_promotion_requires_tenant_admin",
         )
+
+
+def _require_company_knowledge_admin(current_user: User) -> None:
+    """Admin-only boundary for direct import, preview, and lifecycle actions.
+
+    A frontend route guard is not backend authority: every direct-import
+    endpoint enforces the tenant-admin role at the API.
+    """
+    if str(current_user.role) not in {"org_admin", "platform_admin"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "company_knowledge_admin_required"},
+        )
+
+
+_COMPANY_UPLOAD_STREAM_CHUNK_BYTES = 1024 * 1024
+
+
+async def _read_company_upload_bounded(file: UploadFile, *, max_bytes: int) -> bytes:
+    """Stream the upload in bounded chunks and reject oversize before queue."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_COMPANY_UPLOAD_STREAM_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail={"code": "upload_too_large", "max_bytes": max_bytes},
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 @router.get("/promotion-intakes")
@@ -933,6 +974,73 @@ async def create_import(
     return _payload(job)
 
 
+@router.post("/imports/file", status_code=status.HTTP_202_ACCEPTED)
+async def create_direct_file_import(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    source_contract_id: uuid.UUID = Form(...),
+    source_contract_version: int = Form(...),
+    title: str = Form(...),
+    proposed_namespace: str = Form(...),
+    proposed_sensitivity: str = Form("internal"),
+    purpose: str = Form(""),
+    source_acl_snapshot: str = Form('{"all_tenant_members": true}'),
+    idempotency_key: str = Form(...),
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Admin multipart file intake: bounded read, durable job, worker-side conversion."""
+    _require_company_knowledge_admin(current_user)
+    if not file.filename:
+        raise HTTPException(status_code=400, detail={"code": "import_payload_invalid"})
+    data = await _read_company_upload_bounded(file, max_bytes=COMPANY_KB_MAX_UPLOAD_BYTES)
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    import json as _json
+
+    try:
+        acl_snapshot = _json.loads(source_acl_snapshot)
+    except _json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail={"code": "import_payload_invalid"}) from exc
+    if not isinstance(acl_snapshot, dict):
+        raise HTTPException(status_code=400, detail={"code": "import_payload_invalid"})
+    job = await _call(
+        _service().queue_direct_file_import(
+            db,
+            principal=_principal(current_user, target_tenant),
+            source_contract_id=source_contract_id,
+            source_contract_version=source_contract_version,
+            filename=file.filename,
+            data=data,
+            source_mime_type=file.content_type,
+            title=title,
+            proposed_namespace=proposed_namespace,
+            proposed_sensitivity=proposed_sensitivity,
+            purpose=purpose,
+            source_acl_snapshot=acl_snapshot,
+            idempotency_key=idempotency_key,
+            trace_id=f"direct-import-{uuid.uuid4().hex[:16]}",
+        )
+    )
+    await db.commit()
+    _schedule_import_processing(background_tasks, tenant_id=target_tenant, job_id=job.id)
+    summary = await _call(_service().get_import_job_summary(db, tenant_id=target_tenant, job_id=job.id))
+    return _payload(summary)
+
+
+@router.get("/import-jobs")
+async def list_import_jobs(
+    limit: int = Query(50, ge=1, le=200),
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_company_knowledge_admin(current_user)
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    jobs = await _call(_service().list_import_jobs(db, tenant_id=target_tenant, limit=limit))
+    return {"jobs": _payload(jobs)}
+
+
 @router.get("/import-jobs/{job_id}")
 async def get_import_job(
     job_id: uuid.UUID,
@@ -940,18 +1048,78 @@ async def get_import_job(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _require_company_knowledge_admin(current_user)
     target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
-    row = (
-        await db.execute(
-            select(CompanyKnowledgeImportJob).where(
-                CompanyKnowledgeImportJob.id == job_id,
-                CompanyKnowledgeImportJob.tenant_id == target_tenant,
-            )
-        )
-    ).scalar_one_or_none()
-    if row is None:
+    summary = await _call(_service().get_import_job_summary(db, tenant_id=target_tenant, job_id=job_id))
+    if summary is None:
         raise HTTPException(status_code=404, detail="company_knowledge_import_job_not_found")
-    return _payload(row)
+    return _payload(summary)
+
+
+@router.post("/import-jobs/{job_id}/retry")
+async def retry_import_job(
+    background_tasks: BackgroundTasks,
+    job_id: uuid.UUID,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_company_knowledge_admin(current_user)
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    summary = await _call(_service().retry_import_job(db, tenant_id=target_tenant, job_id=job_id))
+    await db.commit()
+    _schedule_import_processing(background_tasks, tenant_id=target_tenant, job_id=job_id)
+    return _payload(summary)
+
+
+@router.post("/import-jobs/{job_id}/cancel")
+async def cancel_import_job(
+    job_id: uuid.UUID,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_company_knowledge_admin(current_user)
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    summary = await _call(_service().cancel_import_job(db, tenant_id=target_tenant, job_id=job_id))
+    await db.commit()
+    return _payload(summary)
+
+
+@router.get("/import-jobs/{job_id}/preview")
+async def get_import_job_preview(
+    job_id: uuid.UUID,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_company_knowledge_admin(current_user)
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    preview = await _call(_service().get_import_job_preview(db, tenant_id=target_tenant, job_id=job_id))
+    if preview is None:
+        raise HTTPException(status_code=404, detail="company_knowledge_import_job_not_found")
+    return _payload(preview)
+
+
+@router.post("/import-jobs/{job_id}/create-proposal")
+async def create_proposal_from_import(
+    job_id: uuid.UUID,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_company_knowledge_admin(current_user)
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    proposal = await _call(
+        _service().create_proposal_from_import(
+            db,
+            principal=_principal(current_user, target_tenant),
+            job_id=job_id,
+            trace_id=f"direct-import-proposal-{uuid.uuid4().hex[:16]}",
+        )
+    )
+    await db.commit()
+    return _payload(proposal)
 
 
 @router.post("/proposals")

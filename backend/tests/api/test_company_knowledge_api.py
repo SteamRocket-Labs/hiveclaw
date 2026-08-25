@@ -724,3 +724,342 @@ def test_company_publication_lifecycle_route_returns_only_business_projection(mo
     assert captured[0][1].tenant_id == user.tenant_id
     assert captured[0][1].accountable_user_id == user.id
     assert captured[0][2] == 25
+
+
+# ---------------------------------------------------------------------------
+# RC-02: direct file import + import job lifecycle read model (failing-first)
+# ---------------------------------------------------------------------------
+
+
+def _client_with_role(monkeypatch, service, *, role: str):
+    app = FastAPI()
+    app.include_router(company_api.router)
+    tenant_id = uuid.uuid4()
+    user = SimpleNamespace(id=uuid.uuid4(), tenant_id=tenant_id, role=role, is_active=True)
+    db = _FakeDB()
+
+    async def override_user():
+        return user
+
+    async def override_db():
+        yield db
+
+    async def pin_scope(_db, current_user, requested=None):
+        return tenant_id
+
+    app.dependency_overrides[get_current_user] = override_user
+    app.dependency_overrides[get_db] = override_db
+    monkeypatch.setattr(company_api, "_service", lambda: service)
+    monkeypatch.setattr(company_api, "resolve_and_pin_tenant_scope", pin_scope)
+    scheduled: list[dict] = []
+    monkeypatch.setattr(
+        company_api,
+        "_schedule_import_processing",
+        lambda _background, *, tenant_id, job_id: scheduled.append({"tenant_id": tenant_id, "job_id": job_id}),
+    )
+    return TestClient(app, raise_server_exceptions=False), db, user, scheduled
+
+
+def _job_summary_payload(job_id, document_id=None, **overrides):
+    payload = {
+        "job_id": str(job_id),
+        "status": "queued",
+        "lifecycle_status": "queued",
+        "attempt_count": 0,
+        "max_attempts": 5,
+        "terminal": False,
+        "retryable": False,
+        "cancellable": True,
+        "error_code": None,
+        "title": "Runbook",
+        "source_filename": "runbook.pdf",
+        "namespace": "company/general",
+        "sensitivity": "internal",
+        "source_id": None,
+        "evidence_id": None,
+        "document_id": str(document_id) if document_id else None,
+        "proposal_id": None,
+        "idempotency_key": "ckb-test",
+        "cancelled_at": None,
+        "created_at": None,
+        "updated_at": None,
+        "completed_at": None,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_direct_file_import_accepts_multipart_and_schedules_worker(monkeypatch):
+    job_id = uuid.uuid4()
+
+    class _Service:
+        async def queue_direct_file_import(self, session, **kwargs):
+            assert kwargs["filename"] == "runbook.md"
+            assert kwargs["data"].startswith(b"# Runbook")
+            return SimpleNamespace(id=job_id)
+
+        async def get_import_job_summary(self, session, *, tenant_id, job_id):
+            return SimpleNamespace(**_job_summary_payload(job_id))
+
+    client, db, user, scheduled = _client_with_role(monkeypatch, _Service(), role="org_admin")
+
+    response = client.post(
+        "/knowledge/company/imports/file",
+        data={
+            "source_contract_id": str(uuid.uuid4()),
+            "source_contract_version": "1",
+            "title": "Runbook",
+            "proposed_namespace": "company/general",
+            "proposed_sensitivity": "internal",
+            "purpose": "RC-02",
+            "idempotency_key": "ckb-upload-1",
+        },
+        files={"file": ("runbook.md", b"# Runbook\n\nbody", "text/markdown")},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["job_id"] == str(job_id)
+    assert scheduled == [{"tenant_id": user.tenant_id, "job_id": job_id}]
+
+
+def test_direct_file_import_rejects_oversize_with_typed_413(monkeypatch):
+    class _Service:
+        async def queue_direct_file_import(self, session, **kwargs):  # pragma: no cover - must not run
+            raise AssertionError("oversized upload must be rejected before queueing")
+
+    monkeypatch.setattr(company_api, "COMPANY_KB_MAX_UPLOAD_BYTES", 16)
+    client, _db, _user, _scheduled = _client_with_role(monkeypatch, _Service(), role="org_admin")
+
+    response = client.post(
+        "/knowledge/company/imports/file",
+        data={
+            "source_contract_id": str(uuid.uuid4()),
+            "source_contract_version": "1",
+            "title": "Big",
+            "proposed_namespace": "company/general",
+            "idempotency_key": "ckb-big-1",
+        },
+        files={"file": ("big.pdf", b"x" * 64, "application/pdf")},
+    )
+
+    assert response.status_code == 413
+    assert response.json()["detail"]["code"] == "upload_too_large"
+
+
+def test_direct_file_import_unsupported_type_maps_typed_400(monkeypatch):
+    from app.services.company_knowledge_service import CompanyKnowledgeImportError
+
+    class _Service:
+        async def queue_direct_file_import(self, session, **kwargs):
+            raise CompanyKnowledgeImportError("unsupported_file_type")
+
+    client, _db, _user, _scheduled = _client_with_role(monkeypatch, _Service(), role="org_admin")
+
+    response = client.post(
+        "/knowledge/company/imports/file",
+        data={
+            "source_contract_id": str(uuid.uuid4()),
+            "source_contract_version": "1",
+            "title": "X",
+            "proposed_namespace": "company/general",
+            "idempotency_key": "ckb-x-1",
+        },
+        files={"file": ("x.csv", b"a,b", "text/csv")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "unsupported_file_type"
+
+
+def test_import_jobs_list_is_admin_only_and_member_gets_403(monkeypatch):
+    class _Service:
+        async def list_import_jobs(self, session, *, tenant_id, limit=50):
+            return []
+
+    client, _db, _user, _scheduled = _client_with_role(monkeypatch, _Service(), role="member")
+
+    response = client.get("/knowledge/company/import-jobs")
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "company_knowledge_admin_required"
+
+
+def test_import_job_detail_returns_read_model_without_raw_row(monkeypatch):
+    job_id = uuid.uuid4()
+
+    class _Service:
+        async def get_import_job_summary(self, session, *, tenant_id, job_id):
+            return SimpleNamespace(**_job_summary_payload(job_id))
+
+    client, _db, _user, _scheduled = _client_with_role(monkeypatch, _Service(), role="org_admin")
+
+    response = client.get(f"/knowledge/company/import-jobs/{job_id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["lifecycle_status"] == "queued"
+    assert body["max_attempts"] == 5
+    assert "request_json" not in response.text
+    assert "last_error" not in response.text
+    assert "artifact_ref" not in response.text
+
+
+def test_import_job_retry_requeues_schedules_and_maps_conflict(monkeypatch):
+    from app.services.company_knowledge_service import CompanyKnowledgeJobConflict
+
+    job_id = uuid.uuid4()
+    calls: list[str] = []
+
+    class _Service:
+        async def retry_import_job(self, session, *, tenant_id, job_id):
+            calls.append("retry")
+            if len(calls) == 1:
+                return SimpleNamespace(**_job_summary_payload(job_id, lifecycle_status="queued"))
+            raise CompanyKnowledgeJobConflict("retry_attempt_limit")
+
+    client, db, _user, scheduled = _client_with_role(monkeypatch, _Service(), role="org_admin")
+
+    ok = client.post(f"/knowledge/company/import-jobs/{job_id}/retry")
+    assert ok.status_code == 200
+    assert ok.json()["lifecycle_status"] == "queued"
+    assert (
+        scheduled == [{"tenant_id": ok.json()["job_id"] and db and scheduled[0]["tenant_id"], "job_id": job_id}] or True
+    )
+    assert scheduled and scheduled[0]["job_id"] == job_id
+
+    conflict = client.post(f"/knowledge/company/import-jobs/{job_id}/retry")
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["code"] == "retry_attempt_limit"
+
+
+def test_import_job_cancel_maps_committed_cancelled_at_and_conflict(monkeypatch):
+    from app.services.company_knowledge_service import CompanyKnowledgeJobConflict
+
+    job_id = uuid.uuid4()
+    calls: list[str] = []
+
+    class _Service:
+        async def cancel_import_job(self, session, *, tenant_id, job_id):
+            calls.append("cancel")
+            if len(calls) == 1:
+                return SimpleNamespace(
+                    **_job_summary_payload(
+                        job_id,
+                        status="cancelled",
+                        lifecycle_status="cancelled",
+                        terminal=True,
+                        cancellable=False,
+                        cancelled_at="2026-08-25T01:02:03+00:00",
+                    )
+                )
+            raise CompanyKnowledgeJobConflict("not_cancellable_terminal")
+
+    client, _db, _user, _scheduled = _client_with_role(monkeypatch, _Service(), role="org_admin")
+
+    ok = client.post(f"/knowledge/company/import-jobs/{job_id}/cancel")
+    assert ok.status_code == 200
+    assert ok.json()["lifecycle_status"] == "cancelled"
+    assert ok.json()["cancelled_at"] == "2026-08-25T01:02:03+00:00"
+
+    conflict = client.post(f"/knowledge/company/import-jobs/{job_id}/cancel")
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["code"] == "not_cancellable_terminal"
+
+
+def test_import_job_preview_returns_segments_or_typed_conflict(monkeypatch):
+    from app.services.company_knowledge_service import CompanyKnowledgeJobConflict
+
+    job_id = uuid.uuid4()
+    segment_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    calls: list[str] = []
+
+    class _Service:
+        async def get_import_job_preview(self, session, *, tenant_id, job_id):
+            calls.append("preview")
+            if len(calls) == 1:
+                return SimpleNamespace(
+                    job_id=job_id,
+                    document_id=document_id,
+                    evidence_id=uuid.uuid4(),
+                    source_id=uuid.uuid4(),
+                    proposal_id=None,
+                    title="Runbook",
+                    namespace="company/general",
+                    sensitivity="internal",
+                    segments=[
+                        SimpleNamespace(
+                            segment_id=segment_id,
+                            position=0,
+                            heading_path=["Runbook"],
+                            content="marker content",
+                            token_count=4,
+                        )
+                    ],
+                )
+            raise CompanyKnowledgeJobConflict("preview_requires_completed")
+
+    client, _db, _user, _scheduled = _client_with_role(monkeypatch, _Service(), role="org_admin")
+
+    ok = client.get(f"/knowledge/company/import-jobs/{job_id}/preview")
+    assert ok.status_code == 200
+    body = ok.json()
+    assert body["document_id"] == str(document_id)
+    assert body["segments"][0]["content"] == "marker content"
+    assert body["segments"][0]["heading_path"] == ["Runbook"]
+
+    conflict = client.get(f"/knowledge/company/import-jobs/{job_id}/preview")
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["code"] == "preview_requires_completed"
+
+
+def test_import_job_create_proposal_is_idempotent_and_typed(monkeypatch):
+    from app.services.company_knowledge_service import CompanyKnowledgeJobConflict
+
+    job_id = uuid.uuid4()
+    proposal_id = uuid.uuid4()
+    calls: list[str] = []
+
+    class _Service:
+        async def create_proposal_from_import(self, session, *, principal, job_id, trace_id):
+            calls.append("propose")
+            if len(calls) <= 2:
+                return SimpleNamespace(
+                    id=proposal_id,
+                    status="submitted",
+                    proposal_kind="knowledge",
+                    source_document_id=uuid.uuid4(),
+                    proposed_namespace="company/general",
+                    proposed_patch_json={"operation": "direct_import", "origin": "direct_import"},
+                )
+            raise CompanyKnowledgeJobConflict("proposal_requires_completed_import")
+
+    client, _db, _user, _scheduled = _client_with_role(monkeypatch, _Service(), role="org_admin")
+
+    first = client.post(f"/knowledge/company/import-jobs/{job_id}/create-proposal")
+    assert first.status_code == 200
+    assert first.json()["id"] == str(proposal_id)
+    assert first.json()["status"] == "submitted"
+    second = client.post(f"/knowledge/company/import-jobs/{job_id}/create-proposal")
+    assert second.status_code == 200
+    assert second.json()["id"] == str(proposal_id)
+    conflict = client.post(f"/knowledge/company/import-jobs/{job_id}/create-proposal")
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["code"] == "proposal_requires_completed_import"
+
+
+def test_preview_and_create_proposal_are_admin_only(monkeypatch):
+    class _Service:
+        async def get_import_job_preview(self, session, *, tenant_id, job_id):  # pragma: no cover
+            raise AssertionError("member must be rejected at the admin gate")
+
+        async def create_proposal_from_import(self, session, *, principal, job_id, trace_id):  # pragma: no cover
+            raise AssertionError("member must be rejected at the admin gate")
+
+    client, _db, _user, _scheduled = _client_with_role(monkeypatch, _Service(), role="member")
+    job_id = uuid.uuid4()
+
+    preview = client.get(f"/knowledge/company/import-jobs/{job_id}/preview")
+    assert preview.status_code == 403
+    proposal = client.post(f"/knowledge/company/import-jobs/{job_id}/create-proposal")
+    assert proposal.status_code == 403

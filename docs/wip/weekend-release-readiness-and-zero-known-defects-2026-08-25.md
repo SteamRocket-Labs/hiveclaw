@@ -382,6 +382,23 @@ correction（failing-first，先 4 红→绿）：
 
 本轮验证（当前 checkout 实测，计数已含本轮 7 个新回归）：`npm test` = 141 files / **844 passed**；`npm run i18n:check` gates 全 0（unresolvedDynamic 修复变量键调用后归 0）；`./node_modules/.bin/tsc --noEmit` 干净；`npm run build` AgentDetail 350477/380000（gzip 96848/115000）、vendor 预算通过。backend 无改动，未复跑（上一轮 148+26+197 + ruff 结果仍有效）。
 
+### RC-00 Codex final verdict: PASS — Verified（2026-08-25）
+
+两轮 FAIL 全部 correction 后，Codex 对 RC-00 本地包终审 **PASS**，状态 **Verified**。Codex 独立证据（与本地实测一致）：
+
+```text
+npm test                    → 141 files / 844 tests passed
+i18n node tests             → 9 passed；catalog en=3750 / zh=3750；全部 gates = 0
+tsc --noEmit                → clean
+npm run build               → 7385 modules；
+                              AgentDetail 350477/380000（gzip 96848/115000）
+                              vendor      591449/620000（gzip 186474/200000）
+git diff --check            → clean（仅 .ultra runtime 脏，一贯排除）
+backend                     → 无改动；此前独立结果 148+26+197 与 ruff check+format 仍有效
+```
+
+**状态边界**：Production E2E run 1 与 run 2 仍 pending——两遍生产旅程通过并登记证据后才可转 **Closed**（§5.1 状态定义）。
+
 **剩余风险**：存量 `agent_activity_logs.summary` 中已持久化的 raw 文本仍存在于 DB（正常用户界面不再渲染；行详情展开为 progressive disclosure，普通 owner 可见，跨属主访问才走 operator view）；Aware tab 后端英文 prose 保留在 payload 供 operator/审计；D3/D4/D5 未复现待证据；全量 backend 回归留 RC-09；生产两遍 E2E 待执行（部署已获 owner 授权）。
 
 ## 7.2 RC-01 — Personal Knowledge 导入、切片、索引与 Agent 消费
@@ -779,7 +796,7 @@ Rollback / recovery:
 
 | RC | Defect/Task | zCode commit | Targeted tests | Codex verdict | Production run 1 | Production run 2 | Seven-atom status | Remaining |
 |---|---|---|---|---|---|---|---|---|
-| RC-00 | UI-001/002/003/004、SHELL-001、A2A-001 read-model、UI-005(D1/D2/auth出口) + Codex FAIL 六项 correction + 第二轮 FAIL（WorkspaceFeatureHub live consumer）correction + canonical attention_state 全映射、静态键渲染、gate 优先级（最终形态 `7761aedb`） | `e04f6fee`（主包）、`6e2ff99d`（Agent Detail 面 + Codex 基线）、`b0c1a95c`（review-fail correction #1）、`70190bf0`（correction #2）、`31c8f8d4`（canonical 全映射）、`e2ec5dc8`（静态键渲染）、`48dd4ccb`+`7761aedb`（gate 优先级 v1/v2）、`d71ab449`（测试格式修复） | 见 §7.1 验证块（frontend 141 files / 844 tests；backend 定向 148+26+197；i18n gates 0；build 预算过；ruff check + format 全过） | Codex 两轮 FAIL（均已 correction，verdict 待复评 = pending） | 已授权未执行 | 已授权未执行 | 局部闭环（Fix Candidate）：Input/Authority/Execution/Evidence 有当前代码路径与回归；Recovery/Consumption 待生产 E2E；Acceptance 缺生产两遍 | D3/D4/D5 未复现；全量 backend 回归留 RC-09；生产 E2E 待执行（owner 已授权 gates 后两次三服务部署） |
+| RC-00 | UI-001/002/003/004、SHELL-001、A2A-001 read-model、UI-005(D1/D2/auth出口) + Codex FAIL 六项 correction + 第二轮 FAIL（WorkspaceFeatureHub live consumer）correction + canonical attention_state 全映射、静态键渲染、gate 优先级（最终形态 `7761aedb`） | `e04f6fee`（主包）、`6e2ff99d`（Agent Detail 面 + Codex 基线）、`b0c1a95c`（review-fail correction #1）、`70190bf0`（correction #2）、`31c8f8d4`（canonical 全映射）、`e2ec5dc8`（静态键渲染）、`48dd4ccb`+`7761aedb`（gate 优先级 v1/v2）、`d71ab449`（测试格式修复） | Codex 独立复验：npm test = 141 files / 844 tests；i18n node tests 9，catalog en=3750 / zh=3750，全部 gates 0；tsc --noEmit 干净；build 7385 modules，AgentDetail 350477/380000（gzip 96848/115000）、vendor 591449/620000（gzip 186474/200000）；git diff --check 干净（仅 .ultra runtime 脏）；backend 无改动，此前独立结果 148+26+197 与 ruff check+format 仍有效 | **Codex final verdict: PASS — Verified**（两轮 FAIL 已全部 correction 后终审通过） | 已授权未执行 | 已授权未执行 | **Verified**：Input/Authority/Execution/Evidence 有当前代码路径、回归与 Codex 独立复验；Recovery/Consumption 待生产 E2E（run 1/run 2）后转 Closed | D3/D4/D5 未复现；全量 backend 回归留 RC-09；生产 E2E 两遍待执行（owner 已授权 gates 后两次三服务部署） |
 | RC-01 | 待开工 | — | — | — | — | — | Breakpoint | PDF queued/segments/Agent citation |
 | RC-02 | 待开工 | — | — | — | — | — | Missing/Breakpoint | admin file intake + preview + proposal |
 | RC-03 | 待开工 | — | — | — | — | — | Partial loop | async push + long result + UI evidence |
@@ -837,7 +854,7 @@ owner 已过稿并明确说“开始”。先提交本文件作为恢复点；�
 - [x] owner 已确认本计划顺序。
 - [x] owner 已授权 zCode 开工。
 - [ ] 尚未创建合成测试资产。
-- [x] RC-00 已完成首轮代码修改与定向回归（见 §7.1 交付记录与 §10）；尚待 Codex review/verdict。
+- [x] RC-00 已完成首轮代码修改与定向回归；Codex final verdict **PASS — Verified**（两轮 FAIL 已 correction，独立证据见 §7.1/§10）。生产 E2E run 1/run 2 pending，通过后转 Closed。
 - [x] RC-00 计划对应 commit 已创建（本 commit）。
 - [ ] 尚未写入 Rocky 的实验室测试数据。
 - [ ] 尚未部署。

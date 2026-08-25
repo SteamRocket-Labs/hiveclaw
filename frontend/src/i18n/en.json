@@ -4274,6 +4274,7 @@
       "errorSourceMissing": "The uploaded source is no longer available.",
       "errorUnsupportedFileType": "This file type is not supported.",
       "errorImportPayloadInvalid": "The import request was invalid.",
+      "errorTitleConflict": "This file matches an existing document but uses a different title.",
       "errorAttemptLimit": "Retry limit reached.",
       "errorImportFailed": "Import failed with an unspecified error.",
       "errorUnknown": "Import failed with an unspecified error.",

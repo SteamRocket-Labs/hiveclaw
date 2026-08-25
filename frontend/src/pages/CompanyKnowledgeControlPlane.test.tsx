@@ -1,6 +1,9 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
+import enCatalog from '../i18n/en.json';
+import zhCatalog from '../i18n/zh.json';
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (_key: string, fallback?: string) => fallback ?? _key,
@@ -291,6 +294,19 @@ describe('Company Knowledge direct import wizard', () => {
     expect(markup).not.toContain('conversion_timeout');
   });
 
+  it('maps the title conflict to localized prose without retry or raw code', () => {
+    const markup = renderToStaticMarkup(
+      <DirectImportWizard
+        {...wizardProps}
+        jobs={[{ ...baseJob, status: 'failed', lifecycleStatus: 'failed', terminal: true, retryable: false, cancellable: false, attemptCount: 1, errorCode: 'company_knowledge_import_title_conflict' }]}
+      />,
+    );
+
+    expect(markup).toContain('This file matches an existing document but uses a different title.');
+    expect(markup).not.toContain('company_knowledge_import_title_conflict');
+    expect(markup).not.toContain('>Retry<');
+  });
+
   it('maps unknown lifecycle and error codes to one neutral label without leaking raw codes', () => {
     const markup = renderToStaticMarkup(
       <DirectImportWizard
@@ -348,5 +364,16 @@ describe('Company Knowledge direct import wizard', () => {
     expect(markup).toContain('role="alert"');
     expect(markup).toContain('Retry limit reached.');
     expect(markup).not.toContain('retry_attempt_limit');
+  });
+});
+
+describe('Company Knowledge direct import error catalog', () => {
+  it('localizes the title-conflict code with bounded prose in both locales', () => {
+    expect(enCatalog.companyKnowledge.directImport.errorTitleConflict).toBe(
+      'This file matches an existing document but uses a different title.',
+    );
+    expect(zhCatalog.companyKnowledge.directImport.errorTitleConflict).toBe(
+      '该文件内容与现有文档相同，但标题不同。',
+    );
   });
 });

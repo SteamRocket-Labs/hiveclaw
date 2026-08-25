@@ -795,6 +795,8 @@ function companyImportErrorLabel(errorCode: string | null, t: ReturnType<typeof 
       return t('companyKnowledge.directImport.errorUnsupportedFileType', 'This file type is not supported.');
     case 'import_payload_invalid':
       return t('companyKnowledge.directImport.errorImportPayloadInvalid', 'The import request was invalid.');
+    case 'company_knowledge_import_title_conflict':
+      return t('companyKnowledge.directImport.errorTitleConflict', 'This file matches an existing document but uses a different title.');
     case 'company_knowledge_import_attempts_exhausted':
       return t('companyKnowledge.directImport.errorAttemptLimit', 'Retry limit reached.');
     case 'worker_error':

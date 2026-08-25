@@ -444,6 +444,7 @@ _PERMANENT_IMPORT_ERROR_CODES = frozenset(
         "unsupported_file_type",
         "source_missing",
         "import_payload_invalid",
+        "company_knowledge_import_title_conflict",
         "company_knowledge_import_attempts_exhausted",
     }
 )
@@ -1486,6 +1487,17 @@ class CompanyKnowledgeService:
                         .limit(1)
                     )
                 ).scalar_one_or_none()
+                if (
+                    document is not None
+                    and request.get("import_kind") == "direct_file"
+                    and str(document.title or "") != str(request["title"])
+                ):
+                    # Same canonical content under a different strip-normalized
+                    # title is a permanent semantic identity conflict: reusing
+                    # the document would silently discard the requested title,
+                    # rewriting it would corrupt the existing one. Evidence
+                    # imports and promotions keep their legacy dedupe path.
+                    raise CompanyKnowledgeImportError("company_knowledge_import_title_conflict")
                 if document is None:
                     document = KnowledgeDocument(
                         tenant_id=tenant_id,
@@ -1614,11 +1626,17 @@ class CompanyKnowledgeService:
                     )
                 ).scalar_one_or_none()
                 if failed is not None and failed.status != "completed":
-                    failed.status = "failed" if failed.attempt_count >= failed.max_attempts else "queued"
+                    error_code = str(getattr(exc, "code", "") or "") or type(exc).__name__
+                    # Permanent codes never consume retries: the job fails
+                    # terminal immediately with a truthful attempt ledger.
+                    permanent_failure = error_code in _PERMANENT_IMPORT_ERROR_CODES
+                    failed.status = (
+                        "failed" if permanent_failure or failed.attempt_count >= failed.max_attempts else "queued"
+                    )
                     failed.available_at = _utcnow() + timedelta(seconds=min(300, 2**failed.attempt_count))
                     failed.claim_token = None
                     failed.claim_expires_at = None
-                    failed.last_error_code = str(getattr(exc, "code", "") or "") or type(exc).__name__
+                    failed.last_error_code = error_code
                     failed.last_error = str(exc)[:4000]
             raise
 
@@ -1646,6 +1664,13 @@ class CompanyKnowledgeService:
                             CompanyKnowledgeImportJob.status.in_(("queued", "failed")),
                             CompanyKnowledgeImportJob.available_at <= now,
                             CompanyKnowledgeImportJob.attempt_count < CompanyKnowledgeImportJob.max_attempts,
+                            # Permanent failures — including historical rows —
+                            # are never re-attempted; retryable conversion
+                            # failures and timeouts keep their backoff loop.
+                            or_(
+                                CompanyKnowledgeImportJob.last_error_code.is_(None),
+                                ~CompanyKnowledgeImportJob.last_error_code.in_(_PERMANENT_IMPORT_ERROR_CODES),
+                            ),
                         ),
                         # Stale running is recovered at any attempt count: a
                         # crash at the final attempt must be terminalized, not

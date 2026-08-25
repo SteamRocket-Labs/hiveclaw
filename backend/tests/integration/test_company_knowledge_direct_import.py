@@ -21,7 +21,11 @@ from sqlalchemy import func, select
 
 from app.database import Base
 from app.models.company_knowledge import (
+    CompanyKnowledgeEvent,
+    CompanyKnowledgeEvidence,
     CompanyKnowledgeImportJob,
+    CompanyKnowledgeOutbox,
+    CompanyKnowledgeSource,
 )
 from app.models.knowledge import KnowledgeDocument, KnowledgeSegment
 from app.models.tenant import Tenant
@@ -1720,3 +1724,189 @@ async def test_direct_import_management_surface_isolates_direct_file_jobs(
     for created_job_id in (*non_direct_job_ids, direct_old.id, direct_new.id, proposal_job.id):
         terminal_status, _request = await _fetch_job_state(owner_sessionmaker, created_job_id)
         assert terminal_status in {"completed", "cancelled"}, (created_job_id, terminal_status)
+
+
+# ---------------------------------------------------------------------------
+# RC-02 finding-6: same canonical content dedupes only under the same
+# strip-normalized title; a different title is a permanent typed conflict.
+# ---------------------------------------------------------------------------
+
+
+async def test_direct_import_same_content_different_title_conflict(complete_schema, owner_sessionmaker, tmp_path):
+    """Same content + same normalized title dedupes; a different title is a typed permanent conflict with zero side artifacts."""
+    ids = await _seed_tenant(owner_sessionmaker)
+    tenant_id, admin_id = ids["tenant"], ids["admin"]
+    service = CompanyKnowledgeService(data_root=tmp_path)
+    contract = await _register_contract(owner_sessionmaker, service, tenant_id=tenant_id, admin_id=admin_id)
+    suffix = uuid.uuid4().hex[:8]
+    data = f"# Same content\n\n{MARKER_ZH} title conflict body.".encode()
+
+    # First import carries a whitespace-padded title; the persisted title is
+    # the strip-normalized value.
+    first = await _queue_file(
+        owner_sessionmaker,
+        service,
+        tenant_id=tenant_id,
+        admin_id=admin_id,
+        contract=contract,
+        filename="same.md",
+        data=data,
+        title="  Same Title  ",
+        mime="text/markdown",
+        idempotency_key=f"ckb-f6-first-{suffix}",
+    )
+    processed_first = await _process(owner_sessionmaker, service, tenant_id=tenant_id, job_id=first.id)
+    assert processed_first.status == "completed"
+    assert processed_first.document_id is not None
+
+    # Same bytes under a NEW key with the stripped-equivalent title: the
+    # document dedupes and the replay completes with the same document_id.
+    replay = await _queue_file(
+        owner_sessionmaker,
+        service,
+        tenant_id=tenant_id,
+        admin_id=admin_id,
+        contract=contract,
+        filename="same.md",
+        data=data,
+        title="Same Title",
+        mime="text/markdown",
+        idempotency_key=f"ckb-f6-replay-{suffix}",
+    )
+    processed_replay = await _process(owner_sessionmaker, service, tenant_id=tenant_id, job_id=replay.id)
+    assert processed_replay.status == "completed"
+    assert str(processed_replay.document_id) == str(processed_first.document_id)
+
+    # Same bytes under a third NEW key with a genuinely different title: the
+    # exact typed permanent conflict fires before completion or any binding.
+    conflict = await _queue_file(
+        owner_sessionmaker,
+        service,
+        tenant_id=tenant_id,
+        admin_id=admin_id,
+        contract=contract,
+        filename="same.md",
+        data=data,
+        title="Different Title",
+        mime="text/markdown",
+        idempotency_key=f"ckb-f6-conflict-{suffix}",
+    )
+    with pytest.raises(CompanyKnowledgeImportError) as exc_info:
+        await _process(owner_sessionmaker, service, tenant_id=tenant_id, job_id=conflict.id)
+    assert exc_info.value.code == "company_knowledge_import_title_conflict"
+
+    # Persisted summary: failed, terminal, not retryable, exact code, and a
+    # truthful attempt ledger (one attempt made, ceiling untouched).
+    async with owner_sessionmaker() as session:
+        summary = await service.get_import_job_summary(session, tenant_id=tenant_id, job_id=conflict.id)
+        await session.rollback()
+    assert summary is not None
+    assert summary.status == "failed"
+    assert summary.terminal is True
+    assert summary.retryable is False
+    assert summary.error_code == "company_knowledge_import_title_conflict"
+    assert summary.attempt_count == 1
+    assert summary.max_attempts == conflict.max_attempts
+    assert summary.document_id is None
+    assert summary.evidence_id is None
+    assert summary.source_id is None
+    assert summary.proposal_id is None
+
+    # Manual retry refuses through the existing permanent set.
+    async with owner_sessionmaker() as session:
+        with pytest.raises(CompanyKnowledgeJobConflict) as retry_conflict:
+            await service.retry_import_job(session, tenant_id=tenant_id, job_id=conflict.id)
+        await session.rollback()
+    assert retry_conflict.value.code == "not_retryable"
+
+    # Bring the conflict row's availability forward: fleet recovery must never
+    # select or increment a permanent-code row, even one already due.
+    async with owner_sessionmaker() as session:
+        job_row = (
+            await session.execute(select(CompanyKnowledgeImportJob).where(CompanyKnowledgeImportJob.id == conflict.id))
+        ).scalar_one()
+        job_row.available_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        await session.commit()
+    async with owner_sessionmaker() as session:
+        recovery = await service.recover_due_import_jobs(session, session_factory=owner_sessionmaker, limit=50)
+        await session.rollback()
+    assert all(recovered_job_id != conflict.id for _recovered_tenant, recovered_job_id in recovery.job_refs)
+    status, attempts, error_code = await _read_job(owner_sessionmaker, conflict.id)
+    assert status == "failed"
+    assert attempts == 1
+    assert error_code == "company_knowledge_import_title_conflict"
+
+    # One canonical document/title remains for this content, and the
+    # conflicting processing transaction rolled back every artifact: no
+    # evidence row, no source lineage, no completion event, no index outbox.
+    async with owner_sessionmaker() as session:
+        # The durable content identity is the post-conversion canonical hash
+        # the document itself carries, not the queue-time raw upload hash.
+        first_document = (
+            await session.execute(select(KnowledgeDocument).where(KnowledgeDocument.id == processed_first.document_id))
+        ).scalar_one()
+        documents = (
+            (
+                await session.execute(
+                    select(KnowledgeDocument).where(
+                        KnowledgeDocument.tenant_id == tenant_id,
+                        KnowledgeDocument.scope_type == "company",
+                        KnowledgeDocument.source_sha256 == first_document.source_sha256,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(documents) == 1
+        assert documents[0].title == "Same Title"
+        assert documents[0].id == first_document.id
+
+        evidence_count = (
+            await session.execute(
+                select(func.count())
+                .select_from(CompanyKnowledgeEvidence)
+                .where(
+                    CompanyKnowledgeEvidence.tenant_id == tenant_id,
+                    CompanyKnowledgeEvidence.idempotency_key == conflict.idempotency_key,
+                )
+            )
+        ).scalar_one()
+        assert int(evidence_count) == 0
+
+        source_count = (
+            await session.execute(
+                select(func.count())
+                .select_from(CompanyKnowledgeSource)
+                .where(
+                    CompanyKnowledgeSource.tenant_id == tenant_id,
+                    CompanyKnowledgeSource.lineage_json["import_job_id"].astext == str(conflict.id),
+                )
+            )
+        ).scalar_one()
+        assert int(source_count) == 0
+
+        completion_events = (
+            await session.execute(
+                select(func.count())
+                .select_from(CompanyKnowledgeEvent)
+                .where(
+                    CompanyKnowledgeEvent.tenant_id == tenant_id,
+                    CompanyKnowledgeEvent.idempotency_key == f"{conflict.idempotency_key}:completed",
+                )
+            )
+        ).scalar_one()
+        assert int(completion_events) == 0
+
+        index_outbox = (
+            await session.execute(
+                select(func.count())
+                .select_from(CompanyKnowledgeOutbox)
+                .where(
+                    CompanyKnowledgeOutbox.tenant_id == tenant_id,
+                    CompanyKnowledgeOutbox.idempotency_key == f"{conflict.idempotency_key}:index",
+                )
+            )
+        ).scalar_one()
+        assert int(index_outbox) == 0
+        await session.rollback()

@@ -4274,6 +4274,7 @@
       "errorSourceMissing": "上传的源文件已不可用。",
       "errorUnsupportedFileType": "不支持此文件类型。",
       "errorImportPayloadInvalid": "导入请求无效。",
+      "errorTitleConflict": "该文件内容与现有文档相同，但标题不同。",
       "errorAttemptLimit": "已达重试次数上限。",
       "errorImportFailed": "导入失败，原因未知。",
       "errorUnknown": "导入失败，原因未知。",

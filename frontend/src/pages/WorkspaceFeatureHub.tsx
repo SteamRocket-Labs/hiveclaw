@@ -387,6 +387,38 @@ export const AUTOMATION_STATUS_FALLBACKS: Record<AutomationStatusKey, string> = 
   unknown: 'Status unavailable',
 };
 
+// Static translation keys only (the i18n audit must not depend on
+// catalog_pattern resolution for canonical automation states).
+export function automationStatusLabel(statusKey: AutomationStatusKey, t: ScheduleTranslator): string {
+  switch (statusKey) {
+    case 'paused':
+      return t('featureHub.automationStatus.paused', AUTOMATION_STATUS_FALLBACKS.paused);
+    case 'running':
+      return t('featureHub.automationStatus.running', AUTOMATION_STATUS_FALLBACKS.running);
+    case 'failed':
+      return t('featureHub.automationStatus.failed', AUTOMATION_STATUS_FALLBACKS.failed);
+    case 'missingModel':
+      return t('featureHub.automationStatus.missingModel', AUTOMATION_STATUS_FALLBACKS.missingModel);
+    case 'completed':
+      return t('featureHub.automationStatus.completed', AUTOMATION_STATUS_FALLBACKS.completed);
+    case 'active':
+      return t('featureHub.automationStatus.active', AUTOMATION_STATUS_FALLBACKS.active);
+    case 'expired':
+      return t('featureHub.automationStatus.expired', AUTOMATION_STATUS_FALLBACKS.expired);
+    case 'maxFires':
+      return t('featureHub.automationStatus.maxFires', AUTOMATION_STATUS_FALLBACKS.maxFires);
+    case 'backoff':
+      return t('featureHub.automationStatus.backoff', AUTOMATION_STATUS_FALLBACKS.backoff);
+    case 'noRecentAttempt':
+      return t('featureHub.automationStatus.noRecentAttempt', AUTOMATION_STATUS_FALLBACKS.noRecentAttempt);
+    case 'needsReconciliation':
+      return t('featureHub.automationStatus.needsReconciliation', AUTOMATION_STATUS_FALLBACKS.needsReconciliation);
+    case 'unknown':
+    default:
+      return t('featureHub.automationStatus.unknown', AUTOMATION_STATUS_FALLBACKS.unknown);
+  }
+}
+
 /** One automation row rendered from typed facts — the testable live-consumer seam. */
 export function AutomationRowSurface({ row }: { row: AutomationHubRow }) {
   const { t } = useTranslation();
@@ -399,7 +431,7 @@ export function AutomationRowSurface({ row }: { row: AutomationHubRow }) {
       </span>
       <span className="automation-task-schedule">{automationScheduleLabel(row.schedule, t)}</span>
       <span className={`employee-status ${row.status}`}>
-        {t(`featureHub.automationStatus.${row.statusKey}`, AUTOMATION_STATUS_FALLBACKS[row.statusKey])}
+        {automationStatusLabel(row.statusKey, t)}
       </span>
     </Link>
   );

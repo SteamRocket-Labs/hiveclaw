@@ -324,8 +324,7 @@ describe('automation schedule/status display (live consumer seam)', () => {
     expect(String(status.statusKey)).not.toContain('experimental_future_state');
   });
 
-  it('maps every canonical autonomy attention_state exactly instead of collapsing to unknown', () => {
-    // The canonical attention_state vocabulary from autonomy_overview is a
+  it('maps every canonical autonomy attention_state exactly instead of collapsing to unknown', () => {    // The canonical attention_state vocabulary from autonomy_overview is a
     // closed machine set; every member carries real semantics and must map to
     // its own typed key. Only codes outside this set resolve to unknown.
     expect(automationStatus({ attention_state: 'active', is_enabled: true }, []).statusKey).toBe('active');
@@ -383,6 +382,22 @@ describe('automation schedule/status display (live consumer seam)', () => {
     expect(zhStatus.active).toBe('进行中');
     expect(zhStatus.unknown).toBe('状态不可用');
     expect(zhStatus.unknown).not.toBe('unknown');
+  });
+
+  it('renders status labels through static catalog keys, not a dynamic statusKey template', async () => {
+    // Static-key contract: every statusKey must have an explicit literal t()
+    // call site so the i18n audit never depends on catalog_pattern resolution
+    // for canonical states, and no raw code can reach the DOM via a template.
+    const { readFileSync } = await import('node:fs');
+    const source = readFileSync(new URL('./WorkspaceFeatureHub.tsx', import.meta.url), 'utf8');
+
+    expect(source).not.toContain('automationStatus.${');
+    for (const key of [
+      'paused', 'running', 'failed', 'missingModel', 'completed', 'active',
+      'expired', 'maxFires', 'backoff', 'noRecentAttempt', 'needsReconciliation', 'unknown',
+    ]) {
+      expect(source).toContain(`featureHub.automationStatus.${key}`);
+    }
   });
 
   it('keeps raw schedule/status markers out of the rendered automation hub DOM', () => {

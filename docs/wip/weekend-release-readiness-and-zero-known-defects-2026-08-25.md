@@ -1,10 +1,15 @@
 # 周末验收准备与零已知缺陷收口方案
 
-> 建档：2026-08-25  
-> 状态：**Draft — 待 owner 逐段过稿，尚未授权开工**  
-> 目标环境：生产环境中的 **Rocky 的实验室**；该公司本身就是测试环境，不另建测试租户  
-> 实施分工：**zCode 负责全部代码修改；Codex 只负责 review → test → feedback**  
-> 当前代码基线：本地 `HEAD=ab73541f`；相对生产代码提交 `de66ac4e`，`backend/app` 与 `frontend/src` 无代码差异  
+> 建档：2026-08-25
+>
+> 状态：**Approved — owner 已于 2026-08-25 确认顺序并授权开工**
+>
+> 目标环境：生产环境中的 **Rocky 的实验室**；该公司本身就是测试环境，不另建测试租户
+>
+> 实施分工：**zCode 负责全部代码修改；Codex 只负责 review → test → feedback**
+>
+> 当前业务代码基线：生产提交 `de66ac4e`；其后的本地提交截至开工时未改变 `backend/app` 与 `frontend/src`
+>
 > 目标时间：owner 确认开工后的两个工作日内形成可供周末测试的 Release Candidate
 
 ---
@@ -16,7 +21,7 @@
 1. `docs/wip/company-knowledge-intake-and-access-redesign.md` 作为 Company Knowledge 专项研究材料保留，但不再单独决定施工优先级；其中与当前源码不一致的事项，以本文件 §7.2 为准。
 2. `docs/wip/production-remediation-plan-2026-08-23.md` 作为历史生产诊断与修复记录保留，不作为本周末 RC 的当前排序。
 3. Agent Sandbox、OpenBot、Environment Control Plane、Extension/plugin convergence、Knowledge Graph、Ontology 扩展等长期架构工作全部暂停，不进入这两个工作日。
-4. 本轮先完成文档评审。owner 明确说“开始”之后，zCode 才开始改代码；生产部署仍是独立外部效果，必须在 RC 通过后单独确认。
+4. owner 已明确说“开始”，并授权 Day 1 按“首轮闭环 → 首次部署 → 生产 A2A → 反馈修复 → 再次部署 → A2A 复验”的顺序执行。该授权不包含生产 DDL、不可逆迁移、删除数据或外部邀请。
 5. 本文件不把已有 API、数据表、页面或绿色单测当作功能完成证据。每项能力都要通过真实入口和七原子闭环验收。
 
 ### 0.1 已确认的 owner 决定
@@ -28,7 +33,8 @@
 | 谁修改代码 | zCode |
 | Codex 的职责 | review、test、feedback；不修改代码 |
 | 是否立即继续 Sandbox | 否，暂停 |
-| 是否已经授权本轮实现 | 否；先过完本文件再开始 |
+| 是否已经授权本轮实现 | 是；2026-08-25 已授权开工 |
+| Day 1 部署 | 已授权两次候选部署：首轮闭环后一次，A2A 反馈修复后一次 |
 
 ---
 
@@ -570,7 +576,9 @@ cd backend
 
 ### 部署门槛
 
-部署需要 owner 单独确认。获批后：
+owner 已于 2026-08-25 授权 Day 1 在所有前置 review/test gates 通过后执行两次部署：首轮闭环部署，以及 A2A 反馈修复后的再次部署。生产 DDL、不可逆迁移、删除数据与外部邀请仍需单独确认。
+
+每次部署均要求：
 
 - `backend`、`backend-api`、`frontend` 必须部署同一 Git 提交。
 - 三个 Railway deployment 均为 `SUCCESS`。
@@ -582,13 +590,14 @@ cd backend
 
 ## 8. 两个工作日的执行节奏
 
-### 开工前 Gate 0 — owner 过稿
+### 开工前 Gate 0 — owner 过稿（已完成）
 
-- [ ] 逐段确认本文件。
-- [ ] 确认本轮不做 Sandbox/插件/图谱等长期工作。
-- [ ] 确认 Rocky 的实验室可写入合成 E2E 数据。
-- [ ] 确认 zCode/Codex 分工和部署独立授权边界。
-- [ ] owner 明确说“开始”。
+- [x] 确认本文件的范围与执行顺序。
+- [x] 确认本轮不做 Sandbox/插件/图谱等长期工作。
+- [x] 确认 Rocky 的实验室可写入合成 E2E 数据。
+- [x] 确认 zCode/Codex 分工。
+- [x] owner 明确说“开始”。
+- [x] owner 授权 Day 1 两次候选部署；高风险数据库与账号动作仍单独确认。
 
 ### Day 1 — 共同底座、Knowledge 与 A2A 主线
 
@@ -597,9 +606,12 @@ cd backend
 | 1 | RC-00 复现与 Release Shell/recovery 修复 | 第一个 zCode candidate commit + Codex verdict |
 | 2 | RC-01 Personal Knowledge | PDF 完整闭环、失败/恢复、Agent citation |
 | 3 | RC-02 Company Knowledge | 管理员直接导入垂直切片与权限闭环 |
-| 4 | RC-03 A2A push | 四路径、长结果、父任务唤醒、UI 证据 |
+| 4 | 首轮 RC review/test 与三服务部署 | 每包独立 commit；三服务同一提交并为 `SUCCESS` |
+| 5 | RC-03 生产 A2A push | 四路径、长结果、父任务唤醒、UI 证据；形成反馈缺陷包 |
+| 6 | zCode 按 A2A 反馈修复 | 回归测试、文档证据、correction commit、Codex verdict |
+| 7 | 再次部署与 A2A 复验 | 三服务同一修复提交；A2A 连续通过两次 |
 
-Day 1 结束硬检查：Personal PDF、Company PDF、A2A async push 三条周末主线必须至少各完成一次真实 E2E。Company 管理员直接导入若仍未闭环，不能把 Company KB 标记为可展示。
+Day 1 结束硬检查：Personal PDF、Company PDF 必须完成首轮真实 E2E；A2A async push 必须完成“生产发现 → 反馈 → 修复 → 再部署 → 连续两次复验”的闭环。Company 管理员直接导入若仍未闭环，不能把 Company KB 标记为可展示。
 
 ### Day 2 — Agent 工作模式、Workflow 与全量发布检查
 
@@ -728,20 +740,19 @@ Rollback / recovery:
 4. Rocky 的实验室内允许创建哪些合成数据、测试 Agent、Team、Workflow 和权限记录。
 5. 两天排序是否按 RC-00 → Knowledge/A2A → Plan/Team/Workflow → Full Regression。
 6. zCode/Codex 的 commit、review、test、feedback 协议。
-7. 部署是否继续维持“RC 通过后单独确认”。
+7. Day 1 两次部署已获授权，但生产 DDL、不可逆迁移、删除数据与外部邀请仍保持单独确认。
 
-owner 过稿并明确说“开始”后，第一个动作不是改代码，而是把 `UI-001`、`UI-005`、`PKB-001`、`A2A-002` 在干净条件下稳定复现并形成首批 zCode 缺陷包；随后按 §8 顺序执行。
+owner 已过稿并明确说“开始”。先提交本文件作为恢复点；随后把 `UI-001`、`UI-005`、`PKB-001` 在干净条件下稳定复现并形成首批 zCode 缺陷包。`A2A-002` 在首轮部署后的生产 A2A 阶段复现，不在部署前凭历史会话猜修。
 
 ---
 
 ## 13. 当前 Not Done
 
-- [ ] owner 尚未逐段确认本计划。
-- [ ] 尚未授权 zCode 开工。
+- [x] owner 已确认本计划顺序。
+- [x] owner 已授权 zCode 开工。
 - [ ] 尚未创建合成测试资产。
 - [ ] 尚未修改任何代码。
 - [ ] 尚未创建本计划对应 commit。
 - [ ] 尚未写入 Rocky 的实验室测试数据。
 - [ ] 尚未部署。
 - [ ] 尚未完成任何本轮生产 E2E。
-

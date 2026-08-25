@@ -117,7 +117,7 @@ Hive is an **AI-native system**. Three layers, in strict priority order:
 
 **Memory / self-evolution boundary law:** LLM 负责判断、提炼、反思、归纳、候选生成；平台负责证据引用、权限、去重、回滚、审计、最终落盘。Any memory, heartbeat, dream, skill, workflow, or evolution path that replaces model judgment with counters, regexes, truncated summaries, or platform-authored "semantic" text is an AI-native violation. Any path that lets the model bypass governed write surfaces for durable memory/evolution/soul files is a governance violation.
 
-**Memory target form:** Hive memory is an Agent Markdown Wiki / Learning Vault: T0 raw evidence, T2 tagged Markdown Segment Packages under `memory/t2/sessions/**`, a converged T3 semantic layer (`memory/t3/episodes.md`, `user.md`, `worker.md`, `capabilities.md`), source_refs-backed residual evidence verification, and `soul.md`. Skill is a progressive capability capsule grown from T3 capability evidence and eval-backed candidate packages, not a T3 page. `relations`, `contradictions`, graph/vector/search/UI views are derived and rebuildable; no external memory provider may become the T3 source of truth. `memory/indexes/wiki_map.md` is the single generated navigation map, not always-on prompt memory; control sidecars live under `memory/control/`. Current path contract: `docs/memory-vault-path-contract-2026-06-23.md`.
+**Memory target form:** Hive memory is an Agent Markdown Wiki / Learning Vault: T0 raw evidence, T2 tagged Markdown Segment Packages under `memory/t2/sessions/**`, a converged T3 **two-plane** semantic layer — profile plane (`memory/self/self.md`, `memory/profiles/{owner,collaborators,domain}.md`, entry-level upsert/retire anchored by `<!-- id: ... -->`) and knowledge plane (`memory/knowledge/<concept>.md`, `memory/milestones/<milestone>.md`, whole-page upsert with mandatory `## Relations` edges and Contradictions preservation) — source_refs-backed residual evidence verification, and `soul.md`. Skill is a progressive capability capsule grown from T3 capability evidence and eval-backed candidate packages, not a T3 page. `relations`, `contradictions`, graph/vector/search/UI views are derived and rebuildable; no external memory provider may become the T3 source of truth. `memory/indexes/wiki_map.md` is the single generated navigation map, not always-on prompt memory; control sidecars live under `memory/control/`. Current path contract: `docs/memory-vault-path-contract-2026-06-23.md`.
 
 **Cloud runtime truth and T0 evidence truth:** `ChatTranscriptEvent` is the transactional cloud event truth for run ordering, resume, replay, fork, checkpoint, and rollback. Per-segment `memory/t0/sessions/<session_id>/segments/<segment_id>/events.jsonl` is the exactly-once portable Memory evidence projection; same-segment `source.md` is its deterministic human/LLM-readable Markdown/XML projection. T0 remains the canonical raw evidence source for T2/T3 curation, but it is not a second cloud run authority.
 
@@ -247,10 +247,35 @@ curl -fsS https://backend-production-326d.up.railway.app/api/health
 curl -I -fsS https://frontend-production-0346.up.railway.app/
 ```
 
-## Current Engineering Baseline (2026-06-15)
+## Current Engineering Baseline (updated 2026-08-19)
+
+### Status authority order — 判断"做没做"时的权威顺序
+
+**This file describes intent, architecture, and conventions. It is NOT a status source.**
+Sections here lag behind the code. When judging whether a capability is actually
+built, closed-loop, or still missing, read these in order — a later source never
+overrides an earlier one:
+
+1. `docs/kimi-review-report-2026-07-24.md` — latest whole-system review. Current
+   completion verdicts, including HN-04 "Enterprise Knowledge 七原子已形成产品闭环"
+   and the two-plane T3 status.
+2. **The capability's own spec** — e.g. `docs/memory-system-spec.md` v1.2 (Agent
+   Memory design authority: two planes, seven 工序, five 设计不变量).
+3. **The construction ledger** — e.g. `docs/memory-implementation-log-2026-07.md`
+   (per-task wiring evidence, retirement grep, test numbers, Part J 终验收).
+4. **Current-checkout source code.**
+
+Known lag hazard: dated design memos (`*-2026-06-*.md`, `*-2026-07-0*.md`) capture a
+decision at a point in time and are not revised when later work lands. A memo saying
+a capability is "Missing" only means it was missing on that memo's date. Four
+consecutive misjudgements in 2026-08 traced to reading this file and dated memos
+instead of the four sources above.
 
 Before making architecture claims, use the current evidence surface:
 
+- `docs/kimi-review-report-2026-07-24.md` — **latest whole-system review; authoritative completion status.**
+- `docs/memory-system-spec.md` — **Agent Memory design authority (v1.2): two-plane T3, seven 工序, hard constraints (MD is the only truth source; no vector at the memory layer).**
+- `docs/memory-implementation-log-2026-07.md` — **Agent Memory construction ledger and Part J 终验收 (2026-07-02); records the one remaining owner action: production `migrate_memory_two_planes --apply`.**
 - `docs/hive-sota-master-goal.md` — canonical SOTA total goal, target matrix, and future loop-comparison ledger.
 - `docs/ccplus-north-star-contract-2026-06-24.md` — canonical CCPlus boundary contract: CC semantic baseline, Codex engineering delta, Hive-native evolution, local CLI parity, and remote proprietary exclusion.
 - `docs/runtime-model-agency-constraint-audit-2026-07-13.md` — canonical Model Agency Boundary audit and closure record: C-01 through C-20 findings, CC/FreeCode/Codex comparison, one-pass repairs, and acceptance evidence.
@@ -393,7 +418,9 @@ MD files are the source of truth; the legacy SQLite/JSON shadow stores are retir
 T0 append-only session ledger
   → T2 Segment Package (summary.md / labels.md / review.md / manifest.json)
   → T3 Consolidation Batch (LLM pitch + Memory Gate review + Platform Gate commit)
-  → accepted T3 Markdown (episodes.md / user.md / worker.md / capabilities.md)
+  → accepted T3 Markdown, two planes:
+      profile plane   self/self.md + profiles/{owner,collaborators,domain}.md   (converges)
+      knowledge plane knowledge/<concept>.md + milestones/<milestone>.md    (grows a graph)
   → soul.md (Dream soul reconsolidation)
 
 Explicit user-commanded memories enter memory/explicit/** immediately, then may
@@ -451,7 +478,9 @@ pointers live in `manifest.json` and in-file `source_refs`.
 | **T2 Segment Package** | `memory/t2/sessions/<session_id>/segments/<t2_segment_id>/{summary.md,labels.md,review.md,manifest.json}` | LLM summary/label agents + independent review; Platform Gate commits package metadata | T3 Consolidator only when complete/standalone; residual T0 evidence lookup |
 | **T2 Episode Stitch Package** | `memory/t2/sessions/<session_id>/episodes/<episode_id>/{synthesis.md,review.md,manifest.json}` | Continuity/Episode Stitcher + independent review; Platform Gate commits package metadata | T3 Consolidator for broken/continuing segments after stitching |
 | **Explicit Memory Overlay** | `memory/explicit/entries/<explicit_id>.md` + `memory/explicit/manifest.jsonl` + generated `memory/explicit/MEMORY.md` | `save_memory` only for explicit user-commanded memory; write gate enforces sensitivity/privacy | Prompt activation immediately; later T3 absorption candidate |
-| **T3 Accepted Memory** | `memory/t3/{episodes.md,user.md,worker.md,capabilities.md}` | T3 Consolidator submits pitch/revised patch; Memory Gate reviews; Platform Gate commits exact accepted XML blocks | Dynamic memory activation and Dream soul evidence |
+| **T3 Accepted Memory (profile plane)** | `memory/self/self.md` + `memory/profiles/{owner,collaborators,domain}.md` | T3 Consolidator submits pitch/revised patch; Memory Gate reviews; Platform Gate commits via `upsert_entry` / `retire_entry` / `rewrite_file` (convergence_note required, refuses to empty a populated file) | Dynamic memory activation and Dream soul evidence |
+| **T3 Accepted Memory (knowledge plane)** | `memory/knowledge/<concept>.md` + `memory/milestones/<milestone>.md` | Same gate path via `upsert_page`; a new knowledge page must carry >=1 `## Relations` edge, and updates must preserve every existing Contradictions line | Knowledge retrieval into prompt; Dream soul evidence |
+| **Legacy flat T3** | `memory/t3/{episodes,user,worker,capabilities}.md` | **Retired at the C7 cutover — NOT accepted write targets.** Named only by migration/archive tooling (`LEGACY_T3_FILES`) | `plane_read` legacy fallback emits an observable `migration_required` document until `python -m app.scripts.migrate_memory_two_planes --apply --confirm` runs |
 | **soul.md** | Root workspace | Dream soul reconsolidation through promotion/frozen-mission gates | Prompt injection (frozen prefix) |
 
 The pyramid is the storage and distillation path. Runtime behavior is governed by the owner/company-aware Memory Gate / Platform Gate split:
@@ -482,8 +511,9 @@ The pyramid is the storage and distillation path. Runtime behavior is governed b
 | `services/invocation_trace.py` | Per-invocation runtime trace: file-backed JSONL compatibility plus PostgreSQL `invocation_spans` canonical query surface. |
 | `services/session_feedback.py` | Persists useful/misleading feedback and writes calibrated memory through governed paths. |
 | `memory/hygiene.py` | Retires legacy shadow stores, quarantines dead stubs, and backfills lifecycle metadata with dry-run/apply reports. |
-| `memory/retriever.py` | Read T3 into prompt. High-priority files are injected directly where policy allows; knowledge/strategy/user entries are scored against query. |
-| `memory/md_store.py` | Maintains Markdown T3 stores and generated `memory/indexes/wiki_map.md`; the map is a navigation artifact, not the primary retriever route. |
+| `memory/plane_read.py` | **Unified two-plane read surface**: profile-plane `###` entries + knowledge-plane pages, resolved through the reference index (short ids, tombstone chains, archived evidence). Backs `search_memory(scope=facts)` / `load_memory` and the memory UI read model. Legacy flat-T3 files surface only as a `migration_required` document. |
+| `memory/retriever.py` | Read T3 into prompt: resident profile plane (over-budget warns, never truncates) + knowledge retrieval scored against query. **Read path runs zero LLM** (LLM rerank removed at Part H); semantic selection happens at write time. |
+| `memory/md_store.py` | Maintains Markdown T3 stores and regenerates `memory/indexes/wiki_map.md` **over the two-plane layout**; the map is a navigation artifact, not the primary retriever route. |
 | `runtime/hooks_setup.py` | Hook handlers: T0 writers, extraction triggers, drain on close |
 
 ### Hook System (`app/runtime/hooks.py`)
@@ -512,7 +542,7 @@ Memory pipeline hooks (registered in `hooks_setup.py`):
 | Section | Source |
 |---------|--------|
 | `agent_context.py` | Soul identity + tone/style rules |
-| `memory_context.py` | Accepted T3 files (`memory/t3/user.md`, `worker.md`, `episodes.md`, `capabilities.md`) plus explicit overlay when activation policy allows |
+| `memory_context.py` | Accepted T3 two-plane files (resident `memory/self/self.md` + `memory/profiles/*.md`; retrieved `memory/knowledge/*.md` + `memory/milestones/*.md`) plus explicit overlay when activation policy allows |
 | `tasks.py` | Active tasks + verification rules |
 | `executing_actions.py` | Tool usage + memory save rules |
 | `output_efficiency.py` | Response format and conciseness |
@@ -549,7 +579,7 @@ Soul refinement prompt teaches the LLM the full 4-layer architecture, soul-vs-fo
 | `runtime/` | 17 files | Hooks, invoker, prompt builder, prompt sections, context engines, workflow runtime, session context, recovery/coordinator helpers |
 | `tools/` | 18 handler modules + registry files | Tool registry, governance, runtime groups, catalog, result envelopes, workspace |
 | `skills/` | 5 files | Skill parser, loader, registry |
-| `memory/` | 25 files | MD-first: retriever, assembler, md_store (T3), t2_store, write gate, activation, lifecycle, retention, access log, replay corpus, hygiene, optional backends |
+| `memory/` | 30 files | MD-first two-plane: `plane_read` (unified read surface), `t3_platform_gate` (four commit ops), `reference_index` (short id / tombstone / ref count), `consolidation_debt`, `t2/` package builder + `job_sweep`, retriever, assembler, md_store, write gate, activation, lifecycle, retention, hygiene |
 | `memory/enhancement.py` | — | Optional enhancement adapter boundary; currently a no-op. Native T3 Markdown remains the only memory backend. |
 | `core/` | — | Security, permissions, middleware, Redis pub/sub |
 | `migrations/` | 79 versions | Alembic schema evolution |

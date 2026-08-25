@@ -213,6 +213,111 @@ ruff format --check <11 个改动文件>  → all formatted
 - **P0-A 未解决前，修好 trigger 也只会立刻撞 429。** 部署顺序应为：充值 → 部署 → dry-run 对账 → apply。
 - 「具体是 GC / 取消 / 事件循环饥饿哪一种杀死协程」仍未证实。修复不依赖该结论（四条缺失中任何一条被补上，死亡都不再静默），但若想彻底定性，需在生产抓 `Task was destroyed but it is pending`。
 
+##### 已部署（2026-08-23，两次提交）
+
+| 提交 | 内容 | 生产状态 |
+|---|---|---|
+| `fcd5e4b8` | trigger 改由 RuntimeTask worker 认领执行（强引用 + done callback + 租约 + fence）；会话绑定守卫；陈旧意图守卫；`mark_daemon_outcome` | 22:24Z 前已上线，三服务 SUCCESS |
+| `aeb777e0` | **真正的根因修复**（见下）+ 全仓 13 处 loguru 地雷 | 22:29Z 上线，三服务 SUCCESS |
+
+##### 真正的根因（生产 traceback 实证）
+
+```
+CheckViolationError: writer_epoch_rejected legacy run authority
+  trigger_daemon.py _invoke_agent_for_triggers → append_session_event → db.flush()
+```
+
+`session_event_contract` 要求写 transcript 行时 `runtime_tasks` 里**已存在** run→session 绑定。
+web chat 建 RuntimeTask 时就带 `parent_session_id`，天然满足；trigger 每次发火现建会话，却把 `child_session_id` 写在第一条 event **之后 23 行**。该约束随 Session V2 cutover（`c50fea9d`，2026-07-16 10:54Z）上线，正好落在最后一次成功（09:30Z）与第一条永久卡死（16:00Z）之间。
+
+**修复**：绑定提到 `db.flush()` 之后、任何 transcript 写入之前。`update_runtime_task_record` 独立连接提交，READ COMMITTED 下约束可见。
+
+##### 隐藏它 38 天的第二个 bug
+
+```python
+logger.error(f"Failed to invoke agent {agent_id} for triggers: {e}", exc_info=True)
+```
+
+loguru 无 `exc_info` 参数 → 当作格式参数 → 对已插值的 f-string 再跑 `.format()` → 异常文本含 `{"source": "trigger_daemon"` → `str.format` 把 `"source"` 当字段名、`:` 当格式串 → `KeyError: '"source"'`。**异常处理器在写终态前先炸了**，这就是 30 天 `failed|trigger`=0 的成因，也是 `exc_info=True` 从未产出 traceback 的成因。
+
+全仓同形状共 **13 处**（feishu / oidc / teams / hr_provisioning_runner / wechat_personal_stream / trigger_daemon），全部改为 `logger.opt(exception=True).<lvl>(f"...")`，并加全仓 AST 门禁止复发。
+
+**这也修正了本文档此前的判断**：不是「没抛异常」，是抛了、而处理器自己又抛了一次。
+
+##### 生产验收状态（2026-08-23 22:43Z）
+
+| 项 | 结果 |
+|---|---|
+| 卡死 `running` trigger | 2,107 → **15 → 1** |
+| 这些行有租约 | **全部有**（此前全为 NULL） |
+| 失败能否写终态 | **已证实修好**：部署后出现 `failed`，附真实原因。30 天来第一次 |
+| `stale_trigger_intent` 生效 | 全天触发 20 次 |
+| **2026-07-16 之后第一个 `completed`** | **尚未出现 —— 未达成** |
+
+未达成的原因有两层：
+
+1. **时间窗**：68 个调度型 trigger 的 `_fire_inflight` 停在 18:06Z，`_TRIGGER_FIRE_INFLIGHT_STALE_SECONDS=6h` → 最早 **00:06Z** 才会再次发火。在那之前无法验证 A 是否真的修好。
+2. **浮现出第三个阻塞（原本被 B 隐藏）**：
+
+```
+QueryCanceledError: canceling statement due to statement timeout
+[SQL: SELECT ... FROM runtime_tasks WHERE runtime_tasks.id = $1::UUID FOR UPDATE]
+```
+
+主键查询加 `FOR UPDATE` 撞 30s `statement_timeout` —— **不是慢扫描，是行锁等待**。当前时刻复查 `pg_locks` 15 个锁全 granted、`blocked_by=0`，说明是**间歇性争用**而非持续阻塞。
+
+**这正是本文档 P1 一节预留的判据被触发**：「若 P0-B 的诊断指向查询超时，则 P1 不是 578 天以后的事，而是 P0-B 的共因，须并入 P0。」**现在成立，P1 应提级并入 P0。**
+
+##### 下一步（按顺序）
+
+1. **00:06Z 之后复查**是否出现 2026-07-16 之后第一个 `completed` —— 这是 A 的唯一验收
+2. 定位 `runtime_tasks ... FOR UPDATE` 的行锁持有者（怀疑租约续期与任务自身更新在同一行上争用，或 transcript 路径的 `pg_advisory_xact_lock` 串联）
+3. P0-A 充值（MiniMax 套餐 / DeepSeek 余额）—— 即使 A/C 全通，5 个 MiniMax agent 仍会撞 429
+4. P0-D 51 个 agent 分类
+
+##### 验收通过（2026-08-24 03:42:47Z）
+
+```
+★ trigger 全局最后一次 completed: 2026-08-24 03:42:47Z   （部署完成后 47 秒）
+   上一次: 2026-07-16 09:30:32Z —— 中断 39 天
+```
+
+| 指标 | 修复前 | 部署后 12 分钟 |
+|---|---|---|
+| `completed` | 0（39 天） | **1**（`AIAnalyst`，28s，9 spans，落 durable result ref） |
+| invocation span | 0 | **9** |
+| `trigger_run` 会话 | 0 | **1** |
+| `last_fired_at` 推进 | 0 | **2 个 trigger** |
+| 卡死 `running` | 2,107 | **0** |
+| `failed` | 128（前一版） | **0** |
+
+`last_fired_at` 推进比 `completed` 更关键：它证明「skip 不推游标 → cron 永久判定为 due → 每分钟空转」这个自我强化循环从根上断了。
+
+##### 三次提交
+
+| 提交 | bug |
+|---|---|
+| `fcd5e4b8` | fire-and-forget 派发：无强引用、无租约、无完成核算 → 2,107 条无声堆积 |
+| `aeb777e0` | `writer_epoch_rejected legacy run authority`（真根因）+ 全仓 13 处 loguru 地雷（隐藏它 38 天） |
+| `de66ac4e` | FK 锁自死锁 —— **`aeb777e0` 引入的回归**，不是既有问题 |
+
+`de66ac4e` 的机制：`ChatSession.runtime_task_id` 是 `ForeignKey("runtime_tasks.id")`，其 INSERT 在连接 A 上持 `FOR KEY SHARE` 直到提交；`aeb777e0` 把绑定夹在 INSERT 与 commit 之间，用连接 B 发 `FOR UPDATE` 同一行 → 两个连接在同一协程里互等 → 30s `statement_timeout`。修法是预生成 session id，让绑定发生在取锁的 INSERT 之前，同时满足 Session V2 约束与锁约束。
+
+##### 本文档需撤回的三条判断
+
+| 原判断 | 实际 |
+|---|---|
+| 「**不是异常**」——依据 30 天 `failed\|trigger`=0 推断外层 handler 从未执行 | handler 执行了，但 loguru 地雷让它在写终态前自爆。同一份证据符合两种解释，选错分支 |
+| 「怀疑 GC / 取消 / 事件循环饥饿」 | 全都不是。自始至终是一个普通异常被吞掉 |
+| 「`FOR UPDATE` 超时 = 容量泄漏打到 trigger 路径，**P1 应提级并入 P0**」 | 不是慢扫描、不是容量问题，是 `aeb777e0` 引入的锁冲突。**P1 提级的判据不成立，该结论撤回**；是否提级需在 trigger 稳定运行后重新评估 |
+
+##### 仍未完成
+
+- **69 个调度 trigger 的 `last_fired_at` 仍冻结在 2026-07-16 之前**，各自等 6h 在途守卫窗口到期后依次发火。需持续观察确认，尚未证实
+- **P0-A 充值未做**：heartbeat 已出现 1 个 `failed`；5 个 MiniMax agent 必然撞 429，与本次修复无关
+- `skipped/no_model` 仍在（P0-D 的 51 个 agent），符合预期
+- `scripts/reconcile_orphaned_trigger_runs.py` 保留但已无用武之地——存量孤儿在 `fcd5e4b8` 部署重启时被启动回收器settle 完毕
+
 #### P0-C　skip 路径不推进调度游标（**容量泄漏的真正机制**）
 
 `trigger_daemon._evaluate_trigger`（`app/services/trigger_daemon.py:846`）：
@@ -524,6 +629,8 @@ P5 = 两张新表 + alembic 单 revision + 异步作业 processor + `begin_revie
 | 2026-08-23 | 首版。基于 §3.6 诊断建立统一优先级；确认 P0 为唯一「用户正在受损」项且首步无需代码；确认 no_model 为历史遗留而非当前创建流程缺陷 |
 | 2026-08-23 | 补齐 P2→P5 依赖论证：B3 早于图投影的三个理由（需求验证 / 零代码优先 / 定 R1-R5 参数）、补跑范围表（仅 review 环节失效，授权链不失效）、翻转条件（素材少于 3 份则可并行）与素材建议（≥3 份且含一份刻意矛盾，用于测漏检率） |
 | 2026-08-23 | 加入「下个 session 从这里开始」：立即可执行项、owner 唯一阻塞项（51 个 agent 分类）、本轮未提交产出清单、只读复现要点与 RLS 盘点纪律 |
+| 2026-08-24 | **P0-B 验收通过。** `de66ac4e` 修复 `aeb777e0` 引入的 FK 锁自死锁（预生成 session id，绑定先于取锁 INSERT）。部署后 47 秒出现 2026-07-16 以来第一个 `completed`（`AIAnalyst`，28s，9 spans），`last_fired_at` 开始推进，卡死 running=0、failed=0。**撤回本文档三条判断**：非「不是异常」（是 loguru 吞了异常）、非 GC/饥饿、`FOR UPDATE` 超时非容量泄漏故 P1 提级判据不成立 |
+| 2026-08-23 | **两次提交已部署生产（`fcd5e4b8` + `aeb777e0`），三服务均 SUCCESS。** 生产 traceback 定位真根因：`writer_epoch_rejected legacy run authority` —— trigger 把 `child_session_id` 绑定写在第一条 transcript event 之后，违反 Session V2 约束（随 `c50fea9d` 于 2026-07-16 10:54Z 上线）；隐藏它的是全仓 13 处 `logger.error(f"...", exc_info=True)` loguru 地雷（`KeyError: '"source"'` 使异常处理器在写终态前自爆），据此**修正本文档此前「不是异常」的判断**。已验收：卡死行 2,107→1、全部带租约、失败能写终态（30 天来第一次）。**未验收**：2026-07-16 后第一个 `completed` 尚未出现，最早 00:06Z 才可验（在途守卫 6h）。**新增阻塞**：`runtime_tasks ... FOR UPDATE` 行锁间歇超时 → P1 提级并入 P0 |
 | 2026-08-23 | **P0-B 修复实现完成（未提交未部署）。** 删除 trigger daemon 的三处 fire-and-forget 派发，改由既有 `runtime_task_worker` 认领执行（强引用 + done callback + 租约 + fence）；trigger 任务建成 `pending`；`trigger` 加入租约可回收类型；新增会话绑定守卫与陈旧意图守卫（后者同时防止修复本身首次部署时放出 2,107 条历史 fire）；`mark_daemon_tick` 不再冒充成功，新增 `mark_daemon_outcome`；新增存量孤儿对账脚本（dry-run 默认 + 确认短语）。新增 12 条红测，推翻 6 条钉着 bug 的旧断言。验收：`pytest tests -q` → 7992 passed, 2 skipped |
 | 2026-08-23 | **P0-B 定因闭合。** 在生产容器内复现前段：四个可疑 await 全部干净，整段 0.10 秒抵达 ChatSession 插入点 → 代码路径无问题，协程根本没运行。根因是派发方式：`_tick()` 把任务直接建成 `running` 绕过 worker 认领队列，裸 `asyncio.create_task` 不留强引用、不挂 done callback、不设租约，四条缺失叠加使协程死亡不可观测、不可恢复；唯一回收器是启动时的 orphan reconcile（指纹：30 天内 `needs_reconciliation\|trigger` 32 行，latest_created 2026-07-24 19:03Z 即最后一次部署重启前），而进程已连续运行 29.5 天。残留未证实项：具体是 GC/取消/饥饿哪一种杀死协程——不阻塞修复 |
 | 2026-08-23 | **P0-B 定因推进。** invocation_spans 诊断：2,107 个卡死 trigger 任务**零 span、零 trigger_run 会话**，执行从未进入 `invoke_agent`；30 天 `failed|trigger`=0 证明外层 `except Exception` 从未执行，**故非异常而是挂起或任务被销毁**；在生产镜像内逐项排除 ImportError、陈旧部署、连接池耗尽、锁竞争、信号量为起因；嫌疑窗口缩至四个无守卫 await；标记 `asyncio.create_task` 未保强引用为结构性可疑点（待日志证实）；附带发现 `/api/health` 只测 tick 循环不测终态产出，是 38 天无人发现的直接原因 |

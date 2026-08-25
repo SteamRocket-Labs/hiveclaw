@@ -484,6 +484,28 @@ $ git diff --check                → clean（仅 .ultra runtime 脏，按约排
 
 **遗留风险**：legacy 单会话 Worker 路径（`_process_claimed_import_job_rows`）仅供直接会话调用方/测试保留，生产 Worker 均走两阶段；`claim_lost` 是 Worker summary 的 typed 观测结果（jobs 列表展示胜出的 Worker 终态）；`conversion_markdown_path` 键经核查当前源码仅一处（此前中间态重复已随重写消除）；生产两遍 E2E（Rocky 的实验室）按 §7.10 待执行；全量 backend 回归留 RC-09。
 
+### RC-01 Codex final verdict: PASS — Verified（2026-08-25，对 `f05b4cc7`）
+
+Codex 完成对 `703bd2c7` + `f05b4cc7` 的独立最终审查，结论 **PASS — Verified**。此处 Verified 指代码审查与本地独立验证通过；七原子整体仍因生产两遍 E2E 未执行保持**局部闭环**，不转 Closed。
+
+**Codex post-commit 独立证据**：
+
+```text
+exact focused 125 bundle ×3：125 passed, 1 warning，35.78s / 15.33s / 14.28s，exit 0
+  （第一次含 Docker/Testcontainers 冷启动）
+broad backend knowledge slice：343 passed, 7706 deselected, 1 warning in 33.34s
+Ruff 精确 12 路径：All checks passed；12 files already formatted
+frontend npm test：141 passed files / 861 passed tests
+frontend tsc --noEmit：exit 0
+frontend i18n:check：9 tests pass；catalog en=3799 / zh=3799；全部 gates = 0
+frontend build：7385 modules；四项 bundle budget 全通过
+git diff 1bcd8276..f05b4cc7 --check：clean；scope 恰为 19 个 RC-01 文件；.ultra 仅未暂存
+```
+
+**Codex live wiring 审计**：`main.py` 注册 personal/agent knowledge routers；`agent_knowledge.py`、`upload.py`、`evolution_daemon.py` 三个生产入口均传 `session_factory` 进入两阶段 claim/commit/work/CAS；`search_personal_kb`/`read_personal_kb` 由 tool registry 注册并走 `AgentRuntimePrincipal`；搜索与读取都在返回内容前应用 tenant/owner/status/agent_searchable/grant authority；Personal KB 没有静态预取，web runtime 仅提示重新调用工具。
+
+**明确保留**：生产两遍 E2E 尚未执行，RC-01 的生产验收仍 pending（列入 §13 Not Done）；可选 vector provider 未在生产启用，仍是非 Day-1 blocker，不伪装成已验证。
+
 ## 7.3 RC-02 — Company Knowledge 管理员导入与授权闭环
 
 ### 当前事实与旧文档修正
@@ -842,7 +864,7 @@ Rollback / recovery:
 | RC | Defect/Task | zCode commit | Targeted tests | Codex verdict | Production run 1 | Production run 2 | Seven-atom status | Remaining |
 |---|---|---|---|---|---|---|---|---|
 | RC-00 | UI-001/002/003/004、SHELL-001、A2A-001 read-model、UI-005(D1/D2/auth出口) + Codex FAIL 六项 correction + 第二轮 FAIL（WorkspaceFeatureHub live consumer）correction + canonical attention_state 全映射、静态键渲染、gate 优先级（最终形态 `7761aedb`） | `e04f6fee`（主包）、`6e2ff99d`（Agent Detail 面 + Codex 基线）、`b0c1a95c`（review-fail correction #1）、`70190bf0`（correction #2）、`31c8f8d4`（canonical 全映射）、`e2ec5dc8`（静态键渲染）、`48dd4ccb`+`7761aedb`（gate 优先级 v1/v2）、`d71ab449`（测试格式修复） | Codex 独立复验：npm test = 141 files / 844 tests；i18n node tests 9，catalog en=3750 / zh=3750，全部 gates 0；tsc --noEmit 干净；build 7385 modules，AgentDetail 350477/380000（gzip 96848/115000）、vendor 591449/620000（gzip 186474/200000）；git diff --check 干净（仅 .ultra runtime 脏）；backend 无改动，此前独立结果 148+26+197 与 ruff check+format 仍有效 | **Codex final verdict: PASS — Verified**（两轮 FAIL 已全部 correction 后终审通过） | 已授权未执行 | 已授权未执行 | **Verified**：Input/Authority/Execution/Evidence 有当前代码路径、回归与 Codex 独立复验；Recovery/Consumption 待生产 E2E（run 1/run 2）后转 Closed | D3/D4/D5 未复现；全量 backend 回归留 RC-09；生产 E2E 两遍待执行（owner 已授权 gates 后两次三服务部署） |
-| RC-01 | PKB-001（queued/attempt 0 read-model）、final-attempt 不到达、stale-claim fencing 缺失、failed 自动重选、lifecycle/result 未分离、evolution_daemon 导入缺失、substring 错误分类、cancel/retry 时间戳、归档非消费边界（P1）、归档与 Worker 并发覆盖（P1）、intake/action 错误不可见、格式宣传超证据 | `703bd2c7`（zCode 起始 + K3 完成全部 correction；本行为 docs-only correction commit 补录） | backend 125 passed（真 PG，含 24 integration）+ 343 passed 跨域；frontend 861 tests + tsc + i18n gates 0 + build 预算；连续多轮 pipefail 复跑全绿 | 待 Codex 复验（基建 flake 已 correction，见 §7.2 review 事件） | 已授权未执行 | 已授权未执行 | **局部闭环**：Input/Authority/Execution/Evidence/Recovery/Consumption/Acceptance 均有当前代码路径与真 PG/组件回归；生产两遍 E2E 后转 Verified | 生产 E2E 两遍待执行；全量 backend 回归留 RC-09 |
+| RC-01 | PKB-001（queued/attempt 0 read-model）、final-attempt 不到达、stale-claim fencing 缺失、failed 自动重选、lifecycle/result 未分离、evolution_daemon 导入缺失、substring 错误分类、cancel/retry 时间戳、归档非消费边界（P1）、归档与 Worker 并发覆盖（P1）、intake/action 错误不可见、格式宣传超证据 | `703bd2c7`（主包）+ `f05b4cc7`（docs-only 补录） | Codex 独立证据：focused 125×3（35.78/15.33/14.28s，exit 0，首次含 Docker 冷启动）；broad 343 passed；Ruff 12 路径 check+format 通过；frontend 861 tests、tsc、i18n gates 0（en=zh=3799）、build 四项预算；`git diff 1bcd8276..f05b4cc7 --check` clean；scope 恰 19 文件 | **Codex final verdict: PASS — Verified**（代码审查与本地独立验证通过） | 已授权未执行 | 已授权未执行 | **局部闭环**：七原子均有当前代码路径与真 PG/组件回归；生产两遍 E2E 后转 Verified→Closed | 生产 E2E 两遍待执行；全量 backend 回归留 RC-09；vector provider 未生产启用（非 Day-1 blocker，未伪装已验证） |
 | RC-02 | 待开工 | — | — | — | — | — | Missing/Breakpoint | admin file intake + preview + proposal |
 | RC-03 | 待开工 | — | — | — | — | — | Partial loop | async push + long result + UI evidence |
 | RC-04 | 待验收 | — | — | — | — | — | Unknown | full production journey |
@@ -901,8 +923,9 @@ owner 已过稿并明确说“开始”。先提交本文件作为恢复点；�
 - [ ] 尚未创建合成测试资产。
 - [x] RC-00 已完成首轮代码修改与定向回归；Codex final verdict **PASS — Verified**（两轮 FAIL 已 correction，独立证据见 §7.1/§10）。生产 E2E run 1/run 2 pending，通过后转 Closed。
 - [x] RC-00 计划对应 commit 已创建（本 commit）。
-- [x] RC-01 已完成代码修改、真 PG/组件回归与前端门禁（§7.2 交付记录：backend 125 + 343、frontend 861、tsc、i18n gates 0、build 预算；基建 flake correction 后连续复跑全绿）。Codex 复验与生产两遍 E2E pending。
-- [x] RC-01 对应代码 commit 已创建（`703bd2c7`）；本行为 docs-only correction commit 补录 review 事件精确表述与 ledger 哈希。
+- [x] RC-01 已完成代码修改、真 PG/组件回归与前端门禁；**Codex final verdict: PASS — Verified**（对 `703bd2c7` + `f05b4cc7`，代码审查与本地独立验证通过；七原子保持局部闭环）。
+- [x] RC-01 对应代码 commit 已创建（`703bd2c7`）+ docs-only 补录（`f05b4cc7`）。
+- [ ] RC-01 生产两遍 E2E 尚未执行（部署后按 §7.10 彩排执行）；可选 vector provider 未在生产启用（非 Day-1 blocker）。
 - [ ] 尚未写入 Rocky 的实验室测试数据。
 - [ ] 尚未部署。
 - [ ] 尚未完成任何本轮生产 E2E。

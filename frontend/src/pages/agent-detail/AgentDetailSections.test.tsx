@@ -1816,6 +1816,46 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('Tenant-wide activity and failures are visible');
   });
 
+  it('hides raw tool payloads and raw action codes in the activity log summary row', () => {
+    // UI-002 production reproduction on Agent Detail: legacy rows whose
+    // persisted summary embeds the raw tool result must render a clean label
+    // (derived from the structured detail), and the meta line must not leak
+    // the raw snake_case action code to normal users.
+    const markup = renderToStaticMarkup(
+      <AgentActivityLogSection
+        activityLogs={[
+          {
+            id: 'log-legacy-tool',
+            created_at: '2026-08-25T08:00:00Z',
+            summary:
+              "Called tool track_todo: {'todo_id': 'item-internal-77', 'status': 'in_progress', 'trace': 'op-9931'}",
+            action_type: 'tool_call',
+            detail: { tool: 'track_todo', result: "{'todo_id': 'item-internal-77'}" },
+          },
+          {
+            id: 'log-plain',
+            created_at: '2026-08-25T08:05:00Z',
+            summary: 'Saved Q2 research outline',
+            action_type: 'file_written',
+            detail: null,
+          },
+        ]}
+        logFilter="all"
+        expandedLogId={null}
+        onFilterChange={() => {}}
+        onToggleExpandedLog={() => {}}
+      />,
+    );
+
+    expect(markup).not.toContain('item-internal-77');
+    expect(markup).not.toContain("{'");
+    expect(markup).toContain('Called tool track_todo');
+    expect(markup).not.toContain('· tool_call');
+    expect(markup).not.toContain('· file_written');
+    // Non-tool summaries keep rendering verbatim.
+    expect(markup).toContain('Saved Q2 research outline');
+  });
+
   it('renders AgentApprovalsSection as a standalone approvals module', () => {
     const markup = renderToStaticMarkup(<AgentApprovalsSection agentId="agent-1" />);
 

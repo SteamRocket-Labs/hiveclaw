@@ -8,6 +8,7 @@ import { dashboardApi } from '../api/domains/dashboard';
 import { chatApi, type ChatSession } from '../api/domains/chat';
 import type { ToolFailureSummary } from '../api/domains/activity';
 import type { Agent } from '../types';
+import { activityDisplaySummary } from './agent-detail/activityDisplay';
 import {
     buildAssignmentHandoff,
     buildAssignmentSessionTitle,
@@ -230,24 +231,6 @@ export function ToolFailureOverview({
 
 /* ────── Recent Activity Feed ────── */
 
-type ActivityTranslator = ReturnType<typeof useTranslation>['t'];
-
-// Tool-call activity summaries written before the payload-hygiene fix embed the
-// raw result text. The structured detail (same durable row) carries the tool
-// name, so the normal-user feed derives a clean label from it instead of
-// rendering the raw payload; full evidence stays in the Agent Detail activity
-// log's operator view.
-function activityDisplaySummary(act: any, t: ActivityTranslator): string {
-  const actionType = String(act?.action_type || '');
-  const detail = act?.detail as Record<string, unknown> | null | undefined;
-  const toolName = typeof detail?.tool === 'string' ? String(detail.tool).trim() : '';
-  if (toolName && (actionType === 'tool_call' || actionType === 'tool_call_approved')) {
-    return actionType === 'tool_call_approved'
-      ? t('dashboard.activity.toolCallApproved', 'Approved tool {{tool}}', { tool: toolName })
-      : t('dashboard.activity.toolCall', 'Called tool {{tool}}', { tool: toolName });
-  }
-  return act?.summary || '';
-}
 
 function ActivityFeed({ activities, agents }: { activities: any[]; agents: Agent[] }) {
     const { t } = useTranslation();

@@ -2196,7 +2196,27 @@
       "topErrorClass": "最常见错误",
       "topHttpStatus": "最常见状态码",
       "recentToolFailures": "近期问题",
-      "noToolFailures": "近期没有问题"
+      "noToolFailures": "近期没有问题",
+      "enterOperatorView": "进入操作员视图",
+      "exitOperatorView": "退出操作员视图",
+      "operatorViewTitle": "操作员视图",
+      "operatorViewNote": "可见全租户活动与失败记录；跨属主访问会被审计。",
+      "actionTypes": {
+        "chatReply": "会话回复",
+        "toolCall": "工具调用",
+        "toolCallApproved": "审批后工具调用",
+        "taskCreated": "任务创建",
+        "taskUpdated": "任务更新",
+        "fileWritten": "文件写入",
+        "error": "错误",
+        "heartbeat": "心跳",
+        "plazaPost": "广场动态",
+        "scheduleRun": "定时运行",
+        "feishuMsgSent": "飞书消息",
+        "agentMsgSent": "Agent 消息",
+        "webMsgSent": "网页消息",
+        "other": "活动"
+      }
     },
     "settings": {
       "title": "员工设置",

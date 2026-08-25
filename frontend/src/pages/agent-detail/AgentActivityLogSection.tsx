@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import type { ToolFailureSummary } from '../../api/domains/activity';
+import { activityActionTypeLabel, activityDisplaySummary } from './activityDisplay';
 import './AgentActivityLogSection.css';
 
 type AgentActivityLogSectionProps = {
@@ -67,14 +68,19 @@ export default function AgentActivityLogSection({
             aria-pressed={operatorView}
             onClick={() => onOperatorViewChange?.(!operatorView)}
           >
-            {operatorView ? 'Exit operator view' : 'Enter operator view'}
+            {operatorView
+              ? t('agent.activityLog.exitOperatorView', 'Exit operator view')
+              : t('agent.activityLog.enterOperatorView', 'Enter operator view')}
           </button>
         </div>
       ) : null}
 
       {operatorView ? (
         <div className="agent-activity-operator-note" role="status">
-          <strong>Operator view</strong> · Tenant-wide activity and failures are visible; cross-owner access is audited.
+          <strong>{t('agent.activityLog.operatorViewTitle', 'Operator view')}</strong> · {t(
+            'agent.activityLog.operatorViewNote',
+            'Tenant-wide activity and failures are visible; cross-owner access is audited.',
+          )}
         </div>
       ) : null}
 
@@ -198,9 +204,9 @@ export default function AgentActivityLogSection({
                 <div className="agent-activity-log-main">
                   <span className="agent-activity-log-icon">{icons[log.action_type] || '·'}</span>
                   <div className="agent-activity-log-text">
-                    <div className="agent-activity-log-summary">{log.summary}</div>
+                    <div className="agent-activity-log-summary">{activityDisplaySummary(log, t)}</div>
                     <div className="agent-activity-log-meta">
-                      {time} · {log.action_type}
+                      {time} · {activityActionTypeLabel(log.action_type, t)}
                       {log.detail && !isExpanded && <span className="agent-activity-log-details-hint">▸ Details</span>}
                     </div>
                   </div>

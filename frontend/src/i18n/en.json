@@ -2196,7 +2196,27 @@
       "topErrorClass": "Most Common Error",
       "topHttpStatus": "Most Common Status",
       "recentToolFailures": "Recent Issues",
-      "noToolFailures": "No recent issues"
+      "noToolFailures": "No recent issues",
+      "enterOperatorView": "Enter operator view",
+      "exitOperatorView": "Exit operator view",
+      "operatorViewTitle": "Operator view",
+      "operatorViewNote": "Tenant-wide activity and failures are visible; cross-owner access is audited.",
+      "actionTypes": {
+        "chatReply": "Chat reply",
+        "toolCall": "Tool call",
+        "toolCallApproved": "Approved tool call",
+        "taskCreated": "Task created",
+        "taskUpdated": "Task updated",
+        "fileWritten": "File written",
+        "error": "Error",
+        "heartbeat": "Heartbeat",
+        "plazaPost": "Plaza post",
+        "scheduleRun": "Scheduled run",
+        "feishuMsgSent": "Feishu message",
+        "agentMsgSent": "Agent message",
+        "webMsgSent": "Web message",
+        "other": "Activity"
+      }
     },
     "settings": {
       "title": "Employee Settings",

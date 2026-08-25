@@ -885,6 +885,24 @@ async def get_company_knowledge_capabilities(
     }
 
 
+def _source_contract_summary(row: Any) -> dict[str, Any]:
+    """Minimal admin read model for source contracts.
+
+    The full ORM row carries connection/schema/cursor/ACL/export/retention/
+    legal-hold/contract-hash internals and steward references; the frontend
+    only needs identity, lifecycle, namespaces, and sensitivity, so anything
+    beyond that allowlist must not serialize.
+    """
+    return {
+        "id": str(row.id),
+        "stable_source_id": str(row.stable_source_id),
+        "status": str(row.status),
+        "version": int(row.version),
+        "allowed_namespaces_json": list(row.allowed_namespaces_json or []),
+        "default_sensitivity": str(row.default_sensitivity),
+    }
+
+
 @router.post("/source-contracts")
 async def create_source_contract(
     body: SourceContractCreate,
@@ -892,6 +910,7 @@ async def create_source_contract(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _require_company_knowledge_admin(current_user)
     target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     contract = await _call(
         _service().register_source_contract(
@@ -903,7 +922,7 @@ async def create_source_contract(
         )
     )
     await db.commit()
-    return _payload(contract)
+    return _source_contract_summary(contract)
 
 
 @router.get("/source-contracts")
@@ -913,6 +932,7 @@ async def list_source_contracts(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _require_company_knowledge_admin(current_user)
     target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     rows = (
         (
@@ -929,7 +949,7 @@ async def list_source_contracts(
         .scalars()
         .all()
     )
-    return {"source_contracts": [_payload(row) for row in rows]}
+    return {"source_contracts": [_source_contract_summary(row) for row in rows]}
 
 
 @router.get("/source-contracts/{contract_id}")
@@ -939,6 +959,7 @@ async def get_source_contract(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _require_company_knowledge_admin(current_user)
     target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     row = (
         await db.execute(
@@ -950,7 +971,7 @@ async def get_source_contract(
     ).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="company_source_contract_not_found")
-    return _payload(row)
+    return _source_contract_summary(row)
 
 
 @router.post("/imports", status_code=status.HTTP_202_ACCEPTED)

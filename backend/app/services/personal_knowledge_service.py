@@ -476,13 +476,6 @@ class PersonalKnowledgeService:
             conversion_timeout_seconds = float(get_settings().PERSONAL_KB_CONVERSION_TIMEOUT_SECONDS)
         self.conversion_timeout_seconds = max(0.001, float(conversion_timeout_seconds))
 
-    def _conversion_service(self) -> Any:
-        if self.conversion_service is not None:
-            return self.conversion_service
-        from app.services.document_conversion import DocumentConversionService
-
-        return DocumentConversionService()
-
     def _knowledge_extractor(self) -> Any | None:
         if self.extractor is None:
             return None
@@ -1838,17 +1831,37 @@ class PersonalKnowledgeService:
 
         workspace_root = _personal_knowledge_root(self.data_root, owner_user_id)
         guessed_mime = source_mime_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
-        converter = self._conversion_service()
+        converter_override = self.conversion_service
         try:
-            # Blocking conversion runs off the event loop under an explicit
-            # physical timeout; a timeout is a typed retryable failure and the
-            # spooled source evidence stays recorded.
-            conversion = await asyncio.wait_for(
-                asyncio.to_thread(
-                    converter.convert_bytes,
+            # The default production path converts in a killable child process
+            # under an explicit physical timeout; a timeout is a typed
+            # retryable failure and the spooled source evidence stays recorded.
+            # An injected converter is test-only DI and keeps the thread path.
+            if converter_override is not None:
+                conversion = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        converter_override.convert_bytes,
+                        data=data,
+                        filename=safe_name,
+                        workspace_root=workspace_root,
+                        source_uri=source_uri,
+                        source_mime_type=guessed_mime,
+                        tenant_id=tenant_id,
+                        agent_id=None,
+                        user_id=owner_user_id,
+                        mode="auto",
+                        force_refresh=False,
+                    ),
+                    timeout=self.conversion_timeout_seconds,
+                )
+            else:
+                from app.services.document_conversion import convert_bytes_in_killable_process
+
+                conversion = await convert_bytes_in_killable_process(
                     data=data,
                     filename=safe_name,
                     workspace_root=workspace_root,
+                    timeout_seconds=self.conversion_timeout_seconds,
                     source_uri=source_uri,
                     source_mime_type=guessed_mime,
                     tenant_id=tenant_id,
@@ -1856,9 +1869,7 @@ class PersonalKnowledgeService:
                     user_id=owner_user_id,
                     mode="auto",
                     force_refresh=False,
-                ),
-                timeout=self.conversion_timeout_seconds,
-            )
+                )
         except asyncio.TimeoutError:
             return await self._record_failed_import(
                 session,

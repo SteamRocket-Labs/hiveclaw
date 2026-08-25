@@ -4,13 +4,18 @@ import hashlib
 import json
 import mimetypes
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeVar
 
+import anyio
+from anyio import to_process
 from loguru import logger
+
+_T = TypeVar("_T")
 
 ConversionMode = Literal["auto", "fast", "ocr", "layout", "vision"]
 ReturnFormat = Literal["preview", "markdown", "metadata", "pages"]
@@ -342,6 +347,89 @@ class DocumentConversionService:
             source_path.resolve().relative_to(workspace_root.resolve())
         except ValueError as exc:
             raise ValueError("Document conversion source is outside workspace") from exc
+
+
+@dataclass(frozen=True)
+class KillableConversionRequest:
+    """Top-level pickleable request carrying one bytes conversion into a child process."""
+
+    data: bytes
+    filename: str
+    workspace_root: Path
+    max_file_bytes: int
+    source_uri: str | None = None
+    source_mime_type: str | None = None
+    tenant_id: object | None = None
+    agent_id: object | None = None
+    user_id: object | None = None
+    mode: ConversionMode = "auto"
+    max_pages: int | None = None
+    force_refresh: bool = False
+
+
+def run_conversion_in_child(request: KillableConversionRequest) -> DocumentConversionResult:
+    """Child-process entry point: build the service inside the child, then convert."""
+    service = DocumentConversionService(max_file_bytes=request.max_file_bytes)
+    return service.convert_bytes(
+        data=request.data,
+        filename=request.filename,
+        workspace_root=request.workspace_root,
+        source_uri=request.source_uri,
+        source_mime_type=request.source_mime_type,
+        tenant_id=request.tenant_id,
+        agent_id=request.agent_id,
+        user_id=request.user_id,
+        mode=request.mode,
+        max_pages=request.max_pages,
+        force_refresh=request.force_refresh,
+    )
+
+
+async def run_killable_in_process(func: Callable[..., _T], *args: object, timeout_seconds: float) -> _T:
+    """Run a top-level pickleable callable in a child process under a physical timeout.
+
+    On timeout the enclosing fail_after scope cancels the await and
+    cancellable=True makes anyio kill the worker process, so a hung or
+    overlong callable can never survive the caller and keep producing side
+    effects. There is intentionally no thread fallback: an abandoned thread
+    is not killable.
+    """
+    with anyio.fail_after(timeout_seconds):
+        return await to_process.run_sync(func, *args, cancellable=True)
+
+
+async def convert_bytes_in_killable_process(
+    *,
+    data: bytes,
+    filename: str,
+    workspace_root: Path,
+    timeout_seconds: float,
+    max_file_bytes: int = 50 * 1024 * 1024,
+    source_uri: str | None = None,
+    source_mime_type: str | None = None,
+    tenant_id: object | None = None,
+    agent_id: object | None = None,
+    user_id: object | None = None,
+    mode: ConversionMode = "auto",
+    max_pages: int | None = None,
+    force_refresh: bool = False,
+) -> DocumentConversionResult:
+    """Convert source bytes in a killable child process; timeout raises TimeoutError."""
+    request = KillableConversionRequest(
+        data=data,
+        filename=filename,
+        workspace_root=workspace_root,
+        max_file_bytes=max_file_bytes,
+        source_uri=source_uri,
+        source_mime_type=source_mime_type,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        mode=mode,
+        max_pages=max_pages,
+        force_refresh=force_refresh,
+    )
+    return await run_killable_in_process(run_conversion_in_child, request, timeout_seconds=timeout_seconds)
 
 
 def render_conversion_preview(result: DocumentConversionResult, *, max_chars: int | None = None) -> str:

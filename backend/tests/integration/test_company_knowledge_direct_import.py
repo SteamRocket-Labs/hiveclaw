@@ -39,6 +39,8 @@ from app.services.company_knowledge_gateway import (
 )
 from app.services.company_knowledge_permissions import CompanyKnowledgePrincipal
 from app.services.company_knowledge_service import (
+    CompanyKnowledgeImportError,
+    CompanyKnowledgeJobConflict,
     CompanyKnowledgeReviewRequest,
     CompanyKnowledgeService,
 )
@@ -843,10 +845,9 @@ async def test_failed_job_terminalizes_at_ceiling_and_is_not_reselected(complete
         idempotency_key=f"ckb-corrupt-{uuid.uuid4().hex[:8]}",
     )
     for _ in range(job.max_attempts):
-        try:
+        with pytest.raises(CompanyKnowledgeImportError) as exc:
             await _process(owner_sessionmaker, service, tenant_id=tenant_id, job_id=job.id)
-        except Exception:
-            pass
+        assert exc.value.code == "conversion_failed", exc.value.code
         status, attempts, _ = await _read_job(owner_sessionmaker, job.id)
         if status == "failed":
             break
@@ -903,10 +904,10 @@ async def test_cancel_and_retry_lifecycle(complete_schema, owner_sessionmaker, t
     assert cancelled.cancelled_at
 
     async with owner_sessionmaker() as session:
-        with pytest.raises(Exception) as conflict:
+        with pytest.raises(CompanyKnowledgeJobConflict) as conflict:
             await service.cancel_import_job(session, tenant_id=tenant_id, job_id=job.id)
         await session.rollback()
-    assert "not_cancellable" in str(conflict.value)
+    assert conflict.value.code == "not_cancellable_terminal"
 
     async with owner_sessionmaker() as session:
         retried = await service.retry_import_job(
@@ -928,10 +929,10 @@ async def test_cancel_and_retry_lifecycle(complete_schema, owner_sessionmaker, t
         job_row.attempt_count = job_row.max_attempts
         await session.commit()
     async with owner_sessionmaker() as session:
-        with pytest.raises(Exception) as cap_conflict:
+        with pytest.raises(CompanyKnowledgeJobConflict) as cap_conflict:
             await service.retry_import_job(session, tenant_id=tenant_id, job_id=job.id)
         await session.rollback()
-    assert "attempt_limit" in str(cap_conflict.value) or "not_retryable" in str(cap_conflict.value)
+    assert cap_conflict.value.code == "retry_attempt_limit"
 
 
 async def test_corrupt_pdf_typed_failure_and_reupload_recovers(complete_schema, owner_sessionmaker, tmp_path):
@@ -953,15 +954,15 @@ async def test_corrupt_pdf_typed_failure_and_reupload_recovers(complete_schema, 
         mime="application/pdf",
         idempotency_key=f"ckb-corrupt2-{uuid.uuid4().hex[:8]}",
     )
-    try:
+    with pytest.raises(CompanyKnowledgeImportError) as first_failure:
         await _process(owner_sessionmaker, service, tenant_id=tenant_id, job_id=bad_job.id)
-    except Exception:
-        pass
+    assert first_failure.value.code == "conversion_failed", first_failure.value.code
     # After the first failure the job sits in bounded-backoff queued with the
     # typed code visible (the drain owns automatic retries); terminal failure
     # at the ceiling is not manually retryable.
-    status, _attempts, error_code = await _read_job(owner_sessionmaker, bad_job.id)
-    assert status in {"failed", "queued"}, status
+    status, attempts_after_first, error_code = await _read_job(owner_sessionmaker, bad_job.id)
+    assert status == "queued", status
+    assert attempts_after_first < bad_job.max_attempts
     assert error_code == "conversion_failed", error_code
 
     async with owner_sessionmaker() as session:
@@ -985,10 +986,9 @@ async def test_corrupt_pdf_typed_failure_and_reupload_recovers(complete_schema, 
             ).scalar_one()
             job_row.available_at = datetime.now(timezone.utc) - timedelta(seconds=1)
             await session.commit()
-        try:
+        with pytest.raises(CompanyKnowledgeImportError) as loop_failure:
             await _process(owner_sessionmaker, service, tenant_id=tenant_id, job_id=bad_job.id)
-        except Exception:
-            pass
+        assert loop_failure.value.code == "conversion_failed", loop_failure.value.code
     status, attempts, error_code = await _read_job(owner_sessionmaker, bad_job.id)
     assert status == "failed", (status, attempts)
     assert attempts == bad_job.max_attempts

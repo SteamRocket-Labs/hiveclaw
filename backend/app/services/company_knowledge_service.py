@@ -400,13 +400,6 @@ class CompanyKnowledgeService:
             conversion_timeout_seconds = float(get_settings().COMPANY_KB_CONVERSION_TIMEOUT_SECONDS)
         self._conversion_timeout_seconds = max(0.001, float(conversion_timeout_seconds))
 
-    def _conversion_service(self) -> Any:
-        if self._conversion_service_override is not None:
-            return self._conversion_service_override
-        from app.services.document_conversion import DocumentConversionService
-
-        return DocumentConversionService()
-
     @staticmethod
     async def _require_permission(
         session: Any,
@@ -928,22 +921,45 @@ class CompanyKnowledgeService:
     ) -> tuple[bytes, Path]:
         """Convert spooled source bytes to canonical Markdown in the worker.
 
-        The blocking converter runs off the event loop under an explicit
-        physical timeout; failures raise typed codes (conversion_timeout /
-        conversion_failed). On success the job's artifact points at the
-        canonical Markdown and a conversion receipt preserves the source hash.
+        The blocking converter runs in a killable child process under an
+        explicit physical timeout; failures raise typed codes
+        (conversion_timeout / conversion_failed). On success the job's
+        artifact points at the canonical Markdown and a conversion receipt
+        preserves the source hash.
         """
         direct_file = dict(request.get("direct_file_import") or {})
         filename = str(direct_file.get("source_filename") or "upload.bin")
         mime = str(direct_file.get("source_mime_type") or "") or "application/octet-stream"
-        converter = self._conversion_service()
+        converter_override = self._conversion_service_override
         try:
-            conversion = await asyncio.wait_for(
-                asyncio.to_thread(
-                    converter.convert_bytes,
+            # The default production path converts in a killable child process
+            # so a physical timeout cannot leave an abandoned worker running.
+            # An injected converter is test-only DI and keeps the thread path.
+            if converter_override is not None:
+                conversion = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        converter_override.convert_bytes,
+                        data=payload,
+                        filename=filename,
+                        workspace_root=self._data_root / "companies" / str(tenant_id) / "knowledge" / "conversion",
+                        source_uri=f"company-import://{job.id}/source",
+                        source_mime_type=mime,
+                        tenant_id=tenant_id,
+                        agent_id=None,
+                        user_id=job.accountable_user_id,
+                        mode="auto",
+                        force_refresh=False,
+                    ),
+                    timeout=self._conversion_timeout_seconds,
+                )
+            else:
+                from app.services.document_conversion import convert_bytes_in_killable_process
+
+                conversion = await convert_bytes_in_killable_process(
                     data=payload,
                     filename=filename,
                     workspace_root=self._data_root / "companies" / str(tenant_id) / "knowledge" / "conversion",
+                    timeout_seconds=self._conversion_timeout_seconds,
                     source_uri=f"company-import://{job.id}/source",
                     source_mime_type=mime,
                     tenant_id=tenant_id,
@@ -951,9 +967,7 @@ class CompanyKnowledgeService:
                     user_id=job.accountable_user_id,
                     mode="auto",
                     force_refresh=False,
-                ),
-                timeout=self._conversion_timeout_seconds,
-            )
+                )
         except asyncio.TimeoutError as exc:
             raise CompanyKnowledgeImportError("conversion_timeout") from exc
         except Exception as exc:

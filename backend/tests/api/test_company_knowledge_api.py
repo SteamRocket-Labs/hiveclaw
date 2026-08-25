@@ -70,6 +70,8 @@ def test_company_source_and_import_routes_derive_principal_from_authentication(m
                 status="active",
                 stable_source_id=contract_input.stable_source_id,
                 contract_hash="a" * 64,
+                allowed_namespaces_json=list(contract_input.allowed_namespaces),
+                default_sensitivity=contract_input.default_sensitivity,
             )
 
         async def queue_evidence_import(self, session, *, principal, request):
@@ -922,10 +924,9 @@ def test_import_job_retry_requeues_schedules_and_maps_conflict(monkeypatch):
     ok = client.post(f"/knowledge/company/import-jobs/{job_id}/retry")
     assert ok.status_code == 200
     assert ok.json()["lifecycle_status"] == "queued"
-    assert (
-        scheduled == [{"tenant_id": ok.json()["job_id"] and db and scheduled[0]["tenant_id"], "job_id": job_id}] or True
-    )
-    assert scheduled and scheduled[0]["job_id"] == job_id
+    # Exact scheduling contract: one scheduled worker run for the pinned
+    # tenant with the exact job id.
+    assert scheduled == [{"tenant_id": _user.tenant_id, "job_id": job_id}]
 
     conflict = client.post(f"/knowledge/company/import-jobs/{job_id}/retry")
     assert conflict.status_code == 409
@@ -1098,3 +1099,177 @@ def test_import_jobs_list_admin_success_with_empty_list(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"jobs": []}
+
+
+# ---------------------------------------------------------------------------
+# RC-02 round-2 review corrections (failing-first)
+# ---------------------------------------------------------------------------
+
+
+def test_source_contract_routes_are_admin_only_and_member_gets_403(monkeypatch):
+    class _Service:
+        async def register_source_contract(self, session, **kwargs):  # pragma: no cover - gate first
+            raise AssertionError("member must never reach contract registration")
+
+    client, _db, _user, _scheduled = _client_with_role(monkeypatch, _Service(), role="member")
+
+    created = client.post(
+        "/knowledge/company/source-contracts",
+        json={
+            "stable_source_id": "handbook",
+            "source_kind": "file",
+            "owner_principal_ref": "user://x",
+            "accountable_steward_ref": "user://x",
+            "ingest_mode": "batch",
+            "source_acl_mapping_policy": {},
+            "idempotency_policy": {},
+            "allowed_namespaces": ["company/general"],
+            "default_sensitivity": "PL2_pii",
+            "idempotency_key": "contract:member:1",
+            "trace_id": "trace-member-contract-1",
+        },
+    )
+    listed = client.get("/knowledge/company/source-contracts")
+    detail = client.get(f"/knowledge/company/source-contracts/{uuid.uuid4()}")
+
+    assert created.status_code == 403, created.text
+    assert created.json()["detail"]["code"] == "company_knowledge_admin_required"
+    # The read endpoints must enforce the same admin boundary.
+    assert listed.status_code == 403
+    assert listed.json()["detail"]["code"] == "company_knowledge_admin_required"
+    assert detail.status_code == 403
+    assert detail.json()["detail"]["code"] == "company_knowledge_admin_required"
+
+
+class _ContractResult:
+    """Result shape covering both list (.scalars().all()) and detail
+    (.scalar_one_or_none()) consumption of the source-contract queries."""
+
+    def __init__(self, rows: list) -> None:
+        self._rows = rows
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self._rows
+
+    def scalar_one_or_none(self):
+        return self._rows[0] if self._rows else None
+
+
+class _ContractFakeDB:
+    def __init__(self) -> None:
+        self.commits = 0
+        self.rows: list = []
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+    async def execute(self, statement):
+        return _ContractResult(self.rows)
+
+
+def _contract_orm_row(contract_id):
+    return SimpleNamespace(
+        id=contract_id,
+        tenant_id=uuid.uuid4(),
+        version=3,
+        status="active",
+        source_kind="file",
+        provider_kind="native",
+        stable_source_id="handbook",
+        owner_principal_ref="user://owner",
+        accountable_steward_ref="user://steward",
+        connection_ref="secret://conn",
+        schema_ref="secret://schema",
+        schema_version="2",
+        identity_keys_json=["a"],
+        relation_keys_json=["b"],
+        ingest_mode="batch",
+        cursor_kind="watermark",
+        cursor_policy_json={"secret": True},
+        watermark_field="updated_at",
+        temporal_mapping_json={},
+        source_acl_mapping_policy_json={"acl": "secret"},
+        default_sensitivity="PL2_pii",
+        export_policy_json={"export": "secret"},
+        retention_policy_json={"retain": "secret"},
+        legal_hold_policy_json={"hold": "secret"},
+        allowed_namespaces_json=["company/general"],
+        precedence_policy_ref="secret://prec",
+        acceptance_suite_ref="secret://suite",
+        idempotency_policy_json={"policy": "secret"},
+        contract_hash="c" * 64,
+        created_by_user_id=uuid.uuid4(),
+        reviewed_by_json=["secret"],
+        effective_from=None,
+        retired_at=None,
+        created_at=None,
+        updated_at=None,
+    )
+
+
+def test_source_contract_list_and_detail_return_summary_allowlist_only(monkeypatch):
+    contract_id = uuid.uuid4()
+
+    class _Service:
+        async def register_source_contract(self, session, **kwargs):  # pragma: no cover - list path
+            raise AssertionError("not under test")
+
+    app = FastAPI()
+    app.include_router(company_api.router)
+    tenant_id = uuid.uuid4()
+    user = SimpleNamespace(id=uuid.uuid4(), tenant_id=tenant_id, role="org_admin", is_active=True)
+    db = _ContractFakeDB()
+    db.rows = [_contract_orm_row(contract_id)]
+
+    async def override_user():
+        return user
+
+    async def override_db():
+        yield db
+
+    async def pin_scope(_db, current_user, requested=None):
+        return tenant_id
+
+    app.dependency_overrides[get_current_user] = override_user
+    app.dependency_overrides[get_db] = override_db
+    monkeypatch.setattr(company_api, "_service", lambda: _Service())
+    monkeypatch.setattr(company_api, "resolve_and_pin_tenant_scope", pin_scope)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    listed = client.get("/knowledge/company/source-contracts")
+    assert listed.status_code == 200, listed.text
+    rows = listed.json()["source_contracts"]
+    assert isinstance(rows, list) and len(rows) == 1
+    summary = rows[0]
+    assert set(summary.keys()) == {
+        "id",
+        "stable_source_id",
+        "status",
+        "version",
+        "allowed_namespaces_json",
+        "default_sensitivity",
+    }
+    assert summary["id"] == str(contract_id)
+    assert summary["stable_source_id"] == "handbook"
+    assert summary["status"] == "active"
+    assert summary["version"] == 3
+    assert summary["allowed_namespaces_json"] == ["company/general"]
+    assert summary["default_sensitivity"] == "PL2_pii"
+    # Internal/secret fields never serialize.
+    forbidden = [
+        "connection_ref", "schema_ref", "cursor_policy_json", "cursor_kind",
+        "source_acl_mapping_policy_json", "export_policy_json", "retention_policy_json",
+        "legal_hold_policy_json", "contract_hash", "created_by_user_id", "owner_principal_ref",
+        "accountable_steward_ref", "idempotency_policy_json", "reviewed_by_json",
+    ]
+    for field in forbidden:
+        assert field not in listed.text, field
+
+    detail = client.get(f"/knowledge/company/source-contracts/{contract_id}")
+    assert detail.status_code == 200, detail.text
+    assert set(detail.json().keys()) == set(summary.keys())
+    for field in forbidden:
+        assert field not in detail.text, field

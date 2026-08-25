@@ -20,6 +20,35 @@ def _install_fake_markitdown(monkeypatch, calls: list[dict], output: str = "# Co
     monkeypatch.setitem(sys.modules, "markitdown", SimpleNamespace(MarkItDown=_FakeMarkItDown))
 
 
+async def test_run_killable_in_process_timeout_physically_kills_worker(tmp_path):
+    """A timed-out child process is physically killed mid-execution.
+
+    The pool is warmed first so first-process startup overhead cannot eat the
+    timeout; the started marker proves the worker really began executing, and
+    the absent completed marker proves it was killed rather than abandoned.
+    """
+    import anyio
+
+    from app.services.document_conversion import run_killable_in_process
+
+    assert await run_killable_in_process(len, (1, 2, 3), timeout_seconds=30) == 3
+
+    started = tmp_path / "worker_started.marker"
+    completed = tmp_path / "worker_completed.marker"
+    code = (
+        "import time\n"
+        "from pathlib import Path\n"
+        f"Path({str(started)!r}).write_text('started', encoding='utf-8')\n"
+        "time.sleep(2)\n"
+        f"Path({str(completed)!r}).write_text('completed', encoding='utf-8')\n"
+    )
+    with pytest.raises(TimeoutError):
+        await run_killable_in_process(exec, code, timeout_seconds=0.5)
+    assert started.exists()
+    await anyio.sleep(2.5)
+    assert not completed.exists()
+
+
 def test_document_conversion_uses_markitdown_local_file_and_writes_artifacts(monkeypatch, tmp_path):
     from app.services.document_conversion import DocumentConversionRequest, DocumentConversionService
 

@@ -2242,6 +2242,116 @@ async def test_conversion_timeout_is_typed_retryable_failure(tmp_path: Path) -> 
     assert failed_job.job_metadata_json.get("source_filename") == "slow.pdf"
 
 
+@pytest.mark.asyncio
+async def test_default_conversion_path_uses_killable_process_seam(monkeypatch, tmp_path: Path) -> None:
+    """Default production construction routes conversion through the shared
+    killable process seam; the thread path is only reachable via test DI."""
+    import app.services.document_conversion as document_conversion
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    seam_calls: list[dict] = []
+
+    async def _fake_seam(**kwargs):
+        seam_calls.append(kwargs)
+        return document_conversion.DocumentConversionResult(
+            markdown="# Wired\n\nProcess seam body.",
+            plain_text="Wired Process seam body.",
+            source_path="",
+            source_uri=kwargs["source_uri"],
+            source_sha256="c" * 64,
+            source_mime_type=kwargs["source_mime_type"] or "text/markdown",
+            engine="killable-process-test",
+            used_ocr=False,
+            used_vision=False,
+            page_count=1,
+            artifact_markdown_path="",
+            artifact_metadata_path="",
+            warnings=(),
+        )
+
+    def _forbidden_to_thread(*args, **kwargs):  # pragma: no cover - must not run
+        raise AssertionError("default production path must not use asyncio.to_thread")
+
+    monkeypatch.setattr(document_conversion, "convert_bytes_in_killable_process", _fake_seam)
+    monkeypatch.setattr(asyncio, "to_thread", _forbidden_to_thread)
+
+    session = _FakeAsyncSession()
+    service = PersonalKnowledgeService(
+        data_root=tmp_path,
+        extractor=_NoopKnowledgeExtractor(),
+        conversion_timeout_seconds=12.5,
+    )
+
+    result = await service.ingest_source_bytes(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        filename="wired.md",
+        data=b"# raw wired body",
+        source_kind="upload",
+        source_uri="upload://wired.md",
+        created_by_user_id=owner_id,
+        agent_searchable=True,
+        sensitivity="internal",
+        source_mime_type="text/markdown",
+    )
+
+    assert result.status == "ready"
+    assert seam_calls == [
+        {
+            "data": b"# raw wired body",
+            "filename": "wired.md",
+            "workspace_root": tmp_path / "persons" / str(owner_id) / "kb",
+            "timeout_seconds": 12.5,
+            "source_uri": "upload://wired.md",
+            "source_mime_type": "text/markdown",
+            "tenant_id": tenant_id,
+            "agent_id": None,
+            "user_id": owner_id,
+            "mode": "auto",
+            "force_refresh": False,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_default_conversion_path_seam_timeout_stays_typed_retryable(monkeypatch, tmp_path: Path) -> None:
+    """A TimeoutError from the killable seam keeps the typed retryable conversion_timeout contract."""
+    import app.services.document_conversion as document_conversion
+
+    async def _timeout_seam(**kwargs):
+        raise TimeoutError("physical kill")
+
+    monkeypatch.setattr(document_conversion, "convert_bytes_in_killable_process", _timeout_seam)
+
+    session = _FakeAsyncSession()
+    service = PersonalKnowledgeService(data_root=tmp_path, conversion_timeout_seconds=0.05)
+
+    result = await service.ingest_source_bytes(
+        session,
+        tenant_id=uuid.uuid4(),
+        owner_user_id=uuid.uuid4(),
+        filename="slow.pdf",
+        data=b"%PDF-1.4 fake bytes for seam timeout wiring",
+        title="Slow PDF",
+        source_kind="upload",
+        source_uri="upload://slow.pdf",
+        created_by_user_id=None,
+        agent_searchable=True,
+        sensitivity="internal",
+        source_mime_type="application/pdf",
+    )
+
+    assert result.status == "failed"
+    assert "conversion_timeout" in (result.warnings or [])
+    failed_job = next(row for row in session.added if isinstance(row, KnowledgeIndexJob))
+    assert failed_job.status == "failed"
+    assert failed_job.error_message == "conversion_timeout"
+    assert failed_job.job_metadata_json.get("error") == "conversion_timeout"
+    assert failed_job.job_metadata_json.get("retryable") is True
+
+
 class _JobLookupSession(_FakeAsyncSession):
     """Returns a specific existing job row for Select statements."""
 

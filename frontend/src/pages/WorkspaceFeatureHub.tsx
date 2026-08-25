@@ -330,31 +330,22 @@ function latestAttemptForTrigger(trigger: any, attempts: any[]): any | null {
 // mirrors the aware-tab tone semantics (attention states share the failed
 // tone; informational states stay neutral).
 const CANONICAL_ATTENTION_STATE_STATUS: Record<string, { status: string; statusKey: AutomationStatusKey }> = {
-  active: { status: 'active', statusKey: 'active' },
   expired: { status: 'failed', statusKey: 'expired' },
   max_fires_reached: { status: 'failed', statusKey: 'maxFires' },
   backoff_active: { status: 'backoff', statusKey: 'backoff' },
   no_recent_attempt: { status: 'noRecentAttempt', statusKey: 'noRecentAttempt' },
+  missing_model: { status: 'failed', statusKey: 'missingModel' },
+  failed_recently: { status: 'failed', statusKey: 'failed' },
   needs_reconciliation: { status: 'failed', statusKey: 'needsReconciliation' },
 };
 
-// Gate states resolve before the latest attempt, mirroring build_trigger_view's
-// own precedence (paused > expired > max_fires_reached > backoff_active >
-// attempt-derived): the trigger-level gate is the canonical truth about
-// whether the automation can still run, so a completed or running last
-// attempt must never mask a dead trigger.
-const GATE_ATTENTION_STATE_STATUS: Record<string, { status: string; statusKey: AutomationStatusKey }> = {
-  expired: CANONICAL_ATTENTION_STATE_STATUS.expired,
-  max_fires_reached: CANONICAL_ATTENTION_STATE_STATUS.max_fires_reached,
-  backoff_active: CANONICAL_ATTENTION_STATE_STATUS.backoff_active,
-  missing_model: { status: 'failed', statusKey: 'missingModel' },
-  failed_recently: { status: 'failed', statusKey: 'failed' },
-  needs_reconciliation: CANONICAL_ATTENTION_STATE_STATUS.needs_reconciliation,
-};
-
-// Exact machine-code status mapping only: unknown attention states resolve to
-// the neutral `unknown` key — raw codes never reach the row, and nothing is
-// guessed by substring matching.
+// Exact machine-code status mapping only. Every non-active attention state
+// resolves from the canonical map (or the neutral unknown) WITHOUT consulting
+// the attempt history — the trigger-level state is the canonical truth about
+// whether the automation can still run, mirroring build_trigger_view's own
+// precedence (paused > expired > max_fires_reached > backoff_active >
+// attempt-derived). Only an active trigger reads the latest attempt to color
+// the tail; raw codes never render and nothing is guessed by substring.
 export function automationStatus(
   trigger: any,
   attempts: any[],
@@ -364,13 +355,14 @@ export function automationStatus(
     return { status: 'paused', statusKey: 'paused', section: 'paused' };
   }
 
-  const gate = GATE_ATTENTION_STATE_STATUS[attentionState];
-  if (gate) {
-    return { ...gate, section: 'current' };
+  if (attentionState !== 'active') {
+    const canonical = CANONICAL_ATTENTION_STATE_STATUS[attentionState];
+    if (canonical) {
+      return { ...canonical, section: 'current' };
+    }
+    return { status: 'unknown', statusKey: 'unknown', section: 'current' };
   }
 
-  // The latest attempt colors the active tail (and provides its own evidence
-  // when the gate has nothing to say).
   const latestAttempt = latestAttemptForTrigger(trigger, attempts);
   const attemptStatus = String(latestAttempt?.status || '').toLowerCase();
   if (['pending', 'queued', 'running', 'in_progress', 'started'].includes(attemptStatus)) {
@@ -382,11 +374,7 @@ export function automationStatus(
   if (['completed', 'success', 'succeeded'].includes(attemptStatus)) {
     return { status: 'completed', statusKey: 'completed', section: 'current' };
   }
-  const canonical = CANONICAL_ATTENTION_STATE_STATUS[attentionState];
-  if (canonical) {
-    return { ...canonical, section: 'current' };
-  }
-  return { status: 'unknown', statusKey: 'unknown', section: 'current' };
+  return { status: 'active', statusKey: 'active', section: 'current' };
 }
 
 export const AUTOMATION_STATUS_FALLBACKS: Record<AutomationStatusKey, string> = {

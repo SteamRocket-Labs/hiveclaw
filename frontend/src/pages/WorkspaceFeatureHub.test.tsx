@@ -353,22 +353,25 @@ describe('automation schedule/status display (live consumer seam)', () => {
     // canonical truth about whether the automation can still run, so a
     // completed/running last attempt must not mask an expired or capped
     // trigger.
-    const withAttempt = (attentionState: string, status: string) => [
-      { trigger_id: 'trigger-1', status },
-    ];
+    const withAttempt = (status: string) => [{ trigger_id: 'trigger-1', status }];
     const trigger = (attentionState: string) => ({ id: 'trigger-1', attention_state: attentionState, is_enabled: true });
 
-    expect(automationStatus(trigger('expired'), withAttempt('expired', 'completed')).statusKey).toBe('expired');
-    expect(automationStatus(trigger('max_fires_reached'), withAttempt('max_fires_reached', 'running')).statusKey).toBe('maxFires');
-    expect(automationStatus(trigger('backoff_active'), withAttempt('backoff_active', 'completed')).statusKey).toBe('backoff');
-    expect(automationStatus(trigger('needs_reconciliation'), withAttempt('needs_reconciliation', 'completed')).statusKey).toBe('needsReconciliation');
-    expect(automationStatus(trigger('missing_model'), withAttempt('missing_model', 'completed')).statusKey).toBe('missingModel');
-    expect(automationStatus(trigger('failed_recently'), withAttempt('failed_recently', 'completed')).statusKey).toBe('failed');
+    expect(automationStatus(trigger('expired'), withAttempt('completed')).statusKey).toBe('expired');
+    expect(automationStatus(trigger('max_fires_reached'), withAttempt('running')).statusKey).toBe('maxFires');
+    expect(automationStatus(trigger('backoff_active'), withAttempt('completed')).statusKey).toBe('backoff');
+    expect(automationStatus(trigger('needs_reconciliation'), withAttempt('completed')).statusKey).toBe('needsReconciliation');
+    expect(automationStatus(trigger('missing_model'), withAttempt('completed')).statusKey).toBe('missingModel');
+    expect(automationStatus(trigger('failed_recently'), withAttempt('completed')).statusKey).toBe('failed');
+
+    // Non-active attention states never consult the attempt at all: unknown
+    // codes and informational states resolve from the canonical map first.
+    expect(automationStatus(trigger('brand_new_backend_code'), withAttempt('completed')).statusKey).toBe('unknown');
+    expect(automationStatus(trigger('no_recent_attempt'), withAttempt('completed')).statusKey).toBe('noRecentAttempt');
 
     // The latest attempt still colors the active tail (and its own evidence).
-    expect(automationStatus(trigger('active'), withAttempt('active', 'running')).statusKey).toBe('running');
-    expect(automationStatus(trigger('active'), withAttempt('active', 'completed')).statusKey).toBe('completed');
-    expect(automationStatus(trigger('active'), withAttempt('active', 'failed')).statusKey).toBe('failed');
+    expect(automationStatus(trigger('active'), withAttempt('running')).statusKey).toBe('running');
+    expect(automationStatus(trigger('active'), withAttempt('completed')).statusKey).toBe('completed');
+    expect(automationStatus(trigger('active'), withAttempt('failed')).statusKey).toBe('failed');
     expect(automationStatus({ id: 't', attention_state: 'active', is_enabled: true }, []).statusKey).toBe('active');
     expect(automationStatus({ id: 't', attention_state: 'no_recent_attempt', is_enabled: true }, []).statusKey).toBe('noRecentAttempt');
   });

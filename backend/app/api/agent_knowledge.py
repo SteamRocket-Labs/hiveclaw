@@ -26,7 +26,11 @@ from app.database import get_db, tenant_scoped_session
 from app.models.agent import Agent
 from app.models.user import User
 from app.services.personal_knowledge_access import HumanBrowserPrincipal
-from app.services.personal_knowledge_service import PersonalKnowledgeService
+from app.services.personal_knowledge_service import (
+    PersonalKnowledgeDocumentConflict,
+    PersonalKnowledgeJobConflict,
+    PersonalKnowledgeService,
+)
 from app.services.personal_knowledge_proposals import PersonalKnowledgeProposalService
 from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
 
@@ -34,6 +38,33 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agents/{agent_id}/knowledge", tags=["agent-knowledge"])
 personal_router = APIRouter(prefix="/knowledge/personal", tags=["personal-knowledge"])
+
+# Bounded streaming upload ceiling, shared with DocumentConversionService's
+# 50 MiB limit (overridable in tests).
+PERSONAL_KB_MAX_UPLOAD_BYTES = get_settings().PERSONAL_KB_MAX_UPLOAD_BYTES
+_UPLOAD_STREAM_CHUNK_BYTES = 1024 * 1024
+
+
+async def _read_upload_file_bounded(file: UploadFile, *, max_bytes: int) -> bytes:
+    """Stream the upload in bounded chunks and reject oversize before queue.
+
+    Reading the whole body unbounded allowed a single request to buffer an
+    arbitrary amount of memory before any validation ran.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_UPLOAD_STREAM_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail={"code": "upload_too_large", "max_bytes": max_bytes},
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 class PersonalKnowledgeIngestRequest(BaseModel):
@@ -55,7 +86,9 @@ class PersonalKnowledgeUrlImportRequest(BaseModel):
 class PersonalKnowledgeDocumentPatchRequest(BaseModel):
     agent_searchable: bool | None = None
     sensitivity: str | None = Field(None, min_length=1, max_length=30)
-    status: str | None = Field(None, min_length=1, max_length=40)
+    # Lifecycle mutation is restricted to the exact supported value: archive.
+    # Restore owns the reverse transition through its dedicated endpoint.
+    status: str | None = Field(None, pattern="^(archived)$")
 
 
 class PersonalKnowledgeGrantRequest(BaseModel):
@@ -118,10 +151,7 @@ def _data_root() -> Path:
 
 
 def _owner_user_id_for_personal_kb(agent: Agent) -> uuid.UUID:
-    owner_id = (
-        getattr(agent, "owner_user_id", None)
-        or getattr(agent, "creator_id", None)
-    )
+    owner_id = getattr(agent, "owner_user_id", None) or getattr(agent, "creator_id", None)
     if owner_id is None:
         raise HTTPException(status_code=409, detail="Agent owner is not configured")
     return uuid.UUID(str(owner_id))
@@ -171,15 +201,17 @@ def _source_preview_response(preview: Any) -> Response:
 
 
 async def _process_current_user_personal_import_jobs(*, tenant_id: uuid.UUID, owner_user_id: uuid.UUID) -> None:
-    async with tenant_scoped_session(tenant_id) as db:
-        await PersonalKnowledgeService().process_import_jobs(
-            db,
-            tenant_id=tenant_id,
-            owner_user_id=owner_user_id,
-            current_user_id=owner_user_id,
-            limit=5,
-            statuses=("queued",),
-        )
+    # Two-phase worker: the claim (running + attempt increment) commits before
+    # long conversion starts, so concurrent readers see the real state.
+    await PersonalKnowledgeService().process_import_jobs(
+        None,
+        session_factory=lambda: tenant_scoped_session(tenant_id),
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+        current_user_id=owner_user_id,
+        limit=5,
+        statuses=("queued",),
+    )
 
 
 def _schedule_personal_import_worker(
@@ -285,7 +317,7 @@ async def import_current_user_personal_file(
 ):
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename")
-    data = await file.read()
+    data = await _read_upload_file_bounded(file, max_bytes=PERSONAL_KB_MAX_UPLOAD_BYTES)
     service = PersonalKnowledgeService()
     tenant_id = _tenant_id_for_user(current_user)
     owner_user_id = uuid.UUID(str(current_user.id))
@@ -355,17 +387,62 @@ async def list_current_user_personal_import_jobs(
 @personal_router.post("/import-jobs/{job_id}/retry")
 async def retry_current_user_personal_import_job(
     job_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     service = PersonalKnowledgeService()
-    result = await service.retry_import_job(
-        db,
-        tenant_id=_tenant_id_for_user(current_user),
-        owner_user_id=uuid.UUID(str(current_user.id)),
-        job_id=job_id,
-        current_user_id=uuid.UUID(str(current_user.id)),
-    )
+    tenant_id = _tenant_id_for_user(current_user)
+    owner_user_id = uuid.UUID(str(current_user.id))
+    try:
+        result = await service.retry_import_job(
+            db,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            job_id=job_id,
+            current_user_id=owner_user_id,
+        )
+    except PersonalKnowledgeJobConflict as conflict:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": conflict.code,
+                "cancellable": conflict.cancellable,
+                "retryable": conflict.retryable,
+            },
+        ) from conflict
+    if result is None:
+        raise HTTPException(status_code=404, detail="Personal knowledge import job not found")
+    await db.commit()
+    # The retry only requeues; the same asynchronous worker owns execution.
+    _schedule_personal_import_worker(background_tasks, tenant_id=tenant_id, owner_user_id=owner_user_id)
+    return _dataclass_payload(result)
+
+
+@personal_router.post("/import-jobs/{job_id}/cancel")
+async def cancel_current_user_personal_import_job(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = PersonalKnowledgeService()
+    try:
+        result = await service.cancel_import_job(
+            db,
+            tenant_id=_tenant_id_for_user(current_user),
+            owner_user_id=uuid.UUID(str(current_user.id)),
+            job_id=job_id,
+            current_user_id=uuid.UUID(str(current_user.id)),
+        )
+    except PersonalKnowledgeJobConflict as conflict:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": conflict.code,
+                "cancellable": conflict.cancellable,
+                "retryable": conflict.retryable,
+            },
+        ) from conflict
     if result is None:
         raise HTTPException(status_code=404, detail="Personal knowledge import job not found")
     await db.commit()
@@ -630,6 +707,29 @@ async def patch_current_user_personal_document(
         sensitivity=body.sensitivity,
         status=body.status,
     )
+    if document is None:
+        raise HTTPException(status_code=404, detail="Personal knowledge document not found")
+    await db.commit()
+    return _dataclass_payload(document)
+
+
+@personal_router.post("/documents/{document_id}/restore")
+async def restore_current_user_personal_document(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = PersonalKnowledgeService()
+    try:
+        document = await service.restore_personal_document(
+            db,
+            tenant_id=_tenant_id_for_user(current_user),
+            owner_user_id=uuid.UUID(str(current_user.id)),
+            document_id=document_id,
+            current_user_id=uuid.UUID(str(current_user.id)),
+        )
+    except PersonalKnowledgeDocumentConflict as conflict:
+        raise HTTPException(status_code=409, detail={"code": conflict.code}) from conflict
     if document is None:
         raise HTTPException(status_code=404, detail="Personal knowledge document not found")
     await db.commit()

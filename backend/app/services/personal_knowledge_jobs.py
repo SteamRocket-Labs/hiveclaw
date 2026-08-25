@@ -22,21 +22,27 @@ def build_personal_knowledge_job_claim_statement(
     max_attempts: int,
     limit: int,
 ):
-    """Build the sole SKIP LOCKED claim query used by API and fleet workers."""
+    """Build the sole SKIP LOCKED claim query used by API and fleet workers.
+
+    Workers select queued jobs and stale-running leases only — never failed
+    jobs (a failed job re-enters queued exclusively through the explicit
+    retry CAS). Queued rows require attempts left; stale-running rows are
+    admitted at any attempt count so a crash at the final attempt can be
+    terminalized instead of leaking a permanently running row.
+    """
 
     clean_statuses = tuple(
-        status
-        for status in (str(item or "").strip().lower() for item in statuses)
-        if status in {"queued", "failed", "running"}
+        status for status in (str(item or "").strip().lower() for item in statuses) if status in {"queued", "running"}
     )
     status_predicates = []
     if "queued" in clean_statuses:
-        predicate = KnowledgeIndexJob.status == "queued"
+        predicate = and_(
+            KnowledgeIndexJob.status == "queued",
+            KnowledgeIndexJob.attempt_count < max(1, int(max_attempts or DEFAULT_IMPORT_JOB_MAX_ATTEMPTS)),
+        )
         if queued_before is not None:
             predicate = and_(predicate, KnowledgeIndexJob.updated_at <= queued_before)
         status_predicates.append(predicate)
-    if "failed" in clean_statuses:
-        status_predicates.append(KnowledgeIndexJob.status == "failed")
     if "running" in clean_statuses:
         predicate = KnowledgeIndexJob.status == "running"
         if running_before is not None:
@@ -47,7 +53,6 @@ def build_personal_knowledge_job_claim_statement(
 
     statement = select(KnowledgeIndexJob).where(
         KnowledgeIndexJob.scope_type == "person",
-        KnowledgeIndexJob.attempt_count < max(1, int(max_attempts or DEFAULT_IMPORT_JOB_MAX_ATTEMPTS)),
         or_(*status_predicates),
     )
     if tenant_id is not None:

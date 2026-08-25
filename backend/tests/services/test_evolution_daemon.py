@@ -370,3 +370,54 @@ async def test_heartbeat_hook_persists_dream_admission_before_detaching_maintena
     )
 
     assert sequence == ["durable_admission", "maintenance_detached"]
+
+
+@pytest.mark.asyncio
+async def test_drain_personal_kb_jobs_smoke_runs_real_body(monkeypatch) -> None:
+    """B6: the drain body must execute end-to-end with a session factory —
+    guards the asynccontextmanager import and the two-phase worker handoff."""
+    captured: dict[str, object] = {}
+
+    class _StubSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _StubBypass:
+        def __init__(self, db, *, reason: str):
+            captured["reason"] = reason
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _StubSummary:
+        attempted = 0
+
+    async def fake_claim_and_process(self, session, **kwargs):
+        captured["session_is_none"] = session is None
+        factory = kwargs.get("session_factory")
+        assert factory is not None, "drain must hand a session factory to the two-phase worker"
+        # The factory itself must be an async context manager (this is where
+        # the missing asynccontextmanager import used to explode).
+        async with factory() as db:
+            captured["db"] = db
+        captured["limit"] = kwargs.get("limit")
+        return _StubSummary()
+
+    monkeypatch.setattr("app.database.async_session", lambda: _StubSession())
+    monkeypatch.setattr("app.database.enter_rls_bypass", lambda db, *, reason: _StubBypass(db, reason=reason))
+    monkeypatch.setattr(
+        "app.services.personal_knowledge_service.PersonalKnowledgeService.claim_and_process_stuck_jobs",
+        fake_claim_and_process,
+    )
+
+    await evolution_daemon._drain_personal_kb_jobs()
+
+    assert captured["session_is_none"] is True
+    assert isinstance(captured["db"], _StubBypass)
+    assert "personal-kb import job drain" in str(captured["reason"])

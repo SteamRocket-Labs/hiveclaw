@@ -4006,7 +4006,7 @@
     "untitled": "Untitled note",
     "stats": "Personal knowledge stats",
     "dropOrChoose": "Drag or choose a file",
-    "dropHelper": "PDF, DOCX, CSV, HTML, Markdown, audio, video, or images",
+    "dropHelper": "PDF, DOCX, Markdown, or plain text",
     "importing": "Importing",
     "importFile": "Import file",
     "urlImport": "URL import",
@@ -4041,7 +4041,66 @@
     "companyReviewSubmitting": "Submitting...",
     "companyReviewSubmit": "Submit to Company review",
     "companyReviewQueued": "Submitted for review. Nothing has been published yet.",
-    "openCompanyLibrary": "Open Company Library"
+    "openCompanyLibrary": "Open Company Library",
+    "formatPdf": "PDF",
+    "formatDocx": "Word / DOCX",
+    "formatMarkdown": "Markdown",
+    "sourcePaste": "Paste",
+    "sourceLink": "Link",
+    "sourceUpload": "Upload",
+    "sourceChatAttachment": "Chat attachment",
+    "sourceAgent": "From agent",
+    "sourceOther": "Other",
+    "jobStatus": {
+      "queued": "Queued",
+      "running": "Running",
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled",
+      "unknown": "Status unavailable"
+    },
+    "jobResult": {
+      "ready": "Ready",
+      "degraded": "Partially indexed",
+      "failed": "Failed",
+      "cancelled": "Cancelled",
+      "unknown": "Status unavailable"
+    },
+    "jobError": {
+      "conversionFailed": "The file could not be converted.",
+      "conversionTimeout": "Conversion timed out; you can retry.",
+      "sourceMissing": "The uploaded source is no longer available.",
+      "unsupportedFileType": "This file type is not supported.",
+      "unsupportedOrUnconfigured": "This media type is not supported here.",
+      "mediaTranscriptionEmpty": "No readable content was produced.",
+      "documentMissing": "The document is no longer available.",
+      "canonicalMissing": "The stored content is no longer available.",
+      "importPayloadInvalid": "The import request was invalid.",
+      "importFailed": "Import failed with an unspecified error.",
+      "attemptLimit": "Retry limit reached.",
+      "unknown": "Import failed with an unspecified error."
+    },
+    "documentStatus": {
+      "queued": "Queued",
+      "ready": "Ready",
+      "degraded": "Partially indexed",
+      "failed": "Failed",
+      "archived": "Archived",
+      "unknown": "Status unavailable"
+    },
+    "actionError": {
+      "notRetryable": "This import cannot be retried now.",
+      "retryAttemptLimit": "Retry limit reached.",
+      "notCancellableRunning": "A running import cannot be cancelled.",
+      "notCancellableTerminal": "This import has already finished.",
+      "restoreRequiresArchived": "Only archived documents can be restored.",
+      "restoreNoConsumableState": "There is no consumable version to restore.",
+      "unknown": "The action could not be completed.",
+      "uploadTooLarge": "The file is too large to import."
+    },
+    "cancel": "Cancel",
+    "restore": "Restore",
+    "untitledJob": "Knowledge import"
   },
   "companyKnowledge": {
     "libraryEyebrow": "Authorized company library",

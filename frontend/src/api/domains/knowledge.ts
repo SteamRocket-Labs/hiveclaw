@@ -250,6 +250,7 @@ export interface PersonalKnowledgeJobSummary {
   job_id: string;
   document_id: string;
   stage: string;
+  /** Raw stored status — compatibility only; drive UI from lifecycle_status. */
   status: string;
   artifact_hash: string;
   error_message: string | null;
@@ -257,6 +258,16 @@ export interface PersonalKnowledgeJobSummary {
   metadata: Record<string, unknown>;
   created_at: string | null;
   updated_at: string | null;
+  terminal: boolean;
+  retryable: boolean;
+  cancellable: boolean;
+  error_code: string | null;
+  max_attempts: number;
+  /** queued | running | completed | failed | cancelled — polling authority. */
+  lifecycle_status: string;
+  /** ready | degraded | failed | cancelled when a terminal result exists. */
+  result_status: string | null;
+  cancelled_at: string | null;
 }
 
 export interface PersonalKnowledgeDocumentPatchRequest {
@@ -441,9 +452,13 @@ export const knowledgeApi = {
   myPersonalImportJobs: () =>
     get<{ jobs: PersonalKnowledgeJobSummary[] }>('/knowledge/personal/import-jobs'),
   myPersonalRetryImportJob: (jobId: string) =>
-    post<PersonalKnowledgeIngestResponse>(`/knowledge/personal/import-jobs/${jobId}/retry`),
+    post<PersonalKnowledgeJobSummary>(`/knowledge/personal/import-jobs/${jobId}/retry`),
+  myPersonalCancelImportJob: (jobId: string) =>
+    post<PersonalKnowledgeJobSummary>(`/knowledge/personal/import-jobs/${jobId}/cancel`),
   myPersonalPatchDocument: (documentId: string, body: PersonalKnowledgeDocumentPatchRequest) =>
     patch<PersonalKnowledgeDocumentDetail>(`/knowledge/personal/documents/${documentId}`, body),
+  myPersonalRestoreDocument: (documentId: string) =>
+    post<PersonalKnowledgeDocumentDetail>(`/knowledge/personal/documents/${documentId}/restore`),
   myPersonalRebuildDocument: (documentId: string) =>
     post<PersonalKnowledgeIngestResponse>(`/knowledge/personal/documents/${documentId}/rebuild-index`),
   myPersonalGraph: () =>

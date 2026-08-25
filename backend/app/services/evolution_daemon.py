@@ -13,6 +13,7 @@ Lifespan wiring lives in `app/main.py` — the daemon is spawned alongside
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import uuid
 from pathlib import Path
@@ -304,20 +305,26 @@ async def _drain_personal_kb_jobs() -> None:
     from app.database import async_session, enter_rls_bypass
     from app.services.personal_knowledge_service import PersonalKnowledgeService
 
-    async with (
-        async_session() as db,
-        enter_rls_bypass(db, reason="personal-kb import job drain — recover stale queued/running person-scope jobs"),
-    ):
-        summary = await PersonalKnowledgeService().claim_and_process_stuck_jobs(
-            db,
-            limit=10,
-            queued_grace_seconds=30,
-            running_timeout_seconds=600,
-            max_attempts=5,
-        )
-        if summary.attempted:
-            logger.info("[EvolutionDaemon] Personal KB import drain: {}", summary)
-        await db.commit()
+    @asynccontextmanager
+    async def _bypass_session():
+        async with (
+            async_session() as db,
+            enter_rls_bypass(
+                db, reason="personal-kb import job drain — recover stale queued/running person-scope jobs"
+            ) as bypass_db,
+        ):
+            yield bypass_db
+
+    summary = await PersonalKnowledgeService().claim_and_process_stuck_jobs(
+        None,
+        session_factory=_bypass_session,
+        limit=10,
+        queued_grace_seconds=30,
+        running_timeout_seconds=600,
+        max_attempts=5,
+    )
+    if summary.attempted:
+        logger.info("[EvolutionDaemon] Personal KB import drain: {}", summary)
 
 
 async def _drain_company_kb_jobs():

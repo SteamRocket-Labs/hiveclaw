@@ -515,6 +515,15 @@ def personal_knowledge_agent_visibility_predicate(*, principal: PersonalKnowledg
     return KnowledgeDocument.agent_searchable.is_(True)
 
 
+def personal_knowledge_consumable_status_predicate(*, principal: PersonalKnowledgePrincipal):
+    """Archive is a real consumption boundary: an Agent runtime only receives
+    content for consumable (ready/degraded) documents, while the owner browser
+    keeps full workbench visibility (including archived) for Restore."""
+    if isinstance(principal, AgentRuntimePrincipal):
+        return KnowledgeDocument.status.in_(["ready", "degraded"])
+    return KnowledgeDocument.status != "deleted"
+
+
 def build_personal_knowledge_document_list_statement(
     *,
     tenant_id: uuid.UUID,
@@ -542,7 +551,7 @@ def build_personal_knowledge_document_list_statement(
             KnowledgeDocument.tenant_id == tenant_id,
             KnowledgeDocument.scope_type == "person",
             KnowledgeDocument.scope_id == owner_user_id,
-            KnowledgeDocument.status != "deleted",
+            personal_knowledge_consumable_status_predicate(principal=principal),
             personal_knowledge_agent_visibility_predicate(
                 principal=principal,
             ),

@@ -216,3 +216,73 @@ describe('knowledgeApi personal KB endpoints', () => {
     expect(JSON.parse(String(requestOf(3).init.body))).toEqual({ target_version: 1 });
   });
 });
+
+describe('knowledgeApi personal KB import job lifecycle endpoints', () => {
+  const jobSummaryBody = {
+    job_id: 'job-1',
+    document_id: 'doc-1',
+    stage: 'queued',
+    status: 'queued',
+    artifact_hash: 'a'.repeat(64),
+    error_message: null,
+    attempt_count: 1,
+    metadata: {},
+    created_at: null,
+    updated_at: null,
+    terminal: false,
+    retryable: false,
+    cancellable: true,
+    error_code: null,
+    max_attempts: 5,
+    lifecycle_status: 'queued',
+    result_status: null,
+    cancelled_at: null,
+  };
+
+  it('retry returns a job summary (not an ingest response) from the retry endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(jobSummaryBody));
+
+    const result = await knowledgeApi.myPersonalRetryImportJob('job-1');
+
+    expect(requestOf(0).url).toBe('/api/knowledge/personal/import-jobs/job-1/retry');
+    expect(requestOf(0).init.method).toBe('POST');
+    expect(result.lifecycle_status).toBe('queued');
+    expect(result.cancellable).toBe(true);
+    expect(result.max_attempts).toBe(5);
+    expect(result).not.toHaveProperty('segment_count');
+  });
+
+  it('cancel posts to the cancel endpoint and returns the cancelled summary', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ...jobSummaryBody,
+        stage: 'cancelled',
+        status: 'cancelled',
+        terminal: true,
+        cancellable: false,
+        lifecycle_status: 'cancelled',
+        result_status: 'cancelled',
+        cancelled_at: '2026-08-25T01:02:03+00:00',
+      }),
+    );
+
+    const result = await knowledgeApi.myPersonalCancelImportJob('job-1');
+
+    expect(requestOf(0).url).toBe('/api/knowledge/personal/import-jobs/job-1/cancel');
+    expect(requestOf(0).init.method).toBe('POST');
+    expect(result.lifecycle_status).toBe('cancelled');
+    expect(result.cancelled_at).toBe('2026-08-25T01:02:03+00:00');
+  });
+
+  it('restore posts to the document restore endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ document_id: 'doc-1', status: 'ready', segments: [] }),
+    );
+
+    const result = await knowledgeApi.myPersonalRestoreDocument('doc-1');
+
+    expect(requestOf(0).url).toBe('/api/knowledge/personal/documents/doc-1/restore');
+    expect(requestOf(0).init.method).toBe('POST');
+    expect(result.status).toBe('ready');
+  });
+});

@@ -119,6 +119,10 @@ class Settings(BaseSettings):
     # File Storage
     AGENT_DATA_DIR: str = _default_agent_data_dir()
     AGENT_TEMPLATE_DIR: str = "/app/agent_template"
+    # Personal Knowledge import pipeline: physical conversion timeout and the
+    # shared upload ceiling (mirrors DocumentConversionService's 50 MiB).
+    PERSONAL_KB_CONVERSION_TIMEOUT_SECONDS: float = 120.0
+    PERSONAL_KB_MAX_UPLOAD_BYTES: int = 50 * 1024 * 1024
     # Startup repair for legacy chat sessions that predate the canonical
     # chat_transcript_events + memory/t0 session ledger path. Runs inside the
     # backend container so Railway's /data/agents volume is available.

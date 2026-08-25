@@ -1,7 +1,8 @@
-import { type FormEvent, type ReactNode, useEffect, useMemo, useState } from 'react';
+import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import {
   IconArchive,
   IconBrain,
@@ -43,30 +44,158 @@ const laneIcons: Record<PersonalKnowledgeLane, ReactNode> = {
   grants: <IconShieldCheck size={15} stroke={1.7} />,
 };
 
+// Advertised formats are exactly the ones proven by the RC-01 vertical
+// evidence (real conversion → segments → search in real PostgreSQL):
+// PDF, DOCX, Markdown, and plain text. Nothing else is advertised.
 const importFormats = [
-  { label: 'PDF', helper: 'pdf' },
-  { label: 'Word / DOCX', helper: 'docx' },
-  { label: 'CSV / HTML', helper: 'csv · html' },
-  { label: 'Markdown', helper: 'md · txt' },
-  { label: '音频', helper: 'mp3 · wav · m4a' },
-  { label: '视频', helper: 'mp4 · mov · webm' },
-  { label: '图片', helper: 'png · jpg · webp' },
-];
+  { labelKey: 'personalKnowledge.formatPdf', fallback: 'PDF', helper: 'pdf' },
+  { labelKey: 'personalKnowledge.formatDocx', fallback: 'Word / DOCX', helper: 'docx' },
+  { labelKey: 'personalKnowledge.formatMarkdown', fallback: 'Markdown', helper: 'md · txt' },
+] as const;
 
-function sourceLabel(sourceKind: string): string {
-  if (sourceKind === 'paste') return '粘贴';
-  if (sourceKind === 'link' || sourceKind === 'url') return '链接';
-  if (sourceKind === 'upload') return '上传';
-  if (sourceKind === 'chat_attachment') return '聊天附件';
-  if (sourceKind === 'agent') return '来自 Agent';
-  return sourceKind || '未知';
+// Bounded machine-code vocabularies with exact static i18n keys; any unknown
+// value renders one neutral localized label — raw codes never enter the DOM.
+function sourceLabel(sourceKind: string, t: TFunction): string {
+  switch (sourceKind) {
+    case 'paste':
+      return t('personalKnowledge.sourcePaste', 'Paste');
+    case 'link':
+    case 'url':
+      return t('personalKnowledge.sourceLink', 'Link');
+    case 'upload':
+      return t('personalKnowledge.sourceUpload', 'Upload');
+    case 'chat_attachment':
+      return t('personalKnowledge.sourceChatAttachment', 'Chat attachment');
+    case 'agent':
+      return t('personalKnowledge.sourceAgent', 'From agent');
+    default:
+      return t('personalKnowledge.sourceOther', 'Other');
+  }
+}
+
+function jobLifecycleLabel(lifecycleStatus: string, t: TFunction): string {
+  switch (lifecycleStatus) {
+    case 'queued':
+      return t('personalKnowledge.jobStatus.queued', 'Queued');
+    case 'running':
+      return t('personalKnowledge.jobStatus.running', 'Running');
+    case 'completed':
+      return t('personalKnowledge.jobStatus.completed', 'Completed');
+    case 'failed':
+      return t('personalKnowledge.jobStatus.failed', 'Failed');
+    case 'cancelled':
+      return t('personalKnowledge.jobStatus.cancelled', 'Cancelled');
+    default:
+      return t('personalKnowledge.jobStatus.unknown', 'Status unavailable');
+  }
+}
+
+function jobResultLabel(resultStatus: string | null, t: TFunction): string | null {
+  switch (resultStatus) {
+    case null:
+    case '':
+      return null;
+    case 'ready':
+      return t('personalKnowledge.jobResult.ready', 'Ready');
+    case 'degraded':
+      return t('personalKnowledge.jobResult.degraded', 'Partially indexed');
+    case 'failed':
+      return t('personalKnowledge.jobResult.failed', 'Failed');
+    case 'cancelled':
+      return t('personalKnowledge.jobResult.cancelled', 'Cancelled');
+    default:
+      return t('personalKnowledge.jobResult.unknown', 'Status unavailable');
+  }
+}
+
+function jobErrorLabel(errorCode: string | null, t: TFunction): string | null {
+  if (!errorCode) return null;
+  switch (errorCode) {
+    case 'conversion_failed':
+      return t('personalKnowledge.jobError.conversionFailed', 'The file could not be converted.');
+    case 'conversion_timeout':
+      return t('personalKnowledge.jobError.conversionTimeout', 'Conversion timed out; you can retry.');
+    case 'source_missing':
+      return t('personalKnowledge.jobError.sourceMissing', 'The uploaded source is no longer available.');
+    case 'unsupported_file_type':
+      return t('personalKnowledge.jobError.unsupportedFileType', 'This file type is not supported.');
+    case 'unsupported_or_unconfigured':
+      return t('personalKnowledge.jobError.unsupportedOrUnconfigured', 'This media type is not supported here.');
+    case 'media_transcription_empty':
+      return t('personalKnowledge.jobError.mediaTranscriptionEmpty', 'No readable content was produced.');
+    case 'document_missing':
+      return t('personalKnowledge.jobError.documentMissing', 'The document is no longer available.');
+    case 'canonical_markdown_missing':
+      return t('personalKnowledge.jobError.canonicalMissing', 'The stored content is no longer available.');
+    case 'import_payload_invalid':
+      return t('personalKnowledge.jobError.importPayloadInvalid', 'The import request was invalid.');
+    case 'worker_error':
+    case 'import_failed':
+      return t('personalKnowledge.jobError.importFailed', 'Import failed with an unspecified error.');
+    case 'personal_kb_import_attempt_limit_exceeded':
+      return t('personalKnowledge.jobError.attemptLimit', 'Retry limit reached.');
+    default:
+      return t('personalKnowledge.jobError.unknown', 'Import failed with an unspecified error.');
+  }
+}
+
+function documentStatusLabel(status: string, t: TFunction): string {
+  switch (status) {
+    case 'queued':
+      return t('personalKnowledge.documentStatus.queued', 'Queued');
+    case 'ready':
+      return t('personalKnowledge.documentStatus.ready', 'Ready');
+    case 'degraded':
+      return t('personalKnowledge.documentStatus.degraded', 'Partially indexed');
+    case 'failed':
+      return t('personalKnowledge.documentStatus.failed', 'Failed');
+    case 'archived':
+      return t('personalKnowledge.documentStatus.archived', 'Archived');
+    default:
+      return t('personalKnowledge.documentStatus.unknown', 'Status unavailable');
+  }
+}
+
+// Exact conflict codes returned by cancel/retry/restore endpoints (409) and
+// the bounded upload rejection (413); unknown failures use the generic code.
+function actionErrorLabel(code: string | null, t: TFunction): string {
+  switch (code) {
+    case 'upload_too_large':
+      return t('personalKnowledge.actionError.uploadTooLarge', 'The file is too large to import.');
+    case 'not_retryable':
+      return t('personalKnowledge.actionError.notRetryable', 'This import cannot be retried now.');
+    case 'retry_attempt_limit':
+      return t('personalKnowledge.actionError.retryAttemptLimit', 'Retry limit reached.');
+    case 'not_cancellable_while_running':
+      return t('personalKnowledge.actionError.notCancellableRunning', 'A running import cannot be cancelled.');
+    case 'not_cancellable_terminal':
+      return t('personalKnowledge.actionError.notCancellableTerminal', 'This import has already finished.');
+    case 'restore_requires_archived':
+      return t('personalKnowledge.actionError.restoreRequiresArchived', 'Only archived documents can be restored.');
+    case 'restore_no_consumable_state':
+      return t('personalKnowledge.actionError.restoreNoConsumableState', 'There is no consumable version to restore.');
+    default:
+      return t('personalKnowledge.actionError.unknown', 'The action could not be completed.');
+  }
+}
+
+/** Extract the exact machine code from a typed API conflict; any other
+ * failure (404/500/network) maps to the one bounded generic code so the
+ * action error is always visible, never silently swallowed. */
+export function actionErrorCode(error: unknown): string {
+  const data = (error as { data?: unknown } | null)?.data;
+  if (data && typeof data === 'object' && 'code' in data) {
+    const code = (data as { code?: unknown }).code;
+    if (typeof code === 'string' && code) return code;
+  }
+  return 'unknown';
 }
 
 function formatDate(value: string | null): string {
   if (!value) return '';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
-  return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit' }).format(date);
+  return new Intl.DateTimeFormat(undefined, { month: '2-digit', day: '2-digit' }).format(date);
 }
 
 function documentTags(document: PersonalKnowledgeDocumentSummary): string[] {
@@ -103,59 +232,85 @@ function SearchResults({ results }: { results: PersonalKnowledgeSearchResult[] }
           <span>{result.heading_path.join(' / ')}</span>
           <p>{result.snippet}</p>
           <code>{result.source_ref}</code>
-          {result.score_trace && <small>score_trace · {result.score.toFixed(3)}</small>}
         </div>
       ))}
     </section>
   );
 }
 
-function ImportJobs({
+export function ImportJobs({
   jobs,
   onRetry,
+  onCancel,
   busyJobId,
+  actionError,
 }: {
   jobs: PersonalKnowledgeJobSummary[];
   onRetry: (jobId: string) => void;
+  onCancel: (jobId: string) => void;
   busyJobId?: string | null;
+  actionError?: string | null;
 }) {
   const { t } = useTranslation();
-  if (jobs.length === 0) {
-    return <EmptyBlock>{t('personalKnowledge.noJobs')}</EmptyBlock>;
-  }
   return (
     <div className="personal-kb-jobs">
-      {jobs.map((job) => {
-        const filename = String(job.metadata?.source_filename || job.document_id);
-        const canRetry = job.status === 'failed' || job.status === 'degraded';
-        return (
-          <div key={job.job_id} className="personal-kb-job-row">
-            <div>
-              <strong>{filename}</strong>
-              <span>
-                {job.stage} · {job.status} · {t('personalKnowledge.attempts')} {job.attempt_count}
+      {actionError && (
+        <div className="personal-kb-action-error" role="alert">
+          {actionErrorLabel(actionError, t)}
+        </div>
+      )}
+      {jobs.length === 0 ? (
+        <EmptyBlock>{t('personalKnowledge.noJobs')}</EmptyBlock>
+      ) : (
+        jobs.map((job) => {
+          const filename = String(job.metadata?.source_filename || t('personalKnowledge.untitledJob', 'Knowledge import'));
+          const errorLabel = jobErrorLabel(job.error_code, t);
+          // The result label is shown only when it adds information beyond
+          // the lifecycle (completed → ready/degraded); failed/cancelled
+          // would only duplicate the lifecycle label.
+          const resultLabel = job.lifecycle_status === 'completed' ? jobResultLabel(job.result_status, t) : null;
+          return (
+            <div key={job.job_id} className="personal-kb-job-row">
+              <div>
+                <strong>{filename}</strong>
+                <span>
+                  {jobLifecycleLabel(job.lifecycle_status, t)}
+                  {resultLabel ? ` · ${resultLabel}` : ''} · {t('personalKnowledge.attempts')} {job.attempt_count}/{job.max_attempts}
+                </span>
+                {errorLabel && <small>{errorLabel}</small>}
+              </div>
+              <span className="personal-kb-job-actions">
+                {job.cancellable && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    disabled={busyJobId === job.job_id}
+                    onClick={() => onCancel(job.job_id)}
+                  >
+                    {t('personalKnowledge.cancel', 'Cancel')}
+                  </button>
+                )}
+                {job.retryable && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    disabled={busyJobId === job.job_id}
+                    onClick={() => onRetry(job.job_id)}
+                  >
+                    <IconRefresh size={14} stroke={1.7} />
+                    {t('personalKnowledge.retry')}
+                  </button>
+                )}
               </span>
-              {job.error_message && <code>{job.error_message}</code>}
             </div>
-            {canRetry && (
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                disabled={busyJobId === job.job_id}
-                onClick={() => onRetry(job.job_id)}
-              >
-                <IconRefresh size={14} stroke={1.7} />
-                {t('personalKnowledge.retry')}
-              </button>
-            )}
-          </div>
-        );
-      })}
+          );
+        })
+      )}
     </div>
   );
 }
 
-function InboxPanel({
+export function InboxPanel({
   title,
   markdown,
   url,
@@ -164,6 +319,8 @@ function InboxPanel({
   jobsLoading,
   jobsError,
   busyJobId,
+  actionError,
+  intakeError,
   onTitleChange,
   onMarkdownChange,
   onUrlChange,
@@ -172,6 +329,7 @@ function InboxPanel({
   onFileSubmit,
   onUrlSubmit,
   onRetryJob,
+  onCancelJob,
   onRetryJobsQuery,
   pastePending,
   filePending,
@@ -185,6 +343,8 @@ function InboxPanel({
   jobsLoading: boolean;
   jobsError?: unknown;
   busyJobId?: string | null;
+  actionError?: string | null;
+  intakeError?: string | null;
   onTitleChange: (value: string) => void;
   onMarkdownChange: (value: string) => void;
   onUrlChange: (value: string) => void;
@@ -193,12 +353,18 @@ function InboxPanel({
   onFileSubmit: (event: FormEvent) => void;
   onUrlSubmit: (event: FormEvent) => void;
   onRetryJob: (jobId: string) => void;
+  onCancelJob: (jobId: string) => void;
   onRetryJobsQuery: () => void;
   pastePending: boolean;
   filePending: boolean;
   urlPending: boolean;
 }) {
   const { t } = useTranslation();
+  const formatLabels: Record<(typeof importFormats)[number]['labelKey'], string> = {
+    'personalKnowledge.formatPdf': t('personalKnowledge.formatPdf', 'PDF'),
+    'personalKnowledge.formatDocx': t('personalKnowledge.formatDocx', 'Word / DOCX'),
+    'personalKnowledge.formatMarkdown': t('personalKnowledge.formatMarkdown', 'Markdown'),
+  };
   return (
     <section className="personal-kb-panel personal-kb-intake">
       <div className="personal-kb-panel-heading">
@@ -208,6 +374,12 @@ function InboxPanel({
         </div>
         <IconDatabase size={18} stroke={1.7} />
       </div>
+
+      {intakeError && (
+        <div className="personal-kb-action-error" role="alert">
+          {actionErrorLabel(intakeError, t)}
+        </div>
+      )}
 
       <form className="personal-kb-upload-zone" onSubmit={onFileSubmit}>
         <label
@@ -228,8 +400,8 @@ function InboxPanel({
         </label>
         <div className="personal-kb-format-grid">
           {importFormats.map((format) => (
-            <span key={format.label}>
-              <strong>{format.label}</strong>
+            <span key={format.labelKey}>
+              <strong>{formatLabels[format.labelKey]}</strong>
               <small>{format.helper}</small>
             </span>
           ))}
@@ -280,7 +452,7 @@ function InboxPanel({
         ) : jobsLoading ? (
           <EmptyBlock>{t('common.loading', 'Loading...')}</EmptyBlock>
         ) : (
-          <ImportJobs jobs={jobs} onRetry={onRetryJob} busyJobId={busyJobId} />
+          <ImportJobs jobs={jobs} onRetry={onRetryJob} onCancel={onCancelJob} busyJobId={busyJobId} actionError={actionError} />
         )}
       </div>
     </section>
@@ -322,7 +494,7 @@ function LibraryPanel({
           >
             <span className="personal-kb-doc-head">
               <strong>{document.title}</strong>
-              <small>{sourceLabel(document.source_kind)} · {document.status}</small>
+              <small>{sourceLabel(document.source_kind, t)} · {documentStatusLabel(document.status, t)}</small>
             </span>
             <span className="personal-kb-doc-tags">
               {documentTags(document).map((tag) => <em key={tag}>{tag}</em>)}
@@ -663,13 +835,16 @@ export function RevisionHistory({
   );
 }
 
-function DocumentDetail({
+export function DocumentDetail({
   document,
   onRebuild,
   onToggleAgentSearchable,
   onArchive,
+  onRestore,
   rebuildPending,
   patchPending,
+  restorePending,
+  actionError,
   revisions,
   revisionsLoading,
   revisionsError,
@@ -681,8 +856,11 @@ function DocumentDetail({
   onRebuild: (documentId: string) => void;
   onToggleAgentSearchable: (document: PersonalKnowledgeDocumentDetail) => void;
   onArchive: (documentId: string) => void;
+  onRestore: (documentId: string) => void;
   rebuildPending: boolean;
   patchPending: boolean;
+  restorePending: boolean;
+  actionError?: string | null;
   revisions: PersonalKnowledgeRevision[];
   revisionsLoading: boolean;
   revisionsError?: unknown;
@@ -726,7 +904,7 @@ function DocumentDetail({
           <span className="personal-kb-eyebrow">{t('personalKnowledge.detailEyebrow')}</span>
           <h2>{document.title}</h2>
         </div>
-        <span className="ui-chip">{document.status}</span>
+        <span className="ui-chip">{documentStatusLabel(document.status, t)}</span>
       </div>
       {imagePreview && (
         <div className="personal-kb-source-preview">
@@ -774,6 +952,11 @@ function DocumentDetail({
         />
       )}
       <div className="personal-kb-detail-actions">
+        {actionError && (
+          <div className="personal-kb-action-error" role="alert">
+            {actionErrorLabel(actionError, t)}
+          </div>
+        )}
         <button
           type="button"
           className="btn btn-secondary btn-sm"
@@ -793,14 +976,25 @@ function DocumentDetail({
             ? t('personalKnowledge.blockAgentSearch')
             : t('personalKnowledge.allowAgentSearch')}
         </button>
-        <button
-          type="button"
-          className="btn btn-secondary btn-sm"
-          disabled={patchPending}
-          onClick={() => onArchive(document.document_id)}
-        >
-          {t('personalKnowledge.archive')}
-        </button>
+        {document.status === 'archived' ? (
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            disabled={restorePending}
+            onClick={() => onRestore(document.document_id)}
+          >
+            {t('personalKnowledge.restore', 'Restore')}
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            disabled={patchPending}
+            onClick={() => onArchive(document.document_id)}
+          >
+            {t('personalKnowledge.archive')}
+          </button>
+        )}
         {document.status === 'ready' && (
           <PersonalKnowledgePromotionCard
             documentKey={document.document_id}
@@ -836,6 +1030,9 @@ export default function PersonalKnowledge() {
   const [deletingGrantId, setDeletingGrantId] = useState<string | null>(null);
   const [busyProposalId, setBusyProposalId] = useState<string | null>(null);
   const [rollbackPendingVersion, setRollbackPendingVersion] = useState<number | null>(null);
+  const [jobActionError, setJobActionError] = useState<string | null>(null);
+  const [documentActionError, setDocumentActionError] = useState<string | null>(null);
+  const [intakeActionError, setIntakeActionError] = useState<string | null>(null);
 
   const documentsQuery = useQuery({
     queryKey: ['personal-knowledge-documents'],
@@ -845,7 +1042,16 @@ export default function PersonalKnowledge() {
     queryKey: ['personal-knowledge-import-jobs'],
     queryFn: () => knowledgeApi.myPersonalImportJobs(),
     enabled: activeLane === 'inbox',
+    // Lifecycle-aware polling: refresh only while any job is queued/running;
+    // stop once everything is terminal.
+    refetchInterval: (query) => {
+      const jobs = (query.state.data as { jobs?: PersonalKnowledgeJobSummary[] } | undefined)?.jobs ?? [];
+      return jobs.some((job) => job.lifecycle_status === 'queued' || job.lifecycle_status === 'running')
+        ? 3000
+        : false;
+    },
   });
+  const jobs = jobsQuery.data?.jobs ?? [];
   const graphQuery = useQuery({
     queryKey: ['personal-knowledge-graph'],
     queryFn: () => knowledgeApi.myPersonalGraph(),
@@ -884,9 +1090,26 @@ export default function PersonalKnowledge() {
     void queryClient.invalidateQueries({ queryKey: ['personal-knowledge-import-jobs'] });
     void queryClient.invalidateQueries({ queryKey: ['personal-knowledge-graph'] });
     void queryClient.invalidateQueries({ queryKey: ['personal-knowledge-proposals'] });
+    void queryClient.invalidateQueries({ queryKey: ['personal-knowledge-search'] });
     if (activeDocumentId) void queryClient.invalidateQueries({ queryKey: ['personal-knowledge-document', activeDocumentId] });
     if (activeDocumentId) void queryClient.invalidateQueries({ queryKey: ['personal-knowledge-revisions', activeDocumentId] });
   };
+
+  // When a job transitions to a terminal lifecycle state, the documents/
+  // detail/graph/revisions/search read models refresh without a reload.
+  const terminalSignature = jobs
+    .filter((job) => job.lifecycle_status !== 'queued' && job.lifecycle_status !== 'running')
+    .map((job) => `${job.job_id}:${job.lifecycle_status}:${job.result_status ?? ''}`)
+    .sort()
+    .join('|');
+  const previousTerminalSignatureRef = useRef<string | null>(null);
+  useEffect(() => {
+    const previous = previousTerminalSignatureRef.current;
+    previousTerminalSignatureRef.current = terminalSignature;
+    if (previous === null || previous === terminalSignature) return;
+    invalidatePersonalKb();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [terminalSignature]);
 
   const ingestMutation = useMutation({
     mutationFn: () =>
@@ -898,52 +1121,95 @@ export default function PersonalKnowledge() {
         agent_searchable: true,
         sensitivity: 'internal',
       }),
+    onMutate: () => setIntakeActionError(null),
     onSuccess: (result) => {
       setTitle('');
       setMarkdown('');
+      setIntakeActionError(null);
       setSelectedDocumentId(result.document_id);
       invalidatePersonalKb();
     },
+    onError: (error) => setIntakeActionError(actionErrorCode(error)),
   });
   const importFileMutation = useMutation({
     mutationFn: (file: File) => knowledgeApi.myPersonalImportFile(file, { title: title.trim() || file.name, sensitivity: 'internal' }),
+    onMutate: () => setIntakeActionError(null),
     onSuccess: (result) => {
       setSelectedFile(null);
+      setIntakeActionError(null);
       setSelectedDocumentId(result.document_id);
       invalidatePersonalKb();
     },
+    onError: (error) => setIntakeActionError(actionErrorCode(error)),
   });
   const importUrlMutation = useMutation({
     mutationFn: () => knowledgeApi.myPersonalImportUrl({ url: url.trim(), title: title.trim() || undefined, sensitivity: 'internal' }),
+    onMutate: () => setIntakeActionError(null),
     onSuccess: (result) => {
       setUrl('');
+      setIntakeActionError(null);
       setSelectedDocumentId(result.document_id);
       invalidatePersonalKb();
     },
+    onError: (error) => setIntakeActionError(actionErrorCode(error)),
   });
   const retryMutation = useMutation({
     mutationFn: (jobId: string) => knowledgeApi.myPersonalRetryImportJob(jobId),
+    onMutate: () => setJobActionError(null),
     onSuccess: (result) => {
       setBusyJobId(null);
+      setJobActionError(null);
       setSelectedDocumentId(result.document_id);
       invalidatePersonalKb();
     },
-    onError: () => setBusyJobId(null),
+    onError: (error) => {
+      setBusyJobId(null);
+      setJobActionError(actionErrorCode(error));
+    },
+  });
+  const cancelJobMutation = useMutation({
+    mutationFn: (jobId: string) => knowledgeApi.myPersonalCancelImportJob(jobId),
+    onMutate: () => setJobActionError(null),
+    onSuccess: () => {
+      setBusyJobId(null);
+      setJobActionError(null);
+      invalidatePersonalKb();
+    },
+    onError: (error) => {
+      setBusyJobId(null);
+      setJobActionError(actionErrorCode(error));
+    },
   });
   const patchMutation = useMutation({
     mutationFn: ({ documentId, body }: { documentId: string; body: { agent_searchable?: boolean; status?: string } }) =>
       knowledgeApi.myPersonalPatchDocument(documentId, body),
+    onMutate: () => setDocumentActionError(null),
     onSuccess: (document) => {
+      setDocumentActionError(null);
       setSelectedDocumentId(document.document_id);
       invalidatePersonalKb();
     },
+    onError: (error) => setDocumentActionError(actionErrorCode(error)),
+  });
+  const restoreMutation = useMutation({
+    mutationFn: (documentId: string) => knowledgeApi.myPersonalRestoreDocument(documentId),
+    onMutate: () => setDocumentActionError(null),
+    onSuccess: (document) => {
+      setDocumentActionError(null);
+      setSelectedDocumentId(document.document_id);
+      invalidatePersonalKb();
+    },
+    onError: (error) => setDocumentActionError(actionErrorCode(error)),
   });
   const rebuildMutation = useMutation({
     mutationFn: (documentId: string) => knowledgeApi.myPersonalRebuildDocument(documentId),
+    onMutate: () => setDocumentActionError(null),
     onSuccess: (result) => {
+      setDocumentActionError(null);
       setSelectedDocumentId(result.document_id);
       invalidatePersonalKb();
     },
+    onError: (error) => setDocumentActionError(actionErrorCode(error)),
   });
   const createGrantMutation = useMutation({
     mutationFn: () => {
@@ -1140,7 +1406,13 @@ export default function PersonalKnowledge() {
                 setBusyJobId(jobId);
                 retryMutation.mutate(jobId);
               }}
+              onCancelJob={(jobId) => {
+                setBusyJobId(jobId);
+                cancelJobMutation.mutate(jobId);
+              }}
               onRetryJobsQuery={() => void jobsQuery.refetch()}
+              actionError={jobActionError}
+              intakeError={intakeActionError}
               pastePending={ingestMutation.isPending}
               filePending={importFileMutation.isPending}
               urlPending={importUrlMutation.isPending}
@@ -1267,8 +1539,11 @@ export default function PersonalKnowledge() {
               })
             }
             onArchive={(documentId) => patchMutation.mutate({ documentId, body: { status: 'archived' } })}
+            onRestore={(documentId) => restoreMutation.mutate(documentId)}
             rebuildPending={rebuildMutation.isPending}
             patchPending={patchMutation.isPending}
+            restorePending={restoreMutation.isPending}
+            actionError={documentActionError}
             revisions={revisionsQuery.data?.revisions ?? []}
             revisionsLoading={revisionsQuery.isLoading}
             revisionsError={revisionsQuery.isError ? revisionsQuery.error : undefined}

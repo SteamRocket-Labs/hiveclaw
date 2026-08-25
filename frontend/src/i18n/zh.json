@@ -4006,7 +4006,7 @@
     "untitled": "未命名笔记",
     "stats": "个人知识库统计",
     "dropOrChoose": "拖拽或选择文件",
-    "dropHelper": "PDF、DOCX、CSV、HTML、Markdown、音频、视频或图片",
+    "dropHelper": "PDF、DOCX、Markdown 或纯文本",
     "importing": "导入中",
     "importFile": "导入文件",
     "urlImport": "URL 导入",
@@ -4041,7 +4041,66 @@
     "companyReviewSubmitting": "正在提交...",
     "companyReviewSubmit": "提交公司审核",
     "companyReviewQueued": "已提交审核，目前尚未发布任何公司知识。",
-    "openCompanyLibrary": "打开公司知识库"
+    "openCompanyLibrary": "打开公司知识库",
+    "formatPdf": "PDF",
+    "formatDocx": "Word / DOCX",
+    "formatMarkdown": "Markdown",
+    "sourcePaste": "粘贴",
+    "sourceLink": "链接",
+    "sourceUpload": "上传",
+    "sourceChatAttachment": "聊天附件",
+    "sourceAgent": "来自 Agent",
+    "sourceOther": "其他",
+    "jobStatus": {
+      "queued": "排队中",
+      "running": "进行中",
+      "completed": "已完成",
+      "failed": "失败",
+      "cancelled": "已取消",
+      "unknown": "状态不可用"
+    },
+    "jobResult": {
+      "ready": "已就绪",
+      "degraded": "部分索引",
+      "failed": "失败",
+      "cancelled": "已取消",
+      "unknown": "状态不可用"
+    },
+    "jobError": {
+      "conversionFailed": "文件无法转换。",
+      "conversionTimeout": "转换超时，可以重试。",
+      "sourceMissing": "上传的源文件已不可用。",
+      "unsupportedFileType": "不支持此文件类型。",
+      "unsupportedOrUnconfigured": "此处不支持该媒体类型。",
+      "mediaTranscriptionEmpty": "未生成可读内容。",
+      "documentMissing": "文档已不可用。",
+      "canonicalMissing": "已存储的内容不可用。",
+      "importPayloadInvalid": "导入请求无效。",
+      "importFailed": "导入失败，原因未知。",
+      "attemptLimit": "已达重试次数上限。",
+      "unknown": "导入失败，原因未知。"
+    },
+    "documentStatus": {
+      "queued": "排队中",
+      "ready": "已就绪",
+      "degraded": "部分索引",
+      "failed": "失败",
+      "archived": "已归档",
+      "unknown": "状态不可用"
+    },
+    "actionError": {
+      "notRetryable": "该导入暂时无法重试。",
+      "retryAttemptLimit": "已达重试次数上限。",
+      "notCancellableRunning": "进行中的导入无法取消。",
+      "notCancellableTerminal": "该导入已结束。",
+      "restoreRequiresArchived": "仅已归档的文档可以恢复。",
+      "restoreNoConsumableState": "没有可恢复的可用版本。",
+      "unknown": "操作未能完成。",
+      "uploadTooLarge": "文件过大，无法导入。"
+    },
+    "cancel": "取消",
+    "restore": "恢复",
+    "untitledJob": "知识导入"
   },
   "companyKnowledge": {
     "libraryEyebrow": "已授权的公司知识库",

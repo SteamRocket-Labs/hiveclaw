@@ -23,6 +23,8 @@ from app.models.knowledge import (
     KnowledgeLink,
     KnowledgeSegment,
 )
+from app.services.personal_knowledge_jobs import DEFAULT_IMPORT_JOB_MAX_ATTEMPTS
+from app.services.personal_knowledge_service import PersonalKnowledgeService
 
 
 class _ScalarResult:
@@ -1624,7 +1626,10 @@ async def test_ingest_audio_uses_transcription_provider_then_indexes_transcript(
 
 
 @pytest.mark.asyncio
-async def test_process_import_jobs_consumes_queued_and_failed_personal_jobs(tmp_path: Path) -> None:
+async def test_process_import_jobs_consumes_queued_jobs_and_refuses_failed_reselect(tmp_path: Path) -> None:
+    """Normal workers select queued jobs and stale-running leases only. Even
+    when a failed row is hand-fed to the batch, it is refused — a failed job
+    re-enters queued exclusively through the explicit retry CAS."""
     from app.services.personal_knowledge_service import PersonalKnowledgeIngestResult, PersonalKnowledgeService
 
     tenant_id = uuid.uuid4()
@@ -1637,32 +1642,19 @@ async def test_process_import_jobs_consumes_queued_and_failed_personal_jobs(tmp_
         def __init__(self) -> None:
             super().__init__(data_root=tmp_path)
             self.rebuild_calls: list[uuid.UUID] = []
-            self.results = [
-                PersonalKnowledgeIngestResult(
-                    document_id=job_a.document_id,
-                    job_id=job_a.id,
-                    source_sha256="a" * 64,
-                    artifact_hash="a" * 64,
-                    canonical_md_path="a.md",
-                    segment_count=2,
-                    status="ready",
-                    warnings=[],
-                ),
-                PersonalKnowledgeIngestResult(
-                    document_id=job_b.document_id,
-                    job_id=job_b.id,
-                    source_sha256="b" * 64,
-                    artifact_hash="b" * 64,
-                    canonical_md_path="b.md",
-                    segment_count=0,
-                    status="failed",
-                    warnings=["canonical_markdown_missing"],
-                ),
-            ]
 
         async def rebuild_personal_document_index(self, session, **kwargs):
             self.rebuild_calls.append(kwargs["document_id"])
-            return self.results.pop(0)
+            return PersonalKnowledgeIngestResult(
+                document_id=kwargs["document_id"],
+                job_id=job_a.id,
+                source_sha256="a" * 64,
+                artifact_hash="a" * 64,
+                canonical_md_path="a.md",
+                segment_count=2,
+                status="ready",
+                warnings=[],
+            )
 
     service = _BatchService()
 
@@ -1674,12 +1666,14 @@ async def test_process_import_jobs_consumes_queued_and_failed_personal_jobs(tmp_
         limit=5,
     )
 
-    assert service.rebuild_calls == [job_a.document_id, job_b.document_id]
-    assert summary.attempted == 2
+    # Only the queued job ran; the failed row was refused without a rebuild.
+    assert service.rebuild_calls == [job_a.document_id]
     assert summary.succeeded == 1
-    assert summary.failed == 1
+    assert summary.failed == 0
+    assert summary.skipped == 1
     assert summary.results[0]["status"] == "ready"
-    assert summary.results[1]["warnings"] == ["canonical_markdown_missing"]
+    assert summary.results[1]["status"] == "skipped"
+    assert summary.results[1]["warnings"] == ["status_not_claimable"]
 
 
 @pytest.mark.asyncio
@@ -2061,3 +2055,702 @@ async def test_process_import_jobs_isolates_poison_job_from_rest_of_batch(tmp_pa
     # Healthy job indexed successfully after the poison job failed.
     assert healthy.status == "ready"
     assert summary.results[1]["status"] == "ready"
+
+
+# ---------------------------------------------------------------------------
+# RC-01: durable lifecycle, idempotency, typed exits (failing-first additions)
+# ---------------------------------------------------------------------------
+
+
+class _ExistingPairSession(_FakeAsyncSession):
+    """Returns the seeded existing document for the first Select and the
+    seeded existing job for the second (mirrors _queue_import_job's lookups)."""
+
+    def __init__(self, existing_document, existing_job) -> None:
+        super().__init__(existing_document=existing_document)
+        self.existing_job = existing_job
+        self._select_index = 0
+
+    async def execute(self, statement):
+        if isinstance(statement, Select):
+            self._select_index += 1
+            if self._select_index == 1:
+                return _ScalarResult(self.existing_document)
+            if self._select_index == 2:
+                return _ScalarResult(self.existing_job)
+        return await super().execute(statement)
+
+
+def _existing_document_row(status: str, *, archived: bool = False, segment_count: int = 0) -> KnowledgeDocument:
+    metadata: dict = {"segment_count": segment_count}
+    if archived:
+        metadata["archived_from_status"] = "ready"
+    return KnowledgeDocument(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        scope_type="person",
+        scope_id=uuid.uuid4(),
+        owner_user_id=uuid.uuid4(),
+        source_kind="upload",
+        source_uri="upload://dup.pdf",
+        source_sha256="a" * 64,
+        artifact_hash="a" * 64,
+        title="Existing duplicate document",
+        status=status,
+        sensitivity="internal",
+        agent_searchable=True,
+        canonical_md_path="a.md",
+        canonical_md_sha256="b" * 64,
+        doc_metadata_json=metadata,
+        created_by_user_id=None,
+    )
+
+
+def _existing_job_row(status: str, attempt_count: int) -> KnowledgeIndexJob:
+    return KnowledgeIndexJob(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        document_id=uuid.uuid4(),
+        scope_type="person",
+        scope_id=uuid.uuid4(),
+        artifact_hash="a" * 64,
+        stage="indexed" if status in {"ready", "degraded"} else status,
+        status=status,
+        error_message=None,
+        attempt_count=attempt_count,
+        job_metadata_json={},
+    )
+
+
+async def test_duplicate_source_returns_existing_state_without_reset(tmp_path: Path) -> None:
+    """Reuploading identical bytes is idempotent: ready stays ready, archived
+    stays archived, attempts stay stable — only explicit Retry/Restore/Rebuild
+    reprocesses."""
+    service = PersonalKnowledgeService(data_root=tmp_path)
+    owner_id = uuid.uuid4()
+    for document_status, job_status, attempts in (
+        ("ready", "ready", 1),
+        ("archived", "ready", 2),
+        ("ready", "failed", 3),
+    ):
+        document = _existing_document_row(document_status, archived=document_status == "archived", segment_count=4)
+        job = _existing_job_row(job_status, attempts)
+        session = _ExistingPairSession(document, job)
+
+        result = await service._queue_import_job(
+            session,
+            tenant_id=document.tenant_id,
+            owner_user_id=document.scope_id,
+            title="Duplicate upload",
+            source_kind="upload",
+            source_uri="upload://dup.pdf",
+            source_sha256="a" * 64,
+            artifact_hash="a" * 64,
+            canonical_md_path="a.md",
+            canonical_md_sha256="b" * 64,
+            created_by_user_id=owner_id,
+            agent_searchable=True,
+            sensitivity="internal",
+            metadata={},
+        )
+
+        assert result.status == document_status, (document_status, result.status)
+        assert result.document_id == document.id
+        assert result.job_id == job.id
+        # The existing rows were not mutated back to queued.
+        assert document.status == document_status
+        assert job.status == job_status
+        assert int(job.attempt_count or 0) == attempts
+
+
+async def test_duplicate_source_at_max_attempts_stays_terminal_not_queued(tmp_path: Path) -> None:
+    document = _existing_document_row("ready", segment_count=2)
+    job = _existing_job_row("failed", DEFAULT_IMPORT_JOB_MAX_ATTEMPTS)
+    session = _ExistingPairSession(document, job)
+    service = PersonalKnowledgeService(data_root=tmp_path)
+
+    result = await service._queue_import_job(
+        session,
+        tenant_id=document.tenant_id,
+        owner_user_id=document.scope_id,
+        title="Duplicate at max attempts",
+        source_kind="upload",
+        source_uri="upload://dup.pdf",
+        source_sha256="a" * 64,
+        artifact_hash="a" * 64,
+        canonical_md_path="a.md",
+        canonical_md_sha256="b" * 64,
+        created_by_user_id=uuid.uuid4(),
+        agent_searchable=True,
+        sensitivity="internal",
+        metadata={},
+    )
+
+    assert result.status == "ready"
+    assert job.status == "failed"
+    assert int(job.attempt_count or 0) == DEFAULT_IMPORT_JOB_MAX_ATTEMPTS
+
+
+class _SlowConverter:
+    def convert_bytes(self, **kwargs):
+        import time
+
+        time.sleep(0.3)
+        return SimpleNamespace(
+            markdown="# slow",
+            warnings=[],
+            engine="slow-test",
+            artifact_markdown_path="",
+            artifact_metadata_path="",
+            source_mime_type="application/pdf",
+            source_sha256="c" * 64,
+        )
+
+
+async def test_conversion_timeout_is_typed_retryable_failure(tmp_path: Path) -> None:
+    """A physically slow converter becomes a typed retryable failure; the
+    source evidence stays recorded and semantic content is not truncated."""
+    session = _FakeAsyncSession()
+    service = PersonalKnowledgeService(
+        data_root=tmp_path,
+        conversion_service=_SlowConverter(),
+        conversion_timeout_seconds=0.05,
+    )
+
+    result = await service.ingest_source_bytes(
+        session,
+        tenant_id=uuid.uuid4(),
+        owner_user_id=uuid.uuid4(),
+        filename="slow.pdf",
+        data=b"%PDF-1.4 fake bytes for timeout regression",
+        title="Slow PDF",
+        source_kind="upload",
+        source_uri="upload://slow.pdf",
+        created_by_user_id=None,
+        agent_searchable=True,
+        sensitivity="internal",
+        source_mime_type="application/pdf",
+    )
+
+    assert result.status == "failed"
+    assert "conversion_timeout" in (result.warnings or [])
+    failed_job = next(row for row in session.added if isinstance(row, KnowledgeIndexJob))
+    assert failed_job.status == "failed"
+    assert failed_job.error_message == "conversion_timeout"
+    assert failed_job.job_metadata_json.get("error") == "conversion_timeout"
+    assert failed_job.job_metadata_json.get("retryable") is True
+    assert failed_job.job_metadata_json.get("source_filename") == "slow.pdf"
+
+
+class _JobLookupSession(_FakeAsyncSession):
+    """Returns a specific existing job row for Select statements."""
+
+    def __init__(self, job) -> None:
+        super().__init__()
+        self.job = job
+        self.updates: list[Update] = []
+
+    async def execute(self, statement):
+        if isinstance(statement, Select):
+            return _ScalarResult(self.job)
+        if isinstance(statement, Update):
+            self.updates.append(statement)
+            return SimpleNamespace(rowcount=1, scalar_one_or_none=lambda: None)
+        return await super().execute(statement)
+
+
+class _SegmentCountSession(_JobLookupSession):
+    async def execute(self, statement):
+        if isinstance(statement, Select):
+            compiled = str(statement.compile(compile_kwargs={"literal_binds": False}))
+            if "knowledge_segments" in compiled:
+                return _ScalarResult(3)
+            return _ScalarResult(self.job)
+        return await super().execute(statement)
+
+
+async def test_cancel_queued_import_job_is_cas_guarded(tmp_path: Path) -> None:
+    job = _existing_job_row("queued", 0)
+    session = _JobLookupSession(job)
+    service = PersonalKnowledgeService(data_root=tmp_path)
+    owner = uuid.uuid4()
+
+    summary = await service.cancel_import_job(
+        session, tenant_id=job.tenant_id, owner_user_id=owner, job_id=job.id, current_user_id=owner
+    )
+
+    assert summary is not None
+    assert summary.status == "cancelled"
+    assert summary.terminal is True
+    assert summary.cancellable is False
+    # The cancel must be compare-and-set guarded on status == 'queued'.
+    cancel_update = next(statement for statement in session.updates if isinstance(statement, Update))
+    compiled = str(cancel_update.compile(compile_kwargs={"literal_binds": False}))
+    assert "status" in compiled
+
+
+async def test_cancel_running_import_job_is_typed_not_cancellable(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeJobConflict
+
+    job = _existing_job_row("running", 1)
+    session = _JobLookupSession(job)
+    service = PersonalKnowledgeService(data_root=tmp_path)
+    owner = uuid.uuid4()
+
+    with pytest.raises(PersonalKnowledgeJobConflict) as conflict:
+        await service.cancel_import_job(
+            session, tenant_id=job.tenant_id, owner_user_id=owner, job_id=job.id, current_user_id=owner
+        )
+    assert conflict.value.code == "not_cancellable_while_running"
+    assert conflict.value.cancellable is False
+
+
+async def test_retry_import_job_requeues_without_running_conversion(tmp_path: Path) -> None:
+    job = _existing_job_row("failed", 1)
+    session = _JobLookupSession(job)
+    service = PersonalKnowledgeService(data_root=tmp_path)
+    owner = uuid.uuid4()
+
+    conversions = []
+
+    async def _fail_if_called(*args, **kwargs):  # pragma: no cover - must not run
+        conversions.append(True)
+        raise AssertionError("retry must not run conversion inside the request")
+
+    service.ingest_markdown = _fail_if_called  # type: ignore[method-assign]
+    service.rebuild_personal_document_index = _fail_if_called  # type: ignore[method-assign]
+
+    summary = await service.retry_import_job(
+        session, tenant_id=job.tenant_id, owner_user_id=owner, job_id=job.id, current_user_id=owner
+    )
+
+    assert summary is not None
+    assert summary.status == "queued"
+    assert summary.terminal is False
+    # A queued job is not retryable again — the Retry affordance is owned by
+    # failed jobs under the attempt ceiling; the claim increment owns attempts.
+    assert summary.retryable is False
+    assert summary.attempt_count == 1
+    assert conversions == []
+
+
+async def test_job_summary_derives_lifecycle_view_fields(tmp_path: Path) -> None:
+    """The read model derives terminal/retryable/cancellable/error_code and
+    exposes max_attempts without any schema change."""
+    from app.services.personal_knowledge_service import _job_lifecycle_view
+
+    queued = _existing_job_row("queued", 0)
+    running = _existing_job_row("running", 1)
+    failed_retryable = _existing_job_row("failed", 1)
+    failed_retryable.job_metadata_json = {"error": "conversion_timeout"}
+    ready = _existing_job_row("ready", 1)
+
+    assert _job_lifecycle_view(queued).terminal is False
+    assert _job_lifecycle_view(queued).cancellable is True
+    assert _job_lifecycle_view(running).terminal is False
+    assert _job_lifecycle_view(running).cancellable is False
+    retryable_view = _job_lifecycle_view(failed_retryable)
+    assert retryable_view.terminal is True
+    assert retryable_view.retryable is True
+    assert retryable_view.error_code == "conversion_timeout"
+    assert _job_lifecycle_view(ready).terminal is True
+    assert _job_lifecycle_view(ready).retryable is False
+
+
+async def test_patch_personal_document_status_accepts_only_archive(tmp_path: Path) -> None:
+    document = _existing_document_row("ready", segment_count=3)
+
+    class _DocumentOnlySession(_FakeAsyncSession):
+        async def execute(self, statement):
+            if isinstance(statement, Select):
+                return _ScalarResult(document)
+            return await super().execute(statement)
+
+    session = _DocumentOnlySession()
+    service = PersonalKnowledgeService(data_root=tmp_path)
+
+    with pytest.raises(ValueError) as rejection:
+        await service.patch_personal_document(
+            session,
+            tenant_id=document.tenant_id,
+            owner_user_id=document.scope_id,
+            document_id=document.id,
+            current_user_id=document.scope_id,
+            agent_id=None,
+            status="ready",
+        )
+    assert "unsupported_status" in str(rejection.value)
+
+    archived = await service.patch_personal_document(
+        session,
+        tenant_id=document.tenant_id,
+        owner_user_id=document.scope_id,
+        document_id=document.id,
+        current_user_id=document.scope_id,
+        agent_id=None,
+        status="archived",
+    )
+    assert archived is not None
+    assert document.status == "archived"
+    assert document.doc_metadata_json["archived_from_status"] == "ready"
+
+
+async def test_restore_personal_document_recovers_previous_consumable_state(tmp_path: Path) -> None:
+    document = _existing_document_row("archived", archived=True, segment_count=3)
+
+    class _DocumentRoutingSession(_FakeAsyncSession):
+        async def execute(self, statement):
+            if isinstance(statement, Select):
+                compiled = str(statement.compile(compile_kwargs={"literal_binds": False}))
+                if "knowledge_segments" in compiled:
+                    return SimpleNamespace(scalar_one=lambda: 3, scalar_one_or_none=lambda: 3)
+                return _ScalarResult(document)
+            return await super().execute(statement)
+
+    session = _DocumentRoutingSession()
+    service = PersonalKnowledgeService(data_root=tmp_path)
+
+    restored = await service.restore_personal_document(
+        session,
+        tenant_id=document.tenant_id,
+        owner_user_id=document.scope_id,
+        document_id=document.id,
+        current_user_id=document.scope_id,
+    )
+
+    assert restored is not None
+    assert restored.status == "ready"
+    assert document.doc_metadata_json.get("archived_from_status") is None
+
+
+async def test_restore_never_invents_ready_without_consumable_state(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeDocumentConflict
+
+    document = _existing_document_row("archived")
+    document.doc_metadata_json = {}  # no archived_from_status recorded
+
+    class _NoSegmentsSession(_FakeAsyncSession):
+        async def execute(self, statement):
+            if isinstance(statement, Select):
+                compiled = str(statement.compile(compile_kwargs={"literal_binds": False}))
+                if "knowledge_segments" in compiled:
+                    return SimpleNamespace(scalar_one=lambda: 0, scalar_one_or_none=lambda: 0)
+                return _ScalarResult(document)
+            return await super().execute(statement)
+
+    session = _NoSegmentsSession()
+    service = PersonalKnowledgeService(data_root=tmp_path)
+
+    with pytest.raises(PersonalKnowledgeDocumentConflict) as conflict:
+        await service.restore_personal_document(
+            session,
+            tenant_id=document.tenant_id,
+            owner_user_id=document.scope_id,
+            document_id=document.id,
+            current_user_id=document.scope_id,
+        )
+    assert conflict.value.code == "restore_no_consumable_state"
+
+
+# ---------------------------------------------------------------------------
+# RC-01 corrections: lifecycle/result split, typed error taxonomy, timestamps
+# (failing-first additions)
+# ---------------------------------------------------------------------------
+
+
+async def test_job_summary_splits_lifecycle_and_result_status(tmp_path: Path) -> None:
+    """B5: lifecycle_status (queued/running/completed/failed/cancelled) is
+    distinct from result_status (ready/degraded/failed/cancelled); raw status
+    stays only for compatibility."""
+    from app.services.personal_knowledge_service import _job_lifecycle_view
+
+    queued = _job_lifecycle_view(_existing_job_row("queued", 0))
+    assert queued.lifecycle_status == "queued"
+    assert queued.result_status is None
+    assert queued.terminal is False
+
+    running = _job_lifecycle_view(_existing_job_row("running", 1))
+    assert running.lifecycle_status == "running"
+    assert running.result_status is None
+    assert running.terminal is False
+
+    ready = _job_lifecycle_view(_existing_job_row("ready", 1))
+    assert ready.lifecycle_status == "completed"
+    assert ready.result_status == "ready"
+    assert ready.terminal is True
+
+    degraded = _job_lifecycle_view(_existing_job_row("degraded", 1))
+    assert degraded.lifecycle_status == "completed"
+    assert degraded.result_status == "degraded"
+    assert degraded.terminal is True
+
+    failed = _job_lifecycle_view(_existing_job_row("failed", 1))
+    assert failed.lifecycle_status == "failed"
+    assert failed.result_status == "failed"
+    assert failed.terminal is True
+
+    cancelled = _existing_job_row("cancelled", 0)
+    cancelled.job_metadata_json = {"cancelled_at": "2026-08-25T01:02:03+00:00"}
+    cancelled_view = _job_lifecycle_view(cancelled)
+    assert cancelled_view.lifecycle_status == "cancelled"
+    assert cancelled_view.result_status == "cancelled"
+    assert cancelled_view.terminal is True
+    assert cancelled_view.cancelled_at == "2026-08-25T01:02:03+00:00"
+
+
+def _queued_kind_job(tmp_path: Path, kind: str = "markdown") -> KnowledgeIndexJob:
+    spool = tmp_path / "spool" / "queued.md"
+    spool.parent.mkdir(parents=True, exist_ok=True)
+    spool.write_text("# queued\n\nbody", encoding="utf-8")
+    job = _existing_job_row("running", 1)
+    job.job_metadata_json = {
+        "queued_import_kind": kind,
+        "queued_markdown_path": spool.relative_to(tmp_path).as_posix(),
+        "title": "Queued doc",
+        "source_kind": "paste",
+        "source_uri": None,
+        "created_by_user_id": None,
+        "agent_searchable": True,
+        "sensitivity": "internal",
+        "doc_metadata": {},
+        "source_sha256": "a" * 64,
+        "claimed_token": "token-a",
+    }
+    return job
+
+
+async def test_unknown_worker_error_maps_to_generic_code_not_raw_prose(tmp_path: Path) -> None:
+    """B7: an unexpected exception — even one whose prose happens to contain
+    format words like 'pdf' — maps to the one generic safe code. Raw exception
+    text never becomes the user-facing error state."""
+    job = _queued_kind_job(tmp_path)
+    session = _JobLookupSession(job)
+    service = PersonalKnowledgeService(data_root=tmp_path)
+    owner = job.scope_id
+
+    async def explode(*args, **kwargs):
+        raise RuntimeError("vendor parser choked on pdf stream bytes at offset 41")
+
+    service.ingest_markdown = explode  # type: ignore[method-assign]
+    result = await service._process_queued_import_job(
+        session,
+        job=job,
+        tenant_id=job.tenant_id,
+        owner_user_id=owner,
+        current_user_id=owner,
+        claimed=True,
+    )
+
+    assert result is not None and result.status == "failed"
+    assert job.status == "failed"
+    assert job.error_message == "import_failed"
+    assert job.job_metadata_json.get("error") == "import_failed"
+    # Raw exception prose is not the contract; only the class name stays as
+    # operator evidence.
+    assert "vendor parser" not in str(job.error_message)
+    assert "vendor parser" not in str(job.job_metadata_json.get("error"))
+    assert job.job_metadata_json.get("failure_exception") == "RuntimeError"
+
+
+async def test_converter_exception_maps_to_typed_conversion_failed(tmp_path: Path) -> None:
+    """B7: any failure from the conversion boundary is the exact typed
+    conversion_failed code — never inferred from message substrings."""
+    job = _queued_kind_job(tmp_path, kind="source_bytes")
+    spool = tmp_path / "spool" / "queued.pdf"
+    spool.write_bytes(b"%PDF-1.4 bytes")
+    job.job_metadata_json["queued_source_path"] = spool.relative_to(tmp_path).as_posix()
+    job.job_metadata_json["source_filename"] = "queued.pdf"
+    session = _JobLookupSession(job)
+    service = PersonalKnowledgeService(data_root=tmp_path)
+
+    class _ExplodingConverter:
+        def convert_bytes(self, **kwargs):
+            raise RuntimeError("totally unexpected converter internals")
+
+    service.conversion_service = _ExplodingConverter()
+    result = await service._process_queued_import_job(
+        session,
+        job=job,
+        tenant_id=job.tenant_id,
+        owner_user_id=job.scope_id,
+        current_user_id=job.scope_id,
+        claimed=True,
+    )
+
+    assert result is not None and result.status == "failed"
+    assert job.job_metadata_json.get("error") == "conversion_failed"
+    assert job.error_message == "conversion_failed"
+
+
+async def test_cancel_returns_the_committed_cancelled_at(tmp_path: Path) -> None:
+    """B8: the cancel response carries the exact cancelled_at that the CAS
+    committed — one timestamp, visible on the summary and the metadata."""
+    job = _existing_job_row("queued", 0)
+    session = _JobLookupSession(job)
+    service = PersonalKnowledgeService(data_root=tmp_path)
+    owner = uuid.uuid4()
+
+    summary = await service.cancel_import_job(
+        session, tenant_id=job.tenant_id, owner_user_id=owner, job_id=job.id, current_user_id=owner
+    )
+
+    assert summary is not None
+    committed = str(job.job_metadata_json.get("cancelled_at") or "")
+    assert committed
+    assert summary.cancelled_at == committed
+    cancel_update = next(statement for statement in session.updates if isinstance(statement, Update))
+    params = cancel_update.compile().params
+    metadata_values = [value for value in params.values() if isinstance(value, dict)]
+    assert any(value.get("cancelled_at") == committed for value in metadata_values)
+
+
+async def test_retry_uses_one_consistent_retried_at(tmp_path: Path) -> None:
+    """B8: retry stamps one retried_at and the returned summary reflects the
+    same committed metadata (no double now() divergence)."""
+    job = _existing_job_row("failed", 1)
+    session = _JobLookupSession(job)
+    service = PersonalKnowledgeService(data_root=tmp_path)
+    owner = uuid.uuid4()
+
+    summary = await service.retry_import_job(
+        session, tenant_id=job.tenant_id, owner_user_id=owner, job_id=job.id, current_user_id=owner
+    )
+
+    assert summary is not None
+    committed = str(job.job_metadata_json.get("retried_at") or "")
+    assert committed
+    retry_update = next(statement for statement in session.updates if isinstance(statement, Update))
+    params = retry_update.compile().params
+    metadata_values = [value for value in params.values() if isinstance(value, dict) and "retried_at" in value]
+    # Exactly one stamped value, and it is the one the summary reflects.
+    assert len(metadata_values) == 1
+    assert metadata_values[0]["retried_at"] == committed
+
+
+def test_claim_statement_never_selects_failed_jobs() -> None:
+    """B4: the sole claim query admits queued and stale-running leases only;
+    'failed' is not a selectable status even if a caller asks for it."""
+    from app.services.personal_knowledge_jobs import build_personal_knowledge_job_claim_statement
+
+    statement = build_personal_knowledge_job_claim_statement(
+        tenant_id=None,
+        owner_user_id=None,
+        statuses=("failed",),
+        queued_before=None,
+        running_before=None,
+        max_attempts=5,
+        limit=10,
+    )
+    compiled = str(statement.compile(compile_kwargs={"literal_binds": True}))
+    assert "'failed'" not in compiled
+
+
+async def test_retry_refuses_requeue_at_or_above_attempt_ceiling(tmp_path: Path) -> None:
+    """B1 guard: explicit retry must refuse to requeue a failed job that is
+    already at the attempt ceiling (typed conflict, no queued resurrection)."""
+    from app.services.personal_knowledge_service import PersonalKnowledgeJobConflict
+
+    job = _existing_job_row("failed", DEFAULT_IMPORT_JOB_MAX_ATTEMPTS)
+    session = _JobLookupSession(job)
+    service = PersonalKnowledgeService(data_root=tmp_path)
+    owner = uuid.uuid4()
+
+    with pytest.raises(PersonalKnowledgeJobConflict) as conflict:
+        await service.retry_import_job(
+            session, tenant_id=job.tenant_id, owner_user_id=owner, job_id=job.id, current_user_id=owner
+        )
+    assert conflict.value.code == "retry_attempt_limit"
+    assert conflict.value.retryable is False
+    assert job.status == "failed"
+
+
+async def test_duplicate_source_with_missing_job_row_returns_null_job_id(tmp_path: Path) -> None:
+    """Codex-2: a deduped upload whose persisted document has no matching job
+    row returns job_id=None — never a fabricated id for nonexistent evidence."""
+    document = _existing_document_row("ready", segment_count=2)
+    session = _ExistingPairSession(document, None)
+    service = PersonalKnowledgeService(data_root=tmp_path)
+
+    result = await service._queue_import_job(
+        session,
+        tenant_id=document.tenant_id,
+        owner_user_id=document.scope_id,
+        title="Duplicate with missing job",
+        source_kind="upload",
+        source_uri="upload://dup.pdf",
+        source_sha256="a" * 64,
+        artifact_hash="a" * 64,
+        canonical_md_path="a.md",
+        canonical_md_sha256="b" * 64,
+        created_by_user_id=uuid.uuid4(),
+        agent_searchable=True,
+        sensitivity="internal",
+        metadata={},
+    )
+
+    assert result.document_id == document.id
+    assert result.job_id is None
+    assert result.status == "ready"
+
+
+async def test_retryable_contract_failed_cancelled_and_permanent_codes(tmp_path: Path) -> None:
+    """One retryability authority: cancelled requeues while attempts remain;
+    permanent codes are non-retryable; transient failures stay retryable."""
+    from app.services.personal_knowledge_service import PersonalKnowledgeJobConflict, _job_lifecycle_view
+
+    cancelled = _existing_job_row("cancelled", 1)
+    cancelled_view = _job_lifecycle_view(cancelled)
+    assert cancelled_view.retryable is True
+
+    # Evidence-missing codes are recoverable by re-uploading the same bytes:
+    # the spool/artifact is rewritten on queue, so an explicit retry succeeds.
+    for recoverable_code in (
+        "conversion_timeout",
+        "conversion_failed",
+        "source_missing",
+        "canonical_markdown_missing",
+        "worker_error",
+        "import_failed",
+    ):
+        recoverable = _existing_job_row("failed", 1)
+        recoverable.job_metadata_json = {"error": recoverable_code}
+        assert _job_lifecycle_view(recoverable).retryable is True, recoverable_code
+
+    # Truly permanent codes: input type/structure, orphaned object, attempt ceiling.
+    for permanent_code in (
+        "unsupported_file_type",
+        "document_missing",
+        "import_payload_invalid",
+        "personal_kb_import_attempt_limit_exceeded",
+    ):
+        permanent = _existing_job_row("failed", 1)
+        permanent.job_metadata_json = {"error": permanent_code}
+        assert _job_lifecycle_view(permanent).retryable is False, permanent_code
+
+        session = _JobLookupSession(permanent)
+        service = PersonalKnowledgeService(data_root=tmp_path)
+        owner = uuid.uuid4()
+        with pytest.raises(PersonalKnowledgeJobConflict) as conflict:
+            await service.retry_import_job(
+                session,
+                tenant_id=permanent.tenant_id,
+                owner_user_id=owner,
+                job_id=permanent.id,
+                current_user_id=owner,
+            )
+        assert conflict.value.code == "not_retryable", permanent_code
+        assert permanent.status == "failed"
+
+    # Cancelled under the ceiling requeues through the same helper.
+    cancelled_session = _JobLookupSession(cancelled)
+    service = PersonalKnowledgeService(data_root=tmp_path)
+    owner = uuid.uuid4()
+    summary = await service.retry_import_job(
+        cancelled_session,
+        tenant_id=cancelled.tenant_id,
+        owner_user_id=owner,
+        job_id=cancelled.id,
+        current_user_id=owner,
+    )
+    assert summary is not None
+    assert summary.lifecycle_status == "queued"

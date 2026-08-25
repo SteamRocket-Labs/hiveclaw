@@ -186,15 +186,16 @@ def _personal_kb_candidate_payload(result, *, origin: str) -> dict[str, object]:
 
 
 async def _process_upload_personal_import_jobs(*, tenant_id: uuid.UUID, owner_user_id: uuid.UUID) -> None:
-    async with tenant_scoped_session(tenant_id) as session:
-        await PersonalKnowledgeService().process_import_jobs(
-            session,
-            tenant_id=tenant_id,
-            owner_user_id=owner_user_id,
-            current_user_id=owner_user_id,
-            limit=5,
-            statuses=("queued",),
-        )
+    # Two-phase worker: the claim commits before long conversion starts.
+    await PersonalKnowledgeService().process_import_jobs(
+        None,
+        session_factory=lambda: tenant_scoped_session(tenant_id),
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+        current_user_id=owner_user_id,
+        limit=5,
+        statuses=("queued",),
+    )
 
 
 async def save_upload_for_agent(

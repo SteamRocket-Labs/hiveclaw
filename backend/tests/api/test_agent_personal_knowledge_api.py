@@ -334,7 +334,12 @@ def test_current_user_personal_knowledge_url_import_and_jobs(monkeypatch):
     for _name, kwargs in captured:
         assert kwargs["tenant_id"] == user.tenant_id
         assert kwargs["owner_user_id"] == owner_id
-    assert background_calls == [{"tenant_id": user.tenant_id, "owner_user_id": owner_id}]
+    # The import schedules the worker; the retry now also schedules the same
+    # asynchronous worker after committing its queued transition.
+    assert background_calls == [
+        {"tenant_id": user.tenant_id, "owner_user_id": owner_id},
+        {"tenant_id": user.tenant_id, "owner_user_id": owner_id},
+    ]
 
 
 def test_current_user_personal_knowledge_document_actions(monkeypatch):
@@ -936,3 +941,194 @@ def test_shared_agent_user_browser_read_does_not_borrow_agent_runtime_authority(
     assert captured["principal"].principal_type == "human_browser"
     assert captured["principal"].user_id == shared_user_id
     assert not hasattr(captured["principal"], "agent_id")
+
+
+# ---------------------------------------------------------------------------
+# RC-01: typed lifecycle endpoints (failing-first additions)
+# ---------------------------------------------------------------------------
+
+
+def test_personal_import_job_cancel_lifecycle(monkeypatch):
+    from app.services.personal_knowledge_service import PersonalKnowledgeJobConflict
+
+    owner_id = uuid4()
+    user = SimpleNamespace(id=owner_id, role="member", tenant_id=uuid4(), is_active=True)
+    job_id = uuid4()
+    document_id = uuid4()
+    calls = []
+
+    class _FakeService:
+        async def cancel_import_job(self, session, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return SimpleNamespace(
+                    job_id=job_id,
+                    document_id=document_id,
+                    stage="cancelled",
+                    status="cancelled",
+                    artifact_hash="a" * 64,
+                    error_message=None,
+                    attempt_count=0,
+                    metadata={},
+                    created_at=None,
+                    updated_at=None,
+                    terminal=True,
+                    retryable=False,
+                    cancellable=False,
+                    error_code=None,
+                    max_attempts=5,
+                )
+            raise PersonalKnowledgeJobConflict("not_cancellable_while_running", cancellable=False)
+
+    monkeypatch.setattr(agent_knowledge_api, "PersonalKnowledgeService", lambda: _FakeService())
+    client, fake_db, _user = _personal_client(monkeypatch, user=user)
+
+    ok = client.post(f"/knowledge/personal/import-jobs/{job_id}/cancel")
+    assert ok.status_code == 200
+    assert ok.json()["status"] == "cancelled"
+    assert ok.json()["terminal"] is True
+    assert fake_db.commit_count == 1
+
+    conflict = client.post(f"/knowledge/personal/import-jobs/{job_id}/cancel")
+    assert conflict.status_code == 409
+    body = conflict.json()["detail"]
+    assert body["code"] == "not_cancellable_while_running"
+    assert body["cancellable"] is False
+
+
+def test_personal_import_job_retry_requeues_and_schedules_worker(monkeypatch):
+    owner_id = uuid4()
+    user = SimpleNamespace(id=owner_id, role="member", tenant_id=uuid4(), is_active=True)
+    job_id = uuid4()
+    background_calls = []
+    retry_calls = []
+
+    class _FakeService:
+        async def retry_import_job(self, session, **kwargs):
+            retry_calls.append(kwargs)
+            return SimpleNamespace(
+                job_id=job_id,
+                document_id=uuid4(),
+                stage="queued",
+                status="queued",
+                artifact_hash="b" * 64,
+                error_message=None,
+                attempt_count=1,
+                metadata={},
+                created_at=None,
+                updated_at=None,
+                terminal=False,
+                retryable=False,
+                cancellable=True,
+                error_code=None,
+                max_attempts=5,
+            )
+
+    async def fake_process_jobs(**kwargs):
+        background_calls.append(kwargs)
+
+    monkeypatch.setattr(agent_knowledge_api, "PersonalKnowledgeService", lambda: _FakeService())
+    monkeypatch.setattr(agent_knowledge_api, "_process_current_user_personal_import_jobs", fake_process_jobs)
+    client, fake_db, _user = _personal_client(monkeypatch, user=user)
+
+    response = client.post(f"/knowledge/personal/import-jobs/{job_id}/retry")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"
+    # The retry commits the queued transition and schedules the same worker
+    # after the response — no conversion ran inside the request.
+    assert fake_db.commit_count == 1
+    assert retry_calls and retry_calls[0]["job_id"] == job_id
+    assert background_calls == [{"tenant_id": user.tenant_id, "owner_user_id": owner_id}]
+
+
+def test_personal_file_import_rejects_oversized_upload_before_queue(monkeypatch):
+    owner_id = uuid4()
+    user = SimpleNamespace(id=owner_id, role="member", tenant_id=uuid4(), is_active=True)
+    queued = []
+
+    class _FakeService:
+        async def queue_source_bytes_import(self, session, **kwargs):  # pragma: no cover - must not run
+            queued.append(kwargs)
+            raise AssertionError("oversized upload must be rejected before queueing")
+
+    monkeypatch.setattr(agent_knowledge_api, "PersonalKnowledgeService", lambda: _FakeService())
+    monkeypatch.setattr(agent_knowledge_api, "PERSONAL_KB_MAX_UPLOAD_BYTES", 16)
+    client, _db, _user = _personal_client(monkeypatch, user=user)
+
+    response = client.post(
+        "/knowledge/personal/imports",
+        data={"title": "Big file", "agent_searchable": "true", "sensitivity": "internal"},
+        files={"file": ("big.bin", io.BytesIO(b"x" * 64), "application/octet-stream")},
+    )
+
+    assert response.status_code == 413
+    assert response.json()["detail"]["code"] == "upload_too_large"
+    assert response.json()["detail"]["max_bytes"] == 16
+    assert queued == []
+
+
+def test_personal_document_patch_status_is_restricted_and_restore_is_typed(monkeypatch):
+    owner_id = uuid4()
+    user = SimpleNamespace(id=owner_id, role="member", tenant_id=uuid4(), is_active=True)
+    document_id = uuid4()
+
+    class _FakeService:
+        async def patch_personal_document(self, session, **kwargs):
+            if kwargs.get("status") != "archived":  # pragma: no cover - pattern rejects earlier
+                raise AssertionError("unsupported status must be rejected by the request schema")
+            return SimpleNamespace(
+                document_id=document_id,
+                title="Archived doc",
+                status="archived",
+                source_kind="upload",
+                source_uri="upload://dup.pdf",
+                source_sha256="a" * 64,
+                artifact_hash="a" * 64,
+                sensitivity="internal",
+                agent_searchable=True,
+                segment_count=3,
+                canonical_md_path="a.md",
+                archived=True,
+                created_at=None,
+                updated_at=None,
+                metadata={"archived_from_status": "ready"},
+            )
+
+        async def restore_personal_document(self, session, **kwargs):
+            return SimpleNamespace(
+                document_id=document_id,
+                title="Restored doc",
+                status="ready",
+                source_kind="upload",
+                source_uri="upload://dup.pdf",
+                source_sha256="a" * 64,
+                artifact_hash="a" * 64,
+                sensitivity="internal",
+                agent_searchable=True,
+                segment_count=3,
+                canonical_md_path="a.md",
+                archived=False,
+                created_at=None,
+                updated_at=None,
+                metadata={"restored_at": "2026-08-25T00:00:00+00:00"},
+            )
+
+    monkeypatch.setattr(agent_knowledge_api, "PersonalKnowledgeService", lambda: _FakeService())
+    client, _db, _user = _personal_client(monkeypatch, user=user)
+
+    invalid = client.patch(
+        f"/knowledge/personal/documents/{document_id}",
+        json={"status": "ready"},
+    )
+    assert invalid.status_code == 422
+
+    archive = client.patch(
+        f"/knowledge/personal/documents/{document_id}",
+        json={"status": "archived"},
+    )
+    assert archive.status_code == 200
+
+    restored = client.post(f"/knowledge/personal/documents/{document_id}/restore")
+    assert restored.status_code == 200
+    assert restored.json()["status"] == "ready"

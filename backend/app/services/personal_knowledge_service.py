@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import mimetypes
@@ -10,6 +11,7 @@ import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlparse
 
@@ -35,6 +37,7 @@ from app.services.personal_knowledge_access import (
     _personal_knowledge_access_predicate,
     _personal_knowledge_agent_visibility_predicate,
     build_personal_knowledge_document_list_statement,
+    personal_knowledge_consumable_status_predicate,
     resolve_personal_knowledge_permission,
 )
 from app.services.personal_knowledge_index_search import (
@@ -114,6 +117,7 @@ class PersonalKnowledgeIngestResult:
     segment_count: int
     status: str
     warnings: list[str]
+    error_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -199,6 +203,14 @@ class PersonalKnowledgeJobSummary:
     metadata: dict[str, Any]
     created_at: Any
     updated_at: Any
+    terminal: bool = False
+    retryable: bool = False
+    cancellable: bool = False
+    error_code: str | None = None
+    max_attempts: int = _DEFAULT_IMPORT_JOB_MAX_ATTEMPTS
+    lifecycle_status: str = ""
+    result_status: str | None = None
+    cancelled_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -208,6 +220,174 @@ class PersonalKnowledgeJobProcessSummary:
     failed: int
     skipped: int
     results: list[dict[str, Any]]
+
+
+class PersonalKnowledgeJobConflict(Exception):
+    """Typed lifecycle conflict (cancel/retry) with an exact machine code."""
+
+    def __init__(self, code: str, *, cancellable: bool | None = None, retryable: bool | None = None) -> None:
+        super().__init__(code)
+        self.code = code
+        self.cancellable = cancellable
+        self.retryable = retryable
+
+
+class PersonalKnowledgeDocumentConflict(Exception):
+    """Typed document lifecycle conflict (restore) with an exact machine code."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class PersonalKnowledgeImportError(Exception):
+    """Typed import-pipeline failure carrying one exact machine code.
+
+    The code is the user-facing error contract; the exception class name stays
+    available as operator evidence, and raw exception prose never becomes UI
+    state.
+    """
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class PersonalKnowledgeConversionError(PersonalKnowledgeImportError):
+    """Conversion boundary failure (parser/provider), e.g. conversion_failed."""
+
+
+class PersonalKnowledgeSourceMissingError(PersonalKnowledgeImportError):
+    """The spooled source evidence for a queued import is no longer readable."""
+
+
+class PersonalKnowledgeClaimLost(Exception):
+    """The phase-1 claim lease (token + attempt + running) no longer matches.
+
+    Raised when another worker reclaimed the stale lease; the losing worker
+    must roll back every staged document/segment write and report the typed
+    claim_lost outcome instead of a failure.
+    """
+
+    code = "claim_lost"
+
+    def __init__(self, claimed_token: str) -> None:
+        super().__init__("claim_lost")
+        self.claimed_token = claimed_token
+
+
+def _typed_import_error_code(exc: Exception) -> str:
+    """Map an exception to its exact stable machine code.
+
+    Typed pipeline failures carry their code; anything else collapses to the
+    one generic safe code — no message-text classification.
+    """
+
+    if isinstance(exc, PersonalKnowledgeImportError):
+        return exc.code
+    return "import_failed"
+
+
+# Lifecycle view derived from the durable job row (no schema change):
+# lifecycle_status is queued/running/completed/failed/cancelled; result_status
+# is ready/degraded/failed/cancelled where a terminal result exists. The raw
+# status column stays only for compatibility.
+_JOB_LIFECYCLE_BY_RAW_STATUS = {
+    "queued": "queued",
+    "running": "running",
+    "ready": "completed",
+    "degraded": "completed",
+    "failed": "failed",
+    "cancelled": "cancelled",
+}
+_JOB_RESULT_BY_RAW_STATUS = {
+    "ready": "ready",
+    "degraded": "degraded",
+    "failed": "failed",
+    "cancelled": "cancelled",
+}
+_NONTERMINAL_LIFECYCLE_STATUSES = {"queued", "running"}
+
+# Current-state terminal fields a retry CAS strips when requeueing a
+# failed/cancelled job — the fresh queued read model must not expose stale
+# failure or cancel evidence from the previous run.
+_STALE_TERMINAL_JOB_METADATA_KEYS = frozenset(
+    {"error", "warnings", "failure_exception", "failed_at", "finished_at", "cancelled_at"}
+)
+
+# Permanent failure codes: retrying cannot change the outcome because the
+# defect is in the input type/structure, an orphaned object, or the attempt
+# budget itself. Evidence-missing codes (source_missing,
+# canonical_markdown_missing) are NOT permanent: re-uploading the same bytes
+# rewrites the spool/artifact, and an explicit retry then succeeds.
+_NON_RETRYABLE_JOB_ERROR_CODES = frozenset(
+    {
+        "unsupported_file_type",
+        "document_missing",
+        "import_payload_invalid",
+        "personal_kb_import_attempt_limit_exceeded",
+    }
+)
+
+
+def _job_retryable(*, lifecycle_status: str, attempt_count: int, max_attempts: int, error_code: str | None) -> bool:
+    """Single retryability authority shared by the read model and the retry
+    CAS: failed and cancelled jobs may requeue while attempts remain, unless
+    the failure code is permanent."""
+    if lifecycle_status not in {"failed", "cancelled"}:
+        return False
+    if int(attempt_count) >= max(1, int(max_attempts)):
+        return False
+    return error_code not in _NON_RETRYABLE_JOB_ERROR_CODES
+
+
+def _job_error_code(job: Any) -> str | None:
+    metadata = dict(getattr(job, "job_metadata_json", {}) or {})
+    code = str(metadata.get("error") or "").strip()
+    if code:
+        return code
+    message = str(getattr(job, "error_message", None) or "").strip()
+    if not message:
+        return None
+    head = message.split(":", 1)[0].strip()
+    return head or None
+
+
+def _job_lifecycle_view(job: Any) -> PersonalKnowledgeJobSummary:
+    status = str(getattr(job, "status", "") or "").lower()
+    attempt_count = int(getattr(job, "attempt_count", 0) or 0)
+    metadata = dict(getattr(job, "job_metadata_json", {}) or {})
+    max_attempts = int(metadata.get("max_attempts") or _DEFAULT_IMPORT_JOB_MAX_ATTEMPTS)
+    lifecycle_status = _JOB_LIFECYCLE_BY_RAW_STATUS.get(status, status)
+    result_status = _JOB_RESULT_BY_RAW_STATUS.get(status)
+    terminal = lifecycle_status not in _NONTERMINAL_LIFECYCLE_STATUSES
+    cancelled_at = str(metadata.get("cancelled_at") or "") or None
+    error_code = _job_error_code(job)
+    return PersonalKnowledgeJobSummary(
+        job_id=getattr(job, "id", None),
+        document_id=getattr(job, "document_id", None),
+        stage=str(getattr(job, "stage", "") or ""),
+        status=status,
+        artifact_hash=str(getattr(job, "artifact_hash", "") or ""),
+        error_message=getattr(job, "error_message", None),
+        attempt_count=attempt_count,
+        metadata=metadata,
+        created_at=getattr(job, "created_at", None),
+        updated_at=getattr(job, "updated_at", None),
+        terminal=terminal,
+        retryable=_job_retryable(
+            lifecycle_status=lifecycle_status,
+            attempt_count=attempt_count,
+            max_attempts=max_attempts,
+            error_code=error_code,
+        ),
+        cancellable=lifecycle_status == "queued",
+        error_code=error_code,
+        max_attempts=max_attempts,
+        lifecycle_status=lifecycle_status,
+        result_status=result_status,
+        cancelled_at=cancelled_at,
+    )
 
 
 @dataclass(frozen=True)
@@ -285,12 +465,16 @@ class PersonalKnowledgeService:
         extractor: Any = _DEFAULT_EXTRACTOR,
         media_provider: Any | None = None,
         vector_provider: Any | None = None,
+        conversion_timeout_seconds: float | None = None,
     ) -> None:
         self.data_root = Path(data_root) if data_root is not None else Path(get_settings().AGENT_DATA_DIR)
         self.conversion_service = conversion_service
         self.extractor = extractor
         self.media_provider = media_provider
         self.vector_provider = vector_provider
+        if conversion_timeout_seconds is None:
+            conversion_timeout_seconds = float(get_settings().PERSONAL_KB_CONVERSION_TIMEOUT_SECONDS)
+        self.conversion_timeout_seconds = max(0.001, float(conversion_timeout_seconds))
 
     def _conversion_service(self) -> Any:
         if self.conversion_service is not None:
@@ -458,7 +642,7 @@ class PersonalKnowledgeService:
                     KnowledgeDocument.scope_type == "person",
                     KnowledgeDocument.scope_id == owner_user_id,
                     KnowledgeDocument.id == document_id,
-                    KnowledgeDocument.status != "deleted",
+                    personal_knowledge_consumable_status_predicate(principal=principal),
                 )
             )
         ).all()
@@ -651,7 +835,14 @@ class PersonalKnowledgeService:
         error_message: str | None = None,
         channels: list[str] | None = None,
         attempt_increment: int = 1,
-    ) -> KnowledgeIndexJob:
+        managed_job_id: uuid.UUID | None = None,
+    ) -> Any:
+        if managed_job_id is not None:
+            # The claiming worker owns the job row lifecycle: ingest stages
+            # document/segment writes only and must never read, mutate, or
+            # flush the managed KnowledgeIndexJob row — the fenced terminal
+            # CAS is the sole job-row writer after phase 1.
+            return SimpleNamespace(id=managed_job_id, job_metadata_json={})
         result = await session.execute(
             select(KnowledgeIndexJob).where(
                 KnowledgeIndexJob.tenant_id == tenant_id,
@@ -660,7 +851,13 @@ class PersonalKnowledgeService:
             )
         )
         job = result.scalar_one_or_none()
+        # The worker claim owns attempt accounting exactly once: claimed runs
+        # pass attempt_increment=0 so the same job is never counted twice;
+        # direct ingest without a pre-claimed job keeps its own increment.
+        increment = max(0, int(attempt_increment or 0))
         if not isinstance(job, KnowledgeIndexJob):
+            # A brand-new job row has no pre-claimed worker: this upsert is its
+            # only attempt record, so it always counts at least one execution.
             job = KnowledgeIndexJob(
                 id=uuid.uuid4(),
                 tenant_id=tenant_id,
@@ -668,11 +865,11 @@ class PersonalKnowledgeService:
                 scope_type="person",
                 scope_id=owner_user_id,
                 artifact_hash=artifact_hash,
-                attempt_count=max(1, int(attempt_increment or 1)),
+                attempt_count=max(1, increment),
             )
             session.add(job)
         else:
-            job.attempt_count = int(job.attempt_count or 0) + max(1, int(attempt_increment or 1))
+            job.attempt_count = int(job.attempt_count or 0) + increment
         job.stage = stage
         job.status = status
         job.error_message = error_message
@@ -1014,46 +1211,63 @@ class PersonalKnowledgeService:
             )
         )
         document = existing_result.scalar_one_or_none()
+        if document is not None:
+            # Idempotent duplicate upload: identical source bytes for the same
+            # owner return the existing document/job untouched — ready stays
+            # ready, archived stays archived, attempts stay stable. Only the
+            # explicit Retry / Restore / Rebuild actions own reprocessing, so a
+            # duplicate can never reset a terminal state or resurrect a job at
+            # the attempt ceiling back into a permanent queued loop.
+            job_result = await session.execute(
+                select(KnowledgeIndexJob).where(
+                    KnowledgeIndexJob.tenant_id == tenant_id,
+                    KnowledgeIndexJob.document_id == document.id,
+                    KnowledgeIndexJob.artifact_hash == artifact_hash,
+                )
+            )
+            existing_job = job_result.scalar_one_or_none()
+            # Truthful dedupe: when the persisted document has no matching job
+            # row (legacy data), the result carries job_id=None — a fabricated
+            # job id would be nonexistent evidence.
+            existing_job_id = getattr(existing_job, "id", None)
+            existing_status = str(getattr(document, "status", "") or "queued")
+            await session.flush()
+            return PersonalKnowledgeIngestResult(
+                document_id=document.id,
+                job_id=existing_job_id,
+                source_sha256=clean_source_sha256,
+                artifact_hash=str(getattr(document, "artifact_hash", "") or artifact_hash),
+                canonical_md_path=str(getattr(document, "canonical_md_path", "") or ""),
+                segment_count=int(dict(getattr(document, "doc_metadata_json", {}) or {}).get("segment_count") or 0),
+                status=existing_status,
+                warnings=[],
+            )
         document_metadata = {
-            **(getattr(document, "doc_metadata_json", {}) or {}),
             **metadata,
             "sensitivity": canonical_sensitivity,
             "queued_import_kind": metadata.get("queued_import_kind"),
             "queued_at": datetime.now(timezone.utc).isoformat(),
         }
-        if document is None:
-            document = KnowledgeDocument(
-                id=uuid.uuid4(),
-                tenant_id=tenant_id,
-                scope_type="person",
-                scope_id=owner_user_id,
-                owner_user_id=owner_user_id,
-                source_kind=clean_source_kind,
-                source_uri=source_uri,
-                source_sha256=clean_source_sha256,
-                artifact_hash=artifact_hash,
-                title=clean_title,
-                status="queued",
-                sensitivity=canonical_sensitivity,
-                agent_searchable=agent_searchable,
-                canonical_md_path=canonical_md_path,
-                canonical_md_sha256=canonical_md_sha256,
-                doc_metadata_json=document_metadata,
-                created_by_user_id=created_by_user_id,
-            )
-            session.add(document)
-        else:
-            document.source_kind = clean_source_kind
-            document.source_uri = source_uri
-            document.artifact_hash = artifact_hash
-            document.title = clean_title
-            document.status = "queued"
-            document.sensitivity = canonical_sensitivity
-            document.agent_searchable = agent_searchable
-            document.canonical_md_path = canonical_md_path
-            document.canonical_md_sha256 = canonical_md_sha256
-            document.doc_metadata_json = document_metadata
-            document.created_by_user_id = created_by_user_id or document.created_by_user_id
+        document = KnowledgeDocument(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            scope_type="person",
+            scope_id=owner_user_id,
+            owner_user_id=owner_user_id,
+            source_kind=clean_source_kind,
+            source_uri=source_uri,
+            source_sha256=clean_source_sha256,
+            artifact_hash=artifact_hash,
+            title=clean_title,
+            status="queued",
+            sensitivity=canonical_sensitivity,
+            agent_searchable=agent_searchable,
+            canonical_md_path=canonical_md_path,
+            canonical_md_sha256=canonical_md_sha256,
+            doc_metadata_json=document_metadata,
+            created_by_user_id=created_by_user_id,
+        )
+        session.add(document)
         await session.flush()
 
         job_result = await session.execute(
@@ -1280,6 +1494,8 @@ class PersonalKnowledgeService:
         doc_metadata: dict[str, Any] | None = None,
         warnings: list[str] | None = None,
         force_reindex: bool = False,
+        attempt_increment: int = 1,
+        managed_job_id: uuid.UUID | None = None,
     ) -> PersonalKnowledgeIngestResult:
         canonical_sensitivity = canonicalize_sensitivity(sensitivity).value
         canonical_md = _normalize_markdown(markdown)
@@ -1299,15 +1515,27 @@ class PersonalKnowledgeService:
         canonical_md_path = artifact_path.relative_to(self.data_root).as_posix()
 
         existing_result = await session.execute(
-            select(KnowledgeDocument).where(
+            select(KnowledgeDocument)
+            .where(
                 KnowledgeDocument.tenant_id == tenant_id,
                 KnowledgeDocument.scope_type == "person",
                 KnowledgeDocument.scope_id == owner_user_id,
                 KnowledgeDocument.source_sha256 == clean_source_sha256,
             )
+            .with_for_update()
+            # The locked read must see the committed row, not a stale
+            # identity-map snapshot (e.g. a rebuild loaded the document in
+            # this session before the user archived it).
+            .execution_options(populate_existing=True)
         )
         document = existing_result.scalar_one_or_none()
         previous_artifact_hash = document.canonical_md_sha256 if document is not None else None
+        # Archive ownership: a user archive committed before this ingest owns
+        # the consumable status. The row lock above serializes the two writers;
+        # an archived document keeps "archived" while content production still
+        # completes, and the final consumable status is recorded as the
+        # restore target instead of flipping the document back.
+        document_archived = document is not None and str(document.status or "") == "archived"
         if document is None:
             document = KnowledgeDocument(
                 id=uuid.uuid4(),
@@ -1334,7 +1562,8 @@ class PersonalKnowledgeService:
             document.source_uri = source_uri
             document.artifact_hash = artifact_hash
             document.title = clean_title
-            document.status = "ready"
+            if not document_archived:
+                document.status = "ready"
             document.sensitivity = canonical_sensitivity
             document.agent_searchable = agent_searchable
             document.canonical_md_path = canonical_md_path
@@ -1389,6 +1618,8 @@ class PersonalKnowledgeService:
                 stage="segmenting",
                 status="running",
                 channels=channels,
+                attempt_increment=attempt_increment,
+                managed_job_id=managed_job_id,
             )
             job_id = job.id
 
@@ -1485,7 +1716,8 @@ class PersonalKnowledgeService:
                 }
 
         extraction_usage_state = _finalize_extraction_usage(extraction_usage_summary)
-        document.status = final_status
+        if not document_archived:
+            document.status = final_status
         document.doc_metadata_json = {
             **(document.doc_metadata_json or {}),
             "ingest_format": "canonical_markdown",
@@ -1493,6 +1725,12 @@ class PersonalKnowledgeService:
             "optional_vector": optional_vector_state,
             **(doc_metadata or {}),
         }
+        if document_archived:
+            # The user's archive owns the consumable status; the worker only
+            # records its real final consumable state as the restore target.
+            # Written after the caller-metadata merge so a stale lifecycle
+            # control field in doc_metadata can never win over the platform.
+            document.doc_metadata_json["archived_from_status"] = final_status
         if extraction_usage_state is not None:
             document.doc_metadata_json["extraction_usage"] = extraction_usage_state
         if job is not None:
@@ -1544,6 +1782,8 @@ class PersonalKnowledgeService:
         source_mime_type: str | None = None,
         doc_metadata: dict[str, Any] | None = None,
         source_sha256: str | None = None,
+        attempt_increment: int = 1,
+        managed_job_id: uuid.UUID | None = None,
     ) -> PersonalKnowledgeIngestResult:
         canonical_sensitivity = canonicalize_sensitivity(sensitivity).value
         safe_name = _safe_filename(filename)
@@ -1568,6 +1808,8 @@ class PersonalKnowledgeService:
                 source_hash=source_hash,
                 media_kind=media_kind,
                 doc_metadata=doc_metadata,
+                attempt_increment=attempt_increment,
+                managed_job_id=managed_job_id,
             )
         if ext not in _SUPPORTED_IMPORT_EXTENSIONS:
             return await self._record_failed_import(
@@ -1584,27 +1826,71 @@ class PersonalKnowledgeService:
                 created_by_user_id=created_by_user_id,
                 stage="converting",
                 error_message=f"unsupported_file_type:{ext or 'unknown'}",
+                error_code="unsupported_file_type",
                 metadata={
                     "source_filename": safe_name,
                     "source_mime_type": source_mime_type or "",
                     "error": "unsupported_file_type",
                     **(doc_metadata or {}),
                 },
+                managed_job_id=managed_job_id,
             )
 
         workspace_root = _personal_knowledge_root(self.data_root, owner_user_id)
-        conversion = self._conversion_service().convert_bytes(
-            data=data,
-            filename=safe_name,
-            workspace_root=workspace_root,
-            source_uri=source_uri,
-            source_mime_type=source_mime_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream",
-            tenant_id=tenant_id,
-            agent_id=None,
-            user_id=owner_user_id,
-            mode="auto",
-            force_refresh=False,
-        )
+        guessed_mime = source_mime_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
+        converter = self._conversion_service()
+        try:
+            # Blocking conversion runs off the event loop under an explicit
+            # physical timeout; a timeout is a typed retryable failure and the
+            # spooled source evidence stays recorded.
+            conversion = await asyncio.wait_for(
+                asyncio.to_thread(
+                    converter.convert_bytes,
+                    data=data,
+                    filename=safe_name,
+                    workspace_root=workspace_root,
+                    source_uri=source_uri,
+                    source_mime_type=guessed_mime,
+                    tenant_id=tenant_id,
+                    agent_id=None,
+                    user_id=owner_user_id,
+                    mode="auto",
+                    force_refresh=False,
+                ),
+                timeout=self.conversion_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            return await self._record_failed_import(
+                session,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                source_kind=source_kind,
+                source_uri=source_uri,
+                source_hash=source_hash,
+                artifact_hash=artifact_hash,
+                title=_clean_title(title_from_filename_or_uri(safe_name, source_uri, title)),
+                sensitivity=canonical_sensitivity,
+                agent_searchable=agent_searchable,
+                created_by_user_id=created_by_user_id,
+                stage="converting",
+                error_message="conversion_timeout",
+                error_code="conversion_timeout",
+                metadata={
+                    "source_filename": safe_name,
+                    "source_mime_type": guessed_mime,
+                    "error": "conversion_timeout",
+                    "retryable": True,
+                    **(doc_metadata or {}),
+                },
+                managed_job_id=managed_job_id,
+            )
+        except Exception as exc:
+            # The conversion boundary owns one exact typed code; the original
+            # exception stays chained for operator logs and never becomes the
+            # user-facing error state.
+            raise PersonalKnowledgeConversionError("conversion_failed") from exc
+        if not str(getattr(conversion, "markdown", "") or "").strip():
+            raise PersonalKnowledgeConversionError("conversion_failed")
         warnings = list(getattr(conversion, "warnings", ()) or [])
         metadata = {
             "source_filename": safe_name,
@@ -1632,6 +1918,8 @@ class PersonalKnowledgeService:
             else getattr(conversion, "source_sha256", source_hash),
             doc_metadata=metadata,
             warnings=warnings,
+            attempt_increment=attempt_increment,
+            managed_job_id=managed_job_id,
         )
 
     async def _record_failed_import(
@@ -1651,58 +1939,85 @@ class PersonalKnowledgeService:
         stage: str,
         error_message: str,
         metadata: dict[str, Any],
+        error_code: str | None = None,
+        managed_job_id: uuid.UUID | None = None,
     ) -> PersonalKnowledgeIngestResult:
         canonical_sensitivity = canonicalize_sensitivity(sensitivity).value
-        document = KnowledgeDocument(
-            id=uuid.uuid4(),
-            tenant_id=tenant_id,
-            scope_type="person",
-            scope_id=owner_user_id,
-            owner_user_id=owner_user_id,
-            source_kind=source_kind,
-            source_uri=source_uri,
-            source_sha256=source_hash,
-            artifact_hash=artifact_hash,
-            title=title,
-            status="failed",
-            sensitivity=canonical_sensitivity,
-            agent_searchable=agent_searchable,
-            canonical_md_path="",
-            canonical_md_sha256=None,
-            doc_metadata_json=dict(metadata),
-            created_by_user_id=created_by_user_id,
+        # Upsert by the source digest: a queued import that fails terminally
+        # marks its own document failed instead of creating a duplicate row.
+        existing_result = await session.execute(
+            select(KnowledgeDocument)
+            .where(
+                KnowledgeDocument.tenant_id == tenant_id,
+                KnowledgeDocument.scope_type == "person",
+                KnowledgeDocument.scope_id == owner_user_id,
+                KnowledgeDocument.source_sha256 == source_hash,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
-        session.add(document)
+        document = existing_result.scalar_one_or_none()
+        if document is None:
+            document = KnowledgeDocument(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                scope_type="person",
+                scope_id=owner_user_id,
+                owner_user_id=owner_user_id,
+                source_kind=source_kind,
+                source_uri=source_uri,
+                source_sha256=source_hash,
+                artifact_hash=artifact_hash,
+                title=title,
+                status="failed",
+                sensitivity=canonical_sensitivity,
+                agent_searchable=agent_searchable,
+                canonical_md_path="",
+                canonical_md_sha256=None,
+                doc_metadata_json=dict(metadata),
+                created_by_user_id=created_by_user_id,
+            )
+            session.add(document)
+        else:
+            # A transient (never-consumable) document terminalizes to failed;
+            # an existing consumable or archived document keeps its status.
+            if str(getattr(document, "status", "") or "") in {"queued", "running", "failed"}:
+                document.status = "failed"
+            document.doc_metadata_json = {**(getattr(document, "doc_metadata_json", {}) or {}), **dict(metadata)}
         await session.flush()
-        job = KnowledgeIndexJob(
-            id=uuid.uuid4(),
-            tenant_id=tenant_id,
-            document_id=document.id,
-            scope_type="person",
-            scope_id=owner_user_id,
-            artifact_hash=artifact_hash,
-            stage=stage,
-            status="failed",
-            error_message=error_message,
-            attempt_count=1,
-            job_metadata_json={
-                "source_kind": source_kind,
-                "source_sha256": source_hash,
-                "warnings": [error_message],
-                **dict(metadata),
-            },
-        )
-        session.add(job)
-        await session.flush()
+        job_id: uuid.UUID | None = managed_job_id
+        if managed_job_id is None:
+            job = KnowledgeIndexJob(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                document_id=document.id,
+                scope_type="person",
+                scope_id=owner_user_id,
+                artifact_hash=artifact_hash,
+                stage=stage,
+                status="failed",
+                error_message=error_message,
+                attempt_count=1,
+                job_metadata_json={
+                    "source_kind": source_kind,
+                    "source_sha256": source_hash,
+                    "warnings": [error_message],
+                    **dict(metadata),
+                },
+            )
+            session.add(job)
+            await session.flush()
+            job_id = job.id
         return PersonalKnowledgeIngestResult(
             document_id=document.id,
-            job_id=job.id,
+            job_id=job_id,
             source_sha256=source_hash,
             artifact_hash=artifact_hash,
             canonical_md_path="",
             segment_count=0,
             status="failed",
             warnings=[error_message],
+            error_code=error_code or error_message,
         )
 
     async def _ingest_media_bytes(
@@ -1723,6 +2038,8 @@ class PersonalKnowledgeService:
         source_hash: str,
         media_kind: str,
         doc_metadata: dict[str, Any] | None,
+        attempt_increment: int = 1,
+        managed_job_id: uuid.UUID | None = None,
     ) -> PersonalKnowledgeIngestResult:
         canonical_sensitivity = canonicalize_sensitivity(sensitivity).value
         provider = self._media_transcription_provider()
@@ -1748,7 +2065,9 @@ class PersonalKnowledgeService:
                 created_by_user_id=created_by_user_id,
                 stage="transcribing",
                 error_message="unsupported_or_unconfigured:media_transcription_provider",
+                error_code="unsupported_or_unconfigured",
                 metadata={**base_metadata, "error": "unsupported_or_unconfigured"},
+                managed_job_id=managed_job_id,
             )
 
         call = provider.transcribe_media(
@@ -1779,7 +2098,9 @@ class PersonalKnowledgeService:
                 created_by_user_id=created_by_user_id,
                 stage="transcribing",
                 error_message="media_transcription_empty",
+                error_code="media_transcription_empty",
                 metadata={**base_metadata, "error": "media_transcription_empty"},
+                managed_job_id=managed_job_id,
             )
 
         transcript_metadata = dict(getattr(transcript, "metadata", {}) or {})
@@ -1806,6 +2127,8 @@ class PersonalKnowledgeService:
             source_sha256=source_hash,
             doc_metadata=media_metadata,
             warnings=warnings,
+            attempt_increment=attempt_increment,
+            managed_job_id=managed_job_id,
         )
 
     async def ingest_url(
@@ -1820,6 +2143,8 @@ class PersonalKnowledgeService:
         agent_searchable: bool = True,
         sensitivity: str = "internal",
         source_sha256: str | None = None,
+        attempt_increment: int = 1,
+        managed_job_id: uuid.UUID | None = None,
     ) -> PersonalKnowledgeIngestResult:
         canonical_sensitivity = canonicalize_sensitivity(sensitivity).value
         clean_url = str(url or "").strip()
@@ -1853,6 +2178,8 @@ class PersonalKnowledgeService:
             sensitivity=canonical_sensitivity,
             source_mime_type=response.headers.get("content-type"),
             source_sha256=source_sha256,
+            attempt_increment=attempt_increment,
+            managed_job_id=managed_job_id,
         )
 
     async def list_import_jobs(
@@ -1874,23 +2201,7 @@ class PersonalKnowledgeService:
             .limit(max(1, int(limit or 50)))
         )
         jobs = result.scalars().all()
-        summaries: list[PersonalKnowledgeJobSummary] = []
-        for job in jobs:
-            summaries.append(
-                PersonalKnowledgeJobSummary(
-                    job_id=job.id,
-                    document_id=job.document_id,
-                    stage=str(job.stage or ""),
-                    status=str(job.status or ""),
-                    artifact_hash=str(job.artifact_hash or ""),
-                    error_message=job.error_message,
-                    attempt_count=int(job.attempt_count or 0),
-                    metadata=dict(job.job_metadata_json or {}),
-                    created_at=job.created_at,
-                    updated_at=job.updated_at,
-                )
-            )
-        return summaries
+        return [_job_lifecycle_view(job) for job in jobs]
 
     def _grant_summary(self, grant: Any) -> PersonalKnowledgeGrantSummary:
         now = datetime.now(timezone.utc)
@@ -2321,12 +2632,18 @@ class PersonalKnowledgeService:
         if current_user_id != owner_user_id:
             return None
         result = await session.execute(
-            select(KnowledgeDocument).where(
+            select(KnowledgeDocument)
+            .where(
                 KnowledgeDocument.tenant_id == tenant_id,
                 KnowledgeDocument.scope_type == "person",
                 KnowledgeDocument.scope_id == owner_user_id,
                 KnowledgeDocument.id == document_id,
             )
+            # Serialize with a running import/rebuild: the row lock makes the
+            # archive read the worker's final committed state (never a stale
+            # pre-worker snapshot that would clobber fresh metadata).
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
         document = result.scalar_one_or_none()
         if document is None:
@@ -2336,9 +2653,92 @@ class PersonalKnowledgeService:
         if sensitivity is not None:
             document.sensitivity = canonicalize_sensitivity(sensitivity).value
         if status is not None:
-            document.status = str(status)
+            clean_status = str(status or "").strip().lower()
+            if clean_status != "archived":
+                raise ValueError(f"unsupported_status:{clean_status or 'empty'}")
+            metadata = dict(getattr(document, "doc_metadata_json", {}) or {})
+            previous = str(getattr(document, "status", "") or "")
+            if "archived_from_status" not in metadata and previous in {"ready", "degraded"}:
+                metadata["archived_from_status"] = previous
+            metadata["archived_at"] = datetime.now(timezone.utc).isoformat()
+            document.doc_metadata_json = metadata
+            document.status = "archived"
         await session.flush()
+        if status is not None:
+            # onupdate columns expire on flush; reload them inside the session
+            # so the summary never triggers lazy IO outside greenlet context.
+            refresh = getattr(session, "refresh", None)
+            if refresh is not None:
+                await refresh(document)
         return self._document_summary(owner_user_id=owner_user_id, document=document, segment_count=0)
+
+    async def restore_personal_document(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        document_id: uuid.UUID,
+        current_user_id: uuid.UUID | None,
+    ) -> PersonalKnowledgeDocumentSummary | None:
+        """Restore an archived document to its previous consumable state.
+
+        The archived_from_status marker (written by archive) is the authority;
+        when it is missing, a document with live segments restores to degraded
+        — never an invented ready without consumable evidence.
+        """
+        if current_user_id != owner_user_id:
+            return None
+        result = await session.execute(
+            select(KnowledgeDocument)
+            .where(
+                KnowledgeDocument.tenant_id == tenant_id,
+                KnowledgeDocument.scope_type == "person",
+                KnowledgeDocument.scope_id == owner_user_id,
+                KnowledgeDocument.id == document_id,
+            )
+            # Same serialization boundary as archive: a restore never reads a
+            # stale pre-worker snapshot while an import/rebuild is in flight.
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        document = result.scalar_one_or_none()
+        if document is None:
+            return None
+        if str(getattr(document, "status", "") or "") != "archived":
+            raise PersonalKnowledgeDocumentConflict("restore_requires_archived")
+        metadata = dict(getattr(document, "doc_metadata_json", {}) or {})
+        previous = str(metadata.get("archived_from_status") or "").strip().lower()
+        if previous in {"ready", "degraded"}:
+            document.status = previous
+        else:
+            segment_count = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(KnowledgeSegment)
+                    .where(KnowledgeSegment.document_id == document.id)
+                )
+            ).scalar_one()
+            if int(segment_count or 0) <= 0:
+                raise PersonalKnowledgeDocumentConflict("restore_no_consumable_state")
+            document.status = "degraded"
+        metadata.pop("archived_from_status", None)
+        metadata.pop("archived_at", None)
+        metadata["restored_at"] = datetime.now(timezone.utc).isoformat()
+        document.doc_metadata_json = metadata
+        await session.flush()
+        # onupdate columns expire on flush; reload inside the session.
+        refresh = getattr(session, "refresh", None)
+        if refresh is not None:
+            await refresh(document)
+        segment_count = (
+            await session.execute(
+                select(func.count()).select_from(KnowledgeSegment).where(KnowledgeSegment.document_id == document.id)
+            )
+        ).scalar_one()
+        return self._document_summary(
+            owner_user_id=owner_user_id, document=document, segment_count=int(segment_count or 0)
+        )
 
     async def rebuild_personal_document_index(
         self,
@@ -2348,6 +2748,8 @@ class PersonalKnowledgeService:
         owner_user_id: uuid.UUID,
         document_id: uuid.UUID,
         current_user_id: uuid.UUID | None,
+        attempt_increment: int = 1,
+        managed_job_id: uuid.UUID | None = None,
     ) -> PersonalKnowledgeIngestResult | None:
         if current_user_id != owner_user_id:
             return None
@@ -2364,30 +2766,34 @@ class PersonalKnowledgeService:
             return None
         artifact_path = self.data_root / str(document.canonical_md_path or "")
         if not artifact_path.exists():
-            job = KnowledgeIndexJob(
-                id=uuid.uuid4(),
-                tenant_id=tenant_id,
-                document_id=document.id,
-                scope_type="person",
-                scope_id=owner_user_id,
-                artifact_hash=str(document.artifact_hash or document.source_sha256),
-                stage="indexing",
-                status="failed",
-                error_message="canonical_markdown_missing",
-                attempt_count=1,
-                job_metadata_json={"source_kind": document.source_kind},
-            )
-            session.add(job)
-            await session.flush()
+            job_id: uuid.UUID | None = managed_job_id
+            if managed_job_id is None:
+                job = KnowledgeIndexJob(
+                    id=uuid.uuid4(),
+                    tenant_id=tenant_id,
+                    document_id=document.id,
+                    scope_type="person",
+                    scope_id=owner_user_id,
+                    artifact_hash=str(document.artifact_hash or document.source_sha256),
+                    stage="indexing",
+                    status="failed",
+                    error_message="canonical_markdown_missing",
+                    attempt_count=1,
+                    job_metadata_json={"source_kind": document.source_kind},
+                )
+                session.add(job)
+                await session.flush()
+                job_id = job.id
             return PersonalKnowledgeIngestResult(
                 document_id=document.id,
-                job_id=job.id,
+                job_id=job_id,
                 source_sha256=str(document.source_sha256),
                 artifact_hash=str(document.artifact_hash or ""),
                 canonical_md_path=str(document.canonical_md_path or ""),
                 segment_count=0,
                 status="failed",
                 warnings=["canonical_markdown_missing"],
+                error_code="canonical_markdown_missing",
             )
         return await self.ingest_markdown(
             session,
@@ -2403,6 +2809,8 @@ class PersonalKnowledgeService:
             source_sha256=str(document.source_sha256),
             doc_metadata=dict(document.doc_metadata_json or {}),
             force_reindex=True,
+            attempt_increment=attempt_increment,
+            managed_job_id=managed_job_id,
         )
 
     async def retry_import_job(
@@ -2413,7 +2821,14 @@ class PersonalKnowledgeService:
         owner_user_id: uuid.UUID,
         job_id: uuid.UUID,
         current_user_id: uuid.UUID | None,
-    ) -> PersonalKnowledgeIngestResult | None:
+    ) -> PersonalKnowledgeJobSummary | None:
+        """Requeue a failed/cancelled import job without running any work.
+
+        The retry only commits the queued transition; the caller schedules the
+        asynchronous worker. The claim increment owns attempt_count, so it is
+        preserved here. Retrying obeys the attempt ceiling via a typed
+        conflict instead of resurrecting a permanent queued loop.
+        """
         if current_user_id != owner_user_id:
             return None
         result = await session.execute(
@@ -2427,28 +2842,215 @@ class PersonalKnowledgeService:
         job = result.scalar_one_or_none()
         if job is None:
             return None
-        if dict(job.job_metadata_json or {}).get("queued_import_kind"):
-            return await self._process_queued_import_job(
+        status = str(getattr(job, "status", "") or "").lower()
+        max_attempts = int(
+            dict(getattr(job, "job_metadata_json", {}) or {}).get("max_attempts") or _DEFAULT_IMPORT_JOB_MAX_ATTEMPTS
+        )
+        if status not in {"failed", "cancelled"}:
+            raise PersonalKnowledgeJobConflict("not_retryable", retryable=False)
+        if int(getattr(job, "attempt_count", 0) or 0) >= max_attempts:
+            raise PersonalKnowledgeJobConflict("retry_attempt_limit", retryable=False)
+        # Same authority as the read model: permanent failure codes (bad
+        # input, missing evidence, exhausted budget) reject with a typed
+        # conflict instead of a futile requeue.
+        if _job_error_code(job) in _NON_RETRYABLE_JOB_ERROR_CODES:
+            raise PersonalKnowledgeJobConflict("not_retryable", retryable=False)
+        metadata = dict(getattr(job, "job_metadata_json", {}) or {})
+        # One consistent timestamp across the CAS payload and the returned
+        # summary — never two diverging now() calls. The requeued job also
+        # drops its previous terminal current-state fields so the fresh
+        # queued read model exposes no stale failure/cancel evidence.
+        retried_at = datetime.now(timezone.utc).isoformat()
+        cleaned_metadata = {
+            key: value for key, value in metadata.items() if key not in _STALE_TERMINAL_JOB_METADATA_KEYS
+        }
+        queued_metadata = {**cleaned_metadata, "retried_at": retried_at}
+        cas = await session.execute(
+            update(KnowledgeIndexJob)
+            .where(
+                KnowledgeIndexJob.tenant_id == tenant_id,
+                KnowledgeIndexJob.scope_type == "person",
+                KnowledgeIndexJob.scope_id == owner_user_id,
+                KnowledgeIndexJob.id == job_id,
+                KnowledgeIndexJob.status == status,
+            )
+            .values(
+                status="queued",
+                stage="queued",
+                error_message=None,
+                job_metadata_json=queued_metadata,
+            )
+        )
+        if int(getattr(cas, "rowcount", 0) or 0) != 1:  # pragma: no cover - race window
+            raise PersonalKnowledgeJobConflict("not_retryable", retryable=False)
+        job.status = "queued"
+        job.stage = "queued"
+        job.error_message = None
+        job.job_metadata_json = queued_metadata
+        await session.flush()
+        # onupdate columns expire on flush; reload inside the session so the
+        # summary never triggers lazy IO outside greenlet context.
+        refresh = getattr(session, "refresh", None)
+        if refresh is not None:
+            await refresh(job)
+        return _job_lifecycle_view(job)
+
+    async def cancel_import_job(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        job_id: uuid.UUID,
+        current_user_id: uuid.UUID | None,
+    ) -> PersonalKnowledgeJobSummary | None:
+        """Cancel a queued import job via a compare-and-set transition.
+
+        A running job cannot be cancelled race-safely without schema work, so
+        the conflict is typed (cancellable=False) instead of pretending the
+        cancellation succeeded; terminal jobs reject with a terminal conflict.
+        """
+        if current_user_id != owner_user_id:
+            return None
+
+        async def _load_job() -> Any | None:
+            loaded = await session.execute(
+                select(KnowledgeIndexJob).where(
+                    KnowledgeIndexJob.tenant_id == tenant_id,
+                    KnowledgeIndexJob.scope_type == "person",
+                    KnowledgeIndexJob.scope_id == owner_user_id,
+                    KnowledgeIndexJob.id == job_id,
+                )
+            )
+            return loaded.scalar_one_or_none()
+
+        job = await _load_job()
+        if job is None:
+            return None
+        if str(getattr(job, "status", "") or "").lower() == "queued":
+            metadata = dict(getattr(job, "job_metadata_json", {}) or {})
+            # One committed timestamp: the CAS payload, the ORM row, and the
+            # returned summary all carry the same cancelled_at.
+            cancelled_at = datetime.now(timezone.utc).isoformat()
+            cas = await session.execute(
+                update(KnowledgeIndexJob)
+                .where(
+                    KnowledgeIndexJob.tenant_id == tenant_id,
+                    KnowledgeIndexJob.scope_type == "person",
+                    KnowledgeIndexJob.scope_id == owner_user_id,
+                    KnowledgeIndexJob.id == job_id,
+                    KnowledgeIndexJob.status == "queued",
+                )
+                .values(
+                    status="cancelled",
+                    stage="cancelled",
+                    error_message=None,
+                    job_metadata_json={**metadata, "cancelled_at": cancelled_at},
+                )
+            )
+            if int(getattr(cas, "rowcount", 0) or 0) == 1:
+                job.status = "cancelled"
+                job.stage = "cancelled"
+                job.error_message = None
+                job.job_metadata_json = {**metadata, "cancelled_at": cancelled_at}
+                # A cancelled initial import must not leave its document
+                # permanently queued; a consumable rebuild document keeps its
+                # status. Same transaction as the CAS above.
+                await self._stage_transient_document_failure(
+                    session, document_id=job.document_id, error_code="cancelled"
+                )
+                await session.flush()
+                # onupdate columns expire on flush; reload inside the session.
+                refresh = getattr(session, "refresh", None)
+                if refresh is not None:
+                    await refresh(job)
+                return _job_lifecycle_view(job)
+            job = await _load_job()  # pragma: no cover - CAS lost, re-read below
+        status = str(getattr(job, "status", "") or "").lower()
+        if status == "running":
+            raise PersonalKnowledgeJobConflict("not_cancellable_while_running", cancellable=False)
+        raise PersonalKnowledgeJobConflict("not_cancellable_terminal", cancellable=False)
+
+    async def _ingest_queued_payload(
+        self,
+        session: Any,
+        *,
+        job: Any,
+        metadata: dict[str, Any],
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        managed_job_id: uuid.UUID,
+    ) -> PersonalKnowledgeIngestResult:
+        """Run the queued import body (markdown / source bytes / url).
+
+        Known infrastructure failures raise typed PersonalKnowledgeImportError
+        codes; unexpected exceptions propagate to the typed mapping at the
+        caller. The managed job row is never read or written here.
+        """
+
+        def _optional_uuid(value: Any) -> uuid.UUID | None:
+            if value in {None, ""}:
+                return None
+            return uuid.UUID(str(value))
+
+        queued_kind = str(metadata.get("queued_import_kind") or "").strip()
+        source_hash = _validate_source_sha256(metadata.get("source_sha256") or getattr(job, "artifact_hash", ""))
+        attempt_kwargs: dict[str, Any] = {"attempt_increment": 0, "managed_job_id": managed_job_id}
+        if queued_kind == "markdown":
+            queued_path = self.data_root / str(metadata.get("queued_markdown_path") or "")
+            if not queued_path.exists():
+                raise PersonalKnowledgeSourceMissingError("source_missing")
+            return await self.ingest_markdown(
                 session,
-                job=job,
                 tenant_id=tenant_id,
                 owner_user_id=owner_user_id,
-                current_user_id=current_user_id,
-                claimed=False,
+                title=str(metadata.get("title") or "Untitled knowledge document"),
+                markdown=queued_path.read_text(encoding="utf-8"),
+                source_kind=str(metadata.get("source_kind") or "paste"),
+                source_uri=metadata.get("source_uri"),
+                created_by_user_id=_optional_uuid(metadata.get("created_by_user_id")),
+                agent_searchable=bool(metadata.get("agent_searchable", True)),
+                sensitivity=str(metadata.get("sensitivity") or "internal"),
+                source_sha256=source_hash,
+                doc_metadata=dict(metadata.get("doc_metadata") or {}),
+                force_reindex=True,
+                **attempt_kwargs,
             )
-        metadata = dict(getattr(job, "job_metadata_json", {}) or {})
-        await self._claim_import_job_for_processing(session, job=job, metadata=metadata)
-        result = await self.rebuild_personal_document_index(
-            session,
-            tenant_id=tenant_id,
-            owner_user_id=owner_user_id,
-            document_id=job.document_id,
-            current_user_id=current_user_id,
-        )
-        if result is not None:
-            self._apply_import_job_result(job=job, metadata=metadata, result=result)
-            await session.flush()
-        return result
+        if queued_kind == "source_bytes":
+            queued_path = self.data_root / str(metadata.get("queued_source_path") or "")
+            if not queued_path.exists():
+                raise PersonalKnowledgeSourceMissingError("source_missing")
+            return await self.ingest_source_bytes(
+                session,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                filename=str(metadata.get("source_filename") or queued_path.name),
+                data=queued_path.read_bytes(),
+                title=metadata.get("title"),
+                source_kind=str(metadata.get("source_kind") or "upload"),
+                source_uri=metadata.get("source_uri"),
+                created_by_user_id=_optional_uuid(metadata.get("created_by_user_id")),
+                agent_searchable=bool(metadata.get("agent_searchable", True)),
+                sensitivity=str(metadata.get("sensitivity") or "internal"),
+                source_mime_type=metadata.get("source_mime_type"),
+                doc_metadata=dict(metadata.get("doc_metadata") or {}),
+                source_sha256=source_hash,
+                **attempt_kwargs,
+            )
+        if queued_kind == "url":
+            return await self.ingest_url(
+                session,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                url=str(metadata.get("source_uri") or ""),
+                title=metadata.get("title"),
+                created_by_user_id=_optional_uuid(metadata.get("created_by_user_id")),
+                agent_searchable=bool(metadata.get("agent_searchable", True)),
+                sensitivity=str(metadata.get("sensitivity") or "internal"),
+                source_sha256=source_hash,
+                **attempt_kwargs,
+            )
+        raise PersonalKnowledgeImportError("import_payload_invalid")
 
     async def _process_queued_import_job(
         self,
@@ -2467,76 +3069,38 @@ class PersonalKnowledgeService:
         if not queued_kind:
             return None
 
-        def _optional_uuid(value: Any) -> uuid.UUID | None:
-            if value in {None, ""}:
-                return None
-            return uuid.UUID(str(value))
-
         source_hash = _validate_source_sha256(metadata.get("source_sha256") or getattr(job, "artifact_hash", ""))
         if not claimed:
             await self._claim_import_job_for_processing(session, job=job, metadata=metadata)
             metadata = dict(getattr(job, "job_metadata_json", {}) or metadata)
 
         try:
-            if queued_kind == "markdown":
-                queued_path = self.data_root / str(metadata.get("queued_markdown_path") or "")
-                if not queued_path.exists():
-                    raise FileNotFoundError("queued_markdown_missing")
-                result = await self.ingest_markdown(
-                    session,
-                    tenant_id=tenant_id,
-                    owner_user_id=owner_user_id,
-                    title=str(metadata.get("title") or "Untitled knowledge document"),
-                    markdown=queued_path.read_text(encoding="utf-8"),
-                    source_kind=str(metadata.get("source_kind") or "paste"),
-                    source_uri=metadata.get("source_uri"),
-                    created_by_user_id=_optional_uuid(metadata.get("created_by_user_id")),
-                    agent_searchable=bool(metadata.get("agent_searchable", True)),
-                    sensitivity=str(metadata.get("sensitivity") or "internal"),
-                    source_sha256=source_hash,
-                    doc_metadata=dict(metadata.get("doc_metadata") or {}),
-                    force_reindex=True,
-                )
-            elif queued_kind == "source_bytes":
-                queued_path = self.data_root / str(metadata.get("queued_source_path") or "")
-                if not queued_path.exists():
-                    raise FileNotFoundError("queued_source_missing")
-                result = await self.ingest_source_bytes(
-                    session,
-                    tenant_id=tenant_id,
-                    owner_user_id=owner_user_id,
-                    filename=str(metadata.get("source_filename") or queued_path.name),
-                    data=queued_path.read_bytes(),
-                    title=metadata.get("title"),
-                    source_kind=str(metadata.get("source_kind") or "upload"),
-                    source_uri=metadata.get("source_uri"),
-                    created_by_user_id=_optional_uuid(metadata.get("created_by_user_id")),
-                    agent_searchable=bool(metadata.get("agent_searchable", True)),
-                    sensitivity=str(metadata.get("sensitivity") or "internal"),
-                    source_mime_type=metadata.get("source_mime_type"),
-                    doc_metadata=dict(metadata.get("doc_metadata") or {}),
-                    source_sha256=source_hash,
-                )
-            elif queued_kind == "url":
-                result = await self.ingest_url(
-                    session,
-                    tenant_id=tenant_id,
-                    owner_user_id=owner_user_id,
-                    url=str(metadata.get("source_uri") or ""),
-                    title=metadata.get("title"),
-                    created_by_user_id=_optional_uuid(metadata.get("created_by_user_id")),
-                    agent_searchable=bool(metadata.get("agent_searchable", True)),
-                    sensitivity=str(metadata.get("sensitivity") or "internal"),
-                    source_sha256=source_hash,
-                )
-            else:
-                raise ValueError(f"unknown_queued_import_kind:{queued_kind}")
+            # The worker claim already owns attempt accounting exactly once;
+            # the ingest underneath must not increment the same job again.
+            result = await self._ingest_queued_payload(
+                session,
+                job=job,
+                metadata=metadata,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                managed_job_id=job.id,
+            )
         except Exception as exc:
-            warning = f"queued_import_failed:{exc}"
-            job.stage = "processing"
+            # Exact typed taxonomy: known infrastructure failures carry their
+            # code; anything unknown collapses to one generic safe code. Raw
+            # exception prose never becomes the user-facing error state (the
+            # class name stays as operator evidence).
+            code = _typed_import_error_code(exc)
+            warning = f"{code}:{exc.__class__.__name__}"
+            job.stage = "failed"
             job.status = "failed"
-            job.error_message = warning
-            job.job_metadata_json = {**metadata, "warnings": [warning]}
+            job.error_message = code
+            job.job_metadata_json = {
+                **metadata,
+                "error": code,
+                "warnings": [warning],
+                "failure_exception": exc.__class__.__name__,
+            }
             await session.flush()
             return PersonalKnowledgeIngestResult(
                 document_id=job.document_id,
@@ -2547,18 +3111,10 @@ class PersonalKnowledgeService:
                 segment_count=0,
                 status="failed",
                 warnings=[warning],
+                error_code=code,
             )
 
-        job.stage = "indexed" if result.status in {"ready", "degraded"} else "failed"
-        job.status = result.status
-        job.error_message = None if result.status in {"ready", "degraded"} else ";".join(result.warnings or [])
-        job.job_metadata_json = {
-            **metadata,
-            "warnings": list(result.warnings or []),
-            "processed_result_job_id": str(result.job_id or job.id),
-            "processed_document_id": str(result.document_id),
-            "processed_canonical_md_path": result.canonical_md_path,
-        }
+        self._apply_import_job_result(job=job, metadata=metadata, result=result)
         await session.flush()
         return result
 
@@ -2567,7 +3123,15 @@ class PersonalKnowledgeService:
         job.status = "running"
         job.error_message = None
         job.attempt_count = int(getattr(job, "attempt_count", 0) or 0) + 1
-        job.job_metadata_json = {**metadata, "claimed_at": datetime.now(timezone.utc).isoformat()}
+        # The opaque claim token plus the post-claim attempt count are the
+        # lease identity: the fenced terminal CAS compares both against the
+        # committed row before any phase-2 write may land.
+        claimed_token = uuid.uuid4().hex
+        job.job_metadata_json = {
+            **metadata,
+            "claimed_at": datetime.now(timezone.utc).isoformat(),
+            "claimed_token": claimed_token,
+        }
         await session.flush()
 
     def _apply_import_job_result(
@@ -2577,16 +3141,22 @@ class PersonalKnowledgeService:
         metadata: dict[str, Any],
         result: PersonalKnowledgeIngestResult,
     ) -> None:
-        job.stage = "indexed" if result.status in {"ready", "degraded"} else "failed"
+        succeeded = result.status in {"ready", "degraded"}
+        job.stage = "indexed" if succeeded else "failed"
         job.status = result.status
-        job.error_message = None if result.status in {"ready", "degraded"} else ";".join(result.warnings or [])
-        job.job_metadata_json = {
+        job.error_message = None if succeeded else (result.error_code or ";".join(result.warnings or []))
+        terminal_metadata = {
             **metadata,
             "warnings": list(result.warnings or []),
             "processed_result_job_id": str(result.job_id or job.id),
             "processed_document_id": str(result.document_id),
             "processed_canonical_md_path": result.canonical_md_path,
         }
+        if succeeded:
+            terminal_metadata.pop("error", None)
+        elif result.error_code:
+            terminal_metadata["error"] = result.error_code
+        job.job_metadata_json = terminal_metadata
 
     async def _mark_import_job_attempt_limit_exceeded(self, session: Any, *, job: Any) -> None:
         warning = "personal_kb_import_attempt_limit_exceeded"
@@ -2594,39 +3164,91 @@ class PersonalKnowledgeService:
         job.stage = "failed"
         job.status = "failed"
         job.error_message = warning
-        job.job_metadata_json = {**metadata, "warnings": [warning]}
+        job.job_metadata_json = {**metadata, "error": warning, "warnings": [warning]}
         await session.flush()
 
     async def _fail_import_job_after_worker_error(
-        self, session: Any, *, job: Any, metadata: dict[str, Any], error: str
+        self, session: Any, *, job: Any, metadata: dict[str, Any], code: str, exception_name: str
     ) -> None:
-        warning = f"personal_kb_import_worker_error:{error}"
+        warning = f"personal_kb_import_{code}:{exception_name}"
         job.stage = "failed"
         job.status = "failed"
-        job.error_message = warning
-        job.job_metadata_json = {**metadata, "warnings": [warning]}
+        job.error_message = code
+        job.job_metadata_json = {
+            **metadata,
+            "error": code,
+            "warnings": [warning],
+            "failure_exception": exception_name,
+        }
         await session.flush()
 
-    async def process_import_jobs(
+    async def _fail_claimed_job_after_worker_error(
         self,
         session: Any,
         *,
+        job_id: uuid.UUID,
+        claimed_token: str,
+        claimed_attempt: int,
+        code: str,
+        exception_name: str,
+    ) -> bool:
+        """Typed terminal failure for an unexpected phase-2 error, fenced by
+        the claim lease (token + attempt + running). Returns False when the
+        lease was lost — then neither the job row nor the document is
+        mutated. On a successful CAS the transient (never-consumable)
+        document terminalizes in the same transaction."""
+        job = (
+            await session.execute(select(KnowledgeIndexJob).where(KnowledgeIndexJob.id == job_id))
+        ).scalar_one_or_none()
+        if job is None:
+            return False
+        warning = f"personal_kb_import_{code}:{exception_name}"
+        metadata = {
+            **dict(getattr(job, "job_metadata_json", {}) or {}),
+            "error": code,
+            "warnings": [warning],
+            "failure_exception": exception_name,
+            "failed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        cas = await session.execute(
+            update(KnowledgeIndexJob)
+            .where(
+                KnowledgeIndexJob.id == job_id,
+                KnowledgeIndexJob.status == "running",
+                KnowledgeIndexJob.attempt_count == int(claimed_attempt),
+                KnowledgeIndexJob.job_metadata_json["claimed_token"].astext == claimed_token,
+            )
+            .values(status="failed", stage="failed", error_message=code, job_metadata_json=metadata)
+            .execution_options(synchronize_session=False)
+        )
+        if int(getattr(cas, "rowcount", 0) or 0) != 1:
+            return False
+        await self._stage_transient_document_failure(session, document_id=job.document_id, error_code=code)
+        return True
+
+    async def process_import_jobs(
+        self,
+        session: Any = None,
+        *,
+        session_factory: Any = None,
         tenant_id: uuid.UUID,
         owner_user_id: uuid.UUID,
         current_user_id: uuid.UUID | None,
         limit: int = 10,
-        statuses: tuple[str, ...] = ("queued", "failed"),
+        statuses: tuple[str, ...] = ("queued",),
         queued_grace_seconds: int = _DEFAULT_IMPORT_JOB_QUEUED_GRACE_SECONDS,
         running_timeout_seconds: int | None = None,
         max_attempts: int = _DEFAULT_IMPORT_JOB_MAX_ATTEMPTS,
     ) -> PersonalKnowledgeJobProcessSummary:
         if current_user_id != owner_user_id:
             return PersonalKnowledgeJobProcessSummary(attempted=0, succeeded=0, failed=0, skipped=0, results=[])
+        # Workers select queued jobs and stale-running leases only. A failed
+        # job re-enters queued exclusively through the explicit retry CAS.
         clean_statuses = tuple(
             status
             for status in (str(item or "").strip().lower() for item in statuses)
-            if status in {"queued", "failed", "running"}
-        ) or ("queued", "failed")
+            if status in {"queued", "running"}
+        ) or ("queued",)
         now = datetime.now(timezone.utc)
         queued_before = now - timedelta(seconds=max(0, int(queued_grace_seconds or 0)))
         running_before = (
@@ -2634,6 +3256,17 @@ class PersonalKnowledgeService:
             if running_timeout_seconds is not None
             else None
         )
+        if session_factory is not None:
+            return await self._process_import_jobs_two_phase(
+                session_factory,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                limit=limit,
+                statuses=clean_statuses,
+                queued_before=queued_before,
+                running_before=running_before,
+                max_attempts=max_attempts,
+            )
         rows = (
             await session.execute(
                 build_personal_knowledge_job_claim_statement(
@@ -2657,14 +3290,26 @@ class PersonalKnowledgeService:
 
     async def claim_and_process_stuck_jobs(
         self,
-        session: Any,
+        session: Any = None,
         *,
+        session_factory: Any = None,
         limit: int = 10,
         queued_grace_seconds: int = 30,
         running_timeout_seconds: int = _DEFAULT_IMPORT_JOB_RUNNING_TIMEOUT_SECONDS,
         max_attempts: int = _DEFAULT_IMPORT_JOB_MAX_ATTEMPTS,
     ) -> PersonalKnowledgeJobProcessSummary:
         now = datetime.now(timezone.utc)
+        if session_factory is not None:
+            return await self._process_import_jobs_two_phase(
+                session_factory,
+                tenant_id=None,
+                owner_user_id=None,
+                limit=limit,
+                statuses=("queued", "running"),
+                queued_before=now - timedelta(seconds=max(0, int(queued_grace_seconds or 0))),
+                running_before=now - timedelta(seconds=max(0, int(running_timeout_seconds or 0))),
+                max_attempts=max_attempts,
+            )
         rows = (
             await session.execute(
                 build_personal_knowledge_job_claim_statement(
@@ -2685,6 +3330,396 @@ class PersonalKnowledgeService:
             default_tenant_id=None,
             default_owner_user_id=None,
         )
+
+    async def _process_import_jobs_two_phase(
+        self,
+        session_factory: Any,
+        *,
+        tenant_id: uuid.UUID | None,
+        owner_user_id: uuid.UUID | None,
+        limit: int,
+        statuses: tuple[str, ...],
+        queued_before: datetime,
+        running_before: datetime | None,
+        max_attempts: int,
+    ) -> PersonalKnowledgeJobProcessSummary:
+        """Durable two-phase claim loop — the live worker path.
+
+        Phase 1 claims exactly one job in a short transaction (SKIP LOCKED
+        select, status=running + attempt increment + opaque claim token,
+        COMMIT) so the row lock is released and concurrent readers observe the
+        real running state before long conversion/indexing starts. Phase 2
+        stages document/segment writes only and finalizes through one fenced
+        compare-and-set on the claim lease; a stale (reclaimed) lease ends as
+        typed claim_lost with every staged write rolled back. A crash between
+        the phases leaves a committed running job that the stale drain either
+        reclaims (attempts left) or terminalizes as attempt-limit-exhausted.
+        """
+        results: list[dict[str, Any]] = []
+        succeeded = 0
+        failed = 0
+        skipped = 0
+        attempted = 0
+        while attempted < max(1, int(limit or 1)):
+            claim_statement = build_personal_knowledge_job_claim_statement(
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                statuses=statuses,
+                queued_before=queued_before,
+                running_before=running_before,
+                max_attempts=max_attempts,
+                limit=1,
+            )
+            async with session_factory() as claim_session:
+                rows = (await claim_session.execute(claim_statement)).all()
+                if not rows:
+                    break
+                job = _row_first(rows[0])
+                job_id = getattr(job, "id", None)
+                document_id = getattr(job, "document_id", None)
+                job_tenant = getattr(job, "tenant_id", None) or tenant_id
+                job_owner = getattr(job, "scope_id", None) or owner_user_id
+                if document_id is None or job_tenant is None or job_owner is None:
+                    # Unreachable by schema (columns are non-nullable); a
+                    # corrupt row must still terminalize instead of spinning
+                    # in queued forever. The claim transaction holds the row
+                    # lock, so this mutation is race-safe.
+                    attempted += 1
+                    job.stage = "failed"
+                    job.status = "failed"
+                    job.error_message = "import_payload_invalid"
+                    job.job_metadata_json = {
+                        **dict(getattr(job, "job_metadata_json", {}) or {}),
+                        "error": "import_payload_invalid",
+                        "warnings": ["import_payload_invalid"],
+                    }
+                    await claim_session.commit()
+                    failed += 1
+                    results.append(
+                        {
+                            "job_id": str(job_id or ""),
+                            "document_id": str(document_id or ""),
+                            "status": "failed",
+                            "segment_count": 0,
+                            "warnings": ["import_payload_invalid"],
+                        }
+                    )
+                    continue
+                metadata = dict(getattr(job, "job_metadata_json", {}) or {})
+                attempt_ceiling = max(1, int(max_attempts or _DEFAULT_IMPORT_JOB_MAX_ATTEMPTS))
+                if (
+                    str(getattr(job, "status", "") or "") == "running"
+                    and int(getattr(job, "attempt_count", 0) or 0) >= attempt_ceiling
+                ):
+                    # Crash after the final allowed claim: terminalize in this
+                    # same short transaction WITHOUT consuming another attempt
+                    # (the SKIP LOCKED row lock makes it race-safe). The
+                    # never-consumable document terminalizes with it.
+                    attempted += 1
+                    code = "personal_kb_import_attempt_limit_exceeded"
+                    job.stage = "failed"
+                    job.status = "failed"
+                    job.error_message = code
+                    job.job_metadata_json = {
+                        **metadata,
+                        "error": code,
+                        "warnings": [code],
+                        "finished_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    await self._stage_transient_document_failure(
+                        claim_session, document_id=document_id, error_code=code
+                    )
+                    await claim_session.commit()
+                    failed += 1
+                    results.append(
+                        {
+                            "job_id": str(job_id or ""),
+                            "document_id": str(document_id or ""),
+                            "status": "failed",
+                            "segment_count": 0,
+                            "warnings": [code],
+                        }
+                    )
+                    continue
+                # Only queued or stale-running rows below the ceiling receive
+                # a fresh claim token and the single attempt increment.
+                await self._claim_import_job_for_processing(claim_session, job=job, metadata=metadata)
+                await claim_session.commit()
+                claimed_metadata = dict(getattr(job, "job_metadata_json", {}) or metadata)
+                claimed_token = str(claimed_metadata.get("claimed_token") or "")
+                claimed_attempt = int(getattr(job, "attempt_count", 0) or 0)
+                claimed_id = getattr(job, "id", None)
+                claimed_document_id = getattr(job, "document_id", None)
+            attempted += 1
+            try:
+                async with session_factory() as work_session:
+                    result = await self._process_claimed_job_phase_two(
+                        work_session,
+                        job_id=claimed_id,
+                        claimed_token=claimed_token,
+                        claimed_attempt=claimed_attempt,
+                        tenant_id=job_tenant,
+                        owner_user_id=job_owner,
+                        max_attempts=max_attempts,
+                    )
+                    await work_session.commit()
+            except PersonalKnowledgeClaimLost:
+                skipped += 1
+                results.append(
+                    {
+                        "job_id": str(claimed_id or ""),
+                        "document_id": str(claimed_document_id or ""),
+                        "status": "claim_lost",
+                        "segment_count": 0,
+                        "warnings": ["personal_kb_import_claim_lost"],
+                    }
+                )
+                continue
+            except Exception as exc:
+                wrote_failure = False
+                async with session_factory() as fail_session:
+                    wrote_failure = await self._fail_claimed_job_after_worker_error(
+                        fail_session,
+                        job_id=claimed_id,
+                        claimed_token=claimed_token,
+                        claimed_attempt=claimed_attempt,
+                        code="worker_error",
+                        exception_name=exc.__class__.__name__,
+                    )
+                    await fail_session.commit()
+                if not wrote_failure:
+                    skipped += 1
+                    results.append(
+                        {
+                            "job_id": str(claimed_id or ""),
+                            "document_id": str(claimed_document_id or ""),
+                            "status": "claim_lost",
+                            "segment_count": 0,
+                            "warnings": ["personal_kb_import_claim_lost"],
+                        }
+                    )
+                    continue
+                failed += 1
+                results.append(
+                    {
+                        "job_id": str(claimed_id or ""),
+                        "document_id": str(claimed_document_id or ""),
+                        "status": "failed",
+                        "segment_count": 0,
+                        "warnings": [f"personal_kb_import_worker_error:{exc.__class__.__name__}"],
+                    }
+                )
+                continue
+            if result is None:
+                # The job row disappeared between claim and phase 2 — nothing
+                # remains to finalize, and no running row is left behind.
+                skipped += 1
+                results.append({"job_id": str(claimed_id or ""), "status": "skipped", "warnings": ["job_deleted"]})
+                continue
+            terminal_status = str(result.status or "")
+            if terminal_status in {"ready", "degraded"}:
+                succeeded += 1
+            else:
+                failed += 1
+            results.append(
+                {
+                    "job_id": str(claimed_id or result.job_id or ""),
+                    "document_id": str(result.document_id),
+                    "status": terminal_status,
+                    "segment_count": result.segment_count,
+                    "warnings": list(result.warnings or []),
+                }
+            )
+        return PersonalKnowledgeJobProcessSummary(
+            attempted=attempted,
+            succeeded=succeeded,
+            failed=failed,
+            skipped=skipped,
+            results=results,
+        )
+
+    async def _process_claimed_job_phase_two(
+        self,
+        session: Any,
+        *,
+        job_id: uuid.UUID,
+        claimed_token: str,
+        claimed_attempt: int,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        max_attempts: int,
+    ) -> PersonalKnowledgeIngestResult | None:
+        """Execute the claimed job body and fence the terminal transition.
+
+        Until the final compare-and-set, the managed KnowledgeIndexJob row is
+        never mutated or flushed — the ingest stages document/segment writes
+        only (managed_job_id mode). A zero-row CAS means another worker
+        reclaimed the stale lease: PersonalKnowledgeClaimLost is raised so the
+        caller rolls every staged write back and reports typed claim_lost.
+        """
+        job = (
+            await session.execute(select(KnowledgeIndexJob).where(KnowledgeIndexJob.id == job_id))
+        ).scalar_one_or_none()
+        if job is None:
+            return None
+        metadata = dict(getattr(job, "job_metadata_json", {}) or {})
+        if (
+            str(metadata.get("claimed_token") or "") != claimed_token
+            or int(getattr(job, "attempt_count", 0) or 0) != int(claimed_attempt)
+            or str(getattr(job, "status", "") or "") != "running"
+        ):
+            raise PersonalKnowledgeClaimLost(claimed_token)
+
+        attempt_ceiling = max(1, int(max_attempts or _DEFAULT_IMPORT_JOB_MAX_ATTEMPTS))
+        failure_exception: str | None = None
+        if int(claimed_attempt) > attempt_ceiling:
+            # Terminalize-only claim (stale-running at the attempt ceiling,
+            # e.g. a crash after the final allowed claim): no work reruns.
+            result = PersonalKnowledgeIngestResult(
+                document_id=job.document_id,
+                job_id=job.id,
+                source_sha256=str(getattr(job, "artifact_hash", "") or ""),
+                artifact_hash=str(getattr(job, "artifact_hash", "") or ""),
+                canonical_md_path="",
+                segment_count=0,
+                status="failed",
+                warnings=["personal_kb_import_attempt_limit_exceeded"],
+                error_code="personal_kb_import_attempt_limit_exceeded",
+            )
+        else:
+            try:
+                result = await self._execute_claimed_body(
+                    session,
+                    job=job,
+                    metadata=metadata,
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                )
+            except PersonalKnowledgeClaimLost:
+                raise
+            except Exception as exc:
+                code = _typed_import_error_code(exc)
+                failure_exception = exc.__class__.__name__
+                result = PersonalKnowledgeIngestResult(
+                    document_id=job.document_id,
+                    job_id=job.id,
+                    source_sha256=str(getattr(job, "artifact_hash", "") or ""),
+                    artifact_hash=str(getattr(job, "artifact_hash", "") or ""),
+                    canonical_md_path="",
+                    segment_count=0,
+                    status="failed",
+                    warnings=[f"{code}:{failure_exception}"],
+                    error_code=code,
+                )
+
+        succeeded = result.status in {"ready", "degraded"}
+        if not succeeded:
+            await self._stage_transient_document_failure(
+                session,
+                document_id=result.document_id,
+                error_code=result.error_code or "import_failed",
+            )
+        terminal_metadata = {
+            **metadata,
+            "warnings": list(result.warnings or []),
+            "processed_result_job_id": str(result.job_id or job.id),
+            "processed_document_id": str(result.document_id),
+            "processed_canonical_md_path": result.canonical_md_path,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if succeeded:
+            terminal_metadata.pop("error", None)
+        else:
+            terminal_metadata["error"] = result.error_code or "import_failed"
+        if failure_exception is not None:
+            terminal_metadata["failure_exception"] = failure_exception
+
+        cas = await session.execute(
+            update(KnowledgeIndexJob)
+            .where(
+                KnowledgeIndexJob.id == job_id,
+                KnowledgeIndexJob.status == "running",
+                KnowledgeIndexJob.attempt_count == int(claimed_attempt),
+                KnowledgeIndexJob.job_metadata_json["claimed_token"].astext == claimed_token,
+            )
+            .values(
+                status=str(result.status),
+                stage="indexed" if succeeded else "failed",
+                error_message=None if succeeded else (result.error_code or "import_failed"),
+                job_metadata_json=terminal_metadata,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if int(getattr(cas, "rowcount", 0) or 0) != 1:
+            raise PersonalKnowledgeClaimLost(claimed_token)
+        return result
+
+    async def _execute_claimed_body(
+        self,
+        session: Any,
+        *,
+        job: Any,
+        metadata: dict[str, Any],
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+    ) -> PersonalKnowledgeIngestResult:
+        """Run the claimed job body with the job row in managed mode."""
+        if metadata.get("queued_import_kind"):
+            return await self._ingest_queued_payload(
+                session,
+                job=job,
+                metadata=metadata,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                managed_job_id=job.id,
+            )
+        result = await self.rebuild_personal_document_index(
+            session,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            document_id=job.document_id,
+            current_user_id=owner_user_id,
+            attempt_increment=0,
+            managed_job_id=job.id,
+        )
+        if result is None:
+            # The document is no longer readable for this scope — a typed
+            # terminal failure, never an indefinitely running job.
+            return PersonalKnowledgeIngestResult(
+                document_id=job.document_id,
+                job_id=job.id,
+                source_sha256=str(getattr(job, "artifact_hash", "") or ""),
+                artifact_hash=str(getattr(job, "artifact_hash", "") or ""),
+                canonical_md_path="",
+                segment_count=0,
+                status="failed",
+                warnings=["document_missing"],
+                error_code="document_missing",
+            )
+        return result
+
+    async def _stage_transient_document_failure(self, session: Any, *, document_id: uuid.UUID, error_code: str) -> None:
+        """A terminal job failure must not leave a never-consumable document
+        queued in the read model. A consumable (ready/degraded) document being
+        rebuilt keeps its prior status. Staged in the work transaction — a
+        lost claim CAS rolls this back with everything else."""
+        document = (
+            await session.execute(
+                select(KnowledgeDocument)
+                .where(KnowledgeDocument.id == document_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if document is None:
+            return
+        if str(getattr(document, "status", "") or "") in {"queued", "running", "failed"}:
+            document.status = "failed"
+            document.doc_metadata_json = {
+                **(getattr(document, "doc_metadata_json", {}) or {}),
+                "error": error_code,
+            }
+            await session.flush()
 
     async def _process_claimed_import_job_rows(
         self,
@@ -2712,6 +3747,13 @@ class PersonalKnowledgeService:
             if tenant_id is None or owner_user_id is None:
                 skipped += 1
                 results.append({"job_id": str(job_id or ""), "status": "skipped", "warnings": ["missing_scope"]})
+                continue
+            raw_status = str(getattr(job, "status", "") or "").lower()
+            if raw_status not in {"queued", "running"}:
+                # Workers never (re)select terminal jobs — a failed job
+                # re-enters queued only through the explicit retry CAS.
+                skipped += 1
+                results.append({"job_id": str(job_id or ""), "status": "skipped", "warnings": ["status_not_claimable"]})
                 continue
             if int(getattr(job, "attempt_count", 0) or 0) >= max(
                 1, int(max_attempts or _DEFAULT_IMPORT_JOB_MAX_ATTEMPTS)
@@ -2748,6 +3790,8 @@ class PersonalKnowledgeService:
                         owner_user_id=owner_user_id,
                         document_id=document_id,
                         current_user_id=owner_user_id,
+                        attempt_increment=0,
+                        managed_job_id=job.id,
                     )
                     if result is not None:
                         self._apply_import_job_result(job=job, metadata=metadata, result=result)
@@ -2757,7 +3801,13 @@ class PersonalKnowledgeService:
                 # malformed source digest) so it cannot starve the rest of the claimed
                 # batch. The failure is recorded on the job row — the queryable
                 # observability surface for this pipeline — and the loop moves on.
-                await self._fail_import_job_after_worker_error(session, job=job, metadata=metadata, error=str(exc))
+                await self._fail_import_job_after_worker_error(
+                    session,
+                    job=job,
+                    metadata=metadata,
+                    code="worker_error",
+                    exception_name=exc.__class__.__name__,
+                )
                 failed += 1
                 results.append(
                     {
@@ -2765,7 +3815,7 @@ class PersonalKnowledgeService:
                         "document_id": str(document_id),
                         "status": "failed",
                         "segment_count": 0,
-                        "warnings": [f"personal_kb_import_worker_error:{exc}"],
+                        "warnings": [f"personal_kb_import_worker_error:{exc.__class__.__name__}"],
                     }
                 )
                 continue

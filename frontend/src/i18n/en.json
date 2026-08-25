@@ -1007,7 +1007,9 @@
     "activity": {
       "toolCall": "Called tool {{tool}}",
       "toolCallApproved": "Approved tool {{tool}}",
-      "unknownAgent": "Digital employee"
+      "unknownAgent": "Digital employee",
+      "toolCallGeneric": "Tool call",
+      "toolCallApprovedGeneric": "Approved tool call"
     },
     "noLimit": "Unlimited",
     "justNow": "Just now",
@@ -1046,7 +1048,8 @@
       "paused": "Paused",
       "stopped": "Stopped",
       "cancelled": "Cancelled",
-      "needsAdminReview": "Needs admin review"
+      "needsAdminReview": "Needs admin review",
+      "unknown": "Status unavailable"
     },
     "status": {
       "running": "Working",
@@ -1497,7 +1500,11 @@
       "researchStatus": "Status",
       "researchSources": "Sources",
       "researchClaims": "Claims",
-      "researchGaps": "Gaps"
+      "researchGaps": "Gaps",
+      "kindOther": "Automation",
+      "scheduleIntervalGeneric": "Interval",
+      "scheduleOnceGeneric": "One-off",
+      "scheduleCronGeneric": "Scheduled (cron)"
     },
     "plan": {
       "badge": "Plan",

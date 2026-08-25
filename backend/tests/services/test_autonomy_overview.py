@@ -68,13 +68,13 @@ def test_trigger_view_exposes_structured_schedule_for_localized_rendering():
             expires_at=None,
         )
 
-    interval = build_trigger_view(
-        make_trigger("interval", {"minutes": 15}), attempts=[], include_diagnostics=False
-    )
+    interval = build_trigger_view(make_trigger("interval", {"minutes": 15}), attempts=[], include_diagnostics=False)
     assert interval["schedule"] == {"kind": "interval", "minutes": 15}
     assert interval["display_schedule"] == "Every 15 minutes"
 
-    once = build_trigger_view(make_trigger("once", {"at": "2026-08-30T09:00:00Z"}), attempts=[], include_diagnostics=False)
+    once = build_trigger_view(
+        make_trigger("once", {"at": "2026-08-30T09:00:00Z"}), attempts=[], include_diagnostics=False
+    )
     assert once["schedule"] == {"kind": "once", "at": "2026-08-30T09:00:00Z"}
 
     on_message = build_trigger_view(make_trigger("on_message", {}), attempts=[], include_diagnostics=False)
@@ -216,3 +216,32 @@ def test_artifact_view_defaults_to_output_not_internal_metadata():
     diagnostic_view = build_artifact_view(raw_payload, include_diagnostics=True)
     assert diagnostic_view["diagnostics"]["runtime_task_id"] == "runtime-1"
     assert diagnostic_view["diagnostics"]["schema"] == "trigger_output_artifact.v1"
+
+
+def test_trigger_view_never_falls_back_to_raw_kind_code_in_display_title():
+    """The user-facing title must not borrow the machine kind code.
+
+    When name/reason are empty, display_title stays empty so clients render
+    their localized kind label; unknown kinds never enter the user DOM.
+    """
+    from app.services.autonomy_overview import build_trigger_view
+
+    trigger = SimpleNamespace(
+        id=uuid4(),
+        name="",
+        type="cron",
+        config={},
+        reason="",
+        is_enabled=True,
+        fire_count=0,
+        max_fires=None,
+        cooldown_seconds=60,
+        last_fired_at=None,
+        created_at=None,
+        expires_at=None,
+    )
+
+    view = build_trigger_view(trigger, attempts=[], include_diagnostics=False)
+
+    assert view["display_title"] == ""
+    assert view["display_kind"] == "scheduled_job"

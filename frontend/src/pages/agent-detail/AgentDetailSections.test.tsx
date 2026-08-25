@@ -80,14 +80,29 @@ describe('runtimeStatusLabel', () => {
 });
 
 describe('userFacingRuntimeStatus', () => {
-  it('maps known states and never falls back to raw runtime values', () => {
+  it('maps known machine codes exactly and never falls back to raw runtime values', () => {
     expect(userFacingRuntimeStatus('waiting_budget_approval')).toBe('Waiting for approval');
     expect(userFacingRuntimeStatus('blocked')).toBe('Needs attention');
     expect(userFacingRuntimeStatus('not_admitted')).toBe('Skipped');
     expect(userFacingRuntimeStatus('ready')).toBe('Ready');
     expect(userFacingRuntimeStatus('quota_denied')).toBe('Needs attention');
     expect(userFacingRuntimeStatus('quota_unavailable')).toBe('Needs attention');
-    expect(userFacingRuntimeStatus('provider_stream_half_closed_internal')).toBe('Working');
+  });
+
+  it('renders unknown states as a neutral unavailable label without substring inference', () => {
+    // Model-agency boundary: an unrecognized machine state must not be
+    // guessed into a semantic status (old behavior: any code containing
+    // 'fail'/'done'/'stop'... was coerced, and the default masqueraded as
+    // Working). Benign/unknown codes render one honest neutral label.
+    expect(userFacingRuntimeStatus('provider_stream_half_closed_internal')).toBe('Status unavailable');
+    expect(userFacingRuntimeStatus('narrative_with_the_word_done_inside')).toBe('Status unavailable');
+    expect(userFacingRuntimeStatus('detailing_a_failure_story')).toBe('Status unavailable');
+    expect(userFacingRuntimeStatus('')).toBe('Status unavailable');
+
+    const t = ((key: string, fallback?: string) => fallback ?? key) as unknown as Parameters<typeof runtimeStatusLabel>[1];
+    const unknownLabel = runtimeStatusLabel('provider_stream_half_closed_internal', t);
+    expect(unknownLabel).toBe('Status unavailable');
+    expect(unknownLabel).not.toContain('provider_stream');
   });
 });
 
@@ -1854,6 +1869,110 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('· file_written');
     // Non-tool summaries keep rendering verbatim.
     expect(markup).toContain('Saved Q2 research outline');
+  });
+
+  it('sanitizes tool-call rows even when the structured detail is missing', () => {
+    // Legacy rows without detail must not fall back to the persisted raw
+    // summary: the action_type alone decides the clean generic label.
+    const markup = renderToStaticMarkup(
+      <AgentActivityLogSection
+        activityLogs={[
+          {
+            id: 'log-no-detail',
+            created_at: '2026-08-25T08:00:00Z',
+            summary: "Called tool web_fetch: {'url': 'https://internal-host/payload', 'item': 'raw-internal-88'}",
+            action_type: 'tool_call',
+            detail: null,
+          },
+          {
+            id: 'log-approved-no-detail',
+            created_at: '2026-08-25T08:05:00Z',
+            summary: "Approved-executed send_email: {'message_id': 'raw-internal-99'}",
+            action_type: 'tool_call_approved',
+            detail: undefined,
+          },
+        ]}
+        logFilter="all"
+        expandedLogId={null}
+        onFilterChange={() => {}}
+        onToggleExpandedLog={() => {}}
+      />,
+    );
+
+    expect(markup).not.toContain('raw-internal-88');
+    expect(markup).not.toContain('raw-internal-99');
+    expect(markup).not.toContain("{'");
+    expect(markup).toContain('Tool call');
+    expect(markup).toContain('Approved tool call');
+  });
+
+  it('keeps unknown aware kinds, schedules, and states out of the normal-user DOM entirely', () => {
+    // Raw codes/prose must not appear anywhere in the rendered output —
+    // text, title, aria-label, or data-* attributes included.
+    const markup = renderToStaticMarkup(
+      <AgentAwareSection
+        agentId="agent-1"
+        awareTriggers={[]}
+        reflectionSessions={[]}
+        reflectionMessages={{}}
+        autonomyOverview={{
+          agent_id: 'agent-1',
+          lookback_hours: 24,
+          totals: { triggers: 3, recent_attempts: 0, findings: 0 },
+          triggers: [
+            {
+              id: 'trigger-unknown-everything',
+              // Unknown machine kind; title empty so the kind label path runs.
+              display_kind: 'experimental_bridge_runtime',
+              display_title: '',
+              // Legacy payload without structured schedule: the English prose
+              // fallback must not reach the user DOM.
+              display_schedule: 'Every 30 minutes',
+              attention_state: 'unmapped_future_state',
+              attention_reason: 'Unmapped future prose reason.',
+              next_action: null,
+              linked_objective: null,
+              last_attempt: null,
+              last_artifact: null,
+            },
+            {
+              id: 'trigger-known-schedule',
+              display_kind: 'scheduled_job',
+              display_title: 'Daily launch report',
+              schedule: { kind: 'interval', minutes: 15 },
+              attention_state: 'active',
+              attention_reason: null,
+              next_action: null,
+              linked_objective: null,
+              last_attempt: null,
+              last_artifact: null,
+            },
+          ],
+          recent_attempts: [],
+          findings: [],
+        }}
+        expandedReflection={null}
+        showAllTriggers={false}
+        reflectionPage={0}
+        onSetExpandedReflection={() => {}}
+        onSetReflectionMessages={() => {}}
+        onSetShowAllTriggers={() => {}}
+        onSetReflectionPage={() => {}}
+        onRefetchTriggers={async () => {}}
+        onRefetchAutonomy={async () => {}}
+      />,
+    );
+
+    // Unknown machine values never render (any attribute surface).
+    expect(markup).not.toContain('experimental_bridge_runtime');
+    expect(markup).not.toContain('Every 30 minutes');
+    expect(markup).not.toContain('unmapped_future_state');
+    expect(markup).not.toContain('Unmapped future prose reason');
+    // Neutral localized labels render instead.
+    expect(markup).toContain('Unknown state');
+    expect(markup).toContain('Automation');
+    // Known structured schedules keep rendering localized typed labels.
+    expect(markup).toContain('Every 15 min');
   });
 
   it('renders AgentApprovalsSection as a standalone approvals module', () => {

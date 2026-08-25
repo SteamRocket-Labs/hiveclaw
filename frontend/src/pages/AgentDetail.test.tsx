@@ -196,7 +196,7 @@ describe('AgentDetail realtime refresh contract', () => {
     expect(source).toContain("window.addEventListener('offline', handleOffline)");
     expect(source).toContain("document.addEventListener('visibilitychange', handleVisibility)");
     expect(source).toContain('transportPollIntervalMs(');
-    expect(source).toContain('await optionsRef.current.callbacks.onBackfill(activeSession, agentId)');
+    expect(source).toContain('backfill: () => optionsRef.current.callbacks.onBackfill(activeSession, agentId)');
     expect(pageSource).toContain('onReconnectTransport={reconnectActiveTransport}');
   });
 });

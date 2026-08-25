@@ -3,15 +3,20 @@ import type { useTranslation } from 'react-i18next';
 export type ActivityTranslator = ReturnType<typeof useTranslation>['t'];
 
 // Tool-call activity summaries written before the payload-hygiene fix embed the
-// raw result text. The structured detail (same durable row) carries the tool
-// name, so normal-user surfaces derive a clean label from it instead of
-// rendering the raw payload; full evidence stays behind progressive disclosure
-// / operator views.
+// raw result text. Hygiene is unconditional for tool_call action types: with a
+// structured tool name derive "Called tool X"; without it fall back to a clean
+// generic label — never the persisted raw summary. Full evidence stays behind
+// progressive disclosure / operator views.
 export function activityDisplaySummary(act: any, t: ActivityTranslator): string {
   const actionType = String(act?.action_type || '');
-  const detail = act?.detail as Record<string, unknown> | null | undefined;
-  const toolName = typeof detail?.tool === 'string' ? String(detail.tool).trim() : '';
-  if (toolName && (actionType === 'tool_call' || actionType === 'tool_call_approved')) {
+  if (actionType === 'tool_call' || actionType === 'tool_call_approved') {
+    const detail = act?.detail as Record<string, unknown> | null | undefined;
+    const toolName = typeof detail?.tool === 'string' ? String(detail.tool).trim() : '';
+    if (!toolName) {
+      return actionType === 'tool_call_approved'
+        ? t('dashboard.activity.toolCallApprovedGeneric', 'Approved tool call')
+        : t('dashboard.activity.toolCallGeneric', 'Tool call');
+    }
     return actionType === 'tool_call_approved'
       ? t('dashboard.activity.toolCallApproved', 'Approved tool {{tool}}', { tool: toolName })
       : t('dashboard.activity.toolCall', 'Called tool {{tool}}', { tool: toolName });

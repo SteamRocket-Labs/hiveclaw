@@ -238,41 +238,49 @@ export default function AgentAwareSection({
     return attentionReasonLabel(category.slice('trigger_'.length));
   };
 
-  // Structured schedule facts (backend `schedule` field) render localized;
-  // the English display_schedule string is a legacy/operator fallback.
+  // Schedule text renders ONLY from the structured backend facts (typed
+  // schedule.kind + params). The backend display_schedule string is operator
+  // prose and must never fall back into the user DOM; unknown or missing
+  // structure hides the line instead of guessing.
   const scheduleLabelFromView = (trigger: any): string | null => {
     const schedule = trigger?.schedule as Record<string, unknown> | null | undefined;
-    if (schedule && typeof schedule === 'object' && typeof schedule.kind === 'string') {
-      const kind = schedule.kind;
-      if (kind === 'interval' && schedule.minutes != null) {
-        const minutes = Number(schedule.minutes);
-        if (Number.isFinite(minutes) && minutes > 0) {
-          if (minutes >= 60 && minutes % 60 === 0) {
-            return t('agent.aware.scheduleEveryHours', 'Every {{count}}h', { count: minutes / 60 });
-          }
-          return t('agent.aware.scheduleEveryMinutes', 'Every {{count}} min', { count: minutes });
+    if (!schedule || typeof schedule !== 'object' || typeof schedule.kind !== 'string') return null;
+    const kind = schedule.kind;
+    if (kind === 'interval') {
+      const minutes = Number(schedule.minutes);
+      if (Number.isFinite(minutes) && minutes > 0) {
+        if (minutes >= 60 && minutes % 60 === 0) {
+          return t('agent.aware.scheduleEveryHours', 'Every {{count}}h', { count: minutes / 60 });
         }
+        return t('agent.aware.scheduleEveryMinutes', 'Every {{count}} min', { count: minutes });
       }
-      if (kind === 'once' && typeof schedule.at === 'string' && schedule.at) {
-        return t('agent.aware.scheduleOnceAt', 'Once at {{time}}', { time: schedule.at });
-      }
-      if (kind === 'cron' && typeof schedule.expr === 'string' && schedule.expr) {
-        return t('agent.aware.scheduleCron', 'Cron: {{expression}}', { expression: schedule.expr });
-      }
-      if (kind === 'on_message') return t('agent.aware.scheduleWaitMessage', 'Wait for message');
-      if (kind === 'webhook') return t('agent.aware.scheduleWebhook', 'Webhook');
-      if (kind === 'poll') return t('agent.aware.schedulePollLabel', 'Polling');
+      return t('agent.aware.scheduleIntervalGeneric', 'Interval');
     }
-    const fallback = trigger?.display_schedule;
-    return typeof fallback === 'string' && fallback ? fallback : null;
+    if (kind === 'once') {
+      return typeof schedule.at === 'string' && schedule.at
+        ? t('agent.aware.scheduleOnceAt', 'Once at {{time}}', { time: schedule.at })
+        : t('agent.aware.scheduleOnceGeneric', 'One-off');
+    }
+    if (kind === 'cron') {
+      return typeof schedule.expr === 'string' && schedule.expr
+        ? t('agent.aware.scheduleCron', 'Cron: {{expression}}', { expression: schedule.expr })
+        : t('agent.aware.scheduleCronGeneric', 'Scheduled (cron)');
+    }
+    if (kind === 'on_message') return t('agent.aware.scheduleWaitMessage', 'Wait for message');
+    if (kind === 'webhook') return t('agent.aware.scheduleWebhook', 'Webhook');
+    if (kind === 'poll') return t('agent.aware.schedulePollLabel', 'Polling');
+    return null;
   };
 
+  // Machine kind codes map exactly to translations; an unknown kind renders a
+  // neutral localized label, never the raw code.
   const kindLabel = (value?: string | null) => {
     const key = String(value || '');
     if (key === 'scheduled_job') return t('agent.aware.kindScheduled', 'Scheduled job');
     if (key === 'event_wait') return t('agent.aware.kindEventWait', 'Waiting event');
     if (key === 'system_maintenance') return t('agent.aware.kindMaintenance', 'System maintenance');
-    return key || t('agent.aware.kindWake', 'Wake policy');
+    if (!key) return t('agent.aware.kindWake', 'Wake policy');
+    return t('agent.aware.kindOther', 'Automation');
   };
 
   const stateToneClass = (state?: string | null): string => {
@@ -530,7 +538,7 @@ export default function AgentAwareSection({
                       <span className="u-meta u-tertiary">{kindLabel(trigger.display_kind)}</span>
                       {statusBadge(trigger.attention_state)}
                     </div>
-                    <div className="agent-aware-trigger-title">{trigger.display_title}</div>
+                    <div className="agent-aware-trigger-title">{trigger.display_title || kindLabel(trigger.display_kind)}</div>
                     {scheduleLabelFromView(trigger) && <div className="u-row u-tertiary agent-aware-mt2">{scheduleLabelFromView(trigger)}</div>}
                     {attentionReasonLabel(trigger.attention_state) && (
                       <div className={`agent-aware-trigger-reason ${stateToneClass(trigger.attention_state)}`}>

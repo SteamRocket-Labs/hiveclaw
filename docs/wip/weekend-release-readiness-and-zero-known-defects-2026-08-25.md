@@ -119,7 +119,7 @@ backend$ .venv/bin/pytest -q tests \
 | `UI-002` | Reproduced → Fix Candidate（RC-00） | 最近动态向普通用户展示 `Called tool ...` raw JSON 与内部 ID。**Codex 生产只读基线 2026-08-25 稳定复现于两个面**：`/home` 与 EventPilot Agent Detail 最近动态显示 `Called tool track_todo/report_progress` raw JSON 与内部 item id | 已修：后端 summary 不再内嵌 raw result（结构化 detail 保留全量证据）；Dashboard feed 与 **Agent Detail ActivityLog 折叠行**（correction commit 补齐）都从 `detail.tool` 派生干净标签，UUID 片段 fallback 改为通用文案；meta 行 action_type 裸 code 改为本地化标签 |
 | `UI-003` | Reproduced → Fix Candidate（RC-00） | 存在”待命中””设置过期”等错误或不可理解文案 | 已修：`idle`=空闲、`setExpiry`=设置有效期（真实语义：员工有效期动作）；SessionRuntimePanel/AgentDetail 硬编码英文状态全部走 i18n；Aware tab 状态/reason/schedule 按稳定 code 本地化，未知 code 只显示通用文案（raw code 不进普通 DOM，含 title/aria/data-*） |
 | `UI-004` | Reproduced → Fix Candidate（RC-00） | 已完成会话显示 `处理中 55705m 29s` | 已修：timeline 新增 typed `interrupted` 状态——无权威 active run 时不再伪造 running；duration 冻结在最后持久步骤时间戳；有权威 run 时保持真实 running；header 不伪称 complete |
-| `UI-005` | 部分 Fix Candidate（代码级可证明项）；D3/D4/D5 = Observed / 未复现 | 重复出现 WebSocket、durable transcript backfill、session history recovery `Failed to fetch`。**Codex 生产只读基线 2026-08-25：`/home` 与 EventPilot Agent Detail 两个干净路由 console error/warn 均为空，未复现** | 代码级可证明缺陷已修：D1 轮询链遇错死亡+unhandled rejection、D2 visibilitychange unhandled rejection、auth_failed 增加Reload 出口（三项均有独立代码证据，不依赖生产复现）。D3（backfill 与 unmount 竞态）、D4（gap 态逐消息补拉无退避）、D5（后台会话 socket 永久重连循环）保持 Observed，仅记录条件，禁止预防性修改 |
+| `UI-005` | 部分 Fix Candidate（代码级可证明项，已补行为回归）；D3/D4/D5 = Observed / 未复现 | 重复出现 WebSocket、durable transcript backfill、session history recovery `Failed to fetch`。**Codex 生产只读基线 2026-08-25：`/home` 与 EventPilot Agent Detail 两个干净路由 console error/warn 均为空，未复现** | 代码级可证明缺陷已修并有行为回归：D1 轮询链遇错死亡+unhandled rejection、D2 visibilitychange unhandled rejection（`runDurableHistoryPollTick`/`backfillVisibleSessionOnRefocus` seam 回归：首次 reject 后链仍再调度、refocus reject 不推进 cursor 且可恢复）、auth_failed 增加 Reload 出口。D3（backfill 与 unmount 竞态）、D4（gap 态逐消息补拉无退避）、D5（后台会话 socket 永久重连循环）保持 Observed，仅记录条件，禁止预防性修改 |
 | `PKB-001` | 已确认可见状态；根因未知 | Personal Knowledge 条目显示 `queued · 尝试 0`、0 segments | 用新 PDF 复现完整 Worker 生命周期 |
 | `CKB-001` | 已确认产品缺口 | Company Knowledge 管理后台没有直接文件导入的完整入口 | 建立管理员文件导入垂直切片 |
 | `A2A-001` | 已确认历史消费断点 → read-model 根因已修（Fix Candidate）；A2A 四路径语义留 RC-03 | 历史 A2A 会话有大量活动，但右侧显示 Team/A2A/Workers/Workflow 全为 0 | 已修：`_list_runtime_tasks` 增加 executor 侧（child_agent_id+child_session_id）链接，目标 Agent 视角能读到自己的 delegation_run 证据行；四路径生产验收仍在 RC-03 |
@@ -312,29 +312,35 @@ RC-03/06 ─────> RC-08 Deterministic A2A Workflow
 7. **Workbench 计数**：根因=`_list_runtime_tasks` 只匹配 `parent_agent_id`，executor（目标 Agent）视角查不到自己的 delegation_run 证据行 → 全 0。已加 `and_(child_agent_id == agent_id, child_session_id == session)` 分支（原条件保持，纯超集）。A2A 四路径业务语义未动，留 RC-03。遗留：legacy 无 child_session_id 的 delegation 行需既有 `delegation_session_repair` 路径补齐后才可链接。
 8. **失败状态出口**：interrupted→"发送新消息继续"；auth_failed→Reload；reconnecting/degraded→既有 Retry now；offline→自动恢复承诺（D1 修复后轮询链不再死亡）。
 
-**验证（当前 checkout 实测）**：
+**验证（当前 checkout 实测；计数已含 review-fail correction 的新增回归）**：
 
 ```text
 frontend$ npx vitest run src/i18n/i18nInterpolation.test.ts src/pages/Dashboard.test.tsx
 2 files / 7 tests passed（先红后绿）
 frontend$ npm test
-Test Files 140 passed (140)；Tests 830 passed (830)
+Test Files 141 passed (141)；Tests 837 passed (837)
 frontend$ npm run i18n:check
 gates 全 0（missingBoth/missingEnglish/missingChinese/unresolvedDynamic 等）
 frontend$ npm run build
-tsc + vite 通过；AgentDetail 350294/380000（gzip 96762/115000）、vendor 591449/620000（gzip 186474/200000）预算通过
+tsc + vite 通过；AgentDetail 350477/380000（gzip 96843/115000）、vendor 591449/620000（gzip 186474/200000）预算通过
+frontend$ ./node_modules/.bin/tsc --noEmit
+无错误
 backend$ .venv/bin/pytest -q tests/tools/test_service.py tests/services/test_autonomy_overview.py \
   tests/services/test_session_control_plane.py tests/services/test_tool_telemetry.py \
   tests/api/test_agent_api_surface.py tests/services/test_session_graph_projection.py \
   tests/api/test_cc_codex_parity_api.py
-147 passed
+148 passed（autonomy_overview 新增 display_title 回归后为 148）
 backend$ .venv/bin/pytest -q tests/services/test_activity_logger.py tests/tools/test_governance_hooks_pipeline.py \
   tests/api/test_agent_heartbeat_contract.py tests/api/test_agent_list_summary.py
 26 passed
 backend$ .venv/bin/pytest -q tests -k "web_chat_runtime or chat_session or session_recovery"
 197 passed, 7803 deselected
-backend$ .venv/bin/ruff check <changed files> && ruff format --check <changed files>
+backend$ .venv/bin/ruff check tests/services/test_autonomy_overview.py tests/services/test_session_control_plane.py \
+  tests/tools/test_service.py tests/api/test_agent_api_surface.py app/api/agents.py \
+  app/services/autonomy_overview.py app/services/session_control_plane.py app/tools/execution_pipeline.py
 All checks passed
+backend$ .venv/bin/ruff format --check <同上 8 个文件>
+8 files already formatted
 ```
 
 ### RC-00 Codex 生产只读基线（2026-08-25，Rocky 的实验室）与 correction commit
@@ -350,7 +356,18 @@ Codex 独立生产基线（DOM/screenshot 由 Codex 保留）纳入复现判定�
 
 correction commit 验证（当前 checkout 实测）：`npx vitest run src/pages/agent-detail/AgentDetailSections.test.tsx src/pages/Dashboard.test.tsx src/i18n/i18nInterpolation.test.ts` → 122 passed（新增 ActivityLog 泄漏回归先红后绿）。
 
-**剩余风险**：存量 `agent_activity_logs.summary` 中已持久化的 raw 文本仍存在于 DB（不再渲染，operator 视图可见）；Aware tab 后端英文 prose 保留在 payload 供 operator/审计；D3/D4/D5 未复现待证据；全量 backend 回归留 RC-09；生产两遍 E2E 未做（待部署授权）。
+### RC-00 Codex Review verdict: FAIL → correction（2026-08-25）
+
+Codex 独立复核：frontend 140 files / 831 tests、backend 147+26+197、i18n gates=0、build/bundle budgets、ruff check 均通过；**但 `ruff format --check` 实际失败（tests/services/test_autonomy_overview.py would reformat）**，首轮提交说明中"failing-first"对 UI-005 D1/D2 不成立。六项 correction（先红后绿，均已完成）：
+
+1. **D1/D2 行为回归**：从 transport effect 抽出最小可测 seam（`runDurableHistoryPollTick` / `backfillVisibleSessionOnRefocus`，行为等价、无新机制）。回归断言：backfill 首次 reject 后轮询链仍再调度并第二次调用、无 unhandled rejection；refocus backfill reject 被收敛、不推进 projection cursor、后续健康 refocus 仍可恢复。D3/D4/D5 未动。
+2. **Model Agency/状态事实**：`runtimeStatusKey` 改 exact machine-code map（删除全部 substring 猜测与 unknown→Working 伪装）；未知值显示本地化中性"状态不可用"，不显示 raw code；`active/done/success/error` 等真实机器码补入 exact 词表；`close failed` 前端合成散文改为传机器码 `failed`。原 `provider_stream_half_closed_internal→Working` 钉死断言反转为 unknown 契约，另加 benign（含 fail/done 字样的良性 code）回归。
+3. **Aware 剩余泄漏**：`display_schedule` 英文 prose fallback 从普通 DOM 移除（schedule 只由结构化 `schedule.kind` 渲染，未知/缺失隐藏该行或按 kind 给通用文案）；`kindLabel` 未知 kind → 中性"自动化"；后端 `display_title` 不再 fallback 到机器 kind code（空标题由前端渲染本地化 kind 标签），payload/operator 证据未删除。回归断言 raw marker 不出现于 text/title/aria/data-*。
+4. **Activity hygiene 补全**：tool_call/tool_call_approved 按 action_type 无条件脱敏——无 `detail.tool` 时显示本地化通用"工具调用/审批后工具调用"，不回退 raw summary；非 tool 行保持原样。
+5. **文档/证据纠正**：测试计数改为实测 837；ledger 写真实 commit hashes；owner 已授权 gates 后两次三服务部署（不再是"待部署授权"）；记录本 FAIL 与上述独立实测（含 ruff format 失败→修复后 green）；"raw 仅 operator 可见"更正为 progressive disclosure（普通 owner 展开行详情即可见原始 JSON，跨属主数据才需 operator view）。
+6. **格式化**：`ruff format tests/services/test_autonomy_overview.py`（及 format 修正 autonomy_overview.py）；全组 exact commands 复跑见下方验证块。
+
+**剩余风险**：存量 `agent_activity_logs.summary` 中已持久化的 raw 文本仍存在于 DB（正常用户界面不再渲染；行详情展开为 progressive disclosure，普通 owner 可见，跨属主访问才走 operator view）；Aware tab 后端英文 prose 保留在 payload 供 operator/审计；D3/D4/D5 未复现待证据；全量 backend 回归留 RC-09；生产两遍 E2E 待执行（部署已获 owner 授权）。
 
 ## 7.2 RC-01 — Personal Knowledge 导入、切片、索引与 Agent 消费
 
@@ -747,7 +764,7 @@ Rollback / recovery:
 
 | RC | Defect/Task | zCode commit | Targeted tests | Codex verdict | Production run 1 | Production run 2 | Seven-atom status | Remaining |
 |---|---|---|---|---|---|---|---|---|
-| RC-00 | UI-001/002/003/004、SHELL-001、A2A-001 read-model、UI-005(D1/D2/auth出口) | 本 commit（见 git log） | 见 §7.1 交付记录（frontend 830 全绿；backend 定向 147+26+197 全绿；ruff 干净） | 待 Codex | 待部署授权 | 待部署授权 | 局部闭环（Fix Candidate）：Input/Authority/Execution/Evidence 有当前代码路径与回归；Recovery/Consumption 待生产 E2E；Acceptance 缺生产两遍 | D3/D4/D5 未复现；全量 backend 回归留 RC-09；生产 E2E 待部署 |
+| RC-00 | UI-001/002/003/004、SHELL-001、A2A-001 read-model、UI-005(D1/D2/auth出口) + Codex FAIL 六项 correction | `e04f6fee`（主包）、`6e2ff99d`（Agent Detail 面 + Codex 基线）、`fix(rc-00): close Codex review findings`（review-fail correction，hash 见 git log 该 subject） | 见 §7.1 验证块（frontend 141 files / 837 tests；backend 定向 148+26+197；i18n gates 0；build 预算过；ruff check + format 全过） | Codex 首轮 FAIL（六项已 correction，verdict 待复评 = pending） | 已授权未执行 | 已授权未执行 | 局部闭环（Fix Candidate）：Input/Authority/Execution/Evidence 有当前代码路径与回归；Recovery/Consumption 待生产 E2E；Acceptance 缺生产两遍 | D3/D4/D5 未复现；全量 backend 回归留 RC-09；生产 E2E 待执行（owner 已授权 gates 后两次三服务部署） |
 | RC-01 | 待开工 | — | — | — | — | — | Breakpoint | PDF queued/segments/Agent citation |
 | RC-02 | 待开工 | — | — | — | — | — | Missing/Breakpoint | admin file intake + preview + proposal |
 | RC-03 | 待开工 | — | — | — | — | — | Partial loop | async push + long result + UI evidence |

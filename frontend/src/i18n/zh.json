@@ -1007,7 +1007,9 @@
     "activity": {
       "toolCall": "调用了工具 {{tool}}",
       "toolCallApproved": "审批后执行了工具 {{tool}}",
-      "unknownAgent": "数字员工"
+      "unknownAgent": "数字员工",
+      "toolCallGeneric": "工具调用",
+      "toolCallApprovedGeneric": "审批后工具调用"
     },
     "noLimit": "无限制",
     "justNow": "刚刚",
@@ -1046,7 +1048,8 @@
       "paused": "已暂停",
       "stopped": "已停止",
       "cancelled": "已取消",
-      "needsAdminReview": "需要管理员处理"
+      "needsAdminReview": "需要管理员处理",
+      "unknown": "状态不可用"
     },
     "status": {
       "running": "工作中",
@@ -1497,7 +1500,11 @@
       "researchStatus": "状态",
       "researchSources": "来源",
       "researchClaims": "结论",
-      "researchGaps": "缺口"
+      "researchGaps": "缺口",
+      "kindOther": "自动化",
+      "scheduleIntervalGeneric": "周期运行",
+      "scheduleOnceGeneric": "一次性",
+      "scheduleCronGeneric": "定时运行"
     },
     "plan": {
       "badge": "计划",

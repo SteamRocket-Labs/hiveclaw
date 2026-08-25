@@ -27,6 +27,58 @@ import {
 
 type SessionRuntimeKey = string;
 
+export type DurableHistoryPollTickConfig = {
+  isCancelled: () => boolean;
+  isOnline: () => boolean;
+  backfill: () => unknown;
+  onBackfillSucceeded: () => void;
+  onBackfillFailed: (error: unknown) => void;
+  nextDelayMs: () => number | null;
+  schedule: (handler: () => void, delayMs: number) => void;
+};
+
+/**
+ * One durable-history poll tick. A rejected backfill page must never kill the
+ * polling chain (the transport banner promises automatic recovery) nor surface
+ * as an unhandled rejection; the failure is reported through
+ * ``onBackfillFailed`` and the next tick is still scheduled.
+ */
+export async function runDurableHistoryPollTick(config: DurableHistoryPollTickConfig): Promise<void> {
+  if (config.isCancelled()) return;
+  if (config.isOnline()) {
+    try {
+      await Promise.resolve(config.backfill());
+      if (!config.isCancelled()) config.onBackfillSucceeded();
+    } catch (error) {
+      config.onBackfillFailed(error);
+    }
+  }
+  if (config.isCancelled()) return;
+  const delayMs = config.nextDelayMs();
+  if (delayMs === null) return;
+  config.schedule(() => {
+    void runDurableHistoryPollTick(config);
+  }, delayMs);
+}
+
+export type RefocusBackfillConfig = {
+  backfill: () => unknown;
+  onBackfillSucceeded: () => void;
+  onBackfillFailed: (error: unknown) => void;
+};
+
+/**
+ * Tab-refocus durable-history backfill with contained failure semantics: a
+ * rejected page (or a cursor-sync throw) is reported through
+ * ``onBackfillFailed``, never an unhandled rejection, and the cursor only
+ * advances on success — a later healthy refocus still recovers.
+ */
+export function backfillVisibleSessionOnRefocus(config: RefocusBackfillConfig): void {
+  void Promise.resolve(config.backfill())
+    .then(config.onBackfillSucceeded)
+    .catch(config.onBackfillFailed);
+}
+
 export interface SessionSocketMessageContext {
   data: any;
   session: any;
@@ -533,16 +585,15 @@ export function useSessionTransportController(options: SessionTransportControlle
     };
     const handleVisibility = () => {
       if (document.visibilityState !== 'visible') return;
-      void Promise.resolve(optionsRef.current.callbacks.onBackfill(activeSession, agentId))
-        .then(() => {
-          syncProjectionCursor(key, agentId, String(activeSession.id));
-        })
-        .catch((error) => {
-          // A transient REST failure on tab refocus must stay a typed
-          // recoverable condition, never an unhandled rejection; the poll
-          // loop / reconnect path owns retry.
+      backfillVisibleSessionOnRefocus({
+        backfill: () => optionsRef.current.callbacks.onBackfill(activeSession, agentId),
+        onBackfillSucceeded: () => syncProjectionCursor(key, agentId, String(activeSession.id)),
+        onBackfillFailed: (error) => {
+          // A transient REST failure on tab refocus stays a typed recoverable
+          // condition; the poll loop / reconnect path owns retry.
           console.warn(`Session history refocus backfill failed for ${activeSession.id}:`, error);
-        });
+        },
+      });
       const socket = socketsRef.current[key];
       if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) wake();
     };
@@ -564,24 +615,22 @@ export function useSessionTransportController(options: SessionTransportControlle
     if (interval === null) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const poll = async () => {
-      if (cancelled) return;
-      if (typeof navigator === 'undefined' || navigator.onLine !== false) {
-        try {
-          await optionsRef.current.callbacks.onBackfill(activeSession, agentId);
-          if (!cancelled) syncProjectionCursor(key, agentId, String(activeSession.id));
-        } catch (error) {
-          // One failed poll page must never kill the durable-history polling
-          // chain (the banner promises automatic recovery) nor surface as an
-          // unhandled rejection; keep rescheduling below.
+    const tick = () => {
+      void runDurableHistoryPollTick({
+        isCancelled: () => cancelled,
+        isOnline: () => typeof navigator === 'undefined' || navigator.onLine !== false,
+        backfill: () => optionsRef.current.callbacks.onBackfill(activeSession, agentId),
+        onBackfillSucceeded: () => syncProjectionCursor(key, agentId, String(activeSession.id)),
+        onBackfillFailed: (error) => {
           console.warn(`Session history poll failed for ${activeSession.id}:`, error);
-        }
-      }
-      if (cancelled) return;
-      const nextInterval = transportPollIntervalMs(transportPhase, optionsRef.current.isRunActive(key));
-      if (nextInterval !== null) timer = setTimeout(poll, nextInterval);
+        },
+        nextDelayMs: () => transportPollIntervalMs(transportPhase, optionsRef.current.isRunActive(key)),
+        schedule: (handler, delayMs) => {
+          timer = setTimeout(handler, delayMs);
+        },
+      });
     };
-    timer = setTimeout(poll, interval);
+    timer = setTimeout(tick, interval);
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);

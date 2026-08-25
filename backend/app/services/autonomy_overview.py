@@ -230,11 +230,10 @@ def build_trigger_view(
     display_kind = _trigger_class(trigger)
     latest_attempt = _latest_attempt_for_trigger(trigger, attempts)
 
-    display_title = (
-        str(getattr(trigger, "reason", "") or "").strip()
-        or str(getattr(trigger, "name", "") or "").strip()
-        or display_kind
-    )
+    # User-facing title: name/reason only. Falling back to the machine kind
+    # code here leaked raw codes into client DOM; clients render their own
+    # localized kind label when the title is empty.
+    display_title = str(getattr(trigger, "reason", "") or "").strip() or str(getattr(trigger, "name", "") or "").strip()
     attention_state = "active"
     attention_reason = None
     next_action = None

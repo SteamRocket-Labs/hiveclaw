@@ -171,7 +171,10 @@ export function runtimeItemDisplayStatus(item: RuntimeSectionItemModel, t?: Runt
   const closeStatus = item.runtimeKind === 'agent_team'
     ? stringValue(item.raw.close_status || item.raw.closeStatus).trim().toLowerCase()
     : '';
-  const outcome = closeStatus === 'failed' ? 'close failed' : stringValue(
+  // The close outcome is a machine code, not synthesized prose: pass 'failed'
+  // so the exact status vocabulary maps it; the close context stays in the
+  // operator detail payload.
+  const outcome = closeStatus === 'failed' ? 'failed' : stringValue(
     item.raw.last_turn_status
     || item.raw.lastTurnStatus
     || metadata.last_turn_status
@@ -214,6 +217,7 @@ export type RuntimeStatusTranslator = ReturnType<typeof useTranslation>['t'];
 const RUNTIME_STATUS_KEYS: Record<string, string> = {
   idle: 'ready',
   ready: 'ready',
+  active: 'working',
   queued: 'queued',
   pending: 'queued',
   running: 'working',
@@ -225,7 +229,10 @@ const RUNTIME_STATUS_KEYS: Record<string, string> = {
   waiting_budget_approval: 'waitingApproval',
   completed: 'completed',
   succeeded: 'completed',
+  done: 'completed',
+  success: 'completed',
   failed: 'needsAttention',
+  error: 'needsAttention',
   blocked: 'needsAttention',
   provider_error: 'needsAttention',
   quota_denied: 'needsAttention',
@@ -255,27 +262,23 @@ const RUNTIME_STATUS_LABELS: Record<string, string> = {
   stopped: 'Stopped',
   cancelled: 'Cancelled',
   needsAdminReview: 'Needs admin review',
+  unknown: 'Status unavailable',
 };
 
+// Exact machine-code mapping only: an unrecognized code is never guessed into
+// a semantic status by substring inference and never masquerades as Working.
 export function runtimeStatusKey(status: unknown): string {
   const normalized = String(status || '').trim().toLowerCase();
-  const exact = RUNTIME_STATUS_KEYS[normalized];
-  if (exact) return exact;
-  if (normalized.includes('approval') || normalized.includes('confirm') || normalized.includes('wait')) return 'waiting';
-  if (normalized.includes('fail') || normalized.includes('error') || normalized.includes('reconcil')) return 'needsAttention';
-  if (normalized.includes('complete') || normalized.includes('success') || normalized.includes('done')) return 'completed';
-  if (normalized.includes('cancel') || normalized.includes('stop') || normalized.includes('kill')) return 'stopped';
-  if (normalized.includes('queue') || normalized.includes('pending')) return 'queued';
-  return 'working';
+  return RUNTIME_STATUS_KEYS[normalized] || 'unknown';
 }
 
 export function userFacingRuntimeStatus(status: unknown): string {
-  return RUNTIME_STATUS_LABELS[runtimeStatusKey(status)] || 'Working';
+  return RUNTIME_STATUS_LABELS[runtimeStatusKey(status)];
 }
 
 export function runtimeStatusLabel(status: unknown, t: RuntimeStatusTranslator): string {
   const key = runtimeStatusKey(status);
-  return t(`agent.runtimeStatus.${key}`, RUNTIME_STATUS_LABELS[key] || 'Working');
+  return t(`agent.runtimeStatus.${key}`, RUNTIME_STATUS_LABELS[key]);
 }
 
 export function SessionRuntimePanel({

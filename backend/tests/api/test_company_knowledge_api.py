@@ -1105,6 +1105,49 @@ def test_import_jobs_list_admin_success_with_empty_list(monkeypatch):
     assert response.json() == {"jobs": []}
 
 
+def test_import_job_routes_map_non_direct_jobs_to_exact_404(monkeypatch):
+    """Non-direct jobs map to the exact not-found detail on all five routes (isolation itself is proven on real PG)."""
+    job_id = uuid.uuid4()
+    calls: list[str] = []
+
+    class _Service:
+        async def get_import_job_summary(self, session, *, tenant_id, job_id):
+            calls.append("summary")
+            return None
+
+        async def get_import_job_preview(self, session, *, tenant_id, job_id):
+            calls.append("preview")
+            return None
+
+        async def retry_import_job(self, session, *, tenant_id, job_id):
+            calls.append("retry")
+            raise LookupError("company_knowledge_import_job_not_found")
+
+        async def cancel_import_job(self, session, *, tenant_id, job_id):
+            calls.append("cancel")
+            raise LookupError("company_knowledge_import_job_not_found")
+
+        async def create_proposal_from_import(self, session, *, principal, job_id, trace_id):
+            calls.append("propose")
+            raise LookupError("company_knowledge_import_job_not_found")
+
+    client, db, _user, scheduled = _client_with_role(monkeypatch, _Service(), role="org_admin")
+
+    outcomes = (
+        ("detail", client.get(f"/knowledge/company/import-jobs/{job_id}")),
+        ("preview", client.get(f"/knowledge/company/import-jobs/{job_id}/preview")),
+        ("retry", client.post(f"/knowledge/company/import-jobs/{job_id}/retry")),
+        ("cancel", client.post(f"/knowledge/company/import-jobs/{job_id}/cancel")),
+        ("proposal", client.post(f"/knowledge/company/import-jobs/{job_id}/create-proposal")),
+    )
+    for label, response in outcomes:
+        assert response.status_code == 404, (label, response.text)
+        assert response.json() == {"detail": "company_knowledge_import_job_not_found"}, (label, response.text)
+    assert calls == ["summary", "preview", "retry", "cancel", "propose"]
+    assert scheduled == []
+    assert db.commits == 0
+
+
 # ---------------------------------------------------------------------------
 # RC-02 round-2 review corrections (failing-first)
 # ---------------------------------------------------------------------------

@@ -39,6 +39,7 @@ from app.services.company_knowledge_gateway import (
 )
 from app.services.company_knowledge_permissions import CompanyKnowledgePrincipal
 from app.services.company_knowledge_service import (
+    CompanyEvidenceIngestRequest,
     CompanyKnowledgeImportError,
     CompanyKnowledgeJobConflict,
     CompanyKnowledgeReviewRequest,
@@ -1449,3 +1450,273 @@ async def test_direct_import_title_normalization_is_strip_only(complete_schema, 
         ).scalar_one()
         assert document.title == "A   B"
         await session.rollback()
+
+
+# ---------------------------------------------------------------------------
+# RC-02 finding-5: the import-jobs management surface serves direct-file jobs
+# only; every other kind is indistinguishable from not found.
+# ---------------------------------------------------------------------------
+
+
+async def _queue_evidence_import_job(
+    owner_sessionmaker,
+    service,
+    *,
+    tenant_id,
+    admin_id,
+    contract,
+    source_item_id,
+    idempotency_key,
+):
+    """Queue one job through the real evidence-import producer (no import_kind)."""
+    async with owner_sessionmaker() as session:
+        job = await service.queue_evidence_import(
+            session,
+            principal=_principal(tenant_id=tenant_id, user_id=admin_id),
+            request=CompanyEvidenceIngestRequest(
+                source_contract_id=contract.id,
+                source_contract_version=contract.version,
+                evidence_kind="document",
+                source_item_id=source_item_id,
+                source_revision="rev-1",
+                title="Legacy evidence intake",
+                markdown="# Legacy evidence\n\nbody",
+                typed_payload=None,
+                external_artifact_ref=None,
+                schema_ref=None,
+                source_acl_snapshot={"all_tenant_members": True},
+                proposed_namespace=NAMESPACE,
+                proposed_sensitivity="internal",
+                occurred_at=None,
+                effective_from=None,
+                effective_until=None,
+                observed_at=datetime.now(timezone.utc),
+                cursor={},
+                sequence=None,
+                coverage_ledger={"complete": True, "total_units": 1, "covered_units": 1},
+                purpose="finding-5 isolation",
+                idempotency_key=idempotency_key,
+                trace_id=f"trace-{uuid.uuid4().hex[:12]}",
+            ),
+        )
+        await session.commit()
+        return job
+
+
+async def _fetch_job_state(owner_sessionmaker, job_id: uuid.UUID) -> tuple[str, object]:
+    async with owner_sessionmaker() as session:
+        row = (
+            await session.execute(select(CompanyKnowledgeImportJob).where(CompanyKnowledgeImportJob.id == job_id))
+        ).scalar_one()
+        state = (str(row.status or ""), row.request_json)
+        await session.rollback()
+        return state
+
+
+async def test_direct_import_management_surface_isolates_direct_file_jobs(
+    complete_schema, owner_sessionmaker, tmp_path
+):
+    """Only direct_file jobs are visible/actionable; other kinds are not-found before any mutation or proposal shortcut."""
+    ids = await _seed_tenant(owner_sessionmaker)
+    tenant_id, admin_id = ids["tenant"], ids["admin"]
+    service = CompanyKnowledgeService(data_root=tmp_path)
+    contract = await _register_contract(owner_sessionmaker, service, tenant_id=tenant_id, admin_id=admin_id)
+    suffix = uuid.uuid4().hex[:8]
+
+    direct_old = await _queue_file(
+        owner_sessionmaker,
+        service,
+        tenant_id=tenant_id,
+        admin_id=admin_id,
+        contract=contract,
+        filename="old.md",
+        data=b"# old direct import",
+        title="Old direct",
+        mime="text/markdown",
+        idempotency_key=f"ckb-f5-old-{suffix}",
+    )
+    direct_new = await _queue_file(
+        owner_sessionmaker,
+        service,
+        tenant_id=tenant_id,
+        admin_id=admin_id,
+        contract=contract,
+        filename="new.md",
+        data=b"# new direct import",
+        title="New direct",
+        mime="text/markdown",
+        idempotency_key=f"ckb-f5-new-{suffix}",
+    )
+    evidence_job = await _queue_evidence_import_job(
+        owner_sessionmaker,
+        service,
+        tenant_id=tenant_id,
+        admin_id=admin_id,
+        contract=contract,
+        source_item_id=f"evidence-{suffix}",
+        idempotency_key=f"ckb-f5-evidence-{suffix}",
+    )
+    explicit_kind = await _queue_evidence_import_job(
+        owner_sessionmaker,
+        service,
+        tenant_id=tenant_id,
+        admin_id=admin_id,
+        contract=contract,
+        source_item_id=f"explicit-{suffix}",
+        idempotency_key=f"ckb-f5-explicit-{suffix}",
+    )
+    null_kind = await _queue_evidence_import_job(
+        owner_sessionmaker,
+        service,
+        tenant_id=tenant_id,
+        admin_id=admin_id,
+        contract=contract,
+        source_item_id=f"null-{suffix}",
+        idempotency_key=f"ckb-f5-null-{suffix}",
+    )
+    malformed = await _queue_evidence_import_job(
+        owner_sessionmaker,
+        service,
+        tenant_id=tenant_id,
+        admin_id=admin_id,
+        contract=contract,
+        source_item_id=f"malformed-{suffix}",
+        idempotency_key=f"ckb-f5-malformed-{suffix}",
+    )
+
+    # Deterministic chronology: every non-direct row is NEWER than both direct
+    # rows, and the retry target enters a retryable failed state.
+    base = datetime.now(timezone.utc).replace(microsecond=0)
+    chronology = (
+        (direct_old.id, 0),
+        (direct_new.id, 1),
+        (evidence_job.id, 2),
+        (explicit_kind.id, 3),
+        (null_kind.id, 4),
+        (malformed.id, 5),
+    )
+    async with owner_sessionmaker() as session:
+        for job_id, offset in chronology:
+            row = (
+                await session.execute(select(CompanyKnowledgeImportJob).where(CompanyKnowledgeImportJob.id == job_id))
+            ).scalar_one()
+            row.created_at = base + timedelta(seconds=offset)
+        evidence_row = (
+            await session.execute(
+                select(CompanyKnowledgeImportJob).where(CompanyKnowledgeImportJob.id == evidence_job.id)
+            )
+        ).scalar_one()
+        evidence_row.status = "failed"
+        evidence_row.attempt_count = 1
+        explicit_row = (
+            await session.execute(
+                select(CompanyKnowledgeImportJob).where(CompanyKnowledgeImportJob.id == explicit_kind.id)
+            )
+        ).scalar_one()
+        explicit_row.request_json = {**dict(explicit_row.request_json or {}), "import_kind": "legacy_import"}
+        null_row = (
+            await session.execute(select(CompanyKnowledgeImportJob).where(CompanyKnowledgeImportJob.id == null_kind.id))
+        ).scalar_one()
+        null_row.request_json = {**dict(null_row.request_json or {}), "import_kind": None}
+        malformed_row = (
+            await session.execute(select(CompanyKnowledgeImportJob).where(CompanyKnowledgeImportJob.id == malformed.id))
+        ).scalar_one()
+        malformed_row.request_json = ["not", "an", "object"]
+        await session.commit()
+
+    # List filtering happens server-side BEFORE order/limit: the newer
+    # non-direct rows cannot consume limit=1 and hide the newer direct row.
+    async with owner_sessionmaker() as session:
+        listed_limited = await service.list_import_jobs(session, tenant_id=tenant_id, limit=1)
+        listed_full = await service.list_import_jobs(session, tenant_id=tenant_id, limit=10)
+        await session.rollback()
+    assert [summary.job_id for summary in listed_limited] == [direct_new.id]
+    assert [summary.job_id for summary in listed_full] == [direct_new.id, direct_old.id]
+
+    # Every non-direct shape is indistinguishable from not found on every
+    # read and action, with no state mutation behind the guard.
+    for non_direct_id in (evidence_job.id, explicit_kind.id, null_kind.id, malformed.id):
+        async with owner_sessionmaker() as session:
+            assert await service.get_import_job_summary(session, tenant_id=tenant_id, job_id=non_direct_id) is None
+            assert await service.get_import_job_preview(session, tenant_id=tenant_id, job_id=non_direct_id) is None
+            with pytest.raises(LookupError, match="company_knowledge_import_job_not_found"):
+                await service.retry_import_job(session, tenant_id=tenant_id, job_id=non_direct_id)
+            with pytest.raises(LookupError, match="company_knowledge_import_job_not_found"):
+                await service.cancel_import_job(session, tenant_id=tenant_id, job_id=non_direct_id)
+            await session.rollback()
+
+    # The retryable failed row and the cancellable queued row were not touched.
+    evidence_status, evidence_request = await _fetch_job_state(owner_sessionmaker, evidence_job.id)
+    assert evidence_status == "failed"
+    assert "retried_at" not in dict(evidence_request or {})
+    explicit_status, explicit_request = await _fetch_job_state(owner_sessionmaker, explicit_kind.id)
+    assert explicit_status == "queued"
+    assert "cancelled_at" not in dict(explicit_request or {})
+
+    # Proposal shortcut ordering: the kind guard must precede the
+    # job.proposal_id idempotent shortcut, so a non-direct job holding a real
+    # proposal is still not-found and never returns that proposal.
+    proposal_job = await _queue_file(
+        owner_sessionmaker,
+        service,
+        tenant_id=tenant_id,
+        admin_id=admin_id,
+        contract=contract,
+        filename="proposal.md",
+        data=f"# Proposal source\n\n{MARKER_ZH} proposal body.".encode(),
+        title="Proposal source",
+        mime="text/markdown",
+        idempotency_key=f"ckb-f5-proposal-{suffix}",
+    )
+    processed = await _process(owner_sessionmaker, service, tenant_id=tenant_id, job_id=proposal_job.id)
+    assert processed.status == "completed"
+    async with owner_sessionmaker() as session:
+        proposal = await service.create_proposal_from_import(
+            session,
+            principal=_principal(tenant_id=tenant_id, user_id=admin_id),
+            job_id=proposal_job.id,
+            trace_id=f"trace-{uuid.uuid4().hex[:12]}",
+        )
+        await session.commit()
+    assert proposal.status == "submitted"
+
+    async with owner_sessionmaker() as session:
+        row = (
+            await session.execute(
+                select(CompanyKnowledgeImportJob).where(CompanyKnowledgeImportJob.id == proposal_job.id)
+            )
+        ).scalar_one()
+        row.request_json = {**dict(row.request_json or {}), "import_kind": "legacy_import"}
+        await session.commit()
+    async with owner_sessionmaker() as session:
+        with pytest.raises(LookupError, match="company_knowledge_import_job_not_found"):
+            await service.create_proposal_from_import(
+                session,
+                principal=_principal(tenant_id=tenant_id, user_id=admin_id),
+                job_id=proposal_job.id,
+                trace_id=f"trace-{uuid.uuid4().hex[:12]}",
+            )
+        await session.rollback()
+
+    # Cleanup: direct rows cancel through the service; every non-direct row —
+    # including the failed evidence job, which fleet recovery would otherwise
+    # re-attempt — is terminalized via ORM scoped to this test's explicit job
+    # ids, so no row created here remains fleet-recoverable.
+    non_direct_job_ids = (evidence_job.id, explicit_kind.id, null_kind.id, malformed.id)
+    async with owner_sessionmaker() as session:
+        for direct_job in (direct_old, direct_new):
+            await service.cancel_import_job(session, tenant_id=tenant_id, job_id=direct_job.id)
+        for non_direct_job_id in non_direct_job_ids:
+            row = (
+                await session.execute(
+                    select(CompanyKnowledgeImportJob).where(CompanyKnowledgeImportJob.id == non_direct_job_id)
+                )
+            ).scalar_one()
+            row.status = "cancelled"
+        await session.commit()
+
+    # Postcondition: every job created by this test is terminal, so the
+    # fleet-wide recovery discovery invoked by later tests cannot observe it.
+    for created_job_id in (*non_direct_job_ids, direct_old.id, direct_new.id, proposal_job.id):
+        terminal_status, _request = await _fetch_job_state(owner_sessionmaker, created_job_id)
+        assert terminal_status in {"completed", "cancelled"}, (created_job_id, terminal_status)

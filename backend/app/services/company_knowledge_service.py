@@ -449,6 +449,16 @@ _PERMANENT_IMPORT_ERROR_CODES = frozenset(
 )
 
 
+def _is_direct_file_import_job(job: Any) -> bool:
+    """Direct-file management-surface membership: exact import_kind match only.
+
+    Missing, null, malformed, or any other kind (legacy evidence, personal or
+    legacy promotion) is indistinguishable from not found on that surface.
+    """
+    request = getattr(job, "request_json", None)
+    return isinstance(request, dict) and request.get("import_kind") == "direct_file"
+
+
 def company_import_job_view(job: Any) -> CompanyKnowledgeImportJobSummary:
     """Derive the lifecycle read model from the durable job row (no schema change)."""
     request = dict(getattr(job, "request_json", {}) or {})
@@ -1701,7 +1711,13 @@ class CompanyKnowledgeService:
             (
                 await session.execute(
                     select(CompanyKnowledgeImportJob)
-                    .where(CompanyKnowledgeImportJob.tenant_id == tenant_id)
+                    .where(
+                        CompanyKnowledgeImportJob.tenant_id == tenant_id,
+                        # Server-side direct-file filter BEFORE order/limit: a
+                        # newer non-direct row must never consume the limit and
+                        # hide an older direct row from the wizard.
+                        CompanyKnowledgeImportJob.request_json["import_kind"].astext == "direct_file",
+                    )
                     .order_by(CompanyKnowledgeImportJob.created_at.desc())
                     .limit(max(1, int(limit or 50)))
                 )
@@ -1726,7 +1742,9 @@ class CompanyKnowledgeService:
                 )
             )
         ).scalar_one_or_none()
-        return company_import_job_view(job) if job is not None else None
+        if job is None or not _is_direct_file_import_job(job):
+            return None
+        return company_import_job_view(job)
 
     async def retry_import_job(
         self,
@@ -1752,7 +1770,7 @@ class CompanyKnowledgeService:
                 .with_for_update()
             )
         ).scalar_one_or_none()
-        if job is None:
+        if job is None or not _is_direct_file_import_job(job):
             raise LookupError("company_knowledge_import_job_not_found")
         status = str(job.status or "")
         if status not in {"failed", "cancelled"}:
@@ -1795,7 +1813,7 @@ class CompanyKnowledgeService:
                 .with_for_update()
             )
         ).scalar_one_or_none()
-        if job is None:
+        if job is None or not _is_direct_file_import_job(job):
             raise LookupError("company_knowledge_import_job_not_found")
         status = str(job.status or "")
         if status != "queued":
@@ -1830,7 +1848,7 @@ class CompanyKnowledgeService:
                 )
             )
         ).scalar_one_or_none()
-        if job is None:
+        if job is None or not _is_direct_file_import_job(job):
             return None
         if str(job.status or "") != "completed" or job.document_id is None:
             raise CompanyKnowledgeJobConflict("preview_requires_completed")
@@ -1902,7 +1920,7 @@ class CompanyKnowledgeService:
                 .with_for_update()
             )
         ).scalar_one_or_none()
-        if job is None:
+        if job is None or not _is_direct_file_import_job(job):
             raise LookupError("company_knowledge_import_job_not_found")
         if job.proposal_id is not None:
             existing = (

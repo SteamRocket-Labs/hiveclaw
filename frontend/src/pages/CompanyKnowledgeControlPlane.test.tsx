@@ -17,6 +17,8 @@ import {
   KnowledgeLifecycleView,
   OntologyStatusView,
   ReviewQueueView,
+  type DirectImportBoundaryState,
+  type DirectImportPreviewState,
 } from './CompanyKnowledgeControlPlane';
 
 describe('Company Knowledge control-plane business projections', () => {
@@ -244,6 +246,9 @@ const wizardProps = {
   busyJobKey: null as string | null,
   previewJobKey: null as string | null,
   preview: null as import('../api/domains/companyKnowledge').CompanyImportPreview | null,
+  contractsState: 'ready' as DirectImportBoundaryState,
+  jobsState: 'ready' as DirectImportBoundaryState,
+  previewState: 'idle' as DirectImportPreviewState,
   onUpload: () => {},
   onSelectContract: () => {},
   onCreateContract: () => {},
@@ -251,6 +256,9 @@ const wizardProps = {
   onCancelJob: () => {},
   onPreview: () => {},
   onCreateProposal: () => {},
+  onRetryContracts: () => {},
+  onRetryJobs: () => {},
+  onRetryPreview: () => {},
 };
 
 describe('Company Knowledge direct import wizard', () => {
@@ -307,6 +315,175 @@ describe('Company Knowledge direct import wizard', () => {
     expect(markup).not.toContain('>Retry<');
   });
 
+  it('shows a scoped loading state for contracts without selector or create form', () => {
+    const markup = renderToStaticMarkup(
+      <DirectImportWizard {...wizardProps} contractsState='loading' />,
+    );
+
+    expect(markup).toContain('Loading source contracts…');
+    expect(markup).not.toContain('<select');
+    expect(markup).not.toContain('Create source contract');
+  });
+
+  it('treats a contracts error as unavailable even with stale data, with retry', () => {
+    const markup = renderToStaticMarkup(
+      <DirectImportWizard {...wizardProps} contractsState='error' />,
+    );
+
+    expect(markup).toContain('Source contracts are temporarily unavailable');
+    expect(markup).toContain('No empty-state conclusion was made and no action was taken.');
+    expect(markup).toContain('role="alert"');
+    expect(markup).toContain('>Retry<');
+    expect(markup).not.toContain('<select');
+    expect(markup).not.toContain('Create source contract');
+  });
+
+  it('keeps the create-contract empty form only for ready contracts', () => {
+    const markup = renderToStaticMarkup(
+      <DirectImportWizard {...wizardProps} contracts={[]} contractsState='ready' />,
+    );
+
+    expect(markup).toContain('Create source contract');
+    expect(markup).not.toContain('Loading source contracts…');
+    expect(markup).not.toContain('Source contracts are temporarily unavailable');
+  });
+
+  it('shows jobs loading without the empty conclusion or stale rows', () => {
+    const markup = renderToStaticMarkup(
+      <DirectImportWizard {...wizardProps} jobs={[baseJob]} jobsState='loading' />,
+    );
+
+    expect(markup).toContain('Loading import jobs…');
+    expect(markup).not.toContain('No import jobs yet.');
+    expect(markup).not.toContain('Runbook');
+  });
+
+  it('treats a jobs error as unavailable even with stale rows, with retry', () => {
+    const markup = renderToStaticMarkup(
+      <DirectImportWizard {...wizardProps} jobs={[baseJob]} jobsState='error' />,
+    );
+
+    expect(markup).toContain('Import jobs are temporarily unavailable');
+    expect(markup).toContain('No empty-state conclusion was made and no action was taken.');
+    expect(markup).toContain('role="alert"');
+    expect(markup).toContain('>Retry<');
+    expect(markup).not.toContain('No import jobs yet.');
+    expect(markup).not.toContain('Runbook');
+  });
+
+  it('keeps the jobs empty conclusion only for ready jobs', () => {
+    const markup = renderToStaticMarkup(
+      <DirectImportWizard {...wizardProps} jobs={[]} jobsState='ready' />,
+    );
+
+    expect(markup).toContain('No import jobs yet.');
+    expect(markup).not.toContain('Loading import jobs…');
+    expect(markup).not.toContain('Import jobs are temporarily unavailable');
+  });
+
+  it('renders no preview region while idle', () => {
+    const markup = renderToStaticMarkup(<DirectImportWizard {...wizardProps} />);
+
+    expect(markup).not.toContain('Segment preview');
+  });
+
+  it('renders no preview region for an idle state even with a stale key and stale segments', () => {
+    const markup = renderToStaticMarkup(
+      <DirectImportWizard
+        {...wizardProps}
+        previewJobKey="job-1"
+        previewState="idle"
+        preview={{
+          jobKey: 'job-1',
+          documentKey: 'doc-1',
+          evidenceKey: 'ev-1',
+          sourceKey: 'src-1',
+          proposalKey: null,
+          title: 'Runbook',
+          namespace: 'company/general',
+          sensitivity: 'internal',
+          segments: [
+            { segmentKey: 'seg-1', position: 0, headingPath: ['Runbook'], content: 'marker content', tokenCount: 2 },
+          ],
+        }}
+      />,
+    );
+
+    expect(markup).not.toContain('Segment preview');
+    expect(markup).not.toContain('marker content');
+  });
+
+  it('keeps stale contracts mechanically non-actionable outside ready', () => {
+    // Ready is the only state whose authority (selector identity) exists in
+    // the DOM and whose submit button can ever enable; loading/error with
+    // stale data leave no authority identity and a disabled submit.
+    const ready = renderToStaticMarkup(<DirectImportWizard {...wizardProps} />);
+    expect(ready).toContain('<option value="contract-1" selected="">company-file-upload · v1</option>');
+
+    for (const staleState of ['loading', 'error'] as const) {
+      const stale = renderToStaticMarkup(<DirectImportWizard {...wizardProps} contractsState={staleState} />);
+
+      expect(stale).not.toContain('<option');
+      expect(stale).not.toContain('company-file-upload');
+      expect(stale).not.toContain('Create source contract');
+      expect(stale).toContain('<button type="submit" class="btn btn-primary btn-sm" disabled=""');
+    }
+  });
+
+  it('shows preview loading without stale segment content', () => {
+    const markup = renderToStaticMarkup(
+      <DirectImportWizard
+        {...wizardProps}
+        previewJobKey="job-1"
+        previewState='loading'
+        preview={{
+          jobKey: 'job-1',
+          documentKey: 'doc-1',
+          evidenceKey: 'ev-1',
+          sourceKey: 'src-1',
+          proposalKey: null,
+          title: 'Runbook',
+          namespace: 'company/general',
+          sensitivity: 'internal',
+          segments: [
+            { segmentKey: 'seg-1', position: 0, headingPath: ['Runbook'], content: 'marker content', tokenCount: 2 },
+          ],
+        }}
+      />,
+    );
+
+    expect(markup).toContain('Loading segment preview…');
+    expect(markup).not.toContain('marker content');
+  });
+
+  it('treats a preview error as unavailable with retry and no stale segments', () => {
+    const markup = renderToStaticMarkup(
+      <DirectImportWizard
+        {...wizardProps}
+        previewJobKey="job-1"
+        previewState='error'
+        preview={{
+          jobKey: 'job-1',
+          documentKey: 'doc-1',
+          evidenceKey: 'ev-1',
+          sourceKey: 'src-1',
+          proposalKey: null,
+          title: 'Runbook',
+          namespace: 'company/general',
+          sensitivity: 'internal',
+          segments: [
+            { segmentKey: 'seg-1', position: 0, headingPath: ['Runbook'], content: 'marker content', tokenCount: 2 },
+          ],
+        }}
+      />,
+    );
+
+    expect(markup).toContain('Segment preview is temporarily unavailable');
+    expect(markup).toContain('role="alert"');
+    expect(markup).toContain('>Retry<');
+    expect(markup).not.toContain('marker content');
+  });
+
   it('maps unknown lifecycle and error codes to one neutral label without leaking raw codes', () => {
     const markup = renderToStaticMarkup(
       <DirectImportWizard
@@ -344,6 +521,7 @@ describe('Company Knowledge direct import wizard', () => {
         {...wizardProps}
         jobs={[{ ...baseJob, status: 'completed', lifecycleStatus: 'completed', terminal: true, cancellable: false, documentKey: 'doc-1' }]}
         previewJobKey="job-1"
+        previewState='ready'
         preview={{
           jobKey: 'job-1',
           documentKey: 'doc-1',
@@ -375,5 +553,23 @@ describe('Company Knowledge direct import error catalog', () => {
     expect(zhCatalog.companyKnowledge.directImport.errorTitleConflict).toBe(
       '该文件内容与现有文档相同，但标题不同。',
     );
+  });
+
+  it('localizes all direct-import query-state titles in both locales', () => {
+    const enDirect = enCatalog.companyKnowledge.directImport;
+    const zhDirect = zhCatalog.companyKnowledge.directImport;
+
+    expect(enDirect.contractsLoading).toBe('Loading source contracts…');
+    expect(zhDirect.contractsLoading).toBe('正在加载来源契约…');
+    expect(enDirect.contractsUnavailable).toBe('Source contracts are temporarily unavailable');
+    expect(zhDirect.contractsUnavailable).toBe('来源契约暂时不可用');
+    expect(enDirect.jobsLoading).toBe('Loading import jobs…');
+    expect(zhDirect.jobsLoading).toBe('正在加载导入任务…');
+    expect(enDirect.jobsUnavailable).toBe('Import jobs are temporarily unavailable');
+    expect(zhDirect.jobsUnavailable).toBe('导入任务暂时不可用');
+    expect(enDirect.previewLoading).toBe('Loading segment preview…');
+    expect(zhDirect.previewLoading).toBe('正在加载分段预览…');
+    expect(enDirect.previewUnavailable).toBe('Segment preview is temporarily unavailable');
+    expect(zhDirect.previewUnavailable).toBe('分段预览暂时不可用');
   });
 });

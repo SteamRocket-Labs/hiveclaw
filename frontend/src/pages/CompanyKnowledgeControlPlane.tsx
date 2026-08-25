@@ -734,11 +734,11 @@ function AccessGrantForm({
   );
 }
 
-function SectionError({ onRetry }: { onRetry: () => void }) {
+function SectionError({ onRetry, title }: { onRetry: () => void; title?: string }) {
   const { t } = useTranslation();
   return (
     <div className="company-control-empty" role="alert">
-      <strong>{t('companyKnowledge.sectionUnavailable', 'This section is temporarily unavailable')}</strong>
+      <strong>{title ?? t('companyKnowledge.sectionUnavailable', 'This section is temporarily unavailable')}</strong>
       <span>
         {t(
           'companyKnowledge.sectionUnavailableDescription',
@@ -840,14 +840,20 @@ export function companyImportActionErrorCode(error: unknown): string {
   return 'unknown';
 }
 
+export type DirectImportBoundaryState = 'loading' | 'error' | 'ready';
+export type DirectImportPreviewState = 'idle' | 'loading' | 'error' | 'ready';
+
 export function DirectImportWizard({
   contracts,
+  contractsState,
   jobs,
+  jobsState,
   uploading,
   actionError,
   busyJobKey,
   previewJobKey,
   preview,
+  previewState,
   onUpload,
   onSelectContract,
   onCreateContract,
@@ -855,14 +861,20 @@ export function DirectImportWizard({
   onCancelJob,
   onPreview,
   onCreateProposal,
+  onRetryContracts,
+  onRetryJobs,
+  onRetryPreview,
 }: {
   contracts: CompanySourceContractSummary[];
+  contractsState: DirectImportBoundaryState;
   jobs: CompanyImportJobSummary[];
+  jobsState: DirectImportBoundaryState;
   uploading: boolean;
   actionError: string | null;
   busyJobKey: string | null;
   previewJobKey: string | null;
   preview: CompanyImportPreview | null;
+  previewState: DirectImportPreviewState;
   onUpload: (input: { file: File; contract: CompanySourceContractSummary; title: string; purpose: string }) => void;
   onSelectContract: (contractKey: string) => void;
   onCreateContract: (input: { stable_source_id: string; allowed_namespaces: string[]; default_sensitivity: string }) => void;
@@ -870,9 +882,15 @@ export function DirectImportWizard({
   onCancelJob: (jobKey: string) => void;
   onPreview: (jobKey: string) => void;
   onCreateProposal: (jobKey: string) => void;
+  onRetryContracts: () => void;
+  onRetryJobs: () => void;
+  onRetryPreview: () => void;
 }) {
   const { t } = useTranslation();
-  const activeContracts = contracts.filter((contract) => contract.status === 'active');
+  // Only ready may use contract data: in loading/error even a stale array is
+  // mechanically non-actionable (no authority, no upload authorization).
+  const activeContracts =
+    contractsState === 'ready' ? contracts.filter((contract) => contract.status === 'active') : [];
   const [selectedContractKey, setSelectedContractKey] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState('');
@@ -881,7 +899,7 @@ export function DirectImportWizard({
   const selectedContract =
     activeContracts.find((contract) => contract.contractKey === selectedContractKey) ?? activeContracts[0] ?? null;
   const namespace = selectedContract?.allowedNamespaces[0] ?? 'company/general';
-  const canUpload = Boolean(file && selectedContract && title.trim() && !uploading);
+  const canUpload = contractsState === 'ready' && Boolean(file && selectedContract && title.trim() && !uploading);
 
   return (
     <section className="company-control-panel">
@@ -907,12 +925,21 @@ export function DirectImportWizard({
         className="company-control-form"
         onSubmit={(event: FormEvent) => {
           event.preventDefault();
-          if (file && selectedContract && title.trim()) {
+          if (contractsState === 'ready' && file && selectedContract && title.trim()) {
             onUpload({ file, contract: selectedContract, title: title.trim(), purpose: purpose.trim() });
           }
         }}
       >
-        {activeContracts.length === 0 ? (
+        {contractsState === 'loading' ? (
+          <div className="company-control-empty">
+            {t('companyKnowledge.directImport.contractsLoading', 'Loading source contracts…')}
+          </div>
+        ) : contractsState === 'error' ? (
+          <SectionError
+            title={t('companyKnowledge.directImport.contractsUnavailable', 'Source contracts are temporarily unavailable')}
+            onRetry={onRetryContracts}
+          />
+        ) : activeContracts.length === 0 ? (
           <div className="company-control-form-grid">
             <label>
               <span>{t('companyKnowledge.directImport.contractName', 'Source contract name')}</span>
@@ -1002,7 +1029,14 @@ export function DirectImportWizard({
 
       <div className="company-control-subsection">
         <h3>{t('companyKnowledge.directImport.jobsTitle', 'Import jobs')}</h3>
-        {jobs.length === 0 ? (
+        {jobsState === 'loading' ? (
+          <div className="company-control-empty">{t('companyKnowledge.directImport.jobsLoading', 'Loading import jobs…')}</div>
+        ) : jobsState === 'error' ? (
+          <SectionError
+            title={t('companyKnowledge.directImport.jobsUnavailable', 'Import jobs are temporarily unavailable')}
+            onRetry={onRetryJobs}
+          />
+        ) : jobs.length === 0 ? (
           <div className="company-control-empty">{t('companyKnowledge.directImport.jobsEmpty', 'No import jobs yet.')}</div>
         ) : (
           jobs.map((job) => {
@@ -1068,20 +1102,33 @@ export function DirectImportWizard({
         )}
       </div>
 
-      {preview && previewJobKey && (
+      {previewJobKey && previewState !== 'idle' && (
         <div className="company-control-subsection">
           <h3>{t('companyKnowledge.directImport.previewTitle', 'Segment preview')}</h3>
-          <div className="company-control-preview">
-            <strong>{preview.title}</strong>
-            {preview.segments.map((segment) => (
-              <div key={segment.segmentKey} className="company-control-preview-segment">
-                <span>
-                  #{segment.position + 1} {segment.headingPath.join(' / ')} · {segment.tokenCount} tok
-                </span>
-                <p>{segment.content}</p>
+          {previewState === 'loading' ? (
+            <div className="company-control-empty">
+              {t('companyKnowledge.directImport.previewLoading', 'Loading segment preview…')}
+            </div>
+          ) : previewState === 'error' ? (
+            <SectionError
+              title={t('companyKnowledge.directImport.previewUnavailable', 'Segment preview is temporarily unavailable')}
+              onRetry={onRetryPreview}
+            />
+          ) : (
+            preview && (
+              <div className="company-control-preview">
+                <strong>{preview.title}</strong>
+                {preview.segments.map((segment) => (
+                  <div key={segment.segmentKey} className="company-control-preview-segment">
+                    <span>
+                      #{segment.position + 1} {segment.headingPath.join(' / ')} · {segment.tokenCount} tok
+                    </span>
+                    <p>{segment.content}</p>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            )
+          )}
         </div>
       )}
     </section>
@@ -1443,12 +1490,19 @@ export default function CompanyKnowledgeControlPlane() {
         <div className="company-control-grid">
           <DirectImportWizard
             contracts={sourceContractsQuery.data ?? []}
+            contractsState={
+              sourceContractsQuery.isError ? 'error' : sourceContractsQuery.isPending ? 'loading' : 'ready'
+            }
             jobs={importJobs}
+            jobsState={importJobsQuery.isError ? 'error' : importJobsQuery.isPending ? 'loading' : 'ready'}
             uploading={uploadImportMutation.isPending || createContractMutation.isPending}
             actionError={importActionError}
             busyJobKey={importBusyJobKey}
             previewJobKey={previewJobKey}
             preview={previewQuery.data ?? null}
+            previewState={
+              !previewJobKey ? 'idle' : previewQuery.isError ? 'error' : previewQuery.isPending ? 'loading' : 'ready'
+            }
             onUpload={(input) => uploadImportMutation.mutate(input)}
             onSelectContract={setImportSelectedContractKey}
             onCreateContract={(input) => createContractMutation.mutate(input)}
@@ -1465,6 +1519,9 @@ export default function CompanyKnowledgeControlPlane() {
               setImportBusyJobKey(jobKey);
               createProposalMutation.mutate(jobKey);
             }}
+            onRetryContracts={() => void sourceContractsQuery.refetch()}
+            onRetryJobs={() => void importJobsQuery.refetch()}
+            onRetryPreview={() => void previewQuery.refetch()}
           />
           <section className="company-control-panel">
             <div className="company-control-panel-head">

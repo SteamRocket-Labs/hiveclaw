@@ -572,6 +572,17 @@
     "automationNoPaused": "没有已暂停的自动化任务。",
     "automationNoAgentSelected": "请先选择一个 Agent。",
     "automationCreateFailed": "无法创建这个自动化任务。",
+    "automationNameFallback": "自动化任务",
+    "scheduleGeneric": "定时工作",
+    "automationStatus": {
+      "paused": "已暂停",
+      "running": "运行中",
+      "failed": "需要处理",
+      "missingModel": "未配置模型",
+      "completed": "已完成",
+      "active": "进行中",
+      "unknown": "状态不可用"
+    },
     "plans": {
       "title": "计划确认",
       "eyebrow": "确认边界",
@@ -1471,6 +1482,7 @@
       "reasonFailedRecently": "最近一次运行失败或被跳过。",
       "reasonNeedsReconciliation": "该运行需管理员核对后才能重试。",
       "scheduleEveryDayAt": "每天 {{time}}",
+      "scheduleWeekdayAt": "{{weekday}} {{time}}",
       "scheduleWeekdaysAt": "工作日 {{time}}",
       "scheduleSundaysAt": "每周日 {{time}}",
       "scheduleHourlyWeekdays": "工作日每小时",

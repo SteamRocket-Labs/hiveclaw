@@ -597,6 +597,17 @@
     "automationNoPaused": "No paused automation tasks.",
     "automationNoAgentSelected": "Select an agent before creating a task.",
     "automationCreateFailed": "Could not create this automation task.",
+    "automationNameFallback": "Automation",
+    "scheduleGeneric": "Scheduled work",
+    "automationStatus": {
+      "paused": "Paused",
+      "running": "Running",
+      "failed": "Needs attention",
+      "missingModel": "Model not configured",
+      "completed": "Completed",
+      "active": "Active",
+      "unknown": "Status unavailable"
+    },
     "plans": {
       "title": "Plan Review",
       "eyebrow": "Confirmation boundary",
@@ -1471,6 +1482,7 @@
       "reasonFailedRecently": "The most recent run failed or was skipped.",
       "reasonNeedsReconciliation": "This run needs admin reconciliation before retry.",
       "scheduleEveryDayAt": "Every day at {{time}}",
+      "scheduleWeekdayAt": "{{weekday}} {{time}}",
       "scheduleWeekdaysAt": "Weekdays at {{time}}",
       "scheduleSundaysAt": "Sundays at {{time}}",
       "scheduleHourlyWeekdays": "Every hour on weekdays",

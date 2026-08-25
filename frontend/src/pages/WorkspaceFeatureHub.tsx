@@ -87,12 +87,125 @@ interface AutomationHubRow {
   agentName: string;
   triggerId: string;
   name: string;
-  scheduleText: string;
+  schedule: AutomationScheduleFacts;
   status: string;
-  statusText: string;
+  statusKey: AutomationStatusKey;
   section: AutomationSection;
   href: string;
   updatedAt: string | null;
+}
+
+export type AutomationScheduleKind = 'cron' | 'interval' | 'once' | 'on_message' | 'webhook' | 'poll' | 'other';
+
+export type AutomationScheduleFacts = {
+  kind: AutomationScheduleKind;
+  expr?: string;
+  minutes?: number;
+  at?: string;
+};
+
+export type AutomationStatusKey =
+  | 'paused'
+  | 'running'
+  | 'failed'
+  | 'missingModel'
+  | 'completed'
+  | 'active'
+  | 'unknown';
+
+// Exact typed facts from the trigger machine shape (type/config fields only):
+// the backend display_schedule prose is operator text and never renders in the
+// hub, and poll/webhook URLs/tokens stay out of the user DOM entirely.
+export function automationScheduleFacts(trigger: any): AutomationScheduleFacts {
+  const config = trigger?.config && typeof trigger.config === 'object' ? trigger.config : {};
+  const type = String(trigger?.type || '').trim();
+  if (type === 'cron') {
+    const expr = typeof config.expr === 'string' && config.expr.trim() ? config.expr.trim() : undefined;
+    return expr ? { kind: 'cron', expr } : { kind: 'cron' };
+  }
+  if (type === 'interval') {
+    const minutes = Number(config.minutes);
+    return Number.isFinite(minutes) && minutes > 0 ? { kind: 'interval', minutes } : { kind: 'interval' };
+  }
+  if (type === 'once') {
+    const at = typeof config.at === 'string' && config.at.trim() ? config.at.trim() : undefined;
+    return { kind: 'once', ...(at ? { at } : {}) };
+  }
+  if (type === 'on_message') return { kind: 'on_message' };
+  if (type === 'webhook') return { kind: 'webhook' };
+  if (type === 'poll') return { kind: 'poll' };
+  return { kind: 'other' };
+}
+
+// Static translation keys only (variable-key t() calls are not statically
+// auditable); unknown weekday indices fall back to the cron expression form.
+function scheduleWeekdayLabel(dayOfWeek: string, t: ScheduleTranslator): string {
+  switch (dayOfWeek) {
+    case '0':
+    case '7':
+      return t('agent.aware.weekdaySunday', 'Sunday');
+    case '1':
+      return t('agent.aware.weekdayMonday', 'Monday');
+    case '2':
+      return t('agent.aware.weekdayTuesday', 'Tuesday');
+    case '3':
+      return t('agent.aware.weekdayWednesday', 'Wednesday');
+    case '4':
+      return t('agent.aware.weekdayThursday', 'Thursday');
+    case '5':
+      return t('agent.aware.weekdayFriday', 'Friday');
+    case '6':
+      return t('agent.aware.weekdaySaturday', 'Saturday');
+    default:
+      return '';
+  }
+}
+
+type ScheduleTranslator = {
+  (key: string, fallback?: string): string;
+  (key: string, fallback: string, values: Record<string, unknown>): string;
+};
+
+export function automationScheduleLabel(facts: AutomationScheduleFacts, t: ScheduleTranslator): string {
+  if (facts.kind === 'cron') {
+    if (!facts.expr) return t('agent.aware.scheduleCronGeneric', 'Scheduled (cron)');
+    const parts = facts.expr.split(/\s+/);
+    if (parts.length >= 5) {
+      const [minute, hour, , , dayOfWeek] = parts;
+      const timeText = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+      if (hour === '*' && minute === '0') return t('agent.aware.scheduleHourly', 'Every hour');
+      if (dayOfWeek === '*' && hour !== '*' && minute !== '*') {
+        return t('agent.aware.scheduleEveryDayAt', 'Every day at {{time}}', { time: timeText });
+      }
+      const weekday = scheduleWeekdayLabel(dayOfWeek, t);
+      if (weekday && hour !== '*' && minute !== '*') {
+        return t('agent.aware.scheduleWeekdayAt', '{{weekday}} {{time}}', {
+          weekday,
+          time: timeText,
+        });
+      }
+    }
+    return t('agent.aware.scheduleCron', 'Cron: {{expression}}', { expression: facts.expr });
+  }
+  if (facts.kind === 'interval') {
+    const minutes = Number(facts.minutes);
+    if (Number.isFinite(minutes) && minutes > 0) {
+      if (minutes >= 60 && minutes % 60 === 0) {
+        return t('agent.aware.scheduleEveryHours', 'Every {{count}}h', { count: minutes / 60 });
+      }
+      return t('agent.aware.scheduleEveryMinutes', 'Every {{count}} min', { count: minutes });
+    }
+    return t('agent.aware.scheduleIntervalGeneric', 'Interval');
+  }
+  if (facts.kind === 'once') {
+    return facts.at
+      ? t('agent.aware.scheduleOnceAt', 'Once at {{time}}', { time: facts.at })
+      : t('agent.aware.scheduleOnceGeneric', 'One-off');
+  }
+  if (facts.kind === 'on_message') return t('agent.aware.scheduleWaitMessage', 'Wait for message');
+  if (facts.kind === 'webhook') return t('agent.aware.scheduleWebhook', 'Webhook');
+  if (facts.kind === 'poll') return t('agent.aware.schedulePollLabel', 'Polling');
+  return t('featureHub.scheduleGeneric', 'Scheduled work');
 }
 
 const hubCopy: Record<HubKind, HubCopy> = {
@@ -176,41 +289,6 @@ function createDefaultWakeForm(): WakeFormState {
   };
 }
 
-function triggerScheduleText(trigger: any): string {
-  if (typeof trigger?.display_schedule === 'string' && trigger.display_schedule.trim()) {
-    return trigger.display_schedule;
-  }
-  if (trigger?.type === 'cron' && trigger?.config?.expr) {
-    const parts = String(trigger.config.expr).trim().split(/\s+/);
-    if (parts.length >= 5) {
-      const [minute, hour, , , dayOfWeek] = parts;
-      const timeText = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
-      const weekdays: Record<string, string> = {
-        '0': 'Sunday',
-        '1': 'Monday',
-        '2': 'Tuesday',
-        '3': 'Wednesday',
-        '4': 'Thursday',
-        '5': 'Friday',
-        '6': 'Saturday',
-        '7': 'Sunday',
-      };
-      if (hour === '*' && minute === '0') return 'Every hour';
-      if (dayOfWeek === '*' && hour !== '*' && minute !== '*') return `Every day at ${timeText}`;
-      if (weekdays[dayOfWeek] && hour !== '*' && minute !== '*') return `${weekdays[dayOfWeek]} at ${timeText}`;
-    }
-    return `Cron: ${trigger.config.expr}`;
-  }
-  if (trigger?.type === 'interval' && trigger?.config?.minutes) {
-    const minutes = Number(trigger.config.minutes);
-    if (Number.isFinite(minutes) && minutes > 0) return minutes >= 60 ? `Every ${minutes / 60}h` : `Every ${minutes} min`;
-  }
-  if (trigger?.type === 'once' && trigger?.config?.at) {
-    return `Once at ${trigger.config.at}`;
-  }
-  return String(trigger?.type || 'automation');
-}
-
 function runtimeTaskTriggerIds(task: any): Set<string> {
   const diagnostics = task?.diagnostics && typeof task.diagnostics === 'object' ? task.diagnostics : {};
   const metadata = task?.metadata && typeof task.metadata === 'object' ? task.metadata : {};
@@ -241,24 +319,65 @@ function latestAttemptForTrigger(trigger: any, attempts: any[]): any | null {
   })[0];
 }
 
-function automationStatus(trigger: any, attempts: any[]): Pick<AutomationHubRow, 'status' | 'statusText' | 'section'> {
+// Exact machine-code status mapping only: unknown attention states resolve to
+// the neutral `unknown` key — raw codes never reach the row, and nothing is
+// guessed by substring matching.
+export function automationStatus(
+  trigger: any,
+  attempts: any[],
+): { status: string; statusKey: AutomationStatusKey; section: AutomationSection } {
   const attentionState = String(trigger?.attention_state || '').toLowerCase();
   if (trigger?.is_enabled === false || attentionState === 'paused') {
-    return { status: 'paused', statusText: 'paused', section: 'paused' };
+    return { status: 'paused', statusKey: 'paused', section: 'paused' };
   }
 
   const latestAttempt = latestAttemptForTrigger(trigger, attempts);
   const attemptStatus = String(latestAttempt?.status || '').toLowerCase();
   if (['pending', 'queued', 'running', 'in_progress', 'started'].includes(attemptStatus)) {
-    return { status: 'running', statusText: 'running', section: 'current' };
+    return { status: 'running', statusKey: 'running', section: 'current' };
   }
   if (['failed', 'error', 'needs_reconciliation', 'skipped'].includes(attemptStatus) || ['failed_recently', 'missing_model'].includes(attentionState)) {
-    return { status: 'failed', statusText: attentionState === 'missing_model' ? 'missing model' : 'failed', section: 'current' };
+    return {
+      status: 'failed',
+      statusKey: attentionState === 'missing_model' ? 'missingModel' : 'failed',
+      section: 'current',
+    };
   }
   if (['completed', 'success', 'succeeded'].includes(attemptStatus)) {
-    return { status: 'completed', statusText: 'completed', section: 'current' };
+    return { status: 'completed', statusKey: 'completed', section: 'current' };
   }
-  return { status: attentionState || 'active', statusText: attentionState || 'active', section: 'current' };
+  if (attentionState === 'active') {
+    return { status: 'active', statusKey: 'active', section: 'current' };
+  }
+  return { status: 'unknown', statusKey: 'unknown', section: 'current' };
+}
+
+export const AUTOMATION_STATUS_FALLBACKS: Record<AutomationStatusKey, string> = {
+  paused: 'Paused',
+  running: 'Running',
+  failed: 'Needs attention',
+  missingModel: 'Model not configured',
+  completed: 'Completed',
+  active: 'Active',
+  unknown: 'Status unavailable',
+};
+
+/** One automation row rendered from typed facts — the testable live-consumer seam. */
+export function AutomationRowSurface({ row }: { row: AutomationHubRow }) {
+  const { t } = useTranslation();
+  return (
+    <Link to={row.href} className="automation-task-row">
+      <span className={`automation-task-dot ${row.status}`} aria-hidden="true" />
+      <span className="automation-task-main">
+        <strong>{row.name || t('featureHub.automationNameFallback', 'Automation')}</strong>
+        <small>{row.agentName}</small>
+      </span>
+      <span className="automation-task-schedule">{automationScheduleLabel(row.schedule, t)}</span>
+      <span className={`employee-status ${row.status}`}>
+        {t(`featureHub.automationStatus.${row.statusKey}`, AUTOMATION_STATUS_FALLBACKS[row.statusKey])}
+      </span>
+    </Link>
+  );
 }
 
 async function collectAutomationRows(agents: Agent[]): Promise<AutomationHubRow[]> {
@@ -271,14 +390,14 @@ async function collectAutomationRows(agents: Agent[]): Promise<AutomationHubRow[
         ]);
         return triggers.map((trigger: any) => {
           const status = automationStatus(trigger, attempts);
-          const name = String(trigger.display_title || trigger.name || trigger.reason || 'Automation');
+          const name = String(trigger.display_title || trigger.name || trigger.reason || '');
           return {
             id: `${agent.id}:${trigger.id}`,
             agentId: agent.id,
             agentName: agent.name,
             triggerId: String(trigger.id),
             name,
-            scheduleText: triggerScheduleText(trigger),
+            schedule: automationScheduleFacts(trigger),
             updatedAt: trigger.last_fired_at || trigger.created_at || null,
             href: `/agents/${agent.id}#aware`,
             ...status,
@@ -511,17 +630,7 @@ export default function WorkspaceFeatureHub({ kind, initialAutomationCreateOpen 
   const renderAutomationRows = (rows: AutomationHubRow[], emptyText: string) => (
     <div className="automation-task-list">
       {rows.length === 0 && <EmptyState>{emptyText}</EmptyState>}
-      {rows.map((row) => (
-        <Link key={row.id} to={row.href} className="automation-task-row">
-          <span className={`automation-task-dot ${row.status}`} aria-hidden="true" />
-          <span className="automation-task-main">
-            <strong>{row.name}</strong>
-            <small>{row.agentName}</small>
-          </span>
-          <span className="automation-task-schedule">{row.scheduleText}</span>
-          <span className={`employee-status ${row.status}`}>{row.statusText}</span>
-        </Link>
-      ))}
+      {rows.map((row) => <AutomationRowSurface key={row.id} row={row} />)}
     </div>
   );
 

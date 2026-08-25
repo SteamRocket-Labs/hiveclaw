@@ -338,6 +338,20 @@ const CANONICAL_ATTENTION_STATE_STATUS: Record<string, { status: string; statusK
   needs_reconciliation: { status: 'failed', statusKey: 'needsReconciliation' },
 };
 
+// Gate states resolve before the latest attempt, mirroring build_trigger_view's
+// own precedence (paused > expired > max_fires_reached > backoff_active >
+// attempt-derived): the trigger-level gate is the canonical truth about
+// whether the automation can still run, so a completed or running last
+// attempt must never mask a dead trigger.
+const GATE_ATTENTION_STATE_STATUS: Record<string, { status: string; statusKey: AutomationStatusKey }> = {
+  expired: CANONICAL_ATTENTION_STATE_STATUS.expired,
+  max_fires_reached: CANONICAL_ATTENTION_STATE_STATUS.max_fires_reached,
+  backoff_active: CANONICAL_ATTENTION_STATE_STATUS.backoff_active,
+  missing_model: { status: 'failed', statusKey: 'missingModel' },
+  failed_recently: { status: 'failed', statusKey: 'failed' },
+  needs_reconciliation: CANONICAL_ATTENTION_STATE_STATUS.needs_reconciliation,
+};
+
 // Exact machine-code status mapping only: unknown attention states resolve to
 // the neutral `unknown` key — raw codes never reach the row, and nothing is
 // guessed by substring matching.
@@ -350,17 +364,20 @@ export function automationStatus(
     return { status: 'paused', statusKey: 'paused', section: 'paused' };
   }
 
+  const gate = GATE_ATTENTION_STATE_STATUS[attentionState];
+  if (gate) {
+    return { ...gate, section: 'current' };
+  }
+
+  // The latest attempt colors the active tail (and provides its own evidence
+  // when the gate has nothing to say).
   const latestAttempt = latestAttemptForTrigger(trigger, attempts);
   const attemptStatus = String(latestAttempt?.status || '').toLowerCase();
   if (['pending', 'queued', 'running', 'in_progress', 'started'].includes(attemptStatus)) {
     return { status: 'running', statusKey: 'running', section: 'current' };
   }
-  if (['failed', 'error', 'needs_reconciliation', 'skipped'].includes(attemptStatus) || ['failed_recently', 'missing_model'].includes(attentionState)) {
-    return {
-      status: 'failed',
-      statusKey: attentionState === 'missing_model' ? 'missingModel' : 'failed',
-      section: 'current',
-    };
+  if (['failed', 'error', 'needs_reconciliation', 'skipped'].includes(attemptStatus)) {
+    return { status: 'failed', statusKey: 'failed', section: 'current' };
   }
   if (['completed', 'success', 'succeeded'].includes(attemptStatus)) {
     return { status: 'completed', statusKey: 'completed', section: 'current' };

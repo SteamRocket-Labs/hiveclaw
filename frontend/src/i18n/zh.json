@@ -581,6 +581,11 @@
       "missingModel": "未配置模型",
       "completed": "已完成",
       "active": "进行中",
+      "expired": "已过期",
+      "maxFires": "已达运行上限",
+      "backoff": "冷却中",
+      "noRecentAttempt": "最近未运行",
+      "needsReconciliation": "需要管理员处理",
       "unknown": "状态不可用"
     },
     "plans": {

@@ -111,6 +111,11 @@ export type AutomationStatusKey =
   | 'missingModel'
   | 'completed'
   | 'active'
+  | 'expired'
+  | 'maxFires'
+  | 'backoff'
+  | 'noRecentAttempt'
+  | 'needsReconciliation'
   | 'unknown';
 
 // Exact typed facts from the trigger machine shape (type/config fields only):
@@ -319,6 +324,20 @@ function latestAttemptForTrigger(trigger: any, attempts: any[]): any | null {
   })[0];
 }
 
+// The canonical attention_state vocabulary emitted by autonomy_overview. Every
+// member maps exactly to its own typed key — none collapses to unknown; only
+// codes outside this closed set resolve to the neutral unknown. The CSS status
+// mirrors the aware-tab tone semantics (attention states share the failed
+// tone; informational states stay neutral).
+const CANONICAL_ATTENTION_STATE_STATUS: Record<string, { status: string; statusKey: AutomationStatusKey }> = {
+  active: { status: 'active', statusKey: 'active' },
+  expired: { status: 'failed', statusKey: 'expired' },
+  max_fires_reached: { status: 'failed', statusKey: 'maxFires' },
+  backoff_active: { status: 'backoff', statusKey: 'backoff' },
+  no_recent_attempt: { status: 'noRecentAttempt', statusKey: 'noRecentAttempt' },
+  needs_reconciliation: { status: 'failed', statusKey: 'needsReconciliation' },
+};
+
 // Exact machine-code status mapping only: unknown attention states resolve to
 // the neutral `unknown` key — raw codes never reach the row, and nothing is
 // guessed by substring matching.
@@ -346,8 +365,9 @@ export function automationStatus(
   if (['completed', 'success', 'succeeded'].includes(attemptStatus)) {
     return { status: 'completed', statusKey: 'completed', section: 'current' };
   }
-  if (attentionState === 'active') {
-    return { status: 'active', statusKey: 'active', section: 'current' };
+  const canonical = CANONICAL_ATTENTION_STATE_STATUS[attentionState];
+  if (canonical) {
+    return { ...canonical, section: 'current' };
   }
   return { status: 'unknown', statusKey: 'unknown', section: 'current' };
 }
@@ -359,6 +379,11 @@ export const AUTOMATION_STATUS_FALLBACKS: Record<AutomationStatusKey, string> = 
   missingModel: 'Model not configured',
   completed: 'Completed',
   active: 'Active',
+  expired: 'Expired',
+  maxFires: 'Run limit reached',
+  backoff: 'Cooling down',
+  noRecentAttempt: 'No recent run',
+  needsReconciliation: 'Needs admin review',
   unknown: 'Status unavailable',
 };
 

@@ -606,6 +606,11 @@
       "missingModel": "Model not configured",
       "completed": "Completed",
       "active": "Active",
+      "expired": "Expired",
+      "maxFires": "Run limit reached",
+      "backoff": "Cooling down",
+      "noRecentAttempt": "No recent run",
+      "needsReconciliation": "Needs admin review",
       "unknown": "Status unavailable"
     },
     "plans": {

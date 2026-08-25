@@ -324,6 +324,29 @@ describe('automation schedule/status display (live consumer seam)', () => {
     expect(String(status.statusKey)).not.toContain('experimental_future_state');
   });
 
+  it('maps every canonical autonomy attention_state exactly instead of collapsing to unknown', () => {
+    // The canonical attention_state vocabulary from autonomy_overview is a
+    // closed machine set; every member carries real semantics and must map to
+    // its own typed key. Only codes outside this set resolve to unknown.
+    expect(automationStatus({ attention_state: 'active', is_enabled: true }, []).statusKey).toBe('active');
+    expect(automationStatus({ attention_state: 'expired', is_enabled: true }, []).statusKey).toBe('expired');
+    expect(automationStatus({ attention_state: 'max_fires_reached', is_enabled: true }, []).statusKey).toBe('maxFires');
+    expect(automationStatus({ attention_state: 'backoff_active', is_enabled: true }, []).statusKey).toBe('backoff');
+    expect(automationStatus({ attention_state: 'no_recent_attempt', is_enabled: true }, []).statusKey).toBe('noRecentAttempt');
+    expect(automationStatus({ attention_state: 'missing_model', is_enabled: true }, []).statusKey).toBe('missingModel');
+    expect(automationStatus({ attention_state: 'failed_recently', is_enabled: true }, []).statusKey).toBe('failed');
+    expect(automationStatus({ attention_state: 'needs_reconciliation', is_enabled: true }, []).statusKey).toBe('needsReconciliation');
+    // Non-canonical codes stay the honest neutral unknown.
+    expect(automationStatus({ attention_state: 'brand_new_backend_code', is_enabled: true }, []).statusKey).toBe('unknown');
+
+    const zhStatus = (zh as any).featureHub.automationStatus;
+    expect(zhStatus.expired).toBe('已过期');
+    expect(zhStatus.maxFires).toBe('已达运行上限');
+    expect(zhStatus.backoff).toBe('冷却中');
+    expect(zhStatus.noRecentAttempt).toBe('最近未运行');
+    expect(zhStatus.needsReconciliation).toBe('需要管理员处理');
+  });
+
   it('renders known interval and cron schedules plus statuses through localized en/zh catalog keys', () => {
     // interval
     const intervalKeys: string[] = [];

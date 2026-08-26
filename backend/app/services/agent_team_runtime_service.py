@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -39,6 +40,8 @@ from app.services.runtime_root_ledger import (
     transition_runtime_root_item,
 )
 from app.services.tenant_resolver import resolve_tenant_for_agent
+
+logger = logging.getLogger(__name__)
 
 ACTIVE_AGENT_TEAM_MEMBER_STATUSES = frozenset(
     {"created", "pending", "queued", "running", "started", "in_progress", "resuming"}
@@ -929,26 +932,77 @@ async def project_agent_team_member_completion(
     return payload
 
 
-async def project_agent_team_close_completion(
+async def _recover_team_close_bindings_from_result_page(
+    db: Any, *, task: Any
+) -> tuple[str | None, list[dict[str, Any]]]:
+    """Recover every agent_team_close routing fact for a result-integration
+    continuation.
+
+    The delivered result-integration outbox is the single existing fact
+    source: each lead close wrote an ``agent_team_close`` row (source_kind
+    ``agent_team``, metadata ``agent_team_close_id``) bound to the
+    integration page that spawned this continuation. Exact tenant + page +
+    source_kind + task_type binding in SQL. Returns the page id and one
+    binding record per row (``outbox_id`` plus the parsed ``team_id`` or the
+    malformed ``raw`` value) so every binding stays individually observable
+    and recoverable.
+    """
+
+    from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+
+    metadata = dict(getattr(task, "metadata_json", None) or {})
+    page_id = _uuid_or_none(metadata.get("integration_page_id"))
+    tenant_id = getattr(task, "tenant_id", None)
+    if page_id is None or tenant_id is None:
+        return None, []
+    rows = (
+        await db.execute(
+            select(RuntimeNotificationOutbox.id, RuntimeNotificationOutbox.metadata_json).where(
+                RuntimeNotificationOutbox.tenant_id == tenant_id,
+                RuntimeNotificationOutbox.integration_page_id == page_id,
+                RuntimeNotificationOutbox.task_type == "agent_team_close",
+                RuntimeNotificationOutbox.source_kind == "agent_team",
+            )
+        )
+    ).all()
+    bindings: list[dict[str, Any]] = []
+    for row_id, row_metadata in rows:
+        raw = (row_metadata or {}).get("agent_team_close_id")
+        parsed = _uuid_or_none(raw)
+        if parsed is None:
+            logger.warning(
+                "[AgentTeam] close outbox row %s carries malformed agent_team_close_id %r; skipped",
+                row_id,
+                raw,
+            )
+        bindings.append({"outbox_id": row_id, "team_id": parsed, "raw": str(raw or "")})
+    return str(page_id), bindings
+
+
+async def _apply_team_close_outcome(
     *,
     db: Any,
+    team: Any,
     task: Any,
     status: str,
     result_summary: str | None,
+    task_metadata: dict[str, Any],
 ) -> dict[str, str] | None:
-    """Finalize Team close only after the lead model's synthesis turn terminates."""
+    """Apply the lead-synthesis terminal outcome to one Team in closing."""
 
-    task_metadata = dict(getattr(task, "metadata_json", None) or {})
-    team_id = _uuid_or_none(task_metadata.get("agent_team_close_id"))
-    if team_id is None:
-        return None
-    team = (
-        await db.execute(select(AgentTeam).where(AgentTeam.id == team_id).limit(1).with_for_update())
-    ).scalar_one_or_none()
-    if team is None:
-        return None
     if team.status == "closed":
         return {"team_id": str(team.id), "status": "closed"}
+    terminal_status = str(status or "failed").lower()
+    existing_metadata = dict(team.metadata_json or {})
+    if (
+        team.status == "active"
+        and str(existing_metadata.get("close_synthesis_run_id") or "") == str(getattr(task, "id", "") or "")
+        and str(existing_metadata.get("close_synthesis_status") or "").strip().lower() == terminal_status
+    ):
+        # Duplicate terminal replay of the same synthesis task and status:
+        # the previously applied outcome is the truthful idempotent result —
+        # no second event, no overwritten receipt.
+        return {"team_id": str(team.id), "status": team.status}
     if team.status != "closing":
         return None
 
@@ -963,7 +1017,6 @@ async def project_agent_team_close_completion(
         .scalars()
         .all()
     )
-    terminal_status = str(status or "failed").lower()
     succeeded = terminal_status == "completed"
     now = datetime.now(timezone.utc)
     metadata = dict(team.metadata_json or {})
@@ -1029,6 +1082,137 @@ async def project_agent_team_close_completion(
         )
     await db.flush()
     return {"team_id": str(team.id), "status": team.status}
+
+
+async def project_agent_team_close_completion(
+    *,
+    db: Any,
+    task: Any,
+    status: str,
+    result_summary: str | None,
+) -> dict[str, Any] | None:
+    """Finalize Team close only after the lead model's synthesis turn terminates.
+
+    The direct task-metadata path (``agent_team_close_id`` embedded by the
+    close request) keeps its single-Team contract. Result-integration
+    continuations carry page/manifest metadata instead, so the close binding
+    is recovered from the delivered outbox rows of that integration page and
+    EVERY unique valid Team is processed independently — a page may legitimately
+    aggregate several Team closes. Team selection carries the continuation
+    tenant in SQL with FOR UPDATE. The recovered path persists a typed
+    ``agent_team_close_projection`` receipt on the canonical RuntimeTask
+    metadata (by reassigning ``task.metadata_json``) so terminal branches
+    that discard the return value still leave durable, recoverable
+    diagnostics: integration page id, per-team outcomes, and per-binding
+    skip entries with the outbox row id, typed reason, and retryable=True.
+    A page with only malformed close rows persists and returns
+    ``needs_reconciliation`` — never None.
+    """
+
+    task_metadata = dict(getattr(task, "metadata_json", None) or {})
+    direct_team_id = _uuid_or_none(task_metadata.get("agent_team_close_id"))
+    if direct_team_id is not None:
+        team = (
+            await db.execute(
+                select(AgentTeam)
+                .where(AgentTeam.id == direct_team_id, AgentTeam.tenant_id == getattr(task, "tenant_id", None))
+                .limit(1)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if team is None:
+            return None
+        return await _apply_team_close_outcome(
+            db=db,
+            team=team,
+            task=task,
+            status=status,
+            result_summary=result_summary,
+            task_metadata=task_metadata,
+        )
+
+    page_id_text, bindings = await _recover_team_close_bindings_from_result_page(db, task=task)
+    if page_id_text is None or not bindings:
+        return None
+    tenant_id = getattr(task, "tenant_id", None)
+    skipped: list[dict[str, Any]] = []
+    valid_bindings = []
+    for binding in bindings:
+        if binding["team_id"] is None:
+            skipped.append(
+                {
+                    "outbox_id": str(binding["outbox_id"]),
+                    "raw": binding["raw"],
+                    "reason": "malformed_agent_team_close_id",
+                    "retryable": True,
+                }
+            )
+            continue
+        valid_bindings.append(binding)
+    seen_team_ids: set[uuid.UUID] = set()
+    outcomes: list[dict[str, str]] = []
+    for binding in sorted(valid_bindings, key=lambda item: str(item["team_id"])):
+        team_id = binding["team_id"]
+        if team_id in seen_team_ids:
+            # Duplicate outbox rows for the same Team close are one Team.
+            continue
+        seen_team_ids.add(team_id)
+        team = (
+            await db.execute(
+                select(AgentTeam)
+                .where(AgentTeam.id == team_id, AgentTeam.tenant_id == tenant_id)
+                .limit(1)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if team is None:
+            logger.warning(
+                "[AgentTeam] recovered close binding for team %s has no Team row in the continuation tenant; skipped",
+                team_id,
+            )
+            skipped.append(
+                {
+                    "outbox_id": str(binding["outbox_id"]),
+                    "team_id": str(team_id),
+                    "reason": "team_not_found_in_tenant",
+                    "retryable": True,
+                }
+            )
+            continue
+        outcome = await _apply_team_close_outcome(
+            db=db,
+            team=team,
+            task=task,
+            status=status,
+            result_summary=result_summary,
+            task_metadata=task_metadata,
+        )
+        if outcome is None:
+            # Neither closing nor closed with no same-task idempotency proof:
+            # a typed retryable skip, never an empty-outcome completed receipt.
+            logger.warning(
+                "[AgentTeam] close binding for team %s is not in closing state; skipped for reconciliation",
+                team_id,
+            )
+            skipped.append(
+                {
+                    "outbox_id": str(binding["outbox_id"]),
+                    "team_id": str(team_id),
+                    "reason": "team_not_closing",
+                    "retryable": True,
+                }
+            )
+            continue
+        outcomes.append(outcome)
+    receipt = {
+        "status": "needs_reconciliation" if skipped else "completed",
+        "integration_page_id": page_id_text,
+        "teams": outcomes,
+        "skipped": skipped,
+    }
+    task_metadata["agent_team_close_projection"] = receipt
+    task.metadata_json = task_metadata
+    return receipt
 
 
 async def reopen_agent_team_close_after_delivery_failure(

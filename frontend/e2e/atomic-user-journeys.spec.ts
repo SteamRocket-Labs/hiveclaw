@@ -692,9 +692,29 @@ async function exerciseDomain(
         'read team workbench',
       );
       expect(workbench.schema).toBe('hive.ccplus.agent_team_workbench.v1');
+      // Aggregate terminal (failing-first): the lead-synthesis continuation
+      // must actually close the Team through the delivered close routing —
+      // a Team stuck in "closing" can never pass J-10.
+      let closedWorkbench: Record<string, unknown> = {};
+      await expect.poll(async () => {
+        closedWorkbench = await responseJson<Record<string, unknown>>(
+          await context.ownerApi.get(`/api/agents/${context.agentId}/agent-teams/${team.id}/workbench`),
+          'poll team aggregate terminal close',
+        );
+        return String(((closedWorkbench.team as Record<string, unknown>) || {}).status || '');
+      }, { timeout: 90_000, intervals: [500, 1000] }).toBe('closed');
+      const closedTeam = (closedWorkbench.team as Record<string, unknown>) || {};
+      expect(String(closedTeam.close_status)).toBe('completed');
+      const closeEvents = ((closedWorkbench.events as Array<Record<string, unknown>>) || []).filter(
+        (item) => String(item.event_type) === 'team_closed',
+      );
+      expect(closeEvents).toHaveLength(1);
+      const closeEventPayload = (closeEvents[0].payload as Record<string, unknown>) || {};
+      expect(UUID_PATTERN.test(String(closeEventPayload.synthesis_run_id || ''))).toBe(true);
+      expect(String(closeEventPayload.terminal_status)).toBe('completed');
       domain.team = team;
       domain.closing = closing;
-      domain.workbench = workbench;
+      domain.workbench = closedWorkbench;
       break;
     }
     case 'J-11': {

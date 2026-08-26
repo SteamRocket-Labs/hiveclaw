@@ -1041,6 +1041,7 @@ async def test_lead_synthesis_completion_closes_team_after_model_turn(monkeypatc
 
     task = SimpleNamespace(
         id=uuid4(),
+        tenant_id=team.tenant_id,
         task_type="web_chat_turn",
         metadata_json={
             "agent_team_close_id": str(team.id),
@@ -1105,6 +1106,7 @@ async def test_failed_lead_synthesis_reopens_team_for_retry(monkeypatch):
     monkeypatch.setattr("app.services.agent_team_runtime_service.append_session_event", fake_append)
     task = SimpleNamespace(
         id=uuid4(),
+        tenant_id=team.tenant_id,
         task_type="web_chat_turn",
         metadata_json={"agent_team_close_id": str(team.id), "user_id": str(uuid4())},
     )
@@ -1121,3 +1123,563 @@ async def test_failed_lead_synthesis_reopens_team_for_retry(monkeypatch):
     assert member.status == "idle"
     assert team.metadata_json["close_failure"] == "Provider timeout"
     assert any(isinstance(item, AgentTeamEvent) and item.event_type == "team_close_failed" for item in db.added)
+
+
+class _Rows:
+    def __init__(self, values):
+        self.values = list(values)
+
+    def all(self):
+        return list(self.values)
+
+
+class _ScriptedDB(_DB):
+    """Executes pop a scripted result queue in order."""
+
+    def __init__(self, *results):
+        super().__init__()
+        self._results = list(results)
+
+    async def execute(self, _stmt):
+        assert self._results, "unexpected execute call"
+        return self._results.pop(0)
+
+
+def _continuation_close_task(tenant_id, page_id, *, team_id=None):
+    """Real continuation shape: page + manifest metadata only; the close
+    binding lives on the delivered agent_team_close outbox row unless the
+    legacy direct path embedded it."""
+    metadata = {
+        "integration_page_id": str(page_id),
+        "result_manifest": {"items": [{"kind": "agent_team_close", "ref": "runtime-notification://close"}]},
+        "user_id": str(uuid4()),
+    }
+    if team_id is not None:
+        metadata["agent_team_close_id"] = str(team_id)
+    return SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        task_type="web_chat_turn",
+        metadata_json=metadata,
+    )
+
+
+@pytest.mark.asyncio
+async def test_continuation_terminal_projection_recovers_team_close_from_outbox_page_binding(monkeypatch):
+    from app.models.agent_team import AgentTeam, AgentTeamEvent, AgentTeamMember
+    from app.services.agent_team_runtime_service import project_agent_team_close_completion
+
+    tenant_id = uuid4()
+    page_id = uuid4()
+    outbox_row_id = uuid4()
+    team = AgentTeam(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        lead_agent_id=uuid4(),
+        parent_session_id=uuid4(),
+        name="Research Team",
+        status="closing",
+        metadata_json={"close_attempt": 1},
+    )
+    members = [
+        AgentTeamMember(id=uuid4(), team_id=team.id, member_name="researcher", chat_session_id=uuid4(), status="idle")
+    ]
+    task = _continuation_close_task(tenant_id, page_id)
+    db = _ScriptedDB(
+        _Rows([(outbox_row_id, {"agent_team_close_id": str(team.id)})]),
+        _ScalarOne(team),
+        _ScalarMany(members),
+    )
+    session_events = []
+
+    async def fake_append(**kwargs):
+        session_events.append(kwargs)
+        return SimpleNamespace(event_id=uuid4())
+
+    async def fake_hook(_event, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.agent_team_runtime_service.append_session_event", fake_append)
+    monkeypatch.setattr("app.services.agent_team_runtime_service.emit_hook", fake_hook)
+
+    result = await project_agent_team_close_completion(
+        db=db, task=task, status="completed", result_summary="Synthesized the team findings"
+    )
+
+    expected_receipt = {
+        "status": "completed",
+        "integration_page_id": str(page_id),
+        "teams": [{"team_id": str(team.id), "status": "closed"}],
+        "skipped": [],
+    }
+    assert result == expected_receipt
+    # The typed receipt persists on the canonical RuntimeTask metadata, so
+    # terminal-branch callers that discard the return still leave evidence.
+    assert task.metadata_json["agent_team_close_projection"] == expected_receipt
+    assert team.status == "closed"
+    assert team.metadata_json["close_synthesis_status"] == "completed"
+    assert any(isinstance(item, AgentTeamEvent) and item.event_type == "team_closed" for item in db.added)
+
+    # Duplicate terminal projection is idempotent: no second close event.
+    db_again = _ScriptedDB(
+        _Rows([(outbox_row_id, {"agent_team_close_id": str(team.id)})]),
+        _ScalarOne(team),
+    )
+    again = await project_agent_team_close_completion(
+        db=db_again, task=task, status="completed", result_summary="Synthesized the team findings"
+    )
+    assert again == expected_receipt
+    assert not any(isinstance(item, AgentTeamEvent) and item.event_type == "team_closed" for item in db_again.added)
+
+
+@pytest.mark.asyncio
+async def test_multiple_distinct_team_close_bindings_on_one_page_all_close(monkeypatch):
+    from app.models.agent_team import AgentTeam, AgentTeamEvent, AgentTeamMember
+    from app.services.agent_team_runtime_service import project_agent_team_close_completion
+
+    tenant_id = uuid4()
+    page_id = uuid4()
+    team_one = AgentTeam(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        lead_agent_id=uuid4(),
+        parent_session_id=uuid4(),
+        name="Team One",
+        status="closing",
+        metadata_json={"close_attempt": 1},
+    )
+    team_two = AgentTeam(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        lead_agent_id=uuid4(),
+        parent_session_id=uuid4(),
+        name="Team Two",
+        status="closing",
+        metadata_json={"close_attempt": 1},
+    )
+    members_by_team = {
+        team_one.id: [
+            AgentTeamMember(id=uuid4(), team_id=team_one.id, member_name="a", chat_session_id=uuid4(), status="idle")
+        ],
+        team_two.id: [
+            AgentTeamMember(id=uuid4(), team_id=team_two.id, member_name="b", chat_session_id=uuid4(), status="idle")
+        ],
+    }
+    task = _continuation_close_task(tenant_id, page_id)
+    ordered_teams = sorted([team_one, team_two], key=lambda item: item.id)
+    db = _ScriptedDB(
+        _Rows(
+            [
+                (uuid4(), {"agent_team_close_id": str(team_one.id)}),
+                (uuid4(), {"agent_team_close_id": str(team_two.id)}),
+            ]
+        ),
+        *[result for team in ordered_teams for result in (_ScalarOne(team), _ScalarMany(members_by_team[team.id]))],
+    )
+
+    async def fake_append(**_kwargs):
+        return SimpleNamespace(event_id=uuid4())
+
+    async def fake_hook(_event, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.agent_team_runtime_service.append_session_event", fake_append)
+    monkeypatch.setattr("app.services.agent_team_runtime_service.emit_hook", fake_hook)
+
+    result = await project_agent_team_close_completion(
+        db=db, task=task, status="completed", result_summary="Synthesized the team findings"
+    )
+
+    # Every unique valid binding closes independently — never abstain and
+    # strand teams in "closing".
+    assert result == {
+        "status": "completed",
+        "integration_page_id": str(page_id),
+        "teams": [{"team_id": str(team.id), "status": "closed"} for team in ordered_teams],
+        "skipped": [],
+    }
+    assert task.metadata_json["agent_team_close_projection"]["status"] == "completed"
+    assert team_one.status == "closed"
+    assert team_two.status == "closed"
+    closed_events = [item for item in db.added if isinstance(item, AgentTeamEvent) and item.event_type == "team_closed"]
+    assert sorted(str(event.team_id) for event in closed_events) == sorted([str(team_one.id), str(team_two.id)])
+
+
+@pytest.mark.asyncio
+async def test_malformed_outbox_close_metadata_is_skipped_and_valid_row_still_binds(monkeypatch):
+    from app.models.agent_team import AgentTeam, AgentTeamEvent, AgentTeamMember
+    from app.services.agent_team_runtime_service import project_agent_team_close_completion
+
+    tenant_id = uuid4()
+    page_id = uuid4()
+    malformed_row_id = uuid4()
+    team = AgentTeam(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        lead_agent_id=uuid4(),
+        parent_session_id=uuid4(),
+        name="Research Team",
+        status="closing",
+        metadata_json={"close_attempt": 1},
+    )
+    members = [
+        AgentTeamMember(id=uuid4(), team_id=team.id, member_name="researcher", chat_session_id=uuid4(), status="idle")
+    ]
+    task = _continuation_close_task(tenant_id, page_id)
+    db = _ScriptedDB(
+        _Rows(
+            [
+                (malformed_row_id, {"agent_team_close_id": "not-a-uuid"}),
+                (uuid4(), {"agent_team_close_id": str(team.id)}),
+            ]
+        ),
+        _ScalarOne(team),
+        _ScalarMany(members),
+    )
+
+    async def fake_append(**_kwargs):
+        return SimpleNamespace(event_id=uuid4())
+
+    async def fake_hook(_event, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.agent_team_runtime_service.append_session_event", fake_append)
+    monkeypatch.setattr("app.services.agent_team_runtime_service.emit_hook", fake_hook)
+
+    result = await project_agent_team_close_completion(
+        db=db, task=task, status="completed", result_summary="Synthesized the team findings"
+    )
+
+    assert result == {
+        "status": "needs_reconciliation",
+        "integration_page_id": str(page_id),
+        "teams": [{"team_id": str(team.id), "status": "closed"}],
+        "skipped": [
+            {
+                "outbox_id": str(malformed_row_id),
+                "raw": "not-a-uuid",
+                "reason": "malformed_agent_team_close_id",
+                "retryable": True,
+            }
+        ],
+    }
+    assert task.metadata_json["agent_team_close_projection"] == result
+    assert any(isinstance(item, AgentTeamEvent) and item.event_type == "team_closed" for item in db.added)
+
+
+@pytest.mark.asyncio
+async def test_malformed_only_close_page_persists_needs_reconciliation_never_none():
+    from app.services.agent_team_runtime_service import project_agent_team_close_completion
+
+    tenant_id = uuid4()
+    page_id = uuid4()
+    malformed_row_id = uuid4()
+    task = _continuation_close_task(tenant_id, page_id)
+    db = _ScriptedDB(_Rows([(malformed_row_id, {"agent_team_close_id": "also-not-a-uuid"})]))
+
+    result = await project_agent_team_close_completion(
+        db=db, task=task, status="completed", result_summary="nothing closable"
+    )
+
+    expected = {
+        "status": "needs_reconciliation",
+        "integration_page_id": str(page_id),
+        "teams": [],
+        "skipped": [
+            {
+                "outbox_id": str(malformed_row_id),
+                "raw": "also-not-a-uuid",
+                "reason": "malformed_agent_team_close_id",
+                "retryable": True,
+            }
+        ],
+    }
+    assert result == expected
+    assert task.metadata_json["agent_team_close_projection"] == expected
+
+
+@pytest.mark.asyncio
+async def test_recovered_binding_skips_foreign_tenant_team_without_closing_it():
+    from app.models.agent_team import AgentTeam
+    from app.services.agent_team_runtime_service import project_agent_team_close_completion
+
+    task_tenant = uuid4()
+    foreign_team_tenant = uuid4()
+    page_id = uuid4()
+    foreign_row_id = uuid4()
+    foreign_team = AgentTeam(
+        id=uuid4(),
+        tenant_id=foreign_team_tenant,
+        lead_agent_id=uuid4(),
+        parent_session_id=uuid4(),
+        name="Foreign Team",
+        status="closing",
+        metadata_json={"close_attempt": 1},
+    )
+    task = _continuation_close_task(task_tenant, page_id)
+    # The team select carries the tenant in SQL, so a foreign-tenant team
+    # resolves to no row at the continuation's tenant scope.
+    db = _ScriptedDB(
+        _Rows([(foreign_row_id, {"agent_team_close_id": str(foreign_team.id)})]),
+        _ScalarOne(None),
+    )
+
+    result = await project_agent_team_close_completion(
+        db=db, task=task, status="completed", result_summary="foreign binding"
+    )
+
+    assert result == {
+        "status": "needs_reconciliation",
+        "integration_page_id": str(page_id),
+        "teams": [],
+        "skipped": [
+            {
+                "outbox_id": str(foreign_row_id),
+                "team_id": str(foreign_team.id),
+                "reason": "team_not_found_in_tenant",
+                "retryable": True,
+            }
+        ],
+    }
+    assert task.metadata_json["agent_team_close_projection"] == result
+    assert foreign_team.status == "closing"
+    assert db.added == []
+
+
+@pytest.mark.asyncio
+async def test_failed_synthesis_via_recovered_binding_reopens_team_for_retry(monkeypatch):
+    from app.models.agent_team import AgentTeam, AgentTeamEvent, AgentTeamMember
+    from app.services.agent_team_runtime_service import project_agent_team_close_completion
+
+    tenant_id = uuid4()
+    page_id = uuid4()
+    team = AgentTeam(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        lead_agent_id=uuid4(),
+        parent_session_id=uuid4(),
+        name="Research Team",
+        status="closing",
+        metadata_json={"close_attempt": 1},
+    )
+    members = [
+        AgentTeamMember(id=uuid4(), team_id=team.id, member_name="researcher", chat_session_id=uuid4(), status="idle")
+    ]
+    task = _continuation_close_task(tenant_id, page_id)
+    db = _ScriptedDB(
+        _Rows([(uuid4(), {"agent_team_close_id": str(team.id)})]),
+        _ScalarOne(team),
+        _ScalarMany(members),
+    )
+
+    async def fake_append(**_kwargs):
+        return SimpleNamespace(event_id=uuid4())
+
+    async def fake_hook(_event, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.agent_team_runtime_service.append_session_event", fake_append)
+    monkeypatch.setattr("app.services.agent_team_runtime_service.emit_hook", fake_hook)
+
+    result = await project_agent_team_close_completion(
+        db=db, task=task, status="failed", result_summary="synthesis unavailable"
+    )
+
+    assert result == {
+        "status": "completed",
+        "integration_page_id": str(page_id),
+        "teams": [{"team_id": str(team.id), "status": "active"}],
+        "skipped": [],
+    }
+    assert task.metadata_json["agent_team_close_projection"]["teams"][0]["status"] == "active"
+    assert team.status == "active"
+    assert team.metadata_json["close_synthesis_status"] == "failed"
+    assert any(isinstance(item, AgentTeamEvent) and item.event_type == "team_close_failed" for item in db.added)
+
+
+@pytest.mark.asyncio
+async def test_terminal_projector_boundary_persists_close_projection_receipt(monkeypatch):
+    """Prove the receipt survives the REAL terminal projector boundary in
+    web_chat_runtime — the branch whose callers discard the return value."""
+
+    from app.models.agent_team import AgentTeam, AgentTeamMember
+    from app.services import web_chat_runtime
+
+    tenant_id = uuid4()
+    page_id = uuid4()
+    outbox_row_id = uuid4()
+    team = AgentTeam(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        lead_agent_id=uuid4(),
+        parent_session_id=uuid4(),
+        name="Research Team",
+        status="closing",
+        metadata_json={"close_attempt": 1},
+    )
+    members = [
+        AgentTeamMember(id=uuid4(), team_id=team.id, member_name="researcher", chat_session_id=uuid4(), status="idle")
+    ]
+    task = _continuation_close_task(tenant_id, page_id)
+    malformed_row_id = uuid4()
+    db = _ScriptedDB(
+        _Rows(
+            [
+                (malformed_row_id, {"agent_team_close_id": "not-a-uuid"}),
+                (outbox_row_id, {"agent_team_close_id": str(team.id)}),
+            ]
+        ),
+        _ScalarOne(team),
+        _ScalarMany(members),
+    )
+
+    async def fake_append(**_kwargs):
+        return SimpleNamespace(event_id=uuid4())
+
+    async def fake_hook(_event, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.agent_team_runtime_service.append_session_event", fake_append)
+    monkeypatch.setattr("app.services.agent_team_runtime_service.emit_hook", fake_hook)
+
+    await web_chat_runtime._project_agent_team_terminal_state(
+        db=db,
+        task=task,
+        status="completed",
+        result_summary="Synthesized the team findings",
+        metadata_json=dict(task.metadata_json),
+    )
+
+    receipt = task.metadata_json["agent_team_close_projection"]
+    assert receipt["status"] == "needs_reconciliation"
+    assert receipt["integration_page_id"] == str(page_id)
+    assert receipt["teams"] == [{"team_id": str(team.id), "status": "closed"}]
+    assert receipt["skipped"] == [
+        {
+            "outbox_id": str(malformed_row_id),
+            "raw": "not-a-uuid",
+            "reason": "malformed_agent_team_close_id",
+            "retryable": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_failed_synthesis_replay_is_idempotent_and_truthful(monkeypatch):
+    from app.models.agent_team import AgentTeam, AgentTeamEvent, AgentTeamMember
+    from app.services.agent_team_runtime_service import project_agent_team_close_completion
+
+    tenant_id = uuid4()
+    page_id = uuid4()
+    outbox_row_id = uuid4()
+    team = AgentTeam(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        lead_agent_id=uuid4(),
+        parent_session_id=uuid4(),
+        name="Research Team",
+        status="closing",
+        metadata_json={"close_attempt": 1},
+    )
+    members = [
+        AgentTeamMember(id=uuid4(), team_id=team.id, member_name="researcher", chat_session_id=uuid4(), status="idle")
+    ]
+    task = _continuation_close_task(tenant_id, page_id)
+
+    async def fake_append(**_kwargs):
+        return SimpleNamespace(event_id=uuid4())
+
+    async def fake_hook(_event, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.agent_team_runtime_service.append_session_event", fake_append)
+    monkeypatch.setattr("app.services.agent_team_runtime_service.emit_hook", fake_hook)
+
+    # First failed projection: the Team reopens and the receipt is truthful.
+    db_first = _ScriptedDB(
+        _Rows([(outbox_row_id, {"agent_team_close_id": str(team.id)})]),
+        _ScalarOne(team),
+        _ScalarMany(members),
+    )
+    first = await project_agent_team_close_completion(
+        db=db_first, task=task, status="failed", result_summary="synthesis unavailable"
+    )
+    assert first == {
+        "status": "completed",
+        "integration_page_id": str(page_id),
+        "teams": [{"team_id": str(team.id), "status": "active"}],
+        "skipped": [],
+    }
+    assert team.status == "active"
+    assert team.metadata_json["close_synthesis_run_id"] == str(task.id)
+    assert team.metadata_json["close_synthesis_status"] == "failed"
+
+    # Replaying the SAME failed synthesis must return the existing active
+    # outcome — never an empty-teams completed receipt that overwrites the
+    # truthful one — and must not emit a second team_close_failed.
+    db_replay = _ScriptedDB(
+        _Rows([(outbox_row_id, {"agent_team_close_id": str(team.id)})]),
+        _ScalarOne(team),
+    )
+    replay = await project_agent_team_close_completion(
+        db=db_replay, task=task, status="failed", result_summary="synthesis unavailable"
+    )
+    assert replay == {
+        "status": "completed",
+        "integration_page_id": str(page_id),
+        "teams": [{"team_id": str(team.id), "status": "active"}],
+        "skipped": [],
+    }
+    assert task.metadata_json["agent_team_close_projection"] == replay
+    assert not any(isinstance(item, AgentTeamEvent) for item in db_replay.added)
+
+
+@pytest.mark.asyncio
+async def test_foreign_team_state_surfaces_retryable_team_not_closing_skip(monkeypatch):
+    from app.models.agent_team import AgentTeam
+    from app.services.agent_team_runtime_service import project_agent_team_close_completion
+
+    tenant_id = uuid4()
+    page_id = uuid4()
+    outbox_row_id = uuid4()
+    # An active Team whose close metadata belongs to a DIFFERENT synthesis
+    # run: replaying this continuation must not silently report completed
+    # with empty outcomes.
+    team = AgentTeam(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        lead_agent_id=uuid4(),
+        parent_session_id=uuid4(),
+        name="Research Team",
+        status="active",
+        metadata_json={
+            "close_attempt": 1,
+            "close_synthesis_run_id": str(uuid4()),
+            "close_synthesis_status": "failed",
+        },
+    )
+    task = _continuation_close_task(tenant_id, page_id)
+    db = _ScriptedDB(
+        _Rows([(outbox_row_id, {"agent_team_close_id": str(team.id)})]),
+        _ScalarOne(team),
+    )
+
+    result = await project_agent_team_close_completion(
+        db=db, task=task, status="completed", result_summary="stale close state"
+    )
+
+    assert result == {
+        "status": "needs_reconciliation",
+        "integration_page_id": str(page_id),
+        "teams": [],
+        "skipped": [
+            {
+                "outbox_id": str(outbox_row_id),
+                "team_id": str(team.id),
+                "reason": "team_not_closing",
+                "retryable": True,
+            }
+        ],
+    }
+    assert task.metadata_json["agent_team_close_projection"] == result
+    assert db.added == []

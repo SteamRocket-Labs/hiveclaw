@@ -69,7 +69,6 @@ from app.services.runtime_budget_service import RuntimeBudgetPolicyLookup, Runti
 from app.services.runtime_root_ledger import (
     RuntimeRootIntentSpec,
     register_runtime_task_root_item,
-    transition_runtime_root_item_by_task,
 )
 from app.services.web_chat_broker import web_chat_broker
 
@@ -691,45 +690,13 @@ async def _apply_terminal_task_update_and_settle(
     if locked_task.status not in _TERMINAL_STATUSES:
         raise ValueError("terminal_runtime_task_status_required")
 
-    terminal_metadata = dict(locked_task.metadata_json or {})
-    terminal_fence = str(terminal_metadata.get("terminal_execution_fence_ref") or "")
-    if not terminal_fence:
-        fence_payload = {
-            "run_id": str(locked_task.id),
-            "status": locked_task.status,
-            "claim_version": int(getattr(locked_task, "claim_version", 0) or 0),
-            "completed_at": (locked_task.completed_at.isoformat() if locked_task.completed_at is not None else None),
-        }
-        fence_sha = hashlib.sha256(
-            json.dumps(fence_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
-        terminal_fence = f"runtime-task-terminal:{fence_sha}"
-    terminal_metadata.update(
-        {
-            "terminal_execution_fence_ref": terminal_fence,
-            "terminal_commit_source": str(terminal_source),
-            "terminal_committed_status": locked_task.status,
-        }
-    )
-    locked_task.metadata_json = terminal_metadata
+    from app.services.runtime_terminal_settlement import settle_runtime_task_terminal
 
-    if getattr(locked_task, "root_runtime_task_id", None) is not None:
-        await transition_runtime_root_item_by_task(
-            db,
-            runtime_task_id=locked_task.id,
-            requested_state=str(locked_task.status),
-            reason_code=f"web_chat_terminal:{terminal_source}",
-            result_refs=(f"runtime-task://{locked_task.id}",),
-            metadata={"terminal_execution_fence_ref": terminal_fence},
-        )
-
-    from app.services.session_control_input import settle_pending_controls_for_run
-
-    await settle_pending_controls_for_run(
+    await settle_runtime_task_terminal(
         db,
-        task=locked_task,
-        execution_fence_ref=terminal_fence,
+        locked_task,
         terminal_source=terminal_source,
+        root_reason_code=f"web_chat_terminal:{terminal_source}",
     )
     return locked_task
 
@@ -1861,8 +1828,29 @@ def dispatch_web_chat_run(
         )
     task = asyncio.create_task(work, name=f"web-chat-run-{run_key}")
     _TASKS[run_key] = task
-    task.add_done_callback(lambda _task, run_id=run_key: _TASKS.pop(run_id, None))
+    task.add_done_callback(lambda finished, run_id=run_key: _finish_dispatched_web_chat_run(finished, run_key=run_id))
     return True
+
+
+def _finish_dispatched_web_chat_run(task: asyncio.Task, *, run_key: str) -> None:
+    """Pop the dispatched run and retrieve its outcome.
+
+    Fire-and-forget runs whose coroutine dies outside the lifecycle handlers
+    (for example a stale worker fence raised before the handler settles) would
+    otherwise surface only as an unretrieved-task-exception log at garbage
+    collection; retrieving here turns that into an explicit operator log line.
+    """
+
+    _TASKS.pop(run_key, None)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error(
+            "[WebChatRun] Dispatched run {} ended outside lifecycle handlers: {}",
+            run_key,
+            exc,
+        )
 
 
 async def broadcast_web_chat_event(

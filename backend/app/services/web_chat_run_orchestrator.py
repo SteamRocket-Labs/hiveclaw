@@ -1505,26 +1505,82 @@ async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> N
         await _handle_terminal_persistence_failure(state, exc, terminal_exc)
 
 
+_PROVIDER_SEND_RECONCILIATION_REASON = "ambiguous_provider_send"
+
+
+async def _committed_provider_send_reconciliation(
+    state: _WebChatRunState,
+    *,
+    provider_request_id: str,
+) -> dict[str, Any] | None:
+    """Read the durable ambiguous-send settlement without a fenced entity load.
+
+    ``fail_model_request`` owns the canonical terminal write for an ambiguous
+    provider send and bumps claim_version once committed, so reloading the ORM
+    entity from this worker would trip the stale fence. The typed columns are
+    read directly and matched against the exact reconciliation code.
+    """
+
+    from app.models.runtime_task import RuntimeTask
+
+    if state.agent is None or not state.session_id:
+        return None
+    async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
+        row = (
+            await db.execute(
+                select(
+                    RuntimeTask.status,
+                    RuntimeTask.metadata_json,
+                ).where(
+                    RuntimeTask.id == state.run_uuid,
+                    RuntimeTask.tenant_id == state.agent.tenant_id,
+                    RuntimeTask.parent_agent_id == state.agent.id,
+                    RuntimeTask.parent_session_id == state.session_id,
+                )
+            )
+        ).first()
+    if row is None:
+        return None
+    status, metadata = row
+    recovery = metadata.get("session_v2_reconciliation") if isinstance(metadata, dict) else None
+    if not isinstance(recovery, dict):
+        return None
+    if str(status or "") != "needs_reconciliation":
+        return None
+    if str(recovery.get("reason") or "") != _PROVIDER_SEND_RECONCILIATION_REASON:
+        return None
+    if str(recovery.get("provider_request_id") or "") != str(provider_request_id):
+        return None
+    return dict(recovery)
+
+
 async def _handle_provider_reconciliation_required(
     state: _WebChatRunState,
     exc: ProviderRequestNeedsReconciliation,
 ) -> None:
     """Fence an ambiguous provider send without inventing an assistant answer."""
 
-    metadata = {
-        "terminal_reason": "provider_send_ambiguous",
-        "session_v2_reconciliation": {
-            "reason": "ambiguous_provider_send",
-            "provider_request_id": exc.provider_request_id,
-            "error_class": exc.error_class,
-        },
-    }
-    await state.ports.terminal.update_runtime_task(
-        state.run_uuid,
-        status="needs_reconciliation",
-        result_summary="Provider send outcome is ambiguous; operator reconciliation is required.",
-        metadata_json=metadata,
+    committed = await _committed_provider_send_reconciliation(
+        state,
+        provider_request_id=exc.provider_request_id,
     )
+    if committed is None:
+        # No durable ambiguous-send settlement exists yet: this terminal
+        # update is the canonical settlement for the run.
+        metadata = {
+            "terminal_reason": "provider_send_ambiguous",
+            "session_v2_reconciliation": {
+                "reason": "ambiguous_provider_send",
+                "provider_request_id": exc.provider_request_id,
+                "error_class": exc.error_class,
+            },
+        }
+        await state.ports.terminal.update_runtime_task(
+            state.run_uuid,
+            status="needs_reconciliation",
+            result_summary="Provider send outcome is ambiguous; operator reconciliation is required.",
+            metadata_json=metadata,
+        )
     if state.agent is None or not state.session_id:
         return
     await state.ports.events.broadcast(

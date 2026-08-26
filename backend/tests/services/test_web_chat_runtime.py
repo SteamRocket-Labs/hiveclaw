@@ -6349,3 +6349,102 @@ def test_memory_context_degradation_events_are_durable_session_context_events() 
     )
     source = inspect.getsource(web_chat_run_orchestrator._WebChatCallbacks.runtime_event)
     assert source.index("await events.persist_runtime_event") < source.index("await events.broadcast")
+
+
+@pytest.mark.asyncio
+async def test_dispatched_run_callback_removes_key_and_stays_silent_on_clean_completion(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    async def clean_work():
+        return None
+
+    task = asyncio.create_task(clean_work())
+    await task
+    run_key = uuid4().hex
+    runtime._TASKS[run_key] = task
+    errors: list[tuple[object, ...]] = []
+    monkeypatch.setattr(runtime, "logger", SimpleNamespace(error=lambda *args: errors.append(args)))
+
+    runtime._finish_dispatched_web_chat_run(task, run_key=run_key)
+
+    assert run_key not in runtime._TASKS
+    assert errors == []
+
+
+@pytest.mark.asyncio
+async def test_dispatched_run_callback_removes_key_and_skips_exception_on_cancelled_task(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    async def hanging_work():
+        await asyncio.sleep(60)
+
+    task = asyncio.create_task(hanging_work())
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    run_key = uuid4().hex
+    runtime._TASKS[run_key] = task
+    errors: list[tuple[object, ...]] = []
+    monkeypatch.setattr(runtime, "logger", SimpleNamespace(error=lambda *args: errors.append(args)))
+
+    runtime._finish_dispatched_web_chat_run(task, run_key=run_key)
+
+    assert run_key not in runtime._TASKS
+    assert errors == []
+
+
+@pytest.mark.asyncio
+async def test_dispatched_run_callback_retrieves_exception_and_logs_once(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    async def exploding_work():
+        raise RuntimeError("boom outside lifecycle handlers")
+
+    task = asyncio.create_task(exploding_work())
+    with pytest.raises(RuntimeError, match="boom outside lifecycle handlers"):
+        await task
+    run_key = uuid4().hex
+    runtime._TASKS[run_key] = task
+    errors: list[tuple[object, ...]] = []
+    monkeypatch.setattr(runtime, "logger", SimpleNamespace(error=lambda *args: errors.append(args)))
+
+    runtime._finish_dispatched_web_chat_run(task, run_key=run_key)
+
+    assert run_key not in runtime._TASKS
+    # Retrieving the exception here is what prevents the unretrieved-task-
+    # exception log at garbage collection; the operator log fires exactly once.
+    assert task.exception() is not None
+    assert len(errors) == 1
+    assert run_key in errors[0]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_web_chat_run_registers_the_outcome_callback(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    run_key = run_id.hex
+    run_key_holder: dict[str, str] = {}
+
+    async def idle_execute(_run_id, *, cancel_event=None):
+        return None
+
+    def spy_finish(task, *, run_key):
+        run_key_holder["run_key"] = run_key
+
+    monkeypatch.setattr(runtime, "execute_web_chat_run", idle_execute)
+    monkeypatch.setattr(runtime, "_finish_dispatched_web_chat_run", spy_finish)
+
+    assert runtime.dispatch_web_chat_run(run_id) is True
+    try:
+        assert run_key in runtime._TASKS
+        # Await this exact dispatched task; never scan or adopt unrelated
+        # global entries.
+        await runtime._TASKS[run_key]
+    finally:
+        runtime._TASKS.pop(run_key, None)
+        runtime._CANCEL_EVENTS.pop(run_key, None)
+
+    assert run_key_holder["run_key"] == run_key

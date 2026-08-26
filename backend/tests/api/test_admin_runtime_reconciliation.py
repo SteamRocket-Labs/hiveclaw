@@ -94,3 +94,40 @@ def test_admin_runtime_reconciliation_routes_delegate_to_service(monkeypatch) ->
     assert captured["apply"]["action"] == "mark_resolved"
     assert fake_db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(tenant_id)
     assert any(f"SET LOCAL app.current_tenant_id = '{tenant_id}'" in stmt for stmt in fake_db.statements)
+
+
+def test_admin_projection_repair_requires_platform_admin_and_delegates(monkeypatch) -> None:
+    from app import database
+
+    tenant_id = uuid4()
+    captured = {}
+
+    async def fake_repair(db, *, tenant_id, actor_user_id, limit=100):
+        captured["repair"] = {
+            "tenant_id": tenant_id,
+            "actor_user_id": actor_user_id,
+            "limit": limit,
+        }
+        return {"examined": 0, "repaired_task_ids": []}
+
+    monkeypatch.setattr(admin_api, "repair_ambiguous_provider_send_terminal_projections", fake_repair)
+
+    denied_client, _denied_db = _client(role="org_admin")
+    denied = denied_client.post(
+        "/admin/runtime-reconciliation/projection-repair",
+        params={"tenant_id": str(tenant_id)},
+    )
+    assert denied.status_code == 403
+
+    client, fake_db = _client()
+    response = client.post(
+        "/admin/runtime-reconciliation/projection-repair",
+        params={"tenant_id": str(tenant_id), "limit": "50"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"examined": 0, "repaired_task_ids": []}
+    assert captured["repair"]["tenant_id"] == tenant_id
+    assert captured["repair"]["limit"] == 50
+    assert fake_db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(tenant_id)
+    assert any(f"SET LOCAL app.current_tenant_id = '{tenant_id}'" in stmt for stmt in fake_db.statements)

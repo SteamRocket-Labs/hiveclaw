@@ -284,9 +284,7 @@ async def test_unbound_external_channel_input_uses_principal_authority_and_safe_
             runtime_metadata={"channel": channel_type, "budget_interactive": False},
         )
         assert receipt["admission_state"] == "admitted"
-        admission = await db.scalar(
-            select(SessionInputAdmission).where(SessionInputAdmission.input_id == input_id)
-        )
+        admission = await db.scalar(select(SessionInputAdmission).where(SessionInputAdmission.input_id == input_id))
         assert admission is not None
         assert receipt["run"] is not None, {
             "receipt": receipt,
@@ -419,9 +417,7 @@ async def test_verified_feishu_qr_input_uses_bound_principal_authority(
             idempotency_key=f"feishu:{input_id}",
             runtime_metadata={"channel": "feishu", "budget_interactive": False},
         )
-        admission = await db.scalar(
-            select(SessionInputAdmission).where(SessionInputAdmission.input_id == input_id)
-        )
+        admission = await db.scalar(select(SessionInputAdmission).where(SessionInputAdmission.input_id == input_id))
         assert admission is not None
         assert receipt["admission_state"] == "admitted"
         assert receipt["run"] is not None, admission.dispatch_last_error
@@ -697,8 +693,7 @@ async def test_channel_durable_ingress_persists_canonical_human_input(owner_sess
             ingress_event_id=ingress_event_id,
         )
         assert conflict_reply == (
-            "⚠️ 这条 IM 消息与已接收消息使用了相同事件标识但内容不同；"
-            "为防止重复执行，本次未启动。请重新发送。"
+            "⚠️ 这条 IM 消息与已接收消息使用了相同事件标识但内容不同；为防止重复执行，本次未启动。请重新发送。"
         )
         assert "IdempotencyConflict" not in conflict_reply
 
@@ -2807,6 +2802,220 @@ async def test_ambiguous_provider_failure_fences_result_run_and_event_chain(owne
         assert task is not None and task.status == "needs_reconciliation"
         assert task.metadata_json["session_v2_reconciliation"]["provider_request_id"] == provider_request_id
         assert event_types == {"result_commit.needs_reconciliation", "run.needs_reconciliation"}
+
+
+async def test_provider_reconciliation_handler_settles_once_after_canonical_fail_commit(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    """RC-10A: the ambiguous-send failure handler must not re-open a fenced run.
+
+    ``fail_model_request(retry_safe=False)`` is the sole canonical terminal
+    writer for an ambiguous provider send; committing that settlement bumps
+    claim_version 1 -> 2. The run failure handler that afterwards receives
+    ProviderRequestNeedsReconciliation must keep the stale worker fence
+    intact (no second RuntimeTask write through the old claim), while still
+    broadcasting the terminal reconciliation state exactly once.
+    """
+
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    import app.database as database
+    from sqlalchemy import update
+
+    from app.kernel.contracts import ProviderRequestNeedsReconciliation
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_root_item import RuntimeRootItem
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionCommand, SessionControlInput, SessionModelResult
+    from app.services import web_chat_run_orchestrator as orchestrator
+    from app.services import web_chat_runtime
+    from app.services.runtime_root_ledger import register_runtime_root_item
+    from app.services.runtime_task_fence import (
+        reset_runtime_task_fence,
+        set_runtime_task_fence,
+    )
+    from app.services.session_control_input import accept_cancel_control_input
+    from app.services.session_model_round import bind_round_inputs, prepare_model_request
+
+    tenant_id, user_id, agent_id, session_id, run_id = await _seed_session(
+        owner_sessionmaker,
+        active_run=True,
+    )
+    assert run_id is not None
+    turn_id = f"turn-{run_id.hex}"
+    cancel_control_id = uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        await db.execute(
+            update(RuntimeTask).where(RuntimeTask.id == run_id).values(claim_version=1, claimed_by="worker-a")
+        )
+        await register_runtime_root_item(
+            db,
+            tenant_id=tenant_id,
+            root_runtime_task_id=run_id,
+            source_agent_id=agent_id,
+            intent_key=f"web-chat-turn:{run_id.hex}",
+            work_type="web_chat_turn",
+            target_ref=str(run_id),
+            runtime_task_id=run_id,
+            root_user_id=user_id,
+            root_session_id=str(session_id),
+            state="queued",
+            admission_disposition="admitted",
+        )
+        await db.flush()
+        authority = await _authority(db, user_id=user_id, agent_id=agent_id, session_id=session_id)
+        control_receipt = await accept_cancel_control_input(
+            db,
+            authority=authority,
+            control_id=cancel_control_id,
+            idempotency_key=f"cancel:{run_id}",
+            expected_run_id=run_id,
+        )
+        await db.commit()
+    assert control_receipt.status == "accepted"
+
+    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
+    monkeypatch.setattr(web_chat_runtime, "_async_session", owner_sessionmaker)
+
+    ports = web_chat_runtime._web_chat_run_ports()
+    broadcasts: list[dict] = []
+
+    async def record_broadcast(_agent_id, _session_id, payload):
+        broadcasts.append(dict(payload))
+
+    ports = replace(ports, events=replace(ports.events, broadcast=record_broadcast))
+    state = orchestrator._WebChatRunState(
+        run_uuid=run_id,
+        ports=ports,
+        cancel_event=asyncio.Event(),
+        run_key=run_id.hex,
+        broadcast_token=None,
+        agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+        session_id=str(session_id),
+        metadata={"turn_id": turn_id},
+    )
+
+    token = set_runtime_task_fence(task_id=run_id, claim_version=1, worker_id="worker-a")
+    try:
+        async with owner_sessionmaker() as db:
+            messages = await bind_round_inputs(
+                db,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                session_id=session_id,
+                run_id=run_id,
+                turn_id=turn_id,
+                round_index=1,
+            )
+            provider_request_id = await prepare_model_request(
+                db,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                session_id=session_id,
+                run_id=run_id,
+                turn_id=turn_id,
+                round_index=1,
+                messages=messages,
+                tools=None,
+                provider="openai",
+                model="gpt-4.1",
+                attempt_owner="worker-a:1:1",
+            )
+            await db.commit()
+
+        # Real kernel failure settlement: the canonical terminal commit runs
+        # inside the worker fence and bumps claim_version 1 -> 2.
+        await orchestrator._fail_session_model_request(
+            state,
+            round_index=1,
+            provider_request_id=provider_request_id,
+            error_class="read_error",
+            delivery_state="unknown",
+            retry_safe=False,
+        )
+
+        # The production failure path the kernel raises afterwards.
+        await orchestrator._handle_web_chat_failure(
+            state,
+            ProviderRequestNeedsReconciliation(
+                provider_request_id=provider_request_id,
+                error_class="read_error",
+            ),
+        )
+    finally:
+        reset_runtime_task_fence(token)
+
+    reconciliation_events = [
+        payload for payload in broadcasts if payload.get("type") == "runtime_reconciliation_required"
+    ]
+    assert len(reconciliation_events) == 1
+    assert reconciliation_events[0]["provider_request_id"] == provider_request_id
+    assert reconciliation_events[0]["retryable"] is False
+
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, run_id)
+        result = await db.scalar(
+            select(SessionModelResult).where(SessionModelResult.provider_request_id == provider_request_id)
+        )
+        root_item = await db.scalar(select(RuntimeRootItem).where(RuntimeRootItem.runtime_task_id == run_id))
+        control = await db.get(SessionControlInput, cancel_control_id)
+        control_command = await db.scalar(select(SessionCommand).where(SessionCommand.id == control.command_id))
+        control_events = list(
+            (
+                await db.execute(
+                    select(ChatTranscriptEvent.event_type).where(
+                        ChatTranscriptEvent.session_id == session_id,
+                        ChatTranscriptEvent.item_id == cancel_control_id,
+                        ChatTranscriptEvent.event_type == "control_input.rejected",
+                    )
+                )
+            ).scalars()
+        )
+        event_types = list(
+            (
+                await db.execute(
+                    select(ChatTranscriptEvent.event_type).where(
+                        ChatTranscriptEvent.session_id == session_id,
+                        ChatTranscriptEvent.event_type.in_(
+                            ("result_commit.needs_reconciliation", "run.needs_reconciliation")
+                        ),
+                    )
+                )
+            ).scalars()
+        )
+
+    assert task is not None and task.status == "needs_reconciliation"
+    assert task.claim_version == 2
+    assert task.completed_at is not None
+    assert task.metadata_json["session_v2_reconciliation"]["reason"] == "ambiguous_provider_send"
+    assert task.metadata_json["session_v2_reconciliation"]["provider_request_id"] == provider_request_id
+    # The canonical fail commit owns the terminal settlement; the failure
+    # handler must not have rewritten it through the stale worker fence.
+    assert task.metadata_json["terminal_commit_source"] == "session_model_round:ambiguous_provider_send"
+    assert task.metadata_json["terminal_committed_status"] == "needs_reconciliation"
+    assert task.metadata_json["terminal_execution_fence_ref"]
+    assert root_item is not None and root_item.state == "needs_reconciliation"
+    assert root_item.metadata_json["terminal_execution_fence_ref"] == task.metadata_json["terminal_execution_fence_ref"]
+    # The pending cancel control settles exactly once with the canonical
+    # terminal commit: typed rejection, one settlement receipt, one event.
+    assert control is not None and control.status == "rejected"
+    assert control.settlement_ref
+    assert control_command is not None and control_command.status == "rejected"
+    assert control_command.rejection_json == {"reason_code": "run_terminal_before_cancel_effect"}
+    assert control_command.receipt_ref == control.settlement_ref
+    assert control_events == ["control_input.rejected"]
+    assert result is not None and result.state == "needs_reconciliation"
+    assert result.seal_json == {
+        "delivery_state": "unknown",
+        "error_class": "read_error",
+        "retry_safe": False,
+    }
+    assert sorted(event_types) == [
+        "result_commit.needs_reconciliation",
+        "run.needs_reconciliation",
+    ]
 
 
 async def test_blocked_replacement_creates_no_saga_and_does_not_cancel_old_run(owner_sessionmaker) -> None:

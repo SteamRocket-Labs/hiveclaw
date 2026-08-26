@@ -30,6 +30,7 @@ from app.services.runtime_reconciliation import (
     RuntimeReconciliationConflict,
     RuntimeReconciliationNotFound,
     apply_runtime_reconciliation_action,
+    repair_ambiguous_provider_send_terminal_projections,
     get_runtime_reconciliation_task,
     list_runtime_reconciliation_tasks,
 )
@@ -352,6 +353,27 @@ async def get_runtime_reconciliation(
     if payload is None:
         raise HTTPException(status_code=404, detail="Runtime reconciliation task not found")
     return payload
+
+
+@router.post("/runtime-reconciliation/projection-repair")
+async def repair_runtime_reconciliation_projections(
+    tenant_id: uuid.UUID = Query(...),
+    limit: int = Query(default=100, ge=1, le=500),
+    current_user: User = Depends(require_role("platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Repair missing mechanical terminal projections for ambiguous provider sends.
+
+    Exact-code, idempotent recovery: preserves status=needs_reconciliation and
+    never makes the operator's semantic resolve/archive decision.
+    """
+    await _pin_admin_tenant_scope(db, tenant_id)
+    return await repair_ambiguous_provider_send_terminal_projections(
+        db,
+        tenant_id=tenant_id,
+        actor_user_id=current_user.id,
+        limit=limit,
+    )
 
 
 @router.post("/runtime-reconciliation/{task_id}/action")

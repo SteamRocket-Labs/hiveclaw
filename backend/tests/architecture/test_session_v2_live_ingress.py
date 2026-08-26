@@ -115,11 +115,32 @@ def test_web_chat_terminal_owner_atomically_settles_session_controls() -> None:
             async_owner_calls = called
 
     assert direct_sync_call_owners == ["_apply_terminal_task_update_and_settle"]
-    assert "settle_pending_controls_for_run" in async_owner_calls
+    # Since RC-10A every durable terminal writer settles controls through the
+    # one shared mechanical boundary instead of duplicating the tail here.
+    assert "settle_runtime_task_terminal" in async_owner_calls
     assert "_apply_terminal_task_update_and_settle" in _called_names(
         "app/services/web_chat_runtime.py", "_update_runtime_task"
     )
     assert "submit_live_cancel_input" in _called_names("app/services/web_chat_runtime.py", "cancel_web_chat_run")
+
+
+def test_shared_terminal_settlement_boundary_settles_root_and_controls() -> None:
+    boundary_calls = _called_names(
+        "app/services/runtime_terminal_settlement.py",
+        "settle_runtime_task_terminal",
+    )
+    assert "settle_pending_controls_for_run" in boundary_calls
+    assert "transition_runtime_root_item_by_task" in boundary_calls
+
+    # The canonical ambiguous-provider-send commit, the operator terminal
+    # actions, and the exact projection-recovery sweep all use the boundary.
+    assert "settle_runtime_task_terminal" in _called_names("app/services/session_model_round.py", "fail_model_request")
+    assert "settle_runtime_task_terminal" in _called_names(
+        "app/services/runtime_reconciliation.py", "apply_runtime_reconciliation_action"
+    )
+    assert "settle_runtime_task_terminal" in _called_names(
+        "app/services/runtime_reconciliation.py", "repair_ambiguous_provider_send_terminal_projections"
+    )
 
 
 def test_existing_runtime_worker_periodically_recovers_session_controls() -> None:

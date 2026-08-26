@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit import AuditLog
@@ -14,7 +14,10 @@ from app.models.runtime_task import RuntimeTask
 
 RECONCILIATION_STATUS = "needs_reconciliation"
 RESOLVED_RUNTIME_TASK_STATUS = "completed"
+AMBIGUOUS_PROVIDER_SEND_REASON = "ambiguous_provider_send"
+AMBIGUOUS_PROVIDER_SEND_PROJECTION_REPAIR_SOURCE = "runtime_reconciliation.ambiguous_provider_send_projection_repair"
 _ACTIONS = {"mark_resolved", "archive", "retry"}
+_TERMINAL_ACTIONS = ("mark_resolved", "archive")
 
 
 class RuntimeReconciliationNotFound(LookupError):
@@ -172,6 +175,8 @@ async def apply_runtime_reconciliation_action(
     if task is None:
         raise RuntimeReconciliationNotFound("Runtime reconciliation task not found")
     if task.status != RECONCILIATION_STATUS:
+        # Established admin contract: once the task leaves needs_reconciliation
+        # every further action conflicts; there is no replay-success path.
         raise RuntimeReconciliationConflict(
             f"RuntimeTask is no longer awaiting reconciliation (status={task.status!r})"
         )
@@ -221,5 +226,119 @@ async def apply_runtime_reconciliation_action(
         actor_user_id=actor_user_id,
         previous_status=previous_status,
     )
+    if normalized_action in _TERMINAL_ACTIONS:
+        # Operator terminal actions share the one mechanical settlement
+        # boundary: terminal fence, root item transition, and pending control
+        # settlement commit with the operator's semantic decision.
+        from app.services.runtime_terminal_settlement import settle_runtime_task_terminal
+
+        await settle_runtime_task_terminal(
+            db,
+            task,
+            terminal_source=f"runtime_reconciliation.{normalized_action}",
+            root_reason_code=f"runtime_reconciliation_terminal:{normalized_action}",
+        )
     await db.flush()
     return runtime_reconciliation_view(task)
+
+
+async def repair_ambiguous_provider_send_terminal_projections(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """RC-10A recovery lane B: repair only the missing mechanical projection.
+
+    Candidates are exact-code rows whose projection is actually incomplete:
+    status=needs_reconciliation AND
+    metadata.session_v2_reconciliation.reason == ambiguous_provider_send AND
+    (terminal fence missing OR committed status not exactly needs_reconciliation
+    OR commit source missing OR root item not yet settled). A complete
+    projection requires every one of those mechanical terminal facts;
+    incompleteness is filtered in SQL before the limit so a backlog of
+    already-complete rows can never starve a later drift, and ``examined``
+    counts the claimed candidates. The repair NEVER changes RuntimeTask
+    status: the semantic resolve/archive decision stays with the operator.
+    """
+
+    from sqlalchemy import exists, or_
+
+    from app.models.runtime_root_item import RuntimeRootItem
+    from app.services.runtime_root_ledger import RUNTIME_ROOT_TERMINAL_STATES
+    from app.services.runtime_terminal_settlement import settle_runtime_task_terminal
+
+    reason_filter = RuntimeTask.metadata_json["session_v2_reconciliation"]["reason"].as_string()
+    settled_root_states = {"needs_reconciliation"} | RUNTIME_ROOT_TERMINAL_STATES
+    fence_missing = func.coalesce(RuntimeTask.metadata_json["terminal_execution_fence_ref"].as_string(), "") == ""
+    committed_status_incomplete = (
+        func.coalesce(RuntimeTask.metadata_json["terminal_committed_status"].as_string(), "") != RECONCILIATION_STATUS
+    )
+    commit_source_missing = func.coalesce(RuntimeTask.metadata_json["terminal_commit_source"].as_string(), "") == ""
+    root_unsettled = exists(
+        select(RuntimeRootItem.id).where(
+            RuntimeRootItem.runtime_task_id == RuntimeTask.id,
+            RuntimeRootItem.state.not_in(settled_root_states),
+        )
+    )
+    rows = list(
+        (
+            await db.execute(
+                select(RuntimeTask)
+                .where(
+                    RuntimeTask.tenant_id == tenant_id,
+                    RuntimeTask.status == RECONCILIATION_STATUS,
+                    reason_filter == AMBIGUOUS_PROVIDER_SEND_REASON,
+                    or_(fence_missing, committed_status_incomplete, commit_source_missing, root_unsettled),
+                )
+                .order_by(RuntimeTask.created_at, RuntimeTask.id)
+                .limit(max(1, min(int(limit), 500)))
+                .with_for_update(skip_locked=True)
+            )
+        ).scalars()
+    )
+
+    repaired: list[str] = []
+    examined = 0
+    for task in rows:
+        examined += 1
+        metadata = _metadata(task)
+        fence_present = bool(str(metadata.get("terminal_execution_fence_ref") or ""))
+        committed_status_complete = str(metadata.get("terminal_committed_status") or "") == RECONCILIATION_STATUS
+        commit_source_present = bool(str(metadata.get("terminal_commit_source") or ""))
+        root_state = await db.scalar(select(RuntimeRootItem.state).where(RuntimeRootItem.runtime_task_id == task.id))
+        root_settled = (
+            root_state is None or root_state == "needs_reconciliation" or (root_state in RUNTIME_ROOT_TERMINAL_STATES)
+        )
+        if fence_present and committed_status_complete and commit_source_present and root_settled:
+            # Completed by a concurrent repair between claim and check.
+            continue
+        await settle_runtime_task_terminal(
+            db,
+            task,
+            terminal_source=AMBIGUOUS_PROVIDER_SEND_PROJECTION_REPAIR_SOURCE,
+            root_reason_code="ambiguous_provider_send_projection_repair",
+        )
+        repaired_metadata = _metadata(task)
+        repaired_metadata["ambiguous_provider_send_projection_repaired_at"] = datetime.now(timezone.utc).isoformat()
+        task.metadata_json = repaired_metadata
+        db.add(
+            AuditLog(
+                action="runtime_reconciliation.projection_repair",
+                details={
+                    "runtime_task_id": str(task.id),
+                    "task_type": task.task_type,
+                    "previous_status": task.status,
+                    "resulting_status": task.status,
+                    "reconciliation_status": metadata.get("reconciliation_status"),
+                    "reason": AMBIGUOUS_PROVIDER_SEND_REASON,
+                },
+                agent_id=task.parent_agent_id,
+                user_id=actor_user_id,
+                tenant_id=tenant_id,
+            )
+        )
+        repaired.append(str(task.id))
+    await db.flush()
+    return {"examined": examined, "repaired_task_ids": repaired}

@@ -931,6 +931,114 @@ def test_needs_reconciliation_is_a_semantic_platform_blocker():
     }
 
 
+def test_provider_send_unknown_blocker_reports_delivery_not_side_effects():
+    import app.services.session_control_plane as service
+
+    blocker = service._runtime_task_user_blocker(
+        SimpleNamespace(
+            status="needs_reconciliation",
+            budget_admission_status=None,
+            metadata_json={
+                "session_v2_reconciliation": {
+                    "reason": "ambiguous_provider_send",
+                    "provider_request_id": "hive:run:round:1:attempt:1",
+                    "error_class": "read_error",
+                    "delivery_state": "unknown",
+                },
+            },
+        )
+    )
+
+    assert blocker == {
+        "kind": "runtime_reconciliation",
+        "status": "blocked",
+        "title": "需要平台运营核对后继续",
+        "reason": "模型服务的请求投递状态未知，任务已安全停在当前进度，系统不会自动重放。",
+        "next_action": "你可以继续其他工作；运营核对投递证据后会处理本任务。",
+        "owner": "platform_admin",
+        "can_continue_other_work": True,
+        "auto_resume": False,
+        "retry_available": False,
+    }
+    # The provider bucket never claims external side effects or suggests
+    # approval / safe retry, and still identifies the accountable owner plus
+    # the user's freedom to continue other work.
+    combined_copy = blocker["reason"] + blocker["next_action"]
+    assert "外部副作用" not in combined_copy
+    assert "批准" not in combined_copy
+    assert "重试" not in combined_copy
+    assert blocker["owner"] == "platform_admin"
+    assert blocker["can_continue_other_work"] is True
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {
+            "session_permission_reconciliation": {
+                "schema": "hive.session_permission_reconciliation.v1",
+                "reason_code": "tool_effect_settlement",
+            }
+        },
+        {"reconciliation_reason": "approval_execution_side_effect_unknown"},
+    ],
+)
+def test_true_side_effect_ambiguity_keeps_original_blocker_semantics(metadata):
+    import app.services.session_control_plane as service
+
+    blocker = service._runtime_task_user_blocker(
+        SimpleNamespace(
+            status="needs_reconciliation",
+            budget_admission_status=None,
+            metadata_json=dict(metadata),
+        )
+    )
+
+    assert blocker["title"] == "需要平台管理员核对后继续"
+    assert blocker["reason"] == "任务在可能产生外部副作用时中断，系统不会自动重放。"
+    assert blocker["next_action"] == "你可以继续其他工作；平台管理员核对证据后可重试、标记完成或归档。"
+    assert blocker["kind"] == "runtime_reconciliation"
+    assert blocker["status"] == "blocked"
+    assert blocker["owner"] == "platform_admin"
+    assert blocker["can_continue_other_work"] is True
+    assert blocker["auto_resume"] is False
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"session_v2_reconciliation": {"reason": "terminal_outcome_commit", "result_id": "x"}},
+        {"recovery_state": "needs_reconciliation", "needs_reconciliation": True},
+        # Benign natural language must never influence the typed mapping.
+        {"reconciliation_reason": "benign_note_mentions_provider_and_ambiguous_words"},
+    ],
+)
+def test_unknown_reason_uses_generic_recoverable_blocker(metadata):
+    import app.services.session_control_plane as service
+
+    blocker = service._runtime_task_user_blocker(
+        SimpleNamespace(
+            status="needs_reconciliation",
+            budget_admission_status=None,
+            result_summary="Provider stream delivery is unknown: ReadError",
+            metadata_json=dict(metadata),
+        )
+    )
+
+    assert blocker == {
+        "kind": "runtime_reconciliation",
+        "status": "blocked",
+        "title": "任务中断，等待核对",
+        "reason": "任务因运行异常中断，当前进度已保存。",
+        "next_action": "你可以继续其他工作；核对完成后可恢复或重新发起。",
+        "owner": "platform_admin",
+        "can_continue_other_work": True,
+        "auto_resume": False,
+        "retry_available": False,
+    }
+    assert "外部副作用" not in blocker["reason"]
+
+
 @pytest.mark.asyncio
 async def test_session_index_reports_resume_health_when_index_omits_it(monkeypatch):
     import app.services.session_control_plane as service

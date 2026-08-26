@@ -260,16 +260,58 @@ def _compact_workbench_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return compact
 
 
+# Exact-code reconciliation classification for the user blocker. The provider
+# bucket must never claim external side effects or suggest approval/retry;
+# the side-effect family keeps its original wording; anything else falls back
+# to a generic recoverable message instead of guessing.
+_PROVIDER_SEND_UNKNOWN_REASON = "ambiguous_provider_send"
+_SIDE_EFFECT_RECONCILIATION_REASONS = frozenset(
+    {
+        "non_idempotent_restart_orphan",
+        "approval_execution_side_effect_unknown",
+    }
+)
+
+
 def _runtime_task_user_blocker(task: RuntimeTask) -> dict[str, Any] | None:
     task_status = str(getattr(task, "status", None) or "").strip().lower()
     metadata = _mapping(getattr(task, "metadata_json", None))
     if task_status == "needs_reconciliation" or bool(metadata.get("needs_reconciliation")):
+        recovery = metadata.get("session_v2_reconciliation")
+        reason = str(recovery.get("reason") or "") if isinstance(recovery, dict) else ""
+        if reason == _PROVIDER_SEND_UNKNOWN_REASON:
+            return {
+                "kind": "runtime_reconciliation",
+                "status": "blocked",
+                "title": "需要平台运营核对后继续",
+                "reason": "模型服务的请求投递状态未知，任务已安全停在当前进度，系统不会自动重放。",
+                "next_action": "你可以继续其他工作；运营核对投递证据后会处理本任务。",
+                "owner": "platform_admin",
+                "can_continue_other_work": True,
+                "auto_resume": False,
+                "retry_available": bool(metadata.get("reconciliation_retry_allowed")),
+            }
+        side_effect_ambiguity = isinstance(metadata.get("session_permission_reconciliation"), dict) or (
+            str(metadata.get("reconciliation_reason") or "") in _SIDE_EFFECT_RECONCILIATION_REASONS
+        )
+        if side_effect_ambiguity:
+            return {
+                "kind": "runtime_reconciliation",
+                "status": "blocked",
+                "title": "需要平台管理员核对后继续",
+                "reason": "任务在可能产生外部副作用时中断，系统不会自动重放。",
+                "next_action": "你可以继续其他工作；平台管理员核对证据后可重试、标记完成或归档。",
+                "owner": "platform_admin",
+                "can_continue_other_work": True,
+                "auto_resume": False,
+                "retry_available": bool(metadata.get("reconciliation_retry_allowed")),
+            }
         return {
             "kind": "runtime_reconciliation",
             "status": "blocked",
-            "title": "需要平台管理员核对后继续",
-            "reason": "任务在可能产生外部副作用时中断，系统不会自动重放。",
-            "next_action": "你可以继续其他工作；平台管理员核对证据后可重试、标记完成或归档。",
+            "title": "任务中断，等待核对",
+            "reason": "任务因运行异常中断，当前进度已保存。",
+            "next_action": "你可以继续其他工作；核对完成后可恢复或重新发起。",
             "owner": "platform_admin",
             "can_continue_other_work": True,
             "auto_resume": False,

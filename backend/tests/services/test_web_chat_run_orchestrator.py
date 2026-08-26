@@ -473,59 +473,138 @@ async def test_committed_visible_envelope_broadcast_failure_defers_to_durable_ou
     assert "durable outbox" in str(warnings[0][0]).lower()
 
 
+class _MarkerRowDB:
+    def __init__(self, row):
+        self._row = row
+
+    async def execute(self, _statement):
+        return SimpleNamespace(first=lambda: self._row)
+
+
+class _MarkerTenantSession:
+    def __init__(self, row):
+        self._row = row
+
+    async def __aenter__(self):
+        return _MarkerRowDB(self._row)
+
+    async def __aexit__(self, *_args):
+        return False
+
+
+def _marker_state(run_id, agent_id, row, calls):
+    async def update_runtime_task(_run_id, **payload):
+        calls.append(("update", payload))
+
+    async def broadcast(_agent_id, _session_id, payload):
+        calls.append(("broadcast", payload))
+
+    return SimpleNamespace(
+        run_uuid=run_id,
+        run_key=run_id.hex,
+        agent=SimpleNamespace(id=agent_id, tenant_id=uuid4()),
+        session_id=str(uuid4()),
+        cancel_event=SimpleNamespace(is_set=lambda: False),
+        terminal_phase_hint=None,
+        ports=SimpleNamespace(
+            runtime=SimpleNamespace(
+                tenant_scoped_session=lambda _tenant_id: _MarkerTenantSession(row),
+                logger=SimpleNamespace(exception=lambda *_args: None),
+            ),
+            terminal=SimpleNamespace(update_runtime_task=update_runtime_task),
+            events=SimpleNamespace(broadcast=broadcast),
+        ),
+    )
+
+
 @pytest.mark.asyncio
-async def test_ambiguous_provider_send_requires_reconciliation_without_assistant_prose():
+async def test_ambiguous_provider_send_handler_skips_rewrite_when_canonical_marker_committed():
     from app.kernel.contracts import ProviderRequestNeedsReconciliation
     from app.services import web_chat_run_orchestrator as orchestrator
 
     run_id = uuid4()
     agent_id = uuid4()
     calls: list[tuple[str, object]] = []
-
-    async def update_runtime_task(_run_id, **payload):
-        calls.append(("update", payload))
-
-    async def finalize_with_assistant(**payload):
-        calls.append(("finalize", payload))
-        return True
-
-    async def broadcast(_agent_id, _session_id, payload):
-        calls.append(("broadcast", payload))
-
-    state = SimpleNamespace(
-        run_uuid=run_id,
-        run_key=run_id.hex,
-        agent=SimpleNamespace(id=agent_id),
-        session_id=str(uuid4()),
-        cancel_event=SimpleNamespace(is_set=lambda: False),
-        terminal_phase_hint=None,
-        ports=SimpleNamespace(
-            runtime=SimpleNamespace(logger=SimpleNamespace(exception=lambda *_args: None)),
-            terminal=SimpleNamespace(
-                update_runtime_task=update_runtime_task,
-                finalize_with_assistant=finalize_with_assistant,
-            ),
-            events=SimpleNamespace(broadcast=broadcast),
-        ),
+    row = (
+        "needs_reconciliation",
+        {
+            "session_v2_reconciliation": {
+                "reason": "ambiguous_provider_send",
+                "provider_request_id": "provider-request-ambiguous",
+                "error_class": "read_error",
+            },
+            "terminal_commit_source": "session_model_round:ambiguous_provider_send",
+        },
     )
+    state = _marker_state(run_id, agent_id, row, calls)
 
     await orchestrator._handle_web_chat_failure(
         state,
         ProviderRequestNeedsReconciliation(
             provider_request_id="provider-request-ambiguous",
-            error_class="timeout",
+            error_class="read_error",
+        ),
+    )
+
+    # fail_model_request already owns the canonical terminal write; the
+    # handler must not re-open the stale-fenced RuntimeTask, and the terminal
+    # reconciliation broadcast fires exactly once.
+    assert [name for name, _ in calls] == ["broadcast"]
+    assert calls[0][1] == {
+        "type": "runtime_reconciliation_required",
+        "run_id": str(run_id),
+        "provider_request_id": "provider-request-ambiguous",
+        "error_class": "read_error",
+        "retryable": False,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "row",
+    [
+        None,
+        ("needs_reconciliation", {}),
+        ("needs_reconciliation", {"session_v2_reconciliation": {"reason": "terminal_outcome_commit"}}),
+        (
+            "needs_reconciliation",
+            {
+                "session_v2_reconciliation": {
+                    # Exact-code match is required: another round's marker
+                    # must not suppress the canonical settlement.
+                    "reason": "ambiguous_provider_send",
+                    "provider_request_id": "provider-request-other-round",
+                }
+            },
+        ),
+        ("running", {"session_v2_reconciliation": {"reason": "ambiguous_provider_send"}}),
+    ],
+)
+async def test_ambiguous_provider_send_handler_settles_canonically_when_marker_missing(row):
+    from app.kernel.contracts import ProviderRequestNeedsReconciliation
+    from app.services import web_chat_run_orchestrator as orchestrator
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    calls: list[tuple[str, object]] = []
+    state = _marker_state(run_id, agent_id, row, calls)
+
+    await orchestrator._handle_web_chat_failure(
+        state,
+        ProviderRequestNeedsReconciliation(
+            provider_request_id="provider-request-ambiguous",
+            error_class="read_error",
         ),
     )
 
     assert [name for name, _ in calls] == ["update", "broadcast"]
     assert calls[0][1]["status"] == "needs_reconciliation"
-    assert calls[1][1] == {
-        "type": "runtime_reconciliation_required",
-        "run_id": str(run_id),
+    assert calls[0][1]["metadata_json"]["session_v2_reconciliation"] == {
+        "reason": "ambiguous_provider_send",
         "provider_request_id": "provider-request-ambiguous",
-        "error_class": "timeout",
-        "retryable": False,
+        "error_class": "read_error",
     }
+    assert calls[1][1]["retryable"] is False
 
 
 @pytest.mark.asyncio

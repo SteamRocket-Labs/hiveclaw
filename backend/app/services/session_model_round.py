@@ -1095,6 +1095,17 @@ async def fail_model_request(
             run_task.metadata_json = metadata
             run_task.completed_at = datetime.now(timezone.utc)
             run_task.claim_version = int(run_task.claim_version or 0) + 1
+            # The canonical ambiguous-send terminal settlement shares the one
+            # mechanical boundary: terminal fence, root item transition, and
+            # pending control settlement all commit with this status change.
+            from app.services.runtime_terminal_settlement import settle_runtime_task_terminal
+
+            await settle_runtime_task_terminal(
+                db,
+                run_task,
+                terminal_source="session_model_round:ambiguous_provider_send",
+                root_reason_code="ambiguous_provider_send_terminal",
+            )
         try:
             from app.services.session_fork_input import settle_fork_input_provider_delivery
 

@@ -40,9 +40,12 @@ def test_release_manifest_has_all_fifteen_atomic_journeys() -> None:
     assert endpoint_matrix["J-02"] == [
         "POST /api/chat/upload",
         "GET /api/agents/{agent_id}/files/?path=workspace/uploads",
+        "GET /api/agents/{agent_id}/files/download?path={workspace_path}",
     ]
     assert endpoint_matrix["J-04"] == [
         "POST /api/agents/{agent_id}/sessions/{session_id}/goals",
+        "GET /api/agents/{agent_id}/sessions/{session_id}/workbench?operator_view=true",
+        "GET /api/agents/{agent_id}/sessions/{session_id}/transcript?schema_version=2",
     ]
     assert endpoint_matrix["J-06"] == [
         "POST /api/agents/{agent_id}/sessions/{session_id}/branches",

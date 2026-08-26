@@ -981,6 +981,15 @@ cd backend
 - **投递与预算横切反证**：runtime_notification_outbox 4/4 delivered；integration pages 4/4 delivered；channel outbox 1/1 delivered；ingress 1/1 processed。预算 reservation/settlement 各 36，全部 allowed、would_deny=false（budget run 的 active 生命周期是正常形态，不记为缺陷，也不构成 Closed 依据）。
 - **状态：RC-09 候选全量 PASS — Verified；predeploy gate 仍为 Partial / 未 Closed** —— 候选全量本身（全新库 15/15 + 上列 DB/文件反证）已通过；**最终全量 backend/frontend gates、部署、生产 Personal/Company PDF 两遍 E2E 与 A2A 两遍均未执行，Day 1 未完成，不得宣称 RC-09 Closed**。
 
+### 最终 backend gate 唯一失败：J-02/J-04 endpoint contract drift correction（2026-08-26）
+
+- **Codex 最终门禁真实结果**：frontend `npm test` = 141 files / **887 passed**；i18n **9/9 + en=zh=3853 + 全部 gates 0**；`tsc --noEmit` clean；build 7385 modules / bundle budgets pass。backend `.venv/bin/pytest -q -rs tests` → **1 failed / 8184 passed / 2 skipped / 1 warning in 551.36s**，唯一失败为 `tests/architecture/test_atomic_user_journey_gate.py::test_release_manifest_has_all_fifteen_atomic_journeys`。
+- **根因（endpoint contract drift，纯测试期望漂移）**：`4fb5c347` 六旅程 closure 包把 J-02 第三 endpoint `GET /api/agents/{agent_id}/files/download?path={workspace_path}`（同时有 exact-byte download browser assertion）与 J-04 的 `GET …/workbench?operator_view=true`、`GET …/transcript?schema_version=2` 补进 manifest，而旧测试期望行来自 `93324606` 漏同步；J-06/J-10 期望与 manifest 已 exact 一致、未漂移。fresh4 全新 J-01..J-15 已一次全过，J-02 已通过真实 download endpoint 逐字节相等证明——**不能删除第三 endpoint，也不能弱化为 contains/subset**。
+- **failing-first RED**：修正前单测 **1 failed in 0.26s**——`assert endpoint_matrix["J-02"] == [...]`，`Left contains one more item: 'GET /api/agents/{agent_id}/files/download?path={workspace_path}'`；J-02 按 manifest 同步后复跑，同测试下一断言行暴露 **J-04 同类漂移**（`Left contains 2 more items, first extra item: 'GET …/workbench?operator_view=true'`）——多断言行同测试，全量跑只报首处失败，J-04 漂移被 J-02 遮蔽。
+- **最小修正**：仅在该测试的 J-02/J-04 exact-equality 列表按 manifest 顺序追加实际 endpoint（J-02 +1 项、J-04 +2 项）；manifest 零改动；断言保持完全相等、未弱化；J-06/J-10 未动。
+- **GREEN**：单测 **1 passed in 0.26s**；整个 gate 文件 **6 passed in 0.18s**；`ruff check` All checks passed；`ruff format --check` already formatted；`git diff --check` clean。
+- **状态：本 correction targeted 绿；最终 backend full rerun 尚待 Codex 执行** —— RC-09 predeploy gate 仍 Partial / 未 Closed；frontend final gates 已 PASS — Verified；§10 Evidence Ledger 行的门禁状态留待 full rerun 通过后收口。
+
 ### 生产彩排
 
 按以下顺序，从干净会话跑两遍：
@@ -1189,6 +1198,6 @@ owner 已过稿并明确说“开始”。先提交本文件作为恢复点；�
 - [x] J-13 dead_letter 修正已按 failing-first 完成并经 Codex final verdict **PASS — Verified**（两处 outbox is_connected 硬门移除、有意零工具外部语义澄清、retry-safe 精确 provider 证明；commit 见 §10 行）。
 - [x] J-07/J-09 false-green correction 已完成并经 Codex 独立终审 **PASS — Verified**（fresh3 全新库双过；完整失败轨迹 full5→fresh1 404→fresh2 marker→fresh_1420 重复 child→fresh_1519 id 表示→fresh_1641/fresh3 双过记录于 §7.10；commit `test(rc-09): close knowledge and subagent journey proofs`，`431eac58`）。
 - [x] J-02/J-03/J-04/J-05/J-11/J-14 false-green closure 包已完成并经 Codex 独立终审 **PASS — Verified**（fresh3_184632 全新库 6 passed in 50.0s；完整范围、两件过程事故与精确 IDs 记录于 §7.10 六旅程小节；commit 随本包创建，精确 hash 以 git log 为准）。
-- [ ] RC-09 仍需：最终全量 backend/frontend gates、部署与生产 E2E/A2A（十一包已交付；fresh4 全新 J-01..J-15 候选全量已 PASS — Verified，predeploy gate 未通过、未 Closed）。
+- [ ] RC-09 仍需：最终 backend full rerun（唯一失败已按 exact-equality 最小修正、targeted 绿，待 Codex 全量复跑确认）、部署与生产 E2E/A2A（十一包已交付；fresh4 全新 J-01..J-15 候选全量已 PASS — Verified；frontend final gates 已 PASS — Verified：141 files / 887 tests、i18n 9/9 en=zh=3853 gates 0、tsc clean、build budgets pass；predeploy gate 未通过、未 Closed）。
 - [ ] 尚未部署。
 - [ ] 尚未完成任何本轮生产 E2E。

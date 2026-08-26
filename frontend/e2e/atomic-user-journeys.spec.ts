@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { expect, test, type APIRequestContext, type APIResponse, type Page, type Playwright } from '@playwright/test';
+import { expect, test, type APIRequestContext, type APIResponse, type Page, type PlaywrightWorkerArgs } from '@playwright/test';
 
 
 type Journey = {
@@ -67,7 +67,7 @@ async function responseJson<T>(response: APIResponse, label: string): Promise<T>
 }
 
 
-async function authContext(playwright: Playwright, auth: AuthState): Promise<APIRequestContext> {
+async function authContext(playwright: PlaywrightWorkerArgs['playwright'], auth: AuthState): Promise<APIRequestContext> {
   return playwright.request.newContext({
     baseURL: HIVE_JOURNEY_BACKEND_URL,
     timeout: 120_000,
@@ -107,7 +107,7 @@ async function login(publicApi: APIRequestContext, username: string): Promise<Au
 }
 
 
-async function bootstrap(playwright: Playwright): Promise<void> {
+async function bootstrap(playwright: PlaywrightWorkerArgs['playwright']): Promise<void> {
   const publicApi = await playwright.request.newContext({ baseURL: HIVE_JOURNEY_BACKEND_URL, timeout: 120_000 });
   owner = await registerOrLogin(publicApi, 'atomic_owner', 'atomic.owner@example.com');
   if (!owner.user.tenant_id) {
@@ -386,38 +386,6 @@ async function setPageAuth(page: Page, auth: AuthState): Promise<void> {
     localStorage.setItem('i18nextLng', 'en');
     if (tenantId) localStorage.setItem('current_tenant_id', tenantId);
   }, { token: auth.access_token, tenantId: String(auth.user.tenant_id || '') });
-}
-
-
-function findUuidField(items: Array<Record<string, unknown>>, field: string): string | null {
-  const visit = (value: unknown): string | null => {
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        const found = visit(item);
-        if (found) return found;
-      }
-      return null;
-    }
-    if (value && typeof value === 'object') {
-      const record = value as Record<string, unknown>;
-      const direct = record[field];
-      if (typeof direct === 'string' && UUID_PATTERN.test(direct)) return direct;
-      for (const nested of Object.values(record)) {
-        const found = visit(nested);
-        if (found) return found;
-      }
-      return null;
-    }
-    if (typeof value !== 'string') return null;
-    try {
-      const parsed = JSON.parse(value) as unknown;
-      if (parsed !== value) return visit(parsed);
-    } catch {
-      // Ordinary transcript text is not JSON; it cannot contain a typed field.
-    }
-    return null;
-  };
-  return visit(items);
 }
 
 
@@ -732,15 +700,54 @@ async function exerciseDomain(
         await context.ownerApi.get('/api/agents/system/hr'),
         'load system HR agent',
       );
-      const hrRun = await startAndAwaitChat(context.ownerApi, String(hr.id), 'J-12', { title: 'J-12 HR provisioning' });
-      const blueprintId = findUuidField(hrRun.transcript, 'blueprint_id');
-      expect(blueprintId).toBeTruthy();
+      const hrAgentId = String(hr.id);
+      const hrRun = await startAndAwaitChat(context.ownerApi, hrAgentId, 'J-12', { title: 'J-12 HR provisioning' });
+      const hrSessionId = String(hrRun.run.session.id);
+      const hrRunId = String(hrRun.run.run.run_id);
+      const hrCanonical = await responseJson<Array<Record<string, unknown>>>(
+        await context.ownerApi.get(`/api/agents/${hrAgentId}/sessions/${hrSessionId}/transcript?schema_version=2`),
+        'read HR canonical V2 transcript',
+      );
+      // Bind the blueprint preview call/result pair to the awaited HR run id
+      // and one shared invocation id; only the matched tool_result payload
+      // content is parsed. The compatibility ThreadItem projection is never
+      // searched for the blueprint id.
+      const payloadOf = (item: Record<string, unknown>) => (item.payload as Record<string, unknown> | undefined) || {};
+      const boundToHrRun = (item: Record<string, unknown>) => normalizeRunId(canonicalRunId(item)) === normalizeRunId(hrRunId);
+      const blueprintCalls = hrCanonical.filter(
+        (item) => item.item_kind === 'tool_call' && boundToHrRun(item) && String(payloadOf(item).tool_name || '') === 'preview_agent_blueprint',
+      );
+      expect(blueprintCalls.length).toBeGreaterThan(0);
+      const invocationIds = new Set(blueprintCalls.map((item) => String(item.invocation_id || '')).filter(Boolean));
+      expect(invocationIds.size).toBe(blueprintCalls.length);
+      const callRowsByInvocation = hrCanonical.filter((item) => item.item_kind === 'tool_call' && boundToHrRun(item));
+      for (const invocationId of invocationIds) {
+        const invocationRows = callRowsByInvocation.filter((item) => String(item.invocation_id || '') === invocationId);
+        expect(invocationRows.some((item) => String(payloadOf(item).outcome || '') === 'success')).toBe(true);
+        expect(invocationRows.some((item) => ['failed', 'denied', 'unavailable'].includes(String(payloadOf(item).outcome || '')))).toBe(false);
+      }
+      const blueprintResults = hrCanonical.filter(
+        (item) => item.item_kind === 'tool_result' && boundToHrRun(item) && invocationIds.has(String(item.invocation_id || '')),
+      );
+      // Exactly one typed result per blueprint call invocation.
+      expect(blueprintResults.length).toBe(invocationIds.size);
+      expect(new Set(blueprintResults.map((item) => String(item.invocation_id || '')))).toEqual(invocationIds);
+      const blueprints = blueprintResults.map((item) => {
+        expect(String(payloadOf(item).outcome || '')).toBe('success');
+        return JSON.parse(String(payloadOf(item).content || '')) as Record<string, unknown>;
+      });
+      for (const blueprint of blueprints) {
+        expect(UUID_PATTERN.test(String(blueprint.blueprint_id || ''))).toBe(true);
+        expect(String(blueprint.session_id || '')).toBe(hrSessionId);
+        expect(String(blueprint.hr_agent_id || '')).toBe(hrAgentId);
+      }
+      const blueprintId = String(blueprints[blueprints.length - 1].blueprint_id);
       const draft = await responseJson<Record<string, unknown>>(
-        await context.ownerApi.get(`/api/agents/${hr.id}/hr-creation-drafts/${blueprintId}`),
+        await context.ownerApi.get(`/api/agents/${hrAgentId}/hr-creation-drafts/${blueprintId}`),
         'read canonical HR draft',
       );
       const confirmed = await responseJson<Record<string, unknown>>(
-        await context.ownerApi.post(`/api/agents/${hr.id}/hr-creation-drafts/${blueprintId}/confirm`, {
+        await context.ownerApi.post(`/api/agents/${hrAgentId}/hr-creation-drafts/${blueprintId}/confirm`, {
           data: { blueprint_version: draft.blueprint_version, blueprint_hash: draft.blueprint_hash },
         }),
         'confirm canonical HR draft',
@@ -748,7 +755,7 @@ async function exerciseDomain(
       let terminal = confirmed;
       await expect.poll(async () => {
         terminal = await responseJson<Record<string, unknown>>(
-          await context.ownerApi.get(`/api/agents/${hr.id}/hr-creation-drafts/${blueprintId}`),
+          await context.ownerApi.get(`/api/agents/${hrAgentId}/hr-creation-drafts/${blueprintId}`),
           'poll durable HR provisioning',
         );
         return String(terminal.draft_status);
@@ -758,10 +765,11 @@ async function exerciseDomain(
       domain.terminal = terminal;
       return {
         sessionId,
+        runId: String(base.run.run.run_id),
         transcript: base.transcript,
         domain,
-        browserAgentId: String(hr.id),
-        browserSessionId: hrRun.run.session.id,
+        browserAgentId: hrAgentId,
+        browserSessionId: hrSessionId,
         expectedText: 'Atomic Journey Employee',
       };
     }

@@ -39,6 +39,9 @@ type JourneyEvidence = {
   domain: Record<string, unknown>;
   browserAgentId?: string;
   browserSessionId?: string;
+  // External channel sessions only load through the manage-mode operator
+  // surface (the product's All-sessions path), never the owner chat shell.
+  browserManageMode?: boolean;
   browserToken?: string;
   browserUser?: Record<string, unknown>;
   expectedText?: string;
@@ -938,6 +941,20 @@ async function exerciseDomain(
         }),
         'configure controlled Slack channel',
       );
+      // Snapshot the durable channel-delivery read model and the provider
+      // payload baseline before ingress, so only rows and messages created
+      // by this journey can satisfy the assertions below.
+      const deliveriesBefore = await responseJson<Array<Record<string, unknown>>>(
+        await context.ownerApi.get('/api/channel-deliveries?limit=500'),
+        'snapshot channel deliveries before ingress',
+      );
+      const knownIds = new Set(deliveriesBefore.map((row) => String(row.id)));
+      const evidenceBefore = await responseJson<Record<string, unknown>>(
+        await context.fakeApi.get('/evidence'),
+        'snapshot provider evidence before ingress',
+      );
+      const baselineMessages = (evidenceBefore.slack_messages as Array<Record<string, unknown>> | undefined) || [];
+      const baselineMessageCount = baselineMessages.length;
       const event = {
         type: 'event_callback',
         event_id: `Ev-J13-${suffix}`,
@@ -957,15 +974,81 @@ async function exerciseDomain(
         }),
         'accept signed Slack ingress',
       );
+      // Terminal delivery: the exact new Slack channel-delivery row for this
+      // agent must reach delivered with terminal_result/completed and at
+      // least one attempt. The ingress ACK can never satisfy this.
+      let delivery: Record<string, unknown> | undefined;
+      await expect.poll(async () => {
+        const deliveriesNow = await responseJson<Array<Record<string, unknown>>>(
+          await context.ownerApi.get('/api/channel-deliveries?limit=500'),
+          'poll channel terminal delivery',
+        );
+        delivery = deliveriesNow.find(
+          (row) => !knownIds.has(String(row.id))
+            && String(row.agent_id || '') === context.agentId
+            && String(row.channel || '') === 'slack'
+            && String(row.delivery_kind || '') === 'terminal_result'
+            && String(row.terminal_status || '') === 'completed'
+            && String(row.status || '') === 'delivered'
+            && Number(row.attempt_count || 0) >= 1,
+        );
+        return Boolean(delivery);
+      }, { timeout: 90_000, intervals: [500, 1000] }).toBe(true);
+      const deliveryRow = delivery as Record<string, unknown>;
+      const externalSessionId = String(deliveryRow.session_id);
+      const deliveryRuntimeTaskId = String(deliveryRow.runtime_task_id);
+      // The provider must have received the exact terminal model receipt as
+      // a NEW message: inspect only messages appended after the pre-ingress
+      // count (retry-safe with a persistent provider process) and require
+      // exact channel and exact bytes — not a call counter, not includes().
+      const exactReceipt = 'J-13 terminal receipt from the controlled provider.';
       let external: Record<string, unknown> = {};
+      let deliveredMessage: Record<string, unknown> | undefined;
       await expect.poll(async () => {
         external = await responseJson<Record<string, unknown>>(await context.fakeApi.get('/evidence'), 'read channel fake evidence');
-        const calls = external.calls as Record<string, number>;
-        return Number(calls['slack:C-ATOMIC'] || 0);
-      }, { timeout: 90_000, intervals: [500, 1000] }).toBeGreaterThan(0);
+        const messages = (external.slack_messages as Array<Record<string, unknown>> | undefined) || [];
+        deliveredMessage = messages
+          .slice(baselineMessageCount)
+          .find(
+            (message) => String(message.channel || '') === 'C-ATOMIC'
+              && String(message.text || '') === exactReceipt,
+          );
+        return Boolean(deliveredMessage);
+      }, { timeout: 90_000, intervals: [500, 1000] }).toBe(true);
+      // External canonical proof: the delivered row's session must carry the
+      // run-bound terminal receipt for exactly the delivery's runtime task,
+      // and — per the unbound external principal authority contract — ZERO
+      // run-bound tool_call/tool_result rows for that task.
+      const externalCanonical = await responseJson<Array<Record<string, unknown>>>(
+        await context.ownerApi.get(
+          `/api/agents/${context.agentId}/sessions/${externalSessionId}/transcript`
+            + '?schema_version=2&operator_view=true&operator_reason=J-13%20external%20terminal%20proof',
+        ),
+        'read external session canonical transcript',
+      );
+      expect(hasCanonicalTerminalProof(externalCanonical, 'J-13', deliveryRuntimeTaskId)).toBe(true);
+      expect(
+        externalCanonical.filter(
+          (item) => ['tool_call', 'tool_result'].includes(String(item.item_kind || ''))
+            && normalizeRunId(canonicalRunId(item)) === normalizeRunId(deliveryRuntimeTaskId),
+        ),
+      ).toHaveLength(0);
       domain.channel = config;
       domain.external = external;
-      break;
+      domain.delivery = deliveryRow;
+      domain.deliveryRuntimeTaskId = deliveryRuntimeTaskId;
+      domain.deliveryBeforeCount = deliveriesBefore.length;
+      domain.deliveredProviderMessage = deliveredMessage;
+      domain.externalCanonical = externalCanonical;
+      return {
+        sessionId,
+        runId: String(base.run.run.run_id),
+        transcript: base.transcript,
+        domain,
+        browserSessionId: externalSessionId,
+        browserManageMode: true,
+        expectedText: 'J-13 terminal receipt from the controlled provider.',
+      };
     }
     case 'J-14': {
       const pairing = await responseJson<Record<string, unknown>>(
@@ -1062,7 +1145,10 @@ test.describe.serial('real full-stack atomic user journeys', () => {
       await setPageAuth(page, browserAuth);
       const browserAgent = evidence.browserAgentId || agentId;
       const browserSession = evidence.browserSessionId || evidence.sessionId;
-      await page.goto(`/agents/${browserAgent}?session_id=${browserSession}#chat`, { waitUntil: 'domcontentloaded' });
+      await page.goto(
+        `/agents/${browserAgent}?session_id=${browserSession}${evidence.browserManageMode ? '&manage' : ''}#chat`,
+        { waitUntil: 'domcontentloaded' },
+      );
       await expect(page.getByText(evidence.expectedText || `${journey.id} terminal receipt from the controlled provider.`, { exact: false }).first()).toBeVisible();
     });
   }

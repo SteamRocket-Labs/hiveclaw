@@ -381,7 +381,10 @@ class BudgetTransitionOutboxService:
                     )
                 )
             ).scalar_one_or_none()
-            if config is None or not config.is_configured or not config.is_connected:
+            # is_configured is the durable send authority; is_connected is a
+            # transient connectivity observation (normal channel setup leaves
+            # it false) and must not permanently reject the transition.
+            if config is None or not config.is_configured:
                 raise BudgetTransitionPermanentError("external channel configuration was revoked or replaced")
             if item.external_principal_id is not None:
                 principal = (

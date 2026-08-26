@@ -25,10 +25,9 @@ def test_controlled_tool_calls_match_production_schemas() -> None:
             "run_in_background": True,
         },
     )
-    assert _tool_for_journey("J-13", {"send_channel_message"}) == (
-        "send_channel_message",
-        {"message": "atomic channel journey receipt"},
-    )
+    # J-13's unbound external session runs tool-disabled by production
+    # authority — the provider must never propose send_channel_message for it.
+    assert _tool_for_journey("J-13", {"send_channel_message"}) is None
     assert _tool_for_journey("J-12", {"preview_agent_blueprint"}) == (
         "preview_agent_blueprint",
         {
@@ -132,3 +131,26 @@ def test_journeys_with_out_of_contract_tool_effects_have_no_candidate() -> None:
     # the controlled terminal receipt with no model tool effect.
     assert _tool_for_journey("J-02", {"write_file"}) is None
     assert _tool_for_journey("J-05", {"set_trigger"}) is None
+
+
+def test_evidence_slack_history_grows_by_exact_new_row() -> None:
+    from fastapi.testclient import TestClient
+
+    from tests.journeys import fake_external_provider as provider
+
+    with TestClient(provider.app) as client:
+        # Baseline count first: state growth must be proven by before/after
+        # count plus the newly appended exact row, so an identical message
+        # posted twice (or a retried test run) never cross-satisfies.
+        before = client.get("/evidence").json()["slack_messages"]
+        baseline = len(before)
+        posted = client.post(
+            "/slack/api/chat.postMessage",
+            json={"channel": "C-HIST", "text": "J-13 terminal receipt from the controlled provider."},
+        )
+        assert posted.status_code == 200
+        after = client.get("/evidence").json()["slack_messages"]
+        assert len(after) == baseline + 1
+        assert after[baseline:] == [
+            {"channel": "C-HIST", "text": "J-13 terminal receipt from the controlled provider."}
+        ]

@@ -16,6 +16,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 app = FastAPI(title="Hive controlled journey external provider")
 _CALLS: Counter[str] = Counter()
 _LAST_TOOLS: dict[str, list[str]] = {}
+# Controlled Slack payload history (test harness only, no secrets): lets the
+# journey prove the exact delivered terminal receipt bytes, not just a call
+# counter that the ingress ACK could already have incremented.
+_SLACK_MESSAGES: list[dict[str, Any]] = []
 _JOURNEY_MARKER = re.compile(r"\bJ-(?:0[1-9]|1[0-5])\b")
 _EXPLICIT_JOURNEY_REQUEST = re.compile(r"(?m)^\s*(J-(?:0[1-9]|1[0-5]))\s+exercise the production journey contract\b")
 
@@ -94,7 +98,10 @@ def _tool_for_journey(journey_id: str, available: set[str]) -> tuple[str, dict[s
                 "focus_content": "Validate the first governed HR task.",
             },
         ),
-        "J-13": ("send_channel_message", {"message": "atomic channel journey receipt"}),
+        # J-13's external session runs with tools intentionally disabled for
+        # the unbound Slack principal (disable_tools=true / tool_policy
+        # disabled_for_unbound_external_principal); its contract is terminal
+        # outbox delivery, never a model send_channel_message call.
     }
     candidate = candidates.get(journey_id)
     return candidate if candidate and candidate[0] in available else None
@@ -212,6 +219,7 @@ async def evidence() -> dict[str, Any]:
         "schema": "hive.controlled_external_evidence.v1",
         "calls": dict(_CALLS),
         "last_tools": dict(_LAST_TOOLS),
+        "slack_messages": [dict(message) for message in _SLACK_MESSAGES],
     }
 
 
@@ -233,6 +241,7 @@ async def slack_chat_post_message(request: Request) -> dict[str, Any]:
     body = await request.json()
     channel = str(body.get("channel") or "unknown")
     _CALLS[f"slack:{channel}"] += 1
+    _SLACK_MESSAGES.append({"channel": channel, "text": str(body.get("text") or "")})
     return {
         "ok": True,
         "channel": channel,

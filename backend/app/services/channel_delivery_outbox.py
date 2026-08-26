@@ -457,7 +457,10 @@ class ChannelDeliveryOutboxService:
                 ).scalar_one_or_none()
                 if config is None:
                     raise ChannelDeliveryPermanentError("channel target configuration was revoked or replaced")
-            if config is not None and (not config.is_configured or not config.is_connected):
+            # is_configured is the durable send authority; is_connected is a
+            # transient connectivity/identity observation and normal channel
+            # setup leaves it false, so it must not dead-letter delivery.
+            if config is not None and not config.is_configured:
                 raise ChannelDeliveryPermanentError("channel target configuration is no longer active")
             if item.external_principal_id is not None:
                 principal = (

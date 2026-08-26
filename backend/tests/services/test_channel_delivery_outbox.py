@@ -491,3 +491,163 @@ async def test_channel_delivery_outbox_rls_hides_other_tenant_rows(
     async with tenant_scoped_session(other_seed["tenant_id"], session_factory=app_user_sessionmaker) as db:
         visible = (await db.execute(select(ChannelDeliveryOutbox))).scalars().all()
     assert visible == []
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_unconnected_but_configured_channel_delivers_terminal_result(owner_sessionmaker, tmp_path):
+    # Normal Slack/Telegram/Discord/DingTalk/Teams/WeCom setup leaves
+    # is_connected false while the config is the exact durable send
+    # authority. is_connected is a transient connectivity observation, not
+    # revocation: the outbox must deliver on it.
+    seed = await _seed_delivery(owner_sessionmaker, tmp_path)
+    async with owner_sessionmaker() as db:
+        config = await db.get(ChannelConfig, seed["config_id"])
+        config.is_connected = False
+        await db.commit()
+
+    async with tenant_scoped_session(seed["tenant_id"], session_factory=owner_sessionmaker) as db:
+        outbox_id = await enqueue_channel_delivery(db, _intent(seed))
+        await db.commit()
+
+    async def send_text(**kwargs):
+        assert kwargs["idempotency_key"] == f"{outbox_id}:text"
+        return DeliveryResult(True, "success", "telegram", "ok", detail={"provider_message_id": "m-1"})
+
+    service = ChannelDeliveryOutboxService(
+        session_factory=owner_sessionmaker,
+        retry_base_seconds=0,
+        text_sender=send_text,
+    )
+    result = await service.drain_once(worker_id="delivery-a")
+
+    async with owner_sessionmaker() as db:
+        row = (
+            await db.execute(select(ChannelDeliveryOutbox).where(ChannelDeliveryOutbox.id == outbox_id))
+        ).scalar_one()
+    assert result["delivered"] == 1
+    assert row.status == "delivered"
+    assert row.delivery_receipts_json["text"]["detail"]["provider_message_id"] == "m-1"
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_unconfigured_channel_is_permanent_dead_letter_without_provider_call(owner_sessionmaker, tmp_path):
+    seed = await _seed_delivery(owner_sessionmaker, tmp_path)
+    async with owner_sessionmaker() as db:
+        config = await db.get(ChannelConfig, seed["config_id"])
+        config.is_configured = False
+        await db.commit()
+
+    async with tenant_scoped_session(seed["tenant_id"], session_factory=owner_sessionmaker) as db:
+        outbox_id = await enqueue_channel_delivery(db, _intent(seed))
+        await db.commit()
+
+    calls = 0
+
+    async def send_text(**_kwargs):
+        nonlocal calls
+        calls += 1
+        return DeliveryResult(True, "success", "telegram", "ok")
+
+    service = ChannelDeliveryOutboxService(session_factory=owner_sessionmaker, text_sender=send_text)
+    result = await service.drain_once(worker_id="delivery-a")
+
+    async with owner_sessionmaker() as db:
+        row = (
+            await db.execute(select(ChannelDeliveryOutbox).where(ChannelDeliveryOutbox.id == outbox_id))
+        ).scalar_one()
+    assert result["dead_lettered"] == 1
+    assert calls == 0
+    assert row.status == "dead_letter"
+    assert "no longer active" in row.last_error
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_deleted_or_replaced_config_is_permanent_dead_letter_without_provider_call(owner_sessionmaker, tmp_path):
+    seed = await _seed_delivery(owner_sessionmaker, tmp_path)
+    async with tenant_scoped_session(seed["tenant_id"], session_factory=owner_sessionmaker) as db:
+        # Replace the exact config id with a different installation.
+        await db.execute(delete(ChannelConfig).where(ChannelConfig.id == seed["config_id"]))
+        replacement_id = uuid.uuid4()
+        db.add(
+            ChannelConfig(
+                id=replacement_id,
+                tenant_id=seed["tenant_id"],
+                agent_id=seed["agent_id"],
+                channel_type="telegram",
+                app_secret="bot-token-2",
+                is_configured=True,
+                is_connected=True,
+            )
+        )
+        await db.commit()
+
+    async with tenant_scoped_session(seed["tenant_id"], session_factory=owner_sessionmaker) as db:
+        outbox_id = await enqueue_channel_delivery(db, _intent(seed))
+        await db.commit()
+
+    calls = 0
+
+    async def send_text(**_kwargs):
+        nonlocal calls
+        calls += 1
+        return DeliveryResult(True, "success", "telegram", "ok")
+
+    service = ChannelDeliveryOutboxService(session_factory=owner_sessionmaker, text_sender=send_text)
+    result = await service.drain_once(worker_id="delivery-a")
+
+    async with owner_sessionmaker() as db:
+        row = (
+            await db.execute(select(ChannelDeliveryOutbox).where(ChannelDeliveryOutbox.id == outbox_id))
+        ).scalar_one()
+    assert result["dead_lettered"] == 1
+    assert calls == 0
+    assert row.status == "dead_letter"
+    assert "revoked or replaced" in row.last_error
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_changed_installation_principal_is_permanent_dead_letter_without_provider_call(
+    owner_sessionmaker, tmp_path
+):
+    seed = await _seed_delivery(owner_sessionmaker, tmp_path, external=True)
+    async with tenant_scoped_session(seed["tenant_id"], session_factory=owner_sessionmaker) as db:
+        outbox_id = await enqueue_channel_delivery(db, _intent(seed))
+        # A second telegram installation for the same agent is impossible
+        # (uq_channel_configs_agent_channel), so model the changed
+        # installation as the principal re-binding to a discord config of
+        # the same agent.
+        foreign_config_id = uuid.uuid4()
+        db.add(
+            ChannelConfig(
+                id=foreign_config_id,
+                tenant_id=seed["tenant_id"],
+                agent_id=seed["agent_id"],
+                channel_type="discord",
+                app_secret="bot-token-2",
+                is_configured=True,
+                is_connected=True,
+            )
+        )
+        await db.flush()
+        principal = await db.get(ExternalPrincipal, seed["principal_id"])
+        principal.channel_config_id = foreign_config_id
+        await db.commit()
+
+    calls = 0
+
+    async def send_text(**_kwargs):
+        nonlocal calls
+        calls += 1
+        return DeliveryResult(True, "success", "telegram", "ok")
+
+    service = ChannelDeliveryOutboxService(session_factory=owner_sessionmaker, text_sender=send_text)
+    result = await service.drain_once(worker_id="delivery-a")
+
+    async with owner_sessionmaker() as db:
+        row = (
+            await db.execute(select(ChannelDeliveryOutbox).where(ChannelDeliveryOutbox.id == outbox_id))
+        ).scalar_one()
+    assert result["dead_lettered"] == 1
+    assert calls == 0
+    assert row.status == "dead_letter"
+    assert "installation changed" in row.last_error

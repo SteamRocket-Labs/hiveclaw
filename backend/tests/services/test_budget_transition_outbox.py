@@ -16,6 +16,7 @@ from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.budget_transition_outbox import BudgetTransitionOutboxService
+from app.services.channel_delivery_service import DeliveryResult
 from app.services.runtime_budget_service import RuntimeBudgetRunCreate, RuntimeBudgetService
 
 
@@ -316,3 +317,117 @@ async def test_unknown_channel_result_requires_operator_reconciliation_without_b
     )
     assert resolved.status == "delivered"
     assert resolved.delivery_receipts_json["channel"]["state"] == "operator_confirmed_delivered"
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_unconnected_but_configured_external_transition_delivers_exactly_once(owner_sessionmaker):
+    seed = await _seed_addressed_budget(owner_sessionmaker, source_channel="telegram")
+    async with owner_sessionmaker() as db:
+        config = (
+            (
+                await db.execute(
+                    select(ChannelConfig).where(
+                        ChannelConfig.tenant_id == seed["tenant_id"],
+                        ChannelConfig.agent_id == seed["agent_id"],
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        config.is_connected = False
+        await db.commit()
+
+    await seed["service"].reject_overrun(
+        tenant_id=seed["tenant_id"],
+        budget_run_id=seed["run_id"],
+        reason="declined",
+        actor_user_id=seed["user_id"],
+    )
+    calls: list[str] = []
+
+    async def send_text(**kwargs):
+        calls.append(str(kwargs.get("idempotency_key")))
+        return DeliveryResult(True, "success", "telegram", "ok")
+
+    service = BudgetTransitionOutboxService(
+        session_factory=owner_sessionmaker,
+        retry_base_seconds=0,
+        text_sender=send_text,
+    )
+    first = await service.drain_once(worker_id="budget-delivery-a")
+    second = await service.drain_once(worker_id="budget-delivery-b")
+
+    async with owner_sessionmaker() as db:
+        outbox = (
+            await db.execute(
+                select(BudgetTransitionOutbox).where(BudgetTransitionOutbox.budget_run_id == seed["run_id"])
+            )
+        ).scalar_one()
+        projected = (
+            await db.execute(
+                select(func.count())
+                .select_from(ChatTranscriptEvent)
+                .where(
+                    ChatTranscriptEvent.session_id == seed["session_id"],
+                    ChatTranscriptEvent.event_type == "runtime_budget_transition",
+                )
+            )
+        ).scalar_one()
+
+    assert first["delivered"] == 1
+    assert second["claimed"] == 0
+    assert len(calls) == 1
+    assert outbox.status == "delivered"
+    assert projected == 1
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_unconfigured_external_transition_is_permanent_dead_letter_without_provider_call(owner_sessionmaker):
+    seed = await _seed_addressed_budget(owner_sessionmaker, source_channel="telegram")
+    async with owner_sessionmaker() as db:
+        config = (
+            (
+                await db.execute(
+                    select(ChannelConfig).where(
+                        ChannelConfig.tenant_id == seed["tenant_id"],
+                        ChannelConfig.agent_id == seed["agent_id"],
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        config.is_configured = False
+        await db.commit()
+
+    await seed["service"].reject_overrun(
+        tenant_id=seed["tenant_id"],
+        budget_run_id=seed["run_id"],
+        reason="declined",
+        actor_user_id=seed["user_id"],
+    )
+    calls = 0
+
+    async def send_text(**_kwargs):
+        nonlocal calls
+        calls += 1
+        return DeliveryResult(True, "success", "telegram", "ok")
+
+    service = BudgetTransitionOutboxService(
+        session_factory=owner_sessionmaker,
+        retry_base_seconds=0,
+        text_sender=send_text,
+    )
+    result = await service.drain_once(worker_id="budget-delivery-a")
+
+    async with owner_sessionmaker() as db:
+        outbox = (
+            await db.execute(
+                select(BudgetTransitionOutbox).where(BudgetTransitionOutbox.budget_run_id == seed["run_id"])
+            )
+        ).scalar_one()
+
+    assert result["dead_lettered"] == 1
+    assert calls == 0
+    assert outbox.status == "dead_letter"

@@ -121,3 +121,14 @@ def test_current_journey_marker_wins_over_historical_context() -> None:
 
     assert call is None
     assert content == "J-01 terminal receipt from the controlled provider."
+
+
+def test_journeys_with_out_of_contract_tool_effects_have_no_candidate() -> None:
+    # J-02's product path is the chat upload plus the workspace uploads
+    # listing (exercised by the journey itself); a write_file model call only
+    # produces an out-of-workspace failure. J-05's path is the disabled
+    # schedule API plus listing; a set_trigger call would need enabled side
+    # effects that violate the disabled-schedule journey. Both must return
+    # the controlled terminal receipt with no model tool effect.
+    assert _tool_for_journey("J-02", {"write_file"}) is None
+    assert _tool_for_journey("J-05", {"set_trigger"}) is None

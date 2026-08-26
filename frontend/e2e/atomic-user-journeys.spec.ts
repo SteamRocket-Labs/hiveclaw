@@ -340,6 +340,46 @@ async function stableTranscriptEvidence(
 }
 
 
+function expectCanonicalSuccessfulToolClosure(
+  canonical: Array<Record<string, unknown>>,
+  runId: string,
+): void {
+  // Common mechanical closure: collect the union of non-empty invocation ids
+  // across ALL run-bound tool_call and tool_result rows — orphan terminal
+  // calls, orphan results, duplicate started rows, and blank-invocation rows
+  // all fail. For every union member: exactly one started tool_call, exactly
+  // one terminal tool_call that is lifecycle completed with payload outcome
+  // success, and exactly one tool_result of the same invocation with outcome
+  // success; progress rows may be zero or more. Zero tool activity is valid
+  // only when there is no bound tool activity at all. No natural language is
+  // inspected.
+  const payloadOf = (item: Record<string, unknown>) => (item.payload as Record<string, unknown> | undefined) || {};
+  const awaitedRunId = normalizeRunId(runId);
+  const boundToRun = (item: Record<string, unknown>) => normalizeRunId(canonicalRunId(item)) === awaitedRunId;
+  const invocationOf = (item: Record<string, unknown>) => String(item.invocation_id || '');
+  const callRows = canonical.filter((item) => item.item_kind === 'tool_call' && boundToRun(item));
+  const resultRows = canonical.filter((item) => item.item_kind === 'tool_result' && boundToRun(item));
+  if (callRows.length === 0 && resultRows.length === 0) return;
+  for (const row of [...callRows, ...resultRows]) {
+    expect(invocationOf(row)).not.toBe('');
+  }
+  const invocationIds = new Set([...callRows, ...resultRows].map(invocationOf).filter(Boolean));
+  for (const invocationId of invocationIds) {
+    const invocationCalls = callRows.filter((item) => invocationOf(item) === invocationId);
+    expect(invocationCalls.filter((item) => item.lifecycle === 'started')).toHaveLength(1);
+    const terminalRows = invocationCalls.filter((item) =>
+      ['completed', 'failed', 'denied', 'unavailable', 'cancelled', 'reconciled', 'needs_reconciliation'].includes(String(item.lifecycle)),
+    );
+    expect(terminalRows).toHaveLength(1);
+    expect(String(terminalRows[0].lifecycle)).toBe('completed');
+    expect(String(payloadOf(terminalRows[0]).outcome || '')).toBe('success');
+    const results = resultRows.filter((item) => invocationOf(item) === invocationId);
+    expect(results).toHaveLength(1);
+    expect(String(payloadOf(results[0]).outcome || '')).toBe('success');
+  }
+}
+
+
 async function expectJourneyEvidence(
   journey: Journey,
   context: JourneyContext,
@@ -361,6 +401,7 @@ async function expectJourneyEvidence(
     `${journey.id} canonical terminal proof replay`,
   );
   expect(hasCanonicalTerminalProof(canonicalReplay, journey.id, evidence.runId)).toBe(true);
+  expectCanonicalSuccessfulToolClosure(canonicalReplay, evidence.runId);
   expect(replay.length).toBeGreaterThanOrEqual(evidence.transcript.length);
 
   const denied = await context.intruderApi.get(

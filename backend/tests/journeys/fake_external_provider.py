@@ -68,13 +68,11 @@ def _available_tool_names(payload: dict[str, Any]) -> set[str]:
 
 def _tool_for_journey(journey_id: str, available: set[str]) -> tuple[str, dict[str, Any]] | None:
     candidates: dict[str, tuple[str, dict[str, Any]]] = {
-        "J-02": ("write_file", {"path": "reports/j02-deliverable.txt", "content": "atomic journey deliverable"}),
-        "J-05": (
-            "set_trigger",
-            {"name": "J-05 schedule", "prompt": "Record the scheduled journey receipt", "schedule": "0 9 * * *"},
-        ),
-        # deep-research is retired (app/skills/retired.py); load_skill resolves
-        # the seeded default replacement by its registry display name.
+        # J-02 (chat upload + uploads listing) and J-05 (disabled schedule API
+        # + listing) exercise their product paths in the journey itself; a
+        # write_file model call only produces an out-of-workspace failure and
+        # a set_trigger call would need enabled side effects that violate the
+        # disabled-schedule journey. Both return the terminal receipt only.
         "J-08": ("load_skill", {"name": "Advanced Web Research"}),
         "J-09": (
             "spawn_subagent",

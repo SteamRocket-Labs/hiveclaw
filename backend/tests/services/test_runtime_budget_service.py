@@ -1478,3 +1478,126 @@ async def test_mark_summary_turn_state_is_a_single_winner_cas(owner_sessionmaker
     metadata = dict(stored.metadata_json or {})
     assert metadata.get("summary_turn_state") == "retried"
     assert metadata.get("summary_run_id") == "run-a"
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_duplicate_terminal_denial_reservation_replays_typed_truth_without_duplicate_event(
+    app_user_sessionmaker,
+    owner_sessionmaker,
+):
+    from sqlalchemy import select
+
+    from app.models.runtime_budget import RuntimeBudgetEvent
+    from app.services.runtime_budget_service import (
+        RuntimeBudgetDenied,
+        RuntimeBudgetReservation,
+        RuntimeBudgetService,
+    )
+
+    tenant_id = await _seed_tenant(owner_sessionmaker)
+    service = RuntimeBudgetService(session_factory=app_user_sessionmaker)
+    run = await _create_run(service, tenant_id)
+
+    # Reach a terminal (hard_stopped) budget state, then replay the same
+    # reservation key against it — the denial must replay the recorded typed
+    # truth exactly once (no duplicate event, no unique-constraint failure).
+    from app.models.runtime_budget import RuntimeBudgetRun
+
+    async with owner_sessionmaker() as db:
+        stored = (
+            await db.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == run.id).with_for_update())
+        ).scalar_one()
+        stored.status = "hard_stopped"
+        stored.terminal_reason = "runtime_budget_circuit_break:team_sessions:1>=0"
+        await db.commit()
+
+    reservation = RuntimeBudgetReservation(
+        budget_run_id=run.id,
+        reservation_key="page-continuation-lane",
+        provider_calls=1,
+        reason="result page continuation admission",
+    )
+    with pytest.raises(RuntimeBudgetDenied) as first_denial:
+        await service.reserve(reservation)
+    with pytest.raises(RuntimeBudgetDenied) as replay_denial:
+        await service.reserve(reservation)
+
+    assert str(replay_denial.value) == str(first_denial.value)
+    assert str(first_denial.value) == "runtime_budget_circuit_break:team_sessions:1>=0"
+
+    async with owner_sessionmaker() as db:
+        denials = (
+            (
+                await db.execute(
+                    select(RuntimeBudgetEvent).where(
+                        RuntimeBudgetEvent.budget_run_id == run.id,
+                        RuntimeBudgetEvent.event_type == "denial",
+                        RuntimeBudgetEvent.reservation_key == "page-continuation-lane",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(denials) == 1
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_duplicate_summary_only_plain_denial_replays_typed_truth(
+    app_user_sessionmaker,
+    owner_sessionmaker,
+):
+    from sqlalchemy import select
+
+    from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
+    from app.services.runtime_budget_service import (
+        RuntimeBudgetDenied,
+        RuntimeBudgetReservation,
+        RuntimeBudgetService,
+    )
+
+    tenant_id = await _seed_tenant(owner_sessionmaker)
+    service = RuntimeBudgetService(session_factory=app_user_sessionmaker)
+    run = await _create_run(service, tenant_id, max_tokens=100)
+
+    # A summary_only run denying a plain (non-work-amplifying) reservation
+    # through the exhausted-dimensions path: replaying the same key must
+    # replay the identical typed denial, never a second insert.
+    async with owner_sessionmaker() as db:
+        stored = (
+            await db.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == run.id).with_for_update())
+        ).scalar_one()
+        stored.status = "summary_only"
+        stored.terminal_reason = "runtime_budget_summary_only:tokens"
+        await db.commit()
+
+    reservation = RuntimeBudgetReservation(
+        budget_run_id=run.id,
+        reservation_key="plain-token-lane",
+        tokens=500,
+        reason="plain token reservation",
+    )
+    with pytest.raises(RuntimeBudgetDenied) as first_denial:
+        await service.reserve(reservation)
+    with pytest.raises(RuntimeBudgetDenied) as replay_denial:
+        await service.reserve(reservation)
+
+    assert str(replay_denial.value) == str(first_denial.value)
+    assert replay_denial.value.dimensions == first_denial.value.dimensions
+    assert first_denial.value.dimensions == ["tokens"]
+
+    async with owner_sessionmaker() as db:
+        denials = (
+            (
+                await db.execute(
+                    select(RuntimeBudgetEvent).where(
+                        RuntimeBudgetEvent.budget_run_id == run.id,
+                        RuntimeBudgetEvent.event_type == "denial",
+                        RuntimeBudgetEvent.reservation_key == "plain-token-lane",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(denials) == 1

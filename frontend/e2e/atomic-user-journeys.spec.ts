@@ -752,8 +752,104 @@ async function exerciseDomain(
         return String(run.status);
       }, { timeout: 90_000, intervals: [500, 1000] }).toMatch(/completed|failed|cancelled/);
       expect(run.status).toBe('completed');
+      // Aggregate closure: the workflow RuntimeTask completing is NOT enough.
+      // The canonical notification must be bound to THIS workflow run through
+      // its result manifest (source_kind/task_type workflow,
+      // source_run_id === started.run_id, terminal item), and the extracted
+      // integration page id must be a UUID. Together with the workbench
+      // continuation proof below this proves the result was consumed; the
+      // fresh-database falsification check (page/outbox status) is what
+      // proves the page row itself reached delivered.
+      const baseRunId = String(base.run.run.run_id);
+      const workflowRunId = String(started.run_id);
+      let integrationPageId = '';
+      let notificationSequence = 0;
+      await expect.poll(async () => {
+        const canonicalNow = await responseJson<Array<Record<string, unknown>>>(
+          await context.ownerApi.get(
+            `/api/agents/${context.agentId}/sessions/${sessionId}/transcript?schema_version=2`,
+          ),
+          'poll workflow result integration delivery',
+        );
+        const notification = canonicalNow.find((item) => {
+          const kind = String(item.legacy_event_type || item.kind || item.event_type || '');
+          if (kind !== 'agent_task_notification') return false;
+          const payload = (item.payload as Record<string, unknown> | undefined) || {};
+          const metadata = (payload.metadata as Record<string, unknown> | undefined) || {};
+          if (String(metadata.source || '') !== 'runtime_result_integration') return false;
+          const manifest = metadata.result_manifest as Record<string, unknown> | undefined;
+          const items = Array.isArray(manifest?.items) ? (manifest.items as Array<Record<string, unknown>>) : [];
+          const pageId = String(metadata.integration_page_id || '');
+          if (!UUID_PATTERN.test(pageId)) return false;
+          if (pageId !== String(metadata.causation_id || '')) return false;
+          // A single manifest item must satisfy every binding at once —
+          // outbox row, workflow source, this run, and terminal status — so
+          // a multi-result page cannot cross-satisfy from two different items.
+          const bound = items.some(
+            (entry) => String(entry.outbox_id || '') === pageId
+              && String(entry.source_kind || '') === 'workflow'
+              && String(entry.task_type || '') === 'workflow'
+              && String(entry.source_run_id || '') === workflowRunId
+              && String(entry.terminal_status || '') === 'completed',
+          );
+          if (!bound) return false;
+          integrationPageId = pageId;
+          notificationSequence = Number(item.sequence || 0);
+          return true;
+        });
+        return Boolean(notification);
+      }, { timeout: 90_000, intervals: [500, 1000] }).toBe(true);
+      // The Session Workbench must show exactly the post-workflow continuation
+      // turn bound to this integration page and workflow run — status
+      // completed, id distinct from the base turn.
+      let continuationTaskId = '';
+      await expect.poll(async () => {
+        const workbenchNow = await responseJson<Record<string, unknown>>(
+          await context.ownerApi.get(
+            `/api/agents/${context.agentId}/sessions/${sessionId}/workbench`
+              + '?operator_view=true&operator_reason=J-11%20workflow%20result%20binding',
+          ),
+          'poll continuation workbench task',
+        );
+        // The session_owner audience sanitizes runtime-task metadata away;
+        // the binding fields require the explicit operator projection.
+        if (String(workbenchNow.audience || '') !== 'operator') return false;
+        const tasks = (workbenchNow.runtime_tasks as Array<Record<string, unknown>> | undefined) || [];
+        const matched = tasks.filter(
+          (task) => String(task.task_type || '') === 'web_chat_turn'
+            && String(((task.metadata as Record<string, unknown> | undefined) || {}).integration_page_id || '')
+              === integrationPageId
+            && String(((task.metadata as Record<string, unknown> | undefined) || {}).root_runtime_task_id || '')
+              === workflowRunId
+            && String(task.status || '') === 'completed',
+        );
+        if (matched.length === 1 && String(matched[0].id || '') !== baseRunId) {
+          continuationTaskId = String(matched[0].id);
+          return true;
+        }
+        return false;
+      }, { timeout: 90_000, intervals: [500, 1000] }).toBe(true);
+      // The continuation's receipt snapshot binds to that exact task id.
+      await expect.poll(async () => {
+        const canonicalNow = await responseJson<Array<Record<string, unknown>>>(
+          await context.ownerApi.get(
+            `/api/agents/${context.agentId}/sessions/${sessionId}/transcript?schema_version=2`,
+          ),
+          'poll continuation receipt snapshot',
+        );
+        return canonicalNow.some(
+          (item) => item.item_kind === 'assistant_text'
+            && item.lifecycle === 'snapshot'
+            && Number(item.sequence || 0) > notificationSequence
+            && normalizeRunId(canonicalRunId(item)) === normalizeRunId(continuationTaskId)
+            && String((item.payload as Record<string, unknown> | undefined)?.content || '')
+              .includes('J-11 terminal receipt from the controlled provider.'),
+        );
+      }, { timeout: 90_000, intervals: [500, 1000] }).toBe(true);
       domain.preview = preview;
       domain.run = run;
+      domain.integrationPageId = integrationPageId;
+      domain.continuationTaskId = continuationTaskId;
       break;
     }
     case 'J-12': {

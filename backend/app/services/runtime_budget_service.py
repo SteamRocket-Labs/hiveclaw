@@ -337,25 +337,29 @@ def evaluate_circuit_breaker(
         consumed = int(used.get(dimension, 0) or 0)
         if dimension in ("tokens", "cache_miss_tokens"):
             consumed += int(reserved.get(dimension, 0) or 0)
-        if consumed >= max_value:
+        # A zero cap forbids positive use, but zero observed use under a zero
+        # cap is legal — nothing was consumed, so the breaker must not trip
+        # (0>=0 is not a violation). Positive caps keep >= semantics.
+        if consumed > 0 and consumed >= max_value:
             tripped.append(f"{dimension}:{consumed}>={int(max_value)}")
 
     max_parent = maxes.get("parent_invocations")
-    if max_parent is not None and parent_invocations >= max_parent:
+    if max_parent is not None and parent_invocations > 0 and parent_invocations >= max_parent:
         tripped.append(f"parent_invocations:{parent_invocations}>={int(max_parent)}")
 
     max_failures = maxes.get("failures")
-    if max_failures is not None and failures >= max_failures:
+    if max_failures is not None and failures > 0 and failures >= max_failures:
         tripped.append(f"failures:{failures}>={int(max_failures)}")
 
     max_needs = maxes.get("needs_reconciliation")
-    if max_needs is not None and needs_reconciliation_count >= max_needs:
+    if max_needs is not None and needs_reconciliation_count > 0 and needs_reconciliation_count >= max_needs:
         tripped.append(f"needs_reconciliation:{needs_reconciliation_count}>={int(max_needs)}")
 
     max_ratio = maxes.get("child_failure_ratio")
     if (
         max_ratio is not None
         and child_failure_ratio is not None
+        and child_failure_ratio > 0
         and total_children >= min_children_for_ratio
         and child_failure_ratio >= max_ratio
     ):
@@ -556,25 +560,48 @@ class RuntimeBudgetService:
             pending_denial = await self._existing_event(db, run.id, reservation.reservation_key, "denial")
             if pending_denial is not None and run.status == "waiting_budget_approval":
                 raise RuntimeBudgetApprovalRequired(
-                    str(pending_denial.reason or "runtime budget approval required"),
+                    str(
+                        (pending_denial.metadata_json or {}).get("denial_message")
+                        or pending_denial.reason
+                        or "runtime budget approval required"
+                    ),
+                    budget_run_id=run.id,
+                    dimensions=list((pending_denial.metadata_json or {}).get("denied_dimensions") or []),
+                )
+            if pending_denial is not None and run.status != "active":
+                # General invariant: an existing denial on any non-active run
+                # replays the recorded typed truth without a second insert —
+                # one durable event per (run, key, event_type). Only an active
+                # run continues (approve_overrun reactivates the run for a
+                # fresh decision on a new reservation).
+                raise RuntimeBudgetDenied(
+                    str(
+                        (pending_denial.metadata_json or {}).get("denial_message")
+                        or pending_denial.reason
+                        or f"budget run is {run.status}"
+                    ),
                     budget_run_id=run.id,
                     dimensions=list((pending_denial.metadata_json or {}).get("denied_dimensions") or []),
                 )
             if run.status == "summary_only" and _work_amplifying_amounts(amounts):
+                denial_message = "summary_only_disallows_work_amplification"
                 event = self._event(
                     run,
                     event_type="denial",
                     reservation_key=reservation.reservation_key,
                     allowed=False,
                     would_deny=True,
-                    reason="summary_only_disallows_work_amplification",
+                    reason=denial_message,
                     amounts=amounts,
                     runtime_task_id=reservation.runtime_task_id,
-                    metadata=reservation.metadata,
+                    metadata={
+                        **(reservation.metadata or {}),
+                        "denial_message": denial_message,
+                    },
                 )
                 db.add(event)
                 await db.commit()
-                raise RuntimeBudgetDenied(str(event.reason), budget_run_id=run.id)
+                raise RuntimeBudgetDenied(denial_message, budget_run_id=run.id)
             if run.status not in {"active", "summary_only"}:
                 event = self._event(
                     run,
@@ -667,6 +694,11 @@ class RuntimeBudgetService:
                             terminal_reason="runtime_budget_exhausted",
                             result_summary="Runtime budget exhausted before this work was claimed.",
                         )
+                denial_message = (
+                    "runtime budget approval required: " + ",".join(denied_dimensions)
+                    if run.status == "waiting_budget_approval"
+                    else "runtime budget exhausted: " + ",".join(denied_dimensions)
+                )
                 event = self._event(
                     run,
                     event_type="denial",
@@ -680,6 +712,7 @@ class RuntimeBudgetService:
                         "denied_dimensions": denied_dimensions,
                         **(reservation.metadata or {}),
                         "target_status": run.status,
+                        "denial_message": denial_message,
                     },
                 )
                 db.add(event)
@@ -694,12 +727,12 @@ class RuntimeBudgetService:
                 await db.commit()
                 if run.status == "waiting_budget_approval":
                     raise RuntimeBudgetApprovalRequired(
-                        "runtime budget approval required: " + ",".join(denied_dimensions),
+                        denial_message,
                         budget_run_id=run.id,
                         dimensions=denied_dimensions,
                     )
                 raise RuntimeBudgetDenied(
-                    "runtime budget exhausted: " + ",".join(denied_dimensions),
+                    denial_message,
                     budget_run_id=run.id,
                     dimensions=denied_dimensions,
                 )

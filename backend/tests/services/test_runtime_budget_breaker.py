@@ -413,3 +413,116 @@ async def test_wake_breaker_hard_stop_cancels_pending_tasks_under_budget(
         pending = (await db.execute(select(RuntimeTask).where(RuntimeTask.id == pending_id))).scalar_one()
     assert pending.status == "killed"
     assert pending.budget_admission_status == "cancelled"
+
+
+def test_zero_cap_with_zero_use_does_not_trip_but_forbids_positive_use():
+    from app.services.runtime_budget_service import evaluate_circuit_breaker
+
+    # Zero observed use under a zero cap is legal: nothing was consumed, so
+    # the run must not be stopped (the full4 false hard_stop was exactly
+    # team_sessions:0>=0).
+    assert (
+        evaluate_circuit_breaker(
+            used={"team_sessions": 0, "subagents": 0, "provider_calls": 0},
+            reserved={},
+            maxes=_maxes(team_sessions=0, subagents=0, provider_calls=0),
+            failures=0,
+            needs_reconciliation_count=0,
+            parent_invocations=0,
+        )
+        == []
+    )
+    # Positive use under a zero cap is forbidden.
+    tripped = evaluate_circuit_breaker(
+        used={"team_sessions": 1},
+        reserved={},
+        maxes=_maxes(team_sessions=0),
+        failures=0,
+        needs_reconciliation_count=0,
+        parent_invocations=0,
+    )
+    assert tripped == ["team_sessions:1>=0"]
+
+
+def test_zero_valued_counters_and_ratio_do_not_trip_at_zero():
+    from app.services.runtime_budget_service import evaluate_circuit_breaker
+
+    assert (
+        evaluate_circuit_breaker(
+            used={},
+            reserved={},
+            maxes=_maxes(failures=0, needs_reconciliation=0, parent_invocations=0, child_failure_ratio=0.0),
+            failures=0,
+            needs_reconciliation_count=0,
+            parent_invocations=0,
+            child_failure_ratio=0.0,
+            total_children=10,
+        )
+        == []
+    )
+
+
+def test_zero_valued_counters_and_ratio_trip_on_first_positive_observation():
+    from app.services.runtime_budget_service import evaluate_circuit_breaker
+
+    assert evaluate_circuit_breaker(
+        used={},
+        reserved={},
+        maxes=_maxes(failures=0),
+        failures=1,
+        needs_reconciliation_count=0,
+        parent_invocations=0,
+    ) == ["failures:1>=0"]
+    assert evaluate_circuit_breaker(
+        used={},
+        reserved={},
+        maxes=_maxes(needs_reconciliation=0),
+        failures=0,
+        needs_reconciliation_count=1,
+        parent_invocations=0,
+    ) == ["needs_reconciliation:1>=0"]
+    assert evaluate_circuit_breaker(
+        used={},
+        reserved={},
+        maxes=_maxes(parent_invocations=0),
+        failures=0,
+        needs_reconciliation_count=0,
+        parent_invocations=1,
+    ) == ["parent_invocations:1>=0"]
+    ratio_tripped = evaluate_circuit_breaker(
+        used={},
+        reserved={},
+        maxes=_maxes(child_failure_ratio=0.0),
+        failures=0,
+        needs_reconciliation_count=0,
+        parent_invocations=0,
+        child_failure_ratio=0.5,
+        total_children=10,
+    )
+    assert ratio_tripped and ratio_tripped[0].startswith("child_failure_ratio:")
+
+
+def test_positive_cap_keeps_at_or_over_behavior():
+    from app.services.runtime_budget_service import evaluate_circuit_breaker
+
+    # Zero use under a positive cap never trips; reaching the positive cap
+    # still trips exactly as before.
+    assert (
+        evaluate_circuit_breaker(
+            used={"team_sessions": 0},
+            reserved={},
+            maxes=_maxes(team_sessions=5),
+            failures=0,
+            needs_reconciliation_count=0,
+            parent_invocations=0,
+        )
+        == []
+    )
+    assert evaluate_circuit_breaker(
+        used={"team_sessions": 5},
+        reserved={},
+        maxes=_maxes(team_sessions=5),
+        failures=0,
+        needs_reconciliation_count=0,
+        parent_invocations=0,
+    ) == ["team_sessions:5>=5"]

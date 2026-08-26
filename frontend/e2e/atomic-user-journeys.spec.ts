@@ -238,6 +238,28 @@ function normalizeRunId(value: string): string {
   return value.replace(/-/g, '').toLowerCase();
 }
 
+function sortKeysStable(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeysStable);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([key, entry]) => [key, sortKeysStable(entry)]),
+    );
+  }
+  return value;
+}
+
+function expectedArgsHash(toolName: string, args: Record<string, unknown>): string {
+  // Mirrors backend session_tool_runtime._sha256: canonical JSON with
+  // recursively sorted keys, ensure_ascii=False semantics, and compact
+  // separators. The schema-v2 tool_call.started payload intentionally
+  // exposes tool_name + args_hash instead of raw arguments; hashing the
+  // expected inputs proves the exact call inputs without reading private data.
+  const encoded = JSON.stringify(sortKeysStable({ tool_name: toolName, arguments: args }));
+  return crypto.createHash('sha256').update(encoded, 'utf8').digest('hex');
+}
+
 function hasCanonicalTerminalProof(
   canonical: Array<Record<string, unknown>>,
   journeyId: string,
@@ -264,14 +286,61 @@ function hasCanonicalTerminalProof(
   return hasReceiptSnapshot && hasTerminalOutcome;
 }
 
+function childSubagentCompatibilityProof(
+  envelopes: Array<Record<string, unknown>>,
+  journeyReceipt: string,
+  subagentTaskId: string,
+  childSessionId: string,
+  parentSessionId: string,
+): boolean {
+  // The subagent child session is produced by subagent_run_service, which
+  // intentionally persists legacy subagent_task_started/completed events; the
+  // schema-v2 read model surfaces them as compatibility envelopes, never as
+  // web-chat V2 assistant_text/run_outcome shapes. The strict proof binds the
+  // completion envelope to the ONE intended subagent task, child session, and
+  // parent session with exact receipt bytes, session contract, and decision
+  // entry — and requires exactly two run-bound subagent activity envelopes.
+  const taskRunId = normalizeRunId(subagentTaskId);
+  const runBound = (item: Record<string, unknown>) => normalizeRunId(String(item.run_id || '')) === taskRunId;
+  const isCompatibility = (item: Record<string, unknown>) =>
+    String(item.schema || '') === 'hive.session_event_compatibility';
+  const subagentRows = envelopes.filter(
+    (item) => isCompatibility(item) && runBound(item) && String(item.legacy_event_type || '').startsWith('subagent_task_'),
+  );
+  if (subagentRows.length !== 2) return false;
+  const started = subagentRows.find((item) => String(item.legacy_event_type || '') === 'subagent_task_started');
+  const completed = subagentRows.find((item) => String(item.legacy_event_type || '') === 'subagent_task_completed');
+  if (!started || !completed) return false;
+  if (String(started.legacy_item_status || '') !== 'running') return false;
+  if (String(completed.schema_version ?? '') !== '1') return false;
+  if (String(completed.compatibility_status || '') !== 'needs_reconciliation') return false;
+  if (String(completed.legacy_item_type || '') !== 'subagent_activity') return false;
+  if (String(completed.legacy_item_status || '') !== 'succeeded') return false;
+  const payload = (completed.payload as Record<string, unknown> | undefined) || {};
+  if (String(payload.content || '') !== journeyReceipt) return false;
+  const meta = (payload.metadata as Record<string, unknown> | undefined) || {};
+  if (String(meta.status || '') !== 'completed') return false;
+  if (String(meta.session_state || '') !== 'completed') return false;
+  const contract = (meta.session_contract as Record<string, unknown> | undefined) || {};
+  if (normalizeRunId(String(contract.run_id || '')) !== taskRunId) return false;
+  if (String(contract.continuation_address || '') !== childSessionId) return false;
+  const decision = (meta.subagent_decision_entry as Record<string, unknown> | undefined) || {};
+  if (normalizeRunId(String(decision.run_id || '')) !== taskRunId) return false;
+  if (String(decision.child_session_id || '') !== childSessionId) return false;
+  if (String(decision.parent_session_id || '') !== parentSessionId) return false;
+  if (String(decision.status || '') !== 'completed') return false;
+  if (String(decision.summary || '') !== journeyReceipt) return false;
+  return true;
+}
+
 
 async function startAndAwaitChat(
   api: APIRequestContext,
   currentAgentId: string,
   journeyId: string,
-  options: { receiptOnly?: boolean; title?: string } = {},
+  options: { receiptOnly?: boolean; title?: string; content?: string } = {},
 ): Promise<{ run: SessionRun; transcript: Array<Record<string, unknown>> }> {
-  const content = `${journeyId} exercise the production journey contract${options.receiptOnly ? ' receipt-only' : ''}.`;
+  const content = options.content || `${journeyId} exercise the production journey contract${options.receiptOnly ? ' receipt-only' : ''}.`;
   const run = await responseJson<SessionRun>(
     await api.post(`/api/agents/${currentAgentId}/sessions/runs`, {
       data: { content, display_content: content, title: options.title || `${journeyId} atomic journey` },
@@ -588,11 +657,12 @@ async function exerciseDomain(
       break;
     }
     case 'J-07': {
+      const marker = `j07-${suffix}`;
       const document = await responseJson<Record<string, unknown>>(
         await context.ownerApi.post(`/api/agents/${context.agentId}/knowledge/personal/documents`, {
           data: {
-            title: `J-07 owner knowledge ${suffix}`,
-            markdown: '# Owner knowledge\n\nAtomic source refs and tenant authority.',
+            title: `J-07 owner knowledge ${marker}`,
+            markdown: `# Owner knowledge ${marker}\n\nUnique per-run marker ${marker}. Atomic source refs and tenant authority.`,
             source_kind: 'paste',
             source_uri: `atomic://${sessionId}`,
             agent_searchable: true,
@@ -601,14 +671,146 @@ async function exerciseDomain(
         }),
         'ingest personal knowledge',
       );
-      const documents = await responseJson<Record<string, unknown>>(
-        await context.ownerApi.get(`/api/agents/${context.agentId}/knowledge/personal/documents`),
-        'list personal knowledge',
+      // Terminal ingestion through the exact returned job id — completed
+      // lifecycle with ready result, never a bare documents list.
+      const jobId = String(document.job_id);
+      expect(UUID_PATTERN.test(jobId)).toBe(true);
+      let job: Record<string, unknown> = {};
+      await expect.poll(async () => {
+        const jobs = await responseJson<Record<string, unknown>>(
+          await context.ownerApi.get(`/api/knowledge/personal/import-jobs`),
+          'poll personal import job',
+        );
+        job = ((jobs.jobs as Array<Record<string, unknown>>) || []).find((row) => String(row.job_id) === jobId) || {};
+        return String(job.lifecycle_status || '') === 'completed';
+      }, { timeout: 90_000, intervals: [500, 1000] }).toBe(true);
+      expect(String(job.result_status)).toBe('ready');
+      expect(Number(job.attempt_count || 0)).toBeGreaterThanOrEqual(1);
+      // Exact document detail: ready, canonicalized sensitivity, searchable,
+      // exact source kind/uri, and an ordered segment carrying the marker.
+      const documentId = String(document.document_id);
+      const detail = await responseJson<Record<string, unknown>>(
+        await context.ownerApi.get(`/api/agents/${context.agentId}/knowledge/personal/documents/${documentId}`),
+        'read personal document detail',
       );
-      expect(JSON.stringify(documents)).toContain(`J-07 owner knowledge ${suffix}`);
+      expect(String(detail.status)).toBe('ready');
+      expect(String(detail.sensitivity)).toBe('PL1_public');
+      expect(detail.agent_searchable).toBe(true);
+      expect(String(detail.source_kind)).toBe('paste');
+      expect(String(detail.source_uri)).toBe(`atomic://${sessionId}`);
+      const detailSegments = (detail.segments as Array<Record<string, unknown>> | undefined) || [];
+      expect(detailSegments.length).toBeGreaterThan(0);
+      const positions = detailSegments.map((segment) => Number(segment.position || 0));
+      expect([...positions].sort((left, right) => left - right)).toEqual(positions);
+      expect(detailSegments.some((segment) => String(segment.content || '').includes(marker))).toBe(true);
+      // Browser Personal KB search: exact document+segment and the exact
+      // kb://person source_ref.
+      const browserSearch = await responseJson<Record<string, unknown>>(
+        await context.ownerApi.get(`/api/agents/${context.agentId}/knowledge/personal/search?q=${marker}`),
+        'browser personal kb search',
+      );
+      const hits = (browserSearch.results as Array<Record<string, unknown>> | undefined) || [];
+      const hit = hits.find((row) => String(row.document_id) === documentId);
+      expect(hit).toBeTruthy();
+      const hitSegmentId = String((hit as Record<string, unknown>).segment_id);
+      expect(String((hit as Record<string, unknown>).source_ref)).toBe(
+        `kb://person/${owner.user.id}/documents/${documentId}#segment=${hitSegmentId}`,
+      );
+      // The second J-07 Agent session must consume the governed progressive-
+      // disclosure sequence: tool_search → search_personal_kb(marker) →
+      // read_personal_kb(exact ids), all closed canonically by the common
+      // closure assertion on its run.
+      const second = await startAndAwaitChat(context.ownerApi, context.agentId, 'J-07', {
+        title: `J-07 KB consume ${marker}`,
+        content: `J-07 exercise the production journey contract with unique marker ${marker}.`,
+      });
+      const secondRunId = String(second.run.run.run_id);
+      const secondSessionId = String(second.run.session.id);
+      const secondCanonical = await responseJson<Array<Record<string, unknown>>>(
+        await context.ownerApi.get(`/api/agents/${context.agentId}/sessions/${secondSessionId}/transcript?schema_version=2`),
+        'read second session canonical transcript',
+      );
+      // Exact run-bound tool sequence by started order, with exact call inputs
+      // proven through the args_hash seam (schema-v2 tool_call.started exposes
+      // tool_name + args_hash, never raw arguments).
+      const startedCalls = secondCanonical
+        .filter(
+          (item) => item.item_kind === 'tool_call'
+            && item.lifecycle === 'started'
+            && normalizeRunId(canonicalRunId(item)) === normalizeRunId(secondRunId),
+        )
+        .sort((left, right) => Number(left.sequence || 0) - Number(right.sequence || 0));
+      expect(
+        startedCalls.map((item) => String((item.payload as Record<string, unknown> | undefined)?.tool_name || '')),
+      ).toEqual(['tool_search', 'search_personal_kb', 'read_personal_kb']);
+      const expectedJ07Calls: Array<[string, Record<string, unknown>]> = [
+        ['tool_search', { query: 'personal knowledge' }],
+        ['search_personal_kb', { query: marker }],
+        ['read_personal_kb', { document_id: documentId, segment_ids: [hitSegmentId] }],
+      ];
+      expectedJ07Calls.forEach(([toolName, expectedArgs], index) => {
+        const payload = (startedCalls[index].payload as Record<string, unknown> | undefined) || {};
+        expect(String(payload.args_hash || '')).toBe(expectedArgsHash(toolName, expectedArgs));
+      });
+      const toolResults = secondCanonical.filter((item) => item.item_kind === 'tool_result');
+      const parsedResult = (item: Record<string, unknown>): Record<string, unknown> => {
+        const payload = (item.payload as Record<string, unknown> | undefined) || {};
+        const content = String(payload.content || '');
+        try {
+          return JSON.parse(content) as Record<string, unknown>;
+        } catch {
+          return {};
+        }
+      };
+      const toolCallsByInvocation = secondCanonical.filter((item) => item.item_kind === 'tool_call');
+      const toolNameFor = (item: Record<string, unknown>): string => {
+        const payload = (item.payload as Record<string, unknown> | undefined) || {};
+        return String(payload.tool_name || '');
+      };
+      const resultForTool = (toolName: string): Record<string, unknown> | undefined => {
+        const call = toolCallsByInvocation.find(
+          (item) => toolNameFor(item) === toolName
+            && normalizeRunId(canonicalRunId(item)) === normalizeRunId(secondRunId),
+        );
+        if (!call) return undefined;
+        return toolResults.find(
+          (item) => String(item.invocation_id || '') === String(call.invocation_id || ''),
+        );
+      };
+      const searchResult = resultForTool('search_personal_kb');
+      expect(searchResult).toBeTruthy();
+      const searchPayload = parsedResult(searchResult as Record<string, unknown>);
+      expect(String(searchPayload.status)).toBe('ok');
+      expect(((searchPayload.authority as Record<string, unknown>) || {}).allowed).toBe(true);
+      const searchHits = (searchPayload.results as Array<Record<string, unknown>> | undefined) || [];
+      const matchedHit = searchHits.find((row) => String(row.document_id) === documentId);
+      expect(matchedHit).toBeTruthy();
+      expect(String((matchedHit as Record<string, unknown>).segment_id)).toBe(hitSegmentId);
+      expect(String((matchedHit as Record<string, unknown>).source_ref)).toBe(
+        `kb://person/${owner.user.id}/documents/${documentId}#segment=${hitSegmentId}`,
+      );
+      const readResult = resultForTool('read_personal_kb');
+      expect(readResult).toBeTruthy();
+      const readPayload = parsedResult(readResult as Record<string, unknown>);
+      expect(String(readPayload.status)).toBe('ok');
+      expect(String(readPayload.document_id)).toBe(documentId);
+      expect(String(readPayload.source_ref)).toBe(`kb://person/${owner.user.id}/documents/${documentId}`);
+      expect(((readPayload.authority as Record<string, unknown>) || {}).allowed).toBe(true);
+      const readSegments = (readPayload.segments as Array<Record<string, unknown>> | undefined) || [];
+      expect(readSegments.some((segment) => String(segment.content || '').includes(marker))).toBe(true);
+      expect(hasCanonicalTerminalProof(secondCanonical, 'J-07', secondRunId)).toBe(true);
       domain.document = document;
-      domain.documents = documents;
-      break;
+      domain.job = job;
+      domain.detail = detail;
+      domain.hit = hit;
+      domain.secondRunId = secondRunId;
+      return {
+        sessionId: secondSessionId,
+        runId: secondRunId,
+        transcript: second.transcript,
+        domain,
+        expectedText: 'J-07 terminal receipt from the controlled provider.',
+      };
     }
     case 'J-08': {
       const skills = await responseJson<unknown>(await context.ownerApi.get('/api/skills/'), 'list skills');
@@ -664,13 +866,159 @@ async function exerciseDomain(
       break;
     }
     case 'J-09': {
+      // Mechanical subagent aggregate closure: exactly the completed subagent
+      // RuntimeTask bound to this base run and parent session; a valid child
+      // session id; the child's compatibility-envelope completion proof bound
+      // to that exact subagent task; the integration notification's one
+      // manifest item binding page/outbox/subagent/run/child-session/
+      // completed; exactly one completed continuation turn bound to the page
+      // and base run with the exact J-09 receipt. String-only workbench checks
+      // cannot satisfy this.
+      const baseRunId = String(base.run.run.run_id);
+      const operatorReason = 'J-09%20subagent%20aggregate%20proof';
       const workbench = await responseJson<Record<string, unknown>>(
-        await context.ownerApi.get(`/api/agents/${context.agentId}/sessions/${sessionId}/workbench`),
+        await context.ownerApi.get(
+          `/api/agents/${context.agentId}/sessions/${sessionId}/workbench?operator_view=true&operator_reason=${operatorReason}`,
+        ),
         'read subagent workbench',
       );
-      expect(JSON.stringify(base.transcript)).toContain('spawn_subagent');
-      expect(JSON.stringify(workbench)).toContain('subagent');
+      expect(String(workbench.audience || '')).toBe('operator');
+      const baseSessionId = String(sessionId);
+      let subagentTask: Record<string, unknown> | undefined;
+      let childSessionId = '';
+      await expect.poll(async () => {
+        const workbenchNow = await responseJson<Record<string, unknown>>(
+          await context.ownerApi.get(
+            `/api/agents/${context.agentId}/sessions/${sessionId}/workbench?operator_view=true&operator_reason=${operatorReason}`,
+          ),
+          'poll subagent task completion',
+        );
+        const tasks = (workbenchNow.runtime_tasks as Array<Record<string, unknown>> | undefined) || [];
+        // Exactly ONE subagent task under this PARENT SESSION, counting every
+        // subagent row regardless of root — the fresh_1420 duplicate child was
+        // rooted at the continuation, not the base run, so a root-only filter
+        // would miss it. The single survivor's root must then normalize to the
+        // base run.
+        const sessionSubagents = tasks.filter(
+          (task) => String(task.task_type || '') === 'subagent'
+            && String(((task.metadata as Record<string, unknown> | undefined) || {}).parent_session_id || '') === baseSessionId,
+        );
+        if (sessionSubagents.length !== 1) return false;
+        subagentTask = sessionSubagents[0];
+        const taskMetadata = (subagentTask.metadata as Record<string, unknown> | undefined) || {};
+        childSessionId = String(taskMetadata.child_session_id || '');
+        return String(subagentTask.status || '') === 'completed'
+          && normalizeRunId(String(taskMetadata.root_runtime_task_id || '')) === normalizeRunId(baseRunId)
+          && UUID_PATTERN.test(childSessionId);
+      }, { timeout: 90_000, intervals: [500, 1000] }).toBe(true);
+      const subagentTaskId = String((subagentTask as Record<string, unknown>).id);
+      // The child session's schema-v2 transcript carries the subagent service's
+      // legacy completion rows as compatibility envelopes; the strict proof
+      // binds started+completed to exactly this subagent task, child session,
+      // and parent session with exact receipt bytes and contract fields.
+      const j09Receipt = 'J-09 terminal receipt from the controlled provider.';
+      const childCanonical = await responseJson<Array<Record<string, unknown>>>(
+        await context.ownerApi.get(
+          `/api/agents/${context.agentId}/sessions/${childSessionId}/transcript`
+            + `?schema_version=2&operator_view=true&operator_reason=${operatorReason}`,
+        ),
+        'read subagent child canonical transcript',
+      );
+      expect(
+        childSubagentCompatibilityProof(childCanonical, j09Receipt, subagentTaskId, childSessionId, baseSessionId),
+      ).toBe(true);
+      // The parent integration notification binds page/outbox/subagent/run/
+      // child session/completed through ONE manifest item.
+      let integrationPageId = '';
+      let notificationSequence = 0;
+      await expect.poll(async () => {
+        const canonicalNow = await responseJson<Array<Record<string, unknown>>>(
+          await context.ownerApi.get(
+            `/api/agents/${context.agentId}/sessions/${sessionId}/transcript?schema_version=2`,
+          ),
+          'poll subagent integration notification',
+        );
+        const matches = canonicalNow.filter((item) => {
+          const kind = String(item.legacy_event_type || item.kind || item.event_type || '');
+          if (kind !== 'agent_task_notification') return false;
+          const payload = (item.payload as Record<string, unknown> | undefined) || {};
+          const metadata = (payload.metadata as Record<string, unknown> | undefined) || {};
+          if (String(metadata.source || '') !== 'runtime_result_integration') return false;
+          const manifest = metadata.result_manifest as Record<string, unknown> | undefined;
+          const items = Array.isArray(manifest?.items) ? (manifest.items as Array<Record<string, unknown>>) : [];
+          const pageId = String(metadata.integration_page_id || '');
+          if (!UUID_PATTERN.test(pageId)) return false;
+          if (pageId !== String(metadata.causation_id || '')) return false;
+          if (metadata.item_count !== undefined && Number(metadata.item_count) !== 1) return false;
+          if (items.length !== 1) return false;
+          const boundItems = items.filter(
+            (entry) => String(entry.outbox_id || '') === pageId
+              && String(entry.source_kind || '') === 'subagent'
+              && String(entry.task_type || '') === 'subagent'
+              && normalizeRunId(String(entry.source_run_id || '')) === normalizeRunId(subagentTaskId)
+              && String(entry.child_session_id || '') === childSessionId
+              && String(entry.terminal_status || '') === 'completed',
+          );
+          return boundItems.length === 1;
+        });
+        // Exactly ONE integration notification carries the full manifest
+        // binding for this subagent task — a second spawned child must fail,
+        // not merely rank behind the first match.
+        if (matches.length !== 1) return false;
+        integrationPageId = String(
+          ((matches[0].payload as Record<string, unknown> | undefined)?.metadata as Record<string, unknown> | undefined)
+            ?.integration_page_id || '',
+        );
+        notificationSequence = Number(matches[0].sequence || 0);
+        return true;
+      }, { timeout: 90_000, intervals: [500, 1000] }).toBe(true);
+      // Exactly one completed continuation turn bound to that page and the
+      // base run, distinct from the base run.
+      let continuationTaskId = '';
+      await expect.poll(async () => {
+        const workbenchNow = await responseJson<Record<string, unknown>>(
+          await context.ownerApi.get(
+            `/api/agents/${context.agentId}/sessions/${sessionId}/workbench?operator_view=true&operator_reason=${operatorReason}`,
+          ),
+          'poll subagent continuation task',
+        );
+        const tasks = (workbenchNow.runtime_tasks as Array<Record<string, unknown>> | undefined) || [];
+        // The API exposes the base run id as dashless hex while task metadata
+        // carries dashed UUIDs — compare normalized on both sides.
+        const matched = tasks.filter(
+          (task) => String(task.task_type || '') === 'web_chat_turn'
+            && String(((task.metadata as Record<string, unknown> | undefined) || {}).integration_page_id || '')
+              === integrationPageId
+            && normalizeRunId(String(((task.metadata as Record<string, unknown> | undefined) || {}).root_runtime_task_id || ''))
+              === normalizeRunId(baseRunId)
+            && String(task.status || '') === 'completed',
+        );
+        if (matched.length === 1 && normalizeRunId(String(matched[0].id || '')) !== normalizeRunId(baseRunId)) {
+          continuationTaskId = String(matched[0].id);
+          return true;
+        }
+        return false;
+      }, { timeout: 90_000, intervals: [500, 1000] }).toBe(true);
+      await expect.poll(async () => {
+        const canonicalNow = await responseJson<Array<Record<string, unknown>>>(
+          await context.ownerApi.get(
+            `/api/agents/${context.agentId}/sessions/${sessionId}/transcript?schema_version=2`,
+          ),
+          'poll continuation receipt snapshot',
+        );
+        return canonicalNow.some(
+          (item) => item.item_kind === 'assistant_text'
+            && item.lifecycle === 'snapshot'
+            && Number(item.sequence || 0) > notificationSequence
+            && normalizeRunId(canonicalRunId(item)) === normalizeRunId(continuationTaskId)
+            && String((item.payload as Record<string, unknown> | undefined)?.content || '') === j09Receipt,
+        );
+      }, { timeout: 90_000, intervals: [500, 1000] }).toBe(true);
       domain.workbench = workbench;
+      domain.subagentTaskId = subagentTaskId;
+      domain.childSessionId = childSessionId;
+      domain.integrationPageId = integrationPageId;
+      domain.continuationTaskId = continuationTaskId;
       break;
     }
     case 'J-10': {
@@ -1134,7 +1482,7 @@ test.describe.serial('real full-stack atomic user journeys', () => {
     test(journey.id + ' ' + journey.name, async ({ page }) => {
       const context: JourneyContext = { ownerApi, memberApi, intruderApi, fakeApi, agentId, owner, member };
       const base = await startAndAwaitChat(ownerApi, agentId, journey.id, {
-        receiptOnly: ['J-03', 'J-12', 'J-13'].includes(journey.id),
+        receiptOnly: ['J-03', 'J-07', 'J-12', 'J-13'].includes(journey.id),
       });
       const evidence = await exerciseDomain(journey, base, context);
       await expectJourneyEvidence(journey, context, evidence);

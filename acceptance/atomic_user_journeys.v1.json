@@ -56,8 +56,8 @@
       "id": "J-07",
       "name": "personal_knowledge_ingest_search",
       "atoms": {"input": "knowledge document", "authority": "owner grants and RLS", "execution": "knowledge index worker", "evidence": "document job citation", "recovery": "stuck job sweep", "consumption": "Personal KB and tool", "acceptance": "result or denial"},
-      "product_endpoints": ["POST /api/agents/{agent_id}/knowledge/personal/documents", "GET /api/agents/{agent_id}/knowledge/personal/documents"],
-      "browser_assertions": ["owner document is returned by the Personal KB projection", "source and sensitivity metadata survive ingestion", "cross-tenant session evidence is denied"],
+      "product_endpoints": ["POST /api/agents/{agent_id}/knowledge/personal/documents", "GET /api/knowledge/personal/import-jobs", "GET /api/agents/{agent_id}/knowledge/personal/documents/{document_id}", "GET /api/agents/{agent_id}/knowledge/personal/search", "GET /api/agents/{agent_id}/sessions/{session_id}/transcript?schema_version=2"],
+      "browser_assertions": ["exact import job reaches completed lifecycle with ready result and attempt evidence", "document detail is ready with canonical sensitivity, exact source identity, and ordered marker-bearing segments", "browser search returns the exact document/segment with kb://person source_ref", "a second Agent session consumes the governed progressive-disclosure sequence with exact run-bound started tool order (tool_search, search_personal_kb, read_personal_kb) and exact call inputs proven by args_hash equality (search the exact per-run marker; read the exact document_id + [segment_id])", "tool_result payloads close canonically with status ok, authority allowed, and exact ids/source_refs", "terminal receipt is rendered by the real Agent Detail UI"],
       "faults": ["permission_denial", "duplicate_or_out_of_order", "index_retry"]
     },
     {
@@ -72,8 +72,8 @@
       "id": "J-09",
       "name": "spawn_subagent",
       "atoms": {"input": "spawn action", "authority": "parent delegation budget", "execution": "subagent service", "evidence": "run journal", "recovery": "cancel reconcile late state", "consumption": "subagent panel", "acceptance": "typed result or failure"},
-      "product_endpoints": ["GET /api/agents/{agent_id}/sessions/{session_id}/transcript", "GET /api/agents/{agent_id}/sessions/{session_id}/workbench"],
-      "browser_assertions": ["spawn_subagent is recorded in the canonical transcript", "subagent evidence is consumed by the workbench projection", "terminal receipt is rendered by the real Agent Detail UI"],
+      "product_endpoints": ["GET /api/agents/{agent_id}/sessions/{session_id}/transcript?schema_version=2", "GET /api/agents/{agent_id}/sessions/{session_id}/workbench?operator_view=true", "GET /api/agents/{agent_id}/sessions/{child_session_id}/transcript?schema_version=2&operator_view=true"],
+      "browser_assertions": ["exactly ONE subagent RuntimeTask is bound to the base run and parent session with a valid child session id (a duplicate second child fails)", "child schema-v2 transcript proves exactly two run-bound subagent compatibility envelopes (started running, completed succeeded) with the exact receipt bytes, session_contract run_id + continuation_address, and subagent_decision_entry child/parent/status/summary bound to the one intended task", "exactly ONE integration notification binds page/outbox/subagent run/child session/completed through one manifest item", "exactly one completed continuation turn is bound to the page and base run and carries the exact receipt snapshot bytes (equality, not substring)", "terminal receipt is rendered by the real Agent Detail UI"],
       "faults": ["permission_denial", "duplicate_or_out_of_order", "child_timeout"]
     },
     {

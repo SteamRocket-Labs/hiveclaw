@@ -81,7 +81,11 @@ def _tool_for_journey(journey_id: str, available: set[str]) -> tuple[str, dict[s
         "J-09": (
             "spawn_subagent",
             {
-                "task": "Return the atomic subagent receipt",
+                # The spawn task must carry the explicit J-09 journey marker so
+                # the child's controlled response is the exact J-09 receipt —
+                # a marker-less task lets the provider's history fallback pick
+                # any earlier journey (the full5 J-01 false green).
+                "task": "J-09 return the atomic subagent receipt",
                 "type": "explorer",
                 "run_in_background": True,
             },
@@ -107,6 +111,68 @@ def _tool_for_journey(journey_id: str, available: set[str]) -> tuple[str, dict[s
     return candidate if candidate and candidate[0] in available else None
 
 
+_EXTRACTOR_SYSTEM_MARKER = "You extract a compact, source-grounded personal knowledge graph"
+
+
+def _extractor_payload(messages: list[dict[str, Any]]) -> str | None:
+    """The exact PersonalKnowledgeLLMExtractor protocol boundary.
+
+    The extractor calls this provider with a fixed system prompt and a JSON
+    document payload; the controlled answer must be the strict JSON object the
+    parser contract accepts (entities/assertions/links/warnings), grounded in
+    the segment content — never terminal prose (the full5 degraded job came
+    from prose reaching knowledge_extraction_failed).
+    """
+    for message in messages:
+        if message.get("role") != "system":
+            continue
+        if _EXTRACTOR_SYSTEM_MARKER not in _content_text(message.get("content")):
+            continue
+        # Protocol-valid and source-safe: the controlled journey must not
+        # invent semantic facts, so the extraction contract returns strict
+        # empty arrays — the pipeline still reaches ready through its own
+        # durable segments.
+        return json.dumps(
+            {
+                "entities": [],
+                "assertions": [],
+                "links": [],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+    return None
+
+
+def _latest_search_tool_result(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """Parse the most recent search_personal_kb tool result JSON, if present."""
+    for message in reversed(messages):
+        if message.get("role") != "tool":
+            continue
+        try:
+            parsed = json.loads(_content_text(message.get("content")))
+        except (TypeError, ValueError):
+            continue
+        if isinstance(parsed, dict) and isinstance(parsed.get("results"), list) and parsed.get("results"):
+            return parsed
+    return {}
+
+
+def _latest_user_marker(messages: list[dict[str, Any]]) -> str:
+    """The unique per-run marker the second J-07 session carries — repeat-safe.
+
+    The live turn may append trailing user-role system notices after the
+    original marker prompt; scan user messages in reverse for the marker.
+    """
+    for message in reversed(messages):
+        if message.get("role") != "user":
+            continue
+        match = re.search(r"j07-[0-9a-f]{8}", _content_text(message.get("content")))
+        if match:
+            return match.group(0)
+    return ""
+
+
 def _next_tool_for_journey(
     journey_id: str,
     *,
@@ -116,6 +182,32 @@ def _next_tool_for_journey(
     if "receipt-only" in _all_message_text(messages):
         return None
     called = _called_tool_names(messages)
+    if journey_id == "J-07":
+        # The governed Personal KB progressive-disclosure sequence for the
+        # second (non-receipt) J-07 session: discover the deferred tools, search
+        # the exact unique per-run marker carried by the prompt (repeat-safe),
+        # parse the exact matched search result ids, then read those segments
+        # before the terminal receipt.
+        if "tool_search" in available and "tool_search" not in called:
+            return ("tool_search", {"query": "personal knowledge"})
+        if "search_personal_kb" in available and "search_personal_kb" not in called:
+            marker = _latest_user_marker(messages)
+            if not marker:
+                return None
+            return ("search_personal_kb", {"query": marker})
+        if "read_personal_kb" in available and "read_personal_kb" not in called:
+            search_result = _latest_search_tool_result(messages)
+            results = search_result.get("results") or []
+            first = results[0] if results and isinstance(results[0], dict) else {}
+            document_id = str(first.get("document_id") or "")
+            segment_id = str(first.get("segment_id") or "")
+            if document_id and segment_id:
+                return (
+                    "read_personal_kb",
+                    {"document_id": document_id, "segment_ids": [segment_id]},
+                )
+            return None
+        return None
     if journey_id == "J-03":
         if "write_file" in available and "write_file" not in called:
             return (
@@ -150,8 +242,24 @@ def _next_tool_for_journey(
     return candidate
 
 
+def _is_runtime_result_integration_continuation(messages: list[dict[str, Any]]) -> bool:
+    """Detect the product-owned integration page runtime context exactly.
+
+    The continuation turn's model context starts with the literal header
+    emitted by build_result_integration_runtime_context; matching that exact
+    header is deterministic and never inspects natural-language semantics.
+    """
+    return any("Runtime result integration page." in _content_text(message.get("content")) for message in messages)
+
+
 def _response_payload(payload: dict[str, Any]) -> tuple[str | None, tuple[str, dict[str, Any]] | None]:
     messages = payload.get("messages") or []
+    extractor_json = _extractor_payload(messages)
+    if extractor_json is not None:
+        # The PersonalKnowledgeLLMExtractor protocol boundary is answered
+        # before any journey-marker logic — its fixed system prompt has no
+        # journey marker and must never fall back to a receipt.
+        return extractor_json, None
     user_text = _latest_user_text(messages)
     all_text = _all_message_text(messages)
     # Runtime prompts may carry earlier journey receipts through transcript or
@@ -172,6 +280,11 @@ def _response_payload(payload: dict[str, Any]) -> tuple[str | None, tuple[str, d
     )
     _CALLS[journey_id] += 1
     _LAST_TOOLS[journey_id] = sorted(_available_tool_names(payload))
+    if _is_runtime_result_integration_continuation(messages):
+        # The runtime result integration continuation integrates the completed
+        # child receipt; it must never propose a second tool effect (the
+        # fresh_1420 duplicate-child defect). Answer the terminal receipt.
+        return f"{journey_id} terminal receipt from the controlled provider.", None
     tool_call = _next_tool_for_journey(
         journey_id,
         available=_available_tool_names(payload),

@@ -538,6 +538,30 @@ RLS_BYPASS_ALLOWLIST = (
     _grant(
         *(
             "app/services/local_bridge_service.py",
+            "create_pairing_session",
+            "'anonymous local bridge pairing init (unbound pending holding scope)'",
+            ("insert:LocalAgentBridgePairingSession", "insert:Tenant", "select:LocalAgentBridgePairingSession"),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/local_bridge_service.py",
+            "approve_pairing_session",
+            "'local bridge pairing approval tenant rebind'",
+            ("update:LocalAgentBridgePairingSession",),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/local_bridge_service.py",
+            "reject_pairing_session",
+            "'local bridge pairing reject tenant rebind'",
+            ("update:LocalAgentBridgePairingSession",),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/local_bridge_service.py",
             "_load_pairing_by_device_code",
             "'local bridge device-code pairing lookup'",
             ("select:LocalAgentBridgePairingSession",),

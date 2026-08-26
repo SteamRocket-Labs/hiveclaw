@@ -33,6 +33,7 @@ from app.services.agent_identity_lifecycle import agent_lifecycle_active_clause
 from app.services.daemon_liveness import mark_daemon_outcome
 from app.services.plan_mode_core import build_plan_execution_instruction
 from app.services.tenant_resolver import resolve_tenant_for_agent
+from app.services.trigger_resource_authority import trigger_owner_user_id, trigger_root_session_id
 from app.services.runtime_tenant_admission import admit_agent_runtime_tenant
 from app.services.runtime_task_service import (
     build_restart_reconciliation_metadata,
@@ -180,6 +181,31 @@ def _build_trigger_wake_context_candidate(
         "context_candidate_ref": ref,
         **payload,
     }
+
+
+def batch_trigger_authority(triggers: list[AgentTrigger]) -> tuple[uuid.UUID | None, uuid.UUID | None]:
+    """Per-field unanimous-batch authority attribution for a fired trigger ledger row.
+
+    The trigger resources carry the trusted authority (``created_by`` and the
+    root/confirmed-plan/source session, read through the shared
+    ``trigger_resource_authority`` helpers). Each field is attributed
+    INDEPENDENTLY and only when every trigger in the batch carries the SAME
+    non-empty value for that field; a mixed or missing field stays NULL so a
+    batch is never mis-attributed to one user or session (any missing field
+    still fails the normal RuntimeTask authority check). Without owner
+    attribution the executing trigger is invisible to its creator in the
+    runtime-task REST listing and autonomy overview (both filter by
+    ``root_user_id`` first).
+    """
+    owners = [trigger_owner_user_id(trigger) for trigger in triggers]
+    sessions = [trigger_root_session_id(trigger) for trigger in triggers]
+    root_user_id = owners[0] if owners and all(owner == owners[0] and owner is not None for owner in owners) else None
+    root_session_id = (
+        sessions[0]
+        if sessions and all(session == sessions[0] and session is not None for session in sessions)
+        else None
+    )
+    return root_user_id, root_session_id
 
 
 async def _create_trigger_runtime_task(
@@ -338,6 +364,7 @@ async def _create_trigger_runtime_task(
         admission_status = (
             "waiting_budget_approval" if admission_decision is not None and admission_decision.waiting else "admitted"
         )
+        batch_root_user_id, batch_root_session_id = batch_trigger_authority(triggers)
         persisted_task_id = await create_runtime_task_record(
             task_id=task_id,
             task_type="trigger",
@@ -351,6 +378,12 @@ async def _create_trigger_runtime_task(
             prompt=f"Trigger wake: {', '.join(name for name in trigger_names if name) or 'unknown'}",
             trace_id=trace_id,
             metadata_json=metadata,
+            root_user_id=batch_root_user_id,
+            root_session_id=str(batch_root_session_id) if batch_root_session_id is not None else None,
+            # Canonical root-task chain: authorize_runtime_task_record treats
+            # an empty chain as root_authority_missing, hiding the executing
+            # trigger from its owner in the runtime-task read models.
+            delegation_chain=[f"agent:{agent_id}"],
             budget_run_id=budget_run.id if budget_run is not None else None,
             budget_reservation_key=budget_reservation_key,
             budget_admission_status=(

@@ -18,6 +18,10 @@ def _configure_environment() -> None:
     os.environ.setdefault("SECRETS_MASTER_KEY", "atomic-harness-master-secret-32bytes")
     os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:6379/15")
     os.environ.setdefault("HIVE_CODE_EXEC_PROVIDER", "local")
+    # J-05's one-shot trigger fires through the REAL trigger daemon; the
+    # journeys backend must run the production core daemons, not a stripped
+    # API-only process.
+    os.environ.setdefault("CORE_DAEMON_STARTUP_ENABLED", "true")
 
 
 def _upgrade_schema() -> None:

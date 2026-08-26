@@ -173,13 +173,33 @@ def _latest_user_marker(messages: list[dict[str, Any]]) -> str:
     return ""
 
 
+def _is_receipt_only_request(messages: list[dict[str, Any]]) -> bool:
+    """Whether the CURRENT request's own prompt is the receipt-only base turn.
+
+    Same exact reverse request-boundary rule as _is_plan_execution_handoff:
+    scan user messages in reverse, skipping empty and notice-prefixed ones;
+    the FIRST remaining message IS the current request boundary and is
+    authoritative — a later ordinary request never falls through to a
+    historical receipt-only prompt, and a historical real request never
+    suppresses a later one.
+    """
+    for message in reversed(messages):
+        if message.get("role") != "user":
+            continue
+        text = _content_text(message.get("content")).strip()
+        if not text or text.startswith(_USER_NOTICE_PREFIXES):
+            continue
+        return "receipt-only" in text
+    return False
+
+
 def _next_tool_for_journey(
     journey_id: str,
     *,
     available: set[str],
     messages: list[dict[str, Any]],
 ) -> tuple[str, dict[str, Any]] | None:
-    if "receipt-only" in _all_message_text(messages):
+    if _is_receipt_only_request(messages):
         return None
     called = _called_tool_names(messages)
     if journey_id == "J-07":
@@ -207,6 +227,12 @@ def _next_tool_for_journey(
                     {"document_id": document_id, "segment_ids": [segment_id]},
                 )
             return None
+        return None
+    if journey_id == "J-04":
+        # The start_immediately goal continuation run marks the goal complete
+        # exactly once with the exact summary, then the terminal receipt.
+        if "update_goal" in available and "update_goal" not in called:
+            return ("update_goal", {"status": "complete", "summary": "J-04 durable goal complete."})
         return None
     if journey_id == "J-03":
         if "write_file" in available and "write_file" not in called:
@@ -252,6 +278,36 @@ def _is_runtime_result_integration_continuation(messages: list[dict[str, Any]]) 
     return any("Runtime result integration page." in _content_text(message.get("content")) for message in messages)
 
 
+_PLAN_HANDOFF_DISPLAY_MARKER = "✅ 计划已确认，开始执行"
+
+# Runtime-injected user-role notices carry these exact prefixes in real
+# provider snapshots; they are not the turn's own request.
+_USER_NOTICE_PREFIXES = ("[System Notice]", "System Notice:")
+
+
+def _is_plan_execution_handoff(messages: list[dict[str, Any]]) -> bool:
+    """Exact reverse user-boundary detection of the plan execution handoff turn.
+
+    The live handoff run's provider messages carry the product-owned display
+    content 「✅ 计划已确认，开始执行」 as the turn's OWN user message
+    (session_model_results model_request_snapshot_json proof, fresh_1855) —
+    the full plan-execution prompt never reaches the provider. Scan user
+    messages in reverse, skipping empty and notice-prefixed ones: the FIRST
+    remaining message IS the current request boundary, and it qualifies only
+    when it strips to exactly that marker. Any other content ends the scan
+    immediately, so a historical handoff message can never steer a later
+    turn. No natural-language semantics are inspected.
+    """
+    for message in reversed(messages):
+        if message.get("role") != "user":
+            continue
+        text = _content_text(message.get("content")).strip()
+        if not text or text.startswith(_USER_NOTICE_PREFIXES):
+            continue
+        return text == _PLAN_HANDOFF_DISPLAY_MARKER
+    return False
+
+
 def _response_payload(payload: dict[str, Any]) -> tuple[str | None, tuple[str, dict[str, Any]] | None]:
     messages = payload.get("messages") or []
     extractor_json = _extractor_payload(messages)
@@ -284,6 +340,11 @@ def _response_payload(payload: dict[str, Any]) -> tuple[str | None, tuple[str, d
         # The runtime result integration continuation integrates the completed
         # child receipt; it must never propose a second tool effect (the
         # fresh_1420 duplicate-child defect). Answer the terminal receipt.
+        return f"{journey_id} terminal receipt from the controlled provider.", None
+    if _is_plan_execution_handoff(messages):
+        # The confirmed-plan handoff continuation EXECUTES the plan; it must
+        # never repeat the plan-generation tool sequence (the full6 handoff
+        # false green). Answer the terminal receipt with zero tool effects.
         return f"{journey_id} terminal receipt from the controlled provider.", None
     tool_call = _next_tool_for_journey(
         journey_id,

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import Update
 
 from app.services import local_bridge_service as service
 
@@ -51,14 +52,33 @@ class _PolicyDB:
         return _PolicyResult(self.rows)
 
 
+class _UpdateResult:
+    """Models a production UPDATE result (rowcount semantics)."""
+
+    def __init__(self, rowcount):
+        self.rowcount = rowcount
+
+
 class _FakeDB:
     def __init__(self, row):
         self.row = row
         self.in_bypass = False
         self.added = []
         self.committed = False
+        self.executed_statements = []
 
-    async def execute(self, _statement):
+    async def execute(self, statement):
+        self.executed_statements.append(statement)
+        if isinstance(statement, Update):
+            # Model the claim UPDATE semantics: the row is claimed only when
+            # it was approved (mirrors the production status predicate), and
+            # the SET values are applied to the row like a real UPDATE.
+            applies = getattr(self.row, "status", None) == "approved"
+            if applies:
+                for key, value in statement.compile().params.items():
+                    if hasattr(self.row, key):
+                        setattr(self.row, key, value)
+            return _UpdateResult(1 if applies else 0)
         return _ScalarResult(self.row if self.in_bypass else None)
 
     def add(self, obj):
@@ -123,6 +143,15 @@ async def test_exchange_pairing_reads_approved_pairing_with_audited_bypass_then_
     assert result["status"] == "active"
     assert result["access_token"] == "hb_test_token"
     assert pairing.status == "claimed"
+    # The claim is a status-predicated UPDATE with rowcount semantics.
+    update_statements = [s for s in db.executed_statements if isinstance(s, Update)]
+    assert len(update_statements) == 1
+    claim_statement = update_statements[0]
+    where_sql = str(claim_statement.whereclause)
+    assert "id" in where_sql and "status" in where_sql
+    claim_params = claim_statement.compile().params
+    assert claim_params["status"] == "claimed"
+    assert claim_params.get("status_1") == "approved"
     assert db.committed is True
     assert bypass_reasons == ["local bridge device-code pairing lookup"]
     assert pinned_tenants == [str(tenant_id)]

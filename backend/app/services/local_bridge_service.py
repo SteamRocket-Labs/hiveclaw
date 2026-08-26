@@ -14,11 +14,13 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.database import enter_rls_bypass, pin_rls_tenant_context
+from app.core.tenant_scope import TENANT_SCOPE_QUARANTINE_ID, TENANT_SCOPE_QUARANTINE_SLUG
+from app.database import enter_rls_bypass, get_current_tenant_id, pin_rls_tenant_context
 from app.models.agent import Agent
 from app.models.capability_policy import CapabilityPolicy
 from app.models.local_agent_channel import LocalAgentChannel
 from app.models.local_bridge import LocalAgentBridgeConnection, LocalAgentBridgePairingSession
+from app.models.tenant import Tenant
 
 BRIDGE_TOKEN_PREFIX = "hb_"
 DEFAULT_PAIRING_EXPIRES_SECONDS = 15 * 60
@@ -237,11 +239,23 @@ def _pairing_public_payload(
 
 
 async def create_pairing_session(db: AsyncSession, request: Any, *, base_url: str) -> dict[str, Any]:
-    """Create an unbound device-flow pairing session for a local CLI."""
+    """Create an unbound device-flow pairing session for a local CLI.
+
+    The device flow starts WITHOUT a Hive JWT (docs/local-agent-bridge-first-
+    pass): tenant/user/agent authority is bound only by browser approval, and
+    the request body never carries tenant/user/agent. With no tenant context
+    pinned, the genuinely unbound pending pairing is held in the platform
+    quarantine scope (the code-only holding scope seeded by
+    tenant_null_semantics_0712 and hidden from tenant listings) under an
+    audited RLS bypass; approval rebinds it to the authenticated tenant/user.
+    """
 
     user_code = generate_user_code()
     device_code = generate_device_code()
+    current_tenant = get_current_tenant_id()
+    unbound = not current_tenant
     session = LocalAgentBridgePairingSession(
+        tenant_id=uuid.UUID(current_tenant) if current_tenant else TENANT_SCOPE_QUARANTINE_ID,
         pairing_code_hash=hash_secret(normalize_user_code(user_code)),
         device_code_hash=hash_secret(device_code),
         device_name=str(request.device_name or "Local Agent").strip()[:255],
@@ -249,22 +263,103 @@ async def create_pairing_session(db: AsyncSession, request: Any, *, base_url: st
         device_fingerprint=str(request.device_fingerprint or "unknown").strip()[:255],
         scopes=normalize_scopes(getattr(request, "scopes", None)),
         status="pending",
-        metadata_json={},
+        metadata_json=(
+            {
+                "tenant_binding": "unbound_pending_pairing",
+                "holding_scope": TENANT_SCOPE_QUARANTINE_SLUG,
+            }
+            if unbound
+            else {}
+        ),
         expires_at=utcnow() + timedelta(seconds=DEFAULT_PAIRING_EXPIRES_SECONDS),
     )
-    db.add(session)
-    await db.flush()
-    await db.commit()
-    await db.refresh(session)
+    if unbound:
+        # The core insert below writes the row directly, so the ORM id
+        # default must be materialized explicitly first.
+        session.id = uuid.uuid4()
+    if unbound:
+        # Scanner-visible writes: the audited grant must truthfully expose
+        # that this scope inserts the quarantine Tenant seed and the pairing
+        # row — explicit core statements, never an invisible ORM flush.
+        # Import the PostgreSQL dialect insert under the bare name so the
+        # rls_bypass_manifest scanner fingerprints the actual write shape
+        # (insert:Tenant / insert:LocalAgentBridgePairingSession).
+        from sqlalchemy.dialects.postgresql import insert
+
+        async with enter_rls_bypass(
+            db,
+            reason="anonymous local bridge pairing init (unbound pending holding scope)",
+        ) as bypass_db:
+            # Freshly created databases have no quarantine scope row until a
+            # genuinely unbound row needs it (the 0712 migration seeds it only
+            # when residual NULL-tenant rows existed). Values mirror the
+            # migration seed exactly.
+            await bypass_db.execute(
+                insert(Tenant)
+                .values(
+                    id=TENANT_SCOPE_QUARANTINE_ID,
+                    name="Tenant Scope Quarantine",
+                    slug=TENANT_SCOPE_QUARANTINE_SLUG,
+                    im_provider="web_only",
+                    is_active=False,
+                    min_heartbeat_interval_minutes=45,
+                    timezone="UTC",
+                    default_max_triggers=20,
+                    min_poll_interval_floor=5,
+                    max_webhook_rate_ceiling=5,
+                    tokens_used_today=0,
+                    tokens_used_month=0,
+                    tokens_used_total=0,
+                    sync_version=1,
+                )
+                .on_conflict_do_nothing(index_elements=[Tenant.id])
+            )
+            await bypass_db.execute(
+                insert(LocalAgentBridgePairingSession).values(
+                    id=session.id,
+                    tenant_id=session.tenant_id,
+                    pairing_code_hash=session.pairing_code_hash,
+                    device_code_hash=session.device_code_hash,
+                    device_name=session.device_name,
+                    client_kind=session.client_kind,
+                    device_fingerprint=session.device_fingerprint,
+                    scopes=list(session.scopes or []),
+                    status="pending",
+                    metadata_json=dict(session.metadata_json or {}),
+                    expires_at=session.expires_at,
+                )
+            )
+            session = (
+                (
+                    await bypass_db.execute(
+                        select(LocalAgentBridgePairingSession).where(LocalAgentBridgePairingSession.id == session.id)
+                    )
+                )
+                .scalars()
+                .one()
+            )
+            await bypass_db.commit()
+    else:
+        db.add(session)
+        await db.flush()
+        await db.commit()
+        await db.refresh(session)
     return _pairing_public_payload(session=session, device_code=device_code, user_code=user_code, base_url=base_url)
 
 
 async def _load_pairing_by_user_code(db: AsyncSession, user_code: str) -> LocalAgentBridgePairingSession:
+    """Load a pairing for a MUTATION path, holding the row lock to commit.
+
+    The FOR UPDATE fence makes concurrent approvals/exchanges serialize on
+    the row: the loser re-reads the winner's terminal state instead of
+    racing a stale pending snapshot. The lock survives the audited bypass
+    scope until the caller's commit/rollback.
+    """
     async with enter_rls_bypass(db, reason="local bridge user-code pairing lookup"):
         result = await db.execute(
-            select(LocalAgentBridgePairingSession).where(
-                LocalAgentBridgePairingSession.pairing_code_hash == hash_secret(normalize_user_code(user_code))
-            )
+            select(LocalAgentBridgePairingSession)
+            .where(LocalAgentBridgePairingSession.pairing_code_hash == hash_secret(normalize_user_code(user_code)))
+            .with_for_update()
         )
     pairing = result.scalar_one_or_none()
     if pairing is None:
@@ -273,11 +368,16 @@ async def _load_pairing_by_user_code(db: AsyncSession, user_code: str) -> LocalA
 
 
 async def _load_pairing_by_device_code(db: AsyncSession, device_code: str) -> LocalAgentBridgePairingSession:
+    """Load a pairing for a MUTATION path (exchange), holding the row lock.
+
+    Same FOR UPDATE fence as the user-code loader: a concurrent exchange
+    re-reads the winner's claimed state instead of issuing a second token.
+    """
     async with enter_rls_bypass(db, reason="local bridge device-code pairing lookup"):
         result = await db.execute(
-            select(LocalAgentBridgePairingSession).where(
-                LocalAgentBridgePairingSession.device_code_hash == hash_secret(device_code)
-            )
+            select(LocalAgentBridgePairingSession)
+            .where(LocalAgentBridgePairingSession.device_code_hash == hash_secret(device_code))
+            .with_for_update()
         )
     pairing = result.scalar_one_or_none()
     if pairing is None:
@@ -309,6 +409,17 @@ async def ensure_default_local_agent_for_pairing(
     _ensure_pairing_not_expired(pairing)
     if pairing.status not in {"pending", "approved"}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Pairing is {pairing.status}")
+    # An approved/claimed pairing's binding is immutable: a different
+    # principal holding the short user code must not read the bound agent,
+    # re-approve, or trigger an attacker-side Agent creation. The guard runs
+    # BEFORE any existing-agent return or new-Agent creation.
+    if pairing.status in {"approved", "claimed"} and (
+        str(pairing.tenant_id or "") != str(tenant_id) or str(pairing.user_id or "") != str(user_id)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "pairing_already_bound", "status": pairing.status},
+        )
 
     if pairing.agent_id:
         existing = await db.get(Agent, pairing.agent_id)
@@ -365,7 +476,19 @@ async def ensure_default_local_agent_for_pairing(
         status="running",
     )
     db.add(local_agent)
-    await db.flush()
+    # participants is a derived global identity table whose strict-RLS WITH
+    # CHECK requires the referenced agent row while agents.participant_id
+    # requires the Participant — the circular bootstrap ensure_agent_identity
+    # documents and solves as an audited boundary (canonical for desktop/HR
+    # creation paths; a raw flush here 500'd under app_rls).
+    from app.services.agent_identity_lifecycle import ensure_agent_identity
+
+    await ensure_agent_identity(
+        db,
+        local_agent,
+        rls_bypass_reason="local bridge agent identity bootstrap",
+        rls_bypass_actor_id=str(user_id),
+    )
     from app.services.ai_assets import register_agent_asset
 
     await register_agent_asset(
@@ -389,15 +512,77 @@ async def approve_pairing_session(
 ) -> dict[str, Any]:
     pairing = await _load_pairing_by_user_code(db, user_code)
     _ensure_pairing_not_expired(pairing)
-    if pairing.status not in {"pending", "approved"}:
+    if pairing.status == "claimed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "pairing_already_claimed", "status": "claimed"},
+        )
+    if pairing.status == "approved":
+        # Approved bindings are immutable. The exact same server-derived
+        # tenant/user/agent re-approval is idempotent; anything else is a
+        # typed refusal with NO mutation.
+        same_binding = (
+            str(pairing.tenant_id or "") == str(tenant_id)
+            and str(pairing.user_id or "") == str(user_id)
+            and (agent_id is None or pairing.agent_id is None or str(pairing.agent_id) == str(agent_id))
+        )
+        if not same_binding:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "pairing_already_bound", "status": "approved"},
+            )
+        return {
+            "status": "approved",
+            "pairing_id": str(pairing.id),
+            "agent_id": str(pairing.agent_id) if pairing.agent_id else None,
+            "tenant_id": str(pairing.tenant_id),
+            "user_id": str(pairing.user_id),
+        }
+    if pairing.status != "pending":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Pairing is {pairing.status}")
-    pairing.user_id = user_id
-    pairing.tenant_id = tenant_id
-    pairing.agent_id = agent_id
-    pairing.status = "approved"
-    pairing.approved_at = utcnow()
-    pairing.metadata_json = {**(pairing.metadata_json or {}), **(metadata or {})}
-    await db.commit()
+
+    # Rebind the (possibly quarantine-held) pending pairing to the
+    # authenticated tenant/user. Scanner-visible write: the audited grant
+    # truthfully exposes the UPDATE.
+    from sqlalchemy import update
+
+    prior_metadata = dict(pairing.metadata_json or {})
+    initial_holding = prior_metadata.pop("holding_scope", None) or (
+        TENANT_SCOPE_QUARANTINE_SLUG
+        if prior_metadata.pop("tenant_binding", None) == "unbound_pending_pairing"
+        else None
+    )
+    prior_metadata.pop("tenant_binding", None)
+    new_metadata = {
+        **prior_metadata,
+        **(metadata or {}),
+        "tenant_binding": "approved_server_derived",
+    }
+    if initial_holding:
+        new_metadata["initial_holding_scope"] = initial_holding
+    async with enter_rls_bypass(db, reason="local bridge pairing approval tenant rebind") as bypass_db:
+        claim = await bypass_db.execute(
+            update(LocalAgentBridgePairingSession)
+            .where(LocalAgentBridgePairingSession.id == pairing.id, LocalAgentBridgePairingSession.status == "pending")
+            .values(
+                user_id=user_id,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                status="approved",
+                approved_at=utcnow(),
+                metadata_json=new_metadata,
+            )
+        )
+        if claim.rowcount != 1:
+            # A concurrent approval won the row: roll back this request's
+            # earlier uncommitted work (Agent/Participant/asset rows created
+            # by ensure_default_local_agent_for_pairing) and fail typed.
+            await bypass_db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "pairing_already_bound", "status": "approved"},
+            )
+        await bypass_db.commit()
     return {
         "status": "approved",
         "pairing_id": str(pairing.id),
@@ -417,14 +602,61 @@ async def reject_pairing_session(
 ) -> dict[str, Any]:
     pairing = await _load_pairing_by_user_code(db, user_code)
     _ensure_pairing_not_expired(pairing)
-    if agent_id and pairing.agent_id and pairing.agent_id != agent_id:
+    if pairing.status in {"approved", "claimed"}:
+        # Terminal bindings are immutable — reject can never mutate them.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "pairing_binding_terminal", "status": pairing.status},
+        )
+    if pairing.status == "rejected":
+        # Idempotent only for the exact same binding; a different principal
+        # cannot re-bind the rejected row to themselves.
+        if str(pairing.tenant_id or "") != str(tenant_id) or str(pairing.user_id or "") != str(user_id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "pairing_already_bound", "status": "rejected"},
+            )
+        return {"status": "rejected", "pairing_id": str(pairing.id)}
+    if pairing.status != "pending":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Pairing is {pairing.status}")
+    if agent_id and pairing.agent_id and str(pairing.agent_id) != str(agent_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pairing request not found")
-    pairing.user_id = user_id
-    pairing.tenant_id = tenant_id
-    pairing.agent_id = agent_id
-    pairing.status = "rejected"
-    pairing.rejected_at = utcnow()
-    await db.commit()
+    # Same truthful metadata contract as approval: the unbound holding claim
+    # is replaced by the current server-derived binding, with the holding
+    # scope preserved as provenance.
+    prior_metadata = dict(pairing.metadata_json or {})
+    initial_holding = prior_metadata.pop("holding_scope", None) or (
+        TENANT_SCOPE_QUARANTINE_SLUG
+        if prior_metadata.pop("tenant_binding", None) == "unbound_pending_pairing"
+        else None
+    )
+    prior_metadata.pop("tenant_binding", None)
+    new_metadata = {**prior_metadata, "tenant_binding": "rejected_server_derived"}
+    if initial_holding:
+        new_metadata["initial_holding_scope"] = initial_holding
+    # Scanner-visible write under the audited rebind scope.
+    from sqlalchemy import update
+
+    async with enter_rls_bypass(db, reason="local bridge pairing reject tenant rebind") as bypass_db:
+        claim = await bypass_db.execute(
+            update(LocalAgentBridgePairingSession)
+            .where(LocalAgentBridgePairingSession.id == pairing.id, LocalAgentBridgePairingSession.status == "pending")
+            .values(
+                user_id=user_id,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                status="rejected",
+                rejected_at=utcnow(),
+                metadata_json=new_metadata,
+            )
+        )
+        if claim.rowcount != 1:
+            await bypass_db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "pairing_binding_terminal", "status": "rejected"},
+            )
+        await bypass_db.commit()
     return {"status": "rejected", "pairing_id": str(pairing.id)}
 
 
@@ -465,9 +697,22 @@ async def exchange_pairing_session(db: AsyncSession, *, device_code: str) -> dic
     )
     db.add(connection)
     await db.flush()
-    pairing.connection_id = connection.id
-    pairing.status = "claimed"
-    pairing.claimed_at = utcnow()
+    # Claim exactly once: the status predicate plus rowcount (with the FOR
+    # UPDATE loader fence) means a concurrent exchange loses typed and its
+    # just-inserted connection row rolls back with the transaction.
+    from sqlalchemy import update
+
+    claim = await db.execute(
+        update(LocalAgentBridgePairingSession)
+        .where(LocalAgentBridgePairingSession.id == pairing.id, LocalAgentBridgePairingSession.status == "approved")
+        .values(connection_id=connection.id, status="claimed", claimed_at=utcnow())
+    )
+    if claim.rowcount != 1:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "pairing_already_claimed", "status": "claimed"},
+        )
     await db.commit()
     await db.refresh(connection)
     return {

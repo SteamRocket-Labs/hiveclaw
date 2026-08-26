@@ -353,6 +353,218 @@ def test_j07_progressive_disclosure_sequence() -> None:
     assert markerless == ("tool_search", {"query": "personal knowledge"})
 
 
+def test_j03_plan_execution_handoff_returns_receipt_without_plan_tools() -> None:
+    """Regression: the plan execution handoff continuation must not re-plan.
+
+    The live handoff run's provider messages carry ONLY the product-owned
+    display content 「✅ 计划已确认，开始执行」 (session_model_results
+    model_request_snapshot_json proof, fresh_1855) — the full plan-execution
+    prompt never reaches the provider. That exact display string is the
+    deterministic handoff marker: the controlled provider must answer the
+    terminal receipt with zero tool effects, never repeat the
+    write_file/exit_plan_mode generation sequence. Plan GENERATION prompts
+    keep the strict write_file -> exit_plan_mode order.
+    """
+    from tests.journeys.fake_external_provider import _next_tool_for_journey, _response_payload
+
+    # Actual snapshot shape: base prompt, the base run's assistant receipt,
+    # the product-owned handoff display content, and a trailing System Notice.
+    handoff_messages = [
+        {"role": "user", "content": "J-03 exercise the production journey contract."},
+        {"role": "assistant", "content": "J-03 terminal receipt from the controlled provider."},
+        {"role": "user", "content": "✅ 计划已确认，开始执行"},
+        {"role": "user", "content": "System Notice: the runtime granted tools for this round."},
+    ]
+    content, tool_call = _response_payload(
+        {
+            "messages": handoff_messages,
+            "tools": [
+                {"type": "function", "function": {"name": "write_file"}},
+                {"type": "function", "function": {"name": "exit_plan_mode"}},
+            ],
+        }
+    )
+    assert tool_call is None
+    assert content == "J-03 terminal receipt from the controlled provider."
+
+    # A historical handoff message must never steer a LATER explicit request:
+    # the newest real user prompt wins, so the generation sequence runs again.
+    later_messages = [
+        {"role": "user", "content": "✅ 计划已确认，开始执行"},
+        {"role": "assistant", "content": "J-03 terminal receipt from the controlled provider."},
+        {"role": "user", "content": "J-03 exercise the production journey contract again."},
+    ]
+    later_content, later_tool_call = _response_payload(
+        {
+            "messages": later_messages,
+            "tools": [
+                {"type": "function", "function": {"name": "write_file"}},
+                {"type": "function", "function": {"name": "exit_plan_mode"}},
+            ],
+        }
+    )
+    assert later_content is None
+    assert later_tool_call == (
+        "write_file",
+        {
+            "path": "workspace/plans/atomic-journey.plan.md",
+            "content": "# Atomic journey plan\n\nVerify the governed plan confirmation and continuation contract.",
+        },
+    )
+
+    # ANY later ordinary user message is the request boundary — it must not
+    # fall through to a historical handoff marker. Real snapshot notices use
+    # the "[System Notice]" bracket prefix; both prefix forms are skipped.
+    ordinary_messages = [
+        {"role": "user", "content": "✅ 计划已确认，开始执行"},
+        {"role": "assistant", "content": "J-03 terminal receipt from the controlled provider."},
+        {"role": "user", "content": "please summarize what the plan produced"},
+        {"role": "user", "content": "[System Notice] the runtime granted tools for this round."},
+    ]
+    from tests.journeys.fake_external_provider import _is_plan_execution_handoff
+
+    assert _is_plan_execution_handoff(ordinary_messages) is False
+    # And the generation prompt keeps its strict tool order.
+    generation = _next_tool_for_journey(
+        "J-03",
+        available={"write_file", "exit_plan_mode"},
+        messages=[
+            {
+                "role": "system",
+                "content": "Plan Mode: the only path writable in Plan Mode: workspace/plans/atomic.plan.md",
+            },
+            {"role": "user", "content": "J-03 prepare an immutable governed plan and wait for confirmation."},
+        ],
+    )
+    assert generation == (
+        "write_file",
+        {
+            "path": "workspace/plans/atomic.plan.md",
+            "content": "# Atomic journey plan\n\nVerify the governed plan confirmation and continuation contract.",
+        },
+    )
+
+
+def test_j04_goal_run_calls_update_goal_once_then_receipt() -> None:
+    """The goal continuation run marks the goal complete exactly once.
+
+    The start_immediately goal run carries the J-04 marker; the controlled
+    provider must call update_goal {status complete, exact summary} one time,
+    never a second time on replayed/continued rounds, then answer the exact
+    terminal receipt.
+    """
+    from tests.journeys.fake_external_provider import _next_tool_for_journey, _response_payload
+
+    # The receipt-only BASE turn must never touch update_goal (the goal does
+    # not exist yet); the flag binds the current request's own prompt, never a
+    # historical one — and a trailing role=user System Notice must not hide it.
+    base = _next_tool_for_journey(
+        "J-04",
+        available={"update_goal"},
+        messages=[{"role": "user", "content": "J-04 exercise the production journey contract receipt-only."}],
+    )
+    assert base is None
+    base_with_notice = _next_tool_for_journey(
+        "J-04",
+        available={"update_goal"},
+        messages=[
+            {"role": "user", "content": "J-04 exercise the production journey contract receipt-only."},
+            {"role": "user", "content": "System Notice: the runtime granted tools for this round."},
+        ],
+    )
+    assert base_with_notice is None
+
+    # A historical receipt-only prompt must never suppress a LATER ordinary
+    # request: the first non-notice user message is the authoritative request
+    # boundary, so an ordinary follow-up (no explicit journey marker) runs the
+    # normal tool flow instead of falling through to the old flag.
+    from tests.journeys.fake_external_provider import _is_receipt_only_request
+
+    assert (
+        _is_receipt_only_request(
+            [
+                {"role": "user", "content": "J-04 exercise the production journey contract receipt-only."},
+                {"role": "assistant", "content": "J-04 terminal receipt from the controlled provider."},
+                {"role": "user", "content": "please continue the durable goal work"},
+                {"role": "user", "content": "[System Notice] the runtime granted tools for this round."},
+            ]
+        )
+        is False
+    )
+
+    goal_messages = [
+        {"role": "user", "content": "J-04 exercise the production journey contract receipt-only."},
+        {"role": "user", "content": "J-04 exercise the production journey contract with durable goal ab12cd34."},
+    ]
+    first = _next_tool_for_journey(
+        "J-04",
+        available={"update_goal"},
+        messages=goal_messages,
+    )
+    assert first == ("update_goal", {"status": "complete", "summary": "J-04 durable goal complete."})
+
+    called_messages = goal_messages + [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-update_goal",
+                    "type": "function",
+                    "function": {
+                        "name": "update_goal",
+                        "arguments": '{"status": "complete", "summary": "J-04 durable goal complete."}',
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-update_goal", "content": '{"ok": true}'},
+    ]
+    again = _next_tool_for_journey(
+        "J-04",
+        available={"update_goal"},
+        messages=called_messages,
+    )
+    assert again is None
+    content, tool_call = _response_payload(
+        {
+            "messages": called_messages,
+            "tools": [{"type": "function", "function": {"name": "update_goal"}}],
+        }
+    )
+    assert tool_call is None
+    assert content == "J-04 terminal receipt from the controlled provider."
+
+
+def test_j05_trigger_context_returns_exact_receipt_without_tools() -> None:
+    """The one-shot trigger wake answers the exact receipt with zero effects.
+
+    J-05's governed delivery is a disabled schedule + declined recommendation
+    + one-shot trigger; the trigger wake turn itself must never propose tools
+    (not even set_trigger) and must return the exact J-05 terminal receipt.
+    """
+    from tests.journeys.fake_external_provider import _response_payload, _tool_for_journey
+
+    assert _tool_for_journey("J-05", {"set_trigger"}) is None
+    trigger_messages = [
+        {
+            "role": "user",
+            "content": (
+                "Scheduled trigger: manual_J-05 controlled schedule ab12cd34 (once)\n"
+                "Reason: J-05 exercise the production journey contract with unique marker j05-ab12cd34."
+            ),
+        }
+    ]
+    content, tool_call = _response_payload(
+        {
+            "messages": trigger_messages,
+            "tools": [{"type": "function", "function": {"name": "set_trigger"}}],
+        }
+    )
+    assert tool_call is None
+    assert content == "J-05 terminal receipt from the controlled provider."
+
+
 def test_j07_marker_survives_trailing_system_notice_user_message() -> None:
     """Regression: a trailing user-role System Notice must not hide the marker.
 

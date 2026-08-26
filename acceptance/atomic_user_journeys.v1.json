@@ -16,32 +16,32 @@
       "id": "J-02",
       "name": "upload_to_deliverable",
       "atoms": {"input": "file picker", "authority": "ResourceAuthority", "execution": "workspace artifact service", "evidence": "hash artifact row", "recovery": "idempotent registration", "consumption": "deliverables panel", "acceptance": "preview and download"},
-      "product_endpoints": ["POST /api/chat/upload", "GET /api/agents/{agent_id}/files/?path=workspace/uploads"],
-      "browser_assertions": ["registered workspace artifact is returned by the authenticated file projection", "terminal receipt is rendered by the real Agent Detail UI", "cross-tenant session evidence is denied"],
+      "product_endpoints": ["POST /api/chat/upload", "GET /api/agents/{agent_id}/files/?path=workspace/uploads", "GET /api/agents/{agent_id}/files/download?path={workspace_path}"],
+      "browser_assertions": ["upload response carries the exact filename/saved_filename/size/workspace_path and the conversion-banner preview whose body is the exact uploaded bytes", "the authenticated file projection returns EXACTLY ONE matching item with exact name and byte size (no JSON containment)", "downloading through the real download endpoint returns bytes exactly equal to the uploaded constant", "terminal receipt is rendered by the real Agent Detail UI"],
       "faults": ["permission_denial", "duplicate_or_out_of_order", "upload_retry"]
     },
     {
       "id": "J-03",
       "name": "plan_confirm_to_observation",
       "atoms": {"input": "plan card confirmation", "authority": "plan lease and approver", "execution": "ToolRuntime approval worker", "evidence": "plan hash ticket receipt", "recovery": "reapproval continuation", "consumption": "waiting and result cards", "acceptance": "tool observation"},
-      "product_endpoints": ["POST /api/agents/{agent_id}/plans", "GET /api/agents/{agent_id}/plans/{plan_id}", "POST /api/agents/{agent_id}/plans/{plan_id}/confirm"],
-      "browser_assertions": ["canonical plan reaches awaiting_confirmation", "version and hash confirmation reaches confirmed", "terminal receipt is rendered by the real Agent Detail UI"],
+      "product_endpoints": ["POST /api/agents/{agent_id}/plans", "GET /api/agents/{agent_id}/plans/{plan_id}", "POST /api/agents/{agent_id}/plans/{plan_id}/confirm-and-handoff", "GET /api/agents/{agent_id}/sessions/{session_id}/transcript?schema_version=2"],
+      "browser_assertions": ["canonical plan reaches awaiting_confirmation with version and hash binding", "the Web PlanCard happy path confirm-and-handoff returns confirmed (queued keeps polling until real terminal closure)", "handoff_status reaches completed with a UUID runtime_task_id and session_id equal to the current session", "the schema-v2 canonical transcript proves the run-bound terminal J-03 receipt for exactly that handoff runtime task, and the handoff run carries ZERO tool rows (no repeated plan writes)", "terminal receipt is rendered by the real Agent Detail UI"],
       "faults": ["permission_denial", "duplicate_or_out_of_order", "late_approval"]
     },
     {
       "id": "J-04",
       "name": "goal_long_task",
       "atoms": {"input": "goal action", "authority": "owner and budget", "execution": "RuntimeTask worker", "evidence": "goal task transcript", "recovery": "disconnect backfill", "consumption": "run status", "acceptance": "terminal goal"},
-      "product_endpoints": ["POST /api/agents/{agent_id}/sessions/{session_id}/goals"],
-      "browser_assertions": ["same request_id returns the same durable goal", "goal budget is persisted", "terminal receipt is rendered by the real Agent Detail UI"],
+      "product_endpoints": ["POST /api/agents/{agent_id}/sessions/{session_id}/goals", "GET /api/agents/{agent_id}/sessions/{session_id}/workbench?operator_view=true", "GET /api/agents/{agent_id}/sessions/{session_id}/transcript?schema_version=2"],
+      "browser_assertions": ["start_immediately with a J-04 marker creates the goal (id equals request_id) AND starts the real goal run", "the goal run terminates canonically with the exact J-04 receipt and EXACTLY ONE update_goal invocation whose args_hash proves status complete with the exact summary", "the goal projection reaches status complete with non-empty completed_at and the exact completion summary", "replaying the same body returns the same goal id and same run id with the replayed flag, the CANONICAL terminal run status resolved from the tenant-scoped RuntimeTask (never the stale write-time snapshot), and unchanged token/time/continuation budgets", "terminal receipt is rendered by the real Agent Detail UI"],
       "faults": ["permission_denial", "duplicate_or_out_of_order", "disconnect", "budget_exhaustion"]
     },
     {
       "id": "J-05",
       "name": "schedule_trigger_delivery",
       "atoms": {"input": "schedule form", "authority": "tenant trigger policy", "execution": "trigger RuntimeTask", "evidence": "task journal outbox", "recovery": "reconcile retry", "consumption": "notification", "acceptance": "terminal delivery"},
-      "product_endpoints": ["POST /api/agents/{agent_id}/schedules/", "GET /api/agents/{agent_id}/schedules/"],
-      "browser_assertions": ["governed schedule is returned by the tenant-scoped projection", "disabled schedule does not execute unexpectedly", "terminal receipt is rendered by the real Agent Detail UI"],
+      "product_endpoints": ["POST /api/agents/{agent_id}/schedules/", "GET /api/agents/{agent_id}/schedules/", "POST /api/agents/{agent_id}/plan-recommendations", "POST /api/agents/{agent_id}/plan-recommendations/{recommendation_id}/decline", "POST /api/agents/{agent_id}/schedules/{schedule_id}/run", "GET /api/agents/{agent_id}/runtime-tasks?task_type=trigger&trigger_id={trigger_id}", "GET /api/agents/{agent_id}/triggers", "GET /api/agents/{agent_id}/sessions/{trigger_session_id}/transcript?schema_version=2"],
+      "browser_assertions": ["a disabled schedule with a unique marker stays disabled throughout; the manual run is queued ONLY through the exactly-declined plan recommendation path", "the one-shot trigger RuntimeTask reaches terminal completed and is discoverable by its PLAIN OWNER through the runtime-task read model bound to the trigger id (unanimous-batch authority attribution), firing exactly once (fire_count=1, max_fires=1, trigger disabled after fire)", "the trigger child session's transcript carries the awakening context with the unique marker and the exact J-05 terminal receipt, both run-bound to the trigger task", "exactly ONE delivered session_projection notification/page in the child session binds outbox/trigger task/terminal completed through one manifest item", "the legacy activity-log schedule history is not an acceptance source for this path (no modern writer)", "terminal receipt is rendered by the real Agent Detail UI"],
       "faults": ["permission_denial", "duplicate_or_out_of_order", "provider_retry"]
     },
     {
@@ -88,8 +88,8 @@
       "id": "J-11",
       "name": "dynamic_workflow",
       "atoms": {"input": "workflow preview", "authority": "workflow confirmation", "execution": "workflow RuntimeTask", "evidence": "packet step journal", "recovery": "wait resume", "consumption": "workflow panel", "acceptance": "verify integrate"},
-      "product_endpoints": ["POST /api/agents/{agent_id}/workflows/preview", "POST /api/agents/{agent_id}/workflows/runs"],
-      "browser_assertions": ["preview_id is required to start", "step journal reaches completed", "terminal receipt is rendered by the real Agent Detail UI"],
+      "product_endpoints": ["POST /api/agents/{agent_id}/workflows/preview", "POST /api/agents/{agent_id}/workflows/runs", "GET /api/agents/{agent_id}/workflows/runs/{run_id}", "GET /api/agents/{agent_id}/sessions/{session_id}/transcript?schema_version=2"],
+      "browser_assertions": ["preview_id is required to start and the workflow run reaches completed", "the schema-v2 canonical transcript proves the run-bound packet step journal: exactly one running then exactly one done for step id verify with strictly increasing sequences closing before the terminal integration notification", "exactly one continuation turn bound to the integration page and workflow run carries the exact receipt", "terminal receipt is rendered by the real Agent Detail UI"],
       "faults": ["permission_denial", "duplicate_or_out_of_order", "step_retry"]
     },
     {
@@ -112,8 +112,8 @@
       "id": "J-14",
       "name": "local_agent_bridge",
       "atoms": {"input": "bridge session", "authority": "bridge bearer and policy", "execution": "local runner", "evidence": "receipt ledger", "recovery": "replay offline reconnect", "consumption": "local status", "acceptance": "result"},
-      "product_endpoints": ["POST /api/local-bridge/pairing/init", "POST /api/agents/{agent_id}/local-bridge/pairings/{user_code}/approve", "POST /api/local-bridge/pairing/exchange", "GET /api/local-bridge/status"],
-      "browser_assertions": ["owner approval is required before token exchange", "bridge bearer reports connected", "terminal receipt is rendered by the real Agent Detail UI"],
+      "product_endpoints": ["POST /api/local-bridge/pairing/init", "POST /api/local-bridge/pairing/exchange", "POST /api/local-bridge/pairings/{user_code}/approve", "GET /api/local-bridge/status", "POST /api/local-bridge/channel/ws-ticket", "GET /api/local-bridge/channel/ws (websocket ready handshake)", "POST /api/agents/{agent_id}/local-agent/sessions/default", "POST /api/agents/{agent_id}/local-agent/sessions/{session_id}/messages", "GET /api/agents/{agent_id}/approvals", "POST /api/agents/{agent_id}/approvals/{approval_id}/resolve", "GET /api/local-bridge/channel/poll", "POST /api/local-bridge/channel/report", "GET /api/agents/{agent_id}/local-agent/sessions/{session_id}/events"],
+      "browser_assertions": ["pairing requests the explicit local_agent scopes; an ANONYMOUS exchange BEFORE approval returns the typed pending state with no token or connection — owner approval precedes token exchange", "the bridge bearer reports connected against the default local agent and a real WS ready handshake issues the signed capability snapshot (execute + result_report)", "owner action approval gates dispatch BEFORE the bridge may receive: enqueue returns waiting_approval, the bridge poll is empty, exactly ONE pending approval bound to details.local_agent_message_id resolves through approve, and only then exactly one OFFLINE delivery reaches the bridge with attempt 1 while the server-observed presence_status is offline (polled after the first WS disconnect)", "a NEW single-use ws-ticket and a second real ready handshake with the same bridge bearer prove disconnect -> offline delivery -> reconnect -> completion", "resolving the second message's bound approval as reject is terminal: the bridge poll stays empty, exactly ONE approval_resolved event for the denied message carries payload status/execution_status/message_status all rejected, and there is NO result event for it, while the completed main message/result remain exactly one", "the completed local report returns a verifiable execution receipt (schema/status/request_hash/capability_snapshot_hash/result_refs/replay_key); replaying the same report is an idempotent replay with the identical receipt; re-poll stays empty", "the local session shows exactly one result event with the exact output and completed status; browser consumption opens the local session chat under the local agent and renders the local runner's exact output"],
       "faults": ["permission_denial", "duplicate_or_out_of_order", "offline_reconnect"]
     },
     {

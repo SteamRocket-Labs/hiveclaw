@@ -219,9 +219,41 @@ async def start_session_goal(
         metadata = dict(goal.metadata_json or {})
         replay_run_id = str(metadata.get("last_goal_run_id") or "").strip()
         if not created and replay_run_id:
+            # The RuntimeTask ledger is the canonical truth for the run's
+            # status; the goal's last_goal_run_status copy is a write-time
+            # snapshot and goes stale (a terminal task kept replaying
+            # "pending" — fresh2_1829). Resolve the exact task — same agent,
+            # same session, and goal-bound through its metadata — and fall
+            # back to the snapshot only when that task cannot be resolved.
+            from sqlalchemy import or_
+
+            from app.models.runtime_task import RuntimeTask
+
+            try:
+                replay_task_uuid = uuid.UUID(replay_run_id)
+            except (TypeError, ValueError):
+                replay_task_uuid = None
+            replay_task = (
+                (
+                    await db.execute(
+                        select(RuntimeTask).where(
+                            RuntimeTask.id == replay_task_uuid,
+                            RuntimeTask.parent_agent_id == agent.id,
+                            or_(
+                                RuntimeTask.parent_session_id == str(session_id),
+                                RuntimeTask.child_session_id == str(session_id),
+                            ),
+                            RuntimeTask.metadata_json["goal_id"].astext == str(goal.id),
+                        )
+                    )
+                ).scalar_one_or_none()
+                if replay_task_uuid is not None
+                else None
+            )
+            resolved_status = str(getattr(replay_task, "status", "") or "").strip() if replay_task is not None else ""
             run = {
                 "run_id": replay_run_id,
-                "status": str(metadata.get("last_goal_run_status") or "running"),
+                "status": resolved_status or str(metadata.get("last_goal_run_status") or "running"),
                 "replayed": True,
             }
         elif goal.status == "active":
@@ -259,6 +291,12 @@ async def start_session_goal(
                 metadata["last_goal_run_status"] = str((run or {}).get("status") or "running")
                 goal.metadata_json = metadata
                 await db.flush()
+                # updated_at carries onupdate=func.now(), so the flush above
+                # expires it; reload explicitly before the synchronous
+                # projection read or it would perform implicit IO
+                # (MissingGreenlet → HTTP 500 after the goal row and run were
+                # already created).
+                await db.refresh(goal)
     return {**build_session_goal_projection(goal), "run": run}
 
 

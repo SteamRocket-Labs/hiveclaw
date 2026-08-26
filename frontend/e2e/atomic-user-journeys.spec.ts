@@ -27,6 +27,7 @@ type JourneyContext = {
   memberApi: APIRequestContext;
   intruderApi: APIRequestContext;
   fakeApi: APIRequestContext;
+  anonApi: APIRequestContext;
   agentId: string;
   owner: AuthState;
   member: AuthState;
@@ -57,6 +58,7 @@ let ownerApi: APIRequestContext;
 let memberApi: APIRequestContext;
 let intruderApi: APIRequestContext;
 let fakeApi: APIRequestContext;
+let anonApi: APIRequestContext;
 let owner: AuthState;
 let member: AuthState;
 let agentId = '';
@@ -211,6 +213,10 @@ async function bootstrap(playwright: PlaywrightWorkerArgs['playwright']): Promis
   }
   intruderApi = await authContext(playwright, intruder);
   fakeApi = await playwright.request.newContext({ baseURL: HIVE_JOURNEY_FAKE_URL, timeout: 30_000 });
+  // The local bridge device flow is genuinely unauthenticated (no JWT, no
+  // tenant header) — pairing/init through any authenticated context would
+  // mask the anonymous strict-RLS boundary.
+  anonApi = await playwright.request.newContext({ baseURL: HIVE_JOURNEY_BACKEND_URL, timeout: 120_000 });
   await publicApi.dispose();
 }
 
@@ -228,14 +234,26 @@ function canonicalWaitingPermissionItemId(item: Record<string, unknown>): string
 }
 
 function canonicalRunId(item: Record<string, unknown>): string {
+  // Run receipts expose the RuntimeTask id as dashless hex; canonical
+  // envelopes carry the dashed UUID. Normalize both before binding. Accepted
+  // human input uses a SESSION scope by contract, so its run binding lives in
+  // payload.legacy_run_id (session_event_contract: V2 reserves the top-level
+  // run_id for actual run/round scopes) — read it after the top-level and
+  // scope run ids.
   const scope = item.scope as Record<string, unknown> | undefined;
-  return String(item.run_id || scope?.run_id || '');
+  const payload = (item.payload as Record<string, unknown> | undefined) || {};
+  return String(item.run_id || scope?.run_id || payload.legacy_run_id || '');
 }
 
 function normalizeRunId(value: string): string {
   // Run receipts expose the RuntimeTask id as dashless hex; canonical
   // envelopes carry the dashed UUID. Normalize both before binding.
   return value.replace(/-/g, '').toLowerCase();
+}
+
+function isRunIdToken(value: string): boolean {
+  // Runtime task ids surface in both dashed-UUID and dashless-hex forms.
+  return /^[0-9a-f]{32}$/.test(normalizeRunId(value));
 }
 
 function sortKeysStable(value: unknown): unknown {
@@ -334,6 +352,59 @@ function childSubagentCompatibilityProof(
 }
 
 
+async function bridgeReadyHandshake(page: Page, ticket: string): Promise<Record<string, unknown>> {
+  // One REAL websocket ready handshake against the production channel WS:
+  // resolves on ready_ack (online + effective capabilities) and closes the
+  // socket, leaving the bridge offline — the reconnect caller opens a NEW
+  // single-use ticket and repeats this handshake.
+  const wsUrl = HIVE_JOURNEY_BACKEND_URL.replace(/^http/, 'ws')
+    + `/api/local-bridge/channel/ws?ticket=${encodeURIComponent(ticket)}`;
+  return await page.evaluate(
+    async ({ url }) => {
+      return await new Promise<Record<string, unknown>>((resolve, reject) => {
+        const socket = new WebSocket(url);
+        let settled = false;
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          reject(new Error('bridge ws ready timeout'));
+          try {
+            socket.close();
+          } catch {
+            // already closing
+          }
+        }, 30_000);
+        socket.addEventListener('message', (event) => {
+          const data = JSON.parse(String(event.data)) as Record<string, unknown>;
+          if (data.type === 'ready_ack' && !settled) {
+            settled = true;
+            clearTimeout(timer);
+            socket.close();
+            // Resolve only after the CLIENT close event fires so the caller
+            // observes a completed disconnect, not a requested one.
+            socket.addEventListener('close', () => resolve(data));
+          }
+        });
+        socket.addEventListener('error', () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(new Error('bridge ws error'));
+        });
+        socket.addEventListener('open', () => {
+          socket.send(JSON.stringify({
+            type: 'ready',
+            runtime_kind: 'atomic-harness-runner',
+            capabilities: { execute: true, result_report: true },
+          }));
+        });
+      });
+    },
+    { url: wsUrl },
+  );
+}
+
+
 async function startAndAwaitChat(
   api: APIRequestContext,
   currentAgentId: string,
@@ -414,23 +485,21 @@ async function stableTranscriptEvidence(
 
 function expectCanonicalSuccessfulToolClosure(
   canonical: Array<Record<string, unknown>>,
-  runId: string,
 ): void {
-  // Common mechanical closure: collect the union of non-empty invocation ids
-  // across ALL run-bound tool_call and tool_result rows — orphan terminal
-  // calls, orphan results, duplicate started rows, and blank-invocation rows
-  // all fail. For every union member: exactly one started tool_call, exactly
-  // one terminal tool_call that is lifecycle completed with payload outcome
-  // success, and exactly one tool_result of the same invocation with outcome
-  // success; progress rows may be zero or more. Zero tool activity is valid
-  // only when there is no bound tool activity at all. No natural language is
-  // inspected.
+  // Session-wide mechanical closure over the FINAL transcript: collect the
+  // union of non-empty invocation ids across ALL tool_call and tool_result
+  // rows of every run in the session — the base turn AND every later task
+  // (handoff, goal, trigger, workflow, local). Orphan terminal calls, orphan
+  // results, duplicate started rows, blank-invocation rows, and ANY terminal
+  // failure all fail. For every union member: exactly one started tool_call,
+  // exactly one terminal tool_call that is lifecycle completed with payload
+  // outcome success, and exactly one tool_result of the same invocation with
+  // outcome success. There is no whitelist and no failure exception. Zero
+  // tool activity is valid only when the session has none at all.
   const payloadOf = (item: Record<string, unknown>) => (item.payload as Record<string, unknown> | undefined) || {};
-  const awaitedRunId = normalizeRunId(runId);
-  const boundToRun = (item: Record<string, unknown>) => normalizeRunId(canonicalRunId(item)) === awaitedRunId;
   const invocationOf = (item: Record<string, unknown>) => String(item.invocation_id || '');
-  const callRows = canonical.filter((item) => item.item_kind === 'tool_call' && boundToRun(item));
-  const resultRows = canonical.filter((item) => item.item_kind === 'tool_result' && boundToRun(item));
+  const callRows = canonical.filter((item) => item.item_kind === 'tool_call');
+  const resultRows = canonical.filter((item) => item.item_kind === 'tool_result');
   if (callRows.length === 0 && resultRows.length === 0) return;
   for (const row of [...callRows, ...resultRows]) {
     expect(invocationOf(row)).not.toBe('');
@@ -473,7 +542,7 @@ async function expectJourneyEvidence(
     `${journey.id} canonical terminal proof replay`,
   );
   expect(hasCanonicalTerminalProof(canonicalReplay, journey.id, evidence.runId)).toBe(true);
-  expectCanonicalSuccessfulToolClosure(canonicalReplay, evidence.runId);
+  expectCanonicalSuccessfulToolClosure(canonicalReplay);
   expect(replay.length).toBeGreaterThanOrEqual(evidence.transcript.length);
 
   const denied = await context.intruderApi.get(
@@ -506,6 +575,7 @@ async function exerciseDomain(
   journey: Journey,
   base: { run: SessionRun; transcript: Array<Record<string, unknown>> },
   context: JourneyContext,
+  page?: Page,
 ): Promise<JourneyEvidence> {
   const sessionId = base.run.session.id;
   const domain: Record<string, unknown> = {};
@@ -520,22 +590,51 @@ async function exerciseDomain(
       break;
     }
     case 'J-02': {
+      // Exact-byte proof: one unique upload constant, exact projection fields,
+      // exactly one matching files item, and a byte-for-byte download through
+      // the real download endpoint. No JSON.stringify containment.
       const filename = `j02-${suffix}-deliverable.md`;
+      const uploadBytes = `# J-02 deliverable ${suffix}\n\nExact byte payload ${suffix} for the download proof.`;
       const uploaded = await responseJson<Record<string, unknown>>(
         await context.ownerApi.post('/api/chat/upload', {
           multipart: {
             agent_id: context.agentId,
             skip_personal_kb: 'true',
-            file: { name: filename, mimeType: 'text/markdown', buffer: Buffer.from('# J-02 deliverable\n') },
+            file: { name: filename, mimeType: 'text/markdown', buffer: Buffer.from(uploadBytes, 'utf8') },
           },
         }),
         'upload deliverable',
+      );
+      expect(String(uploaded.filename)).toBe(filename);
+      expect(String(uploaded.saved_filename || '')).not.toBe('');
+      expect(Number(uploaded.size)).toBe(Buffer.byteLength(uploadBytes, 'utf8'));
+      expect(String(uploaded.workspace_path)).toBe(`workspace/uploads/${String(uploaded.saved_filename)}`);
+      // preview_text is the product's conversion read model: a fixed banner
+      // rendered from the conversion block, then the exact uploaded bytes as
+      // the Preview body (markdown passthrough preserves content exactly).
+      const conversion = (uploaded.conversion as Record<string, unknown> | undefined) || {};
+      expect(String(conversion.status)).toBe('converted');
+      expect(String(uploaded.preview_text)).toBe(
+        `Converted with ${String(conversion.engine)}.\n`
+          + `Full Markdown: ${String(conversion.markdown_path)}\n`
+          + `Metadata: ${String(conversion.metadata_path)}\n\n`
+          + `Preview:\n${uploadBytes}`,
       );
       const files = await responseJson<Array<Record<string, unknown>>>(
         await context.ownerApi.get(`/api/agents/${context.agentId}/files/?path=workspace/uploads`),
         'list workspace deliverables',
       );
-      expect(JSON.stringify(files)).toContain(filename);
+      const matching = files.filter(
+        (item) => !Boolean(item.is_dir) && String(item.path) === String(uploaded.workspace_path),
+      );
+      expect(matching).toHaveLength(1);
+      expect(String(matching[0].name)).toBe(String(uploaded.saved_filename));
+      expect(Number(matching[0].size)).toBe(Buffer.byteLength(uploadBytes, 'utf8'));
+      const download = await context.ownerApi.get(
+        `/api/agents/${context.agentId}/files/download?path=${encodeURIComponent(String(uploaded.workspace_path))}`,
+      );
+      expect(download.status()).toBe(200);
+      expect(Buffer.from(await download.body()).equals(Buffer.from(uploadBytes, 'utf8'))).toBe(true);
       domain.uploaded = uploaded;
       domain.files = files;
       break;
@@ -561,46 +660,196 @@ async function exerciseDomain(
         return String(plan.status);
       }, { timeout: 90_000, intervals: [250, 500, 1000] }).toMatch(/awaiting_confirmation|planning_failed/);
       expect(plan.status).toBe('awaiting_confirmation');
+      const planVersion = Number(plan.plan_version);
+      const planHash = String(plan.plan_hash);
+      // The Web PlanCard happy path: confirm and hand off in ONE backend call,
+      // then wait for the real execution continuation — "queued" (an active
+      // run exists) is not completion and must keep polling.
       const confirmed = await responseJson<Record<string, unknown>>(
-        await context.ownerApi.post(`/api/agents/${context.agentId}/plans/${plan.id}/confirm`, {
-          data: { plan_version: plan.plan_version, plan_hash: plan.plan_hash, reason: 'Atomic acceptance' },
+        await context.ownerApi.post(`/api/agents/${context.agentId}/plans/${plan.id}/confirm-and-handoff`, {
+          data: { plan_version: planVersion, plan_hash: planHash, reason: 'Atomic acceptance' },
         }),
-        'confirm canonical plan',
+        'confirm and hand off canonical plan',
       );
-      expect(confirmed.status).toBe('confirmed');
+      expect(String(confirmed.status)).toBe('confirmed');
+      let confirmedPlan: Record<string, unknown> = {};
+      await expect.poll(async () => {
+        confirmedPlan = await responseJson<Record<string, unknown>>(
+          await context.ownerApi.get(`/api/agents/${context.agentId}/plans/${plan.id}`),
+          'poll plan execution handoff',
+        );
+        return String(confirmedPlan.handoff_status || '');
+      }, { timeout: 90_000, intervals: [500, 1000] }).toBe('completed');
+      expect(String(confirmedPlan.status)).toBe('confirmed');
+      expect(Number(confirmedPlan.plan_version)).toBe(planVersion);
+      expect(String(confirmedPlan.plan_hash)).toBe(planHash);
+      const handoffPayload = (confirmedPlan.handoff_payload as Record<string, unknown> | undefined) || {};
+      const handoffTaskId = String(handoffPayload.runtime_task_id || '');
+      expect(isRunIdToken(handoffTaskId)).toBe(true);
+      expect(String(handoffPayload.session_id || '')).toBe(sessionId);
+      // The handoff continuation run itself must close terminally in the
+      // canonical transcript, bound to that exact runtime task, with the exact
+      // J-03 receipt (the plan-execution prompt is answered, never re-planned).
+      await expect.poll(async () => {
+        const canonical = await responseJson<Array<Record<string, unknown>>>(
+          await context.ownerApi.get(
+            `/api/agents/${context.agentId}/sessions/${sessionId}/transcript?schema_version=2`,
+          ),
+          'poll plan handoff terminal proof',
+        );
+        return hasCanonicalTerminalProof(canonical, 'J-03', handoffTaskId);
+      }, { timeout: 90_000, intervals: [500, 1000] }).toBe(true);
+      // The handoff EXECUTION run must carry ZERO tool rows — write_file or
+      // exit_plan_mode in the continuation would be an unauthorized repeated
+      // plan write (the fresh_1855 false green had exactly those four rows).
+      const handoffCanonical = await responseJson<Array<Record<string, unknown>>>(
+        await context.ownerApi.get(
+          `/api/agents/${context.agentId}/sessions/${sessionId}/transcript?schema_version=2`,
+        ),
+        'read handoff final transcript',
+      );
+      expect(
+        handoffCanonical.filter(
+          (item) => ['tool_call', 'tool_result'].includes(String(item.item_kind))
+            && normalizeRunId(canonicalRunId(item)) === normalizeRunId(handoffTaskId),
+        ),
+      ).toHaveLength(0);
       domain.plan = plan;
       domain.confirmed = confirmed;
+      domain.confirmedPlan = confirmedPlan;
+      domain.handoffTaskId = handoffTaskId;
       break;
     }
     case 'J-04': {
+      // The goal must actually RUN: start_immediately with a J-04 marker in
+      // the run content, one update_goal completion, terminal goal state, and
+      // an idempotent replay that returns the SAME goal and run without a
+      // second execution. Goal id equals the request id (insert-keyed).
       const requestId = crypto.randomUUID();
+      const goalRunContent = `J-04 exercise the production journey contract with durable goal ${suffix}.`;
       const body = {
         request_id: requestId,
         objective: `J-04 durable goal ${suffix}`,
         token_budget: 4000,
         max_continuation_turns: 2,
         time_budget_seconds: 120,
-        start_immediately: false,
+        content: goalRunContent,
+        start_immediately: true,
       };
       const first = await responseJson<Record<string, unknown>>(
         await context.ownerApi.post(`/api/agents/${context.agentId}/sessions/${sessionId}/goals`, { data: body }),
         'start durable goal',
       );
+      expect(String(first.id)).toBe(requestId);
+      const firstRun = (first.run as Record<string, unknown> | undefined) || {};
+      const goalRunId = String(firstRun.run_id || '');
+      expect(isRunIdToken(goalRunId)).toBe(true);
+      // The goal run terminates canonically with the exact J-04 receipt.
+      await expect.poll(async () => {
+        const canonical = await responseJson<Array<Record<string, unknown>>>(
+          await context.ownerApi.get(
+            `/api/agents/${context.agentId}/sessions/${sessionId}/transcript?schema_version=2`,
+          ),
+          'poll goal run terminal proof',
+        );
+        return hasCanonicalTerminalProof(canonical, 'J-04', goalRunId);
+      }, { timeout: 90_000, intervals: [500, 1000] }).toBe(true);
+      // Exactly ONE update_goal invocation, run-bound to the goal run, with
+      // the exact call inputs proven through the args_hash seam.
+      const goalCanonical = await responseJson<Array<Record<string, unknown>>>(
+        await context.ownerApi.get(`/api/agents/${context.agentId}/sessions/${sessionId}/transcript?schema_version=2`),
+        'read goal canonical transcript',
+      );
+      const goalUpdateCalls = goalCanonical.filter(
+        (item) => item.item_kind === 'tool_call'
+          && item.lifecycle === 'started'
+          && String((item.payload as Record<string, unknown> | undefined)?.tool_name || '') === 'update_goal'
+          && normalizeRunId(canonicalRunId(item)) === normalizeRunId(goalRunId),
+      );
+      expect(goalUpdateCalls).toHaveLength(1);
+      expect(String((goalUpdateCalls[0].payload as Record<string, unknown> | undefined)?.args_hash || '')).toBe(
+        expectedArgsHash('update_goal', { status: 'complete', summary: 'J-04 durable goal complete.' }),
+      );
+      // Terminal goal state through the workbench projection.
+      const goalProjection = async (): Promise<Record<string, unknown>> => {
+        const workbenchNow = await responseJson<Record<string, unknown>>(
+          await context.ownerApi.get(
+            `/api/agents/${context.agentId}/sessions/${sessionId}/workbench?operator_view=true&operator_reason=J-04%20goal%20terminal%20proof`,
+          ),
+          'read goal workbench projection',
+        );
+        return ((workbenchNow.goals as Array<Record<string, unknown>> | undefined) || [])
+          .find((goal) => String(goal.id) === requestId) || {};
+      };
+      await expect.poll(async () => String((await goalProjection()).status || '') === 'complete', {
+        timeout: 90_000,
+        intervals: [500, 1000],
+      }).toBe(true);
+      const completedGoal = await goalProjection();
+      expect(String(completedGoal.completed_at || '')).not.toBe('');
+      expect(String(completedGoal.completion_summary || '')).toBe('J-04 durable goal complete.');
+      const snapshot = {
+        tokens_used: Number(completedGoal.tokens_used || 0),
+        continuation_count: Number(completedGoal.continuation_count || 0),
+        token_budget: Number(completedGoal.token_budget || 0),
+        max_continuation_turns: Number(completedGoal.max_continuation_turns || 0),
+        time_budget_seconds: Number(completedGoal.time_budget_seconds || 0),
+      };
+      expect(snapshot.token_budget).toBe(4000);
+      expect(snapshot.max_continuation_turns).toBe(2);
+      expect(snapshot.time_budget_seconds).toBe(120);
+      // Exactly ONE goal-bound runtime task — the start_immediately run.
+      const goalTasks = (
+        (await responseJson<Record<string, unknown>>(
+          await context.ownerApi.get(
+            `/api/agents/${context.agentId}/sessions/${sessionId}/workbench?operator_view=true&operator_reason=J-04%20goal%20run%20binding`,
+          ),
+          'read goal run workbench',
+        )).runtime_tasks as Array<Record<string, unknown>> | undefined) || [];
+      expect(
+        goalTasks.filter(
+          (task) => String(((task.metadata as Record<string, unknown> | undefined) || {}).goal_id || '') === requestId,
+        ),
+      ).toHaveLength(1);
+      // Idempotent replay: same body -> same goal id, same run, replayed flag,
+      // budgets untouched — id equality alone is never the completion proof.
       const replay = await responseJson<Record<string, unknown>>(
         await context.ownerApi.post(`/api/agents/${context.agentId}/sessions/${sessionId}/goals`, { data: body }),
         'replay durable goal request',
       );
-      expect(replay.id).toBe(first.id);
+      expect(String(replay.id)).toBe(requestId);
+      const replayRun = (replay.run as Record<string, unknown> | undefined) || {};
+      expect(String(replayRun.run_id || '')).toBe(goalRunId);
+      expect(replayRun.replayed).toBe(true);
+      // The replay returns the CANONICAL terminal RuntimeTask status, never
+      // the stale write-time snapshot (fresh2_1829 replayed "pending").
+      expect(String(replayRun.status || '')).toBe('completed');
+      const afterReplay = await goalProjection();
+      expect(Number(afterReplay.tokens_used || 0)).toBe(snapshot.tokens_used);
+      expect(Number(afterReplay.continuation_count || 0)).toBe(snapshot.continuation_count);
+      expect(Number(afterReplay.token_budget || 0)).toBe(4000);
+      expect(Number(afterReplay.max_continuation_turns || 0)).toBe(2);
+      expect(Number(afterReplay.time_budget_seconds || 0)).toBe(120);
       domain.goal = first;
       domain.replay = replay;
+      domain.goalRunId = goalRunId;
+      domain.completedGoal = completedGoal;
       break;
     }
     case 'J-05': {
+      // Governed one-shot delivery: a DISABLED schedule (unique marker in its
+      // instruction), a Plan Mode recommendation that is exactly declined, a
+      // manual run queued through the declined-recommendation path, and the
+      // real trigger lifecycle to terminal — trigger RuntimeTask completed,
+      // the trigger turn's exact receipt in this session, one integration
+      // notification bound to the trigger task, the schedule still disabled,
+      // and exactly one fire of the one-shot trigger.
+      const marker = `j05-${suffix}`;
       const schedule = await responseJson<Record<string, unknown>>(
         await context.ownerApi.post(`/api/agents/${context.agentId}/schedules/`, {
           data: {
             name: `J-05 controlled schedule ${suffix}`,
-            instruction: 'Record a controlled delivery receipt.',
+            instruction: `J-05 exercise the production journey contract with unique marker ${marker}.`,
             cron_expr: '0 9 * * *',
             is_enabled: false,
           },
@@ -612,8 +861,178 @@ async function exerciseDomain(
         'list schedules',
       );
       expect(schedules.some((item) => item.id === schedule.id)).toBe(true);
+      const recommendation = await responseJson<Record<string, unknown>>(
+        await context.ownerApi.post(`/api/agents/${context.agentId}/plan-recommendations`, {
+          data: {
+            original_request: `J-05 manual schedule run ${suffix}`,
+            session_id: sessionId,
+            source: 'schedules_api_manual_run',
+            title: `J-05 schedule run ${suffix}`,
+            intent_type: 'autonomous_wake',
+            action_kind: 'create_enabled_trigger',
+            tool_name: 'set_trigger',
+          },
+        }),
+        'record plan recommendation',
+      );
+      const declined = await responseJson<Record<string, unknown>>(
+        await context.ownerApi.post(
+          `/api/agents/${context.agentId}/plan-recommendations/${recommendation.id}/decline`,
+          { data: {} },
+        ),
+        'decline plan recommendation',
+      );
+      expect(String(declined.status)).toBe('declined');
+      const queued = await responseJson<Record<string, unknown>>(
+        await context.ownerApi.post(`/api/agents/${context.agentId}/schedules/${schedule.id}/run`, {
+          data: {
+            plan_mode_decision: 'declined',
+            plan_recommendation_id: String(recommendation.id),
+            confirmed_plan_session_id: sessionId,
+          },
+        }),
+        'queue one-shot schedule run',
+      );
+      expect(String(queued.status)).toBe('queued');
+      const triggerId = String(queued.trigger_id || '');
+      expect(UUID_PATTERN.test(triggerId)).toBe(true);
+      // The REAL one-shot trigger lifecycle: the trigger RuntimeTask reaches
+      // terminal completed (discovered through the agent runtime-task read
+      // model, bound to this trigger id), fires exactly once, and its trigger
+      // session carries the exact receipt plus the integration notification.
+      let triggerTaskId = '';
+      let triggerSessionId = '';
+      await expect.poll(async () => {
+        const views = await responseJson<Array<Record<string, unknown>>>(
+          await context.ownerApi.get(
+            `/api/agents/${context.agentId}/runtime-tasks?task_type=trigger&trigger_id=${triggerId}&diagnostics=true`,
+          ),
+          'poll trigger runtime task',
+        );
+        const completed = views.filter((view) => String(view.status || '') === 'completed');
+        if (completed.length !== 1) return false;
+        triggerTaskId = String(completed[0].task_id || '');
+        const diagnostics = (completed[0].diagnostics as Record<string, unknown> | undefined) || {};
+        triggerSessionId = String(diagnostics.session_id || '');
+        return isRunIdToken(triggerTaskId) && UUID_PATTERN.test(triggerSessionId);
+      }, { timeout: 120_000, intervals: [1000, 2000] }).toBe(true);
+      // The trigger child session's transcript carries the awakening context
+      // and the exact J-05 terminal receipt, BOTH run-bound to the trigger
+      // task id. The wake is projected to the TYPED canonical shape: the V1
+      // user_message normalizes to item_kind=human_input / lifecycle=accepted
+      // / actor.type=user with payload.legacy=true and the run binding in
+      // payload.legacy_run_id (accepted input uses a SESSION scope by
+      // contract; the top-level run_id is reserved for run/round scopes). The
+      // receipt stays a legacy assistant_message envelope with a top-level
+      // run_id.
+      const readTriggerSession = async (): Promise<Array<Record<string, unknown>>> => responseJson(
+        await context.ownerApi.get(
+          `/api/agents/${context.agentId}/sessions/${triggerSessionId}/transcript?schema_version=2`,
+        ),
+        'read trigger child session transcript',
+      );
+      let triggerSessionCanonical: Array<Record<string, unknown>> = [];
+      await expect.poll(async () => {
+        triggerSessionCanonical = await readTriggerSession();
+        const boundToTriggerTask = (item: Record<string, unknown>) =>
+          normalizeRunId(canonicalRunId(item)) === normalizeRunId(triggerTaskId);
+        const receiptEnvelope = triggerSessionCanonical.find(
+          (item) => boundToTriggerTask(item)
+            && String(item.legacy_event_type || '') === 'assistant_message'
+            && String((item.payload as Record<string, unknown> | undefined)?.content || '')
+              === 'J-05 terminal receipt from the controlled provider.',
+        );
+        const wakeItem = triggerSessionCanonical.find((item) => {
+          if (!boundToTriggerTask(item)) return false;
+          if (String(item.item_kind || '') !== 'human_input') return false;
+          if (String(item.lifecycle || '') !== 'accepted') return false;
+          if (String((item.actor as Record<string, unknown> | undefined)?.type || '') !== 'user') return false;
+          const payload = (item.payload as Record<string, unknown> | undefined) || {};
+          if (payload.legacy !== true) return false;
+          const payloadMetadata = (payload.metadata as Record<string, unknown> | undefined) || {};
+          if (String(payloadMetadata.event_type || '') !== 'user_message') return false;
+          return String(payload.content || '').includes(marker);
+        });
+        return Boolean(receiptEnvelope && wakeItem);
+      }, { timeout: 30_000, intervals: [500, 1000] }).toBe(true);
+      // Exactly ONE integration notification in the child session binds
+      // page/outbox/trigger-task/terminal through one manifest item. The
+      // transcript is re-read EVERY poll round; the predicate stabilizes only
+      // when exactly one matching notification persists.
+      await expect.poll(async () => {
+        const canonicalNow = await readTriggerSession();
+        const matches = canonicalNow.filter((item) => {
+          const kind = String(item.legacy_event_type || item.kind || item.event_type || '');
+          if (kind !== 'agent_task_notification') return false;
+          const payload = (item.payload as Record<string, unknown> | undefined) || {};
+          const metadata = (payload.metadata as Record<string, unknown> | undefined) || {};
+          if (String(metadata.source || '') !== 'runtime_result_integration') return false;
+          const manifest = metadata.result_manifest as Record<string, unknown> | undefined;
+          const items = Array.isArray(manifest?.items) ? (manifest.items as Array<Record<string, unknown>>) : [];
+          const pageId = String(metadata.integration_page_id || '');
+          if (!UUID_PATTERN.test(pageId)) return false;
+          if (pageId !== String(metadata.causation_id || '')) return false;
+          if (metadata.item_count !== undefined && Number(metadata.item_count) !== 1) return false;
+          if (items.length !== 1) return false;
+          return items.some(
+            (entry) => String(entry.outbox_id || '') === pageId
+              && String(entry.source_kind || '') === 'trigger'
+              && String(entry.task_type || '') === 'trigger'
+              && normalizeRunId(String(entry.source_run_id || '')) === normalizeRunId(triggerTaskId)
+              && String(entry.terminal_status || '') === 'completed',
+          );
+        });
+        return matches.length === 1;
+      }, { timeout: 30_000, intervals: [500, 1000] }).toBe(true);
+      // Child session-wide tool closure: the trigger wake must leave no
+      // half-closed tool invocation anywhere in the child session. Re-read
+      // once after the notification poll so closure runs on the final stable
+      // evidence, not an earlier snapshot.
+      triggerSessionCanonical = await readTriggerSession();
+      expectCanonicalSuccessfulToolClosure(triggerSessionCanonical);
+      // One-shot semantics: exactly one trigger task bound to this trigger id,
+      // and the durable trigger row is disabled after firing exactly once.
+      const triggerViews = await responseJson<Array<Record<string, unknown>>>(
+        await context.ownerApi.get(`/api/agents/${context.agentId}/runtime-tasks?trigger_id=${triggerId}`),
+        'list trigger-bound runtime tasks',
+      );
+      expect(triggerViews).toHaveLength(1);
+      const triggers = await responseJson<Array<Record<string, unknown>>>(
+        await context.ownerApi.get(`/api/agents/${context.agentId}/triggers`),
+        'list agent triggers',
+      );
+      const triggerRow = triggers.find((row) => String(row.id) === triggerId);
+      expect(triggerRow).toBeTruthy();
+      expect(Boolean(triggerRow?.is_enabled)).toBe(false);
+      expect(Number(triggerRow?.fire_count || 0)).toBe(1);
+      expect(Number(triggerRow?.max_fires || 0)).toBe(1);
+      // The disabled schedule stays disabled. The legacy activity-log history
+      // endpoint is NOT an acceptance source: the modern trigger executor
+      // writes no schedule_run/trigger_run activity rows (verified in
+      // fresh_2041/fresh_2102), so it carries no run-bound evidence for this
+      // path — do not fake one with string matching.
+      const schedulesAfter = await responseJson<Array<Record<string, unknown>>>(
+        await context.ownerApi.get(`/api/agents/${context.agentId}/schedules/`),
+        'reread schedules after trigger',
+      );
+      const scheduleRow = schedulesAfter.find((item) => item.id === schedule.id);
+      expect(scheduleRow).toBeTruthy();
+      expect(Boolean(scheduleRow?.is_enabled)).toBe(false);
       domain.schedule = schedule;
-      break;
+      domain.recommendation = recommendation;
+      domain.queued = queued;
+      domain.triggerTaskId = triggerTaskId;
+      domain.triggerSessionId = triggerSessionId;
+      // Browser consumption opens the CHILD trigger session — the surface
+      // where the one-shot delivery actually landed — for the exact receipt.
+      return {
+        sessionId,
+        runId: String(base.run.run.run_id),
+        transcript: base.transcript,
+        domain,
+        browserSessionId: triggerSessionId,
+        expectedText: 'J-05 terminal receipt from the controlled provider.',
+      };
     }
     case 'J-06': {
       const canonical = await responseJson<Array<Record<string, unknown>>>(
@@ -1150,6 +1569,38 @@ async function exerciseDomain(
         });
         return Boolean(notification);
       }, { timeout: 90_000, intervals: [500, 1000] }).toBe(true);
+      // The manifest's packet step journal, proven from the canonical
+      // transcript: workflow_step rows bound to THIS run, exactly one running
+      // then exactly one done for step id 'verify', sequences strictly
+      // increasing, and both closed BEFORE the terminal integration
+      // notification — never just run.status.
+      const journalCanonical = await responseJson<Array<Record<string, unknown>>>(
+        await context.ownerApi.get(
+          `/api/agents/${context.agentId}/sessions/${sessionId}/transcript?schema_version=2`,
+        ),
+        'read workflow step journal',
+      );
+      const stepRows = journalCanonical.filter(
+        (item) => String(item.legacy_event_type || item.kind || item.event_type || '') === 'workflow_step'
+          && normalizeRunId(String(item.run_id || '')) === normalizeRunId(workflowRunId),
+      );
+      const journal = stepRows
+        .map((item) => ({
+          sequence: Number(item.sequence || 0),
+          status: String(
+            ((item.payload as Record<string, unknown> | undefined)?.metadata as Record<string, unknown> | undefined)
+              ?.status || '',
+          ),
+          stepId: String(
+            ((item.payload as Record<string, unknown> | undefined)?.metadata as Record<string, unknown> | undefined)
+              ?.workflow_step_id || '',
+          ),
+        }))
+        .filter((row) => row.stepId === 'verify')
+        .sort((left, right) => left.sequence - right.sequence);
+      expect(journal.map((row) => row.status)).toEqual(['running', 'done']);
+      expect(journal[0].sequence).toBeLessThan(journal[1].sequence);
+      expect(journal[1].sequence).toBeLessThan(notificationSequence);
       // The Session Workbench must show exactly the post-workflow continuation
       // turn bound to this integration page and workflow run — status
       // completed, id distinct from the base turn.
@@ -1399,40 +1850,298 @@ async function exerciseDomain(
       };
     }
     case 'J-14': {
+      // The full local bridge production path: explicit local_agent scopes,
+      // approval-gated dispatch (waiting_approval -> owner resolves the ONE
+      // bound pending approval -> bridge may poll), exactly-one delivery,
+      // completed report with a verifiable execution receipt, idempotent
+      // report replay, empty re-poll, and exactly one owner-visible result
+      // event. Browser consumption points at the local session with the local
+      // runner's exact output.
+      const bridgeHeaders = (token: string) => ({ Authorization: `Bearer ${token}` });
       const pairing = await responseJson<Record<string, unknown>>(
-        await context.ownerApi.post('/api/local-bridge/pairing/init', {
+        await context.anonApi.post('/api/local-bridge/pairing/init', {
           data: {
             device_name: `J-14 local runner ${suffix}`,
             client_kind: 'hive-connect',
             device_fingerprint: `atomic-${suffix}`,
-            scopes: ['workspace:read', 'runtime:execute'],
+            scopes: ['local_agent:connect', 'local_agent:receive', 'local_agent:send', 'local_agent:report'],
           },
         }),
         'initialize local bridge pairing',
       );
-      await responseJson(
-        await context.ownerApi.post(
-          `/api/agents/${context.agentId}/local-bridge/pairings/${pairing.user_code}/approve`,
-          { data: {} },
-        ),
+      // Manifest truth: token exchange REQUIRES owner approval first. An
+      // anonymous exchange against the still-pending pairing must return the
+      // typed pending state with no credentials at all.
+      const pendingExchange = await responseJson<Record<string, unknown>>(
+        await context.anonApi.post('/api/local-bridge/pairing/exchange', {
+          data: { device_code: pairing.device_code },
+        }),
+        'probe anonymous exchange before approval',
+      );
+      expect(String(pendingExchange.status)).toBe('pending');
+      expect(pendingExchange.access_token).toBeUndefined();
+      expect(pendingExchange.connection_id).toBeUndefined();
+      const approved = await responseJson<Record<string, unknown>>(
+        await context.ownerApi.post(`/api/local-bridge/pairings/${pairing.user_code}/approve`, { data: {} }),
         'approve local bridge pairing',
       );
+      const localAgentId = String(approved.agent_id || '');
+      expect(UUID_PATTERN.test(localAgentId)).toBe(true);
       const exchange = await responseJson<Record<string, unknown>>(
-        await context.ownerApi.post('/api/local-bridge/pairing/exchange', {
+        await context.anonApi.post('/api/local-bridge/pairing/exchange', {
           data: { device_code: pairing.device_code },
         }),
         'exchange local bridge device code',
       );
+      const bridgeToken = String(exchange.access_token || '');
+      expect(bridgeToken.startsWith('hb_')).toBe(true);
       const status = await responseJson<Record<string, unknown>>(
-        await context.ownerApi.get('/api/local-bridge/status', {
-          headers: { Authorization: `Bearer ${exchange.access_token}` },
-        }),
+        await context.anonApi.get('/api/local-bridge/status', { headers: bridgeHeaders(bridgeToken) }),
         'read paired bridge status',
       );
-      expect(status.status).toBe('connected');
+      expect(String(status.status)).toBe('connected');
+      expect(String(status.agent_id || '')).toBe(localAgentId);
+      // Initial connect: ready the channel through the production WS path
+      // (the only surface that issues signed capability snapshots); the
+      // handshake closes the socket, leaving the bridge OFFLINE before the
+      // message is dispatched below.
+      const firstTicket = await responseJson<Record<string, unknown>>(
+        await context.anonApi.post('/api/local-bridge/channel/ws-ticket', {
+          headers: bridgeHeaders(bridgeToken),
+          data: {},
+        }),
+        'issue bridge ws ticket',
+      );
+      const firstReady = await bridgeReadyHandshake(page as Page, String(firstTicket.ticket));
+      expect(String(firstReady.status || '')).toBe('online');
+      let effective = (firstReady.effective_capabilities as Array<string> | undefined) || [];
+      expect(effective).toContain('execute');
+      expect(effective).toContain('result_report');
+      // Server-observed disconnect: the presence read model must show the
+      // bridge OFFLINE before anything is dispatched, so the later offline
+      // delivery claim is a real boundary, not a comment.
+      await expect.poll(async () => {
+        const presenceNow = await responseJson<Record<string, unknown>>(
+          await context.anonApi.get('/api/local-bridge/status', { headers: bridgeHeaders(bridgeToken) }),
+          'poll bridge presence until offline',
+        );
+        return String(presenceNow.presence_status || '');
+      }, { timeout: 30_000, intervals: [500, 1000] }).toBe('offline');
+      const localSession = await responseJson<Record<string, unknown>>(
+        await context.ownerApi.post(`/api/agents/${localAgentId}/local-agent/sessions/default`, { data: {} }),
+        'create local channel session',
+      );
+      const localSessionId = String(localSession.id);
+      const localChatSessionId = String(localSession.chat_session_id || '');
+      expect(UUID_PATTERN.test(localSessionId)).toBe(true);
+      expect(UUID_PATTERN.test(localChatSessionId)).toBe(true);
+      // The dispatch is approval-gated: waiting_approval + bound pending
+      // approval, and the bridge poll is EMPTY until the owner approves.
+      const messageBody = {
+        content: `J-14 exercise the production journey contract with unique marker j14-${suffix}.`,
+        idempotency_key: `j14-${suffix}`,
+      };
+      const message = await responseJson<Record<string, unknown>>(
+        await context.ownerApi.post(
+          `/api/agents/${localAgentId}/local-agent/sessions/${localSessionId}/messages`,
+          { data: messageBody },
+        ),
+        'enqueue local runner message',
+      );
+      const messageId = String(message.id);
+      expect(UUID_PATTERN.test(messageId)).toBe(true);
+      expect(String(message.status)).toBe('waiting_approval');
+      expect(UUID_PATTERN.test(String(message.approval_id || ''))).toBe(true);
+      const emptyPoll = await responseJson<Record<string, unknown>>(
+        await context.anonApi.get('/api/local-bridge/channel/poll', { headers: bridgeHeaders(bridgeToken) }),
+        'poll before approval must be empty',
+      );
+      expect(((emptyPoll.messages as Array<unknown> | undefined) || [])).toHaveLength(0);
+      const approvals = await responseJson<Array<Record<string, unknown>>>(
+        await context.ownerApi.get(`/api/agents/${localAgentId}/approvals`),
+        'list pending local agent approvals',
+      );
+      const bound = approvals.filter(
+        (row) => String(row.status) === 'pending'
+          && String(((row.details as Record<string, unknown> | undefined) || {}).local_agent_message_id || '')
+            === messageId,
+      );
+      expect(bound).toHaveLength(1);
+      const resolved = await responseJson<Record<string, unknown>>(
+        await context.ownerApi.post(
+          `/api/agents/${localAgentId}/approvals/${String(bound[0].id)}/resolve`,
+          { data: { action: 'approve' } },
+        ),
+        'approve local agent dispatch',
+      );
+      expect(String(resolved.status)).toBe('approved');
+      // After the owner action, exactly one delivery reaches the bridge.
+      let polled: Array<Record<string, unknown>> = [];
+      await expect.poll(async () => {
+        const poll = await responseJson<Record<string, unknown>>(
+          await context.anonApi.get('/api/local-bridge/channel/poll', { headers: bridgeHeaders(bridgeToken) }),
+          'poll local runner messages',
+        );
+        polled = (poll.messages as Array<Record<string, unknown>> | undefined) || [];
+        return polled.length;
+      }, { timeout: 30_000, intervals: [500, 1000] }).toBe(1);
+      expect(String(polled[0].id)).toBe(messageId);
+      expect(String(polled[0].content)).toBe(messageBody.content);
+      expect(Number(polled[0].delivery_attempt_count || 0)).toBe(1);
+      // Offline -> reconnect recovery: the approved message was DELIVERED
+      // through the HTTP poll while the WS was offline; a NEW single-use
+      // ticket and a second real ready handshake with the same bridge bearer
+      // prove the disconnect/reconnect contract, not just service code.
+      const reconnectTicket = await responseJson<Record<string, unknown>>(
+        await context.anonApi.post('/api/local-bridge/channel/ws-ticket', {
+          headers: bridgeHeaders(bridgeToken),
+          data: {},
+        }),
+        'issue reconnect ws ticket',
+      );
+      expect(String(reconnectTicket.ticket)).not.toBe(String(firstTicket.ticket));
+      const reconnectReady = await bridgeReadyHandshake(page as Page, String(reconnectTicket.ticket));
+      expect(String(reconnectReady.status || '')).toBe('online');
+      effective = (reconnectReady.effective_capabilities as Array<string> | undefined) || [];
+      expect(effective).toContain('execute');
+      expect(effective).toContain('result_report');
+      // Report the completed local execution with an artifact; the execution
+      // receipt must be verifiable and replay-stable.
+      const runnerOutput = 'J-14 local runner completed the atomic task.';
+      const reportBody = {
+        session_id: localSessionId,
+        message_id: messageId,
+        status: 'completed',
+        output: runnerOutput,
+        artifacts: [{ path: `workspace/local/j14-${suffix}.txt` }],
+      };
+      const report = await responseJson<Record<string, unknown>>(
+        await context.anonApi.post('/api/local-bridge/channel/report', {
+          headers: bridgeHeaders(bridgeToken),
+          data: reportBody,
+        }),
+        'report local runner result',
+      );
+      expect(String(report.status)).toBe('completed');
+      expect(report.idempotent_replay).toBe(false);
+      const receipt = (report.receipt as Record<string, unknown> | undefined) || {};
+      expect(String(receipt.schema)).toBe('hive.execution_receipt.v1');
+      expect(String(receipt.status)).toBe('completed');
+      expect(String(receipt.request_hash || '')).not.toBe('');
+      expect(String(receipt.capability_snapshot_hash || '')).not.toBe('');
+      expect((receipt.result_refs as Array<string> | undefined) || []).toHaveLength(1);
+      expect(String(receipt.replay_key || '')).toBe(String(message.replay_key || ''));
+      const replayReport = await responseJson<Record<string, unknown>>(
+        await context.anonApi.post('/api/local-bridge/channel/report', {
+          headers: bridgeHeaders(bridgeToken),
+          data: reportBody,
+        }),
+        'replay local runner result report',
+      );
+      expect(replayReport.idempotent_replay).toBe(true);
+      expect(JSON.stringify(replayReport.receipt)).toBe(JSON.stringify(receipt));
+      const repoll = await responseJson<Record<string, unknown>>(
+        await context.anonApi.get('/api/local-bridge/channel/poll', { headers: bridgeHeaders(bridgeToken) }),
+        're-poll after completion must be empty',
+      );
+      expect(((repoll.messages as Array<unknown> | undefined) || [])).toHaveLength(0);
+      const events = await responseJson<Record<string, unknown>>(
+        await context.ownerApi.get(
+          `/api/agents/${localAgentId}/local-agent/sessions/${localSessionId}/events`,
+        ),
+        'read local session events',
+      );
+      const resultEvents = ((events.events as Array<Record<string, unknown>> | undefined) || [])
+        .filter((row) => String(row.type) === 'result' && String(row.message_id || '') === messageId);
+      expect(resultEvents).toHaveLength(1);
+      expect(String(((resultEvents[0].payload as Record<string, unknown> | undefined) || {}).output || ''))
+        .toBe(runnerOutput);
+      expect(String(((resultEvents[0].payload as Record<string, unknown> | undefined) || {}).status || ''))
+        .toBe('completed');
+      // Permission denial on the LIVE path: a second uniquely-keyed message
+      // is gated the same way, its bound approval is RESOLVED AS REJECT, and
+      // the denial is terminal — no bridge delivery, no result event for the
+      // denied message — while the completed main message/result stay
+      // exactly one.
+      const deniedBody = {
+        content: `J-14 denied dispatch probe j14-denied-${suffix}.`,
+        idempotency_key: `j14-denied-${suffix}`,
+      };
+      const deniedMessage = await responseJson<Record<string, unknown>>(
+        await context.ownerApi.post(
+          `/api/agents/${localAgentId}/local-agent/sessions/${localSessionId}/messages`,
+          { data: deniedBody },
+        ),
+        'enqueue denied local runner message',
+      );
+      const deniedMessageId = String(deniedMessage.id);
+      expect(UUID_PATTERN.test(deniedMessageId)).toBe(true);
+      expect(String(deniedMessage.status)).toBe('waiting_approval');
+      expect(UUID_PATTERN.test(String(deniedMessage.approval_id || ''))).toBe(true);
+      const deniedApprovals = await responseJson<Array<Record<string, unknown>>>(
+        await context.ownerApi.get(`/api/agents/${localAgentId}/approvals`),
+        'list pending approvals for denied message',
+      );
+      const deniedBound = deniedApprovals.filter(
+        (row) => String(row.status) === 'pending'
+          && String(((row.details as Record<string, unknown> | undefined) || {}).local_agent_message_id || '')
+            === deniedMessageId,
+      );
+      expect(deniedBound).toHaveLength(1);
+      const deniedResolved = await responseJson<Record<string, unknown>>(
+        await context.ownerApi.post(
+          `/api/agents/${localAgentId}/approvals/${String(deniedBound[0].id)}/resolve`,
+          { data: { action: 'reject' } },
+        ),
+        'reject local agent dispatch',
+      );
+      expect(String(deniedResolved.status)).toBe('rejected');
+      const deniedPoll = await responseJson<Record<string, unknown>>(
+        await context.anonApi.get('/api/local-bridge/channel/poll', { headers: bridgeHeaders(bridgeToken) }),
+        'poll after denial must stay empty',
+      );
+      expect(((deniedPoll.messages as Array<unknown> | undefined) || [])).toHaveLength(0);
+      const eventsAfterDenial = await responseJson<Record<string, unknown>>(
+        await context.ownerApi.get(
+          `/api/agents/${localAgentId}/local-agent/sessions/${localSessionId}/events`,
+        ),
+        'read local session events after denial',
+      );
+      const allEvents = (eventsAfterDenial.events as Array<Record<string, unknown>> | undefined) || [];
+      expect(
+        allEvents.filter((row) => String(row.type) === 'result' && String(row.message_id || '') === deniedMessageId),
+      ).toHaveLength(0);
+      const deniedResolutionEvents = allEvents.filter(
+        (row) => String(row.type) === 'approval_resolved' && String(row.message_id || '') === deniedMessageId,
+      );
+      expect(deniedResolutionEvents).toHaveLength(1);
+      const denialPayload = (deniedResolutionEvents[0].payload as Record<string, unknown> | undefined) || {};
+      expect(String(denialPayload.status)).toBe('rejected');
+      expect(String(denialPayload.execution_status)).toBe('rejected');
+      expect(String(denialPayload.message_status)).toBe('rejected');
+      expect(
+        allEvents.filter((row) => String(row.type) === 'result' && String(row.message_id || '') === messageId),
+      ).toHaveLength(1);
+
       domain.pairing = pairing;
-      domain.status = status;
-      break;
+      domain.localAgentId = localAgentId;
+      domain.localSessionId = localSessionId;
+      domain.message = message;
+      domain.receipt = receipt;
+      domain.resultEvent = resultEvents[0];
+      domain.deniedMessageId = deniedMessageId;
+      return {
+        sessionId,
+        runId: String(base.run.run.run_id),
+        transcript: base.transcript,
+        domain,
+        // The local channel session belongs to the pairing's default local
+        // agent — the browser must open it under THAT agent, not the journey
+        // agent, or the UI surfaces another agent's session (404/false green).
+        browserAgentId: localAgentId,
+        browserSessionId: localChatSessionId,
+        expectedText: runnerOutput,
+      };
     }
     case 'J-15': {
       const memberRun = await startAndAwaitChat(context.memberApi, context.agentId, 'J-15', { title: 'J-15 audience split' });
@@ -1475,16 +2184,16 @@ test.describe.serial('real full-stack atomic user journeys', () => {
   });
 
   test.afterAll(async () => {
-    await Promise.all([ownerApi, memberApi, intruderApi, fakeApi].filter(Boolean).map((api) => api.dispose()));
+    await Promise.all([ownerApi, memberApi, intruderApi, fakeApi, anonApi].filter(Boolean).map((api) => api.dispose()));
   });
 
   for (const journey of JOURNEYS) {
     test(journey.id + ' ' + journey.name, async ({ page }) => {
-      const context: JourneyContext = { ownerApi, memberApi, intruderApi, fakeApi, agentId, owner, member };
+      const context: JourneyContext = { ownerApi, memberApi, intruderApi, fakeApi, anonApi, agentId, owner, member };
       const base = await startAndAwaitChat(ownerApi, agentId, journey.id, {
-        receiptOnly: ['J-03', 'J-07', 'J-12', 'J-13'].includes(journey.id),
+        receiptOnly: ['J-03', 'J-04', 'J-07', 'J-12', 'J-13', 'J-14'].includes(journey.id),
       });
-      const evidence = await exerciseDomain(journey, base, context);
+      const evidence = await exerciseDomain(journey, base, context, page);
       await expectJourneyEvidence(journey, context, evidence);
 
       const browserAuth: AuthState = evidence.browserToken

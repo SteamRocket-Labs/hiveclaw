@@ -4226,7 +4226,8 @@
     "audiences": {
       "allEmployees": "All employees",
       "companyAdmins": "Company administrators",
-      "member": "Company member"
+      "member": "Company member",
+      "platformAdmins": "Platform administrators"
     },
     "kind": {
       "legacy": "Recovered company file",

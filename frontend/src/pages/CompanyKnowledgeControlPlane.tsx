@@ -1237,6 +1237,7 @@ export default function CompanyKnowledgeControlPlane() {
   }, [reviews, selectedReviewKey]);
 
   const invalidateCompanyKnowledge = () => {
+    void queryClient.invalidateQueries({ queryKey: ['company-knowledge-access-rules'] });
     void queryClient.invalidateQueries({ queryKey: ['company-knowledge-intakes'] });
     void queryClient.invalidateQueries({ queryKey: ['company-knowledge-review-queue'] });
     void queryClient.invalidateQueries({ queryKey: ['company-knowledge-review-workspace'] });
@@ -1382,9 +1383,7 @@ export default function CompanyKnowledgeControlPlane() {
   });
   const grantMutation = useMutation({
     mutationFn: companyKnowledgeApi.grantAccess,
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['company-knowledge-access-rules'] });
-    },
+    onSuccess: invalidateCompanyKnowledge,
   });
   const revokeMutation = useMutation({
     mutationFn: ({ permissionKey, reason }: { permissionKey: string; reason: string }) =>
@@ -1392,7 +1391,7 @@ export default function CompanyKnowledgeControlPlane() {
     onSuccess: () => {
       setRevokingKey(null);
       setAccessReason('');
-      void queryClient.invalidateQueries({ queryKey: ['company-knowledge-access-rules'] });
+      invalidateCompanyKnowledge();
     },
     onError: () => setRevokingKey(null),
   });
@@ -1422,6 +1421,11 @@ export default function CompanyKnowledgeControlPlane() {
         kind: 'role',
         key: 'role:org_admin',
         label: t('companyKnowledge.audiences.companyAdmins', 'Company administrators'),
+      },
+      {
+        kind: 'role',
+        key: 'role:platform_admin',
+        label: t('companyKnowledge.audiences.platformAdmins', 'Platform administrators'),
       },
     ];
     const members = (membersQuery.data ?? []).map((member) => ({

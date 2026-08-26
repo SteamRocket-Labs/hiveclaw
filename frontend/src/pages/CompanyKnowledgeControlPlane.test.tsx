@@ -545,6 +545,13 @@ describe('Company Knowledge direct import wizard', () => {
   });
 });
 
+describe('Company Knowledge access audience catalog', () => {
+  it('localizes the platform administrator audience in both locales', () => {
+    expect(enCatalog.companyKnowledge.audiences.platformAdmins).toBe('Platform administrators');
+    expect(zhCatalog.companyKnowledge.audiences.platformAdmins).toBe('平台管理员');
+  });
+});
+
 describe('Company Knowledge direct import error catalog', () => {
   it('localizes the title-conflict code with bounded prose in both locales', () => {
     expect(enCatalog.companyKnowledge.directImport.errorTitleConflict).toBe(

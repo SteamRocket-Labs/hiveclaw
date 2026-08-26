@@ -4226,7 +4226,8 @@
     "audiences": {
       "allEmployees": "全体员工",
       "companyAdmins": "公司管理员",
-      "member": "公司成员"
+      "member": "公司成员",
+      "platformAdmins": "平台管理员"
     },
     "kind": {
       "legacy": "恢复的公司文件",

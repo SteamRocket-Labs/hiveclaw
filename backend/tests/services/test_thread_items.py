@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from types import SimpleNamespace
 
@@ -324,3 +325,259 @@ async def test_canonical_session_broadcast_preserves_committed_envelope_bytes(mo
     )
 
     assert sent == [envelope]
+
+
+def _v2_tool_event(**overrides):
+    values = {
+        "id": uuid.UUID("44444444-4444-4444-4444-444444444444"),
+        "sequence": 20,
+        "session_id": uuid.UUID("22222222-2222-2222-2222-222222222222"),
+        "run_id": uuid.UUID("33333333-3333-3333-3333-333333333333"),
+        "message_id": None,
+        "parent_event_id": None,
+        "root_session_id": None,
+        "parent_session_id": None,
+        "schema_version": 2,
+        "item_type": "tool_call",
+        "item_status": "started",
+        "turn_id": "turn-20",
+        "causation_id": None,
+        "correlation_id": None,
+        "actor_type": "tool",
+        "event_type": "tool_call.started",
+        "visibility_scope": "direct_user",
+        "listed_surface": "chat",
+        "content": "",
+        "parts_json": [],
+        # Production shape (hive_weekend_rc_20260826_full_codex_0701 seq20):
+        # tool_name lives in v2_payload; user arguments persist only as a hash.
+        "metadata_json": {
+            "v2_payload": {
+                "tool_name": "load_skill",
+                "args_hash": "aae0f17dd82871e51be9d8249ca4b9088cd85e46bf4cee0793387652e08c4bb2",
+                "invocation_id": "9193ad53-3e25-51fd-91bb-25050032b8de",
+                "effect_state": "prepared_not_started",
+            },
+            "actor": {"type": "tool"},
+        },
+        "created_at": None,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def test_v2_tool_call_started_projects_running_with_real_tool_name() -> None:
+    from app.services.thread_items import build_thread_item
+
+    item = build_thread_item(_v2_tool_event())
+
+    assert item["item_type"] == "tool_call"
+    assert item["item_status"] == "running"
+    assert item["item_data"]["tool_name"] == "load_skill"
+    assert item["item_data"]["tool_call_id"] == "9193ad53-3e25-51fd-91bb-25050032b8de"
+    assert item["item_data"]["arguments"] == {}
+
+
+def test_v2_tool_call_progress_projects_running() -> None:
+    from app.services.thread_items import build_thread_item
+
+    item = build_thread_item(
+        _v2_tool_event(
+            item_status="progress",
+            event_type="tool_call.progress",
+            metadata_json={"v2_payload": {"invocation_id": "9193ad53-3e25-51fd-91bb-25050032b8de"}},
+        )
+    )
+
+    assert item["item_status"] == "running"
+
+
+def test_v2_tool_call_failed_projects_failed() -> None:
+    from app.services.thread_items import build_thread_item
+
+    item = build_thread_item(
+        _v2_tool_event(
+            item_status="failed",
+            event_type="tool_call.failed",
+            metadata_json={"v2_payload": {"outcome": "failed", "retryable": False}},
+        )
+    )
+
+    assert item["item_status"] == "failed"
+
+
+def test_v2_tool_result_completed_with_failed_outcome_projects_failed_not_succeeded() -> None:
+    from app.services.thread_items import build_thread_item
+
+    item = build_thread_item(
+        _v2_tool_event(
+            item_type="tool_result",
+            item_status="completed",
+            event_type="tool_result.completed",
+            content="❌ Skill not found: deep_research",
+            metadata_json={
+                "v2_payload": {
+                    "outcome": "failed",
+                    "content": "❌ Skill not found: deep_research",
+                    "invocation_id": "9193ad53-3e25-51fd-91bb-25050032b8de",
+                }
+            },
+        )
+    )
+
+    assert item["item_type"] == "tool_result"
+    assert item["item_status"] == "failed"
+    assert item["item_data"]["success"] is False
+    # The real production result payload (seq23) carries no tool_name — the
+    # typed call row (seq20) owns it; the result pairs with its call through
+    # the invocation id surfaced as tool_call_id.
+    assert "tool_name" not in item["item_data"]
+    assert item["item_data"]["tool_call_id"] == "9193ad53-3e25-51fd-91bb-25050032b8de"
+    assert "未完成" in item["user_summary"]
+
+
+def test_v2_tool_result_completed_success_projects_truthfully() -> None:
+    from app.services.thread_items import build_thread_item
+
+    item = build_thread_item(
+        _v2_tool_event(
+            item_type="tool_result",
+            item_status="completed",
+            event_type="tool_result.completed",
+            content="Skill loaded.",
+            metadata_json={
+                "v2_payload": {
+                    "outcome": "success",
+                    "content": "Skill loaded.",
+                    "invocation_id": "9193ad53-3e25-51fd-91bb-25050032b8de",
+                }
+            },
+        )
+    )
+
+    assert item["item_status"] == "succeeded"
+    assert item["item_data"]["success"] is True
+
+
+def test_v2_user_projection_keeps_tool_name_but_redacts_internal_payload() -> None:
+    from app.services.thread_items import build_thread_item
+
+    item = build_thread_item(_v2_tool_event(), audience="user")
+
+    assert item["metadata"] == {"status": "running"}
+    assert not item.get("operator_details")
+    assert item["user_summary"] == "正在使用：Load skill"
+    serialized = json.dumps(item, ensure_ascii=False)
+    assert "args_hash" not in serialized
+    assert "invocation_id" not in serialized
+    assert "prepared_not_started" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("lifecycle", "expected_status"),
+    [
+        ("denied", "failed"),
+        ("unavailable", "failed"),
+        ("waiting", "waiting_user"),
+    ],
+)
+def test_v2_tool_call_denied_unavailable_waiting_lifecycles_project_truthfully(lifecycle, expected_status) -> None:
+    from app.services.thread_items import build_thread_item
+
+    item = build_thread_item(
+        _v2_tool_event(
+            item_status=lifecycle,
+            event_type=f"tool_call.{lifecycle}",
+            metadata_json={"v2_payload": {"invocation_id": "9193ad53-3e25-51fd-91bb-25050032b8de"}},
+        )
+    )
+
+    assert item["item_status"] == expected_status
+
+
+@pytest.mark.parametrize("outcome", ["denied", "unavailable", "blocked"])
+def test_v2_tool_result_completed_with_non_success_outcome_projects_failed(outcome) -> None:
+    from app.services.thread_items import build_thread_item
+
+    item = build_thread_item(
+        _v2_tool_event(
+            item_type="tool_result",
+            item_status="completed",
+            event_type="tool_result.completed",
+            content=f"tool {outcome}",
+            metadata_json={"v2_payload": {"outcome": outcome, "content": f"tool {outcome}"}},
+        )
+    )
+
+    assert item["item_status"] == "failed"
+    assert item["item_data"]["success"] is False
+
+
+def test_v2_tool_result_waiting_outcome_projects_waiting_user() -> None:
+    from app.services.thread_items import build_thread_item
+
+    item = build_thread_item(
+        _v2_tool_event(
+            item_type="tool_result",
+            item_status="waiting",
+            event_type="tool_result.waiting",
+            metadata_json={"v2_payload": {"invocation_id": "9193ad53-3e25-51fd-91bb-25050032b8de"}},
+        )
+    )
+
+    assert item["item_status"] == "waiting_user"
+
+
+def test_v2_tool_result_absent_outcome_keeps_legacy_fallback() -> None:
+    from app.services.thread_items import build_thread_item
+
+    item = build_thread_item(
+        _v2_tool_event(
+            item_type="tool_result",
+            item_status="completed",
+            event_type="tool_result.completed",
+            content="ok",
+            metadata_json={"v2_payload": {"content": "ok"}},
+        )
+    )
+
+    assert item["item_status"] == "succeeded"
+    assert item["item_data"]["success"] is True
+
+
+@pytest.mark.parametrize(
+    ("lifecycle", "expected_status"),
+    [
+        ("queued", "running"),
+        ("needs_reconciliation", "failed"),
+        ("reconciled", "succeeded"),
+    ],
+)
+def test_v2_tool_exec_lifecycle_projects_truthfully(lifecycle, expected_status) -> None:
+    from app.services.thread_items import build_thread_item
+
+    item = build_thread_item(
+        _v2_tool_event(
+            item_status=lifecycle,
+            event_type=f"tool_call.{lifecycle}",
+            metadata_json={"v2_payload": {"invocation_id": "9193ad53-3e25-51fd-91bb-25050032b8de"}},
+        )
+    )
+
+    assert item["item_status"] == expected_status
+
+
+def test_v2_outcome_never_overrides_non_tool_item_lifecycle() -> None:
+    from app.services.thread_items import build_thread_item
+
+    item = build_thread_item(
+        _v2_tool_event(
+            item_type="assistant_final",
+            item_status="completed",
+            event_type="assistant_final.completed",
+            content="final answer",
+            metadata_json={"v2_payload": {"phase": "final", "outcome": "failed"}},
+        )
+    )
+
+    assert item["item_status"] == "succeeded"

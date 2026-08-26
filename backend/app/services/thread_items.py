@@ -112,6 +112,37 @@ _FAILED_STATUSES = {"failed", "error", "blocked", "denied", "capability_denied"}
 _CANCELLED_STATUSES = {"killed", "cancelled", "canceled"}
 _RUNNING_STATUSES = {"pending", "queued", "running", "started", "executing", "in_progress"}
 _WAITING_STATUSES = {"awaiting_confirmation", "awaiting_approval", "session_permission_required", "waiting_user"}
+# Session V2 persists the item lifecycle in the item_status column — the
+# tool-call exec contract spans started/progress/queued/failed/denied/
+# unavailable/waiting/needs_reconciliation/reconciled/completed/cancelled.
+# needs_reconciliation is an operator blocker: it must never surface to the
+# end user as succeeded or waiting. Typed payload outcomes normalize further
+# (tool items only): a present outcome is successful only when exactly
+# "success".
+_V2_LIFECYCLE_STATUSES: dict[str, "ThreadItemStatus"] = {
+    "started": "running",
+    "progress": "running",
+    "queued": "running",
+    "failed": "failed",
+    "denied": "failed",
+    "unavailable": "failed",
+    "needs_reconciliation": "failed",
+    "waiting": "waiting_user",
+    "cancelled": "cancelled",
+    "reconciled": "succeeded",
+    "completed": "succeeded",
+}
+_V2_OUTCOME_ITEM_TYPES = frozenset({"tool_call", "tool_result"})
+
+
+def _v2_outcome_status(metadata: dict[str, Any]) -> "ThreadItemStatus | None":
+    """Normalized typed-outcome truth: ``success`` succeeds, any other present
+    outcome fails, an absent outcome preserves the legacy fallback."""
+
+    outcome = str(_v2_payload(metadata).get("outcome") or "").strip().lower()
+    if not outcome:
+        return None
+    return "succeeded" if outcome == "success" else "failed"
 
 
 class _ThreadModel(BaseModel):
@@ -422,8 +453,27 @@ def _event_part(parts: list[dict[str, Any]]) -> dict[str, Any]:
     return next((dict(part) for part in parts if isinstance(part, dict) and part.get("type") == "event"), {})
 
 
+def _v2_payload(metadata: dict[str, Any]) -> dict[str, Any]:
+    payload = metadata.get("v2_payload")
+    return payload if isinstance(payload, dict) else {}
+
+
 def _merged_data(metadata: dict[str, Any], parts: list[dict[str, Any]]) -> dict[str, Any]:
     data = {**metadata, **_event_part(parts)}
+    payload = _v2_payload(data)
+    if payload:
+        # Presentational Session V2 subset only: the typed tool name and the
+        # outcome feed truthful projections, and the invocation id surfaces
+        # through the established tool_call_id field so results pair with
+        # their call; internal refs, hashes, and raw user arguments never
+        # merge into projection data.
+        for key in ("tool_name", "outcome"):
+            value = payload.get(key)
+            if isinstance(value, str) and value and key not in data:
+                data[key] = value
+        invocation_id = payload.get("invocation_id")
+        if isinstance(invocation_id, str) and invocation_id and "tool_call_id" not in data:
+            data["tool_call_id"] = invocation_id
     permission = data.get("permission_request")
     if isinstance(permission, dict):
         data = {**data, **permission}
@@ -536,12 +586,17 @@ def _item_data(item_type: str, *, event_type: str, data: dict[str, Any]) -> dict
             "risk_class": _text(data.get("risk_class")),
         }
     if item_type == "tool_result":
+        outcome = str(data.get("outcome") or "").strip().lower()
+        success = (
+            outcome == "success"
+            if outcome
+            else str(data.get("status") or "").lower() not in _FAILED_STATUSES and event_type not in {"tool_failure"}
+        )
         return {
             "event_type": event_type,
             "tool_name": _text(data.get("tool_name") or data.get("name")),
             "tool_call_id": _text(data.get("tool_call_id")),
-            "success": str(data.get("status") or "").lower() not in _FAILED_STATUSES
-            and event_type not in {"tool_failure"},
+            "success": success,
         }
     if item_type == "approval_request":
         return {
@@ -913,11 +968,21 @@ def build_thread_item(
         )
     )
     persisted_status = str(getattr(event, "item_status", None) or "")
-    item_status: ThreadItemStatus = (
-        persisted_status
-        if persisted_status in {"running", "waiting_user", "succeeded", "failed", "cancelled"}
-        else classify_thread_item_status(item_type=item_type, event_type=event_type, metadata=clean_metadata)
-    )  # type: ignore[assignment]
+    lifecycle_status: ThreadItemStatus | None = _V2_LIFECYCLE_STATUSES.get(persisted_status)
+    if lifecycle_status is not None:
+        # Session V2 rows persist the item lifecycle as item_status. The typed
+        # payload outcome normalizes it — but only for tool items: an outcome
+        # field on any other V2 item must never override its lifecycle. A
+        # present tool outcome decides (successful only when exactly
+        # "success"); an absent outcome keeps the lifecycle mapping.
+        outcome_status = _v2_outcome_status(clean_metadata) if item_type in _V2_OUTCOME_ITEM_TYPES else None
+        item_status: ThreadItemStatus = outcome_status if outcome_status is not None else lifecycle_status
+    else:
+        item_status = (
+            persisted_status
+            if persisted_status in {"running", "waiting_user", "succeeded", "failed", "cancelled"}
+            else classify_thread_item_status(item_type=item_type, event_type=event_type, metadata=clean_metadata)
+        )  # type: ignore[assignment]
     merged = _merged_data(clean_metadata, clean_parts)
     evidence_refs = clean_metadata.get("evidence_refs")
     clean_evidence_refs = (

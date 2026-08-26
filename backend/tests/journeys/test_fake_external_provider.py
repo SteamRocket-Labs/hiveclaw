@@ -16,7 +16,7 @@ def _payload(messages: list[dict]) -> dict:
 
 
 def test_controlled_tool_calls_match_production_schemas() -> None:
-    assert _tool_for_journey("J-08", {"load_skill"}) == ("load_skill", {"name": "deep_research"})
+    assert _tool_for_journey("J-08", {"load_skill"}) == ("load_skill", {"name": "Advanced Web Research"})
     assert _tool_for_journey("J-09", {"spawn_subagent"}) == (
         "spawn_subagent",
         {

@@ -73,7 +73,9 @@ def _tool_for_journey(journey_id: str, available: set[str]) -> tuple[str, dict[s
             "set_trigger",
             {"name": "J-05 schedule", "prompt": "Record the scheduled journey receipt", "schedule": "0 9 * * *"},
         ),
-        "J-08": ("load_skill", {"name": "deep_research"}),
+        # deep-research is retired (app/skills/retired.py); load_skill resolves
+        # the seeded default replacement by its registry display name.
+        "J-08": ("load_skill", {"name": "Advanced Web Research"}),
         "J-09": (
             "spawn_subagent",
             {

@@ -34,6 +34,7 @@ type JourneyContext = {
 
 type JourneyEvidence = {
   sessionId: string;
+  runId: string;
   transcript: Array<Record<string, unknown>>;
   domain: Record<string, unknown>;
   browserAgentId?: string;
@@ -211,19 +212,53 @@ async function bootstrap(playwright: Playwright): Promise<void> {
 }
 
 
-function permissionRequestId(item: Record<string, unknown>): string | null {
-  const text = JSON.stringify(item);
-  const match = text.match(/"permission_request_id"\s*:\s*"([^"]+)"/);
-  return match?.[1] || null;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function canonicalWaitingPermissionItemId(item: Record<string, unknown>): string | null {
+  // Authoritative waiting permission shape: item_kind tool_permission with
+  // lifecycle waiting; its top-level item_id is the SessionToolInvocation
+  // permission_item_id the resolve route matches. Exact typed checks only —
+  // never legacy JSON scanning.
+  if (item.item_kind !== 'tool_permission' || item.lifecycle !== 'waiting') return null;
+  const itemId = String(item.item_id || '');
+  return UUID_PATTERN.test(itemId) ? itemId : null;
 }
 
+function canonicalRunId(item: Record<string, unknown>): string {
+  const scope = item.scope as Record<string, unknown> | undefined;
+  return String(item.run_id || scope?.run_id || '');
+}
 
-function hasTerminalReceipt(transcript: Array<Record<string, unknown>>, journeyId: string): boolean {
-  return transcript.some(
-    (item) => item.role === 'assistant'
-      && String(item.content || '').includes(`${journeyId} terminal receipt from the controlled provider.`)
-      && ['assistant_message', 'chunk'].includes(String(item.event_type || item.type || '')),
+function normalizeRunId(value: string): string {
+  // Run receipts expose the RuntimeTask id as dashless hex; canonical
+  // envelopes carry the dashed UUID. Normalize both before binding.
+  return value.replace(/-/g, '').toLowerCase();
+}
+
+function hasCanonicalTerminalProof(
+  canonical: Array<Record<string, unknown>>,
+  journeyId: string,
+  runId: string,
+): boolean {
+  // Mechanical terminal proof from the canonical Session V2 truth, bound to
+  // the exact run: an assistant_text snapshot whose payload carries the exact
+  // journey receipt AND the run_outcome.terminal_committed event, both with a
+  // run id equal to the awaited run. Never legacy assistant_message/chunk
+  // compatibility rows, and never a receipt from one run paired with another
+  // run's terminal outcome.
+  const receipt = `${journeyId} terminal receipt from the controlled provider.`;
+  const awaitedRunId = normalizeRunId(runId);
+  const boundToRun = (item: Record<string, unknown>) => normalizeRunId(canonicalRunId(item)) === awaitedRunId;
+  const hasReceiptSnapshot = canonical.some(
+    (item) => item.item_kind === 'assistant_text'
+      && item.lifecycle === 'snapshot'
+      && boundToRun(item)
+      && String((item.payload as Record<string, unknown> | undefined)?.content || '').includes(receipt),
   );
+  const hasTerminalOutcome = canonical.some(
+    (item) => item.item_kind === 'run_outcome' && item.lifecycle === 'terminal_committed' && boundToRun(item),
+  );
+  return hasReceiptSnapshot && hasTerminalOutcome;
 }
 
 
@@ -243,20 +278,22 @@ async function startAndAwaitChat(
   const resolved = new Set<string>();
   let latest: Array<Record<string, unknown>> = [];
   await expect.poll(async () => {
+    // Poll the canonical schema_version=2 truth for the mechanical terminal
+    // proof; legacy compatibility rows are not depended on and may not exist.
     latest = await responseJson<Array<Record<string, unknown>>>(
-      await api.get(`/api/agents/${currentAgentId}/sessions/${run.session.id}/transcript`),
-      `${journeyId} transcript`,
+      await api.get(`/api/agents/${currentAgentId}/sessions/${run.session.id}/transcript?schema_version=2`),
+      `${journeyId} canonical transcript`,
     );
     for (const item of latest) {
-      const requestId = permissionRequestId(item);
-      if (!requestId || resolved.has(requestId)) continue;
+      const permissionItemId = canonicalWaitingPermissionItemId(item);
+      if (!permissionItemId || resolved.has(permissionItemId)) continue;
       const resolution = await api.post(
-        `/api/agents/${currentAgentId}/sessions/${run.session.id}/permissions/${requestId}/resolve`,
+        `/api/agents/${currentAgentId}/sessions/${run.session.id}/permissions/${permissionItemId}/resolve`,
         { data: { action: 'allow_once', feedback: 'Atomic journey controlled approval' } },
       );
-      if (resolution.ok() || resolution.status() === 409) resolved.add(requestId);
+      if (resolution.ok() || resolution.status() === 409) resolved.add(permissionItemId);
     }
-    return hasTerminalReceipt(latest, journeyId);
+    return hasCanonicalTerminalProof(latest, journeyId, String(run.run.run_id));
   }, { timeout: 90_000, intervals: [250, 500, 1000] }).toBe(true);
   // A streamed assistant chunk is user-visible before the durable RuntimeTask
   // has necessarily finished post-run hooks, evidence projection, and lease
@@ -276,7 +313,7 @@ async function startAndAwaitChat(
   }, { timeout: 90_000, intervals: [250, 500, 1000] }).toBe(true);
   latest = await responseJson<Array<Record<string, unknown>>>(
     await api.get(`/api/agents/${currentAgentId}/sessions/${run.session.id}/transcript`),
-    `${journeyId} terminal transcript replay`,
+    `${journeyId} terminal ThreadItem transcript replay`,
   );
   return { run, transcript: latest };
 }
@@ -313,7 +350,17 @@ async function expectJourneyEvidence(
     context.agentId,
     evidence.sessionId,
   );
-  expect(hasTerminalReceipt(evidence.transcript, journey.id)).toBe(true);
+  // Terminal receipt proof is asserted against a fresh canonical
+  // schema_version=2 fetch, mechanically (snapshot receipt + terminal
+  // outcome); the default ThreadItem replay below stays as the stable
+  // read-back check.
+  const canonicalReplay = await responseJson<Array<Record<string, unknown>>>(
+    await context.ownerApi.get(
+      `/api/agents/${context.agentId}/sessions/${evidence.sessionId}/transcript?schema_version=2`,
+    ),
+    `${journey.id} canonical terminal proof replay`,
+  );
+  expect(hasCanonicalTerminalProof(canonicalReplay, journey.id, evidence.runId)).toBe(true);
   expect(replay.length).toBeGreaterThanOrEqual(evidence.transcript.length);
 
   const denied = await context.intruderApi.get(
@@ -343,7 +390,6 @@ async function setPageAuth(page: Page, auth: AuthState): Promise<void> {
 
 
 function findUuidField(items: Array<Record<string, unknown>>, field: string): string | null {
-  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   const visit = (value: unknown): string | null => {
     if (Array.isArray(value)) {
       for (const item of value) {
@@ -355,7 +401,7 @@ function findUuidField(items: Array<Record<string, unknown>>, field: string): st
     if (value && typeof value === 'object') {
       const record = value as Record<string, unknown>;
       const direct = record[field];
-      if (typeof direct === 'string' && uuid.test(direct)) return direct;
+      if (typeof direct === 'string' && UUID_PATTERN.test(direct)) return direct;
       for (const nested of Object.values(record)) {
         const found = visit(nested);
         if (found) return found;
@@ -558,7 +604,49 @@ async function exerciseDomain(
         await context.ownerApi.get(`/api/agents/${context.agentId}/extensions`),
         'list agent extensions',
       );
-      expect(JSON.stringify(base.transcript)).toContain('load_skill');
+      // Typed proof that the model exercised load_skill and the call
+      // succeeded. The default user transcript proves the visible tool name
+      // and a truthful (non-failed) status; exact call/result linkage pairs
+      // top-level invocation_id on the canonical schema_version=2 transcript,
+      // where a present payload outcome must be exactly "success".
+      const visibleCalls = base.transcript.filter(
+        (item) => String(item.item_type) === 'tool_call'
+          && String((item.item_data as Record<string, unknown> | undefined)?.tool_name || '') === 'load_skill',
+      );
+      expect(visibleCalls.length).toBeGreaterThan(0);
+      for (const item of visibleCalls) {
+        expect(String(item.item_status)).not.toBe('failed');
+      }
+      const canonical = await responseJson<Array<Record<string, unknown>>>(
+        await context.ownerApi.get(
+          `/api/agents/${context.agentId}/sessions/${sessionId}/transcript?schema_version=2`,
+        ),
+        'read canonical V2 transcript',
+      );
+      const loadSkillCalls = canonical.filter(
+        (item) => item.item_kind === 'tool_call'
+          && String((item.payload as Record<string, unknown> | undefined)?.tool_name || '') === 'load_skill',
+      );
+      expect(loadSkillCalls.length).toBeGreaterThan(0);
+      const invocationIds = new Set(
+        loadSkillCalls.map((item) => String(item.invocation_id || '')).filter(Boolean),
+      );
+      expect(invocationIds.size).toBe(loadSkillCalls.length);
+      for (const item of loadSkillCalls) {
+        expect(['failed', 'denied', 'unavailable']).not.toContain(String(item.lifecycle));
+      }
+      const loadSkillResults = canonical.filter(
+        (item) => item.item_kind === 'tool_result' && invocationIds.has(String(item.invocation_id || '')),
+      );
+      // Exactly one typed result per load_skill call, and the distinct result
+      // id set must equal the call id set — a missing or duplicated result
+      // for any call fails the journey.
+      expect(loadSkillResults.length).toBe(loadSkillCalls.length);
+      const resultIds = new Set(loadSkillResults.map((item) => String(item.invocation_id || '')));
+      expect(resultIds).toEqual(invocationIds);
+      for (const item of loadSkillResults) {
+        expect(String((item.payload as Record<string, unknown>).outcome)).toBe('success');
+      }
       domain.skills = skills as Record<string, unknown>;
       domain.extensions = extensions as Record<string, unknown>;
       break;
@@ -768,6 +856,7 @@ async function exerciseDomain(
       domain.operatorProjection = operatorProjection;
       return {
         sessionId,
+        runId: String(base.run.run.run_id),
         transcript: base.transcript,
         domain,
         browserSessionId: memberRun.run.session.id,
@@ -780,7 +869,7 @@ async function exerciseDomain(
       throw new Error(`Unmapped atomic journey ${journey.id}`);
   }
 
-  return { sessionId, transcript: base.transcript, domain };
+  return { sessionId, runId: String(base.run.run.run_id), transcript: base.transcript, domain };
 }
 
 

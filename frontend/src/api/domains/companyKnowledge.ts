@@ -33,6 +33,10 @@ export interface CompanyLibraryDocument {
 
 export interface CompanyLibrarySearchHit extends CompanyLibraryDocument {
   snippet: string;
+  // Internal segment-level identity from the backend segment-level search
+  // contract. Used for unique result keys and selection identity only; never
+  // rendered into the DOM.
+  segmentKey: string;
 }
 
 export interface CompanyLibraryDocumentDetail {
@@ -305,12 +309,18 @@ export const companyKnowledgeApi = {
   },
 
   async searchLibrary(query: string): Promise<{ results: CompanyLibrarySearchHit[] }> {
-    const raw = await post<{ results?: Array<RawDocument & { snippet?: string }> }>('/knowledge/company/search', {
-      query: query.trim(),
-      filters: {},
-      limit: 50,
-    });
+    const raw = await post<{ results?: Array<RawDocument & { snippet?: string; segment_id?: string }> }>(
+      '/knowledge/company/search',
+      {
+        query: query.trim(),
+        filters: {},
+        limit: 50,
+      },
+    );
     return {
+      // The backend contract is segment-level (segment_id + snippet). Map the
+      // segment identity into an internal segmentKey; source_ref, score, and
+      // score_trace stay out of the employee UI model.
       results: (raw.results ?? []).map((item) => ({
         ...libraryDocument({
           ...item,
@@ -318,6 +328,7 @@ export const companyKnowledgeApi = {
           valid_until: item.valid_until ?? null,
         }),
         snippet: String(item.snippet || ''),
+        segmentKey: String(item.segment_id || ''),
       })),
     };
   },

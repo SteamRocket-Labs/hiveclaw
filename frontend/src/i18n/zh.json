@@ -4125,6 +4125,7 @@
     "safeEmptyTitle": "当前账号没有可用的公司知识",
     "safeEmptyDescription": "可能是访问范围受限，也可能是没有当前有效的发布内容匹配此次搜索。",
     "results": "结果",
+    "matchingPassage": "匹配段落 {{index}}",
     "reading": "正在打开已授权的发布内容...",
     "publishedVersion": "发布版本",
     "truncated": "当前阅读视图已达到上限，请缩小搜索范围以打开相关段落。",

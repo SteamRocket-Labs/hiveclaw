@@ -86,6 +86,74 @@ describe('companyKnowledgeApi', () => {
     expect(JSON.stringify(result)).not.toContain('required_actions');
   });
 
+  it('maps segment-level search hits to unique internal segment identity without forwarding forensic fields (RC-02C)', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        status: 'ok',
+        results: [
+          {
+            result_kind: 'company_knowledge_segment',
+            publication_id: 'publication-1',
+            document_id: 'document-1',
+            segment_id: 'segment-1',
+            version: 1,
+            title: 'Runbook',
+            namespace: 'company/general',
+            snippet: 'Alpha snippet with the marker.',
+            source_ref: 'company-publication://publication-1/documents/document-1#segment=segment-1',
+            sensitivity: 'PL1_public',
+            score: 0.91,
+            score_trace: { exact: 3 },
+            valid_from: '2026-08-26T00:00:00Z',
+            valid_until: null,
+          },
+          {
+            result_kind: 'company_knowledge_segment',
+            publication_id: 'publication-1',
+            document_id: 'document-1',
+            segment_id: 'segment-2',
+            version: 1,
+            title: 'Runbook',
+            namespace: 'company/general',
+            snippet: 'Beta snippet with the marker.',
+            source_ref: 'company-publication://publication-1/documents/document-1#segment=segment-2',
+            sensitivity: 'PL1_public',
+            score: 0.87,
+            score_trace: { exact: 2 },
+            valid_from: '2026-08-26T00:00:00Z',
+            valid_until: null,
+          },
+        ],
+        authority: { required_actions: ['discover', 'search'] },
+        warnings: [],
+      }),
+    );
+
+    const result = await companyKnowledgeApi.searchLibrary('  marker  ');
+
+    const request = requestOf();
+    expect(request.url).toBe('/api/knowledge/company/search');
+    expect(JSON.parse(String(request.init.body))).toMatchObject({ query: 'marker', limit: 50 });
+
+    // segment_id becomes the internal segmentKey; snippet and backend order
+    // are preserved so repeated hits of one document keep unique identity.
+    expect(result.results.map((hit) => hit.segmentKey)).toEqual(['segment-1', 'segment-2']);
+    expect(result.results.map((hit) => hit.snippet)).toEqual([
+      'Alpha snippet with the marker.',
+      'Beta snippet with the marker.',
+    ]);
+    expect(result.results.map((hit) => hit.title)).toEqual(['Runbook', 'Runbook']);
+
+    // The UI model never receives source_ref, score, score_trace, or other
+    // forensic fields.
+    const serialized = JSON.stringify(result);
+    for (const forbidden of ['source_ref', 'score_trace', 'score', 'company-publication://', 'required_actions']) {
+      expect(serialized).not.toContain(forbidden);
+    }
+    expect(result.results[0]).not.toHaveProperty('score');
+    expect(result.results[0]).not.toHaveProperty('source_ref');
+  });
+
   it('submits a Personal document through explicit scope-change attestation', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({ intake_id: 'intake-1', status: 'queued', recovery: 'automatic' }, 202),

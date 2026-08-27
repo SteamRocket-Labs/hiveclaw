@@ -104,6 +104,20 @@
   color: var(--text-secondary);
 }
 
+.company-library-passage {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.company-library-snippet {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .company-library-reader {
   padding: 24px;
   overflow: auto;

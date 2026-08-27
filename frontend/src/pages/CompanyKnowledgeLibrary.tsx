@@ -16,6 +16,7 @@ import {
   type CompanyKnowledgeSensitivity,
   type CompanyLibraryDocument,
   type CompanyLibraryDocumentDetail,
+  type CompanyLibrarySearchHit,
 } from '../api/domains/companyKnowledge';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import { useAuthStore } from '../stores';
@@ -42,16 +43,52 @@ function sensitivityLabel(
   return t('companyKnowledge.sensitivity.company', 'Company-wide');
 }
 
+type LibraryResult = CompanyLibraryDocument | CompanyLibrarySearchHit;
+
+// Unique identity for one result row. Search hits are segment-level (RC-02C):
+// repeated hits of the same document differ only by their internal segmentKey.
+// Used for React keys and selection identity only — never rendered into the
+// DOM. List-mode documents keep publication:document identity. Malformed
+// legacy responses without a segment identity safely fall back to the
+// document identity.
+export function libraryResultKey(document: LibraryResult): string {
+  const segmentKey = (document as CompanyLibrarySearchHit).segmentKey;
+  const base = `${document.publicationKey}:${document.documentKey}`;
+  return segmentKey ? `${base}:${segmentKey}` : base;
+}
+
+function searchHitOf(document: LibraryResult): CompanyLibrarySearchHit | null {
+  const hit = document as CompanyLibrarySearchHit;
+  return typeof hit.segmentKey === 'string' && hit.segmentKey.length > 0 ? hit : null;
+}
+
+// Deterministic selection: keep the current selection only while its full
+// result identity is present in the current result set; otherwise reset to
+// the first current result. A stale segment of the same publication is never
+// retained (RC-02C).
+export function resolveLibrarySelection(
+  documents: LibraryResult[],
+  selected: LibraryResult | null,
+): LibraryResult | null {
+  if (!documents.length) return null;
+  if (selected) {
+    const selectedKey = libraryResultKey(selected);
+    if (documents.some((item) => libraryResultKey(item) === selectedKey)) return selected;
+  }
+  return documents[0];
+}
+
 interface CompanyKnowledgeLibraryViewProps {
-  documents: CompanyLibraryDocument[];
+  documents: LibraryResult[];
   selectedDocument: CompanyLibraryDocumentDetail | null;
+  selectedResultKey: string | null;
   query: string;
   isLoading: boolean;
   isReading: boolean;
   error: unknown;
   onQueryChange: (value: string) => void;
   onSearch: () => void;
-  onSelect: (document: CompanyLibraryDocument) => void;
+  onSelect: (document: LibraryResult) => void;
   onRetry: () => void;
   canManage: boolean;
 }
@@ -59,6 +96,7 @@ interface CompanyKnowledgeLibraryViewProps {
 export function CompanyKnowledgeLibraryView({
   documents,
   selectedDocument,
+  selectedResultKey,
   query,
   isLoading,
   isReading,
@@ -157,26 +195,39 @@ export function CompanyKnowledgeLibraryView({
       ) : (
         <div className="company-library-shell">
           <section className="company-library-list" aria-label={t('companyKnowledge.results', 'Results')}>
-            {documents.map((document) => (
-              <button
-                type="button"
-                key={`${document.publicationKey}:${document.documentKey}`}
-                className={
-                  selectedDocument?.publicationKey === document.publicationKey
-                    ? 'company-library-card active'
-                    : 'company-library-card'
-                }
-                onClick={() => onSelect(document)}
-              >
-                <span>
-                  <strong>{document.title}</strong>
-                  <small>
-                    {areaLabel(document.area, t)} · {sensitivityLabel(document.sensitivity, t)}
-                  </small>
-                </span>
-                <IconArrowRight size={15} stroke={1.7} />
-              </button>
-            ))}
+            {documents.map((document, index) => {
+              const hit = searchHitOf(document);
+              return (
+                <button
+                  type="button"
+                  key={libraryResultKey(document)}
+                  className={
+                    selectedResultKey !== null && selectedResultKey === libraryResultKey(document)
+                      ? 'company-library-card active'
+                      : 'company-library-card'
+                  }
+                  onClick={() => onSelect(document)}
+                >
+                  <span>
+                    <strong>{document.title}</strong>
+                    <small>
+                      {areaLabel(document.area, t)} · {sensitivityLabel(document.sensitivity, t)}
+                    </small>
+                    {hit && (
+                      <small className="company-library-passage">
+                        {t('companyKnowledge.matchingPassage', 'Matching passage {{index}}', {
+                          index: index + 1,
+                        })}
+                      </small>
+                    )}
+                    {hit?.snippet ? (
+                      <small className="company-library-snippet">{hit.snippet}</small>
+                    ) : null}
+                  </span>
+                  <IconArrowRight size={15} stroke={1.7} />
+                </button>
+              );
+            })}
           </section>
 
           <article className="company-library-reader">
@@ -221,7 +272,7 @@ export default function CompanyKnowledgeLibrary() {
   const user = useAuthStore((state) => state.user);
   const [query, setQuery] = useState('');
   const [activeQuery, setActiveQuery] = useState('');
-  const [selected, setSelected] = useState<CompanyLibraryDocument | null>(null);
+  const [selected, setSelected] = useState<LibraryResult | null>(null);
   const libraryQuery = useQuery({
     queryKey: ['company-knowledge-library'],
     queryFn: () => companyKnowledgeApi.listLibrary(),
@@ -237,13 +288,8 @@ export default function CompanyKnowledgeLibrary() {
   );
 
   useEffect(() => {
-    if (!documents.length) {
-      setSelected(null);
-      return;
-    }
-    if (!selected || !documents.some((item) => item.publicationKey === selected.publicationKey)) {
-      setSelected(documents[0]);
-    }
+    const next = resolveLibrarySelection(documents, selected);
+    if (next !== selected) setSelected(next);
   }, [documents, selected]);
 
   const readQuery = useQuery({
@@ -261,6 +307,7 @@ export default function CompanyKnowledgeLibrary() {
     <CompanyKnowledgeLibraryView
       documents={documents}
       selectedDocument={readQuery.data ?? null}
+      selectedResultKey={selected ? libraryResultKey(selected) : null}
       query={query}
       isLoading={activeListQuery.isLoading}
       isReading={readQuery.isLoading}

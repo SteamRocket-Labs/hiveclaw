@@ -4125,6 +4125,7 @@
     "safeEmptyTitle": "No Company Knowledge is available to your account",
     "safeEmptyDescription": "Your access may be limited, or no current publication matched this search.",
     "results": "Results",
+    "matchingPassage": "Matching passage {{index}}",
     "reading": "Opening the authorized publication...",
     "publishedVersion": "Published version",
     "truncated": "This view reached its reading limit. Refine the search to open the relevant section.",

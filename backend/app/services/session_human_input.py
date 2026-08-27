@@ -28,7 +28,22 @@ from app.services.session_v2_persistence import (
 )
 
 
-_ACTIVE_RUN_STATUSES = frozenset({"pending", "running"})
+# Session-targetable (active-like) run states.  The authoritative runtime
+# contract — ``ck_runtime_tasks_status`` membership, the
+# ``uq_runtime_tasks_active_web_chat_session`` partial unique index, and
+# ``web_chat_runtime._find_active_run`` — treats a suspended (awaiting
+# permission) or resumable run as STILL the session's active turn: the same
+# run later becomes running again and can still bind queued mailbox items.
+# Initial steer/answer target validity must use this set; judging it with
+# only pending/running prematurely rolls a steer away from its live target.
+SESSION_TARGETABLE_RUN_STATUSES = frozenset({"pending", "running", "suspended", "resumable"})
+# Provider-round bindable (executing) run states: only a run that can execute
+# a provider round right now may bind queued inputs at the pre-dispatch
+# boundary.  A suspended/resumable run still occupies the session (see above)
+# but cannot execute until it resumes, so it must never bind.  Do NOT widen
+# this set when touching target validity — the two sets are deliberately
+# distinct mechanical semantics, not one shared constant.
+_PROVIDER_ROUND_BINDABLE_RUN_STATUSES = frozenset({"pending", "running"})
 _UNBOUND_STATUSES = frozenset({"accepted", "queued"})
 
 
@@ -548,7 +563,7 @@ async def queue_admitted_human_input(
         active_turn_id = (
             str((task.metadata_json or {}).get("turn_id") or f"turn-{task.id.hex}") if task is not None else None
         )
-        if task is None or active_turn_id != row.target_turn_id or task.status not in _ACTIVE_RUN_STATUSES:
+        if task is None or active_turn_id != row.target_turn_id or task.status not in SESSION_TARGETABLE_RUN_STATUSES:
             if row.intent == "steer_current_turn" and row.terminal_fallback == "queue_next_turn":
                 return await rollover_terminal_steer(
                     db,
@@ -691,7 +706,7 @@ async def bind_admitted_inputs_to_round(
             RuntimeTask.tenant_id == tenant_id,
             RuntimeTask.parent_agent_id == agent_id,
             RuntimeTask.parent_session_id == str(session_id),
-            RuntimeTask.status.in_(_ACTIVE_RUN_STATUSES),
+            RuntimeTask.status.in_(_PROVIDER_ROUND_BINDABLE_RUN_STATUSES),
         )
         .with_for_update()
     )

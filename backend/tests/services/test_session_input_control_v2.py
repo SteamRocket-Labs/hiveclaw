@@ -2866,6 +2866,356 @@ async def test_dispatched_steer_is_never_rolled_over_while_target_run_is_nonterm
         assert target is not None and target.status == nonterminal_status
 
 
+@pytest.mark.parametrize("nonterminal_status", ["suspended", "resumable"])
+async def test_auto_steer_to_nonterminal_active_like_run_stays_queued_on_target(
+    owner_sessionmaker, nonterminal_status
+) -> None:
+    """DAY1-SESSION-ACTIVE-LIKE-STEER-001 initial-steer target validity.
+
+    ``submit_live_human_input(requested_kind=\"auto\")`` resolves the session's
+    active-like run through ``web_chat_runtime._find_active_run``, whose
+    authoritative four-state set (mirroring the
+    ``uq_runtime_tasks_active_web_chat_session`` partial unique index)
+    includes suspended/resumable.  The initial steer target-validity check in
+    ``queue_admitted_human_input`` must use the same active-like set: the
+    steer stays queued on its original live target run instead of being
+    rolled over (and then churning a successor against the ingress 409)
+    merely because the run is awaiting permission / resumable.
+    """
+
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionCommand, SessionInputAdmission, SessionTurnInput
+    from app.models.user import User
+    from app.services.session_live_input import submit_live_human_input
+
+    tenant_id, user_id, agent_id, session_id, run_id = await _seed_session(owner_sessionmaker, active_run=True)
+    assert run_id is not None
+    input_id = uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        # Truthful nonterminal transition BEFORE the steer arrives: the
+        # awaiting-permission lane suspends the SAME run; a resumable run is
+        # equally recoverable.  Neither is a terminal settlement.
+        task = await db.get(RuntimeTask, run_id)
+        assert task is not None and task.status == "running"
+        task.status = nonterminal_status
+        await db.commit()
+
+        agent = await db.get(Agent, agent_id)
+        user = await db.get(User, user_id)
+        session = await db.get(ChatSession, session_id)
+        assert agent is not None and user is not None and session is not None
+        payload = await submit_live_human_input(
+            db=db,
+            agent=agent,
+            user=user,
+            session=session,
+            content=f"Steer the {nonterminal_status} run",
+            source=f"test_active_like_{nonterminal_status}",
+            input_id=input_id,
+            idempotency_key=f"active-like:{input_id}",
+            requested_kind="auto",
+        )
+
+    successor_run_id = uuid.uuid5(input_id, "session-v2-successor-run")
+    async with owner_sessionmaker() as db:
+        row = await db.get(SessionTurnInput, input_id)
+        command = await db.get(SessionCommand, row.command_id) if row is not None else None
+        admission = await db.scalar(
+            select(SessionInputAdmission).where(
+                SessionInputAdmission.input_id == input_id,
+                SessionInputAdmission.input_revision == 1,
+            )
+        )
+        target = await db.get(RuntimeTask, run_id)
+        successor = await db.get(RuntimeTask, successor_run_id)
+        session_tasks = await db.scalar(
+            select(func.count())
+            .select_from(RuntimeTask)
+            .where(
+                RuntimeTask.tenant_id == tenant_id,
+                RuntimeTask.parent_session_id == str(session_id),
+            )
+        )
+        rolled_over_events = await db.scalar(
+            select(func.count())
+            .select_from(ChatTranscriptEvent)
+            .where(
+                ChatTranscriptEvent.session_id == session_id,
+                ChatTranscriptEvent.event_type == "human_input.rolled_over",
+            )
+        )
+        # requested_kind="auto" resolved through _find_active_run onto the SAME
+        # suspended/resumable run, and dispatch mailed the steer into it.
+        assert payload["intent"] == "steer_current_turn"
+        assert payload["status"] == "queued"
+        assert payload["target_run_id"] == str(run_id)
+        assert payload["target_turn_id"] == f"turn-{run_id.hex}"
+        assert payload["rolled_over_to_turn_id"] is None
+        assert payload["admission_state"] == "admitted"
+        assert payload["dispatch_status"] == "dispatched"
+        assert (payload["dispatch"] or {}).get("kind") == "mailbox"
+        assert payload["run"] is None
+        assert row is not None and row.intent == "steer_current_turn"
+        assert row.status == "queued"
+        assert row.target_run_id == run_id
+        assert row.bound_round_id is None
+        assert row.rolled_over_to_turn_id is None
+        assert row.settlement_ref is None
+        assert command is not None and command.command_kind == "steer_current_turn"
+        assert command.status == "accepted"
+        assert (command.target_json or {}).get("expected_run_id") == str(run_id)
+        assert admission is not None and admission.state == "admitted"
+        assert admission.dispatch_state == "dispatched"
+        assert admission.dispatch_last_error is None
+        assert (admission.dispatch_receipt_json or {}).get("kind") == "mailbox"
+        assert successor is None
+        assert session_tasks == 1
+        assert rolled_over_events == 0
+        assert target is not None and target.status == nonterminal_status
+
+
+@pytest.mark.parametrize("nonterminal_status", ["suspended", "resumable"])
+async def test_queued_steer_binds_only_after_target_run_returns_to_executing(
+    owner_sessionmaker, nonterminal_status
+) -> None:
+    """``bind_admitted_inputs_to_round`` stays executing-only (pending/running).
+
+    A steer dispatched while the target run was running stays queued on that
+    run when the run later suspends (awaiting permission) or becomes
+    resumable.  The provider pre-dispatch bind boundary must NOT bind it
+    while the run cannot execute; once the SAME run returns to running, the
+    next provider round binds the SAME input to the SAME run/turn/round.
+    This pins the boundary between the two mechanical status sets: widening
+    initial target validity to the active-like set must never leak into the
+    provider-round bindable set.
+    """
+
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionTurnInput
+    from app.runtime.hooks import HookResult
+    from app.services.runtime_task_worker import recover_session_input_dispatches_once
+    from app.services.session_human_input import bind_admitted_inputs_to_round
+    from app.services.session_input_admission import run_user_prompt_admission
+
+    tenant_id, user_id, agent_id, session_id, run_id = await _seed_session(owner_sessionmaker, active_run=True)
+    assert run_id is not None
+    turn_id = f"turn-{run_id.hex}"
+    async with owner_sessionmaker() as db:
+        authority = await _authority(db, user_id=user_id, agent_id=agent_id, session_id=session_id)
+        steered = await _accepted_input(
+            db,
+            authority=authority,
+            session_id=session_id,
+            run_id=run_id,
+            kind="steer_current_turn",
+            content=f"Bind me once the {nonterminal_status} run resumes",
+        )
+
+        async def allow(**_kwargs):
+            return HookResult()
+
+        await run_user_prompt_admission(
+            db,
+            authority=authority,
+            input_id=steered.input_id,
+            worker_id=f"bind-{nonterminal_status}-admission",
+            hook_executor=allow,
+        )
+
+    dispatched = await recover_session_input_dispatches_once(
+        worker_id=f"bind-{nonterminal_status}-dispatch",
+        tenant_id=tenant_id,
+        session_factory=owner_sessionmaker,
+    )
+    assert dispatched == {"claimed": 1, "dispatched": 1, "deferred": 0, "retried": 0}
+
+    async with owner_sessionmaker() as db:
+        row = await db.get(SessionTurnInput, steered.input_id)
+        assert row is not None and row.status == "queued" and row.target_run_id == run_id
+        # The run now suspends (awaiting permission) / becomes resumable
+        # WITHOUT binding the queued mailbox item.
+        task = await db.get(RuntimeTask, run_id)
+        assert task is not None and task.status == "running"
+        task.status = nonterminal_status
+        await db.commit()
+
+        # The provider pre-dispatch bind boundary must not bind while the run
+        # cannot execute a round.
+        bound_while_nonterminal = await bind_admitted_inputs_to_round(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            round_id=f"round-{nonterminal_status}-1",
+            model_request_snapshot_ref=f"snapshot:{nonterminal_status}:1",
+        )
+        await db.commit()
+        assert bound_while_nonterminal == []
+        row = await db.get(SessionTurnInput, steered.input_id)
+        assert row is not None and row.status == "queued"
+        assert row.bound_round_id is None
+        assert row.model_request_snapshot_ref is None
+
+        # The SAME run resumes; the next provider round binds the SAME input
+        # to the SAME run/turn/round.
+        task = await db.get(RuntimeTask, run_id)
+        assert task is not None and task.status == nonterminal_status
+        task.status = "running"
+        await db.commit()
+        bound_after_resume = await bind_admitted_inputs_to_round(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            round_id=f"round-{nonterminal_status}-2",
+            model_request_snapshot_ref=f"snapshot:{nonterminal_status}:2",
+        )
+        await db.commit()
+        assert [bound.id for bound in bound_after_resume] == [steered.input_id]
+        row = await db.get(SessionTurnInput, steered.input_id)
+        assert row is not None and row.status == "bound"
+        assert row.target_run_id == run_id
+        assert row.target_turn_id == turn_id
+        assert row.bound_round_id == f"round-{nonterminal_status}-2"
+        assert row.model_request_snapshot_ref == f"snapshot:{nonterminal_status}:2"
+        bound_events = await db.scalar(
+            select(func.count())
+            .select_from(ChatTranscriptEvent)
+            .where(
+                ChatTranscriptEvent.session_id == session_id,
+                ChatTranscriptEvent.input_id == steered.input_id,
+                ChatTranscriptEvent.event_type == "human_input.bound",
+            )
+        )
+        assert bound_events == 1
+        # An already-bound input is never re-bound by a later round.
+        bound_replay = await bind_admitted_inputs_to_round(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            round_id=f"round-{nonterminal_status}-3",
+            model_request_snapshot_ref=f"snapshot:{nonterminal_status}:3",
+        )
+        assert bound_replay == []
+
+
+@pytest.mark.parametrize("nonterminal_status", ["suspended", "resumable"])
+async def test_queue_next_turn_successor_defers_while_active_like_run_exists(
+    owner_sessionmaker, nonterminal_status
+) -> None:
+    """DAY1-SESSION-ACTIVE-LIKE-STEER-001 FIFO successor active-like guard.
+
+    A suspended (awaiting permission) or resumable run still OCCUPIES the
+    session under ``uq_runtime_tasks_active_web_chat_session``.  A queued
+    ``queue_next_turn`` must therefore stably defer its successor
+    (``waiting_for_terminal``) instead of attempting a start that web-chat
+    ingress correctly rejects with 409, which would retry-churn the
+    admission on every worker sweep.  No new RuntimeTask may be created.
+    """
+
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionInputAdmission, SessionTurnInput
+    from app.runtime.hooks import HookResult
+    from app.services.runtime_task_worker import recover_session_input_dispatches_once
+    from app.services.session_input_admission import run_user_prompt_admission
+
+    tenant_id, user_id, agent_id, session_id, run_id = await _seed_session(owner_sessionmaker, active_run=True)
+    assert run_id is not None
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, run_id)
+        assert task is not None and task.status == "running"
+        task.status = nonterminal_status
+        await db.commit()
+        authority = await _authority(db, user_id=user_id, agent_id=agent_id, session_id=session_id)
+        queued = await _accepted_input(
+            db,
+            authority=authority,
+            session_id=session_id,
+            kind="queue_next_turn",
+            content=f"Next turn behind a {nonterminal_status} run",
+        )
+
+        async def allow(**_kwargs):
+            return HookResult()
+
+        await run_user_prompt_admission(
+            db,
+            authority=authority,
+            input_id=queued.input_id,
+            worker_id=f"successor-{nonterminal_status}-admission",
+            hook_executor=allow,
+        )
+
+    first = await recover_session_input_dispatches_once(
+        worker_id=f"successor-{nonterminal_status}-worker",
+        tenant_id=tenant_id,
+        session_factory=owner_sessionmaker,
+    )
+    second = await recover_session_input_dispatches_once(
+        worker_id=f"successor-{nonterminal_status}-worker",
+        tenant_id=tenant_id,
+        session_factory=owner_sessionmaker,
+    )
+    successor_run_id = uuid.uuid5(queued.input_id, "session-v2-successor-run")
+    async with owner_sessionmaker() as db:
+        row = await db.get(SessionTurnInput, queued.input_id)
+        admission = await db.scalar(
+            select(SessionInputAdmission).where(
+                SessionInputAdmission.input_id == queued.input_id,
+                SessionInputAdmission.input_revision == 1,
+            )
+        )
+        successor = await db.get(RuntimeTask, successor_run_id)
+        session_tasks = await db.scalar(
+            select(func.count())
+            .select_from(RuntimeTask)
+            .where(
+                RuntimeTask.tenant_id == tenant_id,
+                RuntimeTask.parent_session_id == str(session_id),
+            )
+        )
+        rolled_over_events = await db.scalar(
+            select(func.count())
+            .select_from(ChatTranscriptEvent)
+            .where(
+                ChatTranscriptEvent.session_id == session_id,
+                ChatTranscriptEvent.event_type == "human_input.rolled_over",
+            )
+        )
+        target = await db.get(RuntimeTask, run_id)
+        # Stable defer: each sweep re-claims the waiting admission, observes
+        # the active-like run, and defers again WITHOUT a 409, an error, or a
+        # retry count.
+        assert first == {"claimed": 1, "dispatched": 0, "deferred": 1, "retried": 0}
+        assert second == {"claimed": 1, "dispatched": 0, "deferred": 1, "retried": 0}
+        assert row is not None and row.status == "queued"
+        assert row.intent == "queue_next_turn"
+        assert row.target_run_id is None
+        assert row.target_turn_id is not None
+        assert admission is not None and admission.dispatch_state == "pending"
+        assert admission.dispatch_last_error is None
+        assert dict(admission.dispatch_receipt_json or {}) == {
+            "kind": "successor",
+            "status": "waiting_for_terminal",
+        }
+        assert successor is None
+        assert session_tasks == 1
+        assert rolled_over_events == 0
+        assert target is not None and target.status == nonterminal_status
+
+
 async def test_round_binding_consumes_only_admitted_inputs_in_fifo_order(owner_sessionmaker) -> None:
     from app.runtime.hooks import HookResult
     from app.services.session_human_input import (

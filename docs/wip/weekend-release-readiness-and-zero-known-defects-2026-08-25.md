@@ -1670,6 +1670,87 @@ git diff --check         → clean；changed files 恰为五个授权文件（�
 
 ---
 
+## 7.13 DAY1-LIVE-TAIL-001 — 终局后 live 投影丢失结构化 tool result + 运行读模型陈旧（本地候选包，未部署）
+
+### 生产复现（2026-08-27，Rocky lab，两轮，如实记录）
+
+HR Agent turn 完成且最终模型回答明确让用户点击 canonical blueprint preview；但 live 页面在流结束后**未渲染结构化 HR Blueprint 卡片**，Session Workbench 一度仍显示 **1 running**（turn 实际 ready/completed）。整页 reload 立即恢复：已持久化的 blueprint 卡片、Confirm 与 create 按钮、0 running、completed runtime 行。两轮复现：
+
+- 复现 1：session `235d5f0a-c2f1-41ce-9ff2-3aae32423d04`，一个 blueprint `WEEKEND-RC-20260825-A-Orchestrator`。
+- 复现 2：session `92edaf9f-face-4189-8cef-fe95c39736d3`，两个 blueprint `WEEKEND-RC-20260825-B-Worker` 与 `WEEKEND-RC-20260825-C-Artifact`。
+
+三个 synthetic agent 最终均在生产创建并核实使用 DeepSeek V4 Flash：A `76af3c45-ba5f-5034-90b0-0ea06c3ca1e6`、B `5797b7fe-7641-5f99-9bbc-8d33c9574a9a`、C `e4569124-e2b8-5f61-9cc6-1ee6cc86a422`。**明确排除**：B/C 在快速 SPA 导航期间一度显示 model-empty，cache-busted 完整导航证明两者均正确显示 DeepSeek V4 Flash——按 owner 指示**不记录为缺陷**。生产页面最终仅经 reload 恢复；未发明任何日志或 DB 证据（观察全部来自产品 UI；本包无生产 DB/日志访问）。
+
+### 合成资产登记与恢复/删除目标（owner 门控，未执行任何删除）
+
+| 资产 | 标识 | 清理目标 |
+|---|---|---|
+| 复现 session 1 | `235d5f0a-c2f1-41ce-9ff2-3aae32423d04` | owner 授权后删除 |
+| 复现 session 2 | `92edaf9f-face-4189-8cef-fe95c39736d3` | owner 授权后删除 |
+| blueprint 草稿 | `WEEKEND-RC-20260825-A-Orchestrator` / `-B-Worker` / `-C-Artifact` | 随 session/agent 清理 |
+| synthetic agent A | `76af3c45-ba5f-5034-90b0-0ea06c3ca1e6` | owner 授权后删除 |
+| synthetic agent B | `5797b7fe-7641-5f99-9bbc-8d33c9574a9a` | owner 授权后删除 |
+| synthetic agent C | `e4569124-e2b8-5f61-9cc6-1ee6cc86a422` | owner 授权后删除 |
+
+### 根因（当前 checkout 源码核实；两个消费侧机械失效，同一 seam）
+
+**投递拓扑**：生产 `/ws/` 由 backend-api（role=api）承载，run 在 backend（runtime）进程执行。canonical Session V2 事件（含 blueprint 卡片所需的 `tool_result.completed` 与终局组 `assistant_final.completed`/`run.completed`/`turn.completed`/`run_outcome.terminal_committed`）的 live 投递走 **at-least-once 中继**：DB 提交 + `SessionEventOutbox(pending)` → runtime worker tick（`RUNTIME_TASK_CLAIM_POLL_SECONDS=1.0s`）→ `publish_canonical_session_event` → Redis Pub/Sub（`SESSION_EVENT_LIVE_CHANNEL` **无持久 stream**；`publish_web_chat_stream_event` 失败仅 log warning 即丢弃）→ backend-api forwarder → socket。legacy 流帧（`chunk`/`done`）走另一条即时通道。HTTP transcript（`chat_sessions` transcript API + `chat-active-run`）始终是权威事实源。
+
+**失效 1（终局后缺失结构化 tool result）**：前端 `sessionEventStore` 是严格连续 sequence reducer——只有**流中** gap 可检测（后续帧进 buffer → `gap_detected` → 既有 HTTP backfill recovery 自愈）。**尾部**丢失（终局帧之后再无后续帧）时 phase 保持 `current`，无任何检测/恢复路径；transport `connected` 时 `transportPollIntervalMs` 返回 null（无轮询）。丢失的 canonical 尾部（`tool_result.completed`）永不进入 live store，`projectSessionEventStoreToMessages` 永不渲染蓝图卡片；reload 的 HTTP 水合立即恢复。
+
+**失效 2（运行读模型陈旧 "1 running"）**：终局 canonical `run.completed` 帧丢失 → `invalidateSessionRuntimeQueries` 永不触发；`chat-active-run` 3s 轮询在自身 data 翻转为 non-live 时**立即停止**，而 stale-clear 路径被 8s 活动宽限门控（`ACTIVE_RUN_ABSENCE_GRACE_MS`，自最后一次 WS 帧）；`chat-session-workbench`（staleTime 60s、无 interval、`refetchOnWindowFocus:false`）只能靠 WS 帧失效刷新 → 徽标持续显示 1 running 直到 reload。
+
+两症状同源：**lost live tail 对连续 reducer 不可检测，且唯一权威终局证人在 HTTP 读模型里，前端从未在终局边界消费它**。
+
+### 修复（最小完整，消费侧、事件驱动；HTTP transcript 保持权威、WS 保持订阅；无 timeout/轮询/reload 变通）
+
+1. `sessionSocketEventProjector.ts`：新增依赖 `reconcileSessionTranscript(agentId, sessionId)`；live 终局帧（`done`/`error`/`quota_exceeded`，仅 active runtime）在既有 terminal 处理后触发一次权威 transcript 对账——`done` 是 turn 的最后保证在场 live 证人（与 canonical 尾部不同通道），据此修复丢失的 canonical 尾部。
+2. `chatRuntime.ts`：新增纯策略 `shouldReconcileTranscriptOnActiveRunAbsence({observedActiveRun, hasLocalActiveRuntime})`——当权威 active-run 读已观察到非 live 而本地投影仍显示 active 时对账（undefined=未读取不触发；本地已 idle 不触发；读仍 live 不触发）。
+3. `AgentDetail.tsx`：两个触发点都接到既有 cursor-keyed `backfillSessionTranscript`（in-flight 去重；结尾 `invalidateSessionRuntimeQueries` 全量失效含 active-run 与 workbench → 运行读模型同步服务端真相）；8s UI 宽限只继续管 composer 清理，不再推迟投影真相。健康 turn 代价 = 每终局信号一次空 delta 拉取。
+4. 预算合规：`AgentDetail.tsx` 2898 行（≤2900 契约保持，**未削弱** ArchitectureSimplicityContract 预算测试）——通过把纯策略 `normalizeSessionCommandCheckpoints` 抽到 policy single-owner `agentDetailPolicy.ts`（并清理因此闲置的 type import）实现。
+5. 模型语义零改动：无 scanner、无硬门、无任意 delay；模型最终输出 byte-faithful 不受影响（本包不触碰任何答案/工具结果字节路径）。
+
+### RED（实现前，当前 checkout 实测）
+
+```text
+frontend$ npx vitest run src/pages/agent-detail/chatRuntime.test.ts src/pages/agent-detail/sessionSocketEventProjector.test.ts
+Test Files 2 failed (2)；Tests 4 failed | 76 passed (80)
+× reconciles the authoritative transcript when the live projection still shows a run the server no longer has
+  TypeError: shouldReconcileTranscriptOnActiveRunAbsence is not a function
+× keeps the live projection untouched while the authoritative run read still shows it live（同上）
+× does not reconcile before the authoritative run read resolves or once the projection is idle（同上）
+× reconciles the authoritative transcript after a live terminal done frame for the active runtime
+  AssertionError: expected "vi.fn()" to be called with arguments: ['agent-1', 'session-1']（Number of calls: 0）
+（负向回归「background socket 终局关闭不触发对账」当轮通过——其断言在 RED 状态下平凡成立，GREEN 后成为真守卫）
+```
+
+### GREEN（当前 checkout 实测）
+
+```text
+frontend$ npx vitest run src/pages/agent-detail/chatRuntime.test.ts src/pages/agent-detail/sessionSocketEventProjector.test.ts
+Test Files 2 passed (2)；Tests 80 passed (80)
+frontend$ npx vitest run src/pages/agent-detail/
+Test Files 42 passed (42)；Tests 442 passed (442)（含 ArchitectureSimplicityContract 预算测试）
+frontend$ NODE_OPTIONS=--no-experimental-webstorage npx vitest run
+Test Files 144 passed (144)；Tests 920 passed (920)
+frontend$ npx tsc → exit 0
+frontend$ wc -l src/pages/AgentDetail.tsx → 2898（≤2900）
+```
+
+### Changed files（本包）
+
+`frontend/src/pages/agent-detail/sessionSocketEventProjector.ts`（新依赖 + 终局触发）、`frontend/src/pages/agent-detail/chatRuntime.ts`（新策略）、`frontend/src/pages/AgentDetail.tsx`（两处接线 + 预算抽取）、`frontend/src/pages/agent-detail/agentDetailPolicy.ts`（接收 `normalizeSessionCommandCheckpoints`）、`frontend/src/pages/agent-detail/sessionSocketEventProjector.test.ts`、`frontend/src/pages/agent-detail/chatRuntime.test.ts`、本 WIP（§7.13/§10/§13）。零后端改动、零新依赖、无 i18n 文案（无新 UI 字符串）。
+
+### 七原子
+
+Input = 用户在 active session 完成 turn（live 流 + 终局信号）；Authority = HTTP transcript 与 active-run API 保持唯一权威，WS 仅订阅，本包不新增任何权限面；Execution = 唯一 live entry = `projectSessionSocketEvent` 终局帧分支 + `AgentDetail` active-run 观察 effect → 既有 `backfillSessionTranscript`，无孤儿、无旁路；Evidence = canonical `ChatTranscriptEvent`/outbox 与 `chat-active-run` HTTP 读为机械事实源，前端对账只消费权威字节；Recovery = 尾部丢失在终局边界自动由权威读修复（事件驱动，非轮询）；mid-stream gap 继续走既有 `gap_detected` 恢复；Consumption = 蓝图卡片经 store→`projectSessionEventStoreToMessages` 真实渲染、running 徽标经 workbench 查询失效同步服务端真相；Acceptance = RED→GREEN 轨迹如上。
+
+### 边界（明确，不过度宣称）
+
+**本地候选包，未部署、未生产复验——不宣称生产已修复。** Codex verdict 待定；转为 Closed 的条件：三服务同 HEAD 部署全 SUCCESS + signed-in 生产 retest 通过（turn 终局后不 reload 即渲染蓝图卡片、0 running、completed runtime 行可见）。上游残余风险（如实记录，本包有意不扩大范围）：canonical live 投递的 Redis Pub/Sub 无持久 stream，forwarder 重启窗口内的帧仍会丢失——本修复使消费端在每个终局边界自愈，终局前的 mid-turn 帧仍依赖中继（mid-stream gap 已有既有恢复）；若未来要求 mid-turn 也不丢帧，需为 `SESSION_EVENT_LIVE_CHANNEL` 引入 durable stream/consumer group（独立包评估）。RC-03/Day1 保持 open；不触碰生产数据；`.ultra/.runtime/compact-snapshot.md`、`output/`、`tmp/pdfs/` 未触碰；未 push、未 deploy。
+
+---
+
 ## 8. 两个工作日的执行节奏
 
 ### 开工前 Gate 0 — owner 过稿（已完成）
@@ -1791,6 +1872,7 @@ Rollback / recovery:
 
 | RC-02B | review 角色层级死锁（生产提案 `a87147d7-f153-4323-8528-098349543860`，租户 `aac728fb-fe1c-45df-a2ff-a56e024a37a0`，platform_admin user `42778d4b-fa70-47c1-ad3a-15f7fcf5e8aa`）：`evaluate_company_review_set` 精确角色匹配未接入 canonical `ROLE_HIERARCHY`，platform_admin 合法 approval 不满足默认 org_admin 权威 → 永久 in_review。修复：确定性 helper `satisfied_review_roles`（消费 `app.core.security.ROLE_HIERARCHY`，无第二事实源）+ 评估处角色集展开；存储 reviewer_role/policy/hash/守卫全不变。详见 §7.3 末节 | `349752d25c4bee9fb3568979643a4df9611d4e54` | RED：①收集期 ImportError ②helper-only 2 failed/24 passed（platform_admin 仍 missing + guard pin）③真 PG 临时回退评估 1 failed（`+ in_review`）→ GREEN：focused 29 passed in 8.34s、12 文件 bundle 111 passed/1 pre-existing warning in 27.41s、broad company_knowledge slice 135 passed/1 warning in 32.73s、ruff check All passed、format 3 files already formatted、`git diff --check` clean（真 PG Docker-on Testcontainers）；Codex 独立：focused 29 passed in 8.63s、broad `-k company_knowledge` 135 passed/8085 deselected/1 pre-existing Starlette warning in 31.74s、fresh-process import smoke 通过（无 import cycle）、ruff check 通过、format 3 files already formatted、diff-check clean | **Codex final verdict：PASS — Verified（本地）** | 三服务部署已完成（HEAD `ec509c86` 全 SUCCESS，见 §7.10）；生产复核主正向路径已执行（2026-08-27，见 §7.3 review/publish 小节） | 已执行（platform_admin 治理化 re-evaluation review → 「已批准」 → publish 成功；非管理员拒绝路径未执行） | **局部闭环（本地 Verified + 已部署）**：Input/Authority/Execution/Evidence/Recovery/Consumption/Acceptance 有当前代码路径与真 PG 回归 + Codex 独立复验；生产 Consumption 主正向路径（治理化 review 重评估 → approved → publish）已 PASS——Production Positive Path PASS / PARTIAL（非管理员拒绝路径未执行） | 已部署；生产复核主正向路径已 PASS（2026-08-27：platform_admin 对 `a87147d7…` 提交治理化 review 达「已批准」并 publish 成功）；非管理员审核被拒路径仍未执行——Production Positive Path PASS / PARTIAL，未 Closed |
 | RC-10B | projection-repair 的已认证 operator UI（live gap：endpoint 已存在且 401 边界正确，但 adminApi 无方法、UI 无控件/回执，operator 无法从产品发起并消费修复）：新增 `RuntimeProjectionRepairReceipt` 类型与 `repairRuntimeReconciliationProjections`（URLSearchParams exact URL、limit 默认 100、按 core post 签名无 body）；Refresh 旁 "Repair projections" 控件（缺失/空白 tenant 与 busy 禁用、独立 "Repairing..." 标签）；本地化回执（examined/repaired 计数，`role="status"`）+ 原地列表重载（重载失败回执保留且错误并列；tenant 变更/新 repair 清陈旧回执）；绝不自动 resolve/archive/retry；**Codex 并发/陈旧 tenant finding 同包 correction：唯一 `busy = loading || repairing` 边界禁用 tenant 输入/Refresh/Repair/全部行内动作（header 保留 missing-tenant 禁用），`.admin-reconcile-search` 加 flex-wrap**。零后端改动、零新依赖。详见 §7.12 | `ef17a191222873af544058446c602403e01132d1`（`fix(rc-10b): expose projection repair control`） | RED：2 files / 8 failed | 1 passed（adapter `repairRuntimeReconciliationProjections is not a function` + mounted ×7 `Unable to find role="button" and name "Repair projections"`；测试侧 jest-dom matcher 误用修正如实记录于 §7.12）；correction RED：busy 边界强化断言 1 failed（`expected false to be true`，repair 在飞时 tenant 输入未禁用）→ GREEN：focused 3 files / 11 passed、全量 143 files / 898 passed（基线 142/890）、tsc clean、i18n check 9/9 en=zh=3857 gates 全 0、inventory 全空、build 预算通过（AgentDetail 350870/380000 gzip 96914/115000、vendor 591449/620000 gzip 186474/200000）、`git diff --check` clean | **Codex final verdict: PASS — Verified（本地，2026-08-27）**（并发/陈旧 tenant finding 同包 correction 复绿后终审通过；Codex 独立证据：focused 3 files / 11 tests passed in 844ms、全量 npm test 143 files / 898 tests passed in 3.01s、tsc --noEmit exit 0、i18n check 9/9 en=zh=3857 gates 0 且 inventory 全空、production build 7385 modules in 2.85s 预算通过、git diff --check clean） | 三服务部署已完成（HEAD `ec509c86` 全 SUCCESS，见 §7.10）；生产渲染复验已执行（2026-08-27，见 §7.10 RC-10B 小节） | 已执行（真实 operator 修复回执 aac 2/2・e253 1/1・幂等二跑 0/0 + 三任务只读 DB 证明，见 §7.10 RC-10B 小节） | **闭环（Closed，限 RC-10B bounded 包）**：七原子均有当前真实消费路径——本地 Acceptance + 当前 HEAD `24b112b2` 三服务部署 + 生产 operator 回执/幂等 + truthful mount/tenant 消费复验全部核验（§7.10 RC-10B 小节）；RC-10A 生产复验余项仅剩 broadcast 生产证明 UNVERIFIED（2026-08-27 更新：RootItem 9 行一致性、owner action-time 确认的 `19c22c3d` archive、blocker 复验均已 PASS，见 §7.11 末节），不属本 bounded 包 | 已部署（HEAD ec509c86 三服务 SUCCESS；finding 修复 HEAD `24b112b2` 再三服务 SUCCESS，见 §7.10）；不宣称 RC-10A/aggregate RC-10 Closed、Day 1 完成或 A2A 完成。**2026-08-27 生产 finding 追加（首载假空/陈旧 tenant，deployed HEAD ec509c86 复现）**：本地包已交付（RED 3 failed/9 passed → StrictMode correction RED 1 failed（2 calls）→ GREEN focused 3 files/17、全量 144 files/911、tsc/i18n 双门 en=zh=3863/build 预算/diff-check 全绿，详见 §7.12 末节）；**Codex final verdict: PASS — Verified（本地）**（独立证据：createRoot 探针 strict_effect_setups=2、focused 17 in 1.37s、全量 911 in 3.73s、tsc exit 0、i18n 9/9 en=zh=3863 gates 0 inventory 全空、build 7385 modules in 2.83s 预算通过、diff-check clean、恰五授权文件）；commit `24b112b2f1d1e6ef1d11f3c47dca2ad5cdb48f86` 已三服务部署并经生产 Browser 复验（mount auto-load `50 待处理项` 含 `19c22c3d`、无假 0、tenant 编辑即清陈旧 + `队列尚未加载`/Refresh 提示、re-goto 复载、空白禁用）+ projection-repair 生产事实终录（回执/幂等/只读 DB 证明，见 §7.10 RC-10B 小节），**RC-10B bounded 包 Closed** |
+| DAY1-LIVE-TAIL-001 | Day1 web-chat live 投影终局丢失（生产两轮复现：session `235d5f0a…` 单 blueprint `WEEKEND-RC-20260825-A-Orchestrator`、session `92edaf9f…` 双 blueprint `-B-Worker`/`-C-Artifact`；turn 完成后 live 页未渲染 HR Blueprint 卡片、Session Workbench 一度 1 running，reload 立即恢复；三 synthetic agent `76af3c45`/`5797b7fe`/`e4569124` 已核实 DeepSeek V4 Flash；B/C 快速导航 model-empty 经 cache-bust 证伪、不记缺陷）：根因 = canonical Session V2 事件走 outbox→Redis Pub/Sub→forwarder 的 at-least-once 中继，前端连续 sequence reducer 只能检测流中 gap，**尾部**丢失不可检测且无恢复触发；workbench 查询（60s stale、无 interval）只能靠丢失的终局帧失效刷新。修复 = 消费侧事件驱动终局对账：projector 终局帧（done/error/quota_exceeded，active runtime）触发 `reconcileSessionTranscript` + `shouldReconcileTranscriptOnActiveRunAbsence` 策略在权威 active-run 读观察到非 live 而本地仍 active 时对账，均接既有 `backfillSessionTranscript`（cursor-keyed、in-flight 去重、结尾全量 runtime 查询失效）；HTTP transcript 权威与 WS 订阅语义不变、零后端改动、无轮询/timeout/reload 变通；AgentDetail 预算经 `normalizeSessionCommandCheckpoints` 抽取到 agentDetailPolicy 保持 ≤2900（未削弱预算测试）。详见 §7.13 | 本次 candidate commit（见 git log，`fix(day1): reconcile live tail at terminal boundaries`） | RED：2 files / 4 failed | 76 passed（`shouldReconcileTranscriptOnActiveRunAbsence is not a function` ×3 + projector `reconcileSessionTranscript` Number of calls: 0）→ GREEN：focused 2 files / 80 passed、agent-detail 全域 42 files / 442 passed（含预算测试）、全量 144 files / 920 passed、`tsc` exit 0、AgentDetail.tsx 2898 行 | 待 Codex verdict | 未执行（本地候选包未部署——不宣称生产已修复；转 Closed 条件 = 三服务同 HEAD 部署全 SUCCESS + signed-in 生产 retest 通过：终局后不 reload 即见蓝图卡片、0 running、completed runtime 行） | 未执行 | **本地候选（未 Verified）**：七原子本地代码路径 + RED→GREEN 回归成立；Recovery/Consumption 待部署后生产复验 | Codex 独立 review、三服务部署与 signed-in 生产 retest、合成资产清理（两 session/三 blueprint/三 agent，owner 门控）均 pending；RC-03/Day1 保持 open |
 
 `Unknown` 表示尚未以本轮当前生产证据判定，不能等同于缺失或完成。
 
@@ -1877,3 +1959,5 @@ owner 已过稿并明确说“开始”。先提交本文件作为恢复点；�
 - [ ] RC-02B 待办余项：生产复核主正向路径已于 2026-08-27 PASS（platform_admin 对 `a87147d7…` 提交治理化 re-evaluation review → 「已批准」 → publish 成功，见 §7.3 review/publish 小节）；**非管理员角色审核仍被拒的负向路径本次未执行**——RC-02B 生产复核为 **Production Positive Path PASS / PARTIAL**，**未 Closed，不宣称生产已修复**。
 - [x] RC-03 生产 provider preflight 已完成（2026-08-27，Codex signed-in 生产 UI 核验（无持久配置/业务数据写入），Rocky 的实验室 tenant `aac728fb-fe1c-45df-a2ff-a56e024a37a0`）：三个已启用 configured model——`deepseek/deepseek-v4-flash`（租户默认）既有 Test action 返回 `连接正常`（1726ms）；`deepseek/deepseek-v4-pro` 既有 Test 返回 HTTP 401 `authentication_error`（存储的 API key 无效，209ms）；`minimax/MiniMax-M3` 既有 Test 保持 testing 约 70 秒后返回 `无法连接: Failed to fetch`（仅证明当前产品调用路径无可用终态、不适合作演示关键路径，不断言 provider 本身不可达或未证明的 provider 侧根因）。全程无任何持久平台配置或业务数据写入：未变更 default/模型配置/API key/billing/credentials，无充值/采购动作；Test action 为最小外部 model request，普通 token usage 非零外部效果（如实记录）。capability recovery 已选定：synthetic Day1 Knowledge Agent 消费与 A2A 使用已验证可用的 `deepseek/deepseek-v4-flash`，仅绑定本轮新建/scoped 的 synthetic Agents，不 mutate 既有真实 Agent、不 repair credentials、不触发充值/采购/新费用授权。**provider preflight PASS / capability recovery selected；RC-03 与 Day1 均未 Closed**，证据见 §7.4 末节与 §10 行。
 - [ ] RC-03 待办：A2A 四条路径生产验收（同步咨询 `send_message_to_agent`、异步委派 `delegate_to_agent`、续发 `send_agent_session_message`、嵌套 A→B→C 长结果/artifact ref）、两遍 clean pass、Knowledge agent-tool 生产消费/引用（经新建/scoped synthetic Agents + `deepseek/deepseek-v4-flash`）、A2A feedback 修复、修复后三服务再部署与复验。
+- [x] DAY1-LIVE-TAIL-001（Day1 web-chat 终局后 live 投影丢失，2026-08-27 生产两轮复现）本地代码 + failing-first 测试 + 本地验证 + WIP 证据已完成：生产复现（session `235d5f0a-c2f1-41ce-9ff2-3aae32423d04` 单 blueprint `WEEKEND-RC-20260825-A-Orchestrator`；session `92edaf9f-face-4189-8cef-fe95c39736d3` 双 blueprint `WEEKEND-RC-20260825-B-Worker`/`-C-Artifact`；turn 完成后 live 页未渲染 HR Blueprint 卡片、Session Workbench 一度 1 running、reload 立即恢复；三 synthetic agent `76af3c45-ba5f-5034-90b0-0ea06c3ca1e6`/`5797b7fe-7641-5f99-9bbc-8d33c9574a9a`/`e4569124-e2b8-5f61-9cc6-1ee6cc86a422` 均核实 DeepSeek V4 Flash；B/C 快速导航 model-empty 经 cache-bust 证伪、按 owner 指示不记缺陷）。根因 = canonical Session V2 事件走 outbox→Redis Pub/Sub→forwarder 的 at-least-once 中继，前端连续 sequence reducer 只能检测流中 gap，尾部丢失不可检测且无恢复触发；workbench 查询只能靠丢失的终局帧失效刷新（详见 §7.13）。修复 = 消费侧事件驱动终局对账（projector 终局帧 + `shouldReconcileTranscriptOnActiveRunAbsence` 权威 active-run 读观察 → 既有 `backfillSessionTranscript`；HTTP transcript 权威与 WS 订阅语义不变；AgentDetail 预算经 policy 抽取保持 ≤2900 未削弱）。RED 4 failed（missing policy ×3 + projector reconcile 0 calls）→ GREEN focused 2 files/80、agent-detail 42 files/442、全量 144 files/920、tsc exit 0。
+- [ ] DAY1-LIVE-TAIL-001 待办：Codex 独立 review/verdict；三服务同 HEAD 部署 + signed-in 生产 retest（终局后不 reload 即渲染蓝图卡片、0 running、completed runtime 行可见）通过后方可评估 Closed——**本地候选包，未部署，不宣称生产已修复**；合成资产清理（两 session、三 blueprint 草稿、三 synthetic agent）待 owner 授权；上游残余风险如实记录（`SESSION_EVENT_LIVE_CHANNEL` Pub/Sub 无持久 stream，mid-turn 帧仍依赖中继，未来如需 mid-turn 不丢帧另立包评估 durable stream）。RC-03/Day1 保持 open。

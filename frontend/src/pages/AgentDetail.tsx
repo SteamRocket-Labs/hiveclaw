@@ -4,7 +4,6 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import ConfirmModal from '../components/ConfirmModal';
 import AgentChatSection, {
-    type SessionCommandCheckpoint,
     type SessionCommandControlState,
     type SessionPermissionMode,
 } from './agent-detail/AgentChatSection';
@@ -32,6 +31,7 @@ import {
     shouldUseWritableSessionSurface,
     shouldIgnoreObservedActiveRun,
     shouldClearStaleRuntimeState,
+    shouldReconcileTranscriptOnActiveRunAbsence,
     shouldReuseSessionTranscriptLoad,
     type AgentChatMessage,
     type ChatTranscriptEventPayload,
@@ -101,6 +101,7 @@ import {
     isAgentDetailTabVisible,
     isLocalAgentRuntimeType,
     isSessionWorkbenchRoute,
+    normalizeSessionCommandCheckpoints,
     objectValue,
     rewindMarkerMessage,
     sessionPermissionModeFromSession,
@@ -838,21 +839,6 @@ function AgentDetailInner() {
             source_channel: 'web',
             listed_surface: 'chat',
         });
-    };
-
-    const normalizeSessionCommandCheckpoints = (value: unknown): SessionCommandCheckpoint[] => {
-        if (!Array.isArray(value)) return [];
-        return value
-            .filter((item): item is Record<string, unknown> => item != null && typeof item === 'object' && !Array.isArray(item))
-            .map((item) => ({
-                checkpoint_event_id: typeof item.checkpoint_event_id === 'string' ? item.checkpoint_event_id : null,
-                event_id: typeof item.event_id === 'string' ? item.event_id : null,
-                sequence: typeof item.sequence === 'number' || typeof item.sequence === 'string' ? item.sequence : null,
-                turn_index: typeof item.turn_index === 'number' || typeof item.turn_index === 'string' ? item.turn_index : null,
-                role: typeof item.role === 'string' ? item.role : null,
-                content: typeof item.content === 'string' ? item.content : null,
-                created_at: typeof item.created_at === 'string' ? item.created_at : null,
-            }));
     };
 
     const ensureSessionWorkbenchRoute = (sessionId: string) => {
@@ -1622,6 +1608,10 @@ function AgentDetailInner() {
             setActiveRunState,
             markActiveRunTerminal,
             invalidateSessionRuntimeQueries,
+            reconcileSessionTranscript: (agentId, sessionId) => {
+                const sess = String(activeSession?.id || '') === sessionId ? activeSession : { id: sessionId };
+                void backfillSessionTranscript(sess, agentId);
+            },
             shouldInvalidateToolCall: (key) => {
                 const now = Date.now();
                 if (now - (toolCallInvalidateAtRef.current[key] || 0) < 2000) return false;
@@ -2225,6 +2215,15 @@ function AgentDetailInner() {
             || sessionUiStateRef.current[key]?.isWaiting
             || sessionUiStateRef.current[key]?.isStreaming
         );
+        if (shouldReconcileTranscriptOnActiveRunAbsence({
+            observedActiveRun: activeSessionRun,
+            hasLocalActiveRuntime: staleRuntimeState,
+        })) {
+            // The authoritative active-run read observed the turn's terminal state
+            // while live frames may have been lost; the UI grace below must not
+            // defer projection truth. Reconcile the durable transcript now.
+            void backfillSessionTranscript(activeSession, id);
+        }
         if (shouldClearStaleRuntimeState({
             hasStaleRuntimeState: staleRuntimeState,
             lastRuntimeActivityAt: runtimeActivityAtRef.current[key],

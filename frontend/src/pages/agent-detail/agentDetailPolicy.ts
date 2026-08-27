@@ -1,5 +1,5 @@
 import type { AgentChatMessage } from './chatRuntime';
-import type { SessionPermissionMode } from './AgentChatSection';
+import type { SessionCommandCheckpoint, SessionPermissionMode } from './AgentChatSection';
 
 // P8 IA (docs/agent-memory-md-first-spec.md §10): Knowledge remains the
 // primary memory view. External capability governance is exposed through a
@@ -51,6 +51,21 @@ export function objectValue(value: unknown): Record<string, unknown> {
 
 export function stringValueFromUnknown(value: unknown): string {
     return typeof value === 'string' ? value.trim() : '';
+}
+
+export function normalizeSessionCommandCheckpoints(value: unknown): SessionCommandCheckpoint[] {
+    if (!Array.isArray(value)) return [];
+    return value
+        .filter((item): item is Record<string, unknown> => item != null && typeof item === 'object' && !Array.isArray(item))
+        .map((item) => ({
+            checkpoint_event_id: typeof item.checkpoint_event_id === 'string' ? item.checkpoint_event_id : null,
+            event_id: typeof item.event_id === 'string' ? item.event_id : null,
+            sequence: typeof item.sequence === 'number' || typeof item.sequence === 'string' ? item.sequence : null,
+            turn_index: typeof item.turn_index === 'number' || typeof item.turn_index === 'string' ? item.turn_index : null,
+            role: typeof item.role === 'string' ? item.role : null,
+            content: typeof item.content === 'string' ? item.content : null,
+            created_at: typeof item.created_at === 'string' ? item.created_at : null,
+        }));
 }
 
 export function draftContentFromCheckpointPayload(actionResult: Record<string, unknown> | null, uiAction?: Record<string, unknown>): string {

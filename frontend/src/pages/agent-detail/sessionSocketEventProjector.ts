@@ -59,6 +59,7 @@ export interface SessionSocketProjectionDependencies {
   setActiveRunState: (key: string, run: SessionRunState | null) => void;
   markActiveRunTerminal: (key: string, runId?: string | null) => void;
   invalidateSessionRuntimeQueries: (agentId: string, sessionId: string, includeActiveRun?: boolean) => void;
+  reconcileSessionTranscript: (agentId: string, sessionId: string) => void | Promise<unknown>;
   shouldInvalidateToolCall: (key: string) => boolean;
   isTerminalTranscriptToolMessage: (message: AgentChatMessage | undefined) => boolean;
   normalizeToolCallMessage: (message: AgentChatMessage) => AgentChatMessage;
@@ -249,6 +250,12 @@ export function projectSessionSocketEvent(
     if (['done', 'error', 'quota_exceeded'].includes(d.type)) {
       markActiveRunTerminal(key, d.run_id ? String(d.run_id) : null);
       invalidateSessionRuntimeQueries(agentId, sessionId);
+      // Stream frames and canonical session events ride independent
+      // at-least-once channels. A terminal stream frame is the last guaranteed
+      // live witness of the turn; reconcile the authoritative transcript so a
+      // lost canonical tail (e.g. the final structured tool result) still
+      // projects without a reload.
+      if (isActiveRuntime) dependencies.reconcileSessionTranscript(agentId, sessionId);
     }
   }
 

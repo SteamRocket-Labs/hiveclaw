@@ -35,6 +35,7 @@ import {
   isTerminalRealtimeChatEvent,
   shouldClearStaleRuntimeState,
   shouldIgnoreObservedActiveRun,
+  shouldReconcileTranscriptOnActiveRunAbsence,
   shouldReuseSessionTranscriptLoad,
 } from './chatRuntime';
 import { normalizeThreadItemPayload, threadItemToAgentChatMessage } from '../session-workbench/threadItemReducer';
@@ -764,6 +765,37 @@ describe('chatRuntime helpers', () => {
       now: 19_000,
       graceMs: 8_000,
     })).toBe(true);
+  });
+
+  it('reconciles the authoritative transcript when the live projection still shows a run the server no longer has', () => {
+    const completedRun = { run_id: 'run-1', status: 'completed' };
+    expect(shouldReconcileTranscriptOnActiveRunAbsence({
+      observedActiveRun: null,
+      hasLocalActiveRuntime: true,
+    })).toBe(true);
+    expect(shouldReconcileTranscriptOnActiveRunAbsence({
+      observedActiveRun: completedRun,
+      hasLocalActiveRuntime: true,
+    })).toBe(true);
+  });
+
+  it('keeps the live projection untouched while the authoritative run read still shows it live', () => {
+    const runningRun = { run_id: 'run-1', status: 'running' };
+    expect(shouldReconcileTranscriptOnActiveRunAbsence({
+      observedActiveRun: runningRun,
+      hasLocalActiveRuntime: true,
+    })).toBe(false);
+  });
+
+  it('does not reconcile before the authoritative run read resolves or once the projection is idle', () => {
+    expect(shouldReconcileTranscriptOnActiveRunAbsence({
+      observedActiveRun: undefined,
+      hasLocalActiveRuntime: true,
+    })).toBe(false);
+    expect(shouldReconcileTranscriptOnActiveRunAbsence({
+      observedActiveRun: null,
+      hasLocalActiveRuntime: false,
+    })).toBe(false);
   });
 
   it('identifies realtime terminal events that must refresh durable session history', () => {

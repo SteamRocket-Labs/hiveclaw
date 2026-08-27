@@ -35,6 +35,7 @@ function makeHarness(data: Record<string, unknown>, isActiveRuntime = true) {
     setActiveRunState: vi.fn(),
     markActiveRunTerminal: vi.fn(),
     invalidateSessionRuntimeQueries: vi.fn(),
+    reconcileSessionTranscript: vi.fn(),
     shouldInvalidateToolCall: vi.fn(() => true),
     isTerminalTranscriptToolMessage: vi.fn(() => false),
     normalizeToolCallMessage: vi.fn((message) => message),
@@ -256,6 +257,31 @@ describe('session socket event projector', () => {
     );
     expect(harness.closeSessionSocket).toHaveBeenCalledWith('agent-1:session-1', true);
     expect(harness.dependencies.selectSession).not.toHaveBeenCalled();
+  });
+
+  it('reconciles the authoritative transcript after a live terminal done frame for the active runtime', () => {
+    const harness = makeHarness(
+      {
+        type: 'done',
+        content: 'Final answer references the persisted blueprint preview card.',
+        run_id: 'run-1',
+      },
+      true,
+    );
+
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+
+    expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledWith('agent-1:session-1', 'run-1');
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledWith('agent-1', 'session-1');
+    expect(harness.dependencies.reconcileSessionTranscript).toHaveBeenCalledWith('agent-1', 'session-1');
+  });
+
+  it('does not reconcile the transcript when a background session socket terminally closes', () => {
+    const harness = makeHarness({ type: 'done', content: 'complete', run_id: 'run-1' }, false);
+
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+
+    expect(harness.dependencies.reconcileSessionTranscript).not.toHaveBeenCalled();
   });
 
   it('keeps typed platform errors out of assistant-authored messages', () => {

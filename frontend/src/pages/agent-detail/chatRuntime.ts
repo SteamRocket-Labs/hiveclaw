@@ -563,6 +563,24 @@ export function shouldClearStaleRuntimeState({
   return now - lastRuntimeActivityAt >= graceMs;
 }
 
+/**
+ * The live projection must reconcile the authoritative HTTP transcript when the
+ * server's active-run read says the run is gone while local state still shows
+ * it active. A lost live terminal tail (at-least-once relay) is otherwise
+ * undetectable: no later frame exists to reveal a sequence gap, so the durable
+ * read is the only terminal witness.
+ */
+export function shouldReconcileTranscriptOnActiveRunAbsence(input: {
+  observedActiveRun?: { status?: string | null } | null;
+  hasLocalActiveRuntime: boolean;
+}): boolean {
+  if (input.observedActiveRun === undefined) return false;
+  if (!input.hasLocalActiveRuntime) return false;
+  const run = input.observedActiveRun;
+  if (!run) return true;
+  return !['pending', 'running'].includes(String(run.status || '').toLowerCase());
+}
+
 export function isTerminalRealtimeChatEvent(payload: any): boolean {
   const eventType = String(payload?.event_type || payload?.type || '').trim();
   return ['assistant_message', 'done', 'error', 'quota_exceeded', 'run_cancelled', 'run_completed'].includes(eventType);

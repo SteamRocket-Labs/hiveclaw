@@ -3342,6 +3342,231 @@ async def test_queue_next_turn_successor_ignores_unrelated_non_chat_runtime_task
         assert executable_chat_tasks == 1
 
 
+@pytest.mark.parametrize("nonterminal_status", ["suspended", "resumable"])
+async def test_steer_targeting_non_chat_runtime_task_rolls_over_to_successor(
+    owner_sessionmaker, nonterminal_status
+) -> None:
+    """DAY1-SESSION-INPUT-TARGET-TYPE-001 initial steer target task-type gate.
+
+    The authoritative session-occupancy contract — the
+    ``uq_runtime_tasks_active_web_chat_session`` partial unique index and
+    ``web_chat_runtime._find_active_run`` — only treats EXECUTABLE CHAT task
+    types (web_chat_turn/goal_continuation/team_member/advanced_plan) as the
+    session's active turn.  A suspended/resumable workflow RuntimeTask may
+    legally share the same tenant/agent/session binding WITHOUT being a
+    steer target: it has no web-chat provider round that could ever bind a
+    queued steer, so the input would strand in the mailbox forever.  The
+    initial target validity gate in ``queue_admitted_human_input`` must
+    therefore judge executable-chat task type AND active-like status, and
+    settle the steer through the existing invalid-target branch: with
+    ``terminal_fallback=queue_next_turn`` it rolls over to the deterministic
+    successor turn exactly once, with zero bind and zero orphan, and a
+    replay never duplicates the successor.
+    """
+
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionTurnInput
+    from app.runtime.hooks import HookResult
+    from app.services.runtime_task_worker import recover_session_input_dispatches_once
+    from app.services.session_human_input import queue_admitted_human_input
+    from app.services.session_input_admission import run_user_prompt_admission
+
+    tenant_id, user_id, agent_id, session_id, run_id = await _seed_session(owner_sessionmaker, active_run=True)
+    assert run_id is not None
+    async with owner_sessionmaker() as db:
+        # Retype the seeded row into a legal non-chat RuntimeTask bound to the
+        # same tenant/agent/session, suspended/resumable, with an explicit
+        # metadata turn_id that matches the steer's ``expected_turn_id``.
+        task = await db.get(RuntimeTask, run_id)
+        assert task is not None and task.status == "running"
+        task.task_type = "workflow"
+        task.status = nonterminal_status
+        await db.commit()
+        authority = await _authority(db, user_id=user_id, agent_id=agent_id, session_id=session_id)
+        accepted = await _accepted_input(
+            db,
+            authority=authority,
+            session_id=session_id,
+            run_id=run_id,
+            kind="steer_current_turn",
+            content=f"Steer at a {nonterminal_status} workflow task",
+        )
+
+        async def allow(**_kwargs):
+            return HookResult()
+
+        await run_user_prompt_admission(
+            db,
+            authority=authority,
+            input_id=accepted.input_id,
+            worker_id=f"non-chat-steer-{nonterminal_status}-admission",
+            hook_executor=allow,
+        )
+        settled = await queue_admitted_human_input(db, authority=authority, input_id=accepted.input_id)
+        await db.commit()
+        # The workflow task is not a valid steer target: the steer must roll
+        # over to its deterministic successor turn instead of queueing onto a
+        # run that can never bind it.
+        assert settled.status == "rolled_over"
+        assert settled.rolled_over_to_turn_id
+        kinds = list(
+            (
+                await db.execute(
+                    select(ChatTranscriptEvent.event_type)
+                    .where(ChatTranscriptEvent.session_id == session_id)
+                    .order_by(ChatTranscriptEvent.sequence)
+                )
+            ).scalars()
+        )
+        assert kinds[-3:] == ["human_input.rolled_over", "turn.accepted", "turn.queued"]
+
+    dispatched = await recover_session_input_dispatches_once(
+        worker_id=f"non-chat-steer-{nonterminal_status}-worker",
+        tenant_id=tenant_id,
+        session_factory=owner_sessionmaker,
+    )
+    replay = await recover_session_input_dispatches_once(
+        worker_id=f"non-chat-steer-{nonterminal_status}-worker",
+        tenant_id=tenant_id,
+        session_factory=owner_sessionmaker,
+    )
+    successor_run_id = uuid.uuid5(accepted.input_id, "session-v2-successor-run")
+    async with owner_sessionmaker() as db:
+        row = await db.get(SessionTurnInput, accepted.input_id)
+        successor = await db.get(RuntimeTask, successor_run_id)
+        workflow = await db.get(RuntimeTask, run_id)
+        rollover_events = await db.scalar(
+            select(func.count())
+            .select_from(ChatTranscriptEvent)
+            .where(
+                ChatTranscriptEvent.session_id == session_id,
+                ChatTranscriptEvent.event_type == "human_input.rolled_over",
+            )
+        )
+        assert dispatched == {"claimed": 1, "dispatched": 1, "deferred": 0, "retried": 0}
+        assert replay == {"claimed": 0, "dispatched": 0, "deferred": 0, "retried": 0}
+        assert row is not None and row.status == "rolled_over"
+        assert row.target_run_id is None
+        # Zero bind / zero orphan: the workflow run never bound the steer and
+        # exactly one rollover was recorded, never duplicated by the replay.
+        assert row.bound_round_id is None
+        assert rollover_events == 1
+        assert successor is not None
+        assert successor.task_type == "web_chat_turn"
+        assert (successor.metadata_json or {})["session_v2_rolled_over_input_id"] == str(accepted.input_id)
+        assert workflow is not None
+        assert workflow.task_type == "workflow"
+        assert workflow.status == nonterminal_status
+
+
+@pytest.mark.parametrize("nonterminal_status", ["suspended", "resumable"])
+async def test_answer_targeting_non_chat_runtime_task_is_typed_target_reject(
+    owner_sessionmaker, nonterminal_status
+) -> None:
+    """DAY1-SESSION-INPUT-TARGET-TYPE-001 answer derived-run task-type gate.
+
+    An ``answer_request`` derives its target run from the waiting
+    ``user_question`` event scope.  When that scope names a non-chat
+    RuntimeTask (workflow here) — even one whose DEFAULT turn id
+    (``turn-<task.hex>``) matches and whose status is active-like — the same
+    mechanical target validity gate must apply: the answer settles as a
+    typed ``target_run_not_active`` reject through the existing
+    invalid-target branch, never as a queued mailbox item that no web-chat
+    provider round could ever bind.
+    """
+
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionCommand, SessionTurnInput
+    from app.runtime.hooks import HookResult
+    from app.services.session_human_input import queue_admitted_human_input
+    from app.services.session_input_admission import run_user_prompt_admission
+    from app.services.session_v2_persistence import SessionEventDraft, accept_human_input, append_session_events
+
+    tenant_id, user_id, agent_id, session_id, run_id = await _seed_session(owner_sessionmaker, active_run=True)
+    assert run_id is not None
+    question_id = uuid.uuid4()
+    run_scope = {
+        "level": "run",
+        "session_id": str(session_id),
+        "thread_id": str(session_id),
+        "turn_id": f"turn-{run_id.hex}",
+        "run_id": str(run_id),
+    }
+    async with owner_sessionmaker() as db:
+        # Retype into a non-chat RuntimeTask and DROP the metadata turn_id so
+        # the gate resolves the DEFAULT turn id (``turn-<task.hex>``): the
+        # answer still matches turn/run on a workflow task and must be
+        # rejected by task type, not by turn or status.
+        task = await db.get(RuntimeTask, run_id)
+        assert task is not None and task.status == "running"
+        task.task_type = "workflow"
+        task.status = nonterminal_status
+        task.metadata_json = {}
+        await db.commit()
+        authority = await _authority(db, user_id=user_id, agent_id=agent_id, session_id=session_id)
+        await append_session_events(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            drafts=[
+                SessionEventDraft(
+                    item_id=question_id,
+                    item_kind="user_question",
+                    lifecycle="waiting",
+                    scope=run_scope,
+                    actor={"type": "runtime"},
+                    payload={"question": "Workflow approval?"},
+                )
+            ],
+        )
+        await db.commit()
+        input_id = uuid.uuid4()
+        accepted = await accept_human_input(
+            db,
+            authority=authority,
+            intent={
+                "kind": "answer_request",
+                "input_id": str(input_id),
+                "idempotency_key": f"answer:{input_id}",
+                "session_id": str(session_id),
+                "request_item_id": str(question_id),
+                "content_parts": [{"type": "text", "text": "Approve"}],
+            },
+        )
+
+        async def allow(**_kwargs):
+            return HookResult()
+
+        await run_user_prompt_admission(
+            db,
+            authority=authority,
+            input_id=input_id,
+            worker_id=f"non-chat-answer-{nonterminal_status}-admission",
+            hook_executor=allow,
+        )
+        settled = await queue_admitted_human_input(db, authority=authority, input_id=input_id)
+        await db.commit()
+        command = await db.get(SessionCommand, accepted.command_id)
+        row = await db.get(SessionTurnInput, input_id)
+        rejected_events = await db.scalar(
+            select(func.count())
+            .select_from(ChatTranscriptEvent)
+            .where(
+                ChatTranscriptEvent.input_id == input_id,
+                ChatTranscriptEvent.event_type == "human_input.rejected",
+            )
+        )
+        assert settled.status == "rejected"
+        assert settled.reason_code == "target_run_not_active"
+        assert command is not None and command.status == "rejected"
+        assert row is not None and row.status == "rejected"
+        assert row.bound_round_id is None
+        assert rejected_events == 1
+
+
 async def test_round_binding_consumes_only_admitted_inputs_in_fifo_order(owner_sessionmaker) -> None:
     from app.runtime.hooks import HookResult
     from app.services.session_human_input import (

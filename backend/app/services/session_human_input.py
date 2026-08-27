@@ -26,6 +26,7 @@ from app.services.session_v2_persistence import (
     SessionEventDraft,
     append_session_events,
 )
+from app.services.web_chat_runtime import is_executable_chat_task_type
 
 
 # Session-targetable (active-like) run states.  The authoritative active-like
@@ -37,8 +38,17 @@ from app.services.session_v2_persistence import (
 # turn: the same run later becomes running again and can still bind queued
 # mailbox items.  ``ck_runtime_tasks_status`` only bounds legal status
 # membership; it does not by itself define active-like semantics.  Initial
-# steer/answer target validity must use this set; judging it with only
-# pending/running prematurely rolls a steer away from its live target.
+# steer/answer target validity must use this set TOGETHER WITH the same
+# contract's executable-chat task-type predicate
+# (``web_chat_runtime.EXECUTABLE_CHAT_TASK_TYPES`` via
+# ``is_executable_chat_task_type``): a suspended/resumable NON-chat
+# RuntimeTask (workflow, business_task, subagent, trigger, ...) may legally
+# share the tenant/agent/session binding and match turn_id, but it has no
+# web-chat provider round that could ever bind a queued input, so accepting
+# it as a target would strand the mailbox item forever.  Judging target
+# validity with only pending/running prematurely rolls a steer away from its
+# live target; judging it without the task-type predicate strands it on a
+# run that can never bind.
 SESSION_TARGETABLE_RUN_STATUSES = frozenset({"pending", "running", "suspended", "resumable"})
 # Provider-round bindable (executing) run states: only a run that can execute
 # a provider round right now may bind queued inputs at the pre-dispatch
@@ -566,7 +576,19 @@ async def queue_admitted_human_input(
         active_turn_id = (
             str((task.metadata_json or {}).get("turn_id") or f"turn-{task.id.hex}") if task is not None else None
         )
-        if task is None or active_turn_id != row.target_turn_id or task.status not in SESSION_TARGETABLE_RUN_STATUSES:
+        # Target validity is the authoritative session-occupancy contract:
+        # executable-chat task type AND active-like status AND exact turn.
+        # Both steer (explicit expected_run_id/expected_turn_id) and answer
+        # (derived question run scope) pass through this single gate; an
+        # invalid target settles through the existing invalid-target branch
+        # (terminal-fallback rollover for steer, typed target_run_not_active
+        # reject for answer).
+        if (
+            task is None
+            or not is_executable_chat_task_type(task.task_type)
+            or active_turn_id != row.target_turn_id
+            or task.status not in SESSION_TARGETABLE_RUN_STATUSES
+        ):
             if row.intent == "steer_current_turn" and row.terminal_fallback == "queue_next_turn":
                 return await rollover_terminal_steer(
                     db,

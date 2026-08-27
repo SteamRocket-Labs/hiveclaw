@@ -28,14 +28,17 @@ from app.services.session_v2_persistence import (
 )
 
 
-# Session-targetable (active-like) run states.  The authoritative runtime
-# contract — ``ck_runtime_tasks_status`` membership, the
-# ``uq_runtime_tasks_active_web_chat_session`` partial unique index, and
+# Session-targetable (active-like) run states.  The authoritative active-like
+# contract — the ``uq_runtime_tasks_active_web_chat_session`` partial unique
+# index predicate (current ORM definition and the
+# ``session_v2_permission_tool_contract_0716`` upgrade snapshot) and
 # ``web_chat_runtime._find_active_run`` — treats a suspended (awaiting
-# permission) or resumable run as STILL the session's active turn: the same
-# run later becomes running again and can still bind queued mailbox items.
-# Initial steer/answer target validity must use this set; judging it with
-# only pending/running prematurely rolls a steer away from its live target.
+# permission) or resumable executable-chat run as STILL the session's active
+# turn: the same run later becomes running again and can still bind queued
+# mailbox items.  ``ck_runtime_tasks_status`` only bounds legal status
+# membership; it does not by itself define active-like semantics.  Initial
+# steer/answer target validity must use this set; judging it with only
+# pending/running prematurely rolls a steer away from its live target.
 SESSION_TARGETABLE_RUN_STATUSES = frozenset({"pending", "running", "suspended", "resumable"})
 # Provider-round bindable (executing) run states: only a run that can execute
 # a provider round right now may bind queued inputs at the pre-dispatch

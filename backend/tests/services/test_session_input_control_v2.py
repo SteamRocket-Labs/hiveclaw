@@ -3216,6 +3216,132 @@ async def test_queue_next_turn_successor_defers_while_active_like_run_exists(
         assert target is not None and target.status == nonterminal_status
 
 
+@pytest.mark.parametrize("nonterminal_status", ["suspended", "resumable"])
+async def test_queue_next_turn_successor_ignores_unrelated_non_chat_runtime_task(
+    owner_sessionmaker, nonterminal_status
+) -> None:
+    """DAY1-SESSION-ACTIVE-LIKE-STEER-REVIEW-001 successor guard task-type scope.
+
+    The authoritative active-like contract — the
+    ``uq_runtime_tasks_active_web_chat_session`` partial unique index and
+    ``web_chat_runtime._find_active_run`` — only treats EXECUTABLE CHAT task
+    types (web_chat_turn/goal_continuation/team_member/advanced_plan) in an
+    active-like status as occupying the session.  A legal non-chat
+    RuntimeTask (workflow here) may share the same tenant/agent/session
+    binding and be suspended/resumable WITHOUT occupying the web-chat
+    session: ``start_web_chat_run`` does not 409 on it.  The FIFO successor
+    guard must therefore ignore it: a queued ``queue_next_turn`` must start
+    exactly one deterministic web-chat successor instead of deferring
+    (``waiting_for_terminal``) forever behind the unrelated task.
+    """
+
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionInputAdmission, SessionTurnInput
+    from app.runtime.hooks import HookResult
+    from app.services.runtime_task_worker import recover_session_input_dispatches_once
+    from app.services.session_input_admission import run_user_prompt_admission
+    from app.services.web_chat_runtime import _find_active_run
+
+    tenant_id, user_id, agent_id, session_id, run_id = await _seed_session(owner_sessionmaker, active_run=True)
+    assert run_id is not None
+
+    async def allow(**_kwargs):
+        return HookResult()
+
+    async with owner_sessionmaker() as db:
+        # Retype the seeded row into a legal non-chat RuntimeTask bound to the
+        # same tenant/agent/session.  Both the unique-index predicate and
+        # ``_find_active_run`` exclude non-chat task types, so the session has
+        # NO active executable-chat run even though this row is
+        # suspended/resumable.
+        task = await db.get(RuntimeTask, run_id)
+        assert task is not None and task.status == "running"
+        task.task_type = "workflow"
+        task.status = nonterminal_status
+        await db.commit()
+        assert await _find_active_run(db, agent_id=agent_id, session_id=session_id) is None
+        authority = await _authority(db, user_id=user_id, agent_id=agent_id, session_id=session_id)
+        queued = await _accepted_input(
+            db,
+            authority=authority,
+            session_id=session_id,
+            kind="queue_next_turn",
+            content=f"Next turn beside a {nonterminal_status} workflow task",
+        )
+        await run_user_prompt_admission(
+            db,
+            authority=authority,
+            input_id=queued.input_id,
+            worker_id=f"non-chat-{nonterminal_status}-admission",
+            hook_executor=allow,
+        )
+
+    first = await recover_session_input_dispatches_once(
+        worker_id=f"non-chat-{nonterminal_status}-worker",
+        tenant_id=tenant_id,
+        session_factory=owner_sessionmaker,
+    )
+    second = await recover_session_input_dispatches_once(
+        worker_id=f"non-chat-{nonterminal_status}-worker",
+        tenant_id=tenant_id,
+        session_factory=owner_sessionmaker,
+    )
+    successor_run_id = uuid.uuid5(queued.input_id, "session-v2-successor-run")
+    async with owner_sessionmaker() as db:
+        row = await db.get(SessionTurnInput, queued.input_id)
+        admission = await db.scalar(
+            select(SessionInputAdmission).where(
+                SessionInputAdmission.input_id == queued.input_id,
+                SessionInputAdmission.input_revision == 1,
+            )
+        )
+        successor = await db.get(RuntimeTask, successor_run_id)
+        workflow = await db.get(RuntimeTask, run_id)
+        session_tasks = await db.scalar(
+            select(func.count())
+            .select_from(RuntimeTask)
+            .where(
+                RuntimeTask.tenant_id == tenant_id,
+                RuntimeTask.parent_session_id == str(session_id),
+            )
+        )
+        executable_chat_tasks = await db.scalar(
+            select(func.count())
+            .select_from(RuntimeTask)
+            .where(
+                RuntimeTask.tenant_id == tenant_id,
+                RuntimeTask.parent_session_id == str(session_id),
+                RuntimeTask.task_type.in_(("web_chat_turn", "goal_continuation", "team_member", "advanced_plan")),
+            )
+        )
+        # The unrelated workflow row must not block the successor: exactly one
+        # deterministic web-chat successor on the first sweep, a no-claim
+        # replay on the second, and the workflow row untouched.
+        assert first == {"claimed": 1, "dispatched": 1, "deferred": 0, "retried": 0}
+        assert second == {"claimed": 0, "dispatched": 0, "deferred": 0, "retried": 0}
+        assert row is not None and row.intent == "queue_next_turn"
+        assert row.status == "queued"
+        # The started successor binds the queued input to itself
+        # (``start_web_chat_run`` Session V2 binding).
+        assert row.target_run_id == successor_run_id
+        assert row.target_turn_id is not None
+        assert admission is not None and admission.dispatch_state == "dispatched"
+        assert admission.dispatch_last_error is None
+        receipt = dict(admission.dispatch_receipt_json or {})
+        assert receipt.get("kind") == "runtime"
+        assert receipt.get("run_id") == str(successor_run_id)
+        assert receipt.get("turn_id") == row.target_turn_id
+        assert successor is not None
+        assert successor.task_type == "web_chat_turn"
+        assert successor.status == "pending"
+        assert successor.prompt == f"Next turn beside a {nonterminal_status} workflow task"
+        assert workflow is not None
+        assert workflow.task_type == "workflow"
+        assert workflow.status == nonterminal_status
+        assert session_tasks == 2
+        assert executable_chat_tasks == 1
+
+
 async def test_round_binding_consumes_only_admitted_inputs_in_fifo_order(owner_sessionmaker) -> None:
     from app.runtime.hooks import HookResult
     from app.services.session_human_input import (

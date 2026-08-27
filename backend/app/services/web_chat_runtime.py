@@ -74,7 +74,16 @@ from app.services.web_chat_broker import web_chat_broker
 
 
 WEB_CHAT_TURN_TASK_TYPE = "web_chat_turn"
-_EXECUTABLE_CHAT_TASK_TYPES = (
+# Executable-chat task types: the ONLY RuntimeTask kinds that can occupy a
+# web-chat session as its active turn.  This is the single authoritative
+# contract mirrored by the ``uq_runtime_tasks_active_web_chat_session``
+# partial unique index predicate (current ORM definition and the
+# ``session_v2_permission_tool_contract_0716`` upgrade snapshot) and consumed
+# by ``_find_active_run``, run admission, and the Session V2 input-dispatch
+# FIFO successor guard.  Non-chat RuntimeTask kinds (workflow, business_task,
+# subagent, trigger, ...) may legally share a tenant/agent/session binding in
+# any status WITHOUT occupying the web-chat session.
+EXECUTABLE_CHAT_TASK_TYPES = (
     WEB_CHAT_TURN_TASK_TYPE,
     "goal_continuation",
     "team_member",
@@ -182,7 +191,7 @@ async def _lock_runtime_task_for_session_mutation(
         select(RuntimeTask)
         .where(
             RuntimeTask.id == run_uuid,
-            RuntimeTask.task_type.in_(_EXECUTABLE_CHAT_TASK_TYPES),
+            RuntimeTask.task_type.in_(EXECUTABLE_CHAT_TASK_TYPES),
             RuntimeTask.tenant_id == tenant_uuid,
             RuntimeTask.parent_agent_id == agent_uuid,
             RuntimeTask.parent_session_id == str(session_uuid),
@@ -534,7 +543,7 @@ def _active_channel_delivery_target_for_turn(
 
 
 def is_executable_chat_task_type(task_type: str | None) -> bool:
-    return str(task_type or "").strip() in _EXECUTABLE_CHAT_TASK_TYPES
+    return str(task_type or "").strip() in EXECUTABLE_CHAT_TASK_TYPES
 
 
 def _runtime_task_to_run(task: RuntimeTask) -> dict[str, Any]:
@@ -1929,7 +1938,7 @@ async def _find_active_run(db: AsyncSession, *, agent_id: uuid.UUID, session_id:
     result = await db.execute(
         select(RuntimeTask)
         .where(
-            RuntimeTask.task_type.in_(_EXECUTABLE_CHAT_TASK_TYPES),
+            RuntimeTask.task_type.in_(EXECUTABLE_CHAT_TASK_TYPES),
             RuntimeTask.parent_agent_id == agent_id,
             RuntimeTask.parent_session_id == str(session_id),
             RuntimeTask.status.in_(_ACTIVE_STATUSES),
@@ -2960,7 +2969,7 @@ async def resume_persisted_web_chat_runs(*, limit: int = 50) -> list[str]:
     """
     records = await list_active_runtime_task_records(
         statuses=_ACTIVE_STATUSES,
-        task_types=_EXECUTABLE_CHAT_TASK_TYPES,
+        task_types=EXECUTABLE_CHAT_TASK_TYPES,
         oldest_started_first=True,
         limit=limit,
     )

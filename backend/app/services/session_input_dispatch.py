@@ -29,6 +29,7 @@ from app.services.session_v2_persistence import (
     AuthenticatedSessionAuthority,
     resolve_session_command_authority,
 )
+from app.services.web_chat_runtime import EXECUTABLE_CHAT_TASK_TYPES
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,17 +163,24 @@ async def _start_fifo_successor_if_ready(
     session: ChatSession,
 ) -> dict[str, Any] | None:
     await lock_transcript_session(db, session_id=session.id)
-    # A suspended (awaiting permission) or resumable run still OCCUPIES the
-    # session under ``uq_runtime_tasks_active_web_chat_session``: it is the
-    # same active-like turn and later becomes running again.  Starting a FIFO
-    # successor beside it would be rejected by web-chat ingress with a 409
-    # and retry-churn this admission on every sweep, so the guard must use
-    # the same active-like set as the unique index and ``_find_active_run``.
+    # Only an EXECUTABLE CHAT run in an active-like status occupies the
+    # session: the ``uq_runtime_tasks_active_web_chat_session`` partial unique
+    # index and ``web_chat_runtime._find_active_run`` both predicate on the
+    # same executable-chat task types (``EXECUTABLE_CHAT_TASK_TYPES``) and
+    # the same active-like statuses.  A suspended (awaiting permission) or
+    # resumable chat run is the same active-like turn and later becomes
+    # running again, so starting a FIFO successor beside it would be rejected
+    # by web-chat ingress with a 409 and retry-churn this admission on every
+    # sweep.  An unrelated non-chat RuntimeTask (workflow, business_task,
+    # subagent, trigger, ...) may legally share the tenant/agent/session
+    # binding in any status WITHOUT occupying the web-chat session — ingress
+    # does not 409 on it — so the guard must not defer behind it either.
     active = await db.scalar(
         select(RuntimeTask.id).where(
             RuntimeTask.tenant_id == admission.tenant_id,
             RuntimeTask.parent_agent_id == agent.id,
             RuntimeTask.parent_session_id == str(session.id),
+            RuntimeTask.task_type.in_(EXECUTABLE_CHAT_TASK_TYPES),
             RuntimeTask.status.in_(SESSION_TARGETABLE_RUN_STATUSES),
         )
     )

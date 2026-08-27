@@ -12,8 +12,10 @@ from app.services.company_knowledge_contracts import (
     build_canonical_evidence_envelope,
     company_knowledge_artifact_path,
     compute_source_contract_hash,
+    default_company_knowledge_review_policy,
     evaluate_company_review_set,
     next_company_proposal_status,
+    satisfied_review_roles,
     validate_source_contract,
 )
 
@@ -227,5 +229,156 @@ def test_review_set_enforces_distinct_high_risk_roles_and_never_agent_self_appro
     assert agent_self_claim == {
         "approved": False,
         "reason_codes": ["agent_cannot_review_or_approve"],
+        "review_set_hash": None,
+    }
+
+
+def _approval(reviewer_id: uuid.UUID, role: str, decision_hash: str) -> dict[str, str]:
+    return {
+        "reviewer_user_id": str(reviewer_id),
+        "reviewer_role": role,
+        "decision": "approve",
+        "decision_hash": decision_hash,
+    }
+
+
+def test_satisfied_review_roles_uses_canonical_admin_hierarchy() -> None:
+    assert satisfied_review_roles("platform_admin") == frozenset({"member", "org_admin", "platform_admin"})
+    assert satisfied_review_roles("org_admin") == frozenset({"member", "org_admin"})
+    assert satisfied_review_roles("member") == frozenset({"member"})
+    # Roles outside the canonical hierarchy satisfy only themselves.
+    assert satisfied_review_roles("domain_steward") == frozenset({"domain_steward"})
+    assert satisfied_review_roles("agent") == frozenset({"agent"})
+    assert satisfied_review_roles(None) == frozenset({""})
+
+
+def test_review_set_platform_admin_satisfies_default_org_admin_review_authority() -> None:
+    creator_id = uuid.uuid4()
+    reviewer_id = uuid.uuid4()
+    policy = default_company_knowledge_review_policy(
+        proposed_sensitivity="PL2_pii",
+        risk_level="normal",
+        created_by_type="user",
+    )
+    assert policy == {
+        "minimum_approvals": 1,
+        "required_roles": ["org_admin"],
+        "separation": False,
+        "source": "server_policy_v1",
+    }
+
+    evaluation = evaluate_company_review_set(
+        [_approval(reviewer_id, "platform_admin", "c" * 64)],
+        policy=policy,
+        created_by_type="user",
+        created_by_id=creator_id,
+        risk_level="normal",
+    )
+
+    assert evaluation["approved"] is True
+    assert evaluation["reason_codes"] == []
+    assert len(evaluation["review_set_hash"]) == 64
+
+
+def test_review_set_org_admin_still_satisfies_default_review_authority_exactly() -> None:
+    evaluation = evaluate_company_review_set(
+        [_approval(uuid.uuid4(), "org_admin", "d" * 64)],
+        policy=default_company_knowledge_review_policy(
+            proposed_sensitivity="PL2_pii",
+            risk_level="normal",
+            created_by_type="user",
+        ),
+        created_by_type="user",
+        created_by_id=uuid.uuid4(),
+        risk_level="normal",
+    )
+
+    assert evaluation["approved"] is True
+
+
+@pytest.mark.parametrize("role", ["member", "domain_steward", "security", "reviewer", "agent", ""])
+def test_review_set_arbitrary_roles_do_not_satisfy_org_admin_review_authority(role: str) -> None:
+    evaluation = evaluate_company_review_set(
+        [_approval(uuid.uuid4(), role, "e" * 64)],
+        policy=default_company_knowledge_review_policy(
+            proposed_sensitivity="PL2_pii",
+            risk_level="normal",
+            created_by_type="user",
+        ),
+        created_by_type="user",
+        created_by_id=uuid.uuid4(),
+        risk_level="normal",
+    )
+
+    assert evaluation["approved"] is False
+    assert "required_review_roles_missing" in evaluation["reason_codes"]
+    assert evaluation["review_set_hash"] is None
+
+
+def test_review_set_hierarchy_does_not_weaken_governance_guards() -> None:
+    creator_id = uuid.uuid4()
+    reviewer_id = uuid.uuid4()
+    other_id = uuid.uuid4()
+    platform_approval = _approval(reviewer_id, "platform_admin", "f" * 64)
+
+    # A reject decision still blocks approval even with a platform_admin approval present.
+    rejected = evaluate_company_review_set(
+        [
+            platform_approval,
+            {
+                "reviewer_user_id": str(other_id),
+                "reviewer_role": "org_admin",
+                "decision": "reject",
+                "decision_hash": "1" * 64,
+            },
+        ],
+        policy={"minimum_approvals": 1, "required_roles": ["org_admin"], "separation": False},
+        created_by_type="user",
+        created_by_id=creator_id,
+        risk_level="normal",
+    )
+    # minimum_approvals is still enforced against actual approval rows.
+    insufficient = evaluate_company_review_set(
+        [platform_approval],
+        policy={"minimum_approvals": 2, "required_roles": ["org_admin"], "separation": False},
+        created_by_type="user",
+        created_by_id=creator_id,
+        risk_level="normal",
+    )
+    # Creator separation still binds the platform_admin reviewer.
+    creator_self_review = evaluate_company_review_set(
+        [platform_approval],
+        policy={"minimum_approvals": 1, "required_roles": ["org_admin"], "separation": True},
+        created_by_type="user",
+        created_by_id=reviewer_id,
+        risk_level="normal",
+    )
+    # Reviewer separation still requires distinct reviewers at high risk.
+    duplicate_reviewer = evaluate_company_review_set(
+        [platform_approval, _approval(reviewer_id, "platform_admin", "2" * 64)],
+        policy={"minimum_approvals": 2, "required_roles": ["org_admin"], "separation": False},
+        created_by_type="user",
+        created_by_id=creator_id,
+        risk_level="high",
+    )
+
+    assert rejected == {
+        "approved": False,
+        "reason_codes": ["review_rejected"],
+        "review_set_hash": None,
+    }
+    assert insufficient == {
+        "approved": False,
+        "reason_codes": ["minimum_approvals_not_met"],
+        "review_set_hash": None,
+    }
+    assert creator_self_review == {
+        "approved": False,
+        "reason_codes": ["creator_reviewer_separation_required"],
+        "review_set_hash": None,
+    }
+    assert duplicate_reviewer == {
+        "approved": False,
+        "reason_codes": ["reviewer_separation_required"],
         "review_set_hash": None,
     }

@@ -1111,3 +1111,247 @@ async def test_company_import_hash_failure_is_durable_and_daemon_recovery_reente
         assert recovered.attempt_count == 2
         assert recovered.document_id is not None
         assert recovered.evidence_id is not None
+
+
+@pytest.mark.asyncio
+async def test_existing_in_review_proposal_with_platform_admin_approval_reaches_approved(
+    owner_sessionmaker,
+    tmp_path: Path,
+) -> None:
+    """Backward-compat closure for the RC-02B production deadlock.
+
+    Replicates the verified production state (tenant with a single
+    platform_admin administrator; proposal stuck in_review with one recorded
+    platform_admin approval and policy required_roles=["org_admin"]) and
+    proves a subsequent governed review evaluation reaches approved and
+    publish without any DB surgery.
+    """
+    tenant_id = uuid.uuid4()
+    admin_user_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    service = CompanyKnowledgeService(data_root=tmp_path)
+    principal = replace(
+        _principal(tenant_id=tenant_id, user_id=admin_user_id),
+        accountable_role="platform_admin",
+    )
+
+    async with owner_sessionmaker() as db:
+        db.add(Tenant(id=tenant_id, name="Company KB RC02B", slug=f"company-kb-rc02b-{tenant_id.hex[:10]}"))
+        db.add(
+            User(
+                id=admin_user_id,
+                username=f"company-kb-rc02b-{admin_user_id.hex[:10]}",
+                email=f"{admin_user_id.hex[:10]}@company-kb-rc02b.test",
+                password_hash="x",
+                display_name="Company Knowledge Platform Admin",
+                role="platform_admin",
+                tenant_id=tenant_id,
+            )
+        )
+        await db.flush()
+        db.add(
+            ResourcePermission(
+                tenant_id=tenant_id,
+                principal_type="user",
+                principal_id=admin_user_id,
+                resource_type="company_knowledge_scope",
+                resource_id=tenant_id,
+                actions=[
+                    "approve",
+                    "publish",
+                    "retire",
+                    "restore",
+                    "discover",
+                    "search",
+                    "read",
+                    "cite",
+                    "propose",
+                    "review",
+                ],
+                conditions={},
+                effect="allow",
+                sensitivity_ceiling="PL3_sensitive",
+                purposes=["interactive_session"],
+                created_by_user_id=admin_user_id,
+            )
+        )
+        await db.commit()
+
+    async with owner_sessionmaker() as db:
+        contract = await service.register_source_contract(
+            db,
+            principal=principal,
+            contract_input=_contract(),
+            idempotency_key="contract:rc02b-handbook:v1",
+            trace_id="trace-rc02b-contract",
+        )
+        await db.commit()
+
+        job = await service.queue_evidence_import(
+            db,
+            principal=principal,
+            request=CompanyEvidenceIngestRequest(
+                source_contract_id=contract.id,
+                source_contract_version=1,
+                evidence_kind="document",
+                source_item_id="rc02b-handbook",
+                source_revision="2026-08-27",
+                title="RC02B Handbook",
+                markdown="# RC02B Policy\n\nPlatform administrators may review company knowledge.",
+                typed_payload=None,
+                external_artifact_ref=None,
+                schema_ref="schema://company-document/v1",
+                source_acl_snapshot={"role_names": ["member", "org_admin", "platform_admin"]},
+                proposed_namespace="company/policies",
+                proposed_sensitivity="PL2_pii",
+                occurred_at=None,
+                effective_from=now,
+                effective_until=None,
+                observed_at=now,
+                cursor={},
+                sequence=None,
+                coverage_ledger={
+                    "complete": True,
+                    "total_units": 1,
+                    "covered_units": 1,
+                    "missing_units": [],
+                },
+                purpose="publish rc02b policy",
+                idempotency_key="import:rc02b-handbook:2026-08-27",
+                trace_id="trace-rc02b-import",
+            ),
+        )
+        await db.commit()
+
+    processed = await service.process_import_job(
+        tenant_id=tenant_id,
+        job_id=job.id,
+        session_factory=owner_sessionmaker,
+    )
+    assert processed.status == "completed"
+    assert processed.document_id is not None
+    assert processed.evidence_id is not None
+
+    async with owner_sessionmaker() as db:
+        proposal = await service.create_proposal(
+            db,
+            principal=principal,
+            request=CompanyKnowledgeProposalRequest(
+                proposal_kind="knowledge",
+                source_id=processed.source_id,
+                source_document_id=processed.document_id,
+                source_revision_ref="2026-08-27",
+                baseline_publication_id=None,
+                baseline_version=None,
+                proposed_patch={"operation": "publish_document", "title": "RC02B Handbook"},
+                proposed_namespace="company/policies",
+                proposed_sensitivity="PL2_pii",
+                source_refs=(f"company-evidence://{processed.evidence_id}",),
+                source_coverage={
+                    "complete": True,
+                    "total_units": 1,
+                    "covered_units": 1,
+                    "missing_units": [],
+                },
+                conflict_candidates=(),
+                ontology_mapping={},
+                risk_level="normal",
+                required_review_policy={
+                    "minimum_approvals": 1,
+                    "required_roles": ["org_admin"],
+                    "separation": False,
+                },
+                idempotency_key="proposal:rc02b-handbook:v1",
+                trace_id="trace-rc02b-proposal",
+            ),
+        )
+        submitted = await service.submit_proposal(
+            db,
+            principal=principal,
+            proposal_id=proposal.id,
+            expected_state_version=proposal.state_version,
+            trace_id="trace-rc02b-submit",
+        )
+        # Replicate the verified pre-fix production state: the deployed
+        # pre-fix control plane recorded the platform_admin approval but
+        # evaluation reported required_review_roles_missing, leaving the
+        # proposal in_review.
+        historical_review = CompanyKnowledgeReview(
+            tenant_id=tenant_id,
+            proposal_id=proposal.id,
+            reviewer_user_id=admin_user_id,
+            reviewer_role="platform_admin",
+            review_round=1,
+            subject_content_hash=CompanyKnowledgeService._review_subject_hash(submitted),
+            decision="approve",
+            reason="Evidence, ACL, validity, and policy text were reviewed.",
+            evidence_refs_json=[f"company-evidence://{processed.evidence_id}"],
+            policy_snapshot_json={
+                "schema": "hive.company_knowledge_review_authority.v1",
+                "required_review_policy": dict(submitted.required_review_policy_json or {}),
+                "review_evaluation": {
+                    "approved": False,
+                    "reason_codes": ["required_review_roles_missing"],
+                    "review_set_hash": None,
+                },
+            },
+            decision_hash="a" * 64,
+        )
+        db.add(historical_review)
+        submitted.status = "in_review"
+        submitted.state_version += 1
+        await db.commit()
+        stuck_state_version = submitted.state_version
+
+    async with owner_sessionmaker() as db:
+        stuck = await db.get(CompanyKnowledgeProposal, proposal.id)
+        assert stuck is not None
+        assert stuck.status == "in_review"
+
+        # A subsequent governed review re-evaluates the whole review set; the
+        # pre-existing platform_admin approval now satisfies the default
+        # org_admin review authority.
+        reviewed = await service.record_review(
+            db,
+            principal=principal,
+            proposal_id=proposal.id,
+            request=CompanyKnowledgeReviewRequest(
+                decision="approve",
+                reviewer_role="platform_admin",
+                reason="Re-confirmation after review role hierarchy closure.",
+                evidence_refs=(f"company-evidence://{processed.evidence_id}",),
+                policy_snapshot={"policy": "rc02b-role-hierarchy-closure"},
+            ),
+            expected_state_version=stuck_state_version,
+            trace_id="trace-rc02b-review",
+        )
+        assert reviewed.status == "approved"
+
+        # Exact audit evidence: every stored review row keeps the actual
+        # reviewer_role platform_admin; nothing was rewritten to org_admin.
+        stored_roles = (
+            await db.execute(
+                select(CompanyKnowledgeReview.reviewer_role, CompanyKnowledgeReview.review_round)
+                .where(
+                    CompanyKnowledgeReview.tenant_id == tenant_id,
+                    CompanyKnowledgeReview.proposal_id == proposal.id,
+                )
+                .order_by(CompanyKnowledgeReview.review_round)
+            )
+        ).all()
+        assert stored_roles == [("platform_admin", 1), ("platform_admin", 2)]
+
+        publication = await service.publish_proposal(
+            db,
+            principal=principal,
+            proposal_id=proposal.id,
+            expected_state_version=reviewed.state_version,
+            valid_from=now,
+            valid_until=None,
+            trace_id="trace-rc02b-publish",
+        )
+        await db.commit()
+
+        assert publication.version == 1
+        assert publication.status == "active"
+        assert publication.review_set_hash is not None

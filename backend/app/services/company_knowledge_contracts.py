@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.core.security import ROLE_HIERARCHY
 from app.services.privacy_layer import canonicalize_sensitivity
 
 
@@ -351,6 +352,22 @@ def default_company_knowledge_review_policy(
     }
 
 
+def satisfied_review_roles(reviewer_role: Any) -> frozenset[str]:
+    """Required review roles that one actual reviewer role satisfies.
+
+    The stored ``reviewer_role`` is never rewritten; this deterministic helper
+    only expands evaluation-time authority using the canonical
+    ``app.core.security.ROLE_HIERARCHY`` (higher index = more privileges), so
+    e.g. a platform_admin approval also satisfies the default org_admin review
+    authority. Roles outside the hierarchy satisfy only themselves.
+    """
+
+    role = str(reviewer_role or "")
+    if role in ROLE_HIERARCHY:
+        return frozenset(ROLE_HIERARCHY[: ROLE_HIERARCHY.index(role) + 1])
+    return frozenset({role})
+
+
 def evaluate_company_review_set(
     reviews: list[dict[str, Any]],
     *,
@@ -369,7 +386,9 @@ def evaluate_company_review_set(
     if len(approvals) < minimum_approvals:
         reason_codes.append("minimum_approvals_not_met")
     required_roles = {str(value) for value in policy.get("required_roles", [])}
-    approval_roles = {str(review.get("reviewer_role") or "") for review in approvals}
+    approval_roles: set[str] = set()
+    for review in approvals:
+        approval_roles.update(satisfied_review_roles(review.get("reviewer_role")))
     if not required_roles.issubset(approval_roles):
         reason_codes.append("required_review_roles_missing")
     reviewer_ids = [str(review.get("reviewer_user_id") or "") for review in approvals]
@@ -414,5 +433,6 @@ __all__ = [
     "default_company_knowledge_review_policy",
     "evaluate_company_review_set",
     "next_company_proposal_status",
+    "satisfied_review_roles",
     "validate_source_contract",
 ]

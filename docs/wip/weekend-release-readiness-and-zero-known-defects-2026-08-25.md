@@ -736,6 +736,58 @@ Codex 独立证据（当前 checkout HEAD `e871be23b7434b577db9d78b6422d6ccb484c
 
 **结论**：RC-02 生产 finding 包 Codex **PASS — Verified（本地）**；**Day1 candidate 三服务部署已完成**（HEAD `3cb2f11d…` 全 SUCCESS，见 §7.10 Day1 candidate 小节）。生产三步复核（① platform_admin 可见并可选 "Platform administrators"；② 显式 grant 后 review queue 无 reload 即现；③ revoke 后 queue 项消失且 workspace 清空）仍 pending，生产两遍 E2E 未执行，包保持**未 Closed**。
 
+### RC-02B — Company Knowledge review 角色层级收口（2026-08-27，Codex final verdict: PASS — Verified 本地）
+
+**已核验生产证据（只读复核事实，未改动任何生产行）**：租户 `aac728fb-fe1c-45df-a2ff-a56e024a37a0` 仅有一名活跃管理员 rocky243（user `42778d4b-fa70-47c1-ad3a-15f7fcf5e8aa`，role `platform_admin`）；合成提案 `a87147d7-f153-4323-8528-098349543860` 状态 `in_review`、state_version 3、normal risk、policy `minimum_approvals=1 / required_roles=["org_admin"] / separation=false / source=server_policy_v1`。已部署控制面授权该 platform_admin 查看 review queue 并提交 approve；一条真实 approval 已落库（reviewer_role=`platform_admin`），但 `evaluate_company_review_set` 报告 `required_review_roles_missing`，提案永远停在 `in_review` 无法 publish——公司内不存在任何 org_admin 账号。这是产品死锁，不是绕过审核的请求。
+
+**根因**：`evaluate_company_review_set` 用精确字符串集合比较 `required_roles ⊆ {reviewer_role}`；仓库既有管理员语义 `app.core.security.ROLE_HIERARCHY = ["member","org_admin","platform_admin"]`（higher index = more privileges）从未接入 review 评估，因此 platform_admin 的合法 approval 不满足默认 `org_admin` 审核权威。
+
+**Live entry → 最早错误状态**：`POST /knowledge/company/proposals/{id}/review`（`knowledge_company.py:1267`）→ `CompanyKnowledgeService.record_review`（reviewer_role 经 `company_knowledge_reviewer_role_mismatch` 钉为 principal 真实角色）→ `evaluate_company_review_set`（`company_knowledge_contracts.py`）的 `required_roles.issubset(approval_roles)` 精确匹配即最早错误状态；`publish_proposal` 内的同一评估是第二处消费点，`company_ontology_service` 共用同一 evaluator。
+
+**实现（surgical，单文件生产改动）**：`company_knowledge_contracts.py` 新增确定性 helper `satisfied_review_roles(reviewer_role)`——直接消费 canonical `ROLE_HIERARCHY`（无第二事实源；Codex fresh-process import smoke 通过，未观察到 import cycle），层级内角色向下蕴含（platform_admin⊇org_admin⊇member），层级外角色（domain_steward/security/agent/任意自定义 required role）只满足自身；评估处把 approval 角色集合替换为按 helper 展开的并集。**未改动**：存储的 proposal policy、reviewer_role（审计证据逐字保持 `platform_admin`）、decision_hash/review_set_hash 输入、minimum_approvals、separation、creator separation、reject、evidence binding、任何权限检查；无 DDL、无迁移、无生产行改动。
+
+**RED（实现前，当前 checkout 实测）**：
+
+```text
+① tests/services/test_company_knowledge_contracts.py 收集期 ImportError: cannot import name 'satisfied_review_roles'
+② 仅补 helper 未接评估时：2 failed / 24 passed——
+   test_review_set_platform_admin_satisfies_default_org_admin_review_authority（platform_admin approve 仍 required_review_roles_missing，精确复现生产死锁）
+   test_review_set_hierarchy_does_not_weaken_governance_guards（guard pin 上多余的 required_review_roles_missing）
+③ 真 PG 集成（临时把评估改回 pre-fix 精确匹配后立即恢复）：
+   test_existing_in_review_proposal_with_platform_admin_approval_reaches_approved
+   1 failed in 8.50s —— AssertionError: - approved + in_review（经真实 service 路径复现生产卡死态）
+```
+
+**GREEN（当前 checkout 实测，Docker-on Testcontainers 真 PostgreSQL）**：
+
+```text
+backend$ .venv/bin/pytest -q tests/integration/test_company_knowledge_closed_loop.py tests/services/test_company_knowledge_contracts.py
+29 passed in 8.34s
+backend$ .venv/bin/pytest -q <RC-02 11 文件 bundle + test_company_ontology_closed_loop.py，共 12 文件>
+111 passed, 1 warning in 27.41s（warning 为 pre-existing Starlette deprecation）
+backend$ .venv/bin/ruff check <3 个改动文件>        → All checks passed!
+backend$ .venv/bin/ruff format --check <同上>        → 3 files already formatted
+$ git diff --check                                   → clean（仅 .ultra runtime 脏，按约排除；output/ 与 tmp/pdfs/ 未触碰）
+```
+
+**Codex 独立复验（final verdict: PASS — Verified 本地，2026-08-27）**：focused `.venv/bin/pytest -q tests/integration/test_company_knowledge_closed_loop.py tests/services/test_company_knowledge_contracts.py` → **29 passed in 8.63s**；broad `.venv/bin/pytest -q -k company_knowledge` → **135 passed, 8085 deselected, 1 pre-existing Starlette warning in 31.74s**；`company_knowledge_contracts` + canonical `ROLE_HIERARCHY` 的 fresh-process import smoke 通过（未观察到 import cycle）；ruff check 通过；ruff format --check 3 files already formatted；`git diff --check` clean。
+
+**回归覆盖要点**：platform_admin approve 满足默认 org_admin 权威（approved=True、hash 在案）；org_admin 精确匹配不变；member/domain_steward/security/reviewer/agent/空角色均不满足（仍 `required_review_roles_missing`）；治理守卫零削弱——reject 仍阻断、minimum_approvals=2 单个 platform_admin approval 仍不足、separation 下 creator 自审与同人重复 review 仍被拒（精确 reason_codes pin）；`satisfied_review_roles` 确定性 pin（含 None/层级外角色）。**向后兼容闭环（验收 #2）**：真 PG 集成测试按生产事实播种一个 in_review 提案 + 一条历史 platform_admin approval（review_round 1），随后经**既有 append-only 治理缝** `record_review` 提交同一 reviewer 的第二轮 approve（round 2）→ 全 review set 重评估 → `approved` → `publish_proposal` 成功（publication v1 active、review_set_hash 在案）；断言两条 review 行的 reviewer_role 逐字保持 `platform_admin`（无 DB surgery、无重复语义记录问题——第二轮 review 是合法的新审核记录）。**生产重试边界（如实记录）**：不存在"只重评估不新增记录"的现存缝（publish 要求 status=approved 在先），因此生产恢复路径是部署后由 platform_admin 对提案 `a87147d7…` 再提交一次治理化 review（append-only、自带 reason/evidence），重评估即达 approved；不需要也不允许手工改库。
+
+**Changed files**：`backend/app/services/company_knowledge_contracts.py`、`backend/tests/services/test_company_knowledge_contracts.py`、`backend/tests/integration/test_company_knowledge_closed_loop.py`（纯新增测试；无前端改动——UI 无需变更，平台管理员本就可访问 review queue）。
+
+**七原子**：
+
+- Input：platform_admin 经 `POST /proposals/{id}/review` 提交 approve（decision/reason/evidence_refs/expected_state_version/trace_id）；评估输入为同 subject_content_hash 的持久 review 行。
+- Authority：reviewer_role 由 `record_review` 钉为 principal 真实角色；层级蕴含只发生在评估时确定性 helper，未扩大任何写入/审核权限；拒绝路径（任意角色不满足 required_roles、agent 审核、reject、separation）全部保持。
+- Execution：唯一 live entry 如上；评估三处消费点（record_review、publish_proposal、ontology service）共用同一 helper，无孤儿、无双事实源。
+- Evidence：`company_knowledge_reviews` 行（reviewer_role 逐字 `platform_admin`）+ decision_hash + review 事件 `policy_snapshot.review_evaluation` 为机械事实源。
+- Recovery：存量 in_review 死锁提案无需迁移——部署后经一次治理化 review 重评估即恢复；重复 review 由 (tenant, proposal, reviewer, review_round) 唯一约束与 state_version CAS 保护。
+- Consumption：评估结果直接驱动 proposal 状态机（approved→publish）与 review workspace 读模型；前端无需变更。
+- Acceptance：RED→GREEN 全轨迹如上；29 + 111 真 PG 回归、ruff check/format、diff-check；Codex 独立复验通过（证据见上）；**生产复核待执行，不宣称生产已修复**。
+
+**状态与边界**：**Codex final verdict: PASS — Verified（本地）**；本地 atomic commit 随本包创建（精确 hash 以 git log 为准）；**未部署、未触碰生产**；生产复核剩余：部署后 ① platform_admin 对 `a87147d7…` 提交一次治理化 review → 状态转 `approved`；② publish 成功且 reviewer_role 证据仍为 `platform_admin`；③ 任意非管理员角色审核仍被拒。不宣称生产已修复、Day 1 完成、A2A 完成或 Closed。
+
 ## 7.4 RC-03 — A2A push 与协作交付
 
 ### “A2A push”的本轮定义
@@ -1299,6 +1351,8 @@ Rollback / recovery:
 | RC-10A | Provider 投递歧义终局收口与可审计修复：handler 旧 fence 自撞（false-green unit 反转）、共享机械 terminal settlement（`runtime_terminal_settlement.settle_runtime_task_terminal`）、A live canonical commit 走 settlement、B exact 幂等投影修复 sweep + platform-admin endpoint `POST /admin/runtime-reconciliation/projection-repair`（SQL 侧不完整投影过滤防 starvation、partial drifts 全覆盖、fence 同状态复用/状态转移新 fence）、C operator resolve/archive 同步 root/control/fence（409 契约不变）、dispatch done-callback 异常回收、用户 blocker 三分支（provider 投递未知 / 真 side-effect 保留 / unknown generic）。生产证据与 6+3 聚合、仅 `19c22c3d` 可清、两条 7 月真实任务（`b07de271`/`6c400e97`）留 owner，详见 §7.11 | `7dafe9a67c774fbd3423affe8a168343196d6c75`（`fix(rc-10a): close ambiguous provider terminal settlement`，已随 Day1 candidate 部署） | RED（旧实现，真 PG）：3 failed —— T1 `StaleRuntimeTaskFenceError expected claim_version=1, current=2`（复现生产证据）；T2 root 仍 `queued`；T3 `ImportError: repair_ambiguous_provider_send_terminal_projections`。GREEN：九文件广义回归 **275 passed, 1 warning**（真 PG Testcontainers + Docker-on；含 dispatch 回调四分支回归；warning 为 pre-existing Starlette deprecation）；ruff check/format（本包文件）clean；`git diff --check` clean；证伪 toggle 已全部删除（生产与测试代码零匹配） | **Codex final verdict: RC-10A PASS — Verified**（当前 checkout 独立复验：ruff check/format 全 exit 0、九文件真 PG bundle 275 passed/1 pre-existing warning in 37.11s、diff-check clean、无 toggle 残留；生产复验 pending，未 Closed） | Day1 candidate 三服务部署已完成（HEAD `3cb2f11d…`，见 §7.10 Day1 candidate 小节）；生产修复复验未执行 | 未执行 | **局部闭环（本地已 commit + 已部署）**：Input/Authority/Execution/Evidence/Recovery/Consumption/Acceptance 七原子当前代码路径与真 PG 回归成立；生产 Consumption（blocker/广播复验）与 3 行投影修复 + `19c22c3d` archive 已可执行、待生产复验 | Day1 candidate 部署已完成；待 生产复验（① projection-repair 修 3 行投影 ② 仅 archive `19c22c3d` ③ RootItem 9 行一致性核验 ④ blocker/广播复验）；`b07de271`/`6c400e97` 留 owner/operator |
 | RC-02（生产 finding 包） | platform_admin audience 缺口 + grant/revoke 成功后视图失效：audience 选择器新增 exact `role:platform_admin`（EN "Platform administrators" 与后端标签逐字一致 / ZH "平台管理员"；无绕过、无自动授权）；共享 `invalidateCompanyKnowledge` 扩为六键（access-rules + intakes + review-queue + review-workspace + publication-lifecycle + library），grant/revoke onSuccess 均复用；mounted-query 测试（jsdom + 真 QueryClient + 仅 mock API 边界）证明 audience 选择与六面读模型无 reload refetch/变化；新增 jsdom/@testing-library devDependencies。详见 §7.3 末节 | `e871be23b7434b577db9d78b6422d6ccb484c559` | RED：3 failed / 23 passed（缺 "Platform administrators" option、revoke 后 review queue 不 refetch、目录缺 platformAdmins）→ GREEN：focused 26 passed、全量 142 files / 890 passed、tsc clean、i18n 9/9 en=zh=3854 gates 全 0、build 7385 modules 预算通过、`git diff --check` clean；Codex 独立（HEAD `e871be23`）：focused 2 files 26 passed in 1.03s、tsc exit 0、i18n 9/9 en=zh=3854 gates 0、全量 142 files/890 in 3.02s、build 7385 modules in 2.87s（AgentDetail 350870/380000 gzip 96915/115000、vendor 591449/620000 gzip 186474/200000）、diff-check clean、Docker Node20 Alpine npm ci +304 后 production build 成功（首次 metadata registry EOF 受控重试）、lock vs `7dafe9a` 48 added 全 dev/零删除/无版本变化、npm audit 4 high 与基线一致（非引入；prod omit-dev 两条 React Router RSC advisory 为 pre-existing 非适用——live entry 用 BrowserRouter）、8 授权文件 | **Codex final verdict：RC-02 生产 finding 包 PASS — Verified（本地）**；Day1 candidate 三服务部署已完成（HEAD `3cb2f11d…`），生产三步复核 pending，未 Closed | Day1 candidate 部署已完成；platform_admin 三步复核未执行 | 未执行 | **Verified（本地）+ 已部署**：七原子当前代码路径与 mounted 回归 + Codex 独立复验成立；生产 Consumption（platform_admin 三重复核）与 Recovery 待生产 E2E | Day1 candidate 部署已完成；待 生产三步复核（grant 后 queue 即现、revoke 后 queue/workspace 即清）；生产两遍 E2E 仍 pending，**未 Closed** |
 
+| RC-02B | review 角色层级死锁（生产提案 `a87147d7-f153-4323-8528-098349543860`，租户 `aac728fb-fe1c-45df-a2ff-a56e024a37a0`，platform_admin user `42778d4b-fa70-47c1-ad3a-15f7fcf5e8aa`）：`evaluate_company_review_set` 精确角色匹配未接入 canonical `ROLE_HIERARCHY`，platform_admin 合法 approval 不满足默认 org_admin 权威 → 永久 in_review。修复：确定性 helper `satisfied_review_roles`（消费 `app.core.security.ROLE_HIERARCHY`，无第二事实源）+ 评估处角色集展开；存储 reviewer_role/policy/hash/守卫全不变。详见 §7.3 末节 | 本地 atomic commit 随本包创建（`fix(rc-02b): honor admin review hierarchy`，精确 hash 以 git log 为准） | RED：①收集期 ImportError ②helper-only 2 failed/24 passed（platform_admin 仍 missing + guard pin）③真 PG 临时回退评估 1 failed（`+ in_review`）→ GREEN：focused 29 passed in 8.34s、12 文件 bundle 111 passed/1 pre-existing warning in 27.41s、broad company_knowledge slice 135 passed/1 warning in 32.73s、ruff check All passed、format 3 files already formatted、`git diff --check` clean（真 PG Docker-on Testcontainers）；Codex 独立：focused 29 passed in 8.63s、broad `-k company_knowledge` 135 passed/8085 deselected/1 pre-existing Starlette warning in 31.74s、fresh-process import smoke 通过（无 import cycle）、ruff check 通过、format 3 files already formatted、diff-check clean | **Codex final verdict：PASS — Verified（本地）** | 未执行（未部署） | 未执行 | **局部闭环（本地）**：Input/Authority/Execution/Evidence/Recovery/Consumption/Acceptance 有当前代码路径与真 PG 回归 + Codex 独立复验；生产 Consumption（部署后一次治理化 review 重评估 → approved → publish）待复核 | 待部署授权后生产复核（对 `a87147d7…` 提交治理化 review 达 approved、publish 成功、reviewer_role 证据逐字 `platform_admin`、非管理员审核仍被拒）；未 Closed |
+
 `Unknown` 表示尚未以本轮当前生产证据判定，不能等同于缺失或完成。
 
 ---
@@ -1370,3 +1424,5 @@ owner 已过稿并明确说“开始”。先提交本文件作为恢复点；�
 - [ ] RC-10A 待办：生产复验（projection-repair 修 3 行投影、仅 archive `19c22c3d`、RootItem 9 行一致性核验、blocker/广播复验）；`b07de271`/`6c400e97` 两条 7 月真实任务留 owner/operator 决定，绝不自动清理。
 - [x] RC-02 生产 finding 包（platform_admin audience 缺口 + grant/revoke 授权视图失效）已按 failing-first 完成：RED 3 failed / 23 passed（缺 audience option、revoke 后 review queue 不 refetch、目录缺 platformAdmins）→ GREEN focused 26 passed、全量 142 files / 890 passed、tsc clean、i18n 9/9 en=zh=3854 gates 全 0、build 预算通过、`git diff --check` clean；本地 commit `e871be23b7434b577db9d78b6422d6ccb484c559`（`fix(rc-02): refresh company knowledge authority views`）；**Codex 独立 final verdict：PASS — Verified（本地）**（focused 26 in 1.03s、全量 890 in 3.02s、tsc/i18n/build 预算、Docker 生产构建、lock 全 dev/audit 与基线一致——证据见 §7.3 末节与 §10 行）。已随 Day1 candidate 三服务部署上线；生产三步复核 pending，生产两遍 E2E 未执行，**未 Closed**。
 - [ ] RC-02 生产 finding 包待办：生产复核（platform_admin 可见并可选 "Platform administrators"、grant 后 review queue 无刷新即现、revoke 后 queue/workspace 即清）；生产两遍 E2E 仍 pending，**未 Closed**。
+- [x] RC-02B（Company Knowledge review 角色层级收口）本地代码+测试+证据已完成：根因=`evaluate_company_review_set` 精确角色匹配未接入 canonical `app.core.security.ROLE_HIERARCHY`，platform_admin 合法 approval 不满足默认 org_admin 权威（生产提案 `a87147d7-f153-4323-8528-098349543860` 永久 in_review 死锁）。修复=surgical 单文件：确定性 helper `satisfied_review_roles` + 评估角色集展开；存储 reviewer_role/policy/hash/全部治理守卫不变。RED（收集期 ImportError → helper-only 2 failed/24 passed → 真 PG 临时回退 1 failed `+ in_review`）→ GREEN（focused 29 passed、12 文件 bundle 111 passed、broad slice 135 passed、ruff check/format、diff-check clean，真 PG Docker-on）。**Codex final verdict: PASS — Verified（本地）**（独立证据：focused 29 passed in 8.63s、broad `-k company_knowledge` 135 passed/8085 deselected/1 pre-existing warning in 31.74s、fresh-process import smoke 通过、ruff/format/diff-check 全净）。证据见 §7.3 RC-02B 小节与 §10 行。本地 atomic commit 随本包创建（精确 hash 以 git log 为准）；**未部署、未触碰生产**。
+- [ ] RC-02B 待办：部署授权后生产复核（platform_admin 对 `a87147d7…` 提交一次治理化 review → 状态转 approved、publish 成功、reviewer_role 证据逐字 `platform_admin`、非管理员角色审核仍被拒）；**未 Closed，不宣称生产已修复**。

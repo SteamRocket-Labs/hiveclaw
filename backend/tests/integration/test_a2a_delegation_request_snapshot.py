@@ -126,6 +126,7 @@ async def _dispatch_delegation(
     edit_mode: str | None = None,
     target_artifact_path: str | None = None,
     target_artifacts: list[dict] | None = None,
+    interaction_type: str = "delegation",
     message: str = "Draft the quarterly delegation report",
 ):
     """Run the real durable dispatch (delegate_async) and return (handle, spawns)."""
@@ -163,6 +164,7 @@ async def _dispatch_delegation(
         parent_agent_id=seeded["parent_agent_id"],
         parent_agent_name="Coordinator",
         tenant_id=seeded["tenant_id"],
+        interaction_type=interaction_type,
         permission_profile={
             "mode": "dontAsk",
             "allowed_tools": ["read_file"],
@@ -232,6 +234,15 @@ async def _restart_rebuild(task_id: str):
             },
             id="shorthand-plus-artifacts-list",
         ),
+        pytest.param(
+            # Real system value used by the send_message_to_agent consult path
+            # (messaging.py passes interaction_type="agent_message"); proves the
+            # persisted snapshot rebuilds non-default interaction types instead
+            # of silently collapsing them onto the dataclass default.
+            "non_default_interaction_type",
+            {"interaction_type": "agent_message"},
+            id="non-default-interaction-type",
+        ),
     ],
 )
 async def test_restart_rebuild_reproduces_dispatch_request_hash(
@@ -245,8 +256,9 @@ async def test_restart_rebuild_reproduces_dispatch_request_hash(
     seeded = await _seed_tenant(owner_sessionmaker)
     _bind_runtime_store(monkeypatch, owner_sessionmaker)
 
-    handle, _spawns = await _dispatch_delegation(monkeypatch, seeded, **dispatch_kwargs)
+    handle, spawns = await _dispatch_delegation(monkeypatch, seeded, **dispatch_kwargs)
     assert handle.status == "queued", f"durable dispatch must be admitted, got {handle.status}"
+    assert spawns == [], "durable enqueue must not spawn in-process before the restart"
 
     record, rebuilt = await _restart_rebuild(handle.task_id)
     receipt_hash = record["metadata"]["execution_receipt"]["request_hash"]
@@ -260,6 +272,13 @@ async def test_restart_rebuild_reproduces_dispatch_request_hash(
     assert dispatched is True, f"[{scenario}] resume dispatch must verify the receipt and spawn the worker"
     post_record = await runtime_task_service.get_runtime_task_record(handle.task_id)
     assert post_record["status"] == "running"
+    # The resume consumer must actually hand the rebuilt request to the worker
+    # spawn — deleting the spawn call would otherwise leave this suite green.
+    assert len(spawns) == 1, f"[{scenario}] resume dispatch must spawn the worker exactly once"
+    assert spawns[0]["task_id"] == handle.task_id
+    assert orchestrator._delegation_request_hash(spawns[0]["request"]) == receipt_hash, (
+        f"[{scenario}] the spawned request must be the receipt-verified rebuild"
+    )
 
 
 async def _tamper_persisted_metadata(owner_sessionmaker, task_id: str, mutate) -> None:

@@ -3778,7 +3778,10 @@
       "empty": "当前没有需要对账的运行任务。",
       "resolve": "已处理",
       "archive": "归档",
-      "retry": "重试"
+      "retry": "重试",
+      "repair": "修复投影",
+      "repairing": "修复中...",
+      "repairReceipt": "投影修复完成：已检查 {{examined}} 个候选，已修复 {{repaired}} 条投影。"
     },
     "action": "操作",
     "all": "全部",

@@ -28,4 +28,20 @@ describe('adminApi runtime reconciliation adapter', () => {
       { action: 'mark_resolved', reason: 'verified' },
     ]);
   });
+
+  it('builds the projection-repair URL with encoded tenant, default and explicit limits, and no body', async () => {
+    const { post } = await import('../core');
+    const { adminApi } = await import('./admin');
+    vi.mocked(post).mockClear();
+
+    await adminApi.repairRuntimeReconciliationProjections({ tenantId: 'tenant-1' });
+    await adminApi.repairRuntimeReconciliationProjections({ tenantId: 'tenant/ 2', limit: 250 });
+
+    // Exact backend contract: POST /admin/runtime-reconciliation/projection-repair
+    // with tenant_id + limit query params and no request body.
+    expect(vi.mocked(post).mock.calls).toEqual([
+      ['/admin/runtime-reconciliation/projection-repair?tenant_id=tenant-1&limit=100'],
+      ['/admin/runtime-reconciliation/projection-repair?tenant_id=tenant%2F+2&limit=250'],
+    ]);
+  });
 });

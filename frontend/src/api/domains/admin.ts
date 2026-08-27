@@ -49,6 +49,18 @@ export interface RuntimeReconciliationTask {
 
 export type RuntimeReconciliationAction = 'mark_resolved' | 'archive' | 'retry';
 
+/**
+ * Truthful server receipt of POST /admin/runtime-reconciliation/projection-repair.
+ * The repair is exact-code and idempotent: it preserves
+ * status=needs_reconciliation and never resolves/archives/retries a task, so the
+ * receipt (examined candidates + repaired task ids) is the operator-facing
+ * result, not a task status change.
+ */
+export interface RuntimeProjectionRepairReceipt {
+  examined: number;
+  repaired_task_ids: string[];
+}
+
 export const adminApi = {
   listCompanies: () => get<Company[]>('/admin/companies'),
   createCompany: (data: { name: string; slug?: string }) => post<Company>('/admin/companies', data),
@@ -82,4 +94,13 @@ export const adminApi = {
       `/admin/runtime-reconciliation/${taskId}/action?tenant_id=${encodeURIComponent(params.tenantId)}`,
       { action: params.action, reason: params.reason },
     ),
+  repairRuntimeReconciliationProjections: (params: { tenantId: string; limit?: number }) => {
+    const query = new URLSearchParams({
+      tenant_id: params.tenantId,
+      limit: String(params.limit ?? 100),
+    });
+    // The endpoint takes no request body; the core post helper omits the body
+    // when it is undefined.
+    return post<RuntimeProjectionRepairReceipt>(`/admin/runtime-reconciliation/projection-repair?${query.toString()}`);
+  },
 };

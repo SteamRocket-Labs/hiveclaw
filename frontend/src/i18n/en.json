@@ -3778,7 +3778,10 @@
       "empty": "No runtime tasks need reconciliation.",
       "resolve": "Resolve",
       "archive": "Archive",
-      "retry": "Retry"
+      "retry": "Retry",
+      "repair": "Repair projections",
+      "repairing": "Repairing...",
+      "repairReceipt": "Projection repair finished: examined {{examined}} candidates, repaired {{repaired}} projections."
     },
     "action": "Action",
     "all": "All",

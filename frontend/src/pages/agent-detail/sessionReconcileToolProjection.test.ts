@@ -207,54 +207,12 @@ const LOST_TAIL: SessionEventV2[] = [
 
 describe('DAY1-LIVE-TAIL-001 terminal reconcile vertical projection', () => {
   it('reconciles the lost durable tail into a UI-consumable hr_preview card without reload', () => {
-    // 1. Live terminal done frame (immediate channel): the terminal reconcile
-    //    trigger and the runtime/read-model invalidation must still fire.
-    const closeSessionSocket = vi.fn();
-    const failAuthentication = vi.fn();
-    const context: SessionSocketMessageContext = {
-      data: { type: 'done', content: '蓝图已准备好，请在卡片中确认。', run_id: 'run-1' },
-      session: { id: 'session-1' },
-      agentId: 'agent-1',
-      sessionId: 'session-1',
-      key: 'agent-1:session-1',
-      isActiveRuntime: true,
-      closeSessionSocket,
-      failAuthentication,
-    };
-    const dependencies = {
-      applyTranscriptToSession: vi.fn(),
-      selectSession: vi.fn(),
-      fetchMySessions: vi.fn(),
-      setSessionPhase: vi.fn(),
-      sessionPhaseOf: vi.fn(() => 'responding' as const),
-      syncActivePhase: vi.fn(),
-      setActiveRunState: vi.fn(),
-      markActiveRunTerminal: vi.fn(),
-      invalidateSessionRuntimeQueries: vi.fn(),
-      reconcileSessionTranscript: vi.fn(),
-      shouldInvalidateToolCall: vi.fn(() => true),
-      isTerminalTranscriptToolMessage: vi.fn(() => false),
-      normalizeToolCallMessage: vi.fn((message: AgentChatMessage) => message),
-      parseChatMsg: vi.fn((message: AgentChatMessage) => message),
-      setChatMessagesSessionId: vi.fn(),
-      setTransportNotice: vi.fn(),
-      enqueueChatMessagesUpdate: vi.fn(),
-      setChatMessagesAfterQueued: vi.fn(),
-      setCreatedAgentId: vi.fn(),
-      setAgentExpired: vi.fn(),
-      invalidateQuery: vi.fn(),
-    } as unknown as SessionSocketProjectionDependencies;
-
-    projectSessionSocketEvent(context, dependencies);
-
-    expect(dependencies.reconcileSessionTranscript).toHaveBeenCalledWith('agent-1', 'session-1');
-    expect(dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledWith('agent-1', 'session-1');
-    expect(dependencies.markActiveRunTerminal).toHaveBeenCalledWith('agent-1:session-1', 'run-1');
-
-    // 2. The reconcile backfill replays the durable tail through the exact
+    // 1. The reconcile backfill replays the durable tail through the exact
     //    production consumption path (AgentDetail applyTranscriptToSession →
     //    consumeSessionEnvelope → applyCanonicalSessionSnapshot with the same
-    //    onMessages terminal-merge semantics).
+    //    onMessages terminal-merge semantics). The store/visible/consume
+    //    closure is built BEFORE the projector so the terminal trigger below
+    //    can drive this real replay — the two halves are one connected test.
     let store: SessionEventStore | undefined;
     let visible: AgentChatMessage[] = [];
     const consume = (event: SessionEventV2) => {
@@ -282,12 +240,65 @@ describe('DAY1-LIVE-TAIL-001 terminal reconcile vertical projection', () => {
       });
     };
 
+    // The live input is already projected before the terminal boundary; the
+    // reconcile must only backfill the lost durable tail after it.
     consume(LIVE_INPUT_ACCEPTED);
     expect(visible).toHaveLength(1);
 
-    for (const event of LOST_TAIL) {
-      consume(event);
-    }
+    // 2. Live terminal done frame (immediate channel): the terminal reconcile
+    //    trigger and the runtime/read-model invalidation must still fire. The
+    //    reconcile dependency is a vi.fn spy ONLY for call-count/argument
+    //    assertion — its implementation is the REAL canonical replay of the
+    //    durable tail (LOST_TAIL.forEach(consume)). There is no manual tail
+    //    replay after the projector: deleting either the projector's terminal
+    //    trigger (reconcile never runs → card assertions fail) or the
+    //    canonical consumer (consume never runs → same) fails THIS test.
+    const closeSessionSocket = vi.fn();
+    const failAuthentication = vi.fn();
+    const context: SessionSocketMessageContext = {
+      data: { type: 'done', content: '蓝图已准备好，请在卡片中确认。', run_id: 'run-1' },
+      session: { id: 'session-1' },
+      agentId: 'agent-1',
+      sessionId: 'session-1',
+      key: 'agent-1:session-1',
+      isActiveRuntime: true,
+      closeSessionSocket,
+      failAuthentication,
+    };
+    const dependencies = {
+      applyTranscriptToSession: vi.fn(),
+      selectSession: vi.fn(),
+      fetchMySessions: vi.fn(),
+      setSessionPhase: vi.fn(),
+      sessionPhaseOf: vi.fn(() => 'responding' as const),
+      syncActivePhase: vi.fn(),
+      setActiveRunState: vi.fn(),
+      markActiveRunTerminal: vi.fn(),
+      invalidateSessionRuntimeQueries: vi.fn(),
+      reconcileSessionTranscript: vi.fn(() => {
+        for (const event of LOST_TAIL) {
+          consume(event);
+        }
+      }),
+      shouldInvalidateToolCall: vi.fn(() => true),
+      isTerminalTranscriptToolMessage: vi.fn(() => false),
+      normalizeToolCallMessage: vi.fn((message: AgentChatMessage) => message),
+      parseChatMsg: vi.fn((message: AgentChatMessage) => message),
+      setChatMessagesSessionId: vi.fn(),
+      setTransportNotice: vi.fn(),
+      enqueueChatMessagesUpdate: vi.fn(),
+      setChatMessagesAfterQueued: vi.fn(),
+      setCreatedAgentId: vi.fn(),
+      setAgentExpired: vi.fn(),
+      invalidateQuery: vi.fn(),
+    } as unknown as SessionSocketProjectionDependencies;
+
+    projectSessionSocketEvent(context, dependencies);
+
+    expect(dependencies.reconcileSessionTranscript).toHaveBeenCalledTimes(1);
+    expect(dependencies.reconcileSessionTranscript).toHaveBeenCalledWith('agent-1', 'session-1');
+    expect(dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledWith('agent-1', 'session-1');
+    expect(dependencies.markActiveRunTerminal).toHaveBeenCalledWith('agent-1:session-1', 'run-1');
 
     // 3. The structured artifact is consumable from the reconcile result alone:
     //    exactly one preview_agent_blueprint card, hr_preview tool meta with the

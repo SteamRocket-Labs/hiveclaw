@@ -150,6 +150,13 @@
   color: var(--text-tertiary);
 }
 
+.personal-kb-search-submit {
+  flex: none;
+  height: 26px;
+  padding: 0 var(--space-3);
+  font-size: var(--text-meta);
+}
+
 .personal-kb-stats {
   display: flex;
   flex-wrap: wrap;

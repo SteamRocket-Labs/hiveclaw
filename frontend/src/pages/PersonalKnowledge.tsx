@@ -218,22 +218,27 @@ function EmptyBlock({ children }: { children: string }) {
   return <div className="personal-kb-empty">{children}</div>;
 }
 
-function SearchResults({ results }: { results: PersonalKnowledgeSearchResult[] }) {
+function SearchResults({ results, query }: { results: PersonalKnowledgeSearchResult[]; query: string }) {
   const { t } = useTranslation();
-  if (results.length === 0) return null;
   return (
     <section className="personal-kb-panel personal-kb-search-results">
       <div className="personal-kb-panel-heading">
         <h2>{t('personalKnowledge.searchResults')}</h2>
       </div>
-      {results.map((result) => (
-        <div key={result.segment_id} className="personal-kb-result">
-          <strong>{result.title}</strong>
-          <span>{result.heading_path.join(' / ')}</span>
-          <p>{result.snippet}</p>
-          <code>{result.source_ref}</code>
-        </div>
-      ))}
+      {results.length === 0 ? (
+        // A completed zero-hit search is an explicit empty conclusion,
+        // never the unavailable/error surface and never silent nothing.
+        <EmptyBlock>{t('personalKnowledge.searchEmpty', { query })}</EmptyBlock>
+      ) : (
+        results.map((result) => (
+          <div key={result.segment_id} className="personal-kb-result">
+            <strong>{result.title}</strong>
+            <span>{result.heading_path.join(' / ')}</span>
+            <p>{result.snippet}</p>
+            <code>{result.source_ref}</code>
+          </div>
+        ))
+      )}
     </section>
   );
 }
@@ -1282,7 +1287,14 @@ export default function PersonalKnowledge() {
 
   const onSearch = (event: FormEvent) => {
     event.preventDefault();
-    setActiveSearch(searchInput.trim());
+    const normalized = searchInput.trim();
+    if (!normalized) return;
+    if (normalized === activeSearch) {
+      // Retrying the same query is a real action: explicitly refetch.
+      void searchQuery.refetch();
+      return;
+    }
+    setActiveSearch(normalized);
   };
 
   const lanes: Array<{ key: PersonalKnowledgeLane; label: string; helper: string }> = [
@@ -1355,13 +1367,27 @@ export default function PersonalKnowledge() {
     <div className="personal-kb-page">
       {pageChrome}
       <section className="personal-kb-command-row">
-        <form className="personal-kb-search" onSubmit={onSearch}>
+        <form
+          className="personal-kb-search"
+          role="search"
+          aria-label={t('personalKnowledge.searchLabel', 'Search Personal Knowledge')}
+          onSubmit={onSearch}
+        >
           <IconSearch size={16} stroke={1.7} />
           <input
             value={searchInput}
             onChange={(event) => setSearchInput(event.target.value)}
             placeholder={t('personalKnowledge.searchPlaceholder')}
           />
+          <button
+            type="submit"
+            className="btn btn-primary btn-sm personal-kb-search-submit"
+            disabled={!searchInput.trim() || searchQuery.isFetching}
+          >
+            {searchQuery.isFetching
+              ? t('personalKnowledge.searching', 'Searching...')
+              : t('personalKnowledge.searchAction', 'Search')}
+          </button>
         </form>
         <button type="button" className="btn btn-primary" onClick={() => setActiveLane('inbox')}>
           {t('personalKnowledge.feed')}
@@ -1511,12 +1537,14 @@ export default function PersonalKnowledge() {
             )
           )}
 
-          {searchQuery.isError ? (
-            <PersonalKnowledgeQueryState error={searchQuery.error} onRetry={() => void searchQuery.refetch()} />
-          ) : searchQuery.isLoading ? (
-            <EmptyBlock>{t('common.loading', 'Loading...')}</EmptyBlock>
-          ) : (
-            <SearchResults results={searchQuery.data?.results ?? []} />
+          {activeSearch && (
+            searchQuery.isError ? (
+              <PersonalKnowledgeQueryState error={searchQuery.error} onRetry={() => void searchQuery.refetch()} />
+            ) : searchQuery.isLoading ? (
+              <EmptyBlock>{t('common.loading', 'Loading...')}</EmptyBlock>
+            ) : (
+              <SearchResults results={searchQuery.data?.results ?? []} query={activeSearch} />
+            )
           )}
         </main>
 

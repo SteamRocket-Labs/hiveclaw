@@ -512,6 +512,65 @@ Codex 独立复验：精确 5 项 hard-timeout gate 为 **5 passed in 3.42s**；
 
 **明确保留**：生产两遍 E2E 尚未执行，RC-01 的生产验收仍 pending（列入 §13 Not Done）；可选 vector provider 未在生产启用，仍是非 Day-1 blocker，不伪装成已验证。
 
+### RC-01B — Personal Knowledge 检索提交与真实消费收口（2026-08-27，Codex final verdict: PASS — Verified 本地）
+
+**已核验生产观察（如实记录边界）**：生产 `/knowledge` 当前有 3 篇文档 / 10 个 segments / 3 篇 agent-searchable。受控 Browser 把精确 marker `HIVE-PERSONAL-RUN1-QUARTZ-417` 输入页面唯一检索文本框并按 Enter，>4 秒后无 Search results、无 loading、无空结果态、无错误态——纯静默。该表单有 `onSubmit` 但**没有任何显式提交控件**。生产只读 service 调用（真实 `PersonalKnowledgeService.search_personal`）对同一精确 marker 与标题检索各返回 5 条命中、带 `kb://` source_ref；`knowledgeApi.myPersonalSearch` 与 `GET /knowledge/personal/search` 已有 route/adapter 测试。**因此本包判定为前端产品消费收口包：零后端改动，不改检索语义、索引、权限、认证或 API adapter。** 不过度宣称 Enter 对所有人浏览器都失效；已核验缺陷 = 无显式/可发现的提交动作 + 已观察交互之后没有任何真实终态 UI。
+
+**代码根因（当前 checkout 三处）**：
+
+1. `PersonalKnowledge.tsx` 检索表单只有 icon + input，无 submit 控件——无可发现动作（既有 `PersonalKnowledge.test.tsx` 为 SSR + 全 mock react-query，无法驱动提交，所以该缺陷从未被测试捕获）。
+2. `onSearch` 只做 `setActiveSearch(searchInput.trim())`：归一化后 query 与 `activeSearch` 相同时无任何 state 变化、无 refetch——重试同一 query 是 no-op。
+3. `SearchResults` 对零命中 `return null`：一次已完成的成功空检索与"从未提交"在 UI 上不可区分（silent nothing）；空白提交还会把 `activeSearch` 置空并静默禁用 query。
+
+**实现范围（surgical，纯前端）**：
+
+- 表单加 `role="search"` + 本地化 `aria-label`（`personalKnowledge.searchLabel`）；新增显式 submit 按钮（`btn btn-primary btn-sm personal-kb-search-submit`），空白/纯空格或检索在飞时禁用；标签为真实 localized `搜索`/`搜索中...`（Search/Searching...，`searchQuery.isFetching` 驱动）；Enter 经既有 form `onSubmit` 保留；激活前 trim。
+- `onSearch` 归一化 query 等于 `activeSearch` 时显式 `void searchQuery.refetch()`——重试同一 query 是真实动作。无 debounce、无按键自动检索、无轮询、无新 API 调用、无直接 fetch/token 处理、无新依赖。
+- 检索状态只在非空 query 提交后渲染（`activeSearch` 门控）；保留既有 typed error/unavailable（`PersonalKnowledgeQueryState`）与 loading 路径；完成且零命中时渲染显式本地化空结果态（`personalKnowledge.searchEmpty`，`{{query}}` 插值，双语言变量集一致），与 unavailable/error 明确区分（无 `role=alert`、无 `data-personal-knowledge-state`）；命中时保留 title、heading path、snippet、精确 `kb://` source_ref 引用；既有 lane/workbench 内容不隐藏。
+- 新增 mounted jsdom 测试 `PersonalKnowledge.mounted.test.tsx`：真 `@tanstack/react-query` QueryClient（retry:false）+ MemoryRouter + 真实 i18n catalog，仅 mock knowledgeApi 边界；documents/jobs 用空 fixture 保持无关查询有界。真实 DOM 交互证明：空白提交禁用；点击发送 trim 后 query 且 limit=8 并渲染 title/snippet/`kb://` ref；同 query 再次点击真实 refetch；pending 显示 Searching... 且禁用；零结果显示显式空态；API 拒绝渲染 unavailable 且绝不出现空结论；Enter 经 form submit 保留。既有 SSR 测试全部保留不动。
+- i18n：`personalKnowledge.searchLabel/searchAction/searching/searchEmpty` 四键 en/zh 精确对齐；CSS 仅新增 `.personal-kb-search-submit` 一条作用域规则，无 redesign。
+
+**RED（实现前，当前 checkout 实测）**：
+
+```text
+frontend$ NODE_OPTIONS=--no-experimental-webstorage npx vitest run src/pages/PersonalKnowledge.mounted.test.tsx
+Test Files 1 failed (1)；Tests 7 failed (7)
+× 全部 7 项——TestingLibraryElementError:
+  Unable to find an accessible element with the role "button" and name "Search"
+  Unable to find an accessible element with the role "search" and name "Search Personal Knowledge"
+```
+
+（GREEN 期间一处测试侧修正，非产品行为变化：等待锚点从 library lane 的 `Personal KB is empty...` 改为默认 inbox lane 的 `No import jobs yet.`——首版锚点在默认 lane 永不渲染；修正后 RED 精确落在缺失控件/landmark 上。）
+
+**GREEN（当前 checkout 实测）**：
+
+```text
+frontend$ npx vitest run src/pages/PersonalKnowledge.mounted.test.tsx src/pages/PersonalKnowledge.test.tsx
+2 files / 25 passed（7 新增 mounted + 18 既有 SSR，先红后绿）
+frontend$ npm test                → 144 files / 905 tests passed（基线 143/898 → +1 文件 +7 测试）
+frontend$ ./node_modules/.bin/tsc --noEmit → 无错误
+frontend$ npm run i18n:check      → node tests 通过；catalog en=3861 / zh=3861；全部 gates = 0
+frontend$ npm run i18n:inventory  → missingEnglish/missingChinese/unresolvedDynamic 等全为空
+frontend$ npm run build           → AgentDetail 350870/380000（gzip 96916/115000）、vendor 591449/620000（gzip 186474/200000）预算通过
+$ git diff --check                → clean（.ultra/.runtime/compact-snapshot.md 保持开工前 modified 原状未触碰；output/ 与 tmp/pdfs/ 未触碰）
+```
+
+**Changed files**：`frontend/src/pages/PersonalKnowledge.tsx`、`frontend/src/pages/PersonalKnowledge.mounted.test.tsx`（新增）、`frontend/src/pages/PersonalKnowledge.css`、`frontend/src/i18n/en.json`、`frontend/src/i18n/zh.json`、`docs/wip/weekend-release-readiness-and-zero-known-defects-2026-08-25.md`（本节与 §10/§13）。零后端改动。
+
+**七原子**：
+
+- Input：owner 在 `/knowledge` 检索表单输入 query，经显式 Search 按钮或 Enter 提交；输入为 trim 后非空字符串，limit 固定 8。
+- Authority：检索权威仍由后端 `GET /knowledge/personal/search` 既有 owner-scope 判定；前端不处理 token、不扩大任何可见性。
+- Execution：唯一 live entry = form submit → `onSearch` → react-query `['personal-knowledge-search', activeSearch]` → `knowledgeApi.myPersonalSearch(query, 8)` → 既有后端路由；无孤儿、无旁路 fetch。
+- Evidence：后端 segment 行与 `kb://` source_ref 为机械事实源；前端逐字渲染 title/heading_path/snippet/source_ref，不伪造。
+- Recovery：同 query 重试显式 refetch；失败保留既有 typed unavailable/forbidden + Retry；空白输入机械禁用，不产生假动作。
+- Consumption：命中列表、显式空结论、unavailable 三态分离是 owner 的真实消费面；lane/workbench 其余内容不受影响。
+- Acceptance：RED→GREEN 轨迹如上；focused 25 + 全量 905 + tsc + i18n 双门 + build 预算 + diff-check；**Codex final verdict: PASS — Verified（本地，见下）；生产 Browser 复验 pending**。
+
+**Codex 独立复验（final verdict: PASS — Verified 本地，2026-08-27，无可执行 finding）**：基于当前最终 diff 独立核验——focused `NODE_OPTIONS=--no-experimental-webstorage npx vitest run src/pages/PersonalKnowledge.mounted.test.tsx src/pages/PersonalKnowledge.test.tsx` = 2 files / 25 passed in 2.05s；全量 `npm test` = 144 files / 905 passed in 3.77s；`./node_modules/.bin/tsc --noEmit` exit 0；`npm run i18n:check` = 9/9 且 en=zh=3861、全部 gates 0；`npm run i18n:inventory` 全部 missing/duplicate/default/dynamic 列表为空；`npm run build` = 7385 modules in 2.84s，AgentDetail 350870/380000（gzip 96916/115000）、vendor 591449/620000（gzip 186474/200000）；`git diff --check` exit 0。Codex live-path review 确认：form submit → activeSearch → 真 QueryClient → `knowledgeApi.myPersonalSearch(query, 8)`、同 query 显式 refetch、提交前门控、pending/empty/unavailable 真实分离、精确 result/source_ref 渲染、零后端或权威改动。
+
+**状态与边界（明确）**：**Codex final verdict: PASS — Verified（本地）**（无可执行 finding；独立证据见上 Acceptance）；本地 atomic commit 随本包创建（`fix(rc-01b): close personal search interaction`，精确 hash 以 git log 为准）；**未部署、未触碰生产、未执行外部 E2E**。不宣称生产检索已修复、不宣称 Agent tool 消费/A2A/Day 1 完成、不转 Closed。生产 Browser 复验待部署授权后执行：① `/knowledge` 出现显式 Search 控件；② 输入 `HIVE-PERSONAL-RUN1-QUARTZ-417` 点击 Search → 真实命中（含 `kb://` 引用）渲染；③ 输入不存在 marker → 显式空结果态；④ 空白输入按钮禁用。
+
 ## 7.3 RC-02 — Company Knowledge 管理员导入与授权闭环
 
 ### 当前事实与旧文档修正
@@ -1407,6 +1466,7 @@ Rollback / recovery:
 |---|---|---|---|---|---|---|---|---|
 | RC-00 | UI-001/002/003/004、SHELL-001、A2A-001 read-model、UI-005(D1/D2/auth出口) + Codex FAIL 六项 correction + 第二轮 FAIL（WorkspaceFeatureHub live consumer）correction + canonical attention_state 全映射、静态键渲染、gate 优先级（最终形态 `7761aedb`） | `e04f6fee`（主包）、`6e2ff99d`（Agent Detail 面 + Codex 基线）、`b0c1a95c`（review-fail correction #1）、`70190bf0`（correction #2）、`31c8f8d4`（canonical 全映射）、`e2ec5dc8`（静态键渲染）、`48dd4ccb`+`7761aedb`（gate 优先级 v1/v2）、`d71ab449`（测试格式修复） | Codex 独立复验：npm test = 141 files / 844 tests；i18n node tests 9，catalog en=3750 / zh=3750，全部 gates 0；tsc --noEmit 干净；build 7385 modules，AgentDetail 350477/380000（gzip 96848/115000）、vendor 591449/620000（gzip 186474/200000）；git diff --check 干净（仅 .ultra runtime 脏）；backend 无改动，此前独立结果 148+26+197 与 ruff check+format 仍有效 | **Codex final verdict: PASS — Verified**（两轮 FAIL 已全部 correction 后终审通过） | 已授权未执行 | 已授权未执行 | **Verified**：Input/Authority/Execution/Evidence 有当前代码路径、回归与 Codex 独立复验；Recovery/Consumption 待生产 E2E（run 1/run 2）后转 Closed | D3/D4/D5 未复现；全量 backend 回归留 RC-09；生产 E2E 两遍待执行（owner 已授权 gates 后两次三服务部署） |
 | RC-01 | PKB-001（queued/attempt 0 read-model）、final-attempt 不到达、stale-claim fencing 缺失、failed 自动重选、lifecycle/result 未分离、evolution_daemon 导入缺失、substring 错误分类、cancel/retry 时间戳、归档非消费边界（P1）、归档与 Worker 并发覆盖（P1）、intake/action 错误不可见、格式宣传超证据；post-verdict fake physical-timeout correction | `703bd2c7`（主包）+ `f05b4cc7`（docs-only 补录）+ 本次 RC01/02 checkpoint commit | Codex 原独立证据：focused 125×3、broad 343、Ruff/frontend 全门禁；post-verdict correction：hard-timeout 5 passed in 3.42s；受影响 service/API/integration 111 passed, 1 warning in 18.48s；Ruff 与 `git diff --check` clean | **本地 correction 已独立验证**；生产 E2E pending | 已授权未执行 | 已授权未执行 | **局部闭环**：本地七原子代码路径与回归成立；生产两遍 E2E 后转 Closed | 生产 E2E 两遍待执行；全量 backend 回归留 RC-09；vector provider 未生产启用（非 Day-1 blocker，未伪装已验证） |
+| RC-01B | Personal Knowledge 检索提交与真实消费收口（生产已核验观察：marker `HIVE-PERSONAL-RUN1-QUARTZ-417` 提交后 >4s 无任何终态 UI；表单无显式提交控件；同 query 重试 no-op；零命中 silent nothing；后端真实 service 同 marker 返回 5 命中 → 判定纯前端消费包，零后端改动）：显式 Search 控件（role=search + 本地化 aria-label、空白/在飞禁用、Search/Searching 真实标签）、同 query 显式 refetch、activeSearch 门控 + 显式本地化空结果态（与 unavailable/error 区分）、命中保留 title/heading path/snippet/精确 `kb://` source_ref；mounted jsdom 测试（真 QueryClient + MemoryRouter + 真实 i18n，仅 mock knowledgeApi，空 documents/jobs fixture）证明空白禁用/trim+limit 8/同 query refetch/pending 禁用/空态/拒绝≠空结论/Enter 保留。详见 §7.2 末节 | 本地 atomic commit 随本包创建（`fix(rc-01b): close personal search interaction`，精确 hash 以 git log 为准） | RED：1 file / 7 failed（`Unable to find role="button" name "Search"` / `role="search" name "Search Personal Knowledge"`；测试侧锚点修正如实记录于 §7.2）→ GREEN：focused 2 files / 25 passed、全量 144 files / 905 passed、tsc clean、i18n check 通过 en=zh=3861 gates 全 0、inventory 全空、build 预算通过（AgentDetail 350870/380000 gzip 96916/115000、vendor 591449/620000 gzip 186474/200000）、`git diff --check` clean | **Codex final verdict: PASS — Verified（本地，2026-08-27，无可执行 finding）**（独立证据：focused 2 files / 25 passed in 2.05s、全量 144 files / 905 passed in 3.77s、tsc exit 0、i18n check 9/9 en=zh=3861 gates 全 0、inventory 全空、build 7385 modules in 2.84s（AgentDetail 350870/380000 gzip 96916/115000、vendor 591449/620000 gzip 186474/200000）、diff-check exit 0；live-path review 确认 form submit → activeSearch → 真 QueryClient → `myPersonalSearch(query,8)`、同 query 显式 refetch、提交前门控、pending/empty/unavailable 真实分离、精确 result/source_ref 渲染、零后端或权威改动） | 未执行（未部署） | 未执行 | **局部闭环（本地 Verified）**：Input/Authority/Execution/Evidence/Recovery/Consumption/Acceptance 有当前代码路径与 mounted 交互回归 + Codex 独立复验；生产 Browser 复验 pending | 待部署授权后生产 Browser 复验（显式控件可见、marker 命中含 `kb://` 引用、不存在 marker 显式空态、空白禁用）；不宣称生产已修复、Agent tool 消费/A2A/Day 1 完成或 Closed |
 | RC-02 | 管理员 direct import 主包 + first-review correction；second re-review 七项全部 PASS：#1 admin-only/六字段 contract summary、#2 child-process hard timeout、#4 exact assertions、#3 input bounds（含六轮 correction：blank/absent typed 400、strip-only title 端到端、ACL 必填化、strict NaN 拒绝、前端 ACL 接线）、#5 direct-file isolation（JSONB 服务端过滤先于 order/limit + 五方法 kind 守卫先于 proposal_id 捷径；含 fleet-recovery 测试清理 correction）、#6 same-content/different-title 冲突（direct-file title 守卫 + 永久 code 即时 terminalize + recovery 排除永久行 + 前端 EN/ZH 精确映射）、#7 truthful query states（string-union 状态 props + live query 派生 + retry 接线 + stale authority 机械不可执行；含 P0 correction） | `41e0e533`（主包）+ `c92bfcf5`（first-review correction）+ RC01/02 checkpoint commit + `426c0fdd`（#3）+ `f97b9d3a`（#5）+ `173bd5d7`（#6）+ 本次 `fix(rc-02): expose direct import query states`（#7） | 原证据：backend 83 + broad 364、frontend 871、tsc/i18n/build、Ruff；second re-review checkpoint：hard-timeout 5 passed、受影响 bundle 111 passed；#3 Codex 独立：11 文件 bundle 96 passed、frontend 10 passed、ACL/NaN 探针；#5 Codex 独立：两文件 44 passed、11 文件 bundle（最坏顺序）98 passed in 25.83s；#6 Codex 独立：两文件 45 passed in 19.75s、11 文件 bundle 99 passed in 26.44s、前端 11 passed、tsc exit 0、i18n 9/9 en=zh=3847 gates 全 0、Ruff/format/diff clean；#7 Codex 独立：相关前端 3 文件 36 passed、tsc exit 0、i18n 9/9 en=zh=3853 gates 全 0、build 7385 modules 预算通过、`git diff --check` clean、live-path review 确认状态派生/retry 接线/stale authority 不可执行、correction 轨迹 7→9 failed→final 23 passed | **七项 findings 全部 PASS；Codex final verdict：RC-02 final PASS — Verified** | 已授权未执行 | 已授权未执行 | **Verified**：Input/Authority/Execution/Evidence/Consumption 有当前代码路径、回归与 Codex 独立复验（含前端消费面）；Recovery/生产 Consumption 待生产 E2E（run 1/run 2）后转 Closed，**未 Closed** | 生产 E2E 两遍待执行（owner 已授权）；全量 backend 回归留 RC-09；真实 Agent tool 生产消费属部署后 E2E |
 | RC-03 | 待开工 | — | — | — | — | — | Partial loop | async push + long result + UI evidence |
 | RC-04 | 待验收 | — | — | — | — | — | Unknown | full production journey |
@@ -1473,6 +1533,8 @@ owner 已过稿并明确说“开始”。先提交本文件作为恢复点；�
 - [x] RC-01 原 PASS 因 fake physical-timeout 证明被重开；child-process hard-timeout correction 已完成并经 Codex 独立验证（5-test gate + 111-test 受影响 bundle），本地保持局部闭环。
 - [x] RC-01 对应代码 commit 已创建（`703bd2c7`）+ docs-only 补录（`f05b4cc7`）+ 本次 RC01/02 checkpoint commit。
 - [ ] RC-01 生产两遍 E2E 尚未执行（部署后按 §7.10 彩排执行）；可选 vector provider 未在生产启用（非 Day-1 blocker）。
+- [x] RC-01B（Personal Knowledge 检索提交与真实消费收口）本地代码 + failing-first 测试 + 本地验证 + WIP 证据已完成：已核验生产观察（3 文档/10 segments/3 agent-searchable；marker `HIVE-PERSONAL-RUN1-QUARTZ-417` 提交后 >4s 无终态 UI；真实 service 同 marker 5 命中 → 纯前端消费包，零后端改动）；代码根因三处（无显式提交控件、同 query 重试 no-op、零命中 silent nothing）；实现=显式 Search 控件（role=search、空白/在飞禁用、Search/Searching 真实标签）+ 同 query 显式 refetch + activeSearch 门控 + 显式本地化空结果态 + 命中保留 title/heading/snippet/精确 `kb://` source_ref + mounted jsdom 交互回归（真 QueryClient/MemoryRouter/i18n，仅 mock knowledgeApi）。RED 7 failed（缺 Search 控件/search landmark；测试侧锚点修正如实记录）→ GREEN focused 25、全量 144 files / 905、tsc clean、i18n en=zh=3861 gates 全 0、inventory 全空、build 预算通过、diff-check clean；证据见 §7.2 末节与 §10 行。**Codex final verdict: PASS — Verified（本地，无可执行 finding；独立证据见 §7.2/§10）**；本地 atomic commit 随本包创建（精确 hash 以 git log 为准）；**未部署、未触碰生产**。
+- [ ] RC-01B 待办：部署授权后生产 Browser 复验（显式 Search 控件可见、marker `HIVE-PERSONAL-RUN1-QUARTZ-417` 命中含 `kb://` 引用、不存在 marker 显式空态、空白禁用）；不宣称生产已修复、Agent tool 消费/A2A/Day 1 完成或 Closed。
 - [x] RC-02 second re-review 已完成：#1–#7 七项 findings 全部独立 PASS，Codex final verdict **RC-02 final PASS — Verified**；生产 E2E 两遍仍 pending，通过后方可转 Closed。
 - [x] RC-02 已创建主包 commit `41e0e533` 与 first-review correction `c92bfcf5`；本次 RC01/02 checkpoint commit 记录 #1/#2/#4 证据。
 - [x] RC-02 finding #3（bounded direct import inputs）已按 failing-first 完成并经六轮 Codex correction（blank/absent typed 400、strip-only title 端到端、worker 消费一致、ACL 必填化、strict NaN 拒绝、前端 ACL 接线），Codex final verdict **PASS**；commit `426c0fdd`，证据见 §7.3/§10。

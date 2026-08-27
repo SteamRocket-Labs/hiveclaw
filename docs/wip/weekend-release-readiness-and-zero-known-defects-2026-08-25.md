@@ -1934,6 +1934,18 @@ NODE_OPTIONS=--no-experimental-webstorage npx vitest run（frontend/ 全量）�
 - Run2 第一次尝试的 `ambiguous_provider_send` typed 状态语义未动（不发明根因、不自动重放）；Run1/Run2 的合成 KB 文档与 session/task 资产沿用 owner 门控清理登记（本节不新增删除动作）。
 - native V2 run 终局仍由 `run` item 事件拥有（本包不改变该语义）；若未来有第三种终局 transcript 形态，需在 projector 同 seam 显式登记而非字符串匹配内容。
 
+### DAY1-KNOWLEDGE-UI-TRUTH-001 Codex final verdict: PASS — Verified（本地，2026-08-27，对 `b404e160`）
+
+Codex 独立 review commit `b404e160`（fix(day1): make knowledge run UI truth follow canonical terminal state）完整 diff：**未发现 actionable defect**。Codex 并在当前 HEAD（同一提交）独立 rerun 上述命令，结果一致：
+
+- focused Vitest 2 files（`chatDisclosureReducer.test.ts` + `sessionSocketEventProjector.test.ts`）→ **45 passed**。
+- `npx vitest run src/pages/agent-detail/ src/pages/session-workbench/` → **53 files / 525 tests passed**。
+- `npm run build` → 通过；**AgentDetail 351683/380000（gzip 97100/115000）、vendor 591449/620000（gzip 186474/200000）** 预算全过。
+- frontend 全量 Vitest → **145 files / 930 tests passed**。
+- `git show --check` → clean。
+
+**状态与边界（精确）**：**Codex final verdict: PASS — Verified（本地）**；当前提交 = `b404e160`，本地候选、未 push、未部署。**生产 retest 仍 open**：两个 UI 修复需随三服务部署后 signed-in 生产复测（缺陷 A/B 的生产行为核验）方可转 Closed；不宣称 Knowledge/Day 1 完成。
+
 ---
 
 

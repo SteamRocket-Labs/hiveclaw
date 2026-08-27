@@ -91,7 +91,23 @@ const FILE_TOOL_NAMES = new Set([
   'read_file',
   'write_file',
 ]);
+// Prefix match for the step-level query/url summary display only. This must
+// never feed the aggregate "Searched web" count: search_personal_kb,
+// search_memory, and friends start with "search" but never touch the web.
 const SEARCH_TOOL_PREFIXES = ['web_', 'search', 'firecrawl', 'xcrawl'];
+// Exact web-search registry, source-checked against the @tool registrations in
+// backend/app/tools/handlers/search.py. Only these count as web search; web
+// fetches (web_fetch, firecrawl_fetch, xcrawl_scrape, …) and internal search
+// surfaces (Personal KB, memory, clawhub) are excluded on purpose.
+const WEB_SEARCH_TOOL_NAMES = new Set([
+  'advanced_web_search',
+  'anysearch_batch_search',
+  'anysearch_search',
+  'exa_search',
+  'firecrawl_search',
+  'tavily_search',
+  'web_search',
+]);
 const COMMAND_TOOLS = new Set(['execute_code', 'run_command']);
 const A2A_TOOLS = new Set([
   'cancel_async_task',
@@ -385,7 +401,10 @@ function kindForToolMessage(message: AgentChatMessage): RunStepKind {
   const name = (message.toolName || '').toLowerCase();
   if (COMMAND_TOOLS.has(name)) return 'command';
   if (FILE_TOOL_NAMES.has(name)) return 'file';
-  if (SEARCH_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return 'search';
+  // Only registry web searches are "search" steps: the aggregate summary
+  // counts this kind as "Searched web", so prefix matches must not leak
+  // Personal KB / memory / clawhub lookups into a web-search claim.
+  if (WEB_SEARCH_TOOL_NAMES.has(name)) return 'search';
   if (name.includes('workflow')) return 'workflow';
   if (A2A_TOOLS.has(name) || name.includes('a2a')) return 'a2a';
   if (SUBAGENT_TOOLS.has(name) || name.includes('subagent')) return 'subagent';

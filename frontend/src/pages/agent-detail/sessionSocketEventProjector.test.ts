@@ -7,6 +7,7 @@ import {
   type AgentChatMessage,
 } from './chatRuntime';
 import { consumeSessionEnvelope } from './sessionEventConsumer';
+import { buildSessionRightPanelModel } from '../session-workbench/timelineModel';
 import type { SessionSocketMessageContext } from './useSessionTransportController';
 import type { SessionEventStore } from '../session-workbench/sessionEventStore';
 
@@ -244,6 +245,209 @@ describe('session socket event projector', () => {
     expect(harness.dependencies.fetchMySessions).toHaveBeenCalledWith(true, 'agent-1');
     expect(harness.dependencies.setSessionPhase).toHaveBeenCalledWith('agent-1:session-1', 'done');
     expect(harness.dependencies.syncActivePhase).toHaveBeenCalledWith('done');
+  });
+
+  it('clears the active run and runtime read models when the legacy-adapted canonical assistant terminal arrives (DAY1-KNOWLEDGE-UI-TRUTH-001)', () => {
+    // Production Run2 fresh-retry shape: the web-chat assistant_message
+    // finalizer settles the RuntimeTask and its transcript event arrives as a
+    // canonical envelope adapted from the legacy row (payload.legacy). No
+    // run.completed item event follows on this path, so this terminal witness
+    // must itself clear the active run and invalidate the workbench read
+    // models the right panel renders from.
+    const terminalEnvelope = {
+      schema: 'hive.session_event',
+      schema_version: 2,
+      event_id: 'event-150',
+      sequence: 150,
+      item_id: 'assistant-final-1',
+      item_kind: 'assistant_text',
+      kind: 'assistant_text.completed',
+      lifecycle: 'completed',
+      payload_schema: 'hive.session.payload.assistant_text.completed.v2',
+      tenant_id: 'tenant-1',
+      scope: {
+        level: 'round',
+        session_id: 'session-1',
+        thread_id: 'session-1',
+        turn_id: 'turn-1',
+        run_id: 'run-5ab9b0a8',
+        round_id: 'round-9',
+      },
+      actor: { type: 'assistant' },
+      visibility: { audience: 'direct_user' },
+      payload: {
+        content: '升级颜色为琥珀色，续订间隔 37 天。',
+        parts: [],
+        metadata: { status: 'completed' },
+        legacy: true,
+        phase: 'unknown',
+      },
+      occurred_at: '2026-08-27T13:47:35.453028Z',
+      persisted_at: '2026-08-27T13:47:35.453028Z',
+    };
+    const harness = makeHarness(terminalEnvelope);
+
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+
+    expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledWith(
+      'agent-1:session-1',
+      'run-5ab9b0a8',
+    );
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledWith('agent-1', 'session-1');
+    expect(harness.dependencies.reconcileSessionTranscript).toHaveBeenCalledWith('agent-1', 'session-1');
+    expect(harness.dependencies.fetchMySessions).toHaveBeenCalledWith(true, 'agent-1');
+    expect(harness.dependencies.setSessionPhase).toHaveBeenCalledWith('agent-1:session-1', 'done');
+    expect(harness.dependencies.syncActivePhase).toHaveBeenCalledWith('done');
+
+    // The invalidation above exists so the refetched workbench read model
+    // clears the stale running row. Connect that consumption in the same test:
+    // the pre-terminal snapshot is exactly what kept rendering 运行中, and the
+    // post-terminal refetch shape must leave the running state.
+    const stalePanel = buildSessionRightPanelModel({
+      messages: [],
+      sessionWorkbench: {
+        runtime_sections: {
+          runs: [
+            {
+              runtime_task_id: 'run-5ab9b0a8',
+              id: 'run-5ab9b0a8',
+              runtime_kind: 'runtime_task',
+              label: 'Web chat turn',
+              status: 'running',
+            },
+          ],
+        },
+      },
+    });
+    expect(stalePanel.runtimeConsole.summary.runningCount).toBe(1);
+    expect(stalePanel.runtimeConsole.summary.state).toBe('running');
+
+    const refreshedPanel = buildSessionRightPanelModel({
+      messages: [],
+      sessionWorkbench: {
+        runtime_sections: {
+          runs: [
+            {
+              runtime_task_id: 'run-5ab9b0a8',
+              id: 'run-5ab9b0a8',
+              runtime_kind: 'runtime_task',
+              label: 'Web chat turn',
+              status: 'completed',
+            },
+          ],
+        },
+      },
+    });
+    expect(refreshedPanel.runtimeConsole.summary.runningCount).toBe(0);
+    expect(refreshedPanel.runtimeConsole.summary.state).toBe('idle');
+    expect(refreshedPanel.runs.items[0]?.status).toBe('completed');
+  });
+
+  it('does not terminalize a native V2 assistant item completion mid-run', () => {
+    // Native V2 turns own run terminality through the run item lifecycle; a
+    // mid-run assistant message completing must not clear the active run.
+    const harness = makeHarness({
+      schema: 'hive.session_event',
+      schema_version: 2,
+      event_id: 'event-native-text',
+      sequence: 21,
+      item_id: 'assistant-text-1',
+      item_kind: 'assistant_text',
+      kind: 'assistant_text.completed',
+      lifecycle: 'completed',
+      payload_schema: 'hive.session.payload.assistant_text.completed.v2',
+      tenant_id: 'tenant-1',
+      scope: {
+        level: 'round',
+        session_id: 'session-1',
+        thread_id: 'session-1',
+        turn_id: 'turn-1',
+        run_id: 'run-native',
+        round_id: 'round-2',
+      },
+      actor: { type: 'assistant' },
+      visibility: { audience: 'direct_user' },
+      payload: { content: 'Interim synthesis before the next tool round.', phase: 'unknown' },
+      occurred_at: '2026-08-27T13:40:00Z',
+      persisted_at: '2026-08-27T13:40:00Z',
+    });
+
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+
+    expect(harness.dependencies.markActiveRunTerminal).not.toHaveBeenCalled();
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).not.toHaveBeenCalledWith('agent-1', 'session-1');
+    expect(harness.dependencies.reconcileSessionTranscript).not.toHaveBeenCalled();
+  });
+
+  it('maps failed and cancelled legacy assistant terminal lifecycles to their terminal phases', () => {
+    for (const lifecycle of ['failed', 'cancelled'] as const) {
+      const harness = makeHarness({
+        schema: 'hive.session_event',
+        schema_version: 2,
+        event_id: `event-assistant-${lifecycle}`,
+        sequence: 30,
+        item_id: `assistant-${lifecycle}-1`,
+        item_kind: 'assistant_final',
+        kind: `assistant_final.${lifecycle}`,
+        lifecycle,
+        payload_schema: `hive.session.payload.assistant_final.${lifecycle}.v2`,
+        tenant_id: 'tenant-1',
+        scope: {
+          level: 'round',
+          session_id: 'session-1',
+          thread_id: 'session-1',
+          turn_id: 'turn-1',
+          run_id: 'run-5ab9b0a8',
+          round_id: 'round-9',
+        },
+        actor: { type: 'assistant' },
+        visibility: { audience: 'direct_user' },
+        payload: { content: '', legacy: true, phase: 'final' },
+        occurred_at: '2026-08-27T13:47:35Z',
+        persisted_at: '2026-08-27T13:47:35Z',
+      });
+
+      projectSessionSocketEvent(harness.context, harness.dependencies);
+
+      expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledWith('agent-1:session-1', 'run-5ab9b0a8');
+      expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledWith('agent-1', 'session-1');
+      const expectedPhase = lifecycle === 'failed' ? 'failed' : 'cancelled';
+      expect(harness.dependencies.setSessionPhase).toHaveBeenCalledWith('agent-1:session-1', expectedPhase);
+    }
+  });
+
+  it('refreshes runtime read models when a raw legacy terminal transcript frame arrives', () => {
+    const harness = makeHarness({
+      sequence: 150,
+      event_type: 'assistant_message',
+      run_id: 'run-5ab9b0a8',
+      content: '升级颜色为琥珀色，续订间隔 37 天。',
+    });
+
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledWith('agent-1', 'session-1');
+    expect(harness.dependencies.fetchMySessions).toHaveBeenCalledWith(true, 'agent-1');
+  });
+
+  it('refreshes runtime read models when a compatibility terminal transcript event arrives', () => {
+    const harness = makeHarness({
+      schema: 'hive.session_event_compatibility',
+      schema_version: 1,
+      compatibility_status: 'needs_reconciliation',
+      reason: 'unprovable_scope',
+      event_id: 'legacy-terminal-1',
+      sequence: 60,
+      session_id: 'session-1',
+      run_id: 'run-5ab9b0a8',
+      legacy_event_type: 'assistant_message',
+      payload: { content: 'Reconciled final answer.', metadata: {} },
+    });
+
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledWith('agent-1', 'session-1');
+    expect(harness.dependencies.fetchMySessions).toHaveBeenCalledWith(true, 'agent-1');
   });
 
   it('closes a background session socket only after a terminal stream event is durably projected', () => {

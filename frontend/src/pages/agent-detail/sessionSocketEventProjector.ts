@@ -44,6 +44,28 @@ function terminalPhaseForRunLifecycle(lifecycle: string): RuntimePhase | null {
   return null;
 }
 
+/**
+ * The web-chat assistant_message finalizer settles the RuntimeTask and its
+ * transcript event is the turn's last canonical witness on the live tail —
+ * no run.completed item event follows on that path. Legacy-adapted envelopes
+ * carry the typed `payload.legacy` marker from the backend serializer, so the
+ * terminal assistant item itself must clear the active run and refresh the
+ * runtime read models (the right panel renders from them). Native V2 turns
+ * are excluded: their assistant items complete per message mid-run and run
+ * terminality is owned by the `run` item lifecycle.
+ */
+function isLegacyAssistantTerminalItem(itemKind: string, lifecycle: string, payload: Record<string, unknown>): boolean {
+  return itemKind.startsWith('assistant_')
+    && TERMINAL_RUN_LIFECYCLES.has(lifecycle)
+    && payload.legacy === true;
+}
+
+function scopeRunId(scope: unknown): string | null {
+  if (!scope || typeof scope !== 'object') return null;
+  const runId = (scope as { run_id?: unknown }).run_id;
+  return typeof runId === 'string' && runId.trim() ? runId : null;
+}
+
 export interface SessionSocketProjectionDependencies {
   applyTranscriptToSession: (
     agentId: string,
@@ -146,6 +168,20 @@ export function projectSessionSocketEvent(
       invalidateSessionRuntimeQueries(agentId, sessionId, false);
     } else if (RUNTIME_QUERY_EVENT_KINDS.has(itemKind)) {
       invalidateSessionRuntimeQueries(agentId, sessionId);
+    } else if (isLegacyAssistantTerminalItem(itemKind, lifecycle, payload)) {
+      // Turn-terminal witness of the legacy web-chat path: same contract as
+      // the terminal stream frame — clear the active run, refresh the runtime
+      // read models the right panel renders from, and reconcile the durable
+      // transcript so a lost canonical tail still projects without a reload.
+      const terminalPhase = terminalPhaseForRunLifecycle(lifecycle);
+      markActiveRunTerminal(key, scopeRunId(d.scope));
+      invalidateSessionRuntimeQueries(agentId, sessionId);
+      if (terminalPhase) {
+        setSessionPhase(key, terminalPhase);
+        if (isActiveRuntime) syncActivePhase(terminalPhase);
+      }
+      void fetchMySessions(true, agentId);
+      if (isActiveRuntime) dependencies.reconcileSessionTranscript(agentId, sessionId);
     }
     if (itemKind === 'run' && TERMINAL_RUN_LIFECYCLES.has(lifecycle)) {
       const terminalPhase = terminalPhaseForRunLifecycle(lifecycle);
@@ -170,6 +206,12 @@ export function projectSessionSocketEvent(
         : {},
     };
     applyTranscriptToSession(agentId, sessionId, transcriptEvent, isActiveRuntime);
+    // A terminal transcript event settles the turn on the durable plane; the
+    // runtime read models (right-panel run rows, runtime summary) must refresh
+    // with it — they are only refetched through explicit invalidation.
+    if (isTerminalRealtimeChatEvent(transcriptEvent)) {
+      invalidateSessionRuntimeQueries(agentId, sessionId);
+    }
     if (isActiveRuntime && isTerminalRealtimeChatEvent(transcriptEvent)) {
       void fetchMySessions(true, agentId);
     }
@@ -189,6 +231,9 @@ export function projectSessionSocketEvent(
       metadata: d.metadata || d.metadata_json || {},
     };
     applyTranscriptToSession(agentId, sessionId, transcriptEvent, isActiveRuntime);
+    if (isTerminalRealtimeChatEvent(transcriptEvent)) {
+      invalidateSessionRuntimeQueries(agentId, sessionId);
+    }
     if (isActiveRuntime && isTerminalRealtimeChatEvent(transcriptEvent)) {
       void fetchMySessions(true, agentId);
     }

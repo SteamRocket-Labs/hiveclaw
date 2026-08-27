@@ -1860,6 +1860,82 @@ review: commit 5f2da7ee changes only the vertical test and WIP; sessionSocketEve
 
 ---
 
+## 7.14 DAY1-KNOWLEDGE-UI-TRUTH-001 — Personal Knowledge 两条成功消费路径 PASS + 两个复现的 truthful-UI 缺陷（本地候选，未部署）
+
+### 生产事实（2026-08-27，signed-in Railway 生产，部署 HEAD `8c72f4c9`，只读观察）
+
+**两条成功 Personal Knowledge 消费路径，均 PASS（端到端真实消费：tool_search 选择器 → search_personal_kb → read_personal_kb → 事实进最终答案，全程 effect_committed/not_required）：**
+
+1. **Run1（PASS）**：session `b715f4be-44d9-4307-a3e3-3c371cd74da8`，task `ebaccd86-eb74-5e1b-93fc-eedd6607406c` completed。canonical 调用：`tool_search(select:search_personal_kb)`、`tool_search(select:read_personal_kb)`、`search_personal_kb(query=HIVE-PERSONAL-RUN1-QUARTZ-417, limit=5)`、`read_personal_kb(document=ab30fd09-b1c2-4451-86a1-6a7244cb7e9e, segment=e5a62664-a151-48b2-a322-efc42ae69299, 无 max_chars)`，全部 effect_committed/not_required。消费事实（来自该 segment，source_ref `kb://person/42778d4b-fa70-47c1-ad3a-15f7fcf5e8aa/documents/ab30fd09-b1c2-4451-86a1-6a7244cb7e9e#segment=e5a62664-a151-48b2-a322-efc42ae69299`）：escalation color teal、retention period 43 天。
+2. **Run2 fresh retry（PASS）**：session `752bf1ca-95a0-45c5-9ab9-e0506037ee62`，task `5ab9b0a8-1ebf-5969-a254-721db0aba1a1` completed `2026-08-27T13:47:35.453028Z`，terminal_reason `turn_stop`，terminal_commit_source `assistant_message_finalizer`，claim_version=1，attempt_count=1。调用：两个 tool_search 选择器、`search_personal_kb(query=HIVE-PERSONAL-RUN2-CEDAR-839, limit=5)`、`read_personal_kb(document=cf52b5c9-35e8-40bd-a089-67ee2443cae8, segment=e7f29349-cb65-478c-805d-fb13da82aab4, 无 max_chars)`，全部 effect_committed/not_required。消费事实：escalation color amber、renewal interval 37 天（source_ref `kb://person/42778d4b-fa70-47c1-ad3a-15f7fcf5e8aa/documents/cf52b5c9-35e8-40bd-a089-67ee2443cae8#segment=e7f29349-cb65-478c-805d-fb13da82aab4`）。最终 assistant_message event sequence 150 projected/completed。
+
+**Run2 第一次尝试（如实记录，非本包缺陷）**：session `ab323eb1-afaa-46b2-94df-e82eaed843e1`，task `e50e6816-d380-5867-aecf-569a2d9911cc`；四个 schema/search/read 调用全部 effect_committed/not_required；Round 4 final send settled `needs_reconciliation`，reason `ambiguous_provider_send`、error_class `unknown`、delivery_state `unknown`、retry_safe false，无自动重放。不发明 provider 根因、不称该失败为 transient（属 RC-10A 覆盖的 typed 基础设施状态）。
+
+**两个复现的 truthful-UI 缺陷（本地修复，未部署未生产复验）：**
+
+- **缺陷 A（Run1 重访 signed-in UI）**：持久显示「已处理 45s Searched web 1 time 11 个步骤」，但 canonical/DB 只有 tool_search 与 Personal KB 调用，无任何 web_search。
+- **缺陷 B（Run2 fresh retry，全程未 reload）**：主聊天显示「完成」与正确最终答案的同时，右侧 Session Workbench 持续显示「1 个运行中」+ strong「运行中」+ session「就绪」+ runtime 行「运行中」，直至 `2026-08-27T13:53:27Z`（canonical completed/projected 后 >5m52）未恢复。
+
+### 根因（当前 checkout 源码核实；两个消费侧机械缺陷）
+
+- **A — live 摘要分类器（`frontend/src/pages/agent-detail/chatDisclosureReducer.ts`）**：`SEARCH_TOOL_PREFIXES=['web_','search','firecrawl','xcrawl']` 前缀匹配把 `search_personal_kb`（以及 `search_memory`/`search_clawhub`）分类为 `kind:'search'`，`buildAggregateSummary` 将该 kind 计入「Searched web N times」。`tool_search`/`read_personal_kb` 本就不匹配前缀（不计入）；真实 `web_search` 仍计入。无自然语言启发式——修为对照 `backend/app/tools/handlers/search.py` 注册表的精确 allowlist（web_search/advanced_web_search/anysearch_search/anysearch_batch_search/exa_search/tavily_search/firecrawl_search）；前缀列表仅保留给步骤级 query/url 摘要显示（KB 查询词仍如实展示）。
+- **B — 终局 transcript 事件从不刷新运行读模型（`frontend/src/pages/agent-detail/sessionSocketEventProjector.ts`）**：web-chat 终局路径 `assistant_message_finalizer`（`backend/app/services/web_chat_runtime.py:3574-3611`）结算 RuntimeTask 后只追加 `assistant_message` transcript 事件，**该路径不产生 `run.completed` item 事件**；live tail 上它以后端 serializer 的 legacy 适配 canonical envelope（`payload.legacy=true`，scope 带 run_id）送达。projector canonical 分支只对 `itemKind==='run'` 终局与 `tool_result`/RUNTIME_QUERY_EVENT_KINDS 做失效，assistant 终局事件什么都不触发；`chat-session-workbench` 查询 `staleTime 60s`、`refetchOnWindowFocus:false`、仅靠显式失效刷新（`AgentChatSection.tsx:1608-1624`），于是右侧面板永远渲染 run 启动时（tool_result 失效时刻）的 running 快照。raw legacy（sequence+event_type）与 compatibility 两个分支对 `assistant_message` 终局也只 `fetchMySessions`，同样不失效。active-run 3s 轮询在返回非 live 后自停（`refetchInterval` 谓词基于上次 data），absence-reconcile 兜底因 `staleRuntimeState` 已被清而不触发——无 reload 即永不恢复。后端读模型本身真实（`_runtime_task_payload` 直读 `task.status`），纯前端接线缺陷。
+- **修复（同 seam 最小完整，复用既有 terminal stream frame 契约：markActiveRunTerminal + invalidateSessionRuntimeQueries + reconcileSessionTranscript）**：canonical 分支新增 `isLegacyAssistantTerminalItem`（`item_kind` assistant_* + terminal lifecycle + `payload.legacy===true` 的类型化机器标记）→ 终局四步（清 active run、全量失效、终局 phase、fetchMySessions + active-runtime reconcile）；两个 legacy 分支在 `isTerminalRealtimeChatEvent` 时补 `invalidateSessionRuntimeQueries`。native V2 assistant item 中途 completed 不触发（负向回归钉死）——其 run 终局仍由 `run` item 拥有。保留 DAY1-LIVE-TAIL-001 canonical replay/normalization 与 rejected-Promise containment（reconcile 仍走 `reconcileSessionTranscriptSafely`）。无 reload/timer/轮询/字符串启发式。
+
+### RED（实现前，当前 checkout 实测）
+
+```
+cd frontend && NODE_OPTIONS=--no-experimental-webstorage npx vitest run \
+  src/pages/agent-detail/chatDisclosureReducer.test.ts src/pages/agent-detail/sessionSocketEventProjector.test.ts
+→ Tests 6 failed | 39 passed (45)
+  × never counts Personal KB discovery/search reads as web search (DAY1-KNOWLEDGE-UI-TRUTH-001) — AssertionError: expected 'Searched web 1 time' to be undefined
+  × still counts a real web_search call next to tool discovery and Personal KB reads — AssertionError: expected 'Searched web 2 times' to be 'Searched web 1 time'
+  × clears the active run and runtime read models when the legacy-adapted canonical assistant terminal arrives (DAY1-KNOWLEDGE-UI-TRUTH-001) — markActiveRunTerminal 0 calls
+  × maps failed and cancelled legacy assistant terminal lifecycles to their terminal phases — markActiveRunTerminal 0 calls
+  × refreshes runtime read models when a raw legacy terminal transcript frame arrives — invalidateSessionRuntimeQueries 0 calls
+  × refreshes runtime read models when a compatibility terminal transcript event arrives — invalidateSessionRuntimeQueries 0 calls
+```
+
+缺陷 B 链路测试在同一用例内连接真实终局触发与下游消费：projector 断言（删掉终局处理即失败）+ `buildSessionRightPanelModel` 消费断言（stale running 快照 runningCount=1/state=running → 终局后 refetch 形态 runningCount=0/state=idle/行 completed；删掉读模型派生即失败）。
+
+### GREEN（当前 checkout 实测）
+
+```
+同命令 → Tests 45 passed (45)
+npx vitest run src/pages/agent-detail/ src/pages/session-workbench/ → 53 files / 525 tests passed
+npm run build（tsc + vite）→ 通过；AgentDetail bundle 351683/380000、gzip 97100/115000；vendor 591449/620000、gzip 186474/200000 预算全过
+NODE_OPTIONS=--no-experimental-webstorage npx vitest run（frontend/ 全量）→ 145 files / 930 tests passed
+```
+
+无后端改动（后端读模型已核真实）；预算/断言零削弱。
+
+### Changed files（本包）
+
+- `frontend/src/pages/agent-detail/chatDisclosureReducer.ts`（缺陷 A：WEB_SEARCH_TOOL_NAMES 精确 allowlist）
+- `frontend/src/pages/agent-detail/chatDisclosureReducer.test.ts`（缺陷 A RED→GREEN）
+- `frontend/src/pages/agent-detail/sessionSocketEventProjector.ts`（缺陷 B：终局 transcript 见证的三形态接线）
+- `frontend/src/pages/agent-detail/sessionSocketEventProjector.test.ts`（缺陷 B RED→GREEN + native V2 负向守护 + 读模型消费链路）
+- 本 WIP 文档。
+
+### 七原子
+
+- **输入**：canonical V2 transcript envelope（WS live tail，生产形态复刻）与 tool_call 消息（生产 Run1 四调用复刻）。
+- **权威**：既有 session 订阅鉴权与 agent-detail 读路径；无新权限面。
+- **执行**：唯一入口 `projectSessionSocketEvent`（三形态终局）与 `buildRunTimelineFromMessages`（分类）；无旁路。
+- **证据**：RED/GREEN 输出如上；生产事实引 canonical session/task/invocation 与精确 source_ref。
+- **恢复**：终局见证补齐 reconcile 触发（沿用 rejected-Promise containment）；无状态新增。
+- **消费**：右侧 Session Workbench（`buildSessionRightPanelModel`→`SessionRuntimePanel`）与 run disclosure 摘要为真实消费方，链路测试直连。
+- **验收**：6 RED→GREEN + 负向守护；定向 53 files/525、全量 145 files/930、tsc+build 预算全过。
+
+### 残余风险与精确边界
+
+- **本地候选，未部署**：两个 UI 修复需随三服务部署后 signed-in 生产 retest 方可转 Closed；本节仅记本地 RED→GREEN。
+- 两条 Personal Knowledge 成功消费路径 PASS 为生产事实（消费/引用/事实核验成立），不因 UI 缺陷降级——缺陷 A/B 分别是展示计数与读模型刷新问题，不影响 canonical 证据与事实正确性。
+- Run2 第一次尝试的 `ambiguous_provider_send` typed 状态语义未动（不发明根因、不自动重放）；Run1/Run2 的合成 KB 文档与 session/task 资产沿用 owner 门控清理登记（本节不新增删除动作）。
+- native V2 run 终局仍由 `run` item 事件拥有（本包不改变该语义）；若未来有第三种终局 transcript 形态，需在 projector 同 seam 显式登记而非字符串匹配内容。
+
+---
+
 
 ## 8. 两个工作日的执行节奏
 
@@ -2078,3 +2154,4 @@ owner 已过稿并明确说“开始”。先提交本文件作为恢复点；�
 - [x] DAY1-LIVE-TAIL-001 follow-up 3（Codex review correction：terminal trigger 与 durable replay 断接，2026-08-27）已按原子 correction 完成：finding = `sessionReconcileToolProjection.test.ts` 原结构 `reconcileSessionTranscript` 为空 `vi.fn`、projector 断言后手工另跑 `LOST_TAIL.forEach(consume)`，两段断接任删其一测试仍绿，「垂直贯穿/零 mock 掩盖」为过度声明。correction = 只改测试与 WIP、零生产逻辑改动：store/visible/consume 真实回放 closure 建在 projector 之前并先 `consume(LIVE_INPUT_ACCEPTED)`；boundary dependencies 保持 `vi.fn` spy（仅断言调用次数/参数），reconcile callback 实现真实执行 `LOST_TAIL.forEach(consume)`——projector 终局 trigger 直接驱动 canonical durable replay，projector 之后不再手工另跑 LOST_TAIL；真实 canonical payload、hr_preview identity/raw/renderability、terminal answer、invalidate/markTerminal 断言全部保留（reconcile 另加 `toHaveBeenCalledTimes(1)`）。falsifiability evidence：Probe A 实测（临时删除 projector 终局 trigger → focused 如预期失败 `expected "vi.fn()" to be called 1 times, but got 0 times` → 立即 `git checkout` 恢复，生产文件零净改动）；Probe B 未执行实测、仅按结构推理（callback 不驱动 replay 时 visible 仅余 1 行，全部卡片断言必失败）。GREEN：focused 1 passed、agent-detail 43 files/445、AgentDetail.test 9、`tsc --noEmit` exit 0、`git diff --check` clean；commit 见 git log。不处理其他 finding。
 - [x] 上述 follow-up 3 不改变 DAY1-LIVE-TAIL-001 终态：signed-in 生产 no-reload retest 已于 2026-08-27 完成（Attempt 1 typed ambiguous-provider-send observation/state（不计 PASS/FAIL）、随后 explicit fresh-session retry PASS），bounded 包已 Closed（见 §7.13 retest 小节）；余项仅 owner 门控合成资产清理；RC-03/Knowledge/A2A/aggregate Day1 保持 open。
 - [x] DAY1-LIVE-TAIL-001 三服务同 HEAD 生产部署已完成（2026-08-27，三服务全 SUCCESS）：部署源精确 committed HEAD `8c72f4c9be25077b1bcf03981f658dbd9a7d0423`，Railway production project `dd959a13-19f9-497a-9704-42c310eae230`，environment production；backend deployment `57daf4ac-58ce-45a9-a2aa-3a9d1bf3a685`（cliMessage `deploy Day1 terminal reconcile production archive-root 8c72f4c9`，digest `sha256:377e9904bab22b62b03e85969ebc693387c20cba5802333ac1400dad7e63ed22`）/ backend-api `244a7739-73aa-4bb2-82ee-31babe6a4ee1`（cliMessage `deploy Day1 terminal reconcile backend-api 8c72f4c9`，digest `sha256:3f39aa4c3933e0a30d5a84cfbddbcf3b5d67dcbc7fea84cc0b53ae9c9de320f3`）/ frontend `be86f0ca-a4d8-4a33-bbb1-5ae45f050501`（cliMessage `deploy Day1 terminal reconcile frontend 8c72f4c9`，digest `sha256:d7a909458d50a1f643c1a8ffd20c9d2e9f0d9facc0c7acf1fab81b595eabb1a0`）均 SUCCESS；最终 backend `/api/health` HTTP 200（status ok、version 1.7.0、vercel_sandbox 探针 deny-all/denied/round-trip 通过、evolution/trigger/workflow/sandbox-probe daemon healthy、RLS `app_rls` strict 无 violations、runtime task worker 与 web-chat stream forwarder running），frontend 根 `curl -I` HTTP 200；backend rollout 期 health 一度 502 为 DEPLOYING 切换期 transient 观测（日志为正常 migration/readiness/startup、相对前一部署 `229f56b5` 无 backend source diff，最终 SUCCESS + health 200——如实记录、非未决缺陷）。证据见 §7.13 部署证据小节。**仅证明部署新鲜度与健康：signed-in 生产 no-reload retest 未执行、Knowledge/A2A 生产验收未执行、合成资产清理保持 owner 门控；包保持未 Closed，RC-03/Day1 保持 open。**（2026-08-27 更新：signed-in 生产 no-reload retest 随后已执行——Attempt 1 typed ambiguous-provider-send observation/state（不计 PASS/FAIL）、随后 explicit fresh-session retry PASS，DAY1-LIVE-TAIL-001 bounded 包转 Closed，证据见 §7.13 retest 小节；合成资产清理保持 owner 门控（新增 retest 资产已登记），Knowledge/A2A 生产验收未执行，RC-03/Day1 保持 open。）
+- [x] DAY1-KNOWLEDGE-UI-TRUTH-001（Personal Knowledge 两条成功消费路径 PASS + 两个 truthful-UI 缺陷，2026-08-27 生产观察于部署 HEAD `8c72f4c9`）本地代码 + failing-first 测试 + 本地验证 + WIP 证据已完成：**两条成功 Personal Knowledge 消费路径 PASS 为生产事实**（Run1 session `b715f4be…`/task `ebaccd86…` 与 Run2 fresh retry session `752bf1ca…`/task `5ab9b0a8…`，各自 tool_search 选择器×2 → `search_personal_kb`（精确 marker QUARTZ-417/CEDAR-839, limit 5）→ `read_personal_kb`（精确 document/segment、无 max_chars）→ 事实进最终答案（teal/43 天；amber/37 天），全程 effect_committed/not_required，Run2 终局 `turn_stop`/`assistant_message_finalizer`/seq 150）；Run2 第一次尝试 `ambiguous_provider_send`（error_class/delivery_state=unknown、retry_safe false、无自动重放）如实记录、不发明根因、非本包缺陷。两个 UI 缺陷本地修复（未部署）：A=摘要分类器 `SEARCH_TOOL_PREFIXES` 的 `search` 前缀把 `search_personal_kb` 计入「Searched web」→ 修为对照后端注册表的 `WEB_SEARCH_TOOL_NAMES` 精确 allowlist（`tool_search`/`read_personal_kb` 本不计入；真实 `web_search` 仍计入；KB 查询词展示保留）；B=web-chat 终局路径不产生 `run.completed` item 事件，assistant 终局 transcript 事件在 projector 三形态（canonical legacy 适配/raw legacy/compatibility）下均不失效运行读模型，而 `chat-session-workbench` 仅靠显式失效刷新 → 不 reload 右侧面板永久 running → 修为同 seam 终局四步契约（markActiveRunTerminal+全量失效+终局 phase+fetchMySessions+active-runtime reconcile，`payload.legacy` 类型化判据，native V2 中途 assistant completed 负向钉死；DAY1-LIVE-TAIL-001 replay/normalization 与 rejected-Promise containment 保持）。RED 6 failed / 39 passed → GREEN focused 45、agent-detail+session-workbench 53 files/525、`npm run build` tsc+vite 预算全过、全量 145 files/930；证据见 §7.14。**UI 修复为本地候选：未部署、未生产 retest，包未 Closed；不宣称 Knowledge/Day1 完成。**

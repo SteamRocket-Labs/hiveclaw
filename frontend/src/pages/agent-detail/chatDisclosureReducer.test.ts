@@ -394,6 +394,76 @@ describe('chatDisclosureReducer', () => {
     expect(timeline.summary).toBe('Read 2 files · Searched web 1 time');
   });
 
+  it('never counts Personal KB discovery/search reads as web search (DAY1-KNOWLEDGE-UI-TRUTH-001)', () => {
+    // Production Run1 shape: two tool_search selectors plus one Personal KB
+    // search and one Personal KB read. No web_search ran, so the aggregate
+    // summary must not claim any web search.
+    const timeline = buildRunTimelineFromMessages([
+      {
+        role: 'tool_call',
+        content: '',
+        toolName: 'tool_search',
+        toolArgs: { query: 'select:search_personal_kb' },
+        toolStatus: 'done',
+      },
+      {
+        role: 'tool_call',
+        content: '',
+        toolName: 'tool_search',
+        toolArgs: { query: 'select:read_personal_kb' },
+        toolStatus: 'done',
+      },
+      {
+        role: 'tool_call',
+        content: '',
+        toolName: 'search_personal_kb',
+        toolArgs: { query: 'HIVE-PERSONAL-RUN1-QUARTZ-417', limit: 5 },
+        toolStatus: 'done',
+      },
+      {
+        role: 'tool_call',
+        content: '',
+        toolName: 'read_personal_kb',
+        toolArgs: { document_id: 'ab30fd09-b1c2-4451-86a1-6a7244cb7e9e', segment_id: 'e5a62664-a151-48b2-a322-efc42ae69299' },
+        toolStatus: 'done',
+      },
+    ]);
+
+    expect(timeline.summary).toBeUndefined();
+    const kbSearchStep = timeline.steps.find((step) => step.title === 'search_personal_kb');
+    expect(kbSearchStep?.kind).toBe('tool');
+    // The step-level display still surfaces the KB query it ran.
+    expect(kbSearchStep?.summary).toBe('HIVE-PERSONAL-RUN1-QUARTZ-417');
+  });
+
+  it('still counts a real web_search call next to tool discovery and Personal KB reads', () => {
+    const timeline = buildRunTimelineFromMessages([
+      {
+        role: 'tool_call',
+        content: '',
+        toolName: 'tool_search',
+        toolArgs: { query: 'select:search_personal_kb' },
+        toolStatus: 'done',
+      },
+      {
+        role: 'tool_call',
+        content: '',
+        toolName: 'search_personal_kb',
+        toolArgs: { query: 'HIVE-PERSONAL-RUN2-CEDAR-839', limit: 5 },
+        toolStatus: 'done',
+      },
+      {
+        role: 'tool_call',
+        content: '',
+        toolName: 'web_search',
+        toolArgs: { query: 'quartz escalation color policy' },
+        toolStatus: 'done',
+      },
+    ]);
+
+    expect(timeline.summary).toBe('Searched web 1 time');
+  });
+
   it('summarizes tool discovery without exposing raw select queries', () => {
     const timeline = buildRunTimelineFromMessages([
       {

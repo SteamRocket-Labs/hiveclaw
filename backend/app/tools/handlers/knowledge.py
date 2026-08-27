@@ -445,6 +445,7 @@ async def search_company_kb(request: ToolExecutionRequest) -> str:
                 },
             },
             "anyOf": [{"required": ["document_id"]}, {"required": ["publication_id"]}],
+            "additionalProperties": False,
         },
         category="knowledge",
         pack="company_knowledge_pack",

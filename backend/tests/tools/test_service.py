@@ -1265,6 +1265,59 @@ async def test_tool_runtime_service_blocks_hook_modified_args_that_violate_schem
 
 
 @pytest.mark.asyncio
+async def test_tool_runtime_service_rejects_read_company_kb_singular_segment_id_before_execution():
+    from app.tools.governance import ToolGovernanceContext
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+        session_id="session-1",
+    )
+    governance_context = ToolGovernanceContext(
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        tenant_id=context.tenant_id,
+        tool_name="read_company_kb",
+        arguments={},
+    )
+    governance_resolver = _FakeGovernanceResolver(governance_context, SimpleNamespace())
+    registry = _FakeRegistry("SHOULD_NOT_RUN")
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=governance_resolver,
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+    )
+
+    # Production regression (Company KB Run1/Run2, 2026-08-27): the singular
+    # "segment_id" typo must be rejected by the schema admission gate before
+    # governance, the handler, or the knowledge gateway run, with an actionable
+    # schema-repair error instead of a silent full-document read.
+    result = await service.execute(
+        "read_company_kb",
+        {"document_id": str(uuid4()), "segment_id": str(uuid4())},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+    )
+
+    assert "<tool_error>" in result
+    assert "invalid_tool_arguments" in result
+    assert "segment_id" in result
+    assert "Re-read the tool schema" in result
+    assert governance_resolver.context_calls == []
+    assert registry.calls == []
+
+
+@pytest.mark.asyncio
 async def test_tool_runtime_service_threads_session_permission_context_into_delegation():
     from app.runtime.ccplus_contracts import PermissionMode, PermissionProfileV1
     from app.tools.governance import ToolGovernanceContext

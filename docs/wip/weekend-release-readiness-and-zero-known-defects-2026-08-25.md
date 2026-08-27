@@ -1948,6 +1948,87 @@ Codex 独立 review commit `b404e160`（fix(day1): make knowledge run UI truth f
 
 ---
 
+## 7.15 DAY1-COMPANY-KB-ARG-CONTRACT-001 — read_company_kb 根 schema 缺 `additionalProperties:false`，singular `segment_id` 打字误被 admission gate 放行（本地候选，未部署）
+
+### 生产事实（2026-08-27，signed-in Rocky lab，部署 HEAD `8c72f4c9`，只读观察）
+
+**两轮 Company Knowledge Agent 消费均端到端成功（searched → read → explained → cited → 最终答案陈述真实事实），消费能力本身 PASS：**
+
+1. **Run1（消费 PASS，契约缺陷同现）**：session `660043b3-f73b-49b4-b84f-d234611e1691`，task `23115c44-4425-5fdf-b277-380e7acd79ad`。模型成功检索、阅读、解释来源、引用并回答真实事实。
+2. **Run2 fresh retry（消费 PASS，契约缺陷同现）**：session `6ee89d94-3cb6-4e54-9102-efbc93e8e38f`，task `1b9e3239-a9c6-592b-a108-ac50d98e1521`。同样成功完成全部消费与事实回答。
+
+**两轮共同复现的机器契约缺陷（本包对象）**：模型两次以未知的单数键 `segment_id` 调用 `read_company_kb`，而发布的 schema 只定义复数 `segment_ids` 数组。`backend/app/tools/handlers/knowledge.py` 的 `read_company_kb` 根 schema 缺 `additionalProperties:false`，live ToolService 参数校验（`backend/app/tools/validation.py` 仅在 `additionalProperties is False` 时拒绝未知键）放行了该打字误；handler 只读取已知键、忽略未知字段，于是返回了该文档全部五个 segments（仍受 `max_chars` 常规上限约束）。**事实真实，但模型声称的 exact-segment 读取是假的**——claimed precision 失真，属 truthful-contract 缺陷而非数据泄露。
+
+### 根因（当前 checkout 源码核实，最早共享机器契约成因）
+
+- **Schema 缺口（唯一生产改动点）**：`read_company_kb` 的 `ToolMeta.parameters` 根对象有 `document_id`/`publication_id`/`segment_ids`/`max_chars` 四属性与 `anyOf:[document_id|publication_id]` 必选约束，但无 `additionalProperties:false`——同文件 `search_company_kb` 的 `filters` 子 schema（knowledge.py:328）已带该约束，`company_ontology`/`workflow`/`context_resources` 的根级 strict schema 均已生产验证，唯独此工具根 schema 漏配。
+- **Validator 行为（共享、勿平行重建）**：`backend/app/tools/validation.py::validate_tool_arguments` → `_validate_schema` 只在 `schema.get("additionalProperties") is False` 时对未知键产 `$.<key> is not allowed`（validation.py:65-68）；schema 未声明则未知键静默通过。
+- **Live 入口（两道共享 gate，均在 handler/gateway 之前）**：`backend/app/tools/service.py` `_validate_tool_arguments_block`（service.py:398-409，`render_tool_error(error_class="invalid_tool_arguments", provider="ccplus_validate_input", retryable=False, actionable_hint="Re-read the tool schema and rebuild the arguments object before retrying.")`）接线于 ① `ToolRuntimeService.execute_with_context`（service.py:1228，先于 `ToolExecutionRequest` 构造与 registry 分发）与 ② execution pipeline `validate_arguments` port（`_apply_hooks_and_assets`，execution_pipeline.py:576——hook 改写参数之后的匹配 admission gate，先于 `_apply_governance` 与 `_execute_tool`）。
+- **修复（最小完整，单行）**：`read_company_kb` 根 schema 增加 `"additionalProperties": False`。复用既有共享 validator 与既有 typed `invalid_tool_arguments` repair result，**不发明平行 validator、不静默纠偏单数 `segment_id`**——模型按发布 schema 自行修复参数后重试（CC 式 repair 语义）。合法 `segment_ids` 数组路径保持 green。
+
+### 权威与 principal 安全（明确核验，零削弱）
+
+- Principal 推导零改动：`_company_kb_runtime_principal` 仍从认证执行帧（tenant/user/agent/delegation）推导，工具参数无法改变。
+- 既有 direct handler 测试 `test_company_search_and_read_tools_derive_principal_from_runtime_not_arguments`（`tests/tools/test_company_knowledge_tool.py`，含伪造 `accountable_user_id`/tenant 键不控制 principal 的断言）**原样保持 green**——handler 层 forged-identity 不变量不受影响；admission 层现在额外拒绝未知键，是该不变量的**加强**而非削弱。
+- 注入安全核验：`_inject_runtime_context_arguments` 仅触及 `set_trigger`/`schedule_wakeup`/`delegate_to_agent`/`send_message_to_agent`；`read_company_kb` 无 `plan_gate_action_kind`（`_plan_mode_gate_block` 对无 action_kind 工具直接短路），永不接收 `_plan_authorization` 注入——strict schema 与 runtime 注入无冲突（`start_workflow` 根级 strict schema + plan-gate 组合已生产验证同构）。
+
+### RED（实现前，当前 checkout 实测）
+
+```
+cd backend && .venv/bin/python -m pytest \
+  tests/tools/test_company_knowledge_tool.py::test_read_company_kb_schema_rejects_unknown_singular_segment_id_argument \
+  tests/tools/test_company_knowledge_tool.py::test_read_company_kb_schema_accepts_published_segment_ids_array \
+  tests/tools/test_service.py::test_tool_runtime_service_rejects_read_company_kb_singular_segment_id_before_execution -q
+→ 2 failed, 1 passed
+  × test_read_company_kb_schema_rejects_unknown_singular_segment_id_argument
+    — assert False（validator 对 singular segment_id 返回空错误列表，即 schema 放行打字误）
+  × test_tool_runtime_service_rejects_read_company_kb_singular_segment_id_before_execution
+    — AssertionError: assert '<tool_error>' in 'SHOULD_NOT_RUN'（坏调用穿透 admission gate，handler/gateway 真实执行——生产缺陷本地复现）
+  ✓ test_read_company_kb_schema_accepts_published_segment_ids_array（合法 segment_ids 数组路径修复前即 green，基线钉死）
+```
+
+### GREEN（当前 checkout 实测）
+
+```
+同命令 → 3 passed
+.venv/bin/python -m pytest tests/tools/test_company_knowledge_tool.py tests/tools/test_service.py -q → 72 passed
+  （含 forged-identity handler 不变量测试原样 green）
+.venv/bin/python -m pytest tests/tools/ -q → 663 passed
+.venv/bin/python -m pytest tests/services/test_company_knowledge_contracts.py \
+  tests/services/test_company_knowledge_control_plane.py tests/services/test_company_knowledge_evidence.py \
+  tests/services/test_company_knowledge_permissions.py tests/services/test_company_knowledge_service.py \
+  tests/services/test_knowledge_provenance.py tests/services/test_evolution_daemon_company_knowledge.py -q → 63 passed
+.venv/bin/ruff check app/tools/handlers/knowledge.py → All checks passed
+```
+
+生产代码改动 = 1 行（schema 标志）；其余为测试与本文档。预算/断言零削弱。
+
+### Changed files（本包）
+
+- `backend/app/tools/handlers/knowledge.py`（read_company_kb 根 schema `additionalProperties: False` 单行）
+- `backend/tests/tools/test_company_knowledge_tool.py`（schema 级 RED→GREEN ×2：未知单数键拒绝 + 合法数组/anyOf 必选基线）
+- `backend/tests/tools/test_service.py`（runtime admission RED→GREEN：坏调用在 governance/registry/handler/gateway 之前被 typed `invalid_tool_arguments` + actionable hint 拒绝）
+- 本 WIP 文档。
+
+### 七原子
+
+- **输入**：模型 authored 的 `read_company_kb` 参数对象；发布 schema 即边界机器契约，未知键现为 typed 拒绝并附 repair hint（模型可修复重试，输入可恢复）。
+- **权威**：principal 仍由认证执行帧推导（`_company_kb_runtime_principal`），零改动；forged-identity 参数在 handler 层本就不控制 principal（既有测试 green），admission 层现在额外拒绝未知键（加强）。
+- **执行**：唯一 admission seam = 共享 `validate_tool_arguments` 经 `_validate_tool_arguments_block` 接线于两道 live gate（service.py:1228 与 pipeline:576）；无平行 validator、无旁路。
+- **证据**：RED/GREEN 输出如上；生产事实引 Run1/Run2 精确 session/task。
+- **恢复**：typed `invalid_tool_arguments`（retryable=false + actionable_hint）→ 模型按 schema 重建参数重试；无静默纠偏、无语义改写。
+- **消费**：`read_company_kb` 为 Company Knowledge 运行的真实 agent 工具消费面；schema 经 collector 同步发布给模型，上游契约可见。
+- **验收**：failing-first RED 2 failed（穿透复现）→ GREEN focused 3、tools 双文件 72、`tests/tools/` 全量 663、company knowledge service 63、ruff 通过。
+
+### 残余风险与精确边界
+
+- **本地候选，未部署**：本包基于本地 HEAD（`eb5f6e7f` 之上）的原子提交，未 push；生产仍运行 `8c72f4c9` 系部署，生产行为未变。
+- **生产 retest open**：需随三服务部署后 signed-in 生产复测（复刻 Run1/Run2 场景，验证模型改用 `segment_ids` 数组、或收到 typed schema-repair 错误后自修复并完成真实 exact-segment 读取）方可转 Closed。
+- Run1/Run2 的「事实真实、消费成功」为生产事实，不因本缺陷降级；被修复的是未来同形调用的契约真实性。既有两 session/task 生产资产不清理（owner 门控，沿用登记惯例）。
+- 不处理其他 Company KB / Day 1 事项（agent-tool citation 消费、retire/restore、第二遍 clean pass、A2A 仍 pending）；不宣称 RC-02/Company Knowledge/Day 1 Closed。
+
+---
+
 
 ## 8. 两个工作日的执行节奏
 
@@ -2167,3 +2248,4 @@ owner 已过稿并明确说“开始”。先提交本文件作为恢复点；�
 - [x] 上述 follow-up 3 不改变 DAY1-LIVE-TAIL-001 终态：signed-in 生产 no-reload retest 已于 2026-08-27 完成（Attempt 1 typed ambiguous-provider-send observation/state（不计 PASS/FAIL）、随后 explicit fresh-session retry PASS），bounded 包已 Closed（见 §7.13 retest 小节）；余项仅 owner 门控合成资产清理；RC-03/Knowledge/A2A/aggregate Day1 保持 open。
 - [x] DAY1-LIVE-TAIL-001 三服务同 HEAD 生产部署已完成（2026-08-27，三服务全 SUCCESS）：部署源精确 committed HEAD `8c72f4c9be25077b1bcf03981f658dbd9a7d0423`，Railway production project `dd959a13-19f9-497a-9704-42c310eae230`，environment production；backend deployment `57daf4ac-58ce-45a9-a2aa-3a9d1bf3a685`（cliMessage `deploy Day1 terminal reconcile production archive-root 8c72f4c9`，digest `sha256:377e9904bab22b62b03e85969ebc693387c20cba5802333ac1400dad7e63ed22`）/ backend-api `244a7739-73aa-4bb2-82ee-31babe6a4ee1`（cliMessage `deploy Day1 terminal reconcile backend-api 8c72f4c9`，digest `sha256:3f39aa4c3933e0a30d5a84cfbddbcf3b5d67dcbc7fea84cc0b53ae9c9de320f3`）/ frontend `be86f0ca-a4d8-4a33-bbb1-5ae45f050501`（cliMessage `deploy Day1 terminal reconcile frontend 8c72f4c9`，digest `sha256:d7a909458d50a1f643c1a8ffd20c9d2e9f0d9facc0c7acf1fab81b595eabb1a0`）均 SUCCESS；最终 backend `/api/health` HTTP 200（status ok、version 1.7.0、vercel_sandbox 探针 deny-all/denied/round-trip 通过、evolution/trigger/workflow/sandbox-probe daemon healthy、RLS `app_rls` strict 无 violations、runtime task worker 与 web-chat stream forwarder running），frontend 根 `curl -I` HTTP 200；backend rollout 期 health 一度 502 为 DEPLOYING 切换期 transient 观测（日志为正常 migration/readiness/startup、相对前一部署 `229f56b5` 无 backend source diff，最终 SUCCESS + health 200——如实记录、非未决缺陷）。证据见 §7.13 部署证据小节。**仅证明部署新鲜度与健康：signed-in 生产 no-reload retest 未执行、Knowledge/A2A 生产验收未执行、合成资产清理保持 owner 门控；包保持未 Closed，RC-03/Day1 保持 open。**（2026-08-27 更新：signed-in 生产 no-reload retest 随后已执行——Attempt 1 typed ambiguous-provider-send observation/state（不计 PASS/FAIL）、随后 explicit fresh-session retry PASS，DAY1-LIVE-TAIL-001 bounded 包转 Closed，证据见 §7.13 retest 小节；合成资产清理保持 owner 门控（新增 retest 资产已登记），Knowledge/A2A 生产验收未执行，RC-03/Day1 保持 open。）
 - [x] DAY1-KNOWLEDGE-UI-TRUTH-001（Personal Knowledge 两条成功消费路径 PASS + 两个 truthful-UI 缺陷，2026-08-27 生产观察于部署 HEAD `8c72f4c9`）本地代码 + failing-first 测试 + 本地验证 + WIP 证据已完成：**两条成功 Personal Knowledge 消费路径 PASS 为生产事实**（Run1 session `b715f4be…`/task `ebaccd86…` 与 Run2 fresh retry session `752bf1ca…`/task `5ab9b0a8…`，各自 tool_search 选择器×2 → `search_personal_kb`（精确 marker QUARTZ-417/CEDAR-839, limit 5）→ `read_personal_kb`（精确 document/segment、无 max_chars）→ 事实进最终答案（teal/43 天；amber/37 天），全程 effect_committed/not_required，Run2 终局 `turn_stop`/`assistant_message_finalizer`/seq 150）；Run2 第一次尝试 `ambiguous_provider_send`（error_class/delivery_state=unknown、retry_safe false、无自动重放）如实记录、不发明根因、非本包缺陷。两个 UI 缺陷本地修复（未部署）：A=摘要分类器 `SEARCH_TOOL_PREFIXES` 的 `search` 前缀把 `search_personal_kb` 计入「Searched web」→ 修为对照后端注册表的 `WEB_SEARCH_TOOL_NAMES` 精确 allowlist（`tool_search`/`read_personal_kb` 本不计入；真实 `web_search` 仍计入；KB 查询词展示保留）；B=web-chat 终局路径不产生 `run.completed` item 事件，assistant 终局 transcript 事件在 projector 三形态（canonical legacy 适配/raw legacy/compatibility）下均不失效运行读模型，而 `chat-session-workbench` 仅靠显式失效刷新 → 不 reload 右侧面板永久 running → 修为同 seam 终局四步契约（markActiveRunTerminal+全量失效+终局 phase+fetchMySessions+active-runtime reconcile，`payload.legacy` 类型化判据，native V2 中途 assistant completed 负向钉死；DAY1-LIVE-TAIL-001 replay/normalization 与 rejected-Promise containment 保持）。RED 6 failed / 39 passed → GREEN focused 45、agent-detail+session-workbench 53 files/525、`npm run build` tsc+vite 预算全过、全量 145 files/930；证据见 §7.14。**UI 修复为本地候选：未部署、未生产 retest，包未 Closed；不宣称 Knowledge/Day1 完成。**
+- [x] DAY1-COMPANY-KB-ARG-CONTRACT-001（Company KB Run1/Run2 生产发现：`read_company_kb` 根 schema 缺 `additionalProperties:false`，模型以未知单数键 `segment_id` 调用被 live ToolService 校验放行、handler 忽略未知键读了全部五个 segments——事实真实但 exact-segment read 声明失真；Run1 session `660043b3…`/task `23115c44…`、Run2 session `6ee89d94…`/task `1b9e3239…`，两轮消费本身均 PASS，2026-08-27 生产观察于部署 HEAD `8c72f4c9`）本地代码 + failing-first 测试 + 本地验证 + WIP 证据已完成：修复 = `read_company_kb` 根 schema 单行 `"additionalProperties": False`（复用共享 `validate_tool_arguments` 与既有 typed `invalid_tool_arguments` repair result，两道 live admission gate——service.py:1228 与 execution_pipeline.py:576——均在 governance/handler/gateway 之前；无平行 validator、无单数键静默纠偏；合法 `segment_ids` 数组路径保持 green）；principal 推导零改动（forged-identity direct handler 测试 `test_company_search_and_read_tools_derive_principal_from_runtime_not_arguments` 原样 green，admission 层拒绝未知键为加强非削弱；runtime 参数注入/plan-gate 注入经源码核验不触及该工具）。RED 2 failed（validator 对打字误返回空错误列表；`SHOULD_NOT_RUN` 即坏调用穿透到 handler 真实执行）→ GREEN focused 3 passed、tools 双文件 72、`tests/tools/` 全量 663、company knowledge service 7 文件 63、ruff 通过，证据见 §7.15。**本地候选：未 push、未部署、未生产 retest，包未 Closed（待三服务部署后 signed-in 生产复测：模型改用 `segment_ids` 数组或收到 typed schema-repair 错误后自修复）；不宣称 Company Knowledge/Day 1 完成。**

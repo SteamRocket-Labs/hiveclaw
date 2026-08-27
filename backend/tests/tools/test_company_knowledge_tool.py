@@ -147,6 +147,40 @@ def test_company_knowledge_tools_are_collected_and_not_admin_tools() -> None:
     )
 
 
+def test_read_company_kb_schema_rejects_unknown_singular_segment_id_argument() -> None:
+    from app.tools.validation import validate_tool_arguments
+
+    # Production regression (Run1 session 660043b3 / Run2 session 6ee89d94, 2026-08-27):
+    # the model sent a singular "segment_id" while the published schema only defines the
+    # "segment_ids" array. The root schema must reject unknown keys so the runtime
+    # admission gate returns an actionable schema-repair error instead of silently
+    # admitting the typo and reading every document segment.
+    errors = validate_tool_arguments(
+        "read_company_kb",
+        {"document_id": str(uuid.uuid4()), "segment_id": str(uuid.uuid4())},
+    )
+    assert any("segment_id" in error and "not allowed" in error for error in errors)
+
+
+def test_read_company_kb_schema_accepts_published_segment_ids_array() -> None:
+    from app.tools.validation import validate_tool_arguments
+
+    assert (
+        validate_tool_arguments(
+            "read_company_kb",
+            {
+                "document_id": str(uuid.uuid4()),
+                "segment_ids": [str(uuid.uuid4()), str(uuid.uuid4())],
+                "max_chars": 1000,
+            },
+        )
+        == []
+    )
+    assert validate_tool_arguments("read_company_kb", {"publication_id": str(uuid.uuid4())}) == []
+    # The document_id-or-publication_id requirement stays enforced.
+    assert validate_tool_arguments("read_company_kb", {"segment_ids": [str(uuid.uuid4())]}) != []
+
+
 @pytest.mark.asyncio
 async def test_company_search_and_read_tools_derive_principal_from_runtime_not_arguments(monkeypatch) -> None:
     from app.tools.handlers import knowledge as knowledge_handler

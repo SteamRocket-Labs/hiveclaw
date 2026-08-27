@@ -619,18 +619,30 @@ class DelegationAuthorityReceiptFailure:
 
 
 def _delegation_request_hash(request: AgentDelegationRequest) -> str:
+    """Hash the canonical delegation request snapshot for the execution receipt.
+
+    Every input is normalized through the same accessors that persist and
+    rebuild the durable runtime-task metadata, so a request rehydrated from
+    the persisted record hashes byte-identically to the in-memory request
+    whose receipt was persisted at dispatch. Raw caller spelling (a missing
+    ``edit_mode`` default, artifact shorthand expansion, agent id casing)
+    must never leak into the snapshot, because the rebuild path cannot
+    recover spelling that was never persisted.
+    """
+    source_agent_id = _maybe_uuid(request.parent_agent_id)
+    target_agent_id = _maybe_uuid(getattr(request.target, "id", None))
     return canonical_payload_hash(
         {
             "schema": "hive.a2a_delegation_request.v1",
-            "source_agent_id": str(request.parent_agent_id or ""),
-            "target_agent_id": str(getattr(request.target, "id", "")),
+            "source_agent_id": str(source_agent_id) if source_agent_id is not None else "",
+            "target_agent_id": str(target_agent_id) if target_agent_id is not None else "",
             "session_id": request.session_id,
             "messages": request.conversation_messages,
             "interaction_type": request.interaction_type,
             "depth": request.depth,
-            "target_artifact_path": request.target_artifact_path,
-            "target_artifacts": request.target_artifacts,
-            "edit_mode": request.edit_mode,
+            "target_artifact_path": _normalize_delegation_artifact_path(request.target_artifact_path),
+            "target_artifacts": _normalized_delegation_target_artifacts(request),
+            "edit_mode": _normalize_delegation_edit_mode(request.edit_mode),
         }
     )
 
@@ -1186,7 +1198,22 @@ def _build_runtime_task_metadata(request: AgentDelegationRequest, *, task_id: st
         )
     if request.plan_exempt_reason:
         metadata["plan_exempt_reason"] = request.plan_exempt_reason
-    metadata.update(_delegation_artifact_contract_metadata(request))
+    # Byte-faithful rebuild inputs for _delegation_request_hash. The persisted
+    # snapshot keeps the caller's actual artifact shorthand (None when absent,
+    # never a synthesized paths[0]) next to the merged canonical artifact list,
+    # the normalized edit mode, and the interaction type, so restart
+    # rehydration reproduces the receipt hash exactly. This intentionally does
+    # not reuse _delegation_artifact_contract_metadata's display projection.
+    canonical_artifacts = _normalized_delegation_target_artifacts(request)
+    metadata.update(
+        {
+            "target_artifact_path": _normalize_delegation_artifact_path(request.target_artifact_path),
+            "target_artifact_paths": [artifact["path"] for artifact in canonical_artifacts],
+            "target_artifacts": canonical_artifacts,
+            "edit_mode": _normalize_delegation_edit_mode(request.edit_mode),
+            "interaction_type": request.interaction_type,
+        }
+    )
     permission_profile = _permission_profile_metadata(request.permission_profile)
     if permission_profile:
         metadata["permission_profile"] = permission_profile
@@ -3092,6 +3119,7 @@ async def _build_delegation_request_from_runtime_record(record: dict[str, Any]) 
         target_artifact_path=metadata.get("target_artifact_path"),
         target_artifacts=metadata.get("target_artifacts") if isinstance(metadata.get("target_artifacts"), list) else [],
         edit_mode=metadata.get("edit_mode"),
+        interaction_type=str(metadata.get("interaction_type") or "delegation"),
         execution_receipt=metadata.get("execution_receipt")
         if isinstance(metadata.get("execution_receipt"), dict)
         else None,

@@ -409,6 +409,30 @@ async def queue_admitted_human_input(
     input_uuid = input_id if isinstance(input_id, uuid.UUID) else uuid.UUID(str(input_id))
     row, admission, command = await _locked_input(db, authority=authority, input_id=input_uuid)
     if row.status != "accepted":
+        # A re-dispatched steer that was already mailed into its target run
+        # may have outlived it: the target terminalized without ever binding
+        # the mailbox item.  Re-check the mechanical run status and settle it
+        # through the same terminal rollover; every other settled row stays a
+        # pure replay.
+        if (
+            row.status == "queued"
+            and row.intent == "steer_current_turn"
+            and row.terminal_fallback == "queue_next_turn"
+            and row.target_run_id is not None
+            and row.bound_round_id is None
+        ):
+            task = await db.scalar(
+                select(RuntimeTask)
+                .where(
+                    RuntimeTask.id == row.target_run_id,
+                    RuntimeTask.tenant_id == authority.tenant_id,
+                    RuntimeTask.parent_agent_id == authority.agent_id,
+                    RuntimeTask.parent_session_id == str(authority.session_id),
+                )
+                .with_for_update()
+            )
+            if task is not None and task.status not in _ACTIVE_RUN_STATUSES:
+                return await rollover_terminal_steer(db, authority=authority, row=row, command=command)
         return _receipt(row, replayed=True)
     if admission.state != "admitted":
         raise ValueError("human_input_not_admitted")

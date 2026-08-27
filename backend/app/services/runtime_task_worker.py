@@ -97,6 +97,10 @@ _STATE: dict[str, Any] = {
     "session_input_dispatches_dispatched": 0,
     "session_input_dispatches_deferred": 0,
     "session_input_dispatches_retried": 0,
+    "session_input_rollovers_claimed": 0,
+    "session_input_rollovers_dispatched": 0,
+    "session_input_rollovers_deferred": 0,
+    "session_input_rollovers_retried": 0,
     "team_fanout_claimed": 0,
     "team_fanout_recovered": 0,
     "team_fanout_retried": 0,
@@ -616,6 +620,37 @@ async def recover_session_input_dispatches_once(
     return counts
 
 
+async def recover_terminal_target_session_inputs_once(
+    *,
+    worker_id: str,
+    stale_after: timedelta = timedelta(seconds=5),
+    tenant_id: UUID | None = None,
+    session_factory=async_session,
+) -> dict[str, int]:
+    """Roll over dispatched steers whose target run terminalized after mailing."""
+
+    from app.services.session_input_dispatch import recover_dispatched_terminal_steers_once
+
+    async with (
+        session_factory() as db,
+        enter_rls_bypass(
+            db,
+            reason="runtime task worker roll over Session V2 steers after target run terminal",
+            actor_id=worker_id,
+        ),
+    ):
+        counts = await recover_dispatched_terminal_steers_once(
+            db,
+            worker_id=worker_id,
+            stale_after=stale_after,
+            tenant_id=tenant_id,
+        )
+    for key in ("claimed", "dispatched", "deferred", "retried"):
+        state_key = f"session_input_rollovers_{key}"
+        _STATE[state_key] = int(_STATE.get(state_key) or 0) + int(counts.get(key) or 0)
+    return counts
+
+
 def _dispatch_claimed_task(task: RuntimeTask) -> bool:
     if is_executable_chat_task_type(getattr(task, "task_type", None)):
         return dispatch_web_chat_run(
@@ -876,6 +911,11 @@ async def start_runtime_task_worker_loop() -> None:
             except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
                 _STATE["last_error"] = f"session_input_dispatch:{type(exc).__name__}: {exc}"
                 logger.exception("[RuntimeTaskWorker] Session V2 input dispatch tick failed")
+            try:
+                await recover_terminal_target_session_inputs_once(worker_id=worker_id)
+            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
+                _STATE["last_error"] = f"session_input_terminal_rollover:{type(exc).__name__}: {exc}"
+                logger.exception("[RuntimeTaskWorker] Session V2 terminal steer rollover tick failed")
             try:
                 await recover_turn_replacement_sagas_once(worker_id=worker_id)
             except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.

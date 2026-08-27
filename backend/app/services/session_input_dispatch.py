@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import or_, select
+from sqlalchemy import String, cast, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent
@@ -291,48 +291,25 @@ async def _dispatch_one(
     raise ValueError(f"unsupported admitted input intent: {row.intent}")
 
 
-async def recover_admitted_session_inputs_once(
-    db: AsyncSession,
+def _begin_dispatch_claim(
+    admission: SessionInputAdmission,
     *,
     worker_id: str,
-    stale_after: timedelta = timedelta(seconds=5),
-    tenant_id: uuid.UUID | None = None,
-    limit: int = 100,
+    now: datetime,
+    lease_seconds: float,
+) -> None:
+    admission.dispatch_state = "dispatching"
+    admission.dispatch_attempts = int(admission.dispatch_attempts) + 1
+    admission.dispatch_last_error = None
+    admission.lease_owner = str(worker_id)
+    admission.lease_expires_at = now + timedelta(seconds=lease_seconds)
+    admission.version = int(admission.version) + 1
+
+
+async def _dispatch_claimed_admissions(
+    db: AsyncSession,
+    claimed_ids: list[uuid.UUID],
 ) -> dict[str, int]:
-    """Claim admitted inputs globally with SKIP LOCKED and replay safe effects."""
-
-    now = datetime.now(timezone.utc)
-    statement = (
-        select(SessionInputAdmission)
-        .join(SessionTurnInput, SessionTurnInput.id == SessionInputAdmission.input_id)
-        .where(
-            SessionInputAdmission.input_revision == SessionTurnInput.revision,
-            SessionInputAdmission.state == "admitted",
-            or_(
-                SessionInputAdmission.dispatch_state == "pending",
-                (SessionInputAdmission.dispatch_state == "dispatching")
-                & (SessionInputAdmission.lease_expires_at <= now),
-            ),
-        )
-        .order_by(SessionTurnInput.queue_ordinal, SessionInputAdmission.id)
-        .limit(max(1, int(limit)))
-        .with_for_update(skip_locked=True)
-    )
-    if tenant_id is not None:
-        statement = statement.where(SessionInputAdmission.tenant_id == tenant_id)
-    claimed = list((await db.execute(statement)).scalars())
-    lease_seconds = max(1.0, float(stale_after.total_seconds()) or 5.0)
-    claimed_ids: list[uuid.UUID] = []
-    for admission in claimed:
-        admission.dispatch_state = "dispatching"
-        admission.dispatch_attempts = int(admission.dispatch_attempts) + 1
-        admission.dispatch_last_error = None
-        admission.lease_owner = str(worker_id)
-        admission.lease_expires_at = now + timedelta(seconds=lease_seconds)
-        admission.version = int(admission.version) + 1
-        claimed_ids.append(admission.id)
-    await db.commit()
-
     counts = {"claimed": len(claimed_ids), "dispatched": 0, "deferred": 0, "retried": 0}
     for admission_id in claimed_ids:
         try:
@@ -368,6 +345,119 @@ async def recover_admitted_session_inputs_once(
                 await db.commit()
             counts["retried"] += 1
     return counts
+
+
+def _claimed_admission_ids(
+    admissions: list[SessionInputAdmission],
+    *,
+    worker_id: str,
+    now: datetime,
+    lease_seconds: float,
+) -> list[uuid.UUID]:
+    claimed_ids: list[uuid.UUID] = []
+    for admission in admissions:
+        _begin_dispatch_claim(admission, worker_id=worker_id, now=now, lease_seconds=lease_seconds)
+        claimed_ids.append(admission.id)
+    return claimed_ids
+
+
+async def recover_admitted_session_inputs_once(
+    db: AsyncSession,
+    *,
+    worker_id: str,
+    stale_after: timedelta = timedelta(seconds=5),
+    tenant_id: uuid.UUID | None = None,
+    limit: int = 100,
+) -> dict[str, int]:
+    """Claim admitted inputs globally with SKIP LOCKED and replay safe effects."""
+
+    now = datetime.now(timezone.utc)
+    statement = (
+        select(SessionInputAdmission)
+        .join(SessionTurnInput, SessionTurnInput.id == SessionInputAdmission.input_id)
+        .where(
+            SessionInputAdmission.input_revision == SessionTurnInput.revision,
+            SessionInputAdmission.state == "admitted",
+            or_(
+                SessionInputAdmission.dispatch_state == "pending",
+                (SessionInputAdmission.dispatch_state == "dispatching")
+                & (SessionInputAdmission.lease_expires_at <= now),
+            ),
+        )
+        .order_by(SessionTurnInput.queue_ordinal, SessionInputAdmission.id)
+        .limit(max(1, int(limit)))
+        .with_for_update(skip_locked=True)
+    )
+    if tenant_id is not None:
+        statement = statement.where(SessionInputAdmission.tenant_id == tenant_id)
+    claimed = list((await db.execute(statement)).scalars())
+    lease_seconds = max(1.0, float(stale_after.total_seconds()) or 5.0)
+    claimed_ids = _claimed_admission_ids(
+        claimed,
+        worker_id=worker_id,
+        now=now,
+        lease_seconds=lease_seconds,
+    )
+    await db.commit()
+    return await _dispatch_claimed_admissions(db, claimed_ids)
+
+
+async def recover_dispatched_terminal_steers_once(
+    db: AsyncSession,
+    *,
+    worker_id: str,
+    stale_after: timedelta = timedelta(seconds=5),
+    tenant_id: uuid.UUID | None = None,
+    limit: int = 100,
+) -> dict[str, int]:
+    """Re-claim dispatched steers whose target run terminalized after mailing.
+
+    A steer successfully dispatched into an active run is a settled mailbox
+    admission, so the pending/stale-dispatching sweep never re-examines it.
+    When the target run later terminalizes without binding the mailbox item,
+    this lane re-claims the admission through the same canonical dispatch
+    path, which rolls the steer over (``terminal_fallback=queue_next_turn``)
+    and starts its deterministic FIFO successor run.  The claim predicate is
+    purely mechanical: intent/status/fallback columns plus an exact
+    tenant/session-scoped RuntimeTask join on the terminal status.
+    """
+
+    now = datetime.now(timezone.utc)
+    statement = (
+        select(SessionInputAdmission)
+        .join(SessionTurnInput, SessionTurnInput.id == SessionInputAdmission.input_id)
+        .join(
+            RuntimeTask,
+            (RuntimeTask.id == SessionTurnInput.target_run_id)
+            & (RuntimeTask.tenant_id == SessionTurnInput.tenant_id)
+            & (RuntimeTask.parent_session_id == cast(SessionTurnInput.session_id, String)),
+        )
+        .where(
+            SessionInputAdmission.input_revision == SessionTurnInput.revision,
+            SessionInputAdmission.state == "admitted",
+            SessionInputAdmission.dispatch_state == "dispatched",
+            SessionTurnInput.intent == "steer_current_turn",
+            SessionTurnInput.status == "queued",
+            SessionTurnInput.terminal_fallback == "queue_next_turn",
+            SessionTurnInput.target_run_id.is_not(None),
+            RuntimeTask.status.notin_(_ACTIVE_RUN_STATUSES),
+        )
+        .order_by(SessionTurnInput.queue_ordinal, SessionInputAdmission.id)
+        .limit(max(1, int(limit)))
+        .with_for_update(of=(SessionInputAdmission, SessionTurnInput), skip_locked=True)
+    )
+    if tenant_id is not None:
+        statement = statement.where(SessionInputAdmission.tenant_id == tenant_id)
+    claimed = list((await db.execute(statement)).scalars())
+    lease_seconds = max(1.0, float(stale_after.total_seconds()) or 5.0)
+    claimed_ids = _claimed_admission_ids(
+        claimed,
+        worker_id=worker_id,
+        now=now,
+        lease_seconds=lease_seconds,
+    )
+    await db.commit()
+    return await _dispatch_claimed_admissions(db, claimed_ids)
 
 
 async def dispatch_admitted_input_fast_path(
@@ -429,4 +519,5 @@ __all__ = [
     "InputDispatchOutcome",
     "dispatch_admitted_input_fast_path",
     "recover_admitted_session_inputs_once",
+    "recover_dispatched_terminal_steers_once",
 ]

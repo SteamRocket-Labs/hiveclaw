@@ -33,6 +33,7 @@ import {
   replayTranscriptEvents,
   sessionBelongsToAgent,
   isTerminalRealtimeChatEvent,
+  reconcileSessionTranscriptSafely,
   shouldClearStaleRuntimeState,
   shouldIgnoreObservedActiveRun,
   shouldReconcileTranscriptOnActiveRunAbsence,
@@ -2004,5 +2005,76 @@ describe('RuntimePhase state machine (§3 seam 1)', () => {
     let state = createEmptyTranscriptReplayState();
     state = applyTranscriptEvent(state, { id: 'p1', sequence: 5, type: 'phase', phase: 'summarizing' });
     expect(state.ui).toEqual(uiForPhase('summarizing'));
+  });
+});
+
+function trackUnhandledRejections(): { seen: unknown[]; stop: () => void } {
+  const seen: unknown[] = [];
+  const listener = (reason: unknown) => seen.push(reason);
+  process.on('unhandledRejection', listener);
+  return { seen, stop: () => process.off('unhandledRejection', listener) };
+}
+
+const flushMicrotasks = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+describe('reconcileSessionTranscriptSafely', () => {
+  it('contains a rejected terminal-frame reconcile: observable failure, empty unhandled rejection set', async () => {
+    const unhandled = trackUnhandledRejections();
+    try {
+      const failures: unknown[] = [];
+
+      // A live terminal frame (done/error/quota_exceeded) fires the reconcile
+      // seam fire-and-forget; a rejected REST transcript page must be reported
+      // through onFailure, never escape as an unhandled rejection.
+      reconcileSessionTranscriptSafely(
+        () => Promise.reject(new TypeError('Failed to fetch')),
+        (error) => failures.push(error),
+      );
+      await flushMicrotasks();
+
+      expect(failures).toHaveLength(1);
+      expect(String(failures[0])).toContain('Failed to fetch');
+      expect(unhandled.seen).toEqual([]);
+    } finally {
+      unhandled.stop();
+    }
+  });
+
+  it('keeps the active-run-absence reconcile retryable: a contained failure latches nothing and the next observation retries', async () => {
+    const unhandled = trackUnhandledRejections();
+    try {
+      const failures: unknown[] = [];
+      const succeeded: number[] = [];
+      let attempts = 0;
+      const reconcile = () => {
+        attempts += 1;
+        return attempts === 1
+          ? Promise.reject(new TypeError('Failed to fetch'))
+          : Promise.resolve(attempts).then((n) => { succeeded.push(n); });
+      };
+      // The same safe seam behind the active-run-absence policy gate.
+      const observeAbsence = () => {
+        if (!shouldReconcileTranscriptOnActiveRunAbsence({ observedActiveRun: null, hasLocalActiveRuntime: true })) return;
+        reconcileSessionTranscriptSafely(reconcile, (error) => failures.push(error));
+      };
+
+      observeAbsence();
+      await flushMicrotasks();
+      expect(attempts).toBe(1);
+      expect(failures).toHaveLength(1);
+      expect(succeeded).toEqual([]);
+      expect(unhandled.seen).toEqual([]);
+
+      // Nothing was latched consumed: the next authoritative active-run-absence
+      // observation invokes the reconcile again and can now succeed.
+      observeAbsence();
+      await flushMicrotasks();
+      expect(attempts).toBe(2);
+      expect(succeeded).toEqual([2]);
+      expect(failures).toHaveLength(1);
+      expect(unhandled.seen).toEqual([]);
+    } finally {
+      unhandled.stop();
+    }
   });
 });

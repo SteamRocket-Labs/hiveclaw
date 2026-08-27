@@ -31,6 +31,7 @@ import {
     shouldUseWritableSessionSurface,
     shouldIgnoreObservedActiveRun,
     shouldClearStaleRuntimeState,
+    reconcileSessionTranscriptSafely,
     shouldReconcileTranscriptOnActiveRunAbsence,
     shouldReuseSessionTranscriptLoad,
     type AgentChatMessage,
@@ -1610,7 +1611,7 @@ function AgentDetailInner() {
             invalidateSessionRuntimeQueries,
             reconcileSessionTranscript: (agentId, sessionId) => {
                 const sess = String(activeSession?.id || '') === sessionId ? activeSession : { id: sessionId };
-                void backfillSessionTranscript(sess, agentId);
+                reconcileSessionTranscriptSafely(() => backfillSessionTranscript(sess, agentId), () => undefined);
             },
             shouldInvalidateToolCall: (key) => {
                 const now = Date.now();
@@ -2222,7 +2223,7 @@ function AgentDetailInner() {
             // The authoritative active-run read observed the turn's terminal state
             // while live frames may have been lost; the UI grace below must not
             // defer projection truth. Reconcile the durable transcript now.
-            void backfillSessionTranscript(activeSession, id);
+            reconcileSessionTranscriptSafely(() => backfillSessionTranscript(activeSession, id), () => undefined);
         }
         if (shouldClearStaleRuntimeState({
             hasStaleRuntimeState: staleRuntimeState,

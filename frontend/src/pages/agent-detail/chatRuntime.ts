@@ -581,6 +581,23 @@ export function shouldReconcileTranscriptOnActiveRunAbsence(input: {
   return !['pending', 'running'].includes(String(run.status || '').toLowerCase());
 }
 
+/**
+ * Containment seam for fire-and-forget terminal transcript reconciliation.
+ * Both reconcile triggers (the projector's live terminal frame and the
+ * authoritative active-run-absence observation) run the transcript backfill
+ * without awaiting it; a rejected REST page must be reported through
+ * ``onFailure`` instead of escaping as an unhandled rejection. The seam
+ * latches nothing: the in-flight cursor cleanup inside the backfill keeps a
+ * later terminal signal or observation free to retry. Same contained-failure
+ * shape as ``backfillVisibleSessionOnRefocus`` in useSessionTransportController.
+ */
+export function reconcileSessionTranscriptSafely(
+  reconcile: () => unknown | Promise<unknown>,
+  onFailure: (error: unknown) => void,
+): void {
+  void Promise.resolve(reconcile()).catch(onFailure);
+}
+
 export function isTerminalRealtimeChatEvent(payload: any): boolean {
   const eventType = String(payload?.event_type || payload?.type || '').trim();
   return ['assistant_message', 'done', 'error', 'quota_exceeded', 'run_cancelled', 'run_completed'].includes(eventType);

@@ -2027,6 +2027,18 @@ cd backend && .venv/bin/python -m pytest \
 - Run1/Run2 的「事实真实、消费成功」为生产事实，不因本缺陷降级；被修复的是未来同形调用的契约真实性。既有两 session/task 生产资产不清理（owner 门控，沿用登记惯例）。
 - 不处理其他 Company KB / Day 1 事项（agent-tool citation 消费、retire/restore、第二遍 clean pass、A2A 仍 pending）；不宣称 RC-02/Company Knowledge/Day 1 Closed。
 
+### DAY1-COMPANY-KB-ARG-CONTRACT-001 Codex final verdict: PASS — Verified（本地，2026-08-27，对 `8748b2eb`）
+
+Codex 独立 review commit `8748b2eb`（fix(day1): reject unknown read_company_kb arguments at admission gate）完整 diff：**未发现 actionable defect**。Codex 并在当前 HEAD（同一提交）独立复跑验证，证据逐项记录如下：
+
+- `.venv/bin/python -m pytest tests/tools/test_company_knowledge_tool.py tests/tools/test_service.py -q` → **72 passed**。
+- `.venv/bin/python -m pytest tests/tools/ -q` → **663 passed**。
+- Company Knowledge 七文件 service bundle（本节 GREEN 所列七文件）→ **63 passed**。
+- `.venv/bin/ruff check app/tools/handlers/knowledge.py tests/tools/test_company_knowledge_tool.py tests/tools/test_service.py` → **All checks passed**。
+- `git show --check` → clean。
+
+**状态与边界（精确）**：**Codex final verdict: PASS — Verified（本地）**；本结论仅覆盖本地包（当前提交 = `8748b2eb`，未 push、未部署）。**生产 retest 仍 open**：需随三服务部署后 signed-in 生产复测——验证模型改用合法 `segment_ids` 数组、或收到 typed `invalid_tool_arguments` 后按 schema 修复参数重试并完成真实 exact-segment 读取——方可转 Closed；**不宣称 Company Knowledge / Day 1 Closed**。
+
 ---
 
 

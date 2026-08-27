@@ -3773,6 +3773,8 @@
     "reconciliation": {
       "title": "运行时对账",
       "openItems": "待处理项",
+      "notLoaded": "队列尚未加载",
+      "loadPrompt": "点击“刷新”加载当前租户的对账队列。",
       "tenantPlaceholder": "租户 ID",
       "refresh": "刷新",
       "empty": "当前没有需要对账的运行任务。",

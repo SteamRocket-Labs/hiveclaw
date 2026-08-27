@@ -3773,6 +3773,8 @@
     "reconciliation": {
       "title": "Runtime Reconciliation",
       "openItems": "open items",
+      "notLoaded": "Queue not loaded",
+      "loadPrompt": "Refresh to load this tenant's reconciliation queue.",
       "tenantPlaceholder": "Tenant ID",
       "refresh": "Refresh",
       "empty": "No runtime tasks need reconciliation.",

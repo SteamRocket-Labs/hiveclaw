@@ -1381,6 +1381,88 @@ $ git diff --check                → clean（.ultra/.runtime/compact-snapshot.m
 - **生产渲染复验 pending（部署已完成）**：以 platform admin 复核——① Runtime Reconciliation 出现 "Repair projections" 控件；② tenant 缺失时禁用；③ 点击后回执展示真实 examined/repaired 计数且队列原地重载；④ 三行投影修复后 RootItem 一致性按 §7.11 既定顺序另行复验。
 - 不宣称生产已修复、RC-10 Closed、Day 1 完成或 A2A 完成；RC-10A 生产修复复验（projection-repair 修 3 行投影、仅 archive `19c22c3d`、RootItem 9 行一致性核验、blocker/广播复验）与 `b07de271`/`6c400e97` 两条 7 月真实任务处置仍留 owner/operator，本包绝不自动清理。
 
+### RC-10B 生产 finding：首载假空 / 陈旧 tenant 队列（2026-08-27，Codex final verdict: PASS — Verified 本地，未部署）
+
+**生产复现（Codex，deployed HEAD `ec509c86`，signed-in rocky243，`/admin/platform-settings`，如实记录不粉饰）**：fresh navigation 后等待 1.8s，Runtime Reconciliation 渲染「0 待处理项」与「当前没有需要对账的运行任务。」——尽管当时 localStorage `current_tenant_id` 为 `aac728fb-fe1c-45df-a2ff-a56e024a37a0`。点击 Refresh 立即加载 50 行真实队列（含 synthetic task `19c22c3d`）。这是已确认的 **false-empty / stale-tenant 生产 finding**：operator 被误导认为队列已加载且为空。
+
+**代码根因（当前 checkout 核实）**：`PlatformDashboard` 以无 props 挂载 `<AdminRuntimeReconciliationSection />`；组件从 localStorage 初始化 `tenantId` 但 **mount 时从不加载**，默认 `initialTasks=[]` 被当作权威空队列渲染（「0 open items」+「No runtime tasks need reconciliation.」）。同级代码缺陷：`onTenantChange` 只清 `repairReceipt`，旧 tenant 的 tasks/count 在新输入的 tenant 下继续可见，直到手动 Refresh。
+
+**RED（实现前，当前 checkout 实测）**：
+
+```text
+frontend$ NODE_OPTIONS=--no-experimental-webstorage npx vitest run \
+  src/pages/admin-companies/AdminRuntimeReconciliationSection.mounted.test.tsx
+Test Files 1 failed (1)；Tests 3 failed | 9 passed (12)
+× auto-loads the resolved localStorage tenant on the no-props production mount path
+  AssertionError: expected "vi.fn()" to be called with arguments: [ { tenantId: 'tenant-prod', …(1) } ]
+  （mount 从不加载；deferred 期间同时渲染「0 open items」与 empty 结论）
+× pins a rejected initial load as an unavailable/error state
+  TestingLibraryElementError: Unable to find an element with the text: service unavailable
+× clears old-tenant rows immediately on tenant edit and loads the new tenant only via explicit Refresh
+  TestingLibraryElementError: Unable to find an element with the text: writer-a
+（两项 seeded-initialTasks 保全 pin 与 7 项既有 repair/busy 回归当轮即通过）
+```
+
+**实现范围（surgical，纯前端，零后端/零语义改动；本包只修真实队列加载/消费真相，不动 provider 决策、任务状态、权限或 operator 动作语义）**：
+
+1. **Mount 自动加载**：仅当 `initialTasks` 未显式提供（即真实生产路径）且解析出的初始 tenant 非空时，mount effect 以 trim 后 tenant + limit 50 自动调用 `listRuntimeReconciliation`；迟到完成在 unmount 后被忽略（active flag）；无新依赖、无新抽象。显式 seeded `initialTasks`（SSR/测试）保持权威且绝不触发重复 fetch（两条 pin 回归）。
+2. **真实加载状态分层**：新增 `loadedTenant` 绑定（渲染队列真实属于哪个 tenant）；未加载 / loading / error 与「成功加载后的权威空队列」严格区分——header 在成功加载前显示本地化「Queue not loaded / 队列尚未加载」（loading 中显示 Loading...），绝不声称 0；body 在未加载且无错误时显示中性本地化提示「Refresh to load this tenant's reconciliation queue. / 点击“刷新”加载当前租户的对账队列。」；初始加载被拒绝时只显示错误态，绝不回落成空队列结论。
+3. **Tenant 编辑清陈旧真相**：`onTenantChange` 现在同时清 `tasks`/`error`/`repairReceipt`/`loadedTenant`——旧 tenant 的行与计数立即消失，出现中性 Refresh 提示；编辑绝不按 keystroke fetch；编辑后的 tenant 仍仅由手动 Refresh 显式加载。
+4. **保持不变**：统一 `busy = loading || repairing` 边界、repair 回执行为（含重载失败回执保留）、adapter 精确调用签名、resolve/archive/retry 行为、缺失/空白 tenant 禁用；`load`/`applyAction`/`repairProjections` 成功重载后同步 `loadedTenant`。无 raw ID/调试态进入普通 UI。
+5. **既有 mounted 测试更新（如实记录，非削弱）**：4 项既有 repair 回归以 `initialTenantId` 渲染但未 seeded tasks，新 auto-load 使 busy 边界在初始加载在飞时禁用控件——更新为先等待初始加载 settle（`findByText('0 open items')`/`findByText('reload failed')`）；「repair 失败不 reload」断言从「`listRuntimeReconciliation` 从未调用」改为「恰一次调用（仅初始 auto-load，失败 repair 不追加 reload）」——新契约更强而非更弱。
+
+**GREEN（当前 checkout 实测）**：
+
+```text
+frontend$ NODE_OPTIONS=--no-experimental-webstorage npx vitest run \
+  src/pages/admin-companies/AdminRuntimeReconciliationSection.mounted.test.tsx \
+  src/pages/admin-companies/AdminRuntimeReconciliationSection.test.tsx \
+  src/api/domains/admin.test.ts
+3 files / 17 passed（先红后绿；含下方 StrictMode correction 后最终计数）
+frontend$ npm test                → 144 files / 911 tests passed（基线 144/905 → +6 新回归）
+frontend$ ./node_modules/.bin/tsc --noEmit → 无错误
+frontend$ npm run i18n:check      → node tests 9/9；catalog en=3863 / zh=3863；全部 gates = 0
+frontend$ npm run i18n:inventory  → missingEnglish/missingChinese/unresolvedDynamic 等全为空
+frontend$ npm run build           → 7385 modules；AgentDetail 350870/380000（gzip 96913/115000）、vendor 591449/620000（gzip 186474/200000）预算通过
+$ git diff --check                → clean（.ultra/.runtime/compact-snapshot.md 保持开工前 modified 原状未触碰；output/ 与 tmp/pdfs/ 未触碰）
+```
+
+### RC-10B 生产 finding 包 — Codex StrictMode finding → correction（2026-08-27，failing-first）
+
+**Codex 可执行 finding（live entry）**：`frontend/src/main.tsx`（lines 20-29）把应用挂载在 `React.StrictMode` 下；Codex 以 jsdom createRoot 探针独立复现 React 19 运行行为 `strict_effect_setups=2`。首轮实现的 mount-only effect 因此在真实开发入口发起**两次** `listRuntimeReconciliation`——首个 setup 被取消忽略、第二个网络结果成为权威，既有 mounted 测试未包 StrictMode 而错误地 pin「恰一次」。
+
+**RED（correction 实现前，当前 checkout 实测）**：新增 `<StrictMode>` 包裹的 no-props/localStorage mounted 回归（单 deferred 请求，断言恰一次调用 + resolve 后行/计数渲染）：
+
+```text
+frontend$ NODE_OPTIONS=--no-experimental-webstorage npx vitest run \
+  src/pages/admin-companies/AdminRuntimeReconciliationSection.mounted.test.tsx
+Test Files 1 failed (1)；Tests 1 failed | 12 passed (13)
+× issues exactly one initial request under React.StrictMode and the surviving setup consumes it
+  AssertionError: expected "vi.fn()" to be called 1 times, but got 2 times
+```
+
+**correction 实现（最小 single-flight，无新依赖/抽象）**：① 初始 tenant 在首次 render 解析一次存入 ref（raw+trimmed），render 与 effect 不再各自重读 localStorage；② 初始请求的 promise 存入 `initialLoadRef`——StrictMode synthetic cleanup 只摘除本 setup 的 handlers（active flag），存活的第二 setup 复用同一 in-flight 请求并消费其结果，每次真实 mount 恰一次请求；真实 unmount/remount 获得新 ref 可发新请求；真实 unmount 后的迟到完成仍被忽略。显式 seeded `initialTasks` 不 fetch、无 per-keystroke fetch、truthful loading/error/empty 分层、统一 busy 边界、repair/resolve/archive/retry 行为全部不变（既有 12 项 mounted 回归原样通过，未削弱任何断言；普通 no-props 非 StrictMode 测试保留）。
+
+**correction GREEN**：focused 3 files / **17 passed**（先红后绿）；全量 `npm test` **144 files / 911 passed**；`tsc --noEmit` 干净；`i18n:check` 9/9、en=zh=3863、gates 全 0；`i18n:inventory` 全空；`npm run build` 预算通过（AgentDetail 350870/380000 gzip 96913/115000、vendor 591449/620000 gzip 186474/200000）；`git diff --check` clean。Changed files 与上方清单相同（组件 + mounted 测试两文件本轮增量，catalog/WIP 不变更键）。
+
+**Changed files（本 finding 包）**：`frontend/src/pages/admin-companies/AdminRuntimeReconciliationSection.tsx`、`frontend/src/pages/admin-companies/AdminRuntimeReconciliationSection.mounted.test.tsx`、`frontend/src/i18n/en.json`、`frontend/src/i18n/zh.json`、`docs/wip/weekend-release-readiness-and-zero-known-defects-2026-08-25.md`（本节与 §10/§13）。零后端改动、零新依赖、静态 SSR 测试与 adapter 测试无改动需求（seeded 契约保留）。
+
+**七原子**：Input = operator fresh navigation 到 `/admin/platform-settings`（tenant 来自 localStorage）或显式 Refresh；Authority = 既有 platform_admin endpoint 裁决，前端不处理 token、不扩大可见性；Execution = 唯一 live entry = mount effect / Refresh → `adminApi.listRuntimeReconciliation` → 既有 GET 路由，无孤儿、无旁路；Evidence = 后端 needs_reconciliation 行为机械事实源，前端逐字渲染计数/行；Recovery = 初始加载失败显式错误态可 Refresh 重试、tenant 编辑后显式 Refresh 加载、unmount 后迟到完成被忽略；Consumption = header 计数、队列行、错误与未加载提示是 operator 真实消费面，假空结论已消除；Acceptance = RED→GREEN 轨迹如上。
+
+**边界（明确，不过度宣称）**：**Codex final verdict: PASS — Verified（本地，2026-08-27，含 StrictMode correction 复验）**；本包仍未 commit、未部署；**生产在重新部署前仍表现该 false-empty/stale-tenant bug**；**RC-10B 与 Day 1 保持未 Closed**。已执行的 projection-repair 生产事实保留给后续生产证据包登记，本节不宣称其为已记录完成；本 finding 不改变 RC-10A 生产修复复验的既定顺序（§7.11/§13）。
+
+**Codex 独立复验证据（final verdict: PASS — Verified 本地，如实记录）**：
+
+```text
+generic React 19 jsdom createRoot live-entry probe → strict_effect_setups=2（correction 前确认 finding 成立）
+focused（mounted + static + adapter 3 files）→ 17 passed in 1.37s
+full npm test            → 144 files / 911 passed in 3.73s
+tsc --noEmit             → exit 0
+i18n check               → 9/9；en=zh=3863；全部 gates = 0；inventory 全部列表为空
+npm run build            → 7385 modules in 2.83s；AgentDetail 350870/380000（gzip 96913/115000）、vendor 591449/620000（gzip 186474/200000）
+git diff --check         → clean；changed files 恰为五个授权文件（组件、mounted 测试、en/zh catalog、本 WIP）
+```
+
 ---
 
 ## 8. 两个工作日的执行节奏
@@ -1503,7 +1585,7 @@ Rollback / recovery:
 | RC-02（生产 finding 包） | platform_admin audience 缺口 + grant/revoke 成功后视图失效：audience 选择器新增 exact `role:platform_admin`（EN "Platform administrators" 与后端标签逐字一致 / ZH "平台管理员"；无绕过、无自动授权）；共享 `invalidateCompanyKnowledge` 扩为六键（access-rules + intakes + review-queue + review-workspace + publication-lifecycle + library），grant/revoke onSuccess 均复用；mounted-query 测试（jsdom + 真 QueryClient + 仅 mock API 边界）证明 audience 选择与六面读模型无 reload refetch/变化；新增 jsdom/@testing-library devDependencies。详见 §7.3 末节 | `e871be23b7434b577db9d78b6422d6ccb484c559` | RED：3 failed / 23 passed（缺 "Platform administrators" option、revoke 后 review queue 不 refetch、目录缺 platformAdmins）→ GREEN：focused 26 passed、全量 142 files / 890 passed、tsc clean、i18n 9/9 en=zh=3854 gates 全 0、build 7385 modules 预算通过、`git diff --check` clean；Codex 独立（HEAD `e871be23`）：focused 2 files 26 passed in 1.03s、tsc exit 0、i18n 9/9 en=zh=3854 gates 0、全量 142 files/890 in 3.02s、build 7385 modules in 2.87s（AgentDetail 350870/380000 gzip 96915/115000、vendor 591449/620000 gzip 186474/200000）、diff-check clean、Docker Node20 Alpine npm ci +304 后 production build 成功（首次 metadata registry EOF 受控重试）、lock vs `7dafe9a` 48 added 全 dev/零删除/无版本变化、npm audit 4 high 与基线一致（非引入；prod omit-dev 两条 React Router RSC advisory 为 pre-existing 非适用——live entry 用 BrowserRouter）、8 授权文件 | **Codex final verdict：RC-02 生产 finding 包 PASS — Verified（本地）**；Day1 candidate 三服务部署已完成（HEAD `3cb2f11d…`），生产三步复核 pending，未 Closed | Day1 candidate 部署已完成；platform_admin 三步复核未执行 | 未执行 | **Verified（本地）+ 已部署**：七原子当前代码路径与 mounted 回归 + Codex 独立复验成立；生产 Consumption（platform_admin 三重复核）与 Recovery 待生产 E2E | Day1 candidate 部署已完成；待 生产三步复核（grant 后 queue 即现、revoke 后 queue/workspace 即清）；生产两遍 E2E 仍 pending，**未 Closed** |
 
 | RC-02B | review 角色层级死锁（生产提案 `a87147d7-f153-4323-8528-098349543860`，租户 `aac728fb-fe1c-45df-a2ff-a56e024a37a0`，platform_admin user `42778d4b-fa70-47c1-ad3a-15f7fcf5e8aa`）：`evaluate_company_review_set` 精确角色匹配未接入 canonical `ROLE_HIERARCHY`，platform_admin 合法 approval 不满足默认 org_admin 权威 → 永久 in_review。修复：确定性 helper `satisfied_review_roles`（消费 `app.core.security.ROLE_HIERARCHY`，无第二事实源）+ 评估处角色集展开；存储 reviewer_role/policy/hash/守卫全不变。详见 §7.3 末节 | `349752d25c4bee9fb3568979643a4df9611d4e54` | RED：①收集期 ImportError ②helper-only 2 failed/24 passed（platform_admin 仍 missing + guard pin）③真 PG 临时回退评估 1 failed（`+ in_review`）→ GREEN：focused 29 passed in 8.34s、12 文件 bundle 111 passed/1 pre-existing warning in 27.41s、broad company_knowledge slice 135 passed/1 warning in 32.73s、ruff check All passed、format 3 files already formatted、`git diff --check` clean（真 PG Docker-on Testcontainers）；Codex 独立：focused 29 passed in 8.63s、broad `-k company_knowledge` 135 passed/8085 deselected/1 pre-existing Starlette warning in 31.74s、fresh-process import smoke 通过（无 import cycle）、ruff check 通过、format 3 files already formatted、diff-check clean | **Codex final verdict：PASS — Verified（本地）** | 三服务部署已完成（HEAD `ec509c86` 全 SUCCESS，见 §7.10）；生产复核/E2E 未执行 | 未执行 | **局部闭环（本地 Verified + 已部署）**：Input/Authority/Execution/Evidence/Recovery/Consumption/Acceptance 有当前代码路径与真 PG 回归 + Codex 独立复验；生产 Consumption（一次治理化 review 重评估 → approved → publish）待复核 | 已部署；待生产复核（对 `a87147d7…` 提交治理化 review 达 approved、publish 成功、reviewer_role 证据逐字 `platform_admin`、非管理员审核仍被拒）；未 Closed |
-| RC-10B | projection-repair 的已认证 operator UI（live gap：endpoint 已存在且 401 边界正确，但 adminApi 无方法、UI 无控件/回执，operator 无法从产品发起并消费修复）：新增 `RuntimeProjectionRepairReceipt` 类型与 `repairRuntimeReconciliationProjections`（URLSearchParams exact URL、limit 默认 100、按 core post 签名无 body）；Refresh 旁 "Repair projections" 控件（缺失/空白 tenant 与 busy 禁用、独立 "Repairing..." 标签）；本地化回执（examined/repaired 计数，`role="status"`）+ 原地列表重载（重载失败回执保留且错误并列；tenant 变更/新 repair 清陈旧回执）；绝不自动 resolve/archive/retry；**Codex 并发/陈旧 tenant finding 同包 correction：唯一 `busy = loading || repairing` 边界禁用 tenant 输入/Refresh/Repair/全部行内动作（header 保留 missing-tenant 禁用），`.admin-reconcile-search` 加 flex-wrap**。零后端改动、零新依赖。详见 §7.12 | `ef17a191222873af544058446c602403e01132d1`（`fix(rc-10b): expose projection repair control`） | RED：2 files / 8 failed | 1 passed（adapter `repairRuntimeReconciliationProjections is not a function` + mounted ×7 `Unable to find role="button" and name "Repair projections"`；测试侧 jest-dom matcher 误用修正如实记录于 §7.12）；correction RED：busy 边界强化断言 1 failed（`expected false to be true`，repair 在飞时 tenant 输入未禁用）→ GREEN：focused 3 files / 11 passed、全量 143 files / 898 passed（基线 142/890）、tsc clean、i18n check 9/9 en=zh=3857 gates 全 0、inventory 全空、build 预算通过（AgentDetail 350870/380000 gzip 96914/115000、vendor 591449/620000 gzip 186474/200000）、`git diff --check` clean | **Codex final verdict: PASS — Verified（本地，2026-08-27）**（并发/陈旧 tenant finding 同包 correction 复绿后终审通过；Codex 独立证据：focused 3 files / 11 tests passed in 844ms、全量 npm test 143 files / 898 tests passed in 3.01s、tsc --noEmit exit 0、i18n check 9/9 en=zh=3857 gates 0 且 inventory 全空、production build 7385 modules in 2.85s 预算通过、git diff --check clean） | 三服务部署已完成（HEAD `ec509c86` 全 SUCCESS，见 §7.10）；生产渲染复验未执行 | 未执行 | **局部闭环（本地 Verified + 已部署）**：Input/Authority/Execution/Evidence/Recovery/Consumption/Acceptance 有当前代码路径与 mounted 交互回归；生产渲染复验与 RC-10A 生产修复复验均 pending | 已部署（HEAD ec509c86 三服务 SUCCESS）；待生产渲染复验（控件可见/禁用态/回执真实计数/原地重载）；不宣称 RC-10 Closed、Day 1 完成或 A2A 完成 |
+| RC-10B | projection-repair 的已认证 operator UI（live gap：endpoint 已存在且 401 边界正确，但 adminApi 无方法、UI 无控件/回执，operator 无法从产品发起并消费修复）：新增 `RuntimeProjectionRepairReceipt` 类型与 `repairRuntimeReconciliationProjections`（URLSearchParams exact URL、limit 默认 100、按 core post 签名无 body）；Refresh 旁 "Repair projections" 控件（缺失/空白 tenant 与 busy 禁用、独立 "Repairing..." 标签）；本地化回执（examined/repaired 计数，`role="status"`）+ 原地列表重载（重载失败回执保留且错误并列；tenant 变更/新 repair 清陈旧回执）；绝不自动 resolve/archive/retry；**Codex 并发/陈旧 tenant finding 同包 correction：唯一 `busy = loading || repairing` 边界禁用 tenant 输入/Refresh/Repair/全部行内动作（header 保留 missing-tenant 禁用），`.admin-reconcile-search` 加 flex-wrap**。零后端改动、零新依赖。详见 §7.12 | `ef17a191222873af544058446c602403e01132d1`（`fix(rc-10b): expose projection repair control`） | RED：2 files / 8 failed | 1 passed（adapter `repairRuntimeReconciliationProjections is not a function` + mounted ×7 `Unable to find role="button" and name "Repair projections"`；测试侧 jest-dom matcher 误用修正如实记录于 §7.12）；correction RED：busy 边界强化断言 1 failed（`expected false to be true`，repair 在飞时 tenant 输入未禁用）→ GREEN：focused 3 files / 11 passed、全量 143 files / 898 passed（基线 142/890）、tsc clean、i18n check 9/9 en=zh=3857 gates 全 0、inventory 全空、build 预算通过（AgentDetail 350870/380000 gzip 96914/115000、vendor 591449/620000 gzip 186474/200000）、`git diff --check` clean | **Codex final verdict: PASS — Verified（本地，2026-08-27）**（并发/陈旧 tenant finding 同包 correction 复绿后终审通过；Codex 独立证据：focused 3 files / 11 tests passed in 844ms、全量 npm test 143 files / 898 tests passed in 3.01s、tsc --noEmit exit 0、i18n check 9/9 en=zh=3857 gates 0 且 inventory 全空、production build 7385 modules in 2.85s 预算通过、git diff --check clean） | 三服务部署已完成（HEAD `ec509c86` 全 SUCCESS，见 §7.10）；生产渲染复验未执行 | 未执行 | **局部闭环（本地 Verified + 已部署）**：Input/Authority/Execution/Evidence/Recovery/Consumption/Acceptance 有当前代码路径与 mounted 交互回归；生产渲染复验与 RC-10A 生产修复复验均 pending | 已部署（HEAD ec509c86 三服务 SUCCESS）；待生产渲染复验（控件可见/禁用态/回执真实计数/原地重载）；不宣称 RC-10 Closed、Day 1 完成或 A2A 完成。**2026-08-27 生产 finding 追加（首载假空/陈旧 tenant，deployed HEAD ec509c86 复现）**：本地包已交付（RED 3 failed/9 passed → StrictMode correction RED 1 failed（2 calls）→ GREEN focused 3 files/17、全量 144 files/911、tsc/i18n 双门 en=zh=3863/build 预算/diff-check 全绿，详见 §7.12 末节）；**Codex final verdict: PASS — Verified（本地）**（独立证据：createRoot 探针 strict_effect_setups=2、focused 17 in 1.37s、全量 911 in 3.73s、tsc exit 0、i18n 9/9 en=zh=3863 gates 0 inventory 全空、build 7385 modules in 2.83s 预算通过、diff-check clean、恰五授权文件）；**未 commit、未部署，生产在重新部署前仍表现该 bug；RC-10B 保持未 Closed** |
 
 `Unknown` 表示尚未以本轮当前生产证据判定，不能等同于缺失或完成。
 
@@ -1579,6 +1661,7 @@ owner 已过稿并明确说“开始”。先提交本文件作为恢复点；�
 - [ ] RC-10A 待办：生产复验（projection-repair 修 3 行投影、仅 archive `19c22c3d`、RootItem 9 行一致性核验、blocker/广播复验）；`b07de271`/`6c400e97` 两条 7 月真实任务留 owner/operator 决定，绝不自动清理。
 - [x] RC-10B（projection-repair 已认证 operator UI）本地代码 + failing-first 测试 + 本地验证 + WIP 证据已完成，含 Codex 并发/陈旧 tenant finding 的同包 correction（统一 `busy = loading || repairing` 边界禁用 tenant 输入/Refresh/Repair/全部行内动作；correction RED 1 failed → 复绿）：RED 8 failed/1 passed → GREEN focused 11 passed、全量 898、tsc/i18n 双门/build 预算/diff-check 全绿，见 §7.12 与 §10 行；**Codex final verdict: PASS — Verified（本地）**（独立证据：focused 11 in 844ms、全量 898 in 3.01s、tsc exit 0、i18n 9/9 en=zh=3857 gates 0 inventory 全空、build 7385 modules in 2.85s 预算通过、diff-check clean）。本地 commit `ef17a191222873af544058446c602403e01132d1`；**已随 HEAD ec509c86 三服务部署（全 SUCCESS，见 §7.10）；未执行生产复验、未触碰生产数据**。
 - [ ] RC-10B 待办：生产渲染复验（部署已完成，HEAD ec509c86 三服务 SUCCESS）（控件可见/禁用态/回执真实计数/原地重载）；RC-10A 生产修复复验（projection-repair 修 3 行投影、仅 archive `19c22c3d`、RootItem 9 行一致性核验、blocker/广播复验）与 A2A 仍 pending；不宣称生产已修复、RC-10 Closed、Day 1 完成或 A2A 完成。
+- [ ] RC-10B 生产 finding（首载假空 / 陈旧 tenant 队列，2026-08-27 Codex 复现于 deployed HEAD ec509c86：fresh navigation 后假「0 待处理项」，Refresh 后才见 50 行真实队列含 `19c22c3d`）：本地包已按 failing-first 完成（RED 3 failed/9 passed → Codex StrictMode finding correction RED 1 failed/12 passed（`expected 1 times, but got 2 times`）→ GREEN focused 3 files/17 passed、全量 144 files/911、tsc clean、i18n 9/9 en=zh=3863 gates 全 0、inventory 全空、build 预算通过、diff-check clean，见 §7.12 末节与 §10 行）；**Codex final verdict: PASS — Verified（本地，含 StrictMode correction 复验）**；**未 commit、未部署——生产在重新部署前仍表现该 bug**；RC-10B 保持未 Closed；已执行的 projection-repair 生产事实保留给后续生产证据包登记，本包不宣称其为已记录完成。
 - [x] RC-02 生产 finding 包（platform_admin audience 缺口 + grant/revoke 授权视图失效）已按 failing-first 完成：RED 3 failed / 23 passed（缺 audience option、revoke 后 review queue 不 refetch、目录缺 platformAdmins）→ GREEN focused 26 passed、全量 142 files / 890 passed、tsc clean、i18n 9/9 en=zh=3854 gates 全 0、build 预算通过、`git diff --check` clean；本地 commit `e871be23b7434b577db9d78b6422d6ccb484c559`（`fix(rc-02): refresh company knowledge authority views`）；**Codex 独立 final verdict：PASS — Verified（本地）**（focused 26 in 1.03s、全量 890 in 3.02s、tsc/i18n/build 预算、Docker 生产构建、lock 全 dev/audit 与基线一致——证据见 §7.3 末节与 §10 行）。已随 Day1 candidate 三服务部署上线；生产三步复核 pending，生产两遍 E2E 未执行，**未 Closed**。
 - [ ] RC-02 生产 finding 包待办：生产复核（platform_admin 可见并可选 "Platform administrators"、grant 后 review queue 无刷新即现、revoke 后 queue/workspace 即清）；生产两遍 E2E 仍 pending，**未 Closed**。
 - [x] RC-02B（Company Knowledge review 角色层级收口）本地代码+测试+证据已完成：根因=`evaluate_company_review_set` 精确角色匹配未接入 canonical `app.core.security.ROLE_HIERARCHY`，platform_admin 合法 approval 不满足默认 org_admin 权威（生产提案 `a87147d7-f153-4323-8528-098349543860` 永久 in_review 死锁）。修复=surgical 单文件：确定性 helper `satisfied_review_roles` + 评估角色集展开；存储 reviewer_role/policy/hash/全部治理守卫不变。RED（收集期 ImportError → helper-only 2 failed/24 passed → 真 PG 临时回退 1 failed `+ in_review`）→ GREEN（focused 29 passed、12 文件 bundle 111 passed、broad slice 135 passed、ruff check/format、diff-check clean，真 PG Docker-on）。**Codex final verdict: PASS — Verified（本地）**（独立证据：focused 29 passed in 8.63s、broad `-k company_knowledge` 135 passed/8085 deselected/1 pre-existing warning in 31.74s、fresh-process import smoke 通过、ruff/format/diff-check 全净）。证据见 §7.3 RC-02B 小节与 §10 行。本地 atomic commit `349752d25c4bee9fb3568979643a4df9611d4e54`；**已随 HEAD ec509c86 三服务部署（全 SUCCESS，见 §7.10）；未执行生产复核、未触碰生产数据**。

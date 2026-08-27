@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { adminApi, type RuntimeProjectionRepairReceipt, type RuntimeReconciliationAction, type RuntimeReconciliationTask } from '../../api/domains/admin';
@@ -22,39 +22,107 @@ function taskLabel(task: RuntimeReconciliationTask) {
   return task.child_agent_name || task.child_agent_id || task.parent_agent_id || task.task_id;
 }
 
+function resolveInitialTenantId(initialTenantId: string) {
+  if (initialTenantId) return initialTenantId;
+  if (typeof localStorage === 'undefined') return '';
+  return localStorage.getItem('current_tenant_id') || '';
+}
+
 export default function AdminRuntimeReconciliationSection({
   initialTenantId = '',
-  initialTasks = [],
+  initialTasks,
 }: Props) {
   const { t } = useTranslation();
-  const [tenantId, setTenantId] = useState(() => {
-    if (initialTenantId) return initialTenantId;
-    if (typeof localStorage === 'undefined') return '';
-    return localStorage.getItem('current_tenant_id') || '';
-  });
-  const [tasks, setTasks] = useState<RuntimeReconciliationTask[]>(initialTasks);
+  // The initial tenant is resolved exactly once per real mount, so render and
+  // the mount effect can never re-read different localStorage values.
+  const initialTenantRef = useRef<{ raw: string; trimmed: string } | null>(null);
+  if (initialTenantRef.current === null) {
+    const raw = resolveInitialTenantId(initialTenantId);
+    initialTenantRef.current = { raw, trimmed: raw.trim() };
+  }
+  const initialTenant = initialTenantRef.current;
+  // Single-flight holder for the initial request: React.StrictMode
+  // double-invokes mount effects (setup → synthetic cleanup → setup), and the
+  // surviving second setup must consume the same in-flight request instead of
+  // issuing a duplicate. A real unmount/remount gets a fresh ref and may
+  // issue a new request.
+  const initialLoadRef = useRef<Promise<RuntimeReconciliationTask[]> | null>(null);
+  const [tenantId, setTenantId] = useState(initialTenant.raw);
+  const [tasks, setTasks] = useState<RuntimeReconciliationTask[]>(initialTasks ?? []);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [repairing, setRepairing] = useState(false);
   const [repairReceipt, setRepairReceipt] = useState<RuntimeProjectionRepairReceipt | null>(null);
+  // The tenant the rendered queue truthfully belongs to. null means nothing
+  // has been successfully loaded for the current tenant binding, so neither a
+  // count nor an empty conclusion may be claimed. Explicitly seeded
+  // initialTasks are authoritative (SSR/tests) and count as already loaded.
+  const [loadedTenant, setLoadedTenant] = useState<string | null>(() =>
+    initialTasks !== undefined ? initialTenant.trimmed : null,
+  );
 
   // Unified busy boundary: while any reconciliation request is in flight, the
   // tenant input and every operator control are disabled so no tenant change or
   // semantic action can race the in-flight request or its follow-up reload.
   const busy = loading || repairing;
+  const bound = loadedTenant !== null && loadedTenant === tenantId.trim();
+
+  // Initial auto-load: PlatformDashboard mounts this section with no props, so
+  // the production path resolves the tenant from localStorage and must load
+  // the queue on its own instead of rendering the default [] as a false
+  // authoritative empty. Explicitly seeded initialTasks never trigger a
+  // duplicate fetch. Later tenant edits load only via explicit Refresh —
+  // never per keystroke. Late completions after a real unmount are ignored.
+  useEffect(() => {
+    if (initialTasks !== undefined) return;
+    const trimmed = initialTenant.trimmed;
+    if (!trimmed) return;
+    let active = true;
+    if (initialLoadRef.current === null) {
+      setLoading(true);
+      setError(null);
+      initialLoadRef.current = adminApi.listRuntimeReconciliation({ tenantId: trimmed, limit: 50 });
+    }
+    initialLoadRef.current.then(
+      (rows) => {
+        if (!active) return;
+        setTasks(rows);
+        setLoadedTenant(trimmed);
+        setLoading(false);
+      },
+      (err) => {
+        if (!active) return;
+        setError(err instanceof Error ? err.message : String(err));
+        setLoading(false);
+      },
+    );
+    return () => {
+      // StrictMode's synthetic cleanup only detaches this setup's handlers;
+      // the shared in-flight request is left for the surviving setup.
+      active = false;
+    };
+    // Mount-only by design: tenant edits are loaded explicitly via Refresh.
+  }, []);
 
   const onTenantChange = (value: string) => {
     setTenantId(value);
-    // A receipt belongs to the tenant it was produced for; never show a stale one.
+    // Rows, errors, and receipts belong to the tenant they were produced for;
+    // never show stale-tenant truth under a newly typed tenant.
+    setTasks([]);
+    setError(null);
     setRepairReceipt(null);
+    setLoadedTenant(null);
   };
 
   const load = async () => {
-    if (!tenantId.trim()) return;
+    const trimmed = tenantId.trim();
+    if (!trimmed) return;
     setLoading(true);
     setError(null);
     try {
-      setTasks(await adminApi.listRuntimeReconciliation({ tenantId: tenantId.trim(), limit: 50 }));
+      const rows = await adminApi.listRuntimeReconciliation({ tenantId: trimmed, limit: 50 });
+      setTasks(rows);
+      setLoadedTenant(trimmed);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -63,16 +131,19 @@ export default function AdminRuntimeReconciliationSection({
   };
 
   const applyAction = async (task: RuntimeReconciliationTask, action: RuntimeReconciliationAction) => {
-    if (!tenantId.trim()) return;
+    const trimmed = tenantId.trim();
+    if (!trimmed) return;
     setLoading(true);
     setError(null);
     try {
       await adminApi.applyRuntimeReconciliationAction(task.task_id, {
-        tenantId: tenantId.trim(),
+        tenantId: trimmed,
         action,
         reason: `operator ${action}`,
       });
-      setTasks(await adminApi.listRuntimeReconciliation({ tenantId: tenantId.trim(), limit: 50 }));
+      const rows = await adminApi.listRuntimeReconciliation({ tenantId: trimmed, limit: 50 });
+      setTasks(rows);
+      setLoadedTenant(trimmed);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -99,7 +170,9 @@ export default function AdminRuntimeReconciliationSection({
     // The receipt stays visible even when this follow-up reload fails; the
     // reload error is shown alongside it instead of hiding the server truth.
     try {
-      setTasks(await adminApi.listRuntimeReconciliation({ tenantId: trimmedTenantId, limit: 50 }));
+      const rows = await adminApi.listRuntimeReconciliation({ tenantId: trimmedTenantId, limit: 50 });
+      setTasks(rows);
+      setLoadedTenant(trimmedTenantId);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -115,7 +188,11 @@ export default function AdminRuntimeReconciliationSection({
             {t('admin.reconciliation.title', 'Runtime Reconciliation')}
           </div>
           <div className="admin-reconcile-count">
-            {tasks.length} {t('admin.reconciliation.openItems', 'open items')}
+            {bound
+              ? `${tasks.length} ${t('admin.reconciliation.openItems', 'open items')}`
+              : loading
+                ? t('common.loading', 'Loading...')
+                : t('admin.reconciliation.notLoaded', 'Queue not loaded')}
           </div>
         </div>
         <div className="admin-reconcile-search">
@@ -152,7 +229,15 @@ export default function AdminRuntimeReconciliationSection({
           )}
         </div>
       )}
-      {tasks.length === 0 ? (
+      {!bound ? (
+        loading ? (
+          <div className="admin-reconcile-empty">{t('common.loading', 'Loading...')}</div>
+        ) : error ? null : (
+          <div className="admin-reconcile-empty">
+            {t('admin.reconciliation.loadPrompt', "Refresh to load this tenant's reconciliation queue.")}
+          </div>
+        )
+      ) : tasks.length === 0 ? (
         <div className="admin-reconcile-empty">
           {t('admin.reconciliation.empty', 'No runtime tasks need reconciliation.')}
         </div>

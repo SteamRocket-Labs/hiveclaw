@@ -20,6 +20,7 @@ from app.models.session_v2 import (
     SessionTurnReplacement,
 )
 from app.services.chat_transcript import lock_transcript_session
+from app.services.runtime_terminal_settlement import TERMINAL_SETTLEMENT_STATUSES
 from app.services.session_v2_persistence import (
     AuthenticatedSessionAuthority,
     SessionEventDraft,
@@ -411,9 +412,10 @@ async def queue_admitted_human_input(
     if row.status != "accepted":
         # A re-dispatched steer that was already mailed into its target run
         # may have outlived it: the target terminalized without ever binding
-        # the mailbox item.  Re-check the mechanical run status and settle it
-        # through the same terminal rollover; every other settled row stays a
-        # pure replay.
+        # the mailbox item.  Re-check the mechanical run status against the
+        # exact terminal set and settle it through the same terminal
+        # rollover; nonterminal suspended/resumable targets stay live and
+        # every other settled row stays a pure replay.
         if (
             row.status == "queued"
             and row.intent == "steer_current_turn"
@@ -431,7 +433,7 @@ async def queue_admitted_human_input(
                 )
                 .with_for_update()
             )
-            if task is not None and task.status not in _ACTIVE_RUN_STATUSES:
+            if task is not None and task.status in TERMINAL_SETTLEMENT_STATUSES:
                 return await rollover_terminal_steer(db, authority=authority, row=row, command=command)
         return _receipt(row, replayed=True)
     if admission.state != "admitted":

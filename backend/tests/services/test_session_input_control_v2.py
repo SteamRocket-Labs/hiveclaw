@@ -2727,6 +2727,145 @@ async def test_terminal_steer_rollover_ack_loss_replay_never_duplicates(owner_se
         assert rolled_over_events == 1
 
 
+@pytest.mark.parametrize("nonterminal_status", ["suspended", "resumable"])
+async def test_dispatched_steer_is_never_rolled_over_while_target_run_is_nonterminal(
+    owner_sessionmaker, nonterminal_status
+) -> None:
+    """DAY1-A2A-TERMINAL-ROLLOVER-REVIEW-001 Codex P1 negative pin.
+
+    ``suspended`` (awaiting permission) and ``resumable`` are NONTERMINAL
+    RuntimeTask states: the same run later becomes running again and can
+    still bind the queued steer mailbox item, and the partial unique index
+    ``uq_runtime_tasks_active_web_chat_session`` treats both as active.
+    The terminal rollover lane must only roll steers whose target run is in
+    the exact terminal set (completed/failed/killed/skipped/
+    needs_reconciliation); it must never claim, re-attempt, or roll a steer
+    away from its original live suspended/resumable target run.
+    """
+
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionCommand, SessionInputAdmission, SessionTurnInput
+    from app.runtime.hooks import HookResult
+    from app.services.runtime_task_worker import (
+        recover_session_input_dispatches_once,
+        recover_terminal_target_session_inputs_once,
+    )
+    from app.services.session_human_input import queue_admitted_human_input
+    from app.services.session_input_admission import run_user_prompt_admission
+
+    tenant_id, user_id, agent_id, session_id, run_id = await _seed_session(owner_sessionmaker, active_run=True)
+    assert run_id is not None
+    async with owner_sessionmaker() as db:
+        authority = await _authority(db, user_id=user_id, agent_id=agent_id, session_id=session_id)
+        steered = await _accepted_input(
+            db,
+            authority=authority,
+            session_id=session_id,
+            run_id=run_id,
+            kind="steer_current_turn",
+            content=f"Steer into a {nonterminal_status} run",
+        )
+
+        async def allow(**_kwargs):
+            return HookResult()
+
+        await run_user_prompt_admission(
+            db,
+            authority=authority,
+            input_id=steered.input_id,
+            worker_id=f"nonterminal-{nonterminal_status}-admission",
+            hook_executor=allow,
+        )
+
+    dispatched = await recover_session_input_dispatches_once(
+        worker_id=f"nonterminal-{nonterminal_status}-dispatch",
+        tenant_id=tenant_id,
+        session_factory=owner_sessionmaker,
+    )
+    assert dispatched == {"claimed": 1, "dispatched": 1, "deferred": 0, "retried": 0}
+
+    successor_run_id = uuid.uuid5(steered.input_id, "session-v2-successor-run")
+    async with owner_sessionmaker() as db:
+        row = await db.get(SessionTurnInput, steered.input_id)
+        assert row is not None and row.status == "queued"
+        assert row.target_run_id == run_id and row.bound_round_id is None
+        # Truthful nonterminal transition: the awaiting-permission lane
+        # suspends (and later resumes) the SAME RuntimeTask row; a resumable
+        # run is equally recoverable.  Neither is a terminal settlement.
+        task = await db.get(RuntimeTask, run_id)
+        assert task is not None and task.status == "running"
+        task.status = nonterminal_status
+        await db.commit()
+        settled_admission = await db.scalar(
+            select(SessionInputAdmission).where(
+                SessionInputAdmission.input_id == steered.input_id,
+                SessionInputAdmission.input_revision == 1,
+            )
+        )
+        assert settled_admission is not None and settled_admission.dispatch_state == "dispatched"
+        settled_attempts = int(settled_admission.dispatch_attempts)
+        settled_version = int(settled_admission.version)
+        settled_receipt = dict(settled_admission.dispatch_receipt_json or {})
+
+    rollover = await recover_terminal_target_session_inputs_once(
+        worker_id=f"nonterminal-{nonterminal_status}-worker",
+        tenant_id=tenant_id,
+        session_factory=owner_sessionmaker,
+    )
+    # The locked replay recheck must also stay a pure replay for a live
+    # suspended/resumable target: no terminal rollover, no requeue.
+    async with owner_sessionmaker() as db:
+        authority = await _authority(db, user_id=user_id, agent_id=agent_id, session_id=session_id)
+        replay_receipt = await queue_admitted_human_input(db, authority=authority, input_id=steered.input_id)
+        await db.commit()
+
+    async with owner_sessionmaker() as db:
+        row = await db.get(SessionTurnInput, steered.input_id)
+        admission = await db.scalar(
+            select(SessionInputAdmission).where(
+                SessionInputAdmission.input_id == steered.input_id,
+                SessionInputAdmission.input_revision == 1,
+            )
+        )
+        command = await db.get(SessionCommand, steered.command_id)
+        successor = await db.get(RuntimeTask, successor_run_id)
+        session_tasks = await db.scalar(
+            select(func.count())
+            .select_from(RuntimeTask)
+            .where(
+                RuntimeTask.tenant_id == tenant_id,
+                RuntimeTask.parent_session_id == str(session_id),
+            )
+        )
+        rolled_over_events = await db.scalar(
+            select(func.count())
+            .select_from(ChatTranscriptEvent)
+            .where(
+                ChatTranscriptEvent.session_id == session_id,
+                ChatTranscriptEvent.event_type == "human_input.rolled_over",
+            )
+        )
+        target = await db.get(RuntimeTask, run_id)
+        assert rollover == {"claimed": 0, "dispatched": 0, "deferred": 0, "retried": 0}
+        assert replay_receipt.replayed is True and replay_receipt.status == "queued"
+        assert row is not None and row.status == "queued"
+        assert row.target_run_id == run_id
+        assert row.bound_round_id is None
+        assert row.rolled_over_to_turn_id is None
+        assert row.settlement_ref is None
+        assert admission is not None and admission.dispatch_state == "dispatched"
+        assert int(admission.dispatch_attempts) == settled_attempts
+        assert int(admission.version) == settled_version
+        assert dict(admission.dispatch_receipt_json or {}) == settled_receipt
+        assert (admission.dispatch_receipt_json or {}).get("kind") == "mailbox"
+        assert command is not None and command.status == "accepted"
+        assert successor is None
+        assert session_tasks == 1
+        assert rolled_over_events == 0
+        assert target is not None and target.status == nonterminal_status
+
+
 async def test_round_binding_consumes_only_admitted_inputs_in_fifo_order(owner_sessionmaker) -> None:
     from app.runtime.hooks import HookResult
     from app.services.session_human_input import (

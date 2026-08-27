@@ -23,6 +23,7 @@ from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import SessionCommand, SessionInputAdmission, SessionTurnInput
 from app.services.chat_transcript import lock_transcript_session
+from app.services.runtime_terminal_settlement import TERMINAL_SETTLEMENT_STATUSES
 from app.services.session_v2_persistence import (
     AuthenticatedSessionAuthority,
     resolve_session_command_authority,
@@ -419,7 +420,11 @@ async def recover_dispatched_terminal_steers_once(
     path, which rolls the steer over (``terminal_fallback=queue_next_turn``)
     and starts its deterministic FIFO successor run.  The claim predicate is
     purely mechanical: intent/status/fallback columns plus an exact
-    tenant/session-scoped RuntimeTask join on the terminal status.
+    tenant/session-scoped RuntimeTask join on exact terminal-status
+    membership.  ``suspended`` (awaiting permission) and ``resumable`` are
+    nonterminal: the same run becomes running again and can still bind the
+    mailbox item, so a negated active-set predicate would prematurely roll
+    the steer away from its live target.
     """
 
     now = datetime.now(timezone.utc)
@@ -440,7 +445,7 @@ async def recover_dispatched_terminal_steers_once(
             SessionTurnInput.status == "queued",
             SessionTurnInput.terminal_fallback == "queue_next_turn",
             SessionTurnInput.target_run_id.is_not(None),
-            RuntimeTask.status.notin_(_ACTIVE_RUN_STATUSES),
+            RuntimeTask.status.in_(TERMINAL_SETTLEMENT_STATUSES),
         )
         .order_by(SessionTurnInput.queue_ordinal, SessionInputAdmission.id)
         .limit(max(1, int(limit)))

@@ -2285,6 +2285,106 @@ zCode 自报“受影响套件 117 + 146 + 332 passed”的组合无法从当前
 ---
 
 
+## 7.18b DAY1-A2A-TERMINAL-ROLLOVER-REVIEW-001 — Codex review P1：终局 rollover lane 误用“非 active 集合”谓词，suspended/resumable 目标被提前 roll（本地候选 correction，未部署、Codex final verdict pending、未 Closed）
+
+记录时间 2026-08-28 Asia/Shanghai。基线 commit `9de6c45ed31bf34ca99d00b985e05b2e9a9a54e1`（不 amend、不重写）；本节为对该基线的**一个新的原子 correction commit** 的记录，writer 为 Kimi（唯一 writer），Codex 为 reviewer。
+
+### 状态取代声明（supersede，明确记录）
+
+§7.18 与 §10 清单行中“K3 接手独立复核（**未发现需修正的实现缺陷**）”的结论被本节**正式取代（superseded）**：Codex review 提出 P1 finding，证明首包实现存在一个真实实现缺陷（见下）。首包的 RED/GREEN 证据与 rollover lane 本身仍然成立，但“K3 复核无问题”这一判断作废，以本节为准。
+
+### Codex review finding（P1，逐字要点）
+
+新终局 rollover lane 在 `session_input_dispatch.py`（SQL 认领谓词 `RuntimeTask.status.notin_(_ACTIVE_RUN_STATUSES)`）与 `session_human_input.py`（锁定重放重查 `task.status not in _ACTIVE_RUN_STATUSES`）两处使用“NOT IN pending/running”的**否定 active 集合**判断终局。但 `RuntimeTask.status` 的权威契约（`app/models/runtime_task.py` `ck_runtime_tasks_status` 与部分唯一索引 `uq_runtime_tasks_active_web_chat_session`）认定 active-like 状态为 `pending/running/suspended/resumable`，精确终局集为 `completed/failed/killed/skipped/needs_reconciliation`：`suspended` 是 awaiting-permission 的**非终局**状态，同一 run 之后会变回 resumable/running 并仍可 bind 该 mailbox 项；`resumable` 同样可恢复。现行代码会把 queued steer 从它仍然活着的 suspended/resumable 目标 run 上**提前 roll 走**。
+
+### 根因（最早共享成因）
+
+唯一成因是两处把“非 pending/running”当作“终局”的否定集合谓词；权威精确终局常量 `TERMINAL_SETTLEMENT_STATUSES = frozenset({"completed", "failed", "killed", "skipped", "needs_reconciliation"})` 早已存在于 `app/services/runtime_terminal_settlement.py`（RC-10A），lane 没有复用它。
+
+### RED（修复前当前 9de 源码实测，真 PG Testcontainers + Docker-on）
+
+新增参数化负向回归 `test_dispatched_steer_is_never_rolled_over_while_target_run_is_nonterminal[suspended/resumable]`：真实构造 admitted+dispatched+queued steer（目标 run active 期 mailbox 结算），随后把**同一** RuntimeTask 行真实地置为 `suspended` / `resumable`（对应 awaiting-permission 挂起与可恢复续跑），调用真实恢复入口 `recover_terminal_target_session_inputs_once`：
+
+```
+cd backend && .venv/bin/python -m pytest tests/services/test_session_input_control_v2.py \
+  -k "never_rolled_over_while_target_run_is_nonterminal" -v
+# 2 failed, 58 deselected in 9.36s
+```
+
+两例均在 `rollover == {claimed:0,…}` 断言失败，实测 `{'claimed': 1, 'dispatched': 0, 'deferred': 0, 'retried': 1}`——现行代码对 suspended 与 resumable 目标**错误认领**该 admission 并试图 roll（随后因目标 run 仍占 active 唯一索引而 successor 启动 409、落入 retried，留下额外 attempt/错误 churn），证明 P1 缺陷真实存在。
+
+### 修正范围（最小，不扩大）
+
+仅两处谓词改为**精确正向终局集成员判定**，复用既有权威常量 `TERMINAL_SETTLEMENT_STATUSES`（module 级仅依赖 `app.models.runtime_task`，import 环安全，已实测两模块可导入）：
+
+1. `backend/app/services/session_input_dispatch.py` `recover_dispatched_terminal_steers_once`：SQL 认领谓词 `RuntimeTask.status.notin_(_ACTIVE_RUN_STATUSES)` → `RuntimeTask.status.in_(TERMINAL_SETTLEMENT_STATUSES)`；docstring 记录 suspended/resumable 非终局语义。
+2. `backend/app/services/session_human_input.py` `queue_admitted_human_input` 锁定重放重查：`task.status not in _ACTIVE_RUN_STATUSES` → `task.status in TERMINAL_SETTLEMENT_STATUSES`；注释同步。
+
+五个终局状态（completed/failed/killed/skipped/needs_reconciliation）的既有终局竞态行为完全保留（三条原 rollover 回归原样通过，见 GREEN）；不改 `_ACTIVE_RUN_STATUSES` 的既有正向用途（初始派发 active 检查、successor 就绪门），不触碰任何无关文件，无 schema/migration。
+
+### 原始竞态的可证伪性加强（probe，不提交、零 git mutation）
+
+首包 RED 为 `ImportError`（缺失恢复入口），fail 在 setup 之前。本次在 pre-fix 父 commit `f04d09afcb0cb2af9e705471caa17ccfe0436f5f` 的隔离 `git archive` 展开目录 `/tmp/day1-rollover-probe`（主工作树与 git 均不动）写入行为探针 `tests/services/test_probe_terminal_rollover_race.py`：只 import 该父 commit 真实存在的符号，完整构造 active dispatch → queued/dispatched → 生产终局路径 `_apply_terminal_task_update_and_settle` → 该 commit 既有恢复 sweep 两轮全 0，最后断言**期望行为**（行 `rolled_over` + 恰一确定性 successor run）：
+
+```
+cd /tmp/day1-rollover-probe/backend && \
+  /Users/rocky243/vc-saas/hiveclaw-main/backend/.venv/bin/python -m pytest \
+  tests/services/test_probe_terminal_rollover_race.py -v
+# 1 failed in 8.96s — AssertionError: pre-fix behavior: steer stays 'queued'
+#   with no recovery entry（行为断言失败，而非 ImportError）
+```
+
+探针文件不提交；命令与结果如上逐字记录。
+
+### GREEN（修正后当前 checkout 实测，真 PG Testcontainers + Docker-on）
+
+```
+cd backend && .venv/bin/python -m pytest tests/services/test_session_input_control_v2.py \
+  -k "terminal_steer_rollover or dispatched_steer_rolls_over or never_rolled_over_while_target_run_is_nonterminal" -v
+# 5 passed, 55 deselected in 11.53s（3 条原 rollover 回归 + suspended/resumable 两负向）
+.venv/bin/python -m pytest tests/services/test_session_input_control_v2.py \
+  tests/services/test_runtime_task_worker.py tests/architecture/test_session_v2_live_ingress.py
+# 95 passed in 33.76s（60 + 18 + 17）
+.venv/bin/python -m pytest tests/architecture/ tests/api/test_chat_session_runs.py \
+  tests/services/test_session_terminal_outcome_v2.py tests/services/test_session_command_runtime.py \
+  tests/services/test_session_v2_persistence.py tests/services/test_session_permission_control_v2.py
+# 335 passed, 1 warning in 30.89s（warning 为 pre-existing Starlette deprecation）
+.venv/bin/python -m pytest tests/services/
+# 3912 passed in 157.72s (0:02:37)
+.venv/bin/python -m ruff check <本包 3 文件>   # All checks passed!
+.venv/bin/python -m ruff format --check <本包 3 文件>   # 3 files already formatted
+git diff --check   # clean
+```
+
+两条负向最终钉死（suspended 与 resumable 各自）：恢复入口 `{claimed:0, dispatched:0, deferred:0, retried:0}` 零认领；输入行保持 `queued`、仍绑定原 `target_run_id`、`bound_round_id` 为 NULL、`rolled_over_to_turn_id`/`settlement_ref` 均为 NULL；admission 保持 `dispatched` 且 `dispatch_attempts`/`version`/mailbox 收据逐字节无 churn；command 保持 `accepted`；零 `human_input.rolled_over` 事件；无 successor RuntimeTask（session 内任务计数恒 1）；锁定重放重查 `queue_admitted_human_input` 返回 `replayed=True` 纯重放；目标 run 保持原非终局状态。
+
+### 七原子
+
+1. **输入**：目标 run 处于 suspended（awaiting-permission）/resumable 的 admitted+dispatched+queued steer；既有行结构，可恢复。
+2. **权威**：终局判定事实源回收至权威常量 `TERMINAL_SETTLEMENT_STATUSES`（RC-10A 共享机械终局边界）与 `ck_runtime_tasks_status`/active 部分唯一索引定义的语义；tenant/agent/session 三重绑定不变。
+3. **执行**：执行入口不变（worker tick lane + canonical `_dispatch_one` 重放重查）；两处判定共享同一精确终局集，消除“否定 active 集合”旁路语义。
+4. **证据**：非终局目标下零 rolled_over 事件、零 successor、admission 零 churn（测试逐字段钉死）；终局目标下证据面与首包一致（3 条原回归原样通过）。
+5. **恢复**：suspended/resumable run 恢复 running 后仍可在后续轮次 bind 原 mailbox 项，steer 不再被提前 roll 走；终局化后 rollover 幂等语义不变。
+6. **消费**：原目标 run 继续消费其 mailbox；终局场景 successor 消费路径不变。
+7. **验收**：suspended/resumable 双负向 failing-first（RED 2 failed → GREEN 5 passed）+ 95/335/全量 3912 + Ruff 双门 + diff 检查；probe 把首包 RED 从 ImportError 升级为行为失败，命令结果逐字记录。
+
+### 残余风险与精确边界
+
+- 初始派发路径的 active 检查（`_ACTIVE_RUN_STATUSES = {pending, running}` 的正向用途，9de 之前既有）不在本包授权范围；若需把 suspended/resumable 纳入初始 steer 的 active 判定，另立包评估。
+- `terminal_fallback="reject"` orphan 维持 §7.18 既有边界不重开。
+- 生产部署前无生产影响；生产既有 orphan 的 rollover 仍待部署后由 lane 自动完成。
+
+### 回滚
+
+revert 本 correction commit 即回到 9de 基线行为（含 P1 缺陷）；无 schema/数据变更，无部署、无 push。
+
+### 状态（明确，不过度宣称）
+
+**本地候选 correction：未 push、未部署、未生产 retest；Codex final verdict pending（不写 PASS）；不宣称生产已修复；RC-03 与 Day1 保持 open；包未 Closed。** 下一步：Codex re-review → owner 授权后与基线包一并三服务部署 → 生产复验。
+
+---
+
+
 ## 8. 两个工作日的执行节奏
 
 ### 开工前 Gate 0 — owner 过稿（已完成）
@@ -2509,4 +2609,4 @@ owner 已过稿并明确说“开始”。先提交本文件作为恢复点；�
 - [x] DAY1-A2A-RECEIPT-SNAPSHOT-001（A2A 生产发现：异步委派 `e8fa186d-7e9e-4c31-ac23-7d348d3e71a2`/child session `2b2698f4-00bf-4a1e-b1f3-2c8778ff10c6` 恢复派发进入 `needs_reconciliation`、blocker=`a2a_request_snapshot_drift`；Codex 生产只读精确证明根因 = `delegate_async` 把缺省 `edit_mode` 归一化为 `create_or_update` 后参与 `_delegation_request_hash`，而无 target artifacts 时 `_build_runtime_task_metadata` 不持久化 `edit_mode`，`_build_delegation_request_from_runtime_record` 重建 `edit_mode=None`——expected `2c29cf…` vs actual `f04402…`，authority/capability/policy/principal 四者一致仅 request_hash 不同）本地代码 + failing-first 测试 + 本地验证 + WIP 证据已完成：新增真实持久 dispatch/restart rebuild 集成回归（真 PG：真实 `delegate_async` → `create_runtime_task_record` → 清进程内状态模拟重启 → 真实 rebuild → hash 对比 + `dispatch_persisted_async_delegation`），RED 6 failed/1 passed 覆盖五类快照形状（默认 edit_mode 无 artifact、显式 `modify_existing` 无 artifact、artifacts+显式 `create_new`、shorthand、shorthand+artifacts 列表——后三类为本轮审计新发现的同根因潜在漂移：持久化的是合并视图而 dispatch hash 消费原始列表 / artifacts-only 时合成 `paths[0]`）；修复 = orchestrator 三处 surgical 改动（hash 对 canonical 投影计算——id/path/artifacts/edit_mode 全部经与持久化重建相同的归一化器；metadata 无条件持久化 rebuild 输入快照含 `edit_mode`/`interaction_type`/调用方实际 shorthand；rebuild 从持久 metadata 读 `interaction_type`），receipt 验证 `_delegation_authority_receipt_failure` 零改动、真实篡改 guard（messages→`a2a_request_snapshot_drift`、permission profile→`a2a_authority_snapshot_drift`）保持 typed hold，held 生产行不被静默翻转（resume 只扫 pending/running/suspended）；GREEN 集成 7 passed、`tests/agents/` 297、`tests/runtime/`+`tests/architecture/` 1038、A2A/runtime-task bundle 99、reconciliation 8、delegation 工具面 166、邻接 integration 3、ruff check/format 通过，metadata 键 live-consumer 全扫（frontend/api 零消费者）——证据见 §7.16。**本地候选：未 push、未部署、未生产 retest，包未 Closed（待三服务部署后生产验证 fresh 异步委派经重启/worker claim 恢复派发不再出现该 blocker）；不做生产数据修复/migration（JSONB 直接吸收新键）；既有 6 条 held 行留 owner/operator 经既有 reconcile 路径决定；不宣称 RC-03/A2A/Day 1 完成。**范围外如实记录：`agent_activity_logs.owner_user_id` ORM/migration 漂移（模型声明列、alembic 链从未给该表加列）致 delegation 活动 INSERT best-effort 失败，不影响主路径，未在本包处置。（2026-08-27 correction：Codex 对 `942aeac2` review 提出两个验收 gap——正向场景全部默认 `interaction_type` 未证伪非默认值 rebuild 塌缩、正向用例丢弃 spawns 使 spawn 行删除仍假绿——已作独立 correction 包 `test(day1): prove A2A snapshot restart consumption` 修正：`_dispatch_delegation` 支持透传 `interaction_type` + 新增 `agent_message`（`send_message_to_agent` 真实值）正向场景 + 每正向场景恰一次 spawn/task_id 绑定/spawn request hash==receipt hash 断言；隔离 parent `38ff9c1d` worktree 实测新 probe RED 1 failed（expected `69d0378d…` vs rebuilt `fdcde278…`，interaction_type 塌缩真实漂移），当前 HEAD GREEN focused **8 passed**、`tests/agents/` 297、ruff 全过，orchestrator.py 零改动、原 6 failed/1 passed 历史不改写；证据见 §7.16 correction 小节。2026-08-27 终审：**Codex final verdict: PASS — Verified（本地）**——实现 `942aeac2` 全 diff 无生产缺陷、独立复跑 `tests/agents/` 297 + `tests/runtime/`+`tests/architecture/` 1038 + focused pre-correction 7；correction `589dbfdd` 当前 HEAD 独立复跑 focused **8 passed in 11.46s**、ruff check/format 两文件全过、`git show --check` clean，两个 gap 均闭合（详见 §7.16 终审小节）。包仍未 push、未部署，生产部署与 fresh signed-in A2A retest open，未 Closed；既有 6 条 held 行维持披露、不宣称自动修复；不宣称 A2A capability/Day 1 完成。）（2026-08-28 更新：修复链 `942aeac2`+`589dbfdd` 已随 HEAD `2df8f2f1` 三服务部署全 SUCCESS，见 §7.17；fresh signed-in A2A 生产 retest 仍 open，包未 Closed；既有 6 条 held 行维持披露。）
 - [x] DAY1 Knowledge/A2A 闭环三服务生产部署已完成（2026-08-28 Asia/Shanghai 记录；三 deployment 创建于 UTC 2026-08-27 约 15:59–16:00；**部署新鲜度/健康 bounded 包 Closed**）：部署源精确 committed HEAD `2df8f2f1e85589b6e0dba057b59451b6d1bab96b`（携带 §7.14 修复 `b404e160`、§7.15 修复 `8748b2eb`、§7.16 修复 `942aeac2`+correction `589dbfdd`，其余为 docs-only 提交），Railway production project `dd959a13-19f9-497a-9704-42c310eae230` environment production；backend deployment `195eaa35-b873-42bd-9845-b081a20d4fe6`（cliMessage `deploy Day1 knowledge and A2A closure 2df8f2f1 backend archive-root`，digest `sha256:df338da1c6d0421d672b9cdd5f12b89f76f90938dba499025236670b087bd704`）/ backend-api `41bfcdcc-4db2-490c-8d8d-972068eedf9c`（cliMessage `deploy Day1 knowledge and A2A closure 2df8f2f1 backend-api root`，digest `sha256:7e747bf2680c429352c5b66781a533bafaa289bbfe50a0ed753024eb90244ab3`）/ frontend `368ecc16-15d8-4179-86bb-d4254d9acc83`（cliMessage `deploy Day1 knowledge and A2A closure 2df8f2f1 frontend archive-root`，digest `sha256:08f29530e51d2dd399d1ed829c8a49ca9efe0d999f8796b1a2ba025639156eef`）三 deployment 均 SUCCESS；backend startup 日志证明 Alembic actual/expected head 均 `merge_incident_kimi_0725`、schema readiness ready=true（checked_table_count 174、checked_trigger_count 4、issues []）、RLS `app_rls` refresh/readiness 通过、ToolSeeder 日志 `Updated parameters_schema: read_company_kb`、uvicorn startup 正常；rollout 期 backend healthcheck/公共 curl 短暂 502 为 DEPLOYING transient（如实记录、非缺陷）；最终 backend `/api/health` HTTP 200（status ok、version 1.7.0、RLS strict 无 violations、vercel_sandbox 探针 deny-all/network_denied/workspace_round_trip 通过、daemons healthy）；首个 post-SUCCESS 快照 `runtime_task_worker` running:false 为 startup 期观测，15 秒后第二快照 running:true（worker_id `da357e376101:21`、last_error null）、`web_chat_stream_forwarder` running true——记为 startup sequencing 非未决失败；frontend 根 HEAD HTTP 200；证据见 §7.17。**仅关闭 bounded 部署新鲜度/健康包：fresh signed-in Knowledge E2E（§7.14 缺陷 A/B 复测、§7.15 segment_ids/schema-repair 复测）与 fresh signed-in A2A E2E（§7.16 重启恢复派发复验）仍 open，三包各自保持未 Closed；不宣称 Knowledge、A2A、RC-03 或 Day1 Closed。**
 
-- [x] DAY1-A2A-TERMINAL-ROLLOVER-001（A2A 生产发现：续发 steer 在父 run active 期 admitted+dispatched 进 mailbox 后错过最终模型轮次，父 run 终局化后无 `applied`/`rolled_over` 事件、无 successor run——生产实例父 session `41dd817a-b4f2-47db-adb8-ba7d1f8d0a85` / 父 run `b0905f36-f87b-5ce6-bb3d-abf87f9cd772` / 子委派 `f96b3080-fbc7-42e5-9722-c719c5be72f3` completed / 续发输入 `d9f2ddde-9b03-4bf5-abdf-5dd2ba43e352`）本地代码 + failing-first 测试 + 本地验证 + WIP 证据已完成：最早成因 = `recover_admitted_session_inputs_once` 只认领 pending/stale-dispatching admission，已 dispatched 的 queued steer 在目标 run 终局后无恢复入口；修复 = worker 既有 loop 内新增 durable 终局 rollover lane（`recover_dispatched_terminal_steers_once`，纯机械谓词 admitted+dispatched+steer+queued+`queue_next_turn` fallback+目标 run 终局 join，SKIP LOCKED + FIFO + 既有租约语义），复用 canonical `_dispatch_one` → `queue_admitted_human_input` 新增机械终局重查 → 既有 `rollover_terminal_steer` 结算 → `_start_fifo_successor_if_ready` 恰一确定性 successor；明确不重开 bound/applied/`answer_request`/无 fallback steer；幂等（重放/重复 sweep 零效果、ACK-loss 由既有 stale sweep 接管、successor run 确定性 id 恒 1）。本包由 zCode 开始（实现+测试后 provider 流中断，未提交），K3 接手独立复核（未发现需修正的实现缺陷）并独立复跑：RED 3 failed in 8.44s（HEAD 隔离源码 + 仅覆盖新测试文件，`ImportError: recover_terminal_target_session_inputs_once`，与 zCode 记录的 missing recovery entry 一致）→ GREEN 3 passed in 10.00s；受影响 bundle 93 passed in 33.45s；邻接 bundle 335 passed/1 pre-existing warning in 31.00s；全量 tests/services 3910 passed in 156.26s；ruff check/format 双门通过；zCode 自报 117+146+332 口径不可复现，以 §7.18 实测为准。证据见 §7.18 与 §10 行。**本地候选：未 push、未部署、未生产 retest，包未 Closed；不宣称 Codex final verdict、不宣称生产已修复、不宣称 RC-03 Closed 或 Day1 完成。** 残余：`terminal_fallback="reject"` orphan 为既有语义明确不重开；rollover 延迟以 worker tick 为上界；生产既有 orphan 部署后由 lane 自动 rollover，无需手工数据动作；回滚=revert 本 commit。
+- [x] DAY1-A2A-TERMINAL-ROLLOVER-001（A2A 生产发现：续发 steer 在父 run active 期 admitted+dispatched 进 mailbox 后错过最终模型轮次，父 run 终局化后无 `applied`/`rolled_over` 事件、无 successor run——生产实例父 session `41dd817a-b4f2-47db-adb8-ba7d1f8d0a85` / 父 run `b0905f36-f87b-5ce6-bb3d-abf87f9cd772` / 子委派 `f96b3080-fbc7-42e5-9722-c719c5be72f3` completed / 续发输入 `d9f2ddde-9b03-4bf5-abdf-5dd2ba43e352`）本地代码 + failing-first 测试 + 本地验证 + WIP 证据已完成：最早成因 = `recover_admitted_session_inputs_once` 只认领 pending/stale-dispatching admission，已 dispatched 的 queued steer 在目标 run 终局后无恢复入口；修复 = worker 既有 loop 内新增 durable 终局 rollover lane（`recover_dispatched_terminal_steers_once`，纯机械谓词 admitted+dispatched+steer+queued+`queue_next_turn` fallback+目标 run 终局 join，SKIP LOCKED + FIFO + 既有租约语义），复用 canonical `_dispatch_one` → `queue_admitted_human_input` 新增机械终局重查 → 既有 `rollover_terminal_steer` 结算 → `_start_fifo_successor_if_ready` 恰一确定性 successor；明确不重开 bound/applied/`answer_request`/无 fallback steer；幂等（重放/重复 sweep 零效果、ACK-loss 由既有 stale sweep 接管、successor run 确定性 id 恒 1）。本包由 zCode 开始（实现+测试后 provider 流中断，未提交），K3 接手独立复核并独立复跑（**注：K3“未发现需修正的实现缺陷”的复核结论已被 §7.18b 正式取代——Codex review P1 证明首包 lane 误用否定 active 集合谓词、会把 steer 从 suspended/resumable 活目标上提前 roll 走，已由后续原子 correction commit 修正为精确终局集判定**）：RED 3 failed in 8.44s（HEAD 隔离源码 + 仅覆盖新测试文件，`ImportError: recover_terminal_target_session_inputs_once`，与 zCode 记录的 missing recovery entry 一致）→ GREEN 3 passed in 10.00s；受影响 bundle 93 passed in 33.45s；邻接 bundle 335 passed/1 pre-existing warning in 31.00s；全量 tests/services 3910 passed in 156.26s；ruff check/format 双门通过；zCode 自报 117+146+332 口径不可复现，以 §7.18 实测为准。证据见 §7.18 与 §10 行。**本地候选：未 push、未部署、未生产 retest，包未 Closed；不宣称 Codex final verdict、不宣称生产已修复、不宣称 RC-03 Closed 或 Day1 完成。** 残余：`terminal_fallback="reject"` orphan 为既有语义明确不重开；rollover 延迟以 worker tick 为上界；生产既有 orphan 部署后由 lane 自动 rollover，无需手工数据动作；回滚=revert 本 commit。

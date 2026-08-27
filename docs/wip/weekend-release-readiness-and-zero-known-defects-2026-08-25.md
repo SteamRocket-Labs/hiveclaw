@@ -1749,7 +1749,48 @@ Input = 用户在 active session 完成 turn（live 流 + 终局信号）；Auth
 
 **本地候选包，未部署、未生产复验——不宣称生产已修复。** Codex verdict 待定；转为 Closed 的条件：三服务同 HEAD 部署全 SUCCESS + signed-in 生产 retest 通过（turn 终局后不 reload 即渲染蓝图卡片、0 running、completed runtime 行可见）。上游残余风险（如实记录，本包有意不扩大范围）：canonical live 投递的 Redis Pub/Sub 无持久 stream，forwarder 重启窗口内的帧仍会丢失——本修复使消费端在每个终局边界自愈，终局前的 mid-turn 帧仍依赖中继（mid-stream gap 已有既有恢复）；若未来要求 mid-turn 也不丢帧，需为 `SESSION_EVENT_LIVE_CHANNEL` 引入 durable stream/consumer group（独立包评估）。RC-03/Day1 保持 open；不触碰生产数据；`.ultra/.runtime/compact-snapshot.md`、`output/`、`tmp/pdfs/` 未触碰；未 push、未 deploy。
 
+### Follow-up 2（2026-08-27，zCode 垂直验收自审：对账尾部结构化卡片 normalize 断链 — 真实缺陷，RED→GREEN）
+
+**缺口**：原包测试只证明 live terminal `done` 帧调用 `reconcileSessionTranscript`（projector 依赖 mock 断言），未证明对账回放的 durable 尾部里真实 `tool_result.completed`（preview_agent_blueprint）经当前真实 replay/normalize 路径成为 UI 可消费的 hr_preview 结构化卡片。补垂直验收时证实为**真实行为缺陷**，非纯覆盖缺口。
+
+**根因（当前 checkout 源码逐层核实）**：生产 web chat 工具事件唯一持久化路径是 canonical V2 outbox（`web_chat_runtime._persist_legacy_tool_call` 仅被自身测试引用；生产绑定 `persist_tool_call=_persist_tool_call`）。其 `tool_result.completed` payload 形状（`session_tool_runtime.complete_tool_invocation`）= `{invocation_id, provider_request_id, provider_tool_use_id, outcome, retryable, content, content_hash, content_or_error_ref, parts}`——结果字符串在 `content`，**无** `tool_name`/`result` 字段（`tool_name` 只在 `tool_call.started` payload）；call↔result 经事件顶层 `invocation_id` 配对。canonical 投影 `projectCanonicalItem`（sessionEventConsumer.ts）对 tool 项产出 `toolName`/`toolStatus`/`toolResult`（经 `itemDisplayContent` 取 `content` 字符串）但**不产 `toolMeta`**。初始加载路径（selectSession → `projectCanonicalTranscriptSnapshot`）带 `parseMessage: parseChatMsg` 补 normalize（= reload 后卡片恢复的原因）；而 live socket canonical 增量与终局对账（`reconcileSessionTranscript → backfillSessionTranscript → applyTranscriptToSession → applyCanonicalSessionSnapshot.onMessages`）**无任何 parse**——toolMeta 恒 undefined → `isDedicatedToolCardMessage`（chatDisclosureReducer）false → 会话面该 tool 行渲染 null（`StructuredToolResultBody`/`HrBlueprintPreviewCard` 不挂载）。即原包 §7.13 Consumption 原子宣称的「蓝图卡片经 store→`projectSessionEventStoreToMessages` 真实渲染」仅在 reload 路径成立，live/对账路径不成立：终局对账只补回"存在该 tool 行"，未补回结构化卡片。
+
+**修复（最小 GREEN，单 seam）**：`sessionEventConsumer.ts` `projectCanonicalItem` tool 分支接入既有共享 normalizer `normalizeToolCallResult(toolName, toolResult)`（与 live legacy 帧路径、`parseChatMsg`/`normalizeToolCallMessage`、`normalizeStoredChatMessage` 同一实现），产出 `toolResult=displayResult`、`toolRawResult=raw`（byte-faithful 证据保留）、`toolMeta`。一个 seam 同时修复 live canonical 增量与终局对账两路；初始加载的 parseChatMsg 二次 normalize 幂等（同 normalizer 契约）。`AgentDetail.tsx` 零改动（行数预算不动，实测 2899 未变）；零后端改动；无轮询/timer/reload；Model Agency Boundary 不变（纯展示投影，不触碰任何模型输出字节）。该 seam 的同类结构化卡片（plan_proposal / user_clarification / workflow_preview / dynamic_workflow_proposal / plan_mode_request / create_employee_success）因同一 normalize 接入同步受益——同一缺陷类，非范围扩张。
+
+**新测试与接线证明**：`sessionReconcileToolProjection.test.ts` 单测试垂直贯穿 ① live terminal done 帧 → `projectSessionSocketEvent` 断言 `reconcileSessionTranscript`+`invalidateSessionRuntimeQueries`+`markActiveRunTerminal`（终局 read-model invalidation 契约仍在）② 对账回放（真实形状事件逐个过 `consumeSessionEnvelope`+`applyCanonicalSessionSnapshot`，onMessages 语义与 AgentDetail.tsx:465 完全一致，terminal 经 `mergeCanonicalTerminalMessages`）③ 断言 exactly-one tool 行、`toolName='preview_agent_blueprint'`、`toolStatus='done'`、`toolMeta.kind='hr_preview'` 且 blueprintId/version/draft_status/name/mission/firstMission/primaryUsers/coreOutputs/riskClass 保留、`toolRawResult` byte-faithful（JSON 复解析命中 blueprint_id/draft_status）、`isDedicatedToolCardMessage=true`（UI 可消费门）、终局 assistant 回答与 user 行仍在（不只 done 文本）。零新 seam、零 mock 掩盖——被改 seam `projectCanonicalItem` 的唯一 live 消费方 = `AgentDetail.applyTranscriptToSession`（AgentDetail.tsx:447-465），live socket projector、`backfillSessionTranscript`、`selectSession` hydration 三条生产路径共用；fixture 形状逐字段对齐当前 backend 生产 writer（`session_tool_runtime.prepare_tool_invocation`/`complete_tool_invocation`、`hr.py preview_agent_blueprint`、`hr_creation_service.hr_creation_draft_payload`），非自造 schema（首跑曾因 fixture 漏掉事件顶层 `invocation_id` 出现 2 行 tool 消息——按生产契约修正后 pairing 正常，断点唯一落在 toolMeta，证明 RED 是真实行为而非 fixture 伪影）。
+
+**RED（修复前，frontend/ 实测）**：
+
+```text
+frontend$ npx vitest run src/pages/agent-detail/sessionReconcileToolProjection.test.ts
+Test Files 1 failed (1)
+AssertionError: expected undefined to be 'hr_preview'
+  ❯ expect(card.toolMeta?.kind).toBe('hr_preview')
+（toolName/toolStatus/exactly-one 断言先通过——pairing 经顶层 invocation_id 正常，断点唯一在 toolMeta）
+```
+
+**GREEN（修复后，frontend/ 实测）**：
+
+```text
+frontend$ npx vitest run src/pages/agent-detail/sessionReconcileToolProjection.test.ts
+Test Files 1 passed (1)；Tests 1 passed (1)
+frontend$ npx vitest run src/pages/agent-detail/
+Test Files 43 passed (43)；Tests 445 passed (445)（含 ArchitectureSimplicityContract 预算测试）
+frontend$ npx vitest run src/pages/AgentDetail.test.tsx
+Test Files 1 passed (1)；Tests 9 passed (9)
+frontend$ NODE_OPTIONS=--no-experimental-webstorage npx vitest run
+Test Files 145 passed (145)；Tests 923 passed (923)
+frontend$ npm run build
+tsc + vite OK；AgentDetail 351189/380000 bytes、gzip 96985/115000；vendor 591449/620000 bytes、gzip 186474/200000
+git$ git diff --check → clean
+```
+
+**Changed files（本 follow-up）**：`frontend/src/pages/agent-detail/sessionEventConsumer.ts`（`projectCanonicalItem` tool 分支接入 `normalizeToolCallResult`）、`frontend/src/pages/agent-detail/sessionReconcileToolProjection.test.ts`（新增垂直测试）、本 WIP（§7.13 Follow-up 2/§13）。零后端改动、零新依赖、无 i18n 文案（无新 UI 字符串）。
+
+**状态**：本地候选（未部署，未 push）。生产复验条件与原包一致：三服务同 HEAD 部署 + signed-in 生产 retest——终局后不 reload 即渲染 hr_preview **结构化卡片**（本 follow-up 前，即便对账补回 tool 行，卡片仍只在 reload 后出现）。
+
 ---
+
 
 ## 8. 两个工作日的执行节奏
 
@@ -1963,3 +2004,5 @@ owner 已过稿并明确说“开始”。先提交本文件作为恢复点；�
 - [ ] DAY1-LIVE-TAIL-001 待办：Codex 独立 review/verdict；三服务同 HEAD 部署 + signed-in 生产 retest（终局后不 reload 即渲染蓝图卡片、0 running、completed runtime 行可见）通过后方可评估 Closed——**本地候选包，未部署，不宣称生产已修复**；合成资产清理（两 session、三 blueprint 草稿、三 synthetic agent）待 owner 授权；上游残余风险如实记录（`SESSION_EVENT_LIVE_CHANNEL` Pub/Sub 无持久 stream，mid-turn 帧仍依赖中继，未来如需 mid-turn 不丢帧另立包评估 durable stream）。RC-03/Day1 保持 open。
 - [x] DAY1-LIVE-TAIL-001 follow-up（terminal reconcile rejected Promise 未 containment，2026-08-27 自审于本地候选 HEAD `40e96056`）已按 failing-first 原子修复：根因 = `40e96056` 新增的两处 fire-and-forget 对账触发（projector 终局帧 `reconcileSessionTranscript` 回调与 active-run-absence 策略分支）均以裸 `void backfillSessionTranscript(...)` 调用，REST transcript 页 reject 时逃逸为 unhandled rejection。修复 = chatRuntime 新增 `reconcileSessionTranscriptSafely(reconcile, onFailure)` containment seam，复用 useSessionTransportController 既有 `void Promise.resolve(...).catch(onFailure)` 形状（同 `backfillVisibleSessionOnRefocus`），两处触发点统一接线；`backfillSessionTranscript` 内部 `[WS] Durable transcript backfill failed` 日志原样保留，seam 不 latch 任何状态、in-flight cursor 仍在 backfill `finally` 清理，下一终局信号/权威观察可重试（可重试语义不变）；零 reload/timer/poll workaround，零后端改动。RED 2 failed / 70 passed（`reconcileSessionTranscriptSafely is not a function` ×2：terminal-frame reject 时 unhandled 数组为空 + active-run-absence 同一 seam 不产生 unhandled 且保留可重试语义）→ GREEN focused 3 files / 85 passed（chatRuntime 72 含两新测试）、agent-detail suite 43 files / 453 passed（含 ArchitectureSimplicityContract 预算测试；过程中间态 split('\n')=2901 > 2900 一次失败，经保持原双行注释收敛至 AgentDetail.tsx 2899 行复绿，预算未削弱）、`tsc --noEmit` exit 0、`git diff --check` clean；commit 见 git log（`fix(day1): contain terminal transcript reconcile rejections`）。不处理其他 finding。
 - [ ] 上述 follow-up 不改变 DAY1-LIVE-TAIL-001 待办状态：Codex 独立 review/verdict、三服务同 HEAD 部署 + signed-in 生产 retest、合成资产清理（owner 门控）均仍 pending——**本地候选包，未部署，不宣称生产已修复**；RC-03/Day1 保持 open。
+- [x] DAY1-LIVE-TAIL-001 follow-up 2（对账尾部结构化卡片 normalize 断链，2026-08-27 垂直验收自审于本地候选 HEAD `12d40968`）已按 failing-first 原子修复：原包测试只证明 live terminal done 调用 `reconcileSessionTranscript`，未证明对账回放的真实 `tool_result.completed`（preview_agent_blueprint）经真实 replay/normalize 路径成为 UI 可消费 hr_preview 卡片。补垂直测试即证实真实缺陷：canonical `tool_result.completed` payload（结果在 `content`、无 `tool_name`/`result`，call↔result 经顶层 `invocation_id` 配对）经 `projectCanonicalItem` 产出的 tool 消息**不带 toolMeta**；初始加载经 `projectCanonicalTranscriptSnapshot.parseMessage` 补 normalize（reload 恢复的原因），live canonical 增量与终局对账 `applyCanonicalSessionSnapshot.onMessages` 无任何 parse → `isDedicatedToolCardMessage` false → 会话面该行渲染 null——终局对账只补回 tool 行、未补回结构化卡片（原包 Consumption 原子在 live/对账路径不成立）。修复 = `projectCanonicalItem` tool 分支接入既有共享 `normalizeToolCallResult`（单 seam 同修两路；parseChatMsg 二次 normalize 幂等；AgentDetail.tsx 零改动；同类结构化卡片同步受益），Model Agency Boundary/后端/预算均不变。RED `expected undefined to be 'hr_preview'`（toolName/toolStatus/exactly-one 先通过，断点唯一在 toolMeta，fixture 逐字段对齐生产 writer、非自造 schema）→ GREEN 新测试 1 passed、agent-detail 43 files/445、AgentDetail.test 9、全量（`NODE_OPTIONS=--no-experimental-webstorage npx vitest run`）145 files/923、`npm run build` tsc+vite OK（预算全过）、`git diff --check` clean；commit 见 git log（`fix(day1): normalize structured tool cards in canonical projection`）。不处理其他 finding。
+- [ ] 上述 follow-up 2 不改变 DAY1-LIVE-TAIL-001 待办状态：Codex 独立 review/verdict、三服务同 HEAD 部署 + signed-in 生产 retest（终局后不 reload 即渲染 hr_preview **结构化卡片**——follow-up 2 前即便对账补回 tool 行、卡片仍只在 reload 后出现）、合成资产清理（owner 门控）均仍 pending——**本地候选包，未部署，不宣称生产已修复**；RC-03/Day1 保持 open。

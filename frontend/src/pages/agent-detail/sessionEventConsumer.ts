@@ -6,6 +6,7 @@ import {
   type ChatTranscriptEventPayload,
   type SessionUiState,
 } from './chatRuntime';
+import { normalizeToolCallResult } from './toolResultEnvelope';
 import {
   createSessionEventStore,
   reduceSessionCompatibilityEvent,
@@ -163,6 +164,12 @@ function projectCanonicalItem(
       ? pairedEnvelope.result
       : pairedResult ? itemDisplayContent(pairedResult) : undefined;
     const toolArgs = recordValue(toolEnvelope.args ?? toolEnvelope.arguments ?? toolEnvelope.input);
+    // The canonical projection feeds live socket delivery, terminal reconcile
+    // backfill, and initial hydration alike. Structured tool cards (hr_preview,
+    // plan proposals, clarification, …) are render-ready only after the shared
+    // envelope normalizer runs; a reload-only parseChatMsg pass left the
+    // reconciled tail as a meta-less row the chat surface renders as nothing.
+    const normalized = normalizeToolCallResult(toolName, toolResult);
     return {
       role: 'tool_call',
       content: '',
@@ -172,7 +179,9 @@ function projectCanonicalItem(
       toolName,
       toolArgs,
       toolStatus: pairedResult || item.terminal ? 'done' : 'running',
-      toolResult,
+      toolResult: normalized.displayResult,
+      toolRawResult: normalized.raw,
+      toolMeta: normalized.toolMeta,
       eventType: item.kind,
       eventStatus: item.lifecycle,
       sessionItem: item,

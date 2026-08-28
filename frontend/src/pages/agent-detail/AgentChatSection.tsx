@@ -2141,7 +2141,7 @@ function AgentChatSection({
                       onSelectSession={onSelectBranchSession}
                     />
                   ) : activeSessionHydrating ? (
-                    <SessionHydratingState label={t('common.loading', 'Loading')} />
+                    <SessionHydratingState label={t('agent.chat.transport.initializing', 'Loading durable session history...')} />
                   ) : (() => {
                       const isA2A = isA2ASession(activeSession as any);
                       const thisAgentName = agent?.name;
@@ -2195,7 +2195,7 @@ function AgentChatSection({
                       onWorkflowAction={handleWorkflowAction}
                     />
                   ) : activeSessionHydrating ? (
-                    <SessionHydratingState label={t('common.loading', 'Loading')} />
+                    <SessionHydratingState label={t('agent.chat.transport.initializing', 'Loading durable session history...')} />
                   ) : visibleChatMessages.length === 0 && (
                     <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-tertiary)' }}>
                       <div style={{ fontSize: '13px', marginBottom: '4px' }}>{activeSession?.title || t('agent.chat.startChat')}</div>

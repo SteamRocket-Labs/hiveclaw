@@ -5681,6 +5681,7 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('data-testid="session-loading-state"');
+    expect(markup).toContain('Loading durable session history...');
     expect(markup).not.toContain('old-task-id');
     expect(markup).not.toContain('startConversation');
   });

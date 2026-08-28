@@ -1588,7 +1588,6 @@ function AgentDetailInner() {
             sessionEventStoresRef.current[key] ??= createSessionEventStore(acceptedAfterSequence);
             transcriptReplayStateRef.current[key] ??= createEmptyTranscriptReplayState();
             if (activeSessionIdRef.current !== sessionId) return;
-            setChatMessagesSessionId(sessionId);
             setTransportNotice((current) => nextSessionBackfillNotice(current, t('agent.chat.sessionBackfillIncomplete', 'Latest activity is visible, but older session evidence is still recovering.'), Boolean(transcriptBackfillInFlightRef.current[key]) || sessionEventFullHydrationKeysRef.current.has(key)));
         },
         onDisconnected: ({ key, phase, isActiveRuntime }) => {

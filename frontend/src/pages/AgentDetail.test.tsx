@@ -260,6 +260,15 @@ describe('AgentDetail realtime refresh contract', () => {
     expect(source).not.toContain('canonicalHydrationInFlight = canonicalHydration.then');
   });
 
+  it('does not present an empty conversation after live transport connects but before durable history appears', async () => {
+    const source = await readSource('./AgentDetail.tsx');
+    const liveTailStart = source.indexOf('onLiveTailReady:');
+    const liveTailEnd = source.indexOf('onDisconnected:', liveTailStart);
+    const liveTailHandler = source.slice(liveTailStart, liveTailEnd);
+
+    expect(liveTailHandler).not.toContain('setChatMessagesSessionId');
+  });
+
   it('removes the older-history notice once canonical hydration is complete', async () => {
     const source = await readSource('./AgentDetail.tsx');
 

@@ -1744,6 +1744,52 @@ describe('buildWorkspaceDocumentsModel (session deliverables semantics)', () => 
 });
 
 describe('RuntimePhase in the thread projection (§3 seam 3)', () => {
+  it('keeps a user-visible disclosure while a typed runtime-only process item is live', () => {
+    const model = buildThreadTimeline({
+      messages: [
+        {
+          id: 'accepted-input-1',
+          role: 'user',
+          content: 'Return the exact marker.',
+          timestamp: '2026-08-29T00:00:00Z',
+        },
+        {
+          id: 'result-commit-1',
+          role: 'event',
+          content: '',
+          timestamp: '2026-08-29T00:00:01Z',
+          sessionItem: {
+            id: 'result-commit-1',
+            kind: 'result_commit',
+            lifecycle: 'streaming',
+            terminal: false,
+          },
+        },
+      ] as AgentChatMessage[],
+      isWaiting: false,
+      isStreaming: false,
+      runtimePhase: 'resuming',
+    });
+
+    const openRuns = model.cells.filter((cell) => (
+      cell.kind === 'active_run'
+      && (cell.timeline.status === 'running' || cell.timeline.status === 'blocked')
+    ));
+    expect(openRuns).toHaveLength(1);
+    const visibleSteps = openRuns.flatMap((cell) => (
+      cell.kind === 'active_run'
+        ? cell.timeline.steps.filter((step) => step.presentation !== 'external')
+        : []
+    ));
+    expect(visibleSteps).toEqual([
+      expect.objectContaining({
+        kind: 'reasoning',
+        title: 'Thinking',
+        status: 'running',
+      }),
+    ]);
+  });
+
   it('threads the phase onto the pending active-run cell with a phase-aware label', () => {
     const model = buildThreadTimeline({
       messages: [{ role: 'user', content: 'do the thing' }] as any,

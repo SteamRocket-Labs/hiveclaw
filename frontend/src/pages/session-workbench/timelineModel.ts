@@ -1867,6 +1867,42 @@ function keepLatestProcessRunActive(
   return true;
 }
 
+function ensureOpenRunDisclosureContinuity(
+  cells: ThreadTimelineCell[],
+  input: BuildThreadTimelineInput,
+): void {
+  for (let index = cells.length - 1; index >= 0; index -= 1) {
+    const cell = cells[index];
+    if (cell.kind !== 'active_run') continue;
+    if (cell.timeline.status !== 'running' && cell.timeline.status !== 'blocked') continue;
+    if (cell.timeline.steps.some((step) => step.presentation !== 'external')) return;
+
+    const title = cell.timeline.status === 'blocked'
+      ? 'Waiting for input'
+      : cell.phase === 'responding' || input.isStreaming
+        ? 'Working'
+        : 'Thinking';
+    cells[index] = {
+      ...cell,
+      timeline: {
+        ...cell.timeline,
+        steps: [
+          ...cell.timeline.steps,
+          {
+            id: `${cell.timeline.id}:disclosure-continuity`,
+            kind: 'reasoning',
+            title,
+            status: cell.timeline.status,
+            visibility: 'visible',
+            presentation: cell.timeline.status === 'blocked' ? 'surface' : 'process',
+          },
+        ],
+      },
+    };
+    return;
+  }
+}
+
 function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
   const cells: ThreadTimelineCell[] = [];
   const pendingRun: Array<{ message: AgentChatMessage; index: number }> = [];
@@ -2121,6 +2157,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
       break;
     }
   }
+  ensureOpenRunDisclosureContinuity(cells, input);
   const sessionIndex = input.sessionIndex && !Array.isArray(input.sessionIndex) ? input.sessionIndex : null;
   const sessionWorkbench = input.sessionWorkbench && !Array.isArray(input.sessionWorkbench) ? input.sessionWorkbench : null;
   const contextWindow = getContextWindowProjection(sessionWorkbench);

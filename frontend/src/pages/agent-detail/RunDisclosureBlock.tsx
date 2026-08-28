@@ -296,6 +296,7 @@ function RunCompactionBoundary({ step }: { step: RunStepSnapshot }) {
 const TOOL_TITLE_KEYS: Record<string, [string, string]> = {
   Thinking: ['agent.chat.phase.thinking', 'Thinking'],
   Working: ['agent.chat.disclosure.working', 'Working'],
+  'Waiting for input': ['agent.chat.disclosure.waiting', 'Waiting for input'],
   'Loading tools': ['agent.chat.disclosure.toolTitle.loading', 'Loading tools'],
   'Read file': ['agent.chat.disclosure.toolTitle.readFile', 'Read file'],
   'Write file': ['agent.chat.disclosure.toolTitle.writeFile', 'Write file'],

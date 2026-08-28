@@ -191,6 +191,25 @@ export function projectSessionSocketEvent(
       }
       void fetchMySessions(true, agentId);
     }
+    if (itemKind === 'runtime_failure' && lifecycle === 'recorded') {
+      // Canonical terminal witness of the web-chat provider-failure path
+      // (e.g. typed 402 quota_exhausted/rejected): same no-reload contract as
+      // the terminal stream frame — close the active run, pin the failed
+      // phase, refresh the runtime read models, reconcile the durable
+      // transcript, and surface the existing quota/balance notice banner.
+      // The typed failure_code travels in the payload; no natural-language
+      // scanning decides the quota outcome here.
+      markActiveRunTerminal(key, scopeRunId(d.scope));
+      invalidateSessionRuntimeQueries(agentId, sessionId);
+      setSessionPhase(key, 'failed');
+      if (isActiveRuntime) syncActivePhase('failed');
+      void fetchMySessions(true, agentId);
+      if (isActiveRuntime) dependencies.reconcileSessionTranscript(agentId, sessionId);
+      const failureMessage = typeof payload.message === 'string' && payload.message.trim()
+        ? payload.message
+        : (typeof payload.content === 'string' && payload.content.trim() ? payload.content : '');
+      if (failureMessage) dependencies.setTransportNotice(failureMessage);
+    }
     return;
   }
 

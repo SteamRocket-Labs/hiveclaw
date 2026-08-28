@@ -148,6 +148,12 @@ class InvocationResult:
     # Durable Session V2 ModelResultSeal selected as the terminal candidate.
     # This is an exact mechanical receipt, never platform-authored semantics.
     model_result_receipt: dict[str, Any] | None = None
+    # Typed provider-failure facts from the status-first LLMError
+    # classification (app.services.llm_error_policy).  They are mechanical
+    # facts threaded losslessly to the runtime/web terminal layers; no
+    # downstream layer may re-derive them by scanning natural-language text.
+    failure_code: str | None = None
+    failure_delivery_state: str | None = None
 
 
 @dataclass(slots=True)

@@ -1189,6 +1189,28 @@ async def _finalize_empty_interactive_response(
     await state.ports.events.broadcast(state.agent.id, state.session_id, state.ports.events.build_done(""))
 
 
+def _terminal_failure_payload(result: Any, status: str, metadata: dict[str, Any]) -> dict[str, Any] | None:
+    """Machine failure payload for the canonical runtime_failure terminal event.
+
+    Only a genuinely failed terminal carries it (never a user-cancel kill or
+    a tool-card completion).  ``failure_code``/``delivery_state`` are the
+    typed status-first LLMError facts threaded from the kernel; they are
+    never re-derived here from natural-language content.
+    """
+    if status != "failed":
+        return None
+    failure_code = getattr(result, "failure_code", None)
+    delivery_state = getattr(result, "failure_delivery_state", None)
+    message = str(getattr(result, "content", "") or "").strip()
+    return {
+        "failure_code": str(failure_code) if failure_code else None,
+        "delivery_state": str(delivery_state) if delivery_state else None,
+        "terminal_reason": metadata.get("terminal_reason"),
+        "message": message or None,
+        "retryable": False,
+    }
+
+
 async def _finalize_assistant_response(
     state: _WebChatRunState,
     result: Any,
@@ -1244,6 +1266,7 @@ async def _finalize_assistant_response(
             status=status,
             result_summary=str(metadata.get("terminal_reason") or status),
             metadata_json=metadata,
+            failure=_terminal_failure_payload(result, status, metadata),
             **_file_change_kwargs(state),
         )
         if finalized:

@@ -372,8 +372,12 @@ export function projectCanonicalSessionSnapshot(
   runId: string | null;
 } {
   const envelope = event as unknown as SessionEventV2;
-  const runTerminal = envelope.item_kind === 'run'
-    && ['completed', 'failed', 'cancelled'].includes(envelope.lifecycle);
+  const runTerminal = (envelope.item_kind === 'run'
+    && ['completed', 'failed', 'cancelled'].includes(envelope.lifecycle))
+    // The canonical runtime_failure terminal event is the run-scoped terminal
+    // witness of the web-chat provider-failure path; it seals the run exactly
+    // like a run.failed lifecycle item.
+    || (envelope.item_kind === 'runtime_failure' && envelope.lifecycle === 'recorded');
   const terminalMetadataOnly = (
     envelope.item_kind === 'turn'
     && ['completed', 'failed', 'cancelled'].includes(envelope.lifecycle)

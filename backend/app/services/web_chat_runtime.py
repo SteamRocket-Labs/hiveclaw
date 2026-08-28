@@ -3701,6 +3701,70 @@ async def _finalize_web_chat_run_with_assistant(
         return True
 
 
+async def _append_web_chat_runtime_failure_event(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    session_id: str,
+    run_uuid: uuid.UUID,
+    turn_id: str,
+    status: str,
+    failure: dict[str, Any],
+) -> dict[str, Any]:
+    """Append the canonical run-scoped ``runtime_failure.recorded`` terminal event.
+
+    This is the single canonical session-event witness that a web-chat run
+    ended on a provider/runtime failure (e.g. typed HTTP 402
+    quota_exhausted/rejected).  It rides the same transaction as the terminal
+    RuntimeTask settlement (transcript row + outbox row atomically), carries
+    the typed machine failure code from the status-first LLMError
+    classification — never a natural-language re-derivation — and returns the
+    contract-validated direct-user envelope for the post-commit live
+    broadcast.  No assistant ChatMessage is created: the failure is a
+    runtime fact, never platform-authored model prose.
+    """
+    from app.services.session_event_contract import serialize_session_event
+    from app.services.session_v2_persistence import SessionEventDraft, append_session_events
+
+    message = str(failure.get("message") or "").strip()
+    payload: dict[str, Any] = {
+        "status": status,
+        "terminal_reason": str(failure.get("terminal_reason") or status),
+        "retryable": bool(failure.get("retryable")),
+        "content": message,
+        "message": message,
+    }
+    if failure.get("failure_code"):
+        payload["failure_code"] = str(failure["failure_code"])
+    if failure.get("delivery_state"):
+        payload["delivery_state"] = str(failure["delivery_state"])
+    rows = await append_session_events(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        drafts=[
+            SessionEventDraft(
+                item_id=uuid.uuid4(),
+                item_kind="runtime_failure",
+                lifecycle="recorded",
+                scope={
+                    "level": "run",
+                    "session_id": str(session_id),
+                    "thread_id": str(session_id),
+                    "turn_id": turn_id,
+                    "run_id": str(run_uuid),
+                },
+                actor={"type": "runtime"},
+                payload=payload,
+                display={"title": "Run failed"},
+            )
+        ],
+    )
+    return serialize_session_event(rows[0], audience="direct_user")
+
+
 async def _finalize_web_chat_run_without_assistant(
     *,
     run_uuid: uuid.UUID,
@@ -3713,6 +3777,7 @@ async def _finalize_web_chat_run_without_assistant(
     file_change_states: dict[str, dict[str, Any]] | None = None,
     file_change_lineage: list[dict[str, Any]] | None = None,
     channel_delivery_text: str | None = None,
+    failure: dict[str, Any] | None = None,
 ) -> bool:
     """Mark a web-chat run terminal when the visible terminal output is a tool card."""
     from app.services.tenant_resolver import resolve_tenant_for_agent
@@ -3758,6 +3823,18 @@ async def _finalize_web_chat_run_without_assistant(
             terminal_source="tool_card_finalizer",
         )
         merged_metadata = dict(getattr(task, "metadata_json", None) or {})
+        failure_envelope: dict[str, Any] | None = None
+        if failure is not None and status == "failed":
+            failure_envelope = await _append_web_chat_runtime_failure_event(
+                db,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                session_id=str(getattr(task, "parent_session_id", "") or session_id),
+                run_uuid=run_uuid,
+                turn_id=str(merged_metadata.get("turn_id") or f"turn-{run_uuid.hex}"),
+                status=status,
+                failure=failure,
+            )
         await _project_agent_team_terminal_state(
             db=db,
             task=task,
@@ -3804,6 +3881,19 @@ async def _finalize_web_chat_run_without_assistant(
             status=status,
         )
         await db.commit()
+        if failure_envelope is not None:
+            # Live delivery of the committed canonical terminal envelope.  The
+            # outbox row committed in the same transaction owns cross-instance
+            # redelivery, so a local broadcast failure can never lose the
+            # terminal witness (reload replays the transcript row).
+            try:
+                await broadcast_web_chat_event(agent_id, session_id, failure_envelope)
+            except Exception as exc:  # noqa: BLE001 - outbox + transcript remain the recovery path.
+                logger.warning(
+                    "[WebChatRun] runtime_failure terminal broadcast failed for run {}: {}",
+                    run_uuid.hex,
+                    exc,
+                )
         return True
 
 

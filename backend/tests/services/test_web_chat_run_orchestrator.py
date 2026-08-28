@@ -700,6 +700,133 @@ async def test_turn_token_budget_terminal_reason_is_persisted_as_failed_without_
 
 
 @pytest.mark.asyncio
+async def test_failed_invocation_threads_typed_failure_payload_to_terminal_finalizer():
+    """DAY1-PROVIDER-402-TERMINAL-CONSUMPTION-001: a failed InvocationResult
+    carrying the status-first typed failure facts must hand a machine
+    failure payload to the terminal finalizer so the canonical
+    runtime_failure terminal event can carry run_id + failure_code.  The
+    legacy live runtime_failure frame stays byte-identical."""
+
+    from app.kernel.contracts import TerminalReason
+    from app.services import web_chat_run_orchestrator as orchestrator
+
+    finalize_calls: list[dict] = []
+    broadcasts: list[dict] = []
+
+    async def fake_finalize_without_assistant(**kwargs):
+        finalize_calls.append(kwargs)
+        return True
+
+    async def fake_broadcast(_agent_id, _session_id, event):
+        broadcasts.append(event)
+
+    state = SimpleNamespace(
+        run_uuid=uuid4(),
+        agent=SimpleNamespace(id=uuid4()),
+        session_id=str(uuid4()),
+        runtime_session_context=SimpleNamespace(),
+        ports=SimpleNamespace(
+            terminal=SimpleNamespace(finalize_without_assistant=fake_finalize_without_assistant),
+            events=SimpleNamespace(broadcast=fake_broadcast),
+            artifacts=SimpleNamespace(
+                file_change_paths=lambda _context: [],
+                file_change_states=lambda _context: {},
+                file_change_lineage=lambda _context: [],
+            ),
+        ),
+    )
+    message = "[LLM Error] AI 模型额度或余额不足，请联系管理员检查账户余额、模型额度或切换模型。"
+    result = SimpleNamespace(
+        content=message,
+        terminal_reason=TerminalReason.PROVIDER_ERROR,
+        failure_code="quota_exhausted",
+        failure_delivery_state="rejected",
+        model_result_receipt=None,
+    )
+
+    await orchestrator._finalize_assistant_response(
+        state,
+        result,
+        message,
+        None,
+        "failed",
+        {"terminal_reason": TerminalReason.PROVIDER_ERROR.value},
+    )
+
+    assert len(finalize_calls) == 1
+    assert finalize_calls[0]["status"] == "failed"
+    assert finalize_calls[0]["failure"] == {
+        "failure_code": "quota_exhausted",
+        "delivery_state": "rejected",
+        "terminal_reason": TerminalReason.PROVIDER_ERROR.value,
+        "message": message,
+        "retryable": False,
+    }
+    # The legacy live frame is unchanged and still carries no assistant content.
+    assert {
+        "type": "runtime_failure",
+        "status": "failed",
+        "reason": TerminalReason.PROVIDER_ERROR.value,
+        "retryable": True,
+    } in broadcasts
+    assert all("content" not in event for event in broadcasts if event.get("type") == "runtime_failure")
+
+
+@pytest.mark.asyncio
+async def test_killed_terminal_finalize_carries_no_failure_payload():
+    """Cancel stays a user-cancel terminal: no provider failure payload and
+    no canonical runtime_failure event may be attached to a killed run."""
+
+    from app.kernel.contracts import TerminalReason
+    from app.services import web_chat_run_orchestrator as orchestrator
+
+    finalize_calls: list[dict] = []
+
+    async def fake_finalize_without_assistant(**kwargs):
+        finalize_calls.append(kwargs)
+        return True
+
+    async def fake_broadcast(_agent_id, _session_id, _event):
+        return None
+
+    state = SimpleNamespace(
+        run_uuid=uuid4(),
+        agent=SimpleNamespace(id=uuid4()),
+        session_id=str(uuid4()),
+        runtime_session_context=SimpleNamespace(),
+        ports=SimpleNamespace(
+            terminal=SimpleNamespace(finalize_without_assistant=fake_finalize_without_assistant),
+            events=SimpleNamespace(broadcast=fake_broadcast),
+            artifacts=SimpleNamespace(
+                file_change_paths=lambda _context: [],
+                file_change_states=lambda _context: {},
+                file_change_lineage=lambda _context: [],
+            ),
+        ),
+    )
+    result = SimpleNamespace(
+        content="*[Generation stopped]*",
+        terminal_reason=TerminalReason.USER_CANCEL,
+        failure_code=None,
+        failure_delivery_state=None,
+        model_result_receipt=None,
+    )
+
+    await orchestrator._finalize_assistant_response(
+        state,
+        result,
+        result.content,
+        None,
+        "killed",
+        {"terminal_reason": TerminalReason.USER_CANCEL.value},
+    )
+
+    assert len(finalize_calls) == 1
+    assert finalize_calls[0]["status"] == "killed"
+    assert finalize_calls[0].get("failure") is None
+
+
+@pytest.mark.asyncio
 async def test_committed_outcome_is_not_rewritten_when_sidecars_fail(monkeypatch):
     from app.services import web_chat_run_orchestrator as orchestrator
 

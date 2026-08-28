@@ -307,6 +307,61 @@ describe('canonical Session event consumer', () => {
     });
   });
 
+  it('treats a canonical runtime_failure event as the run terminal witness on live and replay (DAY1-PROVIDER-402-TERMINAL-CONSUMPTION-001)', () => {
+    const message = '[LLM Error] AI 模型额度或余额不足，请联系管理员检查账户余额、模型额度或切换模型。';
+    const failureEvent = {
+      schema: 'hive.session_event',
+      schema_version: 2,
+      event_id: 'event-runtime-failure-1',
+      sequence: 1,
+      tenant_id: 'tenant-1',
+      scope: { level: 'run', session_id: 'session-1', thread_id: 'session-1', turn_id: 'turn-1', run_id: 'run-1' },
+      item_id: 'failure-item-1',
+      item_kind: 'runtime_failure',
+      kind: 'runtime_failure.recorded',
+      lifecycle: 'recorded',
+      payload_schema: 'hive.session.payload.runtime_failure.recorded.v2',
+      actor: { type: 'runtime' },
+      visibility: { audience: 'direct_user' },
+      payload: {
+        status: 'failed',
+        terminal_reason: 'provider_error',
+        failure_code: 'quota_exhausted',
+        delivery_state: 'rejected',
+        retryable: false,
+        content: message,
+        message,
+      },
+      display: { title: 'Run failed' },
+      occurred_at: '2026-08-28T00:00:00Z',
+      persisted_at: '2026-08-28T00:00:00Z',
+    } as unknown as SessionEventV2;
+    const store = replay([failureEvent]);
+
+    // Replay/hydration renders the persisted terminal event card — the
+    // failure stays recoverable after a reload without any assistant message.
+    const messages = projectSessionEventStoreToMessages(store);
+    expect(messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'event', eventType: 'runtime_failure', eventTitle: 'Run failed' }),
+    ]));
+    expect(messages.some((entry) => entry.role === 'assistant')).toBe(false);
+
+    // The canonical snapshot seals the run terminal with its typed run id.
+    let terminalRunId: string | null | undefined;
+    let terminalFlag: boolean | undefined;
+    applyCanonicalSessionSnapshot({
+      event: failureEvent as unknown as ChatTranscriptEventPayload,
+      store,
+      active: true,
+      onTranscript: () => undefined,
+      onActivity: () => undefined,
+      onTerminal: (runId) => { terminalRunId = runId; },
+      onMessages: (_messages, terminal) => { terminalFlag = terminal; },
+    });
+    expect(terminalRunId).toBe('run-1');
+    expect(terminalFlag).toBe(true);
+  });
+
   it('uses the backend canonical rendering contract for multipart user input', () => {
     expect(sessionPayloadContent({
       content_parts: [

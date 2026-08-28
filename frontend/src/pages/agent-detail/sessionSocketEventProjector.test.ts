@@ -247,6 +247,49 @@ describe('session socket event projector', () => {
     expect(harness.dependencies.syncActivePhase).toHaveBeenCalledWith('done');
   });
 
+  it('closes the active run with failed phase and the quota notice on a canonical runtime_failure event (DAY1-PROVIDER-402-TERMINAL-CONSUMPTION-001)', () => {
+    const message = '[LLM Error] AI 模型额度或余额不足，请联系管理员检查账户余额、模型额度或切换模型。';
+    const harness = makeHarness({
+      schema: 'hive.session_event',
+      schema_version: 2,
+      event_id: 'event-runtime-failure-1',
+      sequence: 9,
+      item_id: 'failure-item-1',
+      item_kind: 'runtime_failure',
+      lifecycle: 'recorded',
+      kind: 'runtime_failure.recorded',
+      payload_schema: 'hive.session.payload.runtime_failure.recorded.v2',
+      tenant_id: 'tenant-1',
+      scope: { level: 'run', session_id: 'session-1', thread_id: 'session-1', turn_id: 'turn-1', run_id: 'run-1' },
+      actor: { type: 'runtime' },
+      visibility: { audience: 'direct_user' },
+      payload: {
+        status: 'failed',
+        terminal_reason: 'provider_error',
+        failure_code: 'quota_exhausted',
+        delivery_state: 'rejected',
+        retryable: false,
+        content: message,
+        message,
+      },
+      occurred_at: '2026-08-28T00:00:00Z',
+      persisted_at: '2026-08-28T00:00:00Z',
+    });
+
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+
+    // The no-reload terminal consumption contract: close the active run, pin
+    // the failed phase, refresh runtime read models, reconcile the durable
+    // transcript, and surface the existing quota/balance notice banner.
+    expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledWith('agent-1:session-1', 'run-1');
+    expect(harness.dependencies.setSessionPhase).toHaveBeenCalledWith('agent-1:session-1', 'failed');
+    expect(harness.dependencies.syncActivePhase).toHaveBeenCalledWith('failed');
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledWith('agent-1', 'session-1');
+    expect(harness.dependencies.reconcileSessionTranscript).toHaveBeenCalledWith('agent-1', 'session-1');
+    expect(harness.dependencies.fetchMySessions).toHaveBeenCalledWith(true, 'agent-1');
+    expect(harness.dependencies.setTransportNotice).toHaveBeenCalledWith(message);
+  });
+
   it('clears the active run and runtime read models when the legacy-adapted canonical assistant terminal arrives (DAY1-KNOWLEDGE-UI-TRUTH-001)', () => {
     // Production Run2 fresh-retry shape: the web-chat assistant_message
     // finalizer settles the RuntimeTask and its transcript event arrives as a

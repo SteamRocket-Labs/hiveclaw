@@ -1981,7 +1981,12 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         await _record_new_token_usage()
                         user_msg = _humanize_llm_error(exc)
                         await self._persist_before_exit(request, runtime_config, f"[LLM Error] {exc}", api_messages)
-                        return _build_error_result(user_msg, tokens_used=accumulated_tokens)
+                        return _build_error_result(
+                            user_msg,
+                            tokens_used=accumulated_tokens,
+                            failure_code=error_classification.kind,
+                            failure_delivery_state=delivery_state,
+                        )
                     except Exception as exc:
                         logger.error(
                             "[Kernel] Unexpected error provider=%s model=%s round=%s: %s: %s",

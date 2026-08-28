@@ -679,6 +679,8 @@ def _build_error_result(
     tokens_used: int = 0,
     final_tools: list[dict] | None = None,
     terminal_reason: TerminalReason = TerminalReason.PROVIDER_ERROR,
+    failure_code: str | None = None,
+    failure_delivery_state: str | None = None,
 ) -> InvocationResult:
     return InvocationResult(
         content=message,
@@ -686,6 +688,8 @@ def _build_error_result(
         final_tools=final_tools,
         parts=[{"type": "text", "text": message}],
         terminal_reason=terminal_reason,
+        failure_code=failure_code,
+        failure_delivery_state=failure_delivery_state,
     )
 
 

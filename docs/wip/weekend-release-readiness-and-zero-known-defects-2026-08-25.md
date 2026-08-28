@@ -3809,6 +3809,52 @@ Correction #3 通过后，Codex 沿用户真实可见路径继续审查，发现
 **状态与边界**：本包代码、真实 Postgres path proof 与全量门禁为 **PASS — Verified locally**；它修复 Session 历史提交的 architecture/security/acceptance 债务，不改变 §7.31 已完成的 production Session 行为结论。原子 commit/push 完成后随下一候选统一部署三服务；在部署 SUCCESS 前不宣称当前 HEAD 已在线。Knowledge、Create Agent、Plan Mode、Agent Team、Sub-agent、Dynamic Workflow 与 aggregate A2A 仍按后续包分别验收。
 
 
+## 7.33 WEEKEND-KNOWLEDGE-THREE-AUTHORITY-001 — Agent Memory 租户权威断点恢复 + Knowledge 用户态表达（2026-08-29，本地候选全绿；commit/push、三服务部署、生产回放与三面复验 pending）
+
+### 三块的产品边界（North Star 不变）
+
+这里的“三块”不是把三类数据混成一个知识库，而是三个独立权威与消费面：
+
+1. **Agent Memory**：Agent 自身经历与自进化连续性，权威为 Agent + T0/T2/T3/`soul.md`；它不冒充 Personal 或 Company KB。
+2. **Personal Knowledge**：用户权威、tool-only disclosure，Agent 只能在授权后通过 Personal KB 工具查找/读取；不得静态注入原始上下文。
+3. **Company Knowledge**：Tenant 权威、ACL/RLS/provenance/retention/audit，普通员工消费已发布且获授权的公司知识，管理员在控制面管理 intake/review/publish/access。
+
+§7.20–§7.21 已用 signed-in production 两遍 clean pass 证明 Personal + Company 工具消费链；本节没有把旧证据重命名为新完成，而是补上先前未覆盖的 **Agent Memory 真实生产断点**，并统一三面的用户态表达。
+
+### 生产只读取证：Agent Memory 当时并未闭环
+
+Rocky 实验室 Agent `76af3c45-ba5f-5034-90b0-0ea06c3ca1e6` 的 Knowledge 页面显示记忆“需要处理”、近期经历整理停滞、不可回忆且长期记忆未沉淀；普通界面还直接暴露 `overview/timeline/raw`、source refs、canonical path、`ready`、token 数与内部状态。只读 Railway SSH 对 `/data/agents/<agent_id>/memory/control/consolidation_debt.json` 的同一时点核对为 `active_explicit_entries=0`、`exhausted_jobs=94`、`held_jobs=109`、`stall_reasons=["t2_jobs_retry_exhausted"]`；随后 UI 新增经历继续累计到 135，所以两个计数来自不同观测时点，不伪写成相等。
+
+样本 `memory/.staging/t2_jobs/t2job-adfca1afffeb3513/job_manifest.json` 的机械事实为 `tenant_id=null`、`status/package_status=held`、`retry_count=2`，诊断为没有可用的 T0→T2 summary model config。既有文档 `docs/backend-volume-storage-lifecycle-design-2026-07-15.md §2.4` 已记录同根：Session close hook 只信可选 `ctx.metadata.tenant_id`，metadata 缺失就以 `tenant_id=None` 建 durable job；后续 retry 继续缺租户，最终耗尽。正确权威是数据库 `Agent.tenant_id`，不是可选 hook metadata，也不是错误文本。
+
+对 production 执行现有 backfill CLI **dry-run only**（零写入）得到：53 sessions、147 sealed segments、147 candidates、selected 147、remaining 0、existing T2 packages 0、invalid 0、warnings `[]`、18 open segments 安全跳过；`started/committed/held/failed` 均为 0，`coverage_complete=false`。这证明原始 T0 evidence 仍完整、可恢复，但“有文件/有脚本”不等于 Agent Memory 已在线消费。
+
+### 实现（机械权威、证据保留、限流恢复）
+
+- Session close、Turn stop、Trigger/Delegation end 与 Pre-compaction 的 T0→T2 hook 每次都通过 server-side `resolve_tenant_for_agent(agent_id)` 获取数据库权威；metadata tenant 只用于格式/不一致诊断，缺失、非法或合法但属于其它租户都不能决定 job authority。resolver 返回空或失败时仍以 `tenant_id=None` 创建 durable job 并保留 T0 evidence，绝不回退信任 metadata、裸 subprocess、丢证据或伪写成功。
+- T2 sweep 接收 authoritative tenant；manifest tenant 缺失、非法或与 Agent tenant 不同都被机械纠正。修复记录 `tenant_authority_repaired_at`，错误但合法的旧 tenant 记录在 `tenant_authority_previous_value`；历史 retry 计入 `authority_repaired_from_retry_count` 后重新获得完整 retry budget。该决定只比较 UUID 权威事实，**不扫描 issue 自然语言**。
+- 自动 heartbeat 每次最多回放 8 个 jobs，剩余写入 typed `deferred` control report，避免 147 个历史 LLM package build 垄断一个 heartbeat；显式 operator backfill 仍可对完整 preserved T0 evidence 做受控回放。
+- 新 manifest 重写继续携带 authority-repair 字段，恢复链可审计；生产 replay 不在本地 commit 阶段偷跑，必须先部署 committed code，再 dry-run、apply、post-dry-run 和 recall proof。
+
+### 用户态 UI（普通用户理解“记住了什么、能否使用、如何恢复”）
+
+- 所有 subview 使用本地化产品名称：记忆概览、自我认知、人际与领域、个人知识库、知识网络、里程碑、成长记录、身份与记忆文件；不再显示 `overview/timeline/raw`。
+- 普通 Personal KB 视图隐藏 UUID、`kb://` source ref、canonical path、raw `ready`、token 数与 sensitivity code，只显示标题、可读敏感级别、处理状态、原文分段和真实内容；403 仍明确区分“无权限”与“空知识库”。
+- Memory issue 改为“正在恢复 / N 段经历等待恢复”，说明系统自动重试及长时间未恢复时的管理员路径；不把内部 pipeline 名称或错误 code 当作用户文案。
+- profile/timeline status、日期与高级入口本地化；未带 Markdown heading 的记忆以用户可读 preview 或“未命名记忆”展示，绝不回退为内部 entry ID。
+- Agent Memory、Personal KB、Company KB 仍是三个独立消费面；UI 文案优化没有改变授权、检索、索引或 durable truth source。
+
+### failing-first 与本地 GREEN
+
+- backend RED：新增 hook 与 sweep 权威回归先得到 **2 failed**（hook 实际传 `tenant_id=None`；sweep 尚不接受 authoritative tenant）；frontend RED：**3 failed**（subview raw key 与 Personal 内部 ref/path/status/token 仍可见）。staged review 又主动证伪“合法 metadata 可直接信任”：收紧为每次 server resolve 后，组合回归暴露 **5 failed / 70 passed**——4 个旧测试只伪造 builder、没有提供 Agent authority，另 1 个是测试 helper 全局 patch `app.config.get_settings` 导致后加载 heartbeat policy 被污染。修复为显式 per-agent resolver test double + 只 patch `_agent_data_root`，没有放松生产 authority；真实组合顺序随后 **57 passed**。
+- backend GREEN：Knowledge/Hook/Sweep/Heartbeat 定向最终 **75 passed**，包含 metadata 缺失/非法/合法但错误、manifest 缺 tenant/合法但错误 tenant、retry history preservation 与每 sweep 上限；Ruff check/format 7 文件全绿。最终完整 `.venv/bin/pytest tests -q` 为 **8314 passed / 2 skipped / 1 既有 StarletteDeprecationWarning in 595.63s**。
+- frontend GREEN：focused **8 passed**；全量 **147 files / 1063 passed**；`npx tsc --noEmit` exit 0；i18n node tests **9/9**、en=zh=3921、所有 gates 0；production build 7387 modules，AgentDetail **373514/380000 bytes、103035/115000 gzip**，vendor **591449/620000 bytes、186474/200000 gzip**；`git diff --check` 待 commit 前最终复跑。
+
+### 状态与下一验收边界
+
+当前只能判 **PASS — Verified locally / production Agent Memory recovery pending**。原子 commit/push 后部署 backend、backend-api、frontend 三服务；全部 SUCCESS 且 health 正常后，按 dry-run → bounded apply → post-dry-run 的顺序恢复 147 sealed segments，核对 held/exhausted/deferred/control report 与 T2 package coverage，再用 fresh Session 证明 Agent 能从自身 Memory 精确回忆而不调用 Personal/Company KB。随后对 Agent Memory、Personal KB、Company KB 各完成 signed-in UI 与工具消费复验；任一 authority 混淆、空/拒绝误判、工程字段泄漏、检索失败或 recall 不成立均重新进入 RED。本节在这些生产证据完成前不 Closed，也不外推 Weekend、A2A 或 zero-known-defects。
+
+
 ## 8. 两个工作日的执行节奏
 
 ### 开工前 Gate 0 — owner 过稿（已完成）

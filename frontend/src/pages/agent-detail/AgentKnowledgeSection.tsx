@@ -83,14 +83,50 @@ function resolveMemoryStatus(overview: KnowledgeOverview): NonNullable<Knowledge
   };
 }
 
-function entryHeading(entry: KnowledgeEntry): string {
+export function knowledgeEntryHeading(entry: KnowledgeEntry, fallback: string): string {
   const firstLine = (entry.content || '').split('\n').find((line) => line.startsWith('### '));
-  return firstLine ? firstLine.replace(/^###\s+/, '') : entry.id;
+  if (firstLine) return firstLine.replace(/^###\s+/, '');
+  return entry.preview.trim() || fallback;
 }
 
 function entryStatusLine(entry: KnowledgeEntry): string {
   const line = (entry.content || '').split('\n').find((raw) => raw.trim().startsWith('- 状态:'));
   return line ? line.trim().replace(/^- 状态:\s*/, '') : '';
+}
+
+function formatKnowledgeTimestamp(value: string, language: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return new Intl.DateTimeFormat(language, { dateStyle: 'medium', timeStyle: 'short' }).format(parsed);
+}
+
+function personalSensitivityLabel(value: string, t: ReturnType<typeof useTranslation>['t']): string {
+  return t(`agent.knowledge.personalSensitivity.${value}`, t('agent.knowledge.personalSensitivity.unknown'));
+}
+
+function personalStatusLabel(value: string, t: ReturnType<typeof useTranslation>['t']): string {
+  return t(`agent.knowledge.personalStatus.${value}`, t('agent.knowledge.personalStatus.unknown'));
+}
+
+function profileStatusLabel(value: string, t: ReturnType<typeof useTranslation>['t']): string {
+  const key = value === '规避中' ? 'mitigating' : value === '已根除' ? 'resolved' : value;
+  return t(`agent.knowledge.profileStatus.${key}`, t('agent.knowledge.profileStatus.recorded'));
+}
+
+function memoryEventKindLabel(value: string, t: ReturnType<typeof useTranslation>['t']): string {
+  if (value.startsWith('curation:')) return t('agent.knowledge.eventKind.curation');
+  if (value === 'dream:consolidation') return t('agent.knowledge.eventKind.consolidation');
+  return t('agent.knowledge.eventKind.update');
+}
+
+function memoryEventOutcomeLabel(value: string, t: ReturnType<typeof useTranslation>['t']): string {
+  if (['accepted', 'approved', 'committed', 'completed', 'success'].includes(value)) {
+    return t('agent.knowledge.eventOutcome.completed');
+  }
+  if (['held', 'pending', 'needs_attention'].includes(value)) {
+    return t('agent.knowledge.eventOutcome.waiting');
+  }
+  return t('agent.knowledge.eventOutcome.recorded');
 }
 
 function OverviewCards({
@@ -104,7 +140,7 @@ function OverviewCards({
   onOpenSubView: (view: SubView) => void;
   onNavigateTab?: (tab: string) => void;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const fm = overview.planes.self.failureModes;
   const memoryStatus = resolveMemoryStatus(overview);
   const statusClass = MEMORY_STATUS_CLASS[memoryStatus.state] ?? MEMORY_STATUS_CLASS.empty;
@@ -142,7 +178,7 @@ function OverviewCards({
           <div>{t('agent.knowledge.selfEntries')}: {overview.planes.self.entries}</div>
           <div className="agent-knowledge-row-gap">
             {t('agent.knowledge.failureModes')}:{' '}
-            <span className="agent-knowledge-fm-active">{fm.active} active</span>
+            <span className="agent-knowledge-fm-active">{fm.active} {t('agent.knowledge.active')}</span>
             {' · '}
             <span className="agent-knowledge-fm-mitigating">{fm.mitigating} {t('agent.knowledge.mitigating')}</span>
             {' · '}
@@ -194,15 +230,21 @@ function OverviewCards({
             </div>
           )}
           {memoryStatus.issueCount > 0 && (
-            <div className="agent-knowledge-memory-issues">
-              {t('agent.knowledge.memoryIssueItems', '{{count}} items need attention', {
-                count: memoryStatus.issueCount,
-              })}
-            </div>
+            <>
+              <div className="agent-knowledge-memory-issues">
+                {t('agent.knowledge.memoryIssueItems', '{{count}} experiences awaiting recovery', {
+                  count: memoryStatus.issueCount,
+                })}
+              </div>
+              <div className="agent-knowledge-memory-recovery">
+                {t('agent.knowledge.memoryRecoveryHint')}
+              </div>
+            </>
           )}
           {overview.growth?.generatedAt && (
             <div className="agent-knowledge-growth-updated">
-              {t('agent.knowledge.growthUpdated')} {overview.growth.generatedAt.slice(0, 16)}
+              {t('agent.knowledge.growthUpdated')}{' '}
+              {formatKnowledgeTimestamp(overview.growth.generatedAt, i18n.language)}
             </div>
           )}
         </div>
@@ -220,22 +262,22 @@ function OverviewCards({
 }
 
 function ProfileEntryCard({ entry }: { entry: KnowledgeEntry }) {
+  const { t } = useTranslation();
   const status = entryStatusLine(entry);
   const statusStyle = FAILURE_STATUS_STYLE[status];
   return (
     <div className="agent-knowledge-card">
       <div className="agent-knowledge-entry-head">
-        <strong className="agent-knowledge-entry-title">{entryHeading(entry)}</strong>
+        <strong className="agent-knowledge-entry-title">
+          {knowledgeEntryHeading(entry, t('agent.knowledge.untitledEntry'))}
+        </strong>
         {status && (
           <span className={`badge agent-knowledge-status-badge${statusStyle ? ` ${statusStyle.cls}` : ''}`}>
-            {status}
+            {profileStatusLabel(status, t)}
           </span>
         )}
       </div>
       <div className="agent-knowledge-entry-preview">{entry.preview}</div>
-      <div className="agent-knowledge-entry-meta">
-        <code>{entry.id}</code> · {entry.file}
-      </div>
     </div>
   );
 }
@@ -388,7 +430,7 @@ export function PersonalKnowledgeView({
       </div>
 
       <div className="agent-knowledge-card agent-knowledge-personal-readonly">
-        <strong>{t('agent.knowledge.personalReadonlyTitle', 'Read-only owner-scope view')}</strong>
+        <strong>{t('agent.knowledge.personalReadonlyTitle', 'View only')}</strong>
         <span>
           {t(
             'agent.knowledge.personalReadonlyDesc',
@@ -414,14 +456,17 @@ export function PersonalKnowledgeView({
             >
               <strong>{document.title}</strong>
               <span>
-                {document.segment_count} {t('agent.knowledge.personalSegments', 'segments')} · {document.sensitivity}
+                {document.segment_count} {t('agent.knowledge.personalSegments', 'segments')} ·{' '}
+                {personalSensitivityLabel(document.sensitivity, t)}
               </span>
-              <code>{document.source_ref}</code>
             </button>
           ))}
           {documents.length === 0 && (
             <p className="agent-knowledge-empty">
-              {t('agent.knowledge.personalEmpty', 'Personal KB is empty for this owner scope.')}
+              {t(
+                'agent.knowledge.personalEmpty',
+                'No personal knowledge is available here yet. Open Personal Knowledge to import material.',
+              )}
             </p>
           )}
         </div>
@@ -437,7 +482,6 @@ export function PersonalKnowledgeView({
                   <strong>{result.title}</strong>
                   <span>{result.heading_path.join(' / ')}</span>
                   <p>{result.snippet}</p>
-                  <code>{result.source_ref}</code>
                 </div>
               ))}
             </div>
@@ -449,16 +493,16 @@ export function PersonalKnowledgeView({
             <div className="agent-knowledge-card">
               <div className="agent-knowledge-entry-head">
                 <strong className="agent-knowledge-entry-title">{selectedDocument.title}</strong>
-                <span className="badge">{selectedDocument.status}</span>
-              </div>
-              <div className="agent-knowledge-entry-meta">
-                <code>{selectedDocument.source_ref}</code> · {selectedDocument.canonical_md_path}
+                <span className="badge">{personalStatusLabel(selectedDocument.status, t)}</span>
               </div>
               <div className="agent-knowledge-personal-segments">
                 {selectedDocument.segments.map((segment) => (
                   <div key={segment.segment_id} className="agent-knowledge-personal-segment">
                     <div className="agent-knowledge-entry-meta">
-                      #{segment.position + 1} {segment.heading_path.join(' / ')} · {segment.token_count} tok
+                      {t('agent.knowledge.personalSegmentNumber', 'Section {{count}}', {
+                        count: segment.position + 1,
+                      })}
+                      {segment.heading_path.length > 0 ? ` · ${segment.heading_path.join(' / ')}` : ''}
                     </div>
                     <p>{segment.content}</p>
                   </div>
@@ -477,7 +521,7 @@ export function PersonalKnowledgeView({
 }
 
 export default function AgentKnowledgeSection({ agentId, canEdit, onNavigateTab }: AgentKnowledgeSectionProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [subView, setSubView] = useState<SubView>('overview');
   const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
   const [selectedPersonalDocumentId, setSelectedPersonalDocumentId] = useState<string | null>(null);
@@ -633,9 +677,11 @@ export default function AgentKnowledgeSection({ agentId, canEdit, onNavigateTab 
         <div className="agent-knowledge-timeline">
           {(eventsQuery.data?.events ?? []).map((event, index) => (
             <div key={`${event.at}-${index}`} className="agent-knowledge-card agent-knowledge-timeline-row">
-              <span className="agent-knowledge-timeline-time">{event.at.slice(0, 16)}</span>
-              <span className="badge agent-knowledge-mr-2">{event.kind}</span>
-              <span className="agent-knowledge-mr-2">{event.outcome}</span>
+              <span className="agent-knowledge-timeline-time">
+                {formatKnowledgeTimestamp(event.at, i18n.language)}
+              </span>
+              <span className="badge agent-knowledge-mr-2">{memoryEventKindLabel(event.kind, t)}</span>
+              <span className="agent-knowledge-mr-2">{memoryEventOutcomeLabel(event.outcome, t)}</span>
               <span className="agent-knowledge-timeline-summary">{event.summary}</span>
             </div>
           ))}

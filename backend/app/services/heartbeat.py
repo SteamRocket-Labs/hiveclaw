@@ -879,12 +879,18 @@ def _run_memory_lifecycle_maintenance(agent_id: uuid.UUID, *, now: datetime | No
     return run_memory_lifecycle_maintenance(Path(get_settings().AGENT_DATA_DIR), agent_id, now=now)
 
 
-async def _run_t2_job_sweep(agent_id: uuid.UUID):
+async def _run_t2_job_sweep(agent_id: uuid.UUID, tenant_id: uuid.UUID | None = None):
     """C9-1: pick up held/failed T2 package jobs on the heartbeat cadence."""
     from app.config import get_settings
     from app.memory.t2.job_sweep import sweep_t2_jobs
 
-    return await sweep_t2_jobs(agent_id=agent_id, data_root=Path(get_settings().AGENT_DATA_DIR))
+    settings = get_settings()
+    return await sweep_t2_jobs(
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        data_root=Path(settings.AGENT_DATA_DIR),
+        max_jobs_per_sweep=int(getattr(settings, "MEMORY_T2_SWEEP_MAX_JOBS_PER_HEARTBEAT", 8)),
+    )
 
 
 async def _run_consolidation_debt_refresh(agent_id: uuid.UUID):
@@ -1219,15 +1225,16 @@ async def _execute_heartbeat(
                 logger.warning("[Heartbeat] Memory lifecycle maintenance failed for {}: {}", agent_id, _lifecycle_err)
 
             try:
-                sweep_report = await _run_t2_job_sweep(agent_id)
+                sweep_report = await _run_t2_job_sweep(agent_id, tenant_id)
                 if sweep_report.recovered_stale or sweep_report.retried or sweep_report.alerted:
                     logger.info(
-                        "[Heartbeat] T2 job sweep for {}: recovered={} retried={} committed={} exhausted={}",
+                        "[Heartbeat] T2 job sweep for {}: recovered={} retried={} committed={} exhausted={} deferred={}",
                         agent_id,
                         list(sweep_report.recovered_stale),
                         list(sweep_report.retried),
                         list(sweep_report.committed),
                         list(sweep_report.exhausted),
+                        list(sweep_report.deferred),
                     )
             except Exception as _sweep_err:
                 logger.warning("[Heartbeat] T2 job sweep failed for {}: {}", agent_id, _sweep_err)

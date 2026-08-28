@@ -195,6 +195,10 @@ class Settings(BaseSettings):
     # the old 45min digestion rhythm (most ticks idled), and in-conversation
     # memory rides the per-response extraction hook, not this loop.
     HEARTBEAT_DEFAULT_INTERVAL_MINUTES: int = 120
+    # Bound automatic T2 recovery so a repaired historical backlog cannot
+    # monopolize one heartbeat. Explicit backfill tooling remains available
+    # for an operator-authorized full replay from preserved T0 evidence.
+    MEMORY_T2_SWEEP_MAX_JOBS_PER_HEARTBEAT: int = 8
     # Subagent evolution loop (docs/subagent-evolution-loop.md §4.1): an
     # agent-level definition with this many ACTIVE memory entries (and no
     # pending proposal) gets an LLM-drafted definition-improvement proposal.

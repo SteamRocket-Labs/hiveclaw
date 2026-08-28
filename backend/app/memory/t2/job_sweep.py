@@ -50,6 +50,7 @@ class T2JobSweepReport:
     still_held: tuple[str, ...] = ()
     exhausted: tuple[str, ...] = ()
     alerted: tuple[str, ...] = ()
+    deferred: tuple[str, ...] = ()
 
 
 def sweep_stale_t2_jobs(
@@ -101,22 +102,37 @@ async def sweep_t2_jobs(
     *,
     agent_id: uuid.UUID | str,
     data_root: Path | str,
+    tenant_id: uuid.UUID | str | None = None,
     now: datetime | None = None,
     stale_after_seconds: float = DEFAULT_STALE_AFTER_SECONDS,
     max_retries: int = DEFAULT_MAX_RETRIES,
+    max_jobs_per_sweep: int | None = None,
 ) -> T2JobSweepReport:
     """Full sweep: stale recovery + bounded retry of held/failed jobs."""
 
+    if max_jobs_per_sweep is not None and max_jobs_per_sweep <= 0:
+        raise ValueError("max_jobs_per_sweep must be positive or None")
     root = Path(data_root)
     current = _now_utc(now)
+    manifests = _iter_job_manifests(root, agent_id)
+    authoritative_tenant_id = _parse_uuid(tenant_id)
+    if authoritative_tenant_id is None and any(not manifest.get("tenant_id") for _, manifest in manifests):
+        try:
+            from app.services.tenant_resolver import resolve_tenant_for_agent
+
+            authoritative_tenant_id = await resolve_tenant_for_agent(agent_id)
+        except Exception as exc:  # noqa: BLE001 - unresolved jobs remain held with their evidence intact
+            logger.warning("T2 job tenant resolution failed for agent %s: %s", agent_id, exc)
     scanned = 0
+    retry_attempts = 0
     recovered: list[str] = []
     retried: list[str] = []
     committed: list[str] = []
     still_held: list[str] = []
     exhausted: list[str] = []
     alerted: list[str] = []
-    for manifest_path, manifest in _iter_job_manifests(root, agent_id):
+    deferred: list[str] = []
+    for manifest_path, manifest in manifests:
         scanned += 1
         job_id = str(manifest.get("job_id") or manifest_path.parent.name)
         status = str(manifest.get("status") or "").strip().lower()
@@ -126,12 +142,22 @@ async def sweep_t2_jobs(
             status = "held"
         if status not in _RETRYABLE_STATUSES:
             continue
+        manifest = _repair_tenant_authority(
+            manifest_path,
+            manifest,
+            authoritative_tenant_id=authoritative_tenant_id,
+            now=current,
+        )
         if _retry_count(manifest) >= max_retries:
             exhausted.append(job_id)
             if not str(manifest.get("retry_exhausted_alerted_at") or "").strip():
                 await _emit_retry_exhausted_alert(manifest_path, manifest, now=current)
                 alerted.append(job_id)
             continue
+        if max_jobs_per_sweep is not None and retry_attempts >= max_jobs_per_sweep:
+            deferred.append(job_id)
+            continue
+        retry_attempts += 1
         result_status = await _retry_job(manifest_path, manifest, root=root, now=current)
         retried.append(job_id)
         if result_status == "committed":
@@ -147,9 +173,37 @@ async def sweep_t2_jobs(
         still_held=tuple(still_held),
         exhausted=tuple(exhausted),
         alerted=tuple(alerted),
+        deferred=tuple(deferred),
     )
     _write_control_report(root, agent_id, report, now=current)
     return report
+
+
+def _repair_tenant_authority(
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    *,
+    authoritative_tenant_id: uuid.UUID | None,
+    now: datetime,
+) -> dict[str, Any]:
+    """Repair jobs created without correct Agent tenant authority while preserving failed-attempt history."""
+
+    manifest_tenant_id = _parse_uuid(manifest.get("tenant_id"))
+    if authoritative_tenant_id is None or manifest_tenant_id == authoritative_tenant_id:
+        return manifest
+    previous_retry_count = _retry_count(manifest)
+    previous_tenant_value = manifest.get("tenant_id")
+    manifest["tenant_id"] = str(authoritative_tenant_id)
+    manifest["tenant_authority_repaired_at"] = now.isoformat()
+    if previous_tenant_value:
+        manifest["tenant_authority_previous_value"] = str(previous_tenant_value)
+    if previous_retry_count:
+        manifest["authority_repaired_from_retry_count"] = previous_retry_count
+        manifest["retry_count"] = 0
+        manifest.pop("retry_exhausted_alerted_at", None)
+    manifest["updated_at"] = now.isoformat()
+    _write_json(manifest_path, manifest)
+    return manifest
 
 
 def sweep_all_agents_stale_t2_jobs(
@@ -292,6 +346,7 @@ def _write_control_report(root: Path, agent_id: uuid.UUID | str, report: T2JobSw
         "still_held": list(report.still_held),
         "exhausted": list(report.exhausted),
         "alerted": list(report.alerted),
+        "deferred": list(report.deferred),
     }
     _write_json(root / str(agent_id) / "memory" / "control" / "t2_job_sweep.json", payload)
 

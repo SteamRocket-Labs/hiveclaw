@@ -1703,7 +1703,8 @@
       "goApprove": "去审批",
       "selfCard": "自我认知",
       "selfEntries": "条目",
-      "failureModes": "失败模式",
+      "failureModes": "改进情况",
+      "active": "待改进",
       "mitigating": "规避中",
       "resolved": "已根除",
       "planesCard": "记忆版图",
@@ -1715,14 +1716,14 @@
       "memoryState": {
         "remembered": "已记住",
         "consolidating": "正在巩固",
-        "needs_attention": "需要处理",
+        "needs_attention": "正在恢复",
         "empty": "暂无记忆"
       },
       "memoryStateDescription": {
         "remembered": "已形成可用记忆，可在后续对话中按需回忆。",
         "consolidating": "近期经历已可供后续对话回忆，系统正在将它们沉淀为长期认知。",
         "consolidating_pending": "近期经历已安全记录，系统正在整理；完成后即可供后续对话回忆。",
-        "needs_attention": "部分近期经历的整理已经停滞；已完成的记忆仍可继续使用。",
+        "needs_attention": "部分近期经历暂时未整理完成；系统会保留原始内容并自动重试，已完成的记忆仍可继续使用。",
         "empty": "还没有可供后续对话回忆的经历或长期记忆。"
       },
       "availableForRecall": "可供对话回忆",
@@ -1732,7 +1733,8 @@
       "remembered": "已沉淀",
       "notConsolidatedYet": "尚未沉淀",
       "pendingMemoryItems": "正在整理 {{count}} 段经历",
-      "memoryIssueItems": "{{count}} 项需要处理",
+      "memoryIssueItems": "{{count}} 段经历等待恢复",
+      "memoryRecoveryHint": "系统会自动重试；如果长时间没有恢复，请联系工作区管理员。",
       "pipelineCard": "记忆管线",
       "pipelineStalled": "消化停滞",
       "pendingPackages": "积压",
@@ -1740,25 +1742,57 @@
       "dreamCoverage": "覆盖度",
       "dreamCoverageHint": "Dream 提交前必须完整评阅每一份已接受的语义文件。",
       "dreamCoverageLegacy": "历史运行覆盖度未知",
-      "noSelf": "还没有自我认知条目 — 能力、方法和失败模式会随经历由记忆管线长出来。",
-      "noProfiles": "还没有主人/协作者/领域侧写条目。",
+      "noSelf": "还没有自我认知；它会随着经历逐步形成对能力、方法和待改进事项的理解。",
+      "noProfiles": "还没有人物或领域认知；它会在相关经历积累后逐步形成。",
       "noMilestones": "还没有里程碑 — 首次成功、重大失败或主人反馈会沉淀在这里。",
       "personalSearchPlaceholder": "搜索个人知识库...",
       "personalSearch": "搜索",
-      "personalReadonlyTitle": "Owner 级只读视图",
-      "personalReadonlyDesc": "Agent Detail 只负责检索和查看 Personal KB 证据；投喂和权限变更统一进入全局个人知识库工作区。",
+      "personalReadonlyTitle": "仅查看",
+      "personalReadonlyDesc": "可以在这里检索和阅读已授权的个人知识；导入新资料或调整权限请前往个人知识库。",
       "personalOpenGlobal": "打开个人知识库",
       "personalLibrary": "个人知识库",
       "personalSegments": "段落",
-      "personalEmpty": "当前 owner scope 的个人知识库为空。",
+      "personalSegmentNumber": "第 {{count}} 段",
+      "personalSensitivity": {
+        "internal": "内部资料",
+        "private": "仅自己可见",
+        "public": "公开资料",
+        "unknown": "已授权资料"
+      },
+      "personalStatus": {
+        "ready": "可供检索",
+        "processing": "正在处理",
+        "failed": "处理失败",
+        "unknown": "状态待确认"
+      },
+      "profileStatus": {
+        "active": "待改进",
+        "mitigating": "正在改进",
+        "resolved": "已改善",
+        "recorded": "已记录"
+      },
+      "personalEmpty": "这里还没有可用的个人知识。你可以前往个人知识库导入资料。",
       "personalSearchResults": "搜索结果",
-      "personalSelectPrompt": "选择一个个人知识库文档以查看 source segments。",
+      "personalSelectPrompt": "选择一份个人知识以查看原文分段。",
       "subview": {
+        "overview": "记忆概览",
         "self": "自我认知",
         "profiles": "人际与领域",
         "personal": "个人知识库",
         "knowledge": "知识网络",
-        "milestones": "里程碑"
+        "milestones": "里程碑",
+        "timeline": "成长记录",
+        "raw": "身份与记忆文件"
+      },
+      "eventKind": {
+        "curation": "记忆整理",
+        "consolidation": "长期记忆沉淀",
+        "update": "记忆更新"
+      },
+      "eventOutcome": {
+        "completed": "已完成",
+        "waiting": "等待处理",
+        "recorded": "已记录"
       },
       "distiller": {
         "t2_pipeline": "经历打包 (T0→T2)",
@@ -1769,13 +1803,14 @@
       "capabilitiesCard": "关联能力",
       "linkedPages": "关联页面",
       "noEvents": "尚无记忆事件记录。",
-      "noPages": "还没有知识页——证据积累后由整理器生成。",
-      "pageNotCreated": "页面尚未创建",
-      "pendingSoul": "待审批的 soul 候选",
-      "skillCandidates": "Skill 候选",
-      "skillsLinked": "Skills",
-      "soulSections": "Soul 分区",
-      "workflowCandidates": "Workflow 候选"
+      "noPages": "还没有形成知识页面；它会在相关经历积累后逐步出现。",
+      "pageNotCreated": "相关页面尚未形成",
+      "untitledEntry": "未命名记忆",
+      "pendingSoul": "待审批的身份建议",
+      "skillCandidates": "待验证技能",
+      "skillsLinked": "已掌握技能",
+      "soulSections": "身份设定",
+      "workflowCandidates": "待验证工作流程"
     },
     "evolution": {
       "title": "进化",

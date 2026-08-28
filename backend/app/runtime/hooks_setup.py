@@ -608,7 +608,22 @@ async def _build_t2_for_sealed_segment(*, ctx: HookContext, agent_id: uuid.UUID,
         logger.info("[Hooks] T0->T2 skipped segment=%s reason=%s", segment_id, reason)
         return
     tenant_id_raw = ctx.metadata.get("tenant_id")
-    tenant_id = uuid.UUID(str(tenant_id_raw)) if tenant_id_raw else None
+    try:
+        metadata_tenant_id = uuid.UUID(str(tenant_id_raw)) if tenant_id_raw else None
+    except (TypeError, ValueError):
+        metadata_tenant_id = None
+        logger.warning("[Hooks] Ignoring invalid T0->T2 tenant metadata for agent=%s", agent_id)
+    try:
+        from app.services.tenant_resolver import resolve_tenant_for_agent
+
+        tenant_id = await resolve_tenant_for_agent(agent_id)
+        if tenant_id is None:
+            raise LookupError(f"Agent tenant authority not found for {agent_id}")
+        if metadata_tenant_id is not None and metadata_tenant_id != tenant_id:
+            logger.warning("[Hooks] T0->T2 tenant metadata disagrees with Agent authority for agent=%s", agent_id)
+    except Exception as exc:  # noqa: BLE001 - the durable job below preserves evidence for later repair
+        tenant_id = None
+        logger.warning("[Hooks] T0->T2 tenant resolution failed for agent=%s: %s", agent_id, exc)
     try:
         from app.memory.t2.segment_package import run_t2_segment_package_job
 

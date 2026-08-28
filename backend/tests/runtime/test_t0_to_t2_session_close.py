@@ -23,10 +23,17 @@ from app.runtime.hooks_setup import (
 
 def _patch_t0_root(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     fake = lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path))  # noqa: E731
-    monkeypatch.setattr("app.config.get_settings", fake)
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", fake)
-    monkeypatch.setattr("app.runtime.hooks_setup.get_settings", fake, raising=False)
+    monkeypatch.setattr("app.runtime.hooks_setup._agent_data_root", lambda: Path(tmp_path))
     monkeypatch.setattr("app.services.t0_logger.get_settings", fake)
+
+
+def _patch_agent_tenant(monkeypatch: pytest.MonkeyPatch, agent_id, tenant_id) -> None:
+    async def fake_resolve_tenant(resolved_agent_id):
+        assert resolved_agent_id == agent_id
+        return tenant_id
+
+    monkeypatch.setattr("app.services.tenant_resolver.resolve_tenant_for_agent", fake_resolve_tenant)
 
 
 @pytest.mark.asyncio
@@ -34,6 +41,7 @@ async def test_session_close_seals_t0_segment_then_starts_canonical_t2_package(m
     _patch_t0_root(monkeypatch, tmp_path)
     agent_id = uuid4()
     tenant_id = uuid4()
+    _patch_agent_tenant(monkeypatch, agent_id, tenant_id)
     session_id = "chat-session-1"
     first = append_t0_session_event(
         agent_id=agent_id,
@@ -72,10 +80,65 @@ async def test_session_close_seals_t0_segment_then_starts_canonical_t2_package(m
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "metadata_tenant_id",
+    [None, "not-a-uuid", "00000000-0000-0000-0000-000000000001"],
+)
+async def test_session_close_uses_agent_tenant_instead_of_optional_hook_metadata(
+    monkeypatch,
+    tmp_path,
+    metadata_tenant_id,
+) -> None:
+    """Agent ownership is authoritative; optional hook metadata is not the tenant source of truth."""
+
+    _patch_t0_root(monkeypatch, tmp_path)
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    _patch_agent_tenant(monkeypatch, agent_id, tenant_id)
+    session_id = "chat-session-without-tenant-metadata"
+    first = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="缺少可选 hook metadata 时仍应进入受租户约束的记忆管线。",
+        data_root=tmp_path,
+    )
+    calls: list[dict] = []
+
+    async def fake_build(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(status="committed", package_dir=tmp_path / "pkg", job_id=kwargs["job_id"], issues=())
+
+    monkeypatch.setattr("app.memory.t2.segment_package.build_t2_segment_package_with_llm", fake_build)
+
+    metadata = {"reason": "invoke_complete"}
+    if metadata_tenant_id is not None:
+        metadata["tenant_id"] = metadata_tenant_id
+
+    await _t0_session_close(
+        HookContext(
+            event=HookEvent.SESSION_CLOSE,
+            agent_id=str(agent_id),
+            session_id=session_id,
+            source="web",
+            messages=[],
+            metadata=metadata,
+        )
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["tenant_id"] == tenant_id
+    assert calls[0]["t0_segment_id"] == first.segment_id
+
+
+@pytest.mark.asyncio
 async def test_session_close_passes_branch_lineage_to_t2_package_job(monkeypatch, tmp_path) -> None:
     _patch_t0_root(monkeypatch, tmp_path)
     agent_id = uuid4()
     tenant_id = uuid4()
+    _patch_agent_tenant(monkeypatch, agent_id, tenant_id)
     session_id = "branch-session-1"
     first = append_t0_session_event(
         agent_id=agent_id,
@@ -141,6 +204,7 @@ async def test_turn_stop_seals_user_turn_and_starts_canonical_t2_package(monkeyp
     _patch_t0_root(monkeypatch, tmp_path)
     agent_id = uuid4()
     tenant_id = uuid4()
+    _patch_agent_tenant(monkeypatch, agent_id, tenant_id)
     session_id = "turn-native-session"
     user = append_t0_session_event(
         agent_id=agent_id,
@@ -218,6 +282,7 @@ async def test_turn_stop_committed_t2_is_available_to_the_next_chat_prompt_witho
     _patch_t0_root(monkeypatch, tmp_path)
     agent_id = uuid4()
     tenant_id = uuid4()
+    _patch_agent_tenant(monkeypatch, agent_id, tenant_id)
     session_id = "turn-with-new-memory"
     event = append_t0_session_event(
         agent_id=agent_id,
@@ -333,6 +398,7 @@ async def test_trigger_end_seals_runtime_t0_segment_then_starts_canonical_t2_pac
     _patch_t0_root(monkeypatch, tmp_path)
     agent_id = uuid4()
     tenant_id = uuid4()
+    _patch_agent_tenant(monkeypatch, agent_id, tenant_id)
     session_id = "trigger_run-daily-research"
     first = append_t0_session_event(
         agent_id=agent_id,
@@ -389,6 +455,7 @@ async def test_delegation_end_seals_runtime_t0_segment_then_starts_canonical_t2_
     _patch_t0_root(monkeypatch, tmp_path)
     agent_id = uuid4()
     tenant_id = uuid4()
+    _patch_agent_tenant(monkeypatch, agent_id, tenant_id)
     session_id = "delegation_run-worker-42"
     first = append_t0_session_event(
         agent_id=agent_id,
@@ -633,6 +700,7 @@ async def test_turn_stop_seals_activation_feedback_summary_without_raw_events(mo
     _patch_t0_root(monkeypatch, tmp_path)
     agent_id = uuid4()
     tenant_id = uuid4()
+    _patch_agent_tenant(monkeypatch, agent_id, tenant_id)
     session_id = "session-activation-summary"
     append_t0_session_event(
         agent_id=agent_id,
@@ -737,6 +805,7 @@ async def test_pre_compaction_seals_t0_checkpoint_and_enqueues_t2_job(monkeypatc
     _patch_t0_root(monkeypatch, tmp_path)
     agent_id = uuid4()
     tenant_id = uuid4()
+    _patch_agent_tenant(monkeypatch, agent_id, tenant_id)
     session_id = "long-running-chat"
     first = append_t0_session_event(
         agent_id=agent_id,

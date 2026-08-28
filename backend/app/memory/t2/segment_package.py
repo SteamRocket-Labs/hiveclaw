@@ -677,11 +677,7 @@ def _build_source_bundle(
 ) -> dict[str, Any]:
     session_events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=root)
     excluded_transcript_event_ids = _knowledge_provenance_excluded_transcript_event_ids(session_events)
-    segment_events = [
-        event
-        for event in session_events
-        if event.segment_id == t0_segment_id
-    ]
+    segment_events = [event for event in session_events if event.segment_id == t0_segment_id]
     events = [
         event
         for event in segment_events
@@ -1900,7 +1896,15 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-_JOB_CARRY_OVER_KEYS = ("retry_count", "last_retry_at", "retry_exhausted_alerted_at", "recovered_from")
+_JOB_CARRY_OVER_KEYS = (
+    "retry_count",
+    "last_retry_at",
+    "retry_exhausted_alerted_at",
+    "recovered_from",
+    "tenant_authority_repaired_at",
+    "tenant_authority_previous_value",
+    "authority_repaired_from_retry_count",
+)
 
 
 def _carry_over_job_fields(manifest_path: Path) -> dict[str, Any]:

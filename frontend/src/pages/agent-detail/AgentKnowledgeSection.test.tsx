@@ -126,7 +126,7 @@ vi.mock('../../api/domains/knowledge', () => ({
   },
 }));
 
-import AgentKnowledgeSection, { PersonalKnowledgeView } from './AgentKnowledgeSection';
+import AgentKnowledgeSection, { knowledgeEntryHeading, PersonalKnowledgeView } from './AgentKnowledgeSection';
 
 describe('AgentKnowledgeSection', () => {
   it('renders the two-plane overview with failure-mode lifecycle and pipeline health', () => {
@@ -167,9 +167,12 @@ describe('AgentKnowledgeSection', () => {
     const html = renderToStaticMarkup(
       <AgentKnowledgeSection agentId="agent-1" canEdit onNavigateTab={() => {}} />,
     );
-    for (const view of ['overview', '自我认知', '人际与领域', '个人知识库', '知识网络', '里程碑', 'timeline', 'raw']) {
+    for (const view of ['记忆概览', '自我认知', '人际与领域', '个人知识库', '知识网络', '里程碑', '成长记录', '身份与记忆文件']) {
       expect(html).toContain(view);
     }
+    expect(html).not.toContain('>overview</button>');
+    expect(html).not.toContain('>timeline</button>');
+    expect(html).not.toContain('>raw</button>');
     // the dead subview BUTTONS are gone (copy like 'Skill candidates' may remain)
     expect(html).not.toContain('>entries</button>');
     expect(html).not.toContain('>candidates</button>');
@@ -188,9 +191,9 @@ describe('AgentKnowledgeSection', () => {
       const html = renderToStaticMarkup(
         <AgentKnowledgeSection agentId="agent-1" canEdit={false} onNavigateTab={() => {}} />,
       );
-      expect(html).toContain('需要处理');
-      expect(html).toContain('部分近期经历的整理已经停滞');
-      expect(html).toContain('1 项需要处理');
+      expect(html).toContain('正在恢复');
+      expect(html).toContain('部分近期经历暂时未整理完成');
+      expect(html).toContain('1 段经历等待恢复');
       expect(html).toContain('agent-knowledge-memory-status--needs-attention');
       expect(html).not.toContain('t2_pipeline');
       expect(html).not.toContain('runtime_task_id');
@@ -209,7 +212,7 @@ describe('AgentKnowledgeSection', () => {
       const html = renderToStaticMarkup(
         <AgentKnowledgeSection agentId="agent-1" canEdit={false} onNavigateTab={() => {}} />,
       );
-      expect(html).toContain('需要处理');
+      expect(html).toContain('正在恢复');
       expect(html).not.toContain('t2_recovery_pending');
     } finally {
       Object.assign(overviewData.memoryStatus, original);
@@ -220,12 +223,12 @@ describe('AgentKnowledgeSection', () => {
     const html = renderToStaticMarkup(
       <AgentKnowledgeSection agentId="agent-1" canEdit={false} onNavigateTab={() => {}} />,
     );
-    expect(html).toContain('overview');
+    expect(html).toContain('记忆概览');
     expect(html).not.toContain('raw');
     expect(html).not.toContain('查看当前身份');
   });
 
-  it('renders the Personal KB lane as read-only search, library, and source refs inside Agent Detail', () => {
+  it('renders the Personal KB lane as readable content without internal references inside Agent Detail', () => {
     const html = renderToStaticMarkup(
       <PersonalKnowledgeView
         documents={[
@@ -294,12 +297,18 @@ describe('AgentKnowledgeSection', () => {
       />,
     );
 
-    expect(html).toContain('Personal KB');
-    expect(html).toContain('Owner 级只读视图');
+    expect(html).toContain('个人知识库');
+    expect(html).toContain('仅查看');
     expect(html).toContain('Taste notes');
     expect(html).toContain('Use source refs and ACL');
-    expect(html).toContain('kb://person/user-1/documents/doc-1#segment=seg-1');
     expect(html).toContain('source refs');
+    expect(html).toContain('内部资料');
+    expect(html).toContain('可供检索');
+    expect(html).toContain('第 1 段');
+    expect(html).not.toContain('kb://person/');
+    expect(html).not.toContain('persons/user-1/kb/doc.md');
+    expect(html).not.toContain('>ready<');
+    expect(html).not.toContain(' tok');
     expect(html).not.toContain('Add to Personal KB');
     expect(html).not.toContain('Paste Markdown or notes here');
   });
@@ -322,6 +331,16 @@ describe('AgentKnowledgeSection', () => {
 
     expect(html).toContain('data-personal-knowledge-state="forbidden"');
     expect(html).toContain('这不是空知识库');
-    expect(html).not.toContain('当前 owner scope 的个人知识库为空。');
+    expect(html).not.toContain('这里还没有可用的个人知识。');
+  });
+
+  it('uses user-readable content rather than an internal id for an unheaded memory entry', () => {
+    expect(knowledgeEntryHeading({ ...selfEntry, content: '', preview: '先确认需求再执行' }, '未命名记忆')).toBe(
+      '先确认需求再执行',
+    );
+    expect(knowledgeEntryHeading({ ...selfEntry, content: '', preview: '' }, '未命名记忆')).toBe('未命名记忆');
+    expect(knowledgeEntryHeading({ ...selfEntry, content: '', preview: '' }, '未命名记忆')).not.toContain(
+      selfEntry.id,
+    );
   });
 });

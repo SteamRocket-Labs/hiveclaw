@@ -389,6 +389,120 @@ async def test_sweep_stops_at_max_retries_and_alerts_exactly_once(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_sweep_repairs_missing_tenant_authority_and_replays_exhausted_job(tmp_path: Path, monkeypatch) -> None:
+    """Retries spent without tenant authority are platform debt, not a permanent memory loss verdict."""
+
+    from app.memory.t2.job_sweep import sweep_t2_jobs
+
+    manifest, manifest_path = await _make_held_job(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    agent_id = manifest["agent_id"]
+    tenant_id = uuid4()
+    manifest.update(
+        {
+            "tenant_id": None,
+            "retry_count": 3,
+            "retry_exhausted_alerted_at": datetime.now(UTC).isoformat(),
+            "issues": ["no summary model config for T0->T2 package build"],
+        }
+    )
+    _write_manifest(manifest_path, manifest)
+    phases = _patch_working_llm(monkeypatch)
+
+    report = await sweep_t2_jobs(
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        data_root=tmp_path,
+        max_retries=3,
+    )
+
+    updated = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert updated["status"] == "committed"
+    assert updated["tenant_id"] == str(tenant_id)
+    assert updated["tenant_authority_repaired_at"]
+    assert updated["authority_repaired_from_retry_count"] == 3
+    assert updated["retry_count"] == 1
+    assert "retry_exhausted_alerted_at" not in updated
+    assert phases == ["summary", "labels", "review"]
+    assert report.retried == (manifest["job_id"],)
+    assert report.committed == (manifest["job_id"],)
+
+
+@pytest.mark.asyncio
+async def test_sweep_replaces_mismatched_tenant_with_agent_authority(tmp_path: Path, monkeypatch) -> None:
+    """A well-formed but wrong tenant UUID cannot outrank the owning Agent record."""
+
+    from app.memory.t2.job_sweep import sweep_t2_jobs
+
+    manifest, manifest_path = await _make_held_job(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    agent_id = manifest["agent_id"]
+    wrong_tenant_id = uuid4()
+    authoritative_tenant_id = uuid4()
+    manifest.update(
+        {
+            "tenant_id": str(wrong_tenant_id),
+            "retry_count": 2,
+            "retry_exhausted_alerted_at": datetime.now(UTC).isoformat(),
+            "issues": ["opaque prior infrastructure diagnostic"],
+        }
+    )
+    _write_manifest(manifest_path, manifest)
+    _patch_working_llm(monkeypatch)
+
+    report = await sweep_t2_jobs(
+        agent_id=agent_id,
+        tenant_id=authoritative_tenant_id,
+        data_root=tmp_path,
+    )
+
+    updated = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert updated["status"] == "committed"
+    assert updated["tenant_id"] == str(authoritative_tenant_id)
+    assert updated["tenant_authority_previous_value"] == str(wrong_tenant_id)
+    assert updated["authority_repaired_from_retry_count"] == 2
+    assert updated["retry_count"] == 1
+    assert "retry_exhausted_alerted_at" not in updated
+    assert report.committed == (manifest["job_id"],)
+
+
+@pytest.mark.asyncio
+async def test_sweep_bounds_automatic_replay_and_reports_deferred_jobs(tmp_path: Path, monkeypatch) -> None:
+    from app.memory.t2 import job_sweep
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    for suffix in ("a", "b"):
+        manifest = _stale_manifest(agent_id=agent_id, status="held")
+        manifest["job_id"] = f"t2job-bounded-{suffix}"
+        manifest["tenant_id"] = str(tenant_id)
+        manifest_path = _jobs_dir(tmp_path, agent_id) / manifest["job_id"] / "job_manifest.json"
+        _write_manifest(manifest_path, manifest)
+
+    retried: list[str] = []
+
+    async def fake_retry(manifest_path, manifest, **_kwargs):
+        retried.append(str(manifest["job_id"]))
+        return "committed"
+
+    monkeypatch.setattr(job_sweep, "_retry_job", fake_retry)
+
+    report = await job_sweep.sweep_t2_jobs(
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        data_root=tmp_path,
+        max_jobs_per_sweep=1,
+    )
+
+    assert retried == ["t2job-bounded-a"]
+    assert report.retried == ("t2job-bounded-a",)
+    assert report.committed == ("t2job-bounded-a",)
+    assert report.deferred == ("t2job-bounded-b",)
+    control = json.loads(
+        (tmp_path / str(agent_id) / "memory" / "control" / "t2_job_sweep.json").read_text(encoding="utf-8")
+    )
+    assert control["deferred"] == ["t2job-bounded-b"]
+
+
+@pytest.mark.asyncio
 async def test_sweep_skips_committed_jobs(tmp_path: Path, monkeypatch) -> None:
     from app.memory.t2.job_sweep import sweep_t2_jobs
     from app.memory.t2.segment_package import run_t2_segment_package_job

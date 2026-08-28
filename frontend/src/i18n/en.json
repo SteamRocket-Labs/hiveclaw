@@ -1703,7 +1703,8 @@
       "goApprove": "Review",
       "selfCard": "Self-knowledge",
       "selfEntries": "Entries",
-      "failureModes": "Failure modes",
+      "failureModes": "Improvement status",
+      "active": "needs improvement",
       "mitigating": "mitigating",
       "resolved": "resolved",
       "planesCard": "Memory map",
@@ -1715,14 +1716,14 @@
       "memoryState": {
         "remembered": "Remembered",
         "consolidating": "Consolidating",
-        "needs_attention": "Needs attention",
+        "needs_attention": "Recovering",
         "empty": "No memory yet"
       },
       "memoryStateDescription": {
         "remembered": "Usable memory is available for relevant future conversations.",
         "consolidating": "Recent experiences are available for future conversations while they settle into long-term knowledge.",
         "consolidating_pending": "Recent experiences are safely recorded and still being processed. They become available when processing completes.",
-        "needs_attention": "Some recent experience processing has stalled. Completed memories remain available.",
+        "needs_attention": "Some recent experiences are not organized yet. The system keeps the original material and retries automatically; completed memory remains available.",
         "empty": "No experiences or long-term memories are available for future conversations yet."
       },
       "availableForRecall": "Available for future conversations",
@@ -1732,7 +1733,8 @@
       "remembered": "Consolidated",
       "notConsolidatedYet": "Not consolidated yet",
       "pendingMemoryItems": "Organizing {{count}} recent experiences",
-      "memoryIssueItems": "{{count}} items need attention",
+      "memoryIssueItems": "{{count}} experiences awaiting recovery",
+      "memoryRecoveryHint": "The system retries automatically. If this does not recover after a while, contact a workspace administrator.",
       "pipelineCard": "Memory pipeline",
       "pipelineStalled": "Consolidation stalled",
       "pendingPackages": "backlog",
@@ -1740,25 +1742,57 @@
       "dreamCoverage": "Coverage",
       "dreamCoverageHint": "Every accepted semantic file must be reviewed before Dream can commit.",
       "dreamCoverageLegacy": "Coverage unknown (legacy run)",
-      "noSelf": "No self-knowledge entries yet — capabilities, methods and failure modes grow from real work.",
-      "noProfiles": "No owner/collaborator/domain profile entries yet.",
+      "noSelf": "No self-knowledge yet. It develops an understanding of capabilities, methods and areas to improve through experience.",
+      "noProfiles": "No people or domain knowledge yet. It develops as relevant experience accumulates.",
       "noMilestones": "No milestones yet — first successes, major failures and owner feedback land here.",
       "personalSearchPlaceholder": "Search Personal KB...",
       "personalSearch": "Search",
-      "personalReadonlyTitle": "Read-only owner-scope view",
-      "personalReadonlyDesc": "Agent Detail can search and inspect Personal KB evidence, but ingestion and permission changes belong to the global Personal Knowledge workspace.",
+      "personalReadonlyTitle": "View only",
+      "personalReadonlyDesc": "Search and read authorized personal knowledge here. To add material or change access, open Personal Knowledge.",
       "personalOpenGlobal": "Open Personal KB",
       "personalLibrary": "Personal KB",
       "personalSegments": "segments",
-      "personalEmpty": "Personal KB is empty for this owner scope.",
+      "personalSegmentNumber": "Section {{count}}",
+      "personalSensitivity": {
+        "internal": "Internal",
+        "private": "Only me",
+        "public": "Public",
+        "unknown": "Authorized material"
+      },
+      "personalStatus": {
+        "ready": "Available to search",
+        "processing": "Processing",
+        "failed": "Processing failed",
+        "unknown": "Status unavailable"
+      },
+      "profileStatus": {
+        "active": "Needs improvement",
+        "mitigating": "Improving",
+        "resolved": "Improved",
+        "recorded": "Recorded"
+      },
+      "personalEmpty": "No personal knowledge is available here yet. Open Personal Knowledge to import material.",
       "personalSearchResults": "Search results",
-      "personalSelectPrompt": "Select a Personal KB document to inspect source segments.",
+      "personalSelectPrompt": "Select personal knowledge to read its source sections.",
       "subview": {
+        "overview": "Memory overview",
         "self": "Self",
         "profiles": "People & domain",
         "personal": "Personal KB",
         "knowledge": "Knowledge",
-        "milestones": "Milestones"
+        "milestones": "Milestones",
+        "timeline": "Growth history",
+        "raw": "Identity & memory files"
+      },
+      "eventKind": {
+        "curation": "Memory organization",
+        "consolidation": "Long-term memory consolidation",
+        "update": "Memory update"
+      },
+      "eventOutcome": {
+        "completed": "Completed",
+        "waiting": "Waiting",
+        "recorded": "Recorded"
       },
       "distiller": {
         "t2_pipeline": "T0→T2 pipeline",
@@ -1769,13 +1803,14 @@
       "capabilitiesCard": "Linked capabilities",
       "linkedPages": "Linked pages",
       "noEvents": "No memory events recorded yet.",
-      "noPages": "No knowledge pages yet — the curator creates them after evidence accumulates.",
-      "pageNotCreated": "Page not created yet",
-      "pendingSoul": "Pending soul candidates",
-      "skillCandidates": "Skill candidates",
-      "skillsLinked": "Skills",
-      "soulSections": "Soul sections",
-      "workflowCandidates": "Workflow candidates"
+      "noPages": "No knowledge pages have formed yet. They appear as relevant experience accumulates.",
+      "pageNotCreated": "Related page has not formed yet",
+      "untitledEntry": "Untitled memory",
+      "pendingSoul": "Identity suggestions awaiting review",
+      "skillCandidates": "Skills awaiting validation",
+      "skillsLinked": "Learned skills",
+      "soulSections": "Identity settings",
+      "workflowCandidates": "Workflows awaiting validation"
     },
     "evolution": {
       "title": "Evolution",

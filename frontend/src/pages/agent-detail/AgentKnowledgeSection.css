@@ -121,6 +121,11 @@
   color: var(--text-primary);
 }
 
+.agent-knowledge-memory-recovery {
+  color: var(--text-tertiary);
+  margin-top: var(--space-1);
+}
+
 .agent-knowledge-growth-updated {
   color: var(--text-tertiary);
   margin-top: var(--space-1);

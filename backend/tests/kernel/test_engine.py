@@ -787,6 +787,137 @@ async def test_kernel_never_retries_an_ambiguous_provider_send_on_a_fallback_mod
 
 
 @pytest.mark.asyncio
+async def test_kernel_classifies_typed_http_402_as_rejected_quota_without_replay() -> None:
+    """DAY1-PROVIDER-402-CLASSIFICATION-001: a typed HTTP 402 rejection is an
+    authoritative delivery_state=rejected.  The kernel must NOT raise
+    ProviderRequestNeedsReconciliation, must record exact
+    model_request_fail evidence (quota_exhausted/rejected/retry_safe),
+    must not invoke any fallback model (quota_exhausted requires a user
+    decision), and must return the existing user-facing quota/balance
+    error result — never an invented assistant success."""
+
+    from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
+    from app.services.llm_client import LLMError
+
+    primary_model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None)
+    fallback_model = SimpleNamespace(provider="anthropic", model="claude-sonnet", api_key="key", base_url=None)
+    primary_client = _FakeClient(
+        [
+            LLMError(
+                'HTTP 402: {"error":{"message":"Insufficient Balance","type":"invalid_request_error"}}',
+                delivery_state="rejected",
+                http_status=402,
+            )
+        ]
+    )
+    fallback_client = _FakeClient(
+        [SimpleNamespace(content="must not run", tool_calls=[], reasoning_content=None, usage={})]
+    )
+    failures: list[dict] = []
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda *_a, **_k: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=1),
+            resolve_current_user_name=lambda *_a, **_k: "Rocky",
+            build_system_prompt=lambda *_a, **_k: "PROMPT",
+            resolve_memory_context=lambda *_a, **_k: "",
+            get_tools=lambda *_a, **_k: [],
+            maybe_compress_messages=lambda messages, **_k: messages,
+            create_client=lambda model: primary_client if model is primary_model else fallback_client,
+            execute_tool=lambda *_a, **_k: "",
+            persist_memory=lambda **_k: None,
+            record_token_usage=lambda *_a, **_k: None,
+            get_max_tokens=lambda *_a, **_k: 2048,
+            extract_usage_tokens=lambda usage: None,
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=primary_model,
+            fallback_model=fallback_model,
+            messages=[{"role": "user", "content": "hello"}],
+            agent_name="Agent",
+            role_description="test",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            model_request_prepare=lambda **_payload: "provider-request:round-1",
+            model_request_fail=lambda **payload: failures.append(payload),
+        )
+    )
+
+    assert len(primary_client.calls) == 1
+    assert fallback_client.calls == []
+    assert failures == [
+        {
+            "round_index": 1,
+            "provider_request_id": "provider-request:round-1",
+            "error_class": "quota_exhausted",
+            "delivery_state": "rejected",
+            "retry_safe": True,
+        }
+    ]
+    # The existing user-facing quota/balance error path — no invented success.
+    assert "额度或余额不足" in str(result.content)
+    assert "must not run" not in str(result.content)
+
+
+@pytest.mark.asyncio
+async def test_text_only_http_402_without_typed_rejection_stays_needs_reconciliation() -> None:
+    """Safety invariant (same defect class): 402-looking TEXT on an LLMError
+    whose typed delivery_state is unknown must still reconcile — the hard
+    invariant is the authoritative typed HTTP status, never the text."""
+
+    from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
+    from app.kernel.contracts import ProviderRequestNeedsReconciliation
+    from app.services.llm_client import LLMError
+
+    primary_model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None)
+    fallback_model = SimpleNamespace(provider="anthropic", model="claude-sonnet", api_key="key", base_url=None)
+    primary_client = _FakeClient([LLMError('HTTP 402: {"error":{"message":"Insufficient Balance"}}')])
+    fallback_client = _FakeClient(
+        [SimpleNamespace(content="must not run", tool_calls=[], reasoning_content=None, usage={})]
+    )
+    failures: list[dict] = []
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda *_a, **_k: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=1),
+            resolve_current_user_name=lambda *_a, **_k: "Rocky",
+            build_system_prompt=lambda *_a, **_k: "PROMPT",
+            resolve_memory_context=lambda *_a, **_k: "",
+            get_tools=lambda *_a, **_k: [],
+            maybe_compress_messages=lambda messages, **_k: messages,
+            create_client=lambda model: primary_client if model is primary_model else fallback_client,
+            execute_tool=lambda *_a, **_k: "",
+            persist_memory=lambda **_k: None,
+            record_token_usage=lambda *_a, **_k: None,
+            get_max_tokens=lambda *_a, **_k: 2048,
+            extract_usage_tokens=lambda usage: None,
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    with pytest.raises(ProviderRequestNeedsReconciliation):
+        await kernel.handle(
+            InvocationRequest(
+                model=primary_model,
+                fallback_model=fallback_model,
+                messages=[{"role": "user", "content": "hello"}],
+                agent_name="Agent",
+                role_description="test",
+                agent_id=uuid4(),
+                user_id=uuid4(),
+                model_request_prepare=lambda **_payload: "provider-request:text-only-402",
+                model_request_fail=lambda **payload: failures.append(payload),
+            )
+        )
+
+    assert fallback_client.calls == []
+    assert failures[0]["delivery_state"] == "unknown"
+    assert failures[0]["retry_safe"] is False
+
+
+@pytest.mark.asyncio
 async def test_provider_error_text_cannot_authorize_replay_without_typed_rejection() -> None:
     from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
     from app.kernel.contracts import ProviderRequestNeedsReconciliation

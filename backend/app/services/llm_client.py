@@ -409,7 +409,7 @@ def _record_output_cap_hit(*, provider: str, model: str, finish_reason: str | No
     )
 
 
-_AUTHORITATIVE_PROVIDER_REJECTION_STATUSES = frozenset({400, 401, 403, 404, 413, 422, 429})
+_AUTHORITATIVE_PROVIDER_REJECTION_STATUSES = frozenset({400, 401, 402, 403, 404, 413, 422, 429})
 
 
 def delivery_state_from_http_status(status_code: int) -> Literal["rejected", "unknown"]:

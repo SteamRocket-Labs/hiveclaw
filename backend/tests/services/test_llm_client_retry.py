@@ -54,6 +54,7 @@ async def test_post_with_status_retries_uses_ten_rate_limit_rejections_and_expon
     [
         (400, "rejected"),
         (401, "rejected"),
+        (402, "rejected"),
         (403, "rejected"),
         (404, "rejected"),
         (413, "rejected"),
@@ -129,6 +130,46 @@ async def test_post_with_status_retries_honors_retry_after_without_retrying_auth
 
 
 @pytest.mark.asyncio
+async def test_post_with_status_retries_never_replays_after_a_402_rejection(monkeypatch) -> None:
+    """DAY1-PROVIDER-402-CLASSIFICATION-001: an explicit HTTP 402 response is
+    an authoritative rejection.  The same provider request is never
+    automatically retried after it — and when a 429 came first, the 402
+    stops the retry loop immediately (exactly two calls, never a third)."""
+
+    import app.services.llm_client as llm_client
+
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(llm_client.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(llm_client.random, "uniform", lambda _start, _end: 0.0)
+
+    single = _FakePostClient([_response(402), _response(200)])
+    result = await llm_client._post_with_status_retries(
+        single,  # type: ignore[arg-type]
+        "https://llm.example/v1/chat/completions",
+        payload={},
+        headers={},
+    )
+    assert result.status_code == 402
+    assert len(single.calls) == 1
+    assert sleeps == []
+
+    after_rate_limit = _FakePostClient([_response(429), _response(402), _response(200)])
+    result = await llm_client._post_with_status_retries(
+        after_rate_limit,  # type: ignore[arg-type]
+        "https://llm.example/v1/chat/completions",
+        payload={},
+        headers={},
+    )
+    assert result.status_code == 402
+    assert len(after_rate_limit.calls) == 2
+    assert sleeps == [1]
+
+
+@pytest.mark.asyncio
 async def test_post_with_status_retries_never_replays_unknown_network_delivery(monkeypatch) -> None:
     import app.services.llm_client as llm_client
 
@@ -151,4 +192,36 @@ async def test_post_with_status_retries_never_replays_unknown_network_delivery(m
 
     assert caught.value.delivery_state == "unknown"
     assert len(client.calls) == 1
+    assert sleeps == []
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_complete_maps_http_402_to_typed_rejected(monkeypatch) -> None:
+    """Wiring proof (DAY1-PROVIDER-402-CLASSIFICATION-001): a real HTTP 402
+    response through the live ``OpenAICompatibleClient.complete`` path must
+    raise ``LLMError`` with typed ``delivery_state='rejected'`` and
+    ``http_status=402`` — exactly one provider call, never an ambiguous
+    delivery outcome."""
+
+    from types import SimpleNamespace
+
+    import app.services.llm_client as llm_client
+
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(llm_client.asyncio, "sleep", fake_sleep)
+    body = '{"error":{"message":"Insufficient Balance","type":"invalid_request_error"}}'
+    fake_post = _FakePostClient([httpx.Response(402, text=body), httpx.Response(200, text="{}")])
+    client = llm_client.OpenAICompatibleClient(api_key="test-key", model="gpt-4.1")
+    client._client = SimpleNamespace(is_closed=False, post=fake_post.post)
+
+    with pytest.raises(llm_client.LLMError) as caught:
+        await client.complete([llm_client.LLMMessage(role="user", content="hello")])
+
+    assert caught.value.delivery_state == "rejected"
+    assert caught.value.http_status == 402
+    assert len(fake_post.calls) == 1
     assert sleeps == []

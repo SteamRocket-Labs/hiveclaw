@@ -23,6 +23,8 @@ export type ThreadTimelineCell =
   | {
       kind: 'active_run';
       id: string;
+      /** Canonical run identity used to bind later run-terminal evidence. */
+      runId?: string;
       timeline: RunTimelineSnapshot;
       sourceMessages: Array<{ message: AgentChatMessage; index: number }>;
       /** Live RuntimePhase for the open run (§3 seam 3); settled runs carry none. */
@@ -1727,6 +1729,12 @@ function assistantAnswerMessage(message: AgentChatMessage): AgentChatMessage {
   };
 }
 
+function messageRunId(message: AgentChatMessage | undefined): string | null {
+  const scope = message?.sessionItem?.scope;
+  if (!scope || !('run_id' in scope)) return null;
+  return typeof scope.run_id === 'string' && scope.run_id.trim() ? scope.run_id.trim() : null;
+}
+
 function buildRunCell(
   runIndex: number,
   sourceMessages: Array<{ message: AgentChatMessage; index: number }>,
@@ -1738,9 +1746,12 @@ function buildRunCell(
     sourceMessages.map((entry) => entry.message),
     { answer: answer?.message, activeRun, turnStartedAt },
   );
+  const runId = messageRunId(answer?.message)
+    ?? sourceMessages.map((entry) => messageRunId(entry.message)).find((value): value is string => Boolean(value));
   return {
     kind: 'active_run',
     id: `run-${runIndex}-${sourceMessages[0]?.index ?? answer?.index ?? 0}`,
+    ...(runId ? { runId } : {}),
     timeline: answer
       ? { ...timeline, answerMessageId: messageId(answer.message, `assistant-${answer.index}`) }
       : timeline,
@@ -1946,6 +1957,52 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
   return cells;
 }
 
+const CANONICAL_RUN_TERMINAL_LIFECYCLES = new Set(['completed', 'failed', 'cancelled']);
+
+function applyCanonicalRunTerminalEvidence(
+  cells: ThreadTimelineCell[],
+  messages: AgentChatMessage[],
+): ThreadTimelineCell[] {
+  const terminalByRunId = new Map<string, { completedAtMs: number; status: RunTimelineSnapshot['status'] }>();
+  messages.forEach((message) => {
+    const item = message.sessionItem;
+    if (item?.kind !== 'run' || !CANONICAL_RUN_TERMINAL_LIFECYCLES.has(item.lifecycle)) return;
+    const runId = messageRunId(message);
+    const completedAtMs = Date.parse(message.timestamp || item.occurredAt || '');
+    if (!runId || !Number.isFinite(completedAtMs)) return;
+    const status: RunTimelineSnapshot['status'] = item.lifecycle === 'failed'
+      ? 'failed'
+      : item.lifecycle === 'cancelled'
+        ? 'cancelled'
+        : 'done';
+    terminalByRunId.set(runId, { completedAtMs, status });
+  });
+  if (terminalByRunId.size === 0) return cells;
+
+  return cells.map((cell) => {
+    if (cell.kind !== 'active_run' || !cell.runId) return cell;
+    const terminal = terminalByRunId.get(cell.runId);
+    if (!terminal) return cell;
+    const currentCompletedAtMs = Date.parse(cell.timeline.completedAt || '');
+    const completedAtMs = Number.isFinite(currentCompletedAtMs)
+      ? Math.max(currentCompletedAtMs, terminal.completedAtMs)
+      : terminal.completedAtMs;
+    const startedAtMs = Date.parse(cell.timeline.startedAt || '');
+    const durationMs = Number.isFinite(startedAtMs)
+      ? Math.max(cell.timeline.durationMs ?? 0, completedAtMs - startedAtMs, 0)
+      : cell.timeline.durationMs;
+    return {
+      ...cell,
+      timeline: {
+        ...cell.timeline,
+        status: terminal.status,
+        completedAt: new Date(completedAtMs).toISOString(),
+        durationMs,
+      },
+    };
+  });
+}
+
 function stableStringify(value: unknown): string {
   if (value == null) return '';
   const seen = new WeakSet<object>();
@@ -1993,8 +2050,12 @@ function sameCellIdentity(previous: ThreadTimelineCell, next: ThreadTimelineCell
     return previous.index === next.index && previous.title === next.title && previous.summary === next.summary;
   }
   if (previous.kind === 'active_run' && next.kind === 'active_run') {
+    if (previous.runId !== next.runId) return false;
     if (previous.phase !== next.phase) return false;
     if (previous.timeline.status !== next.timeline.status) return false;
+    if (previous.timeline.startedAt !== next.timeline.startedAt) return false;
+    if (previous.timeline.completedAt !== next.timeline.completedAt) return false;
+    if (previous.timeline.durationMs !== next.timeline.durationMs) return false;
     if (previous.timeline.answerMessageId !== next.timeline.answerMessageId) return false;
     if (previous.timeline.steps.length !== next.timeline.steps.length) return false;
     if (previous.timeline.steps.some((step, index) => (
@@ -2032,7 +2093,7 @@ export function createThreadTimelineCache(): ThreadTimelineCache {
 }
 
 export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTimelineModel {
-  const cells = buildCells(input.messages);
+  const cells = applyCanonicalRunTerminalEvidence(buildCells(input.messages), input.messages);
   const activeRunStatus = mainTurnActiveRunStatus(input, cells);
   const runtimePhaseValue = String(input.runtimePhase || '').trim();
   const terminalDeliveryPending = runtimePhaseValue === 'done'

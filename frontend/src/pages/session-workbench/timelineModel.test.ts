@@ -56,6 +56,83 @@ describe('session workbench timeline model', () => {
     expect(run.timeline.durationMs).toBe(14_000);
   });
 
+  it('restores the run duration through the durable run terminal instead of stopping at the first answer snapshot', () => {
+    const runScope = {
+      level: 'run' as const,
+      session_id: 'session-1',
+      thread_id: 'session-1',
+      turn_id: 'turn-1',
+      run_id: 'run-1',
+    };
+    const messages = [
+      {
+        id: 'u1',
+        role: 'user',
+        content: 'Return the exact acceptance marker.',
+        timestamp: '2026-08-29T00:00:00Z',
+      },
+      {
+        id: 'r1',
+        role: 'assistant',
+        content: '',
+        thinking: 'Preparing the response.',
+        timestamp: '2026-08-29T00:00:12Z',
+        sessionItem: { id: 'reasoning-1', kind: 'assistant_reasoning_summary', scope: runScope, terminal: true },
+      },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'SESSION-PRESENTATION-PERSISTED',
+        timestamp: '2026-08-29T00:00:14Z',
+        sessionItem: { id: 'final-1', kind: 'assistant_final', scope: runScope, terminal: true },
+      },
+      {
+        id: 'run-1',
+        role: 'event',
+        content: '',
+        timestamp: '2026-08-29T00:00:25Z',
+        eventType: 'run',
+        eventStatus: 'completed',
+        sessionItem: { id: 'run-1', kind: 'run', lifecycle: 'completed', scope: runScope, terminal: true },
+      },
+    ] as unknown as AgentChatMessage[];
+
+    const model = buildThreadTimeline({
+      messages,
+      activeSession: { id: 'session-1', title: 'Persisted terminal duration' },
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+    });
+
+    const run = model.cells.find((cell) => cell.kind === 'active_run');
+    expect(run).toBeDefined();
+    if (!run || run.kind !== 'active_run') return;
+    expect(run.timeline.startedAt).toBe('2026-08-29T00:00:00.000Z');
+    expect(run.timeline.completedAt).toBe('2026-08-29T00:00:25.000Z');
+    expect(run.timeline.durationMs).toBe(25_000);
+
+    const cache = createThreadTimelineCache();
+    const beforeTerminal = buildThreadTimelineCached({
+      messages: messages.slice(0, -1),
+      activeSession: { id: 'session-1', title: 'Persisted terminal duration' },
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+    }, cache);
+    const afterTerminal = buildThreadTimelineCached({
+      messages,
+      activeSession: { id: 'session-1', title: 'Persisted terminal duration' },
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+    }, cache);
+    const beforeTerminalRun = beforeTerminal.cells.find((cell) => cell.kind === 'active_run');
+    const afterTerminalRun = afterTerminal.cells.find((cell) => cell.kind === 'active_run');
+    expect(afterTerminalRun).not.toBe(beforeTerminalRun);
+    expect(afterTerminalRun?.kind === 'active_run' ? afterTerminalRun.timeline.durationMs : null).toBe(25_000);
+  });
+
   it('starts an empty live run stopwatch at the accepted prompt timestamp', () => {
     const model = buildThreadTimeline({
       messages: [{

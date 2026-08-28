@@ -652,11 +652,29 @@ function normalizedUserContent(message: AgentChatMessage): string {
   return String(message.content || '').replace(/\s+/g, ' ').trim();
 }
 
+function hasMaterialUserDisplay(message: AgentChatMessage): boolean {
+  return Boolean(
+    normalizedUserContent(message)
+      || String(message.fileName || '').trim()
+      || String(message.imageUrl || '').trim(),
+  );
+}
+
+function userMessageHasIdentity(message: AgentChatMessage, identity: string): boolean {
+  return message.role === 'user'
+    && [message.id, message.messageId, message.transcriptEventId]
+      .some((candidate) => String(candidate || '') === identity);
+}
+
 function hasMatchingDurableUserMessage(messages: AgentChatMessage[], pending: PendingUserMessage): boolean {
   const pendingId = String(pending.message.id || '').trim();
+  // Identity alone is not visible proof. Live replay may first expose a
+  // lifecycle-only HumanInput placeholder whose payload has no display bytes;
+  // dropping the optimistic accepted input at that point makes the user's
+  // prompt disappear until full hydration. Only a material durable projection
+  // may retire the optimistic display bytes.
   if (pendingId && messages.some((message) => (
-    message.role === 'user'
-    && [message.id, message.messageId, message.transcriptEventId].some((identity) => String(identity || '') === pendingId)
+    userMessageHasIdentity(message, pendingId) && hasMaterialUserDisplay(message)
   ))) return true;
   const pendingContent = normalizedUserContent(pending.message);
   if (!pendingContent) return false;
@@ -679,6 +697,23 @@ export function mergePendingUserMessages(
   const merged = [...messages];
   const sorted = [...remaining].sort((a, b) => a.anchorMessageCount - b.anchorMessageCount);
   sorted.forEach((item, offset) => {
+    const pendingId = String(item.message.id || '').trim();
+    const placeholderIndex = pendingId
+      ? merged.findIndex((message) => (
+        userMessageHasIdentity(message, pendingId) && !hasMaterialUserDisplay(message)
+      ))
+      : -1;
+    if (placeholderIndex >= 0) {
+      const durablePlaceholder = merged[placeholderIndex];
+      merged[placeholderIndex] = {
+        ...item.message,
+        ...durablePlaceholder,
+        content: item.message.content,
+        fileName: item.message.fileName || durablePlaceholder.fileName,
+        imageUrl: item.message.imageUrl || durablePlaceholder.imageUrl,
+      };
+      return;
+    }
     const index = Math.max(0, Math.min(item.anchorMessageCount + offset, merged.length));
     merged.splice(index, 0, item.message);
   });

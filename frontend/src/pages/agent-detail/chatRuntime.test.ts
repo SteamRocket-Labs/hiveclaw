@@ -753,6 +753,31 @@ describe('chatRuntime helpers', () => {
     expect(merged.pending).toEqual([]);
   });
 
+  it('keeps the accepted prompt visible when live replay only has an empty durable input placeholder', () => {
+    const pending = {
+      message: { id: 'input-1', role: 'user' as const, content: 'Accepted user prompt' },
+      anchorMessageCount: 0,
+    };
+    const merged = mergePendingUserMessages(
+      [{
+        id: 'input-1',
+        role: 'user',
+        content: '',
+        transcriptEventId: 'event-accepted-1',
+      }],
+      [pending],
+    );
+
+    expect(merged.messages).toHaveLength(1);
+    expect(merged.messages[0]).toMatchObject({
+      id: 'input-1',
+      role: 'user',
+      content: 'Accepted user prompt',
+      transcriptEventId: 'event-accepted-1',
+    });
+    expect(merged.pending).toEqual([pending]);
+  });
+
   it('defers stale active-run clearing during recent runtime activity', () => {
     expect(shouldClearStaleRuntimeState({
       hasStaleRuntimeState: true,

@@ -3598,6 +3598,10 @@ Correction #3 通过后，Codex 沿用户真实可见路径继续审查，发现
 
 **下一步（未执行前不宣称）**：先在真实 production consumer seam 建立 failing regression，证明 durable input 尚未完整投影或 transport/reconciliation 竞争时 optimistic accepted input 不能被空白占位/旧快照移除；再修共享根因，运行 focused + 全量前端门禁，更新本节、原子 commit/push、三服务重新部署并用 fresh Session 连续两遍 no-reload 复验。当前 verdict：**FAIL/open**；不宣称 Session、Day 1、Day 2 或 weekend 完成。
 
+**本地修复候选（同日，Codex sole writer）**：根因位于共享 `mergePendingUserMessages` 契约——旧实现只要 durable user message 的 `id/messageId/transcriptEventId` 命中 accepted input identity，就立即退休 optimistic prompt，即使该 durable projection 只是 lifecycle-only 空内容占位。这把机械 identity 误当成“可见用户输入已完成投影”的证据。修复不引入语义判断：只有 durable user item 已含可见 content/file/image 才能退休 optimistic display；同 identity 的空占位改为由 optimistic display 补齐、同时保留 durable `transcriptEventId`/item evidence，并继续保持 pending，直到完整 durable display 到达后再机械清除。无自然语言扫描、无后端/schema/i18n/依赖改动。
+
+**failing-first 证据**：新增 `chatRuntime.test.ts` 回归直接构造同 identity 空 durable placeholder + accepted optimistic prompt；修复前 focused **1 failed / 72 passed**，失败逐字为 expected `Accepted user prompt`、received empty string。随后补 `sessionTranscriptApplier.test.ts` 真实 live consumer seam，证明 canonical lifecycle placeholder 经过生产 applier 后只有一条同 identity user message、accepted bytes 可见、durable checkpoint 保留、pending 不被提前清除。GREEN：focused 2 files **84 passed**；全量 frontend **146 files / 1020 passed**；`tsc --noEmit` exit 0；i18n node tests 9/9、en=zh=3864、全部 gates 0；production build 7386 modules，AgentDetail 363326/380000 bytes、100300/115000 gzip，vendor 591449/620000 bytes、186474/200000 gzip。当前仅为 **PASS — Verified locally / production pending**；仍需原子 commit/push、三服务同 commit 部署、fresh no-reload 两遍复验，并单独判断伴随 active-run 状态文案是否仍复现。
+
 
 ## 8. 两个工作日的执行节奏
 

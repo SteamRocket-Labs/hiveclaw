@@ -141,10 +141,12 @@ function makeApplierHarness() {
     refs,
     markActiveRunTerminal: vi.fn(() => true),
     isTerminalTranscriptToolMessage: () => false,
-    mergePendingMessages: (key, messages) => mergePendingUserMessages(
-      messages,
-      refs.pendingUserMessages[key] || [],
-    ).messages,
+    mergePendingMessages: (key, messages) => {
+      const merged = mergePendingUserMessages(messages, refs.pendingUserMessages[key] || []);
+      if (merged.pending.length > 0) refs.pendingUserMessages[key] = merged.pending;
+      else delete refs.pendingUserMessages[key];
+      return merged.messages;
+    },
     setChatMessagesSessionId: vi.fn(),
     enqueueChatMessagesUpdate: vi.fn((sessionId: string, updater: (messages: AgentChatMessage[]) => AgentChatMessage[]) => {
       const result = updater(messagesBySession.get(sessionId) || []);
@@ -189,6 +191,29 @@ function makeApplierHarness() {
 }
 
 describe('session transcript applier real consumption path (Codex REQUEST_CHANGES #3)', () => {
+  it('keeps an accepted prompt visible through a lifecycle-only canonical input placeholder', () => {
+    const harness = makeApplierHarness();
+    const pending = {
+      message: {
+        id: 'input-item-1',
+        role: 'user' as const,
+        content: 'ACCEPTED PROMPT',
+      },
+      anchorMessageCount: 1,
+    };
+    harness.refs.pendingUserMessages[KEY] = [pending];
+
+    expect(harness.applyEvent(canonicalInputEvent(1, ''))).toBeTruthy();
+    expect(harness.messages().filter((message) => message.id === 'input-item-1')).toEqual([
+      expect.objectContaining({
+        role: 'user',
+        content: 'ACCEPTED PROMPT',
+        transcriptEventId: 'event-input-1',
+      }),
+    ]);
+    expect(harness.refs.pendingUserMessages[KEY]).toEqual([pending]);
+  });
+
   it('proves a compatibility carrier that drains a canonical runtime_failure updates canonical transcript, messages, and terminal acceptance exactly once (finding A)', () => {
     const harness = makeApplierHarness();
     const failure = runScopedFailureEvent(2);

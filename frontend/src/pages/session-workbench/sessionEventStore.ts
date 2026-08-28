@@ -81,6 +81,24 @@ export type ProjectionSyncState = {
   buffered_sequences: number[];
 };
 
+export type SessionEventTransition = {
+  /** Canonical events applied to the contiguous item projection in this
+   * transition, in sequence order. Buffered-only, consistency-conflict,
+   * ignored (terminal item / stale ordinal), duplicate, invalid, and
+   * recovery-hold arrivals are never reported — the projection did not
+   * consume them. */
+  appliedEvents: SessionEventV2[];
+  /** Compatibility envelopes applied to the contiguous delivery cursor in
+   * this transition, in sequence order — drained buffered envelopes only.
+   * A compatibility carrier reports itself through compatibilityApplied and
+   * delivers through its own projection path; it is never double-counted
+   * here. */
+  appliedCompatibilityEvents: SessionCompatibilityEvent[];
+  /** Whether a compatibility carrier itself advanced the contiguous cursor in
+   * this transition (canonical events it drained appear in appliedEvents). */
+  compatibilityApplied: boolean;
+};
+
 export type SessionEventStore = {
   items: Record<string, SessionItemV2>;
   highestContiguousSequence: number;
@@ -94,6 +112,18 @@ export type SessionEventStore = {
   gapBufferLimit: number;
   recoveryRequired?: 'full_hydration';
   consistencyIncident?: { sequence: number; existingEventId: string; incomingEventId: string };
+  /** Report of the most recent reduce transition — always truthful: a
+   * duplicate, late (pre-cursor), or recovery-hold arrival returns a store
+   * whose transition is empty even though the projection is unchanged.
+   * Store-identity change alone is still NOT application: buffering and
+   * incidents also change identity. */
+  lastTransition: SessionEventTransition;
+};
+
+const NO_APPLIED_TRANSITION: SessionEventTransition = {
+  appliedEvents: [],
+  appliedCompatibilityEvents: [],
+  compatibilityApplied: false,
 };
 
 type EventRule = {
@@ -181,6 +211,7 @@ export function createSessionEventStore(
     bufferedEvents: {}, bufferedCompatibilityEvents: {},
     eventIdBySequence: {}, seenEventIds: {}, ignoredEventIds: [], compatibilityQuarantine: [],
     gapBufferLimit: Math.max(1, Math.floor(gapBufferLimit)),
+    lastTransition: NO_APPLIED_TRANSITION,
   };
 }
 
@@ -193,6 +224,7 @@ function requireFullHydration(store: SessionEventStore): SessionEventStore {
       Object.entries(store.eventIdBySequence).filter(([sequence]) => Number(sequence) <= store.highestContiguousSequence),
     ),
     recoveryRequired: 'full_hydration',
+    lastTransition: NO_APPLIED_TRANSITION,
     projection: {
       phase: 'stale',
       highest_contiguous_sequence: store.highestContiguousSequence,
@@ -255,13 +287,15 @@ function isTerminal(event: SessionEventV2): boolean {
   return EVENT_RULES[event.item_kind].terminal.has(event.lifecycle);
 }
 
-function reduceContiguous(store: SessionEventStore, event: SessionEventV2): SessionEventStore {
+function reduceContiguous(store: SessionEventStore, event: SessionEventV2): { store: SessionEventStore; applied: boolean } {
   const prior = store.items[event.item_id];
   let items = store.items;
   let ignoredEventIds = store.ignoredEventIds;
+  let applied = true;
   const ordinal = event.ordinal;
   if (prior?.terminal || (prior?.last_ordinal !== undefined && ordinal !== undefined && ordinal <= prior.last_ordinal)) {
     ignoredEventIds = [...ignoredEventIds, event.event_id];
+    applied = false;
   } else {
     const contentDelta = sessionPayloadContent(event.payload);
     // Snapshots replace, deltas append. A HumanInput revision replaces too:
@@ -308,10 +342,13 @@ function reduceContiguous(store: SessionEventStore, event: SessionEventV2): Sess
     };
   }
   return {
-    ...store, items, ignoredEventIds,
-    highestContiguousSequence: event.sequence,
-    eventIdBySequence: { ...store.eventIdBySequence, [event.sequence]: event.event_id },
-    seenEventIds: { ...store.seenEventIds, [event.event_id]: true },
+    store: {
+      ...store, items, ignoredEventIds,
+      highestContiguousSequence: event.sequence,
+      eventIdBySequence: { ...store.eventIdBySequence, [event.sequence]: event.event_id },
+      seenEventIds: { ...store.seenEventIds, [event.event_id]: true },
+    },
+    applied,
   };
 }
 
@@ -348,8 +385,14 @@ function finalizeBufferedProjection(store: SessionEventStore): SessionEventStore
   };
 }
 
-function drainBuffered(store: SessionEventStore): SessionEventStore {
+function drainBuffered(store: SessionEventStore): {
+  store: SessionEventStore;
+  appliedEvents: SessionEventV2[];
+  appliedCompatibilityEvents: SessionCompatibilityEvent[];
+} {
   let next = store;
+  const appliedEvents: SessionEventV2[] = [];
+  const appliedCompatibilityEvents: SessionCompatibilityEvent[] = [];
   const bufferedEvents = { ...next.bufferedEvents };
   const bufferedCompatibilityEvents = { ...next.bufferedCompatibilityEvents };
   while (true) {
@@ -359,25 +402,32 @@ function drainBuffered(store: SessionEventStore): SessionEventStore {
     if (!canonical && !compatibility) break;
     if (canonical) {
       delete bufferedEvents[sequence];
-      next = reduceContiguous(
+      const step = reduceContiguous(
         { ...next, bufferedEvents, bufferedCompatibilityEvents },
         canonical,
       );
+      next = step.store;
+      if (step.applied) appliedEvents.push(canonical);
     } else {
       delete bufferedCompatibilityEvents[sequence];
+      appliedCompatibilityEvents.push(compatibility);
       next = reduceCompatibilityContiguous(
         { ...next, bufferedEvents, bufferedCompatibilityEvents },
         compatibility,
       );
     }
   }
-  return finalizeBufferedProjection({ ...next, bufferedEvents, bufferedCompatibilityEvents });
+  return {
+    store: finalizeBufferedProjection({ ...next, bufferedEvents, bufferedCompatibilityEvents }),
+    appliedEvents,
+    appliedCompatibilityEvents,
+  };
 }
 
 export function reduceSessionEvent(store: SessionEventStore, event: SessionEventV2): SessionEventStore {
   assertEnvelope(event);
-  if (store.recoveryRequired) return store;
-  if (store.seenEventIds[event.event_id]) return store;
+  if (store.recoveryRequired) return { ...store, lastTransition: NO_APPLIED_TRANSITION };
+  if (store.seenEventIds[event.event_id]) return { ...store, lastTransition: NO_APPLIED_TRANSITION };
   const existingEventId = store.eventIdBySequence[event.sequence]
     ?? store.bufferedEvents[event.sequence]?.event_id
     ?? store.bufferedCompatibilityEvents[event.sequence]?.event_id;
@@ -386,20 +436,33 @@ export function reduceSessionEvent(store: SessionEventStore, event: SessionEvent
       ...store,
       projection: { ...store.projection, phase: 'stale' },
       consistencyIncident: { sequence: event.sequence, existingEventId, incomingEventId: event.event_id },
+      lastTransition: NO_APPLIED_TRANSITION,
     };
   }
-  if (event.sequence <= store.highestContiguousSequence) return store;
+  if (event.sequence <= store.highestContiguousSequence) {
+    return { ...store, lastTransition: NO_APPLIED_TRANSITION };
+  }
   if (event.sequence > store.highestContiguousSequence + 1) {
     if (bufferedCount(store) >= store.gapBufferLimit) return requireFullHydration(store);
     const bufferedEvents = { ...store.bufferedEvents, [event.sequence]: event };
     return finalizeBufferedProjection({
       ...store, bufferedEvents,
+      lastTransition: NO_APPLIED_TRANSITION,
       eventIdBySequence: { ...store.eventIdBySequence, [event.sequence]: event.event_id },
       seenEventIds: { ...store.seenEventIds, [event.event_id]: true },
     });
   }
 
-  return drainBuffered(reduceContiguous(store, event));
+  const carrier = reduceContiguous(store, event);
+  const drained = drainBuffered(carrier.store);
+  return {
+    ...drained.store,
+    lastTransition: {
+      appliedEvents: carrier.applied ? [event, ...drained.appliedEvents] : drained.appliedEvents,
+      appliedCompatibilityEvents: drained.appliedCompatibilityEvents,
+      compatibilityApplied: false,
+    },
+  };
 }
 
 export function reduceSessionCompatibilityEvent(
@@ -417,8 +480,8 @@ export function reduceSessionCompatibilityEvent(
   ) {
     throw new Error('invalid_session_compatibility_event');
   }
-  if (store.recoveryRequired) return store;
-  if (store.seenEventIds[event.event_id]) return store;
+  if (store.recoveryRequired) return { ...store, lastTransition: NO_APPLIED_TRANSITION };
+  if (store.seenEventIds[event.event_id]) return { ...store, lastTransition: NO_APPLIED_TRANSITION };
   const existingEventId = store.eventIdBySequence[event.sequence]
     ?? store.bufferedEvents[event.sequence]?.event_id
     ?? store.bufferedCompatibilityEvents[event.sequence]?.event_id;
@@ -427,13 +490,17 @@ export function reduceSessionCompatibilityEvent(
       ...store,
       projection: { ...store.projection, phase: 'stale' },
       consistencyIncident: { sequence: event.sequence, existingEventId, incomingEventId: event.event_id },
+      lastTransition: NO_APPLIED_TRANSITION,
     };
   }
-  if (event.sequence <= store.highestContiguousSequence) return store;
+  if (event.sequence <= store.highestContiguousSequence) {
+    return { ...store, lastTransition: NO_APPLIED_TRANSITION };
+  }
   if (event.sequence > store.highestContiguousSequence + 1) {
     if (bufferedCount(store) >= store.gapBufferLimit) return requireFullHydration(store);
     return finalizeBufferedProjection({
       ...store,
+      lastTransition: NO_APPLIED_TRANSITION,
       bufferedCompatibilityEvents: {
         ...store.bufferedCompatibilityEvents,
         [event.sequence]: event,
@@ -442,5 +509,15 @@ export function reduceSessionCompatibilityEvent(
       seenEventIds: { ...store.seenEventIds, [event.event_id]: true },
     });
   }
-  return drainBuffered(reduceCompatibilityContiguous(store, event));
+  const drained = drainBuffered(reduceCompatibilityContiguous(store, event));
+  return {
+    ...drained.store,
+    lastTransition: {
+      appliedEvents: drained.appliedEvents,
+      // The carrier itself delivers through its own projection path; only the
+      // drained buffered envelopes are reported for exact-once consumption.
+      appliedCompatibilityEvents: drained.appliedCompatibilityEvents,
+      compatibilityApplied: true,
+    },
+  };
 }

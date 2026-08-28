@@ -16,9 +16,11 @@ describe('UX-04 orchestration and composition boundaries', () => {
 
   it('routes live and optimistic messages by the exact durable Session identity', () => {
     const source = read('../AgentDetail.tsx');
+    const applierSource = read('./sessionTranscriptApplier.ts');
 
-    expect(source).toContain('(terminal ? setChatMessagesAfterQueuedForSession : enqueueChatMessagesUpdateForSession)(sessionId');
-    expect(source).toContain('commitChatMessages(sessionId, () => mergePendingForSession');
+    // The transcript applier owns the live message routing contract.
+    expect(applierSource).toContain('(terminal ? deps.setChatMessagesAfterQueued : deps.enqueueChatMessagesUpdate)');
+    expect(applierSource).toContain('commitChatMessages(sessionId, () => deps.mergePendingMessages(key, next.messages.map(deps.parseChatMsg)))');
     expect(source).toContain('appendOptimisticUserMessage(activeRuntimeKey, runSessionId, {');
     expect(source).toContain('setChatMessagesAfterQueuedForSession(sessionId, () => mergePendingForSession(runtimeKey, preParsed))');
     expect(source).not.toContain('(terminal ? setChatMessagesAfterQueued : enqueueChatMessagesUpdate)(');

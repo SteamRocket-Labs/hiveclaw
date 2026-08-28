@@ -142,16 +142,22 @@ describe('AgentDetail session permission state', () => {
 describe('AgentDetail realtime refresh contract', () => {
   it('seals terminal websocket events onto the visible live process without rebuilding gapped history', async () => {
     const source = await readSource('./agent-detail/sessionSocketEventProjector.ts');
-    const pageSource = await readSource('./AgentDetail.tsx');
+    const applierSource = await readSource('./agent-detail/sessionTranscriptApplier.ts');
 
     expect(source).toContain('applyTranscriptToSession(agentId, sessionId, transcriptEvent, isActiveRuntime)');
     expect(source).not.toContain('void selectSession(session)');
     expect(source).not.toContain("parseChatMsg({ role: 'assistant', content: `⚠️ ${message}` })");
-    expect(pageSource).toContain('if (consumed.canonical && consumed.store)');
-    expect(pageSource).toContain('const nextTranscriptEvents = mergeTranscriptBackfill(existingEvents, [projectionEvent])');
-    expect(pageSource).toContain('mergeCanonicalTerminalMessages(previous, messages, runId)');
-    expect(pageSource).not.toContain('transcriptEvents: nextTranscriptEvents');
-    expect(pageSource).toContain('onTerminal: (runId) => markActiveRunTerminal(key, runId)');
+    // The consumption contract moved to the extracted production applier; its
+    // behavioral proof lives in sessionTranscriptApplier.test.ts.
+    expect(applierSource).toContain('return envelopeApplication');
+    expect(applierSource).toContain('mergeTranscriptBackfill(');
+    expect(applierSource).toContain('events: appliedCanonicalEvents');
+    expect(applierSource).toContain('consumed.application ?? false');
+    expect(applierSource).toContain('mergeCanonicalTerminalMessages(previous, messages, runId)');
+    expect(applierSource).not.toContain('transcriptEvents: nextTranscriptEvents');
+    expect(applierSource).toContain('onTerminal: (runId) => deps.markActiveRunTerminal(key, runId)');
+    // Compatibility carriers legacy-project only after contiguous application.
+    expect(applierSource).toContain('if (!application) return false');
   });
 
   it('hydrates the complete canonical Session V2 transcript without a manual older-message gate', async () => {

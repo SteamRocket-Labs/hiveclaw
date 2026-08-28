@@ -13,11 +13,9 @@ import {
     ACTIVE_RUN_ABSENCE_GRACE_MS,
     applySessionActiveRunObservedState,
     applySessionActiveRunState,
-    applyTranscriptEvent,
     buildRuntimeSummary,
     buildSessionTranscriptLoadFailureMessage,
     createEmptyTranscriptReplayState,
-    getTerminalRunIdFromTranscriptEvent,
     isDraftHumanChatSession,
     markActiveRunTerminalInRegistry,
     mergePendingUserMessages,
@@ -47,10 +45,7 @@ import {
     type TranscriptReplayState,
 } from './agent-detail/chatRuntime';
 import { buildPlanModeScopeKey, nextPlanModeRequestedForScope } from './agent-detail/planModeComposer';
-import {
-    latestTranscriptSequence,
-    mergeTranscriptBackfill,
-} from './agent-detail/chatTransportRecovery';
+import { latestTranscriptSequence } from './agent-detail/chatTransportRecovery';
 import {
     createSessionMessageStore,
     useSessionMessages,
@@ -78,7 +73,7 @@ import {
     type SessionTransportCallbacks,
 } from './agent-detail/useSessionTransportController';
 import { projectSessionSocketEvent } from './agent-detail/sessionSocketEventProjector';
-import { applyCanonicalSessionSnapshot, consumeSessionEnvelope, mergeCanonicalTerminalMessages } from './agent-detail/sessionEventConsumer';
+import { applyTranscriptToSessionRuntime } from './agent-detail/sessionTranscriptApplier';
 import { liveSubscriptionWatermark, loadCanonicalSessionTranscript, projectCanonicalTranscriptSnapshot, realtimeSubscriptionCursor } from './agent-detail/sessionTranscriptHydration';
 import { createSessionEventStore, type SessionEventStore } from './session-workbench/sessionEventStore';
 import {
@@ -447,67 +442,27 @@ function AgentDetailInner() {
         sessionId: string,
         event: ChatTranscriptEventPayload,
         isActiveRuntime: boolean,
-    ) => {
-        const key = buildSessionRuntimeKey(agentId, sessionId);
-        const existingEvents = transcriptEventsRef.current[key] || [];
-        let projectionEvent: ChatTranscriptEventPayload;
-        try {
-            const consumed = consumeSessionEnvelope(
-                event,
-                sessionEventStoresRef.current[key],
-                sessionEventFullHydrationKeysRef.current.has(key) ? 0 : latestTranscriptSequence(existingEvents),
-            );
-            if (consumed.sessionEnvelope && consumed.store === sessionEventStoresRef.current[key]) return false;
-            if (consumed.store) sessionEventStoresRef.current[key] = consumed.store;
-            projectionEvent = consumed.projectionEvent;
-            if (consumed.canonical && consumed.store) { const nextTranscriptEvents = mergeTranscriptBackfill(existingEvents, [projectionEvent]); applyCanonicalSessionSnapshot({ event: projectionEvent, store: consumed.store, active: isActiveRuntime, onTranscript: () => { transcriptEventsRef.current[key] = nextTranscriptEvents; }, onActivity: () => { runtimeActivityAtRef.current[key] = Date.now(); }, onTerminal: (runId) => markActiveRunTerminal(key, runId), onMessages: (messages, terminal, runId) => { setChatMessagesSessionId(sessionId); (terminal ? setChatMessagesAfterQueuedForSession : enqueueChatMessagesUpdateForSession)(sessionId, (previous) => mergePendingForSession(key, terminal ? mergeCanonicalTerminalMessages(previous, messages, runId) : messages)); } }); return true; }
-        } catch (error) {
-            console.warn(`[SessionEventV2] Rejected invalid envelope for ${key}:`, error);
-            return false;
-        }
-        const sequenceAlreadyApplied = typeof projectionEvent.sequence === 'number'
-            && projectionEvent.sequence > 0
-            && existingEvents.some((candidate) => candidate.sequence === projectionEvent.sequence);
-        if (sequenceAlreadyApplied) {
-            transcriptEventsRef.current[key] = mergeTranscriptBackfill(existingEvents, [projectionEvent]);
-            return false;
-        }
-        const previous = transcriptReplayStateRef.current[key] || createEmptyTranscriptReplayState();
-        const next = applyTranscriptEvent(previous, projectionEvent);
-        if (next === previous) return false;
-        transcriptReplayStateRef.current[key] = next;
-        transcriptEventsRef.current[key] = mergeTranscriptBackfill(
-            transcriptEventsRef.current[key] || [],
-            [projectionEvent],
-        );
-        sessionUiStateRef.current[key] = next.ui;
-        runtimeActivityAtRef.current[key] = Date.now();
-
-        const eventType = projectionEvent.event_type || projectionEvent.type;
-        const lastMessage = next.messages[next.messages.length - 1];
-        const terminal =
-            eventType === 'assistant_message'
-            || eventType === 'run_completed'
-            || eventType === 'done'
-            || eventType === 'error'
-            || eventType === 'quota_exceeded'
-            || isTerminalTranscriptToolMessage(lastMessage);
-        if (terminal) {
-            markActiveRunTerminal(key, getTerminalRunIdFromTranscriptEvent(projectionEvent));
-        }
-
-        if (isActiveRuntime) {
-            setChatMessagesSessionId(sessionId);
-            const commitChatMessages = terminal
-                ? setChatMessagesAfterQueuedForSession
-                : enqueueChatMessagesUpdateForSession;
-            commitChatMessages(sessionId, () => mergePendingForSession(key, next.messages.map(parseChatMsg)));
-            setActivePhase(next.ui.phase);
-            setIsWaiting(next.ui.isWaiting);
-            setIsStreaming(next.ui.isStreaming);
-        }
-        return true;
-    };
+    ) => applyTranscriptToSessionRuntime({
+        refs: {
+            transcriptEvents: transcriptEventsRef.current,
+            eventStores: sessionEventStoresRef.current,
+            fullHydrationKeys: sessionEventFullHydrationKeysRef.current,
+            replayStates: transcriptReplayStateRef.current,
+            uiStates: sessionUiStateRef.current,
+            runtimeActivityAt: runtimeActivityAtRef.current,
+            pendingUserMessages: pendingUserMessagesRef.current,
+        },
+        markActiveRunTerminal,
+        isTerminalTranscriptToolMessage,
+        mergePendingMessages: mergePendingForSession,
+        setChatMessagesSessionId,
+        enqueueChatMessagesUpdate: enqueueChatMessagesUpdateForSession,
+        setChatMessagesAfterQueued: setChatMessagesAfterQueuedForSession,
+        setActivePhase,
+        setIsWaiting,
+        setIsStreaming,
+        parseChatMsg,
+    }, agentId, sessionId, event, isActiveRuntime);
 
     const backfillSessionTranscript = async (sess: any, agentId: string) => {
         const sessionId = String(sess?.id || '');

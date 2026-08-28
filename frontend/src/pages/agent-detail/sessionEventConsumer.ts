@@ -19,11 +19,31 @@ import {
   type SessionEventV2,
 } from '../session-workbench/sessionEventStore';
 
+export type SessionTranscriptApplication = {
+  /** Canonical events applied to the contiguous item projection in this
+   * transition, in sequence order — the only events whose projector side
+   * effects may run now. */
+  canonicalEvents: SessionEventV2[];
+  /** Compatibility envelopes applied to the contiguous delivery cursor in
+   * this transition, in sequence order (drained buffered envelopes only —
+   * an applied carrier delivers through its own projection path). Each one
+   * owns exactly one legacy projection and one terminal-effect pass. */
+  compatibilityEvents: SessionCompatibilityEvent[];
+  /** True when a compatibility carrier itself advanced the contiguous cursor
+   * in this transition (canonical events it drained appear in
+   * canonicalEvents). */
+  compatibilityApplied: boolean;
+};
+
 export type ConsumedSessionEnvelope = {
   store: SessionEventStore | undefined;
   projectionEvent: ChatTranscriptEventPayload;
   sessionEnvelope: boolean;
   canonical: boolean;
+  /** This transition's application facts, or null when the carrier was only
+   * buffered, conflicted, ignored, duplicated, or rejected. A store identity
+   * change alone is NOT application. */
+  application: SessionTranscriptApplication | null;
 };
 
 const ASSISTANT_ITEM_KINDS = new Set([
@@ -418,6 +438,68 @@ export function mergeCanonicalTerminalMessages(
   return terminalAnswer ? [...prefix, ...process, terminalAnswer] : [...prefix, ...process];
 }
 
+function runtimeFailureRunIdOf(envelope: SessionEventV2): string | null {
+  // Only a run-scoped runtime_failure with a nonempty authoritative run_id
+  // seals the run.  Session/turn/round scopes carry no whole-run terminal
+  // authority — no null-id fallback for this event.
+  return envelope.scope.level === 'run'
+    && typeof (envelope.scope as { run_id?: unknown }).run_id === 'string'
+    && ((envelope.scope as { run_id: string }).run_id || '').trim()
+    ? (envelope.scope as { run_id: string }).run_id
+    : null;
+}
+
+const TERMINAL_RUN_LIFECYCLES = new Set(['completed', 'failed', 'cancelled']);
+
+/**
+ * The web-chat assistant_message finalizer settles the RuntimeTask and its
+ * transcript event is the turn's last canonical witness on the live tail —
+ * no run.completed item event follows on that path. Legacy-adapted envelopes
+ * carry the typed `payload.legacy` marker from the backend serializer, so the
+ * terminal assistant item itself is the run-terminal witness. Native V2
+ * turns are excluded: their assistant items complete per message mid-run and
+ * run terminality is owned by the `run` item lifecycle.
+ */
+export function isLegacyAssistantTerminalItem(
+  itemKind: string,
+  lifecycle: string,
+  payload: Record<string, unknown>,
+): boolean {
+  return itemKind.startsWith('assistant_')
+    && TERMINAL_RUN_LIFECYCLES.has(lifecycle)
+    && payload.legacy === true;
+}
+
+function isRunTerminalEvent(envelope: SessionEventV2): boolean {
+  return (envelope.item_kind === 'run'
+    && TERMINAL_RUN_LIFECYCLES.has(envelope.lifecycle))
+    // The canonical runtime_failure terminal event is the run-scoped terminal
+    // witness of the web-chat provider-failure path; it seals the run exactly
+    // like a run.failed lifecycle item.
+    || (envelope.item_kind === 'runtime_failure' && envelope.lifecycle === 'recorded' && runtimeFailureRunIdOf(envelope) !== null)
+    // Legacy-adapted assistant terminals are the turn-terminal witness of the
+    // web-chat finalizer path — same acceptance set as the projector effects
+    // (a null scope run binding keeps the legacy clear-active-run behavior).
+    || isLegacyAssistantTerminalItem(
+      String(envelope.item_kind || ''),
+      String(envelope.lifecycle || ''),
+      (envelope.payload && typeof envelope.payload === 'object' ? envelope.payload : {}) as Record<string, unknown>,
+    );
+}
+
+function isTerminalMetadataOnlyEvent(envelope: SessionEventV2): boolean {
+  return (envelope.item_kind === 'turn'
+    && ['completed', 'failed', 'cancelled'].includes(envelope.lifecycle))
+    || (envelope.item_kind === 'run_outcome'
+      && envelope.lifecycle === 'terminal_committed');
+}
+
+function runTerminalRunIdOf(envelope: SessionEventV2): string | null {
+  return envelope.scope.level !== 'session' && envelope.scope.level !== 'turn'
+    ? envelope.scope.run_id
+    : null;
+}
+
 export function projectCanonicalSessionSnapshot(
   event: ChatTranscriptEventPayload,
   store: SessionEventStore,
@@ -429,41 +511,19 @@ export function projectCanonicalSessionSnapshot(
   runId: string | null;
 } {
   const envelope = event as unknown as SessionEventV2;
-  // Only a run-scoped runtime_failure with a nonempty authoritative run_id
-  // seals the run.  Session/turn/round scopes carry no whole-run terminal
-  // authority — no null-id fallback for this event.
-  const runtimeFailureRunId = envelope.scope.level === 'run'
-    && typeof (envelope.scope as { run_id?: unknown }).run_id === 'string'
-    && ((envelope.scope as { run_id?: string }).run_id || '').trim()
-    ? (envelope.scope as { run_id: string }).run_id
-    : null;
-  const runTerminal = (envelope.item_kind === 'run'
-    && ['completed', 'failed', 'cancelled'].includes(envelope.lifecycle))
-    // The canonical runtime_failure terminal event is the run-scoped terminal
-    // witness of the web-chat provider-failure path; it seals the run exactly
-    // like a run.failed lifecycle item.
-    || (envelope.item_kind === 'runtime_failure' && envelope.lifecycle === 'recorded' && runtimeFailureRunId !== null);
-  const terminalMetadataOnly = (
-    envelope.item_kind === 'turn'
-    && ['completed', 'failed', 'cancelled'].includes(envelope.lifecycle)
-  ) || (
-    envelope.item_kind === 'run_outcome'
-    && envelope.lifecycle === 'terminal_committed'
-  );
+  const runTerminal = isRunTerminalEvent(envelope);
   const messages = projectSessionEventStoreToMessages(store);
   return {
     messages,
-    projectMessages: !terminalMetadataOnly,
+    projectMessages: !isTerminalMetadataOnlyEvent(envelope),
     terminal: runTerminal,
     runTerminal,
-    runId: runTerminal && envelope.scope.level !== 'session' && envelope.scope.level !== 'turn'
-      ? envelope.scope.run_id
-      : null,
+    runId: runTerminal ? runTerminalRunIdOf(envelope) : null,
   };
 }
 
 export function applyCanonicalSessionSnapshot(options: {
-  event: ChatTranscriptEventPayload;
+  events: SessionEventV2[];
   store: SessionEventStore;
   active: boolean;
   onTranscript: () => void;
@@ -471,17 +531,66 @@ export function applyCanonicalSessionSnapshot(options: {
   onTerminal: (runId: string | null) => boolean | void;
   onMessages: (messages: AgentChatMessage[], terminal: boolean, runId: string | null) => void;
 }): void {
-  const snapshot = projectCanonicalSessionSnapshot(options.event, options.store);
   options.onTranscript();
   options.onActivity();
-  // The terminal merge must honor whether onTerminal actually accepted this
-  // run terminal: a stale old-run event (rejected by the active-run identity
-  // guard) may enter the durable projection but can never seal or replace
-  // the active newer run's tail.
-  const terminalAccepted = snapshot.runTerminal ? options.onTerminal(snapshot.runId) !== false : false;
-  if (options.active && snapshot.projectMessages) {
-    options.onMessages(snapshot.messages, snapshot.terminal && terminalAccepted, snapshot.runId);
+  // Terminal semantics belong to each applied event, never only the carrier:
+  // a gap close drains buffered terminals whose side effects were held back.
+  // The stale-run guard stays per event — onTerminal reports acceptance, and
+  // a stale old-run terminal may enter the durable projection but never seals
+  // or replaces the active newer run's tail. The message merge binds to the
+  // LATEST ACCEPTED terminal only: a later rejected stale terminal must never
+  // retarget a binding an earlier terminal already earned.
+  let anyTerminalAccepted = false;
+  let acceptedTerminalRunId: string | null = null;
+  for (const event of options.events) {
+    if (!isRunTerminalEvent(event)) continue;
+    const runId = runTerminalRunIdOf(event);
+    if (options.onTerminal(runId) === false) continue;
+    anyTerminalAccepted = true;
+    acceptedTerminalRunId = runId;
   }
+  if (options.active && !options.events.every(isTerminalMetadataOnlyEvent)) {
+    // A metadata-only terminal event (turn/run_outcome) changes no renderable
+    // item; a transition made only of them keeps the message projection.
+    options.onMessages(
+      projectSessionEventStoreToMessages(options.store),
+      anyTerminalAccepted,
+      acceptedTerminalRunId,
+    );
+  }
+}
+
+function transitionApplicationOf(
+  nextStore: SessionEventStore | undefined,
+  previousStore: SessionEventStore | undefined,
+): SessionTranscriptApplication | null {
+  // A same-identity store return carries a stale lastTransition from an
+  // earlier transition — only a changed store owns a fresh report. Empty
+  // transitions (duplicate, late, recovery hold, buffered-only, ignored)
+  // report no application.
+  if (!nextStore || nextStore === previousStore) return null;
+  const { appliedEvents, appliedCompatibilityEvents, compatibilityApplied } = nextStore.lastTransition;
+  return appliedEvents.length > 0 || appliedCompatibilityEvents.length > 0 || compatibilityApplied
+    ? { canonicalEvents: appliedEvents, compatibilityEvents: appliedCompatibilityEvents, compatibilityApplied }
+    : null;
+}
+
+/** Legacy projection event of a compatibility envelope — the single owner of
+ * that mapping for carriers and drained buffered envelopes alike. */
+export function compatibilityProjectionEvent(event: SessionCompatibilityEvent): ChatTranscriptEventPayload {
+  const envelope = event as unknown as Record<string, unknown>;
+  const payload = recordValue(envelope.payload) || {};
+  return {
+    ...(event as unknown as ChatTranscriptEventPayload),
+    id: String(envelope.event_id || ''),
+    event_type: String(envelope.legacy_event_type || ''),
+    ...(typeof payload.legacy_run_id === 'string' && payload.legacy_run_id.trim()
+      ? { run_id: payload.legacy_run_id.trim() }
+      : {}),
+    content: sessionPayloadContent(payload),
+    parts: Array.isArray(payload.parts) ? payload.parts as Array<Record<string, unknown>> : [],
+    metadata: recordValue(payload.metadata) || {},
+  };
 }
 
 export function consumeSessionEnvelope(
@@ -491,42 +600,31 @@ export function consumeSessionEnvelope(
 ): ConsumedSessionEnvelope {
   const envelope = event as unknown as Record<string, unknown>;
   if (envelope.schema === 'hive.session_event' && envelope.schema_version === 2) {
+    const store = reduceSessionEvent(
+      previousStore || createSessionEventStore(baselineSequence),
+      event as unknown as SessionEventV2,
+    );
     return {
-      store: reduceSessionEvent(
-        previousStore || createSessionEventStore(baselineSequence),
-        event as unknown as SessionEventV2,
-      ),
+      store,
       projectionEvent: event,
       sessionEnvelope: true,
       canonical: true,
+      application: transitionApplicationOf(store, previousStore),
     };
   }
   if (envelope.schema !== 'hive.session_event_compatibility' || envelope.schema_version !== 1) {
-    return { store: previousStore, projectionEvent: event, sessionEnvelope: false, canonical: false };
+    return { store: previousStore, projectionEvent: event, sessionEnvelope: false, canonical: false, application: null };
   }
 
-  const payload = envelope.payload && typeof envelope.payload === 'object'
-    ? envelope.payload as Record<string, unknown>
-    : {};
+  const store = reduceSessionCompatibilityEvent(
+    previousStore || createSessionEventStore(baselineSequence),
+    event as unknown as SessionCompatibilityEvent,
+  );
   return {
-    store: reduceSessionCompatibilityEvent(
-      previousStore || createSessionEventStore(baselineSequence),
-      event as unknown as SessionCompatibilityEvent,
-    ),
-    projectionEvent: {
-      ...event,
-      id: String(envelope.event_id || ''),
-      event_type: String(envelope.legacy_event_type || ''),
-      ...(typeof payload.legacy_run_id === 'string' && payload.legacy_run_id.trim()
-        ? { run_id: payload.legacy_run_id.trim() }
-        : {}),
-      content: sessionPayloadContent(payload),
-      parts: Array.isArray(payload.parts) ? payload.parts as Array<Record<string, unknown>> : [],
-      metadata: payload.metadata && typeof payload.metadata === 'object'
-        ? payload.metadata as Record<string, unknown>
-        : {},
-    },
+    store,
+    projectionEvent: compatibilityProjectionEvent(event as unknown as SessionCompatibilityEvent),
     sessionEnvelope: true,
     canonical: false,
+    application: transitionApplicationOf(store, previousStore),
   };
 }

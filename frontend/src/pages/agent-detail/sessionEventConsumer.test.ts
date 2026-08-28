@@ -17,6 +17,7 @@ import {
 } from './sessionEventConsumer';
 import {
   sessionPayloadContent,
+  type SessionCompatibilityEvent,
   type SessionEventStore,
   type SessionEventV2,
 } from '../session-workbench/sessionEventStore';
@@ -276,7 +277,7 @@ describe('canonical Session event consumer', () => {
     }] as ReturnType<typeof projectSessionEventStoreToMessages>;
 
     applyCanonicalSessionSnapshot({
-      event: runCompleted as unknown as ChatTranscriptEventPayload,
+      events: [runCompleted],
       store,
       active: true,
       onTranscript: () => undefined,
@@ -300,7 +301,7 @@ describe('canonical Session event consumer', () => {
 
     let terminalMetadataProjected = false;
     applyCanonicalSessionSnapshot({
-      event: terminalCommitted as unknown as ChatTranscriptEventPayload,
+      events: [terminalCommitted],
       store,
       active: true,
       onTranscript: () => undefined,
@@ -366,7 +367,7 @@ describe('canonical runtime_failure consumption (DAY1-PROVIDER-402-TERMINAL-CONS
     let terminalRunId: string | null | undefined;
     let terminalFlag: boolean | undefined;
     applyCanonicalSessionSnapshot({
-      event: failureEvent as unknown as ChatTranscriptEventPayload,
+      events: [failureEvent],
       store,
       active: true,
       onTranscript: () => undefined,
@@ -420,7 +421,7 @@ describe('canonical runtime_failure consumption (DAY1-PROVIDER-402-TERMINAL-CONS
     const messageMerges: Array<{ terminal: boolean; runId: string | null }> = [];
 
     applyCanonicalSessionSnapshot({
-      event: failureEvent as unknown as ChatTranscriptEventPayload,
+      events: [failureEvent],
       store,
       active: true,
       onTranscript: () => undefined,
@@ -442,8 +443,9 @@ describe('canonical runtime_failure consumption (DAY1-PROVIDER-402-TERMINAL-CONS
     expect(activeRuns['agent-1:session-1']?.runId).toBe('run-2');
     expect(clearedRunIds).toEqual([]);
     // The run-1 failure card may enter the durable projection, but it must
-    // not seal or replace the active run-2 tail as a terminal merge.
-    expect(messageMerges).toEqual([{ terminal: false, runId: 'run-1' }]);
+    // not seal or replace the active run-2 tail as a terminal merge — a
+    // rejected terminal binds no run id at all (Codex finding E).
+    expect(messageMerges).toEqual([{ terminal: false, runId: null }]);
   });
 
   it('still clears and terminal-merges the matching active run for a fresh run-scoped runtime_failure', () => {
@@ -456,7 +458,7 @@ describe('canonical runtime_failure consumption (DAY1-PROVIDER-402-TERMINAL-CONS
     const messageMerges: Array<{ terminal: boolean; runId: string | null }> = [];
 
     applyCanonicalSessionSnapshot({
-      event: failureEvent as unknown as ChatTranscriptEventPayload,
+      events: [failureEvent],
       store,
       active: true,
       onTranscript: () => undefined,
@@ -1030,5 +1032,235 @@ describe('canonical runtime_failure consumption (DAY1-PROVIDER-402-TERMINAL-CONS
         sessionItem: expect.objectContaining({ kind: 'assistant_final' }),
       }),
     ]);
+  });
+});
+
+describe('canonical application facts at the shared consumer seam (Codex REQUEST_CHANGES #3)', () => {
+  type ApplicationFacts = {
+    canonicalEvents: SessionEventV2[];
+    compatibilityApplied: boolean;
+    compatibilityEvents: SessionCompatibilityEvent[];
+  } | null;
+
+  function factsOf(consumed: ReturnType<typeof consumeSessionEnvelope>): ApplicationFacts {
+    return (consumed as { application?: ApplicationFacts }).application ?? null;
+  }
+
+  function appliedEventIds(facts: ApplicationFacts): string[] {
+    // A missing facts object on the pristine baseline is a loud RED, never a silent pass.
+    return facts ? facts.canonicalEvents.map((applied) => applied.event_id) : ['APPLICATION_FACTS_MISSING'];
+  }
+
+  function runCompletedEvent(sequence: number, runId = 'run-1'): SessionEventV2 {
+    return {
+      ...event(sequence, 'completed'),
+      ordinal: undefined,
+      item_id: `run-${runId}`,
+      item_kind: 'run',
+      kind: 'run.completed',
+      lifecycle: 'completed',
+      payload_schema: 'hive.session.payload.run.completed.v2',
+      scope: { level: 'run', session_id: 'session-1', thread_id: 'session-1', turn_id: 'turn-1', run_id: runId },
+      actor: { type: 'runtime' },
+      payload: {},
+    } as SessionEventV2;
+  }
+
+  function compatibilityFiller(sequence: number): ChatTranscriptEventPayload {
+    return {
+      schema: 'hive.session_event_compatibility',
+      schema_version: 1,
+      compatibility_status: 'needs_reconciliation',
+      event_id: `legacy-${sequence}`,
+      sequence,
+      reason: 'legacy_generation',
+      legacy_event_type: 'phase',
+      payload: { content: '', metadata: { phase: 'done' } },
+    } as unknown as ChatTranscriptEventPayload;
+  }
+
+  function runScopedFailureEvent(sequence: number, runId = 'run-1'): SessionEventV2 {
+    return {
+      schema: 'hive.session_event',
+      schema_version: 2,
+      event_id: `event-runtime-failure-${sequence}`,
+      sequence,
+      tenant_id: 'tenant-1',
+      scope: { level: 'run', session_id: 'session-1', thread_id: 'session-1', turn_id: 'turn-1', run_id: runId },
+      item_id: `failure-item-${sequence}`,
+      item_kind: 'runtime_failure',
+      kind: 'runtime_failure.recorded',
+      lifecycle: 'recorded',
+      payload_schema: 'hive.session.payload.runtime_failure.recorded.v2',
+      actor: { type: 'runtime' },
+      visibility: { audience: 'direct_user' },
+      payload: {
+        status: 'failed',
+        terminal_reason: 'provider_error',
+        failure_code: 'quota_exhausted',
+        delivery_state: 'rejected',
+        requires_user_decision: true,
+        retryable: true,
+        content: 'quota message',
+        message: 'quota message',
+      },
+      occurred_at: '2026-08-28T00:00:00Z',
+      persisted_at: '2026-08-28T00:00:00Z',
+    } as unknown as SessionEventV2;
+  }
+
+  it('reports applied canonical events per transition and nothing for buffered, conflicted, or duplicate arrivals', () => {
+    const first = consumeSessionEnvelope(event(1, 'started') as unknown as ChatTranscriptEventPayload, undefined, 0);
+    expect(appliedEventIds(factsOf(first))).toEqual(['event-1']);
+
+    // Buffered-only arrival changes the store identity (gap state) without
+    // applying anything — the exact mechanism e3 mistook for newlyApplied.
+    const buffered = consumeSessionEnvelope(event(3, 'delta') as unknown as ChatTranscriptEventPayload, first.store, 0);
+    expect(buffered.store).not.toBe(first.store);
+    expect(factsOf(buffered)).toBeNull();
+
+    const closed = consumeSessionEnvelope(event(2, 'delta') as unknown as ChatTranscriptEventPayload, buffered.store, 0);
+    expect(appliedEventIds(factsOf(closed))).toEqual(['event-2', 'event-3']);
+
+    const duplicate = consumeSessionEnvelope(event(2, 'delta') as unknown as ChatTranscriptEventPayload, closed.store, 0);
+    // Duplicate delivery changes store identity but exposes an empty
+    // transition (finding D) — still no application facts.
+    expect(duplicate.store).not.toBe(closed.store);
+    expect(duplicate.store?.lastTransition.appliedEvents).toEqual([]);
+    expect(factsOf(duplicate)).toBeNull();
+  });
+
+  it('surfaces drained canonical events when a compatibility carrier fills the gap', () => {
+    const buffered = consumeSessionEnvelope(
+      runCompletedEvent(2) as unknown as ChatTranscriptEventPayload,
+      undefined,
+      0,
+    );
+    expect(factsOf(buffered)).toBeNull();
+
+    const filled = consumeSessionEnvelope(compatibilityFiller(1), buffered.store, 0);
+    expect(filled.canonical).toBe(false);
+    expect(appliedEventIds(factsOf(filled))).toEqual(['event-2']);
+    expect(factsOf(filled)?.compatibilityApplied).toBe(true);
+  });
+
+  it('excludes ignored terminal-item contiguous events from the application facts', () => {
+    const terminal = consumeSessionEnvelope(event(1, 'completed') as unknown as ChatTranscriptEventPayload, undefined, 0);
+    const ignored = consumeSessionEnvelope(event(2, 'delta') as unknown as ChatTranscriptEventPayload, terminal.store, 0);
+    expect(ignored.store?.ignoredEventIds).toEqual(['event-2']);
+    expect(factsOf(ignored)).toBeNull();
+  });
+
+  it('applies terminal semantics per applied event when one transition drains a terminal tail', () => {
+    // runtime_failure at seq 3 sits buffered behind a missing seq 2.
+    const failure = runScopedFailureEvent(3);
+    const buffered = consumeSessionEnvelope(failure as unknown as ChatTranscriptEventPayload, undefined, 0);
+    expect(factsOf(buffered)).toBeNull();
+
+    const closed = consumeSessionEnvelope(event(1, 'started') as unknown as ChatTranscriptEventPayload,
+      consumeSessionEnvelope(event(2, 'delta') as unknown as ChatTranscriptEventPayload, buffered.store, 0).store, 0);
+    const facts = factsOf(closed);
+    expect(appliedEventIds(facts)).toEqual(['event-1', 'event-2', 'event-runtime-failure-3']);
+
+    const terminalRunIds: Array<string | null> = [];
+    let terminalFlag: boolean | undefined;
+    let messagesProjected = false;
+    applyCanonicalSessionSnapshot({
+      events: facts!.canonicalEvents,
+      store: closed.store!,
+      active: true,
+      onTranscript: () => undefined,
+      onActivity: () => undefined,
+      onTerminal: (runId) => { terminalRunIds.push(runId); },
+      onMessages: (_messages, terminal) => { terminalFlag = terminal; messagesProjected = true; },
+    });
+    expect(terminalRunIds).toEqual(['run-1']);
+    expect(terminalFlag).toBe(true);
+    expect(messagesProjected).toBe(true);
+  });
+
+  it('keeps per-event stale-run safety for a drained run-1 terminal against an active run-2', () => {
+    const staleTerminal = runCompletedEvent(2, 'run-1');
+    const filler = event(1, 'started');
+    const closed = consumeSessionEnvelope(filler as unknown as ChatTranscriptEventPayload,
+      consumeSessionEnvelope(staleTerminal as unknown as ChatTranscriptEventPayload, undefined, 0).store, 0);
+    const facts = factsOf(closed);
+    expect(appliedEventIds(facts)).toEqual(['event-1', 'event-2']);
+
+    const activeRuns: Record<string, SessionRunState> = {
+      'agent-1:session-1': { runId: 'run-2', status: 'running' } as SessionRunState,
+    };
+    const messageMerges: Array<{ terminal: boolean; runId: string | null }> = [];
+    applyCanonicalSessionSnapshot({
+      events: facts!.canonicalEvents,
+      store: closed.store!,
+      active: true,
+      onTranscript: () => undefined,
+      onActivity: () => undefined,
+      onTerminal: (runId) => isTerminalRunAcceptedForActiveRun(activeRuns['agent-1:session-1']?.runId ?? null, runId),
+      onMessages: (_messages, terminal, runId) => { messageMerges.push({ terminal, runId }); },
+    });
+
+    expect(activeRuns['agent-1:session-1']?.runId).toBe('run-2');
+    // No terminal was accepted: the merge carries no run binding at all.
+    expect(messageMerges).toEqual([{ terminal: false, runId: null }]);
+  });
+
+  it('binds the terminal merge to the latest accepted terminal, never to a later rejected stale terminal (Codex finding E)', () => {
+    // Drain order: matching run-2 terminal first, then a stale run-1 terminal
+    // rejected by the stale-run guard.
+    const accepted = runCompletedEvent(1, 'run-2');
+    const rejectedStale = runCompletedEvent(2, 'run-1');
+    const messageMerges: Array<{ terminal: boolean; runId: string | null }> = [];
+    applyCanonicalSessionSnapshot({
+      events: [accepted, rejectedStale],
+      store: replay([accepted, rejectedStale]),
+      active: true,
+      onTranscript: () => undefined,
+      onActivity: () => undefined,
+      onTerminal: (runId) => runId === 'run-2',
+      onMessages: (_messages, terminal, runId) => { messageMerges.push({ terminal, runId }); },
+    });
+
+    expect(messageMerges).toEqual([{ terminal: true, runId: 'run-2' }]);
+  });
+
+  it('binds the terminal merge to the latest accepted terminal when several terminals apply in one transition', () => {
+    const first = runCompletedEvent(1, 'run-1');
+    const second = runCompletedEvent(2, 'run-2');
+    const messageMerges: Array<{ terminal: boolean; runId: string | null }> = [];
+    applyCanonicalSessionSnapshot({
+      events: [first, second],
+      store: replay([first, second]),
+      active: true,
+      onTranscript: () => undefined,
+      onActivity: () => undefined,
+      onTerminal: () => true,
+      onMessages: (_messages, terminal, runId) => { messageMerges.push({ terminal, runId }); },
+    });
+
+    expect(messageMerges).toEqual([{ terminal: true, runId: 'run-2' }]);
+  });
+
+  it('reports no application facts for a buffered compatibility carrier (Codex finding B seam)', () => {
+    const buffered = consumeSessionEnvelope(compatibilityFiller(3), undefined, 0);
+    expect(buffered.canonical).toBe(false);
+    expect(buffered.store?.projection.phase).toBe('gap_detected');
+    expect(factsOf(buffered)).toBeNull();
+  });
+
+  it('reports drained compatibility events in the application facts for exact-once live projection (Codex finding C seam)', () => {
+    const bufferedFirst = consumeSessionEnvelope(compatibilityFiller(2), undefined, 0);
+    const bufferedBoth = consumeSessionEnvelope(compatibilityFiller(3), bufferedFirst.store, 0);
+    expect(factsOf(bufferedBoth)).toBeNull();
+
+    const closed = consumeSessionEnvelope(
+      event(1, 'started') as unknown as ChatTranscriptEventPayload,
+      bufferedBoth.store,
+      0,
+    );
+    const facts = factsOf(closed);
+    expect(appliedEventIds(facts)).toEqual(['event-1']);
+    expect(facts?.compatibilityEvents.map((applied) => applied.event_id)).toEqual(['legacy-2', 'legacy-3']);
   });
 });

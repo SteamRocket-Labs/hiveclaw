@@ -226,7 +226,7 @@ describe('DAY1-LIVE-TAIL-001 terminal reconcile vertical projection', () => {
       }
       store = consumed.store;
       applyCanonicalSessionSnapshot({
-        event: consumed.projectionEvent,
+        events: [consumed.projectionEvent as unknown as SessionEventV2],
         store,
         active: true,
         onTranscript: () => undefined,

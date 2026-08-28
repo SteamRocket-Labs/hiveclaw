@@ -17,7 +17,12 @@ import {
 } from './chatRuntime';
 import { normalizeToolCallResult } from './toolResultEnvelope';
 import { sessionRunStateFromPayload } from './runtimeBudgetState';
-import { sessionPayloadContent } from '../session-workbench/sessionEventStore';
+import { sessionPayloadContent, type SessionEventV2 } from '../session-workbench/sessionEventStore';
+import {
+  compatibilityProjectionEvent,
+  isLegacyAssistantTerminalItem,
+  type SessionTranscriptApplication,
+} from './sessionEventConsumer';
 import type { SessionSocketMessageContext } from './useSessionTransportController';
 
 type MessageUpdater = (
@@ -35,29 +40,12 @@ const RUNTIME_QUERY_EVENT_KINDS = new Set([
   'workflow_step',
   'workflow_gate',
 ]);
-const TERMINAL_RUN_LIFECYCLES = new Set(['completed', 'failed', 'cancelled']);
 
 function terminalPhaseForRunLifecycle(lifecycle: string): RuntimePhase | null {
   if (lifecycle === 'completed') return 'done';
   if (lifecycle === 'failed') return 'failed';
   if (lifecycle === 'cancelled') return 'cancelled';
   return null;
-}
-
-/**
- * The web-chat assistant_message finalizer settles the RuntimeTask and its
- * transcript event is the turn's last canonical witness on the live tail —
- * no run.completed item event follows on that path. Legacy-adapted envelopes
- * carry the typed `payload.legacy` marker from the backend serializer, so the
- * terminal assistant item itself must clear the active run and refresh the
- * runtime read models (the right panel renders from them). Native V2 turns
- * are excluded: their assistant items complete per message mid-run and run
- * terminality is owned by the `run` item lifecycle.
- */
-function isLegacyAssistantTerminalItem(itemKind: string, lifecycle: string, payload: Record<string, unknown>): boolean {
-  return itemKind.startsWith('assistant_')
-    && TERMINAL_RUN_LIFECYCLES.has(lifecycle)
-    && payload.legacy === true;
 }
 
 function scopeRunId(scope: unknown): string | null {
@@ -67,16 +55,20 @@ function scopeRunId(scope: unknown): string | null {
 }
 
 export interface SessionSocketProjectionDependencies {
-  // Returns whether the envelope was newly applied (false for an already
-  // seen duplicate or a rejected envelope).  Terminal side effects in this
-  // projector must only run for newly applied canonical events — the
-  // transport is at-least-once.
+  // Returns this transition's application facts: the canonical events actually
+  // applied to the contiguous item projection, in sequence order, plus whether
+  // a compatibility carrier itself advanced the contiguous cursor.  The
+  // boolean preserves the legacy contract ("carrier newly applied") for raw
+  // legacy transcript frames.  Null/false means nothing was newly applied
+  // (duplicate, rejected, buffered-only, or consistency conflict) and MUST
+  // perform zero side effects — the transport is at-least-once and gaps hold
+  // effects back until the missing sequence closes them.
   applyTranscriptToSession: (
     agentId: string,
     sessionId: string,
     event: ChatTranscriptEventPayload,
     isActiveRuntime: boolean,
-  ) => boolean;
+  ) => SessionTranscriptApplication | boolean | null;
   // The currently active run id for the session key, or null when no run is
   // live.  Captured before envelope consumption so a matching terminal can
   // still be honored after the consumption callback cleared that active run.
@@ -117,12 +109,122 @@ function isCanonicalSessionEvent(value: any): boolean {
 function isCompatibilitySessionEvent(value: any): boolean {
   return Boolean(
     value
-    && value.schema === 'hive.session_event_compatibility'
-    && value.schema_version === 1
-    && typeof value.event_id === 'string'
-    && typeof value.sequence === 'number'
-    && typeof value.legacy_event_type === 'string',
+      && value.schema === 'hive.session_event_compatibility'
+      && value.schema_version === 1
+      && typeof value.event_id === 'string'
+      && typeof value.sequence === 'number'
+      && typeof value.legacy_event_type === 'string',
   );
+}
+
+/**
+ * Canonical side effects for exactly one applied canonical session event —
+ * the single owner of the tool/run/failure consumption ladder.  Runs once per
+ * applied event, in sequence order, for canonical carriers and for canonical
+ * events drained by a gap-filling carrier alike.
+ */
+function runCanonicalEventSideEffects(
+  dependencies: SessionSocketProjectionDependencies,
+  context: { agentId: string; sessionId: string; key: string; isActiveRuntime: boolean },
+  preConsumptionActiveRunId: string | null,
+  event: SessionEventV2,
+): void {
+  const { agentId, sessionId, key, isActiveRuntime } = context;
+  const {
+    fetchMySessions,
+    setSessionPhase,
+    syncActivePhase,
+    invalidateSessionRuntimeQueries,
+  } = dependencies;
+
+  const itemKind = String(event.item_kind || '').toLowerCase();
+  const lifecycle = String(event.lifecycle || '').toLowerCase();
+  const payload = event.payload && typeof event.payload === 'object' ? event.payload : {};
+  const toolName = String(payload.tool_name || payload.name || '').toLowerCase();
+  // Run-identity safety for every terminal branch: a stale old-run
+  // terminal while a different run is active must not clear the active
+  // run, set a terminal phase, or refresh/reconcile as that terminal.
+  // Terminal acceptance and the active-run mutation itself are owned by the
+  // applier's onTerminal callback (which needs the acceptance boolean for
+  // the terminal message merge); this projector owns the observable
+  // refresh effects only.
+  const staleTerminalForActiveRun = (terminalRunId: string | null): boolean => Boolean(
+    preConsumptionActiveRunId && terminalRunId && preConsumptionActiveRunId !== terminalRunId,
+  );
+  if (
+    itemKind === 'tool_call'
+    && TASK_LEDGER_MUTATION_TOOLS.has(toolName)
+    && dependencies.shouldInvalidateToolCall(key)
+  ) {
+    invalidateSessionRuntimeQueries(agentId, sessionId, false);
+  } else if (itemKind === 'tool_result') {
+    // The started tool_call can arrive before the tool mutates the Work
+    // Ledger. The committed result is the authoritative refresh boundary.
+    invalidateSessionRuntimeQueries(agentId, sessionId, false);
+  } else if (RUNTIME_QUERY_EVENT_KINDS.has(itemKind)) {
+    invalidateSessionRuntimeQueries(agentId, sessionId);
+  } else if (isLegacyAssistantTerminalItem(itemKind, lifecycle, payload) && !staleTerminalForActiveRun(scopeRunId(event.scope))) {
+    // Turn-terminal witness of the legacy web-chat path: same contract as
+    // the terminal stream frame — refresh the runtime read models the right
+    // panel renders from, and reconcile the durable transcript so a lost
+    // canonical tail still projects without a reload. The active-run
+    // clearing itself already happened in the applier's onTerminal.
+    const terminalPhase = terminalPhaseForRunLifecycle(lifecycle);
+    invalidateSessionRuntimeQueries(agentId, sessionId);
+    if (terminalPhase) {
+      setSessionPhase(key, terminalPhase);
+      if (isActiveRuntime) syncActivePhase(terminalPhase);
+    }
+    void fetchMySessions(true, agentId);
+    if (isActiveRuntime) dependencies.reconcileSessionTranscript(agentId, sessionId);
+  }
+  if (itemKind === 'run' && ['completed', 'failed', 'cancelled'].includes(lifecycle) && !staleTerminalForActiveRun(scopeRunId(event.scope))) {
+    const terminalPhase = terminalPhaseForRunLifecycle(lifecycle);
+    if (terminalPhase) {
+      setSessionPhase(key, terminalPhase);
+      if (isActiveRuntime) syncActivePhase(terminalPhase);
+    }
+    void fetchMySessions(true, agentId);
+  }
+  // Only a run-scoped runtime_failure with a nonempty authoritative run_id
+  // may produce terminal failure effects.  Session/turn/round scopes carry
+  // no whole-run terminal authority (a session/turn scope has no run_id and
+  // a round scope must not fail the whole run) — no null-id fallback here.
+  const failureScopeLevel = event.scope && typeof event.scope === 'object'
+    ? String((event.scope as { level?: unknown }).level || '')
+    : '';
+  const failureRunId = failureScopeLevel === 'run' ? scopeRunId(event.scope) : null;
+  if (itemKind === 'runtime_failure' && lifecycle === 'recorded' && failureRunId && !staleTerminalForActiveRun(failureRunId)) {
+    // Canonical terminal witness of the web-chat provider-failure path
+    // (e.g. typed 402 quota_exhausted/rejected): same no-reload contract as
+    // the terminal stream frame — pin the failed phase, refresh the runtime
+    // read models, reconcile the durable transcript, and surface the
+    // existing quota/balance notice banner. The typed failure_code travels
+    // in the payload; no natural-language scanning decides the quota
+    // outcome here. The active-run closing already happened in the
+    // applier's onTerminal.
+    invalidateSessionRuntimeQueries(agentId, sessionId);
+    setSessionPhase(key, 'failed');
+    if (isActiveRuntime) syncActivePhase('failed');
+    void fetchMySessions(true, agentId);
+    if (isActiveRuntime) dependencies.reconcileSessionTranscript(agentId, sessionId);
+    const failureMessage = typeof payload.message === 'string' && payload.message.trim()
+      ? payload.message
+      : (typeof payload.content === 'string' && payload.content.trim() ? payload.content : '');
+    if (failureMessage) dependencies.setTransportNotice(failureMessage);
+  }
+}
+
+/** Terminal refresh effects of one applied compatibility envelope — an
+ * applied carrier and every drained buffered envelope own them exactly once. */
+function runCompatibilityTerminalEffects(
+  dependencies: SessionSocketProjectionDependencies,
+  context: { agentId: string; sessionId: string; key: string; isActiveRuntime: boolean },
+  transcriptEvent: ChatTranscriptEventPayload,
+): void {
+  if (!isTerminalRealtimeChatEvent(transcriptEvent)) return;
+  dependencies.invalidateSessionRuntimeQueries(context.agentId, context.sessionId);
+  if (context.isActiveRuntime) void dependencies.fetchMySessions(true, context.agentId);
 }
 
 export function projectSessionSocketEvent(
@@ -163,81 +265,29 @@ export function projectSessionSocketEvent(
     // active run via the terminal callback, so the staleness decision must
     // be made against the active run captured before consumption.
     const preConsumptionActiveRunId = dependencies.activeRunIdOf(key);
-    const newlyApplied = applyTranscriptToSession(agentId, sessionId, transcriptEvent, isActiveRuntime) === true;
-    // At-least-once contract: a duplicate or rejected canonical envelope
-    // must not perform any UI or query side effect.
-    if (!newlyApplied) return;
-    const itemKind = String(d.item_kind || '').toLowerCase();
-    const lifecycle = String(d.lifecycle || '').toLowerCase();
-    const payload = d.payload && typeof d.payload === 'object' ? d.payload : {};
-    const toolName = String(payload.tool_name || payload.name || '').toLowerCase();
-    // Run-identity safety for every terminal branch: a stale old-run
-    // terminal while a different run is active must not clear the active
-    // run, set a terminal phase, or refresh/reconcile as that terminal.
-    const staleTerminalForActiveRun = (terminalRunId: string | null): boolean => Boolean(
-      preConsumptionActiveRunId && terminalRunId && preConsumptionActiveRunId !== terminalRunId,
-    );
-    if (
-      itemKind === 'tool_call'
-      && TASK_LEDGER_MUTATION_TOOLS.has(toolName)
-      && dependencies.shouldInvalidateToolCall(key)
-    ) {
-      invalidateSessionRuntimeQueries(agentId, sessionId, false);
-    } else if (itemKind === 'tool_result') {
-      // The started tool_call can arrive before the tool mutates the Work
-      // Ledger. The committed result is the authoritative refresh boundary.
-      invalidateSessionRuntimeQueries(agentId, sessionId, false);
-    } else if (RUNTIME_QUERY_EVENT_KINDS.has(itemKind)) {
-      invalidateSessionRuntimeQueries(agentId, sessionId);
-    } else if (isLegacyAssistantTerminalItem(itemKind, lifecycle, payload) && !staleTerminalForActiveRun(scopeRunId(d.scope))) {
-      // Turn-terminal witness of the legacy web-chat path: same contract as
-      // the terminal stream frame — clear the active run, refresh the runtime
-      // read models the right panel renders from, and reconcile the durable
-      // transcript so a lost canonical tail still projects without a reload.
-      const terminalPhase = terminalPhaseForRunLifecycle(lifecycle);
-      markActiveRunTerminal(key, scopeRunId(d.scope));
-      invalidateSessionRuntimeQueries(agentId, sessionId);
-      if (terminalPhase) {
-        setSessionPhase(key, terminalPhase);
-        if (isActiveRuntime) syncActivePhase(terminalPhase);
-      }
-      void fetchMySessions(true, agentId);
-      if (isActiveRuntime) dependencies.reconcileSessionTranscript(agentId, sessionId);
+    const application = applyTranscriptToSession(agentId, sessionId, transcriptEvent, isActiveRuntime);
+    // Contiguous-application contract: side effects run only for canonical
+    // events actually applied to the contiguous item projection in this
+    // transition — once per event, in sequence order (a gap close surfaces
+    // the drained buffered events). Buffered-only, conflicted, ignored, and
+    // duplicate arrivals report none and perform zero side effects.
+    if (!application) return;
+    const appliedCanonicalEvents: SessionEventV2[] = application === true
+      ? [d as SessionEventV2]
+      : application.canonicalEvents;
+    for (const appliedEvent of appliedCanonicalEvents) {
+      runCanonicalEventSideEffects(dependencies, { agentId, sessionId, key, isActiveRuntime }, preConsumptionActiveRunId, appliedEvent);
     }
-    if (itemKind === 'run' && TERMINAL_RUN_LIFECYCLES.has(lifecycle) && !staleTerminalForActiveRun(scopeRunId(d.scope))) {
-      const terminalPhase = terminalPhaseForRunLifecycle(lifecycle);
-      if (terminalPhase) {
-        setSessionPhase(key, terminalPhase);
-        if (isActiveRuntime) syncActivePhase(terminalPhase);
+    if (application !== true) {
+      // Compatibility envelopes the canonical carrier drained own their
+      // terminal effects exactly once, in sequence order.
+      for (const drainedCompatibility of application.compatibilityEvents) {
+        runCompatibilityTerminalEffects(
+          dependencies,
+          { agentId, sessionId, key, isActiveRuntime },
+          compatibilityProjectionEvent(drainedCompatibility),
+        );
       }
-      void fetchMySessions(true, agentId);
-    }
-    // Only a run-scoped runtime_failure with a nonempty authoritative run_id
-    // may close the active run.  Session/turn/round scopes carry no whole-run
-    // terminal authority (a session/turn scope has no run_id and a round
-    // scope must not fail the whole run) — no null-id fallback here.
-    const failureScopeLevel = d.scope && typeof d.scope === 'object'
-      ? String((d.scope as { level?: unknown }).level || '')
-      : '';
-    const failureRunId = failureScopeLevel === 'run' ? scopeRunId(d.scope) : null;
-    if (itemKind === 'runtime_failure' && lifecycle === 'recorded' && failureRunId && !staleTerminalForActiveRun(failureRunId)) {
-      // Canonical terminal witness of the web-chat provider-failure path
-      // (e.g. typed 402 quota_exhausted/rejected): same no-reload contract as
-      // the terminal stream frame — close the active run, pin the failed
-      // phase, refresh the runtime read models, reconcile the durable
-      // transcript, and surface the existing quota/balance notice banner.
-      // The typed failure_code travels in the payload; no natural-language
-      // scanning decides the quota outcome here.
-      markActiveRunTerminal(key, failureRunId);
-      invalidateSessionRuntimeQueries(agentId, sessionId);
-      setSessionPhase(key, 'failed');
-      if (isActiveRuntime) syncActivePhase('failed');
-      void fetchMySessions(true, agentId);
-      if (isActiveRuntime) dependencies.reconcileSessionTranscript(agentId, sessionId);
-      const failureMessage = typeof payload.message === 'string' && payload.message.trim()
-        ? payload.message
-        : (typeof payload.content === 'string' && payload.content.trim() ? payload.content : '');
-      if (failureMessage) dependencies.setTransportNotice(failureMessage);
     }
     return;
   }
@@ -253,15 +303,39 @@ export function projectSessionSocketEvent(
         ? payload.metadata
         : {},
     };
-    applyTranscriptToSession(agentId, sessionId, transcriptEvent, isActiveRuntime);
+    // Pre-consumption run identity, same as the canonical branch: drained
+    // terminal events must be staleness-checked against the active run that
+    // existed before this transition consumed anything.
+    const preConsumptionActiveRunId = dependencies.activeRunIdOf(key);
+    const application = applyTranscriptToSession(agentId, sessionId, transcriptEvent, isActiveRuntime);
+    // A compatibility carrier can fill a sequence gap and drain buffered
+    // canonical events in the same transition; those drained events own their
+    // canonical side effects now, exactly once each.
+    if (application && application !== true) {
+      for (const appliedEvent of application.canonicalEvents) {
+        runCanonicalEventSideEffects(dependencies, { agentId, sessionId, key, isActiveRuntime }, preConsumptionActiveRunId, appliedEvent);
+      }
+    }
+    const compatibilityFacts = application && application !== true ? application : null;
+    const carrierApplied = application === true || Boolean(compatibilityFacts?.compatibilityApplied);
     // A terminal transcript event settles the turn on the durable plane; the
     // runtime read models (right-panel run rows, runtime summary) must refresh
-    // with it — they are only refetched through explicit invalidation.
-    if (isTerminalRealtimeChatEvent(transcriptEvent)) {
-      invalidateSessionRuntimeQueries(agentId, sessionId);
+    // with it — they are only refetched through explicit invalidation. The
+    // carrier's own terminal handling runs only when the carrier itself was
+    // newly applied to the contiguous cursor (never buffered or conflicted).
+    if (carrierApplied) {
+      runCompatibilityTerminalEffects(dependencies, { agentId, sessionId, key, isActiveRuntime }, transcriptEvent);
     }
-    if (isActiveRuntime && isTerminalRealtimeChatEvent(transcriptEvent)) {
-      void fetchMySessions(true, agentId);
+    // Compatibility envelopes the carrier drained own the same terminal
+    // effects exactly once, in sequence order.
+    if (compatibilityFacts) {
+      for (const drainedCompatibility of compatibilityFacts.compatibilityEvents) {
+        runCompatibilityTerminalEffects(
+          dependencies,
+          { agentId, sessionId, key, isActiveRuntime },
+          compatibilityProjectionEvent(drainedCompatibility),
+        );
+      }
     }
     return;
   }

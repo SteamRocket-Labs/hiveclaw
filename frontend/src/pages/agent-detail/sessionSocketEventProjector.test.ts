@@ -7,6 +7,7 @@ import {
   type AgentChatMessage,
 } from './chatRuntime';
 import { consumeSessionEnvelope } from './sessionEventConsumer';
+import { applyTranscriptToSessionRuntime, type SessionTranscriptApplierRefs } from './sessionTranscriptApplier';
 import { buildSessionRightPanelModel } from '../session-workbench/timelineModel';
 import type { SessionSocketMessageContext } from './useSessionTransportController';
 import type { SessionEventStore } from '../session-workbench/sessionEventStore';
@@ -63,6 +64,120 @@ function makeHarness(data: Record<string, unknown>, isActiveRuntime = true) {
     failAuthentication,
     messages: (sessionId = 'session-1') => messagesBySession.get(sessionId) || [],
     targetedSessions: () => targetedSessions,
+  };
+}
+
+function runtimeFailureEnvelope(runId: string, eventId = 'event-runtime-failure-1', sequence = 9) {
+  return {
+    schema: 'hive.session_event',
+    schema_version: 2,
+    event_id: eventId,
+    sequence,
+    item_id: `failure-item-${eventId}`,
+    item_kind: 'runtime_failure',
+    lifecycle: 'recorded',
+    kind: 'runtime_failure.recorded',
+    payload_schema: 'hive.session.payload.runtime_failure.recorded.v2',
+    tenant_id: 'tenant-1',
+    scope: { level: 'run', session_id: 'session-1', thread_id: 'session-1', turn_id: 'turn-1', run_id: runId },
+    actor: { type: 'runtime' },
+    visibility: { audience: 'direct_user' },
+    payload: {
+      status: 'failed',
+      terminal_reason: 'provider_error',
+      failure_code: 'quota_exhausted',
+      delivery_state: 'rejected',
+      requires_user_decision: true,
+      retryable: true,
+      content: 'quota message',
+      message: 'quota message',
+    },
+    occurred_at: '2026-08-28T00:00:00Z',
+    persisted_at: '2026-08-28T00:00:00Z',
+  };
+}
+
+function runTerminalEnvelope(runId: string, eventId = 'event-run-terminal-1', sequence = 11) {
+  return {
+    schema: 'hive.session_event',
+    schema_version: 2,
+    event_id: eventId,
+    sequence,
+    item_id: `run-item-${eventId}`,
+    item_kind: 'run',
+    lifecycle: 'completed',
+    kind: 'run.completed',
+    payload_schema: 'hive.session.payload.run.completed.v2',
+    tenant_id: 'tenant-1',
+    scope: { level: 'run', session_id: 'session-1', thread_id: 'session-1', turn_id: 'turn-1', run_id: runId },
+    actor: { type: 'runtime' },
+    visibility: { audience: 'direct_user' },
+    payload: {},
+    occurred_at: '2026-08-28T00:00:00Z',
+    persisted_at: '2026-08-28T00:00:00Z',
+  };
+}
+
+function legacyAssistantTerminalEnvelope(runId: string, eventId = 'event-legacy-final-1', sequence = 12) {
+  return {
+    schema: 'hive.session_event',
+    schema_version: 2,
+    event_id: eventId,
+    sequence,
+    item_id: `assistant-item-${eventId}`,
+    item_kind: 'assistant_text',
+    lifecycle: 'completed',
+    kind: 'assistant_text.completed',
+    payload_schema: 'hive.session.payload.assistant_text.completed.v2',
+    tenant_id: 'tenant-1',
+    scope: { level: 'round', session_id: 'session-1', thread_id: 'session-1', turn_id: 'turn-1', run_id: runId, round_id: 'round-1' },
+    actor: { type: 'assistant' },
+    visibility: { audience: 'direct_user' },
+    payload: { content: 'final answer', parts: [], metadata: { status: 'completed' }, legacy: true, phase: 'unknown' },
+    occurred_at: '2026-08-28T00:00:00Z',
+    persisted_at: '2026-08-28T00:00:00Z',
+  };
+}
+
+function wireRealSessionApplication(harness: ReturnType<typeof makeHarness>) {
+  // The REAL AgentDetail consumption path: the extracted production applier
+  // owns envelope reduction, application facts, and legacy projection alike
+  // — no test-only mirror of the contract may drift from the page wiring.
+  const refs: SessionTranscriptApplierRefs = {
+    transcriptEvents: {},
+    eventStores: {},
+    fullHydrationKeys: new Set(),
+    replayStates: {},
+    uiStates: {},
+    runtimeActivityAt: {},
+    pendingUserMessages: {},
+  };
+  harness.dependencies.applyTranscriptToSession = vi.fn((agentId, sessionId, event, isActiveRuntime) => (
+    applyTranscriptToSessionRuntime({
+      refs,
+      markActiveRunTerminal: (key, runId) => {
+        harness.dependencies.markActiveRunTerminal(key, runId);
+        // The registry acceptance contract: only an explicit false rejects.
+        return true;
+      },
+      isTerminalTranscriptToolMessage: () => false,
+      mergePendingMessages: (_key, messages) => messages,
+      setChatMessagesSessionId: () => undefined,
+      enqueueChatMessagesUpdate: (sessionId, updater) => {
+        harness.dependencies.enqueueChatMessagesUpdate(sessionId, updater);
+      },
+      setChatMessagesAfterQueued: (sessionId, updater) => {
+        harness.dependencies.setChatMessagesAfterQueued(sessionId, updater);
+      },
+      setActivePhase: () => undefined,
+      setIsWaiting: () => undefined,
+      setIsStreaming: () => undefined,
+      parseChatMsg: (message) => message,
+    }, agentId, sessionId, event, isActiveRuntime)
+  ));
+  return {
+    store: (): SessionEventStore | undefined => refs.eventStores['agent-1:session-1'],
+    replayMessages: () => refs.replayStates['agent-1:session-1']?.messages ?? [],
   };
 }
 
@@ -255,7 +370,7 @@ describe('session socket event projector', () => {
       schema: 'hive.session_event',
       schema_version: 2,
       event_id: 'event-runtime-failure-1',
-      sequence: 9,
+      sequence: 1,
       item_id: 'failure-item-1',
       item_kind: 'runtime_failure',
       lifecycle: 'recorded',
@@ -278,12 +393,17 @@ describe('session socket event projector', () => {
       occurred_at: '2026-08-28T00:00:00Z',
       persisted_at: '2026-08-28T00:00:00Z',
     });
+    // Drive the real consumption path so the single terminal acceptance
+    // (applier onTerminal) and the projector refresh effects both run.
+    wireRealSessionApplication(harness);
 
     projectSessionSocketEvent(harness.context, harness.dependencies);
 
-    // The no-reload terminal consumption contract: close the active run, pin
-    // the failed phase, refresh runtime read models, reconcile the durable
-    // transcript, and surface the existing quota/余额 notice banner.
+    // The no-reload terminal consumption contract: close the active run once
+    // (applier onTerminal), pin the failed phase, refresh runtime read
+    // models, reconcile the durable transcript, and surface the existing
+    // quota/余额 notice banner.
+    expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledTimes(1);
     expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledWith('agent-1:session-1', 'run-1');
     expect(harness.dependencies.setSessionPhase).toHaveBeenCalledWith('agent-1:session-1', 'failed');
     expect(harness.dependencies.syncActivePhase).toHaveBeenCalledWith('failed');
@@ -293,52 +413,15 @@ describe('session socket event projector', () => {
     expect(harness.dependencies.setTransportNotice).toHaveBeenCalledWith(message);
   });
 
-  function runtimeFailureEnvelope(runId: string, eventId = 'event-runtime-failure-1', sequence = 9) {
-    return {
-      schema: 'hive.session_event',
-      schema_version: 2,
-      event_id: eventId,
-      sequence,
-      item_id: `failure-item-${eventId}`,
-      item_kind: 'runtime_failure',
-      lifecycle: 'recorded',
-      kind: 'runtime_failure.recorded',
-      payload_schema: 'hive.session.payload.runtime_failure.recorded.v2',
-      tenant_id: 'tenant-1',
-      scope: { level: 'run', session_id: 'session-1', thread_id: 'session-1', turn_id: 'turn-1', run_id: runId },
-      actor: { type: 'runtime' },
-      visibility: { audience: 'direct_user' },
-      payload: {
-        status: 'failed',
-        terminal_reason: 'provider_error',
-        failure_code: 'quota_exhausted',
-        delivery_state: 'rejected',
-        requires_user_decision: true,
-        retryable: true,
-        content: 'quota message',
-        message: 'quota message',
-      },
-      occurred_at: '2026-08-28T00:00:00Z',
-      persisted_at: '2026-08-28T00:00:00Z',
-    };
-  }
-
   function wireRealCanonicalDedupe(harness: ReturnType<typeof makeHarness>) {
-    // The exact AgentDetail applyTranscriptToSession dedupe contract: a
-    // canonical envelope whose reduce returns the identical store reference
-    // was already seen and reports not-newly-applied.
-    let store: SessionEventStore | undefined;
-    harness.dependencies.applyTranscriptToSession = vi.fn((_agentId, _sessionId, event) => {
-      const consumed = consumeSessionEnvelope(event as never, store, 0);
-      if (consumed.sessionEnvelope && consumed.store === store) return false;
-      if (consumed.store) store = consumed.store;
-      return true;
-    });
-    return () => store;
+    // The REAL AgentDetail dedupe contract through the production applier: a
+    // duplicate delivery reports an empty application (false) — no effects.
+    const wired = wireRealSessionApplication(harness);
+    return () => wired.store();
   }
 
   it('executes runtime_failure terminal side effects exactly once for a duplicate canonical delivery (Codex finding: at-least-once idempotency)', () => {
-    const harness = makeHarness(runtimeFailureEnvelope('run-1'));
+    const harness = makeHarness(runtimeFailureEnvelope('run-1', 'event-runtime-failure-1', 1));
     harness.dependencies.activeRunIdOf = vi.fn(() => 'run-1');
     wireRealCanonicalDedupe(harness);
 
@@ -346,7 +429,10 @@ describe('session socket event projector', () => {
     // The outbox may legally redeliver the same immutable event_id.
     projectSessionSocketEvent(harness.context, harness.dependencies);
 
+    // One owner: the applier's onTerminal performs the single terminal
+    // acceptance/active-run mutation for the accepted failure.
     expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledTimes(1);
+    expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledWith('agent-1:session-1', 'run-1');
     expect(harness.dependencies.setSessionPhase).toHaveBeenCalledTimes(1);
     expect(harness.dependencies.setTransportNotice).toHaveBeenCalledTimes(1);
     expect(harness.dependencies.reconcileSessionTranscript).toHaveBeenCalledTimes(1);
@@ -354,16 +440,17 @@ describe('session socket event projector', () => {
   });
 
   it('never clears, fails, or surfaces a stale run-1 runtime_failure against an active run-2 (Codex finding: run identity safety)', () => {
-    const harness = makeHarness(runtimeFailureEnvelope('run-1'));
+    const harness = makeHarness(runtimeFailureEnvelope('run-1', 'event-runtime-failure-1', 1));
     harness.dependencies.activeRunIdOf = vi.fn(() => 'run-2');
     wireRealCanonicalDedupe(harness);
 
     projectSessionSocketEvent(harness.context, harness.dependencies);
 
     // The durable event still enters the session projection, but no terminal
-    // side effect may fire against the newer active run.
+    // side effect may fire against the newer active run. The registry call
+    // fires once (consumption callback) and records/rejects safely.
     expect(harness.dependencies.applyTranscriptToSession).toHaveBeenCalledTimes(1);
-    expect(harness.dependencies.markActiveRunTerminal).not.toHaveBeenCalled();
+    expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledTimes(1);
     expect(harness.dependencies.setSessionPhase).not.toHaveBeenCalled();
     expect(harness.dependencies.syncActivePhase).not.toHaveBeenCalled();
     expect(harness.dependencies.setTransportNotice).not.toHaveBeenCalled();
@@ -373,7 +460,7 @@ describe('session socket event projector', () => {
   });
 
   it('still executes the fresh run-scoped runtime_failure terminal consumption for the matching active run', () => {
-    const harness = makeHarness(runtimeFailureEnvelope('run-1'));
+    const harness = makeHarness(runtimeFailureEnvelope('run-1', 'event-runtime-failure-1', 1));
     harness.dependencies.activeRunIdOf = vi.fn(() => 'run-1');
     wireRealCanonicalDedupe(harness);
 
@@ -432,50 +519,8 @@ describe('session socket event projector', () => {
     expect(harness.dependencies.setTransportNotice).not.toHaveBeenCalled();
   });
 
-  function runTerminalEnvelope(runId: string, eventId = 'event-run-terminal-1', sequence = 11) {
-    return {
-      schema: 'hive.session_event',
-      schema_version: 2,
-      event_id: eventId,
-      sequence,
-      item_id: `run-item-${eventId}`,
-      item_kind: 'run',
-      lifecycle: 'completed',
-      kind: 'run.completed',
-      payload_schema: 'hive.session.payload.run.completed.v2',
-      tenant_id: 'tenant-1',
-      scope: { level: 'run', session_id: 'session-1', thread_id: 'session-1', turn_id: 'turn-1', run_id: runId },
-      actor: { type: 'runtime' },
-      visibility: { audience: 'direct_user' },
-      payload: {},
-      occurred_at: '2026-08-28T00:00:00Z',
-      persisted_at: '2026-08-28T00:00:00Z',
-    };
-  }
-
-  function legacyAssistantTerminalEnvelope(runId: string, eventId = 'event-legacy-final-1', sequence = 12) {
-    return {
-      schema: 'hive.session_event',
-      schema_version: 2,
-      event_id: eventId,
-      sequence,
-      item_id: `assistant-item-${eventId}`,
-      item_kind: 'assistant_text',
-      lifecycle: 'completed',
-      kind: 'assistant_text.completed',
-      payload_schema: 'hive.session.payload.assistant_text.completed.v2',
-      tenant_id: 'tenant-1',
-      scope: { level: 'round', session_id: 'session-1', thread_id: 'session-1', turn_id: 'turn-1', run_id: runId, round_id: 'round-1' },
-      actor: { type: 'assistant' },
-      visibility: { audience: 'direct_user' },
-      payload: { content: 'final answer', parts: [], metadata: { status: 'completed' }, legacy: true, phase: 'unknown' },
-      occurred_at: '2026-08-28T00:00:00Z',
-      persisted_at: '2026-08-28T00:00:00Z',
-    };
-  }
-
   it('executes canonical run terminal side effects exactly once for a duplicate delivery (same-root-cause closure)', () => {
-    const harness = makeHarness(runTerminalEnvelope('run-1'));
+    const harness = makeHarness(runTerminalEnvelope('run-1', 'event-run-terminal-1', 1));
     harness.dependencies.activeRunIdOf = vi.fn(() => 'run-1');
     wireRealCanonicalDedupe(harness);
 
@@ -488,7 +533,7 @@ describe('session socket event projector', () => {
   });
 
   it('executes legacy assistant terminal side effects exactly once for a duplicate delivery (same-root-cause closure)', () => {
-    const harness = makeHarness(legacyAssistantTerminalEnvelope('run-1'));
+    const harness = makeHarness(legacyAssistantTerminalEnvelope('run-1', 'event-legacy-final-1', 1));
     harness.dependencies.activeRunIdOf = vi.fn(() => 'run-1');
     wireRealCanonicalDedupe(harness);
 
@@ -505,7 +550,7 @@ describe('session socket event projector', () => {
       schema: 'hive.session_event',
       schema_version: 2,
       event_id: 'event-tool-result-dup',
-      sequence: 13,
+      sequence: 1,
       item_id: 'tool-result-dup',
       item_kind: 'tool_result',
       lifecycle: 'completed',
@@ -574,7 +619,7 @@ describe('session socket event projector', () => {
   });
 
   it('still applies a canonical run terminal for the matching active run', () => {
-    const harness = makeHarness(runTerminalEnvelope('run-1'));
+    const harness = makeHarness(runTerminalEnvelope('run-1', 'event-run-terminal-1', 1));
     harness.dependencies.activeRunIdOf = vi.fn(() => 'run-1');
     wireRealCanonicalDedupe(harness);
 
@@ -585,7 +630,7 @@ describe('session socket event projector', () => {
   });
 
   it('still applies a legacy assistant terminal for the matching active run', () => {
-    const harness = makeHarness(legacyAssistantTerminalEnvelope('run-1'));
+    const harness = makeHarness(legacyAssistantTerminalEnvelope('run-1', 'event-legacy-final-1', 1));
     harness.dependencies.activeRunIdOf = vi.fn(() => 'run-1');
     wireRealCanonicalDedupe(harness);
 
@@ -602,12 +647,13 @@ describe('session socket event projector', () => {
     // canonical envelope adapted from the legacy row (payload.legacy). No
     // run.completed item event follows on this path, so this terminal witness
     // must itself clear the active run and invalidate the workbench read
-    // models the right panel renders from.
+    // models the right panel renders from. The single active-run clearing is
+    // owned by the applier's onTerminal; the projector refreshes read models.
     const terminalEnvelope = {
       schema: 'hive.session_event',
       schema_version: 2,
       event_id: 'event-150',
-      sequence: 150,
+      sequence: 1,
       item_id: 'assistant-final-1',
       item_kind: 'assistant_text',
       kind: 'assistant_text.completed',
@@ -635,9 +681,11 @@ describe('session socket event projector', () => {
       persisted_at: '2026-08-27T13:47:35.453028Z',
     };
     const harness = makeHarness(terminalEnvelope);
+    wireRealSessionApplication(harness);
 
     projectSessionSocketEvent(harness.context, harness.dependencies);
 
+    expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledTimes(1);
     expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledWith(
       'agent-1:session-1',
       'run-5ab9b0a8',
@@ -734,7 +782,7 @@ describe('session socket event projector', () => {
         schema: 'hive.session_event',
         schema_version: 2,
         event_id: `event-assistant-${lifecycle}`,
-        sequence: 30,
+        sequence: 1,
         item_id: `assistant-${lifecycle}-1`,
         item_kind: 'assistant_final',
         kind: `assistant_final.${lifecycle}`,
@@ -755,9 +803,11 @@ describe('session socket event projector', () => {
         occurred_at: '2026-08-27T13:47:35Z',
         persisted_at: '2026-08-27T13:47:35Z',
       });
+      wireRealSessionApplication(harness);
 
       projectSessionSocketEvent(harness.context, harness.dependencies);
 
+      expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledTimes(1);
       expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledWith('agent-1:session-1', 'run-5ab9b0a8');
       expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledWith('agent-1', 'session-1');
       const expectedPhase = lifecycle === 'failed' ? 'failed' : 'cancelled';
@@ -848,5 +898,292 @@ describe('session socket event projector', () => {
     expect(harness.failAuthentication).toHaveBeenCalledWith('agent-1:session-1', false);
     expect(harness.messages()).toEqual([]);
     expect(harness.dependencies.setTransportNotice).toHaveBeenCalledWith('session.auth_failed');
+  });
+});
+
+describe('session socket projector contiguous-application side effects (Codex REQUEST_CHANGES #3)', () => {
+  function canonicalTextEvent(sequence: number, content: string): Record<string, unknown> {
+    return {
+      schema: 'hive.session_event',
+      schema_version: 2,
+      event_id: `event-text-${sequence}`,
+      sequence,
+      item_id: `text-item-${sequence}`,
+      item_kind: 'assistant_text',
+      lifecycle: 'delta',
+      kind: 'assistant_text.delta',
+      payload_schema: 'hive.session.payload.assistant_text.delta.v2',
+      tenant_id: 'tenant-1',
+      scope: {
+        level: 'round',
+        session_id: 'session-1',
+        thread_id: 'session-1',
+        turn_id: 'turn-1',
+        run_id: 'run-1',
+        round_id: 'round-1',
+      },
+      actor: { type: 'assistant' },
+      visibility: { audience: 'direct_user' },
+      payload: { content, phase: 'unknown' },
+      occurred_at: '2026-08-28T00:00:00Z',
+      persisted_at: '2026-08-28T00:00:00Z',
+    };
+  }
+
+  function bufferedToolResultEvent(sequence: number): Record<string, unknown> {
+    return {
+      schema: 'hive.session_event',
+      schema_version: 2,
+      event_id: `event-buffered-tool-result-${sequence}`,
+      sequence,
+      item_id: `buffered-tool-result-${sequence}`,
+      item_kind: 'tool_result',
+      lifecycle: 'completed',
+      kind: 'tool_result.completed',
+      payload_schema: 'hive.session.payload.tool_result.completed.v2',
+      tenant_id: 'tenant-1',
+      scope: {
+        level: 'round',
+        session_id: 'session-1',
+        thread_id: 'session-1',
+        turn_id: 'turn-1',
+        run_id: 'run-1',
+        round_id: 'round-1',
+      },
+      actor: { type: 'tool' },
+      visibility: { audience: 'direct_user' },
+      payload: { invocation_id: 'invocation-buffered', outcome: 'success' },
+      occurred_at: '2026-08-28T00:00:00Z',
+      persisted_at: '2026-08-28T00:00:00Z',
+    };
+  }
+
+  function compatibilityFillerEvent(sequence: number): Record<string, unknown> {
+    return {
+      schema: 'hive.session_event_compatibility',
+      schema_version: 1,
+      compatibility_status: 'needs_reconciliation',
+      reason: 'legacy_generation',
+      event_id: `legacy-filler-${sequence}`,
+      sequence,
+      legacy_event_type: 'phase',
+      payload: { content: '', metadata: { phase: 'done' } },
+    };
+  }
+
+  it('runs a buffered runtime_failure terminal exactly once after gap close and never on arrival or duplicate', () => {
+    const harness = makeHarness(runtimeFailureEnvelope('run-1', 'event-runtime-failure-3', 3));
+    harness.dependencies.activeRunIdOf = vi.fn(() => 'run-1');
+    wireRealSessionApplication(harness);
+
+    // Arrival with seq 1 and 2 missing: the failure is only buffered.
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+    expect(harness.dependencies.markActiveRunTerminal).not.toHaveBeenCalled();
+    expect(harness.dependencies.setSessionPhase).not.toHaveBeenCalled();
+    expect(harness.dependencies.setTransportNotice).not.toHaveBeenCalled();
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).not.toHaveBeenCalled();
+
+    // Gap close drains seq 1 then seq 2; the drained failure fires exactly once.
+    projectSessionSocketEvent(
+      { ...harness.context, data: canonicalTextEvent(1, 'gap filler one') },
+      harness.dependencies,
+    );
+    projectSessionSocketEvent(
+      { ...harness.context, data: canonicalTextEvent(2, 'gap filler two') },
+      harness.dependencies,
+    );
+    expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledTimes(1);
+    expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledWith('agent-1:session-1', 'run-1');
+    expect(harness.dependencies.setSessionPhase).toHaveBeenCalledWith('agent-1:session-1', 'failed');
+    expect(harness.dependencies.setTransportNotice).toHaveBeenCalledTimes(1);
+    expect(harness.dependencies.reconcileSessionTranscript).toHaveBeenCalledTimes(1);
+
+    // At-least-once redelivery of the drained failure is a duplicate: zero.
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+    expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledTimes(1);
+    expect(harness.dependencies.setTransportNotice).toHaveBeenCalledTimes(1);
+  });
+
+  it('invalidates a buffered tool_result exactly once after gap close and never on arrival', () => {
+    const harness = makeHarness(bufferedToolResultEvent(2));
+    wireRealSessionApplication(harness);
+
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).not.toHaveBeenCalled();
+
+    projectSessionSocketEvent(
+      { ...harness.context, data: canonicalTextEvent(1, 'gap filler') },
+      harness.dependencies,
+    );
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledTimes(1);
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledWith('agent-1', 'session-1', false);
+
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces drained canonical terminal effects when a compatibility carrier fills the gap', () => {
+    // Canonical run.completed sits buffered at seq 2; a compatibility envelope
+    // at seq 1 fills the gap and drains it in the same transition.
+    const harness = makeHarness(compatibilityFillerEvent(1));
+    harness.dependencies.activeRunIdOf = vi.fn(() => 'run-1');
+    const wired = wireRealSessionApplication(harness);
+
+    projectSessionSocketEvent(
+      { ...harness.context, data: runTerminalEnvelope('run-1', 'event-run-terminal-2', 2) },
+      harness.dependencies,
+    );
+    expect(harness.dependencies.setSessionPhase).not.toHaveBeenCalled();
+    expect(harness.dependencies.fetchMySessions).not.toHaveBeenCalled();
+
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+
+    expect(wired.store()?.highestContiguousSequence).toBe(2);
+    expect(harness.dependencies.setSessionPhase).toHaveBeenCalledWith('agent-1:session-1', 'done');
+    expect(harness.dependencies.fetchMySessions).toHaveBeenCalledTimes(1);
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledWith('agent-1', 'session-1');
+  });
+
+  it('performs zero effects for a same-sequence different-event conflict while the typed incident remains', () => {
+    const harness = makeHarness(runtimeFailureEnvelope('run-1', 'event-runtime-failure-conflict', 1));
+    harness.dependencies.activeRunIdOf = vi.fn(() => 'run-1');
+    const wired = wireRealSessionApplication(harness);
+
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+    expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledTimes(1);
+
+    const conflicting = runtimeFailureEnvelope('run-1', 'event-runtime-failure-conflicting', 1);
+    projectSessionSocketEvent({ ...harness.context, data: conflicting }, harness.dependencies);
+
+    expect(wired.store()?.consistencyIncident).toMatchObject({
+      sequence: 1,
+      existingEventId: 'event-runtime-failure-conflict',
+      incomingEventId: 'event-runtime-failure-conflicting',
+    });
+    expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledTimes(1);
+    expect(harness.dependencies.setSessionPhase).toHaveBeenCalledTimes(1);
+    expect(harness.dependencies.setTransportNotice).toHaveBeenCalledTimes(1);
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledTimes(1);
+  });
+
+  it('performs zero effects for a contiguous event ignored because the item was already terminal', () => {
+    // seq 1 completes the legacy-adapted assistant item (terminal effects fire
+    // once); seq 2 targets the same item with a new event id and lands only in
+    // ignoredEventIds — zero new effects.
+    const harness = makeHarness(legacyAssistantTerminalEnvelope('run-1', 'event-legacy-final-first', 1));
+    harness.dependencies.activeRunIdOf = vi.fn(() => 'run-1');
+    const wired = wireRealSessionApplication(harness);
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+    expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledTimes(1);
+
+    const ignoredEvent = {
+      ...legacyAssistantTerminalEnvelope('run-1', 'event-legacy-final-ignored', 2),
+      // Same durable item as seq 1 — only the event id differs.
+      item_id: 'assistant-item-event-legacy-final-first',
+    };
+    projectSessionSocketEvent({ ...harness.context, data: ignoredEvent }, harness.dependencies);
+
+    expect(wired.store()?.ignoredEventIds).toEqual(['event-legacy-final-ignored']);
+    expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledTimes(1);
+    expect(harness.dependencies.setSessionPhase).toHaveBeenCalledTimes(1);
+    expect(harness.dependencies.reconcileSessionTranscript).toHaveBeenCalledTimes(1);
+  });
+
+  it('performs zero effects for a contiguous event ignored because its ordinal is stale', () => {
+    // seq 1 is a non-terminal delta with ordinal 5; seq 2 regresses the
+    // ordinal on the same item and lands only in ignoredEventIds.
+    const firstEvent = {
+      ...legacyAssistantTerminalEnvelope('run-1', 'event-legacy-final-open', 1),
+      lifecycle: 'delta',
+      kind: 'assistant_text.delta',
+      payload_schema: 'hive.session.payload.assistant_text.delta.v2',
+      payload: { content: 'live progress bytes', parts: [], metadata: {}, legacy: true, phase: 'unknown' },
+      ordinal: 5,
+    };
+    const harness = makeHarness(firstEvent);
+    harness.dependencies.activeRunIdOf = vi.fn(() => 'run-1');
+    const wired = wireRealSessionApplication(harness);
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+    expect(harness.dependencies.markActiveRunTerminal).not.toHaveBeenCalled();
+
+    const ignoredEvent = {
+      ...firstEvent,
+      event_id: 'event-legacy-final-stale',
+      sequence: 2,
+      ordinal: 0,
+      payload: { content: 'stale ordinal bytes', parts: [], metadata: {}, legacy: true, phase: 'unknown' },
+    };
+    projectSessionSocketEvent({ ...harness.context, data: ignoredEvent }, harness.dependencies);
+
+    expect(wired.store()?.ignoredEventIds).toEqual(['event-legacy-final-stale']);
+    expect(harness.dependencies.markActiveRunTerminal).not.toHaveBeenCalled();
+    expect(harness.dependencies.setSessionPhase).not.toHaveBeenCalled();
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).not.toHaveBeenCalled();
+  });
+
+  it('never lets a drained run-1 terminal mutate an active run-2 while the matching run stays positive', () => {
+    const staleHarness = makeHarness(canonicalTextEvent(1, 'gap filler'));
+    staleHarness.dependencies.activeRunIdOf = vi.fn(() => 'run-2');
+    wireRealSessionApplication(staleHarness);
+    projectSessionSocketEvent(
+      { ...staleHarness.context, data: runTerminalEnvelope('run-1', 'event-stale-run-terminal-2', 2) },
+      staleHarness.dependencies,
+    );
+
+    projectSessionSocketEvent(staleHarness.context, staleHarness.dependencies);
+
+    expect(staleHarness.dependencies.setSessionPhase).not.toHaveBeenCalled();
+    expect(staleHarness.dependencies.syncActivePhase).not.toHaveBeenCalled();
+    expect(staleHarness.dependencies.fetchMySessions).not.toHaveBeenCalled();
+    // The drained stale terminal still reaches the identity-safe terminal
+    // registry call (production markActiveRunTerminalInRegistry records and
+    // rejects it without clearing run-2); no terminal EFFECT may fire.
+    expect(staleHarness.dependencies.markActiveRunTerminal).toHaveBeenCalledTimes(1);
+    expect(staleHarness.dependencies.markActiveRunTerminal).toHaveBeenCalledWith('agent-1:session-1', 'run-1');
+
+    const matchingHarness = makeHarness(canonicalTextEvent(1, 'gap filler'));
+    matchingHarness.dependencies.activeRunIdOf = vi.fn(() => 'run-1');
+    wireRealSessionApplication(matchingHarness);
+    projectSessionSocketEvent(
+      { ...matchingHarness.context, data: runTerminalEnvelope('run-1', 'event-matching-run-terminal-2', 2) },
+      matchingHarness.dependencies,
+    );
+
+    projectSessionSocketEvent(matchingHarness.context, matchingHarness.dependencies);
+
+    expect(matchingHarness.dependencies.setSessionPhase).toHaveBeenCalledWith('agent-1:session-1', 'done');
+    expect(matchingHarness.dependencies.syncActivePhase).toHaveBeenCalledWith('done');
+    expect(matchingHarness.dependencies.fetchMySessions).toHaveBeenCalledWith(true, 'agent-1');
+  });
+
+  it('runs drained compatibility terminal effects exactly once when a canonical carrier closes the gap (Codex finding C)', () => {
+    // A compatibility run_completed envelope buffers behind sequence 1; the
+    // canonical carrier at sequence 1 closes the gap and drains it.
+    const harness = makeHarness(canonicalTextEvent(1, 'gap filler'));
+    const bufferedTerminal = {
+      schema: 'hive.session_event_compatibility',
+      schema_version: 1,
+      compatibility_status: 'needs_reconciliation',
+      reason: 'legacy_generation',
+      event_id: 'legacy-run-completed-2',
+      sequence: 2,
+      legacy_event_type: 'run_completed',
+      payload: { content: '', metadata: {}, legacy_run_id: 'run-1' },
+    };
+    wireRealSessionApplication(harness);
+
+    projectSessionSocketEvent({ ...harness.context, data: bufferedTerminal }, harness.dependencies);
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).not.toHaveBeenCalled();
+    expect(harness.dependencies.fetchMySessions).not.toHaveBeenCalled();
+
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledWith('agent-1', 'session-1');
+    expect(harness.dependencies.fetchMySessions).toHaveBeenCalledTimes(1);
+
+    // At-least-once redelivery of the drained envelope: zero effects.
+    projectSessionSocketEvent({ ...harness.context, data: bufferedTerminal }, harness.dependencies);
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledTimes(1);
+    expect(harness.dependencies.fetchMySessions).toHaveBeenCalledTimes(1);
   });
 });

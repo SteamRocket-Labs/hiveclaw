@@ -4,6 +4,7 @@ import {
   createSessionEventStore,
   reduceSessionCompatibilityEvent,
   reduceSessionEvent,
+  type SessionCompatibilityEvent,
   type SessionEventV2,
 } from '../session-workbench/sessionEventStore';
 
@@ -55,7 +56,10 @@ describe('SessionEventStore', () => {
     expect(store.items['item-1']?.content).toBe('23');
 
     const duplicate = reduceSessionEvent(store, event(2));
-    expect(duplicate).toBe(store);
+    // Duplicate delivery exposes an empty transition truthfully (Codex
+    // REQUEST_CHANGES #3 D): identity churns but nothing was applied.
+    expect(duplicate.lastTransition.appliedEvents).toEqual([]);
+    expect(duplicate.items).toBe(store.items);
   });
 
   it('marks same-sequence different-event as stale instead of last-write-wins', () => {
@@ -200,5 +204,185 @@ describe('SessionEventStore', () => {
     expect(store.recoveryRequired).toBe('full_hydration');
     expect(store.bufferedEvents).toEqual({});
     expect(store.highestContiguousSequence).toBe(0);
+  });
+});
+
+describe('SessionEventStore transition application report (Codex REQUEST_CHANGES #3)', () => {
+  function compatibility(sequence: number, overrides: Partial<Record<string, unknown>> = {}): SessionCompatibilityEvent {
+    return {
+      schema: 'hive.session_event_compatibility',
+      schema_version: 1,
+      compatibility_status: 'needs_reconciliation',
+      event_id: `legacy-${sequence}`,
+      sequence,
+      reason: 'unmapped_legacy_kind',
+      ...overrides,
+    } as SessionCompatibilityEvent;
+  }
+
+  it('reports every canonical event applied to the contiguous projection per transition, in sequence order', () => {
+    let store = createSessionEventStore();
+    store = reduceSessionEvent(store, event(1));
+    expect(store.lastTransition.appliedEvents.map((applied) => applied.event_id)).toEqual(['event-1']);
+
+    // Buffered-only arrival: gap state advances, but nothing was applied.
+    store = reduceSessionEvent(store, event(3));
+    expect(store.projection.phase).toBe('gap_detected');
+    expect(store.lastTransition.appliedEvents).toEqual([]);
+    expect(store.lastTransition.compatibilityApplied).toBe(false);
+
+    // Gap close drains in sequence order: carrier first, then the buffered tail.
+    store = reduceSessionEvent(store, event(2));
+    expect(store.lastTransition.appliedEvents.map((applied) => applied.event_id)).toEqual(['event-2', 'event-3']);
+
+    const duplicate = reduceSessionEvent(store, event(2));
+    // Duplicate delivery reports an empty transition truthfully (finding D).
+    expect(duplicate.lastTransition.appliedEvents).toEqual([]);
+    expect(duplicate.lastTransition.appliedCompatibilityEvents).toEqual([]);
+  });
+
+  it('excludes consistency conflicts and recovery holds from the applied report', () => {
+    let store = reduceSessionEvent(createSessionEventStore(), event(1));
+    store = reduceSessionEvent(store, event(1, { event_id: 'conflict', payload: { content: 'other', phase: 'unknown' } }));
+    expect(store.consistencyIncident).toMatchObject({ sequence: 1, incomingEventId: 'conflict' });
+    expect(store.lastTransition.appliedEvents).toEqual([]);
+
+    const recovered = reduceSessionEvent(
+      reduceSessionEvent(
+        reduceSessionEvent(createSessionEventStore(0, 2), event(3)),
+        event(4),
+      ),
+      event(5),
+    );
+    expect(recovered.recoveryRequired).toBe('full_hydration');
+    expect(recovered.lastTransition.appliedEvents).toEqual([]);
+  });
+
+  it('excludes contiguous events ignored because the item was already terminal or the ordinal was stale', () => {
+    let store = createSessionEventStore();
+    store = reduceSessionEvent(store, event(1, {
+      kind: 'assistant_text.completed', lifecycle: 'completed',
+      payload_schema: 'hive.session.payload.assistant_text.completed.v2',
+    }));
+    store = reduceSessionEvent(store, event(2));
+    expect(store.ignoredEventIds).toEqual(['event-2']);
+    expect(store.lastTransition.appliedEvents).toEqual([]);
+
+    store = createSessionEventStore();
+    store = reduceSessionEvent(store, event(1));
+    store = reduceSessionEvent(store, event(2, { ordinal: 0 }));
+    expect(store.ignoredEventIds).toEqual(['event-2']);
+    expect(store.lastTransition.appliedEvents).toEqual([]);
+  });
+
+  it('reports the compatibility carrier and drained canonical events of one transition', () => {
+    let store = reduceSessionEvent(createSessionEventStore(), event(2));
+    expect(store.lastTransition.appliedEvents).toEqual([]);
+
+    store = reduceSessionCompatibilityEvent(store, compatibility(1));
+    expect(store.lastTransition.compatibilityApplied).toBe(true);
+    expect(store.lastTransition.appliedEvents.map((applied) => applied.event_id)).toEqual(['event-2']);
+
+    const bufferedCompatibility = reduceSessionCompatibilityEvent(createSessionEventStore(), compatibility(5));
+    expect(bufferedCompatibility.projection.phase).toBe('gap_detected');
+    expect(bufferedCompatibility.lastTransition.appliedEvents).toEqual([]);
+    expect(bufferedCompatibility.lastTransition.compatibilityApplied).toBe(false);
+  });
+
+  it('reports drained compatibility events in sequence order when a canonical carrier closes the gap (Codex finding C)', () => {
+    let store = reduceSessionCompatibilityEvent(createSessionEventStore(), compatibility(2));
+    store = reduceSessionCompatibilityEvent(store, compatibility(3));
+    expect(store.lastTransition.appliedCompatibilityEvents).toEqual([]);
+
+    store = reduceSessionEvent(store, event(1));
+    expect(store.lastTransition.appliedEvents.map((applied) => applied.event_id)).toEqual(['event-1']);
+    expect(store.lastTransition.compatibilityApplied).toBe(false);
+    expect(store.lastTransition.appliedCompatibilityEvents.map((applied) => applied.event_id))
+      .toEqual(['legacy-2', 'legacy-3']);
+    expect(store.highestContiguousSequence).toBe(3);
+    expect(store.bufferedCompatibilityEvents).toEqual({});
+    expect(store.compatibilityQuarantine.map((quarantined) => quarantined.eventId))
+      .toEqual(['legacy-2', 'legacy-3']);
+
+    // At-least-once redelivery of a drained compatibility envelope consumed it
+    // already: no second report, no projection change.
+    const duplicate = reduceSessionCompatibilityEvent(store, compatibility(2));
+    expect(duplicate.lastTransition.appliedCompatibilityEvents).toEqual([]);
+    expect(duplicate.lastTransition.appliedEvents).toEqual([]);
+    expect(duplicate.compatibilityQuarantine.map((quarantined) => quarantined.eventId))
+      .toEqual(['legacy-2', 'legacy-3']);
+  });
+
+  it('reports compatibility events drained behind a compatibility carrier without double-counting the carrier (Codex finding C)', () => {
+    let store = reduceSessionCompatibilityEvent(createSessionEventStore(), compatibility(2));
+    store = reduceSessionCompatibilityEvent(store, compatibility(1));
+    expect(store.lastTransition.compatibilityApplied).toBe(true);
+    // The carrier itself is delivered through its own projection path; only the
+    // drained buffered envelopes appear in appliedCompatibilityEvents.
+    expect(store.lastTransition.appliedCompatibilityEvents.map((applied) => applied.event_id))
+      .toEqual(['legacy-2']);
+    expect(store.lastTransition.appliedEvents).toEqual([]);
+    expect(store.highestContiguousSequence).toBe(2);
+  });
+});
+
+describe('SessionEventStore lastTransition truth for direct reducer callers (Codex REQUEST_CHANGES #3 D)', () => {
+  function compatibility(sequence: number): SessionCompatibilityEvent {
+    return {
+      schema: 'hive.session_event_compatibility',
+      schema_version: 1,
+      compatibility_status: 'needs_reconciliation',
+      event_id: `legacy-${sequence}`,
+      sequence,
+      reason: 'legacy_generation',
+    } as SessionCompatibilityEvent;
+  }
+
+  it('exposes an empty transition for a duplicate delivery instead of the prior applied report', () => {
+    let store = reduceSessionEvent(createSessionEventStore(), event(1));
+    expect(store.lastTransition.appliedEvents.map((applied) => applied.event_id)).toEqual(['event-1']);
+
+    const duplicate = reduceSessionEvent(store, event(1));
+    expect(duplicate.lastTransition.appliedEvents).toEqual([]);
+    expect(duplicate.lastTransition.compatibilityApplied).toBe(false);
+    expect(duplicate.items).toBe(store.items);
+    expect(duplicate.highestContiguousSequence).toBe(store.highestContiguousSequence);
+
+    const duplicateCompatibility = reduceSessionCompatibilityEvent(
+      reduceSessionCompatibilityEvent(store, compatibility(2)),
+      compatibility(2),
+    );
+    expect(duplicateCompatibility.lastTransition.appliedEvents).toEqual([]);
+    expect(duplicateCompatibility.lastTransition.appliedCompatibilityEvents).toEqual([]);
+    expect(duplicateCompatibility.lastTransition.compatibilityApplied).toBe(false);
+  });
+
+  it('exposes an empty transition for a late pre-cursor delivery instead of the prior applied report', () => {
+    let store = reduceSessionEvent(createSessionEventStore(5), event(6));
+    expect(store.lastTransition.appliedEvents.map((applied) => applied.event_id)).toEqual(['event-6']);
+
+    const late = reduceSessionEvent(store, event(3));
+    expect(late.lastTransition.appliedEvents).toEqual([]);
+    expect(late.lastTransition.compatibilityApplied).toBe(false);
+    expect(late.items).toBe(store.items);
+
+    const lateCompatibility = reduceSessionCompatibilityEvent(store, compatibility(2));
+    expect(lateCompatibility.lastTransition.appliedEvents).toEqual([]);
+    expect(lateCompatibility.lastTransition.appliedCompatibilityEvents).toEqual([]);
+    expect(lateCompatibility.lastTransition.compatibilityApplied).toBe(false);
+  });
+
+  it('exposes an empty transition while a recovery hold rejects every arrival', () => {
+    let store = createSessionEventStore(0, 1);
+    store = reduceSessionEvent(store, event(2));
+    store = reduceSessionEvent(store, event(3));
+    expect(store.recoveryRequired).toBe('full_hydration');
+    expect(store.lastTransition.appliedEvents).toEqual([]);
+
+    const held = reduceSessionEvent(store, event(7));
+    expect(held.recoveryRequired).toBe('full_hydration');
+    expect(held.lastTransition.appliedEvents).toEqual([]);
+    expect(held.lastTransition.compatibilityApplied).toBe(false);
+    expect(held.items).toBe(store.items);
   });
 });

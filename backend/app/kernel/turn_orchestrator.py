@@ -1610,9 +1610,12 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         provider_request_id = provider_attempt_state.get("provider_request_id")
                         llm_started_ms = int(provider_attempt_state["llm_started_ms"])
                         error_classification = classify_llm_error(exc)
-                        # Error text classification is display/metric metadata
-                        # only. A replay hard outcome requires the transport's
-                        # authoritative typed delivery state.
+                        # Error classification is status-first (typed
+                        # http_status, e.g. 402 owns the quota outcome) and
+                        # only then text-based; it drives surface/fallback
+                        # policy and fail evidence.  A replay hard outcome
+                        # still requires the transport's authoritative typed
+                        # delivery state, never natural-language text.
                         delivery_state = str(getattr(exc, "delivery_state", "unknown") or "unknown")
                         retry_safe = delivery_state == "rejected"
                         if request.model_request_fail is not None and provider_request_id is not None:

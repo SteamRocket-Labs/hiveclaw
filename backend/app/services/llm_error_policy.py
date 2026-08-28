@@ -27,7 +27,20 @@ class LLMErrorClassification:
 
 
 def classify_llm_error(exc: Exception) -> LLMErrorClassification:
-    """Classify model-provider failures without hiding account/config state."""
+    """Classify model-provider failures without hiding account/config state.
+
+    Status-first hard invariant: an authoritative typed ``http_status ==
+    402`` owns the quota/balance outcome by itself — no natural-language
+    body text is required, and no text parser may override it.  Text
+    classification below remains display/user-message policy for every
+    other case.
+    """
+    if getattr(exc, "http_status", None) == 402:
+        return LLMErrorClassification(
+            kind="quota_exhausted",
+            user_message="[LLM Error] AI 模型额度或余额不足，请联系管理员检查账户余额、模型额度或切换模型。",
+            requires_user_decision=True,
+        )
     msg = str(exc)
     lower = msg.lower()
 

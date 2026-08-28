@@ -4969,7 +4969,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="active-run-cell"');
     expect(markup).toContain('Working');
     expect(markup).toContain('Thinking');
-    expect(markup).toContain('Active run: running');
+    expect(markup).not.toContain('Active run:');
+    expect(markup).not.toContain('continuing this turn');
     expect(markup).not.toContain('thinking-indicator');
     expect(markup).toContain('btn-stop-generation');
   });

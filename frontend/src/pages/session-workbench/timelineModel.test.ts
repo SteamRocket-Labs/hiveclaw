@@ -74,6 +74,13 @@ describe('session workbench timeline model', () => {
     expect(run).toBeDefined();
     if (!run || run.kind !== 'active_run') return;
     expect(run.timeline.startedAt).toBe('2026-08-29T00:00:00Z');
+    expect(run.timeline.steps[0]).toMatchObject({
+      kind: 'reasoning',
+      title: 'Thinking',
+    });
+    expect(run.timeline.steps[0]?.summary).toBeUndefined();
+    expect(JSON.stringify(run.timeline)).not.toContain('Active run:');
+    expect(JSON.stringify(run.timeline)).not.toContain('continuing this turn');
   });
 
   it('renders a historical non-terminal turn as interrupted with a frozen duration when no run is active', () => {

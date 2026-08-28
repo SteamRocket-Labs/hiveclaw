@@ -207,6 +207,7 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
 }
 
 function RunStepRow({ step }: { step: RunStepSnapshot }) {
+  const { t } = useTranslation();
   const running = step.status === 'running';
   const exec = asExecDetails(step.details, step.kind);
   const [expanded, setExpanded] = React.useState(
@@ -237,7 +238,7 @@ function RunStepRow({ step }: { step: RunStepSnapshot }) {
           ) : (
             <span className="run-step-caret" />
           )}
-          <span className="run-step-title">{step.title}</span>
+          <span className="run-step-title">{localizedToolTitle(step, t)}</span>
           {step.summary && <span className="run-step-summary">{step.summary}</span>}
         </button>
         {expanded && <RunStepDetails step={step} />}
@@ -288,6 +289,8 @@ function RunCompactionBoundary({ step }: { step: RunStepSnapshot }) {
 }
 
 const TOOL_TITLE_KEYS: Record<string, [string, string]> = {
+  Thinking: ['agent.chat.phase.thinking', 'Thinking'],
+  Working: ['agent.chat.disclosure.working', 'Working'],
   'Loading tools': ['agent.chat.disclosure.toolTitle.loading', 'Loading tools'],
   'Read file': ['agent.chat.disclosure.toolTitle.readFile', 'Read file'],
   'Write file': ['agent.chat.disclosure.toolTitle.writeFile', 'Write file'],

@@ -1794,11 +1794,6 @@ function buildPendingRunCell(
   if (!input.isWaiting && !input.isStreaming && !activeRunStatus && !phase) return null;
   const status: RunTimelineSnapshot['status'] = activeRunStatus === 'failed' ? 'failed' : 'running';
   const title = phase === 'responding' || input.isStreaming ? 'Working' : 'Thinking';
-  const summary = activeRunStatus
-    ? `Active run: ${activeRunStatus}`
-    : input.isStreaming
-      ? 'The assistant is streaming this turn.'
-      : 'The assistant is continuing this turn.';
   const latestInputIndex = latestUserMessageIndex(input.messages);
   const startedAt = latestInputIndex >= 0 ? input.messages[latestInputIndex]?.timestamp : undefined;
   return {
@@ -1816,7 +1811,6 @@ function buildPendingRunCell(
           kind: 'reasoning',
           title,
           status,
-          summary,
           visibility: 'visible',
         },
       ],

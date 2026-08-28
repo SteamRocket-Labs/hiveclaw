@@ -77,14 +77,17 @@ def test_every_completion_outbox_task_type_is_db_constraint_legal() -> None:
 
 
 def test_completion_producer_converges_at_the_shared_terminal_seam() -> None:
-    """The normal terminal producer must be atomic with the terminal write.
+    """The a2a_continuation normal producer must be atomic with the terminal write.
 
     Every executable-chat finalizer branch converges on
-    ``_apply_terminal_task_update_and_settle``; the completion-outbox producer
-    therefore lives exactly once, inside that seam, so no finalizer branch can
+    ``_apply_terminal_task_update_and_settle``; the shared completion-outbox
+    producer's only direct same-transaction caller in web-chat finalization
+    is that seam's ``a2a_continuation`` branch, so no finalizer branch can
     commit a terminal ``a2a_continuation`` without its durable intent. The
-    sweep only re-enters the SAME shared producer as idempotent crash/legacy
-    recovery, and metadata can never select the parent-agent route.
+    sweep re-enters the SAME shared producer only as idempotent crash/legacy
+    recovery. Metadata can never select the parent-agent route for any task
+    type; the legacy target-session/owner metadata fallback for existing
+    non-a2a types is unchanged and out of this contract's scope.
     """
 
     import ast

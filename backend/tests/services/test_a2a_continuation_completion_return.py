@@ -6,11 +6,13 @@ exactly one durable parent completion notification **in the same transaction
 as the terminal RuntimeTask write** (the shared web-chat terminal seam
 ``_apply_terminal_task_update_and_settle``); the reconcile sweep is only the
 idempotent crash/legacy recovery lane over the same shared producer. Routing
-authority is durable state only: non-A2A types route by
-``task.parent_agent_id``; ``a2a_continuation`` derives the return route from
-the durable child ChatSession bound by tenant + ``task.parent_session_id`` +
-``task.parent_agent_id``. Metadata never selects routing, and an ordinary
-top-level ``web_chat_turn`` stays ineligible and can never self-notify.
+authority: for ``a2a_continuation`` the return route and owner come entirely
+from the durable child ChatSession binding (tenant +
+``task.parent_session_id`` + ``task.parent_agent_id``), validated against the
+parent ChatSession — metadata plays no part in that path; for existing
+non-A2A types parent-agent authority is ``task.parent_agent_id`` while the
+legacy target-session/owner metadata fallback remains. An ordinary top-level
+``web_chat_turn`` stays ineligible and can never self-notify.
 """
 
 from __future__ import annotations
@@ -175,7 +177,8 @@ def _continuation_task(
     metadata = {
         "user_id": str(user_id),
         "session_id": str(child_session_id),
-        # Evidence-only hints: routing authority is durable state, never these.
+        # Evidence-only hints: for a2a_continuation the routing authority is
+        # durable state, never these metadata values.
         "parent_session_id": str(parent_session_id),
         "parent_agent_id": str(parent_agent_id),
         "source": "agent_session_mailbox",
@@ -458,10 +461,10 @@ async def test_crash_shaped_missing_intent_is_repaired_once_by_sweep(owner_sessi
 
 @pytest.mark.usefixtures("migrated_pg_url")
 async def test_conflicting_metadata_cannot_reroute_a2a_continuation(owner_sessionmaker):
-    """Metadata never selects routing: even when the task metadata points at a
-    real decoy agent/session, the return route is derived from the durable
-    child ChatSession binding (tenant + task.parent_session_id +
-    task.parent_agent_id)."""
+    """For ``a2a_continuation``, metadata never selects routing: even when the
+    task metadata points at a real decoy agent/session, the return route is
+    derived from the durable child ChatSession binding (tenant +
+    task.parent_session_id + task.parent_agent_id)."""
 
     await _clear_outbox(owner_sessionmaker)
     (
@@ -507,8 +510,10 @@ async def test_conflicting_metadata_cannot_reroute_a2a_continuation(owner_sessio
 
 @pytest.mark.usefixtures("migrated_pg_url")
 async def test_non_a2a_metadata_cannot_override_task_parent_agent_id(owner_sessionmaker):
-    """Existing types route by ``task.parent_agent_id`` only. A conflicting
-    ``metadata.parent_agent_id`` must neither reroute nor wedge the return."""
+    """For existing types, parent-agent authority is ``task.parent_agent_id``
+    only (the legacy target-session/owner metadata fallback is unchanged). A
+    conflicting ``metadata.parent_agent_id`` must neither reroute nor wedge
+    the return."""
 
     await _clear_outbox(owner_sessionmaker)
     (

@@ -717,8 +717,13 @@ async def continue_agent_session_from_mailbox(
             # the reserved structured parent binding.
             **{key: value for key, value in (extra_metadata or {}).items() if key not in _RESERVED_PARENT_ROUTE_KEYS},
             # Reserved structured parent route, stamped from durable session
-            # fields. It always wins over caller-supplied extra_metadata; an
-            # absent durable binding (None) never clobbers a caller value.
+            # fields. Caller-supplied reserved route keys are discarded by the
+            # filter above and can never reroute the binding: a non-None
+            # durable value is always stamped over anything the caller sent;
+            # if the durable value is None and the caller supplied that
+            # reserved key, the key is omitted entirely so the caller value
+            # cannot survive; if the caller did not supply it, the current
+            # construction may retain an explicit None entry.
             **{
                 key: value
                 for key, value in {

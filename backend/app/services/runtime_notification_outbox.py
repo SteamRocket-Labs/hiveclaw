@@ -310,15 +310,22 @@ async def _resolve_completion_route(
     metadata: dict[str, Any],
     attempted_at: datetime,
 ) -> _CompletionRoute | None:
-    """Resolve (target session, parent agent, owner) from durable authority only.
+    """Resolve (target session, parent agent, owner) for a terminal task.
 
-    Metadata never selects routing. Existing types route by
-    ``task.parent_agent_id``. An ``a2a_continuation`` run is owned by the child
-    agent (``task.parent_agent_id`` == child agent on the child session), so
-    its return route is derived from the durable child ChatSession bound by
-    tenant + ``task.parent_session_id`` + ``task.parent_agent_id``, then
-    validated against the parent ChatSession and its owner. Every failure is a
-    typed, retryable hold on the task row; returns None after holding.
+    Routing authority differs by task type. For ``a2a_continuation``, the
+    return route and owner come entirely from durable bindings: the run is
+    owned by the child agent (``task.parent_agent_id`` == child agent on the
+    child session), so the route is derived from the durable child
+    ChatSession bound by tenant + ``task.parent_session_id`` +
+    ``task.parent_agent_id``, then validated against the parent ChatSession
+    and its owner; metadata plays no part in that path. For existing
+    (non-``a2a_continuation``) types, parent-agent authority is
+    ``task.parent_agent_id`` (metadata can never override it), while the
+    legacy target-session/owner metadata fallback remains: the target
+    session may still come from ``metadata.parent_session_id`` and the
+    owner from ``metadata.user_id``/``metadata.owner_id`` before falling
+    back to the task row and the parent session. Every failure is a typed,
+    retryable hold on the task row; returns None after holding.
     """
 
     if task.task_type == "a2a_continuation":
@@ -429,14 +436,20 @@ async def produce_terminal_task_completion_notification(
     attempted_at: datetime,
     reconciled: bool,
 ) -> uuid.UUID | None:
-    """Shared durable completion producer for a terminal RuntimeTask.
+    """Shared durable completion producer for an eligible terminal RuntimeTask.
 
-    Normal producers call this inside the SAME transaction as the terminal
-    RuntimeTask write, so a rollback undoes both. The reconcile sweep re-enters
-    it as the idempotent crash/legacy recovery lane with a lower payload rank
-    (10) so an authoritative normal-path payload (100) always wins the CAS.
-    Returns the outbox id, or None when the task is ineligible or a typed,
-    retryable hold was recorded on the task row.
+    The current direct same-transaction normal caller is the
+    ``a2a_continuation`` branch of the web-chat terminal seam
+    (``web_chat_runtime._apply_terminal_task_update_and_settle``): the
+    enqueue happens inside the SAME transaction as the terminal RuntimeTask
+    write, so a rollback undoes both. The reconcile sweep re-enters this
+    helper as the idempotent crash/legacy recovery lane for eligible
+    terminal rows, with a lower payload rank (10) so an authoritative
+    normal-path payload (100) always wins the CAS. Other task types keep
+    their own producers (e.g. ``team_member``); no claim is made here about
+    every task type using this helper. Returns the outbox id, or None when
+    the task is ineligible or a typed, retryable hold was recorded on the
+    task row.
     """
 
     if not _completion_outbox_eligible(task):
@@ -911,11 +924,16 @@ class RuntimeNotificationOutboxService:
     async def reconcile_terminal_tasks_once(self, *, limit: int = 100) -> int:
         """Idempotent crash/legacy recovery for a missing completion intent.
 
-        Normal producers enqueue in the same transaction as the terminal
-        RuntimeTask write. This sweep is ONLY the recovery atom: it repairs
-        crash-shaped or legacy terminal rows by re-entering the same shared
-        producer (``produce_terminal_task_completion_notification``) with a
-        lower payload rank, and stays idempotent across replays.
+        This sweep is ONLY the recovery lane for eligible terminal rows: it
+        repairs crash-shaped or legacy terminal rows by re-entering the same
+        shared producer (``produce_terminal_task_completion_notification``)
+        with a lower payload rank, and stays idempotent across replays. The
+        A2A continuation normal producer is atomic instead — it enqueues
+        inside the same transaction as the terminal RuntimeTask write at the
+        web-chat terminal seam — so a healthy ``a2a_continuation`` run leaves
+        this sweep nothing to repair. Other task types may keep their own
+        normal producers; this docstring does not claim every normal producer
+        uses the shared helper.
         """
 
         attempted_at = datetime.now(UTC)

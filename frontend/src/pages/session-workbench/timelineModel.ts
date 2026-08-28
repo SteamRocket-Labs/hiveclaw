@@ -1824,9 +1824,10 @@ function keepLatestProcessRunActive(
   cells: ThreadTimelineCell[],
   input: BuildThreadTimelineInput,
   activeRunStatus: string | null,
+  terminalDeliveryPending: boolean,
 ): boolean {
   const phase = liveRunPhase(input);
-  if (!input.isWaiting && !input.isStreaming && !activeRunStatus && !phase) return false;
+  if (!input.isWaiting && !input.isStreaming && !activeRunStatus && !phase && !terminalDeliveryPending) return false;
   const index = cells.length - 1;
   const cell = cells[index];
   if (!cell || cell.kind !== 'active_run' || cell.timeline.answerMessageId) return false;
@@ -2033,7 +2034,16 @@ export function createThreadTimelineCache(): ThreadTimelineCache {
 export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTimelineModel {
   const cells = buildCells(input.messages);
   const activeRunStatus = mainTurnActiveRunStatus(input, cells);
-  const retainedProcessRun = keepLatestProcessRunActive(cells, input, activeRunStatus);
+  const runtimePhaseValue = String(input.runtimePhase || '').trim();
+  const terminalDeliveryPending = runtimePhaseValue === 'done'
+    && latestUserMessageIndex(input.messages) >= 0
+    && !hasAssistantAnswerAfterLatestUser(input.messages);
+  const retainedProcessRun = keepLatestProcessRunActive(cells, input, activeRunStatus, terminalDeliveryPending);
+  const unresolvedUserTurn = cells.at(-1)?.kind === 'user_turn'
+    && !input.isWaiting
+    && !input.isStreaming
+    && !activeRunStatus
+    && (!runtimePhaseValue || runtimePhaseValue === 'idle');
   const pendingRunCell = buildPendingRunCell(input, activeRunStatus);
   if (pendingRunCell && !retainedProcessRun && !hasOpenRunCell(cells)) {
     cells.push(pendingRunCell);
@@ -2053,14 +2063,13 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
   const sessionWorkbench = input.sessionWorkbench && !Array.isArray(input.sessionWorkbench) ? input.sessionWorkbench : null;
   const contextWindow = getContextWindowProjection(sessionWorkbench);
   const runtimeSummary = input.runtimeSummary || null;
-  const terminalDeliveryPending = String(input.runtimePhase || '').trim() === 'done'
-    && latestUserMessageIndex(input.messages) >= 0
-    && !hasAssistantAnswerAfterLatestUser(input.messages);
   const headerStatus = livePhase
     ? livePhaseHeaderStatus(livePhase)
     : terminalDeliveryPending
       ? 'running'
-      : getHeaderStatus(cells, input.isWaiting, input.isStreaming, activeRunStatus);
+      : unresolvedUserTurn
+        ? 'running'
+        : getHeaderStatus(cells, input.isWaiting, input.isStreaming, activeRunStatus);
 
   return {
     cells,

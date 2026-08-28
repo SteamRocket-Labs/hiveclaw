@@ -1684,6 +1684,70 @@ describe('RuntimePhase in the thread projection (§3 seam 3)', () => {
     }).header.status).toBe('complete');
   });
 
+  it('presents an accepted user turn as running before the run registry catches up', () => {
+    const model = buildThreadTimeline({
+      messages: [{
+        id: 'accepted-input-1',
+        role: 'user',
+        content: 'Accepted prompt bytes.',
+      }] as AgentChatMessage[],
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+    });
+
+    expect(model.header.status).toBe('running');
+    expect(model.cells.at(-1)).toMatchObject({ kind: 'user_turn', id: 'accepted-input-1' });
+    const rightPanel = buildSessionRightPanelModel({
+      messages: [{ id: 'accepted-input-1', role: 'user', content: 'Accepted prompt bytes.' }],
+      activeSession: { id: 'session-1', title: 'Accepted input' },
+      activeRunStatus: null,
+      presentationStatus: model.header.status,
+    });
+    expect(rightPanel.runtimeConsole.summary).toMatchObject({
+      state: 'running',
+      runningCount: 1,
+      waitingCount: 0,
+    });
+  });
+
+  it('keeps a consumed assistant snapshot visible while the typed terminal answer catches up', () => {
+    const marker = 'SESSION-PHASE-FIX-PASS1-20260828-2358-R7';
+    const model = buildThreadTimeline({
+      messages: [
+        { id: 'accepted-input-1', role: 'user', content: 'Return the marker.' },
+        {
+          id: 'assistant-text-1',
+          role: 'assistant',
+          content: marker,
+          sessionItem: {
+            id: 'assistant-text-1',
+            kind: 'assistant_text',
+            lifecycle: 'completed',
+            terminal: true,
+          } as AgentChatMessage['sessionItem'],
+        },
+      ],
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+      runtimePhase: 'done',
+    });
+
+    const run = model.cells.find((cell) => cell.kind === 'active_run');
+    expect(model.header.status).toBe('running');
+    expect(run).toEqual(expect.objectContaining({
+      kind: 'active_run',
+      timeline: expect.objectContaining({
+        status: 'running',
+        steps: expect.arrayContaining([
+          expect.objectContaining({ kind: 'prose', details: marker }),
+        ]),
+      }),
+    }));
+    expect(model.cells.some((cell) => cell.kind === 'assistant_final')).toBe(false);
+  });
+
   it('includes the phase in the cache signature so live transitions invalidate', () => {
     const cache = {
       previousInputSignature: null,

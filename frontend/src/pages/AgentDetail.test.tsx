@@ -242,6 +242,16 @@ describe('AgentDetail realtime refresh contract', () => {
     expect(sectionSource).not.toContain('load-older-messages');
   });
 
+  it('publishes the authoritative hydrated runtime phase to the visible Session surface', async () => {
+    const source = await readSource('./AgentDetail.tsx');
+    const publishStart = source.indexOf('const publishCanonicalSnapshot =');
+    const publishEnd = source.indexOf('const canonicalHydration =', publishStart);
+    const publisher = source.slice(publishStart, publishEnd);
+
+    expect(publisher).toContain('sessionUiStateRef.current[runtimeKey] = projected.ui;');
+    expect(publisher).toContain('syncActivePhase(projected.ui.phase);');
+  });
+
   it('opens live transport from the first safe newest suffix while older history keeps recovering', async () => {
     const source = await readSource('./AgentDetail.tsx');
 

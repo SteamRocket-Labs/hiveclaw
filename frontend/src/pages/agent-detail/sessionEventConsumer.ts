@@ -548,6 +548,7 @@ export function hydrateSessionTranscriptEvents(
 } {
   let store: SessionEventStore | undefined;
   let compatibilityReplay = createEmptyTranscriptReplayState();
+  let uiReplay = createEmptyTranscriptReplayState();
   const timeline = createCompatibilityMessageTimeline();
 
   const projectCompatibility = (projectionEvent: ChatTranscriptEventPayload) => {
@@ -565,6 +566,28 @@ export function hydrateSessionTranscriptEvents(
     // times. Raw non-envelope legacy frames keep their direct projection
     // contract (they carry no application ledger).
     if (consumed.sessionEnvelope && !consumed.application) continue;
+
+    const uiEvents: ChatTranscriptEventPayload[] = [];
+    if (!consumed.sessionEnvelope) {
+      uiEvents.push(consumed.projectionEvent);
+    } else {
+      if (!consumed.canonical && consumed.application?.compatibilityApplied) {
+        uiEvents.push(consumed.projectionEvent);
+      }
+      for (const canonical of consumed.application?.canonicalEvents || []) {
+        const projection = canonicalRuntimeProjectionEvent(canonical);
+        if (projection) uiEvents.push(projection);
+      }
+      for (const drained of consumed.application?.compatibilityEvents || []) {
+        uiEvents.push(compatibilityProjectionEvent(drained));
+      }
+    }
+    for (const uiEvent of uiEvents.sort(
+      (left, right) => Number(left.sequence ?? 0) - Number(right.sequence ?? 0),
+    )) {
+      uiReplay = applyTranscriptEvent(uiReplay, uiEvent);
+    }
+
     if (!consumed.canonical) {
       // Total ascending event sequence: the compatibility carrier (lowest
       // sequence of the transition) projects before its drained buffered
@@ -588,8 +611,44 @@ export function hydrateSessionTranscriptEvents(
       compatibilityMessages: compatibilityReplay.messages,
       timeline,
     }),
-    ui: compatibilityReplay.ui,
+    ui: uiReplay.ui,
     compatibilityTimeline: timeline,
+  };
+}
+
+/**
+ * Reduce only typed lifecycle facts that own the whole run's visible phase.
+ * Native assistant items may complete in the middle of a run, so they never
+ * settle the Session. Legacy-adapted assistant terminals remain the explicit
+ * compatibility exception because that path has no later run terminal item.
+ */
+function canonicalRuntimeProjectionEvent(
+  event: SessionEventV2,
+): ChatTranscriptEventPayload | null {
+  let eventType: string | null = null;
+  if (event.item_kind === 'run') {
+    eventType = event.kind;
+  } else if (
+    event.item_kind === 'runtime_failure'
+    && event.lifecycle === 'recorded'
+    && event.scope.level === 'run'
+  ) {
+    eventType = 'error';
+  } else if (isLegacyAssistantTerminalItem(event.item_kind, event.lifecycle, event.payload)) {
+    eventType = event.lifecycle === 'completed'
+      ? 'assistant_message'
+      : event.lifecycle === 'failed'
+        ? 'error'
+        : 'run_cancelled';
+  }
+  if (!eventType) return null;
+  return {
+    id: event.event_id,
+    sequence: event.sequence,
+    event_type: eventType,
+    run_id: event.scope.level === 'run' || event.scope.level === 'round'
+      ? event.scope.run_id
+      : null,
   };
 }
 

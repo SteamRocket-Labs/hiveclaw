@@ -653,8 +653,8 @@ function AgentDetailInner() {
                 sessionCompatibilityTimelinesRef.current[runtimeKey] = projected.compatibilityTimeline;
                 sessionVisibilityBoundariesRef.current[runtimeKey] = projected.visibilityBoundary;
                 sessionUiStateRef.current[runtimeKey] = projected.ui;
-                const preParsed = projected.messages;
-                const activeProjection = projected.activeProjection;
+                syncActivePhase(projected.ui.phase);
+                const { messages: preParsed, activeProjection } = projected;
                 if (activeProjection.checkpointEventId) {
                     if (activeProjection.draftContent) setChatInput(activeProjection.draftContent);
                     if (activeProjection.shouldScrollToProjectionTail && !publishedCanonicalSnapshot) {

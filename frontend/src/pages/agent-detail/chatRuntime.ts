@@ -390,6 +390,8 @@ export function reduceRuntimePhase(current: RuntimePhase, event: RuntimePhaseEve
     case 'run_queued':
       return 'queued';
     case 'run_started':
+    case 'run_starting':
+    case 'run_running':
       return 'starting';
     case 'thinking':
       return 'thinking';
@@ -411,6 +413,7 @@ export function reduceRuntimePhase(current: RuntimePhase, event: RuntimePhaseEve
       return 'done';
     case 'error':
     case 'quota_exceeded':
+    case 'run_failed':
       return 'failed';
     case 'run_cancelled':
       return 'cancelled';

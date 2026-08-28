@@ -53,6 +53,36 @@ function canonicalEvent(options: {
   };
 }
 
+function canonicalRunEvent(
+  sequence: number,
+  lifecycle: 'queued' | 'cancelled',
+): SessionEventV2 {
+  return {
+    schema: 'hive.session_event',
+    schema_version: 2,
+    event_id: `run-event-${sequence}`,
+    sequence,
+    tenant_id: 'tenant-1',
+    scope: {
+      level: 'run',
+      session_id: 'session-1',
+      thread_id: 'session-1',
+      turn_id: 'turn-1',
+      run_id: 'run-1',
+    },
+    item_id: 'run-1',
+    item_kind: 'run',
+    kind: `run.${lifecycle}`,
+    lifecycle,
+    payload_schema: `hive.session.payload.run.${lifecycle}.v2`,
+    actor: { type: 'runtime' },
+    visibility: { audience: 'direct_user' },
+    payload: {},
+    occurred_at: '2026-07-18T02:00:00Z',
+    persisted_at: '2026-07-18T02:00:00Z',
+  };
+}
+
 const session: ChatSession = {
   id: 'session-1',
   agent_id: 'agent-1',
@@ -126,6 +156,31 @@ describe('loadCanonicalSessionTranscript', () => {
       'The newest durable progress is visible now.',
       'Live progress continues without a reload.',
     ]);
+  });
+
+  it('restores a copied canonical run cancellation as interrupted instead of fabricating a live run', () => {
+    const projected = projectCanonicalTranscriptSnapshot({
+      existing: [],
+      snapshot: [
+        canonicalEvent({
+          sequence: 1,
+          itemId: 'input-1',
+          itemKind: 'human_input',
+          lifecycle: 'accepted',
+          content: 'Continue this work.',
+        }) as unknown as ChatTranscriptEventPayload,
+        canonicalRunEvent(2, 'queued') as unknown as ChatTranscriptEventPayload,
+        canonicalRunEvent(3, 'cancelled') as unknown as ChatTranscriptEventPayload,
+      ],
+      session,
+      parseMessage: (message: AgentChatMessage) => message,
+    });
+
+    expect(projected.ui).toEqual({
+      phase: 'cancelled',
+      isWaiting: false,
+      isStreaming: false,
+    });
   });
 
   it('still detects a real gap inside a newest-page suffix', () => {

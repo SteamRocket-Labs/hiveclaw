@@ -544,6 +544,56 @@ async def test_a2a_delegation_child_continuation_starts_dedicated_continuation_r
 
 
 @pytest.mark.asyncio
+async def test_a2a_continuation_admission_extra_metadata_cannot_override_reserved_route(monkeypatch):
+    """Caller-supplied extra_metadata must never reroute the reserved parent
+    binding: admission stamps the structured route from durable session fields
+    and that reserved route always wins."""
+
+    import app.services.agent_session_continuation as svc
+
+    db = _DB()
+    parent_agent_id = uuid4()
+    session = _agent_session(state="open", session_kind="delegation_run", runtime_source="delegation")
+    session.peer_agent_id = parent_agent_id
+    session.source_channel = "agent"
+    agent = SimpleNamespace(id=session.agent_id, tenant_id=session.tenant_id, name="Worker B")
+    user = SimpleNamespace(id=session.user_id)
+    captured: dict = {}
+
+    async def fake_append(**kwargs):
+        return SimpleNamespace(event_id=uuid4())
+
+    async def fake_find_active(**kwargs):
+        return None
+
+    async def fake_start(**kwargs):
+        captured["start"] = kwargs
+        return {"run_id": "continuation-run-2", "status": "pending"}
+
+    monkeypatch.setattr(svc, "append_session_event", fake_append)
+    monkeypatch.setattr(svc, "_find_active_run", fake_find_active)
+    monkeypatch.setattr(svc, "start_web_chat_run", fake_start)
+
+    result = await svc.continue_agent_session_from_mailbox(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        message="follow up on the computation",
+        parent_session_id=str(session.parent_session_id),
+        extra_metadata={
+            "parent_agent_id": str(uuid4()),
+            "parent_session_id": str(uuid4()),
+        },
+    )
+
+    assert result["status"] == "started"
+    stamped = captured["start"]["extra_metadata"]
+    assert stamped["parent_agent_id"] == str(parent_agent_id)
+    assert stamped["parent_session_id"] == str(session.parent_session_id)
+
+
+@pytest.mark.asyncio
 async def test_ordinary_web_session_continuation_stays_plain_web_chat_turn(monkeypatch):
     """An ordinary top-level web chat session must never become outbox-eligible."""
 

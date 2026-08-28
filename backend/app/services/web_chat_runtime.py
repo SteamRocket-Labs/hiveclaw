@@ -712,6 +712,22 @@ async def _apply_terminal_task_update_and_settle(
         terminal_source=terminal_source,
         root_reason_code=f"web_chat_terminal:{terminal_source}",
     )
+    if str(locked_task.task_type or "") == A2A_CONTINUATION_TASK_TYPE:
+        # Durable completion return is produced in the SAME transaction as the
+        # terminal RuntimeTask write: a rollback undoes both, and the reconcile
+        # sweep remains only the idempotent crash/legacy recovery lane over the
+        # same shared producer. Other executable-chat types either stay
+        # outbox-ineligible (web_chat_turn never self-notifies) or keep their
+        # own richer normal producers (team_member), so the seam fires only
+        # for a2a_continuation.
+        from app.services.runtime_notification_outbox import produce_terminal_task_completion_notification
+
+        await produce_terminal_task_completion_notification(
+            db,
+            locked_task,
+            attempted_at=datetime.now(timezone.utc),
+            reconciled=False,
+        )
     return locked_task
 
 

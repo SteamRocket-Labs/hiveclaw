@@ -9,16 +9,21 @@ executable-chat successor run. Typing that successor ``web_chat_turn`` made it
 permanently invisible to the completion-outbox recovery predicate, so the
 parent was never woken (production defect DAY1-A2A-CONT-RETURN-001). The
 dedicated ``a2a_continuation`` type executes through the same web-chat lane
-but stays completion-outbox eligible. This migration therefore rewrites three
-contracts atomically:
+but stays completion-outbox eligible. This migration rewrites four contracts.
+The two check constraints and the active-run unique index change inside the
+migration transaction; the outbox pending index is replaced online in an
+autocommit block via concurrent replacement-rename (retry-safe) and is
+deliberately NOT atomic with the rest — PostgreSQL concurrent index DDL
+cannot run inside a transaction:
 
 1. ``ck_runtime_tasks_task_type`` admits the new type.
 2. ``ck_runtime_notification_outbox_source_kind`` admits the matching
    completion-outbox source kind.
-3. ``ix_runtime_tasks_completion_outbox_pending`` covers it (online,
-   concurrent replacement-rename, retry-safe).
-4. ``uq_runtime_tasks_active_web_chat_session`` guards one active turn per
+3. ``uq_runtime_tasks_active_web_chat_session`` guards one active turn per
    session across all five executable-chat types.
+4. ``ix_runtime_tasks_completion_outbox_pending`` covers the new type
+   (online, concurrent replacement-rename in an autocommit block,
+   retry-safe).
 
 No data backfill is required: the type is only written by new code paths, and
 historical ``web_chat_turn`` continuation rows keep their existing semantics.

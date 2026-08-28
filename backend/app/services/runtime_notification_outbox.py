@@ -27,6 +27,8 @@ from app.models.runtime_result import (
 from app.models.runtime_task import (
     COMPLETION_OUTBOX_PENDING_SQL,
     COMPLETION_OUTBOX_RETRY_SECONDS,
+    COMPLETION_OUTBOX_TASK_TYPES,
+    COMPLETION_OUTBOX_TERMINAL_STATUSES,
     RuntimeTask,
 )
 from app.models.user import User
@@ -284,6 +286,207 @@ def _explicit_root_runtime_task_id(notification: CompletionNotification) -> uuid
 
 def _routing_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in metadata.items() if key in _ROUTING_METADATA_KEYS}
+
+
+_COMPLETION_SOURCE_KIND_BY_TASK_TYPE = {
+    "team_member": "agent_team",
+    "delegation": "a2a_delegation",
+    "a2a_delegation": "a2a_delegation",
+    "approval_execution": "approval",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _CompletionRoute:
+    target_session_id: uuid.UUID
+    parent_agent_id: uuid.UUID
+    owner_id: uuid.UUID
+
+
+async def _resolve_completion_route(
+    db: AsyncSession,
+    task: RuntimeTask,
+    *,
+    metadata: dict[str, Any],
+    attempted_at: datetime,
+) -> _CompletionRoute | None:
+    """Resolve (target session, parent agent, owner) from durable authority only.
+
+    Metadata never selects routing. Existing types route by
+    ``task.parent_agent_id``. An ``a2a_continuation`` run is owned by the child
+    agent (``task.parent_agent_id`` == child agent on the child session), so
+    its return route is derived from the durable child ChatSession bound by
+    tenant + ``task.parent_session_id`` + ``task.parent_agent_id``, then
+    validated against the parent ChatSession and its owner. Every failure is a
+    typed, retryable hold on the task row; returns None after holding.
+    """
+
+    if task.task_type == "a2a_continuation":
+        try:
+            run_session_id = _uuid(task.parent_session_id, field="parent_session_id")
+        except ValueError:
+            _hold_runtime_task_completion_outbox(
+                task,
+                reason="parent_session_id_invalid",
+                attempted_at=attempted_at,
+            )
+            return None
+        child_session = (
+            await db.execute(
+                select(ChatSession).where(
+                    ChatSession.id == run_session_id,
+                    ChatSession.tenant_id == task.tenant_id,
+                    ChatSession.agent_id == task.parent_agent_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if child_session is None:
+            _hold_runtime_task_completion_outbox(
+                task,
+                reason="child_session_not_found",
+                attempted_at=attempted_at,
+            )
+            return None
+        target_value: Any = child_session.parent_session_id
+        parent_agent_value: Any = child_session.peer_agent_id
+    else:
+        target_value = (
+            task.child_session_id
+            if task.task_type == "trigger"
+            else metadata.get("parent_session_id") or task.parent_session_id
+        )
+        parent_agent_value = task.parent_agent_id
+    try:
+        target_session_id = _uuid(target_value, field="parent_session_id")
+    except ValueError:
+        _hold_runtime_task_completion_outbox(
+            task,
+            reason="parent_session_id_invalid",
+            attempted_at=attempted_at,
+        )
+        return None
+    try:
+        parent_agent_id = _uuid(parent_agent_value, field="parent_agent_id")
+    except ValueError:
+        _hold_runtime_task_completion_outbox(
+            task,
+            reason="parent_agent_id_invalid",
+            attempted_at=attempted_at,
+        )
+        return None
+    parent_session = (
+        await db.execute(
+            select(ChatSession).where(
+                ChatSession.id == target_session_id,
+                ChatSession.agent_id == parent_agent_id,
+                ChatSession.tenant_id == task.tenant_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if parent_session is None:
+        _hold_runtime_task_completion_outbox(
+            task,
+            reason="parent_session_not_found",
+            attempted_at=attempted_at,
+        )
+        return None
+    if task.task_type == "a2a_continuation":
+        owner_value: Any = parent_session.user_id
+    else:
+        owner_value = metadata.get("user_id") or metadata.get("owner_id") or parent_session.user_id
+    try:
+        owner_id = _uuid(owner_value, field="parent_user_id")
+    except ValueError:
+        _hold_runtime_task_completion_outbox(
+            task,
+            reason="parent_user_id_invalid",
+            attempted_at=attempted_at,
+        )
+        return None
+    return _CompletionRoute(
+        target_session_id=target_session_id,
+        parent_agent_id=parent_agent_id,
+        owner_id=owner_id,
+    )
+
+
+def _completion_outbox_eligible(task: RuntimeTask) -> bool:
+    """Python mirror of the eligibility shape in ``COMPLETION_OUTBOX_PENDING_SQL``."""
+
+    return (
+        getattr(task, "completion_outbox_generation", None) is not None
+        and str(task.task_type or "") in COMPLETION_OUTBOX_TASK_TYPES
+        and str(task.status or "") in COMPLETION_OUTBOX_TERMINAL_STATUSES
+        and not (task.task_type == "trigger" and str(task.status or "") == "skipped")
+        and task.parent_agent_id is not None
+    )
+
+
+async def produce_terminal_task_completion_notification(
+    db: AsyncSession,
+    task: RuntimeTask,
+    *,
+    attempted_at: datetime,
+    reconciled: bool,
+) -> uuid.UUID | None:
+    """Shared durable completion producer for a terminal RuntimeTask.
+
+    Normal producers call this inside the SAME transaction as the terminal
+    RuntimeTask write, so a rollback undoes both. The reconcile sweep re-enters
+    it as the idempotent crash/legacy recovery lane with a lower payload rank
+    (10) so an authoritative normal-path payload (100) always wins the CAS.
+    Returns the outbox id, or None when the task is ineligible or a typed,
+    retryable hold was recorded on the task row.
+    """
+
+    if not _completion_outbox_eligible(task):
+        return None
+    metadata = dict(task.metadata_json or {})
+    route = await _resolve_completion_route(db, task, metadata=metadata, attempted_at=attempted_at)
+    if route is None:
+        return None
+    child_session_id = None
+    if task.task_type != "trigger" and task.child_session_id:
+        try:
+            child_session_id = _uuid(task.child_session_id, field="child_session_id")
+        except ValueError:
+            child_session_id = None
+    return await enqueue_completion_notification(
+        db,
+        CompletionNotification(
+            tenant_id=task.tenant_id,
+            source_kind=_COMPLETION_SOURCE_KIND_BY_TASK_TYPE.get(task.task_type, task.task_type),
+            source_run_id=str(task.id),
+            parent_session_id=route.target_session_id,
+            parent_agent_id=route.parent_agent_id,
+            parent_user_id=route.owner_id,
+            child_session_id=child_session_id,
+            child_agent_name=task.child_agent_name,
+            terminal_status=str(task.status),
+            task_type=task.task_type,
+            summary=str(task.result_summary or f"{task.task_type} finished with status {task.status}."),
+            delivery_mode=("session_projection" if task.task_type == "trigger" else "parent_continuation"),
+            artifacts=list(metadata.get("artifacts") or []),
+            metadata={
+                **metadata,
+                **(
+                    {
+                        "model_context": (
+                            "[Approval tool result]\n"
+                            f"Approval: {metadata.get('approval_id') or 'unknown'}\n"
+                            f"Tool: {metadata.get('tool_name') or 'approved_action'}\n"
+                            f"Result: {str(task.result_summary or '')}\n"
+                            "Continue the original task from this approved tool result."
+                        )
+                    }
+                    if task.task_type == "approval_execution"
+                    else {}
+                ),
+                **({"reconciled_from_terminal_runtime_task": True} if reconciled else {}),
+            },
+            payload_rank=10 if reconciled else 100,
+        ),
+    )
 
 
 async def enqueue_completion_notification(
@@ -706,11 +909,13 @@ class RuntimeNotificationOutboxService:
         return claimed
 
     async def reconcile_terminal_tasks_once(self, *, limit: int = 100) -> int:
-        """Backfill a missing intent after a crash between terminal write and enqueue.
+        """Idempotent crash/legacy recovery for a missing completion intent.
 
-        Normal producers enqueue in their terminal/projection transaction. This
-        sweep is the recovery atom for legacy rows and the two paths whose
-        terminal RuntimeTask precedes their richer parent projection.
+        Normal producers enqueue in the same transaction as the terminal
+        RuntimeTask write. This sweep is ONLY the recovery atom: it repairs
+        crash-shaped or legacy terminal rows by re-entering the same shared
+        producer (``produce_terminal_task_completion_notification``) with a
+        lower payload rank, and stays idempotent across replays.
         """
 
         attempted_at = datetime.now(UTC)
@@ -757,109 +962,16 @@ class RuntimeNotificationOutboxService:
                     _settle_runtime_task_completion_outbox(task)
                     repaired += 1
                     continue
-                metadata = dict(task.metadata_json or {})
-                source_kind = {
-                    "team_member": "agent_team",
-                    "delegation": "a2a_delegation",
-                    "a2a_delegation": "a2a_delegation",
-                    "approval_execution": "approval",
-                }.get(task.task_type, task.task_type)
-                target_value = (
-                    task.child_session_id
-                    if task.task_type == "trigger"
-                    else metadata.get("parent_session_id") or task.parent_session_id
-                )
-                try:
-                    target_session_id = _uuid(target_value, field="parent_session_id")
-                except ValueError:
-                    _hold_runtime_task_completion_outbox(
-                        task,
-                        reason="parent_session_id_invalid",
-                        attempted_at=attempted_at,
-                    )
-                    continue
-                # An executable-chat continuation run is owned by the child
-                # agent (parent_agent_id == child agent), so the authoritative
-                # parent-agent binding for the return leg is the structured
-                # metadata stamped at admission from durable session fields.
-                parent_agent_value = metadata.get("parent_agent_id") or task.parent_agent_id
-                try:
-                    parent_agent_id = _uuid(parent_agent_value, field="parent_agent_id")
-                except ValueError:
-                    _hold_runtime_task_completion_outbox(
-                        task,
-                        reason="parent_agent_id_invalid",
-                        attempted_at=attempted_at,
-                    )
-                    continue
-                parent_session = (
-                    await db.execute(
-                        select(ChatSession).where(
-                            ChatSession.id == target_session_id,
-                            ChatSession.agent_id == parent_agent_id,
-                            ChatSession.tenant_id == task.tenant_id,
-                        )
-                    )
-                ).scalar_one_or_none()
-                if parent_session is None:
-                    _hold_runtime_task_completion_outbox(
-                        task,
-                        reason="parent_session_not_found",
-                        attempted_at=attempted_at,
-                    )
-                    continue
-                owner_value = metadata.get("user_id") or metadata.get("owner_id") or parent_session.user_id
-                try:
-                    owner_id = _uuid(owner_value, field="parent_user_id")
-                except ValueError:
-                    _hold_runtime_task_completion_outbox(
-                        task,
-                        reason="parent_user_id_invalid",
-                        attempted_at=attempted_at,
-                    )
-                    continue
-                child_session_id = None
-                if task.task_type != "trigger" and task.child_session_id:
-                    try:
-                        child_session_id = _uuid(task.child_session_id, field="child_session_id")
-                    except ValueError:
-                        child_session_id = None
-                outbox_id = await enqueue_completion_notification(
+                outbox_id = await produce_terminal_task_completion_notification(
                     db,
-                    CompletionNotification(
-                        tenant_id=task.tenant_id,
-                        source_kind=source_kind,
-                        source_run_id=str(task.id),
-                        parent_session_id=target_session_id,
-                        parent_agent_id=parent_agent_id,
-                        parent_user_id=owner_id,
-                        child_session_id=child_session_id,
-                        child_agent_name=task.child_agent_name,
-                        terminal_status=task.status,
-                        task_type=task.task_type,
-                        summary=str(task.result_summary or f"{task.task_type} finished with status {task.status}."),
-                        delivery_mode=("session_projection" if task.task_type == "trigger" else "parent_continuation"),
-                        artifacts=list(metadata.get("artifacts") or []),
-                        metadata={
-                            **metadata,
-                            **(
-                                {
-                                    "model_context": (
-                                        "[Approval tool result]\n"
-                                        f"Approval: {metadata.get('approval_id') or 'unknown'}\n"
-                                        f"Tool: {metadata.get('tool_name') or 'approved_action'}\n"
-                                        f"Result: {str(task.result_summary or '')}\n"
-                                        "Continue the original task from this approved tool result."
-                                    )
-                                }
-                                if task.task_type == "approval_execution"
-                                else {}
-                            ),
-                            "reconciled_from_terminal_runtime_task": True,
-                        },
-                        payload_rank=10,
-                    ),
+                    task,
+                    attempted_at=attempted_at,
+                    reconciled=True,
                 )
+                if outbox_id is None:
+                    # Ineligible (defense in depth; the SQL pre-filters) or a
+                    # typed, retryable hold was recorded on the task row.
+                    continue
                 if task.task_type == "approval_execution":
                     await db.flush()
                     continuation_row = await db.get(RuntimeNotificationOutbox, outbox_id)

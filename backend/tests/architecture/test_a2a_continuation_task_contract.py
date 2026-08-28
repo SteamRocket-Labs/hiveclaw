@@ -74,3 +74,55 @@ def test_every_completion_outbox_task_type_is_db_constraint_legal() -> None:
     constraint_text = str(constraint.sqltext)
     missing = [task_type for task_type in COMPLETION_OUTBOX_TASK_TYPES if task_type not in constraint_text]
     assert missing == []
+
+
+def test_completion_producer_converges_at_the_shared_terminal_seam() -> None:
+    """The normal terminal producer must be atomic with the terminal write.
+
+    Every executable-chat finalizer branch converges on
+    ``_apply_terminal_task_update_and_settle``; the completion-outbox producer
+    therefore lives exactly once, inside that seam, so no finalizer branch can
+    commit a terminal ``a2a_continuation`` without its durable intent. The
+    sweep only re-enters the SAME shared producer as idempotent crash/legacy
+    recovery, and metadata can never select the parent-agent route.
+    """
+
+    import ast
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[2]
+    runtime_source = (backend / "app/services/web_chat_runtime.py").read_text(encoding="utf-8")
+    # No finalizer may call the raw enqueue directly; the producer is reachable
+    # only through the shared seam.
+    assert "enqueue_completion_notification" not in runtime_source
+    tree = ast.parse(runtime_source)
+    producer_owners: list[str] = []
+    seam_calls: set[str] = set()
+    for function in (n for n in ast.walk(tree) if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))):
+        calls = {
+            node.func.id
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        if "produce_terminal_task_completion_notification" in calls:
+            producer_owners.append(function.name)
+        if function.name == "_apply_terminal_task_update_and_settle":
+            seam_calls = calls
+    assert producer_owners == ["_apply_terminal_task_update_and_settle"]
+    assert "produce_terminal_task_completion_notification" in seam_calls
+    assert "settle_runtime_task_terminal" in seam_calls
+
+    outbox_source = (backend / "app/services/runtime_notification_outbox.py").read_text(encoding="utf-8")
+    # Metadata never selects the parent-agent route for any task type.
+    assert 'metadata.get("parent_agent_id")' not in outbox_source
+    outbox_tree = ast.parse(outbox_source)
+    reconciler_calls: set[str] = set()
+    for function in (n for n in ast.walk(outbox_tree) if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))):
+        if function.name == "reconcile_terminal_tasks_once":
+            reconciler_calls = {
+                node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id
+                for node in ast.walk(function)
+                if isinstance(node, ast.Call) and isinstance(node.func, (ast.Name, ast.Attribute))
+            }
+    # The sweep is crash/legacy recovery over the same shared producer.
+    assert "produce_terminal_task_completion_notification" in reconciler_calls

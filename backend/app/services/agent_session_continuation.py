@@ -68,6 +68,13 @@ def _session_state(session: ChatSession) -> str:
     return _text(metadata.get("session_state") or metadata.get("state") or "open").lower() or "open"
 
 
+# Structured parent-route keys reserved by admission: they are stamped from
+# durable session fields and caller-supplied extra_metadata can never reroute
+# them (Codex REQUEST_CHANGES on DAY1-A2A-CONT-RETURN-001: metadata must not
+# select completion-return routing).
+_RESERVED_PARENT_ROUTE_KEYS = frozenset({"parent_session_id", "parent_agent_id"})
+
+
 def is_a2a_delegation_child_session(session: ChatSession) -> bool:
     """Structured A2A delegation child-session binding.
 
@@ -699,12 +706,6 @@ async def continue_agent_session_from_mailbox(
         extra_metadata={
             "source": source_channel,
             "agent_session_message": True,
-            "parent_session_id": _text(parent_session_id or getattr(session, "parent_session_id", None)) or None,
-            # Structured parent-agent binding for the completion-outbox
-            # reconciler: the successor run's own parent_agent_id is the child
-            # agent, so the durable peer binding is the only authoritative
-            # route back to the parent agent.
-            "parent_agent_id": _text(getattr(session, "peer_agent_id", None)) or None,
             "runtime_mailbox_role": model_role,
             "latest_user_prompt_overrides_history": model_role == "user",
             **{
@@ -712,7 +713,21 @@ async def continue_agent_session_from_mailbox(
                 for key in ("terminal_session_resume", "resumed_from_terminal_state")
                 if key in metadata_base
             },
-            **(extra_metadata or {}),
+            # Caller-supplied metadata may add context but can never reroute
+            # the reserved structured parent binding.
+            **{key: value for key, value in (extra_metadata or {}).items() if key not in _RESERVED_PARENT_ROUTE_KEYS},
+            # Reserved structured parent route, stamped from durable session
+            # fields. It always wins over caller-supplied extra_metadata; an
+            # absent durable binding (None) never clobbers a caller value.
+            **{
+                key: value
+                for key, value in {
+                    "parent_session_id": _text(parent_session_id or getattr(session, "parent_session_id", None))
+                    or None,
+                    "parent_agent_id": _text(getattr(session, "peer_agent_id", None)) or None,
+                }.items()
+                if value is not None or key not in (extra_metadata or {})
+            },
         },
     )
     return {

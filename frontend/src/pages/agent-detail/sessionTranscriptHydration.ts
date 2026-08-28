@@ -77,6 +77,15 @@ export function realtimeSubscriptionCursor(
   return latestSequence > 0 ? latestSequence : null;
 }
 
+export function nextSessionBackfillNotice(
+  currentNotice: string | null,
+  recoveryNotice: string,
+  recoveryPending: boolean,
+): string | null {
+  if (recoveryPending) return recoveryNotice;
+  return currentNotice === recoveryNotice ? null : currentNotice;
+}
+
 export function projectCanonicalTranscriptSnapshot(options: {
   existing: ChatTranscriptEventPayload[];
   snapshot: ChatTranscriptEventPayload[];

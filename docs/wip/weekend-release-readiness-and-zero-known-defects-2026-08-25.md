@@ -3628,6 +3628,16 @@ Correction #3 通过后，Codex 沿用户真实可见路径继续审查，发现
 
 **correction commit/push/deploy（2026-08-29）**：correction 原子 commit `f1d23715`（`fix(session): keep live presentation monotonic`）已推送至组织仓库 `SteamRocket-Labs/hiveclaw/main`，远端精确 SHA `f1d237153071f0bb7c8053d61edebd5528f71ec5`。按三服务 production 硬规则从该 committed HEAD archive 部署并全部 `SUCCESS`：backend `e3f7b30b-419e-4aa9-bb12-91b1dd1631d2` / digest `sha256:8639cc875dcfc4dd90c6936224a558301509becc42ce8a153c472b22f4b1be66`；backend-api `e16e4af7-0a61-4912-aea9-2b8693f51165` / digest `sha256:9788cd2e8530e02bdd29662b374bcd4423eead41ecbe1287368c547d50e52984`；frontend `65da77f8-1473-4629-8c5a-108f967f072c` / digest `sha256:33dc7fedcb2b20e2cf8f796e3a7758e05c2bb0e46e77ed1b538b32e7654e5c09`。公开 backend/frontend 均 HTTP 200；runtime 切换后首个 health 的 worker 尚处启动窗口 `running=false`，Codex 未发测试流量，约 15 秒后复核为 `runtime_task_worker.running=true` / `last_error=null`、`web_chat_stream_forwarder.running=true` / `last_error=null`，四 daemon healthy，RLS strict/violations 空，最新 Vercel Sandbox deny-all/network_denied/workspace_round_trip probe 通过且历史 30/30。deployment/readiness 里程碑 Closed；signed-in 两轮全时序 clean pass 仍 pending，finding 仍 open。
 
+#### WEEKEND-SESSION-BACKFILL-NOTICE-005（生产发现，2026-08-29；本地修复完成，部署/复验 pending）
+
+在上述 `f1d23715` production 上，Codex 从真实 A Agent 入口创建 fresh Session `13376a17-8e01-4aa0-b19b-5549389fd245`，发送唯一 prompt `生产 Session 单调流式输出验收第1轮。不要调用工具，只回复精确文本 SESSION-MONOTONIC-CLEAN-PASS1-20260829-0028-V6。`，以约 400ms 采样。主流程本身通过：1.318s 时 prompt 已可见且顶部/右栏均为运行中、1 running；12.195s assistant paragraph 首次可见；直到 30.886s 收敛为完成/空闲/0 running 均未发生一次 answer disappearance、accepted-idle、unexpected waiting 或 answer 前 premature complete；32.422s 连续四个稳定样本后分支/回溯均可用。reload 后 prompt=1、answer=1、顺序正确、完成/空闲、分支/回溯可用。
+
+但 reload 5.5 秒后，一个只有单轮且完整历史已经可见的新 Session 仍持续显示 `最新活动已可见，较早的会话证据仍在恢复。`。该横幅由 `onLiveTailReady` 无条件写入，canonical hydration 成功终局没有对应清除；因此产品向用户长期表达不存在的恢复工作，不能把本轮计为 clean pass。此 finding 仅关于 transport notice 的机械生命周期，不改变 canonical transcript、模型回答或 Session 权威事实。
+
+**failing-first 与修复**：先在 `sessionTranscriptHydration.test.ts` 增加 notice lifecycle 回归，修复前 focused 为 **1 failed / 9 passed**（`nextSessionBackfillNotice is not a function`）；再在 `AgentDetail.test.tsx` 增加 live wiring 回归，修复前精确失败为源码缺少 `nextSessionBackfillNotice(`。实现把 notice 决策收敛为共享 pure helper：真实 hydration in-flight 或 `full_hydration` 标记存在时显示；完整 canonical hydration 成功后只清除同一 backfill notice，不覆盖连接错误等其它 notice，并清理已恢复的 full-hydration key；hydration 失败后既有 typed recovery notice 保持。无自然语言扫描、无消息改写、无 backend/schema/i18n catalog/依赖变更。
+
+**本地 GREEN / review**：focused 两文件 **24 passed**；全量 frontend **146 files / 1036 passed**；`npm exec tsc -- --noEmit` exit 0；i18n node tests **9/9**、en=zh=3864、全部 gates 0；production build 7386 modules，AgentDetail **364978/380000 bytes、100784/115000 gzip**，vendor **591449/620000 bytes、186474/200000 gzip**；`git diff --check` clean。全量首跑曾被架构预算正确拦截（AgentDetail 2909>2900）；未放宽测试，把同一 helper 接线压回 **2898/2900** 后全绿。React review：没有新增 effect、请求、订阅或第二事实源，notice 只消费现有 hydration/ref 机械事实。当前仅 **PASS — Verified locally**；必须原子 commit/push、三服务部署并用 fresh Session reload 复验横幅消失，再重新开始连续两轮 clean pass。`WEEKEND-SESSION-PHASE-UI-002`、`WEEKEND-SESSION-ACCEPTED-IDLE-003` 与 `WEEKEND-SESSION-ASSISTANT-FLICKER-004` 仍保持 open，直到部署后两轮全时序通过。
+
 
 ## 8. 两个工作日的执行节奏
 

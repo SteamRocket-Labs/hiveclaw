@@ -74,7 +74,7 @@ import {
 } from './agent-detail/useSessionTransportController';
 import { projectSessionSocketEvent } from './agent-detail/sessionSocketEventProjector';
 import { applyTranscriptToSessionRuntime } from './agent-detail/sessionTranscriptApplier';
-import { liveSubscriptionWatermark, loadCanonicalSessionTranscript, projectCanonicalTranscriptSnapshot, realtimeSubscriptionCursor } from './agent-detail/sessionTranscriptHydration';
+import { liveSubscriptionWatermark, loadCanonicalSessionTranscript, nextSessionBackfillNotice, projectCanonicalTranscriptSnapshot, realtimeSubscriptionCursor } from './agent-detail/sessionTranscriptHydration';
 import type { CompatibilityMessageTimeline, SessionVisibilityBoundary } from './agent-detail/sessionEventConsumer';
 import { buildSessionVisibilityBoundary, createCompatibilityMessageTimeline, installRewindVisibilityBoundary, installRewindVisibilityBoundaryFromStore, seedCompatibilityTimelineIdentities } from './agent-detail/sessionEventConsumer';
 import { createSessionEventStore, type SessionEventStore } from './session-workbench/sessionEventStore';
@@ -728,6 +728,8 @@ function AgentDetailInner() {
                     updateHistoryMsgs(preParsed);
                 }
             }
+            sessionEventFullHydrationKeysRef.current.delete(runtimeKey);
+            setTransportNotice((current) => nextSessionBackfillNotice(current, t('agent.chat.sessionBackfillIncomplete', 'Latest activity is visible, but older session evidence is still recovering.'), false));
         } catch (err: any) {
             if (err?.name === 'AbortError') return;
             if (loadSeq !== sessionLoadSeqRef.current) return;
@@ -1589,10 +1591,7 @@ function AgentDetailInner() {
             transcriptReplayStateRef.current[key] ??= createEmptyTranscriptReplayState();
             if (activeSessionIdRef.current !== sessionId) return;
             setChatMessagesSessionId(sessionId);
-            setTransportNotice(t(
-                'agent.chat.sessionBackfillIncomplete',
-                'Live updates are connected while older session evidence continues recovering.',
-            ));
+            setTransportNotice((current) => nextSessionBackfillNotice(current, t('agent.chat.sessionBackfillIncomplete', 'Latest activity is visible, but older session evidence is still recovering.'), Boolean(transcriptBackfillInFlightRef.current[key]) || sessionEventFullHydrationKeysRef.current.has(key)));
         },
         onDisconnected: ({ key, phase, isActiveRuntime }) => {
             setSessionPhase(key, phase);

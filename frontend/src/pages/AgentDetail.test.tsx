@@ -222,6 +222,15 @@ describe('AgentDetail realtime refresh contract', () => {
     expect(source).not.toContain('canonicalHydrationInFlight = canonicalHydration.then');
   });
 
+  it('removes the older-history notice once canonical hydration is complete', async () => {
+    const source = await readSource('./AgentDetail.tsx');
+
+    expect(source).toContain('nextSessionBackfillNotice(');
+    expect(source).toContain('Boolean(transcriptBackfillInFlightRef.current[key])');
+    expect(source).toContain('sessionEventFullHydrationKeysRef.current.has(key)');
+    expect(source).toContain('sessionEventFullHydrationKeysRef.current.delete(runtimeKey)');
+  });
+
   it('does not make REST transcript hydration a prerequisite for the live Session transport', async () => {
     const pageSource = await readSource('./AgentDetail.tsx');
     const controllerSource = await readSource('./agent-detail/useSessionTransportController.ts');

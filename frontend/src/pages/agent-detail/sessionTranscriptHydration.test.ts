@@ -5,6 +5,7 @@ import type { AgentChatMessage, ChatTranscriptEventPayload } from './chatRuntime
 import {
   liveSubscriptionWatermark,
   loadCanonicalSessionTranscript,
+  nextSessionBackfillNotice,
   projectCanonicalTranscriptSnapshot,
   realtimeSubscriptionCursor,
 } from './sessionTranscriptHydration';
@@ -61,6 +62,14 @@ const session: ChatSession = {
 };
 
 describe('loadCanonicalSessionTranscript', () => {
+  it('shows transcript recovery only while recovery is actually pending', () => {
+    const recoveryNotice = 'Older session evidence is still recovering.';
+
+    expect(nextSessionBackfillNotice(null, recoveryNotice, true)).toBe(recoveryNotice);
+    expect(nextSessionBackfillNotice(recoveryNotice, recoveryNotice, false)).toBeNull();
+    expect(nextSessionBackfillNotice('Connection lost.', recoveryNotice, false)).toBe('Connection lost.');
+  });
+
   it('projects a newest-page suffix immediately and keeps the live cursor contiguous', () => {
     const accepted = canonicalEvent({
       sequence: 1206,

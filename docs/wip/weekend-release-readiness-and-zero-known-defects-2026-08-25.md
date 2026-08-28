@@ -3796,6 +3796,19 @@ Correction #3 通过后，Codex 沿用户真实可见路径继续审查，发现
 **Session 生命周期包 closure（七原子，Closed）**：Input 覆盖真实发送、Stop、`/resume`、Rewind checkpoint、same-session 与 branch/fork；Authority 为 authenticated Rocky lab Session、typed command 与当前 principal；Execution 仍由 RuntimeTask、Session command、canonical route 与 active projection 唯一入口承载；Evidence 为 canonical transcript/RuntimeTask/lineage + signed-in UI 50–100ms 连续采样 + reload；Recovery 覆盖 interrupted Continue、needs-reconciliation hold、reload hydration、same-session rewind draft、branch navigation；Consumption 覆盖用户 timeline/header/disclosure/composer/GitLine/right panel，工程 payload 默认隐藏；Acceptance 覆盖 correction-1～6 failing-first、本地全门禁、每次组织 push/三服务部署，以及最终 Rewind、Resume、Fork、Rollback（Rewind 产品入口）、流式不吞不重、双 reload clean pass。由此本节 Session 表达 + Rewind/Resume/Fork/Rollback 从 Partial loop 转为 **Closed**；不外推 Knowledge、Create Agent、Plan Mode、Agent Team、Sub-agent、Dynamic Workflow、A2A 或 aggregate weekend closure，后续包继续逐项执行。
 
 
+## 7.32 SESSION-FULL-SUITE-REGRESSION-001 — Session 历史修复暴露的三项全量门禁债务（2026-08-29，本地修复与全量回归完成；独立 commit/push pending，三服务部署随下一候选统一执行）
+
+在 Knowledge 包进入提交前，Codex 按零已知缺陷要求执行 backend 全量 `tests`，首次结果为 **8308 passed / 3 failed / 2 skipped / 1 warning**。三个失败均可由当前 checkout 精确解释，不能标成 flaky，也不能被 Knowledge 的定向绿测试掩盖：
+
+1. `run_agent_turn` 为 **2603 行 > 2600 行**，前一轮 typed provider failure 补字段时在一个已经超限的 owner 中继续增长；修复把 typed provider-failure result 构造提取为 `_classified_llm_error_result`，保持 `failure_code`、`delivery_state`、`requires_user_decision` 逐字段原样传递，owner 回到 **2599 行**，没有上调预算、没有改模型路由或模型输出。
+2. `recover_terminal_target_session_inputs_once` 使用跨租户恢复 bypass，但 `RLS_BYPASS_ALLOWLIST` 漏登记精确 callsite；修复补入既有原因表达式与 `session-state-only` query shape，owner/expiry 继续由统一 `_grant` 契约管理。
+3. 真 PostgreSQL exactly-once claim 测试用 table owner 执行所谓 tenant-scoped race；该角色会绕过 ENABLE-only RLS，全量 suite 留下的其它租户可领取行因而进入本测试，两个 worker 各领一条并造成假并发失败。生产 worker 本来就是显式 cross-tenant bypass；本测试要证明的是 tenant-scoped RLS 下同一目标恰一次领取，因此 claim 改用既有 non-owner `app_user_sessionmaker`，seed/最终持久化核对仍用 owner。没有给生产 claim 添加测试专用 task-id 过滤，也没有删除或隐藏其它 suite 数据。
+
+**failing-first / GREEN 证据**：首次全量命令 `.venv/bin/pytest tests -q` 精确得到上述 3 failures；修复后三项定点命令为 **3 passed in 8.65s**，Ruff check/format 全绿。随后从同一完整 worktree 重新执行 `.venv/bin/pytest tests -q`，结果 **8311 passed / 2 skipped / 1 StarletteDeprecationWarning in 621.16s**；并发 claim 在全量顺序约 42% 处通过，不是 isolated-only green。warning 来自 FastAPI TestClient 对 `httpx` 兼容层的既有弃用提示，本包未新增 warning。
+
+**状态与边界**：本包代码、真实 Postgres path proof 与全量门禁为 **PASS — Verified locally**；它修复 Session 历史提交的 architecture/security/acceptance 债务，不改变 §7.31 已完成的 production Session 行为结论。原子 commit/push 完成后随下一候选统一部署三服务；在部署 SUCCESS 前不宣称当前 HEAD 已在线。Knowledge、Create Agent、Plan Mode、Agent Team、Sub-agent、Dynamic Workflow 与 aggregate A2A 仍按后续包分别验收。
+
+
 ## 8. 两个工作日的执行节奏
 
 ### 开工前 Gate 0 — owner 过稿（已完成）

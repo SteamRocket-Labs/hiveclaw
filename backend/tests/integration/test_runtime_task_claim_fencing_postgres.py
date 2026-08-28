@@ -54,11 +54,17 @@ async def _seed_expired_web_chat_claim(sessionmaker):
         return tenant.id, task.id
 
 
-async def test_two_workers_reclaim_one_expired_web_chat_run_exactly_once(owner_sessionmaker):
+async def test_two_workers_reclaim_one_expired_web_chat_run_exactly_once(
+    owner_sessionmaker,
+    app_user_sessionmaker,
+):
     tenant_id, task_id = await _seed_expired_web_chat_claim(owner_sessionmaker)
 
     async def claim(worker_id: str) -> list[RuntimeTask]:
-        async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        # The PostgreSQL table owner bypasses ENABLE-only RLS. Exercise the
+        # tenant-scoped claim through the same non-owner authority that RLS
+        # actually constrains so unrelated suite rows cannot enter this race.
+        async with tenant_scoped_session(tenant_id, session_factory=app_user_sessionmaker) as db:
             return await RuntimeTaskClaimService(
                 db=db,
                 worker_id=worker_id,

@@ -741,6 +741,14 @@ RLS_BYPASS_ALLOWLIST = (
     ),
     _grant(
         *(
+            "app/services/runtime_task_worker.py",
+            "recover_terminal_target_session_inputs_once",
+            "'runtime task worker roll over Session V2 steers after target run terminal'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
             "app/services/session_event_outbox.py",
             "_worker_session",
             "f'session_event_outbox.{operation}'",

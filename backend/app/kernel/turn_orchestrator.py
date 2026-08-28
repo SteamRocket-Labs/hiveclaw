@@ -461,6 +461,24 @@ async def _finalize_empty_provider_response(
     )
 
 
+def _classified_llm_error_result(
+    build_error_result: Any,
+    user_message: str,
+    tokens_used: int,
+    classification: Any,
+    delivery_state: str,
+) -> Any:
+    """Preserve typed provider-failure facts at the turn result boundary."""
+
+    return build_error_result(
+        user_message,
+        tokens_used=tokens_used,
+        failure_code=classification.kind,
+        failure_delivery_state=delivery_state,
+        failure_requires_user_decision=classification.requires_user_decision,
+    )
+
+
 async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> InvocationResult:
     # Bind an explicit per-call dependency snapshot so tests, DI, and runtime
     # overrides observe the same facade values without copying a module namespace.
@@ -1981,12 +1999,8 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         await _record_new_token_usage()
                         user_msg = _humanize_llm_error(exc)
                         await self._persist_before_exit(request, runtime_config, f"[LLM Error] {exc}", api_messages)
-                        return _build_error_result(
-                            user_msg,
-                            tokens_used=accumulated_tokens,
-                            failure_code=error_classification.kind,
-                            failure_delivery_state=delivery_state,
-                            failure_requires_user_decision=error_classification.requires_user_decision,
+                        return _classified_llm_error_result(
+                            _build_error_result, user_msg, accumulated_tokens, error_classification, delivery_state
                         )
                     except Exception as exc:
                         logger.error(

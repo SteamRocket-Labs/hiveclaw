@@ -202,6 +202,29 @@ describe('session workbench timeline model', () => {
     expect(model.header.status).toBe('idle');
   });
 
+  it('renders a copied cancelled branch as interrupted instead of fabricating a current run', () => {
+    const model = buildThreadTimeline({
+      messages: [{
+        id: 'copied-user-1',
+        role: 'user',
+        content: 'Continue the interrupted request.',
+        timestamp: '2026-08-29T04:18:34Z',
+      }],
+      activeSession: { id: 'branch-session-1', title: 'Interrupted branch' },
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+      runtimePhase: 'cancelled',
+    });
+
+    expect(model.header.status).toBe('idle');
+    expect(model.cells.at(-1)).toMatchObject({
+      kind: 'active_run',
+      timeline: { status: 'interrupted' },
+    });
+    expect(model.cells.some((cell) => cell.kind === 'active_run' && cell.timeline.status === 'running')).toBe(false);
+  });
+
   it('upgrades the trailing run to live running when the authoritative runtime reports an active run', () => {
     const messages: AgentChatMessage[] = [
       { id: 'u1', role: 'user', content: 'Draft the Q2 summary.' },

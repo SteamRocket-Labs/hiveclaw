@@ -383,7 +383,7 @@ interface RuntimePhaseEventLike {
  * when a new run starts in the same session.
  */
 export function reduceRuntimePhase(current: RuntimePhase, event: RuntimePhaseEventLike): RuntimePhase {
-  const eventType = String(event.event_type || event.type || '');
+  const eventType = String(event.event_type || event.type || '').replaceAll('.', '_');
   switch (eventType) {
     case 'phase':
       return isRuntimePhase(event.phase) ? event.phase : current;
@@ -1387,7 +1387,7 @@ export function applyTranscriptEvent(
     };
   }
 
-  return { ...state, seenEventIds };
+  return { ...state, seenEventIds, ui: uiForPhase(nextPhase) };
 }
 
 export function replayTranscriptEvents(events: ChatTranscriptEventPayload[]): TranscriptReplayState {

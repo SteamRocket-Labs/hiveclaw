@@ -1801,10 +1801,13 @@ function buildPendingRunCell(
   input: BuildThreadTimelineInput,
   activeRunStatus: string | null,
   acceptedUserTurnPending = false,
+  interruptedUserTurn = false,
 ): Extract<ThreadTimelineCell, { kind: 'active_run' }> | null {
   const phase = liveRunPhase(input);
-  if (!input.isWaiting && !input.isStreaming && !activeRunStatus && !phase && !acceptedUserTurnPending) return null;
-  const status: RunTimelineSnapshot['status'] = activeRunStatus === 'failed' ? 'failed' : 'running';
+  if (!input.isWaiting && !input.isStreaming && !activeRunStatus && !phase && !acceptedUserTurnPending && !interruptedUserTurn) return null;
+  const status: RunTimelineSnapshot['status'] = interruptedUserTurn
+    ? 'interrupted'
+    : activeRunStatus === 'failed' ? 'failed' : 'running';
   const title = phase === 'responding' || input.isStreaming ? 'Working' : 'Thinking';
   const latestInputIndex = latestUserMessageIndex(input.messages);
   const startedAt = latestInputIndex >= 0 ? input.messages[latestInputIndex]?.timestamp : undefined;
@@ -1817,7 +1820,7 @@ function buildPendingRunCell(
       id: 'active-run-pending',
       status,
       startedAt,
-      steps: [
+      steps: interruptedUserTurn ? [] : [
         {
           id: 'active-run-pending-step',
           kind: 'reasoning',
@@ -2137,12 +2140,14 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     && latestUserMessageIndex(input.messages) >= 0
     && !hasAssistantAnswerAfterLatestUser(input.messages);
   const retainedProcessRun = keepLatestProcessRunActive(cells, input, activeRunStatus, terminalDeliveryPending);
-  const unresolvedUserTurn = cells.at(-1)?.kind === 'user_turn'
+  const trailingUserTurn = cells.at(-1)?.kind === 'user_turn';
+  const interruptedUserTurn = trailingUserTurn && runtimePhaseValue === 'cancelled';
+  const unresolvedUserTurn = trailingUserTurn
     && !input.isWaiting
     && !input.isStreaming
     && !activeRunStatus
     && (!runtimePhaseValue || runtimePhaseValue === 'idle');
-  const pendingRunCell = buildPendingRunCell(input, activeRunStatus, unresolvedUserTurn);
+  const pendingRunCell = buildPendingRunCell(input, activeRunStatus, unresolvedUserTurn, interruptedUserTurn);
   if (pendingRunCell && !retainedProcessRun && !hasOpenRunCell(cells)) {
     cells.push(pendingRunCell);
   }

@@ -1981,6 +1981,23 @@ describe('RuntimePhase state machine (§3 seam 1)', () => {
     expect(reduceRuntimePhase('awaiting_approval', { event_type: 'permission_resolved' })).toBe('starting');
   });
 
+  it('replays copied Session V2 dotted cancellation as terminal instead of a live branch run', () => {
+    const replay = replayTranscriptEvents([
+      {
+        id: 'copied-user-1',
+        sequence: 1,
+        event_type: 'user_message',
+        role: 'user',
+        content: 'Continue the interrupted request.',
+      },
+      { id: 'copied-run-queued', sequence: 2, event_type: 'run.queued' },
+      { id: 'copied-run-cancelled', sequence: 3, event_type: 'run.cancelled' },
+    ]);
+
+    expect(replay.ui).toEqual(uiForPhase('cancelled'));
+    expect(replay.messages).toHaveLength(1);
+  });
+
   it('leaves the phase untouched for non-lifecycle events and allows new turns after terminal phases', () => {
     expect(reduceRuntimePhase('responding', { type: 'artifact_delivery' })).toBe('responding');
     expect(reduceRuntimePhase('thinking', { event_type: 'user_message' })).toBe('thinking');

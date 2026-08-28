@@ -1181,6 +1181,7 @@ async def _submit_active_session_input(
     message_already_in_t0: bool = False,
     a2a_peer_agent_id: uuid.UUID | str | None = None,
     runtime_result_page_id: uuid.UUID | str | None = None,
+    runtime_result_page_claim_token: uuid.UUID | str | None = None,
 ) -> dict[str, Any]:
     """Persist one active-turn input through the canonical Session V2 plane."""
 
@@ -1255,6 +1256,7 @@ async def _submit_active_session_input(
         role=role,
         a2a_peer_agent_id=a2a_peer_agent_id,
         runtime_result_page_id=runtime_result_page_id,
+        runtime_result_page_claim_token=runtime_result_page_claim_token,
         runtime_metadata={
             **protected_extra_metadata,
             "source": source_channel,

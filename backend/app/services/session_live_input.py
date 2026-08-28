@@ -136,6 +136,7 @@ async def submit_live_human_input(
     role: str = "user",
     a2a_peer_agent_id: uuid.UUID | str | None = None,
     runtime_result_page_id: uuid.UUID | str | None = None,
+    runtime_result_page_claim_token: uuid.UUID | str | None = None,
 ) -> dict[str, Any]:
     """Accept, Hook-admit and dispatch one production HumanInput."""
 
@@ -190,14 +191,19 @@ async def submit_live_human_input(
     )
     if a2a_peer_agent_id is not None and runtime_result_page_id is not None:
         raise ValueError("a2a peer and runtime result integration lanes are mutually exclusive")
-    existing_row = await db.get(SessionTurnInput, input_uuid)
     command_authority_stamp: dict[str, str] | None = None
+    existing_row: SessionTurnInput | None = None
     if runtime_result_page_id is not None:
         # Narrow server-derived runtime result return lane: never the user
-        # writable gate, never the a2a peer lane.  A fresh accept must
-        # observe the durable claimed processing delivery state; an
-        # already-accepted input (idempotent replay) revalidates immutable
-        # route facts only, exactly like fresh-worker recovery.
+        # writable gate, never the a2a peer lane.  Only this lane resolves
+        # the idempotency lookup BEFORE authority, because its admission vs
+        # replay lifecycle split depends on it: a fresh accept must observe
+        # the durable claimed processing delivery state with exact claim
+        # equality; an already-accepted input (idempotent replay)
+        # revalidates immutable route facts only, exactly like fresh-worker
+        # recovery.  Every other lane keeps the original
+        # authority-before-lookup ordering.
+        existing_row = await db.get(SessionTurnInput, input_uuid)
         page_uuid = (
             runtime_result_page_id
             if isinstance(runtime_result_page_id, uuid.UUID)
@@ -210,6 +216,7 @@ async def submit_live_human_input(
             session_id=session.id,
             action="mutate_session_input",
             require_delivery_state=existing_row is None,
+            expected_claim_token=runtime_result_page_claim_token,
         )
         command_authority_stamp = runtime_result_integration_command_stamp(page_id=page_uuid)
     elif a2a_peer_agent_id is not None:
@@ -239,6 +246,8 @@ async def submit_live_human_input(
             session_id=session.id,
             action="mutate_session_input",
         )
+    if existing_row is None:
+        existing_row = await db.get(SessionTurnInput, input_uuid)
     existing_command = None
     if existing_row is not None:
         existing_command = await db.get(SessionCommand, existing_row.command_id)

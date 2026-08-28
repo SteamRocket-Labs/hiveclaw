@@ -85,13 +85,14 @@ def _delegation_session(
     root_session_id: uuid.UUID,
     runtime_task_id: uuid.UUID | None,
     title: str,
+    source_channel: str = "agent",
 ) -> ChatSession:
     return ChatSession(
         tenant_id=tenant_id,
         agent_id=agent_id,
         user_id=user_id,
         peer_agent_id=peer_agent_id,
-        source_channel="agent",
+        source_channel=source_channel,
         session_kind="delegation_run",
         actor_type="agent",
         runtime_source="delegation",
@@ -105,7 +106,7 @@ def _delegation_session(
     )
 
 
-async def _seed_nested(owner_sessionmaker) -> dict[str, uuid.UUID | str]:
+async def _seed_nested(owner_sessionmaker, *, parent_source_channel: str = "agent") -> dict[str, uuid.UUID | str]:
     """Seed the realistic nested A→B→C durable shape.
 
     B owns a real delegation_run session P proven by its own durable
@@ -157,6 +158,7 @@ async def _seed_nested(owner_sessionmaker) -> dict[str, uuid.UUID | str]:
             root_session_id=root_session.id,
             runtime_task_id=task_ab.id,
             title="Delegation: Middle Worker B",
+            source_channel=parent_source_channel,
         )
         db.add(parent_session)
         await db.flush()
@@ -558,6 +560,7 @@ async def test_missing_linked_outbox_evidence_is_denied(owner_sessionmaker) -> N
         )
         db.add(orphan_page)
         await db.commit()
+        orphan_claim_token = orphan_page.claim_token
 
         with pytest.raises(PermissionError, match="runtime_result_integration_source_missing"):
             await resolve_runtime_result_integration_authority(
@@ -566,6 +569,7 @@ async def test_missing_linked_outbox_evidence_is_denied(owner_sessionmaker) -> N
                 agent_id=seeded["agent_b_id"],
                 session_id=seeded["parent_session_id"],
                 action="mutate_session_input",
+                expected_claim_token=orphan_claim_token,
             )
         await db.rollback()
 
@@ -646,5 +650,328 @@ async def test_admission_requires_actual_processing_delivery_state(owner_session
                 agent_id=seeded["agent_b_id"],
                 session_id=seeded["parent_session_id"],
                 action="mutate_session_input",
+            )
+        await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_stale_claim_token_cannot_admit_and_current_claim_and_recovery_succeed(
+    owner_sessionmaker, monkeypatch
+) -> None:
+    """Claim fence (Codex P1): a stale ClaimedResultIntegrationPage held by
+    worker A must not borrow worker B's later claim after lease reclaim.
+
+    NEW input admission requires exact equality with the current durable
+    page claim_token — threaded transiently, never persisted into the
+    SessionCommand target_json stamp or any durable marker.  Replay and
+    fresh-worker recovery stay lifecycle/claim tolerant.
+    """
+
+    from app.services.agent_session_continuation import continue_parent_session_with_result_page
+    from app.services.session_v2_persistence import resolve_session_command_authority
+
+    monkeypatch.setattr("app.services.runtime_budget_service.async_session", owner_sessionmaker)
+    await _clear_outbox(owner_sessionmaker)
+    seeded = await _seed_nested(owner_sessionmaker)
+    tenant_id = seeded["tenant_id"]
+    await _drive_terminal_seam(owner_sessionmaker, tenant_id=tenant_id, task_id=seeded["c_run_id"])
+
+    service = RuntimeNotificationOutboxService(session_factory=owner_sessionmaker)
+    claimed = await service.claim_batch(worker_id="worker-a", limit=10)
+    assert claimed
+    pages = await service.prepare_integration_pages(worker_id="worker-a", claimed=claimed)
+    assert len(pages) == 1
+    stale_token = pages[0].claim_token
+
+    async with owner_sessionmaker() as db:
+        stored = (
+            await db.execute(
+                select(RuntimeResultIntegrationPage).where(
+                    RuntimeResultIntegrationPage.parent_session_id == seeded["parent_session_id"]
+                )
+            )
+        ).scalar_one()
+        assert stored.status == "processing"
+        page_id = stored.id
+        manifest = dict(stored.manifest_json or {})
+        # Lease reclaim: worker B now owns the durable claim.
+        current_token = uuid.uuid4()
+        stored.claim_token = current_token
+        stored.claimed_by = "worker-b"
+        await db.commit()
+
+        agent = await db.get(Agent, seeded["agent_b_id"])
+        owner = await db.get(User, seeded["user_id"])
+        session = await db.get(ChatSession, seeded["parent_session_id"])
+
+        # Stale token from worker A's claimed page: typed denial, zero effects.
+        with pytest.raises(PermissionError, match="runtime_result_integration_claim_mismatch"):
+            await continue_parent_session_with_result_page(
+                db=db,
+                agent=agent,
+                user=owner,
+                session=session,
+                integration_page_id=page_id,
+                manifest=manifest,
+                page_claim_token=stale_token,
+            )
+        await db.rollback()
+        for model in (SessionCommand, SessionTurnInput):
+            count = (
+                await db.execute(
+                    select(func.count()).select_from(model).where(model.session_id == seeded["parent_session_id"])
+                )
+            ).scalar_one()
+            assert count == 0, f"stale claim created {model.__name__}"
+        event_count = (
+            await db.execute(
+                select(func.count())
+                .select_from(ChatTranscriptEvent)
+                .where(
+                    ChatTranscriptEvent.session_id == seeded["parent_session_id"],
+                    ChatTranscriptEvent.event_type == "agent_task_notification",
+                )
+            )
+        ).scalar_one()
+        assert event_count == 0
+
+        # The rollback above expired the ORM objects; reload before reuse.
+        agent = await db.get(Agent, seeded["agent_b_id"])
+        owner = await db.get(User, seeded["user_id"])
+        session = await db.get(ChatSession, seeded["parent_session_id"])
+
+        # The current claim succeeds through the same live boundary.
+        result = await continue_parent_session_with_result_page(
+            db=db,
+            agent=agent,
+            user=owner,
+            session=session,
+            integration_page_id=page_id,
+            manifest=manifest,
+            page_claim_token=current_token,
+        )
+        assert result.get("ok") is True, result
+        row = (
+            await db.execute(select(SessionTurnInput).where(SessionTurnInput.session_id == seeded["parent_session_id"]))
+        ).scalar_one()
+        command = await db.get(SessionCommand, row.command_id)
+        assert command is not None
+        target = dict(command.target_json or {})
+        stamp = dict(target.get("session_command_authority") or {})
+        # The durable stamp carries only the immutable route marker — never
+        # claim data — and the command target carries no claim fields either.
+        assert set(stamp) == {"schema", "authority_source", "integration_page_id"}
+        assert "claim_token" not in target and "claimed_by" not in target
+        command_id = command.id
+
+        # Lifecycle tolerance: after delivered AND after a later dead_letter,
+        # fresh-worker recovery revalidates immutable route facts only.
+        stored_page = await db.get(RuntimeResultIntegrationPage, page_id)
+        stored_page.status = "delivered"
+        await db.commit()
+        context = await resolve_session_command_authority(
+            db, command=command, session=session, action="mutate_session_input"
+        )
+        assert context.authority.authority_source == "runtime_result_integration"
+        assert context.authority.principal_id == seeded["user_id"]
+
+        stored_page = await db.get(RuntimeResultIntegrationPage, page_id)
+        stored_page.status = "dead_letter"
+        stored_page.claim_token = uuid.uuid4()
+        stored_page.claimed_by = "worker-c"
+        await db.commit()
+        command = await db.get(SessionCommand, command_id)
+        context = await resolve_session_command_authority(
+            db, command=command, session=session, action="mutate_session_input"
+        )
+        assert context.authority.authority_source == "runtime_result_integration"
+
+
+@pytest.mark.asyncio
+async def test_partial_delegation_shape_does_not_activate_lane(owner_sessionmaker, monkeypatch) -> None:
+    """Strict activation (Codex finding 3): a partial/forged durable shape
+    (``session_kind=delegation_run`` + ``runtime_source=delegation`` but
+    ``source_channel != 'agent'``) satisfies the broad compatibility helper
+    but must NOT activate the runtime result lane — delivery falls back to
+    the user gate and is denied with the exact session_read_only contract."""
+
+    from fastapi import HTTPException
+
+    from app.services.agent_session_continuation import continue_parent_session_with_result_page
+
+    monkeypatch.setattr("app.services.runtime_budget_service.async_session", owner_sessionmaker)
+    await _clear_outbox(owner_sessionmaker)
+    seeded = await _seed_nested(owner_sessionmaker, parent_source_channel="web")
+    tenant_id = seeded["tenant_id"]
+    await _drive_terminal_seam(owner_sessionmaker, tenant_id=tenant_id, task_id=seeded["c_run_id"])
+
+    service = RuntimeNotificationOutboxService(session_factory=owner_sessionmaker)
+    claimed = await service.claim_batch(worker_id="worker-a", limit=10)
+    assert claimed
+    pages = await service.prepare_integration_pages(worker_id="worker-a", claimed=claimed)
+    assert len(pages) == 1
+    current_token = pages[0].claim_token
+
+    async with owner_sessionmaker() as db:
+        stored = (
+            await db.execute(
+                select(RuntimeResultIntegrationPage).where(
+                    RuntimeResultIntegrationPage.parent_session_id == seeded["parent_session_id"]
+                )
+            )
+        ).scalar_one()
+        agent = await db.get(Agent, seeded["agent_b_id"])
+        owner = await db.get(User, seeded["user_id"])
+        session = await db.get(ChatSession, seeded["parent_session_id"])
+
+        with pytest.raises(HTTPException) as exc_info:
+            await continue_parent_session_with_result_page(
+                db=db,
+                agent=agent,
+                user=owner,
+                session=session,
+                integration_page_id=stored.id,
+                manifest=dict(stored.manifest_json or {}),
+                page_claim_token=current_token,
+            )
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["code"] == "session_read_only"
+        await db.rollback()
+        command_count = (
+            await db.execute(
+                select(func.count())
+                .select_from(SessionCommand)
+                .where(SessionCommand.session_id == seeded["parent_session_id"])
+            )
+        ).scalar_one()
+        assert command_count == 0
+
+
+@pytest.mark.asyncio
+async def test_ordinary_lane_resolves_authority_before_input_lookup(owner_sessionmaker) -> None:
+    """Ordering (Codex finding 2): the early idempotency lookup is scoped to
+    the runtime result lane only.  For the ordinary session-owner lane,
+    authority resolution must run BEFORE the input-row lookup: a colliding
+    input_id on a read-only session must fail with the exact 409
+    session_read_only contract, not an idempotency/conflict outcome."""
+
+    from fastapi import HTTPException
+
+    from app.services.session_live_input import submit_live_human_input
+
+    async with owner_sessionmaker() as db:
+        tenant_id = await _mk_tenant(db, prefix="ord")
+        user_id = await _mk_user(db, tenant_id)
+        agent_id = await _mk_agent(db, tenant_id=tenant_id, user_id=user_id, name="Assistant")
+        writable = ChatSession(agent_id=agent_id, user_id=user_id, tenant_id=tenant_id, title="writable")
+        delegation = ChatSession(
+            agent_id=agent_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            peer_agent_id=agent_id,
+            source_channel="agent",
+            session_kind="delegation_run",
+            actor_type="agent",
+            runtime_source="delegation",
+            title="read-only",
+        )
+        db.add_all([writable, delegation])
+        await db.commit()
+        writable_id = writable.id
+        delegation_id = delegation.id
+
+    input_id = uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        agent = await db.get(Agent, agent_id)
+        user = await db.get(User, user_id)
+        writable = await db.get(ChatSession, writable_id)
+        receipt = await submit_live_human_input(
+            db=db,
+            agent=agent,
+            user=user,
+            session=writable,
+            content="first input",
+            source="web",
+            input_id=input_id,
+        )
+        assert receipt["input_id"] == str(input_id)
+
+    async with owner_sessionmaker() as db:
+        agent = await db.get(Agent, agent_id)
+        user = await db.get(User, user_id)
+        delegation = await db.get(ChatSession, delegation_id)
+        with pytest.raises(HTTPException) as exc_info:
+            await submit_live_human_input(
+                db=db,
+                agent=agent,
+                user=user,
+                session=delegation,
+                content="colliding input id",
+                source="web",
+                input_id=input_id,
+            )
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["code"] == "session_read_only"
+        await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_tampered_a2a_source_route_is_denied(owner_sessionmaker, monkeypatch) -> None:
+    """Tampering the linked A2A source RuntimeTask or the child→parent
+    session route breaks the durable proof and is denied typed."""
+
+    from app.services.session_v2_persistence import resolve_runtime_result_integration_authority
+
+    monkeypatch.setattr("app.services.runtime_budget_service.async_session", owner_sessionmaker)
+    await _clear_outbox(owner_sessionmaker)
+    seeded = await _seed_nested(owner_sessionmaker)
+    tenant_id = seeded["tenant_id"]
+    await _drive_terminal_seam(owner_sessionmaker, tenant_id=tenant_id, task_id=seeded["c_run_id"])
+
+    service = RuntimeNotificationOutboxService(session_factory=owner_sessionmaker)
+    claimed = await service.claim_batch(worker_id="worker-a", limit=10)
+    assert claimed
+    pages = await service.prepare_integration_pages(worker_id="worker-a", claimed=claimed)
+    assert len(pages) == 1
+    current_token = pages[0].claim_token
+
+    async with owner_sessionmaker() as db:
+        page = (
+            await db.execute(
+                select(RuntimeResultIntegrationPage).where(
+                    RuntimeResultIntegrationPage.parent_session_id == seeded["parent_session_id"]
+                )
+            )
+        ).scalar_one()
+        page_id = page.id
+
+        # 1. Source task type no longer matches the linked outbox row's
+        #    durable task_type (a2a_continuation).
+        source_task = await db.get(RuntimeTask, seeded["c_run_id"])
+        source_task.task_type = "web_chat_turn"
+        await db.flush()
+        with pytest.raises(PermissionError, match="runtime_result_integration_source_mismatch"):
+            await resolve_runtime_result_integration_authority(
+                db,
+                page_id=page_id,
+                agent_id=seeded["agent_b_id"],
+                session_id=seeded["parent_session_id"],
+                action="mutate_session_input",
+                expected_claim_token=current_token,
+            )
+        await db.rollback()
+
+        # 2. Child session route no longer points at the parent session.
+        child_session = await db.get(ChatSession, seeded["child_session_id"])
+        child_session.parent_session_id = seeded["root_session_id"]
+        await db.flush()
+        with pytest.raises(PermissionError, match="runtime_result_integration_source_mismatch"):
+            await resolve_runtime_result_integration_authority(
+                db,
+                page_id=page_id,
+                agent_id=seeded["agent_b_id"],
+                session_id=seeded["parent_session_id"],
+                action="mutate_session_input",
+                expected_claim_token=current_token,
             )
         await db.rollback()

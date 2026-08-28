@@ -1118,6 +1118,31 @@ async def test_command_principal_is_server_derived_and_agent_grant_cannot_cross_
         )
 
 
+def test_server_derived_lane_principal_error_contracts_are_exact() -> None:
+    """Each server-derived lane keeps its own exact post_init error contract."""
+
+    from app.services.session_v2_persistence import (
+        _AUTHORITY_SEAL,
+        A2A_DELEGATION_PEER_AUTHORITY_SOURCE,
+        RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE,
+        AuthenticatedSessionAuthority,
+    )
+
+    base = {
+        "tenant_id": uuid.uuid4(),
+        "agent_id": uuid.uuid4(),
+        "principal_type": "external_principal",
+        "principal_id": uuid.uuid4(),
+        "session_id": uuid.uuid4(),
+        "action": "mutate_session_input",
+        "_seal": _AUTHORITY_SEAL,
+    }
+    with pytest.raises(ValueError, match="a2a_delegation_peer_requires_user_principal"):
+        AuthenticatedSessionAuthority(authority_source=A2A_DELEGATION_PEER_AUTHORITY_SOURCE, **base)
+    with pytest.raises(ValueError, match="runtime_result_integration_requires_user_principal"):
+        AuthenticatedSessionAuthority(authority_source=RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE, **base)
+
+
 async def test_app_role_rls_hides_and_blocks_cross_tenant_session_v2_rows(
     owner_sessionmaker,
     app_user_sessionmaker,

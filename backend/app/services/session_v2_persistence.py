@@ -106,15 +106,10 @@ class AuthenticatedSessionAuthority:
             raise ValueError("untrusted_session_authority")
         if self.principal_type not in {"user", "external_principal"}:
             raise ValueError("unsupported_session_principal_type")
-        if (
-            self.authority_source
-            in {
-                A2A_DELEGATION_PEER_AUTHORITY_SOURCE,
-                RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE,
-            }
-            and self.principal_type != "user"
-        ):
-            raise ValueError("server_derived_lane_requires_user_principal")
+        if self.authority_source == A2A_DELEGATION_PEER_AUTHORITY_SOURCE and self.principal_type != "user":
+            raise ValueError("a2a_delegation_peer_requires_user_principal")
+        if self.authority_source == RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE and self.principal_type != "user":
+            raise ValueError("runtime_result_integration_requires_user_principal")
 
     def event_actor(self) -> dict[str, str]:
         return {"type": self.principal_type, "id": str(self.principal_id)}
@@ -464,6 +459,7 @@ async def _validate_runtime_result_integration_binding(
     agent: Any,
     page_id: uuid.UUID,
     require_delivery_state: bool,
+    expected_claim_token: uuid.UUID | str | None = None,
 ) -> tuple[User, Any]:
     """Mechanically revalidate one runtime result integration page route.
 
@@ -482,9 +478,13 @@ async def _validate_runtime_result_integration_binding(
 
     ``require_delivery_state=True`` (new-command admission) additionally
     requires the durable claimed ``processing`` delivery state with claim
-    evidence.  ``False`` (replay/fresh-worker recovery) revalidates only
-    immutable route and authority facts: a later ``delivered`` or even
-    ``dead_letter`` page status can never strand an already-accepted input.
+    evidence AND exact equality with the transiently presented current
+    ``claim_token`` — a stale claimed page can never borrow another worker's
+    later claim after lease reclaim.  The token itself is never persisted
+    into any durable authority marker.  ``False`` (replay/fresh-worker
+    recovery) revalidates only immutable route and authority facts: a later
+    ``delivered`` or even ``dead_letter`` page status — or any later claim —
+    can never strand an already-accepted input.
     """
 
     from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
@@ -511,12 +511,25 @@ async def _validate_runtime_result_integration_binding(
         raise PermissionError("runtime_result_integration_target_mismatch")
     if str(getattr(page, "delivery_mode", "") or "") != "parent_continuation":
         raise PermissionError("runtime_result_integration_delivery_mode_mismatch")
-    if require_delivery_state and (
-        str(getattr(page, "status", "") or "") != "processing"
-        or getattr(page, "claim_token", None) is None
-        or not str(getattr(page, "claimed_by", "") or "").strip()
-    ):
-        raise PermissionError("runtime_result_integration_not_in_delivery")
+    if require_delivery_state:
+        if (
+            str(getattr(page, "status", "") or "") != "processing"
+            or getattr(page, "claim_token", None) is None
+            or not str(getattr(page, "claimed_by", "") or "").strip()
+        ):
+            raise PermissionError("runtime_result_integration_not_in_delivery")
+        expected_token: uuid.UUID | None = None
+        if expected_claim_token is not None:
+            try:
+                expected_token = (
+                    expected_claim_token
+                    if isinstance(expected_claim_token, uuid.UUID)
+                    else uuid.UUID(str(expected_claim_token))
+                )
+            except ValueError as exc:
+                raise PermissionError("runtime_result_integration_claim_mismatch") from exc
+        if expected_token is None or page.claim_token != expected_token:
+            raise PermissionError("runtime_result_integration_claim_mismatch")
 
     rows = list(
         (
@@ -574,6 +587,7 @@ async def resolve_runtime_result_integration_authority(
     session_id: uuid.UUID | str,
     action: str,
     require_delivery_state: bool = True,
+    expected_claim_token: uuid.UUID | str | None = None,
 ) -> AuthenticatedSessionAuthority:
     """Resolve the narrow server-derived authority for one result-page return.
 
@@ -602,6 +616,7 @@ async def resolve_runtime_result_integration_authority(
         agent=agent,
         page_id=page_uuid,
         require_delivery_state=require_delivery_state,
+        expected_claim_token=expected_claim_token,
     )
     return AuthenticatedSessionAuthority(
         tenant_id=session.tenant_id,

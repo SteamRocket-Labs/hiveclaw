@@ -1505,6 +1505,9 @@ class RuntimeNotificationOutboxService:
                 manifest=page.manifest,
                 inherited_budget_run_id=budget_run_id,
                 resume_parent=page.delivery_mode == "parent_continuation",
+                # Transient admission-time claim fence: threaded, never
+                # persisted into any durable authority marker.
+                page_claim_token=page.claim_token,
             )
             delivered_event = (
                 await db.execute(

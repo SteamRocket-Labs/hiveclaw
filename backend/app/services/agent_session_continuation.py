@@ -19,6 +19,13 @@ from app.models.user import User
 from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
 from app.services.runtime_root_ledger import RuntimeRootIntentSpec
+
+# The strict durable triple (session_kind + runtime_source + source_channel)
+# used by the Session V2 authority plane — intentionally NOT the broad
+# continuation-compatibility helper ``is_a2a_delegation_child_session`` below.
+from app.services.session_v2_persistence import (
+    _is_a2a_delegation_child_session as _strict_delegation_child_shape,
+)
 from app.services.web_chat_runtime import (
     A2A_CONTINUATION_TASK_TYPE,
     WEB_CHAT_TURN_TASK_TYPE,
@@ -461,6 +468,7 @@ async def continue_parent_session_with_result_page(
     manifest: dict[str, Any],
     inherited_budget_run_id: uuid.UUID | None = None,
     resume_parent: bool = True,
+    page_claim_token: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Project one durable result page and wake the parent at most once."""
 
@@ -558,10 +566,15 @@ async def continue_parent_session_with_result_page(
         model_message_role="system",
         budget_admission_status_override=("approved" if inherited_budget_run_id is not None else None),
         # The narrow runtime result return lane activates ONLY for a target
-        # session that is itself a durable A2A delegation child (strict
-        # durable shape, never message metadata).  Ordinary writable parent
-        # sessions keep the existing session-owner authority byte-for-byte.
-        runtime_result_page_id=integration_page_id if is_a2a_delegation_child_session(session) else None,
+        # session with the SAME strict durable delegation shape the authority
+        # validator requires (session_kind=delegation_run AND
+        # runtime_source=delegation AND source_channel=agent) — never the
+        # broad continuation-compatibility helper and never message metadata.
+        # Ordinary writable parent sessions keep the existing session-owner
+        # authority byte-for-byte.  The claim token is threaded transiently
+        # for the admission-time claim fence and is never persisted.
+        runtime_result_page_id=integration_page_id if _strict_delegation_child_shape(session) else None,
+        runtime_result_page_claim_token=page_claim_token if _strict_delegation_child_shape(session) else None,
     )
 
 
@@ -591,6 +604,7 @@ async def continue_agent_session_from_mailbox(
     budget_admission_status_override: str | None = None,
     a2a_peer_agent_id: uuid.UUID | str | None = None,
     runtime_result_page_id: uuid.UUID | str | None = None,
+    runtime_result_page_claim_token: uuid.UUID | str | None = None,
 ) -> dict[str, Any]:
     """Append and consume a follow-up message for an Agent-Agent session."""
 
@@ -690,6 +704,7 @@ async def continue_agent_session_from_mailbox(
             idempotency_key=f"agent-session-event:{mailbox_event_id}",
             a2a_peer_agent_id=a2a_peer_agent_id,
             runtime_result_page_id=runtime_result_page_id,
+            runtime_result_page_claim_token=runtime_result_page_claim_token,
         )
         return {
             **payload,

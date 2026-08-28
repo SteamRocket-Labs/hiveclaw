@@ -1732,10 +1732,11 @@ function buildRunCell(
   sourceMessages: Array<{ message: AgentChatMessage; index: number }>,
   answer?: { message: AgentChatMessage; index: number },
   activeRun = false,
+  turnStartedAt?: string,
 ): Extract<ThreadTimelineCell, { kind: 'active_run' }> {
   const timeline = buildRunTimelineFromMessages(
     sourceMessages.map((entry) => entry.message),
-    { answer: answer?.message, activeRun },
+    { answer: answer?.message, activeRun, turnStartedAt },
   );
   return {
     kind: 'active_run',
@@ -1798,6 +1799,8 @@ function buildPendingRunCell(
     : input.isStreaming
       ? 'The assistant is streaming this turn.'
       : 'The assistant is continuing this turn.';
+  const latestInputIndex = latestUserMessageIndex(input.messages);
+  const startedAt = latestInputIndex >= 0 ? input.messages[latestInputIndex]?.timestamp : undefined;
   return {
     kind: 'active_run',
     id: 'active-run-pending',
@@ -1806,6 +1809,7 @@ function buildPendingRunCell(
     timeline: {
       id: 'active-run-pending',
       status,
+      startedAt,
       steps: [
         {
           id: 'active-run-pending-step',
@@ -1837,7 +1841,7 @@ function keepLatestProcessRunActive(
   // (frozen duration, no live stopwatch) is preserved.
   const rebuilt = buildRunTimelineFromMessages(
     cell.sourceMessages.map((entry) => entry.message),
-    { activeRun: true },
+    { activeRun: true, turnStartedAt: cell.timeline.startedAt },
   );
   const status: RunTimelineSnapshot['status'] = activeRunStatus === 'failed'
     ? 'failed'
@@ -1861,10 +1865,11 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
   const cells: ThreadTimelineCell[] = [];
   const pendingRun: Array<{ message: AgentChatMessage; index: number }> = [];
   let runIndex = 0;
+  let turnStartedAt: string | undefined;
 
   const flushRun = () => {
     if (pendingRun.length === 0) return;
-    cells.push(buildRunCell(runIndex, [...pendingRun]));
+    cells.push(buildRunCell(runIndex, [...pendingRun], undefined, false, turnStartedAt));
     runIndex += 1;
     pendingRun.length = 0;
   };
@@ -1877,7 +1882,7 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
           ...pendingRun,
           { message: assistantReasoningStepMessage(message), index },
         ];
-        cells.push(buildRunCell(runIndex, sourceMessages, { message: answerMessage, index }));
+        cells.push(buildRunCell(runIndex, sourceMessages, { message: answerMessage, index }, false, turnStartedAt));
         cells.push({
           kind: 'assistant_final',
           id: messageId(answerMessage, `assistant-${index}`),
@@ -1889,7 +1894,7 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
         return;
       }
       if (pendingRun.length > 0) {
-        cells.push(buildRunCell(runIndex, [...pendingRun], { message, index }));
+        cells.push(buildRunCell(runIndex, [...pendingRun], { message, index }, false, turnStartedAt));
         cells.push({
           kind: 'assistant_final',
           id: messageId(message, `assistant-${index}`),
@@ -1921,6 +1926,7 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
 
     flushRun();
     if (message.role === 'user') {
+      turnStartedAt = message.timestamp;
       cells.push({
         kind: 'user_turn',
         id: messageId(message, `user-${index}`),

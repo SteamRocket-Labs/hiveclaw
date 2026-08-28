@@ -17,6 +17,65 @@ import type { SessionIndex } from '../../api/domains/chat';
 import type { SessionWorkbench } from '../../api/domains/ccParity';
 
 describe('session workbench timeline model', () => {
+  it('restores the user-observed run duration from the accepted prompt through the final answer', () => {
+    const messages: AgentChatMessage[] = [
+      {
+        id: 'u1',
+        role: 'user',
+        content: 'Return the exact acceptance marker.',
+        timestamp: '2026-08-29T00:00:00Z',
+      },
+      {
+        id: 'r1',
+        role: 'assistant',
+        content: '',
+        thinking: 'Preparing the response.',
+        timestamp: '2026-08-29T00:00:12Z',
+      },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'SESSION-PRESENTATION-PERSISTED',
+        timestamp: '2026-08-29T00:00:14Z',
+      },
+    ];
+
+    const model = buildThreadTimeline({
+      messages,
+      activeSession: { id: 'session-1', title: 'Persisted duration' },
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+    });
+
+    const run = model.cells.find((cell) => cell.kind === 'active_run');
+    expect(run).toBeDefined();
+    if (!run || run.kind !== 'active_run') return;
+    expect(run.timeline.startedAt).toBe('2026-08-29T00:00:00.000Z');
+    expect(run.timeline.completedAt).toBe('2026-08-29T00:00:14.000Z');
+    expect(run.timeline.durationMs).toBe(14_000);
+  });
+
+  it('starts an empty live run stopwatch at the accepted prompt timestamp', () => {
+    const model = buildThreadTimeline({
+      messages: [{
+        id: 'u1',
+        role: 'user',
+        content: 'Start the run.',
+        timestamp: '2026-08-29T00:00:00Z',
+      }],
+      activeSession: { id: 'session-1', title: 'Live duration' },
+      isWaiting: true,
+      isStreaming: false,
+      activeRunStatus: 'running',
+    });
+
+    const run = model.cells.find((cell) => cell.kind === 'active_run');
+    expect(run).toBeDefined();
+    if (!run || run.kind !== 'active_run') return;
+    expect(run.timeline.startedAt).toBe('2026-08-29T00:00:00Z');
+  });
+
   it('renders a historical non-terminal turn as interrupted with a frozen duration when no run is active', () => {
     // UI-004 regression: replaying a session whose last turn never wrote a
     // terminal lifecycle mark must not fabricate a live processing run with an

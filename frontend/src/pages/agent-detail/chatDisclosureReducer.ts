@@ -76,6 +76,8 @@ export interface RunTimelineSnapshot {
 type TimelineBuildOptions = {
   now?: Date;
   answer?: AgentChatMessage;
+  /** Durable timestamp of the user input that opened this turn. */
+  turnStartedAt?: string;
   /** True only when the authoritative runtime (runs/active poll) reports a live run for this session. */
   activeRun?: boolean;
 };
@@ -767,7 +769,11 @@ export function buildRunTimelineFromMessages(
   const answerIndex = messages.findIndex(isAssistantAnswer);
   const answer = options.answer || (answerIndex >= 0 ? messages[answerIndex] : null);
   const status = getTimelineStatus(steps, Boolean(answer));
-  const firstTime = steps.map((step) => getTimestampMs(step.startedAt)).find((time): time is number => time != null);
+  const firstStepTime = steps.map((step) => getTimestampMs(step.startedAt)).find((time): time is number => time != null);
+  const acceptedInputTime = getTimestampMs(options.turnStartedAt);
+  const firstTime = acceptedInputTime != null && firstStepTime != null
+    ? Math.min(acceptedInputTime, firstStepTime)
+    : acceptedInputTime ?? firstStepTime;
   const lastStepTime = [...steps].reverse().map((step) => getTimestampMs(step.completedAt || step.startedAt)).find((time): time is number => time != null);
   const answerTime = getTimestampMs(answer?.timestamp);
   // `interrupted` must not fabricate a terminal completion: completedAt stays

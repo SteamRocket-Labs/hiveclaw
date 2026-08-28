@@ -237,6 +237,51 @@ export interface SessionRunState {
 }
 
 /**
+ * Terminal run-identity guard for the at-least-once transport contract.  A
+ * terminal witness carrying a nonempty run id that differs from the
+ * currently active run id is a stale old-run event: it must never clear the
+ * active run, fail the active phase, or seal the active tail.  A null active
+ * run (nothing live) or a null/blank terminal id (legacy frames without run
+ * identity) keeps the historical behavior of accepting the terminal.
+ */
+export function isTerminalRunAcceptedForActiveRun(
+  activeRunId: string | null | undefined,
+  terminalRunId: string | null | undefined,
+): boolean {
+  const terminal = String(terminalRunId || '').trim();
+  const active = String(activeRunId || '').trim();
+  return !(terminal && active && terminal !== active);
+}
+
+/**
+ * Active-run terminal bookkeeping for the at-least-once transport contract.
+ * A terminal witness whose nonempty run id differs from the currently active
+ * run id is a stale old-run event: it is recorded in ``terminalRunIds`` (so
+ * the stale run is never re-observed as active) but it never marks the whole
+ * session terminal and never clears the active run.  Returns whether the
+ * terminal was accepted for the currently active run; ``clearActiveRun``
+ * fires only on acceptance.
+ */
+export function markActiveRunTerminalInRegistry(
+  terminalSessionKeys: Set<string>,
+  terminalRunIds: Set<string>,
+  key: string,
+  activeRunId: string | null | undefined,
+  terminalRunId: string | null | undefined,
+  clearActiveRun: () => void,
+): boolean {
+  if (!isTerminalRunAcceptedForActiveRun(activeRunId, terminalRunId)) {
+    if (terminalRunId) terminalRunIds.add(String(terminalRunId));
+    return false;
+  }
+  terminalSessionKeys.add(key);
+  const runId = terminalRunId || activeRunId;
+  if (runId) terminalRunIds.add(String(runId));
+  clearActiveRun();
+  return true;
+}
+
+/**
  * RuntimePhase — frontend mirror of the backend first-class phase contract
  * (backend/app/runtime/runtime_phase.py, unified design 2026-07-09 §3.3).
  * `idle` is a frontend-only base state meaning "no run in this session".

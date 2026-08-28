@@ -67,12 +67,20 @@ function scopeRunId(scope: unknown): string | null {
 }
 
 export interface SessionSocketProjectionDependencies {
+  // Returns whether the envelope was newly applied (false for an already
+  // seen duplicate or a rejected envelope).  Terminal side effects in this
+  // projector must only run for newly applied canonical events — the
+  // transport is at-least-once.
   applyTranscriptToSession: (
     agentId: string,
     sessionId: string,
     event: ChatTranscriptEventPayload,
     isActiveRuntime: boolean,
-  ) => void;
+  ) => boolean;
+  // The currently active run id for the session key, or null when no run is
+  // live.  Captured before envelope consumption so a matching terminal can
+  // still be honored after the consumption callback cleared that active run.
+  activeRunIdOf: (key: string) => string | null;
   selectSession: (session: any) => void | Promise<unknown>;
   fetchMySessions: (silent: boolean, agentId: string) => void | Promise<unknown>;
   setSessionPhase: (key: string, phase: RuntimePhase) => void;
@@ -151,11 +159,24 @@ export function projectSessionSocketEvent(
         lifecycle: d.lifecycle,
       },
     };
-    applyTranscriptToSession(agentId, sessionId, transcriptEvent, isActiveRuntime);
+    // Pre-consumption run identity: consumption itself may clear a matching
+    // active run via the terminal callback, so the staleness decision must
+    // be made against the active run captured before consumption.
+    const preConsumptionActiveRunId = dependencies.activeRunIdOf(key);
+    const newlyApplied = applyTranscriptToSession(agentId, sessionId, transcriptEvent, isActiveRuntime) === true;
+    // At-least-once contract: a duplicate or rejected canonical envelope
+    // must not perform any UI or query side effect.
+    if (!newlyApplied) return;
     const itemKind = String(d.item_kind || '').toLowerCase();
     const lifecycle = String(d.lifecycle || '').toLowerCase();
     const payload = d.payload && typeof d.payload === 'object' ? d.payload : {};
     const toolName = String(payload.tool_name || payload.name || '').toLowerCase();
+    // Run-identity safety for every terminal branch: a stale old-run
+    // terminal while a different run is active must not clear the active
+    // run, set a terminal phase, or refresh/reconcile as that terminal.
+    const staleTerminalForActiveRun = (terminalRunId: string | null): boolean => Boolean(
+      preConsumptionActiveRunId && terminalRunId && preConsumptionActiveRunId !== terminalRunId,
+    );
     if (
       itemKind === 'tool_call'
       && TASK_LEDGER_MUTATION_TOOLS.has(toolName)
@@ -168,7 +189,7 @@ export function projectSessionSocketEvent(
       invalidateSessionRuntimeQueries(agentId, sessionId, false);
     } else if (RUNTIME_QUERY_EVENT_KINDS.has(itemKind)) {
       invalidateSessionRuntimeQueries(agentId, sessionId);
-    } else if (isLegacyAssistantTerminalItem(itemKind, lifecycle, payload)) {
+    } else if (isLegacyAssistantTerminalItem(itemKind, lifecycle, payload) && !staleTerminalForActiveRun(scopeRunId(d.scope))) {
       // Turn-terminal witness of the legacy web-chat path: same contract as
       // the terminal stream frame — clear the active run, refresh the runtime
       // read models the right panel renders from, and reconcile the durable
@@ -183,7 +204,7 @@ export function projectSessionSocketEvent(
       void fetchMySessions(true, agentId);
       if (isActiveRuntime) dependencies.reconcileSessionTranscript(agentId, sessionId);
     }
-    if (itemKind === 'run' && TERMINAL_RUN_LIFECYCLES.has(lifecycle)) {
+    if (itemKind === 'run' && TERMINAL_RUN_LIFECYCLES.has(lifecycle) && !staleTerminalForActiveRun(scopeRunId(d.scope))) {
       const terminalPhase = terminalPhaseForRunLifecycle(lifecycle);
       if (terminalPhase) {
         setSessionPhase(key, terminalPhase);
@@ -199,7 +220,7 @@ export function projectSessionSocketEvent(
       ? String((d.scope as { level?: unknown }).level || '')
       : '';
     const failureRunId = failureScopeLevel === 'run' ? scopeRunId(d.scope) : null;
-    if (itemKind === 'runtime_failure' && lifecycle === 'recorded' && failureRunId) {
+    if (itemKind === 'runtime_failure' && lifecycle === 'recorded' && failureRunId && !staleTerminalForActiveRun(failureRunId)) {
       // Canonical terminal witness of the web-chat provider-failure path
       // (e.g. typed 402 quota_exhausted/rejected): same no-reload contract as
       // the terminal stream frame — close the active run, pin the failed

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import type { AgentChatMessage, ChatTranscriptEventPayload } from './chatRuntime';
+import {
+  isTerminalRunAcceptedForActiveRun,
+  type AgentChatMessage,
+  type ChatTranscriptEventPayload,
+  type SessionRunState,
+} from './chatRuntime';
 import { buildRunTimelineFromMessages } from './chatDisclosureReducer';
 import {
   applyCanonicalSessionSnapshot,
@@ -402,6 +407,74 @@ describe('canonical runtime_failure consumption (DAY1-PROVIDER-402-TERMINAL-CONS
       reason: 'provider_error',
       retryable: true,
     });
+  });
+
+  it('never clears or terminal-merges an active run-2 when a stale run-1 runtime_failure replays through the real snapshot seam (Codex path proof)', () => {
+    const failureEvent = runtimeFailureEvent(runScope);
+    const store = replay([failureEvent]);
+    // Real active-run state: run-2 is the currently active run in this session.
+    const activeRuns: Record<string, SessionRunState> = {
+      'agent-1:session-1': { runId: 'run-2', status: 'running' } as SessionRunState,
+    };
+    const clearedRunIds: Array<string | null> = [];
+    const messageMerges: Array<{ terminal: boolean; runId: string | null }> = [];
+
+    applyCanonicalSessionSnapshot({
+      event: failureEvent as unknown as ChatTranscriptEventPayload,
+      store,
+      active: true,
+      onTranscript: () => undefined,
+      onActivity: () => undefined,
+      onTerminal: (runId) => {
+        // The exact AgentDetail markActiveRunTerminal identity contract: a
+        // nonempty stale terminal run id is recorded but never clears the
+        // active run, and reports not-accepted.
+        if (!isTerminalRunAcceptedForActiveRun(activeRuns['agent-1:session-1']?.runId ?? null, runId)) return false;
+        clearedRunIds.push(runId);
+        delete activeRuns['agent-1:session-1'];
+        return true;
+      },
+      onMessages: (_messages, terminal, runId) => {
+        messageMerges.push({ terminal, runId });
+      },
+    });
+
+    expect(activeRuns['agent-1:session-1']?.runId).toBe('run-2');
+    expect(clearedRunIds).toEqual([]);
+    // The run-1 failure card may enter the durable projection, but it must
+    // not seal or replace the active run-2 tail as a terminal merge.
+    expect(messageMerges).toEqual([{ terminal: false, runId: 'run-1' }]);
+  });
+
+  it('still clears and terminal-merges the matching active run for a fresh run-scoped runtime_failure', () => {
+    const failureEvent = runtimeFailureEvent(runScope);
+    const store = replay([failureEvent]);
+    const activeRuns: Record<string, SessionRunState> = {
+      'agent-1:session-1': { runId: 'run-1', status: 'running' } as SessionRunState,
+    };
+    const clearedRunIds: Array<string | null> = [];
+    const messageMerges: Array<{ terminal: boolean; runId: string | null }> = [];
+
+    applyCanonicalSessionSnapshot({
+      event: failureEvent as unknown as ChatTranscriptEventPayload,
+      store,
+      active: true,
+      onTranscript: () => undefined,
+      onActivity: () => undefined,
+      onTerminal: (runId) => {
+        if (!isTerminalRunAcceptedForActiveRun(activeRuns['agent-1:session-1']?.runId ?? null, runId)) return false;
+        clearedRunIds.push(runId);
+        delete activeRuns['agent-1:session-1'];
+        return true;
+      },
+      onMessages: (_messages, terminal, runId) => {
+        messageMerges.push({ terminal, runId });
+      },
+    });
+
+    expect(activeRuns['agent-1:session-1']).toBeUndefined();
+    expect(clearedRunIds).toEqual(['run-1']);
+    expect(messageMerges).toEqual([{ terminal: true, runId: 'run-1' }]);
   });
 
   it.each([

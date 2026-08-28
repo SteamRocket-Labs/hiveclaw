@@ -19,6 +19,7 @@ import {
     createEmptyTranscriptReplayState,
     getTerminalRunIdFromTranscriptEvent,
     isDraftHumanChatSession,
+    markActiveRunTerminalInRegistry,
     mergePendingUserMessages,
     filterSessionsForAgent,
     normalizeRuntimeEventMessage,
@@ -389,12 +390,9 @@ function AgentDetailInner() {
         return next.uiStates[key];
     };
 
-    const markActiveRunTerminal = (key: SessionRuntimeKey, terminalRunId?: string | null) => {
-        locallyTerminalSessionKeysRef.current.add(key);
-        const runId = terminalRunId || activeRunStateRef.current[key]?.runId;
-        if (runId) locallyTerminalRunIdsRef.current.add(String(runId));
-        setActiveRunState(key, null);
-    };
+    // Identity-safe terminal bookkeeping lives in chatRuntime (policy owner).
+    const markActiveRunTerminal = (key: SessionRuntimeKey, terminalRunId?: string | null): boolean =>
+        markActiveRunTerminalInRegistry(locallyTerminalSessionKeysRef.current, locallyTerminalRunIdsRef.current, key, activeRunStateRef.current[key]?.runId ?? null, terminalRunId ?? null, () => setActiveRunState(key, null));
 
     // Turn lifecycle state machine (§3 seam 1): the RuntimePhase is the single
     // source of truth per session; waiting/streaming booleans are derived views.
@@ -459,24 +457,24 @@ function AgentDetailInner() {
                 sessionEventStoresRef.current[key],
                 sessionEventFullHydrationKeysRef.current.has(key) ? 0 : latestTranscriptSequence(existingEvents),
             );
-            if (consumed.sessionEnvelope && consumed.store === sessionEventStoresRef.current[key]) return;
+            if (consumed.sessionEnvelope && consumed.store === sessionEventStoresRef.current[key]) return false;
             if (consumed.store) sessionEventStoresRef.current[key] = consumed.store;
             projectionEvent = consumed.projectionEvent;
-            if (consumed.canonical && consumed.store) { const nextTranscriptEvents = mergeTranscriptBackfill(existingEvents, [projectionEvent]); return applyCanonicalSessionSnapshot({ event: projectionEvent, store: consumed.store, active: isActiveRuntime, onTranscript: () => { transcriptEventsRef.current[key] = nextTranscriptEvents; }, onActivity: () => { runtimeActivityAtRef.current[key] = Date.now(); }, onTerminal: (runId) => markActiveRunTerminal(key, runId), onMessages: (messages, terminal, runId) => { setChatMessagesSessionId(sessionId); (terminal ? setChatMessagesAfterQueuedForSession : enqueueChatMessagesUpdateForSession)(sessionId, (previous) => mergePendingForSession(key, terminal ? mergeCanonicalTerminalMessages(previous, messages, runId) : messages)); } }); }
+            if (consumed.canonical && consumed.store) { const nextTranscriptEvents = mergeTranscriptBackfill(existingEvents, [projectionEvent]); applyCanonicalSessionSnapshot({ event: projectionEvent, store: consumed.store, active: isActiveRuntime, onTranscript: () => { transcriptEventsRef.current[key] = nextTranscriptEvents; }, onActivity: () => { runtimeActivityAtRef.current[key] = Date.now(); }, onTerminal: (runId) => markActiveRunTerminal(key, runId), onMessages: (messages, terminal, runId) => { setChatMessagesSessionId(sessionId); (terminal ? setChatMessagesAfterQueuedForSession : enqueueChatMessagesUpdateForSession)(sessionId, (previous) => mergePendingForSession(key, terminal ? mergeCanonicalTerminalMessages(previous, messages, runId) : messages)); } }); return true; }
         } catch (error) {
             console.warn(`[SessionEventV2] Rejected invalid envelope for ${key}:`, error);
-            return;
+            return false;
         }
         const sequenceAlreadyApplied = typeof projectionEvent.sequence === 'number'
             && projectionEvent.sequence > 0
             && existingEvents.some((candidate) => candidate.sequence === projectionEvent.sequence);
         if (sequenceAlreadyApplied) {
             transcriptEventsRef.current[key] = mergeTranscriptBackfill(existingEvents, [projectionEvent]);
-            return;
+            return false;
         }
         const previous = transcriptReplayStateRef.current[key] || createEmptyTranscriptReplayState();
         const next = applyTranscriptEvent(previous, projectionEvent);
-        if (next === previous) return;
+        if (next === previous) return false;
         transcriptReplayStateRef.current[key] = next;
         transcriptEventsRef.current[key] = mergeTranscriptBackfill(
             transcriptEventsRef.current[key] || [],
@@ -508,6 +506,7 @@ function AgentDetailInner() {
             setIsWaiting(next.ui.isWaiting);
             setIsStreaming(next.ui.isStreaming);
         }
+        return true;
     };
 
     const backfillSessionTranscript = async (sess: any, agentId: string) => {
@@ -1608,6 +1607,7 @@ function AgentDetailInner() {
             syncActivePhase,
             setActiveRunState,
             markActiveRunTerminal,
+            activeRunIdOf: (key: SessionRuntimeKey) => activeRunStateRef.current[key]?.runId ? String(activeRunStateRef.current[key].runId) : null,
             invalidateSessionRuntimeQueries,
             reconcileSessionTranscript: (agentId, sessionId) => {
                 const sess = String(activeSession?.id || '') === sessionId ? activeSession : { id: sessionId };

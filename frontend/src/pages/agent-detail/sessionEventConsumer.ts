@@ -468,15 +468,19 @@ export function applyCanonicalSessionSnapshot(options: {
   active: boolean;
   onTranscript: () => void;
   onActivity: () => void;
-  onTerminal: (runId: string | null) => void;
+  onTerminal: (runId: string | null) => boolean | void;
   onMessages: (messages: AgentChatMessage[], terminal: boolean, runId: string | null) => void;
 }): void {
   const snapshot = projectCanonicalSessionSnapshot(options.event, options.store);
   options.onTranscript();
   options.onActivity();
-  if (snapshot.runTerminal) options.onTerminal(snapshot.runId);
+  // The terminal merge must honor whether onTerminal actually accepted this
+  // run terminal: a stale old-run event (rejected by the active-run identity
+  // guard) may enter the durable projection but can never seal or replace
+  // the active newer run's tail.
+  const terminalAccepted = snapshot.runTerminal ? options.onTerminal(snapshot.runId) !== false : false;
   if (options.active && snapshot.projectMessages) {
-    options.onMessages(snapshot.messages, snapshot.terminal, snapshot.runId);
+    options.onMessages(snapshot.messages, snapshot.terminal && terminalAccepted, snapshot.runId);
   }
 }
 

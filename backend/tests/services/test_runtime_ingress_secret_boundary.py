@@ -86,9 +86,11 @@ async def test_active_turn_redacts_exact_secret_before_session_v2_and_queued_pro
 
     async def fake_submit(**kwargs):
         captured.update(kwargs)
+        # Mirror the canonical hive.human_input_receipt payload produced by
+        # the real submit_live_human_input (key is "status", not "input_status").
         return {
             "input_id": str(uuid.uuid4()),
-            "input_status": "queued",
+            "status": "queued",
             "dispatch_status": "mailbox_queued",
             "queue_ordinal": 7,
         }

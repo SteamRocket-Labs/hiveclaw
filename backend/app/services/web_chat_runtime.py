@@ -1179,6 +1179,7 @@ async def _submit_active_session_input(
     role: str = "user",
     idempotency_key: str | None = None,
     message_already_in_t0: bool = False,
+    a2a_peer_agent_id: uuid.UUID | str | None = None,
 ) -> dict[str, Any]:
     """Persist one active-turn input through the canonical Session V2 plane."""
 
@@ -1188,6 +1189,7 @@ async def _submit_active_session_input(
         redact_runtime_ingress_payload,
     )
     from app.services.session_live_input import submit_live_human_input
+    from app.services.session_v2_persistence import _is_a2a_delegation_child_session
 
     try:
         redaction = await redact_runtime_ingress_payload(
@@ -1250,11 +1252,18 @@ async def _submit_active_session_input(
         attachments=attachments,
         parts=parts,
         role=role,
+        a2a_peer_agent_id=a2a_peer_agent_id,
         runtime_metadata={
             **protected_extra_metadata,
             "source": source_channel,
             "existing_user_message_saved": bool(message_already_in_t0),
             "canonical_session_input": True,
+            # Server-derived from the durable session kind (never caller
+            # input): a terminal-fallback FIFO successor on an A2A delegation
+            # child must stay completion-outbox eligible as a2a_continuation.
+            # This key only types the successor run; it cannot select the
+            # completion route, which is rebound from durable session columns.
+            **({"runtime_task_type": A2A_CONTINUATION_TASK_TYPE} if _is_a2a_delegation_child_session(session) else {}),
         },
     )
     saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
@@ -1269,7 +1278,7 @@ async def _submit_active_session_input(
         "file_name": file_name,
         "attachments": attachments or [],
         "parts": parts or [],
-        "status": receipt["input_status"],
+        "status": receipt["status"],
         "dispatch_status": receipt["dispatch_status"],
         "queue_ordinal": receipt["queue_ordinal"],
     }

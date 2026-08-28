@@ -46,6 +46,22 @@ _PRIORITY_BY_INTENT = {
 }
 _AUTHORITY_SEAL = object()
 
+# Narrow server-derived authority for an authenticated parent Agent's message
+# to its exact active A2A delegation child session.  ``delegation_run`` is
+# product read-only for user-facing HTTP/WS mutation (require_writable_session
+# 409), and that boundary is NOT weakened here: this lane never goes through
+# the user writable gate.  Instead the resolver mechanically revalidates the
+# durable binding — tenant, peer Agent, child Agent/session, root user, root
+# session, and the delegation RuntimeTask — on every accept and on every
+# worker-recovery rebuild.  The command plane keeps
+# ``principal_type='user'``/``principal_id=root user`` (no schema change); the
+# typed ``session_command_authority`` stamp inside ``target_json`` is
+# server-minted only, covered by ``target_hash`` and the idempotency replay
+# comparison, and is never trusted without the full durable revalidation.
+A2A_DELEGATION_PEER_AUTHORITY_SOURCE = "a2a_delegation_peer"
+A2A_DELEGATION_PEER_STAMP_SCHEMA = "hive.session_command_authority.a2a_delegation_peer.v1"
+SESSION_COMMAND_AUTHORITY_STAMP_KEY = "session_command_authority"
+
 
 class IdempotencyConflict(RuntimeError):
     def __init__(self, *, command: SessionCommand):
@@ -72,6 +88,8 @@ class AuthenticatedSessionAuthority:
             raise ValueError("untrusted_session_authority")
         if self.principal_type not in {"user", "external_principal"}:
             raise ValueError("unsupported_session_principal_type")
+        if self.authority_source == A2A_DELEGATION_PEER_AUTHORITY_SOURCE and self.principal_type != "user":
+            raise ValueError("a2a_delegation_peer_requires_user_principal")
 
     def event_actor(self) -> dict[str, str]:
         return {"type": self.principal_type, "id": str(self.principal_id)}
@@ -123,9 +141,7 @@ async def _resolve_external_session_mutation_authority(
     from app.models.user import User
 
     principal_id = _uuid(getattr(actor, "external_principal_id", None), "external_principal_id")
-    session = await db.scalar(
-        select(ChatSession).where(ChatSession.id == session_id, ChatSession.agent_id == agent_id)
-    )
+    session = await db.scalar(select(ChatSession).where(ChatSession.id == session_id, ChatSession.agent_id == agent_id))
     principal = await db.get(ExternalPrincipal, principal_id)
     agent = await db.get(Agent, agent_id)
     if session is None or principal is None or agent is None:
@@ -233,6 +249,172 @@ async def resolve_session_mutation_authority(
     )
 
 
+def _is_a2a_delegation_child_session(session: ChatSession) -> bool:
+    """Structured A2A delegation child binding from durable session fields only."""
+
+    return (
+        str(getattr(session, "session_kind", "") or "").strip().lower() == "delegation_run"
+        and str(getattr(session, "runtime_source", "") or "").strip().lower() == "delegation"
+        and str(getattr(session, "source_channel", "") or "").strip().lower() == "agent"
+    )
+
+
+def a2a_delegation_peer_command_stamp(
+    *,
+    peer_agent_id: uuid.UUID,
+    delegation_runtime_task_id: uuid.UUID,
+) -> dict[str, str]:
+    """Server-minted typed marker persisted inside ``SessionCommand.target_json``.
+
+    The stamp is only written after ``resolve_a2a_delegation_peer_authority``
+    has validated the durable binding, and worker recovery revalidates the same
+    durable binding before acting on it — the marker selects the revalidation
+    lane; it never grants authority by itself.
+    """
+
+    return {
+        "schema": A2A_DELEGATION_PEER_STAMP_SCHEMA,
+        "authority_source": A2A_DELEGATION_PEER_AUTHORITY_SOURCE,
+        "peer_agent_id": str(peer_agent_id),
+        "delegation_runtime_task_id": str(delegation_runtime_task_id),
+    }
+
+
+async def _validate_a2a_delegation_peer_binding(
+    db: AsyncSession,
+    *,
+    session: ChatSession,
+    agent: Any,
+    peer_agent_id: uuid.UUID,
+    delegation_runtime_task_id: uuid.UUID | None,
+) -> tuple[User, Any]:
+    """Mechanically revalidate the exact A2A delegation parent->child binding.
+
+    Every check reads durable columns (``chat_sessions`` / ``runtime_tasks`` /
+    ``agents`` / ``users``); nothing is inferred from message content.  Any
+    mismatch is a typed ``PermissionError`` denial, never a silent fallback.
+    Returns the validated root user and the durable delegation RuntimeTask.
+    """
+
+    from app.models.agent import Agent
+    from app.models.runtime_task import RuntimeTask
+
+    if not _is_a2a_delegation_child_session(session):
+        raise PermissionError("a2a_delegation_peer_session_kind_mismatch")
+    tenant_id = session.tenant_id
+    if tenant_id is None or getattr(agent, "tenant_id", None) != tenant_id or session.agent_id != agent.id:
+        raise PermissionError("a2a_delegation_peer_tenant_mismatch")
+    if session.peer_agent_id != peer_agent_id:
+        raise PermissionError("a2a_delegation_peer_agent_mismatch")
+    peer = await db.get(Agent, peer_agent_id)
+    if peer is None or peer.tenant_id != tenant_id:
+        raise PermissionError("a2a_delegation_peer_agent_mismatch")
+
+    root_user_id = session.user_id
+    if root_user_id is None:
+        raise PermissionError("a2a_delegation_peer_root_user_missing")
+    root_user = await db.get(User, root_user_id)
+    if root_user is None or not getattr(root_user, "is_active", False) or root_user.tenant_id != tenant_id:
+        raise PermissionError("a2a_delegation_peer_root_user_mismatch")
+
+    # 1) Immediate parent route: the session's durable ``parent_session_id``
+    # must be the peer Agent's own session that issued this delegation, and
+    # the durable delegation task must name the same parent session.  For
+    # nested delegation (depth > 1) this is the immediate parent DELEGATION
+    # session — never the human root session.
+    parent_session_id = session.parent_session_id
+    if parent_session_id is None:
+        raise PermissionError("a2a_delegation_peer_parent_session_missing")
+    parent_session = await db.get(ChatSession, parent_session_id)
+    if parent_session is None or parent_session.tenant_id != tenant_id or parent_session.agent_id != peer_agent_id:
+        raise PermissionError("a2a_delegation_peer_parent_session_mismatch")
+
+    # 2) Durable RuntimeTask authority: peer parent agent, exact child
+    # agent/session, same immediate parent session, chain root user, and a
+    # persisted delegation chain.
+    if delegation_runtime_task_id is None or session.runtime_task_id != delegation_runtime_task_id:
+        raise PermissionError("a2a_delegation_peer_runtime_task_mismatch")
+    task = await db.get(RuntimeTask, delegation_runtime_task_id)
+    if (
+        task is None
+        or task.tenant_id != tenant_id
+        or task.parent_agent_id != peer_agent_id
+        or task.child_agent_id != agent.id
+        or str(getattr(task, "child_session_id", None) or "") != str(session.id)
+        or str(getattr(task, "parent_session_id", None) or "") != str(parent_session.id)
+        or task.root_user_id != root_user.id
+        or not list(getattr(task, "delegation_chain_json", None) or [])
+    ):
+        raise PermissionError("a2a_delegation_peer_runtime_task_mismatch")
+
+    # 3) Chain root authority: the task's durable ``root_session_id`` names
+    # the human root session of the whole delegation chain.  For nested
+    # delegation this intentionally differs from the child session's
+    # ``root_session_id`` (production ``_ensure_peer_delegation_session`` sets
+    # the latter to the immediate parent session), so root proof is tenant +
+    # root-user binding only — never immediate-peer ownership.
+    task_root_session_raw = str(getattr(task, "root_session_id", None) or "").strip()
+    if not task_root_session_raw:
+        raise PermissionError("a2a_delegation_peer_root_session_missing")
+    try:
+        task_root_session_id = uuid.UUID(task_root_session_raw)
+    except ValueError as exc:
+        raise PermissionError("a2a_delegation_peer_root_session_missing") from exc
+    root_session = await db.get(ChatSession, task_root_session_id)
+    if root_session is None or root_session.tenant_id != tenant_id or root_session.user_id != root_user.id:
+        raise PermissionError("a2a_delegation_peer_root_session_mismatch")
+    return root_user, task
+
+
+async def resolve_a2a_delegation_peer_authority(
+    db: AsyncSession,
+    *,
+    peer_agent_id: uuid.UUID | str,
+    agent_id: uuid.UUID | str,
+    session_id: uuid.UUID | str,
+    action: str,
+) -> AuthenticatedSessionAuthority:
+    """Resolve the narrow server-derived authority for one A2A peer message.
+
+    This is NOT a writable-session bypass: it never calls the user writable
+    gate and it only ever succeeds for a session whose durable columns prove
+    an exact delegation binding to the authenticated peer Agent.  It is
+    limited to ``mutate_session_input`` so control/approval mutations stay on
+    the user authority plane.
+    """
+
+    from app.models.agent import Agent
+
+    if action != "mutate_session_input":
+        raise PermissionError("a2a_delegation_peer_action_not_allowed")
+    agent_uuid = _uuid(agent_id, "agent_id")
+    session_uuid = _uuid(session_id, "session_id")
+    peer_uuid = _uuid(peer_agent_id, "peer_agent_id")
+    session = await db.scalar(
+        select(ChatSession).where(ChatSession.id == session_uuid, ChatSession.agent_id == agent_uuid)
+    )
+    agent = await db.get(Agent, agent_uuid)
+    if session is None or agent is None:
+        raise PermissionError("a2a_delegation_peer_authority_not_found")
+    root_user, _task = await _validate_a2a_delegation_peer_binding(
+        db,
+        session=session,
+        agent=agent,
+        peer_agent_id=peer_uuid,
+        delegation_runtime_task_id=session.runtime_task_id,
+    )
+    return AuthenticatedSessionAuthority(
+        tenant_id=session.tenant_id,
+        agent_id=agent.id,
+        principal_type="user",
+        principal_id=root_user.id,
+        session_id=session.id,
+        authority_source=A2A_DELEGATION_PEER_AUTHORITY_SOURCE,
+        action=action,
+        _seal=_AUTHORITY_SEAL,
+    )
+
+
 async def resolve_session_command_authority(
     db: AsyncSession,
     *,
@@ -254,6 +436,43 @@ async def resolve_session_command_authority(
     )
     if agent is None or agent.tenant_id != command.tenant_id:
         raise RuntimeError("session_command_agent_authority_mismatch")
+
+    stamp = (command.target_json or {}).get(SESSION_COMMAND_AUTHORITY_STAMP_KEY)
+    if stamp is not None:
+        # A server-minted A2A delegation peer stamp selects the durable
+        # revalidation lane; the stamp itself grants nothing.
+        if command.principal_type != "user" or not isinstance(stamp, dict):
+            raise RuntimeError("session_command_authority_stamp_invalid")
+        if (
+            stamp.get("schema") != A2A_DELEGATION_PEER_STAMP_SCHEMA
+            or stamp.get("authority_source") != A2A_DELEGATION_PEER_AUTHORITY_SOURCE
+        ):
+            raise RuntimeError("session_command_authority_stamp_invalid")
+        try:
+            peer_agent_id = _uuid(stamp.get("peer_agent_id"), "peer_agent_id")
+            delegation_runtime_task_id = _uuid(stamp.get("delegation_runtime_task_id"), "delegation_runtime_task_id")
+        except ValueError as exc:
+            raise RuntimeError("session_command_authority_stamp_invalid") from exc
+        root_user, _task = await _validate_a2a_delegation_peer_binding(
+            db,
+            session=session,
+            agent=agent,
+            peer_agent_id=peer_agent_id,
+            delegation_runtime_task_id=delegation_runtime_task_id,
+        )
+        if command.principal_id != root_user.id:
+            raise RuntimeError("session_command_principal_authority_mismatch")
+        authority = AuthenticatedSessionAuthority(
+            tenant_id=command.tenant_id,
+            agent_id=agent.id,
+            principal_type="user",
+            principal_id=root_user.id,
+            session_id=session.id,
+            authority_source=A2A_DELEGATION_PEER_AUTHORITY_SOURCE,
+            action=action,
+            _seal=_AUTHORITY_SEAL,
+        )
+        return SessionCommandAuthorityContext(authority=authority, agent=agent, actor=root_user, session=session)
 
     principal_type = str(getattr(command, "principal_type", "user") or "user")
     if principal_type == "user":
@@ -424,6 +643,13 @@ async def register_session_command(
     )
     if authority.principal_type == "user" and authority.authority_source == "session_owner":
         if locked_session.user_id != principal_uuid:
+            raise ValueError("session_principal_mismatch")
+    if authority.authority_source == A2A_DELEGATION_PEER_AUTHORITY_SOURCE:
+        # Under the session lock, re-prove the exact durable binding the
+        # resolver validated before locking: root-user ownership and the
+        # structured delegation-child kind.  The full peer/RuntimeTask
+        # binding was validated by the resolver in the same transaction.
+        if locked_session.user_id != principal_uuid or not _is_a2a_delegation_child_session(locked_session):
             raise ValueError("session_principal_mismatch")
     if authority.principal_type == "external_principal":
         if locked_session.external_principal_id != principal_uuid:
@@ -722,6 +948,7 @@ async def accept_human_input(
             "fork_after_sequence",
             "terminal_fallback",
             "runtime_metadata",
+            SESSION_COMMAND_AUTHORITY_STAMP_KEY,
         )
         if intent.get(key) is not None
     }

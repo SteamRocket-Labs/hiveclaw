@@ -584,6 +584,7 @@ async def continue_agent_session_from_mailbox(
     run_id: uuid.UUID | None = None,
     root_item_intent: RuntimeRootIntentSpec | None = None,
     budget_admission_status_override: str | None = None,
+    a2a_peer_agent_id: uuid.UUID | str | None = None,
 ) -> dict[str, Any]:
     """Append and consume a follow-up message for an Agent-Agent session."""
 
@@ -681,6 +682,7 @@ async def continue_agent_session_from_mailbox(
             message_already_in_t0=True,
             role=model_role,
             idempotency_key=f"agent-session-event:{mailbox_event_id}",
+            a2a_peer_agent_id=a2a_peer_agent_id,
         )
         return {
             **payload,

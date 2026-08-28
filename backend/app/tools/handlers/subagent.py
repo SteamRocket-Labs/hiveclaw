@@ -42,7 +42,10 @@ from app.models.agent import Agent
 from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
 from app.models.user import User
-from app.services.agent_session_continuation import continue_agent_session_from_mailbox
+from app.services.agent_session_continuation import (
+    continue_agent_session_from_mailbox,
+    is_a2a_delegation_child_session,
+)
 from app.services.execution_admission import ExecutionAdmission, ExecutionAdmissionDecision
 from app.services.runtime_budget_service import (
     RuntimeBudgetDenied,
@@ -1202,6 +1205,12 @@ async def send_agent_session_message(request: ToolExecutionRequest) -> str:
         except RuntimeBudgetDenied as exc:
             return _json({"ok": False, "error": str(exc), "error_code": "runtime_budget_denied"})
         try:
+            # The parent Agent was authenticated above through the durable
+            # RuntimeTask/root-session authority.  Only for a structured A2A
+            # delegation child (durable session fields, never message content)
+            # does the continuation use the narrow server-derived peer lane;
+            # subagent/team sessions keep the ordinary user authority path.
+            a2a_peer_agent_id = request.context.agent_id if is_a2a_delegation_child_session(session) else None
             result = await continue_agent_session_from_mailbox(
                 db=db,
                 agent=agent,
@@ -1211,6 +1220,7 @@ async def send_agent_session_message(request: ToolExecutionRequest) -> str:
                 parent_session_id=request.context.session_id,
                 interrupt_requested=interrupt,
                 extra_metadata={"budget_run_id": inherited_budget_run_id} if inherited_budget_run_id else None,
+                a2a_peer_agent_id=a2a_peer_agent_id,
             )
             await _settle_agent_session_message_budget(
                 reservation_pair,

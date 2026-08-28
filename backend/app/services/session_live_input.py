@@ -24,7 +24,10 @@ from app.models.user import User
 from app.services.session_v2_persistence import (
     HumanInputReceipt,
     IdempotencyConflict,
+    SESSION_COMMAND_AUTHORITY_STAMP_KEY,
     accept_human_input,
+    a2a_delegation_peer_command_stamp,
+    resolve_a2a_delegation_peer_authority,
     resolve_session_mutation_authority,
 )
 
@@ -129,6 +132,7 @@ async def submit_live_human_input(
     plan_mode_requested: bool = False,
     runtime_metadata: dict[str, Any] | None = None,
     role: str = "user",
+    a2a_peer_agent_id: uuid.UUID | str | None = None,
 ) -> dict[str, Any]:
     """Accept, Hook-admit and dispatch one production HumanInput."""
 
@@ -181,13 +185,34 @@ async def submit_live_human_input(
         file_name=file_name,
         role=role,
     )
-    authority = await resolve_session_mutation_authority(
-        db,
-        user=user,
-        agent_id=agent.id,
-        session_id=session.id,
-        action="mutate_session_input",
-    )
+    command_authority_stamp: dict[str, str] | None = None
+    if a2a_peer_agent_id is not None:
+        # Narrow server-derived A2A delegation peer lane: never the user
+        # writable gate, always the full durable binding revalidation.
+        authority = await resolve_a2a_delegation_peer_authority(
+            db,
+            peer_agent_id=a2a_peer_agent_id,
+            agent_id=agent.id,
+            session_id=session.id,
+            action="mutate_session_input",
+        )
+        # The resolver already proved the durable delegation task binding,
+        # so the session's runtime_task_id is present here.
+        assert session.runtime_task_id is not None
+        command_authority_stamp = a2a_delegation_peer_command_stamp(
+            peer_agent_id=a2a_peer_agent_id
+            if isinstance(a2a_peer_agent_id, uuid.UUID)
+            else uuid.UUID(str(a2a_peer_agent_id)),
+            delegation_runtime_task_id=session.runtime_task_id,
+        )
+    else:
+        authority = await resolve_session_mutation_authority(
+            db,
+            user=user,
+            agent_id=agent.id,
+            session_id=session.id,
+            action="mutate_session_input",
+        )
     existing_row = await db.get(SessionTurnInput, input_uuid)
     existing_command = None
     if existing_row is not None:
@@ -251,6 +276,11 @@ async def submit_live_human_input(
         **({"request_item_id": str(request_item_id)} if request_item_id is not None else {}),
         **({"fork_after_sequence": fork_after_sequence} if fork_after_sequence is not None else {}),
         **({"runtime_metadata": dict(runtime_metadata)} if runtime_metadata else {}),
+        **(
+            {SESSION_COMMAND_AUTHORITY_STAMP_KEY: dict(command_authority_stamp)}
+            if command_authority_stamp is not None
+            else {}
+        ),
     }
     if existing_row is not None and existing_command is not None:
         replay_request = {"input_id": str(input_uuid), "content_parts": content_parts}
@@ -263,6 +293,7 @@ async def submit_live_human_input(
                 "fork_after_sequence",
                 "terminal_fallback",
                 "runtime_metadata",
+                SESSION_COMMAND_AUTHORITY_STAMP_KEY,
             )
             if name in intent
         }

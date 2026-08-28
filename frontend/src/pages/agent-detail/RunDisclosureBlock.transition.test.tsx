@@ -21,13 +21,14 @@ vi.mock('react-i18next', () => ({
 
 afterEach(() => {
   cleanup();
+  window.sessionStorage.clear();
   vi.useRealTimers();
 });
 
 describe('RunDisclosureBlock live-to-terminal presentation', () => {
   it('keeps the mounted and reloaded duration stable across terminal delivery latency', () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-08-29T00:00:16.800Z'));
+    vi.setSystemTime(new Date('2026-08-29T00:00:29.400Z'));
     const running: RunTimelineSnapshot = {
       id: 'run-delivery-latency',
       status: 'running',
@@ -44,19 +45,19 @@ describe('RunDisclosureBlock live-to-terminal presentation', () => {
     const terminal: RunTimelineSnapshot = {
       ...running,
       status: 'done',
-      completedAt: '2026-08-29T00:00:15.588Z',
-      durationMs: 15_588,
+      completedAt: '2026-08-29T00:00:26.829Z',
+      durationMs: 26_829,
       steps: running.steps.map((step) => ({ ...step, status: 'done' })),
     };
-    const view = render(<RunDisclosureBlock timeline={running} />);
+    const view = render(<RunDisclosureBlock timeline={running} presentationKey="session-1:run-delivery-latency" />);
 
-    expect(screen.getByText('16s')).toBeTruthy();
-    view.rerender(<RunDisclosureBlock timeline={terminal} />);
-    expect(screen.getByText('16s')).toBeTruthy();
+    expect(screen.getByText('29s')).toBeTruthy();
+    view.rerender(<RunDisclosureBlock timeline={terminal} presentationKey="session-1:run-delivery-latency" />);
+    expect(screen.getByText('29s')).toBeTruthy();
 
     view.unmount();
-    render(<RunDisclosureBlock timeline={terminal} />);
-    expect(screen.getByText('16s')).toBeTruthy();
+    render(<RunDisclosureBlock timeline={terminal} presentationKey="session-1:run-delivery-latency" />);
+    expect(screen.getByText('29s')).toBeTruthy();
   });
 
   it('never moves the elapsed time backwards when delayed terminal evidence arrives', () => {

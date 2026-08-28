@@ -1555,7 +1555,12 @@ function AgentChatSection({
             data-testid="active-run-cell"
             style={{ marginBottom: '8px' }}
           >
-            <RunDisclosureBlock timeline={cell.timeline} />
+            <RunDisclosureBlock
+              timeline={cell.timeline}
+              presentationKey={activeSessionId && (cell.runId || cell.timeline.startedAt)
+                ? `${activeSessionId}:${cell.runId || cell.timeline.startedAt}`
+                : null}
+            />
             {cell.phase ? (
               <ActiveTailStatusLine
                 phase={cell.phase}

@@ -68,7 +68,33 @@ function formatDuration(durationMs?: number): string {
   return remainder > 0 ? `${minutes}m ${remainder}s` : `${minutes}m`;
 }
 
-function useRunDuration(timeline: RunTimelineSnapshot): string {
+const OBSERVED_RUN_DURATION_STORAGE_PREFIX = 'hive.session.observed-run-duration.v1:';
+
+function readObservedRunDuration(presentationKey: string | null): number {
+  if (!presentationKey || typeof window === 'undefined') return 0;
+  try {
+    const value = Number(window.sessionStorage.getItem(`${OBSERVED_RUN_DURATION_STORAGE_PREFIX}${presentationKey}`));
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function persistObservedRunDuration(presentationKey: string | null, durationMs: number): void {
+  if (!presentationKey || durationMs <= 0 || typeof window === 'undefined') return;
+  try {
+    const storageKey = `${OBSERVED_RUN_DURATION_STORAGE_PREFIX}${presentationKey}`;
+    const previous = Number(window.sessionStorage.getItem(storageKey));
+    if (!Number.isFinite(previous) || durationMs > previous) {
+      window.sessionStorage.setItem(storageKey, String(durationMs));
+    }
+  } catch {
+    // Session presentation persistence is best-effort; durable runtime
+    // evidence remains the fallback when browser storage is unavailable.
+  }
+}
+
+function useRunDuration(timeline: RunTimelineSnapshot, presentationKey: string | null): string {
   const running = timeline.status === 'running';
   const parsed = timeline.startedAt ? Date.parse(timeline.startedAt) : NaN;
   const computeLiveDuration = React.useCallback(() => {
@@ -79,9 +105,10 @@ function useRunDuration(timeline: RunTimelineSnapshot): string {
     // reload when the authoritative duration is rendered.
     return Math.floor(Math.max(0, Date.now() - parsed) / 1000) * 1000;
   }, [parsed, running]);
+  const observationKey = presentationKey || timeline.id;
   const [observed, setObserved] = React.useState(() => ({
-    timelineId: timeline.id,
-    durationMs: computeLiveDuration(),
+    observationKey,
+    durationMs: Math.max(computeLiveDuration(), readObservedRunDuration(presentationKey)),
   }));
   // A delayed terminal projection may carry an execution duration shorter
   // than the elapsed time the user has already watched. Preserve the largest
@@ -89,18 +116,27 @@ function useRunDuration(timeline: RunTimelineSnapshot): string {
   React.useEffect(() => {
     const observe = () => {
       const durationMs = running ? computeLiveDuration() : timeline.durationMs ?? 0;
-      setObserved((previous) => previous.timelineId === timeline.id
+      setObserved((previous) => previous.observationKey === observationKey
         ? { ...previous, durationMs: Math.max(previous.durationMs, durationMs) }
-        : { timelineId: timeline.id, durationMs });
+        : {
+            observationKey,
+            durationMs: Math.max(durationMs, readObservedRunDuration(presentationKey)),
+          });
     };
     observe();
     if (!running || Number.isNaN(parsed)) return undefined;
     const timer = window.setInterval(observe, 1000);
     return () => window.clearInterval(timer);
-  }, [computeLiveDuration, parsed, running, timeline.durationMs, timeline.id]);
-  const observedDurationMs = observed.timelineId === timeline.id
+  }, [computeLiveDuration, observationKey, parsed, presentationKey, running, timeline.durationMs]);
+  const observedDurationMs = observed.observationKey === observationKey
     ? observed.durationMs
-    : running ? computeLiveDuration() : timeline.durationMs ?? 0;
+    : Math.max(
+        running ? computeLiveDuration() : timeline.durationMs ?? 0,
+        readObservedRunDuration(presentationKey),
+      );
+  React.useEffect(() => {
+    persistObservedRunDuration(presentationKey, observedDurationMs);
+  }, [observedDurationMs, presentationKey]);
   const duration = formatDuration(Math.max(observedDurationMs, timeline.durationMs ?? 0));
   if (duration) return duration;
   return running && !Number.isNaN(parsed) ? '0s' : '';
@@ -397,10 +433,16 @@ function RunTimelineItem({ item }: { item: RunRenderItem }) {
   return <RunStepRow step={item.step} />;
 }
 
-export default function RunDisclosureBlock({ timeline }: { timeline: RunTimelineSnapshot }) {
+export default function RunDisclosureBlock({
+  timeline,
+  presentationKey = null,
+}: {
+  timeline: RunTimelineSnapshot;
+  presentationKey?: string | null;
+}) {
   const { t } = useTranslation();
   const running = timeline.status === 'running';
-  const duration = useRunDuration(timeline);
+  const duration = useRunDuration(timeline, presentationKey);
   const opensForAttention = running || timeline.status === 'blocked' || timeline.status === 'failed';
   const [expanded, setExpanded] = React.useState(opensForAttention);
   const previousTimeline = React.useRef({ id: timeline.id, status: timeline.status });

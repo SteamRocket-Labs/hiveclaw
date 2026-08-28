@@ -1377,17 +1377,88 @@ export function buildSessionRightPanelModel({
   sessionWorkbench,
   activeSession,
   activeRunStatus,
+  presentationStatus,
 }: {
   messages: AgentChatMessage[];
   sessionWorkbench?: SessionWorkbench | Record<string, unknown> | null;
   activeSession?: Record<string, unknown> | null;
   activeRunStatus?: string | null;
+  presentationStatus?: SessionWorkbenchStatus | null;
 }): SessionRightPanelModel {
   const workbenchRecord = asRecord(sessionWorkbench) ?? null;
-  const runtimeSections = mergeRuntimeSections(
+  const evidenceRuntimeSections = mergeRuntimeSections(
     buildRuntimeSectionsModel(workbenchRecord),
     runtimeSectionsFromMessages(messages),
   );
+  const presentationRunStatus = presentationStatus === 'waiting'
+    ? 'waiting'
+    : presentationStatus === 'running' || presentationStatus === 'streaming'
+      ? 'running'
+      : null;
+  const selectedSession = activeSession ?? asRecord(workbenchRecord?.session);
+  const selectedSessionId = readString(selectedSession ?? {}, ['id', 'chat_session_id', 'session_id'], 'session');
+  const durableSessionWindow = buildSessionWindowModel(selectedSession, activeRunStatus);
+  // The final answer and empty active-run registry are the presentation commit.
+  // Retire a lagging main-run row only in this disposable read model; `raw`
+  // keeps the durable status and independently-running child sections stay live.
+  const durableRuntimeSections = presentationStatus === 'complete'
+    && durableSessionWindow?.kind === 'main'
+    && normalizedActiveRunStatus(activeRunStatus) === null
+    ? buildRuntimeSectionsSummary({
+        agentTeams: evidenceRuntimeSections.agentTeams,
+        peerA2A: evidenceRuntimeSections.peerA2A,
+        subagents: evidenceRuntimeSections.subagents,
+        workflows: evidenceRuntimeSections.workflows,
+        background: evidenceRuntimeSections.background,
+        notifications: evidenceRuntimeSections.notifications,
+        runs: evidenceRuntimeSections.runs.map((run) => (
+          isRunningRuntimeItem(run)
+            ? { ...run, status: 'completed', state: 'completed' }
+            : run
+        )),
+        raw: evidenceRuntimeSections.raw,
+      })
+    : evidenceRuntimeSections;
+  const presentationRun: RuntimeSectionItemModel | null = presentationRunStatus
+    && selectedSession
+    && durableSessionWindow?.kind === 'main'
+    && !hasActiveRuntimeItem(durableRuntimeSections.runs)
+    ? {
+        id: `${selectedSessionId}:presentation-run`,
+        label: readString(selectedSession, ['title', 'name'], selectedSessionId),
+        status: presentationRunStatus,
+        state: presentationRunStatus,
+        runtimeKind: 'session_run',
+        summary: '',
+        childSessionId: null,
+        enterable: false,
+        metrics: {
+          elapsedSeconds: null,
+          elapsedLabel: null,
+          tokenCount: null,
+          tokenLabel: null,
+          toolUseCount: null,
+          toolUseLabel: null,
+          lastActivityLabel: null,
+        },
+        members: [],
+        steps: [],
+        leafCalls: [],
+        raw: { presentation_only: true, session_id: selectedSessionId },
+      }
+    : null;
+  const runtimeSections = presentationRun
+    ? buildRuntimeSectionsSummary({
+        agentTeams: durableRuntimeSections.agentTeams,
+        peerA2A: durableRuntimeSections.peerA2A,
+        subagents: durableRuntimeSections.subagents,
+        workflows: durableRuntimeSections.workflows,
+        background: durableRuntimeSections.background,
+        notifications: durableRuntimeSections.notifications,
+        runs: [...durableRuntimeSections.runs, presentationRun],
+        raw: durableRuntimeSections.raw,
+      })
+    : durableRuntimeSections;
   const runtimeTables = buildRuntimeSectionModels(runtimeSections);
   const sectionByKey = new Map(runtimeTables.map((section) => [section.key, section]));
   const fallbackSection = (key: RuntimeSectionName) => runtimeSectionModel(key, []);
@@ -1414,7 +1485,9 @@ export function buildSessionRightPanelModel({
     workflow: sectionByKey.get('workflows') ?? fallbackSection('workflows'),
     artifacts: workspaceDocuments,
     raw: sectionByKey.get('raw') ?? fallbackSection('raw'),
-    sessionWindow: buildSessionWindowModel(activeSession ?? asRecord(workbenchRecord?.session), activeRunStatus),
+    sessionWindow: durableSessionWindow?.kind === 'main' && presentationRunStatus
+      ? buildSessionWindowModel(selectedSession, presentationRunStatus)
+      : durableSessionWindow,
   };
 }
 
@@ -1577,6 +1650,7 @@ function getHeaderStatus(
 function normalizedActiveRunStatus(status?: string | null): string | null {
   const value = String(status || '').trim().toLowerCase();
   if (!value) return null;
+  if (value === 'idle') return null;
   if (value === 'completed' || value === 'complete' || value === 'succeeded' || value === 'success') return null;
   if (value === 'cancelled' || value === 'canceled' || value === 'killed') return null;
   return value;
@@ -1696,13 +1770,15 @@ const LIVE_RUN_PHASES: ReadonlySet<string> = new Set([
 ]);
 
 const WAITING_HEADER_PHASES: ReadonlySet<string> = new Set([
-  'queued',
-  'resuming',
-  'starting',
   'awaiting_approval',
   'awaiting_budget',
-  'continuation_gap',
 ]);
+
+function livePhaseHeaderStatus(phase: string): SessionWorkbenchStatus {
+  if (WAITING_HEADER_PHASES.has(phase)) return 'waiting';
+  if (phase === 'responding') return 'streaming';
+  return 'running';
+}
 
 function liveRunPhase(input: BuildThreadTimelineInput): string | null {
   const phase = String(input.runtimePhase || '').trim();
@@ -1977,9 +2053,14 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
   const sessionWorkbench = input.sessionWorkbench && !Array.isArray(input.sessionWorkbench) ? input.sessionWorkbench : null;
   const contextWindow = getContextWindowProjection(sessionWorkbench);
   const runtimeSummary = input.runtimeSummary || null;
+  const terminalDeliveryPending = String(input.runtimePhase || '').trim() === 'done'
+    && latestUserMessageIndex(input.messages) >= 0
+    && !hasAssistantAnswerAfterLatestUser(input.messages);
   const headerStatus = livePhase
-    ? (WAITING_HEADER_PHASES.has(livePhase) ? 'waiting' : 'streaming')
-    : getHeaderStatus(cells, input.isWaiting, input.isStreaming, activeRunStatus);
+    ? livePhaseHeaderStatus(livePhase)
+    : terminalDeliveryPending
+      ? 'running'
+      : getHeaderStatus(cells, input.isWaiting, input.isStreaming, activeRunStatus);
 
   return {
     cells,

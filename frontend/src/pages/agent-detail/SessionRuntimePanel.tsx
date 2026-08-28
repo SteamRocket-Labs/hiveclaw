@@ -14,6 +14,7 @@ import {
   type RuntimeConsoleSegmentKey,
   type RuntimeConsoleWaiterModel,
   type RuntimeSectionItemModel,
+  type SessionWorkbenchStatus,
   type WorkflowRunActionModel,
   type WorkspaceDocumentGroupModel,
   type WorkspaceDocumentModel,
@@ -287,6 +288,7 @@ export function SessionRuntimePanel({
   activeSession,
   agent,
   activeRunStatus,
+  presentationStatus,
   collapsed = false,
   onToggleCollapsed,
   onOpenDocument,
@@ -307,6 +309,7 @@ export function SessionRuntimePanel({
   activeSession?: Record<string, unknown> | null;
   agent?: Record<string, unknown> | null;
   activeRunStatus?: string | null;
+  presentationStatus?: SessionWorkbenchStatus | null;
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
   onOpenDocument?: (artifact: ChatArtifactPart) => void | Promise<unknown>;
@@ -367,6 +370,7 @@ export function SessionRuntimePanel({
     sessionWorkbench: sessionWorkbench as Record<string, unknown> | null,
     activeSession,
     activeRunStatus,
+    presentationStatus,
   });
   const docs = rightPanel.workspaceDocuments;
   const currentSessionDocumentCount = docs.currentSession.items.length;

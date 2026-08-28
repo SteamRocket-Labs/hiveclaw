@@ -2359,6 +2359,7 @@ function AgentChatSection({
           activeSession={activeSession as Record<string, unknown> | null}
           agent={agent as Record<string, unknown> | null}
           activeRunStatus={activeRunStatus}
+          presentationStatus={threadTimelineModel.header.status}
           collapsed={runtimePanelCollapsed}
           onToggleCollapsed={() => setRuntimePanelCollapsed((value) => !value)}
           onOpenDocument={openArtifact}

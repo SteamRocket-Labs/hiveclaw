@@ -3612,6 +3612,12 @@ Correction #3 通过后，Codex 沿用户真实可见路径继续审查，发现
 
 **用户影响与验收边界**：机械运行事实并未丢失，但同一时刻给出互相冲突的用户语义：active run 被顶部表达为「等待输入」，terminal phase 又早于可消费的最终回答。Codex Desktop 风格要求顶部、时间线和右栏从一个可恢复的 canonical presentation truth 派生：接受输入后不能重新要求用户输入；有 active run 时不能同时宣称空闲；没有可消费 terminal answer/error/decision 时不能宣称完成。连接/投影延迟应显示明确的「正在连接/同步结果」而不是错误业务状态。当前七原子在 Consumption/Acceptance 断开，verdict 为 **FAIL/open**；下一步必须先建立状态 reducer/presentation policy 的 failing regression，再修共享 owner，完成全量门禁、原子 commit/push、三服务部署与 signed-in 连续两轮时序复验。
 
+**本地根因与修复候选（Codex sole writer）**：存在三个同根 read-model owner 缝。① `WAITING_HEADER_PHASES` 把 `queued/resuming/starting/continuation_gap` 与真实 user blocker `awaiting_approval/awaiting_budget` 混在一起，并把 `thinking/tool_running/hook_evaluating/compacting/summarizing` 统一叫作「输出中」；现在以 exact typed phase 映射：只有两个 authenticated user blocker 显示「等待输入」，`responding` 显示「输出中」，其余 live phase 显示「运行中」。② 旧 header 在 active run 被 terminal event 清除后只要 cells 非空就立刻「完成」，不等 final answer 被 timeline 消费；现在 `runtimePhase=done` 且最新 user turn 后还没有可渲染 assistant final 时继续显示机械「运行中」，answer 到达后才完成。③ 右栏只消费延迟的 `runtime_sections`，完全不消费同页 canonical header presentation；现在 `threadTimelineModel.header.status` 作为 primitive prop 传入右栏，在 main Session 的 durable row 尚未到达时生成明确、可丢弃的 `session_run` presentation row，使 count/status/activity 同为运行中；final answer + active-run registry 为空时只在派生 read model 中收敛 lagging main run，原始 status 保留于 `raw`，仍真实运行的 Team/A2A/Sub-agent/Workflow sections 不变。`activeRunStatus=idle` 也不再被误认成 active run。无语义文本扫描、无后端/schema/依赖/i18n catalog 改动。
+
+**failing-first 证据**：首轮 focused `timelineModel.test.ts` 为 **11 failed / 42 passed**：startup/live phase 9 个错误状态、terminal delivery 提前完成 1 个、右栏 `idle/0` 1 个；完成主修后追加尾部竞争回归，修复前为 **1 failed / 53 passed**，证明 final presentation 仍会保留 stale main `running` row。测试同时 pin：只收敛 main run、`raw.status=running` 证据不改、并行 Sub-agent 继续 `running`。
+
+**本地 GREEN 与 review**：focused `timelineModel.test.ts + AgentDetailSections.test.tsx` **2 files / 171 passed**；全量 frontend **146 files / 1032 passed**；`npm exec tsc -- --noEmit` exit 0；i18n node tests 9/9、en=zh=3864、全部 gates 0；production build 7386 modules，AgentDetail **364606/380000 bytes、100668/115000 gzip**，vendor **591449/620000 bytes、186474/200000 gzip**；`git diff --check` clean。React best-practices review 未发现新增 effect/waterfall、对象型默认 prop 或额外订阅：跨组件只传一个 primitive status，派生 read model 仍在既有 memoized timeline/render 路径内。当前 verdict 仅为 **PASS — Verified locally / production pending**；必须完成原子 commit/push、三服务同 commit 部署和 signed-in 两轮 400ms 状态时序复验后，才能关闭本 finding。
+
 
 ## 8. 两个工作日的执行节奏
 

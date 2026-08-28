@@ -1448,6 +1448,64 @@ describe('session workbench timeline model', () => {
       expect.objectContaining({ name: 'live-report.md', path: 'workspace/live-report.md' }),
     ]);
   });
+
+  it('keeps the run panel aligned with the canonical active presentation before runtime rows arrive', () => {
+    const rightPanel = buildSessionRightPanelModel({
+      messages: [{ id: 'user-1', role: 'user', content: 'Start the run.' }],
+      activeSession: { id: 'session-1', title: 'Fresh run', status: 'idle' },
+      activeRunStatus: null,
+      presentationStatus: 'running',
+    });
+
+    expect(rightPanel.runtimeConsole.summary).toMatchObject({
+      state: 'running',
+      totalCount: 1,
+      runningCount: 1,
+      waitingCount: 0,
+    });
+    expect(rightPanel.runtimeConsole.activity.runs).toEqual([
+      expect.objectContaining({
+        id: 'session-1:presentation-run',
+        label: 'Fresh run',
+        status: 'running',
+        runtimeKind: 'session_run',
+      }),
+    ]);
+    expect(rightPanel.sessionWindow).toMatchObject({ status: 'running' });
+  });
+
+  it('settles only the stale main-run projection once the final answer is consumable', () => {
+    const rightPanel = buildSessionRightPanelModel({
+      messages: [
+        { id: 'user-1', role: 'user', content: 'Return the marker.' },
+        { id: 'answer-1', role: 'assistant', content: 'MARKER' },
+      ],
+      activeSession: { id: 'session-1', title: 'Completed run', status: 'idle' },
+      sessionWorkbench: {
+        runtime_sections: {
+          runs: [{ id: 'run-1', runtime_kind: 'runtime_task', status: 'running' }],
+          subagents: [{ id: 'worker-1', runtime_kind: 'subagent', status: 'running' }],
+        },
+      },
+      activeRunStatus: null,
+      presentationStatus: 'complete',
+    });
+
+    expect(rightPanel.runtimeConsole.activity.runs).toEqual([
+      expect.objectContaining({
+        id: 'run-1',
+        status: 'completed',
+        raw: expect.objectContaining({ status: 'running' }),
+      }),
+    ]);
+    expect(rightPanel.runtimeConsole.workers.items).toEqual([
+      expect.objectContaining({ id: 'worker-1', status: 'running' }),
+    ]);
+    expect(rightPanel.runtimeConsole.summary).toMatchObject({
+      state: 'running',
+      runningCount: 1,
+    });
+  });
 });
 
 describe('buildWorkspaceDocumentsModel (session deliverables semantics)', () => {
@@ -1592,6 +1650,38 @@ describe('RuntimePhase in the thread projection (§3 seam 3)', () => {
       runtimePhase: 'awaiting_approval',
     });
     expect(model.header.status).toBe('waiting');
+  });
+
+  it.each(['queued', 'resuming', 'starting', 'thinking', 'tool_running', 'hook_evaluating', 'compacting', 'summarizing', 'continuation_gap'])(
+    'never presents the live %s phase as waiting for user input',
+    (runtimePhase) => {
+      const model = buildThreadTimeline({
+        messages: [{ role: 'user', content: 'Run it.' }] as any,
+        isWaiting: true,
+        isStreaming: false,
+        runtimePhase,
+      });
+
+      expect(model.header.status).toBe('running');
+    },
+  );
+
+  it('keeps terminal delivery in progress until the accepted answer is consumable', () => {
+    const input = {
+      messages: [{ role: 'user', content: 'Return the marker.' }] as AgentChatMessage[],
+      isWaiting: false,
+      isStreaming: false,
+      runtimePhase: 'done',
+    };
+
+    expect(buildThreadTimeline(input).header.status).toBe('running');
+    expect(buildThreadTimeline({
+      ...input,
+      messages: [
+        ...input.messages,
+        { role: 'assistant', content: 'MARKER' },
+      ],
+    }).header.status).toBe('complete');
   });
 
   it('includes the phase in the cache signature so live transitions invalidate', () => {

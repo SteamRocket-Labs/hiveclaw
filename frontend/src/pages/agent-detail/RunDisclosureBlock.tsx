@@ -68,21 +68,37 @@ function formatDuration(durationMs?: number): string {
   return remainder > 0 ? `${minutes}m ${remainder}s` : `${minutes}m`;
 }
 
-function useLiveElapsed(startedAt: string | undefined, running: boolean): string {
-  const parsed = startedAt ? Date.parse(startedAt) : NaN;
-  const compute = React.useCallback(() => {
-    if (!running || Number.isNaN(parsed)) return '';
-    const seconds = Math.max(0, Math.floor((Date.now() - parsed) / 1000));
-    return formatDuration(seconds * 1000) || `${seconds}s`;
-  }, [parsed, running]);
-  const [elapsed, setElapsed] = React.useState<string>(compute);
+function useRunDuration(timeline: RunTimelineSnapshot): string {
+  const running = timeline.status === 'running';
+  const parsed = timeline.startedAt ? Date.parse(timeline.startedAt) : NaN;
+  const computeLiveDuration = React.useCallback(() => (
+    running && !Number.isNaN(parsed) ? Math.max(0, Date.now() - parsed) : 0
+  ), [parsed, running]);
+  const [observed, setObserved] = React.useState(() => ({
+    timelineId: timeline.id,
+    durationMs: computeLiveDuration(),
+  }));
+  // A delayed terminal projection may carry an execution duration shorter
+  // than the elapsed time the user has already watched. Preserve the largest
+  // observed value for this mounted run so completion never moves backwards.
   React.useEffect(() => {
+    const observe = () => {
+      const durationMs = running ? computeLiveDuration() : timeline.durationMs ?? 0;
+      setObserved((previous) => previous.timelineId === timeline.id
+        ? { ...previous, durationMs: Math.max(previous.durationMs, durationMs) }
+        : { timelineId: timeline.id, durationMs });
+    };
+    observe();
     if (!running || Number.isNaN(parsed)) return undefined;
-    setElapsed(compute());
-    const timer = window.setInterval(() => setElapsed(compute()), 1000);
+    const timer = window.setInterval(observe, 1000);
     return () => window.clearInterval(timer);
-  }, [compute, parsed, running]);
-  return elapsed;
+  }, [computeLiveDuration, parsed, running, timeline.durationMs, timeline.id]);
+  const observedDurationMs = observed.timelineId === timeline.id
+    ? observed.durationMs
+    : running ? computeLiveDuration() : timeline.durationMs ?? 0;
+  const duration = formatDuration(Math.max(observedDurationMs, timeline.durationMs ?? 0));
+  if (duration) return duration;
+  return running && !Number.isNaN(parsed) ? '0s' : '';
 }
 
 function StepIcon({ kind, running }: { kind: RunStepKind; running: boolean }) {
@@ -375,7 +391,7 @@ function RunTimelineItem({ item }: { item: RunRenderItem }) {
 export default function RunDisclosureBlock({ timeline }: { timeline: RunTimelineSnapshot }) {
   const { t } = useTranslation();
   const running = timeline.status === 'running';
-  const liveElapsed = useLiveElapsed(timeline.startedAt, running);
+  const duration = useRunDuration(timeline);
   const opensForAttention = running || timeline.status === 'blocked' || timeline.status === 'failed';
   const [expanded, setExpanded] = React.useState(opensForAttention);
   const previousTimeline = React.useRef({ id: timeline.id, status: timeline.status });
@@ -390,7 +406,6 @@ export default function RunDisclosureBlock({ timeline }: { timeline: RunTimeline
 
   const visibleSteps = timeline.steps.filter((step) => getRunStepPresentation(step) !== 'external');
   if (visibleSteps.length === 0) return null;
-  const duration = running ? liveElapsed : formatDuration(timeline.durationMs);
   const title = running
     ? t('agent.chat.disclosure.working', 'Working')
     : timeline.status === 'blocked'

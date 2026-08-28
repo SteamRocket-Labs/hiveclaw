@@ -276,7 +276,12 @@ describe('chatDisclosureReducer', () => {
     const timeline = buildRunTimelineFromMessages(messages);
 
     expect(timeline.steps).toEqual([
-      expect.objectContaining({ kind: 'reasoning', title: 'Thinking', summary: 'Provider-private reasoning was used.' }),
+      expect.objectContaining({
+        kind: 'reasoning',
+        title: 'Thinking',
+        summary: undefined,
+        details: undefined,
+      }),
       expect.objectContaining({
         kind: 'prose',
         title: 'Assistant update',

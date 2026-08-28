@@ -575,8 +575,11 @@ function buildStep(message: AgentChatMessage, index: number, allowLiveRunning: b
       status,
       startedAt: message.timestamp,
       completedAt: status === 'done' ? message.timestamp : undefined,
-      summary: message.content?.trim() ? compactText(message.content) : 'Provider-private reasoning was used.',
-      details: message.content?.trim() || undefined,
+      // Private-provider reasoning contributes lifecycle state only. Its
+      // bytes and provider implementation jargon never belong on the user
+      // Session surface.
+      summary: undefined,
+      details: undefined,
       visibility: 'collapsed',
       presentation: 'process',
     };

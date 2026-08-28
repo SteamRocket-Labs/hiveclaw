@@ -966,6 +966,73 @@ describe('canonical runtime_failure consumption (DAY1-PROVIDER-402-TERMINAL-CONS
     ]);
   });
 
+  it('restores the legacy assistant terminal timestamp from the compatibility envelope', () => {
+    const acceptedInput: SessionEventV2 = {
+      ...event(1, 'completed'),
+      ordinal: undefined,
+      item_id: 'input-1',
+      item_kind: 'human_input',
+      kind: 'human_input.accepted',
+      lifecycle: 'accepted',
+      payload_schema: 'hive.session.payload.human_input.accepted.v2',
+      scope: { level: 'session', session_id: 'session-1', thread_id: 'session-1' },
+      actor: { type: 'user', id: 'user-1' },
+      payload: { content_parts: [{ type: 'text', text: 'Return the exact marker.' }], intent: 'start_turn' },
+      occurred_at: '2026-08-29T00:00:00Z',
+      persisted_at: '2026-08-29T00:00:00Z',
+    };
+    const answerSnapshot: SessionEventV2 = {
+      ...event(2, 'completed'),
+      lifecycle: 'snapshot',
+      kind: 'assistant_text.snapshot',
+      payload_schema: 'hive.session.payload.assistant_text.snapshot.v2',
+      payload: { phase: 'unknown', content: 'SESSION-PRESENTATION-PERSISTED' },
+      occurred_at: '2026-08-29T00:00:13Z',
+      persisted_at: '2026-08-29T00:00:13Z',
+    };
+    const answerCompleted: SessionEventV2 = {
+      ...event(3, 'completed'),
+      payload: { phase: 'unknown', content: '' },
+      occurred_at: '2026-08-29T00:00:13Z',
+      persisted_at: '2026-08-29T00:00:13Z',
+    };
+    const legacyTerminal = {
+      schema: 'hive.session_event_compatibility',
+      schema_version: 1,
+      compatibility_status: 'needs_reconciliation',
+      event_id: 'legacy-terminal-1',
+      sequence: 4,
+      reason: 'insufficient_legacy_scope',
+      legacy_kind: 'assistant_text',
+      legacy_lifecycle: 'completed',
+      legacy_event_type: 'assistant_message',
+      legacy_item_type: 'agent_message',
+      legacy_item_status: 'succeeded',
+      run_id: 'run-1',
+      occurred_at: '2026-08-29T00:00:25Z',
+      payload: {
+        content: 'SESSION-PRESENTATION-PERSISTED',
+        parts: [{ type: 'text', text: 'SESSION-PRESENTATION-PERSISTED' }],
+        metadata: { status: 'completed' },
+      },
+    } as unknown as ChatTranscriptEventPayload;
+
+    const hydrated = hydrateSessionTranscriptEvents([
+      acceptedInput as unknown as ChatTranscriptEventPayload,
+      answerSnapshot as unknown as ChatTranscriptEventPayload,
+      answerCompleted as unknown as ChatTranscriptEventPayload,
+      legacyTerminal,
+    ]);
+    const finalAnswer = hydrated.messages.find((message) => message.threadItem?.event_type === 'assistant_message');
+    const timeline = buildRunTimelineFromMessages(hydrated.messages, {
+      turnStartedAt: acceptedInput.occurred_at,
+    });
+
+    expect(finalAnswer?.timestamp).toBe('2026-08-29T00:00:25Z');
+    expect(timeline.completedAt).toBe('2026-08-29T00:00:25.000Z');
+    expect(timeline.durationMs).toBe(25_000);
+  });
+
   it('lets a canonical assistant_final supersede a legacy assistant_message bound to the same run', () => {
     const unrelatedLegacy = {
       schema: 'hive.session_event_compatibility',

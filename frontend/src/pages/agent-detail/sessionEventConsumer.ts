@@ -805,10 +805,20 @@ function transitionApplicationOf(
 export function compatibilityProjectionEvent(event: SessionCompatibilityEvent): ChatTranscriptEventPayload {
   const envelope = event as unknown as Record<string, unknown>;
   const payload = recordValue(envelope.payload) || {};
+  const occurredAt = typeof envelope.occurred_at === 'string' && envelope.occurred_at.trim()
+    ? envelope.occurred_at.trim()
+    : typeof envelope.created_at === 'string' && envelope.created_at.trim()
+      ? envelope.created_at.trim()
+      : undefined;
   return {
     ...(event as unknown as ChatTranscriptEventPayload),
     id: String(envelope.event_id || ''),
     event_type: String(envelope.legacy_event_type || ''),
+    // Compatibility envelopes use the Session V2 `occurred_at` clock while
+    // the legacy projector consumes `created_at`. Preserve that mechanical
+    // event timestamp so a reload ends the visible run at the durable
+    // assistant terminal instead of the earlier answer snapshot.
+    created_at: occurredAt,
     ...(typeof payload.legacy_run_id === 'string' && payload.legacy_run_id.trim()
       ? { run_id: payload.legacy_run_id.trim() }
       : {}),

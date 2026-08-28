@@ -143,22 +143,35 @@ describe('RunDisclosureBlock', () => {
   });
 
   it('keeps a copied cancellation visible when the run has no displayable process steps', () => {
-    const markup = renderToStaticMarkup(
-      <RunDisclosureBlock
-        timeline={{
-          id: 'copied-cancelled-run',
-          status: 'interrupted',
-          startedAt: '2026-08-29T04:37:00Z',
-          steps: [],
-        }}
-      />,
-    );
+    vi.stubGlobal('window', {
+      sessionStorage: {
+        getItem: () => String(1_609_000),
+        setItem: vi.fn(),
+      },
+    });
+    let markup = '';
+    try {
+      markup = renderToStaticMarkup(
+        <RunDisclosureBlock
+          timeline={{
+            id: 'copied-cancelled-run',
+            status: 'interrupted',
+            startedAt: '2026-08-29T04:37:00Z',
+            steps: [],
+          }}
+          presentationKey="branch-session:copied-cancelled-run"
+        />,
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
 
     expect(markup).toContain('data-status="interrupted"');
     expect(markup).toContain('Interrupted');
     expect(markup).toContain('send a new message to continue');
     expect(markup).not.toContain('Working');
     expect(markup).not.toContain('0 steps');
+    expect(markup).not.toContain('run-disclosure-duration');
   });
 
   it('folds model-authored public commentary with completed process history', () => {

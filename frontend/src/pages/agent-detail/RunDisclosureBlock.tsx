@@ -478,7 +478,9 @@ export default function RunDisclosureBlock({
         <div className="run-disclosure-frame">
           <div className="run-disclosure-header is-static" role="status">
             <span className="run-disclosure-title">{title}</span>
-            {duration && <span className="run-disclosure-duration">{duration}</span>}
+            {timeline.durationMs != null && duration && (
+              <span className="run-disclosure-duration">{duration}</span>
+            )}
             <span className="run-disclosure-summary">{interruptedHint}</span>
           </div>
         </div>

@@ -22,7 +22,7 @@ Testcontainers PostgreSQL.  Only DB session factories are rebound.
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import delete, func, select
@@ -975,3 +975,69 @@ async def test_tampered_a2a_source_route_is_denied(owner_sessionmaker, monkeypat
                 expected_claim_token=current_token,
             )
         await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_admission_holds_page_row_lock_until_transaction_release(owner_sessionmaker, monkeypatch) -> None:
+    """TOCTOU claim fence (Codex P1 #2): fresh admission must hold the exact
+    page row under SELECT ... FOR UPDATE inside the acceptance transaction.
+
+    Transaction A validates worker A's token and stays open; a concurrent
+    worker B claim_batch (now beyond lease expiry) must SKIP the locked page
+    (claim_batch reclaims with SKIP LOCKED) — no reclaim, no token change,
+    no effects.  After A releases, B reclaims with a DIFFERENT token.
+    """
+
+    from app.services.session_v2_persistence import resolve_runtime_result_integration_authority
+
+    monkeypatch.setattr("app.services.runtime_budget_service.async_session", owner_sessionmaker)
+    await _clear_outbox(owner_sessionmaker)
+    seeded = await _seed_nested(owner_sessionmaker)
+    tenant_id = seeded["tenant_id"]
+    await _drive_terminal_seam(owner_sessionmaker, tenant_id=tenant_id, task_id=seeded["c_run_id"])
+
+    service = RuntimeNotificationOutboxService(session_factory=owner_sessionmaker)
+    claimed = await service.claim_batch(worker_id="worker-a", limit=10)
+    assert claimed
+    pages = await service.prepare_integration_pages(worker_id="worker-a", claimed=claimed)
+    assert len(pages) == 1
+    token_a = pages[0].claim_token
+    page_id = pages[0].id
+
+    async def _stored_token_and_attempts() -> tuple[uuid.UUID, int]:
+        async with owner_sessionmaker() as db:
+            stored = await db.get(RuntimeResultIntegrationPage, page_id)
+            assert stored is not None
+            return stored.claim_token, int(stored.attempt_count or 0)
+
+    _, attempts_before = await _stored_token_and_attempts()
+
+    # Transaction A: fresh admission authority validation holds the row lock.
+    async with owner_sessionmaker() as db_a:
+        authority = await resolve_runtime_result_integration_authority(
+            db_a,
+            page_id=page_id,
+            agent_id=seeded["agent_b_id"],
+            session_id=seeded["parent_session_id"],
+            action="mutate_session_input",
+            expected_claim_token=token_a,
+        )
+        assert authority.authority_source == "runtime_result_integration"
+
+        # Concurrent worker B beyond lease expiry: the locked page must be
+        # skipped — no reclaim, no new token, no claimed rows.
+        beyond_lease = datetime.now(UTC) + timedelta(hours=1)
+        claimed_b = await service.claim_batch(worker_id="worker-b", now=beyond_lease, limit=10)
+        assert claimed_b == [], f"worker B reclaimed a locked page: {claimed_b}"
+        token_during, attempts_during = await _stored_token_and_attempts()
+        assert token_during == token_a
+        assert attempts_during == attempts_before
+
+        await db_a.rollback()
+
+    # After A releases the lock, worker B reclaims with a DIFFERENT token.
+    claimed_b2 = await service.claim_batch(worker_id="worker-b", now=datetime.now(UTC) + timedelta(hours=1), limit=10)
+    assert claimed_b2, "worker B must reclaim after the lock is released"
+    token_after, attempts_after = await _stored_token_and_attempts()
+    assert token_after != token_a
+    assert attempts_after == attempts_before + 1

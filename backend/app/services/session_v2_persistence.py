@@ -501,7 +501,21 @@ async def _validate_runtime_result_integration_binding(
         delegation_runtime_task_id=session.runtime_task_id,
     )
 
-    page = await db.get(RuntimeResultIntegrationPage, page_id)
+    if require_delivery_state:
+        # Transaction-level claim fence: the exact page row is locked FOR
+        # UPDATE inside the same AsyncSession transaction that proceeds to
+        # command/input/event acceptance, so the lock is held until that
+        # transaction commits or rolls back.  This closes the TOCTOU window
+        # between claim-token validation and acceptance commit: a worker
+        # reclaiming an expired lease uses SKIP LOCKED and must skip this
+        # page while admission is in flight.  Replay/fresh-worker recovery
+        # (``require_delivery_state=False``) deliberately takes no
+        # delivery-state lock and stays lifecycle tolerant.
+        page = await db.scalar(
+            select(RuntimeResultIntegrationPage).where(RuntimeResultIntegrationPage.id == page_id).with_for_update()
+        )
+    else:
+        page = await db.get(RuntimeResultIntegrationPage, page_id)
     if page is None:
         raise PermissionError("runtime_result_integration_page_not_found")
     tenant_id = session.tenant_id

@@ -246,7 +246,11 @@ async def submit_live_human_input(
             session_id=session.id,
             action="mutate_session_input",
         )
-    if existing_row is None:
+    if runtime_result_page_id is None:
+        # Ordinary owner/peer lanes: exactly one idempotency lookup AFTER
+        # authority resolution.  The runtime result lane already performed
+        # its single pre-authority lookup above (fresh admission and replay
+        # alike), so it never queries twice.
         existing_row = await db.get(SessionTurnInput, input_uuid)
     existing_command = None
     if existing_row is not None:

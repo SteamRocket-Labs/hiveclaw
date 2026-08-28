@@ -557,6 +557,11 @@ async def continue_parent_session_with_result_page(
         mailbox_role="system",
         model_message_role="system",
         budget_admission_status_override=("approved" if inherited_budget_run_id is not None else None),
+        # The narrow runtime result return lane activates ONLY for a target
+        # session that is itself a durable A2A delegation child (strict
+        # durable shape, never message metadata).  Ordinary writable parent
+        # sessions keep the existing session-owner authority byte-for-byte.
+        runtime_result_page_id=integration_page_id if is_a2a_delegation_child_session(session) else None,
     )
 
 
@@ -585,6 +590,7 @@ async def continue_agent_session_from_mailbox(
     root_item_intent: RuntimeRootIntentSpec | None = None,
     budget_admission_status_override: str | None = None,
     a2a_peer_agent_id: uuid.UUID | str | None = None,
+    runtime_result_page_id: uuid.UUID | str | None = None,
 ) -> dict[str, Any]:
     """Append and consume a follow-up message for an Agent-Agent session."""
 
@@ -683,6 +689,7 @@ async def continue_agent_session_from_mailbox(
             role=model_role,
             idempotency_key=f"agent-session-event:{mailbox_event_id}",
             a2a_peer_agent_id=a2a_peer_agent_id,
+            runtime_result_page_id=runtime_result_page_id,
         )
         return {
             **payload,

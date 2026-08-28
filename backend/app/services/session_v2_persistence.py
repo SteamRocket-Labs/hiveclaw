@@ -64,6 +64,22 @@ A2A_DELEGATION_PEER_AUTHORITY_SOURCE = "a2a_delegation_peer"
 A2A_DELEGATION_PEER_STAMP_SCHEMA = "hive.session_command_authority.a2a_delegation_peer.v1"
 SESSION_COMMAND_AUTHORITY_STAMP_KEY = "session_command_authority"
 
+# Distinct narrow server-derived authority for the live runtime result
+# return: ``RuntimeNotificationOutboxWorker._deliver_page`` ->
+# ``continue_parent_session_with_result_page`` ->
+# ``continue_agent_session_from_mailbox`` -> ``submit_live_human_input``
+# into a read-only ``delegation_run`` parent session (nested A→B→C: B's
+# session peer is A, while the completion source is the runtime result
+# integration page — this is NOT a parent peer message and never uses the
+# ``a2a_delegation_peer`` lane).  The lane activates only for a target
+# session that is itself proven by the durable A2A delegation binding
+# validator, and separately revalidates the exact integration page route.
+# Same stamp contract as above: the stamp only selects the recovery
+# revalidation lane; it never grants authority and carries no claim data.
+RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE = "runtime_result_integration"
+RUNTIME_RESULT_INTEGRATION_STAMP_SCHEMA = "hive.session_command_authority.runtime_result_integration.v1"
+_A2A_OUTBOX_SOURCE_KINDS = frozenset({"delegation", "a2a_delegation", "a2a_continuation"})
+
 
 class IdempotencyConflict(RuntimeError):
     def __init__(self, *, command: SessionCommand):
@@ -90,8 +106,15 @@ class AuthenticatedSessionAuthority:
             raise ValueError("untrusted_session_authority")
         if self.principal_type not in {"user", "external_principal"}:
             raise ValueError("unsupported_session_principal_type")
-        if self.authority_source == A2A_DELEGATION_PEER_AUTHORITY_SOURCE and self.principal_type != "user":
-            raise ValueError("a2a_delegation_peer_requires_user_principal")
+        if (
+            self.authority_source
+            in {
+                A2A_DELEGATION_PEER_AUTHORITY_SOURCE,
+                RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE,
+            }
+            and self.principal_type != "user"
+        ):
+            raise ValueError("server_derived_lane_requires_user_principal")
 
     def event_actor(self) -> dict[str, str]:
         return {"type": self.principal_type, "id": str(self.principal_id)}
@@ -419,6 +442,179 @@ async def resolve_a2a_delegation_peer_authority(
     )
 
 
+def runtime_result_integration_command_stamp(*, page_id: uuid.UUID) -> dict[str, str]:
+    """Server-minted typed marker for the runtime result integration lane.
+
+    The stamp only selects the recovery revalidation lane.  It is not a
+    claim token and not an authorization fact: volatile claim data
+    (``claim_token``/``claimed_by``/lease) deliberately never enters it.
+    """
+
+    return {
+        "schema": RUNTIME_RESULT_INTEGRATION_STAMP_SCHEMA,
+        "authority_source": RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE,
+        "integration_page_id": str(page_id),
+    }
+
+
+async def _validate_runtime_result_integration_binding(
+    db: AsyncSession,
+    *,
+    session: ChatSession,
+    agent: Any,
+    page_id: uuid.UUID,
+    require_delivery_state: bool,
+) -> tuple[User, Any]:
+    """Mechanically revalidate one runtime result integration page route.
+
+    Two independent durable proofs, no message content and no metadata:
+
+    * the target session must itself be a genuine A2A delegation child,
+      revalidated through the same durable binding validator used by the
+      peer lane (peer agent, immediate parent route, chain root user,
+      exact ``task_type='delegation'`` task);
+    * the page must exactly bind tenant, parent session, parent agent and
+      parent root user, be a ``parent_continuation`` page, and carry at
+      least one linked outbox row whose parent route matches; A2A source
+      kinds additionally prove the source RuntimeTask and the child→parent
+      session route from durable columns.  Other source kinds keep only
+      the page/row parent-route proof (no RuntimeTask shape assumptions).
+
+    ``require_delivery_state=True`` (new-command admission) additionally
+    requires the durable claimed ``processing`` delivery state with claim
+    evidence.  ``False`` (replay/fresh-worker recovery) revalidates only
+    immutable route and authority facts: a later ``delivered`` or even
+    ``dead_letter`` page status can never strand an already-accepted input.
+    """
+
+    from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+    from app.models.runtime_result import RuntimeResultIntegrationPage
+    from app.models.runtime_task import RuntimeTask
+
+    if session.peer_agent_id is None or session.runtime_task_id is None:
+        raise PermissionError("runtime_result_integration_target_not_delegation")
+    root_user, _delegation_task = await _validate_a2a_delegation_peer_binding(
+        db,
+        session=session,
+        agent=agent,
+        peer_agent_id=session.peer_agent_id,
+        delegation_runtime_task_id=session.runtime_task_id,
+    )
+
+    page = await db.get(RuntimeResultIntegrationPage, page_id)
+    if page is None:
+        raise PermissionError("runtime_result_integration_page_not_found")
+    tenant_id = session.tenant_id
+    if page.tenant_id != tenant_id:
+        raise PermissionError("runtime_result_integration_tenant_mismatch")
+    if page.parent_session_id != session.id or page.parent_agent_id != agent.id or page.parent_user_id != root_user.id:
+        raise PermissionError("runtime_result_integration_target_mismatch")
+    if str(getattr(page, "delivery_mode", "") or "") != "parent_continuation":
+        raise PermissionError("runtime_result_integration_delivery_mode_mismatch")
+    if require_delivery_state and (
+        str(getattr(page, "status", "") or "") != "processing"
+        or getattr(page, "claim_token", None) is None
+        or not str(getattr(page, "claimed_by", "") or "").strip()
+    ):
+        raise PermissionError("runtime_result_integration_not_in_delivery")
+
+    rows = list(
+        (
+            await db.execute(
+                select(RuntimeNotificationOutbox).where(RuntimeNotificationOutbox.integration_page_id == page.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        raise PermissionError("runtime_result_integration_source_missing")
+    for row in rows:
+        if (
+            row.tenant_id != tenant_id
+            or row.parent_session_id != session.id
+            or row.parent_agent_id != agent.id
+            or row.parent_user_id != root_user.id
+        ):
+            raise PermissionError("runtime_result_integration_source_mismatch")
+        if str(getattr(row, "source_kind", "") or "") not in _A2A_OUTBOX_SOURCE_KINDS:
+            continue
+        try:
+            source_task_id = uuid.UUID(str(row.source_run_id or ""))
+        except ValueError as exc:
+            raise PermissionError("runtime_result_integration_source_mismatch") from exc
+        source_task = await db.get(RuntimeTask, source_task_id)
+        if (
+            source_task is None
+            or source_task.tenant_id != tenant_id
+            or str(getattr(source_task, "task_type", "") or "") != str(getattr(row, "task_type", "") or "")
+        ):
+            raise PermissionError("runtime_result_integration_source_mismatch")
+        if row.child_session_id is None:
+            raise PermissionError("runtime_result_integration_source_mismatch")
+        child_session = await db.get(ChatSession, row.child_session_id)
+        if (
+            child_session is None
+            or child_session.tenant_id != tenant_id
+            or child_session.parent_session_id != session.id
+            or (
+                str(getattr(source_task, "child_session_id", "") or "") != str(child_session.id)
+                and str(getattr(source_task, "parent_session_id", "") or "") != str(child_session.id)
+            )
+        ):
+            raise PermissionError("runtime_result_integration_source_mismatch")
+    return root_user, page
+
+
+async def resolve_runtime_result_integration_authority(
+    db: AsyncSession,
+    *,
+    page_id: uuid.UUID | str,
+    agent_id: uuid.UUID | str,
+    session_id: uuid.UUID | str,
+    action: str,
+    require_delivery_state: bool = True,
+) -> AuthenticatedSessionAuthority:
+    """Resolve the narrow server-derived authority for one result-page return.
+
+    This is NOT a writable-session bypass and NOT the a2a peer lane: it only
+    succeeds when the exact durable integration page and its linked outbox /
+    source route prove the runtime owns this delivery into an exact durable
+    delegation parent session.  Limited to ``mutate_session_input``.
+    """
+
+    from app.models.agent import Agent
+
+    if action != "mutate_session_input":
+        raise PermissionError("runtime_result_integration_action_not_allowed")
+    agent_uuid = _uuid(agent_id, "agent_id")
+    session_uuid = _uuid(session_id, "session_id")
+    page_uuid = _uuid(page_id, "page_id")
+    session = await db.scalar(
+        select(ChatSession).where(ChatSession.id == session_uuid, ChatSession.agent_id == agent_uuid)
+    )
+    agent = await db.get(Agent, agent_uuid)
+    if session is None or agent is None:
+        raise PermissionError("runtime_result_integration_authority_not_found")
+    root_user, _page = await _validate_runtime_result_integration_binding(
+        db,
+        session=session,
+        agent=agent,
+        page_id=page_uuid,
+        require_delivery_state=require_delivery_state,
+    )
+    return AuthenticatedSessionAuthority(
+        tenant_id=session.tenant_id,
+        agent_id=agent.id,
+        principal_type="user",
+        principal_id=root_user.id,
+        session_id=session.id,
+        authority_source=RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE,
+        action=action,
+        _seal=_AUTHORITY_SEAL,
+    )
+
+
 async def resolve_session_command_authority(
     db: AsyncSession,
     *,
@@ -443,27 +639,47 @@ async def resolve_session_command_authority(
 
     stamp = (command.target_json or {}).get(SESSION_COMMAND_AUTHORITY_STAMP_KEY)
     if stamp is not None:
-        # A server-minted A2A delegation peer stamp selects the durable
-        # revalidation lane; the stamp itself grants nothing.
+        # A server-minted stamp selects the durable revalidation lane; the
+        # stamp itself grants nothing.  Recovery revalidates only immutable
+        # route and authority facts — a later page/task lifecycle state can
+        # never strand an already-accepted command.
         if command.principal_type != "user" or not isinstance(stamp, dict):
             raise RuntimeError("session_command_authority_stamp_invalid")
-        if (
-            stamp.get("schema") != A2A_DELEGATION_PEER_STAMP_SCHEMA
-            or stamp.get("authority_source") != A2A_DELEGATION_PEER_AUTHORITY_SOURCE
+        stamp_source = stamp.get("authority_source")
+        stamp_schema = stamp.get("schema")
+        root_user: User | None = None
+        if stamp_source == A2A_DELEGATION_PEER_AUTHORITY_SOURCE and stamp_schema == A2A_DELEGATION_PEER_STAMP_SCHEMA:
+            try:
+                peer_agent_id = _uuid(stamp.get("peer_agent_id"), "peer_agent_id")
+                delegation_runtime_task_id = _uuid(
+                    stamp.get("delegation_runtime_task_id"), "delegation_runtime_task_id"
+                )
+            except ValueError as exc:
+                raise RuntimeError("session_command_authority_stamp_invalid") from exc
+            root_user, _task = await _validate_a2a_delegation_peer_binding(
+                db,
+                session=session,
+                agent=agent,
+                peer_agent_id=peer_agent_id,
+                delegation_runtime_task_id=delegation_runtime_task_id,
+            )
+        elif (
+            stamp_source == RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE
+            and stamp_schema == RUNTIME_RESULT_INTEGRATION_STAMP_SCHEMA
         ):
+            try:
+                page_id = _uuid(stamp.get("integration_page_id"), "integration_page_id")
+            except ValueError as exc:
+                raise RuntimeError("session_command_authority_stamp_invalid") from exc
+            root_user, _page = await _validate_runtime_result_integration_binding(
+                db,
+                session=session,
+                agent=agent,
+                page_id=page_id,
+                require_delivery_state=False,
+            )
+        else:
             raise RuntimeError("session_command_authority_stamp_invalid")
-        try:
-            peer_agent_id = _uuid(stamp.get("peer_agent_id"), "peer_agent_id")
-            delegation_runtime_task_id = _uuid(stamp.get("delegation_runtime_task_id"), "delegation_runtime_task_id")
-        except ValueError as exc:
-            raise RuntimeError("session_command_authority_stamp_invalid") from exc
-        root_user, _task = await _validate_a2a_delegation_peer_binding(
-            db,
-            session=session,
-            agent=agent,
-            peer_agent_id=peer_agent_id,
-            delegation_runtime_task_id=delegation_runtime_task_id,
-        )
         if command.principal_id != root_user.id:
             raise RuntimeError("session_command_principal_authority_mismatch")
         authority = AuthenticatedSessionAuthority(
@@ -472,7 +688,7 @@ async def resolve_session_command_authority(
             principal_type="user",
             principal_id=root_user.id,
             session_id=session.id,
-            authority_source=A2A_DELEGATION_PEER_AUTHORITY_SOURCE,
+            authority_source=str(stamp_source),
             action=action,
             _seal=_AUTHORITY_SEAL,
         )
@@ -653,6 +869,12 @@ async def register_session_command(
         # resolver validated before locking: root-user ownership and the
         # structured delegation-child kind.  The full peer/RuntimeTask
         # binding was validated by the resolver in the same transaction.
+        if locked_session.user_id != principal_uuid or not _is_a2a_delegation_child_session(locked_session):
+            raise ValueError("session_principal_mismatch")
+    if authority.authority_source == RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE:
+        # Same under-lock re-proof for the runtime result return lane: the
+        # lane only ever targets a genuine delegation child session owned by
+        # the same root user the page binds.
         if locked_session.user_id != principal_uuid or not _is_a2a_delegation_child_session(locked_session):
             raise ValueError("session_principal_mismatch")
     if authority.principal_type == "external_principal":

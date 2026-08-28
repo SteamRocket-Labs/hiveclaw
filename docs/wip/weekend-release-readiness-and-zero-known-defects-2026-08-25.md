@@ -3558,6 +3558,25 @@ Codex REQUEST_CHANGES #3 五项 findings（A–E）经当前未提交源码逐�
 **状态（精确，不过度宣称）**：本地候选完成（独立原子 commit，SHA 以 git log 为准；不 amend、不 deploy、不 push）。**不宣称**：Codex re-review verdict（pending）、已部署、生产已修复/已再观察、A2A clean pass、RC-03/RC-09、zero-known-defects、Day1 Closed。三项既有脏项（`.ultra/.runtime/compact-snapshot.md`、`output/`、`tmp/pdfs/`）未触碰、未 stage。
 
 
+#### Codex REQUEST_CHANGES correction #4（2026-08-28，Session 可见事实、连续 Rewind、增量 Hydration 与 stale terminal 全类收口；本地完成，部署/生产验收 pending）
+
+Correction #3 通过后，Codex 沿用户真实可见路径继续审查，发现“事实已持久化/单元测试已绿”仍不足以保证 no-reload Session 不吞消息。此次 correction 只机械治理事件身份、顺序、run 绑定、checkpoint 与恢复；不扫描自然语言、不改写模型语义，也不新增第二套语义事实源。
+
+**根因与修复**：
+
+1. **canonical / compatibility 双 plane 的可见列表 last-writer-wins**：同一 transition 中后提交的 compatibility replay 可覆盖刚落下的 canonical terminal card。修复为共享 `CompatibilityMessageTimeline` + `composeMixedPlaneSessionMessages`：两 plane 先按 typed identity/sequence 合成再一次提交；canonical identity 优先，compatibility 仅补 canonical 未拥有的消息；每个 transition 的可见 commit 只有一个 owner。
+2. **stale old-run terminal 先破坏 replay，再被 registry 拒绝**：旧 run 的 `assistant_message` 会先替换新 run 的匿名 `_streaming` 尾，再进行 run-id rejection；非 transcript 的 `done/error/quota_exceeded/run_cancelled` 也忽略 boolean acceptance，仍执行 phase、notice、refresh、reconcile 或 tail seal。修复为：legacy terminal 先判 typed run identity；被拒终态在空 replay 上形成独立 evidence message、补机械 event identity，并插在活动 `_streaming` 尾之前，保留 transcript/replay/timeline 证据但加入 `excludedIdentities`，UI object 与活动流不变；后续新 run delta 继续同一条 stream。stream terminal frame 的所有终态副作用统一由 `markActiveRunTerminal` boolean 门控，匹配 run 与 null-id 历史正向行为保持。
+3. **连续 Rewind 只看 replay 或 render-time 陈旧闭包**：第二次 rewind 可能丢失第一次 hidden identities；命令等待期间新到达的消息可能实际被 trim，却未进入 boundary，下一次 full-store recomposition 又“复活”。修复为 cumulative `composeSessionVisibilityBoundary`；chat surface 通过 `SessionMessageStore.updateAfterQueued` 在同一个已 flush 的 current list 内原子导出 boundary、trim 与 marker；history surface 的全部写入口经 `historyMessagesRef` 同步镜像，用同一 current list 导出 boundary 与 trim。只有 full authoritative hydration 可以替换 boundary。
+4. **newest-first incremental hydration 在 checkpoint 未到达时过早 publish**：大 Session 的第一页可先显示 rewind 之后本应隐藏的尾部；全量完成仍缺 checkpoint 时也会静默接受。修复为从 durable Session active projection 读取 checkpoint；checkpoint 未解析时 `liveReady` 保持 pending，后续页找到才发布；完整分页仍找不到时 typed fail `session_rewind_checkpoint_unresolved`。接受 rewind 命令后先 abort 旧 controller、清 load generation、把 authoritative `control_event.metadata`（`projection_reason/checkpoint_event_id/ledger_event_id/draft_content/turn_index/applied_at/truth_source/mode/rewind_guard`）更新到当前 Session，再以新 Session 重启 hydration；旧闭包不能覆盖新 boundary。
+5. **测试契约消费者遗漏**：`SessionSocketProjectionDependencies.markActiveRunTerminal` 从 void 升为 authoritative boolean 后，`sessionReconcileToolProjection.test.ts` 仍使用返回 `undefined` 的旧 mock，使真实 terminal reconcile 纵向测试被误判为拒绝。Codex 独立全量测试复现为 **1 failed / 1017 passed**；仅把该匹配终态 positive harness 改为 `vi.fn(() => true)`，不改产品代码、不弱化既有 reconcile/card 断言。
+
+**RED 轨迹（逐轮如实）**：初始三 finding 聚焦轮 **5 failed / 64 passed**（stale terminal 改写活动 UI、缺 cumulative boundary helper/接线、newest-page rewind 尾过早 publish、完整分页缺 checkpoint 未拒绝）；连续 rewind canonical M5 residual **2 failed / 65 passed**；pre-command stale hydration race **3 failed / 10 passed**；control-event metadata 真实 shape **1 failed / 12 passed**；raw compatibility stream + stream terminal + store race + AgentDetail live wiring **4 failed / 126 passed**；首个 GREEN 候选仍有 **2 failed / 128 passed**（测试应捕获 stream setup 后 UI object；AgentDetail 2902>2900，均如实修正）；Codex 独立全量测试再发现旧 mock **1 failed / 1017 passed**。
+
+**最终 GREEN（Codex 独立直接运行，2026-08-28）**：`npm test` **146 files / 1018 passed**；`npm exec tsc -- --noEmit` exit 0；`npm run i18n:check` node tests **9/9**、en=zh=3864、全部 gates 0；`npm run build` exit 0，Vite **7386 modules**，AgentDetail **363326/380000 bytes、100305/115000 gzip**，vendor **591449/620000 bytes、186474/200000 gzip**；`git diff --check` clean。最终 AgentDetail 行数 **2900/2900**，架构预算测试保持未放宽。无 dependency/schema/migration/i18n catalog 变更。
+
+**当前状态与回滚**：本地代码、测试、WIP 与 Codex 独立 review/test **PASS — Verified locally**；下一步必须从本 commit 部署 Railway `backend`、`backend-api`、`frontend` 三服务，再以 signed-in fresh Session 无 reload 复验 typed 402 failed/idle、quota notice、消息不丢、活动流不分裂、reload 与 live 一致。生产通过前保持 **Partial loop**，不宣称生产修复、A2A clean pass、Day1/Day2、zero-known-defects 或 weekend 完成。回滚为 revert 本 correction commit；三项既有脏项继续不触碰、不 stage。
+
+
 ## 8. 两个工作日的执行节奏
 
 ### 开工前 Gate 0 — owner 过稿（已完成）

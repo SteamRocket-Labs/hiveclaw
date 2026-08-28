@@ -12,10 +12,16 @@ import {
 import { latestTranscriptSequence, mergeTranscriptBackfill } from './chatTransportRecovery';
 import {
   applyCanonicalSessionSnapshot,
+  applySessionVisibilityBoundary,
   compatibilityProjectionEvent,
+  composeMixedPlaneSessionMessages,
   consumeSessionEnvelope,
+  createCompatibilityMessageTimeline,
   mergeCanonicalTerminalMessages,
+  recordCompatibilityTimelineMessages,
+  type CompatibilityMessageTimeline,
   type SessionTranscriptApplication,
+  type SessionVisibilityBoundary,
 } from './sessionEventConsumer';
 import type { SessionCompatibilityEvent, SessionEventStore } from '../session-workbench/sessionEventStore';
 
@@ -31,6 +37,13 @@ export type SessionTranscriptApplierRefs = {
   eventStores: Record<string, SessionEventStore | undefined>;
   fullHydrationKeys: Set<string>;
   replayStates: Record<string, TranscriptReplayState | undefined>;
+  /** Compatibility-plane sequence/run-identity bookkeeping per session —
+   * seeded by hydration and extended by every live legacy projection so the
+   * mixed-plane composition keeps total ascending event sequence. */
+  compatibilityTimelines: Record<string, CompatibilityMessageTimeline | undefined>;
+  /** Mechanical rewind visibility boundary per session — replaced on every
+   * hydration publish and on every live rewind command install. */
+  visibilityBoundaries: Record<string, SessionVisibilityBoundary | undefined>;
   uiStates: Record<string, SessionUiState | undefined>;
   runtimeActivityAt: Record<string, number | undefined>;
   pendingUserMessages: Record<string, PendingUserMessage[] | undefined>;
@@ -58,16 +71,25 @@ function isLegacyTerminalEventType(eventType: string | undefined): boolean {
     || eventType === 'quota_exceeded';
 }
 
-/** Apply one legacy-plane transcript event: replay state, transcript backfill,
- * UI state, and (for the active runtime) the message commit. Returns whether
- * the event was newly applied to the legacy projection. */
+type LegacyProjectionResult = {
+  /** Whether the event was newly applied to the legacy projection. */
+  applied: boolean;
+  /** Whether the event is a terminal witness the run-identity registry
+   * accepted for the currently active run. A stale old-run terminal stays
+   * durable historical evidence but never seals the active UI. */
+  terminalAccepted: boolean;
+};
+
+/** Apply one legacy-plane transcript event: replay state, timeline
+ * bookkeeping, transcript backfill, and UI state. The visible message commit
+ * is NOT performed here — each transition commits the shared mixed-plane
+ * composition exactly once at the end. */
 function applyLegacyProjectionEvent(
   deps: SessionTranscriptApplierDeps,
   key: string,
-  sessionId: string,
   projectionEvent: ChatTranscriptEventPayload,
   isActiveRuntime: boolean,
-): boolean {
+): LegacyProjectionResult {
   const { refs } = deps;
   const currentEvents = refs.transcriptEvents[key] || [];
   const sequenceAlreadyApplied = typeof projectionEvent.sequence === 'number'
@@ -75,58 +97,75 @@ function applyLegacyProjectionEvent(
     && currentEvents.some((candidate) => candidate.sequence === projectionEvent.sequence);
   if (sequenceAlreadyApplied) {
     refs.transcriptEvents[key] = mergeTranscriptBackfill(currentEvents, [projectionEvent]);
-    return false;
+    return { applied: false, terminalAccepted: false };
   }
   const previous = refs.replayStates[key] || createEmptyTranscriptReplayState();
   const next = applyTranscriptEvent(previous, projectionEvent);
-  if (next === previous) return false;
+  if (next === previous) return { applied: false, terminalAccepted: false };
+  const eventType = projectionEvent.event_type || projectionEvent.type;
+  const lastMessage = next.messages[next.messages.length - 1];
+  const terminal = isLegacyTerminalEventType(eventType) || deps.isTerminalTranscriptToolMessage(lastMessage);
+  const terminalAccepted = terminal
+    ? deps.markActiveRunTerminal(key, getTerminalRunIdFromTranscriptEvent(projectionEvent)) !== false
+    : false;
+
+  if (terminal && !terminalAccepted) {
+    // Rejected stale terminal: durable evidence WITHOUT letting the
+    // terminal's replay reduction replace or move the active newer stream.
+    // The terminal reduces against an empty baseline so its message form is
+    // standalone; otherwise-anonymous messages get stamped with the typed
+    // event identity; the evidence inserts BEFORE a trailing active
+    // streaming assistant so a later delta of the active run continues the
+    // same stream. The session UI state keeps its exact pre-event identity
+    // and zero active phase/seal effects fire.
+    const standalone = applyTranscriptEvent(createEmptyTranscriptReplayState(), projectionEvent);
+    const eventIdentity = String(projectionEvent.id || '')
+      || (typeof projectionEvent.sequence === 'number' && projectionEvent.sequence > 0 ? `seq:${projectionEvent.sequence}` : '');
+    const evidenceMessages = standalone.messages.map((message, index) => (
+      message.id || message.messageId || message.transcriptEventId || !eventIdentity
+        ? message
+        : { ...message, id: `${eventIdentity}:evidence:${index}` }
+    ));
+    const previousMessages = previous.messages;
+    const tail = previousMessages[previousMessages.length - 1];
+    const tailIsActiveStream = Boolean(
+      tail && tail.role === 'assistant' && (tail as { _streaming?: boolean })._streaming,
+    );
+    const mergedMessages = tailIsActiveStream
+      ? [...previousMessages.slice(0, -1), ...evidenceMessages, tail]
+      : [...previousMessages, ...evidenceMessages];
+    refs.replayStates[key] = { ...next, messages: mergedMessages, ui: previous.ui };
+    const timeline = refs.compatibilityTimelines[key]
+      ?? (refs.compatibilityTimelines[key] = createCompatibilityMessageTimeline());
+    const firstMaterialized = recordCompatibilityTimelineMessages(timeline, projectionEvent, mergedMessages);
+    refs.transcriptEvents[key] = mergeTranscriptBackfill(
+      refs.transcriptEvents[key] || [],
+      [projectionEvent],
+    );
+    refs.runtimeActivityAt[key] = Date.now();
+    // The identities this rejected terminal first materialized never enter
+    // the active composition; the durable evidence stays in the replay.
+    for (const identity of firstMaterialized) timeline.excludedIdentities.add(identity);
+    return { applied: true, terminalAccepted: false };
+  }
+
+  // Non-terminal or accepted terminal: the full reduction applies.
   refs.replayStates[key] = next;
+  const timeline = refs.compatibilityTimelines[key]
+    ?? (refs.compatibilityTimelines[key] = createCompatibilityMessageTimeline());
+  recordCompatibilityTimelineMessages(timeline, projectionEvent, next.messages);
   refs.transcriptEvents[key] = mergeTranscriptBackfill(
     refs.transcriptEvents[key] || [],
     [projectionEvent],
   );
   refs.uiStates[key] = next.ui;
   refs.runtimeActivityAt[key] = Date.now();
-
-  const eventType = projectionEvent.event_type || projectionEvent.type;
-  const lastMessage = next.messages[next.messages.length - 1];
-  const terminal = isLegacyTerminalEventType(eventType) || deps.isTerminalTranscriptToolMessage(lastMessage);
-  if (terminal) {
-    deps.markActiveRunTerminal(key, getTerminalRunIdFromTranscriptEvent(projectionEvent));
-  }
-
   if (isActiveRuntime) {
-    deps.setChatMessagesSessionId(sessionId);
-    const commitChatMessages = terminal
-      ? deps.setChatMessagesAfterQueued
-      : deps.enqueueChatMessagesUpdate;
-    commitChatMessages(sessionId, () => deps.mergePendingMessages(key, next.messages.map(deps.parseChatMsg)));
     deps.setActivePhase(next.ui.phase);
     deps.setIsWaiting(next.ui.isWaiting);
     deps.setIsStreaming(next.ui.isStreaming);
   }
-  return true;
-}
-
-function applyDrainedCompatibilityEvents(
-  deps: SessionTranscriptApplierDeps,
-  key: string,
-  sessionId: string,
-  drained: SessionCompatibilityEvent[],
-  isActiveRuntime: boolean,
-): void {
-  // Drained compatibility envelopes were buffered behind a gap; now that the
-  // cursor reached them they own exactly one legacy projection each, in
-  // sequence order.
-  for (const drainedEvent of drained) {
-    applyLegacyProjectionEvent(
-      deps,
-      key,
-      sessionId,
-      compatibilityProjectionEvent(drainedEvent),
-      isActiveRuntime,
-    );
-  }
+  return { applied: true, terminalAccepted: terminal && terminalAccepted };
 }
 
 /**
@@ -156,8 +195,17 @@ export function applyTranscriptToSessionRuntime(
     return false;
   }
   if (consumed.store) refs.eventStores[key] = consumed.store;
-  const envelopeApplication = consumed.application ?? false;
   const application = consumed.application;
+
+  // This transition's single visible-commit plan. Both planes only mutate
+  // their durable stores/replay during application; the visible list is
+  // committed once, at the end, from the shared mixed-plane composition —
+  // never a plane-specific whole-list last-writer-wins replacement.
+  let commitRequested = false;
+  let terminalCommit = false;
+  // The terminal merge binds to the canonical accepted terminal run when one
+  // exists; a legacy-only accepted terminal keeps the legacy unbound seal.
+  let canonicalTerminalRunId: string | null = null;
 
   // Canonical snapshots apply for every applied canonical event, whatever the
   // carrier: a compatibility envelope can fill a sequence gap and drain
@@ -179,37 +227,74 @@ export function applyTranscriptToSessionRuntime(
       },
       onActivity: () => { refs.runtimeActivityAt[key] = Date.now(); },
       onTerminal: (runId) => deps.markActiveRunTerminal(key, runId),
-      onMessages: (messages, terminal, runId) => {
-        deps.setChatMessagesSessionId(sessionId);
-        (terminal ? deps.setChatMessagesAfterQueued : deps.enqueueChatMessagesUpdate)(
-          sessionId,
-          (previous) => deps.mergePendingMessages(
-            key,
-            terminal ? mergeCanonicalTerminalMessages(previous, messages, runId) : messages,
-          ),
-        );
+      onMessages: (_messages, terminal, runId) => {
+        commitRequested = true;
+        if (terminal) {
+          terminalCommit = true;
+          canonicalTerminalRunId = runId;
+        }
       },
     });
   }
 
-  if (consumed.canonical) {
-    applyDrainedCompatibilityEvents(
-      deps, key, sessionId, application?.compatibilityEvents || [], isActiveRuntime,
+  const legacyResults: LegacyProjectionResult[] = [];
+  if (!consumed.canonical) {
+    if (consumed.sessionEnvelope && !application) {
+      // Buffered, conflicted, duplicate, late, and recovery-held
+      // compatibility carriers mutate zero UI/transcript state — the content
+      // renders when the missing sequence closes the gap.
+      return false;
+    }
+    if (consumed.sessionEnvelope) {
+      // Total ascending event sequence: the carrier (the lowest sequence of
+      // the transition) projects before its drained buffered envelopes.
+      legacyResults.push(applyLegacyProjectionEvent(deps, key, consumed.projectionEvent, isActiveRuntime));
+      for (const drained of application?.compatibilityEvents || []) {
+        legacyResults.push(applyLegacyProjectionEvent(deps, key, compatibilityProjectionEvent(drained), isActiveRuntime));
+      }
+    } else {
+      // Raw non-envelope legacy frames keep the boolean contract.
+      legacyResults.push(applyLegacyProjectionEvent(deps, key, consumed.projectionEvent, isActiveRuntime));
+    }
+  } else {
+    // Compatibility envelopes the canonical carrier drained own exactly one
+    // legacy projection each, in sequence order.
+    for (const drained of application?.compatibilityEvents || []) {
+      legacyResults.push(applyLegacyProjectionEvent(deps, key, compatibilityProjectionEvent(drained), isActiveRuntime));
+    }
+  }
+
+  if (legacyResults.some((result) => result.applied)) commitRequested = true;
+  if (!terminalCommit) {
+    const acceptedLegacyTerminal = [...legacyResults].reverse()
+      .find((result) => result.applied && result.terminalAccepted);
+    if (acceptedLegacyTerminal) terminalCommit = true;
+  }
+
+  if (commitRequested && isActiveRuntime) {
+    const timeline = refs.compatibilityTimelines[key] ?? createCompatibilityMessageTimeline();
+    const composedAll = composeMixedPlaneSessionMessages({
+      store: refs.eventStores[key],
+      compatibilityMessages: refs.replayStates[key]?.messages || [],
+      timeline,
+    });
+    // The rewind visibility boundary survives the live composition:
+    // identities hidden by a rewind stay hidden until the next hydration
+    // publish replaces the boundary; newly arriving post-rewind events carry
+    // new identities and stay visible.
+    const composed = applySessionVisibilityBoundary(composedAll, refs.visibilityBoundaries[key] ?? null)
+      .map(deps.parseChatMsg);
+    deps.setChatMessagesSessionId(sessionId);
+    (terminalCommit ? deps.setChatMessagesAfterQueued : deps.enqueueChatMessagesUpdate)(
+      sessionId,
+      (previous) => deps.mergePendingMessages(
+        key,
+        terminalCommit ? mergeCanonicalTerminalMessages(previous, composed, canonicalTerminalRunId) : composed,
+      ),
     );
-    return envelopeApplication;
   }
 
-  if (consumed.sessionEnvelope) {
-    // Compatibility carrier: the legacy projection runs ONLY when the carrier
-    // itself was applied contiguously. Buffered, conflicted, duplicate, and
-    // recovery-held arrivals mutate zero UI/transcript state — the content
-    // renders when the missing sequence closes the gap.
-    if (!application) return false;
-    applyDrainedCompatibilityEvents(deps, key, sessionId, application.compatibilityEvents, isActiveRuntime);
-    applyLegacyProjectionEvent(deps, key, sessionId, consumed.projectionEvent, isActiveRuntime);
-    return application;
-  }
-
-  // Raw non-envelope legacy frames keep the boolean contract.
-  return applyLegacyProjectionEvent(deps, key, sessionId, consumed.projectionEvent, isActiveRuntime);
+  if (consumed.canonical) return application ?? false;
+  if (consumed.sessionEnvelope) return application;
+  return legacyResults[0]?.applied ?? false;
 }

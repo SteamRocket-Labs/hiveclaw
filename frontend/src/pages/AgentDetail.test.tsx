@@ -2,6 +2,8 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { withRewindActiveProjection } from './agent-detail/agentDetailPolicy';
+
 const queryCalls: Array<{ key: unknown[]; enabled: unknown }> = [];
 
 async function readSource(relativePath: string): Promise<string> {
@@ -149,15 +151,57 @@ describe('AgentDetail realtime refresh contract', () => {
     expect(source).not.toContain("parseChatMsg({ role: 'assistant', content: `⚠️ ${message}` })");
     // The consumption contract moved to the extracted production applier; its
     // behavioral proof lives in sessionTranscriptApplier.test.ts.
-    expect(applierSource).toContain('return envelopeApplication');
     expect(applierSource).toContain('mergeTranscriptBackfill(');
     expect(applierSource).toContain('events: appliedCanonicalEvents');
-    expect(applierSource).toContain('consumed.application ?? false');
-    expect(applierSource).toContain('mergeCanonicalTerminalMessages(previous, messages, runId)');
     expect(applierSource).not.toContain('transcriptEvents: nextTranscriptEvents');
     expect(applierSource).toContain('onTerminal: (runId) => deps.markActiveRunTerminal(key, runId)');
+    // Canonical arrivals return this transition's application facts.
+    expect(applierSource).toContain('return application ?? false');
+    // The visible list commits once per transition through the single
+    // mixed-plane composition owner — never a plane-specific whole-list
+    // replacement.
+    expect(applierSource).toContain('composeMixedPlaneSessionMessages({');
+    // Terminal seals bind to the accepted canonical terminal run via the
+    // merge; legacy-only accepted terminals keep the unbound legacy seal.
+    expect(applierSource).toContain('mergeCanonicalTerminalMessages(previous, composed, canonicalTerminalRunId)');
+    // A rewind visibility boundary survives live mixed-plane commits.
+    expect(applierSource).toContain('applySessionVisibilityBoundary(');
     // Compatibility carriers legacy-project only after contiguous application.
-    expect(applierSource).toContain('if (!application) return false');
+    expect(applierSource).toContain('consumed.sessionEnvelope && !application');
+  });
+
+  it('derives every live rewind boundary install from the same current list that is trimmed', async () => {
+    const source = await readSource('./AgentDetail.tsx');
+
+    // Chat surface: boundary AND trim derive atomically from the message
+    // store's flushed current list (queued live updates included)…
+    expect(source).toContain('sessionVisibilityBoundariesRef.current[activeKey] = installRewindVisibilityBoundaryFromStore({');
+    // …and no captured render-time visible list split remains.
+    expect(source).not.toContain('visibleNow');
+    // History surface derives boundary and trim from one tracked current list.
+    expect(source).toContain('historyMessagesRef.current');
+    expect(source).toContain('sessionVisibilityBoundariesRef.current[activeKey] = install.boundary;');
+    // The legacy replay baseline is trimmed separately, for its own state.
+    expect(source).toContain('messages: trimMessagesBeforeTranscriptEvent(replay.messages, checkpointEventId, checkpointCreatedAt)');
+  });
+
+  it('aborts the stale pre-command transcript load and rehydrates from the accepted rewind projection', async () => {
+    const source = await readSource('./AgentDetail.tsx');
+
+    // The accepted rewind facts build the updated local session value.
+    expect(source).toContain('withRewindActiveProjection(');
+    // Local session copies update so a future selection cannot regress to the
+    // stale projection while the server refresh arrives.
+    expect(source).toContain('setActiveSession(rewoundSession)');
+    // The stale pre-command load is aborted and its generation cleared BEFORE
+    // the fresh selectSession starts — the existing controller.signal/loadSeq
+    // guards make every old publish callback inert; no second generation
+    // system.
+    const abortAt = source.indexOf('sessionMsgAbortRef.current?.abort();\n                    sessionTranscriptLoadRef.current = null;');
+    expect(abortAt).toBeGreaterThan(-1);
+    const rehydrateAt = source.indexOf('void selectSession(rewoundSession);');
+    expect(rehydrateAt).toBeGreaterThan(-1);
+    expect(rehydrateAt).toBeGreaterThan(abortAt);
   });
 
   it('hydrates the complete canonical Session V2 transcript without a manual older-message gate', async () => {
@@ -224,5 +268,99 @@ describe('AgentDetail access failures', () => {
     expect(getEnabled(['agent-capability-installs', 'agent-403'])).toBe(false);
     expect(getEnabled(['agent-channel-capabilities', 'agent-403'])).toBe(false);
     expect(getEnabled(['metrics', 'agent-403'])).toBe(false);
+  });
+});
+
+describe('rewind session projection builder (Codex REQUEST_CHANGES #4 stale-load race)', () => {
+  it('installs the authoritative server projection from control_event.metadata (production _apply_projection_rewind shape)', () => {
+    const session = {
+      id: 'session-1',
+      agent_id: 'agent-1',
+      title: 'Ops',
+      metadata: { custom: 'kept' },
+      transcript_metadata_json: {
+        legacy_flag: true,
+        active_projection: { projection_reason: 'stale' },
+      },
+    };
+    // The REAL accepted-result shape: checkpoint carries checkpoint facts
+    // only, truth_source/rewind_guard also ride top-level, and the full
+    // durable projection lives in control_event.metadata next to the
+    // envelope-only command/workspace_restore fields. applied_at and mode
+    // exist ONLY in that metadata projection.
+    const actionResult = {
+      truth_source: 'transcript',
+      rewind_guard: { mode: 'strict' },
+      checkpoint: {
+        id: 'event-9',
+        created_at: '2026-08-28T01:00:00Z',
+        turn_index: 7,
+        content: 'draft text',
+      },
+      control_event: {
+        metadata: {
+          command: { name: 'rewind' },
+          workspace_restore: { restored: 3 },
+          projection_reason: 'rewind',
+          checkpoint_event_id: 'event-9',
+          ledger_event_id: null,
+          draft_content: 'draft text',
+          turn_index: 7,
+          applied_at: '2026-08-28T01:00:01Z',
+          truth_source: 'transcript',
+          mode: 'context',
+          rewind_guard: { mode: 'strict' },
+        },
+      },
+    };
+
+    const updated = withRewindActiveProjection(session, actionResult, 'event-9', 'draft text');
+    const metadata = updated.transcript_metadata_json as Record<string, unknown>;
+
+    expect(updated).toMatchObject({
+      id: 'session-1',
+      agent_id: 'agent-1',
+      title: 'Ops',
+      metadata: { custom: 'kept' },
+    });
+    expect(metadata.legacy_flag).toBe(true);
+    // Every exact server projection field survives, including the supplied
+    // null ledger_event_id; envelope-only fields never enter the projection.
+    expect(metadata.active_projection).toEqual({
+      projection_reason: 'rewind',
+      checkpoint_event_id: 'event-9',
+      ledger_event_id: null,
+      draft_content: 'draft text',
+      turn_index: 7,
+      applied_at: '2026-08-28T01:00:01Z',
+      truth_source: 'transcript',
+      mode: 'context',
+      rewind_guard: { mode: 'strict' },
+    });
+    // The input session object is never mutated.
+    expect((session.transcript_metadata_json.active_projection as { projection_reason: string }).projection_reason).toBe('stale');
+  });
+
+  it('falls back to checkpoint/top-level facts for older responses without control_event.metadata', () => {
+    const updated = withRewindActiveProjection(
+      { id: 'session-1' },
+      {
+        truth_source: 'transcript',
+        checkpoint: { id: 'event-3', turn_index: 2, applied_at: '2026-08-28T01:00:01Z' },
+      },
+      'event-3',
+      '',
+    );
+    expect(updated.id).toBe('session-1');
+    expect(updated.transcript_metadata_json).toEqual({
+      active_projection: {
+        projection_reason: 'rewind',
+        checkpoint_event_id: 'event-3',
+        draft_content: '',
+        applied_at: '2026-08-28T01:00:01Z',
+        turn_index: 2,
+        truth_source: 'transcript',
+      },
+    });
   });
 });

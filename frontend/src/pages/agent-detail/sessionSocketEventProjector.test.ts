@@ -35,7 +35,7 @@ function makeHarness(data: Record<string, unknown>, isActiveRuntime = true) {
     sessionPhaseOf: vi.fn(() => 'responding' as const),
     syncActivePhase: vi.fn(),
     setActiveRunState: vi.fn(),
-    markActiveRunTerminal: vi.fn(),
+    markActiveRunTerminal: vi.fn(() => true),
     activeRunIdOf: vi.fn(() => null),
     invalidateSessionRuntimeQueries: vi.fn(),
     reconcileSessionTranscript: vi.fn(),
@@ -139,7 +139,10 @@ function legacyAssistantTerminalEnvelope(runId: string, eventId = 'event-legacy-
   };
 }
 
-function wireRealSessionApplication(harness: ReturnType<typeof makeHarness>) {
+function wireRealSessionApplication(
+  harness: ReturnType<typeof makeHarness>,
+  acceptTerminalRunId?: (runId: string | null | undefined) => boolean,
+) {
   // The REAL AgentDetail consumption path: the extracted production applier
   // owns envelope reduction, application facts, and legacy projection alike
   // — no test-only mirror of the contract may drift from the page wiring.
@@ -148,6 +151,8 @@ function wireRealSessionApplication(harness: ReturnType<typeof makeHarness>) {
     eventStores: {},
     fullHydrationKeys: new Set(),
     replayStates: {},
+    compatibilityTimelines: {},
+    visibilityBoundaries: {},
     uiStates: {},
     runtimeActivityAt: {},
     pendingUserMessages: {},
@@ -158,7 +163,7 @@ function wireRealSessionApplication(harness: ReturnType<typeof makeHarness>) {
       markActiveRunTerminal: (key, runId) => {
         harness.dependencies.markActiveRunTerminal(key, runId);
         // The registry acceptance contract: only an explicit false rejects.
-        return true;
+        return acceptTerminalRunId ? acceptTerminalRunId(runId) : true;
       },
       isTerminalTranscriptToolMessage: () => false,
       mergePendingMessages: (_key, messages) => messages,
@@ -1185,5 +1190,141 @@ describe('session socket projector contiguous-application side effects (Codex RE
     projectSessionSocketEvent({ ...harness.context, data: bufferedTerminal }, harness.dependencies);
     expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledTimes(1);
     expect(harness.dependencies.fetchMySessions).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('session socket projector terminal run-identity safety (Codex REQUEST_CHANGES #4 finding D)', () => {
+  function compatibilityTerminalEnvelope(sequence: number, runId: string): Record<string, unknown> {
+    return {
+      schema: 'hive.session_event_compatibility',
+      schema_version: 1,
+      compatibility_status: 'needs_reconciliation',
+      reason: 'legacy_generation',
+      event_id: `legacy-terminal-${sequence}-${runId}`,
+      sequence,
+      session_id: 'session-1',
+      run_id: runId,
+      legacy_event_type: 'assistant_message',
+      payload: { content: `LEGACY FINAL ${runId}`, legacy_run_id: runId, metadata: {} },
+    };
+  }
+
+  function rawTerminalFrame(sequence: number, runId: string): Record<string, unknown> {
+    return {
+      sequence,
+      transcript_event_id: `raw-terminal-${sequence}-${runId}`,
+      event_type: 'assistant_message',
+      run_id: runId,
+      content: `RAW FINAL ${runId}`,
+    };
+  }
+
+  it('runs zero terminal effects for a stale compatibility run-1 terminal while run-2 is active, and once for the matching run-2 terminal', () => {
+    const staleHarness = makeHarness(compatibilityTerminalEnvelope(1, 'run-1'));
+    staleHarness.dependencies.activeRunIdOf = vi.fn(() => 'run-2');
+
+    projectSessionSocketEvent(staleHarness.context, staleHarness.dependencies);
+
+    expect(staleHarness.dependencies.invalidateSessionRuntimeQueries).not.toHaveBeenCalled();
+    expect(staleHarness.dependencies.fetchMySessions).not.toHaveBeenCalled();
+    expect(staleHarness.dependencies.reconcileSessionTranscript).not.toHaveBeenCalled();
+    expect(staleHarness.dependencies.setSessionPhase).not.toHaveBeenCalled();
+    expect(staleHarness.dependencies.syncActivePhase).not.toHaveBeenCalled();
+
+    const matchingHarness = makeHarness(compatibilityTerminalEnvelope(1, 'run-2'));
+    matchingHarness.dependencies.activeRunIdOf = vi.fn(() => 'run-2');
+
+    projectSessionSocketEvent(matchingHarness.context, matchingHarness.dependencies);
+
+    expect(matchingHarness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledTimes(1);
+    expect(matchingHarness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledWith('agent-1', 'session-1');
+    expect(matchingHarness.dependencies.fetchMySessions).toHaveBeenCalledTimes(1);
+    expect(matchingHarness.dependencies.fetchMySessions).toHaveBeenCalledWith(true, 'agent-1');
+  });
+
+  it('runs zero terminal effects for a stale raw run-1 terminal frame while run-2 is active, through the real applier result', () => {
+    const harness = makeHarness(rawTerminalFrame(1, 'run-1'));
+    harness.dependencies.activeRunIdOf = vi.fn(() => 'run-2');
+    // Real consumption path with run-2 active registry semantics: the run-1
+    // terminal is recorded but rejected for the active run.
+    wireRealSessionApplication(harness, (runId) => runId !== 'run-1');
+
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+
+    expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledTimes(1);
+    expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledWith('agent-1:session-1', 'run-1');
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).not.toHaveBeenCalled();
+    expect(harness.dependencies.fetchMySessions).not.toHaveBeenCalled();
+    expect(harness.dependencies.reconcileSessionTranscript).not.toHaveBeenCalled();
+  });
+
+  it('runs terminal effects exactly once for a matching raw run-2 terminal frame and zero times on redelivery', () => {
+    const harness = makeHarness(rawTerminalFrame(1, 'run-2'));
+    harness.dependencies.activeRunIdOf = vi.fn(() => 'run-2');
+    wireRealSessionApplication(harness, (runId) => runId !== 'run-1');
+
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledTimes(1);
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledWith('agent-1', 'session-1');
+    expect(harness.dependencies.fetchMySessions).toHaveBeenCalledTimes(1);
+    expect(harness.dependencies.fetchMySessions).toHaveBeenCalledWith(true, 'agent-1');
+
+    // At-least-once redelivery: the real applier reports no new application,
+    // so the terminal effects must not run again.
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledTimes(1);
+    expect(harness.dependencies.fetchMySessions).toHaveBeenCalledTimes(1);
+  });
+
+  it('records but performs zero active effects for stale run-1 terminal stream frames while run-2 is active', () => {
+    // Terminal stream frames ride the non-transcript channel: the registry
+    // still observes (and rejects) the stale run identity, but a rejected
+    // frame must not set/sync terminal phase, invalidate/reconcile/fetch,
+    // surface the stale error, or close/replace the active run-2 tail.
+    const staleDone = makeHarness({ type: 'done', content: 'STALE RUN-1 DONE', run_id: 'run-1' });
+    staleDone.dependencies.markActiveRunTerminal = vi.fn(() => false);
+    projectSessionSocketEvent(staleDone.context, staleDone.dependencies);
+    expect(staleDone.dependencies.markActiveRunTerminal).toHaveBeenCalledWith('agent-1:session-1', 'run-1');
+    expect(staleDone.dependencies.setSessionPhase).not.toHaveBeenCalled();
+    expect(staleDone.dependencies.syncActivePhase).not.toHaveBeenCalled();
+    expect(staleDone.dependencies.invalidateSessionRuntimeQueries).not.toHaveBeenCalled();
+    expect(staleDone.dependencies.reconcileSessionTranscript).not.toHaveBeenCalled();
+    expect(staleDone.dependencies.fetchMySessions).not.toHaveBeenCalled();
+    expect(staleDone.messages()).toEqual([]);
+
+    const staleError = makeHarness({ type: 'error', content: 'STALE RUN-1 ERROR', run_id: 'run-1' });
+    staleError.dependencies.markActiveRunTerminal = vi.fn(() => false);
+    projectSessionSocketEvent(staleError.context, staleError.dependencies);
+    expect(staleError.dependencies.markActiveRunTerminal).toHaveBeenCalledWith('agent-1:session-1', 'run-1');
+    expect(staleError.dependencies.setTransportNotice).not.toHaveBeenCalled();
+    expect(staleError.dependencies.setSessionPhase).not.toHaveBeenCalled();
+    expect(staleError.dependencies.invalidateSessionRuntimeQueries).not.toHaveBeenCalled();
+
+    const staleQuota = makeHarness({ type: 'quota_exceeded', content: 'STALE RUN-1 QUOTA', run_id: 'run-1' });
+    staleQuota.dependencies.markActiveRunTerminal = vi.fn(() => false);
+    projectSessionSocketEvent(staleQuota.context, staleQuota.dependencies);
+    expect(staleQuota.dependencies.markActiveRunTerminal).toHaveBeenCalledWith('agent-1:session-1', 'run-1');
+    expect(staleQuota.dependencies.setTransportNotice).not.toHaveBeenCalled();
+    expect(staleQuota.dependencies.setSessionPhase).not.toHaveBeenCalled();
+
+    const staleCancelled = makeHarness({ type: 'run_cancelled', run_id: 'run-1' });
+    staleCancelled.dependencies.markActiveRunTerminal = vi.fn(() => false);
+    projectSessionSocketEvent(staleCancelled.context, staleCancelled.dependencies);
+    expect(staleCancelled.dependencies.markActiveRunTerminal).toHaveBeenCalledWith('agent-1:session-1', 'run-1');
+    expect(staleCancelled.dependencies.setSessionPhase).not.toHaveBeenCalled();
+    expect(staleCancelled.dependencies.syncActivePhase).not.toHaveBeenCalled();
+    expect(staleCancelled.dependencies.invalidateSessionRuntimeQueries).not.toHaveBeenCalled();
+    expect(staleCancelled.dependencies.fetchMySessions).not.toHaveBeenCalled();
+  });
+
+  it('keeps full existing behavior for a matching run-2 terminal stream frame while run-2 is active', () => {
+    const harness = makeHarness({ type: 'done', content: 'RUN-2 FINAL', run_id: 'run-2' });
+    harness.dependencies.activeRunIdOf = vi.fn(() => 'run-2');
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+    expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledWith('agent-1:session-1', 'run-2');
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledWith('agent-1', 'session-1');
+    expect(harness.dependencies.reconcileSessionTranscript).toHaveBeenCalledWith('agent-1', 'session-1');
+    expect(harness.messages().some((message) => message.content === 'RUN-2 FINAL')).toBe(true);
   });
 });

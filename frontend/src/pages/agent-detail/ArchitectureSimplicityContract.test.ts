@@ -16,15 +16,27 @@ describe('UX-04 orchestration and composition boundaries', () => {
 
   it('routes live and optimistic messages by the exact durable Session identity', () => {
     const source = read('../AgentDetail.tsx');
-    const applierSource = read('./sessionTranscriptApplier.ts');
 
-    // The transcript applier owns the live message routing contract.
-    expect(applierSource).toContain('(terminal ? deps.setChatMessagesAfterQueued : deps.enqueueChatMessagesUpdate)');
-    expect(applierSource).toContain('commitChatMessages(sessionId, () => deps.mergePendingMessages(key, next.messages.map(deps.parseChatMsg)))');
     expect(source).toContain('appendOptimisticUserMessage(activeRuntimeKey, runSessionId, {');
     expect(source).toContain('setChatMessagesAfterQueuedForSession(sessionId, () => mergePendingForSession(runtimeKey, preParsed))');
     expect(source).not.toContain('(terminal ? setChatMessagesAfterQueued : enqueueChatMessagesUpdate)(');
     expect(source).not.toContain('setChatMessagesAfterQueued(() => mergePendingForSession(runtimeKey');
+  });
+
+  it('commits the visible list only through the single mixed-plane composition owner', () => {
+    const consumerSource = read('./sessionEventConsumer.ts');
+    const applierSource = read('./sessionTranscriptApplier.ts');
+
+    // One named owner composes the final visible list across the canonical
+    // and compatibility planes (union + identity dedupe + ascending
+    // sequence); both hydration and the live applier consume it.
+    expect(consumerSource).toContain('export function composeMixedPlaneSessionMessages');
+    expect(consumerSource.match(/composeMixedPlaneSessionMessages/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(applierSource).toContain('composeMixedPlaneSessionMessages');
+    // No plane-specific whole-list replacement of the visible list may
+    // remain: neither plane may commit its own replay/projection array as
+    // the entire visible list.
+    expect(applierSource).not.toContain('next.messages.map(deps.parseChatMsg)');
   });
 
   it('loads inactive workbench domains on demand and keeps FileBrowser out of the route entry', () => {

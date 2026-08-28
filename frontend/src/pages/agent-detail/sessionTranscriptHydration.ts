@@ -5,8 +5,8 @@ import {
   type ChatTranscriptEventPayload,
 } from './chatRuntime';
 import { mergeTranscriptBackfill } from './chatTransportRecovery';
-import { applySessionActiveProjection } from './agentDetailPolicy';
-import { hydrateSessionTranscriptEvents } from './sessionEventConsumer';
+import { applySessionActiveProjection, rewindCheckpointEventIdFromSession } from './agentDetailPolicy';
+import { buildSessionVisibilityBoundary, hydrateSessionTranscriptEvents } from './sessionEventConsumer';
 import type { SessionEventStore } from '../session-workbench/sessionEventStore';
 
 export const CANONICAL_TRANSCRIPT_PAGE_SIZE = 1000;
@@ -89,14 +89,20 @@ export function projectCanonicalTranscriptSnapshot(options: {
   // projection baseline so the latest page and subsequent live events can be
   // reduced immediately. A real gap inside the fetched suffix remains a gap.
   const hydration = hydrateSessionTranscriptEvents(events, projectionBaselineSequence(events));
-  const activeProjection = applySessionActiveProjection(
-    options.session,
-    hydration.messages.map(options.parseMessage),
-  );
+  const parsedMessages = hydration.messages.map(options.parseMessage);
+  const activeProjection = applySessionActiveProjection(options.session, parsedMessages);
   return {
     events,
     store: hydration.store,
     ui: hydration.ui,
+    compatibilityTimeline: hydration.compatibilityTimeline,
+    // The rewind visibility boundary is exact projection identity state: the
+    // identities the rewind trim hid. It is replaced on every hydration
+    // publish (null when there is no rewind) and the live applier keeps
+    // honoring it until then.
+    visibilityBoundary: activeProjection.checkpointEventId
+      ? buildSessionVisibilityBoundary(activeProjection.checkpointEventId, parsedMessages, activeProjection.messages)
+      : null,
     messages: activeProjection.messages,
     replay: {
       ...createEmptyTranscriptReplayState(),
@@ -108,14 +114,42 @@ export function projectCanonicalTranscriptSnapshot(options: {
 }
 
 /**
+ * Mechanically-derived projection resolution state for incremental
+ * newest-first hydration: a rewind whose checkpoint event is not yet inside
+ * the merged snapshot cannot be trimmed truthfully, so the projection is
+ * unresolved and must neither publish nor open the live cursor.
+ */
+export type SnapshotProjectionResolution = 'resolved' | 'unresolved_rewind_checkpoint';
+
+export function resolveSnapshotProjectionResolution(
+  session: unknown,
+  snapshot: ChatTranscriptEventPayload[],
+): SnapshotProjectionResolution {
+  const checkpointEventId = rewindCheckpointEventIdFromSession(session);
+  if (!checkpointEventId) return 'resolved';
+  const present = snapshot.some((event) => {
+    const envelope = event as unknown as Record<string, unknown>;
+    return envelope.event_id === checkpointEventId || event.id === checkpointEventId;
+  });
+  return present ? 'resolved' : 'unresolved_rewind_checkpoint';
+}
+
+/**
  * Load complete authorized Session V2 evidence newest-first. The first page is
  * published immediately, then older pages are merged and published
  * automatically. Pagination remains an API transport detail and never becomes
  * a user-operated visibility boundary or a blank-screen prerequisite.
+ *
+ * Rewind exception: while the session's active rewind checkpoint has not
+ * arrived, no snapshot publishes and the live cursor stays closed — the
+ * untrimmed tail would show rewind-hidden content. A complete hydration that
+ * never carries the checkpoint fails observably and recoverably with
+ * `session_rewind_checkpoint_unresolved` and never publishes the unsafe tail.
  */
 export function loadCanonicalSessionTranscript(
   fetchPage: TranscriptPageFetcher,
   onSnapshot?: TranscriptSnapshotConsumer,
+  options?: { session?: unknown },
 ): CanonicalTranscriptHydration {
   let settleLive!: (sequence: number) => void;
   let failLive!: (error: unknown) => void;
@@ -133,6 +167,7 @@ export function loadCanonicalSessionTranscript(
     let beforeSequence: number | undefined;
     let previousOldestSequence: number | undefined;
     let pageCount = 0;
+    let rewindHold = false;
 
     try {
       while (true) {
@@ -152,15 +187,30 @@ export function loadCanonicalSessionTranscript(
         const snapshot = [...eventsById.values()]
           .sort((left, right) => eventSequence(left) - eventSequence(right));
         const complete = page.length < CANONICAL_TRANSCRIPT_PAGE_SIZE;
+        // Rewind gate: an unresolved rewind checkpoint holds the publish and
+        // the live cursor until the page carrying the checkpoint arrives.
+        const publishable = resolveSnapshotProjectionResolution(options?.session, snapshot) === 'resolved';
         let liveWatermark: number | null | void = undefined;
-        if (pageCount === 1 || complete) {
+        if (publishable && (pageCount === 1 || complete || rewindHold)) {
           liveWatermark = await onSnapshot?.(snapshot, { complete, pageCount });
         }
+        rewindHold = !publishable;
         if (!liveSettled && Number.isSafeInteger(liveWatermark) && Number(liveWatermark) >= 0) {
           liveSettled = true;
           settleLive(Number(liveWatermark));
         }
         if (complete) {
+          if (!publishable) {
+            // The authoritative transcript ended without the rewind
+            // checkpoint: fail observably and recoverably — never publish
+            // the unsafe tail and never open the live cursor.
+            const error = new Error('session_rewind_checkpoint_unresolved');
+            if (!liveSettled) {
+              liveSettled = true;
+              failLive(error);
+            }
+            throw error;
+          }
           if (!liveSettled && (snapshot.length === 0 || liveWatermark === undefined)) {
             liveSettled = true;
             settleLive(snapshot.length === 0 ? 0 : eventSequence(snapshot.at(-1)!));

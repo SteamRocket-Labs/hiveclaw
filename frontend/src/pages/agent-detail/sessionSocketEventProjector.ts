@@ -9,6 +9,7 @@ import {
   getTransportNotice,
   isRuntimePhase,
   isTerminalRealtimeChatEvent,
+  isTerminalRunAcceptedForActiveRun,
   reduceRuntimePhase,
   type AgentChatMessage,
   type ChatTranscriptEventPayload,
@@ -17,7 +18,7 @@ import {
 } from './chatRuntime';
 import { normalizeToolCallResult } from './toolResultEnvelope';
 import { sessionRunStateFromPayload } from './runtimeBudgetState';
-import { sessionPayloadContent, type SessionEventV2 } from '../session-workbench/sessionEventStore';
+import { sessionPayloadContent, type SessionCompatibilityEvent, type SessionEventV2 } from '../session-workbench/sessionEventStore';
 import {
   compatibilityProjectionEvent,
   isLegacyAssistantTerminalItem,
@@ -54,6 +55,43 @@ function scopeRunId(scope: unknown): string | null {
   return typeof runId === 'string' && runId.trim() ? runId : null;
 }
 
+/** Run identity carried by a terminal transcript witness — top-level run id
+ * for raw/native frames, mapped legacy run id for compatibility envelopes. */
+function terminalWitnessRunId(event: ChatTranscriptEventPayload): string | null {
+  const direct = getTerminalRunIdFromTranscriptEvent(event);
+  if (direct) return direct;
+  const envelope = event as unknown as Record<string, unknown>;
+  const payload = envelope.payload && typeof envelope.payload === 'object'
+    ? envelope.payload as Record<string, unknown>
+    : {};
+  const legacyRunId = payload.legacy_run_id;
+  if (typeof legacyRunId === 'string' && legacyRunId.trim()) return legacyRunId.trim();
+  const runId = envelope.run_id;
+  return typeof runId === 'string' && runId.trim() ? runId.trim() : null;
+}
+
+/** One terminal-effect step in total ascending event sequence, across planes. */
+type TerminalEffectStep =
+  | { sequence: number; canonical: SessionEventV2 }
+  | { sequence: number; compatibility: SessionCompatibilityEvent };
+
+function ascendingEffectSteps(
+  canonicalEvents: SessionEventV2[],
+  compatibilityEvents: SessionCompatibilityEvent[],
+): TerminalEffectStep[] {
+  const steps: TerminalEffectStep[] = [
+    ...canonicalEvents.map((applied): TerminalEffectStep => ({
+      sequence: Number(applied.sequence ?? 0),
+      canonical: applied,
+    })),
+    ...compatibilityEvents.map((drained): TerminalEffectStep => ({
+      sequence: Number(drained.sequence ?? 0),
+      compatibility: drained,
+    })),
+  ];
+  return steps.sort((left, right) => left.sequence - right.sequence);
+}
+
 export interface SessionSocketProjectionDependencies {
   // Returns this transition's application facts: the canonical events actually
   // applied to the contiguous item projection, in sequence order, plus whether
@@ -79,7 +117,10 @@ export interface SessionSocketProjectionDependencies {
   sessionPhaseOf: (key: string) => RuntimePhase;
   syncActivePhase: (phase: RuntimePhase) => void;
   setActiveRunState: (key: string, run: SessionRunState | null) => void;
-  markActiveRunTerminal: (key: string, runId?: string | null) => void;
+  /** Identity-safe terminal bookkeeping. Returns whether the terminal was
+   * accepted for the currently active run; terminal effects may run only on
+   * acceptance (a stale old-run terminal is recorded but performs none). */
+  markActiveRunTerminal: (key: string, runId?: string | null) => boolean;
   invalidateSessionRuntimeQueries: (agentId: string, sessionId: string, includeActiveRun?: boolean) => void;
   reconcileSessionTranscript: (agentId: string, sessionId: string) => void | Promise<unknown>;
   shouldInvalidateToolCall: (key: string) => boolean;
@@ -216,13 +257,17 @@ function runCanonicalEventSideEffects(
 }
 
 /** Terminal refresh effects of one applied compatibility envelope — an
- * applied carrier and every drained buffered envelope own them exactly once. */
+ * applied carrier and every drained buffered envelope own them exactly once.
+ * Run-identity safety: a stale old-run terminal stays durable evidence but
+ * runs zero active terminal effects while a different run is live. */
 function runCompatibilityTerminalEffects(
   dependencies: SessionSocketProjectionDependencies,
   context: { agentId: string; sessionId: string; key: string; isActiveRuntime: boolean },
   transcriptEvent: ChatTranscriptEventPayload,
+  preConsumptionActiveRunId: string | null,
 ): void {
   if (!isTerminalRealtimeChatEvent(transcriptEvent)) return;
+  if (!isTerminalRunAcceptedForActiveRun(preConsumptionActiveRunId, terminalWitnessRunId(transcriptEvent))) return;
   dependencies.invalidateSessionRuntimeQueries(context.agentId, context.sessionId);
   if (context.isActiveRuntime) void dependencies.fetchMySessions(true, context.agentId);
 }
@@ -275,17 +320,18 @@ export function projectSessionSocketEvent(
     const appliedCanonicalEvents: SessionEventV2[] = application === true
       ? [d as SessionEventV2]
       : application.canonicalEvents;
-    for (const appliedEvent of appliedCanonicalEvents) {
-      runCanonicalEventSideEffects(dependencies, { agentId, sessionId, key, isActiveRuntime }, preConsumptionActiveRunId, appliedEvent);
-    }
-    if (application !== true) {
-      // Compatibility envelopes the canonical carrier drained own their
-      // terminal effects exactly once, in sequence order.
-      for (const drainedCompatibility of application.compatibilityEvents) {
+    const drainedCompatibility = application === true ? [] : application.compatibilityEvents;
+    // Terminal effects run in total ascending event sequence across both
+    // planes — never grouped by plane.
+    for (const step of ascendingEffectSteps(appliedCanonicalEvents, drainedCompatibility)) {
+      if ('canonical' in step) {
+        runCanonicalEventSideEffects(dependencies, { agentId, sessionId, key, isActiveRuntime }, preConsumptionActiveRunId, step.canonical);
+      } else {
         runCompatibilityTerminalEffects(
           dependencies,
           { agentId, sessionId, key, isActiveRuntime },
-          compatibilityProjectionEvent(drainedCompatibility),
+          compatibilityProjectionEvent(step.compatibility),
+          preConsumptionActiveRunId,
         );
       }
     }
@@ -311,30 +357,32 @@ export function projectSessionSocketEvent(
     // A compatibility carrier can fill a sequence gap and drain buffered
     // canonical events in the same transition; those drained events own their
     // canonical side effects now, exactly once each.
-    if (application && application !== true) {
-      for (const appliedEvent of application.canonicalEvents) {
-        runCanonicalEventSideEffects(dependencies, { agentId, sessionId, key, isActiveRuntime }, preConsumptionActiveRunId, appliedEvent);
-      }
-    }
     const compatibilityFacts = application && application !== true ? application : null;
     const carrierApplied = application === true || Boolean(compatibilityFacts?.compatibilityApplied);
     // A terminal transcript event settles the turn on the durable plane; the
     // runtime read models (right-panel run rows, runtime summary) must refresh
     // with it — they are only refetched through explicit invalidation. The
-    // carrier's own terminal handling runs only when the carrier itself was
-    // newly applied to the contiguous cursor (never buffered or conflicted).
+    // carrier owns the lowest sequence of its transition, so its terminal
+    // handling runs first (total ascending event sequence) and only when the
+    // carrier itself was newly applied to the contiguous cursor (never
+    // buffered or conflicted).
     if (carrierApplied) {
-      runCompatibilityTerminalEffects(dependencies, { agentId, sessionId, key, isActiveRuntime }, transcriptEvent);
+      runCompatibilityTerminalEffects(dependencies, { agentId, sessionId, key, isActiveRuntime }, transcriptEvent, preConsumptionActiveRunId);
     }
-    // Compatibility envelopes the carrier drained own the same terminal
-    // effects exactly once, in sequence order.
+    // Events the carrier drained own their effects exactly once, in total
+    // ascending event sequence across both planes.
     if (compatibilityFacts) {
-      for (const drainedCompatibility of compatibilityFacts.compatibilityEvents) {
-        runCompatibilityTerminalEffects(
-          dependencies,
-          { agentId, sessionId, key, isActiveRuntime },
-          compatibilityProjectionEvent(drainedCompatibility),
-        );
+      for (const step of ascendingEffectSteps(compatibilityFacts.canonicalEvents, compatibilityFacts.compatibilityEvents)) {
+        if ('canonical' in step) {
+          runCanonicalEventSideEffects(dependencies, { agentId, sessionId, key, isActiveRuntime }, preConsumptionActiveRunId, step.canonical);
+        } else {
+          runCompatibilityTerminalEffects(
+            dependencies,
+            { agentId, sessionId, key, isActiveRuntime },
+            compatibilityProjectionEvent(step.compatibility),
+            preConsumptionActiveRunId,
+          );
+        }
       }
     }
     return;
@@ -352,12 +400,17 @@ export function projectSessionSocketEvent(
       event_type: d.event_type || d.type,
       metadata: d.metadata || d.metadata_json || {},
     };
-    applyTranscriptToSession(agentId, sessionId, transcriptEvent, isActiveRuntime);
-    if (isTerminalRealtimeChatEvent(transcriptEvent)) {
+    // Pre-consumption run identity, same contract as the envelope branches:
+    // consumption itself may clear a matching active run.
+    const preConsumptionActiveRunId = dependencies.activeRunIdOf(key);
+    const applied = applyTranscriptToSession(agentId, sessionId, transcriptEvent, isActiveRuntime);
+    // The real application result and the run identity gate every terminal
+    // effect: duplicate/rejected frames perform none, and a stale old-run
+    // terminal never runs active terminal effects while another run is live.
+    const terminal = isTerminalRealtimeChatEvent(transcriptEvent);
+    if (terminal && applied && isTerminalRunAcceptedForActiveRun(preConsumptionActiveRunId, terminalWitnessRunId(transcriptEvent))) {
       invalidateSessionRuntimeQueries(agentId, sessionId);
-    }
-    if (isActiveRuntime && isTerminalRealtimeChatEvent(transcriptEvent)) {
-      void fetchMySessions(true, agentId);
+      if (isActiveRuntime) void fetchMySessions(true, agentId);
     }
     return;
   }
@@ -397,7 +450,8 @@ export function projectSessionSocketEvent(
   }
 
   if (d.type === 'run_cancelled') {
-    markActiveRunTerminal(key, d.run_id ? String(d.run_id) : null);
+    const accepted = markActiveRunTerminal(key, d.run_id ? String(d.run_id) : null);
+    if (!accepted) return;
     invalidateSessionRuntimeQueries(agentId, sessionId);
     setSessionPhase(key, 'cancelled');
     if (isActiveRuntime) {
@@ -408,29 +462,37 @@ export function projectSessionSocketEvent(
   }
 
   const lifecycleEvent = ['thinking', 'chunk', 'tool_call', 'done', 'error', 'quota_exceeded'].includes(d.type);
+  const terminalStreamType = ['done', 'error', 'quota_exceeded'].includes(d.type);
+  // Terminal stream frames honor run identity through the same registry: a
+  // stale old-run terminal is recorded but rejected, and performs zero
+  // active effects — no phase, no refresh/reconcile, no notice, no tail
+  // seal, no socket close. Null/absent run identity keeps the historical
+  // compatibility behavior (the registry accepts it).
+  const terminalStreamAccepted = terminalStreamType
+    ? markActiveRunTerminal(key, d.run_id ? String(d.run_id) : null)
+    : true;
   const reducedPhase = lifecycleEvent ? reduceRuntimePhase(sessionPhaseOf(key), d) : null;
-  if (lifecycleEvent && reducedPhase) {
+  if (lifecycleEvent && reducedPhase && (!terminalStreamType || terminalStreamAccepted)) {
     setSessionPhase(key, reducedPhase);
     if (d.type === 'tool_call' && dependencies.shouldInvalidateToolCall(key)) {
       invalidateSessionRuntimeQueries(agentId, sessionId, false);
     }
-    if (['done', 'error', 'quota_exceeded'].includes(d.type)) {
-      markActiveRunTerminal(key, d.run_id ? String(d.run_id) : null);
-      invalidateSessionRuntimeQueries(agentId, sessionId);
-      // Stream frames and canonical session events ride independent
-      // at-least-once channels. A terminal stream frame is the last guaranteed
-      // live witness of the turn; reconcile the authoritative transcript so a
-      // lost canonical tail (e.g. the final structured tool result) still
-      // projects without a reload.
-      if (isActiveRuntime) dependencies.reconcileSessionTranscript(agentId, sessionId);
-    }
+  }
+  if (terminalStreamType && terminalStreamAccepted) {
+    invalidateSessionRuntimeQueries(agentId, sessionId);
+    // Stream frames and canonical session events ride independent
+    // at-least-once channels. A terminal stream frame is the last guaranteed
+    // live witness of the turn; reconcile the authoritative transcript so a
+    // lost canonical tail (e.g. the final structured tool result) still
+    // projects without a reload.
+    if (isActiveRuntime) dependencies.reconcileSessionTranscript(agentId, sessionId);
   }
 
   if (!isActiveRuntime) {
-    if (['done', 'error', 'quota_exceeded', 'trigger_notification'].includes(d.type)) {
+    if (d.type === 'trigger_notification' || (terminalStreamType && terminalStreamAccepted)) {
       void fetchMySessions(true, agentId);
     }
-    if (['done', 'error', 'quota_exceeded'].includes(d.type)) context.closeSessionSocket(key, true);
+    if (terminalStreamType && terminalStreamAccepted) context.closeSessionSocket(key, true);
     return;
   }
 
@@ -442,7 +504,7 @@ export function projectSessionSocketEvent(
     dependencies.setTransportNotice(transportMessage);
     return;
   }
-  if (reducedPhase) syncActivePhase(reducedPhase);
+  if (reducedPhase && (!terminalStreamType || terminalStreamAccepted)) syncActivePhase(reducedPhase);
 
   const runtimeEvent = getRuntimeEventMessage({ ...d, timestamp: new Date().toISOString() });
   if (runtimeEvent) {
@@ -490,6 +552,7 @@ export function projectSessionSocketEvent(
   }
 
   if (d.type === 'done') {
+    if (!terminalStreamAccepted) return;
     dependencies.setChatMessagesAfterQueued(
       sessionId,
       (messages) => applyRuntimeDoneEvent(messages, d).map(parseChatMsg),
@@ -499,6 +562,7 @@ export function projectSessionSocketEvent(
   }
 
   if (d.type === 'error' || d.type === 'quota_exceeded') {
+    if (!terminalStreamAccepted) return;
     const message = d.content || d.detail || d.message || 'Request denied';
     dependencies.setTransportNotice(String(message));
     return;

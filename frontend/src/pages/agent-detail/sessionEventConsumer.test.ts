@@ -9,13 +9,21 @@ import {
 import { buildRunTimelineFromMessages } from './chatDisclosureReducer';
 import {
   applyCanonicalSessionSnapshot,
+  applySessionVisibilityBoundary,
+  buildSessionVisibilityBoundary,
+  composeSessionVisibilityBoundary,
   consumeSessionEnvelope,
   hydrateSessionTranscriptEvents,
+  installRewindVisibilityBoundary,
+  installRewindVisibilityBoundaryFromStore,
   mergeCanonicalTerminalMessages,
   projectCanonicalSessionSnapshot,
   projectSessionEventStoreToMessages,
 } from './sessionEventConsumer';
+import { trimMessagesBeforeTranscriptEvent } from './agentDetailPolicy';
+import { createSessionMessageStore } from './sessionMessageStore';
 import {
+  createSessionEventStore,
   sessionPayloadContent,
   type SessionCompatibilityEvent,
   type SessionEventStore,
@@ -1262,5 +1270,312 @@ describe('canonical application facts at the shared consumer seam (Codex REQUEST
     const facts = factsOf(closed);
     expect(appliedEventIds(facts)).toEqual(['event-1']);
     expect(facts?.compatibilityEvents.map((applied) => applied.event_id)).toEqual(['legacy-2', 'legacy-3']);
+  });
+});
+
+describe('hydration obeys the application ledger gate (Codex REQUEST_CHANGES #4 finding B)', () => {
+  function canonicalText(sequence: number, content: string): SessionEventV2 {
+    return {
+      ...event(sequence, 'completed'),
+      event_id: `event-canon-${sequence}`,
+      item_id: `assistant-${sequence}`,
+      payload: { phase: 'unknown', content },
+    };
+  }
+
+  function compatibilityMessage(
+    sequence: number,
+    content: string,
+    eventId = `legacy-msg-${sequence}`,
+  ): ChatTranscriptEventPayload {
+    return {
+      schema: 'hive.session_event_compatibility',
+      schema_version: 1,
+      compatibility_status: 'needs_reconciliation',
+      event_id: eventId,
+      sequence,
+      reason: 'legacy_generation',
+      legacy_event_type: 'user_message',
+      payload: { content, metadata: {} },
+    } as unknown as ChatTranscriptEventPayload;
+  }
+
+  it('projects a gap-buffered compatibility envelope zero times while the gap stays open', () => {
+    const hydrated = hydrateSessionTranscriptEvents([
+      canonicalText(1, 'CANON_ONE') as unknown as ChatTranscriptEventPayload,
+      compatibilityMessage(3, 'BUFFERED_COMPAT'),
+    ]);
+
+    expect(hydrated.store?.projection.phase).toBe('gap_detected');
+    expect(hydrated.messages.map((message) => message.content)).toEqual(['CANON_ONE']);
+  });
+
+  it('projects a drained compatibility envelope exactly once at its own sequence when a canonical carrier closes the gap', () => {
+    const hydrated = hydrateSessionTranscriptEvents([
+      canonicalText(1, 'CANON_ONE') as unknown as ChatTranscriptEventPayload,
+      compatibilityMessage(4, 'DRAINED_TWO'),
+      compatibilityMessage(3, 'DRAINED_ONE'),
+      canonicalText(2, 'CANON_TWO') as unknown as ChatTranscriptEventPayload,
+      // Duplicate redelivery of an already-drained envelope inside the same
+      // snapshot: still zero additional projection.
+      compatibilityMessage(3, 'DRAINED_ONE'),
+    ]);
+
+    expect(hydrated.messages.map((message) => message.content)).toEqual([
+      'CANON_ONE',
+      'CANON_TWO',
+      'DRAINED_ONE',
+      'DRAINED_TWO',
+    ]);
+  });
+
+  it('projects a drained compatibility envelope exactly once when a compatibility carrier closes the gap', () => {
+    const hydrated = hydrateSessionTranscriptEvents([
+      compatibilityMessage(3, 'BUFFERED_COMPAT'),
+      compatibilityMessage(1, 'CARRIER_ONE'),
+      compatibilityMessage(2, 'CARRIER_TWO'),
+    ]);
+
+    expect(hydrated.messages.map((message) => message.content)).toEqual([
+      'CARRIER_ONE',
+      'CARRIER_TWO',
+      'BUFFERED_COMPAT',
+    ]);
+  });
+
+  it('projects a consistency-conflicted compatibility envelope zero times', () => {
+    const hydrated = hydrateSessionTranscriptEvents([
+      canonicalText(1, 'CANON_ONE') as unknown as ChatTranscriptEventPayload,
+      // Same sequence as the canonical event, different event identity: a
+      // consistency conflict, never an application.
+      compatibilityMessage(1, 'CONFLICTED_COMPAT', 'legacy-conflict-1'),
+    ]);
+
+    expect(hydrated.messages.map((message) => message.content)).toEqual(['CANON_ONE']);
+  });
+
+  it('projects a late pre-cursor compatibility envelope zero times', () => {
+    const hydrated = hydrateSessionTranscriptEvents([
+      canonicalText(1, 'CANON_ONE') as unknown as ChatTranscriptEventPayload,
+      canonicalText(2, 'CANON_TWO') as unknown as ChatTranscriptEventPayload,
+      // Sequence 1 is already behind the contiguous cursor (and its identity
+      // does not match the recorded event): late arrivals never project.
+      compatibilityMessage(1, 'LATE_COMPAT', 'legacy-late-1'),
+    ]);
+
+    expect(hydrated.messages.map((message) => message.content)).toEqual(['CANON_ONE', 'CANON_TWO']);
+  });
+
+  it('projects a duplicated compatibility envelope exactly once', () => {
+    const hydrated = hydrateSessionTranscriptEvents([
+      compatibilityMessage(1, 'ORIGINAL_COMPAT'),
+      compatibilityMessage(1, 'ORIGINAL_COMPAT'),
+    ]);
+
+    expect(hydrated.messages.map((message) => message.content)).toEqual(['ORIGINAL_COMPAT']);
+  });
+
+  it('holds compatibility projection under recovery hold at the real consumeSessionEnvelope seam', () => {
+    // The default 10,000-event gap buffer makes a hydration-level recovery
+    // hold pathological to force; the recovery gate is proven here through
+    // the real store transition with a gapBufferLimit of 1, and the
+    // hydration-level gate for every null-application envelope is proven by
+    // the buffered/conflict/late/duplicate cases above through the same
+    // consumeSessionEnvelope application facts.
+    const limited = createSessionEventStore(0, 1);
+    const firstBuffered = consumeSessionEnvelope(
+      canonicalText(2, 'CANON_TWO') as unknown as ChatTranscriptEventPayload,
+      limited,
+      0,
+    );
+    expect(firstBuffered.application).toBeNull();
+    const overflowed = consumeSessionEnvelope(
+      compatibilityMessage(3, 'OVERFLOW_TRIGGER'),
+      firstBuffered.store,
+      0,
+    );
+    expect(overflowed.store?.recoveryRequired).toBe('full_hydration');
+    expect(overflowed.application).toBeNull();
+
+    const held = consumeSessionEnvelope(
+      compatibilityMessage(4, 'RECOVERY_HELD_COMPAT'),
+      overflowed.store,
+      0,
+    );
+    expect(held.store?.recoveryRequired).toBe('full_hydration');
+    expect(held.application).toBeNull();
+    expect(held.canonical).toBe(false);
+  });
+});
+
+describe('terminal merge mixed-plane dedupe (Codex REQUEST_CHANGES #4 finding G)', () => {
+  it('keeps a pre-prompt compatibility process item exactly once in its original prefix when sealing a later run terminal', () => {
+    const historicalTool: AgentChatMessage = {
+      id: 'legacy-tool-1',
+      role: 'tool_call',
+      content: '',
+      toolName: 'track_todo',
+      eventType: 'tool_call',
+    };
+    const user: AgentChatMessage = { id: 'input-1', role: 'user', content: 'Run the next step.' };
+    const liveProgress: AgentChatMessage = {
+      id: 'live-progress-1',
+      role: 'assistant',
+      content: 'LIVE_PROCESS_BYTES',
+      eventType: 'assistant_commentary',
+      eventStatus: 'completed',
+    };
+    // The mixed-plane union recomposes the same historical compatibility
+    // item (identical identity, new object) alongside the terminal final.
+    const recomposedHistoricalTool: AgentChatMessage = { ...historicalTool };
+    const canonicalFinal: AgentChatMessage = {
+      id: 'canonical-final-2',
+      role: 'assistant',
+      content: 'TERMINAL_FINAL_BYTES',
+      sessionItem: {
+        id: 'assistant-final-item-2',
+        kind: 'assistant_final',
+        scope: {
+          level: 'run',
+          session_id: 'session-1',
+          thread_id: 'session-1',
+          turn_id: 'turn-2',
+          run_id: 'run-2',
+        },
+        lifecycle: 'completed',
+        terminal: true,
+        revision: 1,
+        content: 'TERMINAL_FINAL_BYTES',
+        payload: {},
+        actor: { type: 'assistant' },
+        visibility: { audience: 'direct_user' },
+        occurredAt: '2026-08-28T00:00:05Z',
+        first_sequence: 41,
+        last_sequence: 41,
+      },
+    };
+
+    const merged = mergeCanonicalTerminalMessages(
+      [historicalTool, user, liveProgress],
+      [recomposedHistoricalTool, canonicalFinal],
+      'run-2',
+    );
+
+    expect(merged.map((message) => message.id)).toEqual([
+      'legacy-tool-1',
+      'input-1',
+      'live-progress-1',
+      'canonical-final-2',
+    ]);
+  });
+});
+
+describe('consecutive rewind boundary composition (Codex REQUEST_CHANGES #4 finding B)', () => {
+  it('keeps identities hidden by every accepted rewind hidden while a new post-rewind identity stays visible', () => {
+    const message = (index: number): AgentChatMessage => ({
+      id: `m-${index}`,
+      transcriptEventId: `event-${index}`,
+      role: index === 1 ? 'user' : 'assistant',
+      content: `CONTENT ${index}`,
+    });
+    const [m1, m2, m3, m4, m5] = [message(1), message(2), message(3), message(4), message(5)];
+
+    // Rewind #1 at event-3 over the full replay: hides {m3, m4}.
+    const full1 = [m1, m2, m3, m4];
+    const trimmed1 = trimMessagesBeforeTranscriptEvent(full1, 'event-3');
+    expect(trimmed1.map((entry) => entry.id)).toEqual(['m-1', 'm-2']);
+    const boundary1 = buildSessionVisibilityBoundary('event-3', full1, trimmed1);
+
+    // Rewind #2 at event-2 installs over the ALREADY-TRIMMED replay
+    // [m1, m2]: composing must preserve rewind #1's hidden identities while
+    // binding the newest checkpoint.
+    const trimmed2 = trimMessagesBeforeTranscriptEvent(trimmed1, 'event-2');
+    expect(trimmed2.map((entry) => entry.id)).toEqual(['m-1']);
+    const boundary2 = composeSessionVisibilityBoundary(boundary1, 'event-2', trimmed1, trimmed2);
+    expect(boundary2?.checkpointEventId).toBe('event-2');
+
+    // A later live delta recomposes from the full durable store: m5 is a
+    // genuinely new post-rewind identity and stays visible; every identity
+    // hidden by either accepted rewind stays hidden.
+    const visible = applySessionVisibilityBoundary([m1, m2, m3, m4, m5], boundary2);
+    expect(visible.map((entry) => entry.id)).toEqual(['m-1', 'm-5']);
+  });
+
+  it('hides a post-rewind live canonical message targeted by the second rewind across later full-store recompositions', () => {
+    const message = (index: number): AgentChatMessage => ({
+      id: `m-${index}`,
+      transcriptEventId: `event-${index}`,
+      role: index === 1 ? 'user' : 'assistant',
+      content: `CONTENT ${index}`,
+    });
+    const [m1, m2, m3, m4, m5, m6] = [message(1), message(2), message(3), message(4), message(5), message(6)];
+
+    // Rewind #1 at event-3 installs over the hydrated visible list: {m3, m4}
+    // hidden; the trimmed surface is [m1, m2].
+    const install1 = installRewindVisibilityBoundary({
+      previous: null,
+      checkpointEventId: 'event-3',
+      visibleMessages: [m1, m2, m3, m4],
+    });
+    expect(install1.trimmedVisibleMessages.map((entry) => entry.id)).toEqual(['m-1', 'm-2']);
+
+    // A new canonical message M5 arrives post-rewind and is visible. It never
+    // enters the legacy replay baseline, so a boundary built from the replay
+    // would miss it; the install must derive from the current visible list.
+    const visibleBeforeSecond = [...install1.trimmedVisibleMessages, m5];
+
+    // Rewind #2 targets M5 itself: the immediate surface trims to [m1, m2]…
+    const install2 = installRewindVisibilityBoundary({
+      previous: install1.boundary,
+      checkpointEventId: 'event-5',
+      visibleMessages: visibleBeforeSecond,
+    });
+    expect(install2.trimmedVisibleMessages.map((entry) => entry.id)).toEqual(['m-1', 'm-2']);
+    expect(install2.boundary?.checkpointEventId).toBe('event-5');
+
+    // …and a later canonical M6 full-store recomposition keeps every prior
+    // hidden identity AND M5 hidden, while genuinely post-second-rewind M6
+    // stays visible.
+    const visible = applySessionVisibilityBoundary([m1, m2, m3, m4, m5, m6], install2.boundary);
+    expect(visible.map((entry) => entry.id)).toEqual(['m-1', 'm-2', 'm-6']);
+  });
+
+  it('derives boundary and trim from the same flushed current store list, including messages queued during the command request', () => {
+    const store = createSessionMessageStore();
+    const message = (index: number): AgentChatMessage => ({
+      id: `m-${index}`,
+      transcriptEventId: `event-${index}`,
+      role: index === 1 ? 'user' : 'assistant',
+      content: `CONTENT ${index}`,
+    });
+    const [m1, m2, m3, m4] = [message(1), message(2), message(3), message(4)];
+    const marker: AgentChatMessage = { id: 'rewind-marker', role: 'event', content: 'rewound' };
+
+    store.updateAfterQueued('session-1', () => [m1, m2, m3]);
+    // A message queues while the command request is in flight — the render
+    // that started the request captured only [m1, m2, m3].
+    store.enqueueUpdate('session-1', (previous) => [...previous, m4]);
+
+    // The install must derive BOTH the boundary and the trim from the same
+    // flushed/current updater list: m4 is actually trimmed from the UI, so
+    // its identity MUST be inside the hidden set (otherwise the next live
+    // mixed-plane composition resurrects it).
+    const boundary = installRewindVisibilityBoundaryFromStore({
+      store,
+      sessionId: 'session-1',
+      previous: null,
+      checkpointEventId: 'event-3',
+      marker,
+    });
+
+    expect(store.getSnapshot('session-1').map((entry) => entry.id)).toEqual(['m-1', 'm-2', 'rewind-marker']);
+    expect(boundary?.checkpointEventId).toBe('event-3');
+    expect([...(boundary?.hiddenIdentities || [])].sort()).toEqual(['event-3', 'event-4', 'm-3', 'm-4']);
+
+    // A later full-store recomposition cannot resurrect m3/m4; a genuinely
+    // new post-rewind identity stays visible.
+    const m5 = message(5);
+    expect(applySessionVisibilityBoundary([m1, m2, m3, m4, m5], boundary).map((entry) => entry.id))
+      .toEqual(['m-1', 'm-2', 'm-5']);
   });
 });

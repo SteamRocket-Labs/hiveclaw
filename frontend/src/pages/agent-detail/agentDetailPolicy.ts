@@ -88,6 +88,67 @@ export function checkpointEventIdFromPayload(actionResult: Record<string, unknow
     );
 }
 
+/**
+ * Build the updated local session value after an accepted rewind command.
+ * The authoritative projection is the durable one the backend committed
+ * (`session_command_runtime._apply_projection_rewind`) and returned inside
+ * `actionResult.control_event.metadata`; envelope-only `command` /
+ * `workspace_restore` fields never enter the session projection. The
+ * checkpoint/top-level fields and the required args are repair fallbacks
+ * for older responses — they never redefine an accepted server fact.
+ */
+export function withRewindActiveProjection(
+    session: Record<string, unknown>,
+    actionResult: Record<string, unknown> | null,
+    checkpointEventId: string,
+    draftContent: string,
+): Record<string, unknown> {
+    const result = objectValue(actionResult);
+    const checkpoint = objectValue(result.checkpoint);
+    const metadata = objectValue(objectValue(result.control_event).metadata);
+    const hasServerProjection = stringValueFromUnknown(metadata.projection_reason) === 'rewind'
+        && Boolean(stringValueFromUnknown(metadata.checkpoint_event_id));
+    const activeProjection: Record<string, unknown> = hasServerProjection
+        ? Object.fromEntries(
+            Object.entries(metadata).filter(([key]) => key !== 'command' && key !== 'workspace_restore'),
+        )
+        : { projection_reason: 'rewind' };
+    // Undefined-only fills: a supplied null ledger_event_id stays null.
+    const fillString = (key: string, ...sources: unknown[]) => {
+        if (activeProjection[key] !== undefined) return;
+        const value = sources.map(stringValueFromUnknown).find(Boolean);
+        if (value) activeProjection[key] = value;
+    };
+    fillString('applied_at', checkpoint.applied_at, result.applied_at);
+    // Required repair args fill verbatim (an empty draft_content is a real
+    // value); they still never redefine an accepted server fact.
+    if (activeProjection.checkpoint_event_id === undefined) activeProjection.checkpoint_event_id = checkpointEventId;
+    if (activeProjection.draft_content === undefined) activeProjection.draft_content = draftContent;
+    if (activeProjection.turn_index === undefined) {
+        const turnIndex = checkpoint.turn_index ?? result.turn_index;
+        if (typeof turnIndex === 'number' || (typeof turnIndex === 'string' && turnIndex.trim())) {
+            activeProjection.turn_index = turnIndex;
+        }
+    }
+    fillString('truth_source', checkpoint.truth_source, result.truth_source);
+    fillString('mode', checkpoint.mode, result.mode);
+    if (activeProjection.ledger_event_id === undefined) {
+        if (checkpoint.ledger_event_id !== undefined) activeProjection.ledger_event_id = checkpoint.ledger_event_id;
+        else if (result.ledger_event_id !== undefined) activeProjection.ledger_event_id = result.ledger_event_id;
+    }
+    if (activeProjection.rewind_guard === undefined) {
+        const guard = checkpoint.rewind_guard ?? result.rewind_guard;
+        if (guard !== undefined) activeProjection.rewind_guard = guard;
+    }
+    return {
+        ...session,
+        transcript_metadata_json: {
+            ...objectValue(session.transcript_metadata_json),
+            active_projection: activeProjection,
+        },
+    };
+}
+
 export function trimMessagesBeforeTranscriptEvent(
     messages: AgentChatMessage[],
     checkpointEventId: string,
@@ -117,6 +178,18 @@ export function rewindMarkerMessage(checkpointEventId: string): AgentChatMessage
         timestamp: new Date().toISOString(),
         eventStatus: 'session_rewind_marker',
     } as AgentChatMessage;
+}
+
+/** The rewind checkpoint event id declared by the session's active
+ * projection, or '' when no rewind projection is active. Pure mechanical
+ * identity read — no semantic interpretation. */
+export function rewindCheckpointEventIdFromSession(session: unknown): string {
+  const sessionRecord = objectValue(session);
+  const transcriptMetadata = objectValue(sessionRecord.transcript_metadata_json);
+  const metadata = objectValue(sessionRecord.metadata);
+  const activeProjection = objectValue(transcriptMetadata.active_projection || metadata.active_projection);
+  if (stringValueFromUnknown(activeProjection.projection_reason) !== 'rewind') return '';
+  return stringValueFromUnknown(activeProjection.checkpoint_event_id);
 }
 
 export function applySessionActiveProjection(

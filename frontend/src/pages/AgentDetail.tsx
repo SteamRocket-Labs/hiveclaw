@@ -75,6 +75,8 @@ import {
 import { projectSessionSocketEvent } from './agent-detail/sessionSocketEventProjector';
 import { applyTranscriptToSessionRuntime } from './agent-detail/sessionTranscriptApplier';
 import { liveSubscriptionWatermark, loadCanonicalSessionTranscript, projectCanonicalTranscriptSnapshot, realtimeSubscriptionCursor } from './agent-detail/sessionTranscriptHydration';
+import type { CompatibilityMessageTimeline, SessionVisibilityBoundary } from './agent-detail/sessionEventConsumer';
+import { buildSessionVisibilityBoundary, createCompatibilityMessageTimeline, installRewindVisibilityBoundary, installRewindVisibilityBoundaryFromStore, seedCompatibilityTimelineIdentities } from './agent-detail/sessionEventConsumer';
 import { createSessionEventStore, type SessionEventStore } from './session-workbench/sessionEventStore';
 import {
     buildAssignmentHandoff,
@@ -104,6 +106,7 @@ import {
     sessionPermissionModeFromSession,
     stringValueFromUnknown,
     trimMessagesBeforeTranscriptEvent,
+    withRewindActiveProjection,
     withSessionPermissionMode,
     type AgentDetailTab,
 } from './agent-detail/agentDetailPolicy';
@@ -277,6 +280,12 @@ function AgentDetailInner() {
     const [chatScope, setChatScope] = useState<'mine' | 'all'>('mine');
     const [allUserFilter, setAllUserFilter] = useState<string>('');  // filter by username in All Users
     const [historyMsgs, setHistoryMsgs] = useState<AgentChatMessage[]>([]);
+    const historyMessagesRef = useRef<AgentChatMessage[]>([]);
+    const updateHistoryMsgs = (next: AgentChatMessage[] | ((previous: AgentChatMessage[]) => AgentChatMessage[])) => {
+        const resolved = typeof next === 'function' ? next(historyMessagesRef.current) : next;
+        historyMessagesRef.current = resolved;
+        setHistoryMsgs(resolved);
+    };
     const [historyMessagesSessionId, setHistoryMessagesSessionId] = useState<string | null>(null);
     const [sessionsLoading, setSessionsLoading] = useState(false);
     const [allSessionsLoading, setAllSessionsLoading] = useState(false);
@@ -285,6 +294,8 @@ function AgentDetailInner() {
     type SessionRuntimeKey = string;
     const sessionUiStateRef = useRef<Record<SessionRuntimeKey, SessionUiState>>({});
     const transcriptReplayStateRef = useRef<Record<SessionRuntimeKey, TranscriptReplayState>>({});
+    const sessionCompatibilityTimelinesRef = useRef<Record<SessionRuntimeKey, CompatibilityMessageTimeline>>({});
+    const sessionVisibilityBoundariesRef = useRef<Record<SessionRuntimeKey, SessionVisibilityBoundary>>({});
     const transcriptEventsRef = useRef<Record<SessionRuntimeKey, ChatTranscriptEventPayload[]>>({});
     const sessionEventStoresRef = useRef<Record<SessionRuntimeKey, SessionEventStore>>({});
     const sessionEventFullHydrationKeysRef = useRef<Set<SessionRuntimeKey>>(new Set());
@@ -448,6 +459,8 @@ function AgentDetailInner() {
             eventStores: sessionEventStoresRef.current,
             fullHydrationKeys: sessionEventFullHydrationKeysRef.current,
             replayStates: transcriptReplayStateRef.current,
+            compatibilityTimelines: sessionCompatibilityTimelinesRef.current,
+            visibilityBoundaries: sessionVisibilityBoundariesRef.current,
             uiStates: sessionUiStateRef.current,
             runtimeActivityAt: runtimeActivityAtRef.current,
             pendingUserMessages: pendingUserMessagesRef.current,
@@ -597,7 +610,7 @@ function AgentDetailInner() {
             sessionMsgAbortRef.current?.abort();
             setChatMessagesAfterQueued(() => []);
             setChatMessagesSessionId(sessionId);
-            setHistoryMsgs([]);
+            updateHistoryMsgs([]);
             setHistoryMessagesSessionId(null);
             setBranchLineage([]);
             setIsWaiting(false);
@@ -634,6 +647,8 @@ function AgentDetailInner() {
                 transcriptEventsRef.current[runtimeKey] = projected.events;
                 if (projected.store) sessionEventStoresRef.current[runtimeKey] = projected.store;
                 transcriptReplayStateRef.current[runtimeKey] = projected.replay;
+                sessionCompatibilityTimelinesRef.current[runtimeKey] = projected.compatibilityTimeline;
+                sessionVisibilityBoundariesRef.current[runtimeKey] = projected.visibilityBoundary;
                 sessionUiStateRef.current[runtimeKey] = projected.ui;
                 const preParsed = projected.messages;
                 const activeProjection = projected.activeProjection;
@@ -649,7 +664,7 @@ function AgentDetailInner() {
                     setChatMessagesAfterQueuedForSession(sessionId, () => mergePendingForSession(runtimeKey, preParsed));
                 } else {
                     setHistoryMessagesSessionId(sessionId);
-                    setHistoryMsgs(preParsed);
+                    updateHistoryMsgs(preParsed);
                 }
                 return liveSubscriptionWatermark(projected.store);
             };
@@ -660,6 +675,7 @@ function AgentDetailInner() {
                     ...operatorOptions,
                 }) as Promise<ChatTranscriptEventPayload[]>,
                 publishCanonicalSnapshot,
+                { session: sess },
             );
             canonicalHydrationInFlight = canonicalHydration.liveReady;
             transcriptBackfillInFlightRef.current[runtimeKey] = canonicalHydrationInFlight;
@@ -673,7 +689,8 @@ function AgentDetailInner() {
                     ...operatorOptions,
                 });
                 if (controller.signal.aborted || loadSeq !== sessionLoadSeqRef.current) return;
-                let preParsed = msgs.map((m: any) => parseChatMsg(normalizeStoredChatMessage(m)));
+                const storedParsed = msgs.map((m: any) => parseChatMsg(normalizeStoredChatMessage(m)));
+                let preParsed = storedParsed;
                 transcriptReplayStateRef.current[runtimeKey] = {
                     ...createEmptyTranscriptReplayState(),
                     messages: preParsed,
@@ -693,12 +710,22 @@ function AgentDetailInner() {
                         setProjectionTailScrollNonce(prev => prev + 1);
                     }
                 }
+                // Stored fallback messages own no event sequences: seed deterministic pre-live timeline identities and carry the same rewind boundary as the canonical path.
+                const fallbackTimeline = createCompatibilityMessageTimeline();
+                seedCompatibilityTimelineIdentities(
+                    fallbackTimeline,
+                    transcriptReplayStateRef.current[runtimeKey]?.messages || [],
+                );
+                sessionCompatibilityTimelinesRef.current[runtimeKey] = fallbackTimeline;
+                sessionVisibilityBoundariesRef.current[runtimeKey] = activeProjection.checkpointEventId
+                    ? buildSessionVisibilityBoundary(activeProjection.checkpointEventId, storedParsed, activeProjection.messages)
+                    : null;
                 if (writableSession) {
                     setChatMessagesSessionId(sessionId);
                     setChatMessagesAfterQueuedForSession(sessionId, () => mergePendingForSession(runtimeKey, preParsed));
                 } else {
                     setHistoryMessagesSessionId(sessionId);
-                    setHistoryMsgs(preParsed);
+                    updateHistoryMsgs(preParsed);
                 }
             }
         } catch (err: any) {
@@ -728,7 +755,7 @@ function AgentDetailInner() {
                 setChatMessagesAfterQueuedForSession(sessionId, () => mergePendingForSession(runtimeKey, [failureMessage]));
             } else {
                 setHistoryMessagesSessionId(sessionId);
-                setHistoryMsgs([failureMessage]);
+                updateHistoryMsgs([failureMessage]);
             }
         } finally {
             if (transcriptBackfillInFlightRef.current[runtimeKey] === canonicalHydrationInFlight) {
@@ -947,6 +974,27 @@ function AgentDetailInner() {
                 if (draftContent) setChatInput(draftContent);
                 if (checkpointEventId) {
                     const activeKey = buildSessionRuntimeKey(id, currentSessionId);
+                    // Boundary and trim ALWAYS derive from ONE current list: the chat surface via the message store's synchronously flushed updater list (queued live updates included), the history surface via the tracked mirror ref.
+                    if (chatMessagesSessionId === currentSessionId) {
+                        sessionVisibilityBoundariesRef.current[activeKey] = installRewindVisibilityBoundaryFromStore({
+                            store: sessionMessageStore,
+                            sessionId: currentSessionId,
+                            previous: sessionVisibilityBoundariesRef.current[activeKey],
+                            checkpointEventId,
+                            marker: rewindMarkerMessage(checkpointEventId),
+                            ...(checkpointCreatedAt ? { checkpointCreatedAt } : {}),
+                        });
+                    } else {
+                        const install = installRewindVisibilityBoundary({
+                            previous: sessionVisibilityBoundariesRef.current[activeKey],
+                            checkpointEventId,
+                            visibleMessages: historyMessagesSessionId === currentSessionId ? historyMessagesRef.current : [],
+                            ...(checkpointCreatedAt ? { checkpointCreatedAt } : {}),
+                        });
+                        sessionVisibilityBoundariesRef.current[activeKey] = install.boundary;
+                        if (historyMessagesSessionId === currentSessionId) updateHistoryMsgs(install.trimmedVisibleMessages);
+                    }
+                    // The legacy replay baseline is trimmed separately, for its own state only.
                     const replay = transcriptReplayStateRef.current[activeKey];
                     if (replay) {
                         transcriptReplayStateRef.current[activeKey] = {
@@ -954,18 +1002,15 @@ function AgentDetailInner() {
                             messages: trimMessagesBeforeTranscriptEvent(replay.messages, checkpointEventId, checkpointCreatedAt),
                         };
                     }
-                    const marker = rewindMarkerMessage(checkpointEventId);
-                    setChatMessagesAfterQueued(prev => (
-                        chatMessagesSessionId === currentSessionId
-                            ? [...trimMessagesBeforeTranscriptEvent(prev, checkpointEventId, checkpointCreatedAt), marker]
-                            : prev
-                    ));
-                    setHistoryMsgs(prev => (
-                        historyMessagesSessionId === currentSessionId
-                            ? trimMessagesBeforeTranscriptEvent(prev, checkpointEventId, checkpointCreatedAt)
-                            : prev
-                    ));
                     setProjectionTailScrollNonce(prev => prev + 1);
+                    // The pre-command transcript load captured the stale session value: abort it and clear its generation (existing controller.signal/loadSeq guards make every old publish callback inert), update local session copies, then rehydrate from the accepted rewind projection. The immediate boundary/UI above stays visible meanwhile; selectSession catches its own load errors.
+                    const rewoundSession = withRewindActiveProjection(activeSession, actionResult, checkpointEventId, draftContent);
+                    setActiveSession(rewoundSession);
+                    setSessions(prev => prev.map((entry: any) => (String(entry.id) === currentSessionId ? rewoundSession : entry)));
+                    setAllSessions(prev => prev.map((entry: any) => (String(entry.id) === currentSessionId ? rewoundSession : entry)));
+                    sessionMsgAbortRef.current?.abort();
+                    sessionTranscriptLoadRef.current = null;
+                    void selectSession(rewoundSession);
                 }
             }
             openSessionCommandControl({
@@ -1133,7 +1178,7 @@ function AgentDetailInner() {
                 setActiveSession(null);
                 setChatMessagesAfterQueued(() => []);
                 setChatMessagesSessionId(null);
-                setHistoryMsgs([]);
+                updateHistoryMsgs([]);
                 setHistoryMessagesSessionId(null);
                 setTransportNotice(null);
                 resetActiveTransportState();
@@ -1468,7 +1513,7 @@ function AgentDetailInner() {
         setActiveSession(null);
         setChatMessagesAfterQueued(() => []);
         setChatMessagesSessionId(null);
-        setHistoryMsgs([]);
+        updateHistoryMsgs([]);
         setHistoryMessagesSessionId(null);
         setTransportNotice(null);
         setIsStreaming(false);

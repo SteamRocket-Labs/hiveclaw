@@ -273,7 +273,10 @@ describe('DAY1-LIVE-TAIL-001 terminal reconcile vertical projection', () => {
       sessionPhaseOf: vi.fn(() => 'responding' as const),
       syncActivePhase: vi.fn(),
       setActiveRunState: vi.fn(),
-      markActiveRunTerminal: vi.fn(),
+      // Matching accepted terminal positive path: the production registry
+      // returns true (no competing active run), and the projector treats the
+      // boolean as the authoritative acceptance result.
+      markActiveRunTerminal: vi.fn(() => true),
       invalidateSessionRuntimeQueries: vi.fn(),
       reconcileSessionTranscript: vi.fn(() => {
         for (const event of LOST_TAIL) {

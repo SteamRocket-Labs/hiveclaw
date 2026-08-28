@@ -8,6 +8,8 @@ import {
 } from './chatRuntime';
 import { normalizeToolCallResult } from './toolResultEnvelope';
 import type { ThreadItem } from '../../api/domains/threadItems.generated';
+import { trimMessagesBeforeTranscriptEvent } from './agentDetailPolicy';
+import type { SessionMessageStore } from './sessionMessageStore';
 import {
   createSessionEventStore,
   reduceSessionCompatibilityEvent,
@@ -77,21 +79,189 @@ function messageIdentities(message: AgentChatMessage): string[] {
     .filter((identity): identity is string => typeof identity === 'string' && Boolean(identity));
 }
 
-function compatibilityPayload(event: ChatTranscriptEventPayload): Record<string, unknown> {
-  const envelope = event as unknown as Record<string, unknown>;
-  return recordValue(envelope.payload) || {};
+/**
+ * Compatibility-plane message timeline bookkeeping — the single owner shared
+ * by hydration and the live applier. Records, for every message a projected
+ * compatibility event materialized, the sequence of the event that FIRST
+ * materialized it and (for legacy assistant_message materializations) the
+ * typed legacy run binding used by the canonical-final supersede rule.
+ */
+export type CompatibilityMessageTimeline = {
+  sequenceByIdentity: Map<string, number>;
+  legacyAssistantRunByIdentity: Map<string, string>;
+  /** Identities first materialized by a terminal witness the run-identity
+   * registry REJECTED (a stale old-run terminal while another run is
+   * active). The evidence stays durable in transcript/replay/timeline, but
+   * these identities never enter the active visible composition. Replaced
+   * wholesale with the timeline on every authoritative hydration publish. */
+  excludedIdentities: Set<string>;
+};
+
+export function createCompatibilityMessageTimeline(): CompatibilityMessageTimeline {
+  return { sequenceByIdentity: new Map(), legacyAssistantRunByIdentity: new Map(), excludedIdentities: new Set() };
 }
 
-function compatibilityLegacyRunId(event: ChatTranscriptEventPayload): string | null {
-  const payloadRunId = compatibilityPayload(event).legacy_run_id;
-  const runId = typeof payloadRunId === 'string' ? payloadRunId : event.run_id;
-  return typeof runId === 'string' && runId.trim() ? runId.trim() : null;
+/** Returns the identities this event materialized for the FIRST time. */
+export function recordCompatibilityTimelineMessages(
+  timeline: CompatibilityMessageTimeline,
+  projectionEvent: ChatTranscriptEventPayload,
+  messages: AgentChatMessage[],
+): string[] {
+  const sequence = Number(projectionEvent.sequence ?? 0);
+  const eventType = projectionEvent.event_type || projectionEvent.type;
+  const runId = typeof projectionEvent.run_id === 'string' && projectionEvent.run_id.trim()
+    ? projectionEvent.run_id.trim()
+    : null;
+  const legacyAssistantRunId = eventType === 'assistant_message' ? runId : null;
+  const firstMaterialized: string[] = [];
+  for (const message of messages) {
+    for (const identity of messageIdentities(message)) {
+      // A compatibility lifecycle event can replay the entire accumulated
+      // message list. Only the event that first materialized a message owns
+      // its timeline position; later phase/tool events must not drag old
+      // messages to the newest turn.
+      if (timeline.sequenceByIdentity.has(identity)) continue;
+      timeline.sequenceByIdentity.set(identity, sequence);
+      firstMaterialized.push(identity);
+      if (legacyAssistantRunId) timeline.legacyAssistantRunByIdentity.set(identity, legacyAssistantRunId);
+    }
+  }
+  return firstMaterialized;
 }
 
-function compatibilityLegacyEventType(event: ChatTranscriptEventPayload): string {
-  const envelope = event as unknown as Record<string, unknown>;
-  const eventType = envelope.legacy_event_type ?? event.event_type ?? event.type;
-  return typeof eventType === 'string' ? eventType : '';
+/**
+ * Deterministically seed timeline identities for a stored-message fallback
+ * baseline (the empty-canonical-transcript path): every stored message gets
+ * a pre-live sequence (…, -1, 0) so the first live canonical event always
+ * composes AFTER the legacy history, in original stored order.
+ */
+export function seedCompatibilityTimelineIdentities(
+  timeline: CompatibilityMessageTimeline,
+  messages: AgentChatMessage[],
+  lastSequence = 0,
+): void {
+  const firstSequence = lastSequence - messages.length + 1;
+  messages.forEach((message, index) => {
+    for (const identity of messageIdentities(message)) {
+      if (!timeline.sequenceByIdentity.has(identity)) {
+        timeline.sequenceByIdentity.set(identity, firstSequence + index);
+      }
+    }
+  });
+}
+
+/**
+ * Mechanical rewind visibility boundary — exact projection identity state.
+ * `hiddenIdentities` is the identity set of the messages the rewind trim
+ * removed at install time; later live events carry new identities and stay
+ * visible. Replaced on every hydration publish and rewind command install.
+ */
+export type SessionVisibilityBoundary = {
+  checkpointEventId: string;
+  hiddenIdentities: ReadonlySet<string>;
+} | null;
+
+/** Build the boundary from a rewind trim (the trimmed list is always a prefix
+ * of the full list — trimMessagesBeforeTranscriptEvent's contract). */
+export function buildSessionVisibilityBoundary(
+  checkpointEventId: string,
+  fullMessages: AgentChatMessage[],
+  trimmedMessages: AgentChatMessage[],
+): SessionVisibilityBoundary {
+  const hidden = trimmedMessages.length < fullMessages.length
+    ? fullMessages.slice(trimmedMessages.length)
+    : [];
+  return { checkpointEventId, hiddenIdentities: new Set(hidden.flatMap(messageIdentities)) };
+}
+
+/**
+ * Compose a live rewind command install with the prior boundary: every
+ * identity hidden by an earlier accepted rewind stays hidden and the newest
+ * checkpoint binds. Only full authoritative hydration may REPLACE a
+ * boundary (it uses buildSessionVisibilityBoundary directly).
+ */
+export function composeSessionVisibilityBoundary(
+  previous: SessionVisibilityBoundary,
+  checkpointEventId: string,
+  fullMessages: AgentChatMessage[],
+  trimmedMessages: AgentChatMessage[],
+): SessionVisibilityBoundary {
+  const installed = buildSessionVisibilityBoundary(checkpointEventId, fullMessages, trimmedMessages);
+  return {
+    checkpointEventId,
+    hiddenIdentities: new Set([
+      ...(previous?.hiddenIdentities || []),
+      ...(installed?.hiddenIdentities || []),
+    ]),
+  };
+}
+
+/**
+ * The single live rewind command install path. The boundary is ALWAYS
+ * derived from the current session surface visible list — never from the
+ * legacy replay baseline, because canonical live messages never enter that
+ * baseline. Returns the composed boundary and the trimmed visible list.
+ */
+export function installRewindVisibilityBoundary(options: {
+  previous: SessionVisibilityBoundary;
+  checkpointEventId: string;
+  visibleMessages: AgentChatMessage[];
+  checkpointCreatedAt?: string;
+}): { boundary: SessionVisibilityBoundary; trimmedVisibleMessages: AgentChatMessage[] } {
+  const trimmedVisibleMessages = trimMessagesBeforeTranscriptEvent(
+    options.visibleMessages,
+    options.checkpointEventId,
+    options.checkpointCreatedAt,
+  );
+  return {
+    boundary: composeSessionVisibilityBoundary(
+      options.previous,
+      options.checkpointEventId,
+      options.visibleMessages,
+      trimmedVisibleMessages,
+    ),
+    trimmedVisibleMessages,
+  };
+}
+
+/**
+ * The atomic chat-surface rewind install: `updateAfterQueued` synchronously
+ * flushes queued live updates first, so the boundary AND the trim derive
+ * from the same current list — a message queued while the command request
+ * was in flight can never be trimmed from the UI while missing from the
+ * hidden identity set.
+ */
+export function installRewindVisibilityBoundaryFromStore(options: {
+  store: SessionMessageStore;
+  sessionId: string;
+  previous: SessionVisibilityBoundary;
+  checkpointEventId: string;
+  marker: AgentChatMessage;
+  checkpointCreatedAt?: string;
+}): SessionVisibilityBoundary {
+  let boundary: SessionVisibilityBoundary = options.previous;
+  options.store.updateAfterQueued(options.sessionId, (current) => {
+    const install = installRewindVisibilityBoundary({
+      previous: options.previous,
+      checkpointEventId: options.checkpointEventId,
+      visibleMessages: current,
+      ...(options.checkpointCreatedAt ? { checkpointCreatedAt: options.checkpointCreatedAt } : {}),
+    });
+    boundary = install.boundary;
+    return [...install.trimmedVisibleMessages, options.marker];
+  });
+  return boundary;
+}
+
+/** Apply a rewind visibility boundary to a freshly composed visible list. */
+export function applySessionVisibilityBoundary(
+  messages: AgentChatMessage[],
+  boundary: SessionVisibilityBoundary,
+): AgentChatMessage[] {
+  if (!boundary || boundary.hiddenIdentities.size === 0) return messages;
+  return messages.filter(
+    (message) => !messageIdentities(message).some((identity) => boundary.hiddenIdentities.has(identity)),
+  );
 }
 
 function persistedToolEnvelope(payload: Record<string, unknown>): Record<string, unknown> {
@@ -312,40 +482,20 @@ export function projectSessionEventStoreToMessages(store: SessionEventStore): Ag
     .filter((message): message is AgentChatMessage => message !== null);
 }
 
-export function hydrateSessionTranscriptEvents(
-  events: ChatTranscriptEventPayload[],
-  baselineSequence = 0,
-): { store: SessionEventStore | undefined; messages: AgentChatMessage[]; ui: SessionUiState } {
-  let store: SessionEventStore | undefined;
-  let compatibilityReplay = createEmptyTranscriptReplayState();
-  const sequenceByIdentity = new Map<string, number>();
-  const legacyAssistantRunByIdentity = new Map<string, string>();
-
-  for (const event of events) {
-    const sequence = Number(event.sequence ?? 0);
-    const consumed = consumeSessionEnvelope(event, store, baselineSequence);
-    if (consumed.store) store = consumed.store;
-    if (!consumed.canonical) {
-      compatibilityReplay = applyTranscriptEvent(compatibilityReplay, consumed.projectionEvent);
-      const legacyAssistantRunId = compatibilityLegacyEventType(event) === 'assistant_message'
-        ? compatibilityLegacyRunId(event)
-        : null;
-      for (const message of compatibilityReplay.messages) {
-        for (const identity of messageIdentities(message)) {
-          // A compatibility lifecycle event can replay the entire accumulated
-          // message list. Only the event that first materialized a message owns
-          // its timeline position; later phase/tool events must not drag old
-          // messages to the newest turn.
-          const firstMaterialization = !sequenceByIdentity.has(identity);
-          if (firstMaterialization) sequenceByIdentity.set(identity, sequence);
-          if (firstMaterialization && legacyAssistantRunId) {
-            legacyAssistantRunByIdentity.set(identity, legacyAssistantRunId);
-          }
-        }
-      }
-    }
-  }
-
+/**
+ * The single owner of the final visible mixed-plane composition: the union of
+ * the compatibility replay messages and the canonical store projection,
+ * identity-deduped (canonical projection wins a shared identity) and ordered
+ * by authoritative event/item sequence with a stable arrival fallback. Both
+ * hydration and the live transcript applier commit through this function —
+ * neither plane may replace the whole visible list from its own projection.
+ */
+export function composeMixedPlaneSessionMessages(options: {
+  store: SessionEventStore | undefined;
+  compatibilityMessages: AgentChatMessage[];
+  timeline: CompatibilityMessageTimeline;
+}): AgentChatMessage[] {
+  const { store, timeline } = options;
   const canonicalMessages = store ? projectSessionEventStoreToMessages(store) : [];
   const canonicalFinalRunIds = new Set(
     Object.values(store?.items || {})
@@ -353,27 +503,94 @@ export function hydrateSessionTranscriptEvents(
       .map((item) => ('run_id' in item.scope ? item.scope.run_id : null))
       .filter((runId): runId is string => Boolean(runId)),
   );
-  const compatibilityMessages = compatibilityReplay.messages.filter((message) => {
-    const legacyRunId = messageIdentities(message)
-      .map((identity) => legacyAssistantRunByIdentity.get(identity))
+  const canonicalItemIds = new Set(
+    canonicalMessages.map((message) => message.sessionItem?.id).filter((id): id is string => Boolean(id)),
+  );
+  const canonicalIdentities = new Set(canonicalMessages.flatMap(messageIdentities));
+  const compatibilityMessages = options.compatibilityMessages.filter((message) => {
+    const identities = messageIdentities(message);
+    // Identities a rejected stale terminal first materialized never enter the
+    // active composition (their durable evidence stays in the replay).
+    if (identities.some((identity) => timeline.excludedIdentities.has(identity))) return false;
+    const legacyRunId = identities
+      .map((identity) => timeline.legacyAssistantRunByIdentity.get(identity))
       .find((runId): runId is string => Boolean(runId));
     // During rolling migration the legacy ChatMessage projection and the
     // canonical assistant_final can both exist. The typed run binding—not text
     // similarity—makes the canonical final the sole render owner.
-    return !legacyRunId || !canonicalFinalRunIds.has(legacyRunId);
+    if (legacyRunId && canonicalFinalRunIds.has(legacyRunId)) return false;
+    // Cross-plane identity dedupe: a message materialized in the compatibility
+    // replay that the canonical projection also owns renders once, from the
+    // canonical projection.
+    if (message.sessionItem?.id && canonicalItemIds.has(message.sessionItem.id)) return false;
+    return !messageIdentities(message).some((identity) => canonicalIdentities.has(identity));
   });
-  const ordered = [...compatibilityMessages, ...canonicalMessages]
+  return [...compatibilityMessages, ...canonicalMessages]
     .map((message, index) => ({
       message,
       index,
       sequence: message.sessionItem?.first_sequence
-        ?? sequenceByIdentity.get(String(message.transcriptEventId || message.messageId || message.id || ''))
+        ?? timeline.sequenceByIdentity.get(String(message.transcriptEventId || message.messageId || message.id || ''))
         ?? Number.MAX_SAFE_INTEGER,
     }))
     .sort((left, right) => left.sequence - right.sequence || left.index - right.index)
     .map(({ message }) => message);
+}
 
-  return { store, messages: ordered, ui: compatibilityReplay.ui };
+export function hydrateSessionTranscriptEvents(
+  events: ChatTranscriptEventPayload[],
+  baselineSequence = 0,
+): {
+  store: SessionEventStore | undefined;
+  messages: AgentChatMessage[];
+  ui: SessionUiState;
+  compatibilityTimeline: CompatibilityMessageTimeline;
+} {
+  let store: SessionEventStore | undefined;
+  let compatibilityReplay = createEmptyTranscriptReplayState();
+  const timeline = createCompatibilityMessageTimeline();
+
+  const projectCompatibility = (projectionEvent: ChatTranscriptEventPayload) => {
+    compatibilityReplay = applyTranscriptEvent(compatibilityReplay, projectionEvent);
+    recordCompatibilityTimelineMessages(timeline, projectionEvent, compatibilityReplay.messages);
+  };
+
+  for (const event of events) {
+    const consumed = consumeSessionEnvelope(event, store, baselineSequence);
+    if (consumed.store) store = consumed.store;
+    // Application ledger gate: a session envelope projects only when its
+    // transition actually applied it (contiguous cursor advancement).
+    // Gap-buffered, consistency-conflicted, duplicate, late, and
+    // recovery-held envelopes all report null application and project zero
+    // times. Raw non-envelope legacy frames keep their direct projection
+    // contract (they carry no application ledger).
+    if (consumed.sessionEnvelope && !consumed.application) continue;
+    if (!consumed.canonical) {
+      // Total ascending event sequence: the compatibility carrier (lowest
+      // sequence of the transition) projects before its drained buffered
+      // envelopes.
+      if (!consumed.sessionEnvelope || consumed.application?.compatibilityApplied) {
+        projectCompatibility(consumed.projectionEvent);
+      }
+    }
+    // Compatibility envelopes drained by either carrier kind own exactly one
+    // projection each, in sequence order; their own later appearances in the
+    // input are duplicates and hit the gate above.
+    for (const drained of consumed.application?.compatibilityEvents || []) {
+      projectCompatibility(compatibilityProjectionEvent(drained));
+    }
+  }
+
+  return {
+    store,
+    messages: composeMixedPlaneSessionMessages({
+      store,
+      compatibilityMessages: compatibilityReplay.messages,
+      timeline,
+    }),
+    ui: compatibilityReplay.ui,
+    compatibilityTimeline: timeline,
+  };
 }
 
 function canonicalMessageRunId(message: AgentChatMessage): string | null {
@@ -422,7 +639,11 @@ export function mergeCanonicalTerminalMessages(
   const prefix = latestUserIndex >= 0 ? previous.slice(0, latestUserIndex + 1) : [];
   const liveTail = latestUserIndex >= 0 ? previous.slice(latestUserIndex + 1) : previous;
   const canonicalRun = terminalRunId
-    ? canonical.filter((message) => canonicalMessageRunId(message) === terminalRunId)
+    ? canonical.filter((message) => (
+      // Compatibility-plane messages carry no canonical run binding; a
+      // terminal seal bound to one run must not drop them from the union.
+      !message.sessionItem || canonicalMessageRunId(message) === terminalRunId
+    ))
     : canonical;
   const canonicalFinal = [...canonicalRun].reverse().find(isRenderedAssistantAnswer);
   const liveFinal = [...liveTail].reverse().find(isRenderedAssistantAnswer);
@@ -431,6 +652,10 @@ export function mergeCanonicalTerminalMessages(
   for (const message of canonicalRun) {
     if (isRenderedAssistantAnswer(message) || message.role === 'user') continue;
     if (process.some((existing) => messagesShareIdentity(existing, message))) continue;
+    // A historical compatibility item already sealed in the prefix must not
+    // be re-appended to the live process by a later run's terminal merge —
+    // identity dedupe across the whole visible list, never text similarity.
+    if (prefix.some((existing) => messagesShareIdentity(existing, message))) continue;
     process.push(message);
   }
 

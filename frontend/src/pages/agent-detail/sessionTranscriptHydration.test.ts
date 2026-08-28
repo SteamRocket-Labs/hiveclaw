@@ -250,4 +250,125 @@ describe('loadCanonicalSessionTranscript', () => {
     expect(loaded).toEqual([]);
     expect(snapshots).toEqual([{ length: 0, complete: true }]);
   });
+
+  it('holds an unresolved rewind tail until the page carrying the checkpoint arrives (Codex REQUEST_CHANGES #4 finding C)', async () => {
+    // 1002 durable events; the rewind checkpoint (event-2) lives on the
+    // OLDER page, so the newest first page cannot resolve the trim anchor.
+    const checkpointInput = canonicalEvent({
+      sequence: 2,
+      itemId: 'input-2',
+      itemKind: 'human_input',
+      lifecycle: 'accepted',
+      content: 'PROMPT TWO',
+    });
+    const olderPage = [
+      canonicalEvent({
+        sequence: 1,
+        itemId: 'input-1',
+        itemKind: 'human_input',
+        lifecycle: 'accepted',
+        content: 'PROMPT ONE',
+      }),
+      checkpointInput,
+    ];
+    const newestPage = Array.from({ length: 1000 }, (_, index) => canonicalEvent({
+      sequence: index + 3,
+      itemId: `commentary-${index + 3}`,
+      itemKind: 'assistant_commentary',
+      lifecycle: 'completed',
+      content: `PROGRESS ${index + 3}`,
+    }));
+    const rewindSession = {
+      ...session,
+      transcript_metadata_json: {
+        active_projection: {
+          projection_reason: 'rewind',
+          checkpoint_event_id: 'event-2',
+          draft_content: '',
+        },
+      },
+    } as unknown as ChatSession;
+
+    let releaseOlder!: () => void;
+    const olderBlocked = new Promise<void>((resolve) => { releaseOlder = resolve; });
+    const fetchPage = vi.fn(async ({ beforeSequence }: { beforeSequence?: number }) => {
+      if (beforeSequence == null) return newestPage as unknown as ChatTranscriptEventPayload[];
+      await olderBlocked;
+      return olderPage as unknown as ChatTranscriptEventPayload[];
+    });
+    const published: Array<string[]> = [];
+    const hydration = loadCanonicalSessionTranscript(
+      fetchPage,
+      (snapshot) => {
+        const projected = projectCanonicalTranscriptSnapshot({
+          existing: [],
+          snapshot,
+          session: rewindSession,
+          parseMessage: (message: AgentChatMessage) => message,
+        });
+        published.push(projected.messages.map((message) => message.content));
+        return liveSubscriptionWatermark(projected.store);
+      },
+      { session: rewindSession },
+    );
+
+    // The newest page is fully processed (the older page was requested), but
+    // the unresolved rewind tail is NOT published and the live cursor is NOT
+    // opened.
+    await vi.waitFor(() => expect(fetchPage).toHaveBeenCalledTimes(2));
+    expect(published).toEqual([]);
+    let liveState: 'pending' | 'resolved' | 'rejected' = 'pending';
+    void hydration.liveReady.then(
+      () => { liveState = 'resolved'; },
+      () => { liveState = 'rejected'; },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(liveState).toBe('pending');
+
+    releaseOlder();
+    const loaded = await hydration;
+    expect(loaded).toHaveLength(1002);
+
+    // Exactly one publish, correctly trimmed at the checkpoint: PROMPT TWO
+    // (the anchor) and the entire rewind-hidden tail stay hidden.
+    expect(published).toEqual([['PROMPT ONE']]);
+    await expect(hydration.liveReady).resolves.toBe(1002);
+  });
+
+  it('fails observably and never publishes the unsafe tail when hydration completes without the rewind checkpoint', async () => {
+    const rewindSession = {
+      ...session,
+      transcript_metadata_json: {
+        active_projection: {
+          projection_reason: 'rewind',
+          checkpoint_event_id: 'event-missing',
+          draft_content: '',
+        },
+      },
+    } as unknown as ChatSession;
+    const page = [
+      canonicalEvent({ sequence: 1, itemId: 'input-1', itemKind: 'human_input', lifecycle: 'accepted', content: 'PROMPT ONE' }),
+      canonicalEvent({ sequence: 2, itemId: 'commentary-2', itemKind: 'assistant_commentary', lifecycle: 'completed', content: 'ANSWER ONE' }),
+    ];
+    const published: string[][] = [];
+    const hydration = loadCanonicalSessionTranscript(
+      async () => page as unknown as ChatTranscriptEventPayload[],
+      (snapshot) => {
+        const projected = projectCanonicalTranscriptSnapshot({
+          existing: [],
+          snapshot,
+          session: rewindSession,
+          parseMessage: (message: AgentChatMessage) => message,
+        });
+        published.push(projected.messages.map((message) => message.content));
+        return liveSubscriptionWatermark(projected.store);
+      },
+      { session: rewindSession },
+    );
+
+    await expect(hydration).rejects.toThrow('session_rewind_checkpoint_unresolved');
+    await expect(hydration.liveReady).rejects.toThrow('session_rewind_checkpoint_unresolved');
+    // The unsafe untrimmed tail was never published.
+    expect(published).toEqual([]);
+  });
 });

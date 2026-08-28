@@ -10,7 +10,7 @@ authority: for ``a2a_continuation`` the return route and owner come entirely
 from the durable child ChatSession binding (tenant +
 ``task.parent_session_id`` + ``task.parent_agent_id``), validated against the
 parent ChatSession — metadata plays no part in that path; for existing
-non-A2A types parent-agent authority is ``task.parent_agent_id`` while the
+non-``a2a_continuation`` types parent-agent authority is ``task.parent_agent_id`` while the
 legacy target-session/owner metadata fallback remains. An ordinary top-level
 ``web_chat_turn`` stays ineligible and can never self-notify.
 """

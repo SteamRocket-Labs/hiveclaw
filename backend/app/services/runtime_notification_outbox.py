@@ -445,9 +445,10 @@ async def produce_terminal_task_completion_notification(
     write, so a rollback undoes both. The reconcile sweep re-enters this
     helper as the idempotent crash/legacy recovery lane for eligible
     terminal rows, with a lower payload rank (10) so an authoritative
-    normal-path payload (100) always wins the CAS. Other task types keep
-    their own producers (e.g. ``team_member``); no claim is made here about
-    every task type using this helper. Returns the outbox id, or None when
+    normal-path payload (100) always wins the CAS. Other eligible types
+    retain their existing producer/recovery behavior (e.g. ``team_member``
+    has its own richer producer); no claim is made here that every task
+    type has a normal producer through this helper. Returns the outbox id, or None when
     the task is ineligible or a typed, retryable hold was recorded on the
     task row.
     """

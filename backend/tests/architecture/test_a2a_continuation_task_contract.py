@@ -87,7 +87,7 @@ def test_completion_producer_converges_at_the_shared_terminal_seam() -> None:
     sweep re-enters the SAME shared producer only as idempotent crash/legacy
     recovery. Metadata can never select the parent-agent route for any task
     type; the legacy target-session/owner metadata fallback for existing
-    non-a2a types is unchanged and out of this contract's scope.
+    non-``a2a_continuation`` types is unchanged and out of this contract's scope.
     """
 
     import ast

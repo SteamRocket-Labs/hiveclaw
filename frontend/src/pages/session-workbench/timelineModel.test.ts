@@ -1615,3 +1615,191 @@ describe('RuntimePhase in the thread projection (§3 seam 3)', () => {
     expect(secondRun.phase).toBe('thinking');
   });
 });
+
+
+describe('DAY1-A2A-LIVE-STATE-001: live A2A runtime state converges without reload', () => {
+  it('(a) canonical completed peer A2A task suppresses the stale running fallback for the same runtime_task_id', () => {
+    // Production shape: the canonical peer_a2a row carries runtime_task_id
+    // and child_session_id but no id; the earlier live delegation_run event
+    // keeps a running row alive with the same two durable identities.
+    const rightPanel = buildSessionRightPanelModel({
+      messages: [
+        {
+          id: 'evt-a2a-running',
+          role: 'event',
+          content: 'Worker Agent B is running.',
+          eventType: 'delegation_run',
+          eventStatus: 'running',
+          eventNotificationSource: 'a2a',
+          eventRuntimeTaskId: 'delegation-task-1',
+          eventChildSessionId: 'child-session-1',
+        },
+      ] as AgentChatMessage[],
+      sessionWorkbench: {
+        runtime_sections: {
+          peer_a2a: [
+            {
+              runtime_kind: 'peer_a2a',
+              label: 'Worker Agent B',
+              status: 'completed',
+              child_session_id: 'child-session-1',
+              runtime_task_id: 'delegation-task-1',
+            },
+          ],
+        },
+      } as unknown as SessionWorkbench,
+    });
+
+    expect(rightPanel.runtimeSections.peerA2A).toHaveLength(1);
+    expect(rightPanel.runtimeSections.peerA2A[0]).toMatchObject({
+      status: 'completed',
+      childSessionId: 'child-session-1',
+    });
+    expect(rightPanel.runtimeSections.summary.running).toBe(0);
+    expect(rightPanel.runtimeConsole.summary).toMatchObject({ state: 'idle', runningCount: 0 });
+  });
+
+  it('(b1) a canonical completion wake deduplicates the live agent_task_notification for the same runtime_task_id and never creates a Workers row', () => {
+    const rightPanel = buildSessionRightPanelModel({
+      messages: [
+        {
+          id: 'evt-a2a-notify',
+          role: 'event',
+          content: 'Worker Agent B completed: durable result ready.',
+          eventType: 'agent_task_notification',
+          eventStatus: 'completed',
+          eventNotificationSource: 'runtime_result_integration',
+          eventRuntimeTaskId: 'delegation-task-1',
+          eventChildSessionId: 'child-session-1',
+          // The generated thread-item mapping pins subagent_activity; the
+          // exact event type must still win over it for section routing.
+          threadItem: { item_type: 'subagent_activity' } as AgentChatMessage['threadItem'],
+        },
+      ] as AgentChatMessage[],
+      sessionWorkbench: {
+        runtime_sections: {
+          notifications: [
+            {
+              runtime_kind: 'notification',
+              label: 'Completion wake',
+              status: 'completed',
+              runtime_task_id: 'delegation-task-1',
+            },
+          ],
+        },
+      } as unknown as SessionWorkbench,
+    });
+
+    expect(rightPanel.runtimeSections.subagents).toHaveLength(0);
+    expect(rightPanel.runtimeConsole.workers.items).toHaveLength(0);
+    expect(rightPanel.runtimeSections.notifications).toHaveLength(1);
+    expect(rightPanel.runtimeSections.notifications[0]).toMatchObject({
+      label: 'Completion wake',
+      status: 'completed',
+    });
+  });
+
+  it('(b2) a fallback-only agent_task_notification lands in Notifications/Activity and never in Workers', () => {
+    const rightPanel = buildSessionRightPanelModel({
+      messages: [
+        {
+          id: 'evt-a2a-notify',
+          role: 'event',
+          content: 'Worker Agent B completed: durable result ready.',
+          eventType: 'agent_task_notification',
+          eventStatus: 'completed',
+          eventNotificationSource: 'runtime_result_integration',
+          eventRuntimeTaskId: 'delegation-task-1',
+          eventChildSessionId: 'child-session-1',
+          threadItem: { item_type: 'subagent_activity' } as AgentChatMessage['threadItem'],
+        },
+      ] as AgentChatMessage[],
+      sessionWorkbench: { runtime_sections: {} } as unknown as SessionWorkbench,
+    });
+
+    expect(rightPanel.runtimeSections.subagents).toHaveLength(0);
+    expect(rightPanel.runtimeConsole.workers.items).toHaveLength(0);
+    expect(rightPanel.runtimeSections.notifications).toHaveLength(1);
+    expect(rightPanel.runtimeSections.notifications[0]).toMatchObject({
+      runtimeKind: 'notification',
+      status: 'completed',
+    });
+  });
+
+  it('(c) fallback-only A2A and subagent rows remain usable when canonical runtime sections are absent', () => {
+    const rightPanel = buildSessionRightPanelModel({
+      messages: [
+        {
+          id: 'evt-a2a-running',
+          role: 'event',
+          content: 'Worker Agent B is running.',
+          eventType: 'delegation_run',
+          eventStatus: 'running',
+          eventNotificationSource: 'a2a',
+          eventRuntimeTaskId: 'delegation-task-1',
+          eventChildSessionId: 'child-session-1',
+        },
+        {
+          id: 'evt-subagent-started',
+          role: 'event',
+          content: 'Subagent reviewer is running in the background.',
+          eventType: 'runtime_action_started',
+          eventStatus: 'running',
+          eventNotificationSource: 'subagent_wake',
+          eventRuntimeTaskId: 'run-subagent-1',
+          eventChildSessionId: 'child-subagent-1',
+        },
+      ] as AgentChatMessage[],
+      sessionWorkbench: { runtime_sections: {} } as unknown as SessionWorkbench,
+    });
+
+    expect(rightPanel.runtimeSections.peerA2A).toHaveLength(1);
+    expect(rightPanel.runtimeSections.peerA2A[0]).toMatchObject({ status: 'running' });
+    expect(rightPanel.runtimeSections.subagents).toHaveLength(1);
+    expect(rightPanel.runtimeSections.subagents[0]).toMatchObject({ status: 'running' });
+    expect(rightPanel.runtimeSections.summary.running).toBe(2);
+  });
+
+  it('(d) distinct runtime_task_ids sharing one child_session_id remain distinct rows', () => {
+    const rightPanel = buildSessionRightPanelModel({
+      messages: [
+        {
+          id: 'evt-a2a-running-2',
+          role: 'event',
+          content: 'Worker Agent B is running again.',
+          eventType: 'delegation_run',
+          eventStatus: 'running',
+          eventNotificationSource: 'a2a',
+          eventRuntimeTaskId: 'delegation-task-2',
+          eventChildSessionId: 'child-session-1',
+        },
+      ] as AgentChatMessage[],
+      sessionWorkbench: {
+        runtime_sections: {
+          peer_a2a: [
+            {
+              runtime_kind: 'peer_a2a',
+              label: 'Worker Agent B first run',
+              status: 'completed',
+              child_session_id: 'child-session-1',
+              runtime_task_id: 'delegation-task-1',
+            },
+            {
+              runtime_kind: 'peer_a2a',
+              label: 'Worker Agent B second run',
+              status: 'completed',
+              child_session_id: 'child-session-1',
+              runtime_task_id: 'delegation-task-2',
+            },
+          ],
+        },
+      } as unknown as SessionWorkbench,
+    });
+
+    expect(rightPanel.runtimeSections.peerA2A).toHaveLength(2);
+    expect(
+      rightPanel.runtimeSections.peerA2A.map((item) => String((item.raw as Record<string, unknown>).runtime_task_id)),
+    ).toEqual(['delegation-task-1', 'delegation-task-2']);
+    expect(rightPanel.runtimeSections.summary.running).toBe(0);
+  });
+});

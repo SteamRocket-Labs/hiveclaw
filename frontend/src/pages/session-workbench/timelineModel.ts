@@ -797,7 +797,15 @@ function runtimeSectionFallbackFromMessage(
     section = 'peer_a2a';
     runtimeKind = 'peer_a2a';
     fallbackKind = 'peer_a2a';
-  } else if (itemType === 'subagent_activity' || ['subagent', 'child_session', 'agent_task_notification'].includes(eventType) || source === 'subagent_wake') {
+  } else if (eventType === 'agent_task_notification') {
+    // Exact event-type routing BEFORE the generated
+    // threadItem.item_type='subagent_activity' mapping can route the
+    // completion notification to Workers: an agent_task_notification is a
+    // completion notification (Notifications/Activity), never a worker row.
+    section = 'notifications';
+    runtimeKind = 'notification';
+    fallbackKind = 'notification';
+  } else if (itemType === 'subagent_activity' || ['subagent', 'child_session'].includes(eventType) || source === 'subagent_wake') {
     section = 'subagents';
     runtimeKind = 'subagent';
     fallbackKind = 'subagent';
@@ -840,6 +848,10 @@ function runtimeSectionFallbackFromMessage(
       state: status,
       summary,
       child_session_id: childSessionId || undefined,
+      // Structured durable aliases for exact merge-key matching against
+      // canonical runtime_sections rows (never content/label heuristics).
+      runtime_task_id: readString(record, ['eventRuntimeTaskId'], '') || undefined,
+      workflow_run_id: readString(record, ['eventWorkflowRunId'], '') || undefined,
       source_event_type: eventType,
       source_notification: source,
     },
@@ -881,16 +893,34 @@ function runtimeItemIdentity(item: RuntimeSectionItemModel): string {
   return `${item.runtimeKind}:${item.id}`;
 }
 
+function runtimeItemMergeKeys(item: RuntimeSectionItemModel): string[] {
+  // Structured durable identities win when canonical and fallback each carry
+  // one: canonical rows key by child_session_id before runtime_task_id while
+  // live fallbacks key by eventRuntimeTaskId, so display/navigation ids
+  // alone cannot suppress a stale row for the same task.  Two items are the
+  // same row only when they share at least one structured key
+  // (runtime_task_id / workflow_run_id are globally unique; the kind:id
+  // display identity stays the final candidate and is never reordered).
+  const keys: string[] = [];
+  const raw = item.raw as Record<string, unknown> | undefined;
+  const taskId = readString(raw ?? {}, ['runtime_task_id', 'runtimeTaskId'], '');
+  if (taskId) keys.push(`runtime_task:${taskId}`);
+  const workflowRunId = readString(raw ?? {}, ['workflow_run_id', 'workflowRunId'], '');
+  if (workflowRunId) keys.push(`workflow_run:${workflowRunId}`);
+  keys.push(runtimeItemIdentity(item));
+  return keys;
+}
+
 function mergeRuntimeItemLists(
   primary: RuntimeSectionItemModel[],
   fallback: RuntimeSectionItemModel[],
 ): RuntimeSectionItemModel[] {
-  const seen = new Set(primary.map(runtimeItemIdentity));
+  const seen = new Set(primary.flatMap(runtimeItemMergeKeys));
   const merged = [...primary];
   fallback.forEach((item) => {
-    const key = runtimeItemIdentity(item);
-    if (seen.has(key)) return;
-    seen.add(key);
+    const keys = runtimeItemMergeKeys(item);
+    if (keys.some((key) => seen.has(key))) return;
+    keys.forEach((key) => seen.add(key));
     merged.push(item);
   });
   return merged;

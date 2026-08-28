@@ -455,8 +455,6 @@ export default function RunDisclosureBlock({
     }
   }, [opensForAttention, timeline.id, timeline.status]);
 
-  const visibleSteps = timeline.steps.filter((step) => getRunStepPresentation(step) !== 'external');
-  if (visibleSteps.length === 0) return null;
   const title = running
     ? t('agent.chat.disclosure.working', 'Working')
     : timeline.status === 'blocked'
@@ -468,6 +466,25 @@ export default function RunDisclosureBlock({
           : timeline.status === 'interrupted'
             ? t('agent.chat.disclosure.interrupted', 'Interrupted')
             : t('agent.chat.disclosure.processed', 'Processed');
+  const interruptedHint = t(
+    'agent.chat.disclosure.interruptedHint',
+    'This turn has no completion record; send a new message to continue.',
+  );
+  const visibleSteps = timeline.steps.filter((step) => getRunStepPresentation(step) !== 'external');
+  if (visibleSteps.length === 0) {
+    if (timeline.status !== 'interrupted') return null;
+    return (
+      <div data-testid="run-disclosure-block" data-status={timeline.status} className="run-disclosure">
+        <div className="run-disclosure-frame">
+          <div className="run-disclosure-header is-static" role="status">
+            <span className="run-disclosure-title">{title}</span>
+            {duration && <span className="run-disclosure-duration">{duration}</span>}
+            <span className="run-disclosure-summary">{interruptedHint}</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
   const stepCount = t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: visibleSteps.length });
   const live = timeline.status === 'running' || timeline.status === 'blocked';
   const renderItems = groupRunSteps(visibleSteps);
@@ -487,7 +504,7 @@ export default function RunDisclosureBlock({
           </span>
           {duration && <span className="run-disclosure-duration">{duration}</span>}
           {timeline.status === 'interrupted' ? (
-            <span className="run-disclosure-summary">{t('agent.chat.disclosure.interruptedHint', 'This turn has no completion record; send a new message to continue.')}</span>
+            <span className="run-disclosure-summary">{interruptedHint}</span>
           ) : (
             timeline.summary && <span className="run-disclosure-summary">{timeline.summary}</span>
           )}

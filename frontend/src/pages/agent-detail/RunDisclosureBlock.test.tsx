@@ -142,6 +142,25 @@ describe('RunDisclosureBlock', () => {
     expect(markup).not.toContain('Working');
   });
 
+  it('keeps a copied cancellation visible when the run has no displayable process steps', () => {
+    const markup = renderToStaticMarkup(
+      <RunDisclosureBlock
+        timeline={{
+          id: 'copied-cancelled-run',
+          status: 'interrupted',
+          startedAt: '2026-08-29T04:37:00Z',
+          steps: [],
+        }}
+      />,
+    );
+
+    expect(markup).toContain('data-status="interrupted"');
+    expect(markup).toContain('Interrupted');
+    expect(markup).toContain('send a new message to continue');
+    expect(markup).not.toContain('Working');
+    expect(markup).not.toContain('0 steps');
+  });
+
   it('folds model-authored public commentary with completed process history', () => {
     const markup = renderToStaticMarkup(
       <RunDisclosureBlock

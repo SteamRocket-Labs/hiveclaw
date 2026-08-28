@@ -2695,6 +2695,14 @@
   background: var(--session-tui-hover-bg);
 }
 
+.run-disclosure-header.is-static {
+  cursor: default;
+}
+
+.run-disclosure-header.is-static:hover {
+  background: transparent;
+}
+
 .run-disclosure-title {
   font-size: var(--text-row);
   font-weight: 600;

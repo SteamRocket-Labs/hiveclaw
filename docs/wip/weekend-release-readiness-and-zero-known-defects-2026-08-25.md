@@ -3576,6 +3576,16 @@ Correction #3 通过后，Codex 沿用户真实可见路径继续审查，发现
 
 **当前状态与回滚**：本地代码、测试、WIP 与 Codex 独立 review/test **PASS — Verified locally**；下一步必须从本 commit 部署 Railway `backend`、`backend-api`、`frontend` 三服务，再以 signed-in fresh Session 无 reload 复验 typed 402 failed/idle、quota notice、消息不丢、活动流不分裂、reload 与 live 一致。生产通过前保持 **Partial loop**，不宣称生产修复、A2A clean pass、Day1/Day2、zero-known-defects 或 weekend 完成。回滚为 revert 本 correction commit；三项既有脏项继续不触碰、不 stage。
 
+#### correction #4 三服务生产部署与健康验收（2026-08-28，部署包 Closed；Session 生产验收仍 pending）
+
+部署源为已推送到组织仓库 `SteamRocket-Labs/hiveclaw` 的精确 committed HEAD `1721b004`（`fix(day1): preserve live session truth across replay`）。按仓库约定从该 commit 生成 archive，Railway production project `dd959a13-19f9-497a-9704-42c310eae230` 三服务均已完成：
+
+- `backend` deployment `474e37da-01bc-4d9b-907d-97f29ab555a2`，状态 `SUCCESS`，digest `sha256:806eef125aa91e0d25204a8e7a0e2b7840d6f444616d9bfcf37aacbc88afe1dc`；启动期间 schema readiness gate 确认 Alembic head `a2a_continuation_task_0828`、174 tables、4 triggers、`issues=[]`、`ready=true`。
+- `backend-api` deployment `1ca5e3db-9365-4406-a656-ba8794e21e69`，状态 `SUCCESS`，digest `sha256:6748f25cddd6cc4b02e564aa9093d8e407571cdfd096880863d03c2a4ba8f1aa`；该服务无 public route，Railway exact deployment `SUCCESS` 为 freshness 证据。
+- `frontend` deployment `42e9c1ae-f5fc-47ab-afd4-0ea5ab9bab80`，状态 `SUCCESS`，digest `sha256:846915df2f9f9061449c8fffaffcbde8186480b65ca4e4ec27aa3f9d4859686b`；公共入口 `HEAD /` HTTP 200，`Last-Modified: Fri, 28 Aug 2026 15:02:23 GMT`。
+
+公共 `GET /api/health` HTTP 200，返回 `status=ok`、version `1.7.0`；`trigger_daemon`、`workflow_daemon`、`evolution_daemon`、sandbox probe scheduler 均 healthy；RLS runtime role `app_rls` 为 non-superuser、`bypassrls=false`、strict enforcement、violations 空；Vercel Sandbox 最新探针 `passed=true`、provider `vercel_sandbox`、deny-all/network denied、workspace round trip 通过，30/30 pass；`runtime_task_worker.running=true`、`last_error=null`，`web_chat_stream_forwarder.running=true`。**本节仅关闭部署与健康包**：尚未把 signed-in no-reload Session、typed 402 可见终态、Rewind/Resume/Fork/Rollback、Knowledge、Create Agent、Plan Mode、Agent Team、Dynamic Workflow 或 A2A 标记为生产通过；这些必须继续走真实 UI/E2E，发现缺陷则 test-first 修复、再部署、再复验。
+
 
 ## 8. 两个工作日的执行节奏
 

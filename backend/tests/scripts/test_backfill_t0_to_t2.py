@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -265,4 +266,80 @@ async def test_t2_backfill_apply_requires_exact_confirmation_and_uses_canonical_
             "t0_segment_id": "segment-b",
             "data_root": tmp_path,
         },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_t2_backfill_cli_initializes_secrets_before_running_job(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.scripts import backfill_t0_to_t2
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    settings = SimpleNamespace(
+        AGENT_DATA_DIR=str(tmp_path),
+        DEBUG=False,
+        SECRETS_MASTER_KEY="primary-key",
+        SECRETS_MASTER_KEY_PREVIOUS="previous-a, previous-b",
+    )
+    events: list[str] = []
+
+    def fake_init_script_secrets_provider(actual_settings: object) -> None:
+        assert actual_settings is settings
+        events.append("secrets_initialized")
+
+    async def fake_run(**kwargs):
+        assert events == ["secrets_initialized"]
+        assert kwargs["data_root"] == Path(settings.AGENT_DATA_DIR)
+        return {"schema": "hive.t0-to-t2-backfill.v1", "mode": "dry_run"}
+
+    monkeypatch.setattr(backfill_t0_to_t2, "get_settings", lambda: settings)
+    monkeypatch.setattr(backfill_t0_to_t2, "_init_script_secrets_provider", fake_init_script_secrets_provider)
+    monkeypatch.setattr(backfill_t0_to_t2, "run_t0_to_t2_backfill", fake_run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "backfill_t0_to_t2.py",
+            "--agent-id",
+            str(agent_id),
+            "--tenant-id",
+            str(tenant_id),
+        ],
+    )
+
+    await backfill_t0_to_t2._main()
+
+    assert events == ["secrets_initialized"]
+
+
+def test_t2_backfill_script_secrets_match_runtime_rotation_contract(monkeypatch) -> None:
+    from app.scripts import backfill_t0_to_t2
+    from app.services import secrets_provider
+
+    calls: list[tuple[object, ...]] = []
+    settings = SimpleNamespace(
+        DEBUG=False,
+        SECRETS_MASTER_KEY="primary-key",
+        SECRETS_MASTER_KEY_PREVIOUS=" previous-a, ,previous-b ",
+    )
+
+    monkeypatch.setattr(
+        secrets_provider,
+        "validate_secrets_provider_config",
+        lambda key, *, debug: calls.append(("validate", key, debug)),
+    )
+    monkeypatch.setattr(
+        secrets_provider,
+        "init_secrets_provider",
+        lambda key, *, previous_master_keys: calls.append(("init", key, previous_master_keys)),
+    )
+
+    backfill_t0_to_t2._init_script_secrets_provider(settings)
+
+    assert calls == [
+        ("validate", "primary-key", False),
+        ("init", "primary-key", ("previous-a", "previous-b")),
     ]

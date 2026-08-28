@@ -3809,7 +3809,7 @@ Correction #3 通过后，Codex 沿用户真实可见路径继续审查，发现
 **状态与边界**：本包代码、真实 Postgres path proof 与全量门禁为 **PASS — Verified locally**；它修复 Session 历史提交的 architecture/security/acceptance 债务，不改变 §7.31 已完成的 production Session 行为结论。原子 commit/push 完成后随下一候选统一部署三服务；在部署 SUCCESS 前不宣称当前 HEAD 已在线。Knowledge、Create Agent、Plan Mode、Agent Team、Sub-agent、Dynamic Workflow 与 aggregate A2A 仍按后续包分别验收。
 
 
-## 7.33 WEEKEND-KNOWLEDGE-THREE-AUTHORITY-001 — Agent Memory 租户权威断点恢复 + Knowledge 用户态表达（2026-08-29，本地候选全绿；commit/push、三服务部署、生产回放与三面复验 pending）
+## 7.33 WEEKEND-KNOWLEDGE-THREE-AUTHORITY-001 — Agent Memory 租户权威断点恢复 + Knowledge 用户态表达（2026-08-29；首轮候选已部署，生产回放发现 CLI secrets 生命周期断点，correction 本地全绿、重部署 pending）
 
 ### 三块的产品边界（North Star 不变）
 
@@ -3850,9 +3850,26 @@ Rocky 实验室 Agent `76af3c45-ba5f-5034-90b0-0ea06c3ca1e6` 的 Knowledge 页�
 - backend GREEN：Knowledge/Hook/Sweep/Heartbeat 定向最终 **75 passed**，包含 metadata 缺失/非法/合法但错误、manifest 缺 tenant/合法但错误 tenant、retry history preservation 与每 sweep 上限；Ruff check/format 7 文件全绿。最终完整 `.venv/bin/pytest tests -q` 为 **8314 passed / 2 skipped / 1 既有 StarletteDeprecationWarning in 595.63s**。
 - frontend GREEN：focused **8 passed**；全量 **147 files / 1063 passed**；`npx tsc --noEmit` exit 0；i18n node tests **9/9**、en=zh=3921、所有 gates 0；production build 7387 modules，AgentDetail **373514/380000 bytes、103035/115000 gzip**，vendor **591449/620000 bytes、186474/200000 gzip**；`git diff --check` 待 commit 前最终复跑。
 
+### 首轮生产部署与回放证伪（2026-08-29）
+
+- 权威修复与 UI 包已原子提交并 push 到组织仓库 `SteamRocket-Labs/hiveclaw`：commit `4adbb03a2d0372fa2f2865d95b8e4a2d2385df34`（`fix(knowledge): restore agent memory authority`），部署前 `origin/main` 与本地 HEAD 精确一致。
+- Railway production 三服务均从该 committed HEAD 构建并为 `SUCCESS`：backend `b35d9886-b8a3-4ab0-8fd4-6e0138a057a1` / digest `sha256:5d1e2f6de21173e6f1a2ca8d0f1aa9d96900d36eb979142d7756aba3e657b620`；backend-api `0b59cebf-5c6f-4c8a-9e5d-5e22e6338120` / digest `sha256:fe8aff8c42c219fe99724cb762cebf6d4504e70238a8e4677ef8a7ff875c0744`；frontend `bf077a1c-5f33-409f-b948-b08cea033769` / digest `sha256:8647e17ba77a03e438a72598acb08c16e1edee119bddb79769d2246a945324ae`。公共 backend `/api/health` HTTP 200（version 1.7.0、四 daemon healthy、RLS strict、Vercel Sandbox deny-all probe 通过、runtime worker/stream forwarder running）；frontend `HEAD /` HTTP 200。backend-api 无 public route，以 Railway exact deployment status 作为 freshness 证据。
+- 部署后再次执行 dry-run：53 sessions、147 sealed/candidate/selected、remaining 0、existing 0、invalid 0、warnings `[]`、18 open safely skipped、tenant 精确为 `aac728fb-fe1c-45df-a2ff-a56e024a37a0`；因此 preserved evidence 与 selection 边界仍干净。
+- 随后只对 session `0180ae5e-612b-4646-a957-ab51046f31cb` 的 1 个 segment 做 bounded apply。结果不是成功：`started=1 / committed=0 / held=1 / failed=0`，明确 issue 为 `no summary model config for T0->T2 package build`；进程日志给出更早机械原因：`SecretsProvider not initialized — call init_secrets_provider() at startup`。任务诚实进入 held，T0 未丢、未复制 legacy summary、未伪写 T2；因此没有继续推 147 个任务，也没有把首轮部署标成 Agent Memory Closed。
+
+### WEEKEND-KNOWLEDGE-BACKFILL-SECRETS-001 correction（本地完成，重部署 pending）
+
+最早错误状态在 standalone `backfill_t0_to_t2._main`：它读取 production settings 后直接运行 canonical T2 job，但没有像 FastAPI lifespan 一样执行 secrets provider config validation / initialization，也遗漏 `SECRETS_MASTER_KEY_PREVIOUS` rotation keys。数据库租户权威已修复并不等于 CLI 能解密租户 model config。
+
+修复保持单一生命周期契约：CLI 在任何 dry-run/apply job 前，以当前 settings 调用 `validate_secrets_provider_config`，整理非空 previous keys，并调用 `init_secrets_provider`；随后同一 settings 决定 `AGENT_DATA_DIR`。没有增加备用明文路径、没有吞异常、没有模型降级或机械摘要。
+
+- RED：新增 CLI wiring + rotation contract 两条测试后，focused 得到 **2 failed / 4 passed**，均为 `_init_script_secrets_provider` 不存在；这与 production 错误逐字对应。
+- GREEN：`pytest -q tests/scripts/test_backfill_t0_to_t2.py` → **6 passed in 0.37s**；`ruff check app/scripts/backfill_t0_to_t2.py tests/scripts/test_backfill_t0_to_t2.py` → All checks passed；`ruff format --check ...` → 2 files already formatted。
+- 边界：本 correction 只恢复 operator CLI 与 production Runtime 相同的 secrets 解密生命周期；T2 内容仍由三次独立 LLM 智能步骤与既有 Memory/Platform Gate 产生，平台不编写语义。回滚为 revert 本 correction commit；首轮 held staging evidence 保留并可在重部署后重试。
+
 ### 状态与下一验收边界
 
-当前只能判 **PASS — Verified locally / production Agent Memory recovery pending**。原子 commit/push 后部署 backend、backend-api、frontend 三服务；全部 SUCCESS 且 health 正常后，按 dry-run → bounded apply → post-dry-run 的顺序恢复 147 sealed segments，核对 held/exhausted/deferred/control report 与 T2 package coverage，再用 fresh Session 证明 Agent 能从自身 Memory 精确回忆而不调用 Personal/Company KB。随后对 Agent Memory、Personal KB、Company KB 各完成 signed-in UI 与工具消费复验；任一 authority 混淆、空/拒绝误判、工程字段泄漏、检索失败或 recall 不成立均重新进入 RED。本节在这些生产证据完成前不 Closed，也不外推 Weekend、A2A 或 zero-known-defects。
+当前只能判 **PARTIAL — 首轮权威/UI 候选已部署，CLI correction 本地 Verified，production Agent Memory recovery pending**。下一步必须先把 correction 原子 commit/push，并再次部署 backend、backend-api、frontend 三服务；全部 SUCCESS 且 health 正常后，按 dry-run → 1-segment apply → bounded parallel apply → post-dry-run 的顺序恢复 147 sealed segments，核对 held/exhausted/deferred/control report 与 T2 package coverage，再用 fresh Session 证明 Agent 能从自身 Memory 精确回忆而不调用 Personal/Company KB。随后对 Agent Memory、Personal KB、Company KB 各完成 signed-in UI 与工具消费复验；任一 authority 混淆、空/拒绝误判、工程字段泄漏、检索失败或 recall 不成立均重新进入 RED。本节在这些生产证据完成前不 Closed，也不外推 Weekend、A2A 或 zero-known-defects。
 
 
 ## 8. 两个工作日的执行节奏

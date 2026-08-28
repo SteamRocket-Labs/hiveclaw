@@ -259,6 +259,17 @@ async def run_t0_to_t2_backfill(
     return report
 
 
+def _init_script_secrets_provider(settings: Any) -> None:
+    """Mirror runtime secrets initialization for standalone backfill runs."""
+
+    from app.services.secrets_provider import init_secrets_provider, validate_secrets_provider_config
+
+    master_key = settings.SECRETS_MASTER_KEY or None
+    validate_secrets_provider_config(master_key, debug=settings.DEBUG)
+    previous_master_keys = tuple(key.strip() for key in settings.SECRETS_MASTER_KEY_PREVIOUS.split(",") if key.strip())
+    init_secrets_provider(master_key, previous_master_keys=previous_master_keys)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agent-id", required=True, type=uuid.UUID)
@@ -273,8 +284,10 @@ def _parser() -> argparse.ArgumentParser:
 
 async def _main() -> None:
     args = _parser().parse_args()
+    settings = get_settings()
+    _init_script_secrets_provider(settings)
     report = await run_t0_to_t2_backfill(
-        data_root=args.data_root or Path(get_settings().AGENT_DATA_DIR),
+        data_root=args.data_root or Path(settings.AGENT_DATA_DIR),
         agent_id=args.agent_id,
         tenant_id=args.tenant_id,
         apply=args.apply,

@@ -3586,6 +3586,18 @@ Correction #3 通过后，Codex 沿用户真实可见路径继续审查，发现
 
 公共 `GET /api/health` HTTP 200，返回 `status=ok`、version `1.7.0`；`trigger_daemon`、`workflow_daemon`、`evolution_daemon`、sandbox probe scheduler 均 healthy；RLS runtime role `app_rls` 为 non-superuser、`bypassrls=false`、strict enforcement、violations 空；Vercel Sandbox 最新探针 `passed=true`、provider `vercel_sandbox`、deny-all/network denied、workspace round trip 通过，30/30 pass；`runtime_task_worker.running=true`、`last_error=null`，`web_chat_stream_forwarder.running=true`。**本节仅关闭部署与健康包**：尚未把 signed-in no-reload Session、typed 402 可见终态、Rewind/Resume/Fork/Rollback、Knowledge、Create Agent、Plan Mode、Agent Team、Dynamic Workflow 或 A2A 标记为生产通过；这些必须继续走真实 UI/E2E，发现缺陷则 test-first 修复、再部署、再复验。
 
+#### WEEKEND-SESSION-LIVE-USER-PROMPT-001（生产发现，2026-08-28；P0/open）
+
+在部署 HEAD `1721b004` 后，Codex 以 Rocky 实验室登录态从 `WEEKEND-RC-20260825-A-Orchestrator` 的真实「New conversation」入口创建 fresh Session `d0c8ca27-a77b-4702-b1e5-473511c0b695`，发送唯一输入 `生产 Session 终态验收。不要调用工具，只回复 SESSION-402-CANARY-20260828-2309-A7。`。RuntimeTask `1219da81-394f-5e5b-9b1d-79a81eb2b2cf` 为 `web_chat_turn`、`completed`、claim/attempt 均 1（created `15:09:37.382910Z`、started `15:09:43.478384Z`、completed `15:10:02.828714Z`）；模型真实成功返回 marker，说明此前余额外部前置已不再阻止此 run。
+
+**no-reload FAIL（用户视角）**：运行中与终局都看不到刚发送的原始用户消息；终局 DOM 中精确 prompt count=0、assistant marker count=1，只剩回答。此时回答后的「分支」「回溯」均 disabled。手动 reload 后同一 Session 精确 prompt count=1、assistant marker count=1，用户消息、时间、Copy、2-step process、分支和回溯全部恢复。因此这是 live Session 可见投影吞消息，不是模型未收到，也不是持久化缺失；必须以 no-reload 与 reload 字节/顺序一致为验收标准。
+
+**独立持久层证据（只读事务，零 DDL/写入）**：`chat_transcript_events` sequence 1 为 `human_input.accepted`，item/input id 均 `4196d563-506a-46a9-b3d5-edc30b28bc2e`，`metadata_json.v2_payload.content_parts[0].text/display_content` 均逐字保存完整 prompt；sequence 8/12/28 为同 item 的 queued/bound/applied；sequence 23 `assistant_text.snapshot` 与 sequence 31 legacy `assistant_message` 均保存 marker；31 行全部 `projection_status=projected`。这证明 Input/Evidence/Execution 已成立，断点位于 live Consumption/Recovery。
+
+**伴随 UI 不一致（同 run，纳入同根因复验但不先假定根因）**：运行约 8 秒时，主标题同时显示「等待输入」「请查看下方请求并选择下一步」与「重新连接中」，Stop 可用；右栏却同时显示 strong「空闲」、Session「运行中」、0 个运行中、Activity 中一条「排队中」。终局收敛为完成/空闲。Codex Desktop 标准下，连接状态可以退化，但不能把 active run 表达成等待用户决策或空闲；修复后必须验证状态文案来自同一 canonical active-run/phase truth。
+
+**下一步（未执行前不宣称）**：先在真实 production consumer seam 建立 failing regression，证明 durable input 尚未完整投影或 transport/reconciliation 竞争时 optimistic accepted input 不能被空白占位/旧快照移除；再修共享根因，运行 focused + 全量前端门禁，更新本节、原子 commit/push、三服务重新部署并用 fresh Session 连续两遍 no-reload 复验。当前 verdict：**FAIL/open**；不宣称 Session、Day 1、Day 2 或 weekend 完成。
+
 
 ## 8. 两个工作日的执行节奏
 

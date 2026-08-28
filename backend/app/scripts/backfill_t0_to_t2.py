@@ -22,6 +22,8 @@ APPLY_CONFIRMATION = "APPLY_T0_TO_T2_BACKFILL"
 _EXISTING_T2_STATUSES = {
     "reviewed",
     "closed",
+    "archived_recall_only",
+    "rejected",
     "absorbed",
     "t3_absorbed",
     "reinforced",

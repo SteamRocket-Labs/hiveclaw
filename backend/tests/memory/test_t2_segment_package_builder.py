@@ -406,6 +406,170 @@ async def test_low_risk_t2_package_requires_memory_gate_review(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("decision", "allowed_next", "expected_package_status"),
+    [
+        ("hold_recall_only", "archive_recall_only", "archived_recall_only"),
+        ("rejected", "none", "rejected"),
+    ],
+)
+async def test_t2_package_commits_memory_gate_terminal_non_promotion_decisions(
+    tmp_path: Path,
+    decision: str,
+    allowed_next: str,
+    expected_package_status: str,
+) -> None:
+    from app.memory.t2.segment_package import build_t2_segment_package
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    event = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="heartbeat_tick_end",
+        role="system",
+        content="No semantic work was pending.",
+        source="heartbeat",
+        data_root=tmp_path,
+    )
+
+    async def summary_agent(source_bundle: dict) -> str:
+        return _summary_xml(source_bundle, segment_state="administrative")
+
+    async def learning_brain(source_bundle: dict, _summary_md: str) -> str:
+        return _labels_xml(source_bundle, continuity_state="admin_only")
+
+    async def memory_gate(source_bundle: dict, _summary_md: str, _labels_md: str) -> str:
+        review = _approved_review_xml(
+            package_id=source_bundle["package_id"],
+            ref=source_bundle["source_refs"][0]["uri"],
+        )
+        return review.replace("<decision>approved</decision>", f"<decision>{decision}</decision>").replace(
+            "<allowed_next>t3_intake</allowed_next>",
+            f"<allowed_next>{allowed_next}</allowed_next>",
+        )
+
+    result = await build_t2_segment_package(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        t0_segment_id=event.segment_id,
+        summary_agent=summary_agent,
+        learning_brain=learning_brain,
+        memory_gate=memory_gate,
+    )
+
+    manifest = json.loads((result.package_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert result.status == "committed"
+    assert manifest["package_status"] == expected_package_status
+    assert manifest["review_decision"] == decision
+    assert manifest["allowed_next"] == allowed_next
+
+
+@pytest.mark.asyncio
+async def test_t2_package_keeps_memory_gate_revision_request_in_staging(tmp_path: Path) -> None:
+    from app.memory.t2.segment_package import build_t2_segment_package
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    event = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="The candidate needs a model-authored revision.",
+        source="web",
+        data_root=tmp_path,
+    )
+
+    async def summary_agent(source_bundle: dict) -> str:
+        return _summary_xml(source_bundle)
+
+    async def learning_brain(source_bundle: dict, _summary_md: str) -> str:
+        return _labels_xml(source_bundle)
+
+    async def memory_gate(source_bundle: dict, _summary_md: str, _labels_md: str) -> str:
+        review = _approved_review_xml(
+            package_id=source_bundle["package_id"],
+            ref=source_bundle["source_refs"][0]["uri"],
+        )
+        return review.replace("<decision>approved</decision>", "<decision>needs_revision</decision>").replace(
+            "<allowed_next>t3_intake</allowed_next>",
+            "<allowed_next>none</allowed_next>",
+        )
+
+    result = await build_t2_segment_package(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        t0_segment_id=event.segment_id,
+        summary_agent=summary_agent,
+        learning_brain=learning_brain,
+        memory_gate=memory_gate,
+    )
+
+    assert result.status == "held"
+    assert result.issues == ("review decision requires model-authored revision",)
+    assert not result.package_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_t2_package_holds_invalid_memory_gate_transition_pair(tmp_path: Path) -> None:
+    from app.memory.t2.segment_package import build_t2_segment_package
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    event = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="heartbeat_tick_end",
+        role="system",
+        content="No semantic work was pending.",
+        source="heartbeat",
+        data_root=tmp_path,
+    )
+
+    async def summary_agent(source_bundle: dict) -> str:
+        return _summary_xml(source_bundle, segment_state="administrative")
+
+    async def learning_brain(source_bundle: dict, _summary_md: str) -> str:
+        return _labels_xml(source_bundle, continuity_state="admin_only")
+
+    async def memory_gate(source_bundle: dict, _summary_md: str, _labels_md: str) -> str:
+        review = _approved_review_xml(
+            package_id=source_bundle["package_id"],
+            ref=source_bundle["source_refs"][0]["uri"],
+        )
+        return review.replace("<decision>approved</decision>", "<decision>hold_recall_only</decision>").replace(
+            "<allowed_next>t3_intake</allowed_next>",
+            "<allowed_next>none</allowed_next>",
+        )
+
+    result = await build_t2_segment_package(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        t0_segment_id=event.segment_id,
+        summary_agent=summary_agent,
+        learning_brain=learning_brain,
+        memory_gate=memory_gate,
+    )
+
+    assert result.status == "held"
+    assert result.issues == ("review.md decision/allowed_next pair is invalid",)
+    assert not result.package_dir.exists()
+
+
+@pytest.mark.asyncio
 async def test_t2_package_holds_without_memory_gate_even_for_low_risk(tmp_path: Path) -> None:
     from app.memory.t2.segment_package import build_t2_segment_package
 

@@ -55,6 +55,15 @@ _EPISODE_REVIEW_RUBRIC_SCORE_NAMES = frozenset(
     {"continuity_fidelity", "source_ref_coverage", "correction_quality", "closure_quality", "safety_scope"}
 )
 _ALLOWED_REVIEW_NEXT = {"t3_intake", "episode_stitching", "short_term_carryover", "archive_recall_only", "none"}
+_ALLOWED_REVIEW_DECISIONS = {"approved", "needs_revision", "rejected", "hold_recall_only"}
+_REVIEW_PACKAGE_STATUS_BY_TRANSITION = {
+    ("approved", "t3_intake"): "reviewed",
+    ("approved", "episode_stitching"): "reviewed",
+    ("approved", "short_term_carryover"): "reviewed",
+    ("hold_recall_only", "archive_recall_only"): "archived_recall_only",
+    ("rejected", "none"): "rejected",
+}
+_REVIEW_REVISION_TRANSITION = ("needs_revision", "none")
 _ACTIVATION_KEYS_SCHEMA_VERSION = "t2.activation_keys.20260705"
 _ALLOWED_ACTIVATION_TASK_INTENTS = {
     "architecture_design",
@@ -218,10 +227,11 @@ async def build_t2_segment_package(
         LABELS_FILENAME: labels_md,
         REVIEW_FILENAME: review_md,
     }
+    review_decision, allowed_next = _review_transition(review_md)
     manifest = _build_manifest(
         source_bundle=source_bundle,
         files=files,
-        package_status="reviewed",
+        package_status=_REVIEW_PACKAGE_STATUS_BY_TRANSITION[(review_decision, allowed_next)],
         job_id=resolved_job_id,
         review_mode=review_mode,
     )
@@ -1389,10 +1399,34 @@ def _validate_candidate(*, source_bundle: dict[str, Any], summary_md: str, label
             issues.append(f"{name} source_refs do not match source_bundle")
     _validate_continuity_fields(summary=summary, labels=labels, review=review, issues=issues)
     _validate_activation_keys(labels=labels, issues=issues)
-    if review is not None and (review.findtext("decision") or "").strip() != "approved":
-        issues.append("review decision is not approved")
+    _validate_review_transition(review=review, issues=issues)
     _validate_review_rubric(summary=summary, labels=labels, review=review, issues=issues)
     return issues
+
+
+def _validate_review_transition(*, review: ET.Element | None, issues: list[str]) -> None:
+    if review is None:
+        return
+    decision = (review.findtext("decision") or "").strip()
+    allowed_next = (review.findtext("allowed_next") or "").strip()
+    if decision not in _ALLOWED_REVIEW_DECISIONS:
+        issues.append("review.md decision must be controlled enum")
+        return
+    if allowed_next not in _ALLOWED_REVIEW_NEXT:
+        return
+    transition = (decision, allowed_next)
+    if transition == _REVIEW_REVISION_TRANSITION:
+        issues.append("review decision requires model-authored revision")
+    elif transition not in _REVIEW_PACKAGE_STATUS_BY_TRANSITION:
+        issues.append("review.md decision/allowed_next pair is invalid")
+
+
+def _review_transition(review_md: str) -> tuple[str, str]:
+    issues: list[str] = []
+    review = _extract_single_xml(review_md, "t2_review", issues)
+    if review is None:
+        raise ValueError("validated T2 review XML is unavailable")
+    return (review.findtext("decision") or "").strip(), (review.findtext("allowed_next") or "").strip()
 
 
 def _validate_activation_keys(*, labels: ET.Element | None, issues: list[str]) -> None:
@@ -1696,6 +1730,7 @@ def _build_manifest(
     job_id: str,
     review_mode: str = "independent_gate",
 ) -> dict[str, Any]:
+    review_decision, allowed_next = _review_transition(files.get(REVIEW_FILENAME, ""))
     return {
         "schema_version": "t2.segment-package.manifest.v1",
         "package_id": source_bundle["package_id"],
@@ -1713,6 +1748,8 @@ def _build_manifest(
         "visible_source_view": source_bundle.get("visible_source_view") or {},
         "package_status": package_status,
         "review_mode": review_mode,
+        "review_decision": review_decision,
+        "allowed_next": allowed_next,
         "prompts": {
             "summary_prompt_version": SUMMARY_PROMPT_VERSION,
             "labels_prompt_version": LABELS_PROMPT_VERSION,

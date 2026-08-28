@@ -151,6 +151,32 @@ def test_t2_backfill_inventory_only_reports_complete_for_valid_existing_packages
     assert report["coverage_complete"] is True
 
 
+def test_t2_backfill_treats_non_promotion_terminal_packages_as_existing(tmp_path: Path) -> None:
+    from app.scripts.backfill_t0_to_t2 import inventory_t0_to_t2_backfill
+
+    agent_id = uuid4()
+    _write_t0_index(
+        tmp_path,
+        agent_id,
+        "session-a",
+        sealed_segments=("archived-package", "rejected-package"),
+    )
+    _write_t2_manifest(tmp_path, agent_id, "session-a", "archived-package", status="archived_recall_only")
+    _write_t2_manifest(tmp_path, agent_id, "session-a", "rejected-package", status="rejected")
+
+    report = inventory_t0_to_t2_backfill(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        limit_segments=None,
+    )
+
+    assert report["sealed_segments"] == 2
+    assert report["existing_t2_packages"] == 2
+    assert report["invalid_t2_packages"] == 0
+    assert report["candidate_segments"] == 0
+    assert report["coverage_complete"] is True
+
+
 @pytest.mark.asyncio
 async def test_t2_backfill_dry_run_has_zero_mutation(tmp_path: Path, monkeypatch) -> None:
     from app.scripts import backfill_t0_to_t2

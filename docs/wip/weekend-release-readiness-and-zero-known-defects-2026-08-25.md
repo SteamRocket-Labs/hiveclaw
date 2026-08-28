@@ -3869,7 +3869,7 @@ Rocky 实验室 Agent `76af3c45-ba5f-5034-90b0-0ea06c3ca1e6` 的 Knowledge 页�
 
 该 correction 已原子 commit/push：`03ebd25f94677342002deae8425dbf622266dcaa`（`fix(knowledge): initialize backfill secrets`），`origin/main` 精确一致。三服务 correction 部署均 `SUCCESS`：backend `78cbd3ba-3e91-4cf0-a534-81a555ea7d56` / digest `sha256:08aefa71fbde41921bd63189f5844a61f4b9ac42549aff9d3d24d85ed48c5713`；backend-api `47244603-2345-457d-bdaf-f118b9fa12a3` / digest `sha256:dce20ebee2a56113915ad6490c027c673b3575102a1040bf81261d9219da5619`；frontend `097a22a1-5d22-4b42-a094-e0bb1bec48de` / digest `sha256:8647e17ba77a03e438a72598acb08c16e1edee119bddb79769d2246a945324ae`。最终 backend health 与 frontend HEAD 均 200；四 daemon healthy、RLS strict、sandbox deny-all probe、runtime worker 与 stream forwarder 均通过。
 
-### WEEKEND-KNOWLEDGE-T2-MODEL-CONTRACT-001 correction（2026-08-29，本地全绿，commit/push 与重部署 pending）
+### WEEKEND-KNOWLEDGE-T2-MODEL-CONTRACT-001 correction（2026-08-29，已 commit/push/deploy，生产语义终态复验发现下一处断点）
 
 Secrets correction 部署后，同一单片段已真正进入三次 LLM lane 并记录 token usage，逐字 `SecretsProvider not initialized` 不再出现。第一次普通 Railway SSH 在三步完成前被远端断开，post dry-run 证明 0 T2、证据未丢；改用 Railway 官方持久 tmux session 后完成终态，得到 `started=1 / committed=0 / held=1 / failed=0`。Platform Gate 精确 issues：`summary.md source_refs missing`、`labels.md source_refs missing`、`labels.md activation_keys entity type must be controlled enum`；Review 调用另记录 `finish_reason=length` output-cap hit。候选文件反证：Summary/Labels 只在 Markdown prose 写 `source_ref:`/`same`，没有 validator 所需 XML `<source_ref uri="..."/>`；Labels 生成了不在 allowlist 的 `<entity type="system">`。这证明 Gate 正确，模型机器契约和 cap recovery 路径不完整。
 
@@ -3886,9 +3886,23 @@ Secrets correction 部署后，同一单片段已真正进入三次 LLM lane 并
 - GREEN：focused **71 passed in 0.61s**；仓库 `.venv` 扩展 Memory/Backfill/LLM cap bundle **374 passed in 4.23s**；Ruff check All checks passed、format 4 files already formatted、`git diff --check` clean。一次误用系统 `/opt/anaconda3` 的同集合为 4 failed / 369 passed，四项均是第三方 `lark_oapi -> pkg_resources` DeprecationWarning 被系统环境升级为异常；使用仓库固定 `.venv` 的同一集合全绿，前者不计 product finding。
 - North Star：machine schema 仍由平台 hard validate；语义、引用选择和 enum 选择仍由各自 LLM role 生成。完整 source bundle 未裁剪，output cap 提升而非压低，失败证据与 held recovery 均保留。
 
+该 correction 已原子 commit/push：`037b7c010f0a1b3bc44caa88ff3176c7d8ffd838`（`fix(knowledge): enforce T2 model contracts`），`origin/main` 与 committed HEAD 一致。Railway production 三服务均从该 commit 部署为 `SUCCESS`：backend `872a5c27-d179-4c8c-83db-1e23d629dbac` / digest `sha256:b279474ca6642435c6bb012d8e80fff34bb89a2c2354940da98c2979310dbffa`；backend-api `a084fa95-24d2-462e-aca8-256e7e6fc237` / digest `sha256:c7f9eda9bfa7af7ef5c811d0090c9471b307a82de0ccd20331ca41045e73a67e`；frontend `03ac3748-b2ba-46c8-89e6-ba4866d7d09b` / digest `sha256:8647e17ba77a03e438a72598acb08c16e1edee119bddb79769d2246a945324ae`。公共 backend health 与 frontend HEAD 均为 HTTP 200；daemon、RLS strict、sandbox deny-all probe、runtime worker 与 stream forwarder 均健康。
+
+### WEEKEND-KNOWLEDGE-T2-TERMINAL-DECISION-001 correction（2026-08-29，本地全绿，commit/push 与重部署 pending）
+
+`037b7c01` 部署后，同一 bounded one-segment replay 的 Summary、Labels、Memory Gate 三次 LLM 调用均完整结束，上一轮四项问题全部消失：没有缺失 XML source ref、没有非法 entity type、没有 output-cap 截断，也没有 secrets lifecycle 错误。模型基于完整 evidence 给出的精确机器事实为：Summary `segment_state=administrative`，Labels `continuity_state=admin_only`，Review `decision=hold_recall_only`、`allowed_next=archive_recall_only`。这是 heartbeat-only segment 的合理语义终态，但旧 `_validate_candidate` 无条件要求 `decision=approved`，最终仍得到 `started=1 / committed=0 / held=1 / failed=0` 与 `review decision is not approved`。因此断点已经从模型输入/输出层收窄到 Platform Gate 生命周期消费层。
+
+既有 canonical 设计 `docs/t0-to-t2-segment-package-redesign-2026-06-18.md §8.4/§10` 明确允许四类语义 decision，并规定 `hold_recall_only/archive_recall_only` 与 `rejected/none` 是保留 audit、禁止 T3 promotion 的合法终态；只有 `needs_revision/none` 应继续留在 staging 等待模型重写。旧代码把“允许进入 T3”误当成“允许原子落盘”，导致合法不晋升结论无限 held/retry，并使 backfill 永远无法达到 coverage complete。
+
+修复遵守 Model Agency Boundary：平台没有根据 heartbeat、关键词、分数或文本内容决定语义，也没有把模型结论改写成 approved；它只校验 exact `decision/allowed_next` machine-contract pair，并机械映射 storage lifecycle：`approved/{t3_intake,episode_stitching,short_term_carryover} -> reviewed`，`hold_recall_only/archive_recall_only -> archived_recall_only`，`rejected/none -> rejected`。`needs_revision/none` 返回 typed `review decision requires model-authored revision` 并保留 staging；非法组合 hard hold。manifest 新增原样 `review_decision` 与 `allowed_next` 供 audit；backfill inventory 把 `archived_recall_only`、`rejected` 识别为已有合法 T2 package。T3 dream/consolidation 仍同时要求 `package_status in {reviewed,closed}` 与 review `allowed_next=t3_intake`，所以不晋升终态不会进入 T3。
+
+- RED：定向测试在旧实现上真实得到 **4 failed / 33 deselected**：两个合法不晋升终态均未落盘，revision 得到错误的通用 approved 诊断，backfill 把两个合法终态计为 0 existing。
+- GREEN：终态、revision、非法 transition 与 inventory 定向 **5 passed / 33 deselected**；Prompt/Builder/Debt/Dream/Backfill/LLM-cap 关联集合 **80 passed**；完整 `tests/memory + backfill + llm_client_token_limits` **379 passed in 4.35s**；Ruff check 全绿、format 4 files unchanged。
+- 恢复/回滚：模型输出、candidate、Platform Gate report 与 T0 均保留；revert 本 correction 即恢复旧 hold 行为，不涉及 DB migration 或不可逆数据操作。生产 replay 必须在 committed 三服务部署后重新从同一 preserved T0 evidence 执行，不能用本地测试替代。
+
 ### 状态与下一验收边界
 
-当前只能判 **PARTIAL — 权威/UI 与 CLI secrets corrections 已部署，T2 model-contract correction 本地 Verified，production Agent Memory recovery pending**。下一步必须先把最新 correction 原子 commit/push，并再次部署 backend、backend-api、frontend 三服务；全部 SUCCESS 且 health 正常后，按 dry-run → 1-segment apply → bounded parallel apply → post-dry-run 的顺序恢复 147 sealed segments，核对 held/exhausted/deferred/control report 与 T2 package coverage，再用 fresh Session 证明 Agent 能从自身 Memory 精确回忆而不调用 Personal/Company KB。随后对 Agent Memory、Personal KB、Company KB 各完成 signed-in UI 与工具消费复验；任一 authority 混淆、空/拒绝误判、工程字段泄漏、检索失败或 recall 不成立均重新进入 RED。本节在这些生产证据完成前不 Closed，也不外推 Weekend、A2A 或 zero-known-defects。
+当前只能判 **PARTIAL — 权威/UI、CLI secrets 与 T2 model-contract corrections 已部署；terminal-decision correction 本地 Verified，production Agent Memory recovery pending**。下一步必须先把 terminal correction 原子 commit/push，并再次部署 backend、backend-api、frontend 三服务；全部 SUCCESS 且 health 正常后，按 dry-run → 同一 1-segment apply → bounded parallel apply → post-dry-run 的顺序恢复 147 sealed segments，核对 held/exhausted/deferred/control report 与 T2 package coverage，再用 fresh Session 证明 Agent 能从自身 Memory 精确回忆而不调用 Personal/Company KB。随后对 Agent Memory、Personal KB、Company KB 各完成 signed-in UI 与工具消费复验；任一 authority 混淆、空/拒绝误判、工程字段泄漏、检索失败或 recall 不成立均重新进入 RED。本节在这些生产证据完成前不 Closed，也不外推 Weekend、A2A 或 zero-known-defects。
 
 
 ## 8. 两个工作日的执行节奏

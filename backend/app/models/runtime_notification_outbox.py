@@ -35,7 +35,8 @@ class RuntimeNotificationOutbox(Base):
     __tablename__ = "runtime_notification_outbox"
     __table_args__ = (
         CheckConstraint(
-            "source_kind IN ('subagent','agent_team','workflow','trigger','delegation','a2a_delegation','runtime_budget','approval')",
+            "source_kind IN ('subagent','agent_team','workflow','trigger','delegation','a2a_delegation',"
+            "'a2a_continuation','runtime_budget','approval')",
             name="ck_runtime_notification_outbox_source_kind",
         ),
         CheckConstraint(

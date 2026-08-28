@@ -19,9 +19,22 @@ def _load_module():
     return module
 
 
-def test_completion_outbox_index_migration_replaces_the_production_ineligible_predicate() -> None:
-    from app.models.runtime_task import COMPLETION_OUTBOX_PENDING_SQL
+# The 0721 revision is immutable history: its predicate covers exactly the
+# seven completion-outbox task types known at that time. The current model
+# constant is pinned against the newest outbox migration instead
+# (test_a2a_continuation_task_migration.py).
+_HISTORICAL_PENDING_PREDICATE = (
+    "completion_outbox_generation IS NOT NULL "
+    "AND completion_outbox_settled_at IS NULL "
+    "AND task_type IN ('subagent', 'team_member', 'workflow', 'delegation', 'a2a_delegation', "
+    "'trigger', 'approval_execution') "
+    "AND status IN ('completed', 'failed', 'killed', 'skipped', 'needs_reconciliation') "
+    "AND NOT (task_type = 'trigger' AND status = 'skipped') "
+    "AND parent_agent_id IS NOT NULL"
+)
 
+
+def test_completion_outbox_index_migration_replaces_the_production_ineligible_predicate() -> None:
     module = _load_module()
     source = _PATH.read_text(encoding="utf-8")
 
@@ -29,7 +42,8 @@ def test_completion_outbox_index_migration_replaces_the_production_ineligible_pr
     assert module.down_revision == "completion_reconcile_0721"
     assert "tenant_id IS NOT NULL" in module._LEGACY_PENDING_PREDICATE
     assert "tenant_id IS NOT NULL" not in module._PENDING_PREDICATE
-    assert module._PENDING_PREDICATE == COMPLETION_OUTBOX_PENDING_SQL
+    assert module._PENDING_PREDICATE == _HISTORICAL_PENDING_PREDICATE
+    assert "a2a_continuation" not in module._PENDING_PREDICATE
     assert "CREATE INDEX CONCURRENTLY IF NOT EXISTS" in source
     assert "DROP INDEX CONCURRENTLY IF EXISTS" in source
     assert "ALTER INDEX" in source
@@ -40,7 +54,6 @@ def test_completion_outbox_index_migration_replaces_the_production_ineligible_pr
 async def test_completion_outbox_index_real_upgrade_is_planner_eligible_and_retry_safe(
     revision_parent_migrated_pg_url: str,
 ) -> None:
-    from app.models.runtime_task import COMPLETION_OUTBOX_PENDING_SQL
     from tests.migrations.conftest import _alembic_downgrade, _alembic_upgrade
 
     module = _load_module()
@@ -99,7 +112,7 @@ async def test_completion_outbox_index_real_upgrade_is_planner_eligible_and_retr
                         text(
                             "EXPLAIN (ANALYZE,BUFFERS,COSTS OFF) "
                             "SELECT id FROM runtime_tasks "
-                            f"WHERE {COMPLETION_OUTBOX_PENDING_SQL} "
+                            f"WHERE {module._PENDING_PREDICATE} "
                             "AND (completion_outbox_attempted_at IS NULL "
                             "OR completion_outbox_attempted_at <= now() - interval '30 seconds') "
                             "ORDER BY (completion_outbox_attempted_at IS NOT NULL) ASC, "

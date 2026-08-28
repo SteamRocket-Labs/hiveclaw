@@ -491,3 +491,95 @@ async def test_agent_session_continuation_non_subagent_terminal_session_rejects_
     assert captured["append"]["event_type"] == "agent_session_message_rejected"
     assert captured["append"]["metadata"]["session_state"] == "completed"
     assert db.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_a2a_delegation_child_continuation_starts_dedicated_continuation_run(monkeypatch):
+    """A follow-up to an A2A delegation child session must not degrade to web_chat_turn.
+
+    Regression for DAY1-A2A-CONT-RETURN-001: a ``web_chat_turn`` successor has no
+    durable completion-return eligibility, so the parent was never woken.
+    """
+
+    import app.services.agent_session_continuation as svc
+
+    db = _DB()
+    parent_agent_id = uuid4()
+    session = _agent_session(state="open", session_kind="delegation_run", runtime_source="delegation")
+    session.peer_agent_id = parent_agent_id
+    session.source_channel = "agent"
+    agent = SimpleNamespace(id=session.agent_id, tenant_id=session.tenant_id, name="Worker B")
+    user = SimpleNamespace(id=session.user_id)
+    captured: dict = {}
+
+    async def fake_append(**kwargs):
+        captured["append"] = kwargs
+        return SimpleNamespace(event_id=uuid4())
+
+    async def fake_find_active(**kwargs):
+        return None
+
+    async def fake_start(**kwargs):
+        captured["start"] = kwargs
+        return {"run_id": "continuation-run-1", "status": "pending"}
+
+    monkeypatch.setattr(svc, "append_session_event", fake_append)
+    monkeypatch.setattr(svc, "_find_active_run", fake_find_active)
+    monkeypatch.setattr(svc, "start_web_chat_run", fake_start)
+
+    result = await svc.continue_agent_session_from_mailbox(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        message="compute 31*37 and reply with the marker",
+        parent_session_id=str(session.parent_session_id),
+    )
+
+    assert result["status"] == "started"
+    assert result["consumer"] == "continuation_turn"
+    assert captured["start"]["runtime_task_type"] == "a2a_continuation"
+    assert captured["start"]["extra_metadata"]["parent_session_id"] == str(session.parent_session_id)
+    assert captured["start"]["extra_metadata"]["parent_agent_id"] == str(parent_agent_id)
+
+
+@pytest.mark.asyncio
+async def test_ordinary_web_session_continuation_stays_plain_web_chat_turn(monkeypatch):
+    """An ordinary top-level web chat session must never become outbox-eligible."""
+
+    import app.services.agent_session_continuation as svc
+
+    db = _DB()
+    session = _agent_session(state="open", session_kind="human_chat", runtime_source="web_chat")
+    session.peer_agent_id = None
+    session.source_channel = "web"
+    agent = SimpleNamespace(id=session.agent_id, tenant_id=session.tenant_id, name="Assistant")
+    user = SimpleNamespace(id=session.user_id)
+    captured: dict = {}
+
+    async def fake_append(**kwargs):
+        return SimpleNamespace(event_id=uuid4())
+
+    async def fake_find_active(**kwargs):
+        return None
+
+    async def fake_start(**kwargs):
+        captured["start"] = kwargs
+        return {"run_id": "web-run-1", "status": "pending"}
+
+    monkeypatch.setattr(svc, "append_session_event", fake_append)
+    monkeypatch.setattr(svc, "_find_active_run", fake_find_active)
+    monkeypatch.setattr(svc, "start_web_chat_run", fake_start)
+
+    result = await svc.continue_agent_session_from_mailbox(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        message="continue our chat",
+        parent_session_id=str(session.parent_session_id),
+    )
+
+    assert result["status"] == "started"
+    assert captured["start"]["runtime_task_type"] == "web_chat_turn"
+    assert captured["start"]["extra_metadata"]["parent_agent_id"] is None

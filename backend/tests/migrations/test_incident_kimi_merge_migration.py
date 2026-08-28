@@ -16,6 +16,9 @@ MIGRATION = BACKEND_ROOT / "alembic" / "versions" / "merge_incident_kimi_0725.py
 INCIDENT_HEAD = "completion_outbox_index_0721"
 KIMI_HEAD = "retire_agent_agent_relationships_table_0724"
 MERGE_HEAD = "merge_incident_kimi_0725"
+# The merge revision itself is immutable history; the closure head moves with
+# every newer revision (currently the A2A continuation task contract).
+CURRENT_HEAD = "a2a_continuation_task_0828"
 BRANCH_POINT = "im_unverified_transport_0719"
 
 
@@ -109,7 +112,7 @@ async def test_merge_upgrades_safely_from_either_real_branch_head(
 
         _alembic_upgrade(database_url, "head")
         assert await _branch_snapshot(database_url) == {
-            "version": MERGE_HEAD,
+            "version": CURRENT_HEAD,
             "completion_column": 1,
             "completion_index": 1,
             "company_knowledge_table": 1,

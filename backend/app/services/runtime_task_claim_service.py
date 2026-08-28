@@ -18,6 +18,7 @@ LEASE_RECLAIMABLE_RUNTIME_TASK_TYPES = (
     "goal_continuation",
     "team_member",
     "advanced_plan",
+    "a2a_continuation",
     "approval_execution",
     "hr_provisioning",
     "dream",

@@ -74,6 +74,10 @@ from app.services.web_chat_broker import web_chat_broker
 
 
 WEB_CHAT_TURN_TASK_TYPE = "web_chat_turn"
+# Durable completion-return continuation of an A2A delegation child session:
+# a follow-up successor executes exactly like a chat turn on the child session
+# but stays completion-outbox eligible so the parent is woken on terminal.
+A2A_CONTINUATION_TASK_TYPE = "a2a_continuation"
 # Executable-chat task types: the ONLY RuntimeTask kinds that can occupy a
 # web-chat session as its active turn.  This is the single authoritative
 # contract mirrored by the ``uq_runtime_tasks_active_web_chat_session``
@@ -88,6 +92,7 @@ EXECUTABLE_CHAT_TASK_TYPES = (
     "goal_continuation",
     "team_member",
     "advanced_plan",
+    A2A_CONTINUATION_TASK_TYPE,
 )
 _ACTIVE_WEB_CHAT_UNIQUE_INDEX_NAME = "uq_runtime_tasks_active_web_chat_session"
 _FINAL_ASSISTANT_MARKER_UNIQUE_INDEX_NAME = "uq_chat_messages_web_chat_final_decision_trace"

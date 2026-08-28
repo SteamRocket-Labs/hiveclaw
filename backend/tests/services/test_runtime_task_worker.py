@@ -18,6 +18,7 @@ def test_worker_claimable_task_types_cover_v3_runtime_planes():
     assert "approval_execution" in worker.SUPPORTED_RUNTIME_TASK_TYPES
     assert "hr_provisioning" in worker.SUPPORTED_RUNTIME_TASK_TYPES
     assert "dream" in worker.SUPPORTED_RUNTIME_TASK_TYPES
+    assert "a2a_continuation" in worker.SUPPORTED_RUNTIME_TASK_TYPES
 
 
 def test_worker_claim_batch_is_capped_by_active_web_chat_runs(monkeypatch):
@@ -98,6 +99,7 @@ def test_default_worker_capacity_is_not_cc_hostile():
     assert limits["approval_execution"] >= 8
     assert limits["hr_provisioning"] >= 4
     assert limits["dream"] >= 2
+    assert limits["a2a_continuation"] >= 8
 
 
 def test_worker_dispatches_claimed_subagent_to_runtime_task_executor(monkeypatch):
@@ -213,6 +215,43 @@ def test_worker_dispatches_claimed_dream_to_durable_executor(monkeypatch):
         "task_type": "dream",
         "coro_name": "_execute_claimed_dream_task",
     }
+
+
+def test_worker_dispatches_a2a_continuation_to_web_chat_executor(monkeypatch):
+    import app.services.runtime_task_worker as worker
+
+    captured = {}
+
+    def fake_dispatch(run_id, *, claim_version, worker_id):
+        captured["run_id"] = run_id
+        captured["claim_version"] = claim_version
+        captured["worker_id"] = worker_id
+        return True
+
+    task = SimpleNamespace(id=uuid4(), task_type="a2a_continuation", claim_version=3, claimed_by="worker-9")
+    monkeypatch.setattr(worker, "dispatch_web_chat_run", fake_dispatch)
+
+    assert worker._dispatch_claimed_task(task) is True
+    assert captured == {"run_id": task.id, "claim_version": 3, "worker_id": "worker-9"}
+
+
+def test_worker_a2a_continuation_shares_web_chat_capacity(monkeypatch):
+    import app.services.runtime_task_worker as worker
+
+    monkeypatch.setattr(
+        worker,
+        "_settings",
+        lambda: SimpleNamespace(
+            RUNTIME_TASK_WORKER_TASK_TYPE_LIMITS="a2a_continuation=4,web_chat_turn=4",
+            RUNTIME_TASK_WORKER_MAX_CONCURRENT=8,
+            RUNTIME_TASK_WORKER_BATCH_SIZE=8,
+        ),
+    )
+    monkeypatch.setattr(worker, "active_web_chat_run_count", lambda: 4)
+
+    assert worker._task_type_capacity_remaining("a2a_continuation") == 0
+    monkeypatch.setattr(worker, "active_web_chat_run_count", lambda: 2)
+    assert worker._task_type_capacity_remaining("a2a_continuation") == 2
 
 
 @pytest.mark.asyncio

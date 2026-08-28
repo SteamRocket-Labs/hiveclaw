@@ -740,7 +740,7 @@ async def publish_user_offboarding_runtime_cancellations(receipt: UserOffboardin
         publish_web_chat_cancel,
     )
 
-    chat_task_types = {"web_chat_turn", "goal_continuation", "team_member", "advanced_plan"}
+    chat_task_types = {"web_chat_turn", "goal_continuation", "team_member", "advanced_plan", "a2a_continuation"}
     signal_limit = asyncio.Semaphore(16)
 
     async def publish_one(signal: RuntimeTaskRevocationSignal) -> None:

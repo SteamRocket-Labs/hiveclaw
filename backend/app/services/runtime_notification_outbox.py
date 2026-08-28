@@ -778,11 +778,25 @@ class RuntimeNotificationOutboxService:
                         attempted_at=attempted_at,
                     )
                     continue
+                # An executable-chat continuation run is owned by the child
+                # agent (parent_agent_id == child agent), so the authoritative
+                # parent-agent binding for the return leg is the structured
+                # metadata stamped at admission from durable session fields.
+                parent_agent_value = metadata.get("parent_agent_id") or task.parent_agent_id
+                try:
+                    parent_agent_id = _uuid(parent_agent_value, field="parent_agent_id")
+                except ValueError:
+                    _hold_runtime_task_completion_outbox(
+                        task,
+                        reason="parent_agent_id_invalid",
+                        attempted_at=attempted_at,
+                    )
+                    continue
                 parent_session = (
                     await db.execute(
                         select(ChatSession).where(
                             ChatSession.id == target_session_id,
-                            ChatSession.agent_id == task.parent_agent_id,
+                            ChatSession.agent_id == parent_agent_id,
                             ChatSession.tenant_id == task.tenant_id,
                         )
                     )
@@ -817,7 +831,7 @@ class RuntimeNotificationOutboxService:
                         source_kind=source_kind,
                         source_run_id=str(task.id),
                         parent_session_id=target_session_id,
-                        parent_agent_id=task.parent_agent_id,
+                        parent_agent_id=parent_agent_id,
                         parent_user_id=owner_id,
                         child_session_id=child_session_id,
                         child_agent_name=task.child_agent_name,

@@ -42,6 +42,7 @@ COMPLETION_OUTBOX_TASK_TYPES = (
     "workflow",
     "delegation",
     "a2a_delegation",
+    "a2a_continuation",
     "trigger",
     "approval_execution",
 )
@@ -56,7 +57,7 @@ COMPLETION_OUTBOX_PENDING_SQL = (
     "completion_outbox_generation IS NOT NULL "
     "AND completion_outbox_settled_at IS NULL "
     "AND task_type IN ('subagent', 'team_member', 'workflow', 'delegation', 'a2a_delegation', "
-    "'trigger', 'approval_execution') "
+    "'a2a_continuation', 'trigger', 'approval_execution') "
     "AND status IN ('completed', 'failed', 'killed', 'skipped', 'needs_reconciliation') "
     "AND NOT (task_type = 'trigger' AND status = 'skipped') "
     "AND parent_agent_id IS NOT NULL"
@@ -72,7 +73,7 @@ class RuntimeTask(Base):
             "task_type IN ('web_chat_turn', 'goal_continuation', 'team_member', 'advanced_plan', "
             "'workflow', 'delegation', 'business_task', 'subagent', 'trigger', 'heartbeat', "
             "'coordinator_worker', 'harness_canary', 'a2a_delegation', 'approval_execution', "
-            "'hr_provisioning', 'dream')",
+            "'hr_provisioning', 'dream', 'a2a_continuation')",
             name="ck_runtime_tasks_task_type",
         ),
         CheckConstraint(
@@ -94,13 +95,15 @@ class RuntimeTask(Base):
             "parent_session_id",
             unique=True,
             postgresql_where=text(
-                "task_type IN ('web_chat_turn', 'goal_continuation', 'team_member', 'advanced_plan') "
+                "task_type IN ('web_chat_turn', 'goal_continuation', 'team_member', 'advanced_plan', "
+                "'a2a_continuation') "
                 "AND status IN ('pending', 'running', 'suspended', 'resumable') "
                 "AND parent_agent_id IS NOT NULL "
                 "AND parent_session_id IS NOT NULL"
             ),
             sqlite_where=text(
-                "task_type IN ('web_chat_turn', 'goal_continuation', 'team_member', 'advanced_plan') "
+                "task_type IN ('web_chat_turn', 'goal_continuation', 'team_member', 'advanced_plan', "
+                "'a2a_continuation') "
                 "AND status IN ('pending', 'running', 'suspended', 'resumable') "
                 "AND parent_agent_id IS NOT NULL "
                 "AND parent_session_id IS NOT NULL"

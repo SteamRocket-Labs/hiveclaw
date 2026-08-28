@@ -20,6 +20,7 @@ from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
 from app.services.runtime_root_ledger import RuntimeRootIntentSpec
 from app.services.web_chat_runtime import (
+    A2A_CONTINUATION_TASK_TYPE,
     WEB_CHAT_TURN_TASK_TYPE,
     _find_active_run,
     _submit_active_session_input,
@@ -67,6 +68,20 @@ def _session_state(session: ChatSession) -> str:
     return _text(metadata.get("session_state") or metadata.get("state") or "open").lower() or "open"
 
 
+def is_a2a_delegation_child_session(session: ChatSession) -> bool:
+    """Structured A2A delegation child-session binding.
+
+    Only durable session fields decide this — never natural-language content.
+    The orchestrator stamps ``session_kind="delegation_run"`` and
+    ``runtime_source="delegation"`` when it creates the peer session.
+    """
+
+    return (
+        _text(getattr(session, "session_kind", None)) == "delegation_run"
+        or _text(getattr(session, "runtime_source", None)) == "delegation"
+    )
+
+
 def _runtime_task_type_for_session(session: ChatSession, explicit: str | None = None) -> str:
     if _text(explicit):
         return _text(explicit)
@@ -74,6 +89,12 @@ def _runtime_task_type_for_session(session: ChatSession, explicit: str | None = 
         return "team_member"
     if _text(getattr(session, "runtime_source", None)) == "team_member":
         return "team_member"
+    if is_a2a_delegation_child_session(session):
+        # A follow-up successor on an A2A delegation child session must remain
+        # completion-outbox eligible so its terminal completion durably wakes
+        # the parent.  Degrading it to web_chat_turn silently dropped the
+        # completion return (DAY1-A2A-CONT-RETURN-001).
+        return A2A_CONTINUATION_TASK_TYPE
     return WEB_CHAT_TURN_TASK_TYPE
 
 
@@ -679,6 +700,11 @@ async def continue_agent_session_from_mailbox(
             "source": source_channel,
             "agent_session_message": True,
             "parent_session_id": _text(parent_session_id or getattr(session, "parent_session_id", None)) or None,
+            # Structured parent-agent binding for the completion-outbox
+            # reconciler: the successor run's own parent_agent_id is the child
+            # agent, so the durable peer binding is the only authoritative
+            # route back to the parent agent.
+            "parent_agent_id": _text(getattr(session, "peer_agent_id", None)) or None,
             "runtime_mailbox_role": model_role,
             "latest_user_prompt_overrides_history": model_role == "user",
             **{

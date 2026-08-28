@@ -18,6 +18,7 @@ _SOURCE_KINDS = frozenset(
         "trigger",
         "delegation",
         "a2a_delegation",
+        "a2a_continuation",
         "runtime_budget",
         "approval",
     }

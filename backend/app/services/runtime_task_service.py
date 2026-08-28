@@ -27,6 +27,7 @@ _RESTART_RESUMABLE_TASK_TYPES = (
     "team_member",
     "goal_continuation",
     "advanced_plan",
+    "a2a_continuation",
     "approval_execution",
     "hr_provisioning",
     "dream",

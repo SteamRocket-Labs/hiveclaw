@@ -27,6 +27,7 @@ SUPPORTED_RUNTIME_TASK_TYPES = (
     "goal_continuation",
     "team_member",
     "advanced_plan",
+    "a2a_continuation",
     "workflow",
     "delegation",
     "business_task",
@@ -178,7 +179,7 @@ def _task_type_capacity_remaining(task_type: str) -> int:
     limit = limits.get(task_type)
     if limit is None:
         return 0
-    if task_type in {"web_chat_turn", "goal_continuation", "team_member", "advanced_plan"}:
+    if task_type in {"web_chat_turn", "goal_continuation", "team_member", "advanced_plan", "a2a_continuation"}:
         active = active_web_chat_run_count()
     else:
         active = _active_dispatched_task_type_counts().get(task_type, 0)

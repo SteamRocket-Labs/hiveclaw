@@ -89,7 +89,7 @@ class Settings(BaseSettings):
     RUNTIME_TASK_WORKER_BATCH_SIZE: int = 8
     RUNTIME_TASK_WORKER_MAX_CONCURRENT: int = 16
     RUNTIME_TASK_WORKER_TASK_TYPE_LIMITS: str = (
-        "web_chat_turn=16,goal_continuation=8,team_member=8,advanced_plan=4,"
+        "web_chat_turn=16,goal_continuation=8,team_member=8,advanced_plan=4,a2a_continuation=8,"
         "workflow=16,delegation=16,business_task=8,subagent=16,trigger=8,approval_execution=8,"
         "hr_provisioning=4,dream=2"
     )

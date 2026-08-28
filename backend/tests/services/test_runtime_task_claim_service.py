@@ -90,6 +90,9 @@ def test_runtime_task_claim_statement_reclaims_only_expired_active_rows():
         "goal_continuation",
         "team_member",
         "advanced_plan",
+        # Executable-chat A2A continuation runs must be lease-reclaimable after
+        # a worker crash exactly like every other executable-chat type.
+        "a2a_continuation",
         "approval_execution",
         "hr_provisioning",
         "dream",

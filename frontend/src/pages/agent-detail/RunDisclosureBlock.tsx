@@ -71,9 +71,14 @@ function formatDuration(durationMs?: number): string {
 function useRunDuration(timeline: RunTimelineSnapshot): string {
   const running = timeline.status === 'running';
   const parsed = timeline.startedAt ? Date.parse(timeline.startedAt) : NaN;
-  const computeLiveDuration = React.useCallback(() => (
-    running && !Number.isNaN(parsed) ? Math.max(0, Date.now() - parsed) : 0
-  ), [parsed, running]);
+  const computeLiveDuration = React.useCallback(() => {
+    if (!running || Number.isNaN(parsed)) return 0;
+    // A live clock can observe the terminal frame slightly after the durable
+    // completion timestamp. Preserve only fully elapsed seconds so that
+    // sub-second transport latency cannot add a second which disappears on
+    // reload when the authoritative duration is rendered.
+    return Math.floor(Math.max(0, Date.now() - parsed) / 1000) * 1000;
+  }, [parsed, running]);
   const [observed, setObserved] = React.useState(() => ({
     timelineId: timeline.id,
     durationMs: computeLiveDuration(),

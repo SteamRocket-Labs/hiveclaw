@@ -1800,9 +1800,10 @@ function liveRunPhase(input: BuildThreadTimelineInput): string | null {
 function buildPendingRunCell(
   input: BuildThreadTimelineInput,
   activeRunStatus: string | null,
+  acceptedUserTurnPending = false,
 ): Extract<ThreadTimelineCell, { kind: 'active_run' }> | null {
   const phase = liveRunPhase(input);
-  if (!input.isWaiting && !input.isStreaming && !activeRunStatus && !phase) return null;
+  if (!input.isWaiting && !input.isStreaming && !activeRunStatus && !phase && !acceptedUserTurnPending) return null;
   const status: RunTimelineSnapshot['status'] = activeRunStatus === 'failed' ? 'failed' : 'running';
   const title = phase === 'responding' || input.isStreaming ? 'Working' : 'Thinking';
   const latestInputIndex = latestUserMessageIndex(input.messages);
@@ -2105,7 +2106,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     && !input.isStreaming
     && !activeRunStatus
     && (!runtimePhaseValue || runtimePhaseValue === 'idle');
-  const pendingRunCell = buildPendingRunCell(input, activeRunStatus);
+  const pendingRunCell = buildPendingRunCell(input, activeRunStatus, unresolvedUserTurn);
   if (pendingRunCell && !retainedProcessRun && !hasOpenRunCell(cells)) {
     cells.push(pendingRunCell);
   }

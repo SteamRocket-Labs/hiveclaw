@@ -282,7 +282,8 @@ describe('session workbench timeline model', () => {
     expect(second).not.toBe(first);
     expect(second.cells[0]).toBe(first.cells[0]);
     expect(second.cells[1]).toBe(first.cells[1]);
-    expect(second.cells[second.cells.length - 1]).toMatchObject({ kind: 'user_turn', id: 'u2' });
+    expect(second.cells.at(-2)).toMatchObject({ kind: 'user_turn', id: 'u2' });
+    expect(second.cells.at(-1)).toMatchObject({ kind: 'active_run', id: 'active-run-pending' });
   });
 
   it('does not scan signature-only inputs when the message reference changed', () => {
@@ -1840,7 +1841,13 @@ describe('RuntimePhase in the thread projection (§3 seam 3)', () => {
     });
 
     expect(model.header.status).toBe('running');
-    expect(model.cells.at(-1)).toMatchObject({ kind: 'user_turn', id: 'accepted-input-1' });
+    expect(model.cells).toEqual([
+      expect.objectContaining({ kind: 'user_turn', id: 'accepted-input-1' }),
+      expect.objectContaining({
+        kind: 'active_run',
+        timeline: expect.objectContaining({ status: 'running' }),
+      }),
+    ]);
     const rightPanel = buildSessionRightPanelModel({
       messages: [{ id: 'accepted-input-1', role: 'user', content: 'Accepted prompt bytes.' }],
       activeSession: { id: 'session-1', title: 'Accepted input' },

@@ -25,6 +25,40 @@ afterEach(() => {
 });
 
 describe('RunDisclosureBlock live-to-terminal presentation', () => {
+  it('keeps the mounted and reloaded duration stable across terminal delivery latency', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-29T00:00:16.800Z'));
+    const running: RunTimelineSnapshot = {
+      id: 'run-delivery-latency',
+      status: 'running',
+      startedAt: '2026-08-29T00:00:00Z',
+      steps: [{
+        id: 'prose-1',
+        kind: 'prose',
+        title: 'Assistant update',
+        status: 'running',
+        details: 'VISIBLE ANSWER',
+        visibility: 'visible',
+      }],
+    };
+    const terminal: RunTimelineSnapshot = {
+      ...running,
+      status: 'done',
+      completedAt: '2026-08-29T00:00:15.588Z',
+      durationMs: 15_588,
+      steps: running.steps.map((step) => ({ ...step, status: 'done' })),
+    };
+    const view = render(<RunDisclosureBlock timeline={running} />);
+
+    expect(screen.getByText('16s')).toBeTruthy();
+    view.rerender(<RunDisclosureBlock timeline={terminal} />);
+    expect(screen.getByText('16s')).toBeTruthy();
+
+    view.unmount();
+    render(<RunDisclosureBlock timeline={terminal} />);
+    expect(screen.getByText('16s')).toBeTruthy();
+  });
+
   it('never moves the elapsed time backwards when delayed terminal evidence arrives', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-29T00:00:14Z'));

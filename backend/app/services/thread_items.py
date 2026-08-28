@@ -102,6 +102,9 @@ EVENT_THREAD_ITEM_TYPES: dict[str, str] = {
     "circuit_break": "error",
     "loop": "error",
     "quota_exceeded": "error",
+    # Canonical web-chat provider-failure terminal witness (e.g. typed 402
+    # quota_exhausted/rejected): renders as a user-visible error card.
+    "runtime_failure": "error",
     "runtime_action_failed": "error",
     "runtime_action_blocked": "error",
     "memory_context_degraded": "warning",

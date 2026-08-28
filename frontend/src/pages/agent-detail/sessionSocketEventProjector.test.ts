@@ -268,7 +268,8 @@ describe('session socket event projector', () => {
         terminal_reason: 'provider_error',
         failure_code: 'quota_exhausted',
         delivery_state: 'rejected',
-        retryable: false,
+        requires_user_decision: true,
+        retryable: true,
         content: message,
         message,
       },
@@ -280,7 +281,7 @@ describe('session socket event projector', () => {
 
     // The no-reload terminal consumption contract: close the active run, pin
     // the failed phase, refresh runtime read models, reconcile the durable
-    // transcript, and surface the existing quota/balance notice banner.
+    // transcript, and surface the existing quota/余额 notice banner.
     expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledWith('agent-1:session-1', 'run-1');
     expect(harness.dependencies.setSessionPhase).toHaveBeenCalledWith('agent-1:session-1', 'failed');
     expect(harness.dependencies.syncActivePhase).toHaveBeenCalledWith('failed');
@@ -288,6 +289,52 @@ describe('session socket event projector', () => {
     expect(harness.dependencies.reconcileSessionTranscript).toHaveBeenCalledWith('agent-1', 'session-1');
     expect(harness.dependencies.fetchMySessions).toHaveBeenCalledWith(true, 'agent-1');
     expect(harness.dependencies.setTransportNotice).toHaveBeenCalledWith(message);
+  });
+
+  it.each([
+    ['session', { level: 'session', session_id: 'session-1', thread_id: 'session-1' }],
+    ['turn', { level: 'turn', session_id: 'session-1', thread_id: 'session-1', turn_id: 'turn-1' }],
+    ['round', { level: 'round', session_id: 'session-1', thread_id: 'session-1', turn_id: 'turn-1', run_id: 'run-1', round_id: 'round-1' }],
+  ])('never closes the active run for a %s-scoped runtime_failure live event (Codex finding 2)', (_level, scope) => {
+    const harness = makeHarness({
+      schema: 'hive.session_event',
+      schema_version: 2,
+      event_id: `event-runtime-failure-${String(_level)}`,
+      sequence: 10,
+      item_id: `failure-item-${String(_level)}`,
+      item_kind: 'runtime_failure',
+      lifecycle: 'recorded',
+      kind: 'runtime_failure.recorded',
+      payload_schema: 'hive.session.payload.runtime_failure.recorded.v2',
+      tenant_id: 'tenant-1',
+      scope,
+      actor: { type: 'runtime' },
+      visibility: { audience: 'direct_user' },
+      payload: {
+        status: 'failed',
+        terminal_reason: 'provider_error',
+        failure_code: 'quota_exhausted',
+        delivery_state: 'rejected',
+        requires_user_decision: true,
+        retryable: true,
+        content: 'scoped failure',
+        message: 'scoped failure',
+      },
+      occurred_at: '2026-08-28T00:00:00Z',
+      persisted_at: '2026-08-28T00:00:00Z',
+    });
+
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+
+    // The event card still projects, but no terminal action fires: no active
+    // run close (in particular no null run_id fallback that would clear an
+    // unrelated active run), no failed phase, no quota notice.
+    expect(harness.dependencies.applyTranscriptToSession).toHaveBeenCalled();
+    expect(harness.dependencies.markActiveRunTerminal).not.toHaveBeenCalled();
+    expect(harness.dependencies.setSessionPhase).not.toHaveBeenCalled();
+    expect(harness.dependencies.syncActivePhase).not.toHaveBeenCalled();
+    expect(harness.dependencies.reconcileSessionTranscript).not.toHaveBeenCalled();
+    expect(harness.dependencies.setTransportNotice).not.toHaveBeenCalled();
   });
 
   it('clears the active run and runtime read models when the legacy-adapted canonical assistant terminal arrives (DAY1-KNOWLEDGE-UI-TRUTH-001)', () => {

@@ -77,12 +77,16 @@ async def _seed_running_task(owner_sessionmaker, *, tenant_id, user_id, agent_id
 
 
 def _quota_failure_payload(message: str = QUOTA_MESSAGE) -> dict:
+    # The truthful shape the orchestrator produces for a typed 402 rejected
+    # send (Codex finding 3): replay-safe for a user retry, while the typed
+    # user-decision fact still requires resolving balance before success.
     return {
         "failure_code": "quota_exhausted",
         "delivery_state": "rejected",
+        "requires_user_decision": True,
         "terminal_reason": "provider_error",
         "message": message,
-        "retryable": False,
+        "retryable": True,
     }
 
 
@@ -175,9 +179,12 @@ async def test_failed_finalize_persists_canonical_runtime_failure_event_exactly_
         payload = dict(row.metadata_json["v2_payload"])
         assert payload["failure_code"] == "quota_exhausted"
         assert payload["delivery_state"] == "rejected"
+        assert payload["requires_user_decision"] is True
         assert payload["terminal_reason"] == "provider_error"
         assert payload["message"] == QUOTA_MESSAGE
-        assert payload["retryable"] is False
+        # Typed replay-safety truth for a rejected send: a user retry is safe
+        # (never automatic); balance resolution remains required.
+        assert payload["retryable"] is True
         # No assistant ChatMessage may be materialized for a provider failure.
         message_count = await db.scalar(
             select(func.count()).select_from(ChatMessage).where(ChatMessage.conversation_id == str(session_id))

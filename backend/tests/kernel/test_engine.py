@@ -985,8 +985,71 @@ async def test_kernel_threads_typed_402_failure_code_across_invocation_result() 
     # The typed machine failure code crosses the kernel boundary on the result.
     assert result.failure_code == "quota_exhausted"
     assert result.failure_delivery_state == "rejected"
+    # The typed user-decision fact rides along (402 still requires the user to
+    # resolve balance before success); replay safety stays derived from the
+    # typed delivery_state, never from message text.
+    assert result.failure_requires_user_decision is True
     # The existing user-facing quota/balance error path — no invented success.
     assert "额度或余额不足" in str(result.content)
+
+
+@pytest.mark.asyncio
+async def test_kernel_threads_typed_429_rate_limit_failure_facts_across_invocation_result() -> None:
+    """DAY1-PROVIDER-402-TERMINAL-CONSUMPTION-001 correction (Codex finding 3):
+    a typed HTTP 429 rejection is replay-safe after transport retries — the
+    result must carry the typed delivery_state and user-decision facts so the
+    durable terminal payload can truthfully represent user-retry safety
+    without any natural-language inference and without automatic replay."""
+
+    from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
+    from app.services.llm_client import LLMError
+
+    primary_model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None)
+    fallback_model = SimpleNamespace(provider="anthropic", model="claude-sonnet", api_key="key", base_url=None)
+    primary_client = _FakeClient([LLMError("HTTP 429: rate limit reached", delivery_state="rejected", http_status=429)])
+    fallback_client = _FakeClient(
+        [SimpleNamespace(content="must not run", tool_calls=[], reasoning_content=None, usage={})]
+    )
+    failures: list[dict] = []
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda *_a, **_k: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=1),
+            resolve_current_user_name=lambda *_a, **_k: "Rocky",
+            build_system_prompt=lambda *_a, **_k: "PROMPT",
+            resolve_memory_context=lambda *_a, **_k: "",
+            get_tools=lambda *_a, **_k: [],
+            maybe_compress_messages=lambda messages, **_k: messages,
+            create_client=lambda model: primary_client if model is primary_model else fallback_client,
+            execute_tool=lambda *_a, **_k: "",
+            persist_memory=lambda **_k: None,
+            record_token_usage=lambda *_a, **_k: None,
+            get_max_tokens=lambda *_a, **_k: 2048,
+            extract_usage_tokens=lambda usage: None,
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=primary_model,
+            fallback_model=fallback_model,
+            messages=[{"role": "user", "content": "hello"}],
+            agent_name="Agent",
+            role_description="test",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            model_request_prepare=lambda **_payload: "provider-request:round-1",
+            model_request_fail=lambda **payload: failures.append(payload),
+        )
+    )
+
+    assert len(primary_client.calls) == 1
+    assert fallback_client.calls == []
+    assert failures[0]["error_class"] == "rate_limited"
+    assert failures[0]["delivery_state"] == "rejected"
+    assert result.failure_code == "rate_limited"
+    assert result.failure_delivery_state == "rejected"
+    assert result.failure_requires_user_decision is True
 
 
 @pytest.mark.asyncio

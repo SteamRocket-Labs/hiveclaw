@@ -1986,6 +1986,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             tokens_used=accumulated_tokens,
                             failure_code=error_classification.kind,
                             failure_delivery_state=delivery_state,
+                            failure_requires_user_decision=error_classification.requires_user_decision,
                         )
                     except Exception as exc:
                         logger.error(

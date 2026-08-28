@@ -7,6 +7,7 @@ import {
   consumeSessionEnvelope,
   hydrateSessionTranscriptEvents,
   mergeCanonicalTerminalMessages,
+  projectCanonicalSessionSnapshot,
   projectSessionEventStoreToMessages,
 } from './sessionEventConsumer';
 import {
@@ -14,6 +15,8 @@ import {
   type SessionEventStore,
   type SessionEventV2,
 } from '../session-workbench/sessionEventStore';
+import { normalizeThreadItemPayload } from '../session-workbench/threadItemReducer';
+import { shouldRenderThreadItemInConversation } from '../session-workbench/ThreadItemRenderer';
 
 function event(sequence: number, lifecycle: 'started' | 'delta' | 'completed'): SessionEventV2 {
   return {
@@ -307,35 +310,43 @@ describe('canonical Session event consumer', () => {
     });
   });
 
-  it('treats a canonical runtime_failure event as the run terminal witness on live and replay (DAY1-PROVIDER-402-TERMINAL-CONSUMPTION-001)', () => {
-    const message = '[LLM Error] AI 模型额度或余额不足，请联系管理员检查账户余额、模型额度或切换模型。';
-    const failureEvent = {
-      schema: 'hive.session_event',
-      schema_version: 2,
-      event_id: 'event-runtime-failure-1',
-      sequence: 1,
-      tenant_id: 'tenant-1',
-      scope: { level: 'run', session_id: 'session-1', thread_id: 'session-1', turn_id: 'turn-1', run_id: 'run-1' },
-      item_id: 'failure-item-1',
-      item_kind: 'runtime_failure',
-      kind: 'runtime_failure.recorded',
-      lifecycle: 'recorded',
-      payload_schema: 'hive.session.payload.runtime_failure.recorded.v2',
-      actor: { type: 'runtime' },
-      visibility: { audience: 'direct_user' },
-      payload: {
-        status: 'failed',
-        terminal_reason: 'provider_error',
-        failure_code: 'quota_exhausted',
-        delivery_state: 'rejected',
-        retryable: false,
-        content: message,
-        message,
-      },
-      display: { title: 'Run failed' },
-      occurred_at: '2026-08-28T00:00:00Z',
-      persisted_at: '2026-08-28T00:00:00Z',
-    } as unknown as SessionEventV2;
+function runtimeFailureEvent(scope: Record<string, unknown>, sequence = 1): SessionEventV2 {
+  const message = '[LLM Error] AI 模型额度或余额不足，请联系管理员检查账户余额、模型额度或切换模型。';
+  return {
+    schema: 'hive.session_event',
+    schema_version: 2,
+    event_id: `event-runtime-failure-${sequence}`,
+    sequence,
+    tenant_id: 'tenant-1',
+    scope,
+    item_id: `failure-item-${sequence}`,
+    item_kind: 'runtime_failure',
+    kind: 'runtime_failure.recorded',
+    lifecycle: 'recorded',
+    payload_schema: 'hive.session.payload.runtime_failure.recorded.v2',
+    actor: { type: 'runtime' },
+    visibility: { audience: 'direct_user' },
+    payload: {
+      status: 'failed',
+      terminal_reason: 'provider_error',
+      failure_code: 'quota_exhausted',
+      delivery_state: 'rejected',
+      requires_user_decision: true,
+      retryable: true,
+      content: message,
+      message,
+    },
+    display: { title: 'Run failed' },
+    occurred_at: '2026-08-28T00:00:00Z',
+    persisted_at: '2026-08-28T00:00:00Z',
+  } as unknown as SessionEventV2;
+}
+
+describe('canonical runtime_failure consumption (DAY1-PROVIDER-402-TERMINAL-CONSUMPTION-001)', () => {
+  const runScope = { level: 'run', session_id: 'session-1', thread_id: 'session-1', turn_id: 'turn-1', run_id: 'run-1' };
+
+  it('treats a canonical runtime_failure event as the run terminal witness on live and replay', () => {
+    const failureEvent = runtimeFailureEvent(runScope);
     const store = replay([failureEvent]);
 
     // Replay/hydration renders the persisted terminal event card — the
@@ -361,6 +372,56 @@ describe('canonical Session event consumer', () => {
     expect(terminalRunId).toBe('run-1');
     expect(terminalFlag).toBe(true);
   });
+
+  it('projects a replayed canonical runtime_failure as a visible user error card with the safe quota message (Codex finding 1)', () => {
+    const store = replay([runtimeFailureEvent(runScope)]);
+    const messages = projectSessionEventStoreToMessages(store);
+    const failureMessage = messages.find((entry) => entry.eventType === 'runtime_failure');
+    expect(failureMessage).toBeDefined();
+    expect(messages.some((entry) => entry.role === 'assistant')).toBe(false);
+
+    // The exact AgentChatSection render seam: msg.threadItem wins, otherwise
+    // the hand-picked legacy subset normalizes through the thread-item map.
+    const item = failureMessage!.threadItem || normalizeThreadItemPayload({
+      id: failureMessage!.transcriptEventId || failureMessage!.id || 'legacy-event-0',
+      eventType: failureMessage!.eventType,
+      content: failureMessage!.content,
+      status: failureMessage!.eventStatus,
+      title: failureMessage!.eventTitle,
+      created_at: failureMessage!.timestamp,
+    });
+    expect(item).not.toBeNull();
+    expect(shouldRenderThreadItemInConversation(item!, false)).toBe(true);
+    expect(item!.item_type).toBe('error');
+    expect(item!.item_status).toBe('failed');
+    // The card itself carries the safe humanized quota message — never a
+    // generic summary and never NL-scanned content.
+    expect(item!.user_summary).toContain('额度或余额不足');
+    expect(item!.item_data).toMatchObject({
+      code: 'quota_exhausted',
+      reason: 'provider_error',
+      retryable: true,
+    });
+  });
+
+  it.each([
+    ['session', { level: 'session', session_id: 'session-1', thread_id: 'session-1' }],
+    ['turn', { level: 'turn', session_id: 'session-1', thread_id: 'session-1', turn_id: 'turn-1' }],
+    ['round', { level: 'round', session_id: 'session-1', thread_id: 'session-1', turn_id: 'turn-1', run_id: 'run-1', round_id: 'round-1' }],
+  ])('never terminates the whole run for a %s-scoped runtime_failure (Codex finding 2)', (_level, scope) => {
+    const failureEvent = runtimeFailureEvent(scope);
+    const store = replay([failureEvent]);
+
+    const snapshot = projectCanonicalSessionSnapshot(
+      failureEvent as unknown as ChatTranscriptEventPayload,
+      store,
+    );
+
+    expect(snapshot.runTerminal).toBe(false);
+    expect(snapshot.terminal).toBe(false);
+    expect(snapshot.runId).toBeNull();
+  });
+});
 
   it('uses the backend canonical rendering contract for multipart user input', () => {
     expect(sessionPayloadContent({

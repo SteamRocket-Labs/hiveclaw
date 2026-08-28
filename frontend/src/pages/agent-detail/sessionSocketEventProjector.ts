@@ -191,7 +191,15 @@ export function projectSessionSocketEvent(
       }
       void fetchMySessions(true, agentId);
     }
-    if (itemKind === 'runtime_failure' && lifecycle === 'recorded') {
+    // Only a run-scoped runtime_failure with a nonempty authoritative run_id
+    // may close the active run.  Session/turn/round scopes carry no whole-run
+    // terminal authority (a session/turn scope has no run_id and a round
+    // scope must not fail the whole run) — no null-id fallback here.
+    const failureScopeLevel = d.scope && typeof d.scope === 'object'
+      ? String((d.scope as { level?: unknown }).level || '')
+      : '';
+    const failureRunId = failureScopeLevel === 'run' ? scopeRunId(d.scope) : null;
+    if (itemKind === 'runtime_failure' && lifecycle === 'recorded' && failureRunId) {
       // Canonical terminal witness of the web-chat provider-failure path
       // (e.g. typed 402 quota_exhausted/rejected): same no-reload contract as
       // the terminal stream frame — close the active run, pin the failed
@@ -199,7 +207,7 @@ export function projectSessionSocketEvent(
       // transcript, and surface the existing quota/balance notice banner.
       // The typed failure_code travels in the payload; no natural-language
       // scanning decides the quota outcome here.
-      markActiveRunTerminal(key, scopeRunId(d.scope));
+      markActiveRunTerminal(key, failureRunId);
       invalidateSessionRuntimeQueries(agentId, sessionId);
       setSessionPhase(key, 'failed');
       if (isActiveRuntime) syncActivePhase('failed');

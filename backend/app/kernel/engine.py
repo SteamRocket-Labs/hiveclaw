@@ -681,6 +681,7 @@ def _build_error_result(
     terminal_reason: TerminalReason = TerminalReason.PROVIDER_ERROR,
     failure_code: str | None = None,
     failure_delivery_state: str | None = None,
+    failure_requires_user_decision: bool = False,
 ) -> InvocationResult:
     return InvocationResult(
         content=message,
@@ -690,6 +691,7 @@ def _build_error_result(
         terminal_reason=terminal_reason,
         failure_code=failure_code,
         failure_delivery_state=failure_delivery_state,
+        failure_requires_user_decision=failure_requires_user_decision,
     )
 
 

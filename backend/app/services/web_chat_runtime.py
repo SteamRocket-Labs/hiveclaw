@@ -3732,6 +3732,7 @@ async def _append_web_chat_runtime_failure_event(
         "status": status,
         "terminal_reason": str(failure.get("terminal_reason") or status),
         "retryable": bool(failure.get("retryable")),
+        "requires_user_decision": bool(failure.get("requires_user_decision")),
         "content": message,
         "message": message,
     }

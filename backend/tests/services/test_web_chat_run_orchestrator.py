@@ -741,6 +741,7 @@ async def test_failed_invocation_threads_typed_failure_payload_to_terminal_final
         terminal_reason=TerminalReason.PROVIDER_ERROR,
         failure_code="quota_exhausted",
         failure_delivery_state="rejected",
+        failure_requires_user_decision=True,
         model_result_receipt=None,
     )
 
@@ -758,9 +759,14 @@ async def test_failed_invocation_threads_typed_failure_payload_to_terminal_final
     assert finalize_calls[0]["failure"] == {
         "failure_code": "quota_exhausted",
         "delivery_state": "rejected",
+        "requires_user_decision": True,
         "terminal_reason": TerminalReason.PROVIDER_ERROR.value,
         "message": message,
-        "retryable": False,
+        # Typed replay-safety from the LLMError delivery classification: a
+        # rejected 402 send is safe for a user retry, while the typed
+        # requires_user_decision fact still forces resolving balance first.
+        # Nothing here authorizes automatic replay.
+        "retryable": True,
     }
     # The legacy live frame is unchanged and still carries no assistant content.
     assert {
@@ -770,6 +776,107 @@ async def test_failed_invocation_threads_typed_failure_payload_to_terminal_final
         "retryable": True,
     } in broadcasts
     assert all("content" not in event for event in broadcasts if event.get("type") == "runtime_failure")
+
+
+def _failure_finalize_harness(finalize_calls: list[dict]) -> SimpleNamespace:
+    async def fake_finalize_without_assistant(**kwargs):
+        finalize_calls.append(kwargs)
+        return True
+
+    async def fake_broadcast(_agent_id, _session_id, _event):
+        return None
+
+    return SimpleNamespace(
+        run_uuid=uuid4(),
+        agent=SimpleNamespace(id=uuid4()),
+        session_id=str(uuid4()),
+        runtime_session_context=SimpleNamespace(),
+        ports=SimpleNamespace(
+            terminal=SimpleNamespace(finalize_without_assistant=fake_finalize_without_assistant),
+            events=SimpleNamespace(broadcast=fake_broadcast),
+            artifacts=SimpleNamespace(
+                file_change_paths=lambda _context: [],
+                file_change_states=lambda _context: {},
+                file_change_lineage=lambda _context: [],
+            ),
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_retry_safe_typed_rate_limit_failure_payload_is_user_retryable():
+    """Codex finding 3: a typed 429 rejection is safe for a user retry after
+    transport retries — the payload derives replay safety from the typed
+    delivery_state (never hardcoded, never text-inferred), still with zero
+    automatic replay."""
+
+    from app.kernel.contracts import TerminalReason
+    from app.services import web_chat_run_orchestrator as orchestrator
+
+    finalize_calls: list[dict] = []
+    state = _failure_finalize_harness(finalize_calls)
+    message = "[LLM Error] AI 模型服务方已限流，请稍后重试，或由用户选择切换模型。"
+    result = SimpleNamespace(
+        content=message,
+        terminal_reason=TerminalReason.PROVIDER_ERROR,
+        failure_code="rate_limited",
+        failure_delivery_state="rejected",
+        failure_requires_user_decision=True,
+        model_result_receipt=None,
+    )
+
+    await orchestrator._finalize_assistant_response(
+        state,
+        result,
+        message,
+        None,
+        "failed",
+        {"terminal_reason": TerminalReason.PROVIDER_ERROR.value},
+    )
+
+    assert finalize_calls[0]["failure"]["retryable"] is True
+    assert finalize_calls[0]["failure"]["delivery_state"] == "rejected"
+    assert finalize_calls[0]["failure"]["requires_user_decision"] is True
+    assert finalize_calls[0]["failure"]["failure_code"] == "rate_limited"
+
+
+@pytest.mark.asyncio
+async def test_untyped_failure_payload_is_not_retryable_and_needs_no_user_decision():
+    """Codex finding 3: a failed result without typed delivery facts (e.g. a
+    turn-budget stop) carries no replay-safety claim — retryable stays False
+    and no user-decision fact is invented."""
+
+    from app.kernel.contracts import TerminalReason
+    from app.services import web_chat_run_orchestrator as orchestrator
+
+    finalize_calls: list[dict] = []
+    state = _failure_finalize_harness(finalize_calls)
+    message = "[Runtime Limit] This turn stopped because the configured token budget was exhausted."
+    result = SimpleNamespace(
+        content=message,
+        terminal_reason=TerminalReason.TOOL_BUDGET,
+        failure_code=None,
+        failure_delivery_state=None,
+        model_result_receipt=None,
+    )
+
+    await orchestrator._finalize_assistant_response(
+        state,
+        result,
+        message,
+        None,
+        "failed",
+        {"terminal_reason": TerminalReason.TOOL_BUDGET.value},
+    )
+
+    assert finalize_calls[0]["failure"] == {
+        "failure_code": None,
+        "delivery_state": None,
+        "requires_user_decision": False,
+        "terminal_reason": TerminalReason.TOOL_BUDGET.value,
+        "message": message,
+        "retryable": False,
+    }
 
 
 @pytest.mark.asyncio

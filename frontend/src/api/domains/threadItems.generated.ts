@@ -313,6 +313,7 @@ export const LEGACY_THREAD_ITEM_TYPE_MAP: Readonly<Record<string, ThreadItemType
   "run_started": "boundary",
   "runtime_action_blocked": "error",
   "runtime_action_failed": "error",
+  "runtime_failure": "error",
   "segment_boundary": "boundary",
   "session_branch": "boundary",
   "session_clear": "boundary",

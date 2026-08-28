@@ -91,6 +91,28 @@ describe('ThreadItemRenderer', () => {
     }
   });
 
+  it('renders the runtime_failure error card with the safe humanized quota message (Codex finding 1)', () => {
+    // The canonical thread item produced by the session-event consumer for a
+    // run-scoped runtime_failure: typed failure fields only, no assistant
+    // message, no natural-language scanning.
+    const failure: ThreadItem = {
+      ...item('error'),
+      id: 'failure-item-1',
+      item_type: 'error',
+      item_status: 'failed',
+      event_type: 'runtime_failure',
+      content: '[LLM Error] AI 模型额度或余额不足，请联系管理员检查账户余额、模型额度或切换模型。',
+      user_summary: '[LLM Error] AI 模型额度或余额不足，请联系管理员检查账户余额、模型额度或切换模型。',
+      audience: 'user',
+      item_data: { code: 'quota_exhausted', reason: 'provider_error', retryable: true, retry_reason: null },
+    } as ThreadItem;
+
+    expect(shouldRenderThreadItemInConversation(failure, false)).toBe(true);
+    const markup = renderToStaticMarkup(<ThreadItemRenderer item={failure} onSelect={() => undefined} />);
+    expect(markup).toContain('data-thread-item-type="error"');
+    expect(markup).toContain('额度或余额不足');
+  });
+
   it('shows the approval subject, safe impact, expiry, and action slot without raw governance data', () => {
     const approval = item('approval_request');
     const markup = renderToStaticMarkup(

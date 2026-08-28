@@ -7,6 +7,7 @@ import {
   type SessionUiState,
 } from './chatRuntime';
 import { normalizeToolCallResult } from './toolResultEnvelope';
+import type { ThreadItem } from '../../api/domains/threadItems.generated';
 import {
   createSessionEventStore,
   reduceSessionCompatibilityEvent,
@@ -184,6 +185,62 @@ function projectCanonicalItem(
       toolMeta: normalized.toolMeta,
       eventType: item.kind,
       eventStatus: item.lifecycle,
+      sessionItem: item,
+    };
+  }
+  if (item.kind === 'runtime_failure') {
+    // Canonical thread-item projection for the provider-failure terminal
+    // witness: a user-visible error card built from typed failure fields
+    // (failure_code / terminal_reason / typed replay-safety) and the safe
+    // humanized payload message — never an assistant message and never
+    // natural-language scanning.  AgentChatSection renders msg.threadItem
+    // directly, so this survives the legacy-subset normalization seam.
+    const failureMessage = typeof item.payload.message === 'string' && item.payload.message.trim()
+      ? item.payload.message.trim()
+      : itemDisplayContent(item);
+    const failureCode = typeof item.payload.failure_code === 'string' ? item.payload.failure_code : null;
+    const failureReason = typeof item.payload.terminal_reason === 'string' ? item.payload.terminal_reason : null;
+    const failureRetryable = item.payload.retryable === true;
+    const scope = item.scope;
+    const threadItem: ThreadItem = {
+      schema: 'hive.thread_item.v1',
+      schema_version: 1,
+      id: item.id,
+      sequence: item.first_sequence,
+      session_id: scope.session_id,
+      thread_id: scope.thread_id,
+      turn_id: 'turn_id' in scope ? scope.turn_id : null,
+      run_id: 'run_id' in scope ? scope.run_id : null,
+      item_status: 'failed',
+      actor_type: typeof item.actor?.type === 'string' ? item.actor.type : 'runtime',
+      event_type: item.kind,
+      type: item.kind,
+      role: 'system',
+      visibility_scope: item.visibility?.audience === 'operator' ? 'operator' : 'direct_user',
+      listed_surface: 'chat',
+      content: failureMessage,
+      audience: 'user',
+      user_summary: failureMessage,
+      item_type: 'error',
+      item_data: {
+        code: failureCode,
+        reason: failureReason,
+        retryable: failureRetryable,
+        retry_reason: null,
+      },
+    };
+    return {
+      role: 'event',
+      content: failureMessage,
+      id: item.id,
+      transcriptEventId: item.id,
+      timestamp: item.occurredAt,
+      eventType: item.kind,
+      eventTitle: item.display?.title || item.kind,
+      eventStatus: item.lifecycle,
+      eventReason: failureReason ?? undefined,
+      eventRetryable: failureRetryable,
+      threadItem,
       sessionItem: item,
     };
   }
@@ -372,12 +429,20 @@ export function projectCanonicalSessionSnapshot(
   runId: string | null;
 } {
   const envelope = event as unknown as SessionEventV2;
+  // Only a run-scoped runtime_failure with a nonempty authoritative run_id
+  // seals the run.  Session/turn/round scopes carry no whole-run terminal
+  // authority — no null-id fallback for this event.
+  const runtimeFailureRunId = envelope.scope.level === 'run'
+    && typeof (envelope.scope as { run_id?: unknown }).run_id === 'string'
+    && ((envelope.scope as { run_id?: string }).run_id || '').trim()
+    ? (envelope.scope as { run_id: string }).run_id
+    : null;
   const runTerminal = (envelope.item_kind === 'run'
     && ['completed', 'failed', 'cancelled'].includes(envelope.lifecycle))
     // The canonical runtime_failure terminal event is the run-scoped terminal
     // witness of the web-chat provider-failure path; it seals the run exactly
     // like a run.failed lifecycle item.
-    || (envelope.item_kind === 'runtime_failure' && envelope.lifecycle === 'recorded');
+    || (envelope.item_kind === 'runtime_failure' && envelope.lifecycle === 'recorded' && runtimeFailureRunId !== null);
   const terminalMetadataOnly = (
     envelope.item_kind === 'turn'
     && ['completed', 'failed', 'cancelled'].includes(envelope.lifecycle)

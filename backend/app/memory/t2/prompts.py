@@ -1,8 +1,8 @@
 """Versioned prompt contracts for canonical T0 -> T2 distillation."""
 
-SUMMARY_PROMPT_VERSION = "t2.summary_agent.v1"
-LABELS_PROMPT_VERSION = "t2.learning_brain_labels.activation_20260705"
-REVIEW_PROMPT_VERSION = "t2.memory_gate_review.v1"
+SUMMARY_PROMPT_VERSION = "t2.summary_agent.v2"
+LABELS_PROMPT_VERSION = "t2.learning_brain_labels.activation_20260829"
+REVIEW_PROMPT_VERSION = "t2.memory_gate_review.v2"
 EPISODE_STITCHER_PROMPT_VERSION = "t2.episode_stitcher.v1"
 EPISODE_GATE_REVIEW_PROMPT_VERSION = "t2.episode_gate_review.v1"
 
@@ -40,6 +40,18 @@ source_refs, controlled enums, and no forbidden durable write target.
 </self_check>
 """.strip()
 
+_SEGMENT_SOURCE_REF_CONTRACT = """
+<machine_contract>
+Inside the single required XML root, include at least one exact source reference:
+<source_refs>
+  <source_ref uri="EXACT_URI_FROM_SOURCE_BUNDLE"/>
+</source_refs>
+Replace EXACT_URI_FROM_SOURCE_BUNDLE with a verbatim `source_bundle.source_refs[].uri`
+value. Never write `same` or an event id in place of the exact URI. Markdown text
+that merely says `source_ref:` does not satisfy this machine contract.
+</machine_contract>
+""".strip()
+
 SUMMARY_AGENT_PROMPT = f"""
 <role_and_scope>
 You are the T2 Summary Agent for Hive memory. Summarize exactly one T0 source
@@ -48,6 +60,8 @@ Soul Writer.
 </role_and_scope>
 
 {_COMMON_BOUNDARY}
+
+{_SEGMENT_SOURCE_REF_CONTRACT}
 
 <task_steps>
 1. Identify scenario cues in the user's own words.
@@ -80,6 +94,8 @@ rewrite summary.md, decide final promotion, write T3, or write soul.md.
 
 {_COMMON_BOUNDARY}
 
+{_SEGMENT_SOURCE_REF_CONTRACT}
+
 <task_steps>
 1. Read summary.md and targeted T0 refs from source_bundle.
 2. Emit thin engineering labels and lightweight event/fact labels.
@@ -110,13 +126,15 @@ rewrite summary.md, decide final promotion, write T3, or write soul.md.
    routing. Keep keys thin, source-backed, and enum-like; do NOT summarize:
    <task_intent>architecture_design|coding|research|operations|memory_recall|self_evolution|general</task_intent>
    <scenario>short stable scenario cue</scenario>
-   <entity type="doc|file|person|org|concept|tool|skill">name</entity>
+   <entity type="concept">source-backed name</entity>
    <temporal_hint kind="explicit|relative|continuation">phrase</temporal_hint>
    <decision status="accepted|rejected|superseded|open">source-backed decision</decision>
    <open_loop>unresolved follow-up or carryover</open_loop>
    <relation_seed rel="depends_on|blocks|related_to|contradicts">target</relation_seed>
    <risk_flag>architecture_drift|privacy_sensitive|security_relevant|production_impact|policy_conflict|evidence_gap</risk_flag>
    Emit empty child nodes when absent rather than inventing keys.
+   doc|file|person|org|concept|tool|skill are the only allowed entity types;
+   `type="system"` is invalid. Omit an entity when no allowed type is faithful.
 7. Emit <rework present="true"> ONLY when this segment redoes or corrects work
    a previous segment already delivered (owner asked for rework, output was
    scrapped and rebuilt). Routine iteration inside one task is NOT rework.
@@ -149,6 +167,8 @@ You are a judge, not the summary writer or label writer.
 </role_and_scope>
 
 {_COMMON_BOUNDARY}
+
+{_SEGMENT_SOURCE_REF_CONTRACT}
 
 <task_steps>
 1. Check summary fidelity to T0.

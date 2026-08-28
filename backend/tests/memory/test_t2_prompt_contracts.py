@@ -70,6 +70,25 @@ def test_summary_prompt_requires_segment_state_and_continuity() -> None:
     assert "needs_next" in SUMMARY_AGENT_PROMPT
 
 
+def test_segment_prompts_expose_exact_source_ref_xml_contract() -> None:
+    from app.memory.t2.prompts import (
+        LEARNING_BRAIN_LABELS_PROMPT,
+        MEMORY_GATE_REVIEW_PROMPT,
+        SUMMARY_AGENT_PROMPT,
+    )
+
+    for prompt in (SUMMARY_AGENT_PROMPT, LEARNING_BRAIN_LABELS_PROMPT, MEMORY_GATE_REVIEW_PROMPT):
+        assert '<source_ref uri="EXACT_URI_FROM_SOURCE_BUNDLE"/>' in prompt
+        assert "Never write `same` or an event id in place of the exact URI" in prompt
+
+
+def test_labels_prompt_forbids_unlisted_activation_entity_types() -> None:
+    from app.memory.t2.prompts import LEARNING_BRAIN_LABELS_PROMPT
+
+    assert '`type="system"` is invalid' in LEARNING_BRAIN_LABELS_PROMPT
+    assert "doc|file|person|org|concept|tool|skill are the only allowed entity types" in LEARNING_BRAIN_LABELS_PROMPT
+
+
 def test_episode_prompts_require_t0_refs_and_review_rubric() -> None:
     from app.memory.t2.prompts import EPISODE_GATE_REVIEW_PROMPT, EPISODE_STITCHER_PROMPT
 

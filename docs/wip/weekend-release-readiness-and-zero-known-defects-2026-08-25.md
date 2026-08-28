@@ -3867,9 +3867,28 @@ Rocky 实验室 Agent `76af3c45-ba5f-5034-90b0-0ea06c3ca1e6` 的 Knowledge 页�
 - GREEN：`pytest -q tests/scripts/test_backfill_t0_to_t2.py` → **6 passed in 0.37s**；`ruff check app/scripts/backfill_t0_to_t2.py tests/scripts/test_backfill_t0_to_t2.py` → All checks passed；`ruff format --check ...` → 2 files already formatted。
 - 边界：本 correction 只恢复 operator CLI 与 production Runtime 相同的 secrets 解密生命周期；T2 内容仍由三次独立 LLM 智能步骤与既有 Memory/Platform Gate 产生，平台不编写语义。回滚为 revert 本 correction commit；首轮 held staging evidence 保留并可在重部署后重试。
 
+该 correction 已原子 commit/push：`03ebd25f94677342002deae8425dbf622266dcaa`（`fix(knowledge): initialize backfill secrets`），`origin/main` 精确一致。三服务 correction 部署均 `SUCCESS`：backend `78cbd3ba-3e91-4cf0-a534-81a555ea7d56` / digest `sha256:08aefa71fbde41921bd63189f5844a61f4b9ac42549aff9d3d24d85ed48c5713`；backend-api `47244603-2345-457d-bdaf-f118b9fa12a3` / digest `sha256:dce20ebee2a56113915ad6490c027c673b3575102a1040bf81261d9219da5619`；frontend `097a22a1-5d22-4b42-a094-e0bb1bec48de` / digest `sha256:8647e17ba77a03e438a72598acb08c16e1edee119bddb79769d2246a945324ae`。最终 backend health 与 frontend HEAD 均 200；四 daemon healthy、RLS strict、sandbox deny-all probe、runtime worker 与 stream forwarder 均通过。
+
+### WEEKEND-KNOWLEDGE-T2-MODEL-CONTRACT-001 correction（2026-08-29，本地全绿，commit/push 与重部署 pending）
+
+Secrets correction 部署后，同一单片段已真正进入三次 LLM lane 并记录 token usage，逐字 `SecretsProvider not initialized` 不再出现。第一次普通 Railway SSH 在三步完成前被远端断开，post dry-run 证明 0 T2、证据未丢；改用 Railway 官方持久 tmux session 后完成终态，得到 `started=1 / committed=0 / held=1 / failed=0`。Platform Gate 精确 issues：`summary.md source_refs missing`、`labels.md source_refs missing`、`labels.md activation_keys entity type must be controlled enum`；Review 调用另记录 `finish_reason=length` output-cap hit。候选文件反证：Summary/Labels 只在 Markdown prose 写 `source_ref:`/`same`，没有 validator 所需 XML `<source_ref uri="..."/>`；Labels 生成了不在 allowlist 的 `<entity type="system">`。这证明 Gate 正确，模型机器契约和 cap recovery 路径不完整。
+
+最早共享原因有两处：
+
+1. 三个 segment prompt 只抽象要求 `source_refs`，却没有给出平台实际校验的 XML machine contract；Labels 虽列 enum，示例把多个 type 用 `|` 放进一个 attribute，仍容易诱发自由扩展。
+2. `_run_t2_llm_agent` 调 `client.stream`，而既有 `_CapAwareLLMClient` 对 stream 只记录 output cap、不做扩大预算后的完整重试；T2 是后台原子 package job，不需要 UI streaming，因而走错已有 recovery 入口。
+
+修复不让平台代写任何语义：Summary/Learning Brain/Memory Gate 三个 prompt 都加入相同的精确 XML contract，要求从 `source_bundle.source_refs[].uri` 逐字复制到 `<source_ref uri="EXACT_URI_FROM_SOURCE_BUNDLE"/>`，明确 `same`/event id/Markdown prose 不满足 machine contract；Labels 给一个合法 `concept` 示例，并明确仅 `doc|file|person|org|concept|tool|skill` 可用、`type="system"` 非法、无忠实类型时省略。三个 prompt version 分别提升到 `t2.summary_agent.v2`、`t2.learning_brain_labels.activation_20260829`、`t2.memory_gate_review.v2`。后台 T2 LLM 调用改走同一 client 的 `complete`，由既有 cap-aware wrapper 在 provider 明确 `length|max_tokens` 时用 provider ceiling 重试；若 provider-cap retry 后仍返回 `length|max_tokens`，T2 lane 抛出 typed failure 并由既有 builder 落为 held，而不是解析或提交截断语义；schema 仍非法时原 Platform Gate 同样继续 `held`，绝不机械补 ref/enum/语义。
+
+- RED 1：新增 exact source-ref contract、禁止未列 entity type、cap-aware complete wiring 三条回归后 **3 failed / 32 deselected**，逐项复现 prompt 缺口与 `client.stream` 错路径。
+- RED 2：把 manifest prompt-version 期望提升后 **3 failed / 23 deselected**，证明旧 version 仍被写入，随后同步提升生产常量。
+- RED 3：新增“provider-cap retry 后仍为 `finish_reason=length` 必须拒绝”的回归先得 **1 failed / 1 passed / 25 deselected**（旧路径直接返回截断 content）；补上 exact resource-failure gate 后转绿。
+- GREEN：focused **71 passed in 0.61s**；仓库 `.venv` 扩展 Memory/Backfill/LLM cap bundle **374 passed in 4.23s**；Ruff check All checks passed、format 4 files already formatted、`git diff --check` clean。一次误用系统 `/opt/anaconda3` 的同集合为 4 failed / 369 passed，四项均是第三方 `lark_oapi -> pkg_resources` DeprecationWarning 被系统环境升级为异常；使用仓库固定 `.venv` 的同一集合全绿，前者不计 product finding。
+- North Star：machine schema 仍由平台 hard validate；语义、引用选择和 enum 选择仍由各自 LLM role 生成。完整 source bundle 未裁剪，output cap 提升而非压低，失败证据与 held recovery 均保留。
+
 ### 状态与下一验收边界
 
-当前只能判 **PARTIAL — 首轮权威/UI 候选已部署，CLI correction 本地 Verified，production Agent Memory recovery pending**。下一步必须先把 correction 原子 commit/push，并再次部署 backend、backend-api、frontend 三服务；全部 SUCCESS 且 health 正常后，按 dry-run → 1-segment apply → bounded parallel apply → post-dry-run 的顺序恢复 147 sealed segments，核对 held/exhausted/deferred/control report 与 T2 package coverage，再用 fresh Session 证明 Agent 能从自身 Memory 精确回忆而不调用 Personal/Company KB。随后对 Agent Memory、Personal KB、Company KB 各完成 signed-in UI 与工具消费复验；任一 authority 混淆、空/拒绝误判、工程字段泄漏、检索失败或 recall 不成立均重新进入 RED。本节在这些生产证据完成前不 Closed，也不外推 Weekend、A2A 或 zero-known-defects。
+当前只能判 **PARTIAL — 权威/UI 与 CLI secrets corrections 已部署，T2 model-contract correction 本地 Verified，production Agent Memory recovery pending**。下一步必须先把最新 correction 原子 commit/push，并再次部署 backend、backend-api、frontend 三服务；全部 SUCCESS 且 health 正常后，按 dry-run → 1-segment apply → bounded parallel apply → post-dry-run 的顺序恢复 147 sealed segments，核对 held/exhausted/deferred/control report 与 T2 package coverage，再用 fresh Session 证明 Agent 能从自身 Memory 精确回忆而不调用 Personal/Company KB。随后对 Agent Memory、Personal KB、Company KB 各完成 signed-in UI 与工具消费复验；任一 authority 混淆、空/拒绝误判、工程字段泄漏、检索失败或 recall 不成立均重新进入 RED。本节在这些生产证据完成前不 Closed，也不外推 Weekend、A2A 或 zero-known-defects。
 
 
 ## 8. 两个工作日的执行节奏

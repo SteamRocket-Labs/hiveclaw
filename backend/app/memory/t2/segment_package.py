@@ -1278,6 +1278,7 @@ async def _run_t2_llm_agent(
 ) -> str:
     from app.services.llm_client import (
         LLMMessage,
+        _is_output_cap_finish_reason,
         create_llm_client_from_config,
         get_max_tokens,
         with_llm_usage_context,
@@ -1293,7 +1294,7 @@ async def _run_t2_llm_agent(
         )
     )
     try:
-        response = await client.stream(
+        response = await client.complete(
             messages=[
                 LLMMessage(role="system", content=prompt),
                 LLMMessage(role="user", content=json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)),
@@ -1305,6 +1306,8 @@ async def _run_t2_llm_agent(
             ),
             temperature=0.2,
         )
+        if _is_output_cap_finish_reason(response.finish_reason):
+            raise ValueError(f"T2 {phase} agent exhausted its output budget after provider-cap retry")
         content = response.content or ""
         if not content.strip():
             raise ValueError(f"T2 {phase} agent returned empty content")

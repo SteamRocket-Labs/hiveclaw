@@ -319,10 +319,10 @@ async def test_build_t2_segment_package_commits_agent_outputs_atomically(tmp_pat
     assert manifest["package_status"] == "reviewed"
     assert manifest["source_refs"][0].startswith(f"t0://session/{session_id}/segment/{first.segment_id}#seq=1..")
     assert manifest["files"]["summary.md"]["sha256"]
-    assert manifest["prompts"]["summary_prompt_version"] == "t2.summary_agent.v1"
-    assert manifest["prompts"]["labels_prompt_version"] == "t2.learning_brain_labels.activation_20260705"
+    assert manifest["prompts"]["summary_prompt_version"] == "t2.summary_agent.v2"
+    assert manifest["prompts"]["labels_prompt_version"] == "t2.learning_brain_labels.activation_20260829"
     assert manifest["review_mode"] == "independent_gate"
-    assert manifest["prompts"]["review_prompt_version"] == "t2.memory_gate_review.v1"
+    assert manifest["prompts"]["review_prompt_version"] == "t2.memory_gate_review.v2"
 
     source_bundle_path = (
         tmp_path / str(agent_id) / "memory" / ".staging" / "t2_jobs" / result.job_id / "source_bundle.json"
@@ -402,7 +402,7 @@ async def test_low_risk_t2_package_requires_memory_gate_review(tmp_path: Path) -
     assert review.attrib["reviewer"] == "memory_gate_agent"
     assert review.findtext("decision") == "approved"
     assert manifest["review_mode"] == "independent_gate"
-    assert manifest["prompts"]["review_prompt_version"] == "t2.memory_gate_review.v1"
+    assert manifest["prompts"]["review_prompt_version"] == "t2.memory_gate_review.v2"
 
 
 @pytest.mark.asyncio
@@ -1390,7 +1390,7 @@ def test_labels_prompt_teaches_failure_signals_for_growth_report() -> None:
     recurred/avoided outcomes tied to known self.md failure-mode ids."""
     from app.memory.t2.prompts import LABELS_PROMPT_VERSION, LEARNING_BRAIN_LABELS_PROMPT
 
-    assert LABELS_PROMPT_VERSION == "t2.learning_brain_labels.activation_20260705"
+    assert LABELS_PROMPT_VERSION == "t2.learning_brain_labels.activation_20260829"
     assert "<failure_signals>" in LEARNING_BRAIN_LABELS_PROMPT
     assert "recurred" in LEARNING_BRAIN_LABELS_PROMPT
     assert "avoided" in LEARNING_BRAIN_LABELS_PROMPT
@@ -1401,7 +1401,7 @@ def test_labels_prompt_teaches_failure_signals_for_growth_report() -> None:
 def test_labels_prompt_teaches_activation_keys_for_qkv_router() -> None:
     from app.memory.t2.prompts import LABELS_PROMPT_VERSION, LEARNING_BRAIN_LABELS_PROMPT
 
-    assert LABELS_PROMPT_VERSION == "t2.learning_brain_labels.activation_20260705"
+    assert LABELS_PROMPT_VERSION == "t2.learning_brain_labels.activation_20260829"
     assert '<activation_keys schema_version="t2.activation_keys.20260705">' in LEARNING_BRAIN_LABELS_PROMPT
     for marker in (
         "<task_intent>",
@@ -1414,6 +1414,84 @@ def test_labels_prompt_teaches_activation_keys_for_qkv_router() -> None:
         "<risk_flag>",
     ):
         assert marker in LEARNING_BRAIN_LABELS_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_t2_llm_agent_uses_cap_aware_complete_path(monkeypatch) -> None:
+    from app.memory.t2 import segment_package
+    from app.services import llm_client
+
+    calls: list[dict[str, object]] = []
+
+    class FakeResponse:
+        content = "<t2_summary schema_version='t2.summary.v1'/>"
+        finish_reason = "stop"
+
+    class FakeClient:
+        async def complete(self, **kwargs):
+            calls.append(kwargs)
+            return FakeResponse()
+
+        async def stream(self, **_kwargs):
+            raise AssertionError("T2 package jobs must use the cap-aware complete path")
+
+        async def close(self) -> None:
+            calls.append({"closed": True})
+
+    monkeypatch.setattr(llm_client, "create_llm_client_from_config", lambda _config: FakeClient())
+    monkeypatch.setattr(llm_client, "with_llm_usage_context", lambda config, **_kwargs: config)
+    monkeypatch.setattr(llm_client, "get_max_tokens", lambda *_args: 16384)
+
+    result = await segment_package._run_t2_llm_agent(
+        model_config={"provider": "deepseek", "model": "deepseek-v4-flash"},
+        prompt="system contract",
+        payload={"source_refs": [{"uri": "t0://exact"}]},
+        phase="summary",
+        agent_id=uuid4(),
+        tenant_id=uuid4(),
+    )
+
+    assert result == FakeResponse.content
+    assert len(calls) == 2
+    request = calls[0]
+    assert request["max_tokens"] == 16384
+    assert request["temperature"] == 0.2
+    messages = request["messages"]
+    assert [message.role for message in messages] == ["system", "user"]
+    assert messages[0].content == "system contract"
+    assert json.loads(messages[1].content) == {"source_refs": [{"uri": "t0://exact"}]}
+    assert calls[1] == {"closed": True}
+
+
+@pytest.mark.asyncio
+async def test_t2_llm_agent_rejects_exhausted_output_cap(monkeypatch) -> None:
+    from app.memory.t2 import segment_package
+    from app.services import llm_client
+
+    class FakeResponse:
+        content = "<t2_summary schema_version='t2.summary.v1'/>"
+        finish_reason = "length"
+
+    class FakeClient:
+        async def complete(self, **_kwargs):
+            return FakeResponse()
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(llm_client, "create_llm_client_from_config", lambda _config: FakeClient())
+    monkeypatch.setattr(llm_client, "with_llm_usage_context", lambda config, **_kwargs: config)
+    monkeypatch.setattr(llm_client, "get_max_tokens", lambda *_args: 16384)
+
+    with pytest.raises(ValueError, match="exhausted its output budget"):
+        await segment_package._run_t2_llm_agent(
+            model_config={"provider": "deepseek", "model": "deepseek-v4-flash"},
+            prompt="system contract",
+            payload={"source_refs": [{"uri": "t0://exact"}]},
+            phase="review",
+            agent_id=uuid4(),
+            tenant_id=uuid4(),
+        )
 
 
 def _labels_with_activation_keys(source_bundle: dict, activation_keys_xml: str) -> str:

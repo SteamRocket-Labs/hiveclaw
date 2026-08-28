@@ -42,6 +42,7 @@ export interface ChatSession {
   } | null;
   writable_roots?: string[] | null;
   transcript_metadata_json?: Record<string, unknown> | null;
+  active_projection?: Record<string, unknown> | null;
 }
 
 export interface SessionOperatorOptions {

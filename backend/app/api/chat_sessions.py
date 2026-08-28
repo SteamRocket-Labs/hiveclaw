@@ -136,6 +136,7 @@ class SessionOut(BaseModel):
     read_only: bool = False
     authority_source: str | None = None
     operator_view: bool = False
+    active_projection: dict[str, Any] | None = None
     # Agent-to-agent session fields
     peer_agent_id: Optional[str] = None
     peer_agent_name: Optional[str] = None
@@ -158,6 +159,25 @@ def _session_view_flags(session: ChatSession, current_user: User) -> dict[str, b
 
 def _session_contract_fields(session: ChatSession) -> dict[str, Any]:
     session_metadata = dict(getattr(session, "transcript_metadata_json", None) or {})
+    raw_projection = session_metadata.get("active_projection")
+    active_projection: dict[str, Any] | None = None
+    if isinstance(raw_projection, dict):
+        projection_reason = str(raw_projection.get("projection_reason") or "").strip()
+        checkpoint_event_id = str(raw_projection.get("checkpoint_event_id") or "").strip()
+        if projection_reason and checkpoint_event_id:
+            active_projection = {
+                key: raw_projection[key]
+                for key in (
+                    "projection_reason",
+                    "checkpoint_event_id",
+                    "draft_content",
+                    "turn_index",
+                    "applied_at",
+                    "truth_source",
+                    "mode",
+                )
+                if key in raw_projection
+            }
     return {
         "session_kind": getattr(session, "session_kind", None) or "human_chat",
         "actor_type": getattr(session, "actor_type", None) or "user",
@@ -167,6 +187,7 @@ def _session_contract_fields(session: ChatSession) -> dict[str, Any]:
         "parent_session_id": str(session.parent_session_id) if getattr(session, "parent_session_id", None) else None,
         "root_session_id": str(session.root_session_id) if getattr(session, "root_session_id", None) else None,
         "runtime_task_id": str(session.runtime_task_id) if getattr(session, "runtime_task_id", None) else None,
+        "active_projection": active_projection,
         **_session_permission_metadata(
             str(session_metadata.get("permission_mode") or DEFAULT_CCPLUS_PERMISSION_MODE.value), session
         ),

@@ -3722,6 +3722,33 @@ Correction #3 通过后，Codex 沿用户真实可见路径继续审查，发现
 
 **closure（七原子）**：Input 为 accepted user turn；Authority 为当前 authenticated Session + run；Execution 仍由唯一 RuntimeTask 与 typed transcript 驱动，presentation cache 不参与执行；Evidence 为 canonical transcript/runtime task + 两轮 50ms UI 样本；Recovery 为 reload/hydration 与 storage-unavailable durable fallback；Consumption 为用户 timeline/header/right-panel/disclosure/branch/rewind；Acceptance 为 failing-first、本地全门禁、三服务 SUCCESS、两轮 fresh live+reload clean pass。由此 `WEEKEND-SESSION-PRESENTATION-POLISH-006` 与本次 Session 表达/流式输出 P0 总项转为 **Closed**；不外推 Rewind/Resume/Fork/Rollback、Knowledge、Create Agent、Plan/Team/Workflow 或 aggregate weekend completion，这些按后续独立包继续验收。
 
+### Session 生命周期：Rewind / Resume / Fork / Rollback 生产复现与候选修复（2026-08-29，Codex sole writer；本地完成，部署/生产复验 pending）
+
+**用户视角验收边界**：本包不把底层 command 成功当作完成。用户必须能从当前 Session 看懂“去了哪个历史点、后续历史是否保留、是否真的还有任务在运行、怎样继续”，并且同一事实在即时 UI、分支导航与整页 reload 后保持一致。内部 `command`、`action`、`session_id`、raw payload、checkpoint role 等工程字段不得作为默认产品表达；Rollback 的产品入口统一为 Rewind，底层 rollback/restore 仍由同一受治理的 projection/workspace 机制承载。
+
+**signed-in production RED（部署 HEAD `f844b2fc`）**：
+
+1. **Fork / branch 导航断点**：父 Session `be794523-462e-4c63-9560-9a8647d47387` 通过可见 Branch 动作创建子 Session `b7499927-df3c-48a3-9072-73d3ba39bd0e`。子 Session 正确显示 lineage 并把源 prompt 放回 composer，但点击 GitLine root 后 URL 没有切回父 Session。根因是 `selectBranchSession` 只更新内存 selection，没有调用 canonical workbench route；URL 继续拥有旧子 Session 身份，并把内存选择拉回。
+2. **Resume 假运行 + 工程 payload 泄漏**：在完整父 Session 执行 `/resume` 后，面板直接显示 `ok / command / action / session_id` 等内部字段；本地 optimistic slash prompt 没有 assistant terminal row，也没有在 `ui_action` 完成后移除，timeline 因而把孤立 user row 解释为“运行中”，11 秒后仍显示顶部处理中和 1 active run，尽管后端没有真实 RuntimeTask。
+3. **Rewind 即时正确、reload 复活后续对话**：fresh 两轮 Session `f8a66779-34bd-41a1-bdaa-72ef5a93f33b`（turn 1 marker `SESSION-LIFECYCLE-TURN-1-20260829-0324-Q7`，turn 2 marker `SESSION-LIFECYCLE-TURN-2-20260829-0325-R4`）点击最后一个可见 Rewind 后，即时 UI 正确隐藏 turn 2 并把 turn 2 prompt 放回 composer；但整页 reload 后 turn 2 prompt/answer 全部重新出现，同时 GitLine 又正确把第二 checkpoint 标成 `current_head`。后端已持久化 `active_projection`；断点是 Session list 的 `SessionOut` 没有返回该 read model，导致 transcript hydration 与 GitLine index 各读一套事实。
+4. **附加观察（不伪装成已修复）**：一次多轮采样捕获约 77ms 的 answer disappearance 与 live duplicate，reload 后 canonical transcript 恢复唯一答案；此前 Session 表达包两轮 50ms clean pass 均未复现。本包不以单次观察推导根因或声明修复，部署后必须使用按 run 身份隔离的连续采样重新证伪；若再现，登记为独立 mixed-plane presentation finding 并继续修复。
+
+**候选修复**：
+
+- 后端 `SessionOut.active_projection` 只投影 durable metadata 的 allowlist：`projection_reason`、`checkpoint_event_id`、`draft_content`、`turn_index`、`applied_at`、`truth_source`、`mode`；不返回完整 transcript metadata、`rewind_guard` 或其它私有运行字段。前端 hydration 优先消费 top-level `active_projection`，同时保留旧 metadata fallback；即时 Rewind 也同步更新 top-level 与兼容 metadata，避免 reload split truth。
+- `selectBranchSession` 对 known/lineage 两条路径都提交 canonical Session workbench route，GitLine 选择与 URL 身份保持一致。
+- 每个本地 slash command 使用精确 `session-command:<uuid>` 身份；任何 `ui_action` 完成后只移除该 Session 的该条 optimistic command，不清理其它用户消息。Resume 不再制造不存在的 active run。
+- 新增独立 `sessionCommandPanelPresentation` owner，把 Resume、Rewind、workspace restore、compaction 的默认表达统一为本地化用户文案；Resume 在确有 interrupted work 时提供可见 Continue 动作并用 backend `next_query` 走正常发送入口。checkpoint/workspace/projection/resume 面板隐藏 raw payload；模式、类型和 checkpoint 表达全部本地化。该模块只负责 presentation，不判断自然语言、不改写模型答案、不参与执行或权限决策。
+- 主编排复杂度没有通过放宽门禁规避：`AgentDetail.tsx` 2899 行（预算 2900）、`AgentChatSection.tsx` 2399（预算 2400）、`agentDetailPolicy.ts` 395（预算 420）；presentation mapping 被提取为单一纯 owner。
+
+**failing-first / GREEN 证据**：
+
+- RED：backend contract test 对缺失 `active_projection` 得到 `KeyError`；frontend top-level projection reload test 保留了全部消息；branch route source contract 缺少 route commit；slash command cleanup contract 缺少精确 optimistic row removal；workspace/Resume 面板测试仍看到 raw fields，Resume 缺 Continue action。
+- GREEN backend：`backend/.venv/bin/python -m pytest -q backend/tests/api/test_chat_sessions_permissions.py backend/tests/services/test_session_command_runtime.py backend/tests/api/test_chat_session_branches.py backend/tests/services/test_session_index.py` → **71 passed / 1 pre-existing StarletteDeprecationWarning in 3.17s**；Ruff check **All checks passed**，format **2 files already formatted**。
+- GREEN frontend：focused `AgentDetail.test.tsx + AgentDetailSections.test.tsx + ArchitectureSimplicityContract.test.ts` → **3 files / 148 passed**；全量 `npm test` → **147 files / 1052 passed**；`tsc --noEmit` exit 0；i18n node tests **9/9**、en=zh=3891、全部 gates 0；production build 7387 modules，AgentDetail **371175/380000 bytes、102499/115000 gzip**，vendor **591449/620000 bytes、186474/200000 gzip**；`git diff --check` clean。
+
+**状态与下一验收**：当前仅为 **PASS — Verified locally / production pending**，本包尚未 Closed。下一步必须：原子 commit → push `SteamRocket-Labs/hiveclaw/main` → 同一 committed HEAD 部署 Railway `backend`/`backend-api`/`frontend` 且三者 SUCCESS → hard navigation 载入新 hashed asset → signed-in 生产复验以上三条确定缺陷与附加观察。最低 clean-pass 矩阵为：Rewind 即时 + reload、GitLine parent↔child 双向 URL、完整 Session `/resume` 零假运行、真实 interrupted Session Resume→Continue→终局、checkpoint selector 的 same-session/branch、用户侧 Rollback/Rewind 表达与底层恢复契约。任一 raw engineering payload、状态假运行、历史复活、导航回弹、answer disappearance/duplicate 或 reload 不一致继续判 FAIL。回滚为 revert 本包提交；无 schema migration、无生产数据修复、无不可逆动作。
+
 
 ## 8. 两个工作日的执行节奏
 

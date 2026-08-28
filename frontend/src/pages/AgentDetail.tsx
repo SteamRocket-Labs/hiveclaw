@@ -74,6 +74,7 @@ import {
 } from './agent-detail/useSessionTransportController';
 import { projectSessionSocketEvent } from './agent-detail/sessionSocketEventProjector';
 import { applyTranscriptToSessionRuntime } from './agent-detail/sessionTranscriptApplier';
+import { buildSessionCommandStatusControl } from './agent-detail/sessionCommandPanelPresentation';
 import { liveSubscriptionWatermark, loadCanonicalSessionTranscript, nextSessionBackfillNotice, projectCanonicalTranscriptSnapshot, realtimeSubscriptionCursor } from './agent-detail/sessionTranscriptHydration';
 import type { CompatibilityMessageTimeline, SessionVisibilityBoundary } from './agent-detail/sessionEventConsumer';
 import { buildSessionVisibilityBoundary, createCompatibilityMessageTimeline, installRewindVisibilityBoundary, installRewindVisibilityBoundaryFromStore, seedCompatibilityTimelineIdentities } from './agent-detail/sessionEventConsumer';
@@ -808,6 +809,7 @@ function AgentDetailInner() {
         const known = [...sessions, ...allSessions].find((session: any) => String(session.id) === String(sessionId));
         if (known) {
             await selectSession(known);
+            ensureSessionWorkbenchRoute(sessionId);
             return;
         }
         const branch = branchLineage.find((item) => String(item.id) === String(sessionId));
@@ -823,6 +825,7 @@ function AgentDetailInner() {
             source_channel: 'web',
             listed_surface: 'chat',
         });
+        ensureSessionWorkbenchRoute(sessionId);
     };
 
     const ensureSessionWorkbenchRoute = (sessionId: string) => {
@@ -887,30 +890,32 @@ function AgentDetailInner() {
             const checkpoints = normalizeSessionCommandCheckpoints(uiAction.checkpoints || actionResult?.checkpoints);
             openSessionCommandControl({
                 type: 'checkpoint_selector',
-                title: message || 'Select checkpoint',
+                title: t('sessionWorkbench.commandPanel.selectCheckpointTitle', 'Choose where to go back'),
                 message: checkpoints.length > 0
-                    ? 'Select a checkpoint to rewind this session context.'
-                    : 'No checkpoints are available for this session.',
+                    ? t('sessionWorkbench.commandPanel.selectCheckpointMessage', 'Choose an earlier request. The full history stays preserved.')
+                    : t('sessionWorkbench.commandPanel.noCheckpoints', 'This session has no earlier request to return to.'),
                 command: response.command,
                 checkpoints,
                 payload: actionResult,
             });
             invalidateSessionRuntimeQueries(id, currentSessionId);
-            showToast(message, uiAction.level === 'error' ? 'error' : 'success');
+            showToast(
+                t('sessionWorkbench.commandPanel.selectCheckpointTitle', 'Choose where to go back'),
+                uiAction.level === 'error' ? 'error' : 'success',
+            );
             return true;
         }
 
         if (uiAction.type === 'open_resume_picker') {
-            openSessionCommandControl({
-                type: 'resume_picker',
-                title: message || 'Resume session',
-                message: 'Session resume status is ready.',
+            const control = buildSessionCommandStatusControl(t, uiAction.type, {
                 command: response.command,
                 level: uiAction.level === 'error' ? 'error' : 'info',
                 payload: actionResult,
+                interrupted: actionResult?.interrupted === true,
             });
+            openSessionCommandControl(control);
             invalidateSessionRuntimeQueries(id, currentSessionId);
-            showToast(message, uiAction.level === 'error' ? 'error' : 'success');
+            showToast(control.title, uiAction.level === 'error' ? 'error' : 'success');
             return true;
         }
 
@@ -949,14 +954,10 @@ function AgentDetailInner() {
         }
 
         if (uiAction.type === 'confirm_workspace_restore') {
-            openSessionCommandControl({
-                type: 'workspace_restore_confirmation',
-                title: message || 'Confirm workspace rewind',
-                message,
+            openSessionCommandControl(buildSessionCommandStatusControl(t, uiAction.type, {
                 command: response.command,
-                level: 'info',
                 payload: actionResult,
-            });
+            }));
             invalidateSessionRuntimeQueries(id, currentSessionId);
             return true;
         }
@@ -1015,20 +1016,14 @@ function AgentDetailInner() {
                     void selectSession(rewoundSession);
                 }
             }
-            openSessionCommandControl({
-                type: 'projection_status',
-                title: message || (uiAction.type === 'install_compacted_context' ? 'Context compacted' : workspaceRestore ? 'Workspace restored' : 'Session projection installed'),
-                message: uiAction.type === 'install_compacted_context'
-                    ? 'Future turns in this session will use the compacted context projection.'
-                    : workspaceRestore
-                        ? 'Workspace files were restored from the selected checkpoint.'
-                        : 'Future turns in this session will use the active rewind projection.',
+            const control = buildSessionCommandStatusControl(t, uiAction.type, {
                 command: response.command,
                 level: uiAction.level === 'error' ? 'error' : 'success',
                 payload: actionResult,
             });
+            openSessionCommandControl(control);
             invalidateSessionRuntimeQueries(id, currentSessionId);
-            showToast(message, uiAction.level === 'error' ? 'error' : 'success');
+            showToast(control.title, uiAction.level === 'error' ? 'error' : 'success');
             return true;
         }
 
@@ -1771,8 +1766,10 @@ function AgentDetailInner() {
                 setTransportNotice(null);
                 setSessionPhase(activeRuntimeKey, 'queued');
                 setChatMessagesSessionId(commandSessionId);
+                const commandMessageId = `session-command:${globalThis.crypto.randomUUID()}`;
                 setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({
                     role: 'user',
+                    id: commandMessageId,
                     content: userMsg,
                     timestamp: new Date().toISOString(),
                 })]);
@@ -1787,6 +1784,10 @@ function AgentDetailInner() {
                     const actionResult = commandResultRecord(response);
                     if (getSessionCommandUiAction(response)) {
                         await handleSessionCommandUiAction(response);
+                        setChatMessagesAfterQueuedForSession(
+                            commandSessionId,
+                            prev => prev.filter(message => message.id !== commandMessageId),
+                        );
                         return;
                     }
                     if (actionResult?.action === 'chat_prompt') {

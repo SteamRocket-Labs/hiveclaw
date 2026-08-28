@@ -68,7 +68,23 @@ import {
 } from '../AgentDetail';
 import type { PlanRequest } from '../../api/domains/plans';
 import { AGENT_WORKBENCH_AREAS } from './agentDetailPolicy';
+import { buildSessionCommandStatusControl } from './sessionCommandPanelPresentation';
 import zh from '../../i18n/zh.json';
+
+describe('buildSessionCommandStatusControl', () => {
+  const t = ((_key: string, fallback: string) => fallback) as unknown as Parameters<typeof buildSessionCommandStatusControl>[0];
+
+  it.each([
+    ['open_resume_picker', true, 'resume_picker', 'Continue interrupted work'],
+    ['open_resume_picker', false, 'resume_picker', 'Session is ready'],
+    ['confirm_workspace_restore', false, 'workspace_restore_confirmation', 'Restore workspace files?'],
+    ['install_compacted_context', false, 'projection_status', 'Context compacted'],
+    ['install_workspace_snapshot', false, 'projection_status', 'Workspace restored'],
+    ['install_active_projection', false, 'projection_status', 'Rewind complete'],
+  ] as const)('maps %s to its user-facing control', (action, interrupted, type, title) => {
+    expect(buildSessionCommandStatusControl(t, action, { payload: {}, interrupted })).toMatchObject({ type, title });
+  });
+});
 
 describe('runtimeStatusLabel', () => {
   it('renders through the translator so non-English locales get localized labels', () => {
@@ -1033,6 +1049,28 @@ describe('AgentDetail extracted sections', () => {
     expect(result.shouldScrollToProjectionTail).toBe(true);
   });
 
+  it('restores the active rewind projection from the reload-safe Session read model', () => {
+    const result = applySessionActiveProjection(
+      {
+        active_projection: {
+          projection_reason: 'rewind',
+          checkpoint_event_id: 'evt-user-2',
+          draft_content: 'Retry the second request.',
+        },
+      },
+      [
+        { id: 'msg-user-1', transcriptEventId: 'evt-user-1', role: 'user', content: 'Earlier prompt.' },
+        { id: 'msg-assistant-1', transcriptEventId: 'evt-assistant-1', role: 'assistant', content: 'Earlier answer.' },
+        { id: 'msg-user-2', transcriptEventId: 'evt-user-2', role: 'user', content: 'Retry the second request.' },
+        { id: 'msg-assistant-2', transcriptEventId: 'evt-assistant-2', role: 'assistant', content: 'Stale tail.' },
+      ],
+    );
+
+    expect(result.messages.map((message) => message.transcriptEventId)).toEqual(['evt-user-1', 'evt-assistant-1']);
+    expect(result.draftContent).toBe('Retry the second request.');
+    expect(result.checkpointEventId).toBe('evt-user-2');
+  });
+
   it('keeps only the All Users conversation audit browser inside Agent Detail', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
@@ -1672,31 +1710,37 @@ describe('AgentDetail extracted sections', () => {
 
     expect(markup).toContain('data-testid="session-command-control-panel"');
     expect(markup).toContain('Workspace restored');
-    expect(markup).toContain('workspace_rewind_applied');
-    expect(markup).toContain('restored_count');
+    expect(markup).not.toContain('workspace_rewind_applied');
+    expect(markup).not.toContain('restored_count');
   });
 
-  it('renders resume command status inside the session control panel', () => {
+  it('renders interrupted Resume as a user action without internal command fields', () => {
     const markup = renderToStaticMarkup(
       <SessionCommandControlPanel
         control={{
           type: 'resume_picker',
-          title: 'Resume session',
-          message: 'Session resume status is ready.',
+          title: 'Continue interrupted work',
+          message: 'The previous turn stopped before completing. Continue from the last saved checkpoint.',
           command: 'resume',
           payload: {
             interrupted: true,
             repair_strategy: 'transcript_replay_chain_repair',
+            session_id: 'session-private-id',
+            next_query: 'Continue from where you left off.',
           },
         }}
         onDismiss={vi.fn()}
         onRunCommand={vi.fn()}
+        onContinueSession={vi.fn()}
       />,
     );
 
     expect(markup).toContain('data-testid="session-command-control-panel"');
-    expect(markup).toContain('Resume session');
-    expect(markup).toContain('transcript_replay_chain_repair');
+    expect(markup).toContain('Continue interrupted work');
+    expect(markup).toContain('data-testid="session-resume-continue-action"');
+    expect(markup).not.toContain('transcript_replay_chain_repair');
+    expect(markup).not.toContain('session-private-id');
+    expect(markup).not.toContain('resume_status');
   });
 
   it('renders AgentStatusSection as a standalone overview module', () => {

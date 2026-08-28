@@ -142,6 +142,7 @@ export function withRewindActiveProjection(
     }
     return {
         ...session,
+        active_projection: activeProjection,
         transcript_metadata_json: {
             ...objectValue(session.transcript_metadata_json),
             active_projection: activeProjection,
@@ -187,7 +188,9 @@ export function rewindCheckpointEventIdFromSession(session: unknown): string {
   const sessionRecord = objectValue(session);
   const transcriptMetadata = objectValue(sessionRecord.transcript_metadata_json);
   const metadata = objectValue(sessionRecord.metadata);
-  const activeProjection = objectValue(transcriptMetadata.active_projection || metadata.active_projection);
+  const activeProjection = objectValue(
+    sessionRecord.active_projection || transcriptMetadata.active_projection || metadata.active_projection,
+  );
   if (stringValueFromUnknown(activeProjection.projection_reason) !== 'rewind') return '';
   return stringValueFromUnknown(activeProjection.checkpoint_event_id);
 }
@@ -199,7 +202,9 @@ export function applySessionActiveProjection(
     const sessionRecord = objectValue(session);
     const transcriptMetadata = objectValue(sessionRecord.transcript_metadata_json);
     const metadata = objectValue(sessionRecord.metadata);
-    const activeProjection = objectValue(transcriptMetadata.active_projection || metadata.active_projection);
+    const activeProjection = objectValue(
+        sessionRecord.active_projection || transcriptMetadata.active_projection || metadata.active_projection,
+    );
     if (stringValueFromUnknown(activeProjection.projection_reason) !== 'rewind') {
         return { messages, draftContent: '', checkpointEventId: '', shouldScrollToProjectionTail: false };
     }

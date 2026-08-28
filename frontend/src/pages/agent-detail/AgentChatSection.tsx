@@ -311,26 +311,10 @@ export interface SessionCommandCheckpoint {
 
 export type SessionRewindMode = 'conversation' | 'workspace' | 'both';
 
-export const SESSION_REWIND_MODE_OPTIONS: Array<{
-  value: SessionRewindMode;
-  label: string;
-  description: string;
-}> = [
-  {
-    value: 'conversation',
-    label: 'Conversation',
-    description: 'Rewind only the chat projection',
-  },
-  {
-    value: 'workspace',
-    label: 'Workspace',
-    description: 'Restore only workspace files',
-  },
-  {
-    value: 'both',
-    label: 'Both',
-    description: 'Rewind chat and restore files',
-  },
+export const SESSION_REWIND_MODE_OPTIONS: Array<{ value: SessionRewindMode; label: string; description: string }> = [
+  { value: 'conversation', label: 'Conversation', description: 'Rewind only the chat projection' },
+  { value: 'workspace', label: 'Workspace', description: 'Restore only workspace files' },
+  { value: 'both', label: 'Both', description: 'Rewind chat and restore files' },
 ];
 
 export function normalizeSessionRewindMode(value: unknown): SessionRewindMode {
@@ -493,12 +477,12 @@ export function findRetryAnchorMessage(
   return null;
 }
 
-function commandPanelTypeLabel(type: SessionCommandControlType): string {
+function commandPanelTypeLabel(type: SessionCommandControlType, t: Translate): string {
   switch (type) {
     case 'checkpoint_selector':
-      return 'Rewind';
+      return t('sessionWorkbench.commandPanel.rewind', 'Rewind');
     case 'projection_status':
-      return 'Session context';
+      return t('sessionWorkbench.commandPanel.sessionContext', 'Session context');
     case 'context_panel':
       return 'Context';
     case 'usage_panel':
@@ -510,9 +494,9 @@ function commandPanelTypeLabel(type: SessionCommandControlType): string {
     case 'permissions_panel':
       return 'Permissions';
     case 'workspace_restore_confirmation':
-      return 'Workspace restore';
+      return t('sessionWorkbench.commandPanel.workspaceRestore', 'Workspace restore');
     case 'resume_picker':
-      return 'Resume';
+      return t('sessionWorkbench.commandPanel.resume', 'Resume');
     default:
       return 'Session';
   }
@@ -524,9 +508,8 @@ function checkpointId(checkpoint: SessionCommandCheckpoint): string {
 
 function checkpointLabel(checkpoint: SessionCommandCheckpoint, index: number): string {
   const sequence = checkpoint.sequence ?? checkpoint.turn_index ?? index + 1;
-  const role = checkpoint.role ? `${checkpoint.role}: ` : '';
   const content = String(checkpoint.content || '').trim();
-  return `${sequence}. ${role}${content || checkpointId(checkpoint) || 'checkpoint'}`;
+  return `${sequence}. ${content || checkpointId(checkpoint) || 'checkpoint'}`;
 }
 
 function payloadSummary(payload?: Record<string, unknown> | null): Array<[string, string]> {
@@ -579,11 +562,13 @@ export function SessionCommandControlPanel({
   control,
   onDismiss,
   onRunCommand,
+  onContinueSession,
   rewindUnavailableReason,
 }: {
   control?: SessionCommandControlState | null;
   onDismiss: () => void;
   onRunCommand: (command: string, args?: Record<string, unknown>) => void | Promise<unknown>;
+  onContinueSession?: (content: string) => void | Promise<unknown>;
   rewindUnavailableReason?: string | null;
 }) {
   const { t } = useTranslation();
@@ -602,7 +587,16 @@ export function SessionCommandControlPanel({
     });
   }, [defaultFocusedCheckpointId, checkpointIds.join('|')]);
   if (!control) return null;
-  const details = payloadSummary(control.payload);
+  const hideInternalDetails = control.type === 'resume_picker'
+    || control.type === 'projection_status'
+    || control.type === 'workspace_restore_confirmation'
+    || control.type === 'checkpoint_selector';
+  const details = hideInternalDetails ? [] : payloadSummary(control.payload);
+  const resumeQuery = control.type === 'resume_picker'
+    && control.payload?.interrupted === true
+    && typeof control.payload.next_query === 'string'
+    ? control.payload.next_query.trim()
+    : '';
   const confirmationArgs = control.type === 'workspace_restore_confirmation'
     ? workspaceRestoreConfirmationArgs(control)
     : null;
@@ -611,13 +605,13 @@ export function SessionCommandControlPanel({
   const expectedLastSequence = typeof rawExpectedSequence === 'number'
     ? rawExpectedSequence
     : (typeof rawExpectedSequence === 'string' && rawExpectedSequence.trim() ? Number(rawExpectedSequence) : null);
-  const hasPanelBody = checkpoints.length > 0 || details.length > 0 || Boolean(confirmationArgs);
+  const hasPanelBody = checkpoints.length > 0 || details.length > 0 || Boolean(confirmationArgs) || Boolean(resumeQuery);
   return (
     <section data-testid="session-command-control-panel" className="session-tui-command-panel">
       <div className={`session-tui-command-panel-header ${hasPanelBody ? 'has-body' : ''}`}>
         <div style={{ minWidth: 0 }}>
           <div className="session-tui-kicker">
-            {commandPanelTypeLabel(control.type)}
+            {commandPanelTypeLabel(control.type, t)}
           </div>
           <div className="session-tui-row-title">
             {control.title}
@@ -630,7 +624,7 @@ export function SessionCommandControlPanel({
         </div>
         <button
           type="button"
-          aria-label="Close"
+          aria-label={t('common.close', 'Close')}
           onClick={onDismiss}
           className="session-tui-icon-button"
         >
@@ -647,11 +641,11 @@ export function SessionCommandControlPanel({
                 data-testid={`session-rewind-mode-${option.value}`}
                 data-rewind-mode={option.value}
                 aria-pressed={rewindMode === option.value}
-                title={option.description}
+                title={t(`sessionWorkbench.commandPanel.rewindMode.${option.value}Description`, option.description)}
                 onClick={() => setRewindMode(option.value)}
                 className={`session-tui-rewind-mode-button ${rewindMode === option.value ? 'is-active' : ''}`}
               >
-                {option.label}
+                {t(`sessionWorkbench.commandPanel.rewindMode.${option.value}`, option.label)}
               </button>
             ))}
           </div>
@@ -752,14 +746,30 @@ export function SessionCommandControlPanel({
                 ),
               )}
             >
-              Confirm restore
+              {t('sessionWorkbench.commandPanel.confirmRestore', 'Confirm restore')}
             </button>
             <button
               type="button"
               data-testid="session-workspace-restore-cancel-action"
               onClick={onDismiss}
             >
-              Cancel
+              {t('common.cancel', 'Cancel')}
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {resumeQuery && onContinueSession ? (
+        <div className="session-tui-command-panel-body">
+          <div className="session-tui-confirm-row">
+            <button
+              type="button"
+              data-testid="session-resume-continue-action"
+              onClick={() => {
+                onDismiss();
+                void onContinueSession(resumeQuery);
+              }}
+            >
+              {t('sessionWorkbench.commandPanel.continue', 'Continue')}
             </button>
           </div>
         </div>
@@ -2322,6 +2332,7 @@ function AgentChatSection({
                 control={sessionCommandControl}
                 onDismiss={onDismissSessionCommandControl || (() => undefined)}
                 onRunCommand={onRunSessionCommand || (() => undefined)}
+                onContinueSession={onSendMessage}
                 rewindUnavailableReason={rewindUnavailableReason}
               />
               <SessionComposer

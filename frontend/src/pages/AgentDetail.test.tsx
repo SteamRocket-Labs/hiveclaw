@@ -204,6 +204,24 @@ describe('AgentDetail realtime refresh contract', () => {
     expect(rehydrateAt).toBeGreaterThan(abortAt);
   });
 
+  it('keeps branch lineage navigation and the canonical Session URL in one transition', async () => {
+    const source = await readSource('./AgentDetail.tsx');
+    const selectorStart = source.indexOf('const selectBranchSession = async');
+    const selectorEnd = source.indexOf('const ensureSessionWorkbenchRoute', selectorStart);
+    const selector = source.slice(selectorStart, selectorEnd);
+
+    expect(selector).toContain('ensureSessionWorkbenchRoute(sessionId)');
+    expect(selector.indexOf('ensureSessionWorkbenchRoute(sessionId)')).toBeGreaterThan(selector.indexOf('await selectSession('));
+  });
+
+  it('removes non-running slash command prompts after their in-session control surface opens', async () => {
+    const source = await readSource('./AgentDetail.tsx');
+
+    expect(source).toContain('const commandMessageId = `session-command:');
+    expect(source).toContain('message.id !== commandMessageId');
+    expect(source).toMatch(/setChatMessagesAfterQueuedForSession\(\s*commandSessionId/);
+  });
+
   it('hydrates the complete canonical Session V2 transcript without a manual older-message gate', async () => {
     const source = await readSource('./AgentDetail.tsx');
     const sectionSource = await readSource('./agent-detail/AgentChatSection.tsx');

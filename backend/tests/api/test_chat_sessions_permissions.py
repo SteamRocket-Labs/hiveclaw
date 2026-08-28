@@ -47,6 +47,51 @@ def test_session_permission_metadata_preserves_existing_mode_when_request_omits_
     assert metadata["permission_profile"]["mode"] == "auto"
 
 
+def test_session_contract_projects_only_the_active_rewind_state_needed_for_reload() -> None:
+    import app.api.chat_sessions as chat_sessions_api
+
+    session = SimpleNamespace(
+        session_kind="human_chat",
+        actor_type="user",
+        runtime_source="web_chat",
+        visibility_scope="direct_user",
+        listed_surface="chat",
+        parent_session_id=None,
+        root_session_id=None,
+        runtime_task_id=None,
+        transcript_metadata_json={
+            "permission_mode": "default",
+            "active_projection": {
+                "projection_reason": "rewind",
+                "checkpoint_event_id": "event-user-2",
+                "draft_content": "Retry the second request.",
+                "turn_index": 2,
+                "applied_at": "2026-08-29T03:24:00+00:00",
+                "truth_source": "chat_transcript_events",
+                "mode": "conversation",
+                "rewind_guard": {"last_sequence": 42},
+                "private_internal_note": "must not leave the server",
+            },
+            "private_runtime_state": {"secret": "must not leave the server"},
+        },
+    )
+
+    contract = chat_sessions_api._session_contract_fields(session)
+
+    assert contract["active_projection"] == {
+        "projection_reason": "rewind",
+        "checkpoint_event_id": "event-user-2",
+        "draft_content": "Retry the second request.",
+        "turn_index": 2,
+        "applied_at": "2026-08-29T03:24:00+00:00",
+        "truth_source": "chat_transcript_events",
+        "mode": "conversation",
+    }
+    assert "transcript_metadata_json" not in contract
+    assert "private_internal_note" not in str(contract)
+    assert "private_runtime_state" not in str(contract)
+
+
 def test_tenant_permission_default_is_safe_and_never_break_glass() -> None:
     import app.api.chat_sessions as chat_sessions_api
 

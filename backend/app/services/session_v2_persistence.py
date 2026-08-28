@@ -56,8 +56,10 @@ _AUTHORITY_SEAL = object()
 # worker-recovery rebuild.  The command plane keeps
 # ``principal_type='user'``/``principal_id=root user`` (no schema change); the
 # typed ``session_command_authority`` stamp inside ``target_json`` is
-# server-minted only, covered by ``target_hash`` and the idempotency replay
-# comparison, and is never trusted without the full durable revalidation.
+# server-minted only and is never trusted without the full durable
+# revalidation.  Recovery safety comes from that fresh revalidation alone;
+# ``target_hash`` covers the stamp only as registration/replay consistency
+# evidence — recovery does not recompute it and it is not a tamper seal.
 A2A_DELEGATION_PEER_AUTHORITY_SOURCE = "a2a_delegation_peer"
 A2A_DELEGATION_PEER_STAMP_SCHEMA = "hive.session_command_authority.a2a_delegation_peer.v1"
 SESSION_COMMAND_AUTHORITY_STAMP_KEY = "session_command_authority"
@@ -329,15 +331,17 @@ async def _validate_a2a_delegation_peer_binding(
     if parent_session is None or parent_session.tenant_id != tenant_id or parent_session.agent_id != peer_agent_id:
         raise PermissionError("a2a_delegation_peer_parent_session_mismatch")
 
-    # 2) Durable RuntimeTask authority: peer parent agent, exact child
-    # agent/session, same immediate parent session, chain root user, and a
-    # persisted delegation chain.
+    # 2) Durable RuntimeTask authority: exact delegation task type, peer
+    # parent agent, exact child agent/session, same immediate parent session,
+    # chain root user, and a persisted delegation chain.  Another allowed
+    # task type with otherwise matching columns must never mint this lane.
     if delegation_runtime_task_id is None or session.runtime_task_id != delegation_runtime_task_id:
         raise PermissionError("a2a_delegation_peer_runtime_task_mismatch")
     task = await db.get(RuntimeTask, delegation_runtime_task_id)
     if (
         task is None
         or task.tenant_id != tenant_id
+        or str(getattr(task, "task_type", "") or "") != "delegation"
         or task.parent_agent_id != peer_agent_id
         or task.child_agent_id != agent.id
         or str(getattr(task, "child_session_id", None) or "") != str(session.id)

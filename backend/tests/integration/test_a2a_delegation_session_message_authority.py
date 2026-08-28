@@ -467,6 +467,35 @@ async def test_cross_tenant_peer_and_tampered_runtime_task_denied(owner_sessionm
 
 
 @pytest.mark.asyncio
+async def test_non_delegation_task_type_cannot_mint_peer_authority(owner_sessionmaker) -> None:
+    """The durable authority task must be task_type='delegation' exactly.
+
+    A RuntimeTask of another allowed type with otherwise matching
+    parent/child/session/root columns and a non-empty chain must NOT grant
+    the peer lane — the exact machine authority invariant includes the
+    durable task type; there is no metadata or natural-language fallback.
+    """
+
+    from app.services.session_v2_persistence import resolve_a2a_delegation_peer_authority
+
+    seeded = await _seed_delegation(owner_sessionmaker)
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, seeded["delegation_task_id"])
+        task.task_type = "web_chat_turn"
+        await db.commit()
+
+        with pytest.raises(PermissionError, match="a2a_delegation_peer_runtime_task_mismatch"):
+            await resolve_a2a_delegation_peer_authority(
+                db,
+                peer_agent_id=seeded["parent_agent_id"],
+                agent_id=seeded["child_agent_id"],
+                session_id=seeded["child_session_id"],
+                action="mutate_session_input",
+            )
+        await db.rollback()
+
+
+@pytest.mark.asyncio
 async def test_terminal_race_rolls_into_exactly_one_a2a_continuation_successor(owner_sessionmaker, monkeypatch) -> None:
     """Terminal target after accept -> one deterministic a2a_continuation FIFO
     successor, rebuilt from durable columns in fresh sessions, replay-safe."""

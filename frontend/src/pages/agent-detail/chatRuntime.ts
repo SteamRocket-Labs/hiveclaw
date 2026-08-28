@@ -608,6 +608,23 @@ export function shouldClearStaleRuntimeState({
   return now - lastRuntimeActivityAt >= graceMs;
 }
 
+export function hasLocalSessionRuntimeState(
+  activeRuns: Record<string, SessionRunState>,
+  uiStates: Record<string, SessionUiState>,
+  key: string,
+): boolean {
+  const ui = uiStates[key];
+  return Boolean(key && (activeRuns[key] || ui?.isWaiting || ui?.isStreaming));
+}
+
+export function activeRunPollInterval(
+  observedActiveRun: { status?: string | null } | null | undefined,
+  hasLocalActiveRuntime: boolean,
+): number | false {
+  const status = String(observedActiveRun?.status || '').toLowerCase();
+  return hasLocalActiveRuntime || status === 'pending' || status === 'running' ? 3000 : false;
+}
+
 /**
  * The live projection must reconcile the authoritative HTTP transcript when the
  * server's active-run read says the run is gone while local state still shows

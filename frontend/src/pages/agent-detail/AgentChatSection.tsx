@@ -766,7 +766,7 @@ export function SessionCommandControlPanel({
               data-testid="session-resume-continue-action"
               onClick={() => {
                 onDismiss();
-                void onContinueSession(resumeQuery);
+                void onContinueSession(t('sessionWorkbench.commandPanel.resumeContinuePrompt', resumeQuery));
               }}
             >
               {t('sessionWorkbench.commandPanel.continue', 'Continue')}

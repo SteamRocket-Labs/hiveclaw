@@ -12,6 +12,8 @@ type StatusUiAction =
 type CopyKind =
   | 'resume_interrupted'
   | 'resume_ready'
+  | 'resume_needs_reconciliation'
+  | 'resume_active'
   | 'workspace_restore_confirmation'
   | 'context_compacted'
   | 'workspace_restored'
@@ -25,6 +27,14 @@ const COPY: Record<CopyKind, [string, string, string, string]> = {
   resume_ready: [
     'sessionWorkbench.commandPanel.resumeReadyTitle', 'Session is ready',
     'sessionWorkbench.commandPanel.resumeReadyMessage', 'No interrupted work was found. You can send your next message normally.',
+  ],
+  resume_needs_reconciliation: [
+    'sessionWorkbench.commandPanel.resumeReviewTitle', 'Review required before continuing',
+    'sessionWorkbench.commandPanel.resumeReviewMessage', 'The previous request may have reached the model. To avoid duplicate work, this session is paused until an administrator verifies the delivery.',
+  ],
+  resume_active: [
+    'sessionWorkbench.commandPanel.resumeActiveTitle', 'Work is already in progress',
+    'sessionWorkbench.commandPanel.resumeActiveMessage', 'This session already has an active turn. Wait for it to finish or use the action it is currently requesting.',
   ],
   workspace_restore_confirmation: [
     'sessionWorkbench.commandPanel.confirmWorkspaceTitle', 'Restore workspace files?',
@@ -44,8 +54,12 @@ const COPY: Record<CopyKind, [string, string, string, string]> = {
   ],
 };
 
-function copyKind(action: StatusUiAction, interrupted: boolean): CopyKind {
-  if (action === 'open_resume_picker') return interrupted ? 'resume_interrupted' : 'resume_ready';
+function copyKind(action: StatusUiAction, interrupted: boolean, resumeState?: string): CopyKind {
+  if (action === 'open_resume_picker') {
+    if (resumeState === 'needs_reconciliation') return 'resume_needs_reconciliation';
+    if (resumeState === 'active') return 'resume_active';
+    return interrupted ? 'resume_interrupted' : 'resume_ready';
+  }
   if (action === 'confirm_workspace_restore') return 'workspace_restore_confirmation';
   if (action === 'install_compacted_context') return 'context_compacted';
   if (action === 'install_workspace_snapshot' || action === 'install_active_projection_with_workspace') {
@@ -62,9 +76,12 @@ export function buildSessionCommandStatusControl(
     payload: Record<string, unknown> | null;
     level?: 'success' | 'error' | 'info';
     interrupted?: boolean;
+    resumeState?: string;
   },
 ): SessionCommandControlState {
-  const [titleKey, titleFallback, messageKey, messageFallback] = COPY[copyKind(action, input.interrupted === true)];
+  const [titleKey, titleFallback, messageKey, messageFallback] = COPY[
+    copyKind(action, input.interrupted === true, input.resumeState)
+  ];
   return {
     type: action === 'open_resume_picker'
       ? 'resume_picker'

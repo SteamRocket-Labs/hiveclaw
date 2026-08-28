@@ -167,6 +167,54 @@ async def test_session_commands_resume_detects_interrupted_transcript():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("latest_status", "expected_state"),
+    [
+        ("needs_reconciliation", "needs_reconciliation"),
+        ("running", "active"),
+        ("suspended", "active"),
+    ],
+)
+async def test_session_commands_resume_never_duplicates_an_unsettled_runtime(
+    monkeypatch,
+    latest_status: str,
+    expected_state: str,
+):
+    import app.services.session_command_runtime as runtime
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    db = _DB(session, [_event(session, "user_message", content="finish the interrupted request")])
+
+    async def fake_latest_session_runtime_state(*_args, **_kwargs):
+        return latest_status
+
+    monkeypatch.setattr(
+        runtime,
+        "_latest_session_runtime_state",
+        fake_latest_session_runtime_state,
+        raising=False,
+    )
+
+    result = await _run_session_command(
+        runtime.execute_session_command,
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="resume",
+        session_id=session.id,
+        arguments={},
+    )
+
+    assert result["resume_state"] == expected_state
+    assert result["interrupted"] is False
+    assert result["next_query"] is None
+    assert result["ui_action"]["resume_state"] == expected_state
+
+
+@pytest.mark.asyncio
 async def test_session_commands_resume_prefers_committed_db_event_over_t0_projection(monkeypatch):
     import app.services.session_command_runtime as runtime
 

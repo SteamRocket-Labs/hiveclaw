@@ -75,14 +75,16 @@ describe('buildSessionCommandStatusControl', () => {
   const t = ((_key: string, fallback: string) => fallback) as unknown as Parameters<typeof buildSessionCommandStatusControl>[0];
 
   it.each([
-    ['open_resume_picker', true, 'resume_picker', 'Continue interrupted work'],
-    ['open_resume_picker', false, 'resume_picker', 'Session is ready'],
-    ['confirm_workspace_restore', false, 'workspace_restore_confirmation', 'Restore workspace files?'],
-    ['install_compacted_context', false, 'projection_status', 'Context compacted'],
-    ['install_workspace_snapshot', false, 'projection_status', 'Workspace restored'],
-    ['install_active_projection', false, 'projection_status', 'Rewind complete'],
-  ] as const)('maps %s to its user-facing control', (action, interrupted, type, title) => {
-    expect(buildSessionCommandStatusControl(t, action, { payload: {}, interrupted })).toMatchObject({ type, title });
+    ['open_resume_picker', true, undefined, 'resume_picker', 'Continue interrupted work'],
+    ['open_resume_picker', false, undefined, 'resume_picker', 'Session is ready'],
+    ['open_resume_picker', false, 'needs_reconciliation', 'resume_picker', 'Review required before continuing'],
+    ['open_resume_picker', false, 'active', 'resume_picker', 'Work is already in progress'],
+    ['confirm_workspace_restore', false, undefined, 'workspace_restore_confirmation', 'Restore workspace files?'],
+    ['install_compacted_context', false, undefined, 'projection_status', 'Context compacted'],
+    ['install_workspace_snapshot', false, undefined, 'projection_status', 'Workspace restored'],
+    ['install_active_projection', false, undefined, 'projection_status', 'Rewind complete'],
+  ] as const)('maps %s to its user-facing control', (action, interrupted, resumeState, type, title) => {
+    expect(buildSessionCommandStatusControl(t, action, { payload: {}, interrupted, resumeState })).toMatchObject({ type, title });
   });
 });
 

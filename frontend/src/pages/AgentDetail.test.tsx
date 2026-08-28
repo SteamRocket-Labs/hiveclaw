@@ -216,10 +216,20 @@ describe('AgentDetail realtime refresh contract', () => {
 
   it('removes non-running slash command prompts after their in-session control surface opens', async () => {
     const source = await readSource('./AgentDetail.tsx');
+    const sectionSource = await readSource('./agent-detail/AgentChatSection.tsx');
 
     expect(source).toContain('const commandMessageId = `session-command:');
     expect(source).toContain('message.id !== commandMessageId');
     expect(source).toMatch(/setChatMessagesAfterQueuedForSession\(\s*commandSessionId/);
+    expect(sectionSource).toContain("t('sessionWorkbench.commandPanel.resumeContinuePrompt', resumeQuery)");
+  });
+
+  it('keeps polling an absent authoritative run until the local grace state is actually cleared', async () => {
+    const source = await readSource('./AgentDetail.tsx');
+
+    expect(source).toContain('dataUpdatedAt: activeSessionRunObservedAt');
+    expect(source).toContain('activeRunPollInterval(');
+    expect(source).toMatch(/\[activeSessionRun,\s*activeSessionRunObservedAt,/);
   });
 
   it('hydrates the complete canonical Session V2 transcript without a manual older-message gate', async () => {

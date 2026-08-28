@@ -12,6 +12,7 @@ import {
   getTransportNotice,
   applySessionActiveRunState,
   applySessionActiveRunObservedState,
+  activeRunPollInterval,
   appendToolCallMessage,
   applyRuntimeDoneEvent,
   buildSessionTranscriptLoadFailureMessage,
@@ -791,6 +792,12 @@ describe('chatRuntime helpers', () => {
       now: 19_000,
       graceMs: 8_000,
     })).toBe(true);
+  });
+
+  it('keeps polling after authoritative run absence while local grace state still exists', () => {
+    expect(activeRunPollInterval(null, true)).toBe(3000);
+    expect(activeRunPollInterval({ status: 'running' }, false)).toBe(3000);
+    expect(activeRunPollInterval(null, false)).toBe(false);
   });
 
   it('reconciles the authoritative transcript when the live projection still shows a run the server no longer has', () => {

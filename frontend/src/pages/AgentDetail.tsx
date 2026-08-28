@@ -11,6 +11,7 @@ import type { BranchLineageItem } from './agent-detail/SessionLineageSurface';
 import AgentStatusSection from './agent-detail/AgentStatusSection';
 import {
     ACTIVE_RUN_ABSENCE_GRACE_MS,
+    activeRunPollInterval,
     applySessionActiveRunObservedState,
     applySessionActiveRunState,
     buildRuntimeSummary,
@@ -20,6 +21,7 @@ import {
     markActiveRunTerminalInRegistry,
     mergePendingUserMessages,
     filterSessionsForAgent,
+    hasLocalSessionRuntimeState,
     normalizeRuntimeEventMessage,
     normalizeStoredChatMessage,
     phaseUi,
@@ -912,6 +914,7 @@ function AgentDetailInner() {
                 level: uiAction.level === 'error' ? 'error' : 'info',
                 payload: actionResult,
                 interrupted: actionResult?.interrupted === true,
+                resumeState: typeof actionResult?.resume_state === 'string' ? actionResult.resume_state : undefined,
             });
             openSessionCommandControl(control);
             invalidateSessionRuntimeQueries(id, currentSessionId);
@@ -2177,7 +2180,7 @@ function AgentDetailInner() {
         refetchInterval: activeTab === 'chat' && activeSession?.id && !isDraftHumanChatSession(activeSession) ? 10000 : false,
     });
 
-    const { data: activeSessionRun } = useQuery({
+    const { data: activeSessionRun, dataUpdatedAt: activeSessionRunObservedAt } = useQuery({
         queryKey: ['chat-active-run', id, activeSession?.id],
         queryFn: () => chatApi.getActiveSessionRun(
             id!,
@@ -2187,9 +2190,10 @@ function AgentDetailInner() {
                 : undefined,
         ),
         enabled: canLoadAgentScopedData && activeTab === 'chat' && !!activeSession?.id && !!activeSession && isWritableSession(activeSession) && !isDraftHumanChatSession(activeSession),
-        // Idle sessions rely on WS run events (run_started/done invalidate this
-        // query); the 3s timer is only a live-run fallback (plan D1).
-        refetchInterval: (query) => (isLiveRun(query.state.data as SessionRun | null | undefined) ? 3000 : false),
+        refetchInterval: (query) => activeRunPollInterval(
+            query.state.data as SessionRun | null | undefined,
+            hasLocalSessionRuntimeState(activeRunStateRef.current, sessionUiStateRef.current, id && activeSession?.id ? buildSessionRuntimeKey(id, String(activeSession.id)) : ''),
+        ),
     });
 
     useEffect(() => {
@@ -2211,11 +2215,7 @@ function AgentDetailInner() {
             setIsStreaming(observedUiState.isStreaming);
             return;
         }
-        const staleRuntimeState = Boolean(
-            activeRunStateRef.current[key]
-            || sessionUiStateRef.current[key]?.isWaiting
-            || sessionUiStateRef.current[key]?.isStreaming
-        );
+        const staleRuntimeState = hasLocalSessionRuntimeState(activeRunStateRef.current, sessionUiStateRef.current, key);
         if (shouldReconcileTranscriptOnActiveRunAbsence({
             observedActiveRun: activeSessionRun,
             hasLocalActiveRuntime: staleRuntimeState,
@@ -2237,7 +2237,7 @@ function AgentDetailInner() {
             selectSession(activeSession);
             fetchMySessions(true, id);
         }
-    }, [activeSessionRun, activeSession?.id, id]);
+    }, [activeSessionRun, activeSessionRunObservedAt, activeSession?.id, id]);
 
     const supportsVision = !!agent?.primary_model_id && llmModels.some(
         (m: any) => m.id === agent.primary_model_id && m.supports_vision

@@ -23,6 +23,7 @@ from app.models.audit import ChatMessage
 from app.models.chat_artifact import ChatArtifact
 from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
+from app.models.runtime_task import RuntimeTask
 from app.models.user import User
 from app.memory.t0.ledger import T0SessionEvent, replay_t0_session_events_tail
 from app.runtime.hooks import HookEvent, emit_hook
@@ -44,7 +45,7 @@ from app.services.session_workspace_snapshot import (
     restore_session_workspace_snapshot,
 )
 from app.services.session_live_input import submit_live_cancel_input, submit_live_human_input
-from app.services.web_chat_runtime import get_active_web_chat_run
+from app.services.web_chat_runtime import EXECUTABLE_CHAT_TASK_TYPES, get_active_web_chat_run
 
 SESSION_COMMAND_NAMES = frozenset(
     {
@@ -314,6 +315,24 @@ def _last_replayable_turn_event(
         if _is_replayable_turn_event(event):
             return event
     return None
+
+
+async def _latest_session_runtime_state(db: Any, *, agent: Agent, session: ChatSession) -> str | None:
+    if not isinstance(db, AsyncSession):
+        return None
+    result = await db.execute(
+        select(RuntimeTask.status)
+        .where(
+            RuntimeTask.tenant_id == session.tenant_id,
+            RuntimeTask.parent_agent_id == agent.id,
+            RuntimeTask.parent_session_id == str(session.id),
+            RuntimeTask.task_type.in_(EXECUTABLE_CHAT_TASK_TYPES),
+        )
+        .order_by(RuntimeTask.created_at.desc(), RuntimeTask.id.desc())
+        .limit(1)
+    )
+    status = result.scalar_one_or_none()
+    return str(status).strip().lower() if status else None
 
 
 def _user_checkpoint_events(
@@ -797,16 +816,30 @@ async def _handle_resume(context: SessionCommandContext, session: ChatSession, _
     events, truth_source = await _load_events(context.db, agent=context.agent, session=session)
     last_turn_event = _last_replayable_turn_event(events)
     checkpoints = _user_checkpoint_events(events)
-    interrupted = bool(last_turn_event and _is_interrupted_tail_event(last_turn_event))
+    latest_runtime_state = await _latest_session_runtime_state(context.db, agent=context.agent, session=session)
+    interrupted_tail = bool(last_turn_event and _is_interrupted_tail_event(last_turn_event))
+    if latest_runtime_state == "needs_reconciliation":
+        resume_state = "needs_reconciliation"
+    elif latest_runtime_state in {"pending", "running", "suspended", "resumable"}:
+        resume_state = "active"
+    else:
+        resume_state = "interrupted" if interrupted_tail else "ready"
+    interrupted = resume_state == "interrupted"
     resume_checkpoint = checkpoints[-1] if interrupted and checkpoints else None
     return _typed_result(
         command="resume",
         action="resume_status",
         session_id=session.id,
-        ui_action={"type": "open_resume_picker", "session_id": str(session.id), "interrupted": interrupted},
+        ui_action={
+            "type": "open_resume_picker",
+            "session_id": str(session.id),
+            "interrupted": interrupted,
+            "resume_state": resume_state,
+        },
         truth_source=truth_source,
         event_count=len(events),
         checkpoint_count=len(checkpoints),
+        resume_state=resume_state,
         interrupted=interrupted,
         repair_strategy="transcript_replay_chain_repair",
         raw_last_event_type=events[-1].event_type if events else None,

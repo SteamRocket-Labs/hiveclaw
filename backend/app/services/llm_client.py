@@ -452,6 +452,26 @@ def _retry_after_seconds(headers: dict | httpx.Headers, *, fallback: float, cap:
     return max(0.0, min(float(wait), cap))
 
 
+def _take_http_max_attempts(kwargs: dict[str, Any]) -> int:
+    """Consume an internal per-call transport retry ceiling.
+
+    The global ten-attempt policy remains the default for primary model calls.
+    Advisory intelligence lanes may opt into a smaller physical wait budget;
+    the hint is removed before provider payload construction.
+    """
+
+    raw = kwargs.pop("_http_max_attempts", None)
+    if raw is None:
+        return _LLM_HTTP_MAX_ATTEMPTS
+    error = f"_http_max_attempts must be an integer between 1 and {_LLM_HTTP_MAX_ATTEMPTS}"
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError(error)
+    value = raw
+    if value < 1 or value > _LLM_HTTP_MAX_ATTEMPTS:
+        raise ValueError(error)
+    return value
+
+
 async def _post_with_status_retries(
     client: httpx.AsyncClient,
     url: str,
@@ -825,10 +845,17 @@ class OpenAICompatibleClient(LLMClient):
     ) -> LLMResponse:
         """Non-streaming completion."""
         url = f"{self._normalize_base_url()}/chat/completions"
+        http_max_attempts = _take_http_max_attempts(kwargs)
         payload = self._build_payload(messages, tools, temperature, max_tokens, stream=False, **kwargs)
 
         client = await self._get_client()
-        response = await _post_with_status_retries(client, url, payload=payload, headers=self._get_headers())
+        response = await _post_with_status_retries(
+            client,
+            url,
+            payload=payload,
+            headers=self._get_headers(),
+            max_retries=http_max_attempts,
+        )
 
         if response.status_code >= 400:
             error_text = response.text
@@ -1276,10 +1303,17 @@ class OpenAIResponsesClient(LLMClient):
     ) -> LLMResponse:
         """Non-streaming completion."""
         url = f"{self._normalize_base_url()}/responses"
+        http_max_attempts = _take_http_max_attempts(kwargs)
         payload = self._build_payload(messages, tools, temperature, max_tokens, stream=False, **kwargs)
 
         client = await self._get_client()
-        response = await _post_with_status_retries(client, url, payload=payload, headers=self._get_headers())
+        response = await _post_with_status_retries(
+            client,
+            url,
+            payload=payload,
+            headers=self._get_headers(),
+            max_retries=http_max_attempts,
+        )
 
         if response.status_code >= 400:
             error_text = response.text
@@ -1687,6 +1721,7 @@ class GeminiClient(LLMClient):
         **kwargs: Any,
     ) -> LLMResponse:
         """Non-streaming completion."""
+        http_max_attempts = _take_http_max_attempts(kwargs)
         if self._is_openai_compatible_base():
             fallback = await self._get_openai_fallback_client()
             return await fallback.complete(
@@ -1694,6 +1729,7 @@ class GeminiClient(LLMClient):
                 tools=tools,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                _http_max_attempts=http_max_attempts,
                 **kwargs,
             )
 
@@ -1702,7 +1738,13 @@ class GeminiClient(LLMClient):
         payload = self._build_payload(messages, tools, temperature, max_tokens, **kwargs)
 
         client = await self._get_client()
-        response = await _post_with_status_retries(client, url, payload=payload, headers=self._get_headers())
+        response = await _post_with_status_retries(
+            client,
+            url,
+            payload=payload,
+            headers=self._get_headers(),
+            max_retries=http_max_attempts,
+        )
 
         if response.status_code >= 400:
             error_text = response.text
@@ -1996,10 +2038,17 @@ class AnthropicClient(LLMClient):
     ) -> LLMResponse:
         """Non-streaming completion."""
         url = f"{self.base_url.rstrip('/')}/v1/messages"
+        http_max_attempts = _take_http_max_attempts(kwargs)
         payload = self._build_payload(messages, tools, temperature, max_tokens, stream=False, **kwargs)
 
         client = await self._get_client()
-        response = await _post_with_status_retries(client, url, payload=payload, headers=self._get_headers())
+        response = await _post_with_status_retries(
+            client,
+            url,
+            payload=payload,
+            headers=self._get_headers(),
+            max_retries=http_max_attempts,
+        )
 
         if response.status_code >= 400:
             error_text = response.text

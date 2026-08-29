@@ -786,7 +786,10 @@ async def _resolve_memory_context(
             _memory_kwargs["return_result"] = True
         if "turn_id" in _memory_sig:
             _memory_kwargs["turn_id"] = turn_metadata.get("turn_id")
+        memory_clock = asyncio.get_running_loop()
+        memory_started_at = memory_clock.time()
         memory_value = await build_memory_context(request.agent_id, tenant_id, **_memory_kwargs)
+        memory_duration_ms = max(0.0, (memory_clock.time() - memory_started_at) * 1000)
         runtime_memory_result = (
             memory_value
             if isinstance(memory_value, MemoryContextResult)
@@ -797,7 +800,12 @@ async def _resolve_memory_context(
                 user_message="Memory context is ready.",
             )
         )
-        await _consume_memory_context_status(request, tenant_id, runtime_memory_result)
+        await _consume_memory_context_status(
+            request,
+            tenant_id,
+            runtime_memory_result,
+            duration_ms=memory_duration_ms,
+        )
         runtime_memory_context = runtime_memory_result.content
         if runtime_memory_context:
             parts.append(
@@ -891,6 +899,8 @@ async def _consume_memory_context_status(
     request: AgentInvocationRequest,
     tenant_id: uuid.UUID,
     result: MemoryContextResult,
+    *,
+    duration_ms: float = 0.0,
 ) -> None:
     from app.memory.metrics import record_memory_context_status
 
@@ -911,6 +921,7 @@ async def _consume_memory_context_status(
         "auto_surface_remaining_bytes": result.auto_surface_remaining_bytes,
         "auto_surface_selected_count": result.auto_surface_selected_count,
         "selection_receipt": result.selection_receipt,
+        "duration_ms": round(max(0.0, float(duration_ms)), 3),
     }
     metadata["memory_context_status"] = status_fact
     if result.status == "ready":
@@ -949,7 +960,7 @@ async def _consume_memory_context_status(
         span_type="memory",
         name="memory.context.resolve",
         status=result.status,
-        duration_ms=0.0,
+        duration_ms=max(0.0, float(duration_ms)),
         agent_id=request.agent_id,
         user_id=request.user_id,
         runtime_task_id=metadata.get("runtime_task_id") or metadata.get("task_id"),

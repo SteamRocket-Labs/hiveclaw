@@ -251,7 +251,8 @@ def test_memory_selector_manifest_uses_bounded_descriptors_not_full_bodies() -> 
 
 @pytest.mark.asyncio
 async def test_model_selector_call_receives_only_descriptor_manifest(monkeypatch, tmp_path) -> None:
-    observed: dict[str, str] = {}
+    observed: dict[str, object] = {}
+    http_attempt_limits: list[int | None] = []
     candidate_id = "memory_candidate:semantic:0:abc"
     item = MemoryItem(
         kind=MemoryKind.SEMANTIC,
@@ -267,14 +268,16 @@ async def test_model_selector_call_receives_only_descriptor_manifest(monkeypatch
         },
     )
 
-    async def fake_covered_input(*, sections, **_kwargs):
+    async def fake_covered_input(*, sections, review_chunk, **_kwargs):
         payload = "\n".join(section for _section_id, section in sections)
         observed["manifest"] = payload
+        observed["chunk_review"] = await review_chunk("map", payload)
         return payload
 
     class _Client:
-        async def complete(self, *, messages, **_kwargs):
+        async def complete(self, *, messages, **kwargs):
             observed["final_prompt"] = messages[-1].content
+            http_attempt_limits.append(kwargs.get("_http_max_attempts"))
             return SimpleNamespace(content=json.dumps({"selected_ids": [candidate_id], "reason": "manifest match"}))
 
         async def close(self):
@@ -301,6 +304,7 @@ async def test_model_selector_call_receives_only_descriptor_manifest(monkeypatch
     assert "Bounded manifest hook" in observed["manifest"]
     assert "FULL_MEMORY_BODY_DO_NOT_SEND_TO_SELECTOR" not in observed["manifest"]
     assert "FULL_MEMORY_BODY_DO_NOT_SEND_TO_SELECTOR" not in observed["final_prompt"]
+    assert http_attempt_limits == [3, 3]
 
 
 def test_plane_read_legacy_t3_fallback_is_observable(data_root: Path, agent_id: uuid.UUID) -> None:

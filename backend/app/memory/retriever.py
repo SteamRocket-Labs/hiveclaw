@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 MAX_AUTOMATIC_MEMORY_ITEMS = 5
 MAX_SELECTION_DESCRIPTOR_BYTES = 512
+MEMORY_SEMANTIC_SELECTION_HTTP_MAX_ATTEMPTS = 3
 
 
 def _bounded_descriptor_text(value: object, *, max_bytes: int = MAX_SELECTION_DESCRIPTOR_BYTES) -> str:
@@ -412,6 +413,7 @@ class MemoryRetriever:
                     ],
                     temperature=0.1,
                     max_tokens=output_tokens,
+                    _http_max_attempts=MEMORY_SEMANTIC_SELECTION_HTTP_MAX_ATTEMPTS,
                 )
                 return str(response.content or "").strip()
 
@@ -451,6 +453,7 @@ class MemoryRetriever:
                 ],
                 temperature=0.1,
                 max_tokens=output_tokens,
+                _http_max_attempts=MEMORY_SEMANTIC_SELECTION_HTTP_MAX_ATTEMPTS,
             )
             parsed = json.loads(str(response.content or "").strip())
             if not isinstance(parsed, dict):

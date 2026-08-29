@@ -230,6 +230,9 @@ async def test_resolve_memory_context_emits_durable_degraded_fact_and_model_mark
 
     monkeypatch.setattr(invoker, "build_memory_context", degraded)
     monkeypatch.setattr(invoker, "persist_invocation_span", capture_span)
+    clock_values = iter((100.0, 102.5))
+    clock = SimpleNamespace(time=lambda: next(clock_values))
+    monkeypatch.setattr(invoker.asyncio, "get_running_loop", lambda: clock)
     request = AgentInvocationRequest(
         model=SimpleNamespace(provider="openai", model="gpt-4.1"),
         messages=[{"role": "user", "content": "latest question"}],
@@ -253,7 +256,9 @@ async def test_resolve_memory_context_emits_durable_degraded_fact_and_model_mark
     assert events[0]["retryable"] is True
     assert spans[0]["span_type"] == "memory"
     assert spans[0]["status"] == "degraded"
+    assert spans[0]["duration_ms"] == 2500.0
     assert request.session_context.metadata["memory_context_status"]["code"] == "semantic_retrieval_unavailable"
+    assert request.session_context.metadata["memory_context_status"]["duration_ms"] == 2500.0
     assert snapshot()["memory_context_status_total"]["degraded:semantic_retrieval_unavailable"] == 1
 
 

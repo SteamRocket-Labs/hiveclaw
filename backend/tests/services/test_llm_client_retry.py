@@ -49,6 +49,32 @@ async def test_post_with_status_retries_uses_ten_rate_limit_rejections_and_expon
     assert sleeps == [1, 2, 4, 8, 16, 30, 30, 30, 30]
 
 
+@pytest.mark.asyncio
+async def test_post_with_status_retries_respects_smaller_caller_attempt_budget(monkeypatch) -> None:
+    import app.services.llm_client as llm_client
+
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(llm_client.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(llm_client.random, "uniform", lambda _start, _end: 0.0)
+    client = _FakePostClient([_response(429) for _ in range(10)])
+
+    result = await llm_client._post_with_status_retries(
+        client,  # type: ignore[arg-type]
+        "https://llm.example/v1/chat/completions",
+        payload={"model": "selector"},
+        headers={},
+        max_retries=3,
+    )
+
+    assert result.status_code == 429
+    assert len(client.calls) == 3
+    assert sleeps == [1, 2]
+
+
 @pytest.mark.parametrize(
     ("status_code", "expected"),
     [
@@ -127,6 +153,49 @@ async def test_post_with_status_retries_honors_retry_after_without_retrying_auth
     )
     assert result.status_code == 401
     assert len(auth.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "client_class_name",
+    ["OpenAICompatibleClient", "OpenAIResponsesClient", "GeminiClient", "AnthropicClient"],
+)
+async def test_non_stream_clients_honor_caller_bounded_http_attempts_without_leaking_transport_hint(
+    monkeypatch,
+    client_class_name,
+) -> None:
+    """Advisory intelligence lanes may spend a smaller, explicit retry budget.
+
+    The budget is a transport/lifecycle invariant, not a provider payload field,
+    and must work equally across every non-stream provider protocol.
+    """
+
+    import app.services.llm_client as llm_client
+
+    observed: list[dict] = []
+
+    async def fake_post(_client, _url, *, payload, headers, max_retries):
+        observed.append({"payload": payload, "headers": headers, "max_retries": max_retries})
+        return httpx.Response(429, text='{"error":{"type":"rate_limit_error"}}')
+
+    async def fake_get_client():
+        return object()
+
+    monkeypatch.setattr(llm_client, "_post_with_status_retries", fake_post)
+    client_class = getattr(llm_client, client_class_name)
+    client = client_class(api_key="test-key", model="test-model")
+    monkeypatch.setattr(client, "_get_client", fake_get_client)
+
+    with pytest.raises(llm_client.LLMError) as caught:
+        await client.complete(
+            [llm_client.LLMMessage(role="user", content="select authorized memory")],
+            _http_max_attempts=3,
+        )
+
+    assert caught.value.http_status == 429
+    assert len(observed) == 1
+    assert observed[0]["max_retries"] == 3
+    assert "_http_max_attempts" not in observed[0]["payload"]
 
 
 @pytest.mark.asyncio

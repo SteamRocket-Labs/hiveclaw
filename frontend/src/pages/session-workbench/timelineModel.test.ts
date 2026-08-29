@@ -575,6 +575,63 @@ describe('session workbench timeline model', () => {
     });
   });
 
+  it('does not append a second pending disclosure after the latest turn has a terminal answer', () => {
+    const runScope = {
+      level: 'round' as const,
+      session_id: 'session-1',
+      thread_id: 'session-1',
+      turn_id: 'turn-1',
+      run_id: 'run-1',
+      round_id: 'round-1',
+    };
+    const model = buildThreadTimeline({
+      messages: [
+        {
+          id: 'user-1',
+          role: 'user',
+          content: 'Return the terminal marker.',
+          timestamp: '2026-08-29T00:00:00Z',
+        },
+        {
+          id: 'reasoning-1',
+          role: 'assistant',
+          content: '',
+          timestamp: '2026-08-29T00:00:10Z',
+          sessionItem: {
+            id: 'reasoning-1',
+            kind: 'assistant_reasoning_summary',
+            lifecycle: 'completed',
+            scope: runScope,
+            terminal: true,
+          },
+        },
+        {
+          id: 'answer-1',
+          role: 'assistant',
+          content: 'SESSION-TERMINAL-TAIL',
+          timestamp: '2026-08-29T00:00:13Z',
+          sessionItem: {
+            id: 'answer-1',
+            kind: 'assistant_final',
+            lifecycle: 'completed',
+            scope: runScope,
+            terminal: true,
+          },
+        },
+      ] as AgentChatMessage[],
+      activeSession: { id: 'session-1', title: 'Terminal tail' },
+      isWaiting: true,
+      isStreaming: false,
+      activeRunStatus: 'running',
+      activeRunId: 'run-1',
+      runtimePhase: 'thinking',
+    });
+
+    expect(model.cells.filter((cell) => cell.kind === 'active_run')).toHaveLength(1);
+    expect(model.cells.some((cell) => cell.kind === 'assistant_final')).toBe(true);
+    expect(model.cells).not.toContainEqual(expect.objectContaining({ id: 'active-run-pending' }));
+  });
+
   it('groups delayed evidence by exact run identity even after the next user turn is visible', () => {
     const runScope = {
       level: 'round' as const,

@@ -2171,11 +2171,19 @@ export function createThreadTimelineCache(): ThreadTimelineCache {
 
 export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTimelineModel {
   const cells = applyCanonicalRunTerminalEvidence(buildCells(input.messages), input.messages);
+  const latestTurnAnswered = hasAssistantAnswerAfterLatestUser(input.messages);
+  const latestAnsweredRunId = latestTurnAnswered
+    ? messageRunId([...input.messages].reverse().find(isRenderableAssistantAnswer))
+    : null;
+  const activeRunId = String(input.activeRunId || '').trim();
+  const terminalAnswerOwnsActiveRun = Boolean(
+    latestAnsweredRunId && activeRunId && latestAnsweredRunId === activeRunId,
+  );
   const activeRunStatus = mainTurnActiveRunStatus(input, cells);
   const runtimePhaseValue = String(input.runtimePhase || '').trim();
   const terminalDeliveryPending = runtimePhaseValue === 'done'
     && latestUserMessageIndex(input.messages) >= 0
-    && !hasAssistantAnswerAfterLatestUser(input.messages);
+    && !latestTurnAnswered;
   const retainedProcessRun = keepLatestProcessRunActive(cells, input, activeRunStatus, terminalDeliveryPending);
   const trailingUserTurn = cells.at(-1)?.kind === 'user_turn';
   const interruptedUserTurn = trailingUserTurn && runtimePhaseValue === 'cancelled';
@@ -2184,7 +2192,9 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     && !input.isStreaming
     && !activeRunStatus
     && (!runtimePhaseValue || runtimePhaseValue === 'idle');
-  const pendingRunCell = buildPendingRunCell(input, activeRunStatus, unresolvedUserTurn, interruptedUserTurn);
+  const pendingRunCell = terminalAnswerOwnsActiveRun
+    ? null
+    : buildPendingRunCell(input, activeRunStatus, unresolvedUserTurn, interruptedUserTurn);
   if (pendingRunCell && !retainedProcessRun && !hasOpenRunCell(cells)) {
     cells.push(pendingRunCell);
   }

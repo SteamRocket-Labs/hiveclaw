@@ -241,6 +241,83 @@ async def test_invoke_agent_does_not_prefetch_or_inject_personal_kb_before_kerne
 
 
 @pytest.mark.asyncio
+async def test_invoke_agent_preserves_canonical_model_result_receipt(monkeypatch):
+    from app.kernel import InvocationResult
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+
+    receipt = {
+        "result_id": str(uuid4()),
+        "provider_request_id": "provider-request-terminal-1",
+        "run_id": str(uuid4()),
+        "block_ledger": [
+            {
+                "item_id": str(uuid4()),
+                "kind": "assistant_text",
+                "block_index": 0,
+                "content_hash": "content-hash-1",
+            }
+        ],
+    }
+
+    class FakeKernel:
+        async def handle(self, _request):
+            return InvocationResult(
+                content="Canonical terminal answer",
+                model_result_receipt=receipt,
+            )
+
+    monkeypatch.setattr("app.runtime.invoker._resolve_kernel_for_request", lambda _request: FakeKernel())
+
+    result = await invoke_agent(
+        AgentInvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None),
+            messages=[{"role": "user", "content": "Return the terminal answer."}],
+            agent_name="Agent",
+            role_description="desc",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+        )
+    )
+
+    assert result.content == "Canonical terminal answer"
+    assert result.model_result_receipt == receipt
+
+
+@pytest.mark.asyncio
+async def test_invoke_agent_preserves_typed_provider_failure_facts(monkeypatch):
+    from app.kernel import InvocationResult
+    from app.kernel.contracts import TerminalReason
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+
+    class FakeKernel:
+        async def handle(self, _request):
+            return InvocationResult(
+                content="Provider quota is unavailable.",
+                terminal_reason=TerminalReason.PROVIDER_ERROR,
+                failure_code="insufficient_balance",
+                failure_delivery_state="rejected",
+                failure_requires_user_decision=True,
+            )
+
+    monkeypatch.setattr("app.runtime.invoker._resolve_kernel_for_request", lambda _request: FakeKernel())
+
+    result = await invoke_agent(
+        AgentInvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None),
+            messages=[{"role": "user", "content": "Run the provider request."}],
+            agent_name="Agent",
+            role_description="desc",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+        )
+    )
+
+    assert result.failure_code == "insufficient_balance"
+    assert result.failure_delivery_state == "rejected"
+    assert result.failure_requires_user_decision is True
+
+
+@pytest.mark.asyncio
 async def test_invoke_agent_redacts_only_exact_model_secret_from_stream_final_and_parts(monkeypatch):
     from app.kernel import InvocationResult
     from app.runtime.invoker import AgentInvocationRequest, invoke_agent

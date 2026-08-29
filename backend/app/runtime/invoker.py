@@ -204,6 +204,14 @@ class AgentInvocationResult:
     parts: list[dict] | None = None
     reasoning_signature: str | None = None
     terminal_reason: TerminalReason = TerminalReason.TURN_STOP
+    # Exact mechanical facts produced by the kernel. The invocation boundary
+    # may redact their bytes before this point, but must not drop them: the
+    # durable web runtime needs the receipt to commit assistant_final/run/turn
+    # atomically, and typed provider failures to make replay-safe decisions.
+    model_result_receipt: dict[str, Any] | None = None
+    failure_code: str | None = None
+    failure_delivery_state: str | None = None
+    failure_requires_user_decision: bool = False
 
 
 async def _maybe_await(value: Any) -> Any:

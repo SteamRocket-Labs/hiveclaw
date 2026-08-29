@@ -6,7 +6,7 @@
 >
 > 目标环境：生产环境中的 **Rocky 的实验室**；该公司本身就是测试环境，不另建测试租户
 >
-> 实施分工：**zCode 负责全部代码修改；Codex 只负责 review → test → feedback**
+> 实施分工：**owner 已于 2026-08-29 改为 Codex 独立完成代码、review、test、证据、commit/push、部署与生产验收；不再委派 zCode/Kimi**
 >
 > 当前业务代码基线：生产提交 `de66ac4e`；其后的本地提交截至开工时未改变 `backend/app` 与 `frontend/src`
 >
@@ -30,11 +30,30 @@
 |---|---|
 | 写入型 E2E 使用哪个环境 | 直接使用 **Rocky 的实验室** |
 | 是否另建隔离测试租户 | 否 |
-| 谁修改代码 | zCode |
-| Codex 的职责 | review、test、feedback；不修改代码 |
+| 谁修改代码 | **Codex**（2026-08-29 owner 新决定，取代此前 zCode/Kimi 分工） |
+| Codex 的职责 | 独立实现、review、test、反馈修复、文档证据、原子 commit/push、三服务部署与 signed-in 生产验收 |
 | 是否立即继续 Sandbox | 否，暂停 |
 | 是否已经授权本轮实现 | 是；2026-08-25 已授权开工 |
 | Day 1 部署 | 已授权两次候选部署：首轮闭环后一次，A2A 反馈修复后一次 |
+
+---
+
+### 0.2 当前八项唯一验收看板（2026-08-29）
+
+本表是压缩、重启或长时执行后的第一恢复入口。每次继续工作先读本表和对应专题节；每完成一个 bounded 包，按“测试 → 文档证据 → 原子 commit/push → 需要时三服务部署 → signed-in 生产复验”更新本表。生产失败只新开一个指向**最早错误状态**的缺陷包；同一合同连续两遍 clean pass 即关账，不做邻近重构或无限补丁。
+
+| # | 用户验收面 | 当前已证明 | 未完成 / 下一唯一动作 | 当前状态 |
+|---|---|---|---|---|
+| 1 | Session 表达与流式输出 | 历史 run identity / late evidence 修复已 push；canonical receipt 修复 `3a7bdf50` 已 push；backend full **8332 passed / 2 skipped**；exact HEAD `e4e04754` 三服务均 `SUCCESS` | fresh Session 连续两回合 no-reload 采样 + reload 等价；正文各唯一可见、每 Turn 恰一过程 disclosure、旧时长冻结、0 幽灵 running；只读 DB 证明 canonical 四终局事件与唯一 outcome | **生产 GREEN 待验** |
+| 2 | 三层 Knowledge：Agent Memory / Personal KB / Company KB | Personal + Company tool-first 两遍 signed-in clean pass 已在 §7.20/§7.21 通过；Personal/Company ownership、citation 与 denied/unavailable/empty 边界保持独立 | Agent Memory T0→T2→T3 消费旅程；新建 Agent 的首个 Company KB 引用；最终按三层分别关账，不把 Personal/Company 搜索通过外推为 Memory 完成 | **Personal/Company bounded 闭环；三层 aggregate open** |
+| 3 | Create Agent + Using Agent to Create Agent | preview/revision/reject/canonical-card/decision hierarchy 的 bounded UI 包均已部署并生产通过 | UI confirm → provision → 打开新 Agent → 首任务 Company KB citation；再由既有 Agent 通过 governed HR 工具创建另一 Agent，验证预览/确认/终态/证据/恢复 | **open** |
+| 4 | 单 Agent Plan Mode | 代码与本地 journey 基线已存在 | signed-in 连续两遍：进入、clarify、agent-authored plan、revise、reject/cancel、exact-version approve、执行、reload/resume；确认前零副作用，平台不改写计划语义 | **open** |
+| 5 | Agent Team（与 Sub-agent 分开） | 三类 collaboration typed substrate 与历史本地/部署证据存在 | Sub-agent 与 Team 分开各跑两遍：匿名 worker vs 同 lead 具名 teammate；fanout、成员失败、retry/cancel、结果聚合、child 入口、reload/resume、右栏计数均不混入 A2A/Workflow | **open** |
+| 6 | Dynamic Workflow + 确定性 A2A Workflow | durable workflow/gate/wait/resume 与本地 journey 基线存在 | Dynamic preview/admission/exact-version confirm/run/recovery 两遍；版本化 A→parallel B/C→review gate→join→final 两遍，含 restart、重复 signal、artifact 与 UI tree | **open** |
+| 7 | A2A 四路径 | 同步咨询 clean pass 1 已 Closed；async/continuation/nested 的本地修复链已在当前部署中 | 当前部署上完成同步、异步委派、同 child 续发、A→B→C 长结果/artifact 四路径；每条连续两遍，父自动恰一续跑、no polling、no stale running、authority/ref/UI 拓扑一致 | **open** |
+| 8 | Rewind / Resume / Fork / Rollback | Session V2 typed checkpoint/branch substrate 与回归资产存在；当前 Session P0 修复是前置 | signed-in 两遍覆盖 rewind、resume、fork 分支、rollback；验证原 Session/分支边界、最终回答、artifact、active tail、按钮与 reload 后同构，且无重复 effect/消息丢失 | **open** |
+
+当前发布门禁：backend canonical full gate 已绿；`e4e04754` 已 push 至 `SteamRocket-Labs/hiveclaw/main`，三服务部署均 `SUCCESS`。frontend full test/type/i18n/build 将在所有 UI finding 收口后对最终 HEAD 重跑；八项未全部 `Closed` 前不得宣称 Weekend、Day 1/Day 2、RC-09 或 Zero Known Defects 完成。
 
 ---
 

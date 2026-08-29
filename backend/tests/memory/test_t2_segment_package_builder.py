@@ -1208,8 +1208,8 @@ async def test_episode_stitch_package_commits_without_learning_brain(tmp_path: P
     ]
     manifest = json.loads((episode_result.package_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["schema_version"] == "t2.episode-stitch.manifest.v1"
-    assert manifest["prompts"]["stitcher_prompt_version"] == "t2.episode_stitcher.v2"
-    assert manifest["prompts"]["review_prompt_version"] == "t2.episode_gate_review.v2"
+    assert manifest["prompts"]["stitcher_prompt_version"] == "t2.episode_stitcher.v3"
+    assert manifest["prompts"]["review_prompt_version"] == "t2.episode_gate_review.v3"
     assert manifest["source_packages"] == ["t2pkg-rwa-1"]
     assert (t2_result.package_dir / "summary.md").exists()
 

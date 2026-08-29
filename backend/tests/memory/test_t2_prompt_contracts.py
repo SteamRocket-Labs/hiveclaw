@@ -113,8 +113,8 @@ def test_t2_xml_prompts_require_reserved_character_escaping() -> None:
     assert SUMMARY_PROMPT_VERSION == "t2.summary_agent.v3"
     assert LABELS_PROMPT_VERSION == "t2.learning_brain_labels.continuity_text_20260830"
     assert REVIEW_PROMPT_VERSION == "t2.memory_gate_review.v4"
-    assert EPISODE_STITCHER_PROMPT_VERSION == "t2.episode_stitcher.v2"
-    assert EPISODE_GATE_REVIEW_PROMPT_VERSION == "t2.episode_gate_review.v2"
+    assert EPISODE_STITCHER_PROMPT_VERSION == "t2.episode_stitcher.v3"
+    assert EPISODE_GATE_REVIEW_PROMPT_VERSION == "t2.episode_gate_review.v3"
 
     for prompt in (
         SUMMARY_AGENT_PROMPT,
@@ -160,6 +160,37 @@ def test_episode_prompts_require_t0_refs_and_review_rubric() -> None:
     assert "continuity_fidelity" in EPISODE_GATE_REVIEW_PROMPT
     assert "correction_quality" in EPISODE_GATE_REVIEW_PROMPT
     assert '<episode_review_rubric schema_version="t2.episode_review_rubric.v1">' in EPISODE_GATE_REVIEW_PROMPT
+
+
+def test_episode_prompts_define_platform_gate_machine_contract() -> None:
+    from app.memory.t2.prompts import EPISODE_GATE_REVIEW_PROMPT, EPISODE_STITCHER_PROMPT
+
+    assert (
+        '<episode_synthesis schema_version="t2.episode_synthesis.v1" '
+        'episode_id="EXACT_EPISODE_ID_FROM_EPISODE_BUNDLE" '
+        'session_id="EXACT_SESSION_ID_FROM_EPISODE_BUNDLE" '
+        'status="closed|open|abandoned|stale">'
+    ) in EPISODE_STITCHER_PROMPT
+    assert (
+        '<package_ref package_id="EXACT_PACKAGE_ID_FROM_EPISODE_BUNDLE" '
+        't0_segment_id="EXACT_T0_SEGMENT_ID_FROM_EPISODE_BUNDLE" '
+        'relationship="same_episode|adjacent_but_independent|parent_child|conflicting|insufficient_evidence"/>'
+    ) in EPISODE_STITCHER_PROMPT
+    assert '<source_ref uri="EXACT_T0_SOURCE_REF_FROM_EPISODE_BUNDLE"/>' in EPISODE_STITCHER_PROMPT
+    assert "Use package_ref, not package" in EPISODE_STITCHER_PROMPT
+
+    assert (
+        '<episode_review schema_version="t2.episode_review.v1" '
+        'episode_id="EXACT_EPISODE_ID_FROM_EPISODE_BUNDLE" reviewer="memory_gate_agent">'
+    ) in EPISODE_GATE_REVIEW_PROMPT
+    assert "<decision>approved|needs_revision|rejected|hold_recall_only</decision>" in EPISODE_GATE_REVIEW_PROMPT
+    assert "<allowed_next>t3_intake|short_term_carryover|archive_recall_only|none</allowed_next>" in (
+        EPISODE_GATE_REVIEW_PROMPT
+    )
+    assert "decision and allowed_next must be direct children of episode_review" in EPISODE_GATE_REVIEW_PROMPT
+    assert (
+        "Approval written only in Markdown prose does not satisfy this machine contract" in EPISODE_GATE_REVIEW_PROMPT
+    )
 
 
 def test_segment_platform_gate_does_not_override_low_score_model_approval() -> None:

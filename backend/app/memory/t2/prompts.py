@@ -3,8 +3,8 @@
 SUMMARY_PROMPT_VERSION = "t2.summary_agent.v3"
 LABELS_PROMPT_VERSION = "t2.learning_brain_labels.continuity_text_20260830"
 REVIEW_PROMPT_VERSION = "t2.memory_gate_review.v4"
-EPISODE_STITCHER_PROMPT_VERSION = "t2.episode_stitcher.v2"
-EPISODE_GATE_REVIEW_PROMPT_VERSION = "t2.episode_gate_review.v2"
+EPISODE_STITCHER_PROMPT_VERSION = "t2.episode_stitcher.v3"
+EPISODE_GATE_REVIEW_PROMPT_VERSION = "t2.episode_gate_review.v3"
 
 _COMMON_BOUNDARY = """
 <design_law>
@@ -292,7 +292,26 @@ cited t0_source_refs, conservative correction handling, and no direct T3 write.
 </rubric>
 
 <output_schema>
-Return Markdown with exactly one <episode_synthesis schema_version="t2.episode_synthesis.v1"> block.
+Return Markdown with exactly one XML block in this machine-readable shape:
+<episode_synthesis schema_version="t2.episode_synthesis.v1" episode_id="EXACT_EPISODE_ID_FROM_EPISODE_BUNDLE" session_id="EXACT_SESSION_ID_FROM_EPISODE_BUNDLE" status="closed|open|abandoned|stale">
+  <source_packages>
+    <package_ref package_id="EXACT_PACKAGE_ID_FROM_EPISODE_BUNDLE" t0_segment_id="EXACT_T0_SEGMENT_ID_FROM_EPISODE_BUNDLE" relationship="same_episode|adjacent_but_independent|parent_child|conflicting|insufficient_evidence"/>
+  </source_packages>
+  <source_refs>
+    <source_ref uri="EXACT_T0_SOURCE_REF_FROM_EPISODE_BUNDLE"/>
+  </source_refs>
+  <episode_summary>MODEL_AUTHORED_EPISODE_SYNTHESIS</episode_summary>
+  <continuity_decision relationship="same_episode|adjacent_but_independent|parent_child|conflicting|insufficient_evidence" confidence="0.00-1.00">
+    <reason>MODEL_AUTHORED_SOURCE_BACKED_REASON</reason>
+  </continuity_decision>
+</episode_synthesis>
+Replace every pipe-delimited declaration with exactly one value. Copy episode_id,
+session_id, package_id, t0_segment_id, and T0 source-ref URIs exactly from the
+episode bundle. Root episode_id, session_id, and status must be attributes, not
+child elements. Use package_ref, not package, inside source_packages. Cite every
+source package used by the synthesis and every T0 range supporting a key claim.
+Text or Markdown references outside this XML block do not satisfy the machine
+contract.
 </output_schema>
 """.strip()
 
@@ -349,15 +368,34 @@ hard source, authority, schema, and closed-episode requirements.
 </rubric>
 
 <output_schema>
-Return Markdown with exactly one <episode_review schema_version="t2.episode_review.v1"> block
-that contains:
-<episode_review_rubric schema_version="t2.episode_review_rubric.v1">
-  <score name="continuity_fidelity" value="0.00-1.00"/>
-  <score name="source_ref_coverage" value="0.00-1.00"/>
-  <score name="correction_quality" value="0.00-1.00"/>
-  <score name="closure_quality" value="0.00-1.00"/>
-  <score name="safety_scope" value="0.00-1.00"/>
-  <review_score>0.00-1.00</review_score>
-</episode_review_rubric>
+Return Markdown with exactly one XML block in this machine-readable shape:
+<episode_review schema_version="t2.episode_review.v1" episode_id="EXACT_EPISODE_ID_FROM_EPISODE_BUNDLE" reviewer="memory_gate_agent">
+  <decision>approved|needs_revision|rejected|hold_recall_only</decision>
+  <allowed_next>t3_intake|short_term_carryover|archive_recall_only|none</allowed_next>
+  <episode_review_rubric schema_version="t2.episode_review_rubric.v1">
+    <score name="continuity_fidelity" value="0.00-1.00"/>
+    <score name="source_ref_coverage" value="0.00-1.00"/>
+    <score name="correction_quality" value="0.00-1.00"/>
+    <score name="closure_quality" value="0.00-1.00"/>
+    <score name="safety_scope" value="0.00-1.00"/>
+    <review_score>0.00-1.00</review_score>
+  </episode_review_rubric>
+  <source_refs_checked>
+    <source_ref uri="EXACT_T0_SOURCE_REF_FROM_EPISODE_BUNDLE"/>
+  </source_refs_checked>
+</episode_review>
+Replace every pipe-delimited declaration above with exactly one controlled
+value. Copy episode_id and checked source-ref URIs exactly from the episode
+bundle. The decision and allowed_next must be direct children of episode_review.
+Only these transition pairs are valid:
+- approved with t3_intake for a source-backed closed synthesis;
+- approved with short_term_carryover for a source-backed open synthesis;
+- hold_recall_only with archive_recall_only;
+- needs_revision with none;
+- rejected with none.
+Approval written only in Markdown prose does not satisfy this machine contract.
+A non-approved judgment must remain non-approved; never force approval merely to
+make the candidate committable. Text outside the XML block does not satisfy the
+machine contract.
 </output_schema>
 """.strip()

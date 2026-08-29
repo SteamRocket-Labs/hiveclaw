@@ -2226,7 +2226,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Every day at 09:00');
     expect(markup).toContain('Daily release check');
     expect(markup).toContain('All systems green.');
-    expect(markup).toContain('Deferred capabilities');
+    expect(markup).toContain('Configuration &amp; sources');
+    expect(markup).toContain('Not enabled');
     expect(markup).toContain('github-research');
     expect(markup).toContain('Deploy Playbook');
     expect(markup).toContain('canary rollout');
@@ -5798,11 +5799,12 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('Research Bot');
-    expect(markup).toContain('Ready now');
-    expect(markup).toContain('Will install');
-    expect(markup).toContain('Deferred capabilities');
-    expect(markup).toContain('Warnings');
-    expect(markup).toContain('Manual steps');
+    expect(markup).toContain('Configuration &amp; sources');
+    expect(markup).toContain('Included capabilities');
+    expect(markup).toContain('Added during setup');
+    expect(markup).toContain('Not enabled');
+    expect(markup).toContain('Needs attention');
+    expect(markup).toContain('Needs your attention');
     expect(markup).toContain('Builtin tools + default skills + memory loop');
     expect(markup).toContain('mcp: github');
     expect(markup).toContain('github-research');

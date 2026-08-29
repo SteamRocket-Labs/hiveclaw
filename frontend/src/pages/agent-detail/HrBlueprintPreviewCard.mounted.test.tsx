@@ -29,8 +29,9 @@ vi.mock('../../api/domains/hrCreation', () => ({
 }));
 
 import { HrBlueprintPreviewCard } from './HrBlueprintPreviewCard';
+import type { HrPreviewToolResult } from './toolResultEnvelope';
 
-const preview = {
+const preview: HrPreviewToolResult = {
   kind: 'hr_preview' as const,
   blueprintId: 'draft-1',
   blueprintVersion: 1,
@@ -55,18 +56,21 @@ const preview = {
   manualSteps: [],
 };
 
-function renderCard(onSendMessage?: (message: string) => Promise<unknown>) {
+function renderCard(
+  onSendMessage?: (message: string) => Promise<unknown>,
+  cardPreview: HrPreviewToolResult = preview,
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   hrMocks.get.mockResolvedValue({
-    blueprint_id: preview.blueprintId,
-    blueprint_version: preview.blueprintVersion,
-    blueprint_hash: preview.blueprintHash,
-    draft_status: preview.status,
+    blueprint_id: cardPreview.blueprintId,
+    blueprint_version: cardPreview.blueprintVersion,
+    blueprint_hash: cardPreview.blueprintHash,
+    draft_status: cardPreview.status,
     blueprint: {},
   });
   return render(
     <QueryClientProvider client={client}>
-      <HrBlueprintPreviewCard agentId="hr-agent" preview={preview} onSendMessage={onSendMessage} />
+      <HrBlueprintPreviewCard agentId="hr-agent" preview={cardPreview} onSendMessage={onSendMessage} />
     </QueryClientProvider>,
   );
 }
@@ -134,5 +138,60 @@ describe('HrBlueprintPreviewCard revision UX', () => {
     expect((screen.getByRole('textbox', { name: 'What would you like to change?' }) as HTMLTextAreaElement).value)
       .toBe('Keep this change for retry.');
     expect(onSendMessage).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('HrBlueprintPreviewCard decision hierarchy', () => {
+  it('keeps typed configuration evidence in a closed disclosure while actionable decisions stay visible', () => {
+    const { container } = renderCard(undefined, {
+      ...preview,
+      readyNow: ['builtin tools + 9 default skills', 'workspace, memory, heartbeat, and self-evolution scaffolding'],
+      willInstall: ['mcp: company-search'],
+      deferredCapabilities: ['web research until separately approved'],
+      sourceAttributions: [{
+        field: 'mission',
+        value_summary: 'Company release coordinator',
+        source_type: 'confirmed_by_user',
+        source_refs: ['explicit:user-confirmed'],
+      }],
+      knowledgeDebt: ['No historical release retrospective found'],
+      missingGates: ['Choose the final owner'],
+      warnings: ['External publishing remains disabled'],
+      manualSteps: ['Review access before creation'],
+    });
+
+    const details = container.querySelector<HTMLDetailsElement>('details.hr-blueprint-technical-details');
+    expect(details).not.toBeNull();
+    expect(details?.open).toBe(false);
+    expect(details?.querySelector('summary')?.textContent).toBe('Configuration & sources');
+    expect(details?.textContent).toContain('builtin tools + 9 default skills');
+    expect(details?.textContent).toContain('workspace, memory, heartbeat, and self-evolution scaffolding');
+    expect(details?.textContent).toContain('mcp: company-search');
+    expect(details?.textContent).toContain('web research until separately approved');
+    expect(details?.textContent).toContain('Company release coordinator');
+    expect(details?.textContent).toContain('No historical release retrospective found');
+
+    for (const decisionText of [
+      'Prepare release checks.',
+      'Choose the final owner',
+      'External publishing remains disabled',
+      'Review access before creation',
+    ]) {
+      const decisionNode = screen.getByText(decisionText);
+      expect(details?.contains(decisionNode)).toBe(false);
+    }
+  });
+
+  it('does not render an empty configuration disclosure', () => {
+    const { container } = renderCard(undefined, {
+      ...preview,
+      readyNow: [],
+      willInstall: [],
+      deferredCapabilities: [],
+      sourceAttributions: [],
+      knowledgeDebt: [],
+    });
+
+    expect(container.querySelector('details.hr-blueprint-technical-details')).toBeNull();
   });
 });

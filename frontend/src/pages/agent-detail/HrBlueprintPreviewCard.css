@@ -114,6 +114,29 @@
   padding-left: 18px;
 }
 
+.hr-blueprint-technical-details {
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--bg-primary) 58%, transparent);
+}
+
+.hr-blueprint-technical-details > summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: var(--text-meta);
+  font-weight: 600;
+}
+
+.hr-blueprint-technical-details[open] > summary {
+  margin-bottom: 8px;
+}
+
+.hr-blueprint-technical-details > div {
+  display: grid;
+  gap: 8px;
+}
+
 .hr-blueprint-sources li {
   display: grid;
   gap: 1px;

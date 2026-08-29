@@ -200,6 +200,11 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
   const scopeLabel = permissionScopeLabel(canonicalPreview.permissionScope, t);
   const reviewRiskLabel = riskLabel(canonicalPreview.riskClass, t);
   const provisioningSteps = draft?.provisioning_steps || [];
+  const hasConfigurationDetails = canonicalPreview.readyNow.length > 0
+    || canonicalPreview.willInstall.length > 0
+    || canonicalPreview.deferredCapabilities.length > 0
+    || canonicalPreview.sourceAttributions.length > 0
+    || canonicalPreview.knowledgeDebt.length > 0;
   const canonicalReady = Boolean(agentId && preview.blueprintId);
   const durableAction = hrCreationActionForStatus(status);
 
@@ -309,14 +314,21 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
           <p>{canonicalPreview.boundaries}</p>
         </section>
       )}
-      <PreviewList label={t('agent.chat.toolResults.readyNow', 'Ready now')} items={canonicalPreview.readyNow} />
-      <PreviewList label={t('agent.chat.toolResults.willInstall', 'Will install')} items={canonicalPreview.willInstall} />
-      <PreviewList label={t('agent.chat.toolResults.deferredCapabilities', 'Deferred capabilities')} items={canonicalPreview.deferredCapabilities} />
-      <SourceAttributionList items={canonicalPreview.sourceAttributions} t={t} />
-      <PreviewList label={t('agent.chat.toolResults.knowledgeDebt', 'Knowledge debt')} items={canonicalPreview.knowledgeDebt} />
-      <PreviewList label={t('agent.chat.toolResults.missingGates', 'Missing gates')} items={canonicalPreview.missingGates} />
-      <PreviewList label={t('agent.chat.toolResults.warnings', 'Warnings')} items={canonicalPreview.warnings} />
-      <PreviewList label={t('agent.chat.toolResults.manualSteps', 'Manual steps')} items={canonicalPreview.manualSteps} />
+      {hasConfigurationDetails && (
+        <details className="hr-blueprint-technical-details">
+          <summary>{t('agent.chat.toolResults.configurationDetails', 'Configuration & sources')}</summary>
+          <div>
+            <PreviewList label={t('agent.chat.toolResults.readyNow', 'Included capabilities')} items={canonicalPreview.readyNow} />
+            <PreviewList label={t('agent.chat.toolResults.willInstall', 'Added during setup')} items={canonicalPreview.willInstall} />
+            <PreviewList label={t('agent.chat.toolResults.deferredCapabilities', 'Not enabled')} items={canonicalPreview.deferredCapabilities} />
+            <SourceAttributionList items={canonicalPreview.sourceAttributions} t={t} />
+            <PreviewList label={t('agent.chat.toolResults.knowledgeDebt', 'Information still missing')} items={canonicalPreview.knowledgeDebt} />
+          </div>
+        </details>
+      )}
+      <PreviewList label={t('agent.chat.toolResults.missingGates', 'Required before creation')} items={canonicalPreview.missingGates} />
+      <PreviewList label={t('agent.chat.toolResults.warnings', 'Needs attention')} items={canonicalPreview.warnings} />
+      <PreviewList label={t('agent.chat.toolResults.manualSteps', 'Needs your attention')} items={canonicalPreview.manualSteps} />
 
       {provisioningSteps.length > 0 && (
         <section className="hr-blueprint-provisioning" aria-label={t('agent.chat.toolResults.provisioningProgress', 'Provisioning progress')}>

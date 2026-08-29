@@ -401,7 +401,7 @@ export function threadItemToAgentChatMessage(item: ThreadItem): AgentChatMessage
     eventRetryable: compatibility.retryable === true,
     eventRetryReason: text(compatibility.retry_reason) || undefined,
     eventNotificationSource: text(compatibility.notification_source) || undefined,
-    eventRuntimeTaskId: text(compatibility.runtime_task_id) || undefined,
+    eventRuntimeTaskId: text(compatibility.runtime_task_id) || item.run_id || undefined,
     eventToolCallId: text(compatibility.tool_call_id) || undefined,
     eventHookEvent: text(compatibility.hook_event) || undefined,
     eventHookKey: text(compatibility.hook_key) || undefined,

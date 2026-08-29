@@ -744,7 +744,7 @@ function formatCount(count: number, singular: string, plural: string): string {
   return count === 1 ? singular : plural;
 }
 
-function buildAggregateSummary(steps: RunStepSnapshot[]): string {
+export function buildRunAggregateSummary(steps: RunStepSnapshot[]): string {
   const hiddenProcessTools = steps.filter((step) => step.presentation === 'tool_history');
   const fileCount = hiddenProcessTools.filter((step) => step.kind === 'file').length;
   const searchCount = hiddenProcessTools.filter((step) => step.kind === 'search').length;
@@ -788,7 +788,7 @@ export function buildRunTimelineFromMessages(
     startedAt: firstTime != null ? new Date(firstTime).toISOString() : undefined,
     completedAt: completedAt != null ? new Date(completedAt).toISOString() : undefined,
     durationMs: firstTime != null && durationEnd != null ? Math.max(0, durationEnd - firstTime) : undefined,
-    summary: buildAggregateSummary(steps) || undefined,
+    summary: buildRunAggregateSummary(steps) || undefined,
     steps,
     answerMessageId: answer
       ? answer.id || (answerIndex >= 0 ? `answer-${answerIndex}` : 'answer-external')

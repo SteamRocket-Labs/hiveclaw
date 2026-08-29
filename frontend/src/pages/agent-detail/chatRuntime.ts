@@ -116,6 +116,15 @@ export interface AgentChatMessage {
   artifacts?: ChatArtifactPart[];
 }
 
+export function agentChatMessageRunId(message?: AgentChatMessage): string | null {
+  const scope = message?.sessionItem?.scope;
+  const scopedRunId = scope && 'run_id' in scope ? scope.run_id : null;
+  const runId = typeof scopedRunId === 'string' && scopedRunId.trim()
+    ? scopedRunId
+    : message?.eventRuntimeTaskId || message?.threadItem?.run_id;
+  return typeof runId === 'string' && runId.trim() ? runId.trim() : null;
+}
+
 export interface SessionPermissionRequest {
   permission_request_id: string;
   session_id?: string | null;

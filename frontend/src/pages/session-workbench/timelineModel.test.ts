@@ -310,6 +310,15 @@ describe('session workbench timeline model', () => {
             terminal: true,
           },
         },
+        {
+          id: 'file-changes-1',
+          role: 'event',
+          content: 'file_changes',
+          timestamp: '2026-08-29T00:01:46Z',
+          eventType: 'file_changes',
+          eventStatus: 'succeeded',
+          eventRuntimeTaskId: 'run-1',
+        },
       ] as AgentChatMessage[],
       activeSession: { id: 'session-1', title: 'HR preview' },
       isWaiting: false,
@@ -326,6 +335,10 @@ describe('session workbench timeline model', () => {
         durationMs: 104_000,
       },
     });
+    if (runCells[0]?.kind === 'active_run') {
+      expect(runCells[0].sourceMessages.some((entry) => entry.message.id === 'file-changes-1')).toBe(true);
+      expect(runCells[0].timeline.steps.some((step) => step.kind === 'artifact')).toBe(true);
+    }
     expect(model.cells.some((cell) => (
       cell.kind === 'boundary' && cell.message.sessionItem?.kind === 'result_commit'
     ))).toBe(false);
@@ -386,6 +399,15 @@ describe('session workbench timeline model', () => {
             scope: runOneScope,
             terminal: true,
           },
+        },
+        {
+          id: 'file-changes-1',
+          role: 'event',
+          content: 'file_changes',
+          timestamp: '2026-08-29T00:01:46Z',
+          eventType: 'file_changes',
+          eventStatus: 'succeeded',
+          eventRuntimeTaskId: 'run-1',
         },
       ] as AgentChatMessage[],
       activeSession: { id: 'session-1', title: 'HR revision' },
@@ -516,6 +538,15 @@ describe('session workbench timeline model', () => {
           },
         },
         {
+          id: 'file-changes-1',
+          role: 'event',
+          content: 'file_changes',
+          timestamp: '2026-08-29T00:01:46Z',
+          eventType: 'file_changes',
+          eventStatus: 'succeeded',
+          eventRuntimeTaskId: 'run-1',
+        },
+        {
           id: 'user-2',
           role: 'user',
           content: 'Change only the employee name.',
@@ -542,6 +573,84 @@ describe('session workbench timeline model', () => {
         startedAt: '2026-08-29T00:20:34Z',
       },
     });
+  });
+
+  it('groups delayed evidence by exact run identity even after the next user turn is visible', () => {
+    const runScope = {
+      level: 'round' as const,
+      session_id: 'session-1',
+      thread_id: 'session-1',
+      turn_id: 'turn-1',
+      run_id: 'run-1',
+      round_id: 'round-1',
+    };
+    const model = buildThreadTimeline({
+      messages: [
+        {
+          id: 'user-1',
+          role: 'user',
+          content: 'Finish run one.',
+          timestamp: '2026-08-29T00:00:00Z',
+        },
+        {
+          id: 'reasoning-1',
+          role: 'assistant',
+          content: '',
+          timestamp: '2026-08-29T00:00:10Z',
+          sessionItem: {
+            id: 'reasoning-1',
+            kind: 'assistant_reasoning_summary',
+            lifecycle: 'completed',
+            scope: runScope,
+            terminal: true,
+          },
+        },
+        {
+          id: 'answer-1',
+          role: 'assistant',
+          content: 'Run one is complete.',
+          timestamp: '2026-08-29T00:00:12Z',
+          sessionItem: {
+            id: 'answer-1',
+            kind: 'assistant_final',
+            lifecycle: 'completed',
+            scope: runScope,
+            terminal: true,
+          },
+        },
+        {
+          id: 'user-2',
+          role: 'user',
+          content: 'Start run two.',
+          timestamp: '2026-08-29T00:01:00Z',
+        },
+        {
+          id: 'late-file-changes-1',
+          role: 'event',
+          content: 'file_changes',
+          timestamp: '2026-08-29T00:01:01Z',
+          eventType: 'file_changes',
+          eventStatus: 'succeeded',
+          eventRuntimeTaskId: 'run-1',
+        },
+      ] as AgentChatMessage[],
+      activeSession: { id: 'session-1', title: 'Delayed evidence' },
+      isWaiting: true,
+      isStreaming: false,
+      activeRunStatus: 'running',
+      activeRunId: 'run-2',
+    });
+
+    const runCells = model.cells.filter((cell) => cell.kind === 'active_run');
+    expect(runCells).toHaveLength(2);
+    expect(runCells[0]).toMatchObject({ runId: 'run-1', timeline: { status: 'done', durationMs: 12_000 } });
+    expect(runCells[1]).toMatchObject({
+      runId: 'run-2',
+      timeline: { status: 'running', startedAt: '2026-08-29T00:01:00Z' },
+    });
+    if (runCells[0]?.kind === 'active_run') {
+      expect(runCells[0].sourceMessages.some((entry) => entry.message.id === 'late-file-changes-1')).toBe(true);
+    }
   });
 
   it('reuses the previous timeline model when streaming state did not change', () => {

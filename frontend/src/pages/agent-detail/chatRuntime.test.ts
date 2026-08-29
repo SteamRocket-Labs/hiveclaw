@@ -1458,6 +1458,7 @@ describe('chatRuntime helpers', () => {
       sequence: 43,
       type: 'file_changes',
       event_type: 'file_changes',
+      run_id: 'run-file-changes-1',
       actor_type: 'system',
       role: 'system',
       content: 'file_changes',
@@ -1476,6 +1477,7 @@ describe('chatRuntime helpers', () => {
       id: 'evt-file-changes',
       eventType: 'file_changes',
       eventTitle: 'File Changes',
+      eventRuntimeTaskId: 'run-file-changes-1',
       timestamp: '2026-06-25T12:00:01Z',
     });
     expect(next.messages[0].artifacts).toBeUndefined();

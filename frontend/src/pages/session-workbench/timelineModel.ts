@@ -1,11 +1,17 @@
 import type { SessionIndex } from '../../api/domains/chat';
 import type { SessionWorkbench } from '../../api/domains/ccParity';
 import {
+  buildRunAggregateSummary,
   buildRunTimelineFromMessages,
   isDisclosureStepMessage,
   type RunTimelineSnapshot,
 } from '../agent-detail/chatDisclosureReducer';
-import type { AgentChatMessage, ChatArtifactPart, ChatRuntimeSummary } from '../agent-detail/chatRuntime';
+import {
+  agentChatMessageRunId as messageRunId,
+  type AgentChatMessage,
+  type ChatArtifactPart,
+  type ChatRuntimeSummary,
+} from '../agent-detail/chatRuntime';
 
 export type ThreadTimelineCell =
   | {
@@ -1737,12 +1743,6 @@ function assistantAnswerMessage(message: AgentChatMessage): AgentChatMessage {
   };
 }
 
-function messageRunId(message: AgentChatMessage | undefined): string | null {
-  const scope = message?.sessionItem?.scope;
-  if (!scope || !('run_id' in scope)) return null;
-  return typeof scope.run_id === 'string' && scope.run_id.trim() ? scope.run_id.trim() : null;
-}
-
 function buildRunCell(
   runIndex: number,
   sourceMessages: Array<{ message: AgentChatMessage; index: number }>,
@@ -1927,6 +1927,7 @@ function ensureOpenRunDisclosureContinuity(
 function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
   const cells: ThreadTimelineCell[] = [];
   const pendingRun: Array<{ message: AgentChatMessage; index: number }> = [];
+  const answeredRuns = new Map<string, Extract<ThreadTimelineCell, { kind: 'active_run' }>>();
   let runIndex = 0;
   let turnStartedAt: string | undefined;
 
@@ -1937,6 +1938,32 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
     pendingRun.length = 0;
   };
 
+  const pushAnsweredRun = (
+    sourceMessages: Array<{ message: AgentChatMessage; index: number }>,
+    answer: { message: AgentChatMessage; index: number },
+  ) => {
+    const runCell = buildRunCell(runIndex, sourceMessages, answer, false, turnStartedAt);
+    cells.push(runCell, {
+      kind: 'assistant_final',
+      id: messageId(answer.message, `assistant-${answer.index}`),
+      message: answer.message,
+      index: answer.index,
+    });
+    if (runCell.runId) answeredRuns.set(runCell.runId, runCell);
+    runIndex += 1;
+    pendingRun.length = 0;
+  };
+
+  const appendLateProcessToAnsweredRun = (message: AgentChatMessage, index: number): boolean => {
+    const runId = messageRunId(message);
+    const runCell = runId ? answeredRuns.get(runId) : undefined;
+    if (!runCell) return false;
+    runCell.sourceMessages.push({ message, index });
+    runCell.timeline.steps.push(...buildRunTimelineFromMessages([message]).steps);
+    runCell.timeline.summary = buildRunAggregateSummary(runCell.timeline.steps) || undefined;
+    return true;
+  };
+
   messages.forEach((message, index) => {
     if (isRenderableAssistantAnswer(message)) {
       if (message.thinking?.trim()) {
@@ -1945,27 +1972,11 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
           ...pendingRun,
           { message: assistantReasoningStepMessage(message), index },
         ];
-        cells.push(buildRunCell(runIndex, sourceMessages, { message: answerMessage, index }, false, turnStartedAt));
-        cells.push({
-          kind: 'assistant_final',
-          id: messageId(answerMessage, `assistant-${index}`),
-          message: answerMessage,
-          index,
-        });
-        runIndex += 1;
-        pendingRun.length = 0;
+        pushAnsweredRun(sourceMessages, { message: answerMessage, index });
         return;
       }
       if (pendingRun.length > 0) {
-        cells.push(buildRunCell(runIndex, [...pendingRun], { message, index }, false, turnStartedAt));
-        cells.push({
-          kind: 'assistant_final',
-          id: messageId(message, `assistant-${index}`),
-          message,
-          index,
-        });
-        runIndex += 1;
-        pendingRun.length = 0;
+        pushAnsweredRun([...pendingRun], { message, index });
         return;
       }
       cells.push({
@@ -1979,13 +1990,8 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
 
     if (isCanonicalSessionPresentationInternalItem(message)) return;
 
-    if (isCanonicalSessionProcessItem(message)) {
-      pendingRun.push({ message, index });
-      return;
-    }
-
-    if (isDisclosureStepMessage(message)) {
-      pendingRun.push({ message, index });
+    if (isCanonicalSessionProcessItem(message) || isDisclosureStepMessage(message)) {
+      if (!appendLateProcessToAnsweredRun(message, index)) pendingRun.push({ message, index });
       return;
     }
 

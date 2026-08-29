@@ -1657,7 +1657,6 @@ export function estimateRuntimeInputTokens(messages: AgentChatMessage[]): number
 export function buildRuntimeSummary({
   persistedSummary,
   activeModel,
-  agentPrimaryModelId,
   agentContextWindowSize,
   messages,
   connected,
@@ -1678,7 +1677,7 @@ export function buildRuntimeSummary({
 
   return {
     model: {
-      label: backendModel.label || activeModel?.label || agentPrimaryModelId || 'Unknown model',
+      label: backendModel.label || activeModel?.label || activeModel?.model,
       provider: backendModel.provider || activeModel?.provider,
       name: backendModel.name || activeModel?.model,
       fallback_name: backendModel.fallback_name ?? null,
@@ -1708,6 +1707,34 @@ export function buildRuntimeSummary({
     last_tool_budget_event: persistedSummary?.last_tool_budget_event || null,
     last_retry_reason: persistedSummary?.last_retry_reason || null,
   };
+}
+
+const OPAQUE_MODEL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function buildComposerRuntimePresentation(runtimeSummary: ChatRuntimeSummary | null): {
+  modelLabel: string | null;
+  contextUsedPercent: number | null;
+} {
+  const rawModelLabel = [runtimeSummary?.model?.label, runtimeSummary?.model?.name]
+    .find((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    ?.trim();
+  const modelLabel = rawModelLabel && !OPAQUE_MODEL_ID_RE.test(rawModelLabel) ? rawModelLabel : null;
+
+  const used = runtimeSummary?.runtime?.estimated_input_tokens;
+  const remaining = runtimeSummary?.runtime?.remaining_tokens_estimate;
+  const contextWindow = runtimeSummary?.model?.context_window_tokens;
+  const total =
+    typeof contextWindow === 'number' && contextWindow > 0
+      ? contextWindow
+      : typeof used === 'number' && typeof remaining === 'number'
+        ? used + remaining
+        : null;
+  const contextUsedPercent =
+    typeof used === 'number' && total && total > 0
+      ? Math.max(0, Math.min(100, Math.round((used / total) * 100)))
+      : null;
+
+  return { modelLabel, contextUsedPercent };
 }
 
 export function getTransportNotice(payload: any): string | null {

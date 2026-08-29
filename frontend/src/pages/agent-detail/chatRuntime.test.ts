@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CHAT_SOCKET_KEEPALIVE_INTERVAL_MS,
   buildChatSocketKeepaliveMessage,
+  buildComposerRuntimePresentation,
   buildRuntimeSummary,
   applyStreamingChunkEvent,
   computeComposerHeight,
@@ -1922,6 +1923,26 @@ describe('chatRuntime helpers', () => {
       workspace_key: 'workspace-alpha',
       matched_keys: ['deploy-playbook'],
     });
+  });
+
+  it('keeps opaque model ids and low-level token counts out of composer presentation', () => {
+    const opaqueModelId = 'dcafa6dc-b410-4e9f-954b-659300ab6c77';
+    const summary = buildRuntimeSummary({
+      persistedSummary: null,
+      activeModel: null,
+      agentPrimaryModelId: opaqueModelId,
+      agentContextWindowSize: 1_000_000,
+      messages: [{ role: 'user', content: 'short request' }],
+      connected: true,
+    });
+
+    expect(summary.model?.label).toBeUndefined();
+    expect(buildComposerRuntimePresentation(summary)).toEqual({
+      modelLabel: null,
+      contextUsedPercent: 0,
+    });
+    expect(JSON.stringify(buildComposerRuntimePresentation(summary))).not.toContain(opaqueModelId);
+    expect(JSON.stringify(buildComposerRuntimePresentation(summary))).not.toContain('tokens');
   });
 });
 

@@ -81,6 +81,7 @@ import { showAppToast } from '../../components/AppDialogs';
 import { composerShortcutText } from './sessionComposerShortcuts';
 import type { ToolCallMeta, WorkflowPreviewToolMeta } from './toolResultEnvelope';
 import {
+  buildComposerRuntimePresentation,
   computeComposerHeight,
   isA2ASession,
   isDraftHumanChatSession,
@@ -161,40 +162,6 @@ const SESSION_PERMISSION_MODE_OPTIONS: Array<{
 ];
 
 export const sessionPermissionModeOptions = () => SESSION_PERMISSION_MODE_OPTIONS;
-
-function formatCompactTokenCount(value: number | null | undefined): string {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return '-';
-  if (value >= 1_000_000) return `${Math.round(value / 100_000) / 10}m`;
-  if (value >= 1_000) return `${Math.round(value / 100) / 10}k`;
-  return String(Math.round(value));
-}
-
-function getRuntimeUsageLabel(runtimeSummary: ChatRuntimeSummary | null): string {
-  const used = runtimeSummary?.runtime?.estimated_input_tokens;
-  const remaining = runtimeSummary?.runtime?.remaining_tokens_estimate;
-  const contextWindow = runtimeSummary?.model?.context_window_tokens;
-  const total =
-    typeof contextWindow === 'number' && contextWindow > 0
-      ? contextWindow
-      : typeof used === 'number' && typeof remaining === 'number'
-        ? used + remaining
-        : null;
-  if (typeof used !== 'number' || !total || total <= 0) return '';
-  return `${Math.max(0, Math.min(100, Math.round((used / total) * 100)))}% used`;
-}
-
-function getRuntimeUsageTitle(runtimeSummary: ChatRuntimeSummary | null, usageLabel: string): string {
-  const used = runtimeSummary?.runtime?.estimated_input_tokens;
-  const contextWindow = runtimeSummary?.model?.context_window_tokens;
-  const remaining = runtimeSummary?.runtime?.remaining_tokens_estimate;
-  const parts = [
-    usageLabel,
-    typeof used === 'number' ? `used ${formatCompactTokenCount(used)} tokens` : null,
-    typeof contextWindow === 'number' ? `window ${formatCompactTokenCount(contextWindow)} tokens` : null,
-    typeof remaining === 'number' ? `remaining ${formatCompactTokenCount(remaining)} tokens` : null,
-  ].filter(Boolean);
-  return parts.join(' · ');
-}
 
 function isUuidLike(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
@@ -1218,18 +1185,23 @@ function AgentChatSection({
   const [focusedGitCheckpointId, setFocusedGitCheckpointId] = React.useState<string | null>(null);
   const gitScrollFrameRef = React.useRef<number | null>(null);
 
-  const runtimeUsageLabel = getRuntimeUsageLabel(runtimeSummary);
-  const runtimeUsageTitle = getRuntimeUsageTitle(runtimeSummary, runtimeUsageLabel);
+  const composerRuntime = buildComposerRuntimePresentation(runtimeSummary);
+  const runtimeUsageLabel = composerRuntime.contextUsedPercent !== null && composerRuntime.contextUsedPercent >= 75
+    ? t('agent.chat.composer.contextUsage', 'Context {{percent}}%', { percent: composerRuntime.contextUsedPercent })
+    : '';
+  const runtimeUsageTitle = composerRuntime.contextUsedPercent !== null && composerRuntime.contextUsedPercent >= 75
+    ? t(
+      'agent.chat.composer.contextUsageTitle',
+      '{{percent}}% of this conversation context is in use.',
+      { percent: composerRuntime.contextUsedPercent },
+    )
+    : '';
   const agentDisplayName = (agent as any)?.agent_class === 'internal_system' || agent?.name === '__system_hr__'
     ? t('agentCreate.hrAgentName', 'HR Agent')
     : agent?.name || '';
   const permissionModeLabel = getSessionPermissionModeLabel(sessionPermissionMode, t);
   const composerIntentLabel = getComposerIntentLabel(planModeRequested, goalModeRequested, t);
-  const modelBadgeLabel =
-    runtimeSummary?.model?.label ||
-    runtimeSummary?.model?.name ||
-    agent?.primary_model_id ||
-    t('agent.chat.composer.modelUnknown', 'Unknown model');
+  const modelBadgeLabel = composerRuntime.modelLabel || t('agent.chat.composer.currentModel', 'Current model');
   const modelBadgeTitle = [modelBadgeLabel, runtimeUsageTitle].filter(Boolean).join(' · ');
 
   const focusChatInput = React.useCallback(() => {

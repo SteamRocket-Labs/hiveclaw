@@ -476,6 +476,21 @@ def test_hr_templates_prefer_identity_first_and_install_later() -> None:
     assert not hr_focus_path.exists()
 
 
+def test_hr_templates_keep_blueprint_delivery_user_facing() -> None:
+    project_root = Path(__file__).resolve().parents[3]
+    hr_create_employee = (
+        project_root / "backend" / "hr_agent_template" / "skills" / "create-employee" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    hr_soul = (project_root / "backend" / "hr_agent_template" / "soul.md").read_text(encoding="utf-8")
+    combined = "\n".join([hr_create_employee, hr_soul])
+
+    assert "The preview card is the canonical user consumption surface" in combined
+    assert "Do not repeat `blueprint_id`, draft hash, version" in combined
+    assert "Do not dump workspace paths, memory paths, raw JSON" in combined
+    assert "summarize the role, first work, boundaries, and unresolved setup" in combined
+    assert "use the card to confirm, request changes, or reject" in combined
+
+
 def test_hr_templates_preserve_current_session_facts_and_governed_knowledge_lanes() -> None:
     project_root = Path(__file__).resolve().parents[3]
     hr_create_employee = (

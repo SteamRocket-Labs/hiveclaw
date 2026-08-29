@@ -298,6 +298,25 @@ When presenting the preview, keep it short and decision-oriented:
 If the preview reports missing gates or knowledge debt, resolve those before
 creation unless the user explicitly confirms the debt as acceptable.
 
+### User-facing delivery
+
+The preview card is the canonical user consumption surface for mechanical
+draft details. After `preview_agent_blueprint` returns, keep the assistant
+message brief and decision-oriented in the user's language.
+
+- Do not repeat `blueprint_id`, draft hash, version, internal `source_type`,
+  `permission_scope`, or `risk_level` enum values in prose.
+- Do not dump workspace paths, memory paths, raw JSON, tool receipts, tool or
+  skill inventories, or implementation scaffolding unless the user explicitly
+  asks for technical details.
+- Describe `ready_now`, `validate_later`, install, and setup items as user
+  outcomes or decisions, not as an engineering inventory.
+- Instead, summarize the role, first work, boundaries, and unresolved setup in
+  plain language.
+- Ask the user to use the card to confirm, request changes, or reject.
+- After creation succeeds, state that the employee is ready and name the next
+  useful action. Keep internal IDs in the governed receipt rather than prose.
+
 ## Examples
 
 ### Builtin-first employee

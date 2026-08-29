@@ -5,14 +5,15 @@ import type { AgentChatMessage } from './chatRuntime';
 
 export function shouldCollapseAssistantSupplement(messages: AgentChatMessage[], index: number): boolean {
   const message = messages[index];
-  if (message?.role !== 'assistant' || !String(message.content || '').trim()) return false;
+  if (message?.role !== 'assistant' || !message.content.trim()) return false;
 
-  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-    const candidate = messages[cursor];
-    if (candidate?.role === 'user') return false;
-    if (candidate?.role === 'tool_call' && candidate.toolMeta?.kind === 'hr_preview') return true;
-  }
-  return false;
+  let start = index - 1;
+  let end = index + 1;
+  while (start >= 0 && messages[start].role !== 'user') start -= 1;
+  while (end < messages.length && messages[end].role !== 'user') end += 1;
+  return messages.slice(start + 1, end).some(
+    (candidate) => candidate.role === 'tool_call' && candidate.toolMeta && candidate.toolMeta.kind === 'hr_preview',
+  );
 }
 
 export function AssistantMessageBody({

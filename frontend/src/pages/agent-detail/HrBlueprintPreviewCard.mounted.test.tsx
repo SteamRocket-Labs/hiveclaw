@@ -17,6 +17,11 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, fallbackOrOptions?: string | Record<string, unknown>) => {
       if (typeof fallbackOrOptions === 'string') return fallbackOrOptions;
+      const label = {
+        'hrChat.goToAgent': 'Go to Detail Page',
+        'agent.chat.toolResults.provisioned': 'Provisioned',
+      }[key];
+      if (label) return label;
       const options = fallbackOrOptions || {};
       const template = typeof options.defaultValue === 'string' ? options.defaultValue : key;
       return template.replace('{{changes}}', String(options.changes || ''));
@@ -193,5 +198,28 @@ describe('HrBlueprintPreviewCard decision hierarchy', () => {
     });
 
     expect(container.querySelector('details.hr-blueprint-technical-details')).toBeNull();
+  });
+
+  it('opens the completed employee from the canonical draft instead of leaving a disabled status button', () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const completedDraft = {
+      blueprint_id: preview.blueprintId,
+      blueprint_version: preview.blueprintVersion,
+      blueprint_hash: preview.blueprintHash,
+      draft_status: 'completed',
+      created_agent_id: '7733ee76-abee-5e03-aa6f-8c39fe098576',
+      blueprint: {},
+    };
+    client.setQueryData(['hr-creation-draft', 'hr-agent', preview.blueprintId], completedDraft);
+    hrMocks.get.mockResolvedValue(completedDraft);
+
+    render(
+      <QueryClientProvider client={client}>
+        <HrBlueprintPreviewCard agentId="hr-agent" preview={preview} />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Go to Detail Page' }).getAttribute('disabled')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Provisioned' })).toBeNull();
   });
 });

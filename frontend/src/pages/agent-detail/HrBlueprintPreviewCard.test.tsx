@@ -3,7 +3,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (_key: string, fallback?: string) => fallback || _key }),
+  useTranslation: () => ({
+    t: (key: string, fallback?: string) => ({
+      'agent.chat.toolResults.confirmAndCreate': 'Confirm & create',
+      'agent.chat.toolResults.retryProvisioning': 'Retry provisioning',
+    }[key] || fallback || key),
+  }),
 }));
 
 import { hrCreationActionForStatus, HrBlueprintPreviewCard } from './HrBlueprintPreviewCard';

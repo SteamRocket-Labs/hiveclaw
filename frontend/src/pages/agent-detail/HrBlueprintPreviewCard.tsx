@@ -193,6 +193,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
     },
   });
   const status = draft?.draft_status || preview.status;
+  const createdAgentId = draft?.created_agent_id;
   const canonicalPreview = draft && Object.keys(draft.blueprint || {}).length > 0
     ? parsePreviewAgentBlueprintResult(draft) || preview
     : preview;
@@ -205,7 +206,6 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
     || canonicalPreview.deferredCapabilities.length > 0
     || canonicalPreview.sourceAttributions.length > 0
     || canonicalPreview.knowledgeDebt.length > 0;
-  const canonicalReady = Boolean(agentId && preview.blueprintId);
   const durableAction = hrCreationActionForStatus(status);
 
   const confirmMutation = useMutation({
@@ -279,11 +279,11 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
     || retryMutation.isPending
     || cancelMutation.isPending
     || revisionSubmitting;
-  const canStartCreation = canonicalReady
+  const canStartCreation = canLoad
     && canonicalPreview.missingGates.length === 0
     && durableAction !== 'none';
-  const canReviseOrReject = canonicalReady && status === 'awaiting_confirmation';
-  const canCancel = canonicalReady && ['confirmed', 'creating', 'provisioning'].includes(status);
+  const canReviseOrReject = canLoad && status === 'awaiting_confirmation';
+  const canCancel = canLoad && ['confirmed', 'creating', 'provisioning'].includes(status);
 
   return (
     <article className="hr-blueprint-card">
@@ -346,7 +346,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
         </section>
       )}
 
-      {!canonicalReady && (
+      {!canLoad && (
         <p className="hr-blueprint-error">
           {t('agent.chat.toolResults.legacyBlueprint', 'This legacy preview cannot be confirmed. Ask HR to generate a fresh preview.')}
         </p>
@@ -392,18 +392,25 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
         </form>
       )}
       <footer>
-        <button type="button" className="btn btn-primary" disabled={!canStartCreation || busy || revisionOpen} onClick={runDurableAction}>
-          {confirmMutation.isPending
-            ? t('common.confirming', 'Confirming…')
-            : retryMutation.isPending
-              ? t('agent.chat.toolResults.retryingProvisioning', 'Retrying…')
-              : durableAction === 'retry'
-                ? t('agent.chat.toolResults.retryProvisioning', 'Retry provisioning')
-                : durableAction === 'confirm'
-                  ? t('agent.chat.toolResults.confirmAndCreate', 'Confirm & create')
-                  : ['confirmed', 'creating'].includes(status)
-                    ? t('agent.chat.toolResults.provisioning', 'Provisioning…')
-                    : t('agent.chat.toolResults.provisioned', 'Provisioned')}
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={!createdAgentId && (!canStartCreation || busy || revisionOpen)}
+          onClick={createdAgentId ? () => location.assign(`/agents/${createdAgentId}`) : runDurableAction}
+        >
+          {createdAgentId
+            ? t('hrChat.goToAgent')
+            : confirmMutation.isPending
+              ? t('common.confirming')
+              : retryMutation.isPending
+                ? t('agent.chat.toolResults.retryingProvisioning')
+                : durableAction === 'retry'
+                  ? t('agent.chat.toolResults.retryProvisioning')
+                  : durableAction === 'confirm'
+                    ? t('agent.chat.toolResults.confirmAndCreate')
+                    : ['confirmed', 'creating'].includes(status)
+                      ? t('agent.chat.toolResults.provisioning')
+                      : t('agent.chat.toolResults.provisioned')}
         </button>
         <button type="button" className="btn btn-secondary" disabled={!canReviseOrReject || busy || !onSendMessage || revisionOpen} onClick={() => setRevisionOpen(true)}>
           {t('agent.chat.toolResults.requestChanges', 'Request changes')}

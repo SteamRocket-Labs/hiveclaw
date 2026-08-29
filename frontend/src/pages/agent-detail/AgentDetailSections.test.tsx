@@ -227,6 +227,18 @@ describe('canonical card assistant supplements', () => {
     ], 4)).toBe(false);
   });
 
+  it('collapses an earlier assistant preamble once the same turn receives a canonical HR preview', () => {
+    const liveMessages = [
+      messages[0],
+      { role: 'assistant' as const, content: 'I will call preview_agent_blueprint now.' },
+      messages[1],
+      messages[2],
+    ];
+
+    expect(shouldCollapseAssistantSupplement(liveMessages, 1)).toBe(true);
+    expect(shouldCollapseAssistantSupplement(liveMessages, 3)).toBe(true);
+  });
+
   it('keeps the exact model-authored bytes in a closed supplemental disclosure', () => {
     const content = 'blueprint_id: draft-1; permission_scope=company';
     const markup = renderToStaticMarkup(

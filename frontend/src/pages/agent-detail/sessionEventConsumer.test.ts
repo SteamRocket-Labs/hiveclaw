@@ -195,6 +195,89 @@ describe('canonical Session event consumer', () => {
     ]));
   });
 
+  it('never re-appends a prior-turn final when an unbound terminal arrives before the current final', () => {
+    const priorUser: AgentChatMessage = {
+      id: 'input-turn-1',
+      role: 'user',
+      content: 'FIRST PROMPT',
+    };
+    const priorFinal: AgentChatMessage = {
+      id: 'render-owner-turn-1',
+      transcriptEventId: 'event-final-turn-1',
+      role: 'assistant',
+      content: 'FIRST ANSWER',
+      sessionItem: {
+        id: 'final-item-turn-1',
+        kind: 'assistant_final',
+        scope: {
+          level: 'run',
+          session_id: 'session-1',
+          thread_id: 'session-1',
+          turn_id: 'turn-1',
+          run_id: 'run-1',
+        },
+        lifecycle: 'completed',
+        terminal: true,
+        revision: 1,
+        content: 'FIRST ANSWER',
+        payload: {},
+        actor: { type: 'assistant' },
+        visibility: { audience: 'direct_user' },
+        occurredAt: '2026-08-29T13:00:00Z',
+        first_sequence: 3,
+        last_sequence: 3,
+      },
+    };
+    const currentUser: AgentChatMessage = {
+      id: 'input-turn-2',
+      role: 'user',
+      content: 'SECOND PROMPT',
+    };
+    const currentProcess: AgentChatMessage = {
+      id: 'reasoning-turn-2',
+      role: 'event',
+      content: '',
+      eventType: 'assistant_reasoning_private',
+      eventStatus: 'delta',
+      sessionItem: {
+        id: 'reasoning-item-turn-2',
+        kind: 'assistant_reasoning_private',
+        scope: {
+          level: 'round',
+          session_id: 'session-1',
+          thread_id: 'session-1',
+          turn_id: 'turn-2',
+          run_id: 'run-2',
+          round_id: 'round-2',
+        },
+        lifecycle: 'delta',
+        terminal: false,
+        revision: 1,
+        content: 'CURRENT PROCESS',
+        payload: {},
+        actor: { type: 'assistant' },
+        visibility: { audience: 'private_provider' },
+        occurredAt: '2026-08-29T13:01:00Z',
+        first_sequence: 7,
+        last_sequence: 7,
+      },
+    };
+
+    // A raw/legacy run terminal can arrive before the current canonical
+    // assistant_final. The canonical snapshot therefore still ends in the
+    // prior turn's final. That historical render owner already lives in the
+    // prefix and must never be mistaken for this turn's terminal answer.
+    const merged = mergeCanonicalTerminalMessages(
+      [priorUser, priorFinal, currentUser, currentProcess],
+      [priorUser, priorFinal, currentUser, currentProcess],
+      null,
+    );
+
+    expect(merged.filter((message) => message.transcriptEventId === 'event-final-turn-1')).toHaveLength(1);
+    expect(merged.slice(merged.findIndex((message) => message.id === 'input-turn-2') + 1))
+      .not.toContainEqual(expect.objectContaining({ transcriptEventId: 'event-final-turn-1' }));
+  });
+
   it('seals compatibility process already visible beside a partial canonical tail', () => {
     const legacyThinking = {
       schema: 'hive.session_event_compatibility',

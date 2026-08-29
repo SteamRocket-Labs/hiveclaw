@@ -19,6 +19,8 @@ import {
   type SessionVisibilityBoundary,
 } from './sessionEventConsumer';
 import { projectCanonicalTranscriptSnapshot } from './sessionTranscriptHydration';
+import { createSessionMessageStore, type SessionMessageStore } from './sessionMessageStore';
+import { buildThreadTimeline } from '../session-workbench/timelineModel';
 import type { ChatSession } from '../../api/domains/chat';
 import type { SessionEventStore } from '../session-workbench/sessionEventStore';
 
@@ -84,10 +86,11 @@ function runScopedFailureEvent(sequence: number, runId = 'run-1'): ChatTranscrip
   } as unknown as ChatTranscriptEventPayload;
 }
 
-function canonicalRunTerminalEvent(
+function canonicalRunLifecycleEvent(
   sequence: number,
-  lifecycle: 'completed' | 'failed' | 'cancelled' = 'completed',
+  lifecycle: 'queued' | 'completed' | 'failed' | 'cancelled' = 'completed',
   runId = 'run-1',
+  turnId = 'turn-1',
 ): ChatTranscriptEventPayload {
   return {
     schema: 'hive.session_event',
@@ -96,8 +99,8 @@ function canonicalRunTerminalEvent(
     sequence,
     ordinal: sequence - 1,
     tenant_id: 'tenant-1',
-    scope: { level: 'run', session_id: 'session-1', thread_id: 'session-1', turn_id: 'turn-1', run_id: runId },
-    item_id: `run-item-${sequence}`,
+    scope: { level: 'run', session_id: 'session-1', thread_id: 'session-1', turn_id: turnId, run_id: runId },
+    item_id: `run-item-${runId}`,
     item_kind: 'run',
     kind: `run.${lifecycle}`,
     lifecycle,
@@ -149,7 +152,44 @@ function canonicalInputEvent(sequence: number, content: string): ChatTranscriptE
   } as unknown as ChatTranscriptEventPayload;
 }
 
-function makeApplierHarness() {
+function canonicalAssistantEvent(
+  sequence: number,
+  itemKind: 'assistant_reasoning_private' | 'assistant_text' | 'assistant_final',
+  lifecycle: 'delta' | 'snapshot' | 'completed',
+  turnId: string,
+  runId: string,
+  itemId: string,
+  payload: Record<string, unknown>,
+): ChatTranscriptEventPayload {
+  return {
+    schema: 'hive.session_event',
+    schema_version: 2,
+    event_id: `event-${itemKind}-${sequence}`,
+    sequence,
+    ordinal: sequence - 1,
+    tenant_id: 'tenant-1',
+    scope: {
+      level: 'round',
+      session_id: 'session-1',
+      thread_id: 'session-1',
+      turn_id: turnId,
+      run_id: runId,
+      round_id: `round-${turnId}`,
+    },
+    item_id: itemId,
+    item_kind: itemKind,
+    kind: `${itemKind}.${lifecycle}`,
+    lifecycle,
+    payload_schema: `hive.session.payload.${itemKind}.${lifecycle}.v2`,
+    actor: { type: 'assistant' },
+    visibility: { audience: itemKind === 'assistant_reasoning_private' ? 'private_provider' : 'direct_user' },
+    payload,
+    occurred_at: '2026-08-29T13:01:01Z',
+    persisted_at: '2026-08-29T13:01:01Z',
+  } as unknown as ChatTranscriptEventPayload;
+}
+
+function makeApplierHarness(messageStore?: SessionMessageStore) {
   const refs = {
     transcriptEvents: {} as Record<string, ChatTranscriptEventPayload[] | undefined>,
     eventStores: {} as Record<string, SessionEventStore | undefined>,
@@ -175,11 +215,27 @@ function makeApplierHarness() {
     },
     setChatMessagesSessionId: vi.fn(),
     enqueueChatMessagesUpdate: vi.fn((sessionId: string, updater: (messages: AgentChatMessage[]) => AgentChatMessage[]) => {
+      if (messageStore) {
+        messageStore.enqueueUpdate(sessionId, (previous) => {
+          const result = updater(previous);
+          commits.push({ sessionId, kind: 'enqueue', result });
+          return result;
+        });
+        return;
+      }
       const result = updater(messagesBySession.get(sessionId) || []);
       commits.push({ sessionId, kind: 'enqueue', result });
       messagesBySession.set(sessionId, result);
     }),
     setChatMessagesAfterQueued: vi.fn((sessionId: string, updater: (messages: AgentChatMessage[]) => AgentChatMessage[]) => {
+      if (messageStore) {
+        messageStore.updateAfterQueued(sessionId, (previous) => {
+          const result = updater(previous);
+          commits.push({ sessionId, kind: 'afterQueued', result });
+          return result;
+        });
+        return;
+      }
       const result = updater(messagesBySession.get(sessionId) || []);
       commits.push({ sessionId, kind: 'afterQueued', result });
       messagesBySession.set(sessionId, result);
@@ -203,7 +259,11 @@ function makeApplierHarness() {
     legacyAssistantRunByIdentity: new Map(),
     excludedIdentities: new Set(),
   };
-  messagesBySession.set('session-1', [{ role: 'user', content: 'SEEDED USER', id: 'seeded-user' }]);
+  if (messageStore) {
+    messageStore.updateAfterQueued('session-1', () => [{ role: 'user', content: 'SEEDED USER', id: 'seeded-user' }]);
+  } else {
+    messagesBySession.set('session-1', [{ role: 'user', content: 'SEEDED USER', id: 'seeded-user' }]);
+  }
   const applyEvent = (event: ChatTranscriptEventPayload, isActiveRuntime = true) =>
     applyTranscriptToSessionRuntime(deps, 'agent-1', 'session-1', event, isActiveRuntime);
   return {
@@ -211,7 +271,8 @@ function makeApplierHarness() {
     deps,
     commits,
     applyEvent,
-    messages: () => messagesBySession.get('session-1') || [],
+    messages: () => messageStore?.getSnapshot('session-1') || messagesBySession.get('session-1') || [],
+    flushMessages: () => messageStore?.flushSession('session-1'),
     transcriptEvents: () => refs.transcriptEvents[KEY] || [],
   };
 }
@@ -221,7 +282,7 @@ describe('session transcript applier real consumption path (Codex REQUEST_CHANGE
     const harness = makeApplierHarness();
     harness.refs.uiStates[KEY] = uiForPhase('responding');
 
-    expect(harness.applyEvent(canonicalRunTerminalEvent(1))).toBeTruthy();
+    expect(harness.applyEvent(canonicalRunLifecycleEvent(1))).toBeTruthy();
 
     expect(harness.deps.markActiveRunTerminal).toHaveBeenCalledWith(KEY, 'run-1');
     expect(harness.deps.setActivePhase).toHaveBeenCalledWith('done');
@@ -236,7 +297,7 @@ describe('session transcript applier real consumption path (Codex REQUEST_CHANGE
     harness.refs.uiStates[KEY] = activeUi;
     harness.deps.markActiveRunTerminal = vi.fn(() => false);
 
-    expect(harness.applyEvent(canonicalRunTerminalEvent(1))).toBeTruthy();
+    expect(harness.applyEvent(canonicalRunLifecycleEvent(1))).toBeTruthy();
 
     expect(harness.deps.markActiveRunTerminal).toHaveBeenCalledWith(KEY, 'run-1');
     expect(harness.refs.uiStates[KEY]).toBe(activeUi);
@@ -470,6 +531,146 @@ describe('session transcript applier real consumption path (Codex REQUEST_CHANGE
     expect(harness.deps.markActiveRunTerminal).toHaveBeenCalledWith(KEY, 'run-2');
     expect(harness.deps.setChatMessagesAfterQueued).toHaveBeenCalledTimes(1);
     expect(harness.messages().some((message) => message.content === 'MATCHING RUN-2 FINAL')).toBe(true);
+  });
+
+  it('keeps prior answer bytes exact-once when a live run terminal beats the current canonical final', () => {
+    let frameId = 0;
+    const messageStore = createSessionMessageStore({
+      requestFrame: () => ++frameId,
+      cancelFrame: () => undefined,
+    });
+    const firstTurn = [
+      canonicalInputEvent(1, 'FIRST PROMPT'),
+      canonicalAssistantEvent(2, 'assistant_text', 'snapshot', 'turn-1', 'run-1', 'text-item-turn-1', {
+        phase: 'unknown', content: 'FIRST ANSWER',
+      }),
+      canonicalAssistantEvent(3, 'assistant_final', 'completed', 'turn-1', 'run-1', 'final-item-turn-1', {
+        phase: 'final',
+        render_owner_id: 'render-owner-turn-1',
+        zero_copy: true,
+        source_blocks: [{ item_id: 'text-item-turn-1', block_index: 0, content_hash: 'hash-turn-1' }],
+      }),
+      canonicalRunLifecycleEvent(4, 'completed', 'run-1'),
+    ];
+    const projected = projectCanonicalTranscriptSnapshot({
+      existing: [],
+      snapshot: firstTurn,
+      session: { id: 'session-1' } as unknown as ChatSession,
+      parseMessage: (message) => message,
+    });
+    const harness = makeApplierHarness(messageStore);
+    harness.refs.transcriptEvents[KEY] = projected.events;
+    if (projected.store) harness.refs.eventStores[KEY] = projected.store;
+    harness.refs.replayStates[KEY] = projected.replay;
+    harness.refs.compatibilityTimelines[KEY] = projected.compatibilityTimeline;
+    harness.refs.visibilityBoundaries[KEY] = projected.visibilityBoundary;
+    harness.refs.uiStates[KEY] = projected.ui;
+    harness.deps.setChatMessagesAfterQueued('session-1', () => projected.messages);
+
+    // Mirror the production ordering: canonical accepted input + queued run +
+    // private reasoning are frame-queued, then a live run_completed witness
+    // settles the active registry before assistant_final reaches the durable
+    // socket tail. updateAfterQueued must flush the real store without using
+    // the prior turn's final as this turn's answer.
+    expect(harness.applyEvent(canonicalInputEvent(5, 'SECOND PROMPT'))).toBeTruthy();
+    expect(harness.applyEvent(canonicalRunLifecycleEvent(6, 'queued', 'run-2', 'turn-2'))).toBeTruthy();
+    expect(harness.applyEvent(canonicalAssistantEvent(
+      7,
+      'assistant_reasoning_private',
+      'delta',
+      'turn-2',
+      'run-2',
+      'reasoning-item-turn-2',
+      { phase: 'reasoning_private', content: 'CURRENT PROCESS' },
+    ))).toBeTruthy();
+    expect(harness.applyEvent({
+      id: 'live-run-completed-turn-2',
+      event_type: 'run_completed',
+      run_id: 'run-2',
+      content: '',
+    })).toBe(true);
+
+    const liveMessages = harness.messages();
+    expect(harness.deps.markActiveRunTerminal).toHaveBeenLastCalledWith(KEY, 'run-2');
+    expect(liveMessages.filter((message) => message.content === 'FIRST ANSWER')).toHaveLength(1);
+    let latestUserIndex = -1;
+    for (let index = liveMessages.length - 1; index >= 0; index -= 1) {
+      if (liveMessages[index]?.content !== 'SECOND PROMPT') continue;
+      latestUserIndex = index;
+      break;
+    }
+    expect(liveMessages.slice(latestUserIndex + 1).map((message) => message.content))
+      .not.toContain('FIRST ANSWER');
+
+    const timeline = buildThreadTimeline({
+      messages: liveMessages,
+      isWaiting: false,
+      isStreaming: true,
+      activeRunStatus: 'running',
+      activeRunId: 'run-2',
+      runtimePhase: 'responding',
+    });
+    expect(timeline.cells.filter((cell) => (
+      cell.kind === 'active_run'
+      && (cell.timeline.status === 'running' || cell.timeline.status === 'blocked')
+    ))).toHaveLength(1);
+
+    const secondTurnTail = [
+      canonicalAssistantEvent(8, 'assistant_text', 'snapshot', 'turn-2', 'run-2', 'text-item-turn-2', {
+        phase: 'unknown', content: 'SECOND ANSWER',
+      }),
+      canonicalAssistantEvent(9, 'assistant_final', 'completed', 'turn-2', 'run-2', 'final-item-turn-2', {
+        phase: 'final',
+        render_owner_id: 'render-owner-turn-2',
+        zero_copy: true,
+        source_blocks: [{ item_id: 'text-item-turn-2', block_index: 0, content_hash: 'hash-turn-2' }],
+      }),
+      canonicalRunLifecycleEvent(10, 'completed', 'run-2', 'turn-2'),
+    ];
+    for (const event of secondTurnTail) expect(harness.applyEvent(event)).toBeTruthy();
+
+    const terminalMessages = harness.messages();
+    const reloaded = projectCanonicalTranscriptSnapshot({
+      existing: [],
+      snapshot: [
+        ...firstTurn,
+        canonicalInputEvent(5, 'SECOND PROMPT'),
+        canonicalRunLifecycleEvent(6, 'queued', 'run-2', 'turn-2'),
+        canonicalAssistantEvent(
+          7,
+          'assistant_reasoning_private',
+          'delta',
+          'turn-2',
+          'run-2',
+          'reasoning-item-turn-2',
+          { phase: 'reasoning_private', content: 'CURRENT PROCESS' },
+        ),
+        ...secondTurnTail,
+      ],
+      session: { id: 'session-1' } as unknown as ChatSession,
+      parseMessage: (message) => message,
+    });
+    const visibleConversation = (messages: AgentChatMessage[]) => messages
+      .filter((message) => (message.role === 'user' || message.role === 'assistant') && message.content)
+      .map((message) => ({ id: message.id, role: message.role, content: message.content }));
+    expect(visibleConversation(terminalMessages)).toEqual(visibleConversation(reloaded.messages));
+    expect(terminalMessages.filter((message) => message.content === 'FIRST ANSWER')).toHaveLength(1);
+    expect(terminalMessages.filter((message) => message.content === 'SECOND ANSWER')).toHaveLength(1);
+
+    const terminalTimeline = buildThreadTimeline({
+      messages: terminalMessages,
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+      activeRunId: null,
+      runtimePhase: 'done',
+    });
+    expect(terminalTimeline.cells.filter((cell) => cell.kind === 'user_turn')).toHaveLength(2);
+    expect(terminalTimeline.cells.filter((cell) => cell.kind === 'assistant_final')).toHaveLength(2);
+    expect(terminalTimeline.cells.filter((cell) => (
+      cell.kind === 'active_run'
+      && (cell.timeline.status === 'running' || cell.timeline.status === 'blocked')
+    ))).toHaveLength(0);
   });
 
   it('isolates a rejected stale legacy terminal from the active run-2 projection while keeping durable evidence (Codex REQUEST_CHANGES #4 finding A)', () => {

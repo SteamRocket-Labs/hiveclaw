@@ -76,10 +76,9 @@ function isLegacyTerminalEventType(eventType: string | undefined): boolean {
 type LegacyProjectionResult = {
   /** Whether the event was newly applied to the legacy projection. */
   applied: boolean;
-  /** Whether the event is a terminal witness the run-identity registry
-   * accepted for the currently active run. A stale old-run terminal stays
-   * durable historical evidence but never seals the active UI. */
-  terminalAccepted: boolean;
+  /** Present only for a terminal witness accepted by the active-run registry;
+   * null is the typed value of a genuinely unbound compatibility witness. */
+  terminalRunId?: string | null;
 };
 
 /** Apply one legacy-plane transcript event: replay state, timeline
@@ -99,16 +98,17 @@ function applyLegacyProjectionEvent(
     && currentEvents.some((candidate) => candidate.sequence === projectionEvent.sequence);
   if (sequenceAlreadyApplied) {
     refs.transcriptEvents[key] = mergeTranscriptBackfill(currentEvents, [projectionEvent]);
-    return { applied: false, terminalAccepted: false };
+    return { applied: false };
   }
   const previous = refs.replayStates[key] || createEmptyTranscriptReplayState();
   const next = applyTranscriptEvent(previous, projectionEvent);
-  if (next === previous) return { applied: false, terminalAccepted: false };
+  if (next === previous) return { applied: false };
   const eventType = projectionEvent.event_type || projectionEvent.type;
   const lastMessage = next.messages[next.messages.length - 1];
   const terminal = isLegacyTerminalEventType(eventType) || deps.isTerminalTranscriptToolMessage(lastMessage);
+  const terminalRunId = terminal ? getTerminalRunIdFromTranscriptEvent(projectionEvent) : null;
   const terminalAccepted = terminal
-    ? deps.markActiveRunTerminal(key, getTerminalRunIdFromTranscriptEvent(projectionEvent)) !== false
+    ? deps.markActiveRunTerminal(key, terminalRunId) !== false
     : false;
 
   if (terminal && !terminalAccepted) {
@@ -148,7 +148,7 @@ function applyLegacyProjectionEvent(
     // The identities this rejected terminal first materialized never enter
     // the active composition; the durable evidence stays in the replay.
     for (const identity of firstMaterialized) timeline.excludedIdentities.add(identity);
-    return { applied: true, terminalAccepted: false };
+    return { applied: true };
   }
 
   // Non-terminal or accepted terminal: the full reduction applies.
@@ -167,7 +167,7 @@ function applyLegacyProjectionEvent(
     deps.setIsWaiting(next.ui.isWaiting);
     deps.setIsStreaming(next.ui.isStreaming);
   }
-  return { applied: true, terminalAccepted: terminal && terminalAccepted };
+  return terminal && terminalAccepted ? { applied: true, terminalRunId } : { applied: true };
 }
 
 /**
@@ -296,8 +296,11 @@ export function applyTranscriptToSessionRuntime(
   if (legacyResults.some((result) => result.applied)) commitRequested = true;
   if (!terminalCommit) {
     const acceptedLegacyTerminal = [...legacyResults].reverse()
-      .find((result) => result.applied && result.terminalAccepted);
-    if (acceptedLegacyTerminal) terminalCommit = true;
+      .find((result) => 'terminalRunId' in result);
+    if (acceptedLegacyTerminal) {
+      terminalCommit = true;
+      canonicalTerminalRunId = acceptedLegacyTerminal.terminalRunId ?? null;
+    }
   }
 
   if (commitRequested && isActiveRuntime) {

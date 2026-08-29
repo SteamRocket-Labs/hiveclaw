@@ -717,7 +717,9 @@ export function mergeCanonicalTerminalMessages(
     process.push(message);
   }
 
-  const terminalAnswer = canonicalFinal || liveFinal;
+  const terminalAnswer = [canonicalFinal, liveFinal].find((candidate) => (
+    candidate && !prefix.some((existing) => messagesShareIdentity(existing, candidate))
+  ));
   return terminalAnswer ? [...prefix, ...process, terminalAnswer] : [...prefix, ...process];
 }
 

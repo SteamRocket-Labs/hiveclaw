@@ -337,6 +337,7 @@ interface AgentChatSectionProps {
   sessionsLoading: boolean;
   sessions: any[];
   activeSession: any | null;
+  sessionTransitionPending?: boolean;
   branchLineage?: BranchLineageItem[];
   branchLineageLoading?: boolean;
   onSelectBranchSession?: (sessionId: string) => void | Promise<unknown>;
@@ -907,6 +908,8 @@ function SessionHydratingState({ label }: { label: string }) {
   return (
     <div
       data-testid="session-loading-state"
+      role="status"
+      aria-live="polite"
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -1085,7 +1088,8 @@ function AgentChatSection({
   onCreateNewSession,
   sessionsLoading,
   sessions,
-  activeSession,
+  activeSession: selectedActiveSession,
+  sessionTransitionPending = false,
   branchLineage = [],
   branchLineageLoading = false,
   onSelectBranchSession,
@@ -1109,13 +1113,13 @@ function AgentChatSection({
   onChatScroll,
   chatMessages,
   chatMessagesSessionId,
-  runtimeSummary,
+  runtimeSummary: selectedRuntimeSummary,
   agentPermissions,
   transportNotice,
-  isWaiting,
-  runtimePhase = 'idle',
-  activeRunStatus,
-  activeRunId,
+  isWaiting: selectedIsWaiting,
+  runtimePhase: selectedRuntimePhase = 'idle',
+  activeRunStatus: selectedActiveRunStatus,
+  activeRunId: selectedActiveRunId,
   runtimeBudget,
 
   chatEndRef,
@@ -1147,11 +1151,18 @@ function AgentChatSection({
   onDismissSessionCommandControl,
   onRunSessionCommand,
   onResolveSessionPermission,
-  isStreaming,
+  isStreaming: selectedIsStreaming,
   onAbortGeneration,
   sessionOnly = false,
 }: AgentChatSectionProps) {
   const { t } = useTranslation();
+  const activeSession = sessionTransitionPending ? null : selectedActiveSession;
+  const runtimeSummary = sessionTransitionPending ? null : selectedRuntimeSummary;
+  const isWaiting = sessionTransitionPending ? false : selectedIsWaiting;
+  const runtimePhase = sessionTransitionPending ? 'idle' : selectedRuntimePhase;
+  const activeRunStatus = sessionTransitionPending ? null : selectedActiveRunStatus;
+  const activeRunId = sessionTransitionPending ? null : selectedActiveRunId;
+  const isStreaming = sessionTransitionPending ? false : selectedIsStreaming;
   const effectiveAgentId = agentId ? String(agentId) : (agent?.id ? String(agent.id) : null);
 
   const isReadOnlySession =
@@ -2079,7 +2090,9 @@ function AgentChatSection({
             <span>{t('agent.chat.operatorViewDesc', 'Audited, read-only access to another user’s session.')}</span>
           </div>
         )}
-        {!activeSession ? (
+        {sessionTransitionPending ? (
+          <SessionHydratingState label={t('agent.chat.startingNewSession', 'Starting a new conversation…')} />
+        ) : !activeSession ? (
           <div
             style={{
               flex: 1,

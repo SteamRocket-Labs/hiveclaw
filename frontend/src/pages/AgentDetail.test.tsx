@@ -142,6 +142,35 @@ describe('AgentDetail session permission state', () => {
 });
 
 describe('AgentDetail realtime refresh contract', () => {
+  it('does not let the default Session list selection replace a pending or active new-conversation draft', async () => {
+    const source = await readSource('./AgentDetail.tsx');
+    const fetchStart = source.indexOf('fetchMySessions(false, id).then');
+    const selectionEffectStart = source.lastIndexOf('useEffect(() => {', fetchStart);
+    const selectionEffectEnd = source.indexOf('}, [canLoadAgentScopedData, id, token, activeTab, requestedSessionId]);', selectionEffectStart);
+    const selectionEffect = source.slice(selectionEffectStart, selectionEffectEnd);
+
+    expect(selectionEffect).toContain(
+      'if (newSessionDraftTransitionPending || isDraftHumanChatSession(activeSession)) return;',
+    );
+    expect(selectionEffect.indexOf('newSessionDraftTransitionPending')).toBeLessThan(
+      selectionEffect.indexOf('fetchMySessions(false, id).then'),
+    );
+  });
+
+  it('consumes each typed new-conversation request once before creating its draft', async () => {
+    const source = await readSource('./AgentDetail.tsx');
+    const effectStart = source.indexOf('if (!newSessionDraftRequest || !id) return;');
+    const effectEnd = source.indexOf('}, [id, newSessionDraftRequest?.requestId]);', effectStart);
+    const effect = source.slice(effectStart, effectEnd);
+
+    expect(effect).toContain(
+      'if (consumedNewSessionDraftRequestRef.current === newSessionDraftRequest.requestId) return;',
+    );
+    expect(effect.indexOf('consumedNewSessionDraftRequestRef.current = newSessionDraftRequest.requestId;')).toBeLessThan(
+      effect.indexOf('void createNewSession();'),
+    );
+  });
+
   it('seals terminal websocket events onto the visible live process without rebuilding gapped history', async () => {
     const source = await readSource('./agent-detail/sessionSocketEventProjector.ts');
     const applierSource = await readSource('./agent-detail/sessionTranscriptApplier.ts');

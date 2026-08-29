@@ -30,6 +30,7 @@ import { chatApi, type ChatSession } from '../../api/domains/chat';
 import { agentApi, type HrAgentInfo } from '../../api/domains/agents';
 import { localBridgeApi, type LocalAgentChannelSession } from '../../api/domains/localBridge';
 import { isA2ASession } from '../agent-detail/chatRuntime';
+import { buildNewSessionDraftNavigation } from '../agent-detail/newSessionNavigation';
 
 const sidebarIcons = {
   plus: <IconPlus size={16} stroke={1.5} />,
@@ -361,8 +362,9 @@ export default function AppSidebar({
     });
   }, [activeAgentId]);
 
-  const loadAgentSessions = async (agentId: string) => {
-    if (agentSessionsByAgentId?.[agentId] || sessionsByAgentId[agentId] || sessionLoadingByAgentId[agentId]) return;
+  const loadAgentSessions = async (agentId: string, force = false) => {
+    if (!force && (agentSessionsByAgentId?.[agentId] || sessionsByAgentId[agentId])) return;
+    if (sessionLoadingByAgentId[agentId]) return;
     setSessionLoadingByAgentId((prev) => ({ ...prev, [agentId]: true }));
     try {
       const agent = getSidebarAgentById(agentId);
@@ -406,14 +408,17 @@ export default function AppSidebar({
   const handleCreateSession = async (agentId: string) => {
     try {
       const agent = getSidebarAgentById(agentId);
-      const session = isLocalAgentType(agent)
-        ? sidebarSessionFromLocalAgentChannelSession(
-          agentId,
-          await localBridgeApi.createAgentChannelSession(agentId, {
-            title: t('agent.chat.newSession', 'New Conversation'),
-          }),
-        )
-        : await chatApi.createSession(agentId);
+      if (!isLocalAgentType(agent)) {
+        const request = buildNewSessionDraftNavigation(agentId);
+        navigate(request.to, { state: request.state });
+        return;
+      }
+      const session = sidebarSessionFromLocalAgentChannelSession(
+        agentId,
+        await localBridgeApi.createAgentChannelSession(agentId, {
+          title: t('agent.chat.newSession', 'New Conversation'),
+        }),
+      );
       replaceAgentSessions(agentId, (rows) => [session, ...rows.filter((row) => String(row.id) !== String(session.id))]);
       navigate(`/agents/${agentId}?session_id=${encodeURIComponent(String(session.id))}#chat`);
     } catch (error) {
@@ -450,11 +455,13 @@ export default function AppSidebar({
 
   useEffect(() => {
     if (!activeAgentId) return;
-    void loadAgentSessions(activeAgentId);
-    // The loader intentionally watches only route agent changes; manual
-    // expansion calls the same loader directly.
+    // A canonical Session id appears only after the draft's first atomic
+    // createSessionRun. Refresh then so the sidebar consumes that durable
+    // Session instead of retaining the previous list snapshot.
+    void loadAgentSessions(activeAgentId, Boolean(activeSessionId));
+    // Manual expansion calls the same loader without forcing a refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeAgentId]);
+  }, [activeAgentId, activeSessionId]);
 
   const [expandedSessionFamilyIds, setExpandedSessionFamilyIds] = useState<Set<string>>(() => new Set());
 

@@ -2002,6 +2002,7 @@
       "mySessions": "My Conversations",
       "allUsers": "All Users",
       "newSession": "New Conversation",
+      "startingNewSession": "Starting a new conversation…",
       "noSessionsYet": "No conversations yet.",
       "clickToStart": "Start a new conversation to get going.",
       "noSessionSelected": "No conversation selected",

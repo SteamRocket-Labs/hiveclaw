@@ -87,6 +87,10 @@ import {
     readAssignmentHandoff,
 } from './assignmentHandoff';
 import {
+    createDraftChatSession,
+    readNewSessionDraftRequest,
+} from './agent-detail/newSessionNavigation';
+import {
     AGENT_DETAIL_TABS,
     AGENT_TAB_LABELS,
     AGENT_WORKBENCH_AREAS,
@@ -165,6 +169,12 @@ function AgentDetailInner() {
     const querySessionId = new URLSearchParams(location.search).get('session_id');
     const requestedSessionId = routeSessionId ?? querySessionId;
     const isManageMode = new URLSearchParams(location.search).has('manage');
+    const consumedNewSessionDraftRequestRef = useRef<string | null>(null);
+    const newSessionDraftRequest = readNewSessionDraftRequest(location.state, id);
+    const newSessionDraftTransitionPending = Boolean(
+        newSessionDraftRequest
+        && consumedNewSessionDraftRequestRef.current !== newSessionDraftRequest.requestId,
+    );
 
     // Legacy disguise → canonical session route (§8.4 Legacy Session URL row).
     useEffect(() => {
@@ -1075,40 +1085,13 @@ function AgentDetailInner() {
         }
     };
 
-    const createDraftChatSession = () => {
-        const now = new Date();
-        const pad = (value: number) => String(value).padStart(2, '0');
-        const randomId =
-            typeof globalThis.crypto?.randomUUID === 'function'
-                ? globalThis.crypto.randomUUID()
-                : `${now.getTime()}-${Math.random().toString(36).slice(2)}`;
-        const draftId = `draft:${randomId}`;
-        const defaultPermissionMode = defaultSessionPermissionModeFromAgent(agent);
-        return {
-            id: draftId,
-            draft_client_id: draftId,
-            is_draft: true,
-            agent_id: id,
-            user_id: currentUser?.id ? String(currentUser.id) : undefined,
-            title: `Session ${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`,
-            created_at: now.toISOString(),
-            updated_at: now.toISOString(),
-            source_channel: 'web',
-            session_kind: 'human_chat',
-            actor_type: 'user',
-            runtime_source: 'web_chat',
-            visibility_scope: 'direct_user',
-            listed_surface: 'chat',
-            is_current_user_session: true,
-            read_only: false,
-            message_count: 0,
-            permission_mode: defaultPermissionMode,
-        };
-    };
-
     const createNewSession = async () => {
         if (!id) return;
-        const draft = createDraftChatSession();
+        const draft = createDraftChatSession({
+            agentId: id,
+            userId: currentUser?.id ? String(currentUser.id) : undefined,
+            permissionMode: defaultSessionPermissionModeFromAgent(agent),
+        });
         const params = new URLSearchParams(location.search);
         params.delete('session_id');
         params.delete('manage');
@@ -1118,13 +1101,23 @@ function AgentDetailInner() {
                 search: params.toString() ? `?${params.toString()}` : '',
                 hash: '#chat',
             },
-            { replace: true },
+            { replace: true, state: null },
         );
         setSessions(prev => [draft, ...prev.filter((session: any) => !isDraftHumanChatSession(session))]);
         setIsStreaming(false);
         setIsWaiting(false);
         await selectSession(draft);
     };
+
+    useEffect(() => {
+        if (!newSessionDraftRequest || !id) return;
+        if (consumedNewSessionDraftRequestRef.current === newSessionDraftRequest.requestId) return;
+        consumedNewSessionDraftRequestRef.current = newSessionDraftRequest.requestId;
+        void createNewSession();
+        // The request id is the exact-once navigation authority. createNewSession
+        // deliberately consumes the current route and clears its state.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [id, newSessionDraftRequest?.requestId]);
 
     const replaceDraftActiveSession = (draftId: string, created: ChatSession) => {
         setSessions(prev => [created, ...prev.filter((session: any) => String(session.id) !== draftId)]);
@@ -1530,6 +1523,7 @@ function AgentDetailInner() {
 
     useEffect(() => {
         if (!canLoadAgentScopedData || !token || activeTab !== 'chat') return;
+        if (newSessionDraftTransitionPending || isDraftHumanChatSession(activeSession)) return;
         fetchMySessions(false, id).then((data: any) => {
             if (currentAgentIdRef.current !== id) return;
             setSessionsLoading(false);
@@ -2614,6 +2608,7 @@ function AgentDetailInner() {
                             sessionsLoading={sessionsLoading}
                             sessions={sessions}
                             activeSession={activeSession}
+                            sessionTransitionPending={newSessionDraftTransitionPending}
                             branchLineage={branchLineage}
                             branchLineageLoading={branchLineageLoading}
                             onSelectBranchSession={selectBranchSession}

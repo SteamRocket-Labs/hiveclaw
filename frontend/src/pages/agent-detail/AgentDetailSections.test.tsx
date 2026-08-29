@@ -1038,6 +1038,82 @@ vi.mock('react-router-dom', () => ({
 }));
 
 describe('AgentDetail extracted sections', () => {
+  it('hides the previous Session transcript and composer while a new conversation takes authority', () => {
+    const oldMarker = 'OLD-SESSION-MARKER-MUST-NOT-LEAK';
+    const oldModel = 'OLD-RUNTIME-MODEL-MUST-NOT-LEAK';
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agentId="agent-1"
+        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{ id: 'session-old', user_id: 'user-1', title: 'Old session' }}
+        sessionTransitionPending
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[{ id: 'old-answer', role: 'assistant', content: oldMarker }]}
+        chatMessagesSessionId="session-old"
+        runtimeSummary={{
+          model: { label: oldModel },
+          activated_tool_groups: [],
+          used_tools: [],
+          blocked_capabilities: [],
+          compaction_count: 0,
+        }}
+        transportNotice={null}
+        isWaiting
+        runtimePhase="responding"
+        activeRunStatus="running"
+        activeRunId="old-run"
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('Starting a new conversation');
+    expect(markup).not.toContain(oldMarker);
+    expect(markup).not.toContain(oldModel);
+    expect(markup).not.toContain('Old session');
+    expect(markup).not.toContain('data-testid="session-composer"');
+    expect(markup).not.toContain('data-testid="session-runtime-panel"');
+    expect(markup).toContain('role="status"');
+  });
+
   it('distinguishes destructive approval copy from ordinary one-shot scope', () => {
     expect(permissionOnceOnlyMessageKey({
       permission_request_id: 'controlled-write',

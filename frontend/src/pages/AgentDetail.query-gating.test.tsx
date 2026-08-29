@@ -7,6 +7,7 @@ const mockState = vi.hoisted(() => ({
   hash: '#aware',
   accessLevel: 'use',
   userRole: 'member',
+  locationState: null as null | Record<string, unknown>,
 }));
 
 vi.mock('react-i18next', () => ({
@@ -47,7 +48,7 @@ vi.mock('@tanstack/react-query', () => ({
 
 vi.mock('react-router-dom', () => ({
   useParams: () => ({ id: 'agent-aware' }),
-  useLocation: () => ({ hash: mockState.hash, search: '', pathname: '/agents/agent-aware' }),
+  useLocation: () => ({ hash: mockState.hash, search: '', pathname: '/agents/agent-aware', state: mockState.locationState }),
   useNavigate: () => vi.fn(),
 }));
 
@@ -72,7 +73,11 @@ vi.mock('../components/PromptModal', () => ({ default: () => null }));
 vi.mock('./agent-detail/AgentApprovalsSection', () => ({ default: () => null }));
 vi.mock('./agent-detail/AgentActivityLogSection', () => ({ default: () => null }));
 vi.mock('./agent-detail/AgentAwareSection', () => ({ default: () => null }));
-vi.mock('./agent-detail/AgentChatSection', () => ({ default: () => null }));
+vi.mock('./agent-detail/AgentChatSection', () => ({
+  default: ({ sessionTransitionPending }: { sessionTransitionPending?: boolean }) => (
+    <div data-testid="agent-chat-section" data-session-transition-pending={sessionTransitionPending ? 'true' : 'false'} />
+  ),
+}));
 vi.mock('./agent-detail/AgentMindSection', () => ({ default: () => null }));
 vi.mock('./agent-detail/AgentSettingsSection', () => ({ default: () => null }));
 vi.mock('./agent-detail/AgentExtensionsSection', () => ({ default: () => null }));
@@ -88,6 +93,7 @@ describe('AgentDetail aware reflection session gating', () => {
     mockState.hash = '#aware';
     mockState.accessLevel = 'use';
     mockState.userRole = 'member';
+    mockState.locationState = null;
   });
 
   it('disables reflection sessions query for non-managers on the aware tab', () => {
@@ -122,6 +128,20 @@ describe('AgentDetail aware reflection session gating', () => {
     );
 
     expect(permissionQuery?.enabled).toBe(true);
+  });
+
+  it('withdraws the old Session surface on the first render of a new-conversation navigation', () => {
+    mockState.hash = '#chat';
+    mockState.locationState = {
+      newSessionDraft: {
+        agent_id: 'agent-aware',
+        request_id: 'new-session-request-1',
+      },
+    };
+
+    const markup = renderToStaticMarkup(<AgentDetail />);
+
+    expect(markup).toContain('data-session-transition-pending="true"');
   });
 
   it('renders product workbench areas while preserving legacy hash routing', () => {

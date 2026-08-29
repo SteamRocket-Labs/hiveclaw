@@ -64,7 +64,7 @@ def test_memory_gate_prompt_requires_structured_review_rubric() -> None:
 def test_memory_gate_prompt_requires_machine_readable_terminal_transition() -> None:
     from app.memory.t2.prompts import MEMORY_GATE_REVIEW_PROMPT, REVIEW_PROMPT_VERSION
 
-    assert REVIEW_PROMPT_VERSION == "t2.memory_gate_review.v3"
+    assert REVIEW_PROMPT_VERSION == "t2.memory_gate_review.v4"
     assert "<decision>approved|needs_revision|rejected|hold_recall_only</decision>" in MEMORY_GATE_REVIEW_PROMPT
     assert (
         "<allowed_next>t3_intake|episode_stitching|short_term_carryover|archive_recall_only|none</allowed_next>"
@@ -94,6 +94,39 @@ def test_segment_prompts_expose_exact_source_ref_xml_contract() -> None:
     for prompt in (SUMMARY_AGENT_PROMPT, LEARNING_BRAIN_LABELS_PROMPT, MEMORY_GATE_REVIEW_PROMPT):
         assert '<source_ref uri="EXACT_URI_FROM_SOURCE_BUNDLE"/>' in prompt
         assert "Never write `same` or an event id in place of the exact URI" in prompt
+
+
+def test_t2_xml_prompts_require_reserved_character_escaping() -> None:
+    from app.memory.t2.prompts import (
+        EPISODE_GATE_REVIEW_PROMPT,
+        EPISODE_GATE_REVIEW_PROMPT_VERSION,
+        EPISODE_STITCHER_PROMPT,
+        EPISODE_STITCHER_PROMPT_VERSION,
+        LABELS_PROMPT_VERSION,
+        LEARNING_BRAIN_LABELS_PROMPT,
+        MEMORY_GATE_REVIEW_PROMPT,
+        REVIEW_PROMPT_VERSION,
+        SUMMARY_AGENT_PROMPT,
+        SUMMARY_PROMPT_VERSION,
+    )
+
+    assert SUMMARY_PROMPT_VERSION == "t2.summary_agent.v3"
+    assert LABELS_PROMPT_VERSION == "t2.learning_brain_labels.xml_escaping_20260829"
+    assert REVIEW_PROMPT_VERSION == "t2.memory_gate_review.v4"
+    assert EPISODE_STITCHER_PROMPT_VERSION == "t2.episode_stitcher.v2"
+    assert EPISODE_GATE_REVIEW_PROMPT_VERSION == "t2.episode_gate_review.v2"
+
+    for prompt in (
+        SUMMARY_AGENT_PROMPT,
+        LEARNING_BRAIN_LABELS_PROMPT,
+        MEMORY_GATE_REVIEW_PROMPT,
+        EPISODE_STITCHER_PROMPT,
+        EPISODE_GATE_REVIEW_PROMPT,
+    ):
+        assert "XML-escape every reserved character" in prompt
+        assert "`<C#>` must be written as `&lt;C#&gt;`" in prompt
+        assert "`A&B` must be written as `A&amp;B`" in prompt
+        assert "Never paste raw XML-like evidence inside an XML text node" in prompt
 
 
 def test_labels_prompt_forbids_unlisted_activation_entity_types() -> None:

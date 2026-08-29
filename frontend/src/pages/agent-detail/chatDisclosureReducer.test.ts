@@ -83,6 +83,30 @@ describe('chatDisclosureReducer', () => {
     expect(timeline.answerMessageId).toBe('legacy-final');
   });
 
+  it('keeps an unsealed raw assistant stream as running process evidence', () => {
+    const message = {
+      id: 'raw-stream-1',
+      role: 'assistant',
+      content: 'A partial response is still streaming.',
+      timestamp: '2026-08-29T08:19:57Z',
+      _streaming: true,
+    } as AgentChatMessage & { _streaming: true };
+
+    expect(isDisclosureStepMessage(message)).toBe(true);
+    const timeline = buildRunTimelineFromMessages([message], { activeRun: true });
+
+    expect(timeline.answerMessageId).toBeUndefined();
+    expect(timeline.status).toBe('running');
+    expect(timeline.steps).toEqual([
+      expect.objectContaining({
+        kind: 'reasoning',
+        status: 'running',
+        details: 'A partial response is still streaming.',
+        presentation: 'process',
+      }),
+    ]);
+  });
+
   it('projects thinking, ordinary tool calls, and compaction events into visible timeline steps', () => {
     const messages: AgentChatMessage[] = [
       { role: 'assistant', content: '', thinking: 'I need to inspect the current code.', timestamp: '2026-06-22T10:00:00Z' },

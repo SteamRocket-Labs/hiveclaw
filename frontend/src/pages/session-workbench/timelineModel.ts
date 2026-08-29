@@ -3,11 +3,13 @@ import type { SessionWorkbench } from '../../api/domains/ccParity';
 import {
   buildRunAggregateSummary,
   buildRunTimelineFromMessages,
+  isAssistantAnswer as isRenderableAssistantAnswer,
   isDisclosureStepMessage,
   type RunTimelineSnapshot,
 } from '../agent-detail/chatDisclosureReducer';
 import {
   agentChatMessageRunId as messageRunId,
+  isStreamingAssistantMessage,
   type AgentChatMessage,
   type ChatArtifactPart,
   type ChatRuntimeSummary,
@@ -1697,18 +1699,6 @@ function mainTurnActiveRunStatus(input: BuildThreadTimelineInput, cells: ThreadT
   return hasAssistantAnswerAfterLatestUser(input.messages) ? null : activeRunStatus;
 }
 
-function isRenderableAssistantAnswer(message: AgentChatMessage): boolean {
-  if (message.sessionItem) {
-    return message.sessionItem.kind === 'assistant_final'
-      && message.sessionItem.terminal
-      && Boolean(message.content?.trim());
-  }
-  if (message.role !== 'assistant' || !message.content?.trim()) return false;
-  if (message.eventType === 'assistant_message' || message.eventType === 'assistant_final') return true;
-  if (message.eventType?.startsWith('assistant_')) return false;
-  return true;
-}
-
 function isCanonicalSessionProcessItem(message: AgentChatMessage): boolean {
   const kind = message.sessionItem?.kind;
   if (!kind) return false;
@@ -1760,12 +1750,18 @@ function buildRunCell(
   activeRun = false,
   turnStartedAt?: string,
 ): Extract<ThreadTimelineCell, { kind: 'active_run' }> {
+  const canonicalAssistantTextPresent = sourceMessages.some(
+    ({ message }) => message.sessionItem?.kind === 'assistant_text',
+  );
+  const visibleSourceMessages = canonicalAssistantTextPresent
+    ? sourceMessages.filter(({ message }) => !isStreamingAssistantMessage(message))
+    : sourceMessages;
   const timeline = buildRunTimelineFromMessages(
-    sourceMessages.map((entry) => entry.message),
+    visibleSourceMessages.map((entry) => entry.message),
     { answer: answer?.message, activeRun, turnStartedAt },
   );
   const runId = messageRunId(answer?.message)
-    ?? sourceMessages.map((entry) => messageRunId(entry.message)).find((value): value is string => Boolean(value));
+    ?? visibleSourceMessages.map((entry) => messageRunId(entry.message)).find((value): value is string => Boolean(value));
   return {
     kind: 'active_run',
     id: `run-${runIndex}-${sourceMessages[0]?.index ?? answer?.index ?? 0}`,
@@ -1773,7 +1769,7 @@ function buildRunCell(
     timeline: answer
       ? { ...timeline, answerMessageId: messageId(answer.message, `assistant-${answer.index}`) }
       : timeline,
-    sourceMessages,
+    sourceMessages: visibleSourceMessages,
   };
 }
 
@@ -2001,7 +1997,11 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
 
     if (isCanonicalSessionPresentationInternalItem(message)) return;
 
-    if (isCanonicalSessionProcessItem(message) || isDisclosureStepMessage(message)) {
+    if (
+      isStreamingAssistantMessage(message)
+      || isCanonicalSessionProcessItem(message)
+      || isDisclosureStepMessage(message)
+    ) {
       if (!appendLateProcessToAnsweredRun(message, index)) pendingRun.push({ message, index });
       return;
     }

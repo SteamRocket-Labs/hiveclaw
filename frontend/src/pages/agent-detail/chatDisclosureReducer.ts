@@ -1,4 +1,4 @@
-import type { AgentChatMessage } from './chatRuntime';
+import { isStreamingAssistantMessage, type AgentChatMessage } from './chatRuntime';
 
 export type RunStepKind =
   | 'reasoning'
@@ -528,6 +528,7 @@ function statusForMessage(message: AgentChatMessage, allowLiveRunning: boolean):
     return message.toolStatus === 'running' ? live('running') : 'done';
   }
   if (message.role === 'assistant') {
+    if (isStreamingAssistantMessage(message)) return live('running');
     if (message.sessionItem && !message.sessionItem.terminal) return live('running');
     const status = String(message.eventStatus || '').toLowerCase();
     if (status === 'started' || status === 'delta' || status === 'running' || status === 'in_progress' || status === 'pending') {
@@ -555,7 +556,9 @@ export function isDisclosureStepMessage(message: AgentChatMessage): boolean {
   )) return true;
   if (message.role === 'tool_call') return true;
   if (message.role === 'assistant') {
-    return message.eventType === 'assistant_commentary' || Boolean(message.thinking?.trim());
+    return isStreamingAssistantMessage(message)
+      || message.eventType === 'assistant_commentary'
+      || Boolean(message.thinking?.trim());
   }
   if (message.role === 'event') {
     return Boolean(message.eventType && SESSION_NATIVE_DISCLOSURE_EVENTS.has(message.eventType));
@@ -645,7 +648,7 @@ function buildStep(message: AgentChatMessage, index: number, allowLiveRunning: b
       startedAt: message.timestamp,
       completedAt: status === 'done' ? message.timestamp : undefined,
       summary,
-      details: message.thinking,
+      details: message.thinking || message.content || undefined,
       visibility: 'collapsed',
       presentation: 'process',
     };
@@ -728,7 +731,8 @@ function getTimelineStatus(steps: RunStepSnapshot[], hasAnswer: boolean): RunTim
   return 'idle';
 }
 
-function isAssistantAnswer(message: AgentChatMessage): boolean {
+export function isAssistantAnswer(message: AgentChatMessage): boolean {
+  if (isStreamingAssistantMessage(message)) return false;
   if (!message.content?.trim()) return false;
   if (message.sessionItem) {
     return message.sessionItem.kind === 'assistant_final' && message.sessionItem.terminal;

@@ -789,7 +789,7 @@ function isStreamingAssistantPlaceholder(message: AgentChatMessage | undefined):
   );
 }
 
-function isStreamingAssistantMessage(message: AgentChatMessage | undefined): boolean {
+export function isStreamingAssistantMessage(message: AgentChatMessage | undefined): boolean {
   return Boolean(message && message.role === 'assistant' && (message as any)._streaming);
 }
 

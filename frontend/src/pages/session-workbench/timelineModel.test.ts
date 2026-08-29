@@ -2700,6 +2700,103 @@ describe('RuntimePhase in the thread projection (§3 seam 3)', () => {
     expect(model.header.status).toBe('running');
   });
 
+  it('keeps an unsealed raw stream inside the current canonical process instead of creating a second run card', () => {
+    const scope = (turnId: string, runId: string) => ({
+      level: 'round' as const,
+      session_id: 'session-1',
+      thread_id: 'session-1',
+      turn_id: turnId,
+      run_id: runId,
+      round_id: `${runId}:round:1`,
+    });
+    const model = buildThreadTimeline({
+      messages: [
+        { id: 'user-1', role: 'user', content: 'Finish the first turn.', timestamp: '2026-08-29T08:01:15Z' },
+        {
+          id: 'reasoning-1',
+          role: 'assistant',
+          content: '',
+          timestamp: '2026-08-29T08:04:01Z',
+          sessionItem: {
+            id: 'reasoning-1',
+            kind: 'assistant_reasoning_private',
+            lifecycle: 'completed',
+            scope: scope('turn-1', 'run-1'),
+            terminal: true,
+          } as AgentChatMessage['sessionItem'],
+        },
+        {
+          id: 'answer-1',
+          role: 'assistant',
+          content: 'First turn complete.',
+          timestamp: '2026-08-29T08:06:48Z',
+          sessionItem: {
+            id: 'answer-1',
+            kind: 'assistant_final',
+            lifecycle: 'completed',
+            scope: scope('turn-1', 'run-1'),
+            terminal: true,
+          } as AgentChatMessage['sessionItem'],
+        },
+        { id: 'user-2', role: 'user', content: 'Stream the second turn.', timestamp: '2026-08-29T08:17:07Z' },
+        {
+          id: 'reasoning-2',
+          role: 'assistant',
+          content: '',
+          timestamp: '2026-08-29T08:19:55Z',
+          sessionItem: {
+            id: 'reasoning-2',
+            kind: 'assistant_reasoning_private',
+            lifecycle: 'completed',
+            scope: scope('turn-2', 'run-2'),
+            terminal: true,
+          } as AgentChatMessage['sessionItem'],
+        },
+        {
+          id: 'assistant-text-2',
+          role: 'assistant',
+          content: 'Canonical assistant text is complete, but the run is not terminal.',
+          timestamp: '2026-08-29T08:19:57.723Z',
+          sessionItem: {
+            id: 'assistant-text-2',
+            kind: 'assistant_text',
+            lifecycle: 'completed',
+            scope: scope('turn-2', 'run-2'),
+            terminal: true,
+          } as AgentChatMessage['sessionItem'],
+        },
+        {
+          id: 'raw-stream-2',
+          role: 'assistant',
+          content: 'Partial raw transport projection without a terminal witness.',
+          timestamp: '2026-08-29T08:19:57.724Z',
+          _streaming: true,
+        } as AgentChatMessage & { _streaming: true },
+      ],
+      activeSession: { id: 'session-1', title: 'Two-plane streaming ownership' },
+      isWaiting: true,
+      isStreaming: true,
+      activeRunStatus: 'running',
+      activeRunId: 'run-2',
+      runtimePhase: 'responding',
+    });
+
+    const runCells = model.cells.filter((cell) => cell.kind === 'active_run');
+    expect(runCells).toHaveLength(2);
+    expect(runCells[1]).toMatchObject({
+      runId: 'run-2',
+      timeline: { status: 'running', answerMessageId: undefined },
+    });
+    if (runCells[1]?.kind === 'active_run') {
+      expect(runCells[1].sourceMessages.map((entry) => entry.message.id)).toEqual([
+        'reasoning-2',
+        'assistant-text-2',
+      ]);
+    }
+    expect(model.cells.filter((cell) => cell.kind === 'assistant_final')).toHaveLength(1);
+    expect(model.cells).not.toContainEqual(expect.objectContaining({ id: 'active-run-pending' }));
+  });
+
   it('includes the phase in the cache signature so live transitions invalidate', () => {
     const cache = {
       previousInputSignature: null,

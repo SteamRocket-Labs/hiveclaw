@@ -6,6 +6,7 @@ import {
   type AgentChannelCapability,
 } from '../../api/domains/agents';
 import { runtimeBudgetApi } from '../../api/domains/runtimeBudgets';
+import { activityDisplaySummary } from './activityDisplay';
 import './AgentStatusSection.css';
 
 type AgentStatusSectionProps = {
@@ -64,13 +65,14 @@ export default function AgentStatusSection({
     staleTime: 30_000,
   });
   const runtimeRuns = runtimeBudgetQuery.data || [];
-  const protectedRun = runtimeRuns.find((run) => ['exhausted', 'hard_stopped', 'expired', 'cancelled'].includes(run.status));
-  const latestRun = protectedRun || runtimeRuns[0];
+  const latestRun = runtimeRuns.find((run) => !['active', 'completed'].includes(run.status));
   const runtimeHealth = runtimeHealthQuery.data;
   const runtimeHealthUnavailable = runtimeHealthQuery.isError;
   const safeguardInterrupted = runtimeHealth?.status === 'needs_attention';
   const safeguardDegraded = runtimeHealth?.status === 'degraded';
-  const runtimeNeedsAttention = Boolean(protectedRun || safeguardInterrupted || runtimeHealthUnavailable);
+  const runtimeNeedsAttention = Boolean(
+    (latestRun && latestRun.status !== 'resuming') || safeguardInterrupted || runtimeHealthUnavailable,
+  );
   const runtimeMain = runtimeHealthUnavailable
     ? t('agent.status.runtimeStatusUnavailable', 'Runtime protection status is temporarily unavailable.')
     : safeguardInterrupted
@@ -365,9 +367,9 @@ export default function AgentStatusSection({
       {activityLogs.length > 0 && (
         <div className="card">
           <div className="agent-status-activity-header">
-            <h3 className="agent-status-panel-title">📊 Recent Activity</h3>
+            <h3 className="agent-status-panel-title">📊 {t('dashboard.globalActivity', 'Recent Activity')}</h3>
             <button className="btn btn-ghost" onClick={() => onSelectTab('activityLog')}>
-              View All →
+              {t('dashboard.home.viewAllTasks', 'View all')} →
             </button>
           </div>
           <div className="agent-status-stack">
@@ -379,7 +381,7 @@ export default function AgentStatusSection({
                 <span className="agent-status-activity-time">
                   {new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </span>
-                <span className="u-body u-secondary">{log.summary || log.action_type}</span>
+                <span className="u-body u-secondary">{activityDisplaySummary(log, t)}</span>
               </div>
             ))}
           </div>

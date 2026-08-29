@@ -1070,7 +1070,9 @@
       "toolCallApproved": "Approved tool {{tool}}",
       "unknownAgent": "Digital employee",
       "toolCallGeneric": "Tool call",
-      "toolCallApprovedGeneric": "Approved tool call"
+      "toolCallApprovedGeneric": "Approved tool call",
+      "toolReadLedger": "Reviewed work progress",
+      "toolTrackTodo": "Updated work progress"
     },
     "noLimit": "Unlimited",
     "justNow": "Just now",

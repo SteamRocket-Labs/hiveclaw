@@ -1070,7 +1070,9 @@
       "toolCallApproved": "审批后执行了工具 {{tool}}",
       "unknownAgent": "数字员工",
       "toolCallGeneric": "工具调用",
-      "toolCallApprovedGeneric": "审批后工具调用"
+      "toolCallApprovedGeneric": "审批后工具调用",
+      "toolReadLedger": "查看了任务进度",
+      "toolTrackTodo": "更新了任务进度"
     },
     "noLimit": "无限制",
     "justNow": "刚刚",

@@ -539,6 +539,22 @@ vi.mock('@tanstack/react-query', () => ({
       };
     }
     if (key === 'agent-runtime-health') {
+      if (String(queryKey[1]) === 'agent-active-budget-envelope') {
+        return {
+          data: {
+            schema: 'hive.agent.runtime_health.v1',
+            agent_id: 'agent-active-budget-envelope',
+            status: 'healthy',
+            interrupted_turns: 0,
+            observed_issues: 0,
+            retry_available: false,
+            last_issue_at: null,
+          },
+          isLoading: false,
+          isError: false,
+          error: null,
+        };
+      }
       return {
         data: {
           schema: 'hive.agent.runtime_health.v1',
@@ -549,6 +565,22 @@ vi.mock('@tanstack/react-query', () => ({
           retry_available: true,
           last_issue_at: '2026-07-24T04:00:00Z',
         },
+        isLoading: false,
+        isError: false,
+        error: null,
+      };
+    }
+    if (key === 'agent-runtime-budget-runs' && String(queryKey[1]) === 'agent-active-budget-envelope') {
+      return {
+        data: [
+          {
+            id: 'budget-run-active-after-root-completed',
+            status: 'active',
+            user_status: 'Running',
+            user_reason: 'System safeguard intervened',
+            user_next_action: 'Wait for the current run',
+          },
+        ],
         isLoading: false,
         isError: false,
         error: null,
@@ -1985,6 +2017,78 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Channel');
   });
 
+  it('does not present an active budget envelope as an active task or safeguard intervention', () => {
+    const markup = renderToStaticMarkup(
+      <AgentStatusSection
+        agent={{
+          id: 'agent-active-budget-envelope',
+          agent_type: 'native',
+          status: 'idle',
+          tokens_used_today: 0,
+          tokens_used_month: 0,
+          tokens_used_total: 0,
+          created_at: '2026-08-29T19:22:21Z',
+          primary_model_id: 'model-1',
+        }}
+        llmModels={[{ id: 'model-1', label: 'DeepSeek V4 Flash', model: 'deepseek-v4-flash', provider: 'deepseek' }]}
+        activityLogs={[]}
+        statusKey="idle"
+        onSelectTab={() => {}}
+      />,
+    );
+
+    expect(markup).toContain('No protected runs');
+    expect(markup).not.toContain('System safeguard intervened');
+    expect(markup).not.toContain('Wait for the current run');
+  });
+
+  it('renders recent tool activity as user actions without raw tool identifiers', () => {
+    const markup = renderToStaticMarkup(
+      <AgentStatusSection
+        agent={{
+          id: 'agent-1',
+          agent_type: 'native',
+          tokens_used_today: 0,
+          tokens_used_month: 0,
+          tokens_used_total: 0,
+          created_at: '2026-08-29T19:22:21Z',
+          primary_model_id: 'model-1',
+        }}
+        llmModels={[{ id: 'model-1', label: 'DeepSeek V4 Flash', model: 'deepseek-v4-flash', provider: 'deepseek' }]}
+        activityLogs={[
+          {
+            id: 'log-track-todo',
+            created_at: '2026-08-29T19:23:00Z',
+            summary: "Called tool track_todo: {'todo_id': 'private-item'}",
+            action_type: 'tool_call',
+            detail: { tool: 'track_todo', result: "{'todo_id': 'private-item'}" },
+          },
+          {
+            id: 'log-read-ledger',
+            created_at: '2026-08-29T19:24:00Z',
+            summary: 'Called tool read_ledger',
+            action_type: 'tool_call',
+            detail: { tool: 'read_ledger' },
+          },
+        ]}
+        statusKey="idle"
+        onSelectTab={() => {}}
+      />,
+    );
+
+    expect(markup).toContain('Recent Activity');
+    expect(markup).toContain('View all');
+    expect(markup).toContain('Updated work progress');
+    expect(markup).toContain('Reviewed work progress');
+    expect(markup).not.toContain('track_todo');
+    expect(markup).not.toContain('read_ledger');
+    expect(markup).not.toContain('private-item');
+    expect(zh.dashboard.globalActivity).toBe('最近动态');
+    expect(zh.dashboard.home.viewAllTasks).toBe('查看全部');
+    expect(zh.dashboard.activity.toolTrackTodo).toBe('更新了任务进度');
+    expect(zh.dashboard.activity.toolReadLedger).toBe('查看了任务进度');
+  });
+
   it('renders AgentActivityLogSection as a standalone activity module', () => {
     const markup = renderToStaticMarkup(
       <AgentActivityLogSection
@@ -2067,7 +2171,8 @@ describe('AgentDetail extracted sections', () => {
 
     expect(markup).not.toContain('item-internal-77');
     expect(markup).not.toContain("{'");
-    expect(markup).toContain('Called tool track_todo');
+    expect(markup).toContain('Updated work progress');
+    expect(markup).not.toContain('track_todo');
     expect(markup).not.toContain('· tool_call');
     expect(markup).not.toContain('· file_written');
     // Non-tool summaries keep rendering verbatim.

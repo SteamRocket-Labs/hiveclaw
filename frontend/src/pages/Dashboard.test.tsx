@@ -226,9 +226,11 @@ describe('Dashboard workspace homepage', () => {
     expect(markup).not.toContain("{'");
     // Internal agent UUIDs must not leak as a name fallback.
     expect(markup).not.toContain('0e6d2f81');
-    // Clean tool labels are derived from the structured detail.
-    expect(markup).toContain('Called tool read_file');
-    expect(markup).toContain('Approved tool send_email');
+    // Unknown internal tool identifiers fall back to truthful generic labels.
+    expect(markup).toContain('Tool call');
+    expect(markup).toContain('Approved tool call');
+    expect(markup).not.toContain('read_file');
+    expect(markup).not.toContain('send_email');
     // Non-tool summaries keep rendering verbatim.
     expect(markup).toContain('Saved Q2 research outline');
   });

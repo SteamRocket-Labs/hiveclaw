@@ -142,6 +142,18 @@ def _data_bootstrap_startup_enabled() -> bool:
     return _process_role() != "api"
 
 
+async def _maintain_skill_workspaces_after_startup() -> None:
+    """Reconcile existing Agent Skill workspaces without delaying readiness."""
+
+    from app.services.skill_seeder import (
+        cleanup_retired_builtin_skills,
+        push_default_skills_to_existing_agents,
+    )
+
+    await cleanup_retired_builtin_skills()
+    await push_default_skills_to_existing_agents()
+
+
 _API_ROLE_PREFIXES = (
     "/api/auth/",
     "/api/v1/auth/",
@@ -571,20 +583,13 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("[startup] T2 job sweep skipped for no-volume API role")
 
+    skill_workspace_maintenance_ready = False
     if _data_bootstrap_startup_enabled():
         try:
-            from app.services.skill_seeder import (
-                cleanup_retired_builtin_skills,
-                push_default_skills_to_existing_agents,
-                seed_skills,
-            )
+            from app.services.skill_seeder import seed_skills
 
             await seed_skills()
-            if _volume_bound_startup_enabled():
-                await cleanup_retired_builtin_skills()
-                await push_default_skills_to_existing_agents()
-            else:
-                logger.info("[startup] skill workspace maintenance skipped for no-volume API role")
+            skill_workspace_maintenance_ready = _volume_bound_startup_enabled()
         except Exception as e:
             logger.warning(f"[startup] Skills seed failed: {e}")
     else:
@@ -676,6 +681,12 @@ async def lifespan(app: FastAPI):
         startup_background_tasks = [
             ("code_execution_sandbox_probe_scheduler", start_code_execution_sandbox_probe_scheduler()),
         ]
+        if skill_workspace_maintenance_ready:
+            startup_background_tasks.append(("skill_workspace_maintenance", _maintain_skill_workspaces_after_startup()))
+        elif _volume_bound_startup_enabled():
+            logger.warning("[startup] skill workspace maintenance skipped because registry seed did not complete")
+        else:
+            logger.info("[startup] skill workspace maintenance skipped for no-volume API role")
         from app.services.session_writer_epoch import start_session_writer_heartbeat_loop
 
         startup_background_tasks.append(("session_writer_heartbeat", start_session_writer_heartbeat_loop()))

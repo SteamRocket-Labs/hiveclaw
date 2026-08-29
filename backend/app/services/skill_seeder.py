@@ -1,5 +1,6 @@
 """Seed builtin skills into the global skill registry."""
 
+import asyncio
 import shutil
 from pathlib import Path
 
@@ -443,8 +444,8 @@ async def cleanup_retired_builtin_skills() -> dict:
 
     for agent in agents:
         agent_dir = agent_manager._agent_dir(agent.id)
-        removed = remove_retired_builtin_skill_dirs(agent_dir)
-        removed.extend(remove_legacy_flat_skill_files(agent_dir))
+        removed = await asyncio.to_thread(remove_retired_builtin_skill_dirs, agent_dir)
+        removed.extend(await asyncio.to_thread(remove_legacy_flat_skill_files, agent_dir))
         if removed:
             cleaned_agent_dirs[str(agent.id)] = removed
 
@@ -481,9 +482,7 @@ def _push_default_skill_packages_to_agent(*, agent_dir: Path, default_skills: li
             if not skill.files:
                 continue
             existing_paths = {
-                sf.path
-                for sf in skill.files
-                if (agent_dir / "skills" / skill.folder_name / sf.path).is_file()
+                sf.path for sf in skill.files if (agent_dir / "skills" / skill.folder_name / sf.path).is_file()
             }
             install_result = install_active_skill_package(
                 workspace=agent_dir,
@@ -540,14 +539,15 @@ async def push_default_skills_to_existing_agents():
         unchanged = 0
         for agent in agents:
             agent_dir = agent_manager._agent_dir(agent.id)
-            install_counts = _push_default_skill_packages_to_agent(
+            install_counts = await asyncio.to_thread(
+                _push_default_skill_packages_to_agent,
                 agent_dir=agent_dir,
                 default_skills=default_skills,
             )
             pushed += install_counts["pushed"]
             updated += install_counts["updated"]
             unchanged += install_counts["unchanged"]
-            legacy_removed = remove_legacy_flat_skill_files(agent_dir)
+            legacy_removed = await asyncio.to_thread(remove_legacy_flat_skill_files, agent_dir)
             if legacy_removed:
                 updated += len(legacy_removed)
                 logger.info(

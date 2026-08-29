@@ -104,6 +104,33 @@ def test_runtime_resume_runs_as_background_startup_task_not_lifespan_blocker():
     assert "reconcile_stuck_approval_tickets" in source
 
 
+def test_skill_workspace_maintenance_runs_after_startup_without_blocking_the_event_loop():
+    project_root = Path(__file__).resolve().parents[2]
+    main_source = (project_root / "backend/app/main.py").read_text(encoding="utf-8")
+    lifespan_source = main_source.split("async def lifespan", 1)[1]
+    pre_background_task_setup = lifespan_source.split("# Start background tasks", 1)[0]
+    background_task_setup = lifespan_source.split("startup_background_tasks = [", 1)[1].split(
+        "for name, coro in startup_background_tasks:", 1
+    )[0]
+
+    assert "await cleanup_retired_builtin_skills()" not in pre_background_task_setup
+    assert "await push_default_skills_to_existing_agents()" not in pre_background_task_setup
+    assert "skill_workspace_maintenance_ready = False" in pre_background_task_setup
+    assert "skill_workspace_maintenance_ready = _volume_bound_startup_enabled()" in pre_background_task_setup
+    assert "if skill_workspace_maintenance_ready:" in background_task_setup
+    assert "skill_workspace_maintenance" in background_task_setup
+    assert "_maintain_skill_workspaces_after_startup()" in background_task_setup
+
+    seeder_source = (project_root / "backend/app/services/skill_seeder.py").read_text(encoding="utf-8")
+    cleanup_source = seeder_source.split("async def cleanup_retired_builtin_skills", 1)[1].split(
+        "def _push_default_skill_packages_to_agent", 1
+    )[0]
+    push_source = seeder_source.split("async def push_default_skills_to_existing_agents", 1)[1]
+
+    assert "await asyncio.to_thread" in cleanup_source
+    assert "await asyncio.to_thread" in push_source
+
+
 @pytest.mark.asyncio
 async def test_runtime_task_worker_waits_for_startup_resume_gate():
     import app.main as main_mod

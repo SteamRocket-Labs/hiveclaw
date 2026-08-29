@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from loguru import logger
+
 from app.runtime.session import SessionContext
 
 
@@ -10,10 +12,18 @@ class SessionLiveBufferOverflow(RuntimeError):
     """Live delivery exceeded its bounded pre-ready buffer; DB replay owns recovery."""
 
 
+WEB_CHAT_SOCKET_SEND_TIMEOUT_SECONDS = 1.0
+
+
 class WebChatBroker:
     """Session-scoped WebSocket broadcaster for web chat runs."""
 
-    def __init__(self, *, live_buffer_limit: int = 10_000) -> None:
+    def __init__(
+        self,
+        *,
+        live_buffer_limit: int = 10_000,
+        send_timeout_seconds: float = WEB_CHAT_SOCKET_SEND_TIMEOUT_SECONDS,
+    ) -> None:
         self.active_connections: dict[str, list[tuple[Any, str | None]]] = {}
         self._runtime_sessions: dict[str, SessionContext] = {}
         self._runtime_session_order: list[str] = []
@@ -22,6 +32,7 @@ class WebChatBroker:
         self._subscription_draining: set[int] = set()
         self._subscription_overflowed: set[int] = set()
         self._live_buffer_limit = max(1, int(live_buffer_limit))
+        self._send_timeout_seconds = max(0.01, float(send_timeout_seconds))
 
     @staticmethod
     def _runtime_session_key(agent_id: str, session_id: str | None) -> str | None:
@@ -119,10 +130,11 @@ class WebChatBroker:
         *,
         include_agent_wide: bool = False,
     ) -> None:
+        dead: list[tuple[Any, str | None]] = []
         async with self._lock:
             if agent_id not in self.active_connections:
                 return
-            dead: list[tuple[Any, str | None]] = []
+            direct: list[tuple[Any, str | None]] = []
             for ws, sid in list(self.active_connections[agent_id]):
                 if session_id is not None and sid != session_id:
                     continue
@@ -136,13 +148,46 @@ class WebChatBroker:
                         else:
                             buffer.append(dict(message))
                     else:
-                        await ws.send_json(message)
-                except Exception:
+                        direct.append((ws, sid))
+                except Exception:  # noqa: BLE001 - one dead socket must not block the session.
                     dead.append((ws, sid))
+            if direct:
+
+                async def bounded_send(websocket: Any) -> Exception | None:
+                    try:
+                        await asyncio.wait_for(
+                            websocket.send_json(message),
+                            timeout=self._send_timeout_seconds,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - durable cursor owns transport recovery.
+                        return exc
+                    return None
+
+                outcomes = await asyncio.gather(*(bounded_send(ws) for ws, _sid in direct))
+                dead.extend(connection for connection, outcome in zip(direct, outcomes) if outcome is not None)
             for item in dead:
                 self.active_connections[agent_id] = [
                     connection for connection in self.active_connections[agent_id] if connection != item
                 ]
+        if not dead:
+            return
+
+        logger.warning(
+            "[WebChatBroker] Removed {} stalled or failed websocket connection(s); "
+            "durable Session cursor owns recovery",
+            len(dead),
+        )
+
+        async def close_connection(websocket: Any) -> None:
+            close = getattr(websocket, "close", None)
+            if not callable(close):
+                return
+            try:
+                await asyncio.wait_for(close(code=1011), timeout=self._send_timeout_seconds)
+            except Exception:  # noqa: BLE001 - connection is already removed from live delivery.
+                return
+
+        await asyncio.gather(*(close_connection(ws) for ws, _sid in dead))
 
     async def get_active_session_ids(self, agent_id: str) -> list[str]:
         async with self._lock:

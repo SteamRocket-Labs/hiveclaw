@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
@@ -22,6 +24,18 @@ class _Socket:
 
     async def send_json(self, payload: dict) -> None:
         self.sent.append(payload)
+
+
+class _StalledSocket(_Socket):
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed_codes: list[int] = []
+
+    async def send_json(self, payload: dict) -> None:
+        await asyncio.Event().wait()
+
+    async def close(self, *, code: int = 1000) -> None:
+        self.closed_codes.append(code)
 
 
 def test_subscribe_contract_requires_exact_session_schema_cursor_and_attempt() -> None:
@@ -164,6 +178,66 @@ async def test_broker_preserves_same_sequence_conflicts_for_client_consistency_d
 
     await broker.activate_session_subscription(socket, delivered_through_sequence=1)
     assert [frame["event_id"] for frame in socket.sent] == ["event-a", "event-b"]
+
+
+@pytest.mark.asyncio
+async def test_broker_bounds_stalled_socket_without_blocking_healthy_delivery() -> None:
+    broker = WebChatBroker(send_timeout_seconds=0.02)
+    healthy = _Socket()
+    stalled = _StalledSocket()
+    await broker.connect("agent-1", healthy, "session-1")
+    await broker.connect("agent-1", stalled, "session-1")
+
+    payload = {"type": "phase", "phase": "done", "run_id": "run-1"}
+    await asyncio.wait_for(
+        broker.send_session_message("agent-1", "session-1", payload),
+        timeout=0.2,
+    )
+
+    assert healthy.sent == [payload]
+    assert stalled.sent == []
+    assert stalled.closed_codes == [1011]
+    assert broker.active_connections["agent-1"] == [(healthy, "session-1")]
+
+
+@pytest.mark.asyncio
+async def test_terminal_phase_stall_cannot_outlive_claimed_runtime_work(monkeypatch) -> None:
+    from app.runtime.runtime_phase import RunPhaseEmitter, RuntimePhase
+    from app.services import runtime_task_fence as fence_service
+
+    broker = WebChatBroker(send_timeout_seconds=0.02)
+    stalled = _StalledSocket()
+    await broker.connect("agent-1", stalled, "session-1")
+    renewals: list[float] = []
+
+    async def fake_renew(*, lease_seconds: float):
+        renewals.append(lease_seconds)
+        return datetime.now(timezone.utc)
+
+    monkeypatch.setattr(fence_service, "renew_current_runtime_task_lease", fake_renew)
+    emitter = RunPhaseEmitter(
+        lambda event: broker.send_session_message("agent-1", "session-1", event),
+        run_id="run-1",
+    )
+
+    async def terminal_cleanup() -> str:
+        assert await emitter.transition(RuntimePhase.DONE) is True
+        return "settled"
+
+    result = await asyncio.wait_for(
+        fence_service.run_claimed_runtime_task(
+            terminal_cleanup(),
+            task_id=uuid4(),
+            claim_version=1,
+            worker_id="worker-1",
+            lease_seconds=0.3,
+        ),
+        timeout=0.2,
+    )
+
+    assert result == "settled"
+    assert renewals == []
+    assert stalled.closed_codes == [1011]
 
 
 def test_live_endpoint_registers_buffer_before_watermark_and_activates_after_catchup() -> None:

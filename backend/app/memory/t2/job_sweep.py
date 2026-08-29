@@ -251,6 +251,9 @@ async def _retry_job(manifest_path: Path, manifest: dict[str, Any], *, root: Pat
             t0_segment_id=str(manifest.get("t0_segment_id") or ""),
             package_id=manifest.get("package_id"),
             job_id=job_id,
+            session_lineage=(
+                dict(manifest["session_lineage"]) if isinstance(manifest.get("session_lineage"), dict) else None
+            ),
         )
         return result.status
     except Exception as exc:  # noqa: BLE001 - a broken retry must not kill the sweep loop

@@ -15,6 +15,7 @@ import asyncio
 import logging
 import re
 import uuid
+from contextvars import Context
 from pathlib import Path
 
 from app.runtime.hooks import (
@@ -34,6 +35,7 @@ from app.services.session_memory import (
 
 logger = logging.getLogger(__name__)
 _DEFAULT_HOOK_REGISTRY = hook_registry
+_T2_BACKGROUND_TASKS: dict[str, asyncio.Task[None]] = {}
 
 
 # ── Logging-only handlers (Phase 0, kept for events without active handler) ──
@@ -625,27 +627,101 @@ async def _build_t2_for_sealed_segment(*, ctx: HookContext, agent_id: uuid.UUID,
         tenant_id = None
         logger.warning("[Hooks] T0->T2 tenant resolution failed for agent=%s: %s", agent_id, exc)
     try:
-        from app.memory.t2.segment_package import run_t2_segment_package_job
+        from app.memory.t2.segment_package import enqueue_t2_segment_package_job
 
-        result = await run_t2_segment_package_job(
+        lineage = _session_lineage_metadata(ctx)
+        receipt = enqueue_t2_segment_package_job(
             data_root=_agent_data_root(),
             agent_id=agent_id,
             tenant_id=tenant_id,
             session_id=str(ctx.session_id),
             t0_segment_id=segment_id,
-            session_lineage=_session_lineage_metadata(ctx),
+            session_lineage=lineage,
         )
         logger.info(
             "[Hooks] T0->T2 job %s agent=%s session=%s segment=%s job=%s path=%s",
-            result.status,
+            receipt.status,
             agent_id,
             ctx.session_id,
             segment_id,
+            receipt.job_id,
+            receipt.package_dir,
+        )
+        if receipt.status == "queued":
+            _schedule_t2_segment_package_job(
+                data_root=_agent_data_root(),
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                session_id=str(ctx.session_id),
+                t0_segment_id=segment_id,
+                job_id=receipt.job_id,
+                session_lineage=lineage,
+            )
+            # Give an immediately-completing job one event-loop turn without
+            # waiting on model or provider I/O. Production work remains
+            # detached from the terminal RuntimeTask claim.
+            await asyncio.sleep(0)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Hooks] T0->T2 package build failed for agent=%s segment=%s: %s", agent_id, segment_id, exc)
+
+
+def _schedule_t2_segment_package_job(
+    *,
+    data_root: Path,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID | None,
+    session_id: str,
+    t0_segment_id: str,
+    job_id: str,
+    session_lineage: dict[str, object] | None,
+) -> None:
+    """Run a durably queued T2 job outside any user RuntimeTask fence."""
+
+    key = f"{agent_id}:{job_id}"
+    existing = _T2_BACKGROUND_TASKS.get(key)
+    if existing is not None and not existing.done():
+        return
+
+    async def _run() -> None:
+        from app.memory.t2.segment_package import run_t2_segment_package_job
+
+        result = await run_t2_segment_package_job(
+            data_root=data_root,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            t0_segment_id=t0_segment_id,
+            job_id=job_id,
+            session_lineage=dict(session_lineage or {}),
+        )
+        logger.info(
+            "[Hooks] Detached T0->T2 job %s agent=%s session=%s segment=%s job=%s path=%s",
+            result.status,
+            agent_id,
+            session_id,
+            t0_segment_id,
             result.job_id,
             result.package_dir,
         )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[Hooks] T0->T2 package build failed for agent=%s segment=%s: %s", agent_id, segment_id, exc)
+
+    task = asyncio.create_task(
+        _run(),
+        name=f"t0-to-t2:{agent_id}:{job_id}",
+        context=Context(),
+    )
+    _T2_BACKGROUND_TASKS[key] = task
+
+    def _on_done(done_task: asyncio.Task[None]) -> None:
+        if _T2_BACKGROUND_TASKS.get(key) is done_task:
+            _T2_BACKGROUND_TASKS.pop(key, None)
+        try:
+            done_task.result()
+        except asyncio.CancelledError:
+            logger.info("[Hooks] Detached T0->T2 job cancelled; durable manifest remains job=%s", job_id)
+        except Exception as exc:  # noqa: BLE001 - manifest + sweep own recovery.
+            logger.warning("[Hooks] Detached T0->T2 job crashed job=%s: %s", job_id, exc)
+
+    task.add_done_callback(_on_done)
 
 
 def _t0_segment_t2_eligible(ctx: HookContext) -> tuple[bool, str]:

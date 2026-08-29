@@ -364,6 +364,59 @@ async def build_t2_segment_package_with_llm(
         )
 
 
+def enqueue_t2_segment_package_job(
+    *,
+    agent_id: uuid.UUID | str,
+    tenant_id: uuid.UUID | str | None,
+    session_id: uuid.UUID | str,
+    t0_segment_id: str,
+    data_root: Path | str | None = None,
+    package_id: str | None = None,
+    job_id: str | None = None,
+    session_lineage: dict[str, Any] | None = None,
+) -> T2SegmentPackageJobResult:
+    """Persist the recoverable queued boundary before starting LLM work."""
+
+    root = _data_root(data_root)
+    resolved_package_id = package_id or _stable_t2_package_id(session_id=session_id, t0_segment_id=t0_segment_id)
+    resolved_job_id = job_id or _stable_t2_job_id(session_id=session_id, t0_segment_id=t0_segment_id)
+    staging_dir = _staging_dir(root, agent_id, resolved_job_id)
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    package_dir = _package_dir(root, agent_id, session_id, t0_segment_id)
+    manifest_path = staging_dir / "job_manifest.json"
+    if not manifest_path.exists():
+        _write_json(
+            manifest_path,
+            {
+                "schema_version": "t2.segment-package-job.v1",
+                "job_id": resolved_job_id,
+                "package_id": resolved_package_id,
+                "agent_id": str(agent_id),
+                "tenant_id": str(tenant_id) if tenant_id else None,
+                "session_id": str(session_id),
+                "t0_segment_id": str(t0_segment_id),
+                "package_dir": _relative_agent_path(root, agent_id, package_dir),
+                "staging_dir": _relative_agent_path(root, agent_id, staging_dir),
+                "session_lineage": dict(session_lineage or {}),
+                "created_at": _now(),
+                "status": "queued",
+                "updated_at": _now(),
+                "issues": [],
+            },
+        )
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        manifest = {"status": "failed", "issues": ["unreadable T2 job manifest"]}
+    return T2SegmentPackageJobResult(
+        status=str(manifest.get("status") or "queued"),
+        job_id=resolved_job_id,
+        package_dir=package_dir,
+        staging_dir=staging_dir,
+        issues=tuple(str(issue) for issue in (manifest.get("issues") or [])),
+    )
+
+
 async def run_t2_segment_package_job(
     *,
     agent_id: uuid.UUID | str,
@@ -383,13 +436,35 @@ async def run_t2_segment_package_job(
     that held result is a valid terminal state, not a silent failure.
     """
 
+    queued = enqueue_t2_segment_package_job(
+        data_root=data_root,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        t0_segment_id=t0_segment_id,
+        package_id=package_id,
+        job_id=job_id,
+        session_lineage=session_lineage,
+    )
     root = _data_root(data_root)
-    resolved_package_id = package_id or _stable_t2_package_id(session_id=session_id, t0_segment_id=t0_segment_id)
-    resolved_job_id = job_id or _stable_t2_job_id(session_id=session_id, t0_segment_id=t0_segment_id)
-    staging_dir = _staging_dir(root, agent_id, resolved_job_id)
-    staging_dir.mkdir(parents=True, exist_ok=True)
-    package_dir = _package_dir(root, agent_id, session_id, t0_segment_id)
+    resolved_job_id = queued.job_id
+    staging_dir = queued.staging_dir
+    package_dir = queued.package_dir
     manifest_path = staging_dir / "job_manifest.json"
+    try:
+        queued_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        queued_manifest = {}
+    resolved_package_id = str(
+        queued_manifest.get("package_id")
+        or package_id
+        or _stable_t2_package_id(session_id=session_id, t0_segment_id=t0_segment_id)
+    )
+    resolved_lineage = (
+        dict(session_lineage)
+        if isinstance(session_lineage, dict)
+        else dict(queued_manifest.get("session_lineage") or {})
+    )
     base_manifest = {
         "schema_version": "t2.segment-package-job.v1",
         "job_id": resolved_job_id,
@@ -400,11 +475,10 @@ async def run_t2_segment_package_job(
         "t0_segment_id": str(t0_segment_id),
         "package_dir": _relative_agent_path(root, agent_id, package_dir),
         "staging_dir": _relative_agent_path(root, agent_id, staging_dir),
-        "created_at": _now(),
+        "session_lineage": resolved_lineage,
+        "created_at": str(queued_manifest.get("created_at") or _now()),
     }
     carried = _carry_over_job_fields(manifest_path)
-    if not manifest_path.exists():
-        _write_json(manifest_path, {**base_manifest, "status": "queued", "updated_at": _now(), "issues": []})
     _write_json(manifest_path, {**base_manifest, **carried, "status": "running", "updated_at": _now(), "issues": []})
     try:
         result = await build_t2_segment_package_with_llm(
@@ -415,7 +489,7 @@ async def run_t2_segment_package_job(
             data_root=root,
             package_id=resolved_package_id,
             job_id=resolved_job_id,
-            session_lineage=session_lineage,
+            session_lineage=resolved_lineage,
         )
         terminal = "committed" if result.status == "committed" else "held"
         _write_json(

@@ -1915,11 +1915,6 @@ async def broadcast_web_chat_event(
     run_id = event_payload.get("run_id") or event_payload.get("runtime_task_id") or _CURRENT_BROADCAST_RUN_ID.get()
     if run_id and not event_payload.get("run_id"):
         event_payload["run_id"] = str(run_id)
-    terminal_phase = event_payload.get("type") == "phase" and event_payload.get("phase") in {
-        RuntimePhase.DONE.value,
-        RuntimePhase.FAILED.value,
-        RuntimePhase.CANCELLED.value,
-    }
     from app.services.thread_items import build_live_thread_item
 
     event_payload.update(
@@ -1951,29 +1946,11 @@ async def broadcast_web_chat_event(
         "raw",
     ):
         event_payload.pop(operator_only_key, None)
-    broker_started = time.perf_counter()
-    if terminal_phase:
-        logger.info(
-            "[WebChatRunCleanup] run_id={} stage=terminal_phase.broker.start",
-            run_id,
-        )
     await web_chat_broker.send_session_message(str(agent_id), str(session_id) if session_id else None, event_payload)
-    if terminal_phase:
-        logger.info(
-            "[WebChatRunCleanup] run_id={} stage=terminal_phase.broker.end duration_ms={:.3f}",
-            run_id,
-            (time.perf_counter() - broker_started) * 1000,
-        )
     if run_id:
         try:
             from app.services.web_chat_stream_bus import publish_web_chat_stream_event
 
-            stream_started = time.perf_counter()
-            if terminal_phase:
-                logger.info(
-                    "[WebChatRunCleanup] run_id={} stage=terminal_phase.stream_bus.start",
-                    run_id,
-                )
             await publish_web_chat_stream_event(
                 tenant_id=event_payload.get("tenant_id"),
                 agent_id=agent_id,
@@ -1982,12 +1959,6 @@ async def broadcast_web_chat_event(
                 event_type=str(event_payload.get("type") or event_payload.get("event_type") or "event"),
                 payload=event_payload,
             )
-            if terminal_phase:
-                logger.info(
-                    "[WebChatRunCleanup] run_id={} stage=terminal_phase.stream_bus.end duration_ms={:.3f}",
-                    run_id,
-                    (time.perf_counter() - stream_started) * 1000,
-                )
         except Exception as exc:  # noqa: BLE001 - local broker and durable transcript remain fallback.
             logger.warning("[WebChatRun] stream bus publish failed for run {}: {}", run_id, exc)
 

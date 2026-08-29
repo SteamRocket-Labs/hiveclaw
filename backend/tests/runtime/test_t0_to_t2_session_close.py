@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -270,6 +272,79 @@ async def test_turn_stop_seals_user_turn_and_starts_canonical_t2_package(monkeyp
     assert calls[0]["session_lineage"]["turn_id"] == "turn-1"
     assert calls[0]["session_lineage"]["intent_id"] == "intent-1"
     assert calls[0]["session_lineage"]["checkpoint_kind"] == "user_turn_stop"
+
+
+@pytest.mark.asyncio
+async def test_turn_stop_does_not_hold_runtime_claim_while_t2_llm_job_runs(monkeypatch, tmp_path) -> None:
+    from app.services.runtime_task_fence import (
+        current_runtime_task_fence,
+        reset_runtime_task_fence,
+        set_runtime_task_fence,
+    )
+
+    _patch_t0_root(monkeypatch, tmp_path)
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    task_id = uuid4()
+    _patch_agent_tenant(monkeypatch, agent_id, tenant_id)
+    session_id = "turn-with-slow-t2-model"
+    source = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="终态证据提交后，派生记忆模型不得继续占用用户回合 lease。",
+        data_root=tmp_path,
+    )
+    builder_started = asyncio.Event()
+    release_builder = asyncio.Event()
+    observed_fences = []
+
+    async def blocked_build(**kwargs):
+        observed_fences.append(current_runtime_task_fence())
+        builder_started.set()
+        await release_builder.wait()
+        return SimpleNamespace(
+            status="committed",
+            package_dir=tmp_path / "pkg",
+            job_id=kwargs["job_id"],
+            issues=(),
+        )
+
+    monkeypatch.setattr("app.memory.t2.segment_package.build_t2_segment_package_with_llm", blocked_build)
+    token = set_runtime_task_fence(task_id=task_id, claim_version=1, worker_id="worker-1")
+    try:
+        await asyncio.wait_for(
+            _t0_turn_stop(
+                HookContext(
+                    event=HookEvent.TURN_STOP,
+                    agent_id=str(agent_id),
+                    session_id=session_id,
+                    source="web",
+                    messages=[],
+                    metadata={"tenant_id": str(tenant_id), "reason": "invoke_complete"},
+                )
+            ),
+            timeout=0.2,
+        )
+    finally:
+        reset_runtime_task_fence(token)
+
+    await asyncio.wait_for(builder_started.wait(), timeout=0.2)
+    assert observed_fences == [None]
+    job_digest = hashlib.sha256((session_id + "\0" + source.segment_id).encode()).hexdigest()[:16]
+    manifest_path = (
+        tmp_path / str(agent_id) / "memory" / ".staging" / "t2_jobs" / f"t2job-{job_digest}" / "job_manifest.json"
+    )
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["status"] in {"queued", "running"}
+
+    release_builder.set()
+    for _ in range(20):
+        if json.loads(manifest_path.read_text(encoding="utf-8"))["status"] == "committed":
+            break
+        await asyncio.sleep(0.01)
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["status"] == "committed"
 
 
 @pytest.mark.asyncio

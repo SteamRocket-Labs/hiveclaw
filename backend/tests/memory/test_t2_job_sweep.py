@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -500,6 +501,39 @@ async def test_sweep_bounds_automatic_replay_and_reports_deferred_jobs(tmp_path:
         (tmp_path / str(agent_id) / "memory" / "control" / "t2_job_sweep.json").read_text(encoding="utf-8")
     )
     assert control["deferred"] == ["t2job-bounded-b"]
+
+
+@pytest.mark.asyncio
+async def test_sweep_replays_persisted_session_lineage(tmp_path: Path, monkeypatch) -> None:
+    from app.memory.t2 import job_sweep
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    manifest = _stale_manifest(agent_id=agent_id, status="held")
+    manifest["tenant_id"] = str(tenant_id)
+    manifest["session_lineage"] = {
+        "branch_mode": "rewind",
+        "source_session_id": "source-session-1",
+        "anchor_event_id": "event-7",
+    }
+    manifest_path = _jobs_dir(tmp_path, agent_id) / manifest["job_id"] / "job_manifest.json"
+    _write_manifest(manifest_path, manifest)
+    calls: list[dict] = []
+
+    async def fake_run(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(status="committed")
+
+    monkeypatch.setattr("app.memory.t2.segment_package.run_t2_segment_package_job", fake_run)
+
+    report = await job_sweep.sweep_t2_jobs(
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        data_root=tmp_path,
+    )
+
+    assert report.committed == (manifest["job_id"],)
+    assert calls[0]["session_lineage"] == manifest["session_lineage"]
 
 
 @pytest.mark.asyncio

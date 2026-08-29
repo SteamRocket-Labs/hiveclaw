@@ -111,7 +111,7 @@ def test_t2_xml_prompts_require_reserved_character_escaping() -> None:
     )
 
     assert SUMMARY_PROMPT_VERSION == "t2.summary_agent.v3"
-    assert LABELS_PROMPT_VERSION == "t2.learning_brain_labels.xml_escaping_20260829"
+    assert LABELS_PROMPT_VERSION == "t2.learning_brain_labels.continuity_text_20260830"
     assert REVIEW_PROMPT_VERSION == "t2.memory_gate_review.v4"
     assert EPISODE_STITCHER_PROMPT_VERSION == "t2.episode_stitcher.v2"
     assert EPISODE_GATE_REVIEW_PROMPT_VERSION == "t2.episode_gate_review.v2"
@@ -127,6 +127,19 @@ def test_t2_xml_prompts_require_reserved_character_escaping() -> None:
         assert "`<C#>` must be written as `&lt;C#&gt;`" in prompt
         assert "`A&B` must be written as `A&amp;B`" in prompt
         assert "Never paste raw XML-like evidence inside an XML text node" in prompt
+
+
+def test_labels_prompt_requires_direct_text_continuity_state() -> None:
+    from app.memory.t2.prompts import LABELS_PROMPT_VERSION, LEARNING_BRAIN_LABELS_PROMPT
+
+    assert LABELS_PROMPT_VERSION == "t2.learning_brain_labels.continuity_text_20260830"
+    assert (
+        "<continuity_state>standalone|same_episode_candidate|needs_previous|needs_next|low_signal|admin_only"
+        "</continuity_state>" in LEARNING_BRAIN_LABELS_PROMPT
+    )
+    assert "continuity_state must be a direct child of t2_labels" in LEARNING_BRAIN_LABELS_PROMPT
+    assert "Do not use a value attribute" in LEARNING_BRAIN_LABELS_PROMPT
+    assert "Do not add prose inside continuity_state" in LEARNING_BRAIN_LABELS_PROMPT
 
 
 def test_labels_prompt_forbids_unlisted_activation_entity_types() -> None:

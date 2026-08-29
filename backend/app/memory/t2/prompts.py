@@ -1,7 +1,7 @@
 """Versioned prompt contracts for canonical T0 -> T2 distillation."""
 
 SUMMARY_PROMPT_VERSION = "t2.summary_agent.v3"
-LABELS_PROMPT_VERSION = "t2.learning_brain_labels.xml_escaping_20260829"
+LABELS_PROMPT_VERSION = "t2.learning_brain_labels.continuity_text_20260830"
 REVIEW_PROMPT_VERSION = "t2.memory_gate_review.v4"
 EPISODE_STITCHER_PROMPT_VERSION = "t2.episode_stitcher.v2"
 EPISODE_GATE_REVIEW_PROMPT_VERSION = "t2.episode_gate_review.v2"
@@ -163,7 +163,12 @@ continuity_state maps summary continuity into a controlled engineering label.
 
 <output_schema>
 Return Markdown with exactly one <t2_labels schema_version="t2.labels.v1"> block.
-The block must include <continuity_state>. Include <four_plane_signals> with
+The block must include this direct child:
+<continuity_state>standalone|same_episode_candidate|needs_previous|needs_next|low_signal|admin_only</continuity_state>
+Replace the pipe-delimited declaration with exactly one controlled value.
+continuity_state must be a direct child of t2_labels. Do not use a value attribute.
+Do not add prose inside continuity_state; put source-backed explanation elsewhere.
+Include <four_plane_signals> with
 <self_signal>, <nutrients>, and (only when a criterion fires) <milestone_signal>.
 Include exactly one <activation_keys schema_version="t2.activation_keys.20260705"> block.
 </output_schema>

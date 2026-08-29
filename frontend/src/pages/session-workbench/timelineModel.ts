@@ -1863,7 +1863,8 @@ function keepLatestProcessRunActive(
 ): boolean {
   const phase = liveRunPhase(input);
   if (!input.isWaiting && !input.isStreaming && !activeRunStatus && !phase && !terminalDeliveryPending) return false;
-  const index = cells.length - 1;
+  let index = cells.length - 1;
+  while (index >= 0 && cells[index]?.kind === 'boundary') index -= 1;
   const cell = cells[index];
   if (!cell || cell.kind !== 'active_run' || cell.timeline.answerMessageId) return false;
   const latestUserIndex = latestUserMessageIndex(input.messages);

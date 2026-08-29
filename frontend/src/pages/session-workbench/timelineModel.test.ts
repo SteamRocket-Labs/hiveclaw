@@ -2458,6 +2458,82 @@ describe('RuntimePhase in the thread projection (§3 seam 3)', () => {
     expect(model.cells.some((cell) => cell.kind === 'assistant_final')).toBe(false);
   });
 
+  it('keeps one disclosure when completed assistant text is followed by terminal bookkeeping for the same live run', () => {
+    const marker = 'SESSION-8B1-LIVE-T1-20260829-1522';
+    const runScope = {
+      level: 'round' as const,
+      session_id: 'session-1',
+      thread_id: 'session-1',
+      turn_id: 'turn-1',
+      run_id: 'run-1',
+      round_id: 'round-1',
+    };
+    const model = buildThreadTimeline({
+      messages: [
+        {
+          id: 'accepted-input-1',
+          role: 'user',
+          content: 'Return the marker.',
+          timestamp: '2026-08-29T07:22:03Z',
+        },
+        {
+          id: 'assistant-text-1',
+          role: 'assistant',
+          content: marker,
+          timestamp: '2026-08-29T07:22:18Z',
+          sessionItem: {
+            id: 'assistant-text-1',
+            kind: 'assistant_text',
+            lifecycle: 'completed',
+            scope: runScope,
+            terminal: true,
+          } as AgentChatMessage['sessionItem'],
+        },
+        {
+          id: 'human-input-applied-1',
+          role: 'event',
+          content: '',
+          timestamp: '2026-08-29T07:22:19Z',
+          eventType: 'human_input',
+          eventStatus: 'applied',
+          sessionItem: {
+            id: 'human-input-1',
+            kind: 'human_input',
+            lifecycle: 'applied',
+            terminal: true,
+          } as AgentChatMessage['sessionItem'],
+        },
+        {
+          id: 'provider-call-ledger-1',
+          role: 'event',
+          content: '',
+          timestamp: '2026-08-29T07:22:19Z',
+          eventType: 'provider_call_ledger',
+        },
+      ] as AgentChatMessage[],
+      activeSession: { id: 'session-1', title: 'Terminal bookkeeping tail' },
+      isWaiting: true,
+      isStreaming: false,
+      activeRunStatus: 'running',
+      activeRunId: 'run-1',
+      runtimePhase: 'thinking',
+    });
+
+    const runCells = model.cells.filter((cell) => cell.kind === 'active_run');
+    expect(runCells).toHaveLength(1);
+    expect(runCells[0]).toMatchObject({
+      runId: 'run-1',
+      timeline: {
+        status: 'running',
+        steps: expect.arrayContaining([
+          expect.objectContaining({ kind: 'prose', details: marker }),
+        ]),
+      },
+    });
+    expect(model.cells).not.toContainEqual(expect.objectContaining({ id: 'active-run-pending' }));
+    expect(model.header.status).toBe('running');
+  });
+
   it('includes the phase in the cache signature so live transitions invalidate', () => {
     const cache = {
       previousInputSignature: null,

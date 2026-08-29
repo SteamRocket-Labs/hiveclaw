@@ -75,6 +75,13 @@ import { AGENT_WORKBENCH_AREAS } from './agentDetailPolicy';
 import { buildSessionCommandStatusControl } from './sessionCommandPanelPresentation';
 import zh from '../../i18n/zh.json';
 
+async function renderWithLazyHrPreview(element: React.ReactElement): Promise<string> {
+  renderToStaticMarkup(element);
+  await import('./HrBlueprintPreviewCard');
+  await Promise.resolve();
+  return renderToStaticMarkup(element);
+}
+
 describe('buildSessionCommandStatusControl', () => {
   const t = ((_key: string, fallback: string) => fallback) as unknown as Parameters<typeof buildSessionCommandStatusControl>[0];
 
@@ -2373,8 +2380,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('tenant-wide workspace resources');
   });
 
-  it('renders AgentAwareSection as a standalone aware module', () => {
-    const markup = renderToStaticMarkup(
+  it('renders AgentAwareSection as a standalone aware module', async () => {
+    const markup = await renderWithLazyHrPreview(
       <AgentAwareSection
         agentId="agent-1"
         awareTriggers={[
@@ -5975,8 +5982,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('startConversation');
   });
 
-  it('renders structured HR preview details for tool results', () => {
-    const markup = renderToStaticMarkup(
+  it('renders structured HR preview details for tool results', async () => {
+    const markup = await renderWithLazyHrPreview(
       <StructuredToolResultBody
           toolName="preview_agent_blueprint"
           toolResult='{"status":"preview"}'

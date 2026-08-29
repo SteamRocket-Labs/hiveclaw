@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
 
@@ -320,6 +321,88 @@ async def delegate_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
     from app.services.agent_tools import _delegate_to_agent_async
 
     return _normalize_messaging_result("delegate_to_agent", await _delegate_to_agent_async(agent_id, arguments))
+
+
+# -- start_hr_agent_handoff -------------------------------------------------
+
+
+@tool(
+    ToolMeta(
+        name="start_hr_agent_handoff",
+        timeout_seconds=30.0,
+        idempotency_scope="tool_call",
+        work_amplifying=True,
+        description=(
+            "Hand an authenticated user's digital-employee creation request from this direct Session to the "
+            "company's governed HR Agent. Use this when the user asks you to create, hire, or set up another "
+            "persistent digital employee. Submit the complete brief once; do not use ordinary A2A or Agent Team "
+            "for this handoff. This tool does not create an employee and does not confirm anything: HR Agent owns "
+            "the blueprint, and the user must review and confirm the exact HR preview before provisioning."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "creation_brief": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 20000,
+                    "description": (
+                        "Complete Agent-authored creation brief. Preserve explicit user requirements and clearly label "
+                        "any Agent suggestions; this handoff is not approval to create."
+                    ),
+                }
+            },
+            "required": ["creation_brief"],
+            "additionalProperties": False,
+        },
+        category="communication",
+        display_name="Hand Off to HR Agent",
+        icon="\U0001f9ed",
+        adapter="request",
+    )
+)
+async def start_hr_agent_handoff(request: ToolExecutionRequest) -> str:
+    from app.database import tenant_scoped_session
+    from app.services.hr_creation_handoff_service import HrCreationHandoffError, start_hr_creation_handoff
+    from app.tools.result_envelope import render_tool_error
+
+    try:
+        tenant_id = uuid.UUID(str(request.context.tenant_id or ""))
+        requester_user_id = uuid.UUID(str(request.context.user_id or ""))
+        source_session_id = uuid.UUID(str(request.context.session_id or ""))
+        source_runtime_task_id = uuid.UUID(str(request.context.runtime_task_id or ""))
+    except (TypeError, ValueError):
+        return render_tool_error(
+            tool_name="start_hr_agent_handoff",
+            error_class="missing_handoff_authority",
+            message="This handoff requires a direct signed-in user Session and an active Agent turn.",
+            retryable=False,
+        )
+
+    try:
+        async with tenant_scoped_session(
+            tenant_id,
+            require_tenant=True,
+            source="start_hr_agent_handoff",
+        ) as db:
+            result = await start_hr_creation_handoff(
+                db,
+                tenant_id=tenant_id,
+                requester_user_id=requester_user_id,
+                source_agent_id=request.context.agent_id,
+                source_session_id=source_session_id,
+                source_runtime_task_id=source_runtime_task_id,
+                creation_brief=str(request.arguments.get("creation_brief") or ""),
+            )
+    except HrCreationHandoffError as exc:
+        return render_tool_error(
+            tool_name="start_hr_agent_handoff",
+            error_class=exc.reason_code,
+            message=exc.message,
+            retryable=exc.retryable,
+            actionable_hint="Open HR Agent directly if this Session can no longer continue the handoff.",
+        )
+    return json.dumps(result, ensure_ascii=False, sort_keys=True)
 
 
 # -- check_async_task --------------------------------------------------------

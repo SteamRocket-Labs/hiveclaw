@@ -98,6 +98,11 @@ def test_capability_map_covers_subagent_spawn_tool():
     assert CAPABILITY_MAP.get("spawn_subagent") == "agent.subagent.spawn"
 
 
+def test_hr_handoff_can_message_hr_without_granting_employee_creation():
+    assert CAPABILITY_MAP.get("start_hr_agent_handoff") == "agent.message.send"
+    assert CAPABILITY_MAP.get("create_digital_employee") == "agent.employee.create"
+
+
 def test_capability_map_covers_cc_codex_command_tools():
     expected = {
         "task_create": "agent.task.track",

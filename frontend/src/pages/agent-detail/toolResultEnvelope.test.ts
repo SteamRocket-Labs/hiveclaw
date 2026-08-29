@@ -499,3 +499,44 @@ describe('parsePlanModeRequestResult', () => {
     expect(normalized.displayResult).toBe('Multi-step refactor across the kernel.');
   });
 });
+
+describe('HR creation handoff result', () => {
+  it('marks the handoff for its lazy card without exposing the receipt as user-facing text', () => {
+    const normalized = normalizeToolCallResult(
+      'start_hr_agent_handoff',
+      JSON.stringify({
+        ok: true,
+        status: 'hr_handoff_started',
+        hr_agent_id: 'hr-agent-id',
+        hr_session_id: 'hr-session-id',
+        source_agent_name: 'Planning Agent',
+        message: 'The request is ready in HR Agent.',
+      }),
+    );
+
+    expect(normalized.displayResult).toBe('');
+    expect(normalized.toolMeta).toEqual({ kind: 'hr_creation_handoff' });
+    expect(normalized.displayResult).not.toContain('hr-agent-id');
+    expect(normalized.displayResult).not.toContain('hr-session-id');
+  });
+
+  it('keeps an in-flight exact replay on the same continuation card', () => {
+    const normalized = normalizeToolCallResult('start_hr_agent_handoff', {
+      ok: true,
+      status: 'hr_handoff_queued',
+      hr_agent_id: 'hr-agent-id',
+      hr_session_id: 'hr-session-id',
+      source_agent_name: 'Planning Agent',
+      message: 'The request is ready in HR Agent.',
+    });
+
+    expect(normalized.toolMeta?.kind).toBe('hr_creation_handoff');
+    expect(normalized.displayResult).toBe('');
+  });
+
+  it('keeps the running event in process presentation until a result exists', () => {
+    const normalized = normalizeToolCallResult('start_hr_agent_handoff', undefined);
+    expect(normalized.toolMeta).toBeNull();
+    expect(normalized.raw).toBe('');
+  });
+});

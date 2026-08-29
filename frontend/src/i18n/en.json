@@ -2148,6 +2148,11 @@
       "toolResults": {
         "blueprintPreviewTitle": "Agent Blueprint Preview",
         "unnamedAgent": "Unnamed digital employee",
+        "handoffTitle": "Creation request handed off",
+        "handoffFrom": "handed this creation request to HR Agent.",
+        "handoffGeneric": "This creation request has been handed to HR Agent.",
+        "handoffContinue": "Continue with HR Agent",
+        "handoffUnavailable": "HR Agent handoff could not be opened. Ask the Agent to retry.",
         "createdTitle": "Digital Employee Created",
         "agentName": "Agent",
         "mission": "Mission",

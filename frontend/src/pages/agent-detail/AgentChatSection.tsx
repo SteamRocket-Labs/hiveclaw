@@ -22,7 +22,6 @@ import ThinkingDisclosure from './ThinkingDisclosure';
 import type { AgentPermissions } from '../../api/domains/agents';
 import AskUserQuestionCard from './AskUserQuestionCard';
 import PlanModeRequestCard from './PlanModeRequestCard';
-import { HrBlueprintPreviewCard } from './HrBlueprintPreviewCard';
 import CopyMessageButton from './CopyMessageButton';
 import PlanCard from './PlanCard';
 import RunDisclosureBlock from './RunDisclosureBlock';

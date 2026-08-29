@@ -147,6 +147,7 @@ def test_combined_openai_tools_matches_registered_builtin_surface():
         "set_trigger",
         "simulate_company_action",
         "schedule_wakeup",
+        "start_hr_agent_handoff",
         "submit_t3_consolidation_pitch",
         "submit_t3_memory_gate_review",
         "submit_t3_revised_patch",

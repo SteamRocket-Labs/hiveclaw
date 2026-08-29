@@ -94,6 +94,16 @@ def test_system_hr_keeps_tool_search_for_requester_scoped_personal_knowledge():
     assert "tool_search" in {tool["function"]["name"] for tool in tools}
 
 
+def test_hr_handoff_is_turn_one_for_regular_agents_but_hidden_from_system_hr():
+    from app.services.agent_tools import _core_tools_for_agent
+
+    regular_tools = _core_tools_for_agent(SimpleNamespace(name="Planner", agent_class="internal_tenant"))
+    hr_tools = _core_tools_for_agent(SimpleNamespace(name="__system_hr__", agent_class="internal_system"))
+
+    assert "start_hr_agent_handoff" in {tool["function"]["name"] for tool in regular_tools}
+    assert "start_hr_agent_handoff" not in {tool["function"]["name"] for tool in hr_tools}
+
+
 def test_collected_surface_provides_schemas_for_core_ledger_tools():
     """Core membership grants the ``_always_tools`` fallback: availability no
     longer depends on DB ``Tool.is_default``/assignment rows."""

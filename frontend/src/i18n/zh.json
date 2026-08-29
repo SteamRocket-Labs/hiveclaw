@@ -2148,6 +2148,11 @@
       "toolResults": {
         "blueprintPreviewTitle": "Agent 蓝图预览",
         "unnamedAgent": "未命名数字员工",
+        "handoffTitle": "创建需求已转交",
+        "handoffFrom": "已把这项创建需求交给 HR Agent。",
+        "handoffGeneric": "这项创建需求已交给 HR Agent。",
+        "handoffContinue": "前往 HR Agent 继续创建",
+        "handoffUnavailable": "无法打开 HR Agent 交接，请让当前 Agent 重试。",
         "createdTitle": "数字员工已创建",
         "agentName": "Agent",
         "mission": "使命",

@@ -1,13 +1,18 @@
+import { lazy, Suspense } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import AskUserQuestionCard from './AskUserQuestionCard';
 import PlanModeRequestCard from './PlanModeRequestCard';
-import { HrBlueprintPreviewCard } from './HrBlueprintPreviewCard';
 import PlanCard from './PlanCard';
 import { planApi } from '../../api/domains/plans';
 import { getWorkflowPreview, previewWorkflowCandidate, startWorkflow } from '../../api/domains/workflows';
 import type { ToolCallMeta, WorkflowPreviewToolMeta } from './toolResultEnvelope';
+
+const HrCreationHandoffCard = lazy(() => import('./HrCreationHandoffCard'));
+const HrBlueprintPreviewCard = lazy(() => (
+  import('./HrBlueprintPreviewCard').then((module) => ({ default: module.HrBlueprintPreviewCard }))
+));
 
 type Translate = ReturnType<typeof useTranslation>['t'];
 
@@ -399,11 +404,21 @@ export function StructuredToolResultBody({
 
   if (toolMeta.kind === 'hr_preview') {
     return (
-      <HrBlueprintPreviewCard
-        agentId={agentId}
-        preview={toolMeta}
-        onSendMessage={onSendMessage}
-      />
+      <Suspense fallback={null}>
+        <HrBlueprintPreviewCard
+          agentId={agentId}
+          preview={toolMeta}
+          onSendMessage={onSendMessage}
+        />
+      </Suspense>
+    );
+  }
+
+  if (toolMeta.kind === 'hr_creation_handoff') {
+    return (
+      <Suspense fallback={null}>
+        <HrCreationHandoffCard rawResult={toolRawResult || toolResult} />
+      </Suspense>
     );
   }
 

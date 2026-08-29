@@ -77,6 +77,42 @@ def test_execution_policy_comes_only_from_tool_meta():
     assert "_EXTERNAL_VISIBLE_TOOLS" not in source
 
 
+def test_hr_creation_handoff_is_a_dedicated_agent_visible_capability():
+    from types import SimpleNamespace
+
+    from app.services.tool_visibility import is_tool_allowed_for_agent
+    from app.tools.collector import collect_tools
+    from app.tools.registry import tool_execution_policy
+
+    tools = {tool["function"]["name"]: tool for tool in collect_tools().openai_tools}
+    handoff = tools["start_hr_agent_handoff"]
+    assert handoff["function"]["parameters"] == {
+        "type": "object",
+        "properties": {
+            "creation_brief": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 20000,
+                "description": (
+                    "Complete Agent-authored creation brief. Preserve explicit user requirements and clearly label "
+                    "any Agent suggestions; this handoff is not approval to create."
+                ),
+            }
+        },
+        "required": ["creation_brief"],
+        "additionalProperties": False,
+    }
+    policy = tool_execution_policy("start_hr_agent_handoff")
+    assert policy.idempotency_scope == "tool_call"
+    assert policy.external_visible is False
+
+    regular_agent = SimpleNamespace(agent_class="internal_tenant", name="Worker")
+    system_hr = SimpleNamespace(agent_class="internal_system", name="__system_hr__")
+    tool = SimpleNamespace(name="start_hr_agent_handoff")
+    assert is_tool_allowed_for_agent(tool, regular_agent) is True
+    assert is_tool_allowed_for_agent(tool, system_hr) is False
+
+
 def test_external_side_effects_are_declared_on_tool_meta():
     from app.tools.registry import tool_execution_policy
 

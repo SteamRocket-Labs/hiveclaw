@@ -104,6 +104,9 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         "schedule_wakeup",
         "send_message_to_agent",
         "send_agent_session_message",
+        # A regular Agent may hand a creation brief to governed System HR;
+        # preview/create authority remains HR-only and separately gated.
+        "start_hr_agent_handoff",
         "delegate_to_agent",
         "check_async_task",
         "cancel_async_task",

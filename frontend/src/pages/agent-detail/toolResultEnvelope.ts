@@ -41,6 +41,10 @@ export interface CreateEmployeeSuccessToolMeta {
   manualSteps: string[];
 }
 
+export interface HrCreationHandoffToolMeta {
+  kind: 'hr_creation_handoff';
+}
+
 export interface PlanProposalToolMeta {
   kind: 'plan_proposal';
   planId: string;
@@ -128,6 +132,7 @@ export interface RuntimeStepToolMeta {
 
 export type ToolCallMeta =
   | HrPreviewToolResult
+  | HrCreationHandoffToolMeta
   | CreateEmployeeSuccessToolMeta
   | PlanProposalToolMeta
   | DynamicWorkflowProposalToolMeta
@@ -486,6 +491,10 @@ function buildPlanModeRequestDisplayResult(meta: PlanModeRequestToolMeta): strin
 
 export function normalizeToolCallResult(toolName: string | undefined, rawResult: unknown): NormalizedToolCallResult {
   const raw = coerceToolResultToString(rawResult);
+
+  if (toolName === 'start_hr_agent_handoff' && raw.trim()) {
+    return { displayResult: '', createdAgentId: null, raw, toolMeta: { kind: 'hr_creation_handoff' } };
+  }
 
   const planProposal = parsePlanProposalResult(rawResult);
   if (planProposal) {

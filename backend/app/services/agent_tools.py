@@ -40,7 +40,12 @@ from app.services.capability_group_policy_service import (
     policy_capability_group_names_for_tool,
 )
 from app.services.tenant_resolver import resolve_tenant_for_agent
-from app.services.tool_visibility import HR_ONLY_TOOL_NAMES, is_hr_agent, is_tool_allowed_for_agent
+from app.services.tool_visibility import (
+    HR_ONLY_TOOL_NAMES,
+    REGULAR_AGENT_ONLY_TOOL_NAMES,
+    is_hr_agent,
+    is_tool_allowed_for_agent,
+)
 from app.runtime.activation_candidates import ActivationCandidate, ActivationScore, ActivationSurface
 from app.runtime.context_candidates import build_metadata_activation_keys
 from app.runtime.deferred_tools import make_deferred_tool_candidate
@@ -404,8 +409,7 @@ def _get_always_core_tools() -> list[dict]:
 
 def _core_tools_for_agent(agent: Agent | None) -> list[dict]:
     """Return the invariant core surface without role-specific capability loss."""
-    _ = agent
-    return list(_get_always_core_tools())
+    return [tool for tool in _get_always_core_tools() if is_tool_allowed_for_agent(tool, agent)]
 
 
 def _get_feishu_tools() -> list[dict]:
@@ -1029,7 +1033,11 @@ async def get_agent_tools_for_llm(
         for tool in fallback
         if tool["function"]["name"] not in _FEISHU_TOOL_NAMES or tool["function"]["name"] in allowed_feishu_names
     ]
-    fallback = [tool for tool in fallback if tool["function"]["name"] not in HR_ONLY_TOOL_NAMES]
+    fallback = [
+        tool
+        for tool in fallback
+        if tool["function"]["name"] not in HR_ONLY_TOOL_NAMES | REGULAR_AGENT_ONLY_TOOL_NAMES
+    ]
     if core_only:
         fallback = [t for t in fallback if t["function"]["name"] in CORE_TOOL_NAMES]
     elif requested_set:

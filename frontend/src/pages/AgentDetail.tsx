@@ -2643,6 +2643,7 @@ function AgentDetailInner() {
                             isWaiting={isWaiting}
                             runtimePhase={activePhase}
                             activeRunStatus={currentActiveRunState?.status || null}
+                            activeRunId={currentActiveRunState?.runId || null}
                             runtimeBudget={currentActiveRunState?.runtimeBudget || null}
                             planModeRequested={planModeRequested}
                             onTogglePlanMode={handleTogglePlanMode}

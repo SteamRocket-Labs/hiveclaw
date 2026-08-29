@@ -170,6 +170,15 @@ describe('AgentDetail realtime refresh contract', () => {
     expect(applierSource).toContain('consumed.sessionEnvelope && !application');
   });
 
+  it('threads the authoritative active run identity into the Session timeline projection', async () => {
+    const source = await readSource('./AgentDetail.tsx');
+    const sectionSource = await readSource('./agent-detail/AgentChatSection.tsx');
+
+    expect(source).toContain('activeRunId={currentActiveRunState?.runId || null}');
+    expect(sectionSource).toContain('activeRunId?: string | null;');
+    expect(sectionSource).toMatch(/buildThreadTimelineCached\(\{[\s\S]*activeRunStatus,\s*activeRunId,\s*runtimePhase,/);
+  });
+
   it('derives every live rewind boundary install from the same current list that is trimmed', async () => {
     const source = await readSource('./AgentDetail.tsx');
 

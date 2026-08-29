@@ -141,6 +141,8 @@ export interface BuildThreadTimelineInput {
   isWaiting: boolean;
   isStreaming: boolean;
   activeRunStatus?: string | null;
+  /** Exact authoritative run identity for the active Session turn. */
+  activeRunId?: string | null;
   /** First-class RuntimePhase for the active turn (backend contract, §3.3). */
   runtimePhase?: string;
 }
@@ -1710,8 +1712,14 @@ function isCanonicalSessionProcessItem(message: AgentChatMessage): boolean {
     || kind === 'subagent'
     || kind === 'hook'
     || kind === 'approval'
-    || kind === 'user_question'
-    || kind === 'result_commit';
+    || kind === 'user_question';
+}
+
+function isCanonicalSessionPresentationInternalItem(message: AgentChatMessage): boolean {
+  // `result_commit` is round-level delivery bookkeeping. It remains in the
+  // canonical transcript/operator evidence, but is neither model work nor a
+  // user-facing conversation boundary.
+  return message.sessionItem?.kind === 'result_commit';
 }
 
 function assistantReasoningStepMessage(message: AgentChatMessage): AgentChatMessage {
@@ -1810,11 +1818,15 @@ function buildPendingRunCell(
     : activeRunStatus === 'failed' ? 'failed' : 'running';
   const title = phase === 'responding' || input.isStreaming ? 'Working' : 'Thinking';
   const latestInputIndex = latestUserMessageIndex(input.messages);
-  const startedAt = latestInputIndex >= 0 ? input.messages[latestInputIndex]?.timestamp : undefined;
+  const startedAt = latestInputIndex >= 0 && !hasAssistantAnswerAfterLatestUser(input.messages)
+    ? input.messages[latestInputIndex]?.timestamp
+    : undefined;
+  const activeRunId = String(input.activeRunId || '').trim();
   return {
     kind: 'active_run',
     id: 'active-run-pending',
     sourceMessages: [],
+    ...(activeRunId ? { runId: activeRunId } : {}),
     ...(phase ? { phase } : {}),
     timeline: {
       id: 'active-run-pending',
@@ -1844,6 +1856,11 @@ function keepLatestProcessRunActive(
   const index = cells.length - 1;
   const cell = cells[index];
   if (!cell || cell.kind !== 'active_run' || cell.timeline.answerMessageId) return false;
+  const latestUserIndex = latestUserMessageIndex(input.messages);
+  if (latestUserIndex < 0 || hasAssistantAnswerAfterLatestUser(input.messages)) return false;
+  if (!cell.sourceMessages.some((entry) => entry.index > latestUserIndex)) return false;
+  const activeRunId = String(input.activeRunId || '').trim();
+  if (activeRunId && cell.runId && cell.runId !== activeRunId) return false;
 
   // Rebuild the trailing run with live-run authority so genuinely non-terminal
   // steps stay running; without that authority the honest interrupted state
@@ -1859,6 +1876,7 @@ function keepLatestProcessRunActive(
       : 'running';
   cells[index] = {
     ...cell,
+    ...(activeRunId ? { runId: activeRunId } : {}),
     ...(phase ? { phase } : {}),
     timeline: {
       ...cell.timeline,
@@ -1958,6 +1976,8 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
       });
       return;
     }
+
+    if (isCanonicalSessionPresentationInternalItem(message)) return;
 
     if (isCanonicalSessionProcessItem(message)) {
       pendingRun.push({ message, index });
@@ -2074,6 +2094,7 @@ function threadTimelineInputSignature(input: BuildThreadTimelineInput): string {
     isWaiting: input.isWaiting,
     isStreaming: input.isStreaming,
     activeRunStatus: input.activeRunStatus ?? null,
+    activeRunId: input.activeRunId ?? null,
     runtimePhase: input.runtimePhase ?? null,
   });
 }

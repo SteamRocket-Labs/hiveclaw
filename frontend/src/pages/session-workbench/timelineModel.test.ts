@@ -254,6 +254,296 @@ describe('session workbench timeline model', () => {
     expect(model.header.status).toBe('running');
   });
 
+  it('does not expose round result-commit bookkeeping as a second user process disclosure', () => {
+    const runScope = {
+      level: 'round' as const,
+      session_id: 'session-1',
+      thread_id: 'session-1',
+      turn_id: 'turn-1',
+      run_id: 'run-1',
+      round_id: 'round-1',
+    };
+    const model = buildThreadTimeline({
+      messages: [
+        {
+          id: 'user-1',
+          role: 'user',
+          content: 'Create the employee preview.',
+          timestamp: '2026-08-29T00:00:00Z',
+        },
+        {
+          id: 'reasoning-1',
+          role: 'assistant',
+          content: '',
+          timestamp: '2026-08-29T00:01:40Z',
+          sessionItem: {
+            id: 'reasoning-1',
+            kind: 'assistant_reasoning_summary',
+            lifecycle: 'completed',
+            scope: runScope,
+            terminal: true,
+          },
+        },
+        {
+          id: 'answer-1',
+          role: 'assistant',
+          content: 'The preview is ready.',
+          timestamp: '2026-08-29T00:01:44Z',
+          sessionItem: {
+            id: 'answer-1',
+            kind: 'assistant_final',
+            lifecycle: 'completed',
+            scope: runScope,
+            terminal: true,
+          },
+        },
+        {
+          id: 'result-commit-1',
+          role: 'event',
+          content: '',
+          timestamp: '2026-08-29T00:01:45Z',
+          sessionItem: {
+            id: 'result-commit-1',
+            kind: 'result_commit',
+            lifecycle: 'round_committed',
+            scope: runScope,
+            terminal: true,
+          },
+        },
+      ] as AgentChatMessage[],
+      activeSession: { id: 'session-1', title: 'HR preview' },
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+    });
+
+    const runCells = model.cells.filter((cell) => cell.kind === 'active_run');
+    expect(runCells).toHaveLength(1);
+    expect(runCells[0]).toMatchObject({
+      runId: 'run-1',
+      timeline: {
+        status: 'done',
+        durationMs: 104_000,
+      },
+    });
+    expect(model.cells.some((cell) => (
+      cell.kind === 'boundary' && cell.message.sessionItem?.kind === 'result_commit'
+    ))).toBe(false);
+  });
+
+  it('keeps a newly active run separate while its accepted input has not reached the transcript projection', () => {
+    const runOneScope = {
+      level: 'round' as const,
+      session_id: 'session-1',
+      thread_id: 'session-1',
+      turn_id: 'turn-1',
+      run_id: 'run-1',
+      round_id: 'round-1',
+    };
+    const model = buildThreadTimeline({
+      messages: [
+        {
+          id: 'user-1',
+          role: 'user',
+          content: 'Create the employee preview.',
+          timestamp: '2026-08-29T00:00:00Z',
+        },
+        {
+          id: 'reasoning-1',
+          role: 'assistant',
+          content: '',
+          timestamp: '2026-08-29T00:01:40Z',
+          sessionItem: {
+            id: 'reasoning-1',
+            kind: 'assistant_reasoning_summary',
+            lifecycle: 'completed',
+            scope: runOneScope,
+            terminal: true,
+          },
+        },
+        {
+          id: 'answer-1',
+          role: 'assistant',
+          content: 'The preview is ready.',
+          timestamp: '2026-08-29T00:01:44Z',
+          sessionItem: {
+            id: 'answer-1',
+            kind: 'assistant_final',
+            lifecycle: 'completed',
+            scope: runOneScope,
+            terminal: true,
+          },
+        },
+        {
+          id: 'result-commit-1',
+          role: 'event',
+          content: '',
+          timestamp: '2026-08-29T00:01:45Z',
+          sessionItem: {
+            id: 'result-commit-1',
+            kind: 'result_commit',
+            lifecycle: 'round_committed',
+            scope: runOneScope,
+            terminal: true,
+          },
+        },
+      ] as AgentChatMessage[],
+      activeSession: { id: 'session-1', title: 'HR revision' },
+      isWaiting: true,
+      isStreaming: false,
+      activeRunStatus: 'running',
+      activeRunId: 'run-2',
+    });
+
+    const runCells = model.cells.filter((cell) => cell.kind === 'active_run');
+    expect(runCells).toHaveLength(2);
+    expect(runCells[0]).toMatchObject({
+      runId: 'run-1',
+      timeline: { status: 'done', durationMs: 104_000 },
+    });
+    expect(runCells[1]).toMatchObject({
+      runId: 'run-2',
+      timeline: { status: 'running' },
+    });
+    if (runCells[1]?.kind === 'active_run') {
+      expect(runCells[1].timeline.startedAt).toBeUndefined();
+    }
+  });
+
+  it('never upgrades a differently identified unresolved process run', () => {
+    const model = buildThreadTimeline({
+      messages: [
+        {
+          id: 'user-1',
+          role: 'user',
+          content: 'Finish the first run.',
+          timestamp: '2026-08-29T00:00:00Z',
+        },
+        {
+          id: 'reasoning-1',
+          role: 'assistant',
+          content: '',
+          timestamp: '2026-08-29T00:00:20Z',
+          sessionItem: {
+            id: 'reasoning-1',
+            kind: 'assistant_reasoning_summary',
+            lifecycle: 'started',
+            terminal: false,
+            scope: {
+              level: 'round',
+              session_id: 'session-1',
+              thread_id: 'session-1',
+              turn_id: 'turn-1',
+              run_id: 'run-1',
+              round_id: 'round-1',
+            },
+          },
+        },
+      ] as AgentChatMessage[],
+      activeSession: { id: 'session-1', title: 'Run handoff' },
+      isWaiting: true,
+      isStreaming: false,
+      activeRunStatus: 'running',
+      activeRunId: 'run-2',
+    });
+
+    const runCells = model.cells.filter((cell) => cell.kind === 'active_run');
+    expect(runCells).toHaveLength(2);
+    expect(runCells[0]).toMatchObject({
+      runId: 'run-1',
+      timeline: { status: 'interrupted', durationMs: 20_000 },
+    });
+    expect(runCells[1]).toMatchObject({
+      runId: 'run-2',
+      timeline: { status: 'running' },
+    });
+  });
+
+  it('starts the new run at its own accepted input after the second turn is projected', () => {
+    const runOneScope = {
+      level: 'round' as const,
+      session_id: 'session-1',
+      thread_id: 'session-1',
+      turn_id: 'turn-1',
+      run_id: 'run-1',
+      round_id: 'round-1',
+    };
+    const model = buildThreadTimeline({
+      messages: [
+        {
+          id: 'user-1',
+          role: 'user',
+          content: 'Create the employee preview.',
+          timestamp: '2026-08-29T00:00:00Z',
+        },
+        {
+          id: 'reasoning-1',
+          role: 'assistant',
+          content: '',
+          timestamp: '2026-08-29T00:01:40Z',
+          sessionItem: {
+            id: 'reasoning-1',
+            kind: 'assistant_reasoning_summary',
+            lifecycle: 'completed',
+            scope: runOneScope,
+            terminal: true,
+          },
+        },
+        {
+          id: 'answer-1',
+          role: 'assistant',
+          content: 'The preview is ready.',
+          timestamp: '2026-08-29T00:01:44Z',
+          sessionItem: {
+            id: 'answer-1',
+            kind: 'assistant_final',
+            lifecycle: 'completed',
+            scope: runOneScope,
+            terminal: true,
+          },
+        },
+        {
+          id: 'result-commit-1',
+          role: 'event',
+          content: '',
+          timestamp: '2026-08-29T00:01:45Z',
+          sessionItem: {
+            id: 'result-commit-1',
+            kind: 'result_commit',
+            lifecycle: 'round_committed',
+            scope: runOneScope,
+            terminal: true,
+          },
+        },
+        {
+          id: 'user-2',
+          role: 'user',
+          content: 'Change only the employee name.',
+          timestamp: '2026-08-29T00:20:34Z',
+        },
+      ] as AgentChatMessage[],
+      activeSession: { id: 'session-1', title: 'HR revision' },
+      isWaiting: true,
+      isStreaming: false,
+      activeRunStatus: 'running',
+      activeRunId: 'run-2',
+    });
+
+    const runCells = model.cells.filter((cell) => cell.kind === 'active_run');
+    expect(runCells).toHaveLength(2);
+    expect(runCells[0]).toMatchObject({
+      runId: 'run-1',
+      timeline: { status: 'done', durationMs: 104_000 },
+    });
+    expect(runCells[1]).toMatchObject({
+      runId: 'run-2',
+      timeline: {
+        status: 'running',
+        startedAt: '2026-08-29T00:20:34Z',
+      },
+    });
+  });
+
   it('reuses the previous timeline model when streaming state did not change', () => {
     const messages: AgentChatMessage[] = [
       { id: 'u1', role: 'user', content: 'Profile the session renderer.' },

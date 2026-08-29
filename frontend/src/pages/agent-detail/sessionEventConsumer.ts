@@ -734,7 +734,7 @@ function runtimeFailureRunIdOf(envelope: SessionEventV2): string | null {
     : null;
 }
 
-const TERMINAL_RUN_LIFECYCLES = new Set(['completed', 'failed', 'cancelled']);
+const TERMINAL_RUN_LIFECYCLES = new Set(['completed', 'failed', 'cancelled', 'needs_reconciliation']);
 
 /**
  * The web-chat assistant_message finalizer settles the RuntimeTask and its

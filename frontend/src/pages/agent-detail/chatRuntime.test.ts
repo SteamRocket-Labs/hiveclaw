@@ -860,6 +860,7 @@ describe('chatRuntime helpers', () => {
     expect(isTerminalRealtimeChatEvent({ type: 'run_cancelled' })).toBe(true);
     expect(isTerminalRealtimeChatEvent({ type: 'assistant_message' })).toBe(true);
     expect(isTerminalRealtimeChatEvent({ type: 'run_completed' })).toBe(true);
+    expect(isTerminalRealtimeChatEvent({ event_type: 'run.needs_reconciliation' })).toBe(true);
     expect(isTerminalRealtimeChatEvent({ event_type: 'done' })).toBe(true);
 
     expect(isTerminalRealtimeChatEvent({ type: 'run_started' })).toBe(false);

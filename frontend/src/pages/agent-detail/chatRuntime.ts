@@ -368,7 +368,7 @@ export const TERMINAL_RUNTIME_PHASES: ReadonlySet<RuntimePhase> = new Set([
 export function terminalRuntimePhaseForSessionEvent(itemKind: string, lifecycle: string): RuntimePhase | null {
   if (itemKind === 'runtime_failure' && lifecycle === 'recorded') return 'failed';
   if (lifecycle === 'completed') return 'done';
-  if (lifecycle === 'failed') return 'failed';
+  if (lifecycle === 'failed' || lifecycle === 'needs_reconciliation') return 'failed';
   if (lifecycle === 'cancelled') return 'cancelled';
   return null;
 }
@@ -458,6 +458,7 @@ export function reduceRuntimePhase(current: RuntimePhase, event: RuntimePhaseEve
     case 'error':
     case 'quota_exceeded':
     case 'run_failed':
+    case 'run_needs_reconciliation':
       return 'failed';
     case 'run_cancelled':
       return 'cancelled';
@@ -711,7 +712,15 @@ export function reconcileSessionTranscriptSafely(
 
 export function isTerminalRealtimeChatEvent(payload: any): boolean {
   const eventType = String(payload?.event_type || payload?.type || '').trim();
-  return ['assistant_message', 'done', 'error', 'quota_exceeded', 'run_cancelled', 'run_completed'].includes(eventType);
+  return [
+    'assistant_message',
+    'done',
+    'error',
+    'quota_exceeded',
+    'run_cancelled',
+    'run_completed',
+    'run.needs_reconciliation',
+  ].includes(eventType);
 }
 
 function normalizedUserContent(message: AgentChatMessage): string {

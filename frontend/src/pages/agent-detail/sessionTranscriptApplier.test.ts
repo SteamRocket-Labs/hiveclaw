@@ -88,7 +88,7 @@ function runScopedFailureEvent(sequence: number, runId = 'run-1'): ChatTranscrip
 
 function canonicalRunLifecycleEvent(
   sequence: number,
-  lifecycle: 'queued' | 'completed' | 'failed' | 'cancelled' = 'completed',
+  lifecycle: 'queued' | 'completed' | 'failed' | 'cancelled' | 'needs_reconciliation' = 'completed',
   runId = 'run-1',
   turnId = 'turn-1',
 ): ChatTranscriptEventPayload {
@@ -289,6 +289,61 @@ describe('session transcript applier real consumption path (Codex REQUEST_CHANGE
     expect(harness.deps.setIsWaiting).toHaveBeenCalledWith(false);
     expect(harness.deps.setIsStreaming).toHaveBeenCalledWith(false);
     expect(harness.refs.uiStates[KEY]).toEqual(uiForPhase('done'));
+  });
+
+  it('settles an ambiguous provider send as review-required instead of reviving a running disclosure', () => {
+    const harness = makeApplierHarness();
+    harness.refs.uiStates[KEY] = uiForPhase('responding');
+
+    expect(harness.applyEvent(canonicalRunLifecycleEvent(1, 'needs_reconciliation'))).toBeTruthy();
+
+    expect(harness.deps.markActiveRunTerminal).toHaveBeenCalledWith(KEY, 'run-1');
+    expect(harness.deps.setActivePhase).toHaveBeenCalledWith('failed');
+    expect(harness.deps.setIsWaiting).toHaveBeenCalledWith(false);
+    expect(harness.deps.setIsStreaming).toHaveBeenCalledWith(false);
+    expect(harness.refs.uiStates[KEY]).toEqual(uiForPhase('failed'));
+
+    const timeline = buildThreadTimeline({
+      messages: harness.messages(),
+      activeSession: { id: 'session-1', title: 'Review required' },
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+      activeRunId: null,
+      runtimePhase: harness.refs.uiStates[KEY]?.phase,
+    });
+    expect(timeline.header.status).toBe('failed');
+    expect(timeline.cells.filter((cell) => (
+      cell.kind === 'active_run'
+      && (cell.timeline.status === 'running' || cell.timeline.status === 'blocked')
+    ))).toHaveLength(0);
+    expect(timeline.cells.filter((cell) => (
+      cell.kind === 'active_run' && cell.timeline.status === 'failed'
+    ))).toHaveLength(1);
+
+    const reloaded = projectCanonicalTranscriptSnapshot({
+      existing: [],
+      snapshot: [
+        canonicalInputEvent(1, 'RETURN THE MARKER'),
+        canonicalRunLifecycleEvent(2, 'needs_reconciliation'),
+      ],
+      session: { id: 'session-1' } as unknown as ChatSession,
+      parseMessage: (message) => message,
+    });
+    expect(reloaded.ui).toEqual(uiForPhase('failed'));
+    const reloadedTimeline = buildThreadTimeline({
+      messages: reloaded.messages,
+      activeSession: { id: 'session-1', title: 'Review required' },
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+      activeRunId: null,
+      runtimePhase: reloaded.ui.phase,
+    });
+    expect(reloadedTimeline.header.status).toBe('failed');
+    expect(reloadedTimeline.cells.filter((cell) => (
+      cell.kind === 'active_run' && cell.timeline.status === 'failed'
+    ))).toHaveLength(1);
   });
 
   it('keeps a newer active UI phase byte-identical when canonical terminal identity is rejected', () => {

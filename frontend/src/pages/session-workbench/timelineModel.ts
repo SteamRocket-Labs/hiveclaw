@@ -1693,9 +1693,8 @@ function hasAssistantAnswerAfterLatestUser(messages: AgentChatMessage[]): boolea
 }
 
 function mainTurnActiveRunStatus(input: BuildThreadTimelineInput, cells: ThreadTimelineCell[]): string | null {
-  const activeRunStatus = normalizedActiveRunStatus(input.activeRunStatus);
-  if (!activeRunStatus) return null;
-  if (activeRunStatus === 'failed') return activeRunStatus;
+  const activeRunStatus = normalizedActiveRunStatus(input.activeRunStatus || input.runtimePhase);
+  if (!activeRunStatus || activeRunStatus === 'failed') return activeRunStatus;
   if (input.isWaiting || input.isStreaming) return activeRunStatus;
   if (hasOpenRunCell(cells)) return activeRunStatus;
   return hasAssistantAnswerAfterLatestUser(input.messages) ? null : activeRunStatus;

@@ -2,13 +2,66 @@ import { describe, expect, it } from 'vitest';
 
 import {
   chatTransportPhase,
+  isRetryableSessionReadError,
   mergeTranscriptBackfill,
   reconnectDelayMs,
+  retrySessionRead,
   shouldReconnectSessionSocket,
   transportPollIntervalMs,
 } from './chatTransportRecovery';
 
 describe('chat transport recovery policy', () => {
+  it('keeps retrying transient session reads until durable history is available', async () => {
+    let reads = 0;
+    const waits: number[] = [];
+    const retries: Array<{ attempt: number; delayMs: number }> = [];
+
+    const result = await retrySessionRead(async () => {
+      reads += 1;
+      if (reads < 3) throw { status: 504 };
+      return ['durable-message'];
+    }, {
+      randomValue: () => 0,
+      wait: async (delayMs) => { waits.push(delayMs); },
+      onRetry: (retry) => { retries.push(retry); },
+    });
+
+    expect(result).toEqual(['durable-message']);
+    expect(reads).toBe(3);
+    expect(waits).toEqual([1000, 2000]);
+    expect(retries).toEqual([
+      { attempt: 1, delayMs: 1000 },
+      { attempt: 2, delayMs: 2000 },
+    ]);
+  });
+
+  it('retries network and server failures but never retries authority failures', async () => {
+    expect(isRetryableSessionReadError(new TypeError('Failed to fetch'))).toBe(true);
+    expect(isRetryableSessionReadError({ status: 408 })).toBe(true);
+    expect(isRetryableSessionReadError({ status: 429 })).toBe(true);
+    expect(isRetryableSessionReadError({ status: 502 })).toBe(true);
+    expect(isRetryableSessionReadError({ status: 504 })).toBe(true);
+    expect(isRetryableSessionReadError({ status: 403 })).toBe(false);
+    expect(isRetryableSessionReadError({ status: 404 })).toBe(false);
+
+    let reads = 0;
+    await expect(retrySessionRead(async () => {
+      reads += 1;
+      throw { status: 403 };
+    }, { wait: async () => undefined })).rejects.toEqual({ status: 403 });
+    expect(reads).toBe(1);
+  });
+
+  it('turns a session switch into an explicit abort instead of a visible read failure', async () => {
+    const controller = new AbortController();
+    const read = retrySessionRead(async () => {
+      controller.abort();
+      throw { status: 504 };
+    }, { signal: controller.signal, wait: async () => undefined });
+
+    await expect(read).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
   it('retries forever with capped exponential backoff instead of a terminal attempt count', () => {
     expect(reconnectDelayMs(0, 0)).toBe(1000);
     expect(reconnectDelayMs(5, 1)).toBe(60000);

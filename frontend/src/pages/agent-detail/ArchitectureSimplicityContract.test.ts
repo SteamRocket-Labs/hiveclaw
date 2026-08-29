@@ -23,6 +23,13 @@ describe('UX-04 orchestration and composition boundaries', () => {
     expect(source).not.toContain('setChatMessagesAfterQueued(() => mergePendingForSession(runtimeKey');
   });
 
+  it('keeps both canonical and compatibility session evidence behind retryable reads', () => {
+    const source = read('../AgentDetail.tsx');
+
+    expect(source).toContain('retrySessionRead(() => chatApi.getSessionTranscript');
+    expect(source).toContain('retrySessionRead(() => chatApi.getSessionMessages');
+  });
+
   it('commits the visible list only through the single mixed-plane composition owner', () => {
     const consumerSource = read('./sessionEventConsumer.ts');
     const applierSource = read('./sessionTranscriptApplier.ts');

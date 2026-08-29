@@ -47,7 +47,7 @@ import {
     type TranscriptReplayState,
 } from './agent-detail/chatRuntime';
 import { buildPlanModeScopeKey, nextPlanModeRequestedForScope } from './agent-detail/planModeComposer';
-import { latestTranscriptSequence } from './agent-detail/chatTransportRecovery';
+import { latestTranscriptSequence, retrySessionRead } from './agent-detail/chatTransportRecovery';
 import {
     createSessionMessageStore,
     useSessionMessages,
@@ -672,11 +672,11 @@ function AgentDetailInner() {
                 return liveSubscriptionWatermark(projected.store);
             };
             const canonicalHydration = loadCanonicalSessionTranscript(
-                (page) => chatApi.getSessionTranscript(targetAgentId, sessionId, {
+                (page) => retrySessionRead(() => chatApi.getSessionTranscript(targetAgentId, sessionId, {
                     ...page,
                     signal: controller.signal,
                     ...operatorOptions,
-                }) as Promise<ChatTranscriptEventPayload[]>,
+                }) as Promise<ChatTranscriptEventPayload[]>, { signal: controller.signal }),
                 publishCanonicalSnapshot,
                 { session: sess },
             );
@@ -687,10 +687,10 @@ function AgentDetailInner() {
             if (currentAgentIdRef.current !== targetAgentId) return;
             if (activeSessionIdRef.current !== sessionId) return;
             if (transcriptEvents.length === 0) {
-                const msgs = await chatApi.getSessionMessages(targetAgentId, sessionId, {
+                const msgs = await retrySessionRead(() => chatApi.getSessionMessages(targetAgentId, sessionId, {
                     signal: controller.signal,
                     ...operatorOptions,
-                });
+                }), { signal: controller.signal });
                 if (controller.signal.aborted || loadSeq !== sessionLoadSeqRef.current) return;
                 const storedParsed = msgs.map((m: any) => parseChatMsg(normalizeStoredChatMessage(m)));
                 let preParsed = storedParsed;

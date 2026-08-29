@@ -22,6 +22,77 @@ export function reconnectDelayMs(attempt: number, randomValue: number = Math.ran
   return Math.round(cappedBase * (0.5 + safeRandom * 0.5));
 }
 
+export function isRetryableSessionReadError(error: unknown): boolean {
+  if (error instanceof TypeError) return true;
+  if (!error || typeof error !== 'object') return false;
+  const candidate = error as { name?: unknown; status?: unknown };
+  if (candidate.name === 'AbortError') return false;
+  const status = typeof candidate.status === 'number' ? candidate.status : Number(candidate.status);
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+type SessionReadRetryState = {
+  attempt: number;
+  delayMs: number;
+};
+
+type SessionReadRetryOptions = {
+  signal?: AbortSignal;
+  randomValue?: () => number;
+  onRetry?: (state: SessionReadRetryState) => void;
+  wait?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
+};
+
+function sessionReadAbortError(): DOMException {
+  return new DOMException('Session read aborted', 'AbortError');
+}
+
+function waitForSessionReadRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(sessionReadAbortError());
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(sessionReadAbortError());
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/**
+ * Session history is durable evidence. A temporary network or server outage
+ * must keep the current timeline intact and retry until that evidence is
+ * readable; switching sessions aborts the loop. Authentication and not-found
+ * outcomes remain terminal instead of being hidden behind retries.
+ */
+export async function retrySessionRead<T>(
+  read: () => Promise<T>,
+  options: SessionReadRetryOptions = {},
+): Promise<T> {
+  let attempt = 0;
+  const wait = options.wait ?? waitForSessionReadRetry;
+  const randomValue = options.randomValue ?? Math.random;
+  while (true) {
+    if (options.signal?.aborted) throw sessionReadAbortError();
+    try {
+      return await read();
+    } catch (error) {
+      if (options.signal?.aborted) throw sessionReadAbortError();
+      if (!isRetryableSessionReadError(error)) throw error;
+      const delayMs = reconnectDelayMs(attempt, randomValue());
+      attempt += 1;
+      options.onRetry?.({ attempt, delayMs });
+      await wait(delayMs, options.signal);
+    }
+  }
+}
+
 export function chatTransportPhase(input: {
   online: boolean;
   connected: boolean;

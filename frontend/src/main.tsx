@@ -7,9 +7,11 @@ import './index.css';
 import App from './App';
 import ErrorBoundary from './components/ErrorBoundary';
 import { loadSavedAccentColor } from './utils/theme';
+import { installStalePreloadRecovery } from './utils/preloadRecovery';
 
 // Apply saved theme color before first paint
 loadSavedAccentColor();
+installStalePreloadRecovery();
 
 const queryClient = new QueryClient({
     defaultOptions: {

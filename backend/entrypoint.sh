@@ -9,8 +9,14 @@
 
 set -e
 
-# Fix volume permissions (Railway mounts volumes as root, app runs as hive)
-chown -R hive:hive /data 2>/dev/null || true
+# Railway may mount the volume directories as root while retained workspace
+# contents keep their existing ownership. Repair only the writable mount
+# directories: recursively scanning every durable Agent workspace would make
+# each deploy's availability depend on the total retained volume size.
+if [ -d /data ]; then
+    mkdir -p /data/agents
+    chown hive:hive /data /data/agents 2>/dev/null || true
+fi
 
 # Force git to use HTTPS instead of SSH (container has no SSH keys)
 if command -v git >/dev/null 2>&1; then

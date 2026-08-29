@@ -4,10 +4,11 @@ from pathlib import Path
 
 
 def test_backend_entrypoint_runs_as_root_before_dropping_to_hive() -> None:
-    """Railway volumes mount as root; entrypoint must chown /data before uvicorn.
+    """Railway mount points need ownership repair without rescanning the whole volume.
 
-    A Dockerfile-level USER hive runs entrypoint as hive, makes the chown fail,
-    and breaks agent workspaces mounted under /data/agents.
+    A Dockerfile-level USER hive prevents the entrypoint from repairing the
+    mount directories. Recursively chowning every durable workspace on each
+    deploy makes startup time proportional to retained customer data.
     """
     backend_root = Path(__file__).resolve().parents[2]
     dockerfile = (backend_root / "Dockerfile").read_text(encoding="utf-8")
@@ -16,7 +17,9 @@ def test_backend_entrypoint_runs_as_root_before_dropping_to_hive() -> None:
     before_entrypoint = dockerfile.split("ENTRYPOINT", 1)[0]
 
     assert "\nUSER hive\n" not in before_entrypoint
-    assert "chown -R hive:hive /data" in entrypoint
+    assert "mkdir -p /data/agents" in entrypoint
+    assert "chown hive:hive /data /data/agents" in entrypoint
+    assert "chown -R hive:hive /data" not in entrypoint
     assert 'exec su hive -s /bin/bash -c "exec uvicorn' in entrypoint
 
 

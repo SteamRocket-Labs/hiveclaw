@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -1688,16 +1689,37 @@ async def _cleanup_web_chat_run(state: _WebChatRunState) -> None:
         settled = state.terminal_phase_hint or (
             RuntimePhase.CANCELLED if state.cancel_event.is_set() else RuntimePhase.DONE
         )
+        phase_started = time.perf_counter()
+        state.ports.runtime.logger.info(
+            "[WebChatRunCleanup] run_id={} stage=terminal_phase.start phase={}",
+            state.run_key,
+            settled.value,
+        )
         await state.phase_emitter.transition(settled)
+        state.ports.runtime.logger.info(
+            "[WebChatRunCleanup] run_id={} stage=terminal_phase.end duration_ms={:.3f}",
+            state.run_key,
+            (time.perf_counter() - phase_started) * 1000,
+        )
     state.ports.runtime.broadcast_run_context.reset(state.broadcast_token)
     state.ports.runtime.cancel_events.pop(state.run_key, None)
     if state.agent is None or not state.session_id:
         return
     try:
+        handoff_started = time.perf_counter()
+        state.ports.runtime.logger.info(
+            "[WebChatRunCleanup] run_id={} stage=queued_handoffs.start",
+            state.run_key,
+        )
         await state.ports.terminal.resume_queued_handoffs(
             agent_id=state.agent.id,
             session_id=state.session_id,
             completed_run_id=state.run_key,
+        )
+        state.ports.runtime.logger.info(
+            "[WebChatRunCleanup] run_id={} stage=queued_handoffs.end duration_ms={:.3f}",
+            state.run_key,
+            (time.perf_counter() - handoff_started) * 1000,
         )
     except Exception as exc:
         state.ports.runtime.logger.warning(

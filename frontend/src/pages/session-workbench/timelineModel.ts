@@ -2034,6 +2034,99 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
   return cells;
 }
 
+function processCellTurnId(
+  cell: Extract<ThreadTimelineCell, { kind: 'active_run' }>,
+): string | null {
+  for (const { message } of cell.sourceMessages) {
+    const scope = message.sessionItem?.scope;
+    const scopedTurnId = scope && 'turn_id' in scope ? scope.turn_id : null;
+    const turnId = scopedTurnId || message.eventTurnId || message.threadItem?.turn_id;
+    if (typeof turnId === 'string' && turnId.trim()) return turnId.trim();
+  }
+  return null;
+}
+
+function processCellsShareTurn(
+  current: Extract<ThreadTimelineCell, { kind: 'active_run' }>,
+  next: Extract<ThreadTimelineCell, { kind: 'active_run' }>,
+): boolean {
+  const currentTurnId = processCellTurnId(current);
+  const nextTurnId = processCellTurnId(next);
+  if (currentTurnId && nextTurnId) return currentTurnId === nextTurnId;
+  return !current.runId || !next.runId || current.runId === next.runId;
+}
+
+function mergeProcessCells(
+  current: Extract<ThreadTimelineCell, { kind: 'active_run' }>,
+  next: Extract<ThreadTimelineCell, { kind: 'active_run' }>,
+  messages: AgentChatMessage[],
+  turnStartedAt?: string,
+): Extract<ThreadTimelineCell, { kind: 'active_run' }> {
+  const sourceMessages = [...current.sourceMessages, ...next.sourceMessages];
+  const answerMessageId = next.timeline.answerMessageId || current.timeline.answerMessageId;
+  const answer = answerMessageId
+    ? messages
+        .map((message, index) => ({ message, index }))
+        .find(({ message, index }) => (
+          isRenderableAssistantAnswer(message)
+          && messageId(message, `assistant-${index}`) === answerMessageId
+        ))
+    : undefined;
+  const merged = buildRunCell(0, sourceMessages, answer, false, turnStartedAt);
+  return {
+    ...merged,
+    id: current.id,
+  };
+}
+
+function coalesceProcessCellsByUserTurn(
+  cells: ThreadTimelineCell[],
+  messages: AgentChatMessage[],
+): ThreadTimelineCell[] {
+  const coalesced: ThreadTimelineCell[] = [];
+  let currentProcessIndex: number | null = null;
+  let turnStartedAt: string | undefined;
+  let insideAcceptedUserTurn = false;
+
+  cells.forEach((cell) => {
+    if (cell.kind === 'user_turn') {
+      insideAcceptedUserTurn = true;
+      currentProcessIndex = null;
+      turnStartedAt = cell.message.timestamp;
+      coalesced.push(cell);
+      return;
+    }
+    if (cell.kind === 'assistant_final') {
+      insideAcceptedUserTurn = false;
+      currentProcessIndex = null;
+      coalesced.push(cell);
+      return;
+    }
+    if (cell.kind !== 'active_run' || !insideAcceptedUserTurn) {
+      coalesced.push(cell);
+      return;
+    }
+    if (currentProcessIndex == null) {
+      currentProcessIndex = coalesced.length;
+      coalesced.push(cell);
+      return;
+    }
+
+    const current = coalesced[currentProcessIndex];
+    if (current.kind !== 'active_run' || !processCellsShareTurn(current, cell)) {
+      currentProcessIndex = coalesced.length;
+      coalesced.push(cell);
+      return;
+    }
+
+    // Canonical lifecycle boundaries remain independently available, but they
+    // cannot split one accepted user turn into multiple process disclosures.
+    coalesced[currentProcessIndex] = mergeProcessCells(current, cell, messages, turnStartedAt);
+  });
+
+  return coalesced;
+}
+
 const CANONICAL_RUN_TERMINAL_LIFECYCLES = new Set(['completed', 'failed', 'cancelled']);
 
 function applyCanonicalRunTerminalEvidence(
@@ -2171,7 +2264,10 @@ export function createThreadTimelineCache(): ThreadTimelineCache {
 }
 
 export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTimelineModel {
-  const cells = applyCanonicalRunTerminalEvidence(buildCells(input.messages), input.messages);
+  const cells = applyCanonicalRunTerminalEvidence(
+    coalesceProcessCellsByUserTurn(buildCells(input.messages), input.messages),
+    input.messages,
+  );
   const latestTurnAnswered = hasAssistantAnswerAfterLatestUser(input.messages);
   const latestAnsweredRunId = latestTurnAnswered
     ? messageRunId([...input.messages].reverse().find(isRenderableAssistantAnswer))

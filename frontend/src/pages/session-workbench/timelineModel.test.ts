@@ -2534,6 +2534,172 @@ describe('RuntimePhase in the thread projection (§3 seam 3)', () => {
     expect(model.header.status).toBe('running');
   });
 
+  it('projects one continuous run process when canonical boundaries split one accepted user turn', () => {
+    const marker = 'SESSION-81DCD5-T1-20260829-1539';
+    const sessionScope = {
+      level: 'session' as const,
+      session_id: 'session-1',
+      thread_id: 'session-1',
+    };
+    const turnScope = {
+      level: 'turn' as const,
+      session_id: 'session-1',
+      thread_id: 'session-1',
+      turn_id: 'turn-1',
+    };
+    const runScope = {
+      level: 'run' as const,
+      session_id: 'session-1',
+      thread_id: 'session-1',
+      turn_id: 'turn-1',
+      run_id: 'run-1',
+    };
+    const model = buildThreadTimeline({
+      messages: [
+        {
+          id: 'accepted-input-1',
+          role: 'user',
+          content: 'Return eight short paragraphs.',
+          timestamp: '2026-08-29T07:39:36Z',
+          sessionItem: {
+            id: 'human-input-1',
+            kind: 'human_input',
+            lifecycle: 'accepted',
+            scope: sessionScope,
+            terminal: false,
+          } as AgentChatMessage['sessionItem'],
+        },
+        {
+          id: 'input-admission-started-1',
+          role: 'event',
+          content: '',
+          timestamp: '2026-08-29T07:39:36.100Z',
+          sessionItem: {
+            id: 'input-admission-1',
+            kind: 'input_admission',
+            lifecycle: 'started',
+            scope: sessionScope,
+            terminal: false,
+          } as AgentChatMessage['sessionItem'],
+        },
+        {
+          id: 'hook-completed-1',
+          role: 'event',
+          content: 'Session start hook completed.',
+          timestamp: '2026-08-29T07:39:36.200Z',
+          sessionItem: {
+            id: 'hook-1',
+            kind: 'hook',
+            lifecycle: 'completed',
+            scope: sessionScope,
+            terminal: true,
+          } as AgentChatMessage['sessionItem'],
+        },
+        {
+          id: 'turn-accepted-1',
+          role: 'event',
+          content: '',
+          timestamp: '2026-08-29T07:39:36.300Z',
+          sessionItem: {
+            id: 'turn-1',
+            kind: 'turn',
+            lifecycle: 'accepted',
+            scope: turnScope,
+            terminal: false,
+          } as AgentChatMessage['sessionItem'],
+        },
+        {
+          id: 'run-queued-1',
+          role: 'event',
+          content: '',
+          timestamp: '2026-08-29T07:39:36.400Z',
+          sessionItem: {
+            id: 'run-1',
+            kind: 'run',
+            lifecycle: 'queued',
+            scope: runScope,
+            terminal: false,
+          } as AgentChatMessage['sessionItem'],
+        },
+        {
+          id: 'reasoning-completed-1',
+          role: 'assistant',
+          content: '',
+          thinking: 'Preparing the requested response.',
+          timestamp: '2026-08-29T07:39:55Z',
+          sessionItem: {
+            id: 'reasoning-1',
+            kind: 'assistant_reasoning_private',
+            lifecycle: 'completed',
+            scope: runScope,
+            terminal: true,
+          } as AgentChatMessage['sessionItem'],
+        },
+        {
+          id: 'assistant-text-completed-1',
+          role: 'assistant',
+          content: marker,
+          timestamp: '2026-08-29T07:39:56.699Z',
+          sessionItem: {
+            id: 'assistant-text-1',
+            kind: 'assistant_text',
+            lifecycle: 'completed',
+            scope: runScope,
+            terminal: true,
+          } as AgentChatMessage['sessionItem'],
+        },
+        {
+          id: 'human-input-applied-1',
+          role: 'event',
+          content: '',
+          timestamp: '2026-08-29T07:39:57Z',
+          sessionItem: {
+            id: 'human-input-1',
+            kind: 'human_input',
+            lifecycle: 'applied',
+            scope: sessionScope,
+            terminal: true,
+          } as AgentChatMessage['sessionItem'],
+        },
+        {
+          id: 'provider-call-ledger-1',
+          role: 'event',
+          content: '',
+          timestamp: '2026-08-29T07:39:57.100Z',
+          eventType: 'provider_call_ledger',
+        },
+      ] as AgentChatMessage[],
+      activeSession: { id: 'session-1', title: 'One turn process projection' },
+      isWaiting: true,
+      isStreaming: false,
+      activeRunStatus: 'running',
+      activeRunId: 'run-1',
+      runtimePhase: 'thinking',
+    });
+
+    const runCells = model.cells.filter((cell) => cell.kind === 'active_run');
+    expect(runCells).toHaveLength(1);
+    expect(runCells[0]).toMatchObject({
+      runId: 'run-1',
+      timeline: {
+        status: 'running',
+        steps: expect.arrayContaining([
+          expect.objectContaining({ kind: 'prose', details: marker }),
+        ]),
+      },
+    });
+    if (runCells[0]?.kind === 'active_run') {
+      expect(runCells[0].sourceMessages.map((entry) => entry.message.id)).toEqual([
+        'hook-completed-1',
+        'reasoning-completed-1',
+        'assistant-text-completed-1',
+      ]);
+    }
+    expect(model.cells.some((cell) => cell.kind === 'boundary')).toBe(true);
+    expect(model.cells).not.toContainEqual(expect.objectContaining({ id: 'active-run-pending' }));
+    expect(model.header.status).toBe('running');
+  });
+
   it('includes the phase in the cache signature so live transitions invalidate', () => {
     const cache = {
       previousInputSignature: null,

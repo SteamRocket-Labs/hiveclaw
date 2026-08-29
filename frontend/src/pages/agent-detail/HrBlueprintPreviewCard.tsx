@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
@@ -173,6 +173,10 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
+  const [revisionOpen, setRevisionOpen] = useState(false);
+  const [revisionText, setRevisionText] = useState('');
+  const [revisionSubmitting, setRevisionSubmitting] = useState(false);
+  const revisionInputId = useId();
   const queryKey = ['hr-creation-draft', agentId, preview.blueprintId] as const;
   const canLoad = Boolean(agentId && preview.blueprintId);
   const { data: draft } = useQuery({
@@ -231,14 +235,22 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
       setActionError(error instanceof Error ? error.message : String(error));
     }
   };
-  const requestChanges = async () => {
+  const submitRevision = async () => {
+    const changes = revisionText.trim();
+    if (!changes || !onSendMessage) return;
     setActionError(null);
+    setRevisionSubmitting(true);
     try {
-      await onSendMessage?.(
-        'I want to revise this HR blueprint. Ask what I want to change, then revise the existing canonical draft instead of creating a new employee.',
-      );
+      await onSendMessage(t('agent.chat.toolResults.revisionMessage', {
+        changes,
+        defaultValue: 'Please revise this Agent blueprint: {{changes}}\nKeep the existing draft and return an updated preview. Do not create the employee yet.',
+      }));
+      setRevisionText('');
+      setRevisionOpen(false);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRevisionSubmitting(false);
     }
   };
   const reject = async () => {
@@ -260,7 +272,8 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
   const busy = confirmMutation.isPending
     || rejectMutation.isPending
     || retryMutation.isPending
-    || cancelMutation.isPending;
+    || cancelMutation.isPending
+    || revisionSubmitting;
   const canStartCreation = canonicalReady
     && canonicalPreview.missingGates.length === 0
     && durableAction !== 'none';
@@ -327,8 +340,47 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
         </p>
       )}
       {actionError && <p className="hr-blueprint-error" role="alert">{actionError}</p>}
+      {revisionOpen && canReviseOrReject && (
+        <form
+          className="hr-blueprint-revision"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submitRevision();
+          }}
+        >
+          <label htmlFor={revisionInputId}>
+            {t('agent.chat.toolResults.revisionPrompt', 'What would you like to change?')}
+          </label>
+          <textarea
+            id={revisionInputId}
+            value={revisionText}
+            onChange={(event) => setRevisionText(event.target.value)}
+            placeholder={t('agent.chat.toolResults.revisionPlaceholder', 'Describe the outcome you want changed. You do not need to know field names.')}
+            rows={3}
+            autoFocus
+          />
+          <div>
+            <button type="submit" className="btn btn-primary" disabled={!revisionText.trim() || revisionSubmitting}>
+              {revisionSubmitting
+                ? t('agent.chat.toolResults.submittingRevision', 'Submitting…')
+                : t('agent.chat.toolResults.previewChanges', 'Preview changes')}
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={revisionSubmitting}
+              onClick={() => {
+                setRevisionText('');
+                setRevisionOpen(false);
+              }}
+            >
+              {t('agent.chat.toolResults.cancelChanges', 'Cancel changes')}
+            </button>
+          </div>
+        </form>
+      )}
       <footer>
-        <button type="button" className="btn btn-primary" disabled={!canStartCreation || busy} onClick={runDurableAction}>
+        <button type="button" className="btn btn-primary" disabled={!canStartCreation || busy || revisionOpen} onClick={runDurableAction}>
           {confirmMutation.isPending
             ? t('common.confirming', 'Confirming…')
             : retryMutation.isPending
@@ -341,10 +393,10 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
                     ? t('agent.chat.toolResults.provisioning', 'Provisioning…')
                     : t('agent.chat.toolResults.provisioned', 'Provisioned')}
         </button>
-        <button type="button" className="btn btn-secondary" disabled={!canReviseOrReject || busy || !onSendMessage} onClick={requestChanges}>
+        <button type="button" className="btn btn-secondary" disabled={!canReviseOrReject || busy || !onSendMessage || revisionOpen} onClick={() => setRevisionOpen(true)}>
           {t('agent.chat.toolResults.requestChanges', 'Request changes')}
         </button>
-        <button type="button" className="btn btn-ghost" disabled={!canReviseOrReject || busy} onClick={reject}>
+        <button type="button" className="btn btn-ghost" disabled={!canReviseOrReject || busy || revisionOpen} onClick={reject}>
           {t('common.reject', 'Reject')}
         </button>
         {canCancel && (

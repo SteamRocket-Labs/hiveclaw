@@ -130,6 +130,45 @@
   font-size: var(--text-meta);
 }
 
+.hr-blueprint-revision {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+}
+
+.hr-blueprint-revision label {
+  color: var(--text-primary);
+  font-size: var(--text-meta);
+  font-weight: 600;
+}
+
+.hr-blueprint-revision textarea {
+  min-height: 76px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font: inherit;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.hr-blueprint-revision textarea:focus-visible {
+  border-color: var(--accent-primary);
+  outline: 2px solid color-mix(in srgb, var(--accent-primary) 24%, transparent);
+  outline-offset: 1px;
+}
+
+.hr-blueprint-revision > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
 .hr-blueprint-card > footer {
   display: flex;
   flex-wrap: wrap;

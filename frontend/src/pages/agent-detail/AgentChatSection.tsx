@@ -455,9 +455,19 @@ export function isClarificationCardAnsweredByLaterUserMessage(messages: AgentCha
   const message = messages[index];
   if (message?.role !== 'tool_call' || message.toolMeta?.kind !== 'user_clarification') return false;
   if (message.toolMeta.answered) return true;
-  return messages
+  const hasLaterVisibleAnswer = messages
     .slice(index + 1)
     .some((candidate) => candidate.role === 'user' && String(candidate.content || '').trim().length > 0);
+  if (hasLaterVisibleAnswer) return true;
+
+  // Reconciliation may temporarily place an older card after its answer; event time remains authoritative.
+  const clarificationTime = Date.parse(String(message.timestamp || ''));
+  if (!Number.isFinite(clarificationTime)) return false;
+  return messages.some((candidate) => {
+    if (candidate.role !== 'user' || !String(candidate.content || '').trim()) return false;
+    const candidateTime = Date.parse(String(candidate.timestamp || ''));
+    return Number.isFinite(candidateTime) && candidateTime > clarificationTime;
+  });
 }
 
 export function isInlineToolCardMessage(message: AgentChatMessage): boolean {
@@ -1210,6 +1220,9 @@ function AgentChatSection({
 
   const runtimeUsageLabel = getRuntimeUsageLabel(runtimeSummary);
   const runtimeUsageTitle = getRuntimeUsageTitle(runtimeSummary, runtimeUsageLabel);
+  const agentDisplayName = (agent as any)?.agent_class === 'internal_system' || agent?.name === '__system_hr__'
+    ? t('agentCreate.hrAgentName', 'HR Agent')
+    : agent?.name || '';
   const permissionModeLabel = getSessionPermissionModeLabel(sessionPermissionMode, t);
   const composerIntentLabel = getComposerIntentLabel(planModeRequested, goalModeRequested, t);
   const modelBadgeLabel =
@@ -1217,21 +1230,7 @@ function AgentChatSection({
     runtimeSummary?.model?.name ||
     agent?.primary_model_id ||
     t('agent.chat.composer.modelUnknown', 'Unknown model');
-  const modelBadgeTitle = [
-    runtimeSummary?.model?.provider,
-    runtimeSummary?.model?.name,
-    runtimeSummary?.model?.fallback_name
-      ? `fallback: ${runtimeSummary.model.fallback_name}`
-      : null,
-    runtimeSummary?.model?.route_reason
-      ? `route: ${runtimeSummary.model.route_reason}`
-      : null,
-    runtimeSummary?.model?.routing_config_source
-      ? `source: ${runtimeSummary.model.routing_config_source}`
-      : null,
-    runtimeSummary?.model?.routing_locked ? 'model locked by user' : null,
-    runtimeUsageTitle,
-  ].filter(Boolean).join(' · ');
+  const modelBadgeTitle = [modelBadgeLabel, runtimeUsageTitle].filter(Boolean).join(' · ');
 
   const focusChatInput = React.useCallback(() => {
     setTimeout(() => chatInputRef.current?.focus(), 0);
@@ -2026,7 +2025,7 @@ function AgentChatSection({
           <div className="detail-session-browser-header">
             <div>
               <div className="detail-session-browser-title">{t('agent.chat.allUsers', 'All Users')}</div>
-              <div className="detail-session-browser-subtitle">{agent?.name || t('agent.chat.session', 'Session')}</div>
+              <div className="detail-session-browser-subtitle">{agentDisplayName || t('agent.chat.session', 'Session')}</div>
             </div>
           </div>
           <input
@@ -2106,7 +2105,7 @@ function AgentChatSection({
           >
             <div style={{ fontSize: '28px', opacity: 0.6 }}>💬</div>
             <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', textAlign: 'center', lineHeight: 1.5 }}>
-              {t('agent.chat.startConversation', { name: agent?.name || '' })}
+              {t('agent.chat.startConversation', { name: agentDisplayName })}
             </div>
             <button className="btn btn-primary" onClick={onCreateNewSession} style={{ fontSize: '13px' }}>
               {t('agent.chat.newSession')}
@@ -2199,7 +2198,7 @@ function AgentChatSection({
                   ) : visibleChatMessages.length === 0 && (
                     <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-tertiary)' }}>
                       <div style={{ fontSize: '13px', marginBottom: '4px' }}>{activeSession?.title || t('agent.chat.startChat')}</div>
-                      <div style={{ fontSize: '12px' }}>{t('agent.chat.startConversation', { name: agent.name })}</div>
+                      <div style={{ fontSize: '12px' }}>{t('agent.chat.startConversation', { name: agentDisplayName })}</div>
                       <div style={{ fontSize: '11px', marginTop: '4px', opacity: 0.7 }}>{t('agent.chat.fileSupport')}</div>
                     </div>
                   )}

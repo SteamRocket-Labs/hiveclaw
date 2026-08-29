@@ -559,6 +559,7 @@
   "agentCreate": {
     "eyebrow": "Digital employee setup",
     "title": "Create digital employee",
+    "hrAgentName": "HR Agent",
     "subtitle": "Hive creates employees through the HR Agent. It clarifies role, authority, extension catalog access, memory boundaries, and the first working session before creation is finalized.",
     "useHr": "Use HR Agent for guided creation",
     "hrError": "Failed to open HR Agent.",

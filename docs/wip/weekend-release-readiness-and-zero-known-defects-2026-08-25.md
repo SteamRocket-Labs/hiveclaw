@@ -3809,7 +3809,7 @@ Correction #3 通过后，Codex 沿用户真实可见路径继续审查，发现
 **状态与边界**：本包代码、真实 Postgres path proof 与全量门禁为 **PASS — Verified locally**；它修复 Session 历史提交的 architecture/security/acceptance 债务，不改变 §7.31 已完成的 production Session 行为结论。原子 commit/push 完成后随下一候选统一部署三服务；在部署 SUCCESS 前不宣称当前 HEAD 已在线。Knowledge、Create Agent、Plan Mode、Agent Team、Sub-agent、Dynamic Workflow 与 aggregate A2A 仍按后续包分别验收。
 
 
-## 7.33 WEEKEND-KNOWLEDGE-THREE-AUTHORITY-001 — Agent Memory 租户权威断点恢复 + Knowledge 用户态表达（2026-08-29；首轮候选已部署，生产回放发现 CLI secrets 生命周期断点，correction 本地全绿、重部署 pending）
+## 7.33 WEEKEND-KNOWLEDGE-THREE-AUTHORITY-001 — Agent Memory 租户权威断点恢复 + Knowledge 用户态表达（2026-08-29；terminal-decision correction 已 commit/push，三服务部署与生产回放 pending）
 
 ### 三块的产品边界（North Star 不变）
 
@@ -3888,7 +3888,7 @@ Secrets correction 部署后，同一单片段已真正进入三次 LLM lane 并
 
 该 correction 已原子 commit/push：`037b7c010f0a1b3bc44caa88ff3176c7d8ffd838`（`fix(knowledge): enforce T2 model contracts`），`origin/main` 与 committed HEAD 一致。Railway production 三服务均从该 commit 部署为 `SUCCESS`：backend `872a5c27-d179-4c8c-83db-1e23d629dbac` / digest `sha256:b279474ca6642435c6bb012d8e80fff34bb89a2c2354940da98c2979310dbffa`；backend-api `a084fa95-24d2-462e-aca8-256e7e6fc237` / digest `sha256:c7f9eda9bfa7af7ef5c811d0090c9471b307a82de0ccd20331ca41045e73a67e`；frontend `03ac3748-b2ba-46c8-89e6-ba4866d7d09b` / digest `sha256:8647e17ba77a03e438a72598acb08c16e1edee119bddb79769d2246a945324ae`。公共 backend health 与 frontend HEAD 均为 HTTP 200；daemon、RLS strict、sandbox deny-all probe、runtime worker 与 stream forwarder 均健康。
 
-### WEEKEND-KNOWLEDGE-T2-TERMINAL-DECISION-001 correction（2026-08-29，本地全绿，commit/push 与重部署 pending）
+### WEEKEND-KNOWLEDGE-T2-TERMINAL-DECISION-001 correction（2026-08-29，本地全绿并已 commit/push，三服务重部署 pending）
 
 `037b7c01` 部署后，同一 bounded one-segment replay 的 Summary、Labels、Memory Gate 三次 LLM 调用均完整结束，上一轮四项问题全部消失：没有缺失 XML source ref、没有非法 entity type、没有 output-cap 截断，也没有 secrets lifecycle 错误。模型基于完整 evidence 给出的精确机器事实为：Summary `segment_state=administrative`，Labels `continuity_state=admin_only`，Review `decision=hold_recall_only`、`allowed_next=archive_recall_only`。这是 heartbeat-only segment 的合理语义终态，但旧 `_validate_candidate` 无条件要求 `decision=approved`，最终仍得到 `started=1 / committed=0 / held=1 / failed=0` 与 `review decision is not approved`。因此断点已经从模型输入/输出层收窄到 Platform Gate 生命周期消费层。
 
@@ -3900,9 +3900,36 @@ Secrets correction 部署后，同一单片段已真正进入三次 LLM lane 并
 - GREEN：终态、revision、非法 transition 与 inventory 定向 **5 passed / 33 deselected**；Prompt/Builder/Debt/Dream/Backfill/LLM-cap 关联集合 **80 passed**；完整 `tests/memory + backfill + llm_client_token_limits` **379 passed in 4.35s**；Ruff check 全绿、format 4 files unchanged。
 - 恢复/回滚：模型输出、candidate、Platform Gate report 与 T0 均保留；revert 本 correction 即恢复旧 hold 行为，不涉及 DB migration 或不可逆数据操作。生产 replay 必须在 committed 三服务部署后重新从同一 preserved T0 evidence 执行，不能用本地测试替代。
 
+该 correction 已原子 commit/push 到组织仓库：`6147bc1b54abcd0ddbc63cfbaa384c1cb6b3241a`（`fix(knowledge): preserve non-promotion T2 outcomes`），本地 HEAD 与 `origin/main` 在提交完成时精确一致。首轮三服务 CLI upload 因 Railway 长时间停在 `INITIALIZING` 且 `snapshotId/statusUpdatedAt/build` 均为空而被精确取消，旧生产容器保持在线；随后 backend 串行重试已进入 `BUILDING`，但本节更新时尚未取得 `SUCCESS`，因此 backend-api/frontend 未被伪写为已部署，也未开始 147 段生产回放。后续若由更高 committed HEAD 统一部署，将以三服务同一最新 commit 的 exact deployment 作为 freshness 证据。
+
 ### 状态与下一验收边界
 
-当前只能判 **PARTIAL — 权威/UI、CLI secrets 与 T2 model-contract corrections 已部署；terminal-decision correction 本地 Verified，production Agent Memory recovery pending**。下一步必须先把 terminal correction 原子 commit/push，并再次部署 backend、backend-api、frontend 三服务；全部 SUCCESS 且 health 正常后，按 dry-run → 同一 1-segment apply → bounded parallel apply → post-dry-run 的顺序恢复 147 sealed segments，核对 held/exhausted/deferred/control report 与 T2 package coverage，再用 fresh Session 证明 Agent 能从自身 Memory 精确回忆而不调用 Personal/Company KB。随后对 Agent Memory、Personal KB、Company KB 各完成 signed-in UI 与工具消费复验；任一 authority 混淆、空/拒绝误判、工程字段泄漏、检索失败或 recall 不成立均重新进入 RED。本节在这些生产证据完成前不 Closed，也不外推 Weekend、A2A 或 zero-known-defects。
+当前只能判 **PARTIAL — 权威/UI、CLI secrets 与 T2 model-contract corrections 已部署；terminal-decision correction 已 commit/push 且本地 Verified，production Agent Memory recovery pending**。下一步必须把包含该 correction 的 committed HEAD 再次部署到 backend、backend-api、frontend 三服务；全部 SUCCESS 且 health 正常后，按 dry-run → 同一 1-segment apply → bounded parallel apply → post-dry-run 的顺序恢复 147 sealed segments，核对 held/exhausted/deferred/control report 与 T2 package coverage，再用 fresh Session 证明 Agent 能从自身 Memory 精确回忆而不调用 Personal/Company KB。随后对 Agent Memory、Personal KB、Company KB 各完成 signed-in UI 与工具消费复验；任一 authority 混淆、空/拒绝误判、工程字段泄漏、检索失败或 recall 不成立均重新进入 RED。本节在这些生产证据完成前不 Closed，也不外推 Weekend、A2A 或 zero-known-defects。
+
+
+## 7.34 WEEKEND-SESSION-CLARIFICATION-UX-001 — HR 创建会话提交态与工程字段泄漏（2026-08-29，本地修复全绿，commit/push 与生产复验 pending）
+
+### signed-in 生产复现
+
+Rocky 实验室 HR Agent `bef8b286-b923-4e29-84c9-022f995ae6b3` 的 fresh 创建 Session `d896127a-2f78-48ba-95a3-7ceefbbdade3` 真实走过四问 clarification。提交后，答案摘要已作为下一条用户消息进入 timeline，但 durable transcript reconciliation 短暂把更早的 clarification card 放到该答案之后，card 因而重新呈现为 `已答 0/4` 的可交互状态；约 30 秒后 durable `answered` metadata 到达才恢复为 disabled + “你的答复已发送”。这不是数据丢失，但普通用户会合理判断“刚才提交失败”，属于 Session 表达缺陷。
+
+同一真实入口还暴露两项工程视角内容：空 Session 文案显示内部 Agent 名 `__system_hr__`；模型 badge 的 title/可访问名称包含 `route: primary_model`、`source: runtime_default`、fallback 与 `model locked by user`。这些字段对运行诊断有价值，但不属于普通用户的创建会话表达。
+
+### 根因与最小修复
+
+- clarification 已提交判断原先只接受 durable `toolMeta.answered`，或按当前数组位置寻找 card 之后的 user message。live reconciliation 的数组顺序可以短时落后于 canonical event time，因此已经提交的答案被误判为不存在。修复继续优先 durable metadata与正常数组顺序；仅在两者不足时，用现有 transcript timestamp 判断是否存在时间上晚于 card 的非空 user event。它不解析答案语义、不猜测用户意图、不新增缓存或第二事实源；更早的无关 user event 仍不能锁住新 card。
+- HR system Agent 在普通会话面统一显示本地化产品名 `HR Agent`，内部 `__system_hr__` 仍保留为机器身份和路由事实，不改后端或权限。
+- 模型 badge 仍显示用户可理解的模型名、百分比和 token 用量；普通 tooltip 删除 provider routing reason、config source、fallback route 与 lock machine code。底层 runtime summary 与 operator evidence 不删除。
+
+### failing-first / GREEN
+
+- clarification RED：新增 production-shaped “answer 在数组前、event time 晚于 card”回归后，focused 精确 **1 failed / 127 passed**，`expected false to be true`；修复后 **128 passed**。另加更早无关 user message 的反例，防止把任意历史文本误认成当前答复。
+- UI leak RED：composer/empty-state 回归注入 `agent_class=internal_system`、`name=__system_hr__` 与 routing/fallback/lock 字段后，focused 精确 **1 failed / 127 passed**，静态 markup 同时显示 `startConversation:__system_hr__` 及完整工程 tooltip；修复后同文件 **128 passed**。
+- 全量 frontend：首次全量主动抓到 architecture budget **1 failed / 1064 passed**（`AgentChatSection.tsx` 2409 > 2400），没有上调门禁；压缩同包新增辅助表达后全量 **147 files / 1065 passed**。`npx tsc --noEmit` exit 0；i18n node tests **9/9**、en=zh=3922、全部 gates 0；production build **7387 modules**，AgentDetail **373368/380000 bytes、103028/115000 gzip**，vendor **591449/620000 bytes、186474/200000 gzip**。
+
+### 边界与剩余
+
+本包只收口已提交卡片的 truthful state 与普通用户工程字段泄漏，判 **PASS — Verified locally**；commit/push、三服务部署及同一产品入口无 reload 生产复验完成后才能 Closed。生产流程同时发现 HR Agent 在首轮需求已明确 `WEEKEND-E2E-20260829-D-Researcher` 与职责后仍重复询问名称，并连续发生可选 `search_memory` timeout、单轮等待数分钟；这两项属于 Create Agent 的上下文/Prompt 与 Memory 工具可用性调查，保持 open，不能被本 UI correction 掩盖。Agent 尚未创建，必须先取得可审查 blueprint 并经过明确确认。
 
 
 ## 8. 两个工作日的执行节奏

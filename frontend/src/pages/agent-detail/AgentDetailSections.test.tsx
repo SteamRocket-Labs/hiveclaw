@@ -5159,7 +5159,7 @@ describe('AgentDetail extracted sections', () => {
   it('renders the session composer as a Codex-style control surface with scoped actions and passive badges', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
-        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        agent={{ id: 'agent-1', name: '__system_hr__', agent_class: 'internal_system' }}
         currentUser={{ id: 'user-1' }}
         isAdmin={false}
         chatScope="mine"
@@ -5196,6 +5196,10 @@ describe('AgentDetail extracted sections', () => {
             label: 'GPT-5.4',
             provider: 'openai',
             name: 'gpt-5.4',
+            fallback_name: 'gpt-5.4-mini',
+            route_reason: 'primary_model',
+            routing_config_source: 'runtime_default',
+            routing_locked: true,
             context_window_tokens: 128000,
           },
           runtime: {
@@ -5264,6 +5268,12 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('acceptEdits');
     expect(markup).toContain('GPT-5.4');
     expect(markup).toContain('25% used');
+    expect(markup).toContain('HR Agent');
+    expect(markup).not.toContain('__system_hr__');
+    expect(markup).not.toContain('primary_model');
+    expect(markup).not.toContain('runtime_default');
+    expect(markup).not.toContain('fallback:');
+    expect(markup).not.toContain('model locked by user');
     expect(markup).not.toMatch(/microphone|voice|语音/i);
   });
 
@@ -5818,6 +5828,56 @@ describe('AgentDetail extracted sections', () => {
     ];
 
     expect(isClarificationCardAnsweredByLaterUserMessage(messages, 0)).toBe(true);
+    expect(isClarificationCardAnsweredByLaterUserMessage(messages, 1)).toBe(false);
+  });
+
+  it('keeps a submitted clarification locked while transcript reconciliation temporarily reorders it after the answer', () => {
+    const messages = [
+      {
+        role: 'user' as const,
+        content: 'Scope: Mine',
+        timestamp: '2026-08-29T00:14:00.000Z',
+      },
+      {
+        role: 'tool_call' as const,
+        content: '',
+        timestamp: '2026-08-29T00:13:00.000Z',
+        toolName: 'ask_user_question',
+        toolStatus: 'done' as const,
+        toolMeta: {
+          kind: 'user_clarification' as const,
+          questions: [{ question: 'Scope?', header: 'Scope', options: [{ label: 'Mine', description: '' }], multiSelect: false }],
+          blocking: true,
+          nextAction: null,
+        },
+      },
+    ];
+
+    expect(isClarificationCardAnsweredByLaterUserMessage(messages, 1)).toBe(true);
+  });
+
+  it('does not lock a clarification from an older user message', () => {
+    const messages = [
+      {
+        role: 'user' as const,
+        content: 'An unrelated earlier message',
+        timestamp: '2026-08-29T00:12:00.000Z',
+      },
+      {
+        role: 'tool_call' as const,
+        content: '',
+        timestamp: '2026-08-29T00:13:00.000Z',
+        toolName: 'ask_user_question',
+        toolStatus: 'done' as const,
+        toolMeta: {
+          kind: 'user_clarification' as const,
+          questions: [{ question: 'Scope?', header: 'Scope', options: [{ label: 'Mine', description: '' }], multiSelect: false }],
+          blocking: true,
+          nextAction: null,
+        },
+      },
+    ];
+
     expect(isClarificationCardAnsweredByLaterUserMessage(messages, 1)).toBe(false);
   });
 

@@ -534,6 +534,7 @@
   "agentCreate": {
     "eyebrow": "数字员工设置",
     "title": "创建数字员工",
+    "hrAgentName": "HR Agent",
     "subtitle": "Hive 通过 HR Agent 创建员工。HR Agent 会澄清角色、权限、插件目录权限、记忆边界和第一个工作会话，然后再完成创建。",
     "useHr": "使用 HR Agent 引导创建",
     "hrError": "打开 HR Agent 失败。",

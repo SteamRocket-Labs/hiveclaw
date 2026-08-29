@@ -243,10 +243,12 @@ export type ChatTranscriptEventPayload = Partial<ThreadItem> & {
   created_at?: string;
   timestamp?: string;
   message_id?: string | null;
+  payload?: Record<string, unknown>;
 };
 
 function messageIdentityFromTranscriptEvent(event: ChatTranscriptEventPayload): Pick<AgentChatMessage, 'id' | 'messageId' | 'transcriptEventId'> {
-  const messageId = event.message_id ? String(event.message_id) : null;
+  const rawMessageId = event.message_id || event.payload?.message_id;
+  const messageId = rawMessageId ? String(rawMessageId) : null;
   const transcriptEventId = event.id ? String(event.id) : null;
   return {
     id: messageId || transcriptEventId || undefined,
@@ -1284,16 +1286,20 @@ export function applyTranscriptEvent(
   }
 
   if (eventType === 'user_message' || event.role === 'user') {
+    const identity = messageIdentityFromTranscriptEvent(event);
+    const previousMessages = identity.messageId && content
+      ? state.messages.filter((message) => !userMessageHasIdentity(message, identity.messageId!))
+      : state.messages;
     return {
       messages: [
-        ...state.messages,
-	        {
-	          role: 'user',
-	          content,
-	          timestamp,
-	          threadItem: threadItem || undefined,
-	          ...messageIdentityFromTranscriptEvent(event),
-	        },
+        ...previousMessages,
+        {
+          role: 'user',
+          content,
+          timestamp,
+          threadItem: threadItem || undefined,
+          ...identity,
+        },
       ],
       seenEventIds,
       ui: state.ui,

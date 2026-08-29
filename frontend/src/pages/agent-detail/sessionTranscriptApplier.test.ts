@@ -384,6 +384,38 @@ describe('session transcript applier real consumption path (Codex REQUEST_CHANGE
     expect(harness.refs.pendingUserMessages[KEY]).toEqual([pending]);
   });
 
+  it('upgrades an empty-transcript stored user carrier when its durable compatibility event arrives', () => {
+    const harness = makeApplierHarness();
+    const stored = {
+      id: 'message-user-1',
+      messageId: 'message-user-1',
+      role: 'user' as const,
+      content: 'Exact branch retry prompt.',
+    };
+    harness.refs.replayStates[KEY] = {
+      ...createEmptyTranscriptReplayState(),
+      messages: [stored],
+    };
+    harness.refs.compatibilityTimelines[KEY] = createCompatibilityMessageTimeline();
+    seedCompatibilityTimelineIdentities(harness.refs.compatibilityTimelines[KEY]!, [stored]);
+    harness.deps.setChatMessagesAfterQueued('session-1', () => [stored]);
+
+    expect(harness.applyEvent(compatibilityCarrier(1, 'user_message', {
+      message_id: 'message-user-1',
+      content: 'Exact branch retry prompt.',
+      metadata: { role: 'user' },
+    }))).toBeTruthy();
+
+    expect(harness.messages().filter((message) => message.role === 'user')).toEqual([
+      expect.objectContaining({
+        id: 'message-user-1',
+        messageId: 'message-user-1',
+        transcriptEventId: 'legacy-1',
+        content: 'Exact branch retry prompt.',
+      }),
+    ]);
+  });
+
   it('proves a compatibility carrier that drains a canonical runtime_failure updates canonical transcript, messages, and terminal acceptance exactly once (finding A)', () => {
     const harness = makeApplierHarness();
     const failure = runScopedFailureEvent(2);

@@ -454,11 +454,11 @@ export function findRetryAnchorMessage(
   errorIndex: number,
 ): AgentChatMessage | null {
   for (let index = Math.min(errorIndex, messages.length) - 1; index >= 0; index -= 1) {
-    if (messages[index]?.role === 'user') return messages[index];
+    const message = messages[index];
+    if (message?.role === 'user') return message.transcriptEventId ? message : null;
   }
   return null;
 }
-
 function commandPanelTypeLabel(type: SessionCommandControlType, t: Translate): string {
   switch (type) {
     case 'checkpoint_selector':
@@ -1427,7 +1427,7 @@ function AgentChatSection({
           type="button"
           className="btn btn-secondary"
           data-testid="thread-item-retry-turn"
-          onClick={() => void onBranchMessage(retryAnchor, 'regenerate')}
+          onClick={() => void onBranchMessage(retryAnchor, 'edit', retryAnchor.content)}
         >
           {t('sessionWorkbench.threadItem.retryTurn', 'Retry turn')}
         </button>

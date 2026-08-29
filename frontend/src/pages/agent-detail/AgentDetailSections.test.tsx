@@ -1173,13 +1173,29 @@ describe('AgentDetail extracted sections', () => {
 
   it('anchors a retryable runtime error to the nearest preceding user turn', () => {
     const messages = [
-      { id: 'user-1', role: 'user' as const, content: 'Run the analysis.' },
+      {
+        id: 'user-1',
+        transcriptEventId: 'event-user-1',
+        role: 'user' as const,
+        content: 'Run the analysis.',
+      },
       { id: 'agent-1', role: 'assistant' as const, content: 'Starting.' },
-      { id: 'user-2', role: 'user' as const, content: 'Use the latest file.' },
+      {
+        id: 'user-2',
+        transcriptEventId: 'event-user-2',
+        role: 'user' as const,
+        content: 'Use the latest file.',
+      },
       { id: 'error-1', role: 'event' as const, content: 'Provider timed out.' },
     ];
 
     expect(findRetryAnchorMessage(messages, 3)).toBe(messages[2]);
+    expect(findRetryAnchorMessage([
+      messages[0],
+      messages[1],
+      { ...messages[2], transcriptEventId: null },
+      messages[3],
+    ], 3)).toBeNull();
     expect(findRetryAnchorMessage(messages, 0)).toBeNull();
   });
   it('uses session-only workbench mode for chat routes but not detail management routes', () => {

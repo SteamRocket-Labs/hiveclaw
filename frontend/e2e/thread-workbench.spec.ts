@@ -549,6 +549,25 @@ test('ordinary user active dark desktop visual and accessibility contract', asyn
   expect(consoleErrors).toEqual([]);
 });
 
+test('retryable pre-final failure replays the exact user checkpoint in an edit branch', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 980 });
+  await bootstrap(page, { audience: 'user', scenario: 'active' });
+  const requestPromise = page.waitForRequest((request) => (
+    request.method() === 'POST'
+    && new URL(request.url()).pathname.endsWith(`/agents/${AGENT_ID}/sessions/${SESSION_ID}/branches`)
+  ));
+
+  await page.getByTestId('thread-item-retry-turn').click();
+  const request = await requestPromise;
+  expect(request.postDataJSON()).toMatchObject({
+    mode: 'edit',
+    anchor_event_id: '00000000-0000-4000-8000-000000000001',
+    content: 'Review the release evidence, coordinate the specialists, and prepare the final report.',
+    display_content: 'Review the release evidence, coordinate the specialists, and prepare the final report.',
+    start_run: true,
+  });
+});
+
 test('canonical assistant text becomes visible live without a refresh or a Thinking label', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 980 });
   const progress = 'I isolated the projection gap and am validating the live Session update path.';

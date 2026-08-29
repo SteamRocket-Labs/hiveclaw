@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from app.config import get_settings
-from app.memory.t2.segment_package import run_t2_segment_package_job
+from app.memory.t0.ledger import replay_t0_session_events
+from app.memory.t2.segment_package import run_t2_segment_package_job, select_t2_segment_events
 
 
 APPLY_CONFIRMATION = "APPLY_T0_TO_T2_BACKFILL"
@@ -95,6 +96,7 @@ def inventory_t0_to_t2_backfill(
     existing_t2_packages = 0
     invalid_t2_packages = 0
     open_segments_skipped = 0
+    no_semantic_content_segments_skipped = 0
     sessions_scanned = 0
 
     session_dirs = sorted(path for path in sessions_root.iterdir() if path.is_dir()) if sessions_root.exists() else []
@@ -113,6 +115,9 @@ def inventory_t0_to_t2_backfill(
             warnings.append({"session_id": session_id, "reason": "t0_index_authority_mismatch"})
             continue
         sessions_scanned += 1
+        session_events: list[Any] = []
+        session_events_loaded = False
+        session_events_unreadable = False
         for segment in index.get("segments") or []:
             if not isinstance(segment, dict):
                 warnings.append({"session_id": session_id, "reason": "invalid_t0_segment_record"})
@@ -152,6 +157,38 @@ def inventory_t0_to_t2_backfill(
                     }
                 )
                 continue
+            if not session_events_loaded:
+                try:
+                    session_events = replay_t0_session_events(
+                        agent_id=agent_id,
+                        session_id=session_id,
+                        data_root=root,
+                    )
+                except OSError:
+                    session_events_unreadable = True
+                session_events_loaded = True
+            if session_events_unreadable:
+                warnings.append(
+                    {
+                        "session_id": session_id,
+                        "segment_id": segment_id,
+                        "reason": "unreadable_or_empty_t0_segment_evidence",
+                    }
+                )
+                continue
+            selection = select_t2_segment_events(session_events, t0_segment_id=segment_id)
+            if not selection.segment_events:
+                warnings.append(
+                    {
+                        "session_id": session_id,
+                        "segment_id": segment_id,
+                        "reason": "unreadable_or_empty_t0_segment_evidence",
+                    }
+                )
+                continue
+            if not selection.has_semantic_content:
+                no_semantic_content_segments_skipped += 1
+                continue
             candidates.append({"session_id": session_id, "segment_id": segment_id})
 
     candidate_count = len(candidates)
@@ -167,6 +204,7 @@ def inventory_t0_to_t2_backfill(
         "existing_t2_packages": existing_t2_packages,
         "invalid_t2_packages": invalid_t2_packages,
         "open_segments_skipped": open_segments_skipped,
+        "no_semantic_content_segments_skipped": no_semantic_content_segments_skipped,
         "candidate_segments": candidate_count,
         "selected_segments": len(selected),
         "remaining_segments": remaining,
@@ -202,6 +240,7 @@ async def run_t0_to_t2_backfill(
         "tenant_id": str(tenant_id) if tenant_id else None,
         "started": 0,
         "committed": 0,
+        "not_applicable": 0,
         "held": 0,
         "failed": 0,
         "outcomes": [],
@@ -231,6 +270,8 @@ async def run_t0_to_t2_backfill(
             issues = [str(issue) for issue in (result.issues or ())]
             if status == "committed":
                 report["committed"] += 1
+            elif status == "not_applicable":
+                report["not_applicable"] += 1
             elif status == "held":
                 report["held"] += 1
             else:

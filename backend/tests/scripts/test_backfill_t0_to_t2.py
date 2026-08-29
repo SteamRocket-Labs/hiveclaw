@@ -16,16 +16,43 @@ def _write_t0_index(
     *,
     sealed_segments: tuple[str, ...],
     open_segments: tuple[str, ...] = (),
+    no_semantic_content_segments: tuple[str, ...] = (),
 ) -> None:
     session_dir = data_root / str(agent_id) / "memory" / "t0" / "sessions" / session_id
     segments: list[dict[str, object]] = []
-    for segment_id, state in [
-        *((segment_id, "sealed") for segment_id in sealed_segments),
-        *((segment_id, "open") for segment_id in open_segments),
-    ]:
+    for sequence, (segment_id, state) in enumerate(
+        [
+            *((segment_id, "sealed") for segment_id in sealed_segments),
+            *((segment_id, "open") for segment_id in open_segments),
+        ],
+        start=1,
+    ):
         segment_dir = session_dir / "segments" / segment_id
         segment_dir.mkdir(parents=True, exist_ok=True)
-        (segment_dir / "events.jsonl").write_text('{"schema_version":"t0.event-record.v2"}\n', encoding="utf-8")
+        semantic_content = segment_id not in no_semantic_content_segments
+        (segment_dir / "events.jsonl").write_text(
+            json.dumps(
+                {
+                    "schema_version": "t0.event-record.v2",
+                    "agent_id": str(agent_id),
+                    "session_id": session_id,
+                    "segment_id": segment_id,
+                    "event_id": f"event-{segment_id}",
+                    "sequence": sequence,
+                    "event_type": "user_message" if semantic_content else "run.completed",
+                    "role": "user" if semantic_content else None,
+                    "content": f"semantic evidence for {segment_id}" if semantic_content else "",
+                    "created_at": "2026-08-30T00:00:00+00:00",
+                    "source": "test",
+                    "sensitivity": "PL1_public",
+                    "metadata": {},
+                    "projection": {"path": f"segments/{segment_id}/source.md"},
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         (segment_dir / "source.md").write_text("<t0_session_segment />\n", encoding="utf-8")
         segments.append(
             {
@@ -47,6 +74,79 @@ def _write_t0_index(
         ),
         encoding="utf-8",
     )
+
+
+def test_t2_backfill_excludes_sealed_segments_with_only_mechanical_events_from_debt(tmp_path: Path) -> None:
+    from app.scripts.backfill_t0_to_t2 import inventory_t0_to_t2_backfill
+
+    agent_id = uuid4()
+    _write_t0_index(
+        tmp_path,
+        agent_id,
+        "session-a",
+        sealed_segments=("mechanical-only", "semantic-segment"),
+        no_semantic_content_segments=("mechanical-only",),
+    )
+
+    report = inventory_t0_to_t2_backfill(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        limit_segments=None,
+    )
+
+    assert report["sealed_segments"] == 2
+    assert report["no_semantic_content_segments_skipped"] == 1
+    assert report["candidate_segments"] == 1
+    assert report["candidates"] == [{"session_id": "session-a", "segment_id": "semantic-segment"}]
+    assert report["warnings"] == []
+
+    _write_t2_manifest(tmp_path, agent_id, "session-a", "semantic-segment")
+    complete = inventory_t0_to_t2_backfill(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        limit_segments=None,
+    )
+
+    assert complete["existing_t2_packages"] == 1
+    assert complete["no_semantic_content_segments_skipped"] == 1
+    assert complete["candidate_segments"] == 0
+    assert complete["coverage_complete"] is True
+
+
+def test_t2_backfill_keeps_unreadable_segment_evidence_as_visible_debt(tmp_path: Path) -> None:
+    from app.scripts.backfill_t0_to_t2 import inventory_t0_to_t2_backfill
+
+    agent_id = uuid4()
+    _write_t0_index(tmp_path, agent_id, "session-a", sealed_segments=("unreadable-segment",))
+    events_path = (
+        tmp_path
+        / str(agent_id)
+        / "memory"
+        / "t0"
+        / "sessions"
+        / "session-a"
+        / "segments"
+        / "unreadable-segment"
+        / "events.jsonl"
+    )
+    events_path.write_text("{not-json\n", encoding="utf-8")
+
+    report = inventory_t0_to_t2_backfill(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        limit_segments=None,
+    )
+
+    assert report["no_semantic_content_segments_skipped"] == 0
+    assert report["candidate_segments"] == 0
+    assert report["coverage_complete"] is False
+    assert report["warnings"] == [
+        {
+            "session_id": "session-a",
+            "segment_id": "unreadable-segment",
+            "reason": "unreadable_or_empty_t0_segment_evidence",
+        }
+    ]
 
 
 def _write_t2_manifest(
@@ -292,6 +392,42 @@ async def test_t2_backfill_apply_requires_exact_confirmation_and_uses_canonical_
             "t0_segment_id": "segment-b",
             "data_root": tmp_path,
         },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_t2_backfill_accepts_canonical_not_applicable_race_outcome(tmp_path: Path, monkeypatch) -> None:
+    from app.scripts import backfill_t0_to_t2
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    _write_t0_index(tmp_path, agent_id, "session-a", sealed_segments=("segment-a",))
+
+    async def fake_runner(**_kwargs):
+        return SimpleNamespace(status="not_applicable", issues=())
+
+    monkeypatch.setattr(backfill_t0_to_t2, "run_t2_segment_package_job", fake_runner)
+
+    report = await backfill_t0_to_t2.run_t0_to_t2_backfill(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        apply=True,
+        confirmation="APPLY_T0_TO_T2_BACKFILL",
+    )
+
+    assert report["started"] == 1
+    assert report["not_applicable"] == 1
+    assert report["committed"] == 0
+    assert report["held"] == 0
+    assert report["failed"] == 0
+    assert report["outcomes"] == [
+        {
+            "session_id": "session-a",
+            "segment_id": "segment-a",
+            "status": "not_applicable",
+            "issues": [],
+        }
     ]
 
 

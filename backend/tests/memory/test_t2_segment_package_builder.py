@@ -249,6 +249,101 @@ def test_source_bundle_rejects_segments_without_semantic_t0_events(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_non_semantic_segment_job_is_terminal_not_applicable_without_model_call(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from app.memory.t2 import segment_package
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    mechanical = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="run.completed",
+        content="",
+        source="runtime_control",
+        data_root=tmp_path,
+    )
+    append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="segment_boundary",
+        role="system",
+        content="session_idle",
+        source="runtime_control",
+        data_root=tmp_path,
+    )
+    model_calls: list[object] = []
+
+    async def fake_model_config(actual_tenant_id):
+        model_calls.append(actual_tenant_id)
+        return {"provider": "fake", "model": "fake"}
+
+    async def reject_model_call(**_kwargs):
+        raise AssertionError("non-semantic segments must not call an LLM")
+
+    monkeypatch.setattr("app.services.memory_service._get_summary_model_config", fake_model_config)
+    monkeypatch.setattr(segment_package, "_run_t2_llm_agent", reject_model_call)
+
+    result = await segment_package.run_t2_segment_package_job(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        t0_segment_id=mechanical.segment_id,
+    )
+
+    manifest = json.loads((result.staging_dir / "job_manifest.json").read_text(encoding="utf-8"))
+    gate_report = json.loads((result.staging_dir / "platform_gate_report.json").read_text(encoding="utf-8"))
+    assert result.status == "not_applicable"
+    assert result.issues == ()
+    assert model_calls == []
+    assert manifest["status"] == "not_applicable"
+    assert manifest["package_status"] == "not_applicable"
+    assert manifest["reason_code"] == "no_semantic_t0_events"
+    assert manifest["issues"] == []
+    assert gate_report["status"] == "not_applicable"
+    assert gate_report["reason_code"] == "no_semantic_t0_events"
+    assert not result.package_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_unreadable_segment_evidence_remains_held_and_retryable(monkeypatch, tmp_path: Path) -> None:
+    from app.memory.t2 import segment_package
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+
+    def unreadable_replay(**_kwargs):
+        raise OSError("test evidence read failure")
+
+    async def fake_model_config(_tenant_id):
+        return {"provider": "fake", "model": "fake"}
+
+    monkeypatch.setattr(segment_package, "replay_t0_session_events", unreadable_replay)
+    monkeypatch.setattr("app.services.memory_service._get_summary_model_config", fake_model_config)
+
+    result = await segment_package.run_t2_segment_package_job(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        t0_segment_id="unreadable-segment",
+    )
+
+    manifest = json.loads((result.staging_dir / "job_manifest.json").read_text(encoding="utf-8"))
+    assert result.status == "held"
+    assert manifest["status"] == "held"
+    assert manifest["package_status"] == "held"
+    assert "source bundle unavailable" in manifest["issues"][0]
+
+
+@pytest.mark.asyncio
 async def test_build_t2_segment_package_commits_agent_outputs_atomically(tmp_path: Path) -> None:
     from app.memory.t2.segment_package import build_t2_segment_package
 

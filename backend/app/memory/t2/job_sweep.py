@@ -1,6 +1,6 @@
 """T2 package-job sweep: crash recovery + bounded retry (C9-1, spec §6.2.1).
 
-Held/failed T2 jobs are valid terminal states written by
+Held/failed T2 jobs are recoverable states written by
 ``run_t2_segment_package_job``; without a sweep they are never picked up and
 the underlying experience silently never enters memory. This module owns the
 pickup loop:
@@ -13,6 +13,8 @@ pickup loop:
   ``run_t2_segment_package_job`` (stable job_id, idempotent re-run). Jobs
   exhausting ``max_retries`` raise exactly one ``t2_job_retry_exhausted``
   audit alert and stay visible in the control report until resolved.
+- ``not_applicable`` is a terminal, non-retryable state for a T0 segment that
+  contains mechanical lifecycle evidence but no eligible semantic content.
 
 Retry bookkeeping (``retry_count`` / ``last_retry_at`` /
 ``retry_exhausted_alerted_at`` / ``recovered_from``) lives in the job
@@ -47,6 +49,7 @@ class T2JobSweepReport:
     recovered_stale: tuple[str, ...] = ()
     retried: tuple[str, ...] = ()
     committed: tuple[str, ...] = ()
+    not_applicable: tuple[str, ...] = ()
     still_held: tuple[str, ...] = ()
     exhausted: tuple[str, ...] = ()
     alerted: tuple[str, ...] = ()
@@ -71,6 +74,7 @@ def sweep_stale_t2_jobs(
     current = _now_utc(now)
     scanned = 0
     recovered: list[str] = []
+    not_applicable: list[str] = []
     still_held: list[str] = []
     exhausted: list[str] = []
     for manifest_path, manifest in _iter_job_manifests(root, agent_id):
@@ -87,10 +91,13 @@ def sweep_stale_t2_jobs(
                 exhausted.append(job_id)
             else:
                 still_held.append(job_id)
+        elif status == "not_applicable":
+            not_applicable.append(job_id)
     report = T2JobSweepReport(
         agent_id=str(agent_id),
         scanned=scanned,
         recovered_stale=tuple(recovered),
+        not_applicable=tuple(not_applicable),
         still_held=tuple(still_held),
         exhausted=tuple(exhausted),
     )
@@ -128,6 +135,7 @@ async def sweep_t2_jobs(
     recovered: list[str] = []
     retried: list[str] = []
     committed: list[str] = []
+    not_applicable: list[str] = []
     still_held: list[str] = []
     exhausted: list[str] = []
     alerted: list[str] = []
@@ -140,6 +148,9 @@ async def sweep_t2_jobs(
             manifest = _recover_stale_manifest(manifest_path, manifest, from_status=status, now=current)
             recovered.append(job_id)
             status = "held"
+        if status == "not_applicable":
+            not_applicable.append(job_id)
+            continue
         if status not in _RETRYABLE_STATUSES:
             continue
         manifest = _repair_tenant_authority(
@@ -162,6 +173,8 @@ async def sweep_t2_jobs(
         retried.append(job_id)
         if result_status == "committed":
             committed.append(job_id)
+        elif result_status == "not_applicable":
+            not_applicable.append(job_id)
         else:
             still_held.append(job_id)
     report = T2JobSweepReport(
@@ -170,6 +183,7 @@ async def sweep_t2_jobs(
         recovered_stale=tuple(recovered),
         retried=tuple(retried),
         committed=tuple(committed),
+        not_applicable=tuple(not_applicable),
         still_held=tuple(still_held),
         exhausted=tuple(exhausted),
         alerted=tuple(alerted),
@@ -346,6 +360,7 @@ def _write_control_report(root: Path, agent_id: uuid.UUID | str, report: T2JobSw
         "recovered_stale": list(report.recovered_stale),
         "retried": list(report.retried),
         "committed": list(report.committed),
+        "not_applicable": list(report.not_applicable),
         "still_held": list(report.still_held),
         "exhausted": list(report.exhausted),
         "alerted": list(report.alerted),

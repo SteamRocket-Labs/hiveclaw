@@ -342,6 +342,94 @@ async def test_sweep_retry_failure_keeps_held_and_increments_retry_count(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_sweep_converts_legacy_non_semantic_hold_to_terminal_not_applicable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.memory.t2 import job_sweep, segment_package
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    mechanical = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="run.completed",
+        content="",
+        source="runtime_control",
+        data_root=tmp_path,
+    )
+    append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="segment_boundary",
+        role="system",
+        content="session_idle",
+        source="runtime_control",
+        data_root=tmp_path,
+    )
+    queued = segment_package.enqueue_t2_segment_package_job(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        t0_segment_id=mechanical.segment_id,
+    )
+    manifest_path = queued.staging_dir / "job_manifest.json"
+    legacy_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    legacy_manifest.update(
+        {
+            "status": "held",
+            "package_status": "held",
+            "retry_count": 2,
+            "issues": ["T0->T2 package build failed: ValueError: no semantic T0 events"],
+        }
+    )
+    _write_manifest(manifest_path, legacy_manifest)
+    model_calls: list[object] = []
+
+    async def fake_model_config(actual_tenant_id):
+        model_calls.append(actual_tenant_id)
+        return {"provider": "fake", "model": "fake"}
+
+    monkeypatch.setattr("app.services.memory_service._get_summary_model_config", fake_model_config)
+
+    report = await job_sweep.sweep_t2_jobs(
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        data_root=tmp_path,
+    )
+
+    updated = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert updated["status"] == "not_applicable"
+    assert updated["package_status"] == "not_applicable"
+    assert updated["reason_code"] == "no_semantic_t0_events"
+    assert updated["retry_count"] == 3
+    assert updated["issues"] == []
+    assert model_calls == []
+    assert report.retried == (queued.job_id,)
+    assert report.not_applicable == (queued.job_id,)
+    assert report.still_held == ()
+    assert report.exhausted == ()
+    control = json.loads(
+        (tmp_path / str(agent_id) / "memory" / "control" / "t2_job_sweep.json").read_text(encoding="utf-8")
+    )
+    assert control["not_applicable"] == [queued.job_id]
+
+    second_report = await job_sweep.sweep_t2_jobs(
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        data_root=tmp_path,
+    )
+    unchanged = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert unchanged["retry_count"] == 3
+    assert second_report.retried == ()
+    assert second_report.not_applicable == (queued.job_id,)
+
+
+@pytest.mark.asyncio
 async def test_sweep_retries_failed_jobs_too(tmp_path: Path, monkeypatch) -> None:
     from app.memory.t2.job_sweep import sweep_t2_jobs
 

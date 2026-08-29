@@ -121,6 +121,7 @@ class T2SegmentPackageResult:
     package_dir: Path
     staging_dir: Path
     issues: tuple[str, ...] = ()
+    reason_code: str | None = None
     episode_result: T2EpisodeStitchPackageResult | None = None
 
 
@@ -131,6 +132,7 @@ class T2SegmentPackageJobResult:
     package_dir: Path
     staging_dir: Path
     issues: tuple[str, ...] = ()
+    reason_code: str | None = None
     package_result: T2SegmentPackageResult | None = None
 
 
@@ -141,6 +143,19 @@ class T2EpisodeStitchPackageResult:
     package_dir: Path
     staging_dir: Path
     issues: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class T2SegmentEventSelection:
+    """Mechanical T0 eligibility facts for one Segment Package boundary."""
+
+    segment_events: tuple[Any, ...]
+    source_events: tuple[Any, ...]
+    excluded_events: tuple[Any, ...]
+
+    @property
+    def has_semantic_content(self) -> bool:
+        return any(_is_semantic_content_event(event) for event in self.source_events)
 
 
 async def build_t2_segment_package(
@@ -275,6 +290,23 @@ async def build_t2_segment_package_with_llm(
     root = _data_root(data_root)
     resolved_package_id = package_id or f"t2pkg-{uuid.uuid4().hex}"
     resolved_job_id = job_id or f"job-{uuid.uuid4().hex}"
+
+    try:
+        selection = select_t2_segment_events(
+            replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=root),
+            t0_segment_id=t0_segment_id,
+        )
+    except OSError:
+        selection = None
+    if selection is not None and selection.segment_events and not selection.has_semantic_content:
+        return _not_applicable_without_llm(
+            root=root,
+            agent_id=agent_id,
+            session_id=session_id,
+            t0_segment_id=t0_segment_id,
+            job_id=resolved_job_id,
+            reason_code="no_semantic_t0_events",
+        )
 
     try:
         from app.services.memory_service import _get_summary_model_config
@@ -491,18 +523,25 @@ async def run_t2_segment_package_job(
             job_id=resolved_job_id,
             session_lineage=resolved_lineage,
         )
-        terminal = "committed" if result.status == "committed" else "held"
+        terminal = result.status if result.status in {"committed", "not_applicable"} else "held"
+        reason_code = str(getattr(result, "reason_code", "") or "") or None
+        terminal_manifest = {
+            **base_manifest,
+            **carried,
+            "status": terminal,
+            "package_status": result.status,
+            "issues": list(result.issues),
+            "updated_at": _now(),
+        }
+        if reason_code:
+            terminal_manifest["reason_code"] = reason_code
+        if terminal != "not_applicable":
+            terminal_manifest["package_manifest_path"] = _relative_agent_path(
+                root, agent_id, result.package_dir / MANIFEST_FILENAME
+            )
         _write_json(
             manifest_path,
-            {
-                **base_manifest,
-                **carried,
-                "status": terminal,
-                "package_status": result.status,
-                "issues": list(result.issues),
-                "package_manifest_path": _relative_agent_path(root, agent_id, result.package_dir / MANIFEST_FILENAME),
-                "updated_at": _now(),
-            },
+            terminal_manifest,
         )
         return T2SegmentPackageJobResult(
             status=terminal,
@@ -510,6 +549,7 @@ async def run_t2_segment_package_job(
             package_dir=result.package_dir,
             staging_dir=staging_dir,
             issues=result.issues,
+            reason_code=reason_code,
             package_result=result,
         )
     except Exception as exc:  # noqa: BLE001
@@ -760,27 +800,13 @@ def _build_source_bundle(
     session_lineage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     session_events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=root)
-    excluded_transcript_event_ids = _knowledge_provenance_excluded_transcript_event_ids(session_events)
-    segment_events = [event for event in session_events if event.segment_id == t0_segment_id]
-    events = [
-        event
-        for event in segment_events
-        if _is_t2_semantic_source_event(
-            event,
-            excluded_transcript_event_ids=excluded_transcript_event_ids,
-        )
-    ]
-    excluded_events = [
-        event
-        for event in segment_events
-        if not _is_t2_semantic_source_event(
-            event,
-            excluded_transcript_event_ids=excluded_transcript_event_ids,
-        )
-    ]
+    selection = select_t2_segment_events(session_events, t0_segment_id=t0_segment_id)
+    segment_events = list(selection.segment_events)
+    events = list(selection.source_events)
+    excluded_events = list(selection.excluded_events)
     if not events:
         raise ValueError(f"no semantic T0 events for session={session_id} segment={t0_segment_id}")
-    if not any(_is_semantic_content_event(event) for event in events):
+    if not selection.has_semantic_content:
         raise ValueError(f"no semantic T0 events for session={session_id} segment={t0_segment_id}")
     source_path = events[0].path
     source_ref = _source_ref(
@@ -823,6 +849,41 @@ def _build_source_bundle(
         "principal_context": {},
         "created_at": _now(),
     }
+
+
+def select_t2_segment_events(
+    session_events: list[Any] | tuple[Any, ...],
+    *,
+    t0_segment_id: str,
+) -> T2SegmentEventSelection:
+    """Classify exact T0 event eligibility without judging content meaning.
+
+    This enforces only the mechanical Segment Package input contract: the
+    event must belong to the segment, must not be explicitly projection-only
+    or memory-ineligible, and at least one selected non-boundary event must
+    contain bytes. It does not decide whether those bytes are important.
+    """
+
+    all_events = list(session_events)
+    excluded_transcript_event_ids = _knowledge_provenance_excluded_transcript_event_ids(all_events)
+    segment_events = tuple(event for event in all_events if event.segment_id == t0_segment_id)
+    source_events: list[Any] = []
+    excluded_events: list[Any] = []
+    for event in segment_events:
+        target = (
+            source_events
+            if _is_t2_semantic_source_event(
+                event,
+                excluded_transcript_event_ids=excluded_transcript_event_ids,
+            )
+            else excluded_events
+        )
+        target.append(event)
+    return T2SegmentEventSelection(
+        segment_events=segment_events,
+        source_events=tuple(source_events),
+        excluded_events=tuple(excluded_events),
+    )
 
 
 def _knowledge_provenance_excluded_transcript_event_ids(events: list[Any]) -> set[str]:
@@ -1303,6 +1364,40 @@ def _hold_without_llm(
         package_dir=_package_dir(root, agent_id, session_id, t0_segment_id),
         staging_dir=staging_dir,
         issues=(reason,),
+    )
+
+
+def _not_applicable_without_llm(
+    *,
+    root: Path,
+    agent_id: uuid.UUID | str,
+    session_id: uuid.UUID | str,
+    t0_segment_id: str,
+    job_id: str,
+    reason_code: str,
+) -> T2SegmentPackageResult:
+    """Record a terminal mechanical eligibility outcome without semantic output."""
+
+    staging_dir = _staging_dir(root, agent_id, job_id)
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        staging_dir / "platform_gate_report.json",
+        {
+            "schema_version": "t2.platform-gate-report.v1",
+            "status": "not_applicable",
+            "reason_code": reason_code,
+            "session_id": str(session_id),
+            "t0_segment_id": str(t0_segment_id),
+            "issues": [],
+            "created_at": _now(),
+        },
+    )
+    return T2SegmentPackageResult(
+        status="not_applicable",
+        job_id=job_id,
+        package_dir=_package_dir(root, agent_id, session_id, t0_segment_id),
+        staging_dir=staging_dir,
+        reason_code=reason_code,
     )
 
 

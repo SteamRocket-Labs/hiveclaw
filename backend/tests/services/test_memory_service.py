@@ -190,6 +190,7 @@ async def test_maybe_compress_does_not_use_cumulative_usage_anchor_as_context_pr
 
     tenant_id = uuid4()
     llm_calls: list = []
+    pre_compaction_calls: list[dict] = []
     messages = [{"role": "user", "content": "中文内容"} for _ in range(15)]
 
     async def fake_get_memory_config(_tenant_id):
@@ -201,6 +202,9 @@ async def test_maybe_compress_does_not_use_cumulative_usage_anchor_as_context_pr
     async def fake_llm_summarize(_messages, _model_config, **_kwargs):
         llm_calls.append(1)
         return "usage anchored summary"
+
+    async def before_compaction(facts):
+        pre_compaction_calls.append(facts)
 
     monkeypatch.setattr(memory_service, "_get_memory_config", fake_get_memory_config)
     monkeypatch.setattr(memory_service, "_get_summary_model_config", fake_get_summary_model_config)
@@ -214,9 +218,11 @@ async def test_maybe_compress_does_not_use_cumulative_usage_anchor_as_context_pr
         1000,
         tenant_id,
         usage_anchor_tokens=700,
+        before_compaction=before_compaction,
     )
 
     assert llm_calls == []
+    assert pre_compaction_calls == []
     assert result == messages
 
 

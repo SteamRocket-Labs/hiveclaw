@@ -1372,13 +1372,34 @@ async def _compress_messages_with_lifecycle_hooks(
     hook_metadata = dict(metadata or {})
     hook_metadata["trigger"] = trigger
     hook_metadata.setdefault("phase", instructions or trigger)
-    await _emit_runtime_hook(
-        HookEvent.PRE_COMPACTION,
-        agent_id=agent_id,
-        session_id=session_id,
-        messages=messages,
-        metadata=hook_metadata,
-    )
+    pre_hook_emitted = False
+
+    async def _emit_pre_compaction(facts: dict[str, Any] | None = None) -> None:
+        nonlocal pre_hook_emitted
+        if pre_hook_emitted:
+            return
+        pre_hook_emitted = True
+        await _emit_runtime_hook(
+            HookEvent.PRE_COMPACTION,
+            agent_id=agent_id,
+            session_id=session_id,
+            messages=messages,
+            metadata={**hook_metadata, **dict(facts or {})},
+        )
+
+    try:
+        supports_threshold_callback = "before_compaction" in inspect.signature(compressor).parameters
+    except (TypeError, ValueError):
+        supports_threshold_callback = False
+    compressor_kwargs = dict(kwargs)
+    if supports_threshold_callback:
+        # The production compressor knows whether the physical threshold is
+        # crossed. Let it emit PRE_COMPACTION only after that decision so a
+        # small turn cannot seal T0 and synchronously start T0 -> T2 work.
+        compressor_kwargs["before_compaction"] = _emit_pre_compaction
+    else:
+        # Compatibility for injected compressors that predate the callback.
+        await _emit_pre_compaction()
     compressed = await _maybe_await(
         _compress_messages_with_trace(
             compressor,
@@ -1387,9 +1408,11 @@ async def _compress_messages_with_lifecycle_hooks(
             tools=tools,
             parallel_tool_calls=parallel_tool_calls,
             instructions=instructions,
-            **kwargs,
+            **compressor_kwargs,
         )
     )
+    if compressed != messages and supports_threshold_callback and not pre_hook_emitted:
+        raise RuntimeError("compression_started_without_pre_compaction_hook")
     if compressed != messages:
         compact_summary = compressed[0].get("content", "") if compressed else ""
         post_metadata = {

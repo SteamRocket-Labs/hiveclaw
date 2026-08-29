@@ -1770,6 +1770,37 @@ async def test_compress_messages_with_lifecycle_hooks_emits_pre_and_post(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_compress_messages_with_lifecycle_hooks_skips_pre_hook_when_compaction_is_not_needed(monkeypatch):
+    from app.kernel.engine import _compress_messages_with_lifecycle_hooks
+
+    hook_calls = []
+
+    async def fake_emit_hook(event, **kwargs):
+        hook_calls.append((event, kwargs))
+
+    async def threshold_aware_compressor(messages, *, before_compaction=None, **_kwargs):
+        # Production compression resolves the threshold before invoking this
+        # callback. A below-threshold turn must not seal T0 or start T0 -> T2.
+        assert before_compaction is not None
+        return messages
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+
+    messages = [{"role": "user", "content": "small turn"}]
+    compressed = await _compress_messages_with_lifecycle_hooks(
+        threshold_aware_compressor,
+        messages,
+        agent_id="agent-1",
+        session_id="session-1",
+        trigger="initial",
+        metadata={"phase": "initial_context_compaction"},
+    )
+
+    assert compressed == messages
+    assert hook_calls == []
+
+
+@pytest.mark.asyncio
 async def test_mechanical_compaction_lifecycle_hooks_emit_pre_and_post(monkeypatch):
     from app.kernel.engine import _apply_mechanical_compaction_with_lifecycle_hooks
     from app.runtime.hooks import HookEvent

@@ -801,6 +801,7 @@ async def maybe_compress_messages(
     usage_anchor_tokens: int | None = None,
     agent_id: uuid.UUID | None = None,
     user_id: uuid.UUID | None = None,
+    before_compaction: CompactionCallback | None = None,
 ) -> list[dict]:
     """Compress old messages when approaching model context window.
 
@@ -837,6 +838,18 @@ async def maybe_compress_messages(
 
     if len(messages) <= recent_count:
         return messages
+
+    if before_compaction:
+        maybe_result = before_compaction(
+            {
+                "estimated_tokens": current_tokens,
+                "trigger_tokens": trigger_tokens,
+                "context_limit": context_limit,
+                "message_count": len(messages),
+            }
+        )
+        if maybe_result is not None:
+            await maybe_result
 
     old_messages = messages[:-recent_count]
     recent_messages = messages[-recent_count:]

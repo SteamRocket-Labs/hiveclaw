@@ -2,6 +2,8 @@ import {
   applyTranscriptEvent,
   createEmptyTranscriptReplayState,
   getTerminalRunIdFromTranscriptEvent,
+  terminalRuntimePhaseForSessionEvent,
+  uiForPhase,
   type AgentChatMessage,
   type ChatTranscriptEventPayload,
   type PendingUserMessage,
@@ -206,6 +208,15 @@ export function applyTranscriptToSessionRuntime(
   // The terminal merge binds to the canonical accepted terminal run when one
   // exists; a legacy-only accepted terminal keeps the legacy unbound seal.
   let canonicalTerminalRunId: string | null = null;
+  let canonicalTerminalPhase: RuntimePhase | null = null;
+  const syncCanonicalTerminalPhase = () => {
+    if (!canonicalTerminalPhase || !isActiveRuntime) return;
+    const terminalUi = uiForPhase(canonicalTerminalPhase);
+    refs.uiStates[key] = terminalUi;
+    deps.setActivePhase(terminalUi.phase);
+    deps.setIsWaiting(terminalUi.isWaiting);
+    deps.setIsStreaming(terminalUi.isStreaming);
+  };
 
   // Canonical snapshots apply for every applied canonical event, whatever the
   // carrier: a compatibility envelope can fill a sequence gap and drain
@@ -226,7 +237,16 @@ export function applyTranscriptToSessionRuntime(
         );
       },
       onActivity: () => { refs.runtimeActivityAt[key] = Date.now(); },
-      onTerminal: (runId) => deps.markActiveRunTerminal(key, runId),
+      onTerminal: (runId, terminalEvent) => {
+        const accepted = deps.markActiveRunTerminal(key, runId);
+        if (accepted !== false) {
+          canonicalTerminalPhase = terminalRuntimePhaseForSessionEvent(
+            terminalEvent.item_kind,
+            terminalEvent.lifecycle,
+          );
+        }
+        return accepted;
+      },
       onMessages: (_messages, terminal, runId) => {
         commitRequested = true;
         if (terminal) {
@@ -235,6 +255,10 @@ export function applyTranscriptToSessionRuntime(
         }
       },
     });
+    // A canonical carrier owns the lowest sequence in this transition; any
+    // compatibility events it drains are later and may legitimately advance
+    // the UI after this terminal phase.
+    if (consumed.canonical) syncCanonicalTerminalPhase();
   }
 
   const legacyResults: LegacyProjectionResult[] = [];
@@ -263,6 +287,11 @@ export function applyTranscriptToSessionRuntime(
       legacyResults.push(applyLegacyProjectionEvent(deps, key, compatibilityProjectionEvent(drained), isActiveRuntime));
     }
   }
+
+  // A compatibility carrier that closes a gap owns the lowest sequence; its
+  // drained canonical terminal is later and therefore settles the final UI
+  // phase after the carrier's legacy projection.
+  if (!consumed.canonical) syncCanonicalTerminalPhase();
 
   if (legacyResults.some((result) => result.applied)) commitRequested = true;
   if (!terminalCommit) {

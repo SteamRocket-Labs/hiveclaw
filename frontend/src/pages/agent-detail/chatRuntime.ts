@@ -365,6 +365,14 @@ export const TERMINAL_RUNTIME_PHASES: ReadonlySet<RuntimePhase> = new Set([
   'cancelled',
 ]);
 
+export function terminalRuntimePhaseForSessionEvent(itemKind: string, lifecycle: string): RuntimePhase | null {
+  if (itemKind === 'runtime_failure' && lifecycle === 'recorded') return 'failed';
+  if (lifecycle === 'completed') return 'done';
+  if (lifecycle === 'failed') return 'failed';
+  if (lifecycle === 'cancelled') return 'cancelled';
+  return null;
+}
+
 const STREAMING_RUNTIME_PHASES: ReadonlySet<RuntimePhase> = new Set([
   'thinking',
   'responding',

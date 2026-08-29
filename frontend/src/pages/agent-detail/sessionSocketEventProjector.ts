@@ -8,9 +8,11 @@ import {
   getTerminalRunIdFromTranscriptEvent,
   getTransportNotice,
   isRuntimePhase,
+  isSameSessionRunId,
   isTerminalRealtimeChatEvent,
   isTerminalRunAcceptedForActiveRun,
   reduceRuntimePhase,
+  terminalRuntimePhaseForSessionEvent,
   type AgentChatMessage,
   type ChatTranscriptEventPayload,
   type RuntimePhase,
@@ -41,13 +43,6 @@ const RUNTIME_QUERY_EVENT_KINDS = new Set([
   'workflow_step',
   'workflow_gate',
 ]);
-
-function terminalPhaseForRunLifecycle(lifecycle: string): RuntimePhase | null {
-  if (lifecycle === 'completed') return 'done';
-  if (lifecycle === 'failed') return 'failed';
-  if (lifecycle === 'cancelled') return 'cancelled';
-  return null;
-}
 
 function scopeRunId(scope: unknown): string | null {
   if (!scope || typeof scope !== 'object') return null;
@@ -190,7 +185,8 @@ function runCanonicalEventSideEffects(
   // the terminal message merge); this projector owns the observable
   // refresh effects only.
   const staleTerminalForActiveRun = (terminalRunId: string | null): boolean => Boolean(
-    preConsumptionActiveRunId && terminalRunId && preConsumptionActiveRunId !== terminalRunId,
+    preConsumptionActiveRunId && terminalRunId
+      && !isSameSessionRunId(preConsumptionActiveRunId, terminalRunId),
   );
   if (
     itemKind === 'tool_call'
@@ -210,7 +206,7 @@ function runCanonicalEventSideEffects(
     // panel renders from, and reconcile the durable transcript so a lost
     // canonical tail still projects without a reload. The active-run
     // clearing itself already happened in the applier's onTerminal.
-    const terminalPhase = terminalPhaseForRunLifecycle(lifecycle);
+    const terminalPhase = terminalRuntimePhaseForSessionEvent(itemKind, lifecycle);
     invalidateSessionRuntimeQueries(agentId, sessionId);
     if (terminalPhase) {
       setSessionPhase(key, terminalPhase);
@@ -220,7 +216,7 @@ function runCanonicalEventSideEffects(
     if (isActiveRuntime) dependencies.reconcileSessionTranscript(agentId, sessionId);
   }
   if (itemKind === 'run' && ['completed', 'failed', 'cancelled'].includes(lifecycle) && !staleTerminalForActiveRun(scopeRunId(event.scope))) {
-    const terminalPhase = terminalPhaseForRunLifecycle(lifecycle);
+    const terminalPhase = terminalRuntimePhaseForSessionEvent(itemKind, lifecycle);
     if (terminalPhase) {
       setSessionPhase(key, terminalPhase);
       if (isActiveRuntime) syncActivePhase(terminalPhase);

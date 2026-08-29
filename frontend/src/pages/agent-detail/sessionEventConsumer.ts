@@ -811,7 +811,7 @@ export function applyCanonicalSessionSnapshot(options: {
   active: boolean;
   onTranscript: () => void;
   onActivity: () => void;
-  onTerminal: (runId: string | null) => boolean | void;
+  onTerminal: (runId: string | null, event: SessionEventV2) => boolean | void;
   onMessages: (messages: AgentChatMessage[], terminal: boolean, runId: string | null) => void;
 }): void {
   options.onTranscript();
@@ -828,7 +828,7 @@ export function applyCanonicalSessionSnapshot(options: {
   for (const event of options.events) {
     if (!isRunTerminalEvent(event)) continue;
     const runId = runTerminalRunIdOf(event);
-    if (options.onTerminal(runId) === false) continue;
+    if (options.onTerminal(runId, event) === false) continue;
     anyTerminalAccepted = true;
     acceptedTerminalRunId = runId;
   }

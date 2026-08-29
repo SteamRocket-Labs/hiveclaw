@@ -635,6 +635,20 @@ describe('session socket event projector', () => {
     expect(harness.dependencies.fetchMySessions).toHaveBeenCalledWith(true, 'agent-1');
   });
 
+  it('treats compact live and canonical terminal UUID forms as the same run for terminal side effects', () => {
+    const canonicalRunId = '391ef191-0a87-5d2e-ac8b-43be7184e3cc';
+    const compactRunId = '391ef1910a875d2eac8b43be7184e3cc';
+    const harness = makeHarness(runTerminalEnvelope(canonicalRunId, 'event-run-terminal-uuid', 1));
+    harness.dependencies.activeRunIdOf = vi.fn(() => compactRunId);
+    wireRealCanonicalDedupe(harness);
+
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+
+    expect(harness.dependencies.setSessionPhase).toHaveBeenCalledWith('agent-1:session-1', 'done');
+    expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledWith('agent-1', 'session-1');
+    expect(harness.dependencies.fetchMySessions).toHaveBeenCalledWith(true, 'agent-1');
+  });
+
   it('still applies a legacy assistant terminal for the matching active run', () => {
     const harness = makeHarness(legacyAssistantTerminalEnvelope('run-1', 'event-legacy-final-1', 1));
     harness.dependencies.activeRunIdOf = vi.fn(() => 'run-1');

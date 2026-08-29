@@ -154,7 +154,10 @@ describe('AgentDetail realtime refresh contract', () => {
     expect(applierSource).toContain('mergeTranscriptBackfill(');
     expect(applierSource).toContain('events: appliedCanonicalEvents');
     expect(applierSource).not.toContain('transcriptEvents: nextTranscriptEvents');
-    expect(applierSource).toContain('onTerminal: (runId) => deps.markActiveRunTerminal(key, runId)');
+    expect(applierSource).toContain('onTerminal: (runId, terminalEvent) => {');
+    expect(applierSource).toContain('const accepted = deps.markActiveRunTerminal(key, runId);');
+    expect(applierSource).toContain('terminalRuntimePhaseForSessionEvent(');
+    expect(applierSource).toContain('deps.setIsStreaming(terminalUi.isStreaming);');
     // Canonical arrivals return this transition's application facts.
     expect(applierSource).toContain('return application ?? false');
     // The visible list commits once per transition through the single

@@ -84,6 +84,32 @@ function runScopedFailureEvent(sequence: number, runId = 'run-1'): ChatTranscrip
   } as unknown as ChatTranscriptEventPayload;
 }
 
+function canonicalRunTerminalEvent(
+  sequence: number,
+  lifecycle: 'completed' | 'failed' | 'cancelled' = 'completed',
+  runId = 'run-1',
+): ChatTranscriptEventPayload {
+  return {
+    schema: 'hive.session_event',
+    schema_version: 2,
+    event_id: `event-run-${lifecycle}-${sequence}`,
+    sequence,
+    ordinal: sequence - 1,
+    tenant_id: 'tenant-1',
+    scope: { level: 'run', session_id: 'session-1', thread_id: 'session-1', turn_id: 'turn-1', run_id: runId },
+    item_id: `run-item-${sequence}`,
+    item_kind: 'run',
+    kind: `run.${lifecycle}`,
+    lifecycle,
+    payload_schema: `hive.session.payload.run.${lifecycle}.v2`,
+    actor: { type: 'runtime' },
+    visibility: { audience: 'direct_user' },
+    payload: { status: lifecycle },
+    occurred_at: '2026-08-28T00:00:00Z',
+    persisted_at: '2026-08-28T00:00:00Z',
+  } as unknown as ChatTranscriptEventPayload;
+}
+
 function compatibilityCarrier(
   sequence: number,
   legacyEventType: string,
@@ -191,6 +217,34 @@ function makeApplierHarness() {
 }
 
 describe('session transcript applier real consumption path (Codex REQUEST_CHANGES #3)', () => {
+  it('settles the active UI phase when direct transcript backfill applies a canonical run terminal', () => {
+    const harness = makeApplierHarness();
+    harness.refs.uiStates[KEY] = uiForPhase('responding');
+
+    expect(harness.applyEvent(canonicalRunTerminalEvent(1))).toBeTruthy();
+
+    expect(harness.deps.markActiveRunTerminal).toHaveBeenCalledWith(KEY, 'run-1');
+    expect(harness.deps.setActivePhase).toHaveBeenCalledWith('done');
+    expect(harness.deps.setIsWaiting).toHaveBeenCalledWith(false);
+    expect(harness.deps.setIsStreaming).toHaveBeenCalledWith(false);
+    expect(harness.refs.uiStates[KEY]).toEqual(uiForPhase('done'));
+  });
+
+  it('keeps a newer active UI phase byte-identical when canonical terminal identity is rejected', () => {
+    const harness = makeApplierHarness();
+    const activeUi = uiForPhase('responding');
+    harness.refs.uiStates[KEY] = activeUi;
+    harness.deps.markActiveRunTerminal = vi.fn(() => false);
+
+    expect(harness.applyEvent(canonicalRunTerminalEvent(1))).toBeTruthy();
+
+    expect(harness.deps.markActiveRunTerminal).toHaveBeenCalledWith(KEY, 'run-1');
+    expect(harness.refs.uiStates[KEY]).toBe(activeUi);
+    expect(harness.deps.setActivePhase).not.toHaveBeenCalled();
+    expect(harness.deps.setIsWaiting).not.toHaveBeenCalled();
+    expect(harness.deps.setIsStreaming).not.toHaveBeenCalled();
+  });
+
   it('keeps an accepted prompt visible through a lifecycle-only canonical input placeholder', () => {
     const harness = makeApplierHarness();
     const pending = {
@@ -241,6 +295,10 @@ describe('session transcript applier real consumption path (Codex REQUEST_CHANGE
     // Terminal acceptance fired exactly once for the failure run.
     expect(harness.deps.markActiveRunTerminal).toHaveBeenCalledTimes(1);
     expect(harness.deps.markActiveRunTerminal).toHaveBeenCalledWith(KEY, 'run-1');
+    expect(harness.deps.setActivePhase).toHaveBeenCalledWith('failed');
+    expect(harness.deps.setIsWaiting).toHaveBeenCalledWith(false);
+    expect(harness.deps.setIsStreaming).toHaveBeenCalledWith(false);
+    expect(harness.refs.uiStates[KEY]).toEqual(uiForPhase('failed'));
 
     // Final visible state (not flattened commit history): the typed
     // runtime_failure error card survives the message-neutral compatibility

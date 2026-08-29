@@ -2797,6 +2797,60 @@ describe('RuntimePhase in the thread projection (§3 seam 3)', () => {
     expect(model.cells).not.toContainEqual(expect.objectContaining({ id: 'active-run-pending' }));
   });
 
+  it('treats live UUID hex and canonical hyphenated UUID as the same run without a second pending card', () => {
+    const canonicalRunId = 'bb034234-ef1a-5bdc-8356-af3d9a0a0c1b';
+    const liveRunId = 'bb034234ef1a5bdc8356af3d9a0a0c1b';
+    const build = (activeRunId: string) => buildThreadTimeline({
+      messages: [
+        {
+          id: 'user-1',
+          role: 'user',
+          content: 'Return a streamed answer.',
+          timestamp: '2026-08-29T08:32:58.510Z',
+        },
+        {
+          id: 'assistant-text-delta-1',
+          role: 'assistant',
+          content: 'First visible answer delta.',
+          timestamp: '2026-08-29T08:35:50.328Z',
+          sessionItem: {
+            id: 'assistant-text-1',
+            kind: 'assistant_text',
+            lifecycle: 'delta',
+            scope: {
+              level: 'round',
+              session_id: 'session-1',
+              thread_id: 'session-1',
+              turn_id: 'turn-1',
+              run_id: canonicalRunId,
+              round_id: `${canonicalRunId}:round:1`,
+            },
+            terminal: false,
+          } as AgentChatMessage['sessionItem'],
+        },
+      ] as AgentChatMessage[],
+      activeSession: { id: 'session-1', title: 'UUID run identity' },
+      isWaiting: false,
+      isStreaming: true,
+      activeRunStatus: 'running',
+      activeRunId,
+      runtimePhase: 'responding',
+    });
+
+    const equivalent = build(liveRunId);
+    const equivalentRunCells = equivalent.cells.filter((cell) => cell.kind === 'active_run');
+    expect(equivalentRunCells).toHaveLength(1);
+    expect(equivalentRunCells[0]).toMatchObject({
+      runId: canonicalRunId,
+      timeline: { status: 'running' },
+    });
+    expect(equivalent.cells).not.toContainEqual(expect.objectContaining({ id: 'active-run-pending' }));
+
+    const genuinelyDifferent = build('cc034234cc1a5bdc8356af3d9a0a0c1b');
+    expect(genuinelyDifferent.cells.filter((cell) => cell.kind === 'active_run')).toHaveLength(2);
+    expect(genuinelyDifferent.cells).toContainEqual(expect.objectContaining({ id: 'active-run-pending' }));
+  });
+
   it('includes the phase in the cache signature so live transitions invalidate', () => {
     const cache = {
       previousInputSignature: null,

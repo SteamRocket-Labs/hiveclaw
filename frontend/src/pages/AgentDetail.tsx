@@ -18,7 +18,7 @@ import {
     buildSessionTranscriptLoadFailureMessage,
     createEmptyTranscriptReplayState,
     isDraftHumanChatSession,
-    markActiveRunTerminalInRegistry,
+    markActiveRunTerminalInRegistry, normalizeSessionRunId,
     mergePendingUserMessages,
     filterSessionsForAgent,
     hasLocalSessionRuntimeState,
@@ -382,7 +382,7 @@ function AgentDetailInner() {
         if (run) {
             runtimeActivityAtRef.current[key] = Date.now();
             locallyTerminalSessionKeysRef.current.delete(key);
-            if (run.runId) locallyTerminalRunIdsRef.current.delete(String(run.runId));
+            if (run.runId) locallyTerminalRunIdsRef.current.delete(normalizeSessionRunId(run.runId));
         }
         const next = applySessionActiveRunState(activeRunStateRef.current, sessionUiStateRef.current, key, run);
         activeRunStateRef.current = next.activeRuns;

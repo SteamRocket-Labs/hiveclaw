@@ -35,6 +35,8 @@ import {
   replayTranscriptEvents,
   sessionBelongsToAgent,
   isTerminalRealtimeChatEvent,
+  isTerminalRunAcceptedForActiveRun,
+  normalizeSessionRunId,
   reconcileSessionTranscriptSafely,
   shouldClearStaleRuntimeState,
   shouldIgnoreObservedActiveRun,
@@ -699,6 +701,25 @@ describe('chatRuntime helpers', () => {
       terminalRunIds: new Set(['run-1']),
       terminalSessionKeys: new Set(['agent-1:session-1']),
     })).toBe(false);
+  });
+
+  it('uses UUID identity rather than wire formatting for terminal run ownership', () => {
+    const liveRunId = 'bb034234ef1a5bdc8356af3d9a0a0c1b';
+    const canonicalRunId = 'bb034234-ef1a-5bdc-8356-af3d9a0a0c1b';
+
+    expect(isTerminalRunAcceptedForActiveRun(liveRunId, canonicalRunId)).toBe(true);
+    expect(isTerminalRunAcceptedForActiveRun(
+      liveRunId,
+      'cc034234-ef1a-5bdc-8356-af3d9a0a0c1b',
+    )).toBe(false);
+    expect(shouldIgnoreObservedActiveRun({
+      key: 'agent-1:session-uuid',
+      run: { runId: liveRunId, status: 'running' },
+      terminalRunIds: new Set([canonicalRunId]),
+      terminalSessionKeys: new Set(),
+    })).toBe(true);
+    expect(normalizeSessionRunId('BB034234EF1A5BDC8356AF3D9A0A0C1B')).toBe(canonicalRunId);
+    expect(normalizeSessionRunId('provider-run-BB034234EF1A')).toBe('provider-run-BB034234EF1A');
   });
 
   it('keeps an optimistic user prompt visible until transcript replay confirms it', () => {

@@ -9,7 +9,9 @@ import {
 } from '../agent-detail/chatDisclosureReducer';
 import {
   agentChatMessageRunId as messageRunId,
+  isSameSessionRunId,
   isStreamingAssistantMessage,
+  normalizeSessionRunId,
   type AgentChatMessage,
   type ChatArtifactPart,
   type ChatRuntimeSummary,
@@ -1827,7 +1829,7 @@ function buildPendingRunCell(
   const startedAt = latestInputIndex >= 0 && !hasAssistantAnswerAfterLatestUser(input.messages)
     ? input.messages[latestInputIndex]?.timestamp
     : undefined;
-  const activeRunId = String(input.activeRunId || '').trim();
+  const activeRunId = normalizeSessionRunId(input.activeRunId);
   return {
     kind: 'active_run',
     id: 'active-run-pending',
@@ -1866,8 +1868,8 @@ function keepLatestProcessRunActive(
   const latestUserIndex = latestUserMessageIndex(input.messages);
   if (latestUserIndex < 0 || hasAssistantAnswerAfterLatestUser(input.messages)) return false;
   if (!cell.sourceMessages.some((entry) => entry.index > latestUserIndex)) return false;
-  const activeRunId = String(input.activeRunId || '').trim();
-  if (activeRunId && cell.runId && cell.runId !== activeRunId) return false;
+  const activeRunId = normalizeSessionRunId(input.activeRunId);
+  if (activeRunId && cell.runId && !isSameSessionRunId(cell.runId, activeRunId)) return false;
 
   // Rebuild the trailing run with live-run authority so genuinely non-terminal
   // steps stay running; without that authority the honest interrupted state
@@ -2053,7 +2055,7 @@ function processCellsShareTurn(
   const currentTurnId = processCellTurnId(current);
   const nextTurnId = processCellTurnId(next);
   if (currentTurnId && nextTurnId) return currentTurnId === nextTurnId;
-  return !current.runId || !next.runId || current.runId === next.runId;
+  return !current.runId || !next.runId || isSameSessionRunId(current.runId, next.runId);
 }
 
 function mergeProcessCells(
@@ -2204,7 +2206,7 @@ function threadTimelineInputSignature(input: BuildThreadTimelineInput): string {
     isWaiting: input.isWaiting,
     isStreaming: input.isStreaming,
     activeRunStatus: input.activeRunStatus ?? null,
-    activeRunId: input.activeRunId ?? null,
+    activeRunId: normalizeSessionRunId(input.activeRunId) || null,
     runtimePhase: input.runtimePhase ?? null,
   });
 }
@@ -2272,9 +2274,9 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
   const latestAnsweredRunId = latestTurnAnswered
     ? messageRunId([...input.messages].reverse().find(isRenderableAssistantAnswer))
     : null;
-  const activeRunId = String(input.activeRunId || '').trim();
+  const activeRunId = normalizeSessionRunId(input.activeRunId);
   const terminalAnswerOwnsActiveRun = Boolean(
-    latestAnsweredRunId && activeRunId && latestAnsweredRunId === activeRunId,
+    latestAnsweredRunId && activeRunId && isSameSessionRunId(latestAnsweredRunId, activeRunId),
   );
   const activeRunStatus = mainTurnActiveRunStatus(input, cells);
   const runtimePhaseValue = String(input.runtimePhase || '').trim();

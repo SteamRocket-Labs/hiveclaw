@@ -116,13 +116,39 @@ export interface AgentChatMessage {
   artifacts?: ChatArtifactPart[];
 }
 
+const COMPACT_UUID_RUN_ID_RE = /^[0-9a-fA-F]{32}$/;
+const CANONICAL_UUID_RUN_ID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/**
+ * RuntimeTask UUIDs cross two truthful wire surfaces: live run payloads use
+ * ``UUID.hex`` while canonical SessionEvent scopes use the hyphenated UUID.
+ * Normalize only those exact mechanical forms; arbitrary provider/runtime
+ * identifiers remain byte-distinct after the existing whitespace trim.
+ */
+export function normalizeSessionRunId(value: string | null | undefined): string {
+  const runId = String(value || '').trim();
+  if (!COMPACT_UUID_RUN_ID_RE.test(runId) && !CANONICAL_UUID_RUN_ID_RE.test(runId)) return runId;
+  const compact = runId.replaceAll('-', '').toLowerCase();
+  return `${compact.slice(0, 8)}-${compact.slice(8, 12)}-${compact.slice(12, 16)}-${compact.slice(16, 20)}-${compact.slice(20)}`;
+}
+
+export function isSameSessionRunId(
+  left: string | null | undefined,
+  right: string | null | undefined,
+): boolean {
+  const normalizedLeft = normalizeSessionRunId(left);
+  const normalizedRight = normalizeSessionRunId(right);
+  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
+}
+
 export function agentChatMessageRunId(message?: AgentChatMessage): string | null {
   const scope = message?.sessionItem?.scope;
   const scopedRunId = scope && 'run_id' in scope ? scope.run_id : null;
   const runId = typeof scopedRunId === 'string' && scopedRunId.trim()
     ? scopedRunId
     : message?.eventRuntimeTaskId || message?.threadItem?.run_id;
-  return typeof runId === 'string' && runId.trim() ? runId.trim() : null;
+  const normalized = typeof runId === 'string' ? normalizeSessionRunId(runId) : '';
+  return normalized || null;
 }
 
 export interface SessionPermissionRequest {
@@ -257,8 +283,8 @@ export function isTerminalRunAcceptedForActiveRun(
   activeRunId: string | null | undefined,
   terminalRunId: string | null | undefined,
 ): boolean {
-  const terminal = String(terminalRunId || '').trim();
-  const active = String(activeRunId || '').trim();
+  const terminal = normalizeSessionRunId(terminalRunId);
+  const active = normalizeSessionRunId(activeRunId);
   return !(terminal && active && terminal !== active);
 }
 
@@ -280,12 +306,13 @@ export function markActiveRunTerminalInRegistry(
   clearActiveRun: () => void,
 ): boolean {
   if (!isTerminalRunAcceptedForActiveRun(activeRunId, terminalRunId)) {
-    if (terminalRunId) terminalRunIds.add(String(terminalRunId));
+    const rejectedRunId = normalizeSessionRunId(terminalRunId);
+    if (rejectedRunId) terminalRunIds.add(rejectedRunId);
     return false;
   }
   terminalSessionKeys.add(key);
-  const runId = terminalRunId || activeRunId;
-  if (runId) terminalRunIds.add(String(runId));
+  const runId = normalizeSessionRunId(terminalRunId || activeRunId);
+  if (runId) terminalRunIds.add(runId);
   clearActiveRun();
   return true;
 }
@@ -600,8 +627,10 @@ export function shouldIgnoreObservedActiveRun(input: {
   terminalSessionKeys: Set<string>;
 }): boolean {
   if (input.terminalSessionKeys.has(input.key)) return true;
-  const runId = input.run?.runId ?? input.run?.run_id;
-  return Boolean(runId && input.terminalRunIds.has(String(runId)));
+  const runId = normalizeSessionRunId(input.run?.runId ?? input.run?.run_id);
+  return Boolean(runId && [...input.terminalRunIds].some((terminalRunId) => (
+    normalizeSessionRunId(terminalRunId) === runId
+  )));
 }
 
 export function shouldClearStaleRuntimeState({
@@ -952,7 +981,7 @@ function toolResultValueFromEnvelope(envelope: Record<string, unknown> | null): 
 const TERMINAL_TRANSCRIPT_EVENT_TYPES = new Set(['assistant_message', 'run_completed', 'done', 'error', 'quota_exceeded']);
 
 export function getTerminalRunIdFromTranscriptEvent(event: ChatTranscriptEventPayload): string | null {
-  const runId = typeof event.run_id === 'string' && event.run_id.trim() ? event.run_id.trim() : null;
+  const runId = typeof event.run_id === 'string' ? normalizeSessionRunId(event.run_id) : '';
   if (!runId) return null;
   return TERMINAL_TRANSCRIPT_EVENT_TYPES.has(transcriptEventType(event)) ? runId : null;
 }

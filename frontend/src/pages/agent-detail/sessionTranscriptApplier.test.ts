@@ -130,7 +130,7 @@ function compatibilityCarrier(
   } as unknown as ChatTranscriptEventPayload;
 }
 
-function canonicalInputEvent(sequence: number, content: string): ChatTranscriptEventPayload {
+function canonicalInputEvent(sequence: number, content: string, messageId?: string): ChatTranscriptEventPayload {
   return {
     schema: 'hive.session_event',
     schema_version: 2,
@@ -139,7 +139,7 @@ function canonicalInputEvent(sequence: number, content: string): ChatTranscriptE
     ordinal: sequence - 1,
     tenant_id: 'tenant-1',
     scope: { level: 'session', session_id: 'session-1', thread_id: 'session-1' },
-    item_id: `input-item-${sequence}`,
+    item_id: messageId || `input-item-${sequence}`,
     item_kind: 'human_input',
     kind: 'human_input.accepted',
     lifecycle: 'accepted',
@@ -400,17 +400,50 @@ describe('session transcript applier real consumption path (Codex REQUEST_CHANGE
     seedCompatibilityTimelineIdentities(harness.refs.compatibilityTimelines[KEY]!, [stored]);
     harness.deps.setChatMessagesAfterQueued('session-1', () => [stored]);
 
-    expect(harness.applyEvent(compatibilityCarrier(1, 'user_message', {
+    expect(harness.applyEvent({
+      ...compatibilityCarrier(1, 'user_message', {
+        content: 'Exact branch retry prompt.',
+        metadata: { role: 'user' },
+      }),
       message_id: 'message-user-1',
-      content: 'Exact branch retry prompt.',
-      metadata: { role: 'user' },
-    }))).toBeTruthy();
+    })).toBeTruthy();
 
     expect(harness.messages().filter((message) => message.role === 'user')).toEqual([
       expect.objectContaining({
         id: 'message-user-1',
         messageId: 'message-user-1',
         transcriptEventId: 'legacy-1',
+        content: 'Exact branch retry prompt.',
+      }),
+    ]);
+  });
+
+  it('upgrades an empty-transcript stored user carrier when its canonical input item arrives', () => {
+    const harness = makeApplierHarness();
+    const stored = {
+      id: 'message-user-1',
+      messageId: 'message-user-1',
+      role: 'user' as const,
+      content: 'Exact branch retry prompt.',
+    };
+    harness.refs.replayStates[KEY] = {
+      ...createEmptyTranscriptReplayState(),
+      messages: [stored],
+    };
+    harness.refs.compatibilityTimelines[KEY] = createCompatibilityMessageTimeline();
+    seedCompatibilityTimelineIdentities(harness.refs.compatibilityTimelines[KEY]!, [stored]);
+    harness.deps.setChatMessagesAfterQueued('session-1', () => [stored]);
+
+    expect(harness.applyEvent(canonicalInputEvent(
+      1,
+      'Exact branch retry prompt.',
+      'message-user-1',
+    ))).toBeTruthy();
+
+    expect(harness.messages().filter((message) => message.role === 'user')).toEqual([
+      expect.objectContaining({
+        id: 'message-user-1',
+        transcriptEventId: 'event-input-1',
         content: 'Exact branch retry prompt.',
       }),
     ]);

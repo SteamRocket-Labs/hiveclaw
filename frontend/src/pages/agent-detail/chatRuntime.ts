@@ -247,8 +247,7 @@ export type ChatTranscriptEventPayload = Partial<ThreadItem> & {
 };
 
 function messageIdentityFromTranscriptEvent(event: ChatTranscriptEventPayload): Pick<AgentChatMessage, 'id' | 'messageId' | 'transcriptEventId'> {
-  const rawMessageId = event.message_id || event.payload?.message_id;
-  const messageId = rawMessageId ? String(rawMessageId) : null;
+  const messageId = event.message_id ? String(event.message_id) : null;
   const transcriptEventId = event.id ? String(event.id) : null;
   return {
     id: messageId || transcriptEventId || undefined,

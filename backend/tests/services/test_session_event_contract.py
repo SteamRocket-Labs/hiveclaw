@@ -597,3 +597,33 @@ def test_legacy_session_scope_preserves_run_evidence_without_forging_v2_run_auth
     assert event["scope"]["level"] == "session"
     assert "run_id" not in event
     assert event["payload"]["legacy_run_id"] == str(source.run_id)
+
+
+def test_legacy_message_identity_survives_canonical_and_compatibility_projection() -> None:
+    from app.services.session_event_contract import serialize_session_event
+
+    message_id = uuid.uuid4()
+    canonical = serialize_session_event(
+        _legacy_row(
+            event_type="user_message",
+            item_type="user_message",
+            item_status="succeeded",
+            actor_type="user",
+            message_id=message_id,
+            metadata_json={},
+        )
+    )
+    compatibility = serialize_session_event(
+        _legacy_row(
+            event_type="vendor_magic",
+            item_type="vendor_magic",
+            item_status="mystery",
+            message_id=message_id,
+            run_id=None,
+            turn_id=None,
+            metadata_json={},
+        )
+    )
+
+    assert canonical["item_id"] == str(message_id)
+    assert compatibility["message_id"] == str(message_id)

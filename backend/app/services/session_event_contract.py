@@ -1406,6 +1406,9 @@ def _compatibility_event(
         },
         "occurred_at": _iso(_value(row, "created_at")),
     }
+    message_id = _text(_value(row, "message_id"))
+    if message_id:
+        event["message_id"] = message_id
     for target, source in (
         ("event_id", "id"),
         ("sequence", "sequence"),
@@ -1569,7 +1572,11 @@ def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str
                 else "insufficient_legacy_scope"
             ),
         )
-    item_id = _text(_value(row, "item_id")) or event_id
+    item_id = (
+        _text(_value(row, "item_id"))
+        or (_text(_value(row, "message_id")) if item_kind == "human_input" else None)
+        or event_id
+    )
     payload: dict[str, Any] = {
         "content": str(_value(row, "content", "") or ""),
         "parts": list(_value(row, "parts_json", []) or []),

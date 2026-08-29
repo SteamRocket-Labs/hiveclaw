@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import {
   IconArrowRight,
   IconChecklist,
@@ -10,6 +11,7 @@ import {
 } from '@tabler/icons-react';
 import { agentApi } from '../api/domains/agents';
 import { chatApi } from '../api/domains/chat';
+import { ApiError } from '../api/core';
 
 const capabilityRails = [
   { key: 'hrOnly', fallback: 'Employee creation is guided by the HR Agent as the single creation role.' },
@@ -17,6 +19,19 @@ const capabilityRails = [
   { key: 'toolGovernance', fallback: 'Tools, MCP, workflow, and sub-agent access stay permission-governed.' },
   { key: 'auditTrace', fallback: 'Every durable action remains traceable to the employee, user, and company.' },
 ];
+
+const hrOpenError = (caught: unknown, t: TFunction) => {
+  if (caught instanceof ApiError && [502, 503, 504].includes(caught.status)) {
+    return t(
+      'agentCreate.hrUnavailable',
+      'HR Agent is temporarily unavailable. Nothing has been submitted. Please try again in a moment.',
+    );
+  }
+  return t(
+    'agentCreate.hrError',
+    'Could not open HR Agent. Nothing has been submitted. Please try again.',
+  );
+};
 
 export default function AgentCreate() {
   const { t } = useTranslation();
@@ -32,7 +47,7 @@ export default function AgentCreate() {
       const session = await chatApi.createSession(hrAgent.id);
       navigate(`/agents/${hrAgent.id}?session_id=${encodeURIComponent(String(session.id))}#chat`);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t('agentCreate.hrError', 'Failed to open HR Agent.'));
+      setError(hrOpenError(caught, t));
     } finally {
       setLoading(false);
     }
@@ -66,7 +81,7 @@ export default function AgentCreate() {
                 'There is only one exposed creation path: enter the HR Agent session, describe the role, confirm governance, and let the HR Agent create the employee through the governed backend.',
               )}
             </p>
-            {error && <div className="workbench-error">{error}</div>}
+            {error && <div className="workbench-error" role="alert" aria-live="polite">{error}</div>}
           </div>
         </div>
         <button className="btn btn-primary" onClick={openHrAgent} disabled={loading}>

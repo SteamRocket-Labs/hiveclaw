@@ -18,7 +18,6 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 import AuthenticatedImage from '../../components/AuthenticatedImage';
-import StreamingMarkdown from '../../components/StreamingMarkdown';
 import ThinkingDisclosure from './ThinkingDisclosure';
 import type { AgentPermissions } from '../../api/domains/agents';
 import AskUserQuestionCard from './AskUserQuestionCard';
@@ -127,6 +126,10 @@ import {
 } from './SessionRuntimePanel';
 import { InlinePlanCard, StructuredToolResultBody } from './StructuredToolResult';
 import { isDedicatedToolCardMessage } from './chatDisclosureReducer';
+import {
+  AssistantMessageBody,
+  shouldCollapseAssistantSupplement,
+} from './CanonicalCardAssistantSupplement';
 
 type AttachedFile = {
   name: string;
@@ -931,6 +934,7 @@ interface ChatMessageItemProps {
   onRewindMessage?: (message: AgentChatMessage) => void | Promise<unknown>;
   t: Translate;
   operatorView?: boolean;
+  collapseAssistantContent?: boolean;
 }
 
 const ChatMessageItem = React.memo(function ChatMessageItem({
@@ -945,6 +949,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
   onRewindMessage,
   t,
   operatorView = false,
+  collapseAssistantContent = false,
 }: ChatMessageItemProps) {
   const extension = msg.fileName?.split('.').pop()?.toLowerCase() ?? '';
   const fileIcon =
@@ -1041,7 +1046,12 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
           <ThinkingDisclosure thinking={msg.thinking} streaming={Boolean((msg as any)._streaming)} />
         )}
         {msg.role === 'assistant' ? (
-          <StreamingMarkdown content={msg.content} streaming={Boolean((msg as any)._streaming)} />
+          <AssistantMessageBody
+            content={msg.content}
+            streaming={Boolean((msg as any)._streaming)}
+            supplemental={collapseAssistantContent}
+            supplementalLabel={t('agent.chat.canonicalCardSupplement', 'Agent supplemental notes')}
+          />
         ) : (
           <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
         )}
@@ -1495,6 +1505,7 @@ function AgentChatSection({
           onRewindMessage={rewindUnavailableReason ? undefined : rewindFromMessage}
           t={t}
           operatorView={Boolean(activeSession?.operator_view)}
+          collapseAssistantContent={shouldCollapseAssistantSupplement(visibleTimeline, index)}
 	      />
 	    );
 	  };

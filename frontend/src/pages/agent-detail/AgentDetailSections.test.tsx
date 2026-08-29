@@ -21,6 +21,10 @@ import AgentChatSection, {
   sessionPermissionModeOptions,
 } from './AgentChatSection';
 import {
+  AssistantMessageBody,
+  shouldCollapseAssistantSupplement,
+} from './CanonicalCardAssistantSupplement';
+import {
   BranchLineagePanel,
   branchModeLabel,
   buildBranchLineageRows,
@@ -173,6 +177,71 @@ describe('buildMessageFeedbackInput', () => {
       label: 'misleading',
       message_id: '11111111-1111-4111-8111-111111111111',
     });
+  });
+});
+
+describe('canonical card assistant supplements', () => {
+  const messages = [
+    { role: 'user' as const, content: 'Preview this employee.' },
+    {
+      role: 'tool_call' as const,
+      content: '',
+      toolName: 'preview_agent_blueprint',
+      toolMeta: {
+        kind: 'hr_preview' as const,
+        blueprintId: 'draft-1',
+        blueprintVersion: 1,
+        blueprintHash: 'sha256:canonical',
+        status: 'awaiting_confirmation',
+        name: 'Release coordinator',
+        mission: 'Prepare release checks.',
+        firstMission: 'Prepare three checks.',
+        primaryUsers: ['Owner'],
+        coreOutputs: ['Checklist'],
+        boundaries: 'Read-only.',
+        permissionScope: 'company',
+        sourceAttributions: [],
+        riskClass: 'standard',
+        missingGates: [],
+        knowledgeDebt: [],
+        confirmationRequirements: [],
+        readyNow: [],
+        willInstall: [],
+        deferredCapabilities: [],
+        warnings: [],
+        manualSteps: [],
+      },
+    },
+    {
+      role: 'assistant' as const,
+      content: 'blueprint_id: draft-1; permission_scope=company',
+    },
+  ];
+
+  it('collapses only assistant prose in the same turn as a canonical HR preview', () => {
+    expect(shouldCollapseAssistantSupplement(messages, 2)).toBe(true);
+    expect(shouldCollapseAssistantSupplement([
+      ...messages,
+      { role: 'user', content: 'What does this employee do?' },
+      { role: 'assistant', content: 'It prepares release checks.' },
+    ], 4)).toBe(false);
+  });
+
+  it('keeps the exact model-authored bytes in a closed supplemental disclosure', () => {
+    const content = 'blueprint_id: draft-1; permission_scope=company';
+    const markup = renderToStaticMarkup(
+      <AssistantMessageBody
+        content={content}
+        streaming={false}
+        supplemental
+        supplementalLabel="Agent supplemental notes"
+      />,
+    );
+
+    expect(markup).toContain('data-testid="assistant-canonical-card-supplement"');
+    expect(markup).toContain('<summary>Agent supplemental notes</summary>');
+    expect(markup).not.toContain('<details open=""');
+    expect(markup).toContain('blueprint_id: draft-1; permission_scope=company');
   });
 });
 
@@ -5267,7 +5336,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('Manage access');
     expect(markup).not.toContain('acceptEdits');
     expect(markup).toContain('GPT-5.4');
-    expect(markup).toContain('25% used');
+    expect(markup).not.toContain('25% used');
     expect(markup).toContain('HR Agent');
     expect(markup).not.toContain('__system_hr__');
     expect(markup).not.toContain('primary_model');

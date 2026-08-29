@@ -2005,6 +2005,7 @@
       "disconnected": "Reconnecting...",
       "startConversation": "Start a conversation with {{name}}",
       "sessionLoadFailed": "Conversation failed to load. Please retry this session or refresh the page.",
+      "canonicalCardSupplement": "Agent supplemental notes",
       "fileSupport": "You can attach PDF, Word, Excel, and text files",
       "attachment": "Attachment",
       "attachFile": "Attach file",

@@ -251,6 +251,7 @@ _NON_TOOL_IDENTIFIERS: set[str] = {
     "api_key",
     "smithery_api_key",
     # Blueprint schema keys (HR CREATE_EMPLOYEE skill)
+    "blueprint_id",
     "role_description",
     "primary_users",
     "core_outputs",
@@ -265,6 +266,11 @@ _NON_TOOL_IDENTIFIERS: set[str] = {
     "personality",
     "boundaries",
     "first_tasks",
+    "source_type",
+    "risk_level",
+    # Blueprint capability display groups (not callable tool names)
+    "ready_now",
+    "validate_later",
     # Body section tokens that might match regex
     "role",
     "when_to_use",

@@ -144,6 +144,31 @@ describe('chatRuntime helpers', () => {
     });
   });
 
+  it('renders canonical display_content for a user input while preserving machine content in the event', () => {
+    const state = applyTranscriptEvent(createEmptyTranscriptReplayState(), {
+      id: 'evt-hr-handoff-user',
+      message_id: 'msg-hr-handoff-user',
+      sequence: 12,
+      type: 'user_message',
+      event_type: 'user_message',
+      actor_type: 'user',
+      role: 'user',
+      content: '{"schema":"hive.hr_creation_handoff.v1","creation_brief":"private model wrapper"}',
+      metadata: {
+        display_content: 'Create the weekend feedback employee. Do not deploy.',
+      },
+      created_at: '2026-08-30T07:12:00Z',
+    });
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({
+      role: 'user',
+      content: 'Create the weekend feedback employee. Do not deploy.',
+      messageId: 'msg-hr-handoff-user',
+    });
+    expect(state.messages[0].content).not.toContain('hive.hr_creation_handoff.v1');
+  });
+
   it('restores reasoning from persisted assistant parts during transcript replay', () => {
     const state = applyTranscriptEvent(createEmptyTranscriptReplayState(), {
       id: 'evt-reasoning-answer',

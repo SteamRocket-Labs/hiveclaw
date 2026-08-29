@@ -2461,9 +2461,11 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                 await _inject_loop_guard_warning(result_loop_decision)
                             else:
                                 _loop_guard_terminal_decision = result_loop_decision
-                        _raw_result = str(result)
+                        _raw_result_evidence = (_side_effects or {}).get("raw_tool_result")
+                        _raw_result = _raw_result_evidence if isinstance(_raw_result_evidence, str) else str(result)
+                        _model_result = str(result)
                         _replacement_reason = "result size threshold"
-                        _content = _maybe_evict_tool_result(tool_name, tc["id"], _raw_result, request.eviction_dir)
+                        _content = _maybe_evict_tool_result(tool_name, tc["id"], _model_result, request.eviction_dir)
                         if _round_tool_chars + len(_content) > _TOOL_RESULTS_AGGREGATE_BUDGET:
                             _replacement_reason = "round aggregate budget"
                             logger.info(
@@ -2475,7 +2477,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             _content = _maybe_evict_tool_result(
                                 tool_name,
                                 tc["id"],
-                                str(result),
+                                _model_result,
                                 request.eviction_dir,
                                 force=True,
                                 reason="round aggregate budget",
@@ -2485,7 +2487,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             "name": tool_name,
                             "args": effective_args,
                             "status": "done",
-                            "result": result,
+                            "result": _raw_result,
                             # D-04: the original streamed tool_call_id the model
                             # saw, so the web resume path can reuse it instead of
                             # synthesizing call_{msg.id}.
@@ -2769,9 +2771,11 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                         else full_toolset
                                     )
 
-                        _raw_result = str(result)
+                        _raw_result_evidence = (_side_effects or {}).get("raw_tool_result")
+                        _raw_result = _raw_result_evidence if isinstance(_raw_result_evidence, str) else str(result)
+                        _model_result = str(result)
                         _replacement_reason = "result size threshold"
-                        _content = _maybe_evict_tool_result(tool_name, tc["id"], _raw_result, request.eviction_dir)
+                        _content = _maybe_evict_tool_result(tool_name, tc["id"], _model_result, request.eviction_dir)
                         if _round_tool_chars + len(_content) > _TOOL_RESULTS_AGGREGATE_BUDGET:
                             _replacement_reason = "round aggregate budget"
                             logger.info(
@@ -2783,7 +2787,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             _content = _maybe_evict_tool_result(
                                 tool_name,
                                 tc["id"],
-                                str(result),
+                                _model_result,
                                 request.eviction_dir,
                                 force=True,
                                 reason="round aggregate budget",
@@ -2793,7 +2797,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             "name": tool_name,
                             "args": args,
                             "status": "done",
-                            "result": result,
+                            "result": _raw_result,
                             # D-04: the original streamed tool_call_id the model
                             # saw, so the web resume path can reuse it instead of
                             # synthesizing call_{msg.id}.

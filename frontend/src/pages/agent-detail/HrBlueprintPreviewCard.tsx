@@ -410,7 +410,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
                     ? t('agent.chat.toolResults.confirmAndCreate')
                     : ['confirmed', 'creating'].includes(status)
                       ? t('agent.chat.toolResults.provisioning')
-                      : t('agent.chat.toolResults.provisioned')}
+                      : statusLabel}
         </button>
         <button type="button" className="btn btn-secondary" disabled={!canReviseOrReject || busy || !onSendMessage || revisionOpen} onClick={() => setRevisionOpen(true)}>
           {t('agent.chat.toolResults.requestChanges', 'Request changes')}

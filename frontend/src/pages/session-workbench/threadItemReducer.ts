@@ -374,6 +374,9 @@ function approvalRequest(item: Extract<ThreadItem, { item_type: 'approval_reques
 
 export function threadItemToAgentChatMessage(item: ThreadItem): AgentChatMessage {
   const compatibility = { ...asRecord(item.metadata), ...eventPart(asRecords(item.parts)) };
+  const userDisplayContent = typeof compatibility.display_content === 'string' && compatibility.display_content
+    ? compatibility.display_content
+    : item.content;
   const toolGroups = compatibility.tool_groups ?? compatibility.packs;
   const activatedToolGroupCount = Array.isArray(toolGroups)
     ? toolGroups.filter((group) => typeof group === 'string' || text(asRecord(group).name)).length || undefined
@@ -430,6 +433,7 @@ export function threadItemToAgentChatMessage(item: ThreadItem): AgentChatMessage
       return {
         ...base,
         role: 'user',
+        content: userDisplayContent,
         sender_name: item.item_data.sender_name || undefined,
         fileName: item.item_data.file_name || undefined,
       };

@@ -66,6 +66,31 @@ describe('HrBlueprintPreviewCard', () => {
     expect(hrCreationActionForStatus('completed')).toBe('none');
   });
 
+  it('labels a rejected terminal draft as rejected instead of created', () => {
+    const client = new QueryClient();
+    client.setQueryData(
+      ['hr-creation-draft', 'hr-agent', preview.blueprintId],
+      {
+        blueprint_id: preview.blueprintId,
+        blueprint_version: preview.blueprintVersion,
+        blueprint_hash: preview.blueprintHash,
+        draft_status: 'rejected',
+        blueprint: {},
+      },
+    );
+
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={client}>
+        <HrBlueprintPreviewCard agentId="hr-agent" preview={preview} />
+      </QueryClientProvider>,
+    );
+
+    const primaryButton = markup.match(/<footer><button[^>]*>.*?<\/button>/)?.[0] || '';
+    expect(primaryButton).toContain('Rejected');
+    expect(primaryButton).not.toContain('agent.chat.toolResults.provisioned');
+    expect(primaryButton).toContain('disabled');
+  });
+
   it('shows source authority in user language without exposing machine codes or evidence ids', () => {
     const markup = renderToStaticMarkup(
       <QueryClientProvider client={new QueryClient()}>

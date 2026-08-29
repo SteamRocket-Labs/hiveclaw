@@ -1005,7 +1005,12 @@ async def _execute_tool_call_with_cancel(
 def _normalize_tool_result_for_llm(result: Any) -> str:
     if result is None:
         return _EMPTY_TOOL_RESULT_MESSAGE
-    result_str = str(result)
+    model_visible = (
+        result.model_visible_text
+        if isinstance(result, ToolContentEnvelope) and result.model_visible_text is not None
+        else result
+    )
+    result_str = str(model_visible)
     if not result_str.strip():
         return _EMPTY_TOOL_RESULT_MESSAGE
     return result_str
@@ -1048,6 +1053,11 @@ def _extract_tool_side_effects(raw_result: Any) -> dict[str, Any] | None:
                 "retry_exhausted": True,
                 "progress_token": progress_token,
             }
+    if raw_result.model_visible_text is not None and raw_result.model_visible_text != raw_result.text:
+        # Internal transport fact: the next model round receives the explicit
+        # projection while the durable tool callback keeps the complete receipt.
+        # It never becomes model-authored content or a semantic final rewrite.
+        side_effects["raw_tool_result"] = raw_result.text
     return side_effects or None
 
 

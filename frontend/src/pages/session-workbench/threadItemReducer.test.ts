@@ -190,6 +190,26 @@ describe('typed ThreadItem reducer', () => {
     });
   });
 
+  it('uses display_content for canonical user items without mutating the model input evidence', () => {
+    const item = canonical({
+      item_type: 'user_message',
+      event_type: 'user_message',
+      content: '{"schema":"hive.hr_creation_handoff.v1","creation_brief":"private model wrapper"}',
+      metadata: {
+        display_content: 'Create the weekend feedback employee. Do not deploy.',
+      },
+      item_data: { sender_name: 'Source Agent', file_name: null },
+    } as Partial<ThreadItem>);
+
+    const message = threadItemToAgentChatMessage(item);
+
+    expect(item.content).toContain('hive.hr_creation_handoff.v1');
+    expect(message).toMatchObject({
+      role: 'user',
+      content: 'Create the weekend feedback employee. Do not deploy.',
+    });
+  });
+
   it('projects Plan, Workflow, Sub-agent, cancellation, and retry evidence without shape inference', () => {
     const projections = [
       threadItemToAgentChatMessage(canonical({

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from app.runtime.prompts.delegation import DELEGATION_BRIEF_CONTRACT
 from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
+from app.tools.result_envelope import ToolContentEnvelope
 from app.tools.runtime import ToolExecutionRequest
 
 
@@ -361,7 +362,7 @@ async def delegate_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
         adapter="request",
     )
 )
-async def start_hr_agent_handoff(request: ToolExecutionRequest) -> str:
+async def start_hr_agent_handoff(request: ToolExecutionRequest) -> str | ToolContentEnvelope:
     from app.database import tenant_scoped_session
     from app.services.hr_creation_handoff_service import HrCreationHandoffError, start_hr_creation_handoff
     from app.tools.result_envelope import render_tool_error
@@ -402,7 +403,21 @@ async def start_hr_agent_handoff(request: ToolExecutionRequest) -> str:
             retryable=exc.retryable,
             actionable_hint="Open HR Agent directly if this Session can no longer continue the handoff.",
         )
-    return json.dumps(result, ensure_ascii=False, sort_keys=True)
+    return ToolContentEnvelope(
+        text=json.dumps(result, ensure_ascii=False, sort_keys=True),
+        model_visible_text=json.dumps(
+            {
+                "ok": True,
+                "status": "hr_handoff_ready",
+                "message": (
+                    "The user-facing HR review action is available in the handoff card. "
+                    "Briefly direct the user to that action without restating internal receipt fields."
+                ),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+    )
 
 
 # -- check_async_task --------------------------------------------------------

@@ -22,13 +22,16 @@ class ToolResultBlock:
 class ToolContentEnvelope:
     """A tool result carrying typed content blocks plus a plain-text fallback.
 
-    ``text`` is the always-present rendering used by every str-assuming path
-    (eviction, logging, loop detection, and providers without multimodal
-    tool-result support). ``blocks`` carry typed content mapped per-provider at
-    the llm_client adapter layer — L3 model equality means best-effort per
-    provider (Anthropic supports image/document tool_result; OpenAI/Gemini fall
-    back to ``text``). ``__str__`` returns ``text`` so existing string-typed
-    code paths keep working untouched.
+    ``text`` is the always-present evidence rendering used by str-assuming audit,
+    UI, and compatibility paths. ``model_visible_text`` may provide a truthful,
+    bounded provider projection when the complete receipt contains navigation or
+    idempotency fields that the model does not need; the kernel preserves ``text``
+    in the durable tool event and sends only that explicit projection to the next
+    model round. ``blocks`` carry typed content mapped per-provider at the
+    llm_client adapter layer — L3 model equality means best-effort per provider
+    (Anthropic supports image/document tool_result; OpenAI/Gemini fall back to
+    the projected text). ``__str__`` still returns the complete ``text`` so
+    existing audit and compatibility paths keep working untouched.
 
     DEFERRED CONTRACT — ``new_messages`` and ``terminal_signal`` are a tested
     forward extension point with NO production producer yet. The kernel
@@ -46,6 +49,7 @@ class ToolContentEnvelope:
     """
 
     text: str
+    model_visible_text: str | None = None
     blocks: tuple[ToolResultBlock, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
     # Deferred side-effect channel (see class docstring): consumed by the kernel,

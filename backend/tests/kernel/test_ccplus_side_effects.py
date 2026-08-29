@@ -374,6 +374,63 @@ async def test_done_payload_carries_original_streamed_tool_call_id() -> None:
     assert captured_done[0]["tool_call_id"] == original_id
 
 
+@pytest.mark.asyncio
+async def test_tool_envelope_preserves_full_receipt_but_projects_bounded_model_result() -> None:
+    """A governed effect may need a full UI/audit receipt without exposing its
+    navigation identifiers to the next model round.
+
+    The durable callback receives the byte-exact receipt while the provider sees
+    only the explicitly supplied truthful projection.  No final-answer scanner or
+    platform-authored replacement is involved.
+    """
+
+    raw_receipt = (
+        '{"ok":true,"hr_agent_id":"bef8b286-b923-4e29-84c9-022f995ae6b3",'
+        '"hr_session_id":"2eb843de-6f8c-52cf-aeda-a17cd08f26da",'
+        '"creation_brief_sha256":"724d3ce32853c2dd8ef7e4d396cb6513"}'
+    )
+    model_projection = (
+        '{"ok":true,"status":"hr_handoff_ready",'
+        '"message":"The user-facing HR review action is available in the handoff card."}'
+    )
+    captured_done: list[dict] = []
+    fake_client = _FakeClient(
+        [
+            _tool_call_response("read_file", "call_governed_receipt"),
+            _final_response("Use the HR review action shown above."),
+        ]
+    )
+
+    def execute_tool(tool_name, args, request, emit_event):
+        return ToolContentEnvelope(text=raw_receipt, model_visible_text=model_projection)
+
+    async def on_tool_call(payload: dict) -> None:
+        if payload.get("status") == "done":
+            captured_done.append(payload)
+
+    kernel = AgentKernel(_base_deps(fake_client=fake_client, execute_tool=execute_tool))
+    await kernel.handle(
+        InvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None),
+            messages=[{"role": "user", "content": "Start the governed handoff"}],
+            agent_name="Engineer",
+            role_description="Investigates repositories",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            on_tool_call=on_tool_call,
+        )
+    )
+
+    assert len(captured_done) == 1
+    assert str(captured_done[0]["result"]) == raw_receipt
+    assert captured_done[0]["model_seen_result"] == model_projection
+    assert captured_done[0]["content_replacement"]["replacement_applied"] is True
+    provider_tool_messages = [message for message in fake_client.calls[1]["messages"] if message.role == "tool"]
+    assert [message.content for message in provider_tool_messages] == [model_projection]
+    assert "hr_agent_id" not in str(provider_tool_messages[0].content)
+    assert "hr_session_id" not in str(provider_tool_messages[0].content)
+
+
 def test_side_effect_channel_has_no_production_producer() -> None:
     """B-3: the ``new_messages`` / ``terminal_signal`` side-effect channel is an
     explicitly-tracked DEFERRED CONTRACT — the kernel consumes it (the tests

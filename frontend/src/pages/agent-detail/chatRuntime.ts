@@ -1286,7 +1286,10 @@ export function applyTranscriptEvent(
 
   if (eventType === 'user_message' || event.role === 'user') {
     const identity = messageIdentityFromTranscriptEvent(event);
-    const previousMessages = identity.messageId && content
+    const displayContent = typeof event.metadata?.display_content === 'string' && event.metadata.display_content
+      ? event.metadata.display_content
+      : content;
+    const previousMessages = identity.messageId && displayContent
       ? state.messages.filter((message) => !userMessageHasIdentity(message, identity.messageId!))
       : state.messages;
     return {
@@ -1294,7 +1297,7 @@ export function applyTranscriptEvent(
         ...previousMessages,
         {
           role: 'user',
-          content,
+          content: displayContent,
           timestamp,
           threadItem: threadItem || undefined,
           ...identity,

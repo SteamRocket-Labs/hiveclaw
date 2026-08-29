@@ -50,7 +50,7 @@ def test_preview_agent_blueprint_schema_exposes_role_description_prompt_guard():
     assert params["properties"]["archetype"]["enum"]
     assert params["properties"]["risk_class"]["enum"] == ["standard", "high"]
     source_schema = params["properties"]["source_attributions"]["items"]["properties"]
-    assert "supported_by_company_kb" not in source_schema["source_type"]["enum"]
+    assert "supported_by_company_kb" in source_schema["source_type"]["enum"]
 
 
 def test_hr_role_description_prompt_guard_does_not_silently_truncate():
@@ -230,10 +230,8 @@ def test_build_blueprint_preview_payload_summarizes_ready_install_and_manual_ste
     assert payload["summary"]["first_mission"] == "先完成行业扫描"
     assert payload["blueprint_hash"]
     assert payload["blueprint"]["source_attributions"][0]["source_type"] == "unknown_or_needs_company_source"
-    assert (
-        payload["source_attribution_policy"]["company_knowledge_lane"] == "known_missing_not_available_for_attribution"
-    )
-    assert any("Company KB is not implemented" in warning for warning in payload["warnings"])
+    assert payload["source_attribution_policy"]["company_knowledge_lane"] == "governed_tool_only_fresh_cite"
+    assert any("fresh accessible company evidence" in warning for warning in payload["warnings"])
     assert payload["source_attribution_policy"]["history_suggestion_lane"] == "advisory"
     assert any(item["source_type"] == "unknown_or_needs_company_source" for item in payload["knowledge_debt"])
     assert "unknown_or_needs_company_source" in payload["confirmation_requirements"]["source_types_to_present"]
@@ -244,6 +242,78 @@ def test_build_blueprint_preview_payload_summarizes_ready_install_and_manual_ste
     assert payload["creation_flow"]["gates"]["activation"]["status"] == "complete"
     assert payload["creation_flow"]["gates"]["capabilities"]["status"] == "complete"
     assert payload["creation_flow"]["gates"]["confirmation"]["status"] == "pending"
+
+
+def test_build_blueprint_preview_payload_preserves_fresh_authorized_company_kb_attribution() -> None:
+    from app.tools.handlers.hr import _build_blueprint_preview_payload
+
+    evidence_ref = f"company-evidence://{uuid4()}"
+    payload = _build_blueprint_preview_payload(
+        {
+            "name": "研究助理",
+            "role_description": "读取获授权公司资料并生成带来源的研究摘要。",
+            "primary_users": ["研究团队"],
+            "core_outputs": ["带来源的研究摘要"],
+            "boundaries": "不得发布或修改公司权限",
+            "focus_content": "完成首份公司资料摘要",
+            "source_attributions": [
+                {
+                    "field": "boundaries",
+                    "value_summary": "不得发布或修改公司权限",
+                    "source_type": "supported_by_company_kb",
+                    "source_refs": [evidence_ref],
+                }
+            ],
+        },
+        validated_company_source_refs={evidence_ref},
+    )
+
+    assert payload["blueprint"]["source_attributions"] == [
+        {
+            "field": "boundaries",
+            "source_type": "supported_by_company_kb",
+            "value_summary": "不得发布或修改公司权限",
+            "source_refs": [evidence_ref],
+        }
+    ]
+    assert payload["knowledge_debt"] == []
+    assert payload["confirmation_requirements"]["company_kb_attribution_available"] is True
+    assert not any("fresh accessible company evidence" in warning for warning in payload["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_company_kb_blueprint_sources_require_a_fresh_authorized_cite_decision() -> None:
+    from app.tools.handlers.hr import _verify_company_kb_source_refs, preview_agent_blueprint
+
+    evidence_ref = f"company-evidence://{uuid4()}"
+
+    class _Gateway:
+        async def explain_source(self, _session, *, principal, request):
+            assert principal == "principal"
+            assert str(request.evidence_id) == evidence_ref.removeprefix("company-evidence://")
+            return SimpleNamespace(
+                status="ok",
+                payload={"source_ref": evidence_ref, "coverage": {"complete": True}},
+            )
+
+    verified = await _verify_company_kb_source_refs(
+        session=object(),
+        principal="principal",
+        source_attributions=[
+            {
+                "field": "boundaries",
+                "source_type": "supported_by_company_kb",
+                "source_refs": [evidence_ref, "kb://legacy-not-authoritative"],
+            }
+        ],
+        trace_id="hr-preview:test",
+        gateway=_Gateway(),
+    )
+
+    assert verified == {evidence_ref}
+    source = inspect.getsource(preview_agent_blueprint)
+    assert "_verify_company_kb_source_refs" in source
+    assert "validated_company_source_refs=validated_company_source_refs" in source
 
 
 def test_blueprint_preview_blocks_names_that_create_would_reject():

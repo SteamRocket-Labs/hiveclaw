@@ -44,6 +44,7 @@ describe('HrBlueprintPreviewCard', () => {
     expect(markup).toContain('Research Bot');
     expect(markup).toContain('Investment team');
     expect(markup).toContain('Landscape brief');
+    expect(markup).toContain('Prepare a landscape brief.');
     expect(markup).toContain('Confirm &amp; create');
     expect(markup).toContain('Request changes');
     expect(markup).toContain('Reject');
@@ -58,6 +59,44 @@ describe('HrBlueprintPreviewCard', () => {
     expect(hrCreationActionForStatus('failed')).toBe('retry');
     expect(hrCreationActionForStatus('provisioning')).toBe('retry');
     expect(hrCreationActionForStatus('completed')).toBe('none');
+  });
+
+  it('shows source authority in user language without exposing machine codes or evidence ids', () => {
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <HrBlueprintPreviewCard
+          agentId="hr-agent"
+          preview={{
+            ...preview,
+            sourceAttributions: [
+              {
+                field: 'boundaries',
+                value_summary: 'Never publish without approval.',
+                source_type: 'confirmed_by_user',
+                source_refs: ['explicit:user-confirmed'],
+              },
+              {
+                field: 'role_description',
+                value_summary: 'Use authorized company documents and cite every claim.',
+                source_type: 'supported_by_company_kb',
+                source_refs: ['company-evidence://dfbb7f40-56eb-4dcb-bb46-f58c218f1429'],
+              },
+            ],
+          }}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(markup).toContain('Sources');
+    expect(markup).toContain('User confirmed');
+    expect(markup).toContain('Company knowledge');
+    expect(markup).toContain('Never publish without approval.');
+    expect(markup).toContain('Use authorized company documents and cite every claim.');
+    expect(markup).not.toContain('confirmed_by_user');
+    expect(markup).not.toContain('supported_by_company_kb');
+    expect(markup).not.toContain('company-evidence://');
+    expect(markup).not.toContain('awaiting_confirmation');
+    expect(markup).not.toContain('permission_scope');
   });
 
   it('shows persisted provisioning evidence and exposes a recovery action', () => {
@@ -97,10 +136,53 @@ describe('HrBlueprintPreviewCard', () => {
     );
 
     expect(markup).toContain('Provisioning progress');
-    expect(markup).toContain('workspace');
-    expect(markup).toContain('completed');
+    expect(markup).toContain('Workspace');
+    expect(markup).toContain('Completed');
+    expect(markup).toContain('MCP connection');
     expect(markup).toContain('Provider timed out');
     expect(markup).toContain('Retry provisioning');
     expect(markup).not.toContain('claim_token');
+    expect(markup).not.toContain('mcp_server');
+    expect(markup).not.toContain('data-status');
+  });
+
+  it('renders the fetched canonical draft instead of a stale streamed preview', () => {
+    const client = new QueryClient();
+    client.setQueryData(
+      ['hr-creation-draft', 'hr-agent', preview.blueprintId],
+      {
+        status: 'preview',
+        blueprint_id: preview.blueprintId,
+        blueprint_version: 3,
+        blueprint_hash: 'sha256:new-canonical',
+        draft_status: 'awaiting_confirmation',
+        risk_class: 'standard',
+        missing_gates: [],
+        blueprint: {
+          name: 'Canonical Research Bot',
+          primary_users: ['Canonical user'],
+          core_outputs: ['Canonical brief'],
+          boundaries: 'Canonical boundary.',
+          permission_scope: 'self',
+          source_attributions: [],
+        },
+        summary: {
+          mission: 'Canonical mission.',
+          first_mission: 'Canonical first task.',
+        },
+      },
+    );
+
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={client}>
+        <HrBlueprintPreviewCard agentId="hr-agent" preview={preview} />
+      </QueryClientProvider>,
+    );
+
+    expect(markup).toContain('Canonical Research Bot');
+    expect(markup).toContain('Canonical mission.');
+    expect(markup).toContain('Canonical first task.');
+    expect(markup).toContain('Canonical user');
+    expect(markup).not.toContain('Research competitors.');
   });
 });

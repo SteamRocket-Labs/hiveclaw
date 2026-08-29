@@ -476,7 +476,7 @@ def test_hr_templates_prefer_identity_first_and_install_later() -> None:
     assert not hr_focus_path.exists()
 
 
-def test_hr_templates_mark_company_kb_missing_and_use_canonical_creation_state() -> None:
+def test_hr_templates_preserve_current_session_facts_and_governed_knowledge_lanes() -> None:
     project_root = Path(__file__).resolve().parents[3]
     hr_create_employee = (
         project_root / "backend" / "hr_agent_template" / "skills" / "create-employee" / "SKILL.md"
@@ -484,11 +484,21 @@ def test_hr_templates_mark_company_kb_missing_and_use_canonical_creation_state()
     hr_soul = (project_root / "backend" / "hr_agent_template" / "soul.md").read_text(encoding="utf-8")
     hr_guide_path = project_root / "backend" / "hr_agent_template" / "skills" / "hr-guide"
     combined = "\n".join([hr_create_employee, hr_soul])
+    normalized = " ".join(combined.split())
 
     assert not hr_guide_path.exists()
-    assert "Company KB is not implemented" in combined
+    assert "Company KB is not implemented" not in combined
+    assert "Current-session facts are canonical for this draft" in normalized
+    assert "Never re-ask for a field already explicit in the current session" in normalized
+    assert (
+        "Do not search History, Personal KB, Company KB, workspace files, or the web to reinterpret a field "
+        "already explicit in the current session"
+    ) in normalized
+    assert "must not delay blueprint preview" in normalized
     assert "History Suggestion Lane" in combined
-    assert "supported_by_company_kb" not in combined
+    assert "search_company_kb" in hr_create_employee
+    assert "read_company_kb" in hr_create_employee
+    assert "supported_by_company_kb" in combined
     assert "suggested_by_history" in combined
     assert "unknown_or_needs_company_source" in combined
     assert "confirmed_by_user" in combined

@@ -305,7 +305,7 @@ async def list_agents(
 
 
 HR_AGENT_NAME = "__system_hr__"
-HR_TEMPLATE_VERSION = "hr-flow-v5-personal-kb-work-routing-2026-07-08"
+HR_TEMPLATE_VERSION = "hr-flow-v6-current-session-company-kb-2026-08-29"
 
 
 async def _get_existing_hr_agent(db: AsyncSession, tenant_id: uuid.UUID, *, lock_rows: bool) -> Agent | None:

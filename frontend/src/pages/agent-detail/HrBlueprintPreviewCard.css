@@ -114,6 +114,17 @@
   padding-left: 18px;
 }
 
+.hr-blueprint-sources li {
+  display: grid;
+  gap: 1px;
+}
+
+.hr-blueprint-sources li strong {
+  color: var(--text-primary);
+  font-size: var(--text-tiny);
+  font-weight: 600;
+}
+
 .hr-blueprint-error {
   color: var(--error) !important;
   font-size: var(--text-meta);

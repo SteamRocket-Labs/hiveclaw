@@ -32,9 +32,11 @@ ROLE_DESCRIPTION_MAX_CHARS = 4000
 HR_LONG_TEXT_MAX_CHARS = 4000
 
 UNKNOWN_SOURCE_ATTRIBUTION_TYPE = "unknown_or_needs_company_source"
+COMPANY_SOURCE_ATTRIBUTION_TYPE = "supported_by_company_kb"
 
 SOURCE_ATTRIBUTION_TYPES = [
     "confirmed_by_user",
+    COMPANY_SOURCE_ATTRIBUTION_TYPE,
     "suggested_by_history",
     "suggested_by_general_knowledge",
     UNKNOWN_SOURCE_ATTRIBUTION_TYPE,
@@ -57,7 +59,8 @@ SOURCE_ATTRIBUTIONS_SCHEMA = {
                 "type": "string",
                 "enum": SOURCE_ATTRIBUTION_TYPES,
                 "description": (
-                    "Whether the value is user-confirmed, historical, general, or unresolved. "
+                    "Whether the value is user-confirmed, supported by freshly authorized Company Knowledge, "
+                    "historical, general, or unresolved. "
                     "If omitted, the server records it as unresolved knowledge debt."
                 ),
             },
@@ -70,8 +73,8 @@ SOURCE_ATTRIBUTIONS_SCHEMA = {
         "required": ["field"],
     },
     "description": (
-        "Source attribution for substantive blueprint content. Company knowledge is not implemented yet; "
-        "history is advisory, and all non-current-session suggestions must be shown to the user for confirmation."
+        "Source attribution for substantive blueprint content. Company Knowledge references require a fresh "
+        "cite decision; history is advisory, and the canonical draft must be shown to the user for confirmation."
     ),
 }
 
@@ -157,7 +160,11 @@ def _dedupe_strings(values: list[str]) -> list[str]:
     return deduped
 
 
-def _parse_source_attributions(value: object) -> tuple[list[dict[str, Any]], list[str]]:
+def _parse_source_attributions(
+    value: object,
+    *,
+    validated_company_source_refs: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
     """Normalize source attributions and reject invalid source types.
 
     These annotations are advisory/provenance metadata for the blueprint. They
@@ -179,13 +186,19 @@ def _parse_source_attributions(value: object) -> tuple[list[dict[str, Any]], lis
         if not field:
             invalid_count += 1
             continue
+        source_refs = _dedupe_strings([ref for ref in _parse_list(item.get("source_refs")) if isinstance(ref, str)])
         if not source_type:
             source_type = UNKNOWN_SOURCE_ATTRIBUTION_TYPE
             defaulted_source_type_count += 1
-        elif source_type == "supported_by_company_kb":
+        elif source_type == COMPANY_SOURCE_ATTRIBUTION_TYPE and (
+            not source_refs
+            or validated_company_source_refs is None
+            or any(ref not in validated_company_source_refs for ref in source_refs)
+        ):
             source_type = UNKNOWN_SOURCE_ATTRIBUTION_TYPE
             warnings.append(
-                "supported_by_company_kb was downgraded to unknown_or_needs_company_source because Company KB is not implemented"
+                "supported_by_company_kb requires fresh accessible company evidence; attribution was recorded "
+                "as unknown_or_needs_company_source"
             )
         elif source_type not in SOURCE_ATTRIBUTION_TYPES:
             invalid_count += 1
@@ -194,9 +207,7 @@ def _parse_source_attributions(value: object) -> tuple[list[dict[str, Any]], lis
             "field": field,
             "source_type": source_type,
             "value_summary": str(item.get("value_summary") or "").strip(),
-            "source_refs": _dedupe_strings(
-                [ref for ref in _parse_list(item.get("source_refs")) if isinstance(ref, str)]
-            ),
+            "source_refs": source_refs,
         }
         normalized.append(entry)
     if invalid_count:
@@ -224,15 +235,16 @@ def _knowledge_debt_from_source_attributions(source_attributions: list[dict[str,
 
 def _source_attribution_policy() -> dict[str, Any]:
     return {
-        "company_knowledge_lane": "known_missing_not_available_for_attribution",
+        "company_knowledge_lane": "governed_tool_only_fresh_cite",
         "history_suggestion_lane": "advisory",
         "general_knowledge_lane": "fallback",
         "confirmation_rule": (
-            "All substantive blueprint content from history or general knowledge must be presented to the user "
-            "and explicitly confirmed. Company KB claims are unavailable and remain knowledge debt."
+            "Company Knowledge attributions require a fresh cite decision. The exact canonical draft, including "
+            "history or general-knowledge suggestions, must be presented to the user and explicitly confirmed."
         ),
         "source_type_precedence": [
             "confirmed_by_user",
+            COMPANY_SOURCE_ATTRIBUTION_TYPE,
             "suggested_by_history",
             "suggested_by_general_knowledge",
             "unknown_or_needs_company_source",
@@ -245,9 +257,65 @@ def _confirmation_requirements(source_attributions: list[dict[str, Any]]) -> dic
     return {
         "must_present_all_substantive_blueprint_content": True,
         "source_types_to_present": source_types,
-        "company_kb_attribution_available": False,
+        "company_kb_attribution_available": True,
         "must_confirm_before_create": True,
     }
+
+
+def _company_evidence_id(source_ref: str) -> uuid.UUID | None:
+    rendered = str(source_ref or "").strip()
+    prefix = "company-evidence://"
+    if not rendered.startswith(prefix) or "#" in rendered:
+        return None
+    try:
+        identifier = uuid.UUID(rendered.removeprefix(prefix))
+    except (TypeError, ValueError):
+        return None
+    return identifier if rendered == f"{prefix}{identifier}" else None
+
+
+async def _verify_company_kb_source_refs(
+    *,
+    session: Any,
+    principal: Any,
+    source_attributions: object,
+    trace_id: str,
+    gateway: Any | None = None,
+) -> set[str]:
+    """Return Company Knowledge refs that pass a fresh cite decision."""
+    from app.services.company_knowledge_gateway import (
+        CompanyKnowledgeGateway,
+        CompanyKnowledgeSourceExplainRequest,
+    )
+
+    candidates: dict[str, uuid.UUID] = {}
+    for item in _parse_list(source_attributions):
+        if not isinstance(item, dict) or str(item.get("source_type") or "").strip() != COMPANY_SOURCE_ATTRIBUTION_TYPE:
+            continue
+        for raw_ref in _parse_list(item.get("source_refs")):
+            if not isinstance(raw_ref, str):
+                continue
+            source_ref = raw_ref.strip()
+            evidence_id = _company_evidence_id(source_ref)
+            if evidence_id is not None:
+                candidates[source_ref] = evidence_id
+
+    verifier = gateway or CompanyKnowledgeGateway()
+    verified: set[str] = set()
+    for ordinal, (source_ref, evidence_id) in enumerate(candidates.items()):
+        result = await verifier.explain_source(
+            session,
+            principal=principal,
+            request=CompanyKnowledgeSourceExplainRequest(
+                evidence_id=evidence_id,
+                trace_id=f"{trace_id}:company-source:{ordinal}"[:300],
+            ),
+        )
+        payload = result.payload if result.status == "ok" and isinstance(result.payload, dict) else {}
+        coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
+        if payload.get("source_ref") == source_ref and coverage.get("complete") is True:
+            verified.add(source_ref)
+    return verified
 
 
 def _canonical_json(value: object) -> str:
@@ -958,7 +1026,11 @@ async def _install_external_skill_ref(
     raise ValueError("Unsupported external skill reference")
 
 
-def _build_blueprint_preview_payload(arguments: dict) -> dict:
+def _build_blueprint_preview_payload(
+    arguments: dict,
+    *,
+    validated_company_source_refs: set[str] | None = None,
+) -> dict:
     """Build a structured HR blueprint preview from raw arguments."""
     name = str(arguments.get("name", "")).strip()
     role_description = _trim_role_description_for_prompt_guard(arguments.get("role_description", ""))
@@ -1018,7 +1090,10 @@ def _build_blueprint_preview_payload(arguments: dict) -> dict:
         except (ValueError, TypeError):
             raw_triggers = []
     triggers = [item for item in raw_triggers if isinstance(item, dict)]
-    source_attributions, source_attribution_warnings = _parse_source_attributions(arguments.get("source_attributions"))
+    source_attributions, source_attribution_warnings = _parse_source_attributions(
+        arguments.get("source_attributions"),
+        validated_company_source_refs=validated_company_source_refs,
+    )
 
     capability_routing = _derive_capability_routing(
         role_description=role_description,
@@ -1598,7 +1673,6 @@ async def preview_agent_blueprint(request: ToolExecutionRequest) -> str:
     from app.services.tenant_resolver import resolve_tenant_for_agent
     from app.services.tool_visibility import is_hr_agent
 
-    preview_payload = _build_blueprint_preview_payload(request.arguments)
     try:
         hr_agent_id = uuid.UUID(str(request.context.agent_id))
         user_id = uuid.UUID(str(request.context.user_id))
@@ -1642,6 +1716,28 @@ async def preview_agent_blueprint(request: ToolExecutionRequest) -> str:
                 },
                 ensure_ascii=False,
             )
+        from app.tools.handlers.knowledge import _company_kb_runtime_principal
+
+        validated_company_source_refs: set[str] | None = None
+        if any(
+            isinstance(item, dict) and str(item.get("source_type") or "").strip() == COMPANY_SOURCE_ATTRIBUTION_TYPE
+            for item in _parse_list(request.arguments.get("source_attributions"))
+        ):
+            try:
+                principal = await _company_kb_runtime_principal(db, request)
+                validated_company_source_refs = await _verify_company_kb_source_refs(
+                    session=db,
+                    principal=principal,
+                    source_attributions=request.arguments.get("source_attributions"),
+                    trace_id=f"hr-blueprint:{session_id}",
+                )
+            except Exception:  # noqa: BLE001 - fail closed without exposing inaccessible company evidence
+                logger.exception("[HR] Company Knowledge source verification failed")
+                validated_company_source_refs = set()
+        preview_payload = _build_blueprint_preview_payload(
+            request.arguments,
+            validated_company_source_refs=validated_company_source_refs,
+        )
         try:
             draft = await upsert_hr_creation_draft(
                 db,

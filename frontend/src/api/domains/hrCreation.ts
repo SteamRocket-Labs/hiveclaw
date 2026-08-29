@@ -10,11 +10,21 @@ export interface HrCreationRecovery {
 }
 
 export interface HrCreationDraft {
+  status?: 'preview';
   blueprint_id: string;
   blueprint_version: number;
   blueprint_hash: string;
   draft_status: string;
   blueprint: Record<string, unknown>;
+  risk_class?: string | null;
+  missing_gates?: string[];
+  summary?: Record<string, unknown>;
+  ready_now?: string[];
+  will_install?: string[];
+  knowledge_debt?: unknown[];
+  confirmation_requirements?: unknown[];
+  warnings?: string[];
+  manual_steps?: string[];
   confirmed_by_user_id?: string | null;
   confirmed_at?: string | null;
   created_agent_id?: string | null;

@@ -171,6 +171,16 @@ describe('AgentDetail realtime refresh contract', () => {
     );
   });
 
+  it('clears the previous Agent session surface before consuming a cross-Agent new-conversation request', async () => {
+    const source = await readSource('./AgentDetail.tsx');
+    const agentResetEffect = source.indexOf('// Reset visible state whenever the viewed agent changes.');
+    const draftRequestEffect = source.indexOf('if (!newSessionDraftRequest || !id) return;');
+
+    expect(agentResetEffect).toBeGreaterThanOrEqual(0);
+    expect(draftRequestEffect).toBeGreaterThanOrEqual(0);
+    expect(agentResetEffect).toBeLessThan(draftRequestEffect);
+  });
+
   it('seals terminal websocket events onto the visible live process without rebuilding gapped history', async () => {
     const source = await readSource('./agent-detail/sessionSocketEventProjector.ts');
     const applierSource = await readSource('./agent-detail/sessionTranscriptApplier.ts');

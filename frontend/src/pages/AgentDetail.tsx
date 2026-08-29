@@ -1109,16 +1109,6 @@ function AgentDetailInner() {
         await selectSession(draft);
     };
 
-    useEffect(() => {
-        if (!newSessionDraftRequest || !id) return;
-        if (consumedNewSessionDraftRequestRef.current === newSessionDraftRequest.requestId) return;
-        consumedNewSessionDraftRequestRef.current = newSessionDraftRequest.requestId;
-        void createNewSession();
-        // The request id is the exact-once navigation authority. createNewSession
-        // deliberately consumes the current route and clears its state.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [id, newSessionDraftRequest?.requestId]);
-
     const replaceDraftActiveSession = (draftId: string, created: ChatSession) => {
         setSessions(prev => [created, ...prev.filter((session: any) => String(session.id) !== draftId)]);
         activeSessionIdRef.current = String(created.id);
@@ -1520,6 +1510,18 @@ function AgentDetailInner() {
         setAgentExpired(false);
         settingsInitRef.current = false;
     }, [id]);
+
+    useEffect(() => {
+        if (!newSessionDraftRequest || !id) return;
+        if (consumedNewSessionDraftRequestRef.current === newSessionDraftRequest.requestId) return;
+        consumedNewSessionDraftRequestRef.current = newSessionDraftRequest.requestId;
+        void createNewSession();
+        // The request id is the exact-once navigation authority. createNewSession
+        // deliberately consumes the current route and clears its state.
+        // This effect must run after the Agent reset above and before the
+        // default Session selection below so cross-Agent drafts remain active.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [id, newSessionDraftRequest?.requestId]);
 
     useEffect(() => {
         if (!canLoadAgentScopedData || !token || activeTab !== 'chat') return;

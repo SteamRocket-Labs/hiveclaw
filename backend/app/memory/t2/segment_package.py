@@ -1779,21 +1779,35 @@ def _continuity_state(labels: ET.Element) -> str:
 def _extract_single_xml(markdown: str, tag: str, issues: list[str]) -> ET.Element | None:
     text = markdown or ""
     open_pattern = re.compile(rf"<{re.escape(tag)}(?=[\s>/])")
+    close_pattern = re.compile(rf"</{re.escape(tag)}\s*>")
     starts = list(open_pattern.finditer(text))
-    end = text.rfind(f"</{tag}>")
-    if not starts or end < 0:
+    ends = list(close_pattern.finditer(text))
+    if not starts or not ends:
         issues.append(f"{tag} block missing")
         return None
-    start = starts[0].start()
-    end += len(f"</{tag}>")
-    if len(starts) > 1:
+
+    blocks: list[ET.Element] = []
+    last_parse_error: ET.ParseError | None = None
+    for end in ends:
+        for start in reversed(starts):
+            if start.end() > end.start():
+                continue
+            try:
+                block = ET.fromstring(text[start.start() : end.end()])
+            except ET.ParseError as exc:
+                last_parse_error = exc
+                continue
+            if block.tag == tag:
+                blocks.append(block)
+                break
+
+    if len(blocks) > 1:
         issues.append(f"{tag} has multiple blocks")
         return None
-    try:
-        return ET.fromstring(text[start:end])
-    except ET.ParseError as exc:
-        issues.append(f"{tag} XML parse failed: {exc}")
+    if not blocks:
+        issues.append(f"{tag} XML parse failed: {last_parse_error or 'no complete root element'}")
         return None
+    return blocks[0]
 
 
 def _build_manifest(

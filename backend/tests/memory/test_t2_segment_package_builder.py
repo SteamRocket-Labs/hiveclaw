@@ -470,6 +470,70 @@ async def test_t2_package_commits_memory_gate_terminal_non_promotion_decisions(
 
 
 @pytest.mark.asyncio
+async def test_t2_package_ignores_unclosed_review_tag_name_in_model_prose(tmp_path: Path) -> None:
+    from app.memory.t2.segment_package import build_t2_segment_package
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    event = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="heartbeat_tick_end",
+        role="system",
+        content="No semantic work was pending.",
+        source="heartbeat",
+        data_root=tmp_path,
+    )
+
+    async def summary_agent(source_bundle: dict) -> str:
+        return _summary_xml(source_bundle, segment_state="administrative")
+
+    async def learning_brain(source_bundle: dict, _summary_md: str) -> str:
+        return _labels_xml(source_bundle, continuity_state="admin_only")
+
+    async def memory_gate(source_bundle: dict, _summary_md: str, _labels_md: str) -> str:
+        review = _approved_review_xml(
+            package_id=source_bundle["package_id"],
+            ref=source_bundle["source_refs"][0]["uri"],
+        )
+        review = review.replace("<decision>approved</decision>", "<decision>rejected</decision>").replace(
+            "<allowed_next>t3_intake</allowed_next>",
+            "<allowed_next>none</allowed_next>",
+        )
+        return review + "\n\nSelf-check: exactly one `<t2_review>` XML block was returned."
+
+    result = await build_t2_segment_package(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        t0_segment_id=event.segment_id,
+        summary_agent=summary_agent,
+        learning_brain=learning_brain,
+        memory_gate=memory_gate,
+    )
+
+    assert result.status == "committed", result.issues
+    manifest = json.loads((result.package_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["package_status"] == "rejected"
+    assert manifest["review_decision"] == "rejected"
+    assert manifest["allowed_next"] == "none"
+
+
+def test_t2_xml_extractor_still_rejects_multiple_complete_review_blocks() -> None:
+    from app.memory.t2.segment_package import _extract_single_xml
+
+    issues: list[str] = []
+    review = """<t2_review><decision>rejected</decision></t2_review>
+<t2_review><decision>approved</decision></t2_review>"""
+
+    assert _extract_single_xml(review, "t2_review", issues) is None
+    assert issues == ["t2_review has multiple blocks"]
+
+
+@pytest.mark.asyncio
 async def test_t2_package_keeps_memory_gate_revision_request_in_staging(tmp_path: Path) -> None:
     from app.memory.t2.segment_package import build_t2_segment_package
 

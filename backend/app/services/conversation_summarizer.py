@@ -415,6 +415,7 @@ async def _llm_summarize(
     agent_id=None,
     tenant_id=None,
     user_id=None,
+    http_max_attempts: int | None = None,
 ) -> str | None:
     """Use LLM to create a detailed summary of old messages.
 
@@ -455,6 +456,9 @@ async def _llm_summarize(
                 f"{text}\n"
                 "</covered_input>"
             )
+            transport_kwargs = {}
+            if http_max_attempts is not None:
+                transport_kwargs["_http_max_attempts"] = http_max_attempts
             response = await client.stream(
                 messages=[
                     LLMMessage(role="system", content=_SUMMARIZE_SYSTEM_PROMPT),
@@ -462,6 +466,7 @@ async def _llm_summarize(
                 ],
                 max_tokens=max_tokens,
                 temperature=0.3,
+                **transport_kwargs,
             )
             return _extract_summary_from_response(response.content)
 

@@ -141,6 +141,39 @@ async def test_llm_summarize_sends_full_history_and_raised_max_tokens(monkeypatc
     assert captured["closed"] is True
 
 
+async def test_llm_summarize_forwards_optional_transport_attempt_budget(monkeypatch):
+    """Derived projections can bound transport retries without changing summary semantics."""
+
+    import app.services.llm_client as llm_client_mod
+    from app.services.conversation_summarizer import _llm_summarize
+
+    captured: dict = {}
+
+    class FakeClient:
+        async def stream(self, *, messages, max_tokens, temperature, **kwargs):
+            del messages, max_tokens, temperature
+            captured.update(kwargs)
+
+            class R:
+                content = "<summary>bounded summary</summary>"
+
+            return R()
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(llm_client_mod, "create_llm_client", lambda **_: FakeClient())
+
+    result = await _llm_summarize(
+        [{"role": "user", "content": "terminal-critical derived projection"}],
+        {"provider": "openai", "model": "gpt-4o", "api_key": "k"},
+        http_max_attempts=1,
+    )
+
+    assert result == "bounded summary"
+    assert captured == {"_http_max_attempts": 1}
+
+
 async def test_llm_summarize_hierarchically_reduces_without_oversized_reduce_prompt(monkeypatch):
     import app.services.llm_client as llm_client_mod
     from app.services.conversation_summarizer import _llm_summarize

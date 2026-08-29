@@ -419,6 +419,31 @@ async def test_persist_runtime_memory_strips_null_bytes_from_summary(monkeypatch
     assert fake_session.commits == 1
 
 
+@pytest.mark.asyncio
+async def test_persist_runtime_memory_bounds_terminal_critical_summary_transport(monkeypatch):
+    from app.services.memory_service import persist_runtime_memory
+
+    captured: dict = {}
+
+    async def fake_generate_session_summary(_messages, _tenant_id, **kwargs):
+        captured.update(kwargs)
+        return None
+
+    monkeypatch.setattr("app.services.memory_service._generate_session_summary", fake_generate_session_summary)
+
+    await persist_runtime_memory(
+        agent_id=uuid4(),
+        session_id=str(uuid4()),
+        tenant_id=uuid4(),
+        messages=[
+            {"role": "user", "content": "finish the accepted turn"},
+            {"role": "assistant", "content": "durable answer already committed"},
+        ],
+    )
+
+    assert captured["http_max_attempts"] == 1
+
+
 # ``_extract_summary`` re-export removed with the dead mechanical fallback (B-6);
 # the LLM-holds-without-fallback behavior is covered by the test below.
 

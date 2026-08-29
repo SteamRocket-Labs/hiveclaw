@@ -893,6 +893,7 @@ class OpenAICompatibleClient(LLMClient):
     ) -> LLMResponse:
         """Streaming completion."""
         url = f"{self._normalize_base_url()}/chat/completions"
+        http_max_attempts = _take_http_max_attempts(kwargs)
         payload = self._build_payload(messages, tools, temperature, max_tokens, stream=True, **kwargs)
 
         full_content = ""
@@ -904,7 +905,7 @@ class OpenAICompatibleClient(LLMClient):
         in_think = False
         tag_buffer = ""
 
-        max_retries = _LLM_HTTP_MAX_ATTEMPTS
+        max_retries = http_max_attempts
         client = await self._get_client()
 
         async def reset_partial_stream_for_retry() -> None:
@@ -1771,6 +1772,7 @@ class GeminiClient(LLMClient):
         **kwargs: Any,
     ) -> LLMResponse:
         """Streaming completion using Gemini SSE endpoint."""
+        http_max_attempts = _take_http_max_attempts(kwargs)
         if self._is_openai_compatible_base():
             logger.debug(
                 "[Gemini] Using OpenAI-compatible endpoint for model %s (base_url override detected)", self.model
@@ -1783,6 +1785,7 @@ class GeminiClient(LLMClient):
                 max_tokens=max_tokens,
                 on_chunk=on_chunk,
                 on_thinking=on_thinking,
+                _http_max_attempts=http_max_attempts,
                 **kwargs,
             )
 
@@ -1797,7 +1800,7 @@ class GeminiClient(LLMClient):
         final_finish_reason: str | None = None
 
         client = await self._get_client()
-        max_retries = _LLM_HTTP_MAX_ATTEMPTS
+        max_retries = http_max_attempts
 
         for attempt in range(max_retries):
             try:
@@ -2114,6 +2117,7 @@ class AnthropicClient(LLMClient):
     ) -> LLMResponse:
         """Streaming completion."""
         url = f"{self.base_url.rstrip('/')}/v1/messages"
+        http_max_attempts = _take_http_max_attempts(kwargs)
         payload = self._build_payload(messages, tools, temperature, max_tokens, stream=True, **kwargs)
 
         full_content = ""
@@ -2128,7 +2132,7 @@ class AnthropicClient(LLMClient):
         client = await self._get_client()
 
         # Retry loop for transient provider status and connection failures.
-        max_retries = _LLM_HTTP_MAX_ATTEMPTS
+        max_retries = http_max_attempts
         for attempt in range(max_retries):
             try:
                 async with client.stream("POST", url, json=payload, headers=self._get_headers()) as resp:

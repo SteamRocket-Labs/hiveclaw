@@ -19,6 +19,29 @@ class _FakePostClient:
         return response
 
 
+class _FakeStreamResponse:
+    status_code = 429
+    headers: dict[str, str] = {}
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, _exc_type, _exc, _tb) -> None:
+        return None
+
+    async def aiter_bytes(self):
+        yield b'{"error":{"type":"rate_limit_error"}}'
+
+
+class _FakeStreamClient:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def stream(self, method: str, url: str, **kwargs):
+        self.calls.append({"method": method, "url": url, **kwargs})
+        return _FakeStreamResponse()
+
+
 def _response(status_code: int, *, retry_after: str | None = None) -> httpx.Response:
     headers = {"retry-after": retry_after} if retry_after is not None else {}
     return httpx.Response(status_code, text=f"status {status_code}", headers=headers)
@@ -195,6 +218,75 @@ async def test_non_stream_clients_honor_caller_bounded_http_attempts_without_lea
     assert caught.value.http_status == 429
     assert len(observed) == 1
     assert observed[0]["max_retries"] == 3
+    assert "_http_max_attempts" not in observed[0]["payload"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "client_class_name",
+    ["OpenAICompatibleClient", "GeminiClient", "AnthropicClient"],
+)
+async def test_native_stream_clients_honor_caller_bounded_http_attempts_without_leaking_transport_hint(
+    monkeypatch,
+    client_class_name,
+) -> None:
+    """A terminal-critical projection may make one provider attempt only.
+
+    The mechanical lifecycle budget must apply equally to every native stream
+    protocol and must never become a provider payload field.
+    """
+
+    import app.services.llm_client as llm_client
+
+    async def fake_sleep(_seconds: float) -> None:
+        return None
+
+    fake_http = _FakeStreamClient()
+
+    async def fake_get_client():
+        return fake_http
+
+    monkeypatch.setattr(llm_client.asyncio, "sleep", fake_sleep)
+    client_class = getattr(llm_client, client_class_name)
+    client = client_class(api_key="test-key", model="test-model")
+    monkeypatch.setattr(client, "_get_client", fake_get_client)
+
+    with pytest.raises(llm_client.LLMError) as caught:
+        await client.stream(
+            [llm_client.LLMMessage(role="user", content="update derived session summary")],
+            _http_max_attempts=1,
+        )
+
+    assert caught.value.http_status == 429
+    assert len(fake_http.calls) == 1
+    assert "_http_max_attempts" not in fake_http.calls[0]["json"]
+
+
+@pytest.mark.asyncio
+async def test_responses_stream_fallback_preserves_caller_bounded_http_attempts(monkeypatch) -> None:
+    import app.services.llm_client as llm_client
+
+    observed: list[dict] = []
+
+    async def fake_post(_client, _url, *, payload, headers, max_retries):
+        observed.append({"payload": payload, "headers": headers, "max_retries": max_retries})
+        return httpx.Response(429, text='{"error":{"type":"rate_limit_error"}}')
+
+    async def fake_get_client():
+        return object()
+
+    monkeypatch.setattr(llm_client, "_post_with_status_retries", fake_post)
+    client = llm_client.OpenAIResponsesClient(api_key="test-key", model="test-model")
+    monkeypatch.setattr(client, "_get_client", fake_get_client)
+
+    with pytest.raises(llm_client.LLMError) as caught:
+        await client.stream(
+            [llm_client.LLMMessage(role="user", content="update derived session summary")],
+            _http_max_attempts=1,
+        )
+
+    assert caught.value.http_status == 429
+    assert observed[0]["max_retries"] == 1
     assert "_http_max_attempts" not in observed[0]["payload"]
 
 

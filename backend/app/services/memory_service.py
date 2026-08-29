@@ -980,7 +980,12 @@ async def persist_runtime_memory(
 
     for attempt in range(_MAX_RETRIES + 1):
         try:
-            summary = await _generate_session_summary(messages, tenant_id, agent_id=agent_id)
+            summary = await _generate_session_summary(
+                messages,
+                tenant_id,
+                agent_id=agent_id,
+                http_max_attempts=1,
+            )
             if summary and session_id:
                 await _save_session_summary(session_id, summary, tenant_id)
 
@@ -1187,6 +1192,7 @@ async def _generate_session_summary(
     *,
     agent_id: uuid.UUID | None = None,
     user_id: uuid.UUID | None = None,
+    http_max_attempts: int | None = None,
 ) -> str | None:
     """Generate the user-facing session-list/search summary using LLM only.
 
@@ -1206,6 +1212,7 @@ async def _generate_session_summary(
                 agent_id=agent_id,
                 tenant_id=tenant_id,
                 user_id=user_id,
+                http_max_attempts=http_max_attempts,
             )
         except Exception as e:
             logger.warning("LLM session summary failed; holding summary write: %s", e)

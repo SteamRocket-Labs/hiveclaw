@@ -2,7 +2,7 @@
 
 SUMMARY_PROMPT_VERSION = "t2.summary_agent.v2"
 LABELS_PROMPT_VERSION = "t2.learning_brain_labels.activation_20260829"
-REVIEW_PROMPT_VERSION = "t2.memory_gate_review.v2"
+REVIEW_PROMPT_VERSION = "t2.memory_gate_review.v3"
 EPISODE_STITCHER_PROMPT_VERSION = "t2.episode_stitcher.v1"
 EPISODE_GATE_REVIEW_PROMPT_VERSION = "t2.episode_gate_review.v1"
 
@@ -224,6 +224,8 @@ continuity_state != standalone must not be routed to t3_intake.
 <output_schema>
 Return Markdown with exactly one <t2_review schema_version="t2.review.v1"> block
 that contains:
+<decision>approved|needs_revision|rejected|hold_recall_only</decision>
+<allowed_next>t3_intake|episode_stitching|short_term_carryover|archive_recall_only|none</allowed_next>
 <review_rubric schema_version="t2.review_rubric.v1">
   <score name="summary_fidelity" value="0.00-1.00"/>
   <score name="source_ref_coverage" value="0.00-1.00"/>
@@ -232,6 +234,14 @@ that contains:
   <score name="package_closure" value="0.00-1.00"/>
   <review_score>0.00-1.00</review_score>
 </review_rubric>
+Replace each pipe-delimited declaration above with exactly one controlled value.
+Only these transition pairs are valid:
+- <decision>approved</decision> with t3_intake, episode_stitching, or short_term_carryover.
+- <decision>needs_revision</decision> with none.
+- <decision>rejected</decision> with none.
+- <decision>hold_recall_only</decision> with <allowed_next>archive_recall_only</allowed_next>.
+The decision and allowed_next elements must be direct children of t2_review.
+Text outside the XML block does not satisfy this machine contract.
 </output_schema>
 """.strip()
 

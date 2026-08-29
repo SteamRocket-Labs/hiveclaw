@@ -322,7 +322,7 @@ async def test_build_t2_segment_package_commits_agent_outputs_atomically(tmp_pat
     assert manifest["prompts"]["summary_prompt_version"] == "t2.summary_agent.v2"
     assert manifest["prompts"]["labels_prompt_version"] == "t2.learning_brain_labels.activation_20260829"
     assert manifest["review_mode"] == "independent_gate"
-    assert manifest["prompts"]["review_prompt_version"] == "t2.memory_gate_review.v2"
+    assert manifest["prompts"]["review_prompt_version"] == "t2.memory_gate_review.v3"
 
     source_bundle_path = (
         tmp_path / str(agent_id) / "memory" / ".staging" / "t2_jobs" / result.job_id / "source_bundle.json"
@@ -402,7 +402,7 @@ async def test_low_risk_t2_package_requires_memory_gate_review(tmp_path: Path) -
     assert review.attrib["reviewer"] == "memory_gate_agent"
     assert review.findtext("decision") == "approved"
     assert manifest["review_mode"] == "independent_gate"
-    assert manifest["prompts"]["review_prompt_version"] == "t2.memory_gate_review.v2"
+    assert manifest["prompts"]["review_prompt_version"] == "t2.memory_gate_review.v3"
 
 
 @pytest.mark.asyncio

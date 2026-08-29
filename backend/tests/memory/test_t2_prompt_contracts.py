@@ -61,6 +61,20 @@ def test_memory_gate_prompt_requires_structured_review_rubric() -> None:
     assert "continuity_state != standalone" in MEMORY_GATE_REVIEW_PROMPT
 
 
+def test_memory_gate_prompt_requires_machine_readable_terminal_transition() -> None:
+    from app.memory.t2.prompts import MEMORY_GATE_REVIEW_PROMPT, REVIEW_PROMPT_VERSION
+
+    assert REVIEW_PROMPT_VERSION == "t2.memory_gate_review.v3"
+    assert "<decision>approved|needs_revision|rejected|hold_recall_only</decision>" in MEMORY_GATE_REVIEW_PROMPT
+    assert (
+        "<allowed_next>t3_intake|episode_stitching|short_term_carryover|archive_recall_only|none</allowed_next>"
+        in MEMORY_GATE_REVIEW_PROMPT
+    )
+    assert "<decision>hold_recall_only</decision>" in MEMORY_GATE_REVIEW_PROMPT
+    assert "<allowed_next>archive_recall_only</allowed_next>" in MEMORY_GATE_REVIEW_PROMPT
+    assert "Text outside the XML block does not satisfy this machine contract" in MEMORY_GATE_REVIEW_PROMPT
+
+
 def test_summary_prompt_requires_segment_state_and_continuity() -> None:
     from app.memory.t2.prompts import SUMMARY_AGENT_PROMPT
 

@@ -10,6 +10,7 @@ import { normalizeToolCallResult } from './toolResultEnvelope';
 import type { ThreadItem } from '../../api/domains/threadItems.generated';
 import { trimMessagesBeforeTranscriptEvent } from './agentDetailPolicy';
 import type { SessionMessageStore } from './sessionMessageStore';
+import { runtimeFailurePresentation } from '../session-workbench/runtimeFailurePresentation';
 import {
   createSessionEventStore,
   reduceSessionCompatibilityEvent,
@@ -385,12 +386,10 @@ function projectCanonicalItem(
     // humanized payload message — never an assistant message and never
     // natural-language scanning.  AgentChatSection renders msg.threadItem
     // directly, so this survives the legacy-subset normalization seam.
-    const failureMessage = typeof item.payload.message === 'string' && item.payload.message.trim()
-      ? item.payload.message.trim()
-      : itemDisplayContent(item);
     const failureCode = typeof item.payload.failure_code === 'string' ? item.payload.failure_code : null;
     const failureReason = typeof item.payload.terminal_reason === 'string' ? item.payload.terminal_reason : null;
     const failureRetryable = item.payload.retryable === true;
+    const failureMessage = runtimeFailurePresentation(failureCode, failureRetryable).fallback;
     const scope = item.scope;
     const threadItem: ThreadItem = {
       schema: 'hive.thread_item.v1',

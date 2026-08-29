@@ -406,8 +406,9 @@ describe('session socket event projector', () => {
 
     // The no-reload terminal consumption contract: close the active run once
     // (applier onTerminal), pin the failed phase, refresh runtime read
-    // models, reconcile the durable transcript, and surface the existing
-    // quota/余额 notice banner.
+    // models, and reconcile the durable transcript. The canonical error card
+    // is the single user-facing failure surface; provider prose must not also
+    // leak through the transport notice lane.
     expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledTimes(1);
     expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledWith('agent-1:session-1', 'run-1');
     expect(harness.dependencies.setSessionPhase).toHaveBeenCalledWith('agent-1:session-1', 'failed');
@@ -415,7 +416,7 @@ describe('session socket event projector', () => {
     expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledWith('agent-1', 'session-1');
     expect(harness.dependencies.reconcileSessionTranscript).toHaveBeenCalledWith('agent-1', 'session-1');
     expect(harness.dependencies.fetchMySessions).toHaveBeenCalledWith(true, 'agent-1');
-    expect(harness.dependencies.setTransportNotice).toHaveBeenCalledWith(message);
+    expect(harness.dependencies.setTransportNotice).not.toHaveBeenCalled();
   });
 
   function wireRealCanonicalDedupe(harness: ReturnType<typeof makeHarness>) {
@@ -439,7 +440,7 @@ describe('session socket event projector', () => {
     expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledTimes(1);
     expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledWith('agent-1:session-1', 'run-1');
     expect(harness.dependencies.setSessionPhase).toHaveBeenCalledTimes(1);
-    expect(harness.dependencies.setTransportNotice).toHaveBeenCalledTimes(1);
+    expect(harness.dependencies.setTransportNotice).not.toHaveBeenCalled();
     expect(harness.dependencies.reconcileSessionTranscript).toHaveBeenCalledTimes(1);
     expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledTimes(1);
   });
@@ -473,7 +474,7 @@ describe('session socket event projector', () => {
 
     expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledWith('agent-1:session-1', 'run-1');
     expect(harness.dependencies.setSessionPhase).toHaveBeenCalledWith('agent-1:session-1', 'failed');
-    expect(harness.dependencies.setTransportNotice).toHaveBeenCalledWith('quota message');
+    expect(harness.dependencies.setTransportNotice).not.toHaveBeenCalled();
     expect(harness.dependencies.reconcileSessionTranscript).toHaveBeenCalledWith('agent-1', 'session-1');
   });
 
@@ -1000,13 +1001,13 @@ describe('session socket projector contiguous-application side effects (Codex RE
     expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledTimes(1);
     expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledWith('agent-1:session-1', 'run-1');
     expect(harness.dependencies.setSessionPhase).toHaveBeenCalledWith('agent-1:session-1', 'failed');
-    expect(harness.dependencies.setTransportNotice).toHaveBeenCalledTimes(1);
+    expect(harness.dependencies.setTransportNotice).not.toHaveBeenCalled();
     expect(harness.dependencies.reconcileSessionTranscript).toHaveBeenCalledTimes(1);
 
     // At-least-once redelivery of the drained failure is a duplicate: zero.
     projectSessionSocketEvent(harness.context, harness.dependencies);
     expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledTimes(1);
-    expect(harness.dependencies.setTransportNotice).toHaveBeenCalledTimes(1);
+    expect(harness.dependencies.setTransportNotice).not.toHaveBeenCalled();
   });
 
   it('invalidates a buffered tool_result exactly once after gap close and never on arrival', () => {
@@ -1067,7 +1068,7 @@ describe('session socket projector contiguous-application side effects (Codex RE
     });
     expect(harness.dependencies.markActiveRunTerminal).toHaveBeenCalledTimes(1);
     expect(harness.dependencies.setSessionPhase).toHaveBeenCalledTimes(1);
-    expect(harness.dependencies.setTransportNotice).toHaveBeenCalledTimes(1);
+    expect(harness.dependencies.setTransportNotice).not.toHaveBeenCalled();
     expect(harness.dependencies.invalidateSessionRuntimeQueries).toHaveBeenCalledTimes(1);
   });
 

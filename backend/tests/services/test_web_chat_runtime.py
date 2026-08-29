@@ -1961,6 +1961,7 @@ def test_interactive_pause_summary_accepts_structured_tool_payloads():
 @pytest.mark.asyncio
 async def test_persist_runtime_event_writes_session_native_part(monkeypatch):
     import app.services.web_chat_runtime as runtime
+    import app.services.session_event_contract as session_event_contract
     import app.services.tenant_resolver as tenant_resolver
 
     captured: dict = {}
@@ -1976,15 +1977,28 @@ async def test_persist_runtime_event_writes_session_native_part(monkeypatch):
     async def fake_resolve_tenant_for_agent(_agent_id):
         return tenant_id
 
+    transcript_event = object()
+    committed = {
+        "schema": "hive.session_event_compatibility",
+        "schema_version": 1,
+        "event_id": str(uuid4()),
+        "sequence": 1,
+    }
+
     async def fake_append_session_event(**kwargs):
         captured.update(kwargs)
-        return SimpleNamespace(event_id=uuid4(), sequence=1, message_id=None)
+        return SimpleNamespace(event_id=uuid4(), sequence=1, message_id=None, transcript_event=transcript_event)
 
     monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
     monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: _SessionCtx())
     monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
+    monkeypatch.setattr(
+        session_event_contract,
+        "serialize_session_event",
+        lambda event, *, audience: committed if event is transcript_event and audience == "user" else None,
+    )
 
-    await runtime._persist_runtime_event(
+    result = await runtime._persist_runtime_event(
         agent_id=uuid4(),
         user_id=uuid4(),
         session_id=str(uuid4()),
@@ -2000,6 +2014,7 @@ async def test_persist_runtime_event_writes_session_native_part(monkeypatch):
 
     assert captured["event_type"] == "hook_progress"
     assert captured["role"] == "system"
+    assert result == committed
     assert captured["parts"] == [
         {
             "type": "event",
@@ -2115,6 +2130,7 @@ def test_spawn_subagent_tool_result_builds_runtime_action_started_event():
 @pytest.mark.asyncio
 async def test_session_context_runtime_event_persists_as_specific_context_event(monkeypatch):
     import app.services.web_chat_runtime as runtime
+    import app.services.session_event_contract as session_event_contract
     import app.services.tenant_resolver as tenant_resolver
 
     captured: dict = {}
@@ -2130,13 +2146,26 @@ async def test_session_context_runtime_event_persists_as_specific_context_event(
     async def fake_resolve_tenant_for_agent(_agent_id):
         return tenant_id
 
+    transcript_event = object()
+    committed = {
+        "schema": "hive.session_event_compatibility",
+        "schema_version": 1,
+        "event_id": str(uuid4()),
+        "sequence": 1,
+    }
+
     async def fake_append_session_event(**kwargs):
         captured.update(kwargs)
-        return SimpleNamespace(event_id=uuid4(), sequence=1, message_id=None)
+        return SimpleNamespace(event_id=uuid4(), sequence=1, message_id=None, transcript_event=transcript_event)
 
     monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
     monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: _SessionCtx())
     monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
+    monkeypatch.setattr(
+        session_event_contract,
+        "serialize_session_event",
+        lambda event, *, audience: committed if event is transcript_event and audience == "user" else None,
+    )
 
     data = {
         "type": "session_context",

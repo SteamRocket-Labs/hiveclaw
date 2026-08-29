@@ -68,6 +68,12 @@
       "details": "详情",
       "approvalActions": "审批操作",
       "retryTurn": "重试本轮",
+      "failure": {
+        "quotaExhausted": "模型额度或余额不足，请联系管理员检查额度，或切换模型后重试。",
+        "rateLimited": "模型服务当前繁忙，请稍后重试，或切换模型后再试。",
+        "retryable": "模型服务暂时不可用，本次任务可以安全重试。",
+        "unavailable": "模型服务未能完成本次任务，请检查配置后再试。"
+      },
       "permissionNeeded": "Agent 需要授权才能使用 {{tool}}。",
       "thisTool": "该工具",
       "type": {
@@ -86,6 +92,7 @@
         "context_compaction": "上下文压缩",
         "artifact": "交付物",
         "boundary": "运行边界",
+        "warning": "运行提示",
         "error": "运行错误",
         "event": "运行事件"
       },
@@ -2259,7 +2266,7 @@
       },
       "phase": {
         "queued": "排队中",
-        "resuming": "重新连接中",
+        "resuming": "恢复运行中",
         "starting": "启动中",
         "thinking": "思考中",
         "responding": "撰写回复中",

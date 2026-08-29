@@ -408,9 +408,10 @@ describe('canonical runtime_failure consumption (DAY1-PROVIDER-402-TERMINAL-CONS
     expect(shouldRenderThreadItemInConversation(item!, false)).toBe(true);
     expect(item!.item_type).toBe('error');
     expect(item!.item_status).toBe('failed');
-    // The card itself carries the safe humanized quota message — never a
-    // generic summary and never NL-scanned content.
-    expect(item!.user_summary).toContain('额度或余额不足');
+    // The card derives user copy from the typed failure code, never from raw
+    // provider prose or natural-language scanning.
+    expect(item!.user_summary).toContain('quota or balance');
+    expect(item!.user_summary).not.toContain('[LLM Error]');
     expect(item!.item_data).toMatchObject({
       code: 'quota_exhausted',
       reason: 'provider_error',

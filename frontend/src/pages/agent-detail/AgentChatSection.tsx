@@ -31,7 +31,6 @@ import ChatWorkLedgerDock from './ChatWorkLedgerDock';
 import { SessionTransportStatus } from './SessionTransportStatus';
 import type { ChatTransportPhase } from './chatTransportRecovery';
 import { SessionWorkbenchHeader } from '../session-workbench/SessionWorkbenchChrome';
-import { ThreadItemInspector } from '../session-workbench/ThreadItemInspector';
 import { shouldRenderThreadItemInConversation, ThreadItemRenderer } from '../session-workbench/ThreadItemRenderer';
 import { normalizeThreadItemPayload } from '../session-workbench/threadItemReducer';
 import { SessionComposer } from '../session-workbench/SessionComposer';

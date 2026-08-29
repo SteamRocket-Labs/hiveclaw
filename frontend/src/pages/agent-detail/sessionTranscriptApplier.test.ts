@@ -249,7 +249,8 @@ describe('session transcript applier real consumption path (Codex REQUEST_CHANGE
     const finalFailureCards = finalMessages
       .filter((message) => message.eventType === 'runtime_failure' && message.threadItem?.item_type === 'error');
     expect(finalFailureCards).toHaveLength(1);
-    expect(finalFailureCards[0]).toMatchObject({ content: 'quota message' });
+    expect(finalFailureCards[0]).toMatchObject({ content: expect.stringContaining('quota or balance') });
+    expect(finalFailureCards[0]?.content).not.toContain('quota message');
     const seededIndex = finalMessages.findIndex((message) => message.id === 'seeded-user');
     const failureIndex = finalMessages.findIndex((message) => message.eventType === 'runtime_failure');
     expect(seededIndex).toBeGreaterThanOrEqual(0);

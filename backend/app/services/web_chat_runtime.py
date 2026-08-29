@@ -4247,7 +4247,8 @@ async def _persist_runtime_event(
     session_id: str,
     data: dict[str, Any],
     external_principal_id: uuid.UUID | None = None,
-) -> None:
+) -> dict[str, Any]:
+    from app.services.session_event_contract import serialize_session_event
     from app.services.tenant_resolver import resolve_tenant_for_agent
 
     tenant_id = await resolve_tenant_for_agent(agent_id)
@@ -4260,7 +4261,7 @@ async def _persist_runtime_event(
             "runtime_event_type": event_type,
             **{key: value for key, value in data.items() if value is not None},
         }
-        await append_session_event(
+        result = await append_session_event(
             db=db,
             agent_id=agent_id,
             tenant_id=tenant_id,
@@ -4277,6 +4278,7 @@ async def _persist_runtime_event(
             metadata=event_metadata,
         )
         await db.commit()
+        return serialize_session_event(result.transcript_event, audience="user")
 
 
 def _runtime_event_storage_type(data: dict[str, Any]) -> str:

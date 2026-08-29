@@ -68,6 +68,12 @@
       "details": "Details",
       "approvalActions": "Approval actions",
       "retryTurn": "Retry turn",
+      "failure": {
+        "quotaExhausted": "Model quota or balance is insufficient. Ask an administrator to check quota, or switch models and retry.",
+        "rateLimited": "The model service is busy. Try again later, or switch models and retry.",
+        "retryable": "The model service is temporarily unavailable. This task can be retried safely.",
+        "unavailable": "The model service could not finish this task. Check the configuration before retrying."
+      },
       "permissionNeeded": "The agent needs permission to use {{tool}}.",
       "thisTool": "this tool",
       "type": {
@@ -86,6 +92,7 @@
         "context_compaction": "Context compaction",
         "artifact": "Artifact",
         "boundary": "Run boundary",
+        "warning": "Runtime notice",
         "error": "Runtime error",
         "event": "Runtime event"
       },
@@ -2259,7 +2266,7 @@
       },
       "phase": {
         "queued": "Queued",
-        "resuming": "Reconnecting",
+        "resuming": "Resuming work",
         "starting": "Starting",
         "thinking": "Thinking",
         "responding": "Writing response",

@@ -161,6 +161,132 @@ async def test_tool_callback_binds_provider_request_and_only_broadcasts_committe
     assert broadcasts == [committed]
 
 
+@pytest.mark.asyncio
+async def test_persisted_runtime_event_only_broadcasts_committed_canonical_envelope():
+    from app.services import web_chat_run_orchestrator as orchestrator
+
+    persisted_calls: list[dict] = []
+    broadcasts: list[dict] = []
+    raw_event = {
+        "type": "session_context",
+        "event_type": "memory_context_degraded",
+        "message": "semantic retrieval is temporarily unavailable",
+        "retryable": True,
+    }
+    committed = {
+        "schema": "hive.session_event_compatibility",
+        "schema_version": 1,
+        "event_id": str(uuid4()),
+        "sequence": 12,
+        "visibility": {"audience": "direct_user"},
+        "event_type": "memory_context_degraded",
+    }
+
+    async def persist_runtime_event(**kwargs):
+        persisted_calls.append(kwargs)
+        return committed
+
+    async def broadcast(_agent_id, _session_id, payload):
+        broadcasts.append(payload)
+
+    state = SimpleNamespace(
+        phase_emitter=None,
+        summary_turn_mode=False,
+        agent=SimpleNamespace(id=uuid4()),
+        actor_user_id=uuid4(),
+        actor_external_principal_id=None,
+        session_id=str(uuid4()),
+        ports=SimpleNamespace(
+            events=SimpleNamespace(
+                stream_batcher_type=_NoopStreamBatcher,
+                session_native_types={"session_context"},
+                build_session_native=lambda data: {"raw": data},
+                should_persist_runtime_event=lambda _data: True,
+                persist_runtime_event=persist_runtime_event,
+                broadcast=broadcast,
+            )
+        ),
+    )
+
+    callbacks = orchestrator._WebChatCallbacks(state)
+    await callbacks.runtime_event(raw_event)
+
+    assert persisted_calls == [
+        {
+            "agent_id": state.agent.id,
+            "user_id": state.actor_user_id,
+            "external_principal_id": None,
+            "session_id": state.session_id,
+            "data": raw_event,
+        }
+    ]
+    assert broadcasts == [committed]
+
+
+@pytest.mark.asyncio
+async def test_completed_tool_runtime_action_only_broadcasts_committed_canonical_envelope():
+    from app.services import web_chat_run_orchestrator as orchestrator
+
+    broadcasts: list[dict] = []
+    runtime_action = {
+        "type": "session_context",
+        "event_type": "memory_context_degraded",
+        "retryable": True,
+    }
+    committed = {
+        "schema": "hive.session_event_compatibility",
+        "schema_version": 1,
+        "event_id": str(uuid4()),
+        "sequence": 13,
+        "event_type": "memory_context_degraded",
+    }
+
+    async def persist_tool_call(**_kwargs):
+        return []
+
+    async def persist_runtime_event(**kwargs):
+        assert kwargs["data"] == runtime_action
+        return committed
+
+    async def broadcast(_agent_id, _session_id, payload):
+        broadcasts.append(payload)
+
+    state = SimpleNamespace(
+        active_provider_request_id="provider-request-1",
+        terminal_tool_card_finalized=False,
+        phase_emitter=None,
+        summary_turn_mode=False,
+        agent=SimpleNamespace(id=uuid4()),
+        actor_user_id=uuid4(),
+        actor_external_principal_id=None,
+        session_id=str(uuid4()),
+        run_uuid=uuid4(),
+        ports=SimpleNamespace(
+            events=SimpleNamespace(
+                stream_batcher_type=_NoopStreamBatcher,
+                tool_step_contract=lambda data, fallback_run_id=None: data,
+                persist_tool_call=persist_tool_call,
+                runtime_action_from_tool_result=lambda _data: runtime_action,
+                persist_runtime_event=persist_runtime_event,
+                broadcast=broadcast,
+            ),
+            runtime=SimpleNamespace(interactive_pause_summary=lambda _data: None),
+        ),
+    )
+
+    callbacks = orchestrator._WebChatCallbacks(state)
+    await callbacks.tool_call(
+        {
+            "name": "read_file",
+            "status": "done",
+            "tool_call_id": "provider-tool-1",
+            "result": "done",
+        }
+    )
+
+    assert broadcasts == [committed]
+
+
 @pytest.mark.parametrize(
     ("exc", "expected_reason"),
     [

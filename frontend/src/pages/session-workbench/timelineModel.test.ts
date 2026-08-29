@@ -2296,6 +2296,41 @@ describe('RuntimePhase in the thread projection (§3 seam 3)', () => {
     }).header.status).toBe('complete');
   });
 
+  it('keeps a canonical run failure visibly failed after the live run registry clears', () => {
+    const scope = {
+      level: 'run' as const,
+      session_id: 'session-1',
+      thread_id: 'session-1',
+      turn_id: 'turn-1',
+      run_id: 'run-1',
+    };
+    const model = buildThreadTimeline({
+      messages: [
+        { id: 'user-1', role: 'user', content: 'Return the marker.' },
+        {
+          id: 'failure-1',
+          role: 'event',
+          content: '模型服务当前繁忙，请稍后重试。',
+          eventType: 'runtime_failure',
+          eventStatus: 'recorded',
+          sessionItem: {
+            id: 'failure-1',
+            kind: 'runtime_failure',
+            lifecycle: 'recorded',
+            scope,
+            terminal: true,
+          },
+        },
+      ] as AgentChatMessage[],
+      activeSession: { id: 'session-1', title: 'Failed run' },
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+    });
+
+    expect(model.header.status).toBe('failed');
+  });
+
   it('presents an accepted user turn as running before the run registry catches up', () => {
     const model = buildThreadTimeline({
       messages: [{

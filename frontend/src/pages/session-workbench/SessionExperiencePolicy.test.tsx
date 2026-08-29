@@ -2,6 +2,8 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
+import en from '../../i18n/en.json';
+import zh from '../../i18n/zh.json';
 import { SessionWorkbenchHeader } from './SessionWorkbenchChrome';
 import type { RuntimeSectionItemModel, SessionWorkbenchHeaderModel } from './timelineModel';
 import { runtimeItemDisplayMeta, runtimeItemDisplayStatus } from '../agent-detail/SessionRuntimePanel';
@@ -13,6 +15,13 @@ vi.mock('react-i18next', () => ({
 }));
 
 describe('session experience information policy', () => {
+  it('keeps execution resume distinct from transport reconnection in both locales', () => {
+    expect(en.agent.chat.phase.resuming).toBe('Resuming work');
+    expect(zh.agent.chat.phase.resuming).toBe('恢复运行中');
+    expect(en.agent.chat.phase.resuming).not.toBe(en.agent.chat.transport.reconnecting);
+    expect(zh.agent.chat.phase.resuming).not.toBe(zh.agent.chat.transport.reconnecting);
+  });
+
   it('keeps the ordinary session header semantic and hides runtime mechanics', () => {
     const model: SessionWorkbenchHeaderModel = {
       sessionId: '00000000-0000-4000-8000-000000000001',

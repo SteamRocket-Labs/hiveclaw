@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next';
 import { IconChevronLeft, IconChevronRight, IconFileText, IconX } from '@tabler/icons-react';
 
 import { SessionGoalPanel } from '../session-workbench/SessionGoalPanel';
-import { ThreadItemInspector } from '../session-workbench/ThreadItemInspector';
 import {
   SessionAgentTeamCloseControl,
   SessionAgentTeamMemberControls,
@@ -25,6 +24,10 @@ import type { SessionDecisionTrace } from '../../api/domains/chat';
 import type { AgentChatMessage, ChatArtifactPart } from './chatRuntime';
 import { artifactContributorLabel, formatArtifactSize } from './ArtifactSurface';
 import { SessionDecisionHistory } from './SessionDecisionHistory';
+
+const ThreadItemInspector = React.lazy(() => import('../session-workbench/ThreadItemInspector').then((module) => ({
+  default: module.ThreadItemInspector,
+})));
 
 function isUuidLike(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
@@ -927,7 +930,9 @@ export function SessionRuntimePanel({
       </section>
       {selectedThreadItem?.audience === 'operator' && selectedThreadItem.operator_details ? (
         <div className="session-technical-drawer" role="dialog" aria-modal="false">
-          <ThreadItemInspector item={selectedThreadItem} onClose={onClearSelectedThreadItem} />
+          <React.Suspense fallback={null}>
+            <ThreadItemInspector item={selectedThreadItem} onClose={onClearSelectedThreadItem} />
+          </React.Suspense>
         </div>
       ) : null}
     </aside>

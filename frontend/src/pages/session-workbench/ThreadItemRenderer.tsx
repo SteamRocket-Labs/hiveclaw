@@ -1,5 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import {
   IconAlertTriangle,
   IconBan,
@@ -11,6 +12,7 @@ import {
 } from '@tabler/icons-react';
 
 import type { ThreadItem, ThreadItemStatus, ThreadItemType } from '../../api/domains/threadItems.generated';
+import { runtimeFailurePresentation, type RuntimeFailurePresentation } from './runtimeFailurePresentation';
 import './ThreadItemWorkbench.css';
 
 type Detail = { label: string; value: React.ReactNode };
@@ -135,6 +137,21 @@ function shouldCollapse(item: ThreadItem): boolean {
   ].includes(item.item_type);
 }
 
+function translateRuntimeFailure(t: TFunction, presentation: RuntimeFailurePresentation): string {
+  switch (presentation.kind) {
+    case 'quota_exhausted':
+      return t('sessionWorkbench.threadItem.failure.quotaExhausted', presentation.fallback);
+    case 'rate_limited':
+      return t('sessionWorkbench.threadItem.failure.rateLimited', presentation.fallback);
+    case 'retryable':
+      return t('sessionWorkbench.threadItem.failure.retryable', presentation.fallback);
+    case 'unavailable':
+      return t('sessionWorkbench.threadItem.failure.unavailable', presentation.fallback);
+    default:
+      throw new Error(`Unhandled runtime failure presentation: ${String(presentation.kind)}`);
+  }
+}
+
 export interface ThreadItemRendererProps {
   item: ThreadItem;
   selected?: boolean;
@@ -144,9 +161,12 @@ export interface ThreadItemRendererProps {
 }
 
 const USER_CONVERSATION_ITEM_TYPES = new Set<ThreadItemType>(['approval_request', 'warning', 'error', 'plan']);
+const NON_BLOCKING_STATUS_EVENTS = new Set(['memory_context_degraded']);
 
 export function shouldRenderThreadItemInConversation(item: ThreadItem, operatorView: boolean): boolean {
   if (operatorView && item.audience === 'operator') return true;
+  if (item.audience === 'operator') return false;
+  if (NON_BLOCKING_STATUS_EVENTS.has(item.event_type)) return false;
   if (USER_CONVERSATION_ITEM_TYPES.has(item.item_type)) return true;
   return Boolean(item.user_action && item.user_action.kind !== 'open_artifact');
 }
@@ -162,13 +182,18 @@ export function ThreadItemRenderer({
   const details = detailsFor(item, t).filter((detail) => detail.value !== null && detail.value !== undefined && detail.value !== '');
   const title = t(`sessionWorkbench.threadItem.type.${item.item_type}`, TITLES[item.item_type]);
   const status = t(`sessionWorkbench.threadItem.status.${item.item_status}`, item.item_status);
-  const visibleContent = item.user_summary || (item.item_type === 'approval_request'
-    ? t(
-        'sessionWorkbench.threadItem.permissionNeeded',
-        'The agent needs permission to use {{tool}}.',
-        { tool: item.item_data.tool_display_name || item.item_data.tool_name || t('sessionWorkbench.threadItem.thisTool', 'this tool') },
-      )
-    : item.content);
+  const runtimeFailure = item.item_type === 'error' && item.event_type === 'runtime_failure'
+    ? runtimeFailurePresentation(item.item_data.code, item.item_data.retryable === true)
+    : null;
+  const visibleContent = runtimeFailure
+    ? translateRuntimeFailure(t, runtimeFailure)
+    : item.user_summary || (item.item_type === 'approval_request'
+      ? t(
+          'sessionWorkbench.threadItem.permissionNeeded',
+          'The agent needs permission to use {{tool}}.',
+          { tool: item.item_data.tool_display_name || item.item_data.tool_name || t('sessionWorkbench.threadItem.thisTool', 'this tool') },
+        )
+      : item.content);
   const detailBody = details.length > 0 && (
     <dl className="thread-item-details">
       {details.map((detail) => (
@@ -193,7 +218,7 @@ export function ThreadItemRenderer({
         <span className="thread-item-status-icon" data-status={item.item_status}>{statusIcon(item.item_status, item.item_type)}</span>
         <strong>{title}</strong>
         <span className="thread-item-status-text">{status}</span>
-        <span className="thread-item-sequence">#{item.sequence}</span>
+        {item.audience === 'operator' ? <span className="thread-item-sequence">#{item.sequence}</span> : null}
         {onSelect && item.audience === 'operator' && item.operator_details ? (
           <button
             type="button"

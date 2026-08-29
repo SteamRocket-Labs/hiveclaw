@@ -516,16 +516,23 @@ class _WebChatCallbacks:
             return
         event_type = str(data.get("type") or data.get("event_type") or "")
         await _transition_for_runtime_event(state, event_type, data)
-        payload = events.build_session_native(data) if event_type in events.session_native_types else data
         await self.flush()
         if events.should_persist_runtime_event(data):
-            await events.persist_runtime_event(
+            committed = await events.persist_runtime_event(
                 agent_id=state.agent.id,
                 user_id=state.actor_user_id,
                 external_principal_id=state.actor_external_principal_id,
                 session_id=state.session_id,
                 data=data,
             )
+            if not committed:
+                return
+            audience = str((committed.get("visibility") or {}).get("audience") or "")
+            if audience and audience not in {"direct_user", "participants"}:
+                return
+            await events.broadcast(state.agent.id, state.session_id, committed)
+            return
+        payload = events.build_session_native(data) if event_type in events.session_native_types else data
         await events.broadcast(state.agent.id, state.session_id, payload)
 
     async def tool_call(self, data: dict[str, Any]) -> None:
@@ -556,18 +563,17 @@ class _WebChatCallbacks:
         state, events = self.state, self.state.ports.events
         runtime_action = events.runtime_action_from_tool_result(data)
         if runtime_action:
-            await events.persist_runtime_event(
+            committed = await events.persist_runtime_event(
                 agent_id=state.agent.id,
                 user_id=state.actor_user_id,
                 external_principal_id=state.actor_external_principal_id,
                 session_id=state.session_id,
                 data=runtime_action,
             )
-            await events.broadcast(
-                state.agent.id,
-                state.session_id,
-                events.build_session_native(runtime_action),
-            )
+            if committed:
+                audience = str((committed.get("visibility") or {}).get("audience") or "")
+                if not audience or audience in {"direct_user", "participants"}:
+                    await events.broadcast(state.agent.id, state.session_id, committed)
         if _tool_result_exits_plan_mode(data):
             state.plan_mode_submitted = True
         pause = state.ports.runtime.interactive_pause_summary(data)

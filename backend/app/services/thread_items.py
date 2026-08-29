@@ -667,8 +667,8 @@ def _item_data(item_type: str, *, event_type: str, data: dict[str, Any]) -> dict
         return {"phase": _text(data.get("phase") or data.get("status")), "reason": _text(data.get("reason"))}
     if item_type in {"warning", "error"}:
         return {
-            "code": _text(data.get("code") or data.get("error_code")),
-            "reason": _text(data.get("reason") or data.get("error")),
+            "code": _text(data.get("code") or data.get("error_code") or data.get("failure_code")),
+            "reason": _text(data.get("reason") or data.get("error") or data.get("terminal_reason")),
             "retryable": _boolean(data.get("retryable")),
             "retry_reason": _text(data.get("retry_reason")),
         }
@@ -781,6 +781,8 @@ def _user_summary(
             "cancelled": "任务已取消。",
         }.get(phase, "任务状态已更新。")
     if item_type == "warning":
+        if event_type == "memory_context_degraded":
+            return "部分记忆检索暂时不可用，本轮任务仍在继续。"
         return _text(data.get("user_summary") or data.get("message")) or "部分上下文暂时不可用，任务仍可继续。"
     if item_type == "error":
         if bool(data.get("retryable")):
@@ -805,7 +807,7 @@ def _user_action(
             "impact": "可能产生不可逆影响" if destructive else "可撤销或只读操作",
             "details": _safe_argument_details(data.get("arguments")),
         }
-    if item_type in {"warning", "error"} and bool(data.get("retryable")):
+    if item_type == "error" and bool(data.get("retryable")):
         return {
             "kind": "retry_turn",
             "label": "重试本轮",

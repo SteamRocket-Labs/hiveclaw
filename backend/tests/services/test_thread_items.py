@@ -147,6 +147,26 @@ def test_operator_thread_projection_preserves_evidence_only_in_explicit_details(
     assert item["operator_details"]["links"]["run_id"] == "33333333-3333-3333-3333-333333333333"
 
 
+def test_nonblocking_memory_degradation_has_no_turn_retry_action_or_raw_internal_copy() -> None:
+    from app.services.thread_items import build_thread_item
+
+    raw_message = "semantic retrieval is temporarily unavailable"
+    item = build_thread_item(
+        _event(
+            event_type="memory_context_degraded",
+            item_type="warning",
+            item_status="succeeded",
+            content=raw_message,
+            metadata_json={"message": raw_message, "retryable": True},
+        ),
+        audience="user",
+    )
+
+    assert item.get("user_action") is None
+    assert item["user_summary"] == "部分记忆检索暂时不可用，本轮任务仍在继续。"
+    assert raw_message not in str(item)
+
+
 @pytest.mark.parametrize(
     ("event_type", "item_type", "role"),
     [

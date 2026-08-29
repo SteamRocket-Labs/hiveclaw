@@ -1653,6 +1653,16 @@ function getHeaderStatus(
   // An interrupted trailing run is not fabricated into complete: the header
   // shows the idle session state and the run block carries the typed detail.
   if (lastRun?.timeline.status === 'interrupted') return 'idle';
+  for (let index = cells.length - 1; index >= 0; index -= 1) {
+    const cell = cells[index];
+    if (cell.kind === 'user_turn') break;
+    if (cell.kind === 'assistant_final') return 'complete';
+    if (
+      cell.kind === 'boundary'
+      && cell.message.sessionItem?.kind === 'runtime_failure'
+      && cell.message.sessionItem.scope?.level === 'run'
+    ) return 'failed';
+  }
   if (cells.length > 0) return 'complete';
   return 'idle';
 }

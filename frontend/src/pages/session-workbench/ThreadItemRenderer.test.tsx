@@ -4,6 +4,9 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (_key: string, fallback?: string | Record<string, unknown>, options?: Record<string, unknown>) => {
+      if (_key === 'sessionWorkbench.threadItem.failure.quotaExhausted') {
+        return '模型额度或余额不足，请联系管理员检查额度，或切换模型后重试。';
+      }
       const value = typeof fallback === 'string' ? fallback : String(options?.defaultValue || _key);
       return value.replace('{{status}}', String(options?.status || '')).replace('{{count}}', String(options?.count || ''));
     },
@@ -102,7 +105,7 @@ describe('ThreadItemRenderer', () => {
       item_status: 'failed',
       event_type: 'runtime_failure',
       content: '[LLM Error] AI 模型额度或余额不足，请联系管理员检查账户余额、模型额度或切换模型。',
-      user_summary: '[LLM Error] AI 模型额度或余额不足，请联系管理员检查账户余额、模型额度或切换模型。',
+      user_summary: 'Model quota or balance is insufficient. Ask an administrator to check quota, or switch models and retry.',
       audience: 'user',
       item_data: { code: 'quota_exhausted', reason: 'provider_error', retryable: true, retry_reason: null },
     } as ThreadItem;
@@ -111,6 +114,22 @@ describe('ThreadItemRenderer', () => {
     const markup = renderToStaticMarkup(<ThreadItemRenderer item={failure} onSelect={() => undefined} />);
     expect(markup).toContain('data-thread-item-type="error"');
     expect(markup).toContain('额度或余额不足');
+    expect(markup).not.toContain('Model quota or balance');
+    expect(markup).not.toContain('[LLM Error]');
+    expect(markup).not.toContain('#1');
+  });
+
+  it('keeps non-blocking memory degradation out of the conversation while retaining it for operators', () => {
+    const warning = {
+      ...item('warning'),
+      event_type: 'memory_context_degraded',
+      audience: 'user',
+      operator_details: null,
+      user_action: null,
+    } as ThreadItem;
+
+    expect(shouldRenderThreadItemInConversation(warning, false)).toBe(false);
+    expect(shouldRenderThreadItemInConversation({ ...warning, audience: 'operator' } as ThreadItem, true)).toBe(true);
   });
 
   it('shows the approval subject, safe impact, expiry, and action slot without raw governance data', () => {

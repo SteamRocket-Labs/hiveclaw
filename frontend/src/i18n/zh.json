@@ -2025,7 +2025,7 @@
       "sessionAccessDeniedBody": "你没有访问此会话的权限。",
       "sessionNotFound": "找不到此会话",
       "sessionNotFoundBody": "此会话不存在，或当前账号无法访问。",
-      "backToConversations": "返回对话列表",
+      "backToAgents": "返回数字员工",
       "canonicalCardSupplement": "Agent 补充说明",
       "fileSupport": "可上传 PDF、Word、Excel、TXT 等文件",
       "attachment": "附件",

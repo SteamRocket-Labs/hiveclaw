@@ -31,7 +31,7 @@ export function SessionAccessErrorSurface({
           : t('agent.chat.sessionNotFoundBody', 'This session does not exist or is not available to your account.')}
       </div>
       <button className="btn btn-primary agent-detail-error-action" onClick={onBack}>
-        {t('agent.chat.backToConversations', 'Back to conversations')}
+        {t('agent.chat.backToAgents', 'Back to digital employees')}
       </button>
     </div>
   );

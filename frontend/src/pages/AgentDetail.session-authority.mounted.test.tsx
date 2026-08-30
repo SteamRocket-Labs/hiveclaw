@@ -164,8 +164,8 @@ describe('AgentDetail direct-session authority presentation', () => {
     expect(screen.queryByTestId('fabricated-session-shell')).toBeNull();
     expect(mocks.getSessionMessages).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Back to conversations' }));
-    expect(mocks.navigate).toHaveBeenCalledWith('/agents/agent-1#chat', { replace: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Back to digital employees' }));
+    expect(mocks.navigate).toHaveBeenCalledWith('/agents', { replace: true });
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });

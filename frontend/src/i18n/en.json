@@ -2025,7 +2025,7 @@
       "sessionAccessDeniedBody": "You do not have access to this session.",
       "sessionNotFound": "Session not found",
       "sessionNotFoundBody": "This session does not exist or is not available to your account.",
-      "backToConversations": "Back to conversations",
+      "backToAgents": "Back to digital employees",
       "canonicalCardSupplement": "Agent supplemental notes",
       "fileSupport": "You can attach PDF, Word, Excel, and text files",
       "attachment": "Attachment",

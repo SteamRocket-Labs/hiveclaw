@@ -2631,7 +2631,7 @@ function AgentDetailInner() {
                         ) : sessionAccessError?.sessionId === String(activeSession?.id) ? (
                             <SessionAccessErrorSurface status={sessionAccessError.status} onBack={() => {
                                 sessionMsgAbortRef.current?.abort(); setActiveSession(null); setSessionAccessError(null);
-                                navigate(`/agents/${id}#chat`, { replace: true });
+                                navigate('/agents', { replace: true });
                             }} />
                         ) : pendingSessionLookup ? (
                             <SessionResolvingSurface />

@@ -4,8 +4,8 @@ owner: Rocky
 status: active
 authority: canonical-owner-decision-ledger
 last_reviewed: 2026-08-30
-source_commit: 45340a3a
-verification_status: owner-approved-execution-control-model
+source_commit: 228682e5
+verification_status: owner-approved-execution-control-and-skill-boundary
 ---
 
 # Owner 决策账本
@@ -29,6 +29,7 @@ verification_status: owner-approved-execution-control-model
 | DEC-009 | 把巨型 WIP 重构为索引化文档组 | 2026-08-30 本次授权只覆盖文档与验收结构；旧 WIP 归档并保留兼容跳转 |
 | DEC-010 | 一个 Goal 管最终目标，GitHub Issues 管工作包，`agent-delegate` 管无状态执行 | 每个 Issue 绑定一个 fresh finding、exact base commit 和隔离 Git worktree；默认不复用 ACP worker session，也不再建设第二套语义 supervisor/state machine |
 | DEC-011 | Codex 保留验收、集成和远程状态权威 | Kimi/zCode 不关闭 Issue、不改 Journey/Finding/Evidence verdict、不 commit/push/deploy、不接触生产或凭据；修正轮次使用引用既有 diff/review 事实的新工作包 |
+| DEC-012 | 当前 `agent-delegation` Skill 是唯一派发协议 | Goal 不复制队列状态，Issue 不复制授权协议，验收文档不另造 ACP supervisor；Skill 管授权继承、无状态调用、chain、timeout 和 receipt。`cwd` 不是 sandbox，只读与实现权限分开，未授权 commit effects 必须停在 worker 外 |
 
 ## 当前动作权限
 

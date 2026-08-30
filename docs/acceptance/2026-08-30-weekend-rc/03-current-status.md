@@ -4,15 +4,15 @@ owner: Codex
 status: active
 authority: canonical-working-state
 last_reviewed: 2026-08-30
-source_commit: 45340a3a
-verification_status: execution-control-structurally-verified-remote-baseline-pending
+source_commit: 228682e5
+verification_status: control-layer-and-provider-smokes-verified-manifest-review-next
 ---
 
 # 当前状态与唯一下一动作
 
 [返回索引](README.md) · [旅程账本](04-journey-ledger.md) · [Findings](05-findings.md) · [Runbook](06-runbook-and-release-gates.md)
 
-> 文档重构已完成；owner 已批准执行控制模型并启动唯一 Goal。产品旅程尚未开始，production manifest 尚未冻结。
+> 文档重构、远程控制层和真实 delegation smoke 已完成；owner 已批准精简执行模型。产品旅程尚未开始，production manifest 尚未冻结。
 
 ## 当前目标与可观察 Done
 
@@ -24,10 +24,12 @@ verification_status: execution-control-structurally-verified-remote-baseline-pen
 
 | 事实 | 当前值 | 证据等级 |
 |---|---|---|
-| checkout | `HEAD/main/origin/main = 45340a3a` | 本轮本地已核验 |
+| 已推送控制基线 | `228682e53eb9f9dee1a0a97a57c8dd41df2d176a` | 本轮 commit + `origin/main` push 已核验 |
 | active Goal | Codex Goal `01a05189-c369-75f0-a720-ffe16136644f`，状态 `active` | 本轮 Goal API 已核验 |
-| execution roles | Codex 总控/验收；Kimi Code 前端；zCode 后端 | owner 2026-08-30 已批准，见 DEC-008～DEC-011 |
-| delegation readiness | `agent-delegate doctor = ok`；Kimi `1.49.0`，zCode ACP `0.1.0+ultra.zcode.0.16.5` | 本轮本地已核验；只证明 registry/version，不证明真实 task |
+| execution roles | Codex 总控/验收；Kimi Code 前端；zCode 后端 | owner 2026-08-30 已批准，见 DEC-008～DEC-012 |
+| delegation protocol | `agent-delegation` Skill `0.1.2` 是唯一派发/授权/receipt 协议；`cwd` 不宣称为 sandbox | owner 2026-08-30 已批准 |
+| delegation readiness | doctor `ok`；Kimi `1.49.0`、zCode ACP `0.1.0+ultra.zcode.0.16.5` 的 stateless read-only correction smoke 均 `exit=0`、零 protocol error、零 worktree diff | receipt `0443f540…` / `9b15c8f7…`；Codex 独立核对包名、版本和 exact commit |
+| GitHub 控制层 | milestone [#1](https://github.com/SteamRocket-Labs/hiveclaw/milestone/1)、umbrella Issue [#3](https://github.com/SteamRocket-Labs/hiveclaw/issues/3)、7 个 RC role/state labels | 本轮远程 readback 已核验；不构成 acceptance truth |
 | 旧 WIP archive | 原 5,685 行、约 1.29 MB，完整迁移并增加 archive warning | 本轮本地已核验 |
 | 当前 production 业务提交 | `eb61d468221aa22a4f22c1d96353baadef3b51e6` | 从旧账当前快照迁移；本次未重新查询 Railway |
 | Session terminal/failure | 旧账记录 §7.77/§7.78 已部署并完成 signed-in 双遍 | 历史证据；不外推整体 RC |
@@ -76,8 +78,10 @@ verification_status: execution-control-structurally-verified-remote-baseline-pen
 - 已更新 `docs/README.md`，并增加纯结构架构测试。
 - owner 已批准一个 Goal + GitHub Issue work packet + stateless `agent-delegate` + isolated worktree 的执行模型。
 - 已启动唯一 Goal；已明确 Codex/Kimi/zCode 权限边界、独立验收和上下文隔离合同。
-- `agent-delegate doctor --json` 当前为 `ok`；Kimi/zCode 的真实 no-write provider smoke 仍待执行。
-- 已新增 Weekend RC Issue form，并修正现有 Issue template 的旧仓库链接；尚未写入远程 GitHub。
+- 验收文档与 Issue form 已原子提交并 push 为 `228682e5`；用户已有 dirty/untracked 内容未进入提交。
+- 已建立远程 RC milestone、labels 和 umbrella Issue；它们只承担队列/审计，不拥有 verdict。
+- 首轮 smoke 因 worker 请求 `git rev-parse` execute 权限而在 `approve-reads` 下正确 fail-closed；新无状态 correction packet 仅使用 read-file 后，Kimi/zCode 均成功，两个临时 worktree 保持零改动并已安全移除。
+- owner 已进一步批准：Goal 只管最终 Done/停止条件，Skill 管派发协议，Issue 管工作包，Codex 独占验收/集成/生产 E2E。
 
 ## 最近验证
 
@@ -87,18 +91,19 @@ verification_status: execution-control-structurally-verified-remote-baseline-pen
 - task-state resolve：`docs/acceptance/2026-08-30-weekend-rc/03-current-status.md`。
 - active 文档合计约 1,300 行，单文件最大 117 行；历史 5,000+ 行内容只存在 archive。
 - `git diff --check`：通过。
-- 当前 checkout 再核验：`HEAD = main = origin/main = 45340a3a`。
+- 控制基线核验：`HEAD = main = origin/main = 228682e5`（本状态更新前）。
 - Weekend document group + existing atomic manifest architecture tests：**15 passed**（包含 execution-control 与 Issue form 新合同）。
 - 新 Python test：Ruff check/format passed；全部 Issue Form YAML 可解析；task-state resolve 与 `git diff --check` passed。
+- Kimi correction receipt `0443f540…` 与 zCode correction receipt `9b15c8f7…`：`status=success`、`exit=0`、无 permission/execute/write 事件；Codex 独立读取验证 `hiveclaw-frontend 0.1.0` / `hive-backend 0.1.0`。
 
 ## 唯一下一动作
 
-运行 execution-control 文档结构、链接、Ruff 和 diff 验证；通过后原子提交并 push 验收基线，建立 GitHub RC milestone/labels/umbrella Issue，再从同一 exact commit 分别执行 Kimi/zCode 的隔离 no-write smoke。随后 owner 过稿 PDEC-001～PDEC-006 和候选分母，冻结 production manifest，进入 Gate 0。
+与 owner 过稿 [02-owner-decisions.md](02-owner-decisions.md) 的 PDEC-001～PDEC-006 和 [04-journey-ledger.md](04-journey-ledger.md) 的 35 个候选组；确认后把 aggregate 候选展开为可独立计分的 production manifest 并冻结，随后才进入 Gate 0 和第一条真实 E2E。
 
 ## Not Done / Do Not Redo
 
 - 未冻结 production journey manifest，未计算 NPTCR 或 Evidence Coverage Score。
-- 未执行真实 Kimi/zCode task、新业务代码/UI 修改、测试全量、commit、push、远程 GitHub 写入、Railway 部署或生产写入。
+- 仅完成 Kimi/zCode 只读 smoke；未派实现 task，未修改业务代码/UI，未跑测试全量、Railway 部署或生产写入。
 - 未重新验证 provider、Hive Connect 或生产三服务状态。
 - 不触碰 pre-existing `.ultra/.runtime/compact-snapshot.md`、`bp-kingdee/`、`output/`、root `package*.json`、`tmp/pdfs/` 等用户工作树内容。
 - 不把 archive 中某个历史 `PASS` 自动迁移成当前 aggregate `Closed loop`。

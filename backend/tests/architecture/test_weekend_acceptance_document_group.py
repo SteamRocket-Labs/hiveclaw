@@ -149,12 +149,16 @@ def test_execution_control_contract_is_explicit_and_non_semantic() -> None:
 
     assert "Kimi Code 负责前端，zCode 负责后端" in decisions
     assert "Codex 是唯一验收总控" in decisions
+    assert "当前 `agent-delegation` Skill 是唯一派发协议" in decisions
     assert "取消 zCode/Kimi 分工" not in decisions
     assert "GitHub Issue 只是" in index
     assert "都不是 Journey/Finding verdict" in index
     assert "agent-delegate" in runbook
     assert "无状态 packet" in runbook
     assert "隔离 worktree" in runbook
+    assert "`cwd` 只是上下文，不是 OS sandbox" in runbook
+    assert "approve-all" in runbook
+    assert "--authorization-note" in runbook
     assert "exit=0` 只表示 transport 成功" in runbook
 
 

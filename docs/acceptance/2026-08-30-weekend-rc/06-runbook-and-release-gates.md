@@ -4,8 +4,8 @@ owner: Codex
 status: active
 authority: canonical-execution-and-release-gate
 last_reviewed: 2026-08-30
-source_commit: 45340a3a
-verification_status: execution-control-approved-manifest-review-pending
+source_commit: 228682e5
+verification_status: execution-control-and-skill-boundary-approved-manifest-review-pending
 ---
 
 # 12 小时 Runbook 与 Release Gates
@@ -13,6 +13,8 @@ verification_status: execution-control-approved-manifest-review-pending
 [返回索引](README.md) · [Owner 决策](02-owner-decisions.md) · [Journey Ledger](04-journey-ledger.md) · [Evidence 合同](evidence/README.md)
 
 本文件规定执行顺序和机械发布门，不拥有产品语义、旅程状态或实际结果。
+
+当前安装的 `agent-delegation` Skill 是 delegation mechanics 的唯一权威；本 Runbook 只增加 Hive 的角色分工、Finding 前置条件和验收门，不复制或改写 Skill 的授权继承、chain、permission、timeout、receipt 与恢复语义。两者冲突时，Skill 管派发协议，本目录管产品 acceptance。
 
 ## 执行控制模型
 
@@ -30,11 +32,12 @@ verification_status: execution-control-approved-manifest-review-pending
 每个 worker 调用必须满足：
 
 1. Codex 先 fresh reproduce，并把 Finding ID、Journey ID、exact base commit、最早错误状态、目标、included/excluded scope、验收命令和失败探针写入 Issue。
-2. 从 exact base 创建单 Issue 隔离 worktree；通过 `agent-delegate run --to <kimi|zcode> --cwd <absolute-worktree> --task-file <packet> --timeout <finite-seconds> --permissions approve-reads` 发起无状态 packet。需要写代码时，只授予该 worktree 内明确路径的最小权限，不复用 persistent ACP session。
-3. 最多并行两个互不重叠的 packet：一个 Kimi frontend、一个 zCode backend。跨层 contract 变更按权威层先后串行，禁止并发修改同一协议或文件。
-4. 完整 events/stderr/result 留在 receipt 目录；父上下文只消费目标、exit/timeout、changed paths、tests、risks 和 blocker 摘要。`exit=0` 只表示 transport 成功。
-5. Codex 直接检查当前源码、Git diff、live-entry wiring、failing-first test 和完整相关 gate；失败则创建引用旧 diff/review 事实的新 correction packet，不把旧 worker 对话继续带入。
-6. Codex 复核通过后才原子集成、更新 Finding/Status/Issue；生产 Gate 通过后才允许 `Closed`。下一轮从 canonical docs 重新派发。
+2. 从 exact base 创建单 Issue 隔离 worktree，按当前 Skill 发起 fixed-cwd、finite-timeout 的无状态 packet，不复用 persistent ACP session。研究/只读 smoke 使用 `approve-reads`；owner 已授权的本地实现包才可用 `approve-all` 和必要的 `--terminal`，并必须用 `--authorization-note` 写明“仅限该 finding 的本地编辑与测试”。
+3. `cwd` 只是上下文，不是 OS sandbox。Delegation envelope 必须把 commit/push/network publish/deploy/production/credential/billing/destructive/irreversible effects 列为未下放的 commit gates；worker 可完成无副作用准备，但必须停在这些效果前。需要更强隔离而当前 host 无法提供时，不派包。
+4. 最多并行两个互不重叠的 packet：一个 Kimi frontend、一个 zCode backend。跨层 contract 变更按权威层先后串行，禁止并发修改同一协议或文件。
+5. 完整 events/stderr/result 留在 receipt 目录；父上下文只消费目标、exit/timeout、changed paths、tests、risks 和 blocker 摘要。`exit=0` 只表示 transport 成功。
+6. Codex 直接检查当前源码、Git diff、live-entry wiring、failing-first test 和完整相关 gate；失败则创建引用旧 diff/review 事实的新 correction packet，不把旧 worker 对话继续带入。
+7. Codex 复核通过后才原子集成、更新 Finding/Status/Issue；生产 Gate 通过后才允许 `Closed`。下一轮从 canonical docs 重新派发。
 
 禁止用 Hive Dynamic Workflow 来验收 Hive 自己，也不增加第二套 semantic supervisor、shadow ledger 或 worker-owned truth。Goal 负责持续性，Issue 负责排队，文档负责语义，Git/测试负责代码事实，evidence 负责生产事实。
 

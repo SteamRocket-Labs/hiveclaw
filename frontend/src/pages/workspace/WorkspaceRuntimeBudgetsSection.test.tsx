@@ -109,6 +109,28 @@ describe('WorkspaceRuntimeBudgetsSection', () => {
     expect(html).toContain('Approve');
   });
 
+  it('labels active fallback rows as recent runtime activity', () => {
+    runData = [
+      {
+        ...exhaustedRun,
+        status: 'active',
+        terminal_reason: null,
+        user_status: 'Running',
+        user_reason: 'Run is progressing normally',
+        user_next_action: 'Wait for the current run',
+      },
+    ];
+
+    const html = renderToStaticMarkup(<WorkspaceRuntimeBudgetsSection />);
+
+    expect(html).toContain('<h3>Recent runs</h3>');
+    expect(html).toContain('Recent runtime activity; active runs can be paused here.');
+    expect(html).toContain('Run is progressing normally');
+    expect(html).toContain('Wait for the current run');
+    expect(html).not.toContain('System safeguard intervened');
+    expect(html).not.toContain('<h3>Protected runs</h3>');
+  });
+
   it('shows built-in enforcement as active when no tenant override exists', () => {
     policyData = [];
 

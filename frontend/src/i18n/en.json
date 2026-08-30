@@ -3137,6 +3137,8 @@
     "summaryCacheMiss": "Cache miss",
     "approveContinue": "Approve",
     "stopRun": "Stop",
+    "recentRuns": "Recent runs",
+    "recentRunsDesc": "Recent runtime activity; active runs can be paused here.",
     "emptyRuns": "No runtime budget runs yet.",
     "confirmDelivered": "Confirm delivered",
     "deliveryDecisionRecorded": "The user-facing status is recorded; external delivery needs an operator decision.",

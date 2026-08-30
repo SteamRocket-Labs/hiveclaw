@@ -220,6 +220,8 @@ def _user_status(status_value: str) -> str:
 
 def _user_reason(status_value: str, terminal_reason: str | None) -> str:
     reason = terminal_reason or ""
+    if status_value == "active":
+        return "运行正在正常进行"
     if status_value == "waiting_budget_approval":
         return "运行额度已达上限，正在等待管理员批准"
     if status_value == "resuming":

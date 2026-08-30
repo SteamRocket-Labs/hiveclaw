@@ -220,6 +220,8 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
       run.status,
     ),
   );
+  const visibleRuns = protectedRuns.length > 0 ? protectedRuns : runs.slice(0, 5);
+  const showingProtectedRuns = protectedRuns.length > 0;
   const deliveryIssues = deliveryIssuesQuery.data || [];
 
   const invalidate = () => {
@@ -440,13 +442,21 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
         <div className="card workspace-runtime-card">
           <div className="workspace-runtime-card-header">
             <div>
-              <h3>{t('runtimeBudgets.protectedRuns', 'Protected runs')}</h3>
-              <p>{t('runtimeBudgets.protectedRunsDesc', 'Recent runs paused or stopped by the runtime guard.')}</p>
+              <h3>
+                {showingProtectedRuns
+                  ? t('runtimeBudgets.protectedRuns', 'Protected runs')
+                  : t('runtimeBudgets.recentRuns', 'Recent runs')}
+              </h3>
+              <p>
+                {showingProtectedRuns
+                  ? t('runtimeBudgets.protectedRunsDesc', 'Recent runs paused or stopped by the runtime guard.')
+                  : t('runtimeBudgets.recentRunsDesc', 'Recent runtime activity; active runs can be paused here.')}
+              </p>
             </div>
-            <span className="badge badge-warning">{protectedRuns.length}</span>
+            <span className="badge badge-warning">{visibleRuns.length}</span>
           </div>
           <div className="workspace-runtime-run-list">
-            {(protectedRuns.length > 0 ? protectedRuns : runs.slice(0, 5)).map((run) => (
+            {visibleRuns.map((run) => (
               <div key={run.id} className="workspace-runtime-run-row">
                 <div>
                   <div className="workspace-runtime-run-title">
@@ -477,7 +487,7 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
                 </div>
               </div>
             ))}
-            {!runsQuery.isLoading && runs.length === 0 && (
+            {!runsQuery.isLoading && visibleRuns.length === 0 && (
               <div className="workspace-runtime-empty">
                 <IconAlertTriangle size={16} stroke={1.7} />
                 {t('runtimeBudgets.emptyRuns', 'No runtime budget runs yet.')}

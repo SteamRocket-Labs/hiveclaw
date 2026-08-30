@@ -3137,6 +3137,8 @@
     "summaryCacheMiss": "非缓存 Token",
     "approveContinue": "允许继续",
     "stopRun": "暂停",
+    "recentRuns": "最近运行",
+    "recentRunsDesc": "最近的运行活动；正在运行的任务可在此暂停。",
     "emptyRuns": "还没有运行保护记录。",
     "confirmDelivered": "确认已送达",
     "deliveryDecisionRecorded": "面向用户的状态已记录；外部送达仍需运营决策。",

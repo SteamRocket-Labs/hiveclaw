@@ -386,6 +386,12 @@ def test_runtime_budget_waiting_status_has_user_semantics():
     assert _user_next_action("waiting_budget_approval") == "你可以继续其他工作；管理员批准后本任务会自动恢复"
 
 
+def test_runtime_budget_active_status_does_not_claim_safeguard_intervention():
+    from app.api.runtime_budgets import _user_reason
+
+    assert _user_reason("active", None) == "运行正在正常进行"
+
+
 def test_runtime_budget_delivery_reconciliation_is_admin_scoped_and_explicit():
     fake_service = _FakeRuntimeBudgetService()
     client, user, fake_outbox = _client(fake_service)

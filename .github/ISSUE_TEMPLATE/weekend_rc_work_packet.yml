@@ -1,0 +1,87 @@
+name: "Weekend RC Work Packet"
+description: A bounded implementation packet derived from a freshly reproduced Weekend RC finding
+title: "[Weekend RC] "
+labels: ["rc:weekend"]
+body:
+  - type: input
+    id: finding_id
+    attributes:
+      label: Finding ID
+      description: Canonical ID from the Weekend RC finding ledger.
+      placeholder: UI-CMD-001
+    validations:
+      required: true
+
+  - type: input
+    id: journey_ids
+    attributes:
+      label: Journey IDs
+      description: Frozen production journey IDs covered by this packet.
+      placeholder: PJ-03
+    validations:
+      required: true
+
+  - type: dropdown
+    id: worker
+    attributes:
+      label: Worker
+      options:
+        - Kimi Code — frontend
+        - zCode — backend
+        - Codex — integration or cross-layer review
+    validations:
+      required: true
+
+  - type: input
+    id: base_commit
+    attributes:
+      label: Exact base commit
+      placeholder: 40-character Git SHA
+    validations:
+      required: true
+
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective and observable Done
+      description: One outcome only; state what a novice user can observe when fixed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Fresh reproduction
+      description: Persona, entry, input, expected, actual, and earliest wrong state.
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Included and excluded scope
+      description: Exact paths, contracts, side effects, and explicit non-goals.
+    validations:
+      required: true
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation and failure probes
+      description: Failing-first, focused, cross-domain, full gates, recovery, and negative authority checks.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: authority
+    attributes:
+      label: Authority and isolation contract
+      options:
+        - label: Codex freshly reproduced this finding and recorded the earliest wrong state.
+          required: true
+        - label: This packet will run statelessly in one isolated Git worktree.
+          required: true
+        - label: The worker cannot self-accept, close the finding, commit, push, deploy, or edit canonical verdict/evidence.
+          required: true
+        - label: This packet grants no production, credential, billing, destructive, or irreversible effect.
+          required: true

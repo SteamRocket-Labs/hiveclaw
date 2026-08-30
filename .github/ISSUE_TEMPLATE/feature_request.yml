@@ -6,7 +6,7 @@ body:
     attributes:
       label: Pre-checks
       options:
-        - label: I have searched [existing issues](https://github.com/dataelement/hive-agents/issues) and this is not a duplicate.
+        - label: I have searched [existing issues](https://github.com/SteamRocket-Labs/hiveclaw/issues) and this is not a duplicate.
           required: true
 
   - type: textarea

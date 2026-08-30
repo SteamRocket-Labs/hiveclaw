@@ -1,9 +1,10 @@
 # Hive 文档当前地图
 
-> 状态：2026-07-14 当前文档入口。`docs/` 根目录同时存在被 Git 跟踪的 canonical 文档与本地设计稿；是否可作为工程真相必须看本文标注、文档状态和 current-checkout 证据，不能只看文件是否存在。
+> 状态：2026-08-30 当前文档入口。`docs/` 根目录同时存在被 Git 跟踪的 canonical 文档与本地设计稿；是否可作为工程真相必须看本文标注、文档状态和 current-checkout 证据，不能只看文件是否存在。
 
 ## 当前真相入口
 
+- `acceptance/2026-08-30-weekend-rc/README.md` — 当前 Weekend RC 整体验修的唯一导航入口：North Star、owner decisions、current status、journey ledger、findings、runbook、六个领域验收标准与 exact-commit evidence 分账；旧 5,685 行 WIP 已归档，原路径只保留兼容跳转。
 - `ccplus-unclosed-gap-register-2026-06-27.md` — 上线前未闭环阻断项登记表：当前登记表内阻断项已清零，保留 `/compact`/`/rewind` next-turn context、workspace rewind、hidden commands、Hooks/MCP/Skill/Dynamic Workflow、Sub-agent/Agent Team 和 Background completion wake 的关闭证据。
 - `ccplus-session-checkpoint-branch-ui-upgrade-plan-2026-06-27.md` — Session checkpoint / rewind / branch 的后续 UI/UX 升级方案：在基础 `SessionCommandControlPanel` 已闭合后，规划 checkpoint timeline rail、active head、rewound tail、branch graph、compact marker、Session Inspector 等体验深化。
 - `ccplus-final-prelaunch-convergence-master-plan-2026-06-27.md` — 上线前最后一轮 CCPlus 优化统领入口：把 Session Control Spine、AgentTool/Sub-agent/Completion Bus、Agent Team/A2A Session-first、TurnEnvelope/Workbench/Hooks/Skill/MCP 四条主线统一成一个执行顺序和验收口径；2026-06-27 最终收口后，是否出现新断点仍以 gap register 为准。

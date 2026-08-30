@@ -831,7 +831,7 @@ async def test_failed_invocation_threads_typed_failure_payload_to_terminal_final
     carrying the status-first typed failure facts must hand a machine
     failure payload to the terminal finalizer so the canonical
     runtime_failure terminal event can carry run_id + failure_code.  The
-    legacy live runtime_failure frame stays byte-identical."""
+    finalizer remains the sole owner of the live terminal envelope."""
 
     from app.kernel.contracts import TerminalReason
     from app.services import web_chat_run_orchestrator as orchestrator
@@ -894,14 +894,10 @@ async def test_failed_invocation_threads_typed_failure_payload_to_terminal_final
         # Nothing here authorizes automatic replay.
         "retryable": True,
     }
-    # The legacy live frame is unchanged and still carries no assistant content.
-    assert {
-        "type": "runtime_failure",
-        "status": "failed",
-        "reason": TerminalReason.PROVIDER_ERROR.value,
-        "retryable": True,
-    } in broadcasts
-    assert all("content" not in event for event in broadcasts if event.get("type") == "runtime_failure")
+    # The terminal finalizer owns the committed canonical live envelope. The
+    # orchestrator must not add an unscoped compatibility failure card beside
+    # it; a fake finalizer therefore produces no secondary live frame here.
+    assert broadcasts == []
 
 
 def _failure_finalize_harness(finalize_calls: list[dict]) -> SimpleNamespace:
@@ -976,14 +972,7 @@ async def test_missing_model_pre_invocation_carries_canonical_failure_payload():
         "message": "",
         "retryable": False,
     }
-    assert broadcasts == [
-        {
-            "type": "runtime_failure",
-            "status": "unavailable",
-            "reason": "llm_model_missing",
-            "retryable": False,
-        }
-    ]
+    assert broadcasts == []
 
 
 @pytest.mark.asyncio

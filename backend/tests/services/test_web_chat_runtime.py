@@ -6065,13 +6065,10 @@ async def test_execute_web_chat_run_persists_typed_failure_without_platform_auth
         }
     ]
     assert updates == []
-    assert {
-        "type": "runtime_failure",
-        "status": "failed",
-        "reason": expected_reason,
-        "retryable": True,
-    } in broadcasts
-    assert all("content" not in event for event in broadcasts if event.get("type") == "runtime_failure")
+    # The terminal finalizer owns the canonical failure envelope. This harness
+    # replaces it with a fake, so the orchestrator must not publish a second,
+    # identity-free compatibility failure frame.
+    assert all(event.get("type") != "runtime_failure" for event in broadcasts)
     # The RuntimePhase backstop settles the stream after the visible error event.
     phase_broadcasts = [event for event in broadcasts if event.get("type") == "phase"]
     assert phase_broadcasts[-1]["phase"] == "failed"

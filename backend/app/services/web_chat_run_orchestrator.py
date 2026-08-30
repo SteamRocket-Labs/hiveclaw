@@ -407,7 +407,7 @@ async def _handle_pre_invocation_terminal(state: _WebChatRunState) -> bool:
     if state.llm_model is not None:
         return False
     state.terminal_phase_hint = RuntimePhase.FAILED
-    finalized = await state.ports.terminal.finalize_without_assistant(
+    await state.ports.terminal.finalize_without_assistant(
         run_uuid=state.run_uuid,
         agent_id=state.agent.id,
         session_id=state.session_id,
@@ -423,17 +423,6 @@ async def _handle_pre_invocation_terminal(state: _WebChatRunState) -> bool:
         failure=_llm_model_missing_failure_payload(),
         **_file_change_kwargs(state),
     )
-    if finalized:
-        await state.ports.events.broadcast(
-            state.agent.id,
-            state.session_id,
-            {
-                "type": "runtime_failure",
-                "status": "unavailable",
-                "reason": "llm_model_missing",
-                "retryable": False,
-            },
-        )
     return True
 
 
@@ -1288,7 +1277,7 @@ async def _finalize_assistant_response(
             )
         return
     if status != "completed":
-        finalized = await state.ports.terminal.finalize_without_assistant(
+        await state.ports.terminal.finalize_without_assistant(
             run_uuid=state.run_uuid,
             agent_id=state.agent.id,
             session_id=state.session_id,
@@ -1298,17 +1287,6 @@ async def _finalize_assistant_response(
             failure=_terminal_failure_payload(result, status, metadata),
             **_file_change_kwargs(state),
         )
-        if finalized:
-            await state.ports.events.broadcast(
-                state.agent.id,
-                state.session_id,
-                {
-                    "type": "runtime_failure",
-                    "status": status,
-                    "reason": metadata.get("terminal_reason"),
-                    "retryable": status != "killed",
-                },
-            )
         return
     try:
         finalized = await state.ports.terminal.finalize_with_assistant(
@@ -1542,16 +1520,6 @@ async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> N
             status="failed",
             reason="runtime_exception",
             extra_metadata=metadata,
-        )
-        await state.ports.events.broadcast(
-            agent.id,
-            session_id,
-            {
-                "type": "runtime_failure",
-                "status": "failed",
-                "reason": failure.terminal_reason,
-                "retryable": True,
-            },
         )
     except Exception as terminal_exc:
         await _handle_terminal_persistence_failure(state, exc, terminal_exc)

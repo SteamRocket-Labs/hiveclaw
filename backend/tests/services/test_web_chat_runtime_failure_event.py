@@ -142,7 +142,7 @@ async def test_missing_model_pre_invocation_persists_canonical_terminal_event(
         agent_id=agent_id,
         session_id=session_id,
     )
-    _install_finalizer_fakes(owner_sessionmaker, monkeypatch, tenant_id=tenant_id)
+    canonical_broadcasts = _install_finalizer_fakes(owner_sessionmaker, monkeypatch, tenant_id=tenant_id)
     live_frames: list[dict] = []
 
     async def capture_live_frame(_agent_id, _session_id, event):
@@ -190,14 +190,10 @@ async def test_missing_model_pre_invocation_persists_canonical_terminal_event(
             "failure_code": "llm_model_missing",
             "delivery_state": "unavailable",
         }
-    assert live_frames == [
-        {
-            "type": "runtime_failure",
-            "status": "unavailable",
-            "reason": "llm_model_missing",
-            "retryable": False,
-        }
-    ]
+    assert len(canonical_broadcasts) == 1
+    assert canonical_broadcasts[0]["kind"] == "runtime_failure.recorded"
+    assert canonical_broadcasts[0]["payload"]["failure_code"] == "llm_model_missing"
+    assert live_frames == []
 
 
 @pytest.mark.asyncio

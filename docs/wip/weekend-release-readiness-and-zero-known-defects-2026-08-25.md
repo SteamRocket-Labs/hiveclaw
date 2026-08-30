@@ -8,7 +8,7 @@
 >
 > 实施分工：**owner 已于 2026-08-29 改为 Codex 独立完成代码、review、test、证据、commit/push、部署与生产验收；不再委派 zCode/Kimi**
 >
-> 当前业务代码基线：生产提交 `de66ac4e`；其后的本地提交截至开工时未改变 `backend/app` 与 `frontend/src`
+> 当前业务代码基线：生产已部署 Session terminal correction `8c1ac7cd`；本地另有 §7.78 的 bounded canonical-failure correction，尚未 commit/push/deploy
 >
 > 目标时间：owner 确认开工后的两个工作日内形成可供周末测试的 Release Candidate
 
@@ -41,6 +41,8 @@
 ### 0.2 当前八项唯一验收看板（2026-08-29）
 
 本表是压缩、重启或长时执行后的第一恢复入口。每次继续工作先读本表和对应专题节；每完成一个 bounded 包，按“测试 → 文档证据 → 原子 commit/push → 需要时三服务部署 → signed-in 生产复验”更新本表。生产失败只新开一个指向**最早错误状态**的缺陷包；同一合同连续两遍 clean pass 即关账，不做邻近重构或无限补丁。
+
+> **2026-08-30 Session 热修恢复覆盖**：§7.77 的 `8c1ac7cd` 已 push 并完成三服务 exact deploy，fresh P1 已证明“新建即干净页”和持续运行 95 秒不再闪烁；同一 P1 在真实 MiniMax rate limit 终局又暴露 §7.78：live 同时出现 legacy generic 与 canonical typed 两张 failure card，reload 后只剩 canonical 一张。§7.78 已 failing-first 并本地 GREEN，当前唯一动作是 commit/push、三服务 exact deploy、随后两个 fresh Session 各做 live + reload clean pass。此段覆盖下表 #1 中仍写“§7.77 待部署”的旧恢复摘要；在 §7.78 production 双遍前，Session 仍为 **Reopened / Partial loop**。
 
 | # | 用户验收面 | 当前已证明 | 未完成 / 下一唯一动作 | 当前状态 |
 |---|---|---|---|---|
@@ -4934,6 +4936,20 @@ Codex 经 Railway backend SSH 在只读 transaction 中仅查询精确 Agent/Ses
 **本地 GREEN 与 review 证据**：missing-model unit **1 passed**；真 PostgreSQL terminal/outbox/reload/legacy repair bundle **4 passed**；terminal/failure/active-run focused **42 passed**；完整 orchestrator + runtime-failure 文件 **32 passed**；完整 `test_web_chat_runtime.py` **124 passed**；active-run API **22 passed / 1 pre-existing Starlette warning**。frontend Session replay/socket/timeline/i18n focused **8 files / 287 passed**；frontend full **152 files / 1141 passed**；i18n node **9/9**、inventory 233、en=zh=3984、所有 gates 0；Ruff `All checks passed`、`git diff --check` clean。`tsc + vite build` 7393 modules，AgentDetail **370199/380000 bytes、103303/115000 gzip**，vendor **591449/620000 bytes、186969/200000 gzip**，两个 budget 均 PASS。
 
 **七原子与当前 verdict**：Input 为 signed-in 当前 Session 与 missing-model accepted turn；Authority 为现有 tenant/user/Agent/Session/run 绑定，恢复只读 server-derived authority 后对同 Session canonical event 写入；Execution 唯一走既有 terminal writer / active-run reconciliation；Evidence 为 owner 录屏、15 秒 DOM 采样、backend-api poll、只读 DB terminal gap、RED→GREEN 与真 PG transcript/outbox；Recovery 为 locked exact-code backfill、重复 poll 幂等、reload replay；Consumption 为稳定本地化 failure card、无 Stop/伪 running/raw code；Acceptance 当前已本地闭合但 production 尚运行 `14f4b0f6`，故仅 **PASS — Verified locally / Partial loop**。下一步只做本包原子 commit/push、同一 committed archive 的 backend/backend-api/frontend 三服务部署；部署后在原受损 Session 做 immediate + 20 秒稳定采样与 hard reload equality，再从 sidebar 新建 fresh clean Session、发送一次 missing-model turn并连续两遍验证“干净首屏 → 恰一用户输入 → 恰一稳定 failure card → 0 running/0 waiting/0 Stop → reload 同构”。production 双遍前 #1 不重新 Closed；回滚为 revert 本包 commit 并三服务 redeploy，无 schema、凭据、配置或不可逆数据操作。
+
+### 7.78 WEEKEND-SESSION-CANONICAL-FAILURE-034 — 同一 run 的失败只允许一张权威卡（2026-08-30，production RED / local GREEN，待部署）
+
+**§7.77 首次部署与 production P1**：correction commit `8c1ac7cd` 已 push 到 `SteamRocket-Labs/hiveclaw/main`，并由该 exact Git archive 部署：backend `8c21bf47-676b-4a11-8615-0bcf96817c79`、backend-api `f8e9944b-3ec3-48e7-b5fd-e8026c9540e6`、frontend `3a0ca107-d1af-426c-8e1f-a57b49f30082`，三者均 `SUCCESS`；public health、daemon、strict RLS、Sandbox probe 30/30、frontend HTTP 与 asset `/assets/index-Di5vwhvW.js` 均通过。signed-in production 从 EventPilot sidebar 的真实“新建对话”入口进入时，URL 尚无 Session id、timeline 为空、Header 为 `Session 08-30 14:31`、0 running / 0 waiting，证明 owner 所要求的“添加时进入干净页面”已经恢复，不再携带旧对话或旧过程面板。
+
+P1 只发送一次 marker `SESSION_STABILITY_P1_20260830`，原子生成 Session `29390ec4-dc9c-4284-8bb6-2cf43f1786d7`、run `8945b634-8b71-59b8-ae26-6f843eb6e4c7`、turn `turn-138d507f698e56159ec7109f368bf55c`。运行中 41 + 61 + 81 轮 DOM 采样覆盖约 95 秒，Header、过程块、Stop 与右栏持续保持同一个 running state，状态变化次数为 0；§7.77 的“completed ↔ running”整页闪烁没有再现。该真实 MiniMax M3 调用随后被 provider rate limit 终止，`/runs/active` 只发生一次 `running → null`；canonical transcript sequence 17 为 `result_commit.failed`（`error_class=rate_limited`、`delivery_state=rejected`、`retry_safe=true`），sequence 18 为同 run 的 `runtime_failure.recorded`（`failure_code=rate_limited`、`retryable=true`），机械终局正确且 reload 可恢复。
+
+**新的 production RED 与最早错误状态**：live 终局瞬间出现两张用户错误卡：先是一张 generic“模型服务暂时不可用”，随后是一张准确的“模型服务当前繁忙，请稍后重试，或切换模型后再试”；hard reload 后只有后者，证明 durable transcript 没有重复，重复只来自 live delivery。WebSocket 原帧按到达顺序为：① legacy `runtime_failure` 被 adapter 转成 `schema=hive.thread_item.v1`、`event_type=runtime_failure`、`sequence=0`、`id=live:*` 的 generic card；② canonical `result_commit.failed`；③ canonical `runtime_failure.recorded`。源码追踪到共享 terminal finalizer 已原子持久化并 broadcast canonical envelope 后，`web_chat_run_orchestrator` 三个 caller 分支又各自 broadcast 一次无 transcript authority 的 legacy failure frame。因此这是**同一个机械失败被两个 live owner 表达**，不是 provider 返回两次、React key、动画或用户重复发送。
+
+**failing-first 与最小 correction**：使用上述生产 adapter 原帧建立 frontend RED，先稳定得到 `expected 1 error card, received 2`；backend 分别在 typed provider failure、missing-model pre-invocation、runtime exception 与真 PostgreSQL canonical broadcast 四条路径建立 RED，证明 legacy caller frame 仍存在。实现只做两件事：①删除 orchestrator 三处 secondary legacy failure broadcast，terminal finalizer 保持唯一 durable + live terminal owner；②为三服务 rolling deploy 增加精确 compatibility guard，只忽略 `hive.thread_item.v1 + runtime_failure + sequence=0 + id=live:*` 这一种无 transcript authority 的旧 adapter 帧。guard 不读取自然语言、不按 error code 做语义判断、不改写 canonical typed 文案，也不吞 canonical `runtime_failure.recorded`。
+
+**本地 GREEN 与 review 证据**：生产原帧 projector **46 passed**；frontend full **152 files / 1142 passed**；backend orchestrator + 真 PG canonical terminal **32 passed**，完整 `test_web_chat_runtime.py` **124 passed**；Ruff `All checks passed`；i18n node **9/9**、inventory 233、en=zh=3984、gates 全 0；`tsc + vite build` **7393 modules**，AgentDetail **370408/380000 bytes、103107/115000 gzip**，vendor **591449/620000 bytes、186474/200000 gzip**，双 budget PASS；`git diff --check` clean。build 首次曾只因新测试直接读取联合类型 `item_data.code` 而被 `TS2339` 拒绝，已通过显式 `item_type === 'error'` 收窄测试类型后重跑 projector/build 全绿，production 行为未因此改变。
+
+**七原子与当前 verdict**：Input 为 sidebar fresh Session 的单次真实 prompt；Authority 为 authenticated Rocky lab principal、Agent、Session、run；Execution 仍由 RuntimeTask 与唯一 terminal finalizer 承担，frontend guard 只处理旧 transport carrier；Evidence 为 DOM 连续采样、active-run transition、canonical sequence 17/18、WebSocket 三原帧、RED→GREEN 与真 PG；Recovery 为 canonical reload、rolling-deploy compatibility、幂等 terminal commit；Consumption 目标为 Codex Desktop 式一条稳定 run、一张准确终局卡、0 raw provider payload；Acceptance 当前证明 §7.77 闪烁根因在 production 已消失且 §7.78 本地成立，但新 correction 尚未部署，因此仅 **PASS — Verified locally / Partial loop**。下一唯一动作是原子 commit/push、同一 commit 三服务 exact deploy，再创建两个全新 EventPilot Session；每个都必须满足干净首屏、单次输入、运行期无 toggle、终局恰一 canonical failure card、0 running/0 waiting/Stop、20 秒稳定与 hard reload 同构，并确认 WebSocket 不再出现 `live:*` legacy failure frame。两遍前不得把 Session #1 重新 Closed，也不得开始其它 Weekend 包。
 
 ## 8. 两个工作日的执行节奏
 

@@ -419,6 +419,54 @@ describe('session socket event projector', () => {
     expect(harness.dependencies.setTransportNotice).not.toHaveBeenCalled();
   });
 
+  it('does not append the adapted legacy runtime_failure frame beside the canonical failure card', () => {
+    const legacyFrame = {
+      schema: 'hive.thread_item.v1',
+      schema_version: 1,
+      id: 'live:legacy-runtime-failure',
+      sequence: 0,
+      thread_id: 'session-1',
+      session_id: 'session-1',
+      run_id: 'run-1',
+      correlation_id: 'run-1',
+      item_status: 'failed',
+      actor_type: 'system',
+      event_type: 'runtime_failure',
+      type: 'runtime_failure',
+      role: 'system',
+      visibility_scope: 'direct_user',
+      listed_surface: 'chat',
+      content: 'The connection or service is temporarily unavailable. This turn can be retried safely.',
+      parts: [],
+      metadata: { status: 'failed' },
+      audience: 'user',
+      user_summary: 'The connection or service is temporarily unavailable. This turn can be retried safely.',
+      user_action: { kind: 'retry_turn', label: 'Retry turn', details: [] },
+      item_type: 'error',
+      item_data: { retryable: true },
+      status: 'failed',
+      reason: 'provider_error',
+      retryable: true,
+    };
+    const harness = makeHarness(legacyFrame);
+    harness.dependencies.activeRunIdOf = vi.fn(() => 'run-1');
+    wireRealSessionApplication(harness);
+
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+    projectSessionSocketEvent(
+      { ...harness.context, data: runtimeFailureEnvelope('run-1', 'event-canonical-runtime-failure', 1) },
+      harness.dependencies,
+    );
+
+    const errorCards = harness.messages().filter((message) => message.threadItem?.item_type === 'error');
+    expect(errorCards).toHaveLength(1);
+    const errorCard = errorCards[0]?.threadItem;
+    expect(errorCard?.item_type).toBe('error');
+    if (!errorCard || errorCard.item_type !== 'error') throw new Error('expected one canonical error card');
+    expect(errorCard.item_data.code).toBe('quota_exhausted');
+    expect(harness.dependencies.setTransportNotice).not.toHaveBeenCalled();
+  });
+
   function wireRealCanonicalDedupe(harness: ReturnType<typeof makeHarness>) {
     // The REAL AgentDetail dedupe contract through the production applier: a
     // duplicate delivery reports an empty application (false) — no effects.

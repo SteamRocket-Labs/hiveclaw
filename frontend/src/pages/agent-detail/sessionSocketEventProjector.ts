@@ -381,6 +381,21 @@ export function projectSessionSocketEvent(
     return;
   }
 
+  // Before canonical SessionEventV2 owned failure delivery, the backend also
+  // emitted an identity-free live compatibility card. During a rolling deploy
+  // an older instance may still send that adapter shape after the committed
+  // run-scoped runtime_failure event. It is not transcript authority and must
+  // not create a second user error card beside the canonical terminal.
+  if (
+    d?.schema === 'hive.thread_item.v1'
+    && d?.event_type === 'runtime_failure'
+    && d?.sequence === 0
+    && typeof d?.id === 'string'
+    && d.id.startsWith('live:')
+  ) {
+    return;
+  }
+
   if (
     typeof d === 'object'
     && d

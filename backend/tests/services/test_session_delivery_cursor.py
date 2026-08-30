@@ -10,14 +10,12 @@ from app.services.session_delivery_cursor import (
 )
 
 
-def test_unsafe_legacy_backfill_uses_dense_delivery_cursor_without_rewriting_storage_evidence() -> None:
+def test_all_unsafe_legacy_storage_uses_dense_delivery_cursor_without_rewriting_evidence() -> None:
     first_storage_sequence = 1_777_000_000_000_000_000
     cursor = resolve_session_delivery_cursor(
         event_count=3,
         storage_first_sequence=first_storage_sequence,
         storage_last_sequence=first_storage_sequence + 90_000_000_000,
-        first_event_schema_version=1,
-        first_event_metadata={"source": "backfill_recent_chat_logs"},
     )
 
     original = {
@@ -42,12 +40,10 @@ def test_unsafe_legacy_backfill_uses_dense_delivery_cursor_without_rewriting_sto
     assert "storage_sequence" not in original
 
 
-def test_unsafe_non_backfill_sequence_is_not_silently_normalized() -> None:
+def test_mixed_safe_and_unsafe_storage_namespaces_are_not_silently_normalized() -> None:
     with pytest.raises(SessionDeliveryCursorError, match="session_delivery_cursor_unrecoverable"):
         resolve_session_delivery_cursor(
             event_count=2,
-            storage_first_sequence=1_777_000_000_000_000_000,
-            storage_last_sequence=1_777_000_000_000_000_001,
-            first_event_schema_version=2,
-            first_event_metadata={},
+            storage_first_sequence=1,
+            storage_last_sequence=1_777_000_000_000_000_000,
         )

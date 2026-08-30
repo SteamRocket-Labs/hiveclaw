@@ -202,8 +202,6 @@ async def test_transcript_schema_v2_projects_unsafe_legacy_storage_order_to_dens
         event_count=2,
         storage_first_sequence=rows[0].sequence,
         storage_last_sequence=rows[1].sequence,
-        first_event_schema_version=1,
-        first_event_metadata={"source": "backfill_recent_chat_logs"},
     )
 
     async def fake_load_cursor(_db, *, session_id):

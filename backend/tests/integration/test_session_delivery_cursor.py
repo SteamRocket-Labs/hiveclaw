@@ -72,7 +72,7 @@ async def test_ranked_legacy_delivery_cursor_pages_real_postgres_without_rewriti
                     listed_surface="chat",
                     content=f"message-{index + 1}",
                     metadata_json={
-                        "source": "backfill_recent_chat_logs" if index == 0 else "legacy_runtime",
+                        "source": ("web", "web_chat_runtime", "task_notification")[index],
                         "role": "user" if index == 0 else "assistant",
                     },
                     projection_status="projected",

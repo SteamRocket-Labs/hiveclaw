@@ -133,8 +133,6 @@ async def test_ranked_legacy_catchup_window_exposes_safe_delivery_watermark(monk
         event_count=3,
         storage_first_sequence=storage_first,
         storage_last_sequence=storage_first + 90_000_000_000,
-        first_event_schema_version=1,
-        first_event_metadata={"source": "backfill_recent_chat_logs"},
     )
 
     async def fake_load_cursor(_db, *, session_id: object):

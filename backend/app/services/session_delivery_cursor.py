@@ -1,11 +1,12 @@
 """Lossless browser-safe delivery cursors for durable Session events.
 
 ``ChatTranscriptEvent.sequence`` remains the canonical storage/evidence
-sequence.  A narrow legacy import once used nanosecond timestamps for that
+sequence.  Legacy V1 runtime writers used nanosecond timestamps for that
 column; those values are both non-contiguous and larger than JavaScript's
 lossless integer range.  Rewriting the durable rows would invalidate T0 and
-outbox evidence, so only those explicitly tagged imports receive a derived,
-dense delivery cursor at the HTTP/WebSocket boundary.  The original storage
+outbox evidence, so a Session whose entire storage namespace is above that
+range receives a derived, dense delivery cursor at the HTTP/WebSocket
+boundary.  Mixed safe/unsafe namespaces fail closed.  The original storage
 sequence remains present as decimal text on every projected envelope.
 """
 
@@ -23,8 +24,7 @@ from app.models.chat_transcript_event import ChatTranscriptEvent
 
 JS_SAFE_SEQUENCE_MAX = (1 << 53) - 1
 IDENTITY_SEQUENCE_PROJECTION = "identity"
-LEGACY_RANKED_SEQUENCE_PROJECTION = "ranked_legacy_backfill_v1"
-_LEGACY_BACKFILL_SOURCE = "backfill_recent_chat_logs"
+LEGACY_RANKED_SEQUENCE_PROJECTION = "ranked_unsafe_storage_v1"
 
 
 class SessionDeliveryCursorError(ValueError):
@@ -33,7 +33,7 @@ class SessionDeliveryCursorError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class SessionDeliveryCursor:
-    mode: Literal["identity", "ranked_legacy_backfill_v1"]
+    mode: Literal["identity", "ranked_unsafe_storage_v1"]
     event_count: int
     storage_first_sequence: int
     storage_last_sequence: int
@@ -56,8 +56,6 @@ def resolve_session_delivery_cursor(
     event_count: int,
     storage_first_sequence: int,
     storage_last_sequence: int,
-    first_event_schema_version: int | None = None,
-    first_event_metadata: Mapping[str, Any] | None = None,
 ) -> SessionDeliveryCursor:
     """Resolve the only two accepted storage shapes without semantic guessing."""
 
@@ -79,15 +77,10 @@ def resolve_session_delivery_cursor(
             storage_last_sequence=last,
         )
 
-    metadata = dict(first_event_metadata or {})
-    explicit_legacy_backfill = (
-        int(first_event_schema_version or 0) == 1
-        and str(metadata.get("source") or "") == _LEGACY_BACKFILL_SOURCE
-        and first > JS_SAFE_SEQUENCE_MAX
-        and last >= first
-        and count <= JS_SAFE_SEQUENCE_MAX
+    ranked_unsafe_storage = (
+        first > JS_SAFE_SEQUENCE_MAX and last >= first and last - first + 1 >= count and count <= JS_SAFE_SEQUENCE_MAX
     )
-    if explicit_legacy_backfill:
+    if ranked_unsafe_storage:
         return SessionDeliveryCursor(
             mode=LEGACY_RANKED_SEQUENCE_PROJECTION,
             event_count=count,
@@ -120,20 +113,10 @@ async def load_session_delivery_cursor(
             storage_last_sequence=last,
         )
 
-    first_row = (
-        await db.execute(
-            select(ChatTranscriptEvent.schema_version, ChatTranscriptEvent.metadata_json)
-            .where(ChatTranscriptEvent.session_id == session_uuid)
-            .order_by(ChatTranscriptEvent.sequence.asc())
-            .limit(1)
-        )
-    ).one_or_none()
     return resolve_session_delivery_cursor(
         event_count=count,
         storage_first_sequence=first,
         storage_last_sequence=last,
-        first_event_schema_version=int(first_row[0] or 0) if first_row else None,
-        first_event_metadata=dict(first_row[1] or {}) if first_row else None,
     )
 
 

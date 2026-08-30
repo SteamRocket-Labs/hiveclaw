@@ -4,15 +4,15 @@ owner: Codex
 status: active
 authority: canonical-working-state
 last_reviewed: 2026-08-30
-source_commit: c18b181c
-verification_status: owner-approved-production-denominator-frozen-control-commit-in-progress
+source_commit: 56ec5dd0
+verification_status: gate0-complete-session-context-p1-reproduced
 ---
 
 # 当前状态与唯一下一动作
 
 [返回索引](README.md) · [旅程账本](04-journey-ledger.md) · [Findings](05-findings.md) · [Runbook](06-runbook-and-release-gates.md)
 
-> owner 已接受 PDEC-001～PDEC-006、最终部署和 D/E 双提交合同；96 条 production journeys 已冻结并通过机械结构校验。产品旅程尚未开始，本轮 NPTCR 仍为 0%。
+> owner 已接受 PDEC-001～PDEC-006、最终部署和 D/E 双提交合同；96 条 production journeys 已冻结并通过机械结构校验。Gate 0 已完成并开始真实 Session 探针；首个 P1 已 fresh reproduce，本轮 NPTCR 仍为 0%。
 
 ## 当前目标与可观察 Done
 
@@ -24,14 +24,17 @@ verification_status: owner-approved-production-denominator-frozen-control-commit
 
 | 事实 | 当前值 | 证据等级 |
 |---|---|---|
-| 已推送控制基线 | `c18b181c690fe3c4aa5366a8fd504023b0c41864` | `HEAD = main = origin/main` 本轮重新核验；当前控制冻结改动尚未 commit |
-| Goal | Codex Goal `01a05189-c369-75f0-a720-ffe16136644f`，API 当前仍为 `paused` | owner 新消息已明确继续当前任务，但不得把 Goal 机械状态伪写为 active；进入长时循环前重查 |
+| 已推送控制基线 | `56ec5dd0631ea3b27b796d086560b81f902e322b` | `HEAD = main = origin/main` 本轮重新核验；96 条 manifest、机械 gate、结构测试已原子 commit/push |
+| Goal | Codex Goal `01a05189-c369-75f0-a720-ffe16136644f`，API 当前仍为 `paused` | owner 当前消息已明确授权本轮继续；不得把 Goal 机械状态伪写为后台 active |
 | execution roles | Codex 总控/验收；Kimi Code 前端；zCode 后端 | owner 2026-08-30 已批准，见 DEC-008～DEC-012 |
 | delegation protocol | `agent-delegation` Skill `0.1.2` 是唯一派发/授权/receipt 协议；`cwd` 不宣称为 sandbox | owner 2026-08-30 已批准 |
 | delegation readiness | doctor `ok`；Kimi `1.49.0`、zCode ACP `0.1.0+ultra.zcode.0.16.5` 的 stateless read-only correction smoke 均 `exit=0`、零 protocol error、零 worktree diff | receipt `0443f540…` / `9b15c8f7…`；Codex 独立核对包名、版本和 exact commit |
 | GitHub 控制层 | milestone [#1](https://github.com/SteamRocket-Labs/hiveclaw/milestone/1)、umbrella Issue [#3](https://github.com/SteamRocket-Labs/hiveclaw/issues/3)、7 个 RC role/state labels | 本轮远程 readback 已核验；不构成 acceptance truth |
 | 旧 WIP archive | 原 5,685 行、约 1.29 MB，完整迁移并增加 archive warning | 本轮本地已核验 |
-| 当前 production 业务提交 | `eb61d468221aa22a4f22c1d96353baadef3b51e6` | 从旧账当前快照迁移；本次未重新查询 Railway |
+| 当前 production 业务提交 | `eb61d468221aa22a4f22c1d96353baadef3b51e6` | Railway 三服务 fresh readback；backend `7cf21899…`、backend-api `e7b62bc9…`、frontend `7c133bf2…` 均 `SUCCESS` 且绑定同一应用提交 |
+| production 身份/模型 | 实验 tenant，当前账号为 `超级管理员`；EventPilot primary `zhipu/glm-5.3`、fallback `minimax/MiniMax-M3`，可选 `deepseek/deepseek-v4-flash` | signed-in UI readback；GLM 已完成真实双轮调用，MiniMax/DeepSeek 尚未 live probe |
+| Local Agent | launchd daemon running；CLI/API `401 Invalid bridge token`；UI linked `0`、offline | `BLOCKER-BRIDGE-001` 已确认为 `BLOCKED_PRECONDITION`；未授权 re-login/token replacement |
+| fresh Session P1 | 同一 Session 第二轮看得到第一轮 UI 历史，但模型明确称这是本会话第一条消息 | canonical Session V2 transcript 有两轮完整输入/输出；`/messages` 仅有 10 条 system/debug，无 user/assistant；见 `SESSION-CONTEXT-001` |
 | Session terminal/failure | 旧账记录 §7.77/§7.78 已部署并完成 signed-in 双遍 | 历史证据；不外推整体 RC |
 | executable CI manifest | `acceptance/atomic_user_journeys.v1.json`，J-01～J-15，声明受控 external fakes | 本轮源码已核验 |
 | production NPTCR manifest | `acceptance/weekend_production_journeys.v1.json`，35 组展开 96 条，external fake 禁止 | 已冻结；validator `valid=true`；当前无 production pass |
@@ -42,7 +45,7 @@ verification_status: owner-approved-production-denominator-frozen-control-commit
 | 验收域 | 当前判断 | 仍需证明 |
 |---|---|---|
 | Git / Production | 基线健康，不等于 RC 完成 | 后续代码变更后 exact same commit 三服务部署和全旅程重验 |
-| Session 核心终局 | `Closed loop`（只限旧账已证明的 terminal/failure 与 reload 子集） | 20 commands、复杂协作、全局视觉/a11y |
+| Session 核心终局 | `Breakpoint` | `SESSION-CONTEXT-001` 阻断同一 Session 连续对话；terminal/streaming 的旧账子集不能抵消上下文断点 |
 | 整体前端 | `Partial loop` | 员工/公司后台/operator 的 state screenshot matrix、密度、双主题、窄屏、键盘、Agent rail 规模 |
 | Rewind / Resume / Fork / Rollback | 旧账标 `Closed loop` | 只在 fresh journey 复现新错误时重开 |
 | Personal / Company KB | `Partial loop` | 多格式、多入口、权限负向、失败恢复、Agent/Personal→Company/后台路径统一生产矩阵 |
@@ -62,11 +65,9 @@ verification_status: owner-approved-production-denominator-frozen-control-commit
 
 ## 已知外部前置条件
 
-- DeepSeek 曾返回 `HTTP 402 Insufficient Balance`。
-- MiniMax fresh/既有调用曾长时间无成功终局或 rate-limit。
-- Hive Connect Local Agent 曾显示 offline，CLI/daemon 曾返回 `HTTP 401 Invalid bridge token`。
-
-这些是需要重新验证的历史 blocker，不是本次文档重构的修复对象。不得自动 re-login、充值、换 credential 或盲重试。
+- GLM 已在生产真实完成两轮 provider 调用，但第二轮暴露产品侧 Session 上下文断点。
+- DeepSeek 与 MiniMax 当前只核对了 AgentDetail binding；仍需各做一次 bounded live probe。出现 402/rate-limit/非终态时按 typed blocker 记录，不充值、不换 credential、不盲重试。
+- Hive Connect 已 fresh reproduce `HTTP 401 Invalid bridge token`；daemon running 不等于 product path 可用。修复需要 re-login/token replacement，当前停在 owner action gate。
 
 ## 本次已完成
 
@@ -86,23 +87,29 @@ verification_status: owner-approved-production-denominator-frozen-control-commit
 - owner 已正式接受 PDEC-001～PDEC-006、最终三服务同应用提交部署和实验 tenant 内可回收合成 E2E；凭据、计费、DDL、不可逆效果仍未授权。
 - 已冻结 96 条 production journeys；20 commands、Personal/Artifact 四格式、A2A 六路径、Automation 四模式、MiniMax/GLM/DeepSeek 和六类安全探针均独立计分。
 - 已新增 manifest validator/evidence scorer；它只计算结构、双遍、部署 identity、护栏和证据覆盖，不判断语义质量。
+- 控制冻结已 commit/push 为 `56ec5dd0`；18 个结构/架构测试、Ruff 与 diff check 通过。
+- Gate 0 已 fresh 核验 production 三服务 exact commit、账号角色、EventPilot 的 GLM/MiniMax/DeepSeek binding、公共 health 与 Hive Connect。
+- 已用 GLM 在 production 创建唯一标记 Session：第一轮答案满足外部语义判据；同一 Session 第二轮却否认存在上一轮回答。
+- live readback 证明 canonical Session V2 transcript 有 635 个有序事件及两轮完整输入/输出，但兼容 `/messages` 投影只有 10 条 system/debug；runtime 当前仍从 `ChatMessage` 组装历史，`SESSION-CONTEXT-001` 已进入 P1 修复链。
 
 ## 最近验证
 
 - 上一控制层：Weekend 文档/CI manifest/Issue contract 15 tests passed；Kimi 与 zCode stateless read-only correction smoke 均 `exit=0`、零 worktree diff。
 - 本轮 manifest：`python3 backend/scripts/weekend_rc_gate.py validate` → `valid=true`、denominator `96`、semantic verdict 未计算。
 - 本轮控制冻结 tests：production manifest、文档组、既有 atomic CI manifest 合计 **18 passed**；Ruff check/format 与 scope-limited `git diff --check` 通过。
-- task-state resolve 仍指向本文件；`HEAD = main = origin/main = c18b181c` 在改动前重新核验。
+- task-state resolve 仍指向本文件；`HEAD = main = origin/main = 56ec5dd0` 在 Gate 0 后重新核验。
+- Railway backend/backend-api/frontend 当前均 `SUCCESS`，且部署消息绑定 `eb61d468221aa22a4f22c1d96353baadef3b51e6`；backend health 与 frontend `/` 成功。
+- production `P01`/continuation probe：Session `59257e7a-960b-459a-9652-2ff39be117ee`，两次 run 均 `completed`；第二轮产生 `SESSION-CONTEXT-001`，因此不计入 NPTCR PASS。
 
 ## 唯一下一动作
 
-完成控制冻结的全套结构/格式测试并原子 commit/push；随后执行 Gate 0 只读 preflight，重新核验 Goal、三服务 deployment、账号角色、MiniMax/GLM/DeepSeek exact bindings 和 Hive Connect，再开始 `P01-MAIN` 第一条 signed-in E2E。
+把 `SESSION-CONTEXT-001` 固定为 GitHub backend Issue；从 exact `56ec5dd0` 创建隔离 worktree，按 `agent-delegation 0.1.2` 派给 zCode。Codex 独立核验 canonical-history 修复、production-shaped failing-first regression、真 PostgreSQL/相关全量 gate 后再集成。
 
 ## Not Done / Do Not Redo
 
-- production manifest 已冻结，但尚无本轮 production evidence；NPTCR=0/96，Evidence Coverage 尚未成立。
-- 仅完成 Kimi/zCode 只读 smoke；未派实现 task，未修改业务代码/UI，未跑测试全量、Railway 部署或生产写入。
-- 未重新验证 provider、Hive Connect 或生产三服务状态。
+- production manifest 已冻结；Gate 0 事实已落盘，但没有任何可计分的 pass-1/pass-2，NPTCR=0/96，Evidence Coverage 尚未成立。
+- 仅完成 Kimi/zCode 只读 smoke；尚未派本轮实现 task，未修改业务代码/UI，未跑测试全量或新应用部署。
+- GLM 与三服务/Hive Connect 已 fresh 验证；MiniMax/DeepSeek live provider 调用尚未完成。
 - Goal API 仍显示 `paused`；进入长时 dispatch/E2E 循环前必须重新读取并如实处理，不能靠文档假定 active。
 - 不触碰 pre-existing `.ultra/.runtime/compact-snapshot.md`、`bp-kingdee/`、`output/`、root `package*.json`、`tmp/pdfs/` 等用户工作树内容。
 - 不把 archive 中某个历史 `PASS` 自动迁移成当前 aggregate `Closed loop`。

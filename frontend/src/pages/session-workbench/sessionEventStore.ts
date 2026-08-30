@@ -24,6 +24,7 @@ export type SessionEventV2 = {
   result_id?: string;
   invocation_id?: string;
   provider_tool_use_id?: string;
+  message_id?: string;
   content_hash?: string;
   parent_item_id?: string;
   actor: { type: string; id?: string };
@@ -59,6 +60,7 @@ export type SessionItemV2 = {
   resultId?: string;
   invocationId?: string;
   providerToolUseId?: string;
+  messageId?: string;
   parentItemId?: string;
   renderOwnerId?: string;
   summary?: string;
@@ -321,6 +323,7 @@ function reduceContiguous(store: SessionEventStore, event: SessionEventV2): { st
         resultId: event.result_id ?? prior?.resultId,
         invocationId: event.invocation_id ?? prior?.invocationId,
         providerToolUseId: event.provider_tool_use_id ?? prior?.providerToolUseId,
+        messageId: event.message_id ?? prior?.messageId,
         parentItemId: event.parent_item_id ?? prior?.parentItemId,
         renderOwnerId: typeof event.payload.render_owner_id === 'string'
           ? event.payload.render_owner_id

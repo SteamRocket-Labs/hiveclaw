@@ -4088,6 +4088,67 @@ def _tool_settlement_arguments(payload: dict[str, Any]) -> dict[str, Any]:
     return dict(payload["args"]) if isinstance(payload.get("args"), dict) else {}
 
 
+def _tool_result_anchor_content(payload: dict[str, Any], raw_result: Any) -> str:
+    """Stable legacy projection for a canonical tool-result artifact owner."""
+
+    return json.dumps(
+        {
+            "name": str(payload.get("name") or ""),
+            "status": str(payload.get("status") or "done"),
+            "tool_call_id": str(payload.get("tool_call_id") or ""),
+            "result": str(raw_result or ""),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+async def _ensure_tool_result_artifact_message(
+    db: AsyncSession,
+    *,
+    message_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    session_id: uuid.UUID,
+    user_id: uuid.UUID | None,
+    external_principal_id: uuid.UUID | None,
+    content: str,
+) -> ChatMessage:
+    """Materialize the existing non-null ChatArtifact FK without DDL.
+
+    The deterministic message is a compatibility/read-model owner for the
+    canonical Session V2 tool result. Replays must match the same authority
+    and stable content; a conflict fails closed instead of rebinding evidence.
+    """
+
+    existing = await db.get(ChatMessage, message_id)
+    if existing is not None:
+        if (
+            existing.agent_id != agent_id
+            or existing.tenant_id != tenant_id
+            or existing.user_id != user_id
+            or existing.external_principal_id != external_principal_id
+            or existing.role != "tool_call"
+            or existing.conversation_id != str(session_id)
+            or existing.content != content
+        ):
+            raise RuntimeError("tool_result_artifact_message_conflict")
+        return existing
+    message = ChatMessage(
+        id=message_id,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        external_principal_id=external_principal_id,
+        role="tool_call",
+        content=content,
+        conversation_id=str(session_id),
+    )
+    db.add(message)
+    await db.flush()
+    return message
+
+
 async def _persist_tool_call(
     *,
     agent_id: uuid.UUID,
@@ -4098,11 +4159,11 @@ async def _persist_tool_call(
 ) -> list[dict[str, Any]]:
     """Persist the canonical tool lifecycle before returning live envelopes."""
 
-    del user_id, external_principal_id
     from app.models.session_v2 import SessionEventOutbox, SessionToolInvocation
     from app.services.session_tool_runtime import (
         complete_tool_invocation,
         mark_tool_effect_started,
+        mark_tool_invocation_needs_reconciliation,
         prepare_tool_invocation,
     )
     from app.services.tenant_resolver import resolve_tenant_for_agent
@@ -4116,122 +4177,167 @@ async def _persist_tool_call(
         raise RuntimeError("canonical_tool_event_requires_run_and_provider_tool_use_id")
     tenant_id = await resolve_tenant_for_agent(agent_id)
     session_uuid = uuid.UUID(str(session_id))
-    async with tenant_scoped_session(tenant_id) as db:
-        if status == "running":
-            if not provider_request_id:
-                raise RuntimeError("canonical_tool_start_requires_provider_request_id")
-            invocation = await prepare_tool_invocation(
-                db,
-                tenant_id=tenant_id,
-                agent_id=agent_id,
-                session_id=session_uuid,
-                run_id=run_id,
-                provider_request_id=provider_request_id,
-                provider_tool_use_id=provider_tool_use_id,
-                tool_name=str(payload.get("name") or ""),
-                arguments=payload.get("args") if isinstance(payload.get("args"), dict) else {},
-            )
-            event_ids = list(
-                (
-                    await db.execute(
-                        select(ChatTranscriptEvent.id)
-                        .where(
-                            ChatTranscriptEvent.invocation_id == invocation.id,
-                            ChatTranscriptEvent.event_type.in_(("assistant_commentary.completed", "tool_call.started")),
+    settlement_invocation_id: uuid.UUID | None = None
+    try:
+        async with tenant_scoped_session(tenant_id) as db:
+            if status == "running":
+                if not provider_request_id:
+                    raise RuntimeError("canonical_tool_start_requires_provider_request_id")
+                invocation = await prepare_tool_invocation(
+                    db,
+                    tenant_id=tenant_id,
+                    agent_id=agent_id,
+                    session_id=session_uuid,
+                    run_id=run_id,
+                    provider_request_id=provider_request_id,
+                    provider_tool_use_id=provider_tool_use_id,
+                    tool_name=str(payload.get("name") or ""),
+                    arguments=payload.get("args") if isinstance(payload.get("args"), dict) else {},
+                )
+                event_ids = list(
+                    (
+                        await db.execute(
+                            select(ChatTranscriptEvent.id)
+                            .where(
+                                ChatTranscriptEvent.invocation_id == invocation.id,
+                                ChatTranscriptEvent.event_type.in_(
+                                    ("assistant_commentary.completed", "tool_call.started")
+                                ),
+                            )
+                            .order_by(ChatTranscriptEvent.sequence)
                         )
-                        .order_by(ChatTranscriptEvent.sequence)
-                    )
-                ).scalars()
-            )
-        else:
-            invocation = await db.scalar(
-                select(SessionToolInvocation)
-                .where(
-                    SessionToolInvocation.tenant_id == tenant_id,
-                    SessionToolInvocation.session_id == session_uuid,
-                    SessionToolInvocation.run_id == run_id,
-                    SessionToolInvocation.provider_tool_use_id == provider_tool_use_id,
-                    *(
-                        [SessionToolInvocation.provider_request_id == provider_request_id]
-                        if provider_request_id
-                        else []
-                    ),
-                )
-                .with_for_update()
-            )
-            if invocation is None:
-                raise RuntimeError("canonical_tool_invocation_not_found")
-            if status == "effect_started":
-                events = await mark_tool_effect_started(
-                    db,
-                    tenant_id=tenant_id,
-                    agent_id=agent_id,
-                    session_id=session_uuid,
-                    invocation_id=invocation.id,
-                )
-            elif status in {"done", "completed", "failed"}:
-                raw_result = payload.get("result") or ""
-                provider_content = payload.get("model_seen_result")
-                if provider_content is None:
-                    provider_content = _knowledge_tool_replay_projection(
-                        tool_name=str(payload.get("name") or ""),
-                        args=payload.get("args") if isinstance(payload.get("args"), dict) else {},
-                        raw_result=raw_result,
-                    )
-                if provider_content is None:
-                    provider_content = str(raw_result)
-                artifact_parts: list[dict[str, Any]] = []
-                artifact_paths = tool_session_write_paths(
-                    str(payload.get("name") or ""),
-                    payload.get("args") if isinstance(payload.get("args"), dict) else {},
-                    artifacts=payload.get("artifacts") if isinstance(payload.get("artifacts"), list) else None,
-                )
-                if artifact_paths:
-                    artifact_parts = await create_chat_artifacts_for_message(
-                        db=db,
-                        agent_id=agent_id,
-                        tenant_id=tenant_id,
-                        session_id=session_id,
-                        message_id=uuid.uuid5(invocation.id, "tool-result-artifact-message"),
-                        runtime_task_id=run_id,
-                        paths=artifact_paths,
-                        workspace_root=Path(get_settings().AGENT_DATA_DIR) / str(agent_id),
-                        source="workspace_write",
-                    )
-                events = await complete_tool_invocation(
-                    db,
-                    tenant_id=tenant_id,
-                    agent_id=agent_id,
-                    session_id=session_uuid,
-                    invocation_id=invocation.id,
-                    provider_result_content=str(provider_content),
-                    execution_evidence=(
-                        payload.get("tool_execution_evidence")
-                        if isinstance(payload.get("tool_execution_evidence"), dict)
-                        else None
-                    ),
-                    effective_arguments=_tool_settlement_arguments(payload),
-                    parts=artifact_parts,
+                    ).scalars()
                 )
             else:
-                raise RuntimeError("unsupported canonical tool lifecycle")
-            event_ids = [event.id for event in events]
-        await db.flush()
-        envelopes = (
-            list(
-                (
-                    await db.execute(
-                        select(SessionEventOutbox.envelope_json)
-                        .where(SessionEventOutbox.event_id.in_(event_ids))
-                        .order_by(SessionEventOutbox.sequence)
+                invocation = await db.scalar(
+                    select(SessionToolInvocation)
+                    .where(
+                        SessionToolInvocation.tenant_id == tenant_id,
+                        SessionToolInvocation.session_id == session_uuid,
+                        SessionToolInvocation.run_id == run_id,
+                        SessionToolInvocation.provider_tool_use_id == provider_tool_use_id,
+                        *(
+                            [SessionToolInvocation.provider_request_id == provider_request_id]
+                            if provider_request_id
+                            else []
+                        ),
                     )
-                ).scalars()
+                    .with_for_update()
+                )
+                if invocation is None:
+                    raise RuntimeError("canonical_tool_invocation_not_found")
+                if status == "effect_started":
+                    events = await mark_tool_effect_started(
+                        db,
+                        tenant_id=tenant_id,
+                        agent_id=agent_id,
+                        session_id=session_uuid,
+                        invocation_id=invocation.id,
+                    )
+                elif status in {"done", "completed", "failed"}:
+                    settlement_invocation_id = invocation.id
+                    raw_result = payload.get("result") or ""
+                    provider_content = payload.get("model_seen_result")
+                    if provider_content is None:
+                        provider_content = _knowledge_tool_replay_projection(
+                            tool_name=str(payload.get("name") or ""),
+                            args=payload.get("args") if isinstance(payload.get("args"), dict) else {},
+                            raw_result=raw_result,
+                        )
+                    if provider_content is None:
+                        provider_content = str(raw_result)
+                    artifact_parts: list[dict[str, Any]] = []
+                    artifact_message_id: uuid.UUID | None = None
+                    if invocation.result_event_id is None:
+                        artifact_paths = tool_session_write_paths(
+                            str(payload.get("name") or ""),
+                            payload.get("args") if isinstance(payload.get("args"), dict) else {},
+                            artifacts=(
+                                payload.get("artifacts") if isinstance(payload.get("artifacts"), list) else None
+                            ),
+                        )
+                        if artifact_paths:
+                            artifact_message_id = uuid.uuid5(invocation.id, "tool-result-artifact-message")
+                            artifact_message = await _ensure_tool_result_artifact_message(
+                                db,
+                                message_id=artifact_message_id,
+                                agent_id=agent_id,
+                                tenant_id=tenant_id,
+                                session_id=session_uuid,
+                                user_id=user_id,
+                                external_principal_id=external_principal_id,
+                                content=_tool_result_anchor_content(payload, provider_content),
+                            )
+                            artifact_parts = await create_chat_artifacts_for_message(
+                                db=db,
+                                agent_id=agent_id,
+                                tenant_id=tenant_id,
+                                session_id=session_id,
+                                message_id=artifact_message_id,
+                                runtime_task_id=run_id,
+                                paths=artifact_paths,
+                                workspace_root=Path(get_settings().AGENT_DATA_DIR) / str(agent_id),
+                                source="workspace_write",
+                            )
+                            if not artifact_parts:
+                                await db.delete(artifact_message)
+                                artifact_message_id = None
+                    events = await complete_tool_invocation(
+                        db,
+                        tenant_id=tenant_id,
+                        agent_id=agent_id,
+                        session_id=session_uuid,
+                        invocation_id=invocation.id,
+                        provider_result_content=str(provider_content),
+                        execution_evidence=(
+                            payload.get("tool_execution_evidence")
+                            if isinstance(payload.get("tool_execution_evidence"), dict)
+                            else None
+                        ),
+                        effective_arguments=_tool_settlement_arguments(payload),
+                        parts=artifact_parts,
+                        message_id=artifact_message_id,
+                    )
+                else:
+                    raise RuntimeError("unsupported canonical tool lifecycle")
+                event_ids = [event.id for event in events]
+            await db.flush()
+            envelopes = (
+                list(
+                    (
+                        await db.execute(
+                            select(SessionEventOutbox.envelope_json)
+                            .where(SessionEventOutbox.event_id.in_(event_ids))
+                            .order_by(SessionEventOutbox.sequence)
+                        )
+                    ).scalars()
+                )
+                if event_ids
+                else []
             )
-            if event_ids
-            else []
-        )
-        await db.commit()
-        return [dict(envelope or {}) for envelope in envelopes]
+            await db.commit()
+            return [dict(envelope or {}) for envelope in envelopes]
+    except Exception:
+        if status in {"done", "completed", "failed"} and settlement_invocation_id is not None:
+            try:
+                async with tenant_scoped_session(tenant_id) as recovery_db:
+                    await mark_tool_invocation_needs_reconciliation(
+                        recovery_db,
+                        tenant_id=tenant_id,
+                        agent_id=agent_id,
+                        session_id=session_uuid,
+                        invocation_id=settlement_invocation_id,
+                        reason_code="tool_lifecycle_persistence_failed",
+                        recovery_owner="web_chat_runtime:tool_lifecycle_persistence",
+                    )
+                    await recovery_db.commit()
+            except Exception as recovery_exc:
+                logger.exception(
+                    "[WebChatRun] Failed to quarantine unsettled tool invocation {}: {}",
+                    settlement_invocation_id,
+                    recovery_exc,
+                )
+        raise
 
 
 async def _persist_legacy_tool_call(
@@ -4318,6 +4424,7 @@ async def _persist_legacy_tool_call(
     runtime_task_id = data.get("runtime_task_id") or data.get("run_id")
     async with tenant_scoped_session(tenant_id) as db:
         artifact_parts: list[dict[str, Any]] = []
+        artifact_message_materialized = False
         if event_type == "tool_result":
             tool_args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
             artifact_paths = tool_session_write_paths(
@@ -4326,6 +4433,17 @@ async def _persist_legacy_tool_call(
                 artifacts=data.get("artifacts") if isinstance(data.get("artifacts"), list) else None,
             )
             if artifact_paths:
+                await _ensure_tool_result_artifact_message(
+                    db,
+                    message_id=message_id,
+                    agent_id=agent_id,
+                    tenant_id=tenant_id,
+                    session_id=uuid.UUID(str(session_id)),
+                    user_id=user_id,
+                    external_principal_id=external_principal_id,
+                    content=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                )
+                artifact_message_materialized = True
                 artifact_parts = await create_chat_artifacts_for_message(
                     db=db,
                     agent_id=agent_id,
@@ -4351,6 +4469,7 @@ async def _persist_legacy_tool_call(
             external_principal_id=external_principal_id,
             content=json.dumps(payload, ensure_ascii=False, sort_keys=True),
             message_id=message_id,
+            materialize_chat_message=not artifact_message_materialized,
             source="web_chat_runtime",
             decision_trace_id=decision_trace_id,
             parts=artifact_parts or None,

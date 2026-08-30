@@ -487,6 +487,14 @@ def _tool_result_views(result: Any, side_effects: Any) -> tuple[str, str]:
     return raw_result, str(result)
 
 
+def _raise_terminal_tool_callback_failure(results: list[Any], is_terminal: Any) -> None:
+    """Keep typed lifecycle failures out of parallel tool-result coercion."""
+
+    for result in results:
+        if isinstance(result, BaseException) and is_terminal(result):
+            raise result
+
+
 async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> InvocationResult:
     # Bind an explicit per-call dependency snapshot so tests, DI, and runtime
     # overrides observe the same facade values without copying a module namespace.
@@ -2429,7 +2437,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             final_tools=tools_for_llm,
                             collected_parts=collected_parts,
                         )
-                    # Convert exceptions to error strings
+                    _raise_terminal_tool_callback_failure(results, _is_terminal_tool_card_signal)
                     for _i, _r in enumerate(results):
                         if isinstance(_r, BaseException):
                             _tn = parsed_tool_calls[_i][1]

@@ -33,6 +33,27 @@ class ProviderRequestNeedsReconciliation(RuntimeError):
         self.error_class = error_class
 
 
+class ToolLifecyclePersistenceError(RuntimeError):
+    """A canonical tool lifecycle write failed at an execution boundary.
+
+    Only stable machine identifiers are carried. Tool arguments/results stay
+    out of the exception so logs and terminal metadata cannot leak governed
+    content while the run is held for reconciliation.
+    """
+
+    def __init__(
+        self,
+        *,
+        tool_name: str,
+        provider_tool_use_id: str,
+        lifecycle: str,
+    ) -> None:
+        super().__init__("tool_lifecycle_persistence_failed")
+        self.tool_name = str(tool_name or "")
+        self.provider_tool_use_id = str(provider_tool_use_id or "")
+        self.lifecycle = str(lifecycle or "")
+
+
 class TerminalReason(str, Enum):
     TURN_STOP = "turn_stop"
     TURN_ABORT = "turn_abort"

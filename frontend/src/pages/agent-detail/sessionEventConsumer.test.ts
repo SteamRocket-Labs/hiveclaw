@@ -12,7 +12,9 @@ import {
   applySessionVisibilityBoundary,
   buildSessionVisibilityBoundary,
   composeSessionVisibilityBoundary,
+  composeMixedPlaneSessionMessages,
   consumeSessionEnvelope,
+  createCompatibilityMessageTimeline,
   hydrateSessionTranscriptEvents,
   installRewindVisibilityBoundary,
   installRewindVisibilityBoundaryFromStore,
@@ -818,6 +820,65 @@ describe('canonical runtime_failure consumption (DAY1-PROVIDER-402-TERMINAL-CONS
       toolStatus: 'done',
       toolResult: 'file bytes',
       sessionItem: { id: 'tool-call-1', kind: 'tool_call' },
+    });
+  });
+
+  it('dedupes the artifact FK compatibility message against its canonical tool result', () => {
+    const toolCall: SessionEventV2 = {
+      ...event(1, 'started'),
+      ordinal: undefined,
+      item_id: 'tool-call-artifact',
+      item_kind: 'tool_call',
+      kind: 'tool_call.started',
+      lifecycle: 'started',
+      payload_schema: 'hive.session.payload.tool_call.started.v2',
+      invocation_id: 'invocation-artifact',
+      actor: { type: 'tool' },
+      payload: { tool_name: 'write_file', arguments: { path: 'workspace/report.md' } },
+    };
+    const toolResult: SessionEventV2 = {
+      ...event(2, 'completed'),
+      ordinal: undefined,
+      item_id: 'tool-result-artifact',
+      item_kind: 'tool_result',
+      kind: 'tool_result.completed',
+      lifecycle: 'completed',
+      payload_schema: 'hive.session.payload.tool_result.completed.v2',
+      invocation_id: 'invocation-artifact',
+      parent_item_id: 'tool-call-artifact',
+      message_id: 'artifact-message-1',
+      actor: { type: 'tool' },
+      payload: {
+        outcome: 'success',
+        content: 'Wrote workspace/report.md',
+        parts: [{ type: 'artifact', artifact_id: 'artifact-1', path: 'workspace/report.md' }],
+      },
+    };
+    const store = replay([toolCall, toolResult]);
+    const compatibilityMessage: AgentChatMessage = {
+      id: 'artifact-message-1',
+      messageId: 'artifact-message-1',
+      role: 'tool_call',
+      content: '',
+      toolName: 'write_file',
+      toolStatus: 'done',
+    };
+
+    const messages = composeMixedPlaneSessionMessages({
+      store,
+      compatibilityMessages: [compatibilityMessage],
+      timeline: createCompatibilityMessageTimeline(),
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      id: 'artifact-message-1',
+      messageId: 'artifact-message-1',
+      transcriptEventId: 'tool-call-artifact',
+      role: 'tool_call',
+      toolName: 'write_file',
+      toolStatus: 'done',
+      artifacts: [{ id: 'artifact-1', name: 'report.md', path: 'workspace/report.md' }],
     });
   });
 

@@ -28,6 +28,7 @@ from app.kernel.contracts import (
     RuntimeConfig,
     TerminalReason,
     ThinkingCallback,
+    ToolLifecyclePersistenceError,
 )
 from app.kernel.loop_guard import LoopGuard, LoopGuardDecision
 from app.kernel.reminder_scheduler import (
@@ -239,7 +240,7 @@ async def _maybe_await(value: Any) -> Any:
 
 
 def _is_terminal_tool_card_signal(exc: BaseException) -> bool:
-    return exc.__class__.__name__ == "_TerminalToolCardSignal"
+    return isinstance(exc, ToolLifecyclePersistenceError) or exc.__class__.__name__ == "_TerminalToolCardSignal"
 
 
 def _hook_event_label(event: Any) -> str:
@@ -2116,6 +2117,11 @@ async def _execute_tool_with_hooks(
                     trace_metadata=trace_metadata_sink,
                     machine_status="cancelled",
                 )
+            raise
+        except ToolLifecyclePersistenceError:
+            # This callback is the canonical pre-effect fence. Converting its
+            # persistence failure into model-visible tool prose would let the
+            # loop continue without an authoritative execution boundary.
             raise
         except Exception as exc:
             full_error = str(exc)

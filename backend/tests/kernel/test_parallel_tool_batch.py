@@ -166,6 +166,77 @@ async def test_parallel_batch_executes_read_only_tools():
 
 
 @pytest.mark.asyncio
+async def test_parallel_batch_propagates_pre_effect_lifecycle_persistence_failure():
+    """A failed canonical pre-effect fence must not become model-visible prose."""
+
+    from app.kernel.contracts import InvocationRequest, ToolLifecyclePersistenceError
+    from app.kernel.engine import AgentKernel
+
+    executed: list[str] = []
+
+    async def execute_tool(tool_name, args, request, emit_event):
+        del tool_name, request, emit_event
+        executed.append(str(args.get("path") or ""))
+        return "content"
+
+    async def on_tool_call(payload):
+        if payload.get("status") == "effect_started" and payload.get("tool_call_id") == "call_1":
+            raise ToolLifecyclePersistenceError(
+                tool_name="read_file",
+                provider_tool_use_id="call_1",
+                lifecycle="effect_started",
+            )
+
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {"name": "read_file", "arguments": '{"path":"a.txt"}'},
+                    },
+                    {
+                        "id": "call_2",
+                        "function": {"name": "read_file", "arguments": '{"path":"b.txt"}'},
+                    },
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 10},
+            ),
+            SimpleNamespace(
+                content="must not run",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+        ]
+    )
+    kernel = AgentKernel(
+        _make_deps(
+            execute_tool=execute_tool,
+            create_client=lambda _m: fake_client,
+        )
+    )
+
+    with pytest.raises(ToolLifecyclePersistenceError):
+        await kernel.handle(
+            InvocationRequest(
+                model=_make_model(),
+                messages=[{"role": "user", "content": "read two files"}],
+                agent_name="Agent",
+                role_description="desc",
+                agent_id=uuid4(),
+                user_id=uuid4(),
+                on_tool_call=on_tool_call,
+            )
+        )
+
+    assert "a.txt" not in executed
+    assert len(fake_client.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_parallel_batch_preserves_result_order():
     """Results should be in original tool_call order regardless of completion order."""
     from app.kernel.contracts import InvocationRequest

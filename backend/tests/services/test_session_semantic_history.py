@@ -1,12 +1,14 @@
 """SESSION-CONTEXT-001 regression: same-Session provider history must come from
 the canonical transcript.
 
-Session V2 turns persist user/assistant/tool semantics only in
-``ChatTranscriptEvent`` (``human_input.accepted``, ``assistant_text.snapshot``,
-``tool_call.started``/``tool_result.completed``) and deliberately never
-materialize ``ChatMessage`` rows.  A later turn that assembles its provider
-conversation from the legacy read model therefore sees an empty history and the
-model truthfully answers that this is the first message of the Session.
+Session V2 turns persist provider-history semantics in ``ChatTranscriptEvent``
+(``human_input.accepted``, ``assistant_text.snapshot``,
+``tool_call.started``/``tool_result.completed``), not the legacy read model.
+Artifact-bearing tool results may materialize a ``ChatMessage`` compatibility
+anchor solely to satisfy the existing ``ChatArtifact.message_id`` FK and mixed-
+plane UI projection; that row never becomes provider-history authority. A later
+turn that assembled its conversation from the legacy read model would therefore
+still lose or distort canonical history.
 
 These tests drive the real Session V2 ingress/persistence services against real
 PostgreSQL (``submit_live_human_input`` admission + dispatch, real model-round

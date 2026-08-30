@@ -324,6 +324,139 @@ def test_runtime_exception_failure_uses_authoritative_error_class(
 
 
 @pytest.mark.asyncio
+async def test_tool_callback_promotes_canonical_persistence_failure_to_typed_stop():
+    from app.kernel.contracts import ToolLifecyclePersistenceError
+    from app.services import web_chat_run_orchestrator as orchestrator
+
+    async def persist_tool_call(**_kwargs):
+        raise SQLAlchemyError("canonical settlement unavailable")
+
+    state = SimpleNamespace(
+        active_provider_request_id="provider-request-1",
+        terminal_tool_card_finalized=False,
+        phase_emitter=None,
+        summary_turn_mode=False,
+        stream_batcher=_NoopStreamBatcher(None),
+        agent=SimpleNamespace(id=uuid4()),
+        actor_user_id=uuid4(),
+        actor_external_principal_id=None,
+        session_id=str(uuid4()),
+        run_uuid=uuid4(),
+        ports=SimpleNamespace(
+            events=SimpleNamespace(
+                stream_batcher_type=_NoopStreamBatcher,
+                tool_step_contract=lambda data, fallback_run_id=None: {
+                    **data,
+                    "runtime_task_id": str(fallback_run_id),
+                },
+                persist_tool_call=persist_tool_call,
+            )
+        ),
+    )
+
+    callbacks = orchestrator._WebChatCallbacks(state)
+    with pytest.raises(ToolLifecyclePersistenceError) as raised:
+        await callbacks.tool_call(
+            {
+                "name": "write_file",
+                "args": {"path": "workspace/report.md"},
+                "status": "done",
+                "tool_call_id": "provider-tool-1",
+            }
+        )
+
+    assert str(raised.value) == "tool_lifecycle_persistence_failed"
+    assert raised.value.tool_name == "write_file"
+    assert raised.value.provider_tool_use_id == "provider-tool-1"
+    assert raised.value.lifecycle == "done"
+
+
+@pytest.mark.asyncio
+async def test_tool_lifecycle_persistence_failure_holds_run_for_reconciliation():
+    from app.kernel.contracts import ToolLifecyclePersistenceError
+    from app.runtime.runtime_phase import RuntimePhase
+    from app.services import web_chat_run_orchestrator as orchestrator
+
+    finalize_calls: list[dict] = []
+    broadcasts: list[dict] = []
+    hook_calls: list[dict] = []
+
+    async def finalize_without_assistant(**kwargs):
+        finalize_calls.append(kwargs)
+        return True
+
+    async def broadcast(_agent_id, _session_id, event):
+        broadcasts.append(event)
+
+    async def emit_terminal_hook(**kwargs):
+        hook_calls.append(kwargs)
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    session_id = str(uuid4())
+    state = SimpleNamespace(
+        run_uuid=run_id,
+        agent=SimpleNamespace(id=agent_id),
+        session_id=session_id,
+        metadata={"turn_id": "turn-persistence-failure"},
+        terminal_phase_hint=None,
+        cancel_event=SimpleNamespace(is_set=lambda: False),
+        stream_batcher=None,
+        runtime_session_context=SimpleNamespace(),
+        ports=SimpleNamespace(
+            runtime=SimpleNamespace(logger=SimpleNamespace(exception=lambda *_args: None)),
+            terminal=SimpleNamespace(
+                finalize_without_assistant=finalize_without_assistant,
+                emit_terminal_hook=emit_terminal_hook,
+            ),
+            events=SimpleNamespace(broadcast=broadcast),
+            artifacts=SimpleNamespace(
+                file_change_paths=lambda _context: ["workspace/report.md"],
+                file_change_states=lambda _context: {
+                    "workspace/report.md": {"state": "modified", "after_sha256": "a" * 64}
+                },
+                file_change_lineage=lambda _context: [],
+            ),
+        ),
+    )
+
+    await orchestrator._handle_web_chat_failure(
+        state,
+        ToolLifecyclePersistenceError(
+            tool_name="write_file",
+            provider_tool_use_id="provider-tool-1",
+            lifecycle="done",
+        ),
+    )
+
+    assert state.terminal_phase_hint == RuntimePhase.FAILED
+    assert len(finalize_calls) == 1
+    finalized = finalize_calls[0]
+    assert finalized["status"] == "needs_reconciliation"
+    assert finalized["metadata_json"]["terminal_reason"] == "persistence_error"
+    assert finalized["metadata_json"]["automatic_retry_allowed"] is False
+    assert finalized["metadata_json"]["session_v2_reconciliation"] == {
+        "reason": "tool_lifecycle_persistence",
+        "tool_name": "write_file",
+        "provider_tool_use_id": "provider-tool-1",
+        "lifecycle": "done",
+    }
+    assert finalized["file_change_paths"] == ["workspace/report.md"]
+    assert hook_calls[0]["status"] == "needs_reconciliation"
+    assert broadcasts == [
+        {
+            "type": "runtime_reconciliation_required",
+            "run_id": str(run_id),
+            "reason": "tool_lifecycle_persistence",
+            "tool_name": "write_file",
+            "provider_tool_use_id": "provider-tool-1",
+            "lifecycle": "done",
+            "retryable": False,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_pre_invocation_finalization_preserves_full_response_summary():
     from app.services import web_chat_run_orchestrator as orchestrator
 

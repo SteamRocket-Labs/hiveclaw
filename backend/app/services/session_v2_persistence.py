@@ -779,6 +779,7 @@ class SessionEventDraft:
     result_id: uuid.UUID | None = None
     invocation_id: uuid.UUID | None = None
     provider_tool_use_id: str | None = None
+    message_id: uuid.UUID | None = None
     content_hash: str | None = None
     parent_item_id: uuid.UUID | None = None
     causation_event_id: uuid.UUID | None = None
@@ -1074,6 +1075,7 @@ async def append_session_events(
             ("result_id", draft.result_id),
             ("invocation_id", draft.invocation_id),
             ("provider_tool_use_id", draft.provider_tool_use_id),
+            ("message_id", draft.message_id),
             ("content_hash", draft.content_hash),
             ("parent_item_id", draft.parent_item_id),
             ("causation_event_id", draft.causation_event_id),
@@ -1109,6 +1111,7 @@ async def append_session_events(
             result_id=draft.result_id,
             invocation_id=draft.invocation_id,
             provider_tool_use_id=draft.provider_tool_use_id,
+            message_id=draft.message_id,
             content_hash=effective_content_hash,
             parent_item_id=draft.parent_item_id,
             item_type=item_kind,

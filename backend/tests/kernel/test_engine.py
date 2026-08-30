@@ -3723,6 +3723,195 @@ async def test_agent_kernel_propagates_terminal_tool_card_signal_from_callback()
 
 
 @pytest.mark.asyncio
+async def test_agent_kernel_stops_after_tool_lifecycle_persistence_failure():
+    """A tool effect must never reach another model round without its
+    canonical terminal receipt. The typed persistence signal is a hard
+    execution/recovery boundary, not a best-effort UI callback failure."""
+
+    from app.kernel.contracts import (
+        InvocationRequest,
+        ToolLifecyclePersistenceError,
+    )
+    from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
+
+    model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1",
+        api_key="test-key",
+        base_url=None,
+        max_output_tokens=None,
+    )
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_write",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": '{"path":"workspace/report.md","content":"done"}',
+                        },
+                    }
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 4},
+            ),
+            SimpleNamespace(
+                content="this provider round must not run",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 4},
+            ),
+        ]
+    )
+
+    async def execute_tool(tool_name, args, request, emit_event):
+        del args, request, emit_event
+        assert tool_name == "write_file"
+        return "written"
+
+    async def on_tool_call(payload):
+        if payload.get("status") == "done":
+            raise ToolLifecyclePersistenceError(
+                tool_name="write_file",
+                provider_tool_use_id="call_write",
+                lifecycle="done",
+            )
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=5),
+            resolve_current_user_name=lambda _user_id: "Rocky",
+            build_system_prompt=lambda request, tenant_id, memory_context, current_user_name: "PROMPT",
+            resolve_memory_context=lambda request, tenant_id: "",
+            get_tools=lambda _agent_id, _core_only: [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "write_file",
+                        "description": "",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=execute_tool,
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda *_args, **_kwargs: 2048,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens") if usage else None,
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    with pytest.raises(ToolLifecyclePersistenceError):
+        await kernel.handle(
+            InvocationRequest(
+                model=model,
+                messages=[{"role": "user", "content": "write the report"}],
+                agent_name="Writer",
+                role_description="Write files",
+                agent_id=uuid4(),
+                user_id=uuid4(),
+                on_tool_call=on_tool_call,
+            )
+        )
+
+    assert len(fake_client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_agent_kernel_never_executes_tool_when_started_lifecycle_cannot_persist():
+    from app.kernel.contracts import InvocationRequest, ToolLifecyclePersistenceError
+    from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
+
+    model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1",
+        api_key="test-key",
+        base_url=None,
+        max_output_tokens=None,
+    )
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_write_unfenced",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": '{"path":"workspace/report.md","content":"must not run"}',
+                        },
+                    }
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 4},
+            )
+        ]
+    )
+    executions: list[str] = []
+
+    async def execute_tool(tool_name, args, request, emit_event):
+        del args, request, emit_event
+        executions.append(tool_name)
+        return "written"
+
+    async def on_tool_call(payload):
+        if payload.get("status") == "running":
+            raise ToolLifecyclePersistenceError(
+                tool_name="write_file",
+                provider_tool_use_id="call_write_unfenced",
+                lifecycle="running",
+            )
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=5),
+            resolve_current_user_name=lambda _user_id: "Rocky",
+            build_system_prompt=lambda request, tenant_id, memory_context, current_user_name: "PROMPT",
+            resolve_memory_context=lambda request, tenant_id: "",
+            get_tools=lambda _agent_id, _core_only: [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "write_file",
+                        "description": "",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=execute_tool,
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda *_args, **_kwargs: 2048,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens") if usage else None,
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    with pytest.raises(ToolLifecyclePersistenceError):
+        await kernel.handle(
+            InvocationRequest(
+                model=model,
+                messages=[{"role": "user", "content": "write the report"}],
+                agent_name="Writer",
+                role_description="Write files",
+                agent_id=uuid4(),
+                user_id=uuid4(),
+                on_tool_call=on_tool_call,
+            )
+        )
+
+    assert executions == []
+    assert len(fake_client.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_agent_kernel_splits_concatenated_tool_arguments_into_separate_calls():
     """Tier 1-4: concatenated DeepSeek-V4 style args `{"a":1}{"b":2}` must be split into
     two executable tool_calls (rather than dropped to `{}`). Both calls execute and the

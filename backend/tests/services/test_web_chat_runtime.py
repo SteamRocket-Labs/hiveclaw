@@ -4980,6 +4980,7 @@ async def test_persist_personal_kb_tool_keeps_full_evidence_but_replays_pointer(
 async def test_persist_legacy_tool_call_attaches_written_artifact_parts(monkeypatch, tmp_path):
     import app.services.tenant_resolver as tenant_resolver
     import app.services.web_chat_runtime as runtime
+    from app.models.audit import ChatMessage
     from app.models.chat_artifact import ChatArtifact
     from app.models.chat_transcript_event import ChatTranscriptEvent
 
@@ -5005,6 +5006,14 @@ async def test_persist_legacy_tool_call_attaches_written_artifact_parts(monkeypa
 
         async def execute(self, _stmt):
             return SimpleNamespace(scalar_one_or_none=lambda: self.existing_artifact)
+
+        async def get(self, model, identity):
+            if model is ChatMessage:
+                return next(
+                    (value for value in added if isinstance(value, ChatMessage) and value.id == identity),
+                    None,
+                )
+            return None
 
         def add(self, value):
             added.append(value)
@@ -5480,6 +5489,28 @@ def test_tool_settlement_uses_runtime_effective_arguments_for_decision_hash() ->
         )
         == effective_args
     )
+
+
+def test_tool_result_artifact_anchor_excludes_governed_arguments_and_raw_result() -> None:
+    from app.services.web_chat_runtime import _tool_result_anchor_content
+
+    content = _tool_result_anchor_content(
+        {
+            "name": "write_file",
+            "args": {"path": "workspace/report.md", "credential": "DO_NOT_PERSIST"},
+            "status": "done",
+            "tool_call_id": "call-write",
+            "result": "RAW_RESULT_DO_NOT_PERSIST",
+        },
+        "provider-safe result",
+    )
+
+    assert json.loads(content) == {
+        "name": "write_file",
+        "result": "provider-safe result",
+        "status": "done",
+        "tool_call_id": "call-write",
+    }
 
 
 @pytest.mark.asyncio

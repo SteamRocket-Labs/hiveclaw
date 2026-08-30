@@ -12,7 +12,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.database import PostgresTextContractError
-from app.kernel.contracts import ExecutionIdentityRef, ProviderRequestNeedsReconciliation, TerminalReason
+from app.kernel.contracts import (
+    ExecutionIdentityRef,
+    ProviderRequestNeedsReconciliation,
+    TerminalReason,
+    ToolLifecyclePersistenceError,
+)
 from app.runtime.invoker import AgentInvocationRequest
 from app.runtime.runtime_phase import RunPhaseEmitter, RuntimePhase
 from app.services.llm_client import LLMError
@@ -28,6 +33,8 @@ class RuntimeExceptionFailure:
 def _runtime_exception_failure(exc: Exception) -> RuntimeExceptionFailure:
     """Classify runtime failures from authoritative exception types, never message text."""
     if isinstance(exc, SessionSemanticHistoryUnavailable):
+        return RuntimeExceptionFailure(terminal_reason=TerminalReason.PERSISTENCE_ERROR.value)
+    if isinstance(exc, ToolLifecyclePersistenceError):
         return RuntimeExceptionFailure(terminal_reason=TerminalReason.PERSISTENCE_ERROR.value)
     if isinstance(exc, (SQLAlchemyError, PostgresTextContractError)):
         return RuntimeExceptionFailure(terminal_reason=TerminalReason.PERSISTENCE_ERROR.value)
@@ -552,13 +559,22 @@ class _WebChatCallbacks:
         data = dict(data)
         data["provider_request_id"] = state.active_provider_request_id
         data = events.tool_step_contract(data, fallback_run_id=state.run_uuid)
-        persisted_envelopes = await events.persist_tool_call(
-            agent_id=state.agent.id,
-            user_id=state.actor_user_id,
-            external_principal_id=state.actor_external_principal_id,
-            session_id=state.session_id,
-            data=data,
-        )
+        try:
+            persisted_envelopes = await events.persist_tool_call(
+                agent_id=state.agent.id,
+                user_id=state.actor_user_id,
+                external_principal_id=state.actor_external_principal_id,
+                session_id=state.session_id,
+                data=data,
+            )
+        except ToolLifecyclePersistenceError:
+            raise
+        except Exception as exc:
+            raise ToolLifecyclePersistenceError(
+                tool_name=str(data.get("name") or ""),
+                provider_tool_use_id=str(data.get("tool_call_id") or ""),
+                lifecycle=str(data.get("status") or ""),
+            ) from exc
         for envelope in persisted_envelopes or []:
             audience = str((envelope.get("visibility") or {}).get("audience") or "")
             if audience in {"direct_user", "participants"}:
@@ -1483,12 +1499,96 @@ async def _record_canonical_terminal_artifact_selection(
         await db.commit()
 
 
+async def _handle_tool_lifecycle_persistence_failure(
+    state: _WebChatRunState,
+    exc: ToolLifecyclePersistenceError,
+) -> None:
+    """Hold a run whose executed tool lacks a canonical terminal receipt."""
+
+    if state.agent is None or not state.session_id:
+        runtime_task, agent, _user, *_ = await state.ports.context.load_runtime_context(state.run_uuid)
+        state.agent = agent
+        state.session_id = str(runtime_task.parent_session_id)
+    reconciliation = {
+        "reason": "tool_lifecycle_persistence",
+        "tool_name": exc.tool_name,
+        "provider_tool_use_id": exc.provider_tool_use_id,
+        "lifecycle": exc.lifecycle,
+    }
+    metadata = {
+        "terminal_reason": TerminalReason.PERSISTENCE_ERROR.value,
+        "error_code": "tool_lifecycle_persistence_failed",
+        "effect_outcome_unknown": True,
+        "automatic_retry_allowed": False,
+        "session_v2_reconciliation": reconciliation,
+    }
+    summary = "Tool effect settlement requires operator reconciliation before retry."
+    try:
+        if state.stream_batcher is not None:
+            await state.stream_batcher.flush()
+        finalized = await state.ports.terminal.finalize_without_assistant(
+            run_uuid=state.run_uuid,
+            agent_id=state.agent.id,
+            session_id=state.session_id,
+            status="needs_reconciliation",
+            result_summary=summary,
+            metadata_json=metadata,
+            **_failed_file_change_kwargs(state),
+        )
+        if not finalized:
+            await state.ports.terminal.update_runtime_task(
+                state.run_uuid,
+                status="needs_reconciliation",
+                result_summary=summary,
+                metadata_json=metadata,
+            )
+    except Exception as terminal_exc:
+        await _handle_terminal_persistence_failure(state, exc, terminal_exc)
+        return
+    try:
+        await state.ports.terminal.emit_terminal_hook(
+            agent_id=state.agent.id,
+            session_id=state.session_id,
+            run_uuid=state.run_uuid,
+            runtime_metadata=state.metadata or None,
+            status="needs_reconciliation",
+            reason="tool_lifecycle_persistence",
+            extra_metadata=metadata,
+        )
+    except Exception as hook_exc:
+        state.ports.runtime.logger.warning(
+            "[WebChatRun] Tool persistence reconciliation hook failed for {}: {}",
+            state.run_uuid.hex,
+            hook_exc,
+        )
+    try:
+        await state.ports.events.broadcast(
+            state.agent.id,
+            state.session_id,
+            {
+                "type": "runtime_reconciliation_required",
+                "run_id": str(state.run_uuid),
+                **reconciliation,
+                "retryable": False,
+            },
+        )
+    except Exception as broadcast_exc:
+        state.ports.runtime.logger.warning(
+            "[WebChatRun] Tool persistence reconciliation broadcast failed for {}: {}",
+            state.run_uuid.hex,
+            broadcast_exc,
+        )
+
+
 async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> None:
     state.ports.runtime.logger.exception("[WebChatRun] Run {} failed", state.run_uuid.hex)
     cancelled = state.cancel_event.is_set()
     state.terminal_phase_hint = RuntimePhase.CANCELLED if cancelled else RuntimePhase.FAILED
     if cancelled:
         await _handle_cancelled_failure(state)
+        return
+    if isinstance(exc, ToolLifecyclePersistenceError):
+        await _handle_tool_lifecycle_persistence_failure(state, exc)
         return
     if isinstance(exc, ProviderRequestNeedsReconciliation):
         await _handle_provider_reconciliation_required(state, exc)
@@ -1674,15 +1774,18 @@ async def _handle_terminal_persistence_failure(
         state.run_uuid.hex,
         terminal,
     )
+    reconciliation_required = isinstance(original, ToolLifecyclePersistenceError)
     metadata = {
         "error": str(terminal),
         "original_error": str(original),
         "terminal_reason": TerminalReason.PERSISTENCE_ERROR.value,
         "persistence_error": True,
     }
+    if reconciliation_required:
+        metadata["automatic_retry_allowed"] = False
     await state.ports.terminal.update_runtime_task(
         state.run_uuid,
-        status="failed",
+        status="needs_reconciliation" if reconciliation_required else "failed",
         result_summary=f"Web chat persistence failed: {type(terminal).__name__}",
         metadata_json=metadata,
     )

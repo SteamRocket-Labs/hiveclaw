@@ -362,10 +362,12 @@ function projectCanonicalItem(
     // envelope normalizer runs; a reload-only parseChatMsg pass left the
     // reconciled tail as a meta-less row the chat surface renders as nothing.
     const normalized = normalizeToolCallResult(toolName, toolResult);
+    const messageId = pairedResult?.messageId ?? item.messageId;
     return {
       role: 'tool_call',
       content: '',
-      id: item.invocationId || item.id,
+      id: messageId || item.invocationId || item.id,
+      messageId: messageId ?? null,
       transcriptEventId: item.id,
       timestamp: item.occurredAt,
       toolName,
@@ -373,6 +375,7 @@ function projectCanonicalItem(
       toolStatus: pairedResult || item.terminal ? 'done' : 'running',
       toolResult: normalized.displayResult,
       toolRawResult: normalized.raw,
+      artifacts: extractArtifactParts(pairedResult?.payload ?? item.payload),
       toolMeta: normalized.toolMeta,
       eventType: item.kind,
       eventStatus: item.lifecycle,

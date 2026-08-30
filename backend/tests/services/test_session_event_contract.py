@@ -332,6 +332,7 @@ def test_v2_orm_row_round_trips_exact_columns_without_legacy_reclassification() 
     session_id = uuid.uuid4()
     tenant_id = uuid.uuid4()
     item_id = uuid.uuid4()
+    message_id = uuid.uuid4()
     occurred_at = datetime(2026, 7, 16, 1, 2, 3, tzinfo=timezone.utc)
     row = SimpleNamespace(
         id=event_id,
@@ -364,6 +365,7 @@ def test_v2_orm_row_round_trips_exact_columns_without_legacy_reclassification() 
         result_id=None,
         invocation_id=None,
         provider_tool_use_id=None,
+        message_id=message_id,
         content_hash="b" * 64,
         parent_item_id=None,
         parent_event_id=None,
@@ -376,6 +378,7 @@ def test_v2_orm_row_round_trips_exact_columns_without_legacy_reclassification() 
     assert event["schema_version"] == 2
     assert event["event_id"] == str(event_id)
     assert event["item_id"] == str(item_id)
+    assert event["message_id"] == str(message_id)
     assert event["item_kind"] == "human_input"
     assert event["lifecycle"] == "accepted"
     assert event["scope"] == row.scope_json

@@ -1456,6 +1456,8 @@ def _serialize_v2_row(row: Any, *, audience: str) -> dict[str, Any]:
     }
     if _value(row, "run_id") is not None:
         event["run_id"] = _text(_value(row, "run_id"))
+    if _value(row, "message_id") is not None:
+        event["message_id"] = _text(_value(row, "message_id"))
     for target, source in (
         ("ordinal", "ordinal"),
         ("command_id", "command_id"),

@@ -453,6 +453,7 @@ async def complete_tool_invocation(
     execution_evidence: Mapping[str, Any] | None,
     effective_arguments: Mapping[str, Any] | None = None,
     parts: list[dict[str, Any]] | None = None,
+    message_id: uuid.UUID | None = None,
     permission_resolution: Mapping[str, Any] | None = None,
 ) -> list[ChatTranscriptEvent]:
     """Settle one invocation and append its unique Provider matching result."""
@@ -689,6 +690,7 @@ async def complete_tool_invocation(
                 result_id=result.id,
                 invocation_id=invocation.id,
                 provider_tool_use_id=invocation.provider_tool_use_id,
+                message_id=message_id,
                 content_hash=content_hash,
             ),
             SessionEventDraft(
@@ -711,6 +713,7 @@ async def complete_tool_invocation(
                 result_id=result.id,
                 invocation_id=invocation.id,
                 provider_tool_use_id=invocation.provider_tool_use_id,
+                message_id=message_id,
                 content_hash=content_hash,
             ),
         ]
@@ -741,6 +744,85 @@ async def complete_tool_invocation(
     invocation.recovery_owner = None
     invocation.version = int(invocation.version) + 1
     return events
+
+
+async def mark_tool_invocation_needs_reconciliation(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    invocation_id: uuid.UUID,
+    reason_code: str,
+    recovery_owner: str,
+) -> list[ChatTranscriptEvent]:
+    """Quarantine an unsettled invocation after a persistence failure.
+
+    This fallback creates no semantic outcome. It preserves the executed
+    effect as unknown and requires the canonical settlement path to be
+    reconciled before any replay or later model round.
+    """
+
+    invocation = await db.scalar(
+        select(SessionToolInvocation)
+        .where(
+            SessionToolInvocation.id == invocation_id,
+            SessionToolInvocation.tenant_id == tenant_id,
+            SessionToolInvocation.session_id == session_id,
+        )
+        .with_for_update()
+    )
+    if invocation is None:
+        raise RuntimeError("tool_invocation_not_found")
+    if invocation.result_event_id is not None:
+        return await _terminal_events_for_invocation(db, invocation.id)
+    existing = list(
+        (
+            await db.execute(
+                select(ChatTranscriptEvent)
+                .where(
+                    ChatTranscriptEvent.invocation_id == invocation.id,
+                    ChatTranscriptEvent.item_kind == "tool_call",
+                    ChatTranscriptEvent.lifecycle == "needs_reconciliation",
+                )
+                .order_by(ChatTranscriptEvent.sequence)
+            )
+        ).scalars()
+    )
+    if existing:
+        return existing
+    previous_effect_state = invocation.effect_state
+    invocation.effect_state = "needs_reconciliation"
+    invocation.recovery_owner = str(recovery_owner)
+    invocation.version = int(invocation.version) + 1
+    result = await _result_for_invocation(db, invocation)
+    return await append_session_events(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        drafts=[
+            SessionEventDraft(
+                item_id=invocation.invocation_item_id,
+                item_kind="tool_call",
+                lifecycle="needs_reconciliation",
+                scope=_scope(result),
+                actor={"type": "runtime"},
+                payload={
+                    "invocation_id": str(invocation.id),
+                    "provider_request_id": invocation.provider_request_id,
+                    "provider_tool_use_id": invocation.provider_tool_use_id,
+                    "reason_code": str(reason_code),
+                    "previous_effect_state": previous_effect_state,
+                    "recovery_owner": invocation.recovery_owner,
+                    "execution_fence_ref": invocation.execution_fence_ref,
+                },
+                result_id=result.id,
+                invocation_id=invocation.id,
+                provider_tool_use_id=invocation.provider_tool_use_id,
+            )
+        ],
+    )
 
 
 async def apply_tool_permission_response(
@@ -846,5 +928,6 @@ __all__ = [
     "apply_tool_permission_response",
     "complete_tool_invocation",
     "mark_tool_effect_started",
+    "mark_tool_invocation_needs_reconciliation",
     "prepare_tool_invocation",
 ]

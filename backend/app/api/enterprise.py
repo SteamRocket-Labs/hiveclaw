@@ -82,6 +82,51 @@ def _llm_test_probe_max_tokens(provider: str, model: str | None) -> int:
     return 1024 if uses_openai_responses_api(provider, model) else 16
 
 
+async def _write_llm_test_audit(
+    db: AsyncSession,
+    *,
+    data: LLMTestRequest,
+    actor_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    request_id: uuid.UUID,
+    max_tokens: int,
+    phase: str,
+    success: bool | None = None,
+    latency_ms: int | None = None,
+    error_type: str | None = None,
+) -> None:
+    from app.core.policy import write_audit_event
+
+    try:
+        resource_id = uuid.UUID(data.model_id) if data.model_id else None
+    except ValueError:
+        resource_id = None
+    details: dict[str, object] = {
+        "phase": phase,
+        "provider": data.provider,
+        "model": data.model,
+        "max_tokens": max_tokens,
+        "probe_id": str(request_id),
+    }
+    if success is not None:
+        details.update(success=success, latency_ms=latency_ms or 0)
+    if error_type:
+        details["error_type"] = error_type
+    await write_audit_event(
+        db,
+        event_type=f"llm_model.test_{phase}",
+        severity="info" if success is not False else "warn",
+        actor_type="user",
+        actor_id=actor_id,
+        tenant_id=tenant_id,
+        action=f"test_llm_model_{phase}",
+        resource_type="llm_model",
+        resource_id=resource_id,
+        details=details,
+        request_id=request_id,
+    )
+
+
 @router.post("/llm-test")
 async def test_llm_model(
     data: LLMTestRequest,
@@ -111,7 +156,29 @@ async def test_llm_model(
     if not api_key:
         return {"success": False, "latency_ms": 0, "error": "API Key is required"}
 
-    start = time.time()
+    max_tokens = _llm_test_probe_max_tokens(data.provider, data.model)
+    probe_id = uuid.uuid4()
+    try:
+        await _write_llm_test_audit(
+            db,
+            data=data,
+            actor_id=current_user.id,
+            tenant_id=target_tenant_id,
+            request_id=probe_id,
+            max_tokens=max_tokens,
+            phase="started",
+        )
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        logger.error("Audit start write failed for llm_model test; provider call denied", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Security audit unavailable; model probe was not started",
+        ) from exc
+
+    start = time.monotonic()
+    error_type = None
     try:
         client = create_llm_client(
             provider=data.provider,
@@ -138,15 +205,43 @@ async def test_llm_model(
         response = await client.complete(
             messages=[LLMMessage(role="user", content="Say 'ok' and nothing else.")],
             temperature=resolve_temperature(model_config),
-            max_tokens=_llm_test_probe_max_tokens(data.provider, data.model),
+            max_tokens=max_tokens,
             **reasoning_kwargs,
         )
-        latency_ms = int((time.time() - start) * 1000)
+        latency_ms = int((time.monotonic() - start) * 1000)
         reply = (response.content or "") if response else ""
-        return {"success": True, "latency_ms": latency_ms, "reply": reply}
+        probe_result = {"success": True, "latency_ms": latency_ms, "reply": reply}
     except Exception as e:
-        latency_ms = int((time.time() - start) * 1000)
-        return {"success": False, "latency_ms": latency_ms, "error": str(e)}
+        latency_ms = int((time.monotonic() - start) * 1000)
+        error_type = type(e).__name__
+        probe_result = {"success": False, "latency_ms": latency_ms, "error": str(e)}
+
+    try:
+        await _write_llm_test_audit(
+            db,
+            data=data,
+            actor_id=current_user.id,
+            tenant_id=target_tenant_id,
+            request_id=probe_id,
+            max_tokens=max_tokens,
+            phase="completed",
+            success=probe_result["success"],
+            latency_ms=latency_ms,
+            error_type=error_type,
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.error("Audit result write failed for llm_model test", exc_info=True)
+        return {
+            "success": False,
+            "latency_ms": latency_ms,
+            "error": "Model probe completed, but its audit result could not be persisted. Do not retry automatically.",
+            "provider_success": probe_result["success"],
+            "audit_status": "result_persistence_failed",
+            "retryable": False,
+        }
+    return probe_result
 
 
 @router.get("/llm-models")
@@ -625,6 +720,7 @@ async def list_audit_logs(
 
 @router.get("/audit")
 async def query_audit_events(
+    tenant_id: str | None = None,
     event_type: str | None = None,
     severity: str | None = None,
     actor_id: uuid.UUID | None = None,
@@ -657,7 +753,8 @@ async def query_audit_events(
         page_size=page_size,
     )
 
-    events, total = await query_events(db, current_user.tenant_id, params)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    events, total = await query_events(db, target_tenant_id, params)
     return {
         "items": [AuditEventOut.model_validate(e) for e in events],
         "total": total,

@@ -72,6 +72,30 @@ vi.mock('@tanstack/react-query', () => ({
         ],
       };
     }
+    if (key === 'security-audit-events') {
+      return {
+        data: {
+          items: [
+            {
+              id: 'security-audit-1',
+              event_type: 'llm_model.test_completed',
+              severity: 'info',
+              actor_type: 'user',
+              actor_id: 'user-1',
+              tenant_id: 'tenant-1',
+              resource_type: 'llm_model',
+              resource_id: 'model-12345678',
+              action: 'test_llm_model_completed',
+              details: { provider: 'zhipu', model: 'glm-5.3', success: true },
+              created_at: '2026-03-27T09:01:00Z',
+            },
+          ],
+          total: 1,
+          page: 1,
+          page_size: 200,
+        },
+      };
+    }
     if (key === 'org-departments') {
       return {
         data: [
@@ -148,7 +172,10 @@ describe('Workspace remaining sections', () => {
     expect(approvalsMarkup).not.toContain('secret-token');
     expect(approvalsMarkup).not.toContain('execution_envelope');
     expect(auditMarkup).toContain('schedule_tick');
-    expect(auditMarkup).toContain('records:1');
+    expect(auditMarkup).toContain('test_llm_model_completed');
+    expect(auditMarkup).toContain('llm_model.test_completed');
+    expect(auditMarkup).toContain('model-12');
+    expect(auditMarkup).toContain('records:2');
   });
 
   it('renders the org, quotas, and tools sections outside of EnterpriseSettings', () => {

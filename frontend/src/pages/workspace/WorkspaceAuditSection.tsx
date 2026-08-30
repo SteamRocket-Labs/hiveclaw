@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
-import { enterpriseApi } from '../../api/domains/enterprise';
+import { enterpriseApi, type AuditLog, type SecurityAuditEvent } from '../../api/domains/enterprise';
 
 interface WorkspaceAuditSectionProps {
   selectedTenantId: string;
@@ -16,6 +16,7 @@ interface WorkspaceAuditLog {
   action: string;
   created_at: string;
   agent_id?: string | null;
+  reference_id?: string | null;
   details?: Record<string, unknown> | null;
 }
 
@@ -38,8 +39,27 @@ export default function WorkspaceAuditSection({
     queryKey: ['audit-logs', selectedTenantId],
     queryFn: () => enterpriseApi.getAuditLogs(`limit=200${selectedTenantId ? `&tenant_id=${selectedTenantId}` : ''}`),
   });
+  const { data: securityAuditEvents } = useQuery({
+    queryKey: ['security-audit-events', selectedTenantId],
+    queryFn: () => enterpriseApi.getSecurityAuditEvents(selectedTenantId),
+  });
 
-  const filteredAuditLogs = (auditLogs as WorkspaceAuditLog[]).filter((log) => {
+  const combinedAuditLogs: WorkspaceAuditLog[] = [
+    ...(auditLogs as AuditLog[]).map((log) => ({ ...log, reference_id: log.agent_id })),
+    ...((securityAuditEvents?.items || []) as SecurityAuditEvent[]).map((event) => ({
+      id: `security:${event.id}`,
+      action: event.action,
+      created_at: event.created_at,
+      reference_id: event.resource_id || event.actor_id,
+      details: {
+        ...event.details,
+        event_type: event.event_type,
+        severity: event.severity,
+      },
+    })),
+  ].sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at));
+
+  const filteredAuditLogs = combinedAuditLogs.filter((log) => {
     if (auditFilter === 'background') return BACKGROUND_ACTIONS.includes(log.action);
     if (auditFilter === 'actions') return !BACKGROUND_ACTIONS.includes(log.action);
     return true;
@@ -101,7 +121,7 @@ export default function WorkspaceAuditSection({
                 {isBackgroundAction ? '⚙️' : '👤'}
               </span>
               <span style={{ flex: 1, fontWeight: 500 }}>{log.action}</span>
-              <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>{log.agent_id?.slice(0, 8) || '-'}</span>
+              <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>{log.reference_id?.slice(0, 8) || '-'}</span>
             </div>
             {details ? (
               <div style={{ marginLeft: '100px', marginTop: '2px', fontSize: '11px', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>

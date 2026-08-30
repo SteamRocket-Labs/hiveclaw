@@ -762,7 +762,7 @@ describe('request cleanup adapters', () => {
     expect(del).toHaveBeenCalledWith('/tools/tool-1');
   });
 
-  it('routes enterprise audit logs through the real audit-logs endpoint', async () => {
+  it('routes enterprise operational and security audit logs through their real endpoints', async () => {
     vi.doMock('./core/request', async () => {
       const actual = await vi.importActual<typeof import('./core/request')>('./core/request');
       return {
@@ -777,9 +777,11 @@ describe('request cleanup adapters', () => {
     vi.mocked(post).mockResolvedValue({ success: true, latency_ms: 123 });
 
     await enterpriseApi.getAuditLogs('limit=200&tenant_id=tenant-1');
+    await enterpriseApi.getSecurityAuditEvents('tenant-1');
     await enterpriseApi.testLLM({ provider: 'openai', model: 'gpt-test' });
 
     expect(get).toHaveBeenCalledWith('/enterprise/audit-logs?limit=200&tenant_id=tenant-1');
+    expect(get).toHaveBeenCalledWith('/enterprise/audit?page_size=200&tenant_id=tenant-1');
     expect(post).toHaveBeenCalledWith('/enterprise/llm-test', {
       provider: 'openai',
       model: 'gpt-test',

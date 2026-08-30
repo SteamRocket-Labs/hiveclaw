@@ -43,6 +43,20 @@ export interface AuditLog {
   created_at: string;
 }
 
+export interface SecurityAuditEvent {
+  id: string;
+  event_type: string;
+  severity: string;
+  actor_type: string;
+  actor_id?: string | null;
+  tenant_id: string;
+  resource_type?: string | null;
+  resource_id?: string | null;
+  action: string;
+  details: Record<string, unknown>;
+  created_at: string;
+}
+
 export interface InvitationCode {
   id: string;
   code: string;
@@ -112,6 +126,9 @@ export interface LLMTestResult {
   success: boolean;
   latency_ms?: number;
   error?: string;
+  provider_success?: boolean;
+  audit_status?: 'result_persistence_failed';
+  retryable?: boolean;
 }
 
 export interface EnterpriseStats {
@@ -190,6 +207,10 @@ export const enterpriseApi = {
 
   /** Audit */
   getAuditLogs: (params?: string) => get<AuditLog[]>(`/enterprise/audit-logs${params ? `?${params}` : ''}`),
+  getSecurityAuditEvents: (tenantId?: string) =>
+    get<PaginatedResponse<SecurityAuditEvent>>(
+      `/enterprise/audit?page_size=200${tenantId ? `&tenant_id=${encodeURIComponent(tenantId)}` : ''}`,
+    ),
 
   /** Stats & quotas */
   getStats: (tenantId?: string) => get<EnterpriseStats>(`/enterprise/stats${tenantId ? `?tenant_id=${tenantId}` : ''}`),

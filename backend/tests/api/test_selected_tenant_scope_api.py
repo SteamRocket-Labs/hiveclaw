@@ -33,6 +33,7 @@ class _FakeDB:
         self.added = []
         self.deleted = []
         self.committed = False
+        self.commit_count = 0
         self.statements = []
         self.sync_session = SimpleNamespace(info={})
 
@@ -51,6 +52,7 @@ class _FakeDB:
 
     async def commit(self):
         self.committed = True
+        self.commit_count += 1
 
     async def rollback(self):
         return None
@@ -372,9 +374,18 @@ async def test_platform_admin_can_test_selected_tenant_llm_model(monkeypatch):
     target_tenant_id = uuid4()
     target_model_id = uuid4()
     db = _FakeDB([_ScalarResult(SimpleNamespace(api_key="target-secret"))])
+    timeline = []
+    audit_events = []
+
+    original_commit = db.commit
+
+    async def tracked_commit():
+        timeline.append("commit")
+        await original_commit()
 
     class _FakeClient:
         async def complete(self, messages, max_tokens, **kwargs):
+            timeline.append("provider")
             assert messages[0].content == "Say 'ok' and nothing else."
             assert max_tokens == 16
             assert "temperature" in kwargs
@@ -388,8 +399,11 @@ async def test_platform_admin_can_test_selected_tenant_llm_model(monkeypatch):
         return _FakeClient()
 
     async def fake_write_audit_event(*args, **kwargs):
+        timeline.append(kwargs["event_type"])
+        audit_events.append(kwargs)
         return None
 
+    db.commit = tracked_commit
     monkeypatch.setattr("app.services.llm_client.create_llm_client", fake_create_llm_client)
     monkeypatch.setattr("app.core.policy.write_audit_event", fake_write_audit_event)
 
@@ -409,6 +423,163 @@ async def test_platform_admin_can_test_selected_tenant_llm_model(monkeypatch):
     assert own_tenant_id not in params.values()
     assert result["success"] is True
     assert result["reply"] == "ok"
+    assert timeline == [
+        "llm_model.test_started",
+        "commit",
+        "provider",
+        "llm_model.test_completed",
+        "commit",
+    ]
+    assert [event["action"] for event in audit_events] == [
+        "test_llm_model_started",
+        "test_llm_model_completed",
+    ]
+    assert all(event["tenant_id"] == target_tenant_id for event in audit_events)
+    assert all(event["resource_id"] == target_model_id for event in audit_events)
+    assert audit_events[0]["request_id"] == audit_events[1]["request_id"]
+    assert audit_events[0]["details"]["probe_id"] == str(audit_events[0]["request_id"])
+    assert audit_events[1]["details"]["success"] is True
+    assert "target-secret" not in repr(audit_events)
+
+
+@pytest.mark.asyncio
+async def test_llm_probe_persists_safe_failure_audit_without_provider_error_text(monkeypatch):
+    import app.api.enterprise as enterprise_api
+
+    tenant_id = uuid4()
+    audit_events = []
+
+    class _FailingClient:
+        async def complete(self, *_args, **_kwargs):
+            raise RuntimeError("provider-body-must-not-enter-audit")
+
+    async def capture_audit(*_args, **kwargs):
+        audit_events.append(kwargs)
+
+    monkeypatch.setattr(
+        "app.services.llm_client.create_llm_client",
+        lambda *_args, **_kwargs: _FailingClient(),
+    )
+    monkeypatch.setattr("app.core.policy.write_audit_event", capture_audit)
+
+    result = await enterprise_api.test_llm_model(
+        data=enterprise_api.LLMTestRequest(provider="openai", model="gpt-4o-mini", api_key="secret"),
+        current_user=SimpleNamespace(id=uuid4(), role="admin", tenant_id=tenant_id),
+        db=_FakeDB([]),
+    )
+
+    assert result["success"] is False
+    assert [event["event_type"] for event in audit_events] == [
+        "llm_model.test_started",
+        "llm_model.test_completed",
+    ]
+    assert audit_events[1]["severity"] == "warn"
+    assert audit_events[1]["details"]["error_type"] == "RuntimeError"
+    assert "provider-body-must-not-enter-audit" not in repr(audit_events)
+
+
+@pytest.mark.asyncio
+async def test_llm_probe_fails_closed_when_started_audit_is_unavailable(monkeypatch):
+    import app.api.enterprise as enterprise_api
+
+    provider_called = False
+
+    class _ForbiddenClient:
+        async def complete(self, *_args, **_kwargs):
+            nonlocal provider_called
+            provider_called = True
+
+    async def fail_audit(*_args, **_kwargs):
+        raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr(
+        "app.services.llm_client.create_llm_client",
+        lambda *_args, **_kwargs: _ForbiddenClient(),
+    )
+    monkeypatch.setattr("app.core.policy.write_audit_event", fail_audit)
+
+    with pytest.raises(enterprise_api.HTTPException) as error:
+        await enterprise_api.test_llm_model(
+            data=enterprise_api.LLMTestRequest(provider="openai", model="gpt-4o-mini", api_key="secret"),
+            current_user=SimpleNamespace(id=uuid4(), role="admin", tenant_id=uuid4()),
+            db=_FakeDB([]),
+        )
+
+    assert error.value.status_code == 503
+    assert provider_called is False
+
+
+@pytest.mark.asyncio
+async def test_llm_probe_reports_terminal_audit_failure_without_inviting_retry(monkeypatch):
+    import app.api.enterprise as enterprise_api
+
+    audit_count = 0
+
+    class _SuccessfulClient:
+        async def complete(self, *_args, **_kwargs):
+            return SimpleNamespace(content="ok")
+
+    async def fail_terminal_audit(*_args, **_kwargs):
+        nonlocal audit_count
+        audit_count += 1
+        if audit_count == 2:
+            raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr(
+        "app.services.llm_client.create_llm_client",
+        lambda *_args, **_kwargs: _SuccessfulClient(),
+    )
+    monkeypatch.setattr("app.core.policy.write_audit_event", fail_terminal_audit)
+
+    result = await enterprise_api.test_llm_model(
+        data=enterprise_api.LLMTestRequest(provider="openai", model="gpt-4o-mini", api_key="secret"),
+        current_user=SimpleNamespace(id=uuid4(), role="admin", tenant_id=uuid4()),
+        db=_FakeDB([]),
+    )
+
+    assert result == {
+        "success": False,
+        "latency_ms": result["latency_ms"],
+        "error": "Model probe completed, but its audit result could not be persisted. Do not retry automatically.",
+        "provider_success": True,
+        "audit_status": "result_persistence_failed",
+        "retryable": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_queries_selected_tenant_security_audit(monkeypatch):
+    import app.api.enterprise as enterprise_api
+
+    own_tenant_id = uuid4()
+    target_tenant_id = uuid4()
+    captured = {}
+
+    async def fake_query_events(_db, tenant_id, params):
+        captured["tenant_id"] = tenant_id
+        captured["page_size"] = params.page_size
+        return [], 0
+
+    monkeypatch.setattr("app.services.audit_query_service.query_events", fake_query_events)
+
+    result = await enterprise_api.query_audit_events(
+        tenant_id=str(target_tenant_id),
+        event_type=None,
+        severity=None,
+        actor_id=None,
+        resource_type=None,
+        resource_id=None,
+        search=None,
+        date_from=None,
+        date_to=None,
+        page=1,
+        page_size=200,
+        current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=own_tenant_id),
+        db=_FakeDB([]),
+    )
+
+    assert result["total"] == 0
+    assert captured == {"tenant_id": target_tenant_id, "page_size": 200}
 
 
 @pytest.mark.asyncio
@@ -432,6 +603,11 @@ async def test_llm_test_applies_gpt55_responses_request_options(monkeypatch):
         return _FakeClient()
 
     monkeypatch.setattr("app.services.llm_client.create_llm_client", fake_create_llm_client)
+
+    async def noop_audit(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.core.policy.write_audit_event", noop_audit)
 
     result = await enterprise_api.test_llm_model(
         data=enterprise_api.LLMTestRequest(

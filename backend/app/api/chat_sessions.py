@@ -1493,25 +1493,79 @@ async def branch_session(
     if body.start_run and branch_result.run_request is not None:
         request = branch_result.run_request
         try:
-            run_payload = await start_web_chat_run(
-                db=db,
-                agent=agent,
-                user=current_user,
-                session=branch_result.session,
-                content=request.content,
-                display_content=request.display_content,
-                file_name=request.file_name,
-                attachments=getattr(request, "attachments", None) or [],
-                parts=getattr(request, "parts", None) or [],
-                append_user_message=request.append_user_message,
-                extra_metadata={
-                    **(getattr(request, "extra_metadata", None) or {}),
-                    **_session_permission_metadata(body.permission_mode, branch_result.session),
-                    "model_routing_locked": body.model_routing_locked,
-                },
-            )
+            runtime_metadata = {
+                **(getattr(request, "extra_metadata", None) or {}),
+                **_session_permission_metadata(body.permission_mode, branch_result.session),
+                "model_routing_locked": body.model_routing_locked,
+            }
+            if request.append_user_message:
+                # A content-bearing branch starts a new logical user turn. It
+                # must enter through the same durable Session V2 admission and
+                # round-binding lane as POST /runs; a bare RuntimeTask prompt
+                # is not a provider message and would leave bound_input_ids
+                # empty. Derive the IDs from the already-created branch so
+                # dispatch recovery cannot duplicate its input or run.
+                branch_input_id = uuid.uuid5(
+                    branch_result.session.id,
+                    f"conversation-branch:{body.mode}:initial-input",
+                )
+                receipt = await submit_live_human_input(
+                    db=db,
+                    agent=agent,
+                    user=current_user,
+                    session=branch_result.session,
+                    content=request.content,
+                    source=f"conversation_branch_{body.mode}",
+                    input_id=branch_input_id,
+                    idempotency_key=(f"conversation-branch:{branch_result.session.id}:{body.mode}:initial-input"),
+                    requested_kind="start_turn",
+                    display_content=request.display_content,
+                    file_name=request.file_name,
+                    attachments=getattr(request, "attachments", None) or [],
+                    parts=getattr(request, "parts", None) or [],
+                    runtime_metadata=runtime_metadata,
+                )
+                run_payload = dict(receipt.get("run") or {}) or None
+                if run_payload is None:
+                    branch_result.branch["input_receipt"] = {
+                        key: receipt.get(key)
+                        for key in (
+                            "schema",
+                            "schema_version",
+                            "input_id",
+                            "admission_state",
+                            "reason_code",
+                            "dispatch_status",
+                        )
+                    }
+            else:
+                # Regenerate reuses the copied canonical user prefix and does
+                # not create a second HumanInput checkpoint.
+                run_payload = await start_web_chat_run(
+                    db=db,
+                    agent=agent,
+                    user=current_user,
+                    session=branch_result.session,
+                    content=request.content,
+                    display_content=request.display_content,
+                    file_name=request.file_name,
+                    attachments=getattr(request, "attachments", None) or [],
+                    parts=getattr(request, "parts", None) or [],
+                    append_user_message=False,
+                    extra_metadata=runtime_metadata,
+                )
         except ActiveWebChatRunExists as exc:
             run_payload = {"status": "queued", **exc.run}
+        except IdempotencyConflict as exc:
+            await db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "idempotency_conflict",
+                    "command_id": str(exc.command_id),
+                    "receipt_ref": exc.receipt_ref,
+                },
+            ) from exc
     else:
         await db.commit()
 

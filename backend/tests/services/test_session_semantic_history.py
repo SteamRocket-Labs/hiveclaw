@@ -1166,6 +1166,105 @@ async def test_real_branch_consumes_copied_canonical_v2_prefix(
     assert receipt["branch_prefix"]["source_session_id"] == str(session_id)
 
 
+async def test_edit_branch_live_api_binds_full_unicode_retry_input_to_round_one(
+    owner_sessionmaker,
+) -> None:
+    """SESSION-RETRY-INPUT-001: the live branch API must not bypass V2 input.
+
+    Production reproduced a completed edit retry whose canonical checkpoint
+    held the full prompt while ``result_commit.prepared.bound_input_ids`` was
+    empty. Drive the real API entry and PostgreSQL aggregates, then prove the
+    exact long Unicode input is the sole durable round-one user message.
+    """
+
+    from app.api import chat_sessions as chat_sessions_api
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionModelResult, SessionTurnInput
+    from app.models.user import User
+    from app.services.session_model_round import bind_round_inputs
+
+    tenant_id, user_id, agent_id, session_id = await _seed(owner_sessionmaker)
+    await _submit_turn(
+        owner_sessionmaker,
+        user_id=user_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        content="source turn before a retryable provider failure",
+    )
+    retry_prompt = (
+        "WEEKEND-RC retry ①：请逐字保留当前输入，不要把 queue ordinal 1 当作消息。\n"
+        "Marker: RETRY-完整输入-雪松-734\n" + "活动议程与风险恢复证据；" * 180
+    )
+
+    async with owner_sessionmaker() as db:
+        anchor = await db.scalar(
+            select(ChatTranscriptEvent)
+            .where(
+                ChatTranscriptEvent.session_id == session_id,
+                ChatTranscriptEvent.schema_version == 2,
+                ChatTranscriptEvent.item_kind == "human_input",
+                ChatTranscriptEvent.lifecycle == "accepted",
+            )
+            .order_by(ChatTranscriptEvent.sequence.desc())
+        )
+        agent = await db.get(Agent, agent_id)
+        user = await db.get(User, user_id)
+        source_session = await db.get(ChatSession, session_id)
+        assert anchor is not None and agent is not None and user is not None and source_session is not None
+
+        response = await chat_sessions_api.branch_session(
+            agent_id=agent_id,
+            session_id=session_id,
+            body=chat_sessions_api.BranchSessionIn(
+                mode="edit",
+                anchor_event_id=anchor.id,
+                content=retry_prompt,
+                display_content=retry_prompt,
+                start_run=True,
+                permission_mode="default",
+            ),
+            current_user=user,
+            db=db,
+        )
+        branch_session_id = uuid.UUID(response.session.id)
+        run_payload = dict(response.run or {})
+        run_id = uuid.UUID(str(run_payload["run_id"]))
+        task = await db.get(RuntimeTask, run_id)
+        assert task is not None
+        turn_id = str((task.metadata_json or {})["turn_id"])
+
+        row = await db.scalar(
+            select(SessionTurnInput).where(
+                SessionTurnInput.tenant_id == tenant_id,
+                SessionTurnInput.session_id == branch_session_id,
+                SessionTurnInput.target_run_id == run_id,
+            )
+        )
+        assert row is not None
+        assert row.content_parts_json == [{"type": "text", "text": retry_prompt, "display_content": retry_prompt}]
+
+        bound_messages = await bind_round_inputs(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=branch_session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            round_index=1,
+        )
+        await db.commit()
+
+        assert len(bound_messages) == 1
+        assert bound_messages[0]["role"] == "user"
+        assert bound_messages[0]["content"] == retry_prompt
+        model_result = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == run_id))
+        assert model_result is not None
+        assert model_result.bound_input_ids_json == [str(row.id)]
+
+
 async def test_valid_empty_history_is_typed_and_not_unavailable(
     owner_sessionmaker,
     monkeypatch,

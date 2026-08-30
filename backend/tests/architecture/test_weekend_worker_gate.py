@@ -45,17 +45,17 @@ def test_preflight_reports_the_effective_timeout_without_blocking_the_worker() -
     assert result["semantic_verdict"] == "not_computed_by_tool"
 
 
-def test_preflight_accepts_a_bounded_outer_timeout_with_buffer() -> None:
+def test_preflight_accepts_a_window_level_watchdog_without_warning() -> None:
     result = GATE.validate_preflight(
-        _targets(3600),
+        _targets(43_200),
         target_name="zcode",
-        outer_timeout_seconds=3000,
+        outer_timeout_seconds=43_200,
     )
 
     assert result["ready"] is True
     assert result["errors"] == []
     assert result["warnings"] == []
-    assert result["effective_timeout_seconds"] == 3000
+    assert result["effective_timeout_seconds"] == 43_200
 
 
 def test_receipt_classifies_cancelled_as_reviewable_interruption() -> None:

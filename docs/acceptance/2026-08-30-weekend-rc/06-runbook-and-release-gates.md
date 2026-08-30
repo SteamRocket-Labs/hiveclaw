@@ -4,8 +4,8 @@ owner: Codex
 status: active
 authority: canonical-execution-and-release-gate
 last_reviewed: 2026-08-30
-source_commit: 8c851403
-verification_status: owner-corrected-delegation-contract-validated
+source_commit: 5a5a160d
+verification_status: owner-corrected-window-level-watchdog-validated
 ---
 
 # 12 小时 Runbook 与 Release Gates
@@ -32,10 +32,10 @@ verification_status: owner-corrected-delegation-contract-validated
 每个 worker 调用必须满足：
 
 1. Codex 先 fresh reproduce，并把 Finding ID、Journey ID、exact base commit、最早错误状态、目标、included/excluded scope、验收命令和失败探针写入 Issue。
-2. 从 exact base 创建单 Issue 隔离 worktree，按当前 Skill 发起 fixed-cwd、task-sized finite-timeout packet。默认使用 `approve-all + Terminal`，保留 worker 的正常 Shell、network、search 和工具能力；`approve-reads`、`deny-all`、`--no-terminal` 只在 owner 或真实执行环境明确要求限制时使用，不因任务被描述为“研究/只读”就自动降权。`--authorization-note` 只记录已存在的 owner 授权与效果边界，不负责开启能力。初次派发跨 Issue 无状态；同一 Issue correction 必须携带已经核验的诊断、diff、test 和 interruption checkpoint，不能让 worker 从零重复考古。
+2. 从 exact base 创建单 Issue 隔离 worktree。派发不设置任意单任务 deadline；底层工具强制需要秒数时，只使用 owner 已定义的整轮执行窗口作为技术 watchdog（本轮 43200s），它不参与成功判断。默认使用 `approve-all + Terminal`，保留 worker 的正常 Shell、network、search 和工具能力；`approve-reads`、`deny-all`、`--no-terminal` 只在 owner 或真实执行环境明确要求限制时使用，不因任务被描述为“研究/只读”就自动降权。`--authorization-note` 只记录已存在的 owner 授权与效果边界，不负责开启能力。初次派发跨 Issue 无状态；同一 Issue correction 必须携带已经核验的诊断、diff、test 和 interruption checkpoint，不能让 worker 从零重复考古。
 3. `cwd` 只是上下文，不是 OS sandbox。Delegation envelope 必须把 commit/push/network publish/deploy/production/credential/billing/destructive/irreversible effects 列为未下放的 commit gates；worker 可完成无副作用准备，但必须停在这些效果前。需要更强隔离而当前 host 无法提供时，不派包。
 4. 最多并行两个互不重叠的 packet：一个 Kimi frontend、一个 zCode backend。跨层 contract 变更按权威层先后串行，禁止并发修改同一协议或文件。
-5. 派发前运行 worker preflight，记录 outer、target-internal 与 effective timeout；内外层不一致是显式 warning，不是任意固定缓冲门。完整 events/stderr/result 留在 receipt 目录；父上下文只消费目标、effective timeout、changed paths、tests、risks 和 blocker 摘要。`exit=0` 只表示 transport 返回，stop_reason 只做分类；`returned`、`interrupted`、`transport_failed` 都必须进入 Codex review，任何单字段都不能自动升级为成功。
+5. 派发前运行 worker preflight，确认 outer、target-internal 与 effective watchdog 都没有暗中缩短 owner 的整轮窗口；不设置固定 buffer 或模型工作时长阈值。完整 events/stderr/result 留在 receipt 目录；父上下文只消费目标、effective watchdog、changed paths、tests、risks 和 blocker 摘要。`exit=0` 只表示 transport 返回，stop_reason 只做分类；`returned`、`interrupted`、`transport_failed` 都必须进入 Codex review，任何单字段都不能自动升级为成功。
 6. Codex 直接检查当前源码、Git diff、live-entry wiring、failing-first test 和完整相关 gate。实现包无 diff 是审查信号而非通用失败；interrupted run 的已验证诊断或部分 patch 先保留再决定续跑、correction 或接管，不机械丢弃。只有任务级 Done 真正满足才形成 Fix Candidate。
 7. Codex 复核通过后才原子集成、更新 Finding/Status/Issue；生产 Gate 通过后才允许 `Closed`。下一轮从 canonical docs 重新派发。
 

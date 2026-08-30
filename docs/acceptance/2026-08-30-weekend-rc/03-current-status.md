@@ -4,8 +4,8 @@ owner: Codex
 status: active
 authority: canonical-working-state
 last_reviewed: 2026-08-30
-source_commit: 8c851403
-verification_status: gate0-complete-session-context-p1-dispatch-contract-validated
+source_commit: 5a5a160d
+verification_status: gate0-complete-session-context-p1-window-level-watchdog-validated
 ---
 
 # 当前状态与唯一下一动作
@@ -28,7 +28,7 @@ verification_status: gate0-complete-session-context-p1-dispatch-contract-validat
 | Goal | Codex Goal `01a05189-c369-75f0-a720-ffe16136644f`，API 当前仍为 `paused` | owner 当前消息已明确授权本轮继续；不得把 Goal 机械状态伪写为后台 active |
 | execution roles | Codex 总控/验收；Kimi Code 前端；zCode 后端 | owner 2026-08-30 已批准，见 DEC-008～DEC-012 |
 | delegation protocol | `agent-delegation` Skill `0.1.2` 是唯一派发/授权/receipt 协议；`cwd` 不宣称为 sandbox | owner 2026-08-30 已批准 |
-| delegation readiness | doctor `ok`；zCode registry 的 internal prompt timeout 已从 900s 调整为 3600s；默认保留完整 worker capabilities | 两份 registry exact argv readback + doctor；可恢复 backup `20260830T115555Z-register` |
+| delegation readiness | doctor `ok`；wrapper default/max 与 zCode internal timeout 均为本轮整体窗口 43200s，不再设置单任务 deadline；默认保留完整 worker capabilities | 两份 registry exact argv + dry-run readback；`timeout_seconds=43200`、`approve-all`、Terminal；可恢复 backup `20260830T120822Z-register` |
 | delegation incident | Issue #4 首包在 `approve-all + Terminal` 下运行 901.112s 后被旧 900s target timeout 取消，1943 events、零 protocol error、零 diff；wrapper 同时报 `status=success` / `stop_reason=cancelled` | receipt `f052ff24…`；确认不是权限失败。旧 correction 在改合同前主动取消，worktree 保持 clean |
 | GitHub 控制层 | milestone [#1](https://github.com/SteamRocket-Labs/hiveclaw/milestone/1)、umbrella Issue [#3](https://github.com/SteamRocket-Labs/hiveclaw/issues/3)、7 个 RC role/state labels | 本轮远程 readback 已核验；不构成 acceptance truth |
 | 旧 WIP archive | 原 5,685 行、约 1.29 MB，完整迁移并增加 archive warning | 本轮本地已核验 |
@@ -94,7 +94,7 @@ verification_status: gate0-complete-session-context-p1-dispatch-contract-validat
 - live readback 证明 canonical Session V2 transcript 有 635 个有序事件及两轮完整输入/输出，但兼容 `/messages` 投影只有 10 条 system/debug；runtime 当前仍从 `ChatMessage` 组装历史，`SESSION-CONTEXT-001` 已进入 P1 修复链。
 - 已创建 GitHub Issue #4 并向 zCode 派发首个 backend 实现包；首包暴露 target-internal timeout 与 outer timeout 冲突，而非 worker 权限不足。
 - owner 要求放宽派发规则后，工作流改为默认完整 capability、task-sized timeout、effective-timeout warning、receipt 分类和同 Issue verified checkpoint 续传；不再把固定 stop reason、固定缓冲或是否有 diff 当作语义裁决。
-- 已把 zCode target internal timeout 调整为 3600s，两个 registry 一致且 `agent-delegate doctor --json` 返回 `status=ok`；旧 900s correction 已安全取消，隔离 worktree 无改动。
+- owner 进一步撤销任意单任务 timeout；wrapper default/max 与 zCode target internal timeout 已统一为整轮 12 小时窗口 43200s，两个 registry 一致、dry-run 为 `approve-all + Terminal`，且 `agent-delegate doctor --json` 返回 `status=ok`。旧 900s correction 已安全取消，隔离 worktree 无改动。
 
 ## 最近验证
 
@@ -104,7 +104,7 @@ verification_status: gate0-complete-session-context-p1-dispatch-contract-validat
 - task-state resolve 仍指向本文件；`HEAD = main = origin/main = 56ec5dd0` 在 Gate 0 后重新核验。
 - Railway backend/backend-api/frontend 当前均 `SUCCESS`，且部署消息绑定 `eb61d468221aa22a4f22c1d96353baadef3b51e6`；backend health 与 frontend `/` 成功。
 - production `P01`/continuation probe：Session `59257e7a-960b-459a-9652-2ff39be117ee`，两次 run 均 `completed`；第二轮产生 `SESSION-CONTEXT-001`，因此不计入 NPTCR PASS。
-- 宽松 worker contract：18 个 architecture tests 通过；Ruff check/format 与 `git diff --check` 通过；live preflight 对 zCode 报 `effective_timeout_seconds=3300`、无 warning；旧 cancelled receipt 被正确分类为 `interrupted`、仍可 review、且不计算 semantic verdict。
+- 宽松 worker contract：18 个 architecture tests 通过；Ruff check/format 与 `git diff --check` 通过；旧 cancelled receipt 被正确分类为 `interrupted`、仍可 review、且不计算 semantic verdict。43200s window-level preflight 为 `ready=true`、effective/internal/outer 全部一致、无 warning。
 
 ## 唯一下一动作
 

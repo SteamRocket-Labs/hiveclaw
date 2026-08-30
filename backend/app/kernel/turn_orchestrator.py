@@ -479,6 +479,14 @@ def _classified_llm_error_result(
     )
 
 
+def _tool_result_views(result: Any, side_effects: Any) -> tuple[str, str]:
+    """Keep durable raw evidence separate from the model-facing projection."""
+
+    raw_evidence = (side_effects or {}).get("raw_tool_result")
+    raw_result = raw_evidence if isinstance(raw_evidence, str) else str(result)
+    return raw_result, str(result)
+
+
 async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> InvocationResult:
     # Bind an explicit per-call dependency snapshot so tests, DI, and runtime
     # overrides observe the same facade values without copying a module namespace.
@@ -2461,9 +2469,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                 await _inject_loop_guard_warning(result_loop_decision)
                             else:
                                 _loop_guard_terminal_decision = result_loop_decision
-                        _raw_result_evidence = (_side_effects or {}).get("raw_tool_result")
-                        _raw_result = _raw_result_evidence if isinstance(_raw_result_evidence, str) else str(result)
-                        _model_result = str(result)
+                        _raw_result, _model_result = _tool_result_views(result, _side_effects)
                         _replacement_reason = "result size threshold"
                         _content = _maybe_evict_tool_result(tool_name, tc["id"], _model_result, request.eviction_dir)
                         if _round_tool_chars + len(_content) > _TOOL_RESULTS_AGGREGATE_BUDGET:
@@ -2771,9 +2777,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                         else full_toolset
                                     )
 
-                        _raw_result_evidence = (_side_effects or {}).get("raw_tool_result")
-                        _raw_result = _raw_result_evidence if isinstance(_raw_result_evidence, str) else str(result)
-                        _model_result = str(result)
+                        _raw_result, _model_result = _tool_result_views(result, _side_effects)
                         _replacement_reason = "result size threshold"
                         _content = _maybe_evict_tool_result(tool_name, tc["id"], _model_result, request.eviction_dir)
                         if _round_tool_chars + len(_content) > _TOOL_RESULTS_AGGREGATE_BUDGET:

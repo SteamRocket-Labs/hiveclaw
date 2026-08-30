@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -41,6 +42,10 @@ ConversationBranchMode = Literal[
 
 _CONTENT_REQUIRED_MODES = {"edit", "insert_before", "insert_after", "reply", "side_question"}
 _VALID_MODES = {*_CONTENT_REQUIRED_MODES, "fork", "branch", "regenerate"}
+_LEGACY_BRANCH_TITLE_SUFFIX_RE = re.compile(
+    r"\s+\((?:branch|fork|edit|insert|reply|regenerate|btw|clear)\)\s*$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,18 +106,15 @@ def _branch_title(source_session: ChatSession, mode: str, title: str | None) -> 
     if title and title.strip():
         return title.strip()[:200]
     source_title = (getattr(source_session, "title", None) or "Conversation").strip()
-    if mode == "branch":
-        return source_title[:200]
-    suffix = {
-        "fork": "fork",
-        "edit": "edit",
-        "insert_before": "insert",
-        "insert_after": "insert",
-        "reply": "reply",
-        "regenerate": "regenerate",
-        "side_question": "btw",
-    }.get(mode, "branch")
-    return f"{source_title} ({suffix})"[:200]
+    source_metadata = getattr(source_session, "transcript_metadata_json", None)
+    source_is_branch = bool(
+        getattr(source_session, "parent_session_id", None)
+        or (isinstance(source_metadata, dict) and source_metadata.get("branch_mode"))
+    )
+    if source_is_branch:
+        while _LEGACY_BRANCH_TITLE_SUFFIX_RE.search(source_title):
+            source_title = _LEGACY_BRANCH_TITLE_SUFFIX_RE.sub("", source_title).strip()
+    return (source_title or "Conversation")[:200]
 
 
 def _session_contract_overrides(source_session: ChatSession, mode: str) -> dict[str, str]:

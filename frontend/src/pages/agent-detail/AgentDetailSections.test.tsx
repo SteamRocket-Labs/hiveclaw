@@ -1724,14 +1724,15 @@ describe('AgentDetail extracted sections', () => {
         activeSessionId="edit"
         lineage={[
           { id: 'root', parent_session_id: null, title: 'Original', branch: {} },
-          { id: 'edit', parent_session_id: 'root', title: 'Original (edit)', branch: { branch_mode: 'edit' } },
+          { id: 'edit', parent_session_id: 'root', title: 'Original (edit) (edit)', branch: { branch_mode: 'edit' } },
         ]}
         onSelectSession={vi.fn()}
       />,
     );
 
     expect(markup).toContain('data-testid="branch-lineage-panel"');
-    expect(markup).toContain('Original (edit)');
+    expect(markup).toContain('Original');
+    expect(markup).not.toContain('(edit)');
     expect(markup).toContain('edit');
     expect(branchModeLabel({
       id: 'legacy-rewind',

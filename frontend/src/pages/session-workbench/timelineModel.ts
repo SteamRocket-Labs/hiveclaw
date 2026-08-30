@@ -16,6 +16,7 @@ import {
   type ChatArtifactPart,
   type ChatRuntimeSummary,
 } from '../agent-detail/chatRuntime';
+import { sessionTitleForUser } from './sessionTitlePresentation';
 
 export type ThreadTimelineCell =
   | {
@@ -1315,7 +1316,7 @@ export function buildSessionWindowModel(
             : 'main';
   const id = readString(session, ['id', 'chat_session_id', 'session_id'], 'session');
   const memberName = readString(metadata, ['member_name', 'name'], '') || readString(session, ['member_name'], '');
-  const label = memberName || readString(session, ['title', 'name'], id).split('/').pop()?.trim() || id;
+  const label = memberName || sessionTitleForUser(session, id).split('/').pop()?.trim() || id;
   const status = normalizeSessionWindowStatus(activeRunStatus || session.status);
   const metrics = readRuntimeMetrics({ ...session, ...metadata });
   return {
@@ -1510,8 +1511,7 @@ function messageId(message: AgentChatMessage, fallback: string): string {
 }
 
 function getSessionTitle(activeSession?: Record<string, unknown> | null): string {
-  const raw = activeSession?.title;
-  return typeof raw === 'string' && raw.trim() ? raw : 'Untitled session';
+  return sessionTitleForUser(activeSession, 'Untitled session');
 }
 
 function getSessionId(activeSession?: Record<string, unknown> | null): string | null {

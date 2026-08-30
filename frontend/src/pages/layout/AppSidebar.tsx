@@ -31,6 +31,7 @@ import { agentApi, type HrAgentInfo } from '../../api/domains/agents';
 import { localBridgeApi, type LocalAgentChannelSession } from '../../api/domains/localBridge';
 import { isA2ASession } from '../agent-detail/chatRuntime';
 import { buildNewSessionDraftNavigation } from '../agent-detail/newSessionNavigation';
+import { sessionBranchMode, sessionTitleForUser } from '../session-workbench/sessionTitlePresentation';
 
 const sidebarIcons = {
   plus: <IconPlus size={16} stroke={1.5} />,
@@ -156,18 +157,6 @@ export function getSessionTag(session: ChatSession | any, t: any): string | null
 
 const BRANCH_SESSION_MODES = new Set(['branch', 'fork', 'rewind', 'edit', 'insert_before', 'insert_after', 'reply', 'regenerate']);
 
-function sessionBranchMode(session: ChatSession | any): string {
-  const metadata = session?.transcript_metadata_json && typeof session.transcript_metadata_json === 'object'
-    ? session.transcript_metadata_json as Record<string, unknown>
-    : {};
-  return String(
-    session?.branch_mode
-      || metadata.branch_mode
-      || metadata.mode
-      || '',
-  ).trim().toLowerCase();
-}
-
 export function isBranchSession(session: ChatSession | any): boolean {
   const mode = sessionBranchMode(session);
   if (mode && BRANCH_SESSION_MODES.has(mode)) return true;
@@ -197,8 +186,7 @@ export function getSessionTags(session: ChatSession | any, t: any): string[] {
 
 export function displaySessionTitle(session: ChatSession | any, t: any): string {
   const fallback = t('agent.chat.session', 'Session');
-  const title = String(session?.title || '').trim() || fallback;
-  return isBranchSession(session) ? title.replace(/\s+\(branch\)\s*$/i, '').trim() || fallback : title;
+  return sessionTitleForUser(session, fallback);
 }
 
 export type SidebarSessionFamily = {
@@ -428,7 +416,7 @@ export default function AppSidebar({
 
   const handleDeleteSession = async (agentId: string, session: ChatSession | any) => {
     const sessionId = String(session.id);
-    const label = session.title || t('agent.chat.session', 'Session');
+    const label = displaySessionTitle(session, t);
     const ok = window.confirm(t('chat.deleteConfirmWithTitle', 'Delete "{{title}}" and all its messages? This cannot be undone.', { title: label }));
     if (!ok) return;
     try {

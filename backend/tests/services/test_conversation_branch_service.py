@@ -114,10 +114,23 @@ async def test_edit_branch_creates_new_session_without_mutating_source(monkeypat
     assert branch_session.root_session_id == source_session_id
     assert branch_session.transcript_metadata_json["branch_mode"] == "edit"
     assert branch_session.transcript_metadata_json["anchor_event_id"] == str(anchor.id)
+    assert branch_session.title == "Original"
     assert copied == []
     assert result.run_request.content == "new wording"
     assert result.run_request.display_content == "new wording"
     assert result.run_request.append_user_message is True
+
+
+def test_generated_edit_branch_title_does_not_repeat_legacy_machine_suffixes():
+    from app.services.conversation_branch_service import _branch_title
+
+    source_session = SimpleNamespace(
+        title="Original (edit) (edit)",
+        parent_session_id=uuid4(),
+        transcript_metadata_json={"branch_mode": "edit"},
+    )
+
+    assert _branch_title(source_session, "edit", None) == "Original"
 
 
 @pytest.mark.asyncio

@@ -101,6 +101,19 @@ describe('Layout extracted sections', () => {
     expect(getSessionTag(branch, t)).toBe('A2A');
   });
 
+  it('does not expose repeated edit lineage suffixes as the session name', () => {
+    const t = (key: string, fallback?: string) => fallback || key;
+    const nestedEdit = {
+      id: 'session-grandchild',
+      title: 'Quarterly research brief (edit) (edit)',
+      parent_session_id: 'session-child',
+      root_session_id: 'session-root',
+      transcript_metadata_json: { branch_mode: 'edit' },
+    } as any;
+
+    expect(displaySessionTitle(nestedEdit, t)).toBe('Quarterly research brief');
+  });
+
   it('binds main content width to the collapsed sidebar state at the app layout scope', async () => {
     const fsModuleId = 'node:fs';
     const { readFileSync } = (await import(/* @vite-ignore */ fsModuleId)) as {

@@ -1,5 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
+import { sessionTitleForUser } from '../session-workbench/sessionTitlePresentation';
 
 export interface BranchLineageItem {
   id: string;
@@ -102,7 +103,7 @@ export function BranchLineagePanel({
               }}
             >
               <span style={{ color: 'var(--text-tertiary)', marginRight: '5px' }}>{branchModeLabel(row)}</span>
-              <span>{row.title || row.id}</span>
+              <span>{sessionTitleForUser(row as unknown as Record<string, unknown>, row.id)}</span>
             </button>
           );
         })}
@@ -346,7 +347,7 @@ export function SessionGitLine({
   }, []);
   const renderBranchButton = (row: BranchLineageRow, compact = false, resolvedAnchorId?: string) => {
     const isActive = String(row.id) === String(activeSessionId || '');
-    const title = row.title || row.id;
+    const title = sessionTitleForUser(row as unknown as Record<string, unknown>, row.id);
     const anchorId = resolvedAnchorId || resolveBranchAnchorCheckpointId(row, checkpoints, checkpointIds);
     const previewLabel = `${branchModeLabel(row)} · ${title}`;
     return (
@@ -378,7 +379,7 @@ export function SessionGitLine({
   const canReturnToRoot = Boolean(rootRow && activeSessionId && String(rootRow.id) !== String(activeSessionId));
   const renderRootReturnButton = (anchorId?: string) => {
     if (!rootRow || !canReturnToRoot) return null;
-    const title = rootRow.title || rootRow.id;
+    const title = sessionTitleForUser(rootRow as unknown as Record<string, unknown>, rootRow.id);
     const previewLabel = `${t('agent.chat.branch.mainSession', 'Main session')} · ${title}`;
     return (
       <button

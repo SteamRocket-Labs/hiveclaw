@@ -30,6 +30,7 @@ import ChatWorkLedgerDock from './ChatWorkLedgerDock';
 import { SessionTransportStatus } from './SessionTransportStatus';
 import type { ChatTransportPhase } from './chatTransportRecovery';
 import { SessionWorkbenchHeader } from '../session-workbench/SessionWorkbenchChrome';
+import { sessionTitleForUser } from '../session-workbench/sessionTitlePresentation';
 import { shouldRenderThreadItemInConversation, ThreadItemRenderer } from '../session-workbench/ThreadItemRenderer';
 import { normalizeThreadItemPayload } from '../session-workbench/threadItemReducer';
 import { SessionComposer } from '../session-workbench/SessionComposer';
@@ -2056,7 +2057,7 @@ function AgentChatSection({
                         className="detail-session-row-main"
                         onClick={() => onSelectSession(session)}
                       >
-                        <span className="detail-session-row-title">{session.title || t('agent.chat.session', 'Session')}</span>
+                        <span className="detail-session-row-title">{sessionTitleForUser(session, t('agent.chat.session', 'Session'))}</span>
                         <span className="detail-session-row-meta">
                           {(session.username || sourceLabel) ? `${session.username || sourceLabel} · ` : ''}
                           {formatDetailSessionTime(session)}
@@ -2067,7 +2068,7 @@ function AgentChatSection({
                         <button
                           type="button"
                           className="detail-session-row-action"
-                          aria-label={`Delete session ${session.title || t('agent.chat.session', 'Session')}`}
+                          aria-label={`Delete session ${sessionTitleForUser(session, t('agent.chat.session', 'Session'))}`}
                           title={t('common.delete', 'Delete')}
                           onClick={() => onDeleteSession(String(session.id))}
                         >
@@ -2197,7 +2198,7 @@ function AgentChatSection({
                     <SessionHydratingState label={t('agent.chat.transport.initializing', 'Loading durable session history...')} />
                   ) : visibleChatMessages.length === 0 && (
                     <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-tertiary)' }}>
-                      <div style={{ fontSize: '13px', marginBottom: '4px' }}>{activeSession?.title || t('agent.chat.startChat')}</div>
+                      <div style={{ fontSize: '13px', marginBottom: '4px' }}>{sessionTitleForUser(activeSession, t('agent.chat.startChat'))}</div>
                       <div style={{ fontSize: '12px' }}>{t('agent.chat.startConversation', { name: agentDisplayName })}</div>
                       <div style={{ fontSize: '11px', marginTop: '4px', opacity: 0.7 }}>{t('agent.chat.fileSupport')}</div>
                     </div>

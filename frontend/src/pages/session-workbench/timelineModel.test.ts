@@ -17,6 +17,24 @@ import type { SessionIndex } from '../../api/domains/chat';
 import type { SessionWorkbench } from '../../api/domains/ccParity';
 
 describe('session workbench timeline model', () => {
+  it('keeps branch lineage in navigation instead of repeating it in the session title', () => {
+    const activeSession = {
+      id: 'session-grandchild',
+      title: 'Quarterly research brief (edit) (edit)',
+      parent_session_id: 'session-child',
+      root_session_id: 'session-root',
+      transcript_metadata_json: { branch_mode: 'edit' },
+    };
+
+    expect(buildSessionWindowModel(activeSession)?.label).toBe('Quarterly research brief');
+    expect(buildThreadTimeline({
+      messages: [],
+      activeSession,
+      isWaiting: false,
+      isStreaming: false,
+    }).header.title).toBe('Quarterly research brief');
+  });
+
   it('restores the user-observed run duration from the accepted prompt through the final answer', () => {
     const messages: AgentChatMessage[] = [
       {

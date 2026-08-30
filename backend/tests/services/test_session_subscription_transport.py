@@ -9,6 +9,7 @@ import pytest
 from app.services.session_subscription import (
     SessionSubscriptionError,
     build_session_ready,
+    load_session_catchup_window,
     parse_session_subscribe,
     resolve_subscription_cursor,
 )
@@ -122,6 +123,61 @@ def test_ready_binds_watermark_and_projection_hint_without_model_dependency() ->
 
 
 @pytest.mark.asyncio
+async def test_ranked_legacy_catchup_window_exposes_safe_delivery_watermark(monkeypatch) -> None:
+    from app.services import session_subscription
+    from app.services.session_delivery_cursor import resolve_session_delivery_cursor
+
+    session_id = uuid4()
+    storage_first = 1_777_000_000_000_000_000
+    cursor = resolve_session_delivery_cursor(
+        event_count=3,
+        storage_first_sequence=storage_first,
+        storage_last_sequence=storage_first + 90_000_000_000,
+        first_event_schema_version=1,
+        first_event_metadata={"source": "backfill_recent_chat_logs"},
+    )
+
+    async def fake_load_cursor(_db, *, session_id: object):
+        return cursor
+
+    monkeypatch.setattr(session_subscription, "load_session_delivery_cursor", fake_load_cursor)
+    window = await load_session_catchup_window(object(), session_id=session_id, after_sequence=2)
+
+    assert window.last_committed_sequence == 3
+    assert window.last_committed_storage_sequence == storage_first + 90_000_000_000
+    assert window.cursor is cursor
+
+    ready = build_session_ready(
+        session_id=session_id,
+        connection_attempt_id="attempt-ranked",
+        accepted_after_sequence=2,
+        last_committed_sequence=3,
+        active_run=None,
+        sequence_projection=cursor.mode,
+    )
+    assert ready["accepted_after_sequence"] == 2
+    assert ready["last_committed_sequence"] == 3
+    assert ready["sequence_projection"] == cursor.mode
+
+
+@pytest.mark.asyncio
+async def test_unrecoverable_delivery_cursor_is_typed_and_not_retried(monkeypatch) -> None:
+    from app.services import session_subscription
+    from app.services.session_delivery_cursor import SessionDeliveryCursorError
+
+    async def fail_cursor_load(_db, *, session_id: object):
+        raise SessionDeliveryCursorError("session_delivery_cursor_unrecoverable")
+
+    monkeypatch.setattr(session_subscription, "load_session_delivery_cursor", fail_cursor_load)
+
+    with pytest.raises(SessionSubscriptionError) as raised:
+        await load_session_catchup_window(object(), session_id=uuid4(), after_sequence=0)
+
+    assert raised.value.code == "session_delivery_cursor_unrecoverable"
+    assert raised.value.retryable is False
+
+
+@pytest.mark.asyncio
 async def test_broker_buffers_live_until_catchup_then_drains_in_sequence_order() -> None:
     broker = WebChatBroker()
     socket = _Socket()
@@ -145,6 +201,59 @@ async def test_broker_buffers_live_until_catchup_then_drains_in_sequence_order()
         "agent-1", "session-1", {"schema": "hive.session_event", "event_id": "e14", "sequence": 14}
     )
     assert [frame["sequence"] for frame in socket.sent] == [12, 13, 14]
+
+
+@pytest.mark.asyncio
+async def test_broker_keeps_ranked_legacy_catchup_and_live_delivery_on_one_safe_cursor() -> None:
+    broker = WebChatBroker()
+    socket = _Socket()
+    storage_watermark = 1_777_000_000_090_000_000
+    await broker.begin_session_subscription("agent-1", socket, "session-1")
+
+    await broker.send_session_message(
+        "agent-1",
+        "session-1",
+        {
+            "schema": "hive.session_event",
+            "schema_version": 2,
+            "event_id": "event-4",
+            "sequence": storage_watermark + 2,
+        },
+    )
+    await broker.send_session_message(
+        "agent-1",
+        "session-1",
+        {
+            "schema": "hive.session_event",
+            "schema_version": 2,
+            "event_id": "event-3",
+            "sequence": storage_watermark + 1,
+        },
+    )
+
+    await broker.activate_session_subscription(
+        socket,
+        delivered_through_sequence=storage_watermark,
+        delivered_through_delivery_sequence=2,
+    )
+    assert [frame["sequence"] for frame in socket.sent] == [3, 4]
+    assert [frame["storage_sequence"] for frame in socket.sent] == [
+        str(storage_watermark + 1),
+        str(storage_watermark + 2),
+    ]
+
+    await broker.send_session_message(
+        "agent-1",
+        "session-1",
+        {
+            "schema": "hive.session_event",
+            "schema_version": 2,
+            "event_id": "event-5",
+            "sequence": storage_watermark + 3,
+        },
+    )
+    assert [frame["sequence"] for frame in socket.sent] == [3, 4, 5]
+    assert socket.sent[-1]["storage_sequence"] == str(storage_watermark + 3)
 
 
 @pytest.mark.asyncio
@@ -265,4 +374,5 @@ def test_live_endpoint_skips_history_replay_only_for_typed_live_tail_bootstrap()
     assert "resolve_subscription_cursor" in source
     assert 'subscription.cursor_mode == "resume"' in source
     assert "accepted_after_sequence=accepted_after_sequence" in source
-    assert "delivered_through_sequence=catchup.last_committed_sequence" in source
+    assert "delivered_through_sequence=catchup.last_committed_storage_sequence" in source
+    assert "delivered_through_delivery_sequence=catchup.last_committed_sequence" in source

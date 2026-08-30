@@ -144,6 +144,31 @@ async def test_transcript_schema_v2_returns_canonical_envelopes_without_thread_i
             "sequence": event.sequence,
         },
     )
+    from app.services.session_delivery_cursor import SessionDeliveryCursor
+
+    cursor = SessionDeliveryCursor(
+        mode="identity",
+        event_count=6,
+        storage_first_sequence=1,
+        storage_last_sequence=6,
+    )
+
+    async def fake_load_cursor(_db, *, session_id):
+        assert session_id == session.id
+        return cursor
+
+    async def fake_load_events(_db, **options):
+        assert options["after_sequence"] == 5
+        return [(rows[0], 6)]
+
+    monkeypatch.setattr(
+        "app.services.session_delivery_cursor.load_session_delivery_cursor",
+        fake_load_cursor,
+    )
+    monkeypatch.setattr(
+        "app.services.session_delivery_cursor.load_session_delivery_events",
+        fake_load_events,
+    )
 
     payload = await api.get_session_transcript(
         agent_id=agent.id,
@@ -161,6 +186,68 @@ async def test_transcript_schema_v2_returns_canonical_envelopes_without_thread_i
             "event_id": str(rows[0].id),
             "sequence": 6,
         }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_transcript_schema_v2_projects_unsafe_legacy_storage_order_to_dense_delivery_cursor(monkeypatch):
+    api, agent, session, user = _setup(monkeypatch)
+    storage_first = 1_777_000_000_000_000_000
+    rows = [_event(session.id, storage_first), _event(session.id, storage_first + 90_000_000_000)]
+    db = _DB(session)
+
+    from app.services.session_delivery_cursor import resolve_session_delivery_cursor
+
+    cursor = resolve_session_delivery_cursor(
+        event_count=2,
+        storage_first_sequence=rows[0].sequence,
+        storage_last_sequence=rows[1].sequence,
+        first_event_schema_version=1,
+        first_event_metadata={"source": "backfill_recent_chat_logs"},
+    )
+
+    async def fake_load_cursor(_db, *, session_id):
+        assert session_id == session.id
+        return cursor
+
+    async def fake_load_events(_db, **options):
+        assert options["cursor"] is cursor
+        assert options["direction"] == "backward"
+        assert options["limit"] == 2
+        return [(rows[0], 1), (rows[1], 2)]
+
+    monkeypatch.setattr(
+        "app.services.session_delivery_cursor.load_session_delivery_cursor",
+        fake_load_cursor,
+    )
+    monkeypatch.setattr(
+        "app.services.session_delivery_cursor.load_session_delivery_events",
+        fake_load_events,
+    )
+    monkeypatch.setattr(
+        "app.services.session_event_contract.serialize_session_event",
+        lambda event, **_kwargs: {
+            "schema": "hive.session_event_compatibility",
+            "schema_version": 1,
+            "event_id": str(event.id),
+            "sequence": event.sequence,
+        },
+    )
+
+    payload = await api.get_session_transcript(
+        agent_id=agent.id,
+        session_id=session.id,
+        direction="backward",
+        limit=2,
+        schema_version=2,
+        current_user=user,
+        db=db,
+    )
+
+    assert [item["sequence"] for item in payload] == [1, 2]
+    assert [item["storage_sequence"] for item in payload] == [
+        str(rows[0].sequence),
+        str(rows[1].sequence),
     ]
 
 

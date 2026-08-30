@@ -345,6 +345,7 @@ async def websocket_chat(
                 accepted_after_sequence=accepted_after_sequence,
                 last_committed_sequence=catchup.last_committed_sequence,
                 active_run=active_run,
+                sequence_projection=catchup.cursor.mode,
             )
             await websocket.send_json(ready)
             if subscription.cursor_mode == "resume":
@@ -353,12 +354,14 @@ async def websocket_chat(
                     session_id=active_session.id,
                     after_sequence=subscription.after_sequence,
                     through_sequence=catchup.last_committed_sequence,
+                    cursor=catchup.cursor,
                     audience="user",
                 ):
                     await websocket.send_json(event)
             await manager.activate_session_subscription(
                 websocket,
-                delivered_through_sequence=catchup.last_committed_sequence,
+                delivered_through_sequence=catchup.last_committed_storage_sequence,
+                delivered_through_delivery_sequence=catchup.last_committed_sequence,
             )
 
             history_result = await db.execute(

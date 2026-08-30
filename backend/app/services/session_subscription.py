@@ -7,10 +7,16 @@ from dataclasses import dataclass
 from collections.abc import AsyncIterator
 from typing import Any, Mapping
 
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.chat_transcript_event import ChatTranscriptEvent
+from app.services.session_delivery_cursor import (
+    IDENTITY_SEQUENCE_PROJECTION,
+    SessionDeliveryCursor,
+    SessionDeliveryCursorError,
+    load_session_delivery_cursor,
+    load_session_delivery_events,
+    project_session_event_for_delivery,
+)
 from app.services.session_event_contract import serialize_session_event
 
 
@@ -43,6 +49,8 @@ class SessionSubscribeRequest:
 @dataclass(frozen=True, slots=True)
 class SessionCatchupWindow:
     last_committed_sequence: int
+    last_committed_storage_sequence: int
+    cursor: SessionDeliveryCursor
 
 
 def _uuid(value: Any) -> uuid.UUID:
@@ -111,9 +119,10 @@ def build_session_ready(
     last_committed_sequence: int,
     active_run: Mapping[str, Any] | None,
     subscription_id: uuid.UUID | str | None = None,
+    sequence_projection: str = IDENTITY_SEQUENCE_PROJECTION,
 ) -> dict[str, Any]:
     active = dict(active_run or {})
-    return {
+    ready = {
         "type": "session.ready",
         "session_id": str(session_id),
         "subscription_id": str(subscription_id or uuid.uuid4()),
@@ -125,6 +134,9 @@ def build_session_ready(
         "run_status": str(active.get("status")) if active.get("status") else None,
         "schema_version": SESSION_SUBSCRIPTION_SCHEMA_VERSION,
     }
+    if sequence_projection != IDENTITY_SEQUENCE_PROJECTION:
+        ready["sequence_projection"] = sequence_projection
+    return ready
 
 
 def session_subscription_error_frame(error: SessionSubscriptionError) -> dict[str, Any]:
@@ -147,19 +159,18 @@ async def load_session_catchup_window(
     """Capture the watermark after live buffering starts."""
 
     session_uuid = _uuid(session_id)
-    watermark = int(
-        (
-            await db.scalar(
-                select(func.coalesce(func.max(ChatTranscriptEvent.sequence), 0)).where(
-                    ChatTranscriptEvent.session_id == session_uuid
-                )
-            )
-        )
-        or 0
-    )
-    if after_sequence > watermark:
+    try:
+        cursor = await load_session_delivery_cursor(db, session_id=session_uuid)
+    except SessionDeliveryCursorError as exc:
+        raise SessionSubscriptionError("session_delivery_cursor_unrecoverable") from exc
+    delivery_watermark = cursor.last_committed_delivery_sequence
+    if after_sequence > delivery_watermark:
         raise SessionSubscriptionError("event_store_retryable", retryable=True)
-    return SessionCatchupWindow(last_committed_sequence=watermark)
+    return SessionCatchupWindow(
+        last_committed_sequence=delivery_watermark,
+        last_committed_storage_sequence=cursor.storage_last_sequence,
+        cursor=cursor,
+    )
 
 
 async def iter_session_catchup_events(
@@ -168,33 +179,34 @@ async def iter_session_catchup_events(
     session_id: uuid.UUID | str,
     after_sequence: int,
     through_sequence: int,
+    cursor: SessionDeliveryCursor,
     audience: str,
     page_size: int = 500,
 ) -> AsyncIterator[dict[str, Any]]:
     """Stream complete catch-up coverage in bounded DB pages without dropping events."""
 
     session_uuid = _uuid(session_id)
-    cursor = int(after_sequence)
+    delivery_cursor = int(after_sequence)
     safe_page_size = max(1, min(int(page_size), 1000))
-    while cursor < through_sequence:
-        rows = list(
-            (
-                await db.scalars(
-                    select(ChatTranscriptEvent)
-                    .where(
-                        ChatTranscriptEvent.session_id == session_uuid,
-                        ChatTranscriptEvent.sequence > cursor,
-                        ChatTranscriptEvent.sequence <= through_sequence,
-                    )
-                    .order_by(ChatTranscriptEvent.sequence.asc())
-                    .limit(safe_page_size)
-                )
-            ).all()
+    while delivery_cursor < through_sequence:
+        rows = await load_session_delivery_events(
+            db,
+            session_id=session_uuid,
+            cursor=cursor,
+            after_sequence=delivery_cursor,
+            through_sequence=through_sequence,
+            direction="forward",
+            limit=safe_page_size,
         )
         if not rows:
             raise SessionSubscriptionError("event_store_retryable", retryable=True)
-        for row in rows:
-            if int(row.sequence) != cursor + 1:
+        for row, delivery_sequence in rows:
+            if delivery_sequence != delivery_cursor + 1:
                 raise SessionSubscriptionError("event_store_retryable", retryable=True)
-            cursor = int(row.sequence)
-            yield serialize_session_event(row, audience=audience)
+            delivery_cursor = delivery_sequence
+            yield project_session_event_for_delivery(
+                serialize_session_event(row, audience=audience),
+                cursor=cursor,
+                storage_sequence=int(row.sequence),
+                delivery_sequence=delivery_sequence,
+            )

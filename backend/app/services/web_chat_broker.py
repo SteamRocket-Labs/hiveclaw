@@ -31,6 +31,7 @@ class WebChatBroker:
         self._subscription_buffers: dict[int, list[dict[str, Any]]] = {}
         self._subscription_draining: set[int] = set()
         self._subscription_overflowed: set[int] = set()
+        self._subscription_storage_offsets: dict[int, int] = {}
         self._live_buffer_limit = max(1, int(live_buffer_limit))
         self._send_timeout_seconds = max(0.01, float(send_timeout_seconds))
 
@@ -55,6 +56,7 @@ class WebChatBroker:
             self._subscription_buffers.pop(id(websocket), None)
             self._subscription_draining.discard(id(websocket))
             self._subscription_overflowed.discard(id(websocket))
+            self._subscription_storage_offsets.pop(id(websocket), None)
 
     async def begin_session_subscription(
         self,
@@ -70,12 +72,14 @@ class WebChatBroker:
                 connections.append((websocket, session_id))
             self._subscription_buffers[id(websocket)] = []
             self._subscription_overflowed.discard(id(websocket))
+            self._subscription_storage_offsets.pop(id(websocket), None)
 
     async def activate_session_subscription(
         self,
         websocket: Any,
         *,
         delivered_through_sequence: int,
+        delivered_through_delivery_sequence: int | None = None,
     ) -> None:
         """Drain watermark-newer live frames, then atomically switch to live mode."""
 
@@ -84,6 +88,11 @@ class WebChatBroker:
             raise SessionLiveBufferOverflow("session_live_buffer_overflow")
         self._subscription_draining.add(socket_key)
         cursor = int(delivered_through_sequence)
+        delivery_cursor = (
+            cursor if delivered_through_delivery_sequence is None else int(delivered_through_delivery_sequence)
+        )
+        storage_offset = cursor - delivery_cursor
+        self._subscription_storage_offsets[socket_key] = storage_offset
         while True:
             async with self._lock:
                 pending = self._subscription_buffers.get(socket_key)
@@ -114,6 +123,14 @@ class WebChatBroker:
                 if seen_event_ids_by_sequence.get(sequence) == event_id:
                     continue
                 seen_event_ids_by_sequence[sequence] = event_id
+                if storage_offset > 0:
+                    from app.services.session_delivery_cursor import project_future_session_event_for_delivery
+
+                    frame = project_future_session_event_for_delivery(
+                        frame,
+                        storage_sequence=sequence,
+                        storage_offset=storage_offset,
+                    )
                 await websocket.send_json(frame)
                 cursor = max(cursor, sequence)
             for frame in passthrough:
@@ -134,7 +151,7 @@ class WebChatBroker:
         async with self._lock:
             if agent_id not in self.active_connections:
                 return
-            direct: list[tuple[Any, str | None]] = []
+            direct: list[tuple[Any, str | None, dict[str, Any]]] = []
             for ws, sid in list(self.active_connections[agent_id]):
                 if session_id is not None and sid != session_id:
                     continue
@@ -148,23 +165,41 @@ class WebChatBroker:
                         else:
                             buffer.append(dict(message))
                     else:
-                        direct.append((ws, sid))
+                        projected = message
+                        storage_offset = self._subscription_storage_offsets.get(id(ws), 0)
+                        if (
+                            storage_offset > 0
+                            and message.get("schema") == "hive.session_event"
+                            and isinstance(message.get("sequence"), int)
+                        ):
+                            from app.services.session_delivery_cursor import project_future_session_event_for_delivery
+
+                            projected = project_future_session_event_for_delivery(
+                                message,
+                                storage_sequence=int(message["sequence"]),
+                                storage_offset=storage_offset,
+                            )
+                        direct.append((ws, sid, projected))
                 except Exception:  # noqa: BLE001 - one dead socket must not block the session.
                     dead.append((ws, sid))
             if direct:
 
-                async def bounded_send(websocket: Any) -> Exception | None:
+                async def bounded_send(websocket: Any, payload: dict[str, Any]) -> Exception | None:
                     try:
                         await asyncio.wait_for(
-                            websocket.send_json(message),
+                            websocket.send_json(payload),
                             timeout=self._send_timeout_seconds,
                         )
                     except Exception as exc:  # noqa: BLE001 - durable cursor owns transport recovery.
                         return exc
                     return None
 
-                outcomes = await asyncio.gather(*(bounded_send(ws) for ws, _sid in direct))
-                dead.extend(connection for connection, outcome in zip(direct, outcomes) if outcome is not None)
+                outcomes = await asyncio.gather(*(bounded_send(ws, payload) for ws, _sid, payload in direct))
+                dead.extend(
+                    (connection[0], connection[1])
+                    for connection, outcome in zip(direct, outcomes)
+                    if outcome is not None
+                )
             for item in dead:
                 self.active_connections[agent_id] = [
                     connection for connection in self.active_connections[agent_id] if connection != item

@@ -1001,10 +1001,11 @@ def _backfill_actor_type_for_role(role: str) -> str:
 
 
 def _backfill_sequence_for_message(message: Any, offset: int) -> int:
-    created_at = _coerce_datetime(getattr(message, "created_at", None))
-    if created_at is not None:
-        return int(created_at.timestamp() * 1_000_000_000) + offset
-    return int(datetime.now(timezone.utc).timestamp() * 1_000_000_000) + offset
+    del message
+    # ``ChatTranscriptEvent.sequence`` is a session-local delivery cursor, not
+    # a clock.  Timestamps remain in ``created_at``; dense 1-based allocation
+    # keeps future Session V2 replay contiguous and browser-lossless.
+    return int(offset) + 1
 
 
 def _uuid_or_none(value: Any) -> uuid.UUID | None:

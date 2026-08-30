@@ -504,6 +504,7 @@ async def test_backfill_recent_chat_logs_creates_t0_files(
     ]
     assert transcript_events[0].message_id == messages[0].id
     assert transcript_events[0].created_at == messages[0].created_at
+    assert [event.sequence for event in transcript_events] == [1, 2]
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_agent_dir)
     assert [(event.event_type, event.role, event.content) for event in events] == [
         ("user_message", "user", "请你把记忆系统收成 md-first"),

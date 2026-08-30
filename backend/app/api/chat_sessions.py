@@ -2155,33 +2155,66 @@ async def get_session_transcript(
         operator_reason=operator_reason,
     )
 
-    limit = max(1, min(limit, 1000))
-    if direction == "backward" or before_sequence is not None:
-        stmt = select(ChatTranscriptEvent).where(ChatTranscriptEvent.session_id == session_id)
-        if before_sequence is not None:
-            stmt = stmt.where(ChatTranscriptEvent.sequence < before_sequence)
-        events_result = await db.execute(stmt.order_by(ChatTranscriptEvent.sequence.desc()).limit(limit))
-        rows = list(events_result.scalars().all())
-        rows.reverse()
-    else:
-        events_result = await db.execute(
-            select(ChatTranscriptEvent)
-            .where(
-                ChatTranscriptEvent.session_id == session_id,
-                ChatTranscriptEvent.sequence > after_sequence,
-            )
-            .order_by(ChatTranscriptEvent.sequence.asc())
-            .limit(limit)
-        )
-        rows = list(events_result.scalars().all())
     audience = "operator" if authority_source == "manager_override" else "user"
+    limit = max(1, min(limit, 1000))
     if schema_version not in {None, 2}:
         raise HTTPException(status_code=400, detail="schema_version must be 2 when specified")
     if schema_version == 2:
         from app.services.session_event_contract import serialize_session_event
+        from app.services.session_delivery_cursor import (
+            SessionDeliveryCursorError,
+            load_session_delivery_cursor,
+            load_session_delivery_events,
+            project_session_event_for_delivery,
+        )
 
-        payload = [serialize_session_event(event, audience=audience) for event in rows]
+        try:
+            delivery_cursor = await load_session_delivery_cursor(db, session_id=session_id)
+            rows_with_delivery = await load_session_delivery_events(
+                db,
+                session_id=session_id,
+                cursor=delivery_cursor,
+                after_sequence=after_sequence,
+                before_sequence=before_sequence,
+                direction="backward" if direction == "backward" or before_sequence is not None else "forward",
+                limit=limit,
+            )
+            payload = [
+                project_session_event_for_delivery(
+                    serialize_session_event(event, audience=audience),
+                    cursor=delivery_cursor,
+                    storage_sequence=int(event.sequence),
+                    delivery_sequence=delivery_sequence,
+                )
+                for event, delivery_sequence in rows_with_delivery
+            ]
+        except SessionDeliveryCursorError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "session_delivery_cursor_unrecoverable",
+                    "retryable": False,
+                },
+            ) from exc
     else:
+        if direction == "backward" or before_sequence is not None:
+            stmt = select(ChatTranscriptEvent).where(ChatTranscriptEvent.session_id == session_id)
+            if before_sequence is not None:
+                stmt = stmt.where(ChatTranscriptEvent.sequence < before_sequence)
+            events_result = await db.execute(stmt.order_by(ChatTranscriptEvent.sequence.desc()).limit(limit))
+            rows = list(events_result.scalars().all())
+            rows.reverse()
+        else:
+            events_result = await db.execute(
+                select(ChatTranscriptEvent)
+                .where(
+                    ChatTranscriptEvent.session_id == session_id,
+                    ChatTranscriptEvent.sequence > after_sequence,
+                )
+                .order_by(ChatTranscriptEvent.sequence.asc())
+                .limit(limit)
+            )
+            rows = list(events_result.scalars().all())
         payload = [_serialize_transcript_event(event, audience=audience) for event in rows]
     await db.commit()
     return payload

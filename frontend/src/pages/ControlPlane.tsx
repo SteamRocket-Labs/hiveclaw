@@ -88,7 +88,7 @@ const CONTROL_PLANE_CARDS: ControlPlaneCard[] = [
     tab: 'info',
     to: '/enterprise/info',
     title: 'Channels & Integrations',
-    description: 'Company profile, read-only export of retired shared files, notification broadcasts, and integration identity.',
+    description: 'Tenant identity, timezone, presentation, and role-appropriate company actions.',
     icon: <IconBuilding size={18} stroke={1.6} />,
     group: 'channels',
   },

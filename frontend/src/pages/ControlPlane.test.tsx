@@ -63,7 +63,7 @@ describe('ControlPlane', () => {
     expect(markup).toContain('href="/enterprise/knowledge"');
     expect(markup).toContain('href="/local-agents"');
     expect(markup).not.toContain('Company Knowledge Base is not implemented in this release');
-    expect(markup).toContain('read-only export of retired shared files');
+    expect(markup).toContain('Tenant identity, timezone, presentation, and role-appropriate company actions.');
     expect(markup).toContain('Review, publish, authorize, retire, and restore governed knowledge for employees.');
   });
 

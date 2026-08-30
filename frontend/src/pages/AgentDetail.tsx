@@ -2630,7 +2630,7 @@ function AgentDetailInner() {
                             <LocalAgentChatSection key="chat" agentId={id!} agent={agent} agentPermissions={permData ?? null} />
                         ) : sessionAccessError?.sessionId === String(activeSession?.id) ? (
                             <SessionAccessErrorSurface status={sessionAccessError.status} onBack={() => {
-                                sessionMsgAbortRef.current?.abort(); activeSessionIdRef.current = null; setActiveSession(null); setSessionAccessError(null);
+                                sessionMsgAbortRef.current?.abort(); setActiveSession(null); setSessionAccessError(null);
                                 navigate(`/agents/${id}#chat`, { replace: true });
                             }} />
                         ) : pendingSessionLookup ? (

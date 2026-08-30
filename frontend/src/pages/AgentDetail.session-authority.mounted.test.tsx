@@ -166,6 +166,10 @@ describe('AgentDetail direct-session authority presentation', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Back to conversations' }));
     expect(mocks.navigate).toHaveBeenCalledWith('/agents/agent-1#chat', { replace: true });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(mocks.getSessionTranscript).toHaveBeenCalledTimes(1);
     mocks.sessionId = undefined;
     view.rerender(<AgentDetail />);
     expect(screen.queryByRole('alert')).toBeNull();

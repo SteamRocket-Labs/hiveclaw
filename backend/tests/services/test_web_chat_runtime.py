@@ -4108,7 +4108,14 @@ async def test_start_web_chat_run_replays_explicit_run_id_without_duplicate_mess
     async def fake_load_run(*_args, **_kwargs):
         return existing
 
+    async def must_not_check_new_run_admission(*_args, **_kwargs):
+        raise AssertionError("an exact run-id replay must remain readable")
+
     monkeypatch.setattr(runtime, "_load_web_chat_run_by_id", fake_load_run)
+    monkeypatch.setattr(
+        "app.services.session_tool_runtime.assert_session_tool_effects_settled",
+        must_not_check_new_run_admission,
+    )
 
     result = await runtime.start_web_chat_run(
         db=db,
@@ -4122,6 +4129,51 @@ async def test_start_web_chat_run_replays_explicit_run_id_without_duplicate_mess
     assert result["run_id"] == run_id.hex
     assert result["status"] == "pending"
     assert result["replayed"] is True
+    assert db.added == []
+    assert db.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_start_web_chat_run_blocks_new_run_before_writes_for_unsettled_tool_effect(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+    from fastapi import HTTPException
+
+    from app.services.session_tool_runtime import ToolEffectReconciliationRequired
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    run_id = uuid4()
+    invocation_id = uuid4()
+    db = _FakeDB(active_run=None)
+
+    async def reject_unsettled_effect(*_args, **_kwargs):
+        raise ToolEffectReconciliationRequired(
+            session_id=session_id,
+            run_ids=(run_id,),
+            invocation_ids=(invocation_id,),
+        )
+
+    monkeypatch.setattr(
+        "app.services.session_tool_runtime.assert_session_tool_effects_settled",
+        reject_unsettled_effect,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await runtime.start_web_chat_run(
+            db=db,
+            agent=SimpleNamespace(id=agent_id, name="Agent", tenant_id=tenant_id),
+            user=SimpleNamespace(id=uuid4(), username="rocky", display_name="Rocky"),
+            session=SimpleNamespace(id=session_id, title="Held session", delivery_target_json=None),
+            content="do not replay the prior write",
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == {
+        "code": "tool_effect_reconciliation_required",
+        "session_id": str(session_id),
+        "retryable": False,
+    }
     assert db.added == []
     assert db.commits == 0
 
@@ -5228,6 +5280,8 @@ async def test_start_web_chat_run_queues_when_active_run_unique_index_conflicts(
             if "session_writer_epochs" in str(_stmt):
                 return await super().execute(_stmt)
             if "runtime_root_items" in str(_stmt):
+                return _ScalarResult(None)
+            if "session_tool_invocations" in str(_stmt):
                 return _ScalarResult(None)
             self.execute_calls += 1
             return _ScalarResult(None if self.execute_calls == 1 else active_run)

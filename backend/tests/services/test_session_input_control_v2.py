@@ -168,6 +168,62 @@ async def test_live_rest_ws_adapter_persists_full_human_input_authority(owner_se
         assert outbox_count == len(events)
 
 
+async def test_new_start_turn_is_rejected_before_admission_when_tool_effect_is_unresolved(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.session_v2 import SessionCommand, SessionTurnInput
+    from app.models.user import User
+    from app.services import session_live_input
+    from app.services.session_tool_runtime import ToolEffectReconciliationRequired
+
+    _tenant_id, user_id, agent_id, session_id, _ = await _seed_session(owner_sessionmaker)
+    input_id = uuid.uuid4()
+    calls = []
+
+    async def fail_closed(_db, *, tenant_id, session_id, **_kwargs):
+        calls.append((tenant_id, session_id))
+        raise ToolEffectReconciliationRequired(
+            session_id=session_id,
+            run_ids=(uuid.uuid4(),),
+            invocation_ids=(uuid.uuid4(),),
+        )
+
+    monkeypatch.setattr(session_live_input, "assert_session_tool_effects_settled", fail_closed)
+    async with owner_sessionmaker() as db:
+        agent = await db.get(Agent, agent_id)
+        user = await db.get(User, user_id)
+        chat_session = await db.get(ChatSession, session_id)
+        assert agent is not None and user is not None and chat_session is not None
+        with pytest.raises(ToolEffectReconciliationRequired):
+            await session_live_input.submit_live_human_input(
+                db=db,
+                agent=agent,
+                user=user,
+                session=chat_session,
+                content="retry the whole turn",
+                source="unresolved-tool-effect-test",
+                input_id=input_id,
+                idempotency_key=f"unresolved:{input_id}",
+                requested_kind="start_turn",
+            )
+        assert calls == [(agent.tenant_id, chat_session.id)]
+        assert (
+            await db.scalar(
+                select(func.count()).select_from(SessionCommand).where(SessionCommand.session_id == session_id)
+            )
+            == 0
+        )
+        assert (
+            await db.scalar(
+                select(func.count()).select_from(SessionTurnInput).where(SessionTurnInput.session_id == session_id)
+            )
+            == 0
+        )
+
+
 @pytest.mark.parametrize(
     ("provider", "channel_type"),
     [
@@ -1955,6 +2011,117 @@ async def test_runtime_worker_recovers_admitted_start_input_after_api_crash(owne
         assert admission is not None and admission.dispatch_state == "dispatched"
         assert row is not None and row.status == "queued" and row.target_run_id == expected_run_id
         assert run is not None and run.prompt == "recover the accepted API input"
+
+
+async def test_runtime_worker_terminally_holds_admitted_input_behind_unknown_tool_effect(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    from fastapi import HTTPException
+
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionCommand, SessionInputAdmission, SessionTurnInput
+    from app.runtime.hooks import HookResult
+    from app.services.runtime_task_worker import recover_session_input_dispatches_once
+    from app.services.session_input_admission import run_user_prompt_admission
+
+    tenant_id, user_id, agent_id, session_id, _ = await _seed_session(owner_sessionmaker)
+
+    async def allow(**_kwargs):
+        return HookResult()
+
+    async def fail_closed_start(**_kwargs):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "tool_effect_reconciliation_required",
+                "session_id": str(session_id),
+                "retryable": False,
+            },
+        )
+
+    async with owner_sessionmaker() as db:
+        authority = await _authority(db, user_id=user_id, agent_id=agent_id, session_id=session_id)
+        accepted = await _accepted_input(
+            db,
+            authority=authority,
+            session_id=session_id,
+            content="must not replay the prior tool effect",
+        )
+        admitted = await run_user_prompt_admission(
+            db,
+            authority=authority,
+            input_id=accepted.input_id,
+            worker_id="tool-effect-race-admission",
+            hook_executor=allow,
+        )
+        assert admitted.state == "admitted"
+
+    monkeypatch.setattr("app.services.web_chat_runtime.start_web_chat_run", fail_closed_start)
+    first = await recover_session_input_dispatches_once(
+        worker_id="tool-effect-race-dispatch",
+        tenant_id=tenant_id,
+        session_factory=owner_sessionmaker,
+    )
+    second = await recover_session_input_dispatches_once(
+        worker_id="tool-effect-race-dispatch",
+        tenant_id=tenant_id,
+        session_factory=owner_sessionmaker,
+    )
+
+    expected_run_id = uuid.uuid5(accepted.input_id, "session-v2-runtime-run")
+    async with owner_sessionmaker() as db:
+        row = await db.get(SessionTurnInput, accepted.input_id)
+        command = await db.get(SessionCommand, accepted.command_id)
+        admission = await db.get(SessionInputAdmission, admitted.admission_id)
+        run = await db.get(RuntimeTask, expected_run_id)
+        events = list(
+            (
+                await db.execute(
+                    select(ChatTranscriptEvent)
+                    .where(
+                        ChatTranscriptEvent.session_id == session_id,
+                        ChatTranscriptEvent.event_type.in_(
+                            (
+                                "input_admission.needs_reconciliation",
+                                "human_input.needs_reconciliation",
+                            )
+                        ),
+                    )
+                    .order_by(ChatTranscriptEvent.sequence)
+                )
+            ).scalars()
+        )
+
+    assert first == {"claimed": 1, "dispatched": 1, "deferred": 0, "retried": 0}
+    assert second == {"claimed": 0, "dispatched": 0, "deferred": 0, "retried": 0}
+    assert run is None
+    assert admission is not None
+    assert admission.state == "needs_reconciliation"
+    assert admission.dispatch_state == "needs_reconciliation"
+    assert admission.recovery_owner == "platform_admin:tool_effect_reconciliation"
+    assert admission.dispatch_receipt_json == {
+        "kind": "needs_reconciliation",
+        "code": "tool_effect_reconciliation_required",
+        "input_id": str(accepted.input_id),
+        "session_id": str(session_id),
+        "retryable": False,
+        "replay_allowed": False,
+        "settlement_ref": f"session-input:{accepted.input_id}:tool-effect-reconciliation",
+    }
+    assert row is not None
+    assert row.status == "needs_reconciliation"
+    assert row.recovery_owner == "platform_admin:tool_effect_reconciliation"
+    assert command is not None
+    assert command.status == "needs_reconciliation"
+    assert command.receipt_ref == row.settlement_ref
+    assert [event.event_type for event in events] == [
+        "input_admission.needs_reconciliation",
+        "human_input.needs_reconciliation",
+    ]
+    assert events[0].metadata_json["v2_payload"]["state_version"] == admission.version
+    assert all(event.metadata_json["v2_payload"]["replay_allowed"] is False for event in events)
 
 
 async def test_input_dispatch_fast_path_does_not_steal_live_worker_lease(owner_sessionmaker) -> None:

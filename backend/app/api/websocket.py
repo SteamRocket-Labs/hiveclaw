@@ -19,6 +19,7 @@ from app.models.user import User
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
 from app.services.session_live_input import submit_live_cancel_input, submit_live_human_input
+from app.services.session_tool_runtime import ToolEffectReconciliationRequired
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.web_chat_broker import web_chat_broker
 from app.services.web_chat_runtime import (
@@ -581,6 +582,8 @@ async def websocket_chat(
                         "receipt": receipt,
                     }
                 )
+            except ToolEffectReconciliationRequired:
+                await send_control_error("tool_effect_reconciliation_required", retryable=False)
             except Exception as run_err:
                 logger.error("[WS] Failed to start durable web chat run: {}", run_err)
                 await send_control_error("input_dispatch_retryable", retryable=True)

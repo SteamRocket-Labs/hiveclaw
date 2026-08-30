@@ -1004,6 +1004,36 @@ def test_true_side_effect_ambiguity_keeps_original_blocker_semantics(metadata):
     assert blocker["auto_resume"] is False
 
 
+def test_failed_task_with_unresolved_tool_effect_uses_exact_no_replay_blocker():
+    import app.services.session_control_plane as service
+
+    blocker = service._runtime_task_user_blocker(
+        SimpleNamespace(
+            status="failed",
+            budget_admission_status=None,
+            metadata_json={"terminal_reason": "provider_error"},
+            _tool_effect_reconciliation={
+                "required": True,
+                "reason_code": "tool_effect_outcome_unknown",
+                "unsettled_count": 1,
+            },
+        )
+    )
+
+    assert blocker == {
+        "kind": "runtime_reconciliation",
+        "status": "blocked",
+        "reason_code": "tool_effect_outcome_unknown",
+        "title": "工具效果需要管理员核对",
+        "reason": "工具可能已经产生效果，但终态回执没有落盘；系统不会自动重放这一轮。",
+        "next_action": "平台管理员核对效果证据并停止旧任务后，才能继续或创建分支。",
+        "owner": "platform_admin",
+        "can_continue_other_work": True,
+        "auto_resume": False,
+        "retry_available": False,
+    }
+
+
 @pytest.mark.parametrize(
     "metadata",
     [

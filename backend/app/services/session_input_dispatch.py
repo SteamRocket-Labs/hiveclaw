@@ -27,6 +27,8 @@ from app.services.runtime_terminal_settlement import TERMINAL_SETTLEMENT_STATUSE
 from app.services.session_human_input import SESSION_TARGETABLE_RUN_STATUSES
 from app.services.session_v2_persistence import (
     AuthenticatedSessionAuthority,
+    SessionEventDraft,
+    append_session_events,
     resolve_session_command_authority,
 )
 from app.services.web_chat_runtime import EXECUTABLE_CHAT_TASK_TYPES
@@ -54,6 +56,119 @@ def _json_receipt(value: Any) -> Any:
     """Normalize typed dataclass/UUID receipts before storing them in JSONB."""
 
     return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+
+
+_TOOL_EFFECT_RECONCILIATION_CODE = "tool_effect_reconciliation_required"
+_TOOL_EFFECT_DISPATCH_RECOVERY_OWNER = "platform_admin:tool_effect_reconciliation"
+
+
+def _tool_effect_reconciliation_detail(exc: HTTPException) -> dict[str, Any] | None:
+    detail = exc.detail
+    if (
+        exc.status_code != 409
+        or not isinstance(detail, dict)
+        or str(detail.get("code") or "") != _TOOL_EFFECT_RECONCILIATION_CODE
+        or detail.get("retryable") is not False
+    ):
+        return None
+    return dict(detail)
+
+
+async def _hold_input_dispatch_for_tool_effect(
+    db: AsyncSession,
+    *,
+    admission: SessionInputAdmission,
+    row: SessionTurnInput,
+    command: SessionCommand,
+    authority: AuthenticatedSessionAuthority,
+    detail: dict[str, Any],
+) -> dict[str, Any]:
+    """Terminally hold an admitted input instead of retrying a prior effect.
+
+    The input itself never reached a new RuntimeTask. Its accepted bytes stay
+    durable, while the admission becomes an explicit no-replay recovery item.
+    """
+
+    settlement_ref = f"session-input:{row.id}:tool-effect-reconciliation"
+    receipt = {
+        "kind": "needs_reconciliation",
+        "code": _TOOL_EFFECT_RECONCILIATION_CODE,
+        "input_id": str(row.id),
+        "session_id": str(authority.session_id),
+        "retryable": False,
+        "replay_allowed": False,
+        "settlement_ref": settlement_ref,
+    }
+    admission.state = "needs_reconciliation"
+    admission.dispatch_state = "needs_reconciliation"
+    admission.dispatch_receipt_json = receipt
+    admission.dispatch_last_error = None
+    admission.recovery_owner = _TOOL_EFFECT_DISPATCH_RECOVERY_OWNER
+    admission.lease_owner = None
+    admission.lease_expires_at = None
+    admission.version = int(admission.version) + 1
+    row.status = "needs_reconciliation"
+    row.settlement_ref = settlement_ref
+    row.recovery_owner = _TOOL_EFFECT_DISPATCH_RECOVERY_OWNER
+    row.version = int(row.version) + 1
+    command.status = "needs_reconciliation"
+    command.receipt_ref = settlement_ref
+    await append_session_events(
+        db,
+        tenant_id=authority.tenant_id,
+        agent_id=authority.agent_id,
+        session_id=authority.session_id,
+        drafts=[
+            SessionEventDraft(
+                event_id=uuid.uuid5(admission.id, "tool-effect-dispatch-reconciliation"),
+                item_id=admission.id,
+                item_kind="input_admission",
+                lifecycle="needs_reconciliation",
+                scope={
+                    "level": "session",
+                    "session_id": str(authority.session_id),
+                    "thread_id": str(authority.session_id),
+                },
+                actor={"type": "runtime"},
+                payload={
+                    "admission_id": str(admission.id),
+                    "input_id": str(row.id),
+                    "reason_code": _TOOL_EFFECT_RECONCILIATION_CODE,
+                    "recovery_owner": _TOOL_EFFECT_DISPATCH_RECOVERY_OWNER,
+                    "state_version": admission.version,
+                    "retryable": False,
+                    "replay_allowed": False,
+                    "blocked_session_id": str(detail.get("session_id") or authority.session_id),
+                },
+                command_id=command.id,
+                input_id=row.id,
+            ),
+            SessionEventDraft(
+                event_id=uuid.uuid5(row.id, "tool-effect-dispatch-reconciliation"),
+                item_id=row.id,
+                item_kind="human_input",
+                lifecycle="needs_reconciliation",
+                scope={
+                    "level": "session",
+                    "session_id": str(authority.session_id),
+                    "thread_id": str(authority.session_id),
+                },
+                actor={"type": "runtime"},
+                payload={
+                    "input_id": str(row.id),
+                    "intent": row.intent,
+                    "reason_code": _TOOL_EFFECT_RECONCILIATION_CODE,
+                    "recovery_owner": _TOOL_EFFECT_DISPATCH_RECOVERY_OWNER,
+                    "settlement_ref": settlement_ref,
+                    "retryable": False,
+                    "replay_allowed": False,
+                },
+                command_id=command.id,
+                input_id=row.id,
+            ),
+        ],
+    )
+    return receipt
 
 
 async def _dispatch_context(
@@ -246,6 +361,19 @@ async def _dispatch_one(
                 False,
             )
         except HTTPException as exc:
+            tool_effect_detail = _tool_effect_reconciliation_detail(exc)
+            if tool_effect_detail is not None:
+                return (
+                    await _hold_input_dispatch_for_tool_effect(
+                        db,
+                        admission=admission,
+                        row=row,
+                        command=command,
+                        authority=authority,
+                        detail=tool_effect_detail,
+                    ),
+                    False,
+                )
             if exc.status_code != 409 or exc.detail != "A web chat run is already active for this branch":
                 raise
             from app.services.session_human_input import reject_admitted_human_input
@@ -266,15 +394,31 @@ async def _dispatch_one(
         row = await db.get(SessionTurnInput, row.id)
         assert row is not None
         if row.intent == "queue_next_turn" or row.rolled_over_to_turn_id is not None:
-            run = await _start_fifo_successor_if_ready(
-                db,
-                admission=admission,
-                row=row,
-                command=command,
-                agent=agent,
-                user=user,
-                session=session,
-            )
+            try:
+                run = await _start_fifo_successor_if_ready(
+                    db,
+                    admission=admission,
+                    row=row,
+                    command=command,
+                    agent=agent,
+                    user=user,
+                    session=session,
+                )
+            except HTTPException as exc:
+                tool_effect_detail = _tool_effect_reconciliation_detail(exc)
+                if tool_effect_detail is None:
+                    raise
+                return (
+                    await _hold_input_dispatch_for_tool_effect(
+                        db,
+                        admission=admission,
+                        row=row,
+                        command=command,
+                        authority=authority,
+                        detail=tool_effect_detail,
+                    ),
+                    False,
+                )
             if run is None:
                 return ({"kind": "successor", "status": "waiting_for_terminal"}, True)
             return (run, False)
@@ -290,15 +434,31 @@ async def _dispatch_one(
     if row.intent == "fork_side_thread":
         from app.services.session_fork_input import dispatch_fork_side_thread
 
-        fork = await dispatch_fork_side_thread(
-            db=db,
-            authority=authority,
-            agent=agent,
-            user=user,
-            source_session=session,
-            input_id=row.id,
-            runtime_metadata=_runtime_metadata(command),
-        )
+        try:
+            fork = await dispatch_fork_side_thread(
+                db=db,
+                authority=authority,
+                agent=agent,
+                user=user,
+                source_session=session,
+                input_id=row.id,
+                runtime_metadata=_runtime_metadata(command),
+            )
+        except HTTPException as exc:
+            tool_effect_detail = _tool_effect_reconciliation_detail(exc)
+            if tool_effect_detail is None:
+                raise
+            return (
+                await _hold_input_dispatch_for_tool_effect(
+                    db,
+                    admission=admission,
+                    row=row,
+                    command=command,
+                    authority=authority,
+                    detail=tool_effect_detail,
+                ),
+                False,
+            )
         await db.commit()
         return (_json_receipt({"kind": "fork", **asdict(fork)}), False)
     raise ValueError(f"unsupported admitted input intent: {row.intent}")
@@ -332,17 +492,25 @@ async def _dispatch_claimed_admissions(
             )
             if admission is None:
                 continue
-            if deferred:
+            if admission.state == "needs_reconciliation":
+                # The dispatch lane terminally consumed this admission into a
+                # typed no-replay hold. It is no longer claimable; count it as
+                # a handled dispatch without claiming that a RuntimeTask ran.
+                counts["dispatched"] += 1
+            elif deferred:
                 admission.dispatch_state = "pending"
                 admission.dispatch_receipt_json = receipt
                 counts["deferred"] += 1
+                admission.lease_owner = None
+                admission.lease_expires_at = None
+                admission.version = int(admission.version) + 1
             else:
                 admission.dispatch_state = "dispatched"
                 admission.dispatch_receipt_json = receipt
                 counts["dispatched"] += 1
-            admission.lease_owner = None
-            admission.lease_expires_at = None
-            admission.version = int(admission.version) + 1
+                admission.lease_owner = None
+                admission.lease_expires_at = None
+                admission.version = int(admission.version) + 1
             await db.commit()
         except Exception as exc:  # the deterministic effect may have committed before ACK
             await db.rollback()

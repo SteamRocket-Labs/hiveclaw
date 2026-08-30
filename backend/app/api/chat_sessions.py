@@ -45,6 +45,7 @@ from app.services.session_feedback import read_activation_feedback_sidecar, reco
 from app.services.decision_trace import list_session_decision_traces
 from app.services.session_control_plane import build_session_json_export, build_session_workbench
 from app.services.session_live_input import IdempotencyConflict, submit_live_cancel_input, submit_live_human_input
+from app.services.session_tool_runtime import ToolEffectReconciliationRequired
 
 router = APIRouter(prefix="/agents", tags=["chat-sessions"])
 logger = logging.getLogger(__name__)
@@ -1405,6 +1406,9 @@ async def create_session_run(
             status_code=409,
             detail={"code": "idempotency_conflict", "command_id": str(exc.command_id), "receipt_ref": exc.receipt_ref},
         ) from exc
+    except ToolEffectReconciliationRequired as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=exc.http_detail()) from exc
 
     await db.refresh(session)
     return CreateSessionRunOut(session=_session_out(session, current_user, message_count=1), run=run)
@@ -1456,6 +1460,9 @@ async def start_session_run(
             status_code=409,
             detail={"code": "idempotency_conflict", "command_id": str(exc.command_id), "receipt_ref": exc.receipt_ref},
         ) from exc
+    except ToolEffectReconciliationRequired as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=exc.http_detail()) from exc
 
 
 @router.post("/{agent_id}/sessions/{session_id}/branches", status_code=201, response_model=BranchSessionOut)
@@ -1890,6 +1897,9 @@ async def _submit_session_human_input(
                 "receipt_ref": exc.receipt_ref,
             },
         ) from exc
+    except ToolEffectReconciliationRequired as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=exc.http_detail()) from exc
     dispatch = dict(receipt.get("dispatch") or {})
     return {
         **receipt,

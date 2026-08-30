@@ -70,6 +70,52 @@ afterEach(() => {
 });
 
 describe('AdminRuntimeReconciliationSection — projection repair (mounted)', () => {
+  it('requires an evidence note and exposes only acknowledgement for an unresolved tool effect', async () => {
+    const held: RuntimeReconciliationTask = {
+      ...makeTask('task-tool-effect', 'writer-effect'),
+      status: 'failed',
+      reason: 'tool_effect_outcome_unknown',
+      side_effect_risk: 'effect_outcome_unknown',
+      tool_effect_reconciliation_required: true,
+      unsettled_tool_effect_count: 1,
+      supported_actions: ['acknowledge_tool_effect'],
+    };
+    api.applyRuntimeReconciliationAction.mockResolvedValue({
+      ...held,
+      tool_effect_reconciliation_required: false,
+    });
+    api.listRuntimeReconciliation.mockResolvedValue([]);
+
+    render(
+      <AdminRuntimeReconciliationSection
+        initialTenantId="tenant-1"
+        initialTasks={[held]}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'Resolve' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+    const acknowledge = screen.getByRole('button', { name: 'Acknowledge effect and stop' }) as HTMLButtonElement;
+    expect(acknowledge.disabled).toBe(true);
+
+    fireEvent.change(screen.getByPlaceholderText('Required effect evidence note'), {
+      target: { value: 'Verified the synthetic file; retain it and do not replay.' },
+    });
+    expect(acknowledge.disabled).toBe(false);
+    fireEvent.click(acknowledge);
+
+    await waitFor(() => expect(api.applyRuntimeReconciliationAction).toHaveBeenCalledWith(
+      'task-tool-effect',
+      {
+        tenantId: 'tenant-1',
+        action: 'acknowledge_tool_effect',
+        reason: 'Verified the synthetic file; retain it and do not replay.',
+      },
+    ));
+    await screen.findByText('0 open items');
+  });
+
   it('repairs projections through the authenticated adapter, shows the truthful receipt, and reloads the queue in place', async () => {
     api.repairRuntimeReconciliationProjections.mockResolvedValue({
       examined: 3,

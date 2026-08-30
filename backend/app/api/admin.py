@@ -104,7 +104,7 @@ class WorkflowReplayFromStepRequest(BaseModel):
 
 
 class RuntimeReconciliationActionRequest(BaseModel):
-    action: str = Field(pattern="^(mark_resolved|archive|retry)$")
+    action: str = Field(pattern="^(mark_resolved|archive|retry|acknowledge_tool_effect)$")
     reason: str = Field(min_length=1, max_length=1000)
 
 

@@ -50,7 +50,7 @@ def test_admin_runtime_reconciliation_routes_delegate_to_service(monkeypatch) ->
 
     tenant_id = uuid4()
     task_id = uuid4()
-    captured = {}
+    captured = {"apply_calls": []}
 
     async def fake_list(db, *, tenant_id, status, limit, agent_id=None):
         captured["list"] = {"tenant_id": tenant_id, "status": status, "limit": limit, "agent_id": agent_id}
@@ -61,13 +61,15 @@ def test_admin_runtime_reconciliation_routes_delegate_to_service(monkeypatch) ->
         return {"task_id": str(task_id), "status": "needs_reconciliation"}
 
     async def fake_apply(db, *, tenant_id, task_id, action, reason, actor_user_id):
-        captured["apply"] = {
+        call = {
             "tenant_id": tenant_id,
             "task_id": task_id,
             "action": action,
             "reason": reason,
             "actor_user_id": actor_user_id,
         }
+        captured["apply"] = call
+        captured["apply_calls"].append(call)
         return {"task_id": str(task_id), "status": "completed", "action": action}
 
     monkeypatch.setattr(admin_api, "list_runtime_reconciliation_tasks", fake_list)
@@ -82,16 +84,26 @@ def test_admin_runtime_reconciliation_routes_delegate_to_service(monkeypatch) ->
         params={"tenant_id": str(tenant_id)},
         json={"action": "mark_resolved", "reason": "operator verified no duplicate side effect"},
     )
+    acknowledge_resp = client.post(
+        f"/admin/runtime-reconciliation/{task_id}/action",
+        params={"tenant_id": str(tenant_id)},
+        json={"action": "acknowledge_tool_effect", "reason": "operator verified the effect evidence"},
+    )
 
     assert list_resp.status_code == 200
     assert list_resp.json()[0]["task_id"] == str(task_id)
     assert get_resp.status_code == 200
     assert get_resp.json()["status"] == "needs_reconciliation"
     assert action_resp.status_code == 200
+    assert acknowledge_resp.status_code == 200
     assert action_resp.json()["status"] == "completed"
     assert captured["list"]["tenant_id"] == tenant_id
     assert captured["list"]["limit"] == 25
-    assert captured["apply"]["action"] == "mark_resolved"
+    assert [call["action"] for call in captured["apply_calls"]] == [
+        "mark_resolved",
+        "acknowledge_tool_effect",
+    ]
+    assert captured["apply"]["reason"] == "operator verified the effect evidence"
     assert fake_db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(tenant_id)
     assert any(f"SET LOCAL app.current_tenant_id = '{tenant_id}'" in stmt for stmt in fake_db.statements)
 

@@ -269,6 +269,7 @@ _SIDE_EFFECT_RECONCILIATION_REASONS = frozenset(
     {
         "non_idempotent_restart_orphan",
         "approval_execution_side_effect_unknown",
+        "tool_lifecycle_persistence",
     }
 )
 
@@ -276,6 +277,20 @@ _SIDE_EFFECT_RECONCILIATION_REASONS = frozenset(
 def _runtime_task_user_blocker(task: RuntimeTask) -> dict[str, Any] | None:
     task_status = str(getattr(task, "status", None) or "").strip().lower()
     metadata = _mapping(getattr(task, "metadata_json", None))
+    tool_effect = _mapping(getattr(task, "_tool_effect_reconciliation", None))
+    if bool(tool_effect.get("required")):
+        return {
+            "kind": "runtime_reconciliation",
+            "status": "blocked",
+            "reason_code": "tool_effect_outcome_unknown",
+            "title": "工具效果需要管理员核对",
+            "reason": "工具可能已经产生效果，但终态回执没有落盘；系统不会自动重放这一轮。",
+            "next_action": "平台管理员核对效果证据并停止旧任务后，才能继续或创建分支。",
+            "owner": "platform_admin",
+            "can_continue_other_work": True,
+            "auto_resume": False,
+            "retry_available": False,
+        }
     if task_status == "needs_reconciliation" or bool(metadata.get("needs_reconciliation")):
         recovery = metadata.get("session_v2_reconciliation")
         reason = str(recovery.get("reason") or "") if isinstance(recovery, dict) else ""
@@ -1751,7 +1766,45 @@ async def _list_runtime_tasks(
         .order_by(RuntimeTask.created_at.desc())
         .limit(limit)
     )
-    return list(result.scalars().all())
+    tasks = list(result.scalars().all())
+    tenant_id = next((getattr(task, "tenant_id", None) for task in tasks if getattr(task, "tenant_id", None)), None)
+    if tenant_id is None:
+        return tasks
+
+    from app.services.session_tool_runtime import (
+        list_unresolved_tool_effects,
+        tool_effect_reconciliation_summary,
+    )
+
+    effects = await list_unresolved_tool_effects(
+        db,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        terminal_tasks_only=True,
+        limit=None,
+    )
+    known_task_ids = {task.id for task in tasks}
+    missing_run_ids = {row.run_id for row in effects} - known_task_ids
+    if missing_run_ids:
+        missing = list(
+            (
+                await db.execute(
+                    select(RuntimeTask).where(
+                        RuntimeTask.tenant_id == tenant_id,
+                        RuntimeTask.id.in_(missing_run_ids),
+                    )
+                )
+            ).scalars()
+        )
+        tasks = [*missing, *tasks]
+    effects_by_run: dict[Any, list[Any]] = {}
+    for effect in effects:
+        effects_by_run.setdefault(effect.run_id, []).append(effect)
+    for task in tasks:
+        summary = tool_effect_reconciliation_summary(effects_by_run.get(task.id, []))
+        if summary is not None:
+            setattr(task, "_tool_effect_reconciliation", summary)
+    return tasks
 
 
 async def _list_goals(db: AsyncSession, *, agent_id: Any, session_id: Any) -> list[AgentSessionGoal]:
@@ -2005,6 +2058,12 @@ async def build_session_workbench(
     active_run = await get_active_web_chat_run(db=db, agent_id=agent.id, session_id=session.id)
     active_run_projection = _active_run_with_event_refs(active_run, events)
     runtime_tasks = await _list_runtime_tasks(db, agent_id=agent.id, session_id=session.id)
+    tool_effect_reconciliation_tasks = [
+        task
+        for task in runtime_tasks
+        if bool(_mapping(getattr(task, "_tool_effect_reconciliation", None)).get("required"))
+    ]
+    tool_effect_reconciliation_required = bool(tool_effect_reconciliation_tasks)
     goals = await _list_goals(db, agent_id=agent.id, session_id=session.id)
     teams = await _list_teams(db, agent_id=agent.id, session_id=session.id)
     workflow_journals = await _list_workflow_journals(db, runtime_tasks=runtime_tasks)
@@ -2075,12 +2134,14 @@ async def build_session_workbench(
             "checkpoints": checkpoints,
         },
         "controls": {
-            "can_start_turn": active_run_projection is None,
+            "can_start_turn": active_run_projection is None and not tool_effect_reconciliation_required,
             "can_stop_active_run": active_run_projection is not None,
             "can_export_json": True,
-            "can_branch": bool(checkpoints),
-            "can_start_goal": active_run_projection is None,
+            "can_branch": bool(checkpoints) and not tool_effect_reconciliation_required,
+            "can_start_goal": active_run_projection is None and not tool_effect_reconciliation_required,
             "can_create_agent_team": True,
+            "tool_effect_reconciliation_required": tool_effect_reconciliation_required,
+            "tool_effect_reconciliation_run_ids": [str(task.id) for task in tool_effect_reconciliation_tasks],
             "expected_turn_id": active_turn.get("expected_turn_id") if active_turn else None,
         },
         "active_run": active_run_projection,

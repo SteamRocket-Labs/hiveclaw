@@ -6,17 +6,24 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit import AuditLog
 from app.models.runtime_task import RuntimeTask
+from app.models.session_v2 import SessionToolInvocation
+from app.services.session_tool_runtime import (
+    acknowledge_unresolved_tool_effects,
+    list_unresolved_tool_effects,
+    tool_effect_reconciliation_summary,
+    unresolved_tool_effect_predicates,
+)
 
 RECONCILIATION_STATUS = "needs_reconciliation"
 RESOLVED_RUNTIME_TASK_STATUS = "completed"
 AMBIGUOUS_PROVIDER_SEND_REASON = "ambiguous_provider_send"
 AMBIGUOUS_PROVIDER_SEND_PROJECTION_REPAIR_SOURCE = "runtime_reconciliation.ambiguous_provider_send_projection_repair"
-_ACTIONS = {"mark_resolved", "archive", "retry"}
+_ACTIONS = {"mark_resolved", "archive", "retry", "acknowledge_tool_effect"}
 _TERMINAL_ACTIONS = ("mark_resolved", "archive")
 
 
@@ -42,8 +49,23 @@ def _metadata(task: RuntimeTask) -> dict[str, Any]:
     return dict(getattr(task, "metadata_json", None) or {})
 
 
-def runtime_reconciliation_view(task: RuntimeTask) -> dict[str, Any]:
+def runtime_reconciliation_view(
+    task: RuntimeTask,
+    *,
+    tool_effects: list[SessionToolInvocation] | tuple[SessionToolInvocation, ...] = (),
+) -> dict[str, Any]:
     metadata = _metadata(task)
+    tool_effect = tool_effect_reconciliation_summary(tool_effects)
+    tool_effect_required = tool_effect is not None
+    retry_allowed = False if tool_effect_required else bool(metadata.get("reconciliation_retry_allowed"))
+    if tool_effect_required:
+        supported_actions = ["acknowledge_tool_effect"]
+    elif task.status == RECONCILIATION_STATUS:
+        supported_actions = ["mark_resolved", "archive"]
+        if retry_allowed:
+            supported_actions.append("retry")
+    else:
+        supported_actions = []
     return {
         "task_id": str(task.id),
         "tenant_id": str(task.tenant_id) if task.tenant_id else None,
@@ -55,9 +77,17 @@ def runtime_reconciliation_view(task: RuntimeTask) -> dict[str, Any]:
         "trace_id": task.trace_id,
         "parent_session_id": task.parent_session_id,
         "child_session_id": task.child_session_id,
-        "reason": metadata.get("reconciliation_reason") or metadata.get("restart_resume_blocker"),
-        "side_effect_risk": metadata.get("side_effect_risk"),
-        "retry_allowed": bool(metadata.get("reconciliation_retry_allowed")),
+        "reason": (
+            metadata.get("reconciliation_reason")
+            or metadata.get("restart_resume_blocker")
+            or ("tool_effect_outcome_unknown" if tool_effect_required else None)
+        ),
+        "side_effect_risk": metadata.get("side_effect_risk")
+        or ("effect_outcome_unknown" if tool_effect_required else None),
+        "retry_allowed": retry_allowed,
+        "tool_effect_reconciliation_required": tool_effect_required,
+        "unsettled_tool_effect_count": int((tool_effect or {}).get("unsettled_count") or 0),
+        "supported_actions": supported_actions,
         "result_summary": task.result_summary,
         "metadata": metadata,
         "created_at": _dt(task.created_at),
@@ -74,16 +104,46 @@ async def list_runtime_reconciliation_tasks(
     limit: int = 50,
     agent_id: uuid.UUID | None = None,
 ) -> list[dict[str, Any]]:
+    unresolved_effect = exists(
+        select(SessionToolInvocation.id).where(
+            *unresolved_tool_effect_predicates(
+                tenant_id=tenant_id,
+                run_id=RuntimeTask.id,
+            )
+        )
+    )
+    status_filter = (
+        or_(
+            RuntimeTask.status == RECONCILIATION_STATUS,
+            (RuntimeTask.status == "failed") & unresolved_effect,
+        )
+        if status == RECONCILIATION_STATUS
+        else RuntimeTask.status == status
+    )
     stmt = (
         select(RuntimeTask)
-        .where(RuntimeTask.tenant_id == tenant_id, RuntimeTask.status == status)
-        .order_by(RuntimeTask.created_at.desc())
+        .where(RuntimeTask.tenant_id == tenant_id, status_filter)
+        # Unknown effects are the only queue rows that block all fresh work in
+        # their Session. Keep them ahead of ordinary reconciliation rows so a
+        # busy tenant cannot starve an old fail-closed hold behind ``limit``.
+        .order_by(unresolved_effect.desc(), RuntimeTask.created_at.desc())
         .limit(max(1, min(int(limit), 200)))
     )
     if agent_id is not None:
         stmt = stmt.where(RuntimeTask.parent_agent_id == agent_id)
     result = await db.execute(stmt)
-    return [runtime_reconciliation_view(task) for task in result.scalars().all()]
+    tasks = list(result.scalars().all())
+    effects = await list_unresolved_tool_effects(
+        db,
+        tenant_id=tenant_id,
+        run_ids=[task.id for task in tasks],
+        terminal_tasks_only=True,
+        limit=None,
+    )
+    effects_by_run: dict[uuid.UUID, list[SessionToolInvocation]] = {}
+    for effect in effects:
+        effects_by_run.setdefault(effect.run_id, []).append(effect)
+    return [runtime_reconciliation_view(task, tool_effects=effects_by_run.get(task.id, [])) for task in tasks]
 
 
 async def get_runtime_reconciliation_task(
@@ -100,7 +160,16 @@ async def get_runtime_reconciliation_task(
         select(RuntimeTask).where(RuntimeTask.id == runtime_task_id, RuntimeTask.tenant_id == tenant_id)
     )
     task = result.scalar_one_or_none()
-    return runtime_reconciliation_view(task) if task is not None else None
+    if task is None:
+        return None
+    effects = await list_unresolved_tool_effects(
+        db,
+        tenant_id=tenant_id,
+        run_ids=(task.id,),
+        terminal_tasks_only=True,
+        limit=None,
+    )
+    return runtime_reconciliation_view(task, tool_effects=effects)
 
 
 def _append_history(
@@ -165,6 +234,9 @@ async def apply_runtime_reconciliation_action(
     normalized_action = str(action or "").strip()
     if normalized_action not in _ACTIONS:
         raise ValueError(f"Unsupported reconciliation action: {action!r}")
+    requested_reason = str(reason or "").strip()
+    if normalized_action == "acknowledge_tool_effect" and not requested_reason:
+        raise ValueError("tool effect acknowledgement reason is required")
     runtime_task_id = _coerce_uuid(task_id)
     result = await db.execute(
         select(RuntimeTask)
@@ -174,7 +246,26 @@ async def apply_runtime_reconciliation_action(
     task = result.scalar_one_or_none()
     if task is None:
         raise RuntimeReconciliationNotFound("Runtime reconciliation task not found")
-    if task.status != RECONCILIATION_STATUS:
+    unresolved_effects = await list_unresolved_tool_effects(
+        db,
+        tenant_id=tenant_id,
+        run_ids=(task.id,),
+        terminal_tasks_only=True,
+        for_update=True,
+        limit=None,
+    )
+    if normalized_action == "acknowledge_tool_effect":
+        if not unresolved_effects:
+            raise RuntimeReconciliationConflict("RuntimeTask has no unresolved tool effect to acknowledge")
+        if task.status not in {RECONCILIATION_STATUS, "failed"}:
+            raise RuntimeReconciliationConflict(
+                f"RuntimeTask tool effect hold is not actionable from status={task.status!r}"
+            )
+    elif unresolved_effects:
+        raise RuntimeReconciliationConflict(
+            "Unknown tool effect must be acknowledged before task resolution; automatic replay is forbidden"
+        )
+    elif task.status != RECONCILIATION_STATUS:
         # Established admin contract: once the task leaves needs_reconciliation
         # every further action conflicts; there is no replay-success path.
         raise RuntimeReconciliationConflict(
@@ -182,11 +273,38 @@ async def apply_runtime_reconciliation_action(
         )
 
     metadata = _metadata(task)
-    normalized_reason = (reason or "").strip() or normalized_action
+    normalized_reason = requested_reason or normalized_action
     previous_status = task.status
 
     now = datetime.now(timezone.utc)
-    if normalized_action == "retry":
+    terminal_action = normalized_action in _TERMINAL_ACTIONS
+    if normalized_action == "acknowledge_tool_effect":
+        session_ids = {row.session_id for row in unresolved_effects}
+        if len(session_ids) != 1 or task.parent_agent_id is None:
+            raise RuntimeReconciliationConflict("RuntimeTask tool effect authority is incomplete")
+        await acknowledge_unresolved_tool_effects(
+            db,
+            tenant_id=tenant_id,
+            agent_id=task.parent_agent_id,
+            session_id=next(iter(session_ids)),
+            run_id=task.id,
+            actor_user_id=actor_user_id,
+            reason=normalized_reason,
+        )
+        metadata["needs_reconciliation"] = False
+        metadata["reconciliation_status"] = "tool_effect_acknowledged"
+        metadata["reconciliation_retry_allowed"] = False
+        metadata["tool_effect_acknowledged_at"] = now.isoformat()
+        metadata["tool_effect_acknowledged_by"] = str(actor_user_id)
+        if task.status == RECONCILIATION_STATUS:
+            # The old provider round cannot be resumed without inventing a
+            # tool result. Stop it explicitly after the operator has inspected
+            # the effect; a later user turn is a new run, never a replay.
+            task.status = "killed"
+            task.completed_at = task.completed_at or now
+            task.result_summary = f"Stopped after tool-effect reconciliation: {normalized_reason}"
+            terminal_action = True
+    elif normalized_action == "retry":
         if not bool(metadata.get("reconciliation_retry_allowed")):
             raise RuntimeReconciliationConflict("RuntimeTask is not marked retryable after reconciliation")
         task.status = "pending"
@@ -226,7 +344,7 @@ async def apply_runtime_reconciliation_action(
         actor_user_id=actor_user_id,
         previous_status=previous_status,
     )
-    if normalized_action in _TERMINAL_ACTIONS:
+    if terminal_action:
         # Operator terminal actions share the one mechanical settlement
         # boundary: terminal fence, root item transition, and pending control
         # settlement commit with the operator's semantic decision.
@@ -239,7 +357,14 @@ async def apply_runtime_reconciliation_action(
             root_reason_code=f"runtime_reconciliation_terminal:{normalized_action}",
         )
     await db.flush()
-    return runtime_reconciliation_view(task)
+    remaining_effects = await list_unresolved_tool_effects(
+        db,
+        tenant_id=tenant_id,
+        run_ids=(task.id,),
+        terminal_tasks_only=True,
+        limit=None,
+    )
+    return runtime_reconciliation_view(task, tool_effects=remaining_effects)
 
 
 async def repair_ambiguous_provider_send_terminal_projections(

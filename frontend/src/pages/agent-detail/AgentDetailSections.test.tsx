@@ -11,7 +11,6 @@ import AgentAwareSection, {
 } from './AgentAwareSection';
 import AgentChatSection, {
   SessionCommandControlPanel,
-  buildMessageFeedbackInput,
   buildSessionRewindCommandArgs,
   extractPlanIdFromPlanModeMessage,
   findRetryAnchorMessage,
@@ -20,6 +19,7 @@ import AgentChatSection, {
   permissionOnceOnlyMessageKey,
   sessionPermissionModeOptions,
 } from './AgentChatSection';
+import { buildMessageFeedbackInput } from './messageFeedback';
 import {
   AssistantMessageBody,
   shouldCollapseAssistantSupplement,

@@ -24,6 +24,10 @@ from app.services.session_user_checkpoint import (
     user_checkpoint_content,
     user_checkpoint_events,
 )
+from app.services.session_tool_runtime import (
+    ToolEffectReconciliationRequired,
+    assert_session_tool_effects_settled,
+)
 from app.services.session_workspace_snapshot import (
     clone_workspace_snapshot_for_session,
     delete_workspace_snapshot,
@@ -383,6 +387,14 @@ async def create_conversation_branch(
         anchor_event_id=anchor_uuid,
     )
     _validate_branch_request(mode=mode_text, anchor=anchor, content=content)
+    try:
+        await assert_session_tool_effects_settled(
+            db,
+            tenant_id=source_session.tenant_id,
+            session_id=source_session.id,
+        )
+    except ToolEffectReconciliationRequired as exc:
+        raise HTTPException(status_code=409, detail=exc.http_detail()) from exc
 
     deterministic_branch_id = _uuid(branch_session_id) if branch_session_id is not None else None
     if deterministic_branch_id is not None:

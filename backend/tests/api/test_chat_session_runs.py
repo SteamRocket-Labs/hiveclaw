@@ -29,6 +29,8 @@ class _FakeDB:
         self.session = session
 
     async def execute(self, _stmt):
+        if "session_tool_invocations" in str(_stmt):
+            return _ScalarResult(None)
         return _ScalarResult(self.session)
 
     async def commit(self):
@@ -181,6 +183,42 @@ def test_start_session_run_routes_to_runtime_service(monkeypatch):
             "session_grants": [],
             "writable_roots": ["workspace/"],
         },
+    }
+
+
+def test_start_session_run_returns_exact_nonretryable_tool_effect_hold(monkeypatch):
+    from app.services.session_tool_runtime import ToolEffectReconciliationRequired
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    held_run_id = uuid4()
+    invocation_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=uuid4())
+    user = SimpleNamespace(id=user_id, role="member")
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id)
+    db = _FakeDB(session)
+
+    async def fail_closed(**_kwargs):
+        raise ToolEffectReconciliationRequired(
+            session_id=session_id,
+            run_ids=(held_run_id,),
+            invocation_ids=(invocation_id,),
+        )
+
+    monkeypatch.setattr(chat_sessions_api, "submit_live_human_input", fail_closed)
+    client = _client(monkeypatch, db=db, user=user, agent=agent)
+
+    response = client.post(
+        f"/agents/{agent_id}/sessions/{session_id}/runs",
+        json={"content": "do not replay the write"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "tool_effect_reconciliation_required",
+        "session_id": str(session_id),
+        "retryable": False,
     }
 
 

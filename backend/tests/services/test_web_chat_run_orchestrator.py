@@ -435,6 +435,10 @@ async def test_tool_lifecycle_persistence_failure_holds_run_for_reconciliation()
     assert finalized["status"] == "needs_reconciliation"
     assert finalized["metadata_json"]["terminal_reason"] == "persistence_error"
     assert finalized["metadata_json"]["automatic_retry_allowed"] is False
+    assert finalized["metadata_json"]["needs_reconciliation"] is True
+    assert finalized["metadata_json"]["reconciliation_reason"] == "tool_lifecycle_persistence"
+    assert finalized["metadata_json"]["side_effect_risk"] == "effect_outcome_unknown"
+    assert finalized["metadata_json"]["reconciliation_retry_allowed"] is False
     assert finalized["metadata_json"]["session_v2_reconciliation"] == {
         "reason": "tool_lifecycle_persistence",
         "tool_name": "write_file",

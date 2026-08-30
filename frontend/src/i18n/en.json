@@ -23,6 +23,9 @@
     "personalKbCandidates": "Personal KB",
     "contextArtifacts": "context artifacts",
     "activeRun": "run",
+    "toolEffectReconciliation": {
+      "blocker": "A tool may already have taken effect. An administrator must verify the evidence before this session can continue."
+    },
     "commandPanel": {
       "rewind": "Rewind",
       "sessionContext": "Session context",
@@ -3919,6 +3922,8 @@
       "retry": "Retry",
       "repair": "Repair projections",
       "repairing": "Repairing...",
+      "effectEvidenceNote": "Required effect evidence note",
+      "acknowledgeToolEffect": "Acknowledge effect and stop",
       "repairReceipt": "Projection repair finished: examined {{examined}} candidates, repaired {{repaired}} projections."
     },
     "action": "Action",

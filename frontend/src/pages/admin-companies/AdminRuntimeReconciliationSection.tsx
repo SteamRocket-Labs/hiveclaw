@@ -53,6 +53,7 @@ export default function AdminRuntimeReconciliationSection({
   const [error, setError] = useState<string | null>(null);
   const [repairing, setRepairing] = useState(false);
   const [repairReceipt, setRepairReceipt] = useState<RuntimeProjectionRepairReceipt | null>(null);
+  const [effectEvidenceNotes, setEffectEvidenceNotes] = useState<Record<string, string>>({});
   // The tenant the rendered queue truthfully belongs to. null means nothing
   // has been successfully loaded for the current tenant binding, so neither a
   // count nor an empty conclusion may be claimed. Explicitly seeded
@@ -111,6 +112,7 @@ export default function AdminRuntimeReconciliationSection({
     setTasks([]);
     setError(null);
     setRepairReceipt(null);
+    setEffectEvidenceNotes({});
     setLoadedTenant(null);
   };
 
@@ -133,13 +135,17 @@ export default function AdminRuntimeReconciliationSection({
   const applyAction = async (task: RuntimeReconciliationTask, action: RuntimeReconciliationAction) => {
     const trimmed = tenantId.trim();
     if (!trimmed) return;
+    const reason = action === 'acknowledge_tool_effect'
+      ? String(effectEvidenceNotes[task.task_id] || '').trim()
+      : `operator ${action}`;
+    if (!reason) return;
     setLoading(true);
     setError(null);
     try {
       await adminApi.applyRuntimeReconciliationAction(task.task_id, {
         tenantId: trimmed,
         action,
-        reason: `operator ${action}`,
+        reason,
       });
       const rows = await adminApi.listRuntimeReconciliation({ tenantId: trimmed, limit: 50 });
       setTasks(rows);
@@ -261,16 +267,50 @@ export default function AdminRuntimeReconciliationSection({
                 <span className="badge badge-warning">{task.status}</span>
               </div>
               <div className="admin-reconcile-actions">
-                <button className="btn-secondary" onClick={() => applyAction(task, 'mark_resolved')} disabled={busy}>
-                  {t('admin.reconciliation.resolve', 'Resolve')}
-                </button>
-                <button className="btn-secondary" onClick={() => applyAction(task, 'archive')} disabled={busy}>
-                  {t('admin.reconciliation.archive', 'Archive')}
-                </button>
-                {task.retry_allowed && (
-                  <button className="btn-secondary" onClick={() => applyAction(task, 'retry')} disabled={busy}>
-                    {t('admin.reconciliation.retry', 'Retry')}
-                  </button>
+                {task.tool_effect_reconciliation_required ? (
+                  <>
+                    <input
+                      className="admin-reconcile-input"
+                      value={effectEvidenceNotes[task.task_id] || ''}
+                      onChange={(event) => setEffectEvidenceNotes((current) => ({
+                        ...current,
+                        [task.task_id]: event.target.value,
+                      }))}
+                      placeholder={t(
+                        'admin.reconciliation.effectEvidenceNote',
+                        'Required effect evidence note',
+                      )}
+                      disabled={busy}
+                    />
+                    <button
+                      className="btn-secondary"
+                      onClick={() => applyAction(task, 'acknowledge_tool_effect')}
+                      disabled={busy || !String(effectEvidenceNotes[task.task_id] || '').trim()}
+                    >
+                      {t(
+                        'admin.reconciliation.acknowledgeToolEffect',
+                        'Acknowledge effect and stop',
+                      )}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {(task.supported_actions?.includes('mark_resolved') ?? true) && (
+                      <button className="btn-secondary" onClick={() => applyAction(task, 'mark_resolved')} disabled={busy}>
+                        {t('admin.reconciliation.resolve', 'Resolve')}
+                      </button>
+                    )}
+                    {(task.supported_actions?.includes('archive') ?? true) && (
+                      <button className="btn-secondary" onClick={() => applyAction(task, 'archive')} disabled={busy}>
+                        {t('admin.reconciliation.archive', 'Archive')}
+                      </button>
+                    )}
+                    {task.retry_allowed && (task.supported_actions?.includes('retry') ?? true) && (
+                      <button className="btn-secondary" onClick={() => applyAction(task, 'retry')} disabled={busy}>
+                        {t('admin.reconciliation.retry', 'Retry')}
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             </div>

@@ -129,6 +129,8 @@ import {
   AssistantMessageBody,
   shouldCollapseAssistantSupplement,
 } from './CanonicalCardAssistantSupplement';
+import { SessionToolEffectRecoveryBanner, sessionToolEffectRecoveryModel } from './SessionToolEffectRecovery';
+import { buildMessageFeedbackInput } from './messageFeedback';
 
 type AttachedFile = {
   name: string;
@@ -164,19 +166,6 @@ const SESSION_PERMISSION_MODE_OPTIONS: Array<{
 ];
 
 export const sessionPermissionModeOptions = () => SESSION_PERMISSION_MODE_OPTIONS;
-
-function isUuidLike(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
-}
-
-export function buildMessageFeedbackInput(
-  messageId: string,
-  label: RecordSessionFeedbackInput['label'],
-): RecordSessionFeedbackInput {
-  const input: RecordSessionFeedbackInput = { label };
-  if (isUuidLike(messageId)) input.message_id = messageId;
-  return input;
-}
 
 function getSessionPermissionModeLabel(
   mode: SessionPermissionMode,
@@ -1169,12 +1158,22 @@ function AgentChatSection({
     !!activeSession &&
     !shouldUseWritableSessionSurface(activeSession as any, currentUser?.id);
   const isDraftSession = isDraftHumanChatSession(activeSession as any);
-  const canUseComposer = Boolean(activeSession) && !isReadOnlySession && !agentExpired;
+  const baseCanUseComposer = Boolean(activeSession) && !isReadOnlySession && !agentExpired;
   const activeSessionId = activeSession?.id ? String(activeSession.id) : null;
   const sessionAuthorityMode = activeSession?.operator_view ? 'operator' : 'owner';
   const sessionOperatorOptions = activeSession?.operator_view
     ? { operatorView: true, operatorReason: 'Agent session administration' }
     : undefined;
+  const { data: sessionWorkbenchData, refetch: refetchSessionWorkbench } = useQuery({
+    queryKey: ['chat-session-workbench', effectiveAgentId, activeSessionId, sessionAuthorityMode],
+    queryFn: () => ccParityApi.getSessionWorkbench(effectiveAgentId!, activeSessionId!, sessionOperatorOptions),
+    enabled: Boolean(effectiveAgentId && activeSessionId),
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const sessionWorkbenchBase = sessionWorkbenchData && !Array.isArray(sessionWorkbenchData) ? sessionWorkbenchData : null;
+  const toolEffectRecovery = sessionToolEffectRecoveryModel(sessionWorkbenchBase);
+  const canUseComposer = baseCanUseComposer && !toolEffectRecovery.blocked;
   const resourceOperatorOptions = activeSession?.operator_view
     ? { operatorView: true, reason: 'Agent session administration' }
     : undefined;
@@ -1419,7 +1418,8 @@ function AgentChatSection({
           t={t}
         />
       ) : null;
-      const retryAnchor = (item.item_type === 'warning' || item.item_type === 'error') && item.item_data.retryable
+      const retryAnchor = !toolEffectRecovery.blocked
+        && (item.item_type === 'warning' || item.item_type === 'error') && item.item_data.retryable
         ? findRetryAnchorMessage(visibleTimeline, index)
         : null;
       const recoveryActions = retryAnchor && onBranchMessage ? (
@@ -1452,7 +1452,7 @@ function AgentChatSection({
         </div>
       );
     },
-    [activeSession?.operator_view, onBranchMessage, onResolveSessionPermission, selectThreadItem, selectedThreadItemId, t, visibleTimeline],
+    [activeSession?.operator_view, onBranchMessage, onResolveSessionPermission, selectThreadItem, selectedThreadItemId, t, toolEffectRecovery.blocked, visibleTimeline],
   );
 
   const renderInlinePlanToolCall = (msg: AgentChatMessage, index: number) => (
@@ -1626,13 +1626,6 @@ function AgentChatSection({
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
-  const { data: sessionWorkbenchData, refetch: refetchSessionWorkbench } = useQuery({
-    queryKey: ['chat-session-workbench', effectiveAgentId, activeSessionId, sessionAuthorityMode],
-    queryFn: () => ccParityApi.getSessionWorkbench(effectiveAgentId!, activeSessionId!, sessionOperatorOptions),
-    enabled: Boolean(effectiveAgentId && activeSessionId),
-    staleTime: 60_000,
-    refetchOnWindowFocus: false,
-  });
   const { data: sessionDecisionData, refetch: refetchSessionDecisions } = useQuery({
     queryKey: ['chat-session-decisions', effectiveAgentId, activeSessionId, sessionAuthorityMode],
     queryFn: () => chatApi.listSessionDecisions(effectiveAgentId!, activeSessionId!, sessionOperatorOptions),
@@ -1733,7 +1726,6 @@ function AgentChatSection({
     refetchOnWindowFocus: false,
   });
   const sessionIndex = sessionIndexData && !Array.isArray(sessionIndexData) ? sessionIndexData : null;
-  const sessionWorkbenchBase = sessionWorkbenchData && !Array.isArray(sessionWorkbenchData) ? sessionWorkbenchData : null;
   const sessionContextUsage = sessionContextUsageData && !Array.isArray(sessionContextUsageData)
     ? sessionContextUsageData as SessionContextUsage
     : null;
@@ -2274,6 +2266,7 @@ function AgentChatSection({
                 onReconnect={onReconnectTransport}
               />
             ) : null}
+            {toolEffectRecovery.blocked ? <SessionToolEffectRecoveryBanner /> : null}
             <div
               data-testid="session-composer"
               className="session-tui-composer"

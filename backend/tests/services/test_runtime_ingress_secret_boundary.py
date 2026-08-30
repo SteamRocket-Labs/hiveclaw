@@ -208,6 +208,10 @@ async def test_direct_web_run_redacts_exact_secret_before_runtime_task_and_chat_
         fake_redact,
     )
     monkeypatch.setattr(runtime, "_find_active_run", no_active)
+    monkeypatch.setattr(
+        "app.services.session_tool_runtime.assert_session_tool_effects_settled",
+        no_op,
+    )
     monkeypatch.setattr(runtime, "_create_runtime_budget_root_run_for_chat", unavailable)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", no_op)
     monkeypatch.setattr(runtime, "register_runtime_task_root_item", no_op)

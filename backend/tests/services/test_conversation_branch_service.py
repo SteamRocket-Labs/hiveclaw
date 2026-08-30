@@ -27,6 +27,8 @@ class _FakeDB:
         self.flushed = 0
 
     async def execute(self, _stmt):
+        if "session_tool_invocations" in str(_stmt):
+            return _ScalarResult(values=[])
         assert self._results, "unexpected execute call"
         return self._results.pop(0)
 
@@ -119,6 +121,66 @@ async def test_edit_branch_creates_new_session_without_mutating_source(monkeypat
     assert result.run_request.content == "new wording"
     assert result.run_request.display_content == "new wording"
     assert result.run_request.append_user_message is True
+
+
+@pytest.mark.asyncio
+async def test_branch_is_blocked_before_mutation_when_source_has_unresolved_tool_effect(monkeypatch):
+    from app.services import conversation_branch_service as service
+    from app.services.session_tool_runtime import ToolEffectReconciliationRequired
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    source_session_id = uuid4()
+    anchor = _event(
+        session_id=source_session_id,
+        sequence=10,
+        event_type="user_message",
+        role="user",
+        content="repeat the write",
+    )
+    db = _FakeDB(anchor=anchor, prefix=[])
+
+    async def fail_closed(_db, *, tenant_id, session_id, **_kwargs):
+        raise ToolEffectReconciliationRequired(
+            session_id=session_id,
+            run_ids=(uuid4(),),
+            invocation_ids=(uuid4(),),
+        )
+
+    monkeypatch.setattr(service, "assert_session_tool_effects_settled", fail_closed)
+    with pytest.raises(HTTPException) as exc:
+        await service.create_conversation_branch(
+            db=db,
+            agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+            user=SimpleNamespace(id=user_id),
+            source_session=SimpleNamespace(
+                id=source_session_id,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                title="Original",
+                parent_session_id=None,
+                root_session_id=None,
+                source_channel="web",
+                session_kind="human_chat",
+                actor_type="user",
+                runtime_source="web_chat",
+                visibility_scope="direct_user",
+                listed_surface="chat",
+            ),
+            mode="edit",
+            anchor_event_id=anchor.id,
+            content="repeat the write",
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail == {
+        "code": "tool_effect_reconciliation_required",
+        "session_id": str(source_session_id),
+        "retryable": False,
+    }
+    assert db.added == []
 
 
 def test_generated_edit_branch_title_does_not_repeat_legacy_machine_suffixes():
@@ -330,6 +392,8 @@ async def test_branch_from_user_checkpoint_copies_prefix_before_checkpoint_and_r
             super().__init__(anchor=branch_target, prefix=[])
 
         async def execute(self, stmt):
+            if "session_tool_invocations" in str(stmt):
+                return _ScalarResult(values=[])
             if len(self._results) == 2:
                 return self._results.pop(0)
             sql = str(stmt)

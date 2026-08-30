@@ -23,6 +23,9 @@
     "personalKbCandidates": "个人知识库",
     "contextArtifacts": "上下文工件",
     "activeRun": "运行",
+    "toolEffectReconciliation": {
+      "blocker": "工具可能已经产生效果。管理员核对证据前，当前会话不会继续。"
+    },
     "commandPanel": {
       "rewind": "回溯",
       "sessionContext": "会话上下文",
@@ -3919,6 +3922,8 @@
       "retry": "重试",
       "repair": "修复投影",
       "repairing": "修复中...",
+      "effectEvidenceNote": "必填的效果证据说明",
+      "acknowledgeToolEffect": "确认效果并停止旧任务",
       "repairReceipt": "投影修复完成：已检查 {{examined}} 个候选，已修复 {{repaired}} 条投影。"
     },
     "action": "操作",

@@ -2301,6 +2301,20 @@ async def start_web_chat_run(
         await broadcast_web_chat_event(agent.id, session.id, {"type": "user_message_queued", **payload})
         raise ActiveWebChatRunExists(payload)
 
+    from app.services.session_tool_runtime import (
+        ToolEffectReconciliationRequired,
+        assert_session_tool_effects_settled,
+    )
+
+    try:
+        await assert_session_tool_effects_settled(
+            db,
+            tenant_id=agent.tenant_id,
+            session_id=session.id,
+        )
+    except ToolEffectReconciliationRequired as exc:
+        raise HTTPException(status_code=409, detail=exc.http_detail()) from exc
+
     run_uuid = run_id or uuid.uuid4()
     now = datetime.now(timezone.utc)
     saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)

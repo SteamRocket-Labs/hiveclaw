@@ -18,6 +18,11 @@ describe('adminApi runtime reconciliation adapter', () => {
       action: 'mark_resolved',
       reason: 'verified',
     });
+    await adminApi.applyRuntimeReconciliationAction('task-2', {
+      tenantId: 'tenant-1',
+      action: 'acknowledge_tool_effect',
+      reason: 'verified effect evidence',
+    });
 
     expect(vi.mocked(get).mock.calls[0][0]).toBe(
       '/admin/runtime-reconciliation?tenant_id=tenant-1&status=needs_reconciliation&limit=25',
@@ -26,6 +31,10 @@ describe('adminApi runtime reconciliation adapter', () => {
     expect(vi.mocked(post).mock.calls[0]).toEqual([
       '/admin/runtime-reconciliation/task-1/action?tenant_id=tenant-1',
       { action: 'mark_resolved', reason: 'verified' },
+    ]);
+    expect(vi.mocked(post).mock.calls[1]).toEqual([
+      '/admin/runtime-reconciliation/task-2/action?tenant_id=tenant-1',
+      { action: 'acknowledge_tool_effect', reason: 'verified effect evidence' },
     ]);
   });
 

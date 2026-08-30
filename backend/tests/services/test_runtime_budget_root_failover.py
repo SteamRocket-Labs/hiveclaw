@@ -164,6 +164,10 @@ async def test_start_interactive_run_persists_typed_degraded_budget_state(monkey
         return 1
 
     monkeypatch.setattr(runtime, "_find_active_run", no_active)
+    monkeypatch.setattr(
+        "app.services.session_tool_runtime.assert_session_tool_effects_settled",
+        no_op,
+    )
     monkeypatch.setattr(runtime, "_create_runtime_budget_root_run_for_chat", unavailable)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", no_op)
     monkeypatch.setattr(runtime, "register_runtime_task_root_item", no_op_root_item)
@@ -226,7 +230,14 @@ async def test_start_noninteractive_run_fails_before_task_or_worker(monkeypatch)
     async def notify(**kwargs):
         notified.append(kwargs)
 
+    async def no_unsettled_effects(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr(runtime, "_find_active_run", no_active)
+    monkeypatch.setattr(
+        "app.services.session_tool_runtime.assert_session_tool_effects_settled",
+        no_unsettled_effects,
+    )
     monkeypatch.setattr(runtime, "_create_runtime_budget_root_run_for_chat", unavailable)
     monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", notify)
 

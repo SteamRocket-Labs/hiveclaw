@@ -40,6 +40,9 @@ export interface RuntimeReconciliationTask {
   reason?: string | null;
   side_effect_risk?: string | null;
   retry_allowed?: boolean;
+  tool_effect_reconciliation_required?: boolean;
+  unsettled_tool_effect_count?: number;
+  supported_actions?: RuntimeReconciliationAction[];
   result_summary?: string | null;
   metadata?: Record<string, unknown>;
   created_at?: string | null;
@@ -47,7 +50,7 @@ export interface RuntimeReconciliationTask {
   completed_at?: string | null;
 }
 
-export type RuntimeReconciliationAction = 'mark_resolved' | 'archive' | 'retry';
+export type RuntimeReconciliationAction = 'mark_resolved' | 'archive' | 'retry' | 'acknowledge_tool_effect';
 
 /**
  * Truthful server receipt of POST /admin/runtime-reconciliation/projection-repair.

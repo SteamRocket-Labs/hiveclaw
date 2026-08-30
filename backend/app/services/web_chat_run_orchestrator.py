@@ -1520,6 +1520,10 @@ async def _handle_tool_lifecycle_persistence_failure(
         "error_code": "tool_lifecycle_persistence_failed",
         "effect_outcome_unknown": True,
         "automatic_retry_allowed": False,
+        "needs_reconciliation": True,
+        "reconciliation_reason": "tool_lifecycle_persistence",
+        "side_effect_risk": "effect_outcome_unknown",
+        "reconciliation_retry_allowed": False,
         "session_v2_reconciliation": reconciliation,
     }
     summary = "Tool effect settlement requires operator reconciliation before retry."

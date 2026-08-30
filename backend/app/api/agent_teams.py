@@ -29,6 +29,7 @@ from app.services.agent_team_runtime_service import (
 )
 from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
 from app.services.session_live_input import IdempotencyConflict, submit_live_human_input
+from app.services.session_tool_runtime import ToolEffectReconciliationRequired
 from app.services.team_runtime import TeamIndex, TeamMemberIndex, plan_team_close_consolidation
 
 router = APIRouter(prefix="/agents/{agent_id}/agent-teams", tags=["agent-teams"])
@@ -647,6 +648,9 @@ async def start_agent_team_member_run(
                 "receipt_ref": exc.receipt_ref,
             },
         ) from exc
+    except ToolEffectReconciliationRequired as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=exc.http_detail()) from exc
     run = dict(input_receipt.get("run") or {})
     if not run and input_receipt.get("target_run_id"):
         run = {"run_id": input_receipt["target_run_id"], "status": "queued"}

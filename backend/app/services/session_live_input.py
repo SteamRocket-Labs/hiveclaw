@@ -32,6 +32,7 @@ from app.services.session_v2_persistence import (
     resolve_session_mutation_authority,
     runtime_result_integration_command_stamp,
 )
+from app.services.session_tool_runtime import assert_session_tool_effects_settled
 
 
 def content_parts_from_live_ingress(
@@ -302,6 +303,16 @@ async def submit_live_human_input(
             expected_turn_id=expected_turn_id,
             expected_run_id=expected_run_id,
         )
+    if existing_row is None and kind in {"start_turn", "fork_side_thread"}:
+        # Exact admission fence: an unknown prior tool effect must be resolved
+        # by a platform operator before a fresh run or side branch can repeat
+        # the same external action. Idempotent replays of an already accepted
+        # command remain readable and never create a second command.
+        await assert_session_tool_effects_settled(
+            db,
+            tenant_id=authority.tenant_id,
+            session_id=authority.session_id,
+        )
     intent = {
         "kind": kind,
         "input_id": str(input_uuid),
@@ -434,6 +445,8 @@ async def submit_live_human_input(
     dispatch_receipt: dict[str, Any] = {}
     run_payload: dict[str, Any] | None = None
     dispatch_status = "not_dispatched"
+    effective_admission_state = outcome.state
+    effective_reason_code = outcome.reason_code
     if outcome.state == "admitted":
         from app.services.session_input_dispatch import dispatch_admitted_input_fast_path
 
@@ -444,6 +457,9 @@ async def submit_live_human_input(
         )
         dispatch_receipt = dict(dispatched.receipt or {})
         dispatch_status = dispatched.state
+        if dispatched.state == "needs_reconciliation":
+            effective_admission_state = "needs_reconciliation"
+            effective_reason_code = str(dispatch_receipt.get("code") or "") or None
         if dispatch_receipt.get("run"):
             run_payload = dict(dispatch_receipt["run"])
         elif dispatch_receipt.get("run_id"):
@@ -459,8 +475,8 @@ async def submit_live_human_input(
     return _human_input_payload(
         accepted=accepted,
         row=row,
-        admission_state=outcome.state,
-        reason_code=outcome.reason_code,
+        admission_state=effective_admission_state,
+        reason_code=effective_reason_code,
         dispatch_status=dispatch_status,
         run=run_payload,
         dispatch_receipt=dispatch_receipt,

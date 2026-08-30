@@ -13,12 +13,135 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat_transcript_event import ChatTranscriptEvent
+from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import SessionModelResult, SessionToolInvocation
 from app.services.session_v2_persistence import SessionEventDraft, append_session_events
 
 
 _DECISION_OUTCOMES = {"allow", "allow_prepare_only", "require_approval", "deny", "unavailable"}
 _TERMINAL_TOOL_LIFECYCLES = {"completed", "failed", "denied", "unavailable", "cancelled"}
+UNRESOLVED_TOOL_EFFECT_STATES = frozenset({"effect_started", "needs_reconciliation"})
+TOOL_EFFECT_RECONCILIATION_TASK_STATUSES = frozenset({"failed", "needs_reconciliation"})
+
+
+class ToolEffectReconciliationRequired(RuntimeError):
+    """A prior tool may have taken effect but has no canonical terminal receipt."""
+
+    code = "tool_effect_reconciliation_required"
+
+    def __init__(
+        self,
+        *,
+        session_id: uuid.UUID,
+        run_ids: tuple[uuid.UUID, ...],
+        invocation_ids: tuple[uuid.UUID, ...],
+    ) -> None:
+        super().__init__(self.code)
+        self.session_id = session_id
+        self.run_ids = run_ids
+        self.invocation_ids = invocation_ids
+
+    def http_detail(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "session_id": str(self.session_id),
+            "retryable": False,
+        }
+
+
+def unresolved_tool_effect_predicates(
+    *,
+    tenant_id: Any,
+    session_id: Any | None = None,
+    run_id: Any | None = None,
+) -> tuple[Any, ...]:
+    """Return the one exact SQL predicate shared by admission and recovery."""
+
+    predicates: list[Any] = [
+        SessionToolInvocation.tenant_id == tenant_id,
+        SessionToolInvocation.result_event_id.is_(None),
+        SessionToolInvocation.effect_state.in_(UNRESOLVED_TOOL_EFFECT_STATES),
+        SessionToolInvocation.recovery_owner.is_not(None),
+    ]
+    if session_id is not None:
+        predicates.append(SessionToolInvocation.session_id == session_id)
+    if run_id is not None:
+        predicates.append(SessionToolInvocation.run_id == run_id)
+    return tuple(predicates)
+
+
+async def list_unresolved_tool_effects(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    session_id: uuid.UUID | None = None,
+    run_ids: tuple[uuid.UUID, ...] | list[uuid.UUID] | None = None,
+    terminal_tasks_only: bool = True,
+    for_update: bool = False,
+    limit: int | None = 200,
+) -> list[SessionToolInvocation]:
+    """List effect-started invocations that still lack a settlement decision."""
+
+    if run_ids is not None and not run_ids:
+        return []
+    stmt = select(SessionToolInvocation).where(
+        *unresolved_tool_effect_predicates(
+            tenant_id=tenant_id,
+            session_id=session_id,
+        )
+    )
+    if run_ids is not None:
+        stmt = stmt.where(SessionToolInvocation.run_id.in_(tuple(run_ids)))
+    if terminal_tasks_only:
+        stmt = stmt.join(RuntimeTask, RuntimeTask.id == SessionToolInvocation.run_id).where(
+            RuntimeTask.tenant_id == tenant_id,
+            RuntimeTask.status.in_(TOOL_EFFECT_RECONCILIATION_TASK_STATUSES),
+        )
+    stmt = stmt.order_by(SessionToolInvocation.run_id, SessionToolInvocation.id)
+    if limit is not None:
+        stmt = stmt.limit(max(1, min(int(limit), 500)))
+    if for_update:
+        stmt = stmt.with_for_update()
+    return list((await db.execute(stmt)).scalars().all())
+
+
+def tool_effect_reconciliation_summary(
+    invocations: list[SessionToolInvocation] | tuple[SessionToolInvocation, ...],
+) -> dict[str, Any] | None:
+    if not invocations:
+        return None
+    return {
+        "required": True,
+        "reason_code": "tool_effect_outcome_unknown",
+        "unsettled_count": len(invocations),
+        "run_ids": sorted({str(row.run_id) for row in invocations}),
+        "invocation_ids": [str(row.id) for row in invocations],
+        "tool_names": sorted({str(row.tool_name or "tool") for row in invocations}),
+    }
+
+
+async def assert_session_tool_effects_settled(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    session_id: uuid.UUID,
+) -> None:
+    """Fail closed before a new turn or branch can replay an unknown effect."""
+
+    invocations = await list_unresolved_tool_effects(
+        db,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        terminal_tasks_only=True,
+        limit=1,
+    )
+    if not invocations:
+        return
+    raise ToolEffectReconciliationRequired(
+        session_id=session_id,
+        run_ids=tuple(sorted({row.run_id for row in invocations}, key=str)),
+        invocation_ids=tuple(row.id for row in invocations),
+    )
 
 
 def _canonical(value: Any) -> Any:
@@ -825,6 +948,104 @@ async def mark_tool_invocation_needs_reconciliation(
     )
 
 
+async def acknowledge_unresolved_tool_effects(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    run_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    reason: str,
+) -> list[ChatTranscriptEvent]:
+    """Record an operator's explicit no-replay decision for unknown effects.
+
+    The effect remains ``needs_reconciliation`` because the platform still
+    cannot manufacture a success/failure result. Clearing ``recovery_owner``
+    releases only the operational hold, backed by canonical reconciled events
+    and an operator-authored reason. No ``tool_result`` is created.
+    """
+
+    clean_reason = str(reason or "").strip()
+    if not clean_reason:
+        raise ValueError("tool effect acknowledgement reason is required")
+    invocations = await list_unresolved_tool_effects(
+        db,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        run_ids=(run_id,),
+        terminal_tasks_only=True,
+        for_update=True,
+        limit=None,
+    )
+    if not invocations:
+        return []
+
+    drafts: list[SessionEventDraft] = []
+    tool_event_ids: dict[uuid.UUID, uuid.UUID] = {}
+    first_result: SessionModelResult | None = None
+    for invocation in invocations:
+        result = await _result_for_invocation(db, invocation)
+        first_result = first_result or result
+        event_id = uuid.uuid5(invocation.id, "operator-tool-effect-reconciled")
+        tool_event_ids[invocation.id] = event_id
+        drafts.append(
+            SessionEventDraft(
+                event_id=event_id,
+                item_id=invocation.invocation_item_id,
+                item_kind="tool_call",
+                lifecycle="reconciled",
+                scope=_scope(result),
+                actor={"type": "user", "id": str(actor_user_id)},
+                payload={
+                    "invocation_id": str(invocation.id),
+                    "provider_tool_use_id": invocation.provider_tool_use_id,
+                    "reason_code": "tool_effect_outcome_unknown",
+                    "resolution": "operator_acknowledged_unknown_effect",
+                    "operator_reason": clean_reason,
+                    "execution_fence_ref": invocation.execution_fence_ref,
+                    "creates_tool_result": False,
+                    "replay_allowed": False,
+                },
+                result_id=result.id,
+                invocation_id=invocation.id,
+                provider_tool_use_id=invocation.provider_tool_use_id,
+            )
+        )
+    assert first_result is not None
+    drafts.append(
+        SessionEventDraft(
+            event_id=uuid.uuid5(run_id, "operator-tool-effect-recovery-action"),
+            item_id=uuid.uuid5(run_id, "operator-tool-effect-recovery-item"),
+            item_kind="recovery_action",
+            lifecycle="reconciled",
+            scope=_run_scope(first_result),
+            actor={"type": "user", "id": str(actor_user_id)},
+            payload={
+                "reason_code": "tool_effect_outcome_unknown",
+                "resolution": "operator_acknowledged_unknown_effect",
+                "operator_reason": clean_reason,
+                "invocation_ids": [str(row.id) for row in invocations],
+                "replay_allowed": False,
+            },
+        )
+    )
+    events = await append_session_events(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        drafts=drafts,
+    )
+    for invocation in invocations:
+        invocation.effect_state = "needs_reconciliation"
+        invocation.receipt_ref = f"session-event://{tool_event_ids[invocation.id]}"
+        invocation.recovery_owner = None
+        invocation.version = int(invocation.version) + 1
+    await db.flush()
+    return events
+
+
 async def apply_tool_permission_response(
     db: AsyncSession,
     *,
@@ -925,9 +1146,16 @@ async def apply_tool_permission_response(
 
 
 __all__ = [
+    "TOOL_EFFECT_RECONCILIATION_TASK_STATUSES",
+    "ToolEffectReconciliationRequired",
+    "acknowledge_unresolved_tool_effects",
     "apply_tool_permission_response",
+    "assert_session_tool_effects_settled",
     "complete_tool_invocation",
+    "list_unresolved_tool_effects",
     "mark_tool_effect_started",
     "mark_tool_invocation_needs_reconciliation",
     "prepare_tool_invocation",
+    "tool_effect_reconciliation_summary",
+    "unresolved_tool_effect_predicates",
 ]

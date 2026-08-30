@@ -86,6 +86,121 @@ async def _add_runtime_task(
     return task
 
 
+async def _seed_unresolved_tool_effect(
+    session,
+    *,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    status: str = "failed",
+):
+    from app.models.chat_session import ChatSession
+    from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+
+    session_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    result_id = uuid.uuid4()
+    invocation_id = uuid.uuid4()
+    turn_id = f"turn-{run_id.hex}"
+    round_id = f"{run_id}:round:1"
+    provider_request_id = f"provider-{run_id}"
+    session.add(
+        ChatSession(
+            id=session_id,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            session_kind="human_chat",
+            runtime_source="web_chat",
+        )
+    )
+    task = RuntimeTask(
+        id=run_id,
+        task_type="web_chat_turn",
+        status=status,
+        tenant_id=tenant_id,
+        parent_agent_id=agent_id,
+        child_agent_id=agent_id,
+        parent_session_id=str(session_id),
+        child_session_id=str(session_id),
+        root_user_id=user_id,
+        root_session_id=str(session_id),
+        root_runtime_task_id=run_id,
+        prompt="write one file",
+        result_summary="tool settlement failed after the effect started",
+        metadata_json={
+            "turn_id": turn_id,
+            **(
+                {
+                    "needs_reconciliation": True,
+                    "reconciliation_reason": "tool_lifecycle_persistence",
+                    "side_effect_risk": "effect_outcome_unknown",
+                    "reconciliation_retry_allowed": False,
+                    "session_v2_reconciliation": {"reason": "tool_lifecycle_persistence"},
+                }
+                if status == "needs_reconciliation"
+                else {}
+            ),
+        },
+    )
+    session.add(task)
+    await session.flush()
+    if status == "needs_reconciliation":
+        from app.services.runtime_root_ledger import register_runtime_root_item
+
+        await register_runtime_root_item(
+            session,
+            tenant_id=tenant_id,
+            root_runtime_task_id=run_id,
+            source_agent_id=agent_id,
+            intent_key=f"direct:{run_id}",
+            work_type="direct",
+            target_ref=str(run_id),
+            runtime_task_id=run_id,
+            root_user_id=user_id,
+            root_session_id=str(session_id),
+            state="needs_reconciliation",
+            admission_disposition="admitted",
+        )
+    session.add(
+        SessionModelResult(
+            id=result_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            run_id=run_id,
+            round_id=round_id,
+            provider_request_id=provider_request_id,
+            state="failed",
+            model_request_hash="a" * 64,
+            model_request_snapshot_json={"messages": []},
+            bound_input_ids_json=[],
+        )
+    )
+    await session.flush()
+    invocation = SessionToolInvocation(
+        id=invocation_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        run_id=run_id,
+        round_id=round_id,
+        provider_request_id=provider_request_id,
+        provider_tool_use_id=f"tool-{invocation_id}",
+        tool_name="write_file",
+        provider_arguments_json={"path": "workspace/probe.md"},
+        invocation_item_id=uuid.uuid4(),
+        args_hash="b" * 64,
+        authority_snapshot_hash="c" * 64,
+        effect_idempotency_key=f"tool-effect:{invocation_id}",
+        effect_state="effect_started",
+        execution_fence_ref=f"tool-effect:{invocation_id}:started",
+        recovery_owner="session_tool_runtime:effect_receipt_pending",
+    )
+    session.add(invocation)
+    await session.flush()
+    return task, invocation, session_id
+
+
 async def test_list_runtime_reconciliation_tasks_filters_by_tenant_and_status(owner_sessionmaker, tenant_ids):
     from app.services.runtime_reconciliation import list_runtime_reconciliation_tasks
 
@@ -161,6 +276,271 @@ async def test_runtime_reconciliation_safe_retry_reopens_task(
         persisted = await get_runtime_reconciliation_task(session, task_id=task.id, tenant_id=tenant_id)
     assert persisted is not None
     assert persisted["status"] == "pending"
+
+
+async def test_failed_tool_effect_hold_is_listed_and_can_only_be_acknowledged(
+    owner_sessionmaker,
+    tenant_ids,
+    operator_authority,
+):
+    from app.models.audit import AuditLog
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.session_v2 import SessionToolInvocation
+    from app.services.runtime_reconciliation import (
+        RuntimeReconciliationConflict,
+        apply_runtime_reconciliation_action,
+        list_runtime_reconciliation_tasks,
+    )
+    from app.services.session_tool_runtime import (
+        ToolEffectReconciliationRequired,
+        assert_session_tool_effects_settled,
+    )
+
+    tenant_id, _other = tenant_ids
+    actor_user_id, agent_id = operator_authority
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        task, invocation, session_id = await _seed_unresolved_tool_effect(
+            session,
+            tenant_id=tenant_id,
+            user_id=actor_user_id,
+            agent_id=agent_id,
+            status="failed",
+        )
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        rows = await list_runtime_reconciliation_tasks(session, tenant_id=tenant_id)
+        row = next(item for item in rows if item["task_id"] == str(task.id))
+        assert row["status"] == "failed"
+        assert row["reason"] == "tool_effect_outcome_unknown"
+        assert row["side_effect_risk"] == "effect_outcome_unknown"
+        assert row["retry_allowed"] is False
+        assert row["tool_effect_reconciliation_required"] is True
+        assert row["unsettled_tool_effect_count"] == 1
+        assert row["supported_actions"] == ["acknowledge_tool_effect"]
+        with pytest.raises(ToolEffectReconciliationRequired):
+            await assert_session_tool_effects_settled(
+                session,
+                tenant_id=tenant_id,
+                session_id=session_id,
+            )
+
+        with pytest.raises(ValueError, match="acknowledgement reason is required"):
+            await apply_runtime_reconciliation_action(
+                session,
+                task_id=task.id,
+                tenant_id=tenant_id,
+                action="acknowledge_tool_effect",
+                reason="   ",
+                actor_user_id=actor_user_id,
+            )
+        with pytest.raises(RuntimeReconciliationConflict, match="acknowledged before task resolution"):
+            await apply_runtime_reconciliation_action(
+                session,
+                task_id=task.id,
+                tenant_id=tenant_id,
+                action="mark_resolved",
+                reason="must not manufacture a success",
+                actor_user_id=actor_user_id,
+            )
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        acknowledged = await apply_runtime_reconciliation_action(
+            session,
+            task_id=task.id,
+            tenant_id=tenant_id,
+            action="acknowledge_tool_effect",
+            reason="verified the synthetic file and retained it for evidence; do not replay",
+            actor_user_id=actor_user_id,
+        )
+
+    assert acknowledged["status"] == "failed"
+    assert acknowledged["tool_effect_reconciliation_required"] is False
+    assert acknowledged["metadata"]["reconciliation_status"] == "tool_effect_acknowledged"
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        invocation_row = await session.get(SessionToolInvocation, invocation.id)
+        assert invocation_row is not None
+        assert invocation_row.effect_state == "needs_reconciliation"
+        assert invocation_row.result_event_id is None
+        assert invocation_row.recovery_owner is None
+        assert invocation_row.receipt_ref.startswith("session-event://")
+        events = list(
+            (
+                await session.execute(
+                    select(ChatTranscriptEvent)
+                    .where(ChatTranscriptEvent.run_id == task.id)
+                    .order_by(ChatTranscriptEvent.sequence)
+                )
+            ).scalars()
+        )
+        assert [event.event_type for event in events] == [
+            "tool_call.reconciled",
+            "recovery_action.reconciled",
+        ]
+        assert events[0].metadata_json["v2_payload"]["resolution"] == "operator_acknowledged_unknown_effect"
+        audit = await session.scalar(
+            select(AuditLog).where(
+                AuditLog.tenant_id == tenant_id,
+                AuditLog.action == "runtime_reconciliation.acknowledge_tool_effect",
+            )
+        )
+        assert audit is not None
+        assert audit.details["previous_status"] == "failed"
+        assert audit.details["resulting_status"] == "failed"
+        await assert_session_tool_effects_settled(
+            session,
+            tenant_id=tenant_id,
+            session_id=session_id,
+        )
+
+        with pytest.raises(RuntimeReconciliationConflict, match="no unresolved tool effect"):
+            await apply_runtime_reconciliation_action(
+                session,
+                task_id=task.id,
+                tenant_id=tenant_id,
+                action="acknowledge_tool_effect",
+                reason="stale duplicate acknowledgement",
+                actor_user_id=actor_user_id,
+            )
+
+
+async def test_failed_tool_effect_hold_is_not_starved_by_newer_reconciliation_rows(
+    owner_sessionmaker,
+    tenant_ids,
+    operator_authority,
+):
+    from app.services.runtime_reconciliation import list_runtime_reconciliation_tasks
+
+    tenant_id, _other = tenant_ids
+    actor_user_id, agent_id = operator_authority
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        held, _invocation, _session_id = await _seed_unresolved_tool_effect(
+            session,
+            tenant_id=tenant_id,
+            user_id=actor_user_id,
+            agent_id=agent_id,
+            status="failed",
+        )
+        for _index in range(51):
+            await _add_runtime_task(
+                session,
+                tenant_id=tenant_id,
+                parent_agent_id=agent_id,
+                status="needs_reconciliation",
+            )
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        rows = await list_runtime_reconciliation_tasks(
+            session,
+            tenant_id=tenant_id,
+            limit=50,
+        )
+
+    assert len(rows) == 50
+    assert rows[0]["task_id"] == str(held.id)
+    assert rows[0]["supported_actions"] == ["acknowledge_tool_effect"]
+
+
+async def test_acknowledging_current_tool_effect_hold_stops_the_run_without_replay(
+    owner_sessionmaker,
+    tenant_ids,
+    operator_authority,
+):
+    from app.models.runtime_root_item import RuntimeRootItem
+    from app.services.runtime_reconciliation import apply_runtime_reconciliation_action
+
+    tenant_id, _other = tenant_ids
+    actor_user_id, agent_id = operator_authority
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        task, _invocation, _session_id = await _seed_unresolved_tool_effect(
+            session,
+            tenant_id=tenant_id,
+            user_id=actor_user_id,
+            agent_id=agent_id,
+            status="needs_reconciliation",
+        )
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        acknowledged = await apply_runtime_reconciliation_action(
+            session,
+            task_id=task.id,
+            tenant_id=tenant_id,
+            action="acknowledge_tool_effect",
+            reason="verified effect evidence; abandon the incomplete run",
+            actor_user_id=actor_user_id,
+        )
+
+    assert acknowledged["status"] == "killed"
+    assert acknowledged["metadata"]["reconciliation_status"] == "tool_effect_acknowledged"
+    assert acknowledged["metadata"]["reconciliation_retry_allowed"] is False
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        root_item = await session.scalar(select(RuntimeRootItem).where(RuntimeRootItem.runtime_task_id == task.id))
+        assert root_item is not None
+        assert root_item.state == "killed"
+        assert root_item.reason_code == "runtime_reconciliation_terminal:acknowledge_tool_effect"
+        assert root_item.terminal_at is not None
+
+
+async def test_workbench_loads_legacy_failed_tool_effect_hold_beyond_normal_task_window(
+    owner_sessionmaker,
+    tenant_ids,
+    operator_authority,
+):
+    from app.services.session_control_plane import _list_runtime_tasks, _runtime_task_payload
+
+    tenant_id, _other = tenant_ids
+    actor_user_id, agent_id = operator_authority
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        held, _invocation, session_id = await _seed_unresolved_tool_effect(
+            session,
+            tenant_id=tenant_id,
+            user_id=actor_user_id,
+            agent_id=agent_id,
+            status="failed",
+        )
+        future = datetime.now(timezone.utc) + timedelta(days=1)
+        for index in range(51):
+            session.add(
+                RuntimeTask(
+                    id=uuid.uuid4(),
+                    task_type="web_chat_turn",
+                    status="completed",
+                    tenant_id=tenant_id,
+                    parent_agent_id=agent_id,
+                    child_agent_id=agent_id,
+                    parent_session_id=str(session_id),
+                    child_session_id=str(session_id),
+                    prompt=f"later turn {index}",
+                    created_at=future + timedelta(seconds=index),
+                    completed_at=future + timedelta(seconds=index),
+                )
+            )
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        tasks = await _list_runtime_tasks(
+            session,
+            agent_id=agent_id,
+            session_id=session_id,
+            limit=50,
+        )
+
+    held_task = next(task for task in tasks if task.id == held.id)
+    payload = _runtime_task_payload(held_task)
+    assert len(tasks) == 51
+    assert payload["status"] == "failed"
+    assert payload["user_blocker"] == {
+        "kind": "runtime_reconciliation",
+        "status": "blocked",
+        "reason_code": "tool_effect_outcome_unknown",
+        "title": "工具效果需要管理员核对",
+        "reason": "工具可能已经产生效果，但终态回执没有落盘；系统不会自动重放这一轮。",
+        "next_action": "平台管理员核对效果证据并停止旧任务后，才能继续或创建分支。",
+        "owner": "platform_admin",
+        "can_continue_other_work": True,
+        "auto_resume": False,
+        "retry_available": False,
+    }
 
 
 async def test_session_bound_trigger_and_heartbeat_rows_are_actionable_without_blind_retry(

@@ -35,6 +35,11 @@ from app.models.user import User
 from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService
 from app.services.runtime_result_store import decode_runtime_result_payload
 
+# These tests share one session-scoped PostgreSQL container with the rest of
+# the selected integration package.  Use a wide batch so unrelated eligible
+# fixtures cannot starve the task whose task-local evidence is asserted here.
+_SHARED_PG_RECONCILE_LIMIT = 10_000
+
 
 async def _seed_a2a_parent_child(owner_sessionmaker, *, with_child_session: bool = True):
     tenant_id = uuid.uuid4()
@@ -306,11 +311,25 @@ async def test_terminal_producer_enqueues_exactly_one_outbox_before_sweep(owner_
     assert payload["summary"] == "A2A-CONT-P1-B-FOLLOW-947 31*37=1147 Worker Agent B"
     assert payload["artifacts"] == [{"type": "artifact", "path": "workspace/result.md"}]
 
-    # The sweep is recovery-only now: the producer already settled the intent,
-    # so reconcile is a no-op and never duplicates the notification.
+    # The sweep is process-global and may repair unrelated rows left by other
+    # integration tests sharing this session-scoped PostgreSQL container.  The
+    # contract here is task-local: this producer-settled task is excluded from
+    # recovery and its one durable intent remains byte-for-byte the same.
     service = RuntimeNotificationOutboxService(session_factory=owner_sessionmaker)
-    assert await service.reconcile_terminal_tasks_once(limit=10) == 0
-    assert len(await _outbox_rows(owner_sessionmaker, task_id)) == 1
+    settled_at_before = stored.completion_outbox_settled_at
+    generation_before = stored.completion_outbox_generation
+    outbox_id_before = row.id
+    result_ref_before = row.result_ref
+    await service.reconcile_terminal_tasks_once(limit=_SHARED_PG_RECONCILE_LIMIT)
+    rows_after_sweep = await _outbox_rows(owner_sessionmaker, task_id)
+    async with owner_sessionmaker() as db:
+        stored_after_sweep = await db.get(RuntimeTask, task_id)
+    assert len(rows_after_sweep) == 1
+    assert rows_after_sweep[0].id == outbox_id_before
+    assert rows_after_sweep[0].result_ref == result_ref_before
+    assert stored_after_sweep is not None
+    assert stored_after_sweep.completion_outbox_settled_at == settled_at_before
+    assert stored_after_sweep.completion_outbox_generation == generation_before
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
@@ -420,10 +439,9 @@ async def test_crash_shaped_missing_intent_is_repaired_once_by_sweep(owner_sessi
         await db.commit()
 
     service = RuntimeNotificationOutboxService(session_factory=owner_sessionmaker)
-    repaired = await service.reconcile_terminal_tasks_once(limit=10)
+    await service.reconcile_terminal_tasks_once(limit=_SHARED_PG_RECONCILE_LIMIT)
 
     rows = await _outbox_rows(owner_sessionmaker, task_id)
-    assert repaired == 1
     assert len(rows) == 1
     row = rows[0]
     assert row.source_kind == "a2a_continuation"
@@ -440,7 +458,7 @@ async def test_crash_shaped_missing_intent_is_repaired_once_by_sweep(owner_sessi
     assert (row.metadata_json or {}).get("reconciled_from_terminal_runtime_task") is True
 
     # Replay/idempotency: a second sweep must not create a second notification.
-    again = await service.reconcile_terminal_tasks_once(limit=10)
+    await service.reconcile_terminal_tasks_once(limit=_SHARED_PG_RECONCILE_LIMIT)
     async with owner_sessionmaker() as db:
         count = (
             await db.execute(
@@ -450,7 +468,6 @@ async def test_crash_shaped_missing_intent_is_repaired_once_by_sweep(owner_sessi
             )
         ).scalar_one()
         settled_task = await db.get(RuntimeTask, task_id)
-    assert again == 0
     assert count == 1
     assert settled_task is not None
     assert settled_task.completion_outbox_generation == 1
@@ -495,10 +512,9 @@ async def test_conflicting_metadata_cannot_reroute_a2a_continuation(owner_sessio
         await db.commit()
 
     service = RuntimeNotificationOutboxService(session_factory=owner_sessionmaker)
-    repaired = await service.reconcile_terminal_tasks_once(limit=10)
+    await service.reconcile_terminal_tasks_once(limit=_SHARED_PG_RECONCILE_LIMIT)
 
     rows = await _outbox_rows(owner_sessionmaker, task_id)
-    assert repaired == 1
     assert len(rows) == 1
     row = rows[0]
     assert row.parent_session_id == parent_session_id
@@ -551,10 +567,9 @@ async def test_non_a2a_metadata_cannot_override_task_parent_agent_id(owner_sessi
         await db.commit()
 
     service = RuntimeNotificationOutboxService(session_factory=owner_sessionmaker)
-    repaired = await service.reconcile_terminal_tasks_once(limit=10)
+    await service.reconcile_terminal_tasks_once(limit=_SHARED_PG_RECONCILE_LIMIT)
 
     rows = await _outbox_rows(owner_sessionmaker, task_id)
-    assert repaired == 1
     assert len(rows) == 1
     assert rows[0].parent_agent_id == parent_agent_id
     assert rows[0].parent_session_id == parent_session_id
@@ -592,8 +607,8 @@ async def test_terminal_web_chat_turn_is_never_completion_outbox_eligible(owner_
     await _drive_terminal_seam(owner_sessionmaker, tenant_id=tenant_id, task_id=task_id)
 
     service = RuntimeNotificationOutboxService(session_factory=owner_sessionmaker)
-    await service.reconcile_terminal_tasks_once(limit=10)
-    await service.reconcile_terminal_tasks_once(limit=10)
+    await service.reconcile_terminal_tasks_once(limit=_SHARED_PG_RECONCILE_LIMIT)
+    await service.reconcile_terminal_tasks_once(limit=_SHARED_PG_RECONCILE_LIMIT)
 
     async with owner_sessionmaker() as db:
         outbox_count = (
@@ -639,7 +654,7 @@ async def test_a2a_continuation_hold_is_typed_observable_and_recovers(owner_sess
         await db.commit()
 
     service = RuntimeNotificationOutboxService(session_factory=owner_sessionmaker)
-    held = await service.reconcile_terminal_tasks_once(limit=10)
+    await service.reconcile_terminal_tasks_once(limit=_SHARED_PG_RECONCILE_LIMIT)
 
     async with owner_sessionmaker() as db:
         outbox_count = (
@@ -650,7 +665,6 @@ async def test_a2a_continuation_hold_is_typed_observable_and_recovers(owner_sess
             )
         ).scalar_one()
         stored = await db.get(RuntimeTask, task_id)
-    assert held == 0
     assert outbox_count == 0
     assert stored is not None
     assert stored.completion_outbox_last_error == "child_session_not_found"
@@ -658,10 +672,9 @@ async def test_a2a_continuation_hold_is_typed_observable_and_recovers(owner_sess
     assert stored.completion_outbox_settled_at is None
 
     # The 30s retry backoff holds the row out of the immediate next sweep.
-    skipped = await service.reconcile_terminal_tasks_once(limit=10)
+    await service.reconcile_terminal_tasks_once(limit=_SHARED_PG_RECONCILE_LIMIT)
     async with owner_sessionmaker() as db:
         stored = await db.get(RuntimeTask, task_id)
-    assert skipped == 0
     assert stored is not None and stored.completion_outbox_attempt_count == 1
 
     # Recovery: the durable child binding is created and the backoff window
@@ -692,11 +705,10 @@ async def test_a2a_continuation_hold_is_typed_observable_and_recovers(owner_sess
         )
         await db.commit()
 
-    repaired = await service.reconcile_terminal_tasks_once(limit=10)
+    await service.reconcile_terminal_tasks_once(limit=_SHARED_PG_RECONCILE_LIMIT)
     rows = await _outbox_rows(owner_sessionmaker, task_id)
     async with owner_sessionmaker() as db:
         stored = await db.get(RuntimeTask, task_id)
-    assert repaired == 1
     assert len(rows) == 1
     assert rows[0].parent_agent_id == parent_agent_id
     assert rows[0].parent_session_id == parent_session_id
@@ -744,8 +756,9 @@ async def test_a2a_continuation_completion_delivers_exactly_one_parent_wake(owne
     assert len(await _outbox_rows(owner_sessionmaker, task_id)) == 1
 
     service = RuntimeNotificationOutboxService(session_factory=owner_sessionmaker)
-    # The sweep is recovery-only: nothing left to repair.
-    assert await service.reconcile_terminal_tasks_once(limit=10) == 0
+    # The sweep is recovery-only for this already settled task.
+    await service.reconcile_terminal_tasks_once(limit=_SHARED_PG_RECONCILE_LIMIT)
+    assert len(await _outbox_rows(owner_sessionmaker, task_id)) == 1
     counts = await service.drain_once(worker_id="a2a-continuation-worker")
 
     async with owner_sessionmaker() as db:
@@ -792,7 +805,7 @@ async def test_a2a_continuation_completion_delivers_exactly_one_parent_wake(owne
 
     # The parent wake run is an ordinary web_chat_turn: it must not become a
     # new completion-outbox source (no self-notification loop).
-    assert await service.reconcile_terminal_tasks_once(limit=10) == 0
+    await service.reconcile_terminal_tasks_once(limit=_SHARED_PG_RECONCILE_LIMIT)
     async with owner_sessionmaker() as db:
         loop_count = (
             await db.execute(

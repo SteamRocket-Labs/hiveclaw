@@ -15,6 +15,7 @@ describe('WorkspaceInfoSection', () => {
     const markup = renderToStaticMarkup(
       <WorkspaceInfoSection
         selectedTenantId="tenant-1"
+        canManageCompanyContent
         companyNameEditor={<div>Company Name Editor</div>}
         companyTimezoneEditor={<div>Company Timezone Editor</div>}
         companyIntro="Acme builds AI workflows."
@@ -34,5 +35,32 @@ describe('WorkspaceInfoSection', () => {
     expect(markup).not.toContain('Company Knowledge Base');
     expect(markup).not.toContain('Knowledge Base Browser');
     expect(markup).toContain('Delete This Company');
+  });
+
+  it('keeps company business content out of the platform-admin default surface', () => {
+    const markup = renderToStaticMarkup(
+      <WorkspaceInfoSection
+        selectedTenantId="tenant-1"
+        canManageCompanyContent={false}
+        companyNameEditor={<div>Company Name Editor</div>}
+        companyTimezoneEditor={<div>Company Timezone Editor</div>}
+        companyIntro="PRIVATE-COMPANY-BODY"
+        onCompanyIntroChange={() => {}}
+        onSaveCompanyIntro={() => {}}
+        companyIntroSaving={false}
+        companyIntroSaved={false}
+        legacyCompanyFilesCard={<div>Legacy shared files export</div>}
+        themeColorPicker={<div>Theme Color Picker</div>}
+        broadcastSection={<div>Broadcast Section</div>}
+        onDeleteCompany={() => {}}
+      />,
+    );
+
+    expect(markup).toContain('Company Name Editor');
+    expect(markup).toContain('Company Timezone Editor');
+    expect(markup).toContain('Tenant configuration only');
+    expect(markup).not.toContain('PRIVATE-COMPANY-BODY');
+    expect(markup).not.toContain('Legacy shared files export');
+    expect(markup).not.toContain('Broadcast Section');
   });
 });

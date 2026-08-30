@@ -49,6 +49,18 @@ router = APIRouter(prefix="/enterprise", tags=["enterprise"])
 TENANT_SYSTEM_SETTING_KEYS = {"agent_permission_default", "feishu_org_sync"}
 
 
+def _deny_platform_admin_default_business_body(current_user: User) -> None:
+    if current_user.role == "platform_admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Company business content requires organization administrator access",
+        )
+
+
+def _is_company_intro_setting(key: str) -> bool:
+    return key == "company_intro" or key.startswith("company_intro_")
+
+
 # ─── LLM Model Pool ────────────────────────────────────
 
 
@@ -554,6 +566,7 @@ async def list_enterprise_info(
     db: AsyncSession = Depends(get_db),
 ):
     """List all enterprise information entries."""
+    _deny_platform_admin_default_business_body(current_user)
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     result = await db.execute(
         select(EnterpriseInfo).where(EnterpriseInfo.tenant_id == target_tenant_id).order_by(EnterpriseInfo.info_type)
@@ -571,6 +584,7 @@ async def update_enterprise_info(
     db: AsyncSession = Depends(get_db),
 ):
     """Create or update enterprise information. Triggers sync to agents."""
+    _deny_platform_admin_default_business_body(current_user)
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     info = await enterprise_sync_service.update_enterprise_info(
         db, target_tenant_id, info_type, data.content, data.visible_roles, current_user.id
@@ -1089,6 +1103,8 @@ async def get_system_setting(
     db: AsyncSession = Depends(get_db),
 ):
     """Get a system setting by key (admin only)."""
+    if _is_company_intro_setting(key):
+        _deny_platform_admin_default_business_body(current_user)
     if key in TENANT_SYSTEM_SETTING_KEYS:
         from app.models.tenant_setting import TenantSetting
 
@@ -1128,6 +1144,8 @@ async def update_system_setting(
     db: AsyncSession = Depends(get_db),
 ):
     """Create or update a system setting."""
+    if _is_company_intro_setting(key):
+        _deny_platform_admin_default_business_body(current_user)
     if key in TENANT_SYSTEM_SETTING_KEYS:
         from app.models.tenant_setting import TenantSetting
 

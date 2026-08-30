@@ -3578,6 +3578,10 @@
       "description": "描述公司的使命、产品与文化。该受治理的公司上下文会进入 Agent 对话。",
       "hint": "此内容会出现在每个 Agent 的系统上下文中"
     },
+    "platformAdminBoundary": {
+      "title": "仅显示租户配置",
+      "description": "公司业务内容与沟通操作只对组织管理员开放。"
+    },
     "legacyCompanyFiles": {
       "title": "已退役的共享文件",
       "description": "这些文件来自已退役的共享目录功能，并不是企业知识库，Agent 也无法访问。清理旧数据前，请先导出只读归档。",

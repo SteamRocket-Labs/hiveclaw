@@ -332,6 +332,7 @@ function BroadcastSection() {
 export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome = 'full' }: EnterpriseSettingsProps) {
     const { t } = useTranslation();
     const navigate = useNavigate();
+    const canManageCompanyContent = useAuthStore((s) => s.user?.role === 'org_admin');
     const setUser = useAuthStore((s) => s.setUser);
     const qc = useQueryClient();
     // Use forcedTab directly as the source of truth — no intermediate state.
@@ -361,7 +362,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
     // Load Company Intro (tenant-scoped only, no fallback to global)
     useEffect(() => {
         setCompanyIntro('');
-        if (!selectedTenantId) return;
+        if (!selectedTenantId || !canManageCompanyContent) return;
         const tenantKey = `company_intro_${selectedTenantId}`;
         enterpriseApi.getSetting(tenantKey)
             .then(d => {
@@ -371,9 +372,10 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
                 // No fallback — each company starts empty with placeholder watermark
             })
             .catch(() => { });
-    }, [selectedTenantId]);
+    }, [canManageCompanyContent, selectedTenantId]);
 
     const saveCompanyIntro = async () => {
+        if (!canManageCompanyContent) return;
         setCompanyIntroSaving(true);
         try {
             await enterpriseApi.updateSetting(companyIntroKey, { content: companyIntro });
@@ -390,7 +392,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
     } = useQuery({
         queryKey: ['legacy-company-files', selectedTenantId],
         queryFn: () => enterpriseApi.getLegacyCompanyFilesStatus(selectedTenantId || undefined),
-        enabled: activeTab === 'info' && Boolean(selectedTenantId),
+        enabled: activeTab === 'info' && Boolean(selectedTenantId) && canManageCompanyContent,
     });
 
     const exportLegacyCompanyFiles = async () => {
@@ -737,6 +739,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
                 {activeTab === 'info' && (
                     <WorkspaceInfoSection
                         selectedTenantId={selectedTenantId}
+                        canManageCompanyContent={canManageCompanyContent}
                         companyNameEditor={<CompanyNameEditor key={`name-${selectedTenantId}`} />}
                         companyTimezoneEditor={<CompanyTimezoneEditor key={`tz-${selectedTenantId}`} />}
                         companyIntro={companyIntro}

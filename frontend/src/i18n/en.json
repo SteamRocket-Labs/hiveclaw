@@ -3578,6 +3578,10 @@
       "description": "Describe your company's mission, products, and culture. This governed company context is included in agent conversations.",
       "hint": "This content appears in every agent's system prompt"
     },
+    "platformAdminBoundary": {
+      "title": "Tenant configuration only",
+      "description": "Company content and communication actions are available only to organization administrators."
+    },
     "legacyCompanyFiles": {
       "title": "Retired shared files",
       "description": "These files came from the retired shared-folder feature. This is not a Company Knowledge Base, and Agents cannot access it. Export the read-only archive before removing the legacy data.",

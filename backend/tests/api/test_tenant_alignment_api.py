@@ -55,10 +55,9 @@ class _FakeDB:
 
 
 @pytest.mark.asyncio
-async def test_enterprise_info_update_scopes_to_selected_tenant(monkeypatch):
+async def test_enterprise_info_update_scopes_to_current_org_tenant(monkeypatch):
     import app.api.enterprise as enterprise_api
 
-    own_tenant_id = uuid4()
     target_tenant_id = uuid4()
     captured: dict[str, object] = {}
 
@@ -83,8 +82,8 @@ async def test_enterprise_info_update_scopes_to_selected_tenant(monkeypatch):
     await enterprise_api.update_enterprise_info(
         info_type="company_profile",
         data=enterprise_api.EnterpriseInfoUpdate(content={"name": "Target Co"}, visible_roles=[]),
-        tenant_id=str(target_tenant_id),
-        current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=own_tenant_id),
+        tenant_id=None,
+        current_user=SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=target_tenant_id),
         db=_FakeDB([]),
     )
 
@@ -93,20 +92,20 @@ async def test_enterprise_info_update_scopes_to_selected_tenant(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_enterprise_info_list_scopes_to_selected_tenant():
+async def test_enterprise_info_list_scopes_to_current_org_tenant():
     import app.api.enterprise as enterprise_api
 
-    own_tenant_id = uuid4()
     target_tenant_id = uuid4()
+    other_tenant_id = uuid4()
     db = _FakeDB(
         [
             _ListResult(
                 [
                     SimpleNamespace(
                         id=uuid4(),
-                        tenant_id=own_tenant_id,
+                        tenant_id=other_tenant_id,
                         info_type="company_profile",
-                        content={"name": "Own"},
+                        content={"name": "Other"},
                         version=1,
                         visible_roles=[],
                         updated_at=datetime.now(timezone.utc),
@@ -126,13 +125,43 @@ async def test_enterprise_info_list_scopes_to_selected_tenant():
     )
 
     result = await enterprise_api.list_enterprise_info(
-        tenant_id=str(target_tenant_id),
-        current_user=SimpleNamespace(role="platform_admin", tenant_id=own_tenant_id),
+        tenant_id=None,
+        current_user=SimpleNamespace(role="org_admin", tenant_id=target_tenant_id),
         db=db,
     )
 
     assert len(result) == 1
     assert result[0].content["name"] == "Target"
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_cannot_read_enterprise_business_body_by_default():
+    import app.api.enterprise as enterprise_api
+
+    with pytest.raises(HTTPException) as exc_info:
+        await enterprise_api.list_enterprise_info(
+            tenant_id=str(uuid4()),
+            current_user=SimpleNamespace(role="platform_admin", tenant_id=uuid4()),
+            db=_FakeDB([]),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_cannot_update_enterprise_business_body_by_default():
+    import app.api.enterprise as enterprise_api
+
+    with pytest.raises(HTTPException) as exc_info:
+        await enterprise_api.update_enterprise_info(
+            info_type="company_profile",
+            data=enterprise_api.EnterpriseInfoUpdate(content={"name": "Hidden"}, visible_roles=[]),
+            tenant_id=str(uuid4()),
+            current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=uuid4()),
+            db=_FakeDB([]),
+        )
+
+    assert exc_info.value.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -206,6 +235,69 @@ async def test_agent_permission_default_rejects_break_glass_as_tenant_default():
 
     assert exc_info.value.status_code == 422
     assert db.committed is False
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_cannot_read_company_intro_setting_by_default():
+    import app.api.enterprise as enterprise_api
+
+    with pytest.raises(HTTPException) as exc_info:
+        await enterprise_api.get_system_setting(
+            key=f"company_intro_{uuid4()}",
+            tenant_id=str(uuid4()),
+            current_user=SimpleNamespace(role="platform_admin", tenant_id=uuid4()),
+            db=_FakeDB([]),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_cannot_update_company_intro_setting_by_default():
+    import app.api.enterprise as enterprise_api
+
+    db = _FakeDB([])
+    with pytest.raises(HTTPException) as exc_info:
+        await enterprise_api.update_system_setting(
+            key="company_intro",
+            data=enterprise_api.SettingUpdate(value={"content": "Hidden"}),
+            tenant_id=str(uuid4()),
+            current_user=SimpleNamespace(role="platform_admin", tenant_id=uuid4()),
+            db=db,
+        )
+
+    assert exc_info.value.status_code == 403
+    assert db.committed is False
+
+
+def test_platform_admin_business_body_routes_fail_closed_before_db():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    import app.api.enterprise as enterprise_api
+
+    db = _FakeDB([])
+    user = SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=uuid4())
+
+    async def override_user():
+        return user
+
+    async def override_db():
+        yield db
+
+    app = FastAPI()
+    app.include_router(enterprise_api.router)
+    app.dependency_overrides[enterprise_api.get_current_user] = override_user
+    app.dependency_overrides[enterprise_api.get_current_admin] = override_user
+    app.dependency_overrides[enterprise_api.get_db] = override_db
+
+    with TestClient(app) as client:
+        info_response = client.get("/enterprise/info")
+        intro_response = client.get(f"/enterprise/system-settings/company_intro_{uuid4()}")
+
+    assert info_response.status_code == 403
+    assert intro_response.status_code == 403
+    assert db._results == []
 
 
 @pytest.mark.asyncio

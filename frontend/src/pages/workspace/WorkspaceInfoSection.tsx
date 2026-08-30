@@ -6,6 +6,7 @@ import './WorkspaceInfoSection.css';
 
 interface WorkspaceInfoSectionProps {
   selectedTenantId: string;
+  canManageCompanyContent: boolean;
   companyNameEditor: ReactNode;
   companyTimezoneEditor: ReactNode;
   companyIntro: string;
@@ -21,6 +22,7 @@ interface WorkspaceInfoSectionProps {
 
 export default function WorkspaceInfoSection({
   selectedTenantId,
+  canManageCompanyContent,
   companyNameEditor,
   companyTimezoneEditor,
   companyIntro,
@@ -42,32 +44,45 @@ export default function WorkspaceInfoSection({
 
       <div key={`tz-${selectedTenantId}`}>{companyTimezoneEditor}</div>
 
-      <h3 className="ws-info-heading">{t('enterprise.companyIntro.title', 'Company Intro')}</h3>
-      <p className="ws-info-desc">
-        {t('enterprise.companyIntro.description', 'Describe your company\'s mission, products, and culture. This information is included in every agent conversation as context.')}
-      </p>
-      <div className="card ws-info-card">
-        <textarea
-          className="form-input ws-info-textarea"
-          value={companyIntro}
-          onChange={(event) => onCompanyIntroChange(event.target.value)}
-          placeholder={`# Company Name\nHiveClaw\n\n# About\nAI agents for teams\nOpen Source · Multi-agent collaboration\n\nHive helps individuals and teams operate digital employees at company scale.`}
-        />
-        <div className="ws-info-actions">
-          <button className="btn btn-primary" onClick={onSaveCompanyIntro} disabled={companyIntroSaving}>
-            {companyIntroSaving ? t('common.loading') : t('common.save', 'Save')}
-          </button>
-          {companyIntroSaved ? <span className="ws-info-saved">✅ {t('enterprise.config.saved', 'Saved')}</span> : null}
-          <span className="ws-info-hint">
-            💡 {t('enterprise.companyIntro.hint', 'This content appears in every agent\'s system prompt')}
-          </span>
-        </div>
-      </div>
+      {canManageCompanyContent ? (
+        <>
+          <h3 className="ws-info-heading">{t('enterprise.companyIntro.title', 'Company Intro')}</h3>
+          <p className="ws-info-desc">
+            {t('enterprise.companyIntro.description', 'Describe your company\'s mission, products, and culture. This information is included in every agent conversation as context.')}
+          </p>
+          <div className="card ws-info-card">
+            <textarea
+              className="form-input ws-info-textarea"
+              value={companyIntro}
+              onChange={(event) => onCompanyIntroChange(event.target.value)}
+              placeholder={`# Company Name\nHiveClaw\n\n# About\nAI agents for teams\nOpen Source · Multi-agent collaboration\n\nHive helps individuals and teams operate digital employees at company scale.`}
+            />
+            <div className="ws-info-actions">
+              <button className="btn btn-primary" onClick={onSaveCompanyIntro} disabled={companyIntroSaving}>
+                {companyIntroSaving ? t('common.loading') : t('common.save', 'Save')}
+              </button>
+              {companyIntroSaved ? <span className="ws-info-saved">✅ {t('enterprise.config.saved', 'Saved')}</span> : null}
+              <span className="ws-info-hint">
+                💡 {t('enterprise.companyIntro.hint', 'This content appears in every agent\'s system prompt')}
+              </span>
+            </div>
+          </div>
 
-      {legacyCompanyFilesCard}
+          {legacyCompanyFilesCard}
+          {broadcastSection}
+        </>
+      ) : (
+        <div className="card ws-info-card" role="status">
+          <h3 className="ws-info-heading">
+            {t('enterprise.platformAdminBoundary.title', 'Tenant configuration only')}
+          </h3>
+          <p className="ws-info-desc">
+            {t('enterprise.platformAdminBoundary.description', 'Company content and communication actions are available only to organization administrators.')}
+          </p>
+        </div>
+      )}
 
       {themeColorPicker}
-      {broadcastSection}
 
       <div className="ws-info-danger">
         <h3 className="ws-info-danger-title">{t('enterprise.dangerZone', 'Danger Zone')}</h3>

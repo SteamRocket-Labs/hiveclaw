@@ -2385,6 +2385,42 @@ describe('RuntimePhase in the thread projection (§3 seam 3)', () => {
     expect(runs.every((run) => run.phase == null)).toBe(true);
   });
 
+  it('does not let a terminal done phase revive a historical blocked run', () => {
+    const model = buildThreadTimeline({
+      messages: [
+        { id: 'user-old', role: 'user', content: 'Ask me before continuing.' },
+        {
+          id: 'question-old',
+          role: 'tool_call',
+          content: '',
+          toolName: 'ask_user_question',
+          toolStatus: 'done',
+          toolMeta: {
+            kind: 'user_clarification',
+            blocking: true,
+            nextAction: null,
+            questions: [{ header: 'Scope', question: 'Which scope?', options: [], multiSelect: false }],
+          },
+        },
+        { id: 'user-latest', role: 'user', content: 'Use the selected scope.' },
+        { id: 'answer-latest', role: 'assistant', content: 'The current turn is complete.' },
+      ] as AgentChatMessage[],
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+      runtimePhase: 'done',
+    });
+
+    expect(model.cells).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'active_run',
+        timeline: expect.objectContaining({ status: 'blocked' }),
+      }),
+    ]));
+    expect(model.header.activeRunStatus).toBeNull();
+    expect(model.header.status).toBe('complete');
+  });
+
   it('derives the header status from parked phases', () => {
     const model = buildThreadTimeline({
       messages: [{ role: 'user', content: 'x' }] as any,

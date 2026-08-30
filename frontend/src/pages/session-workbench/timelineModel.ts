@@ -1674,13 +1674,6 @@ function getHeaderStatus(
   if (isWaiting) return 'waiting';
   if (isStreaming) return 'streaming';
   if (activeRunStatus) return activeRunStatus === 'failed' ? 'failed' : 'running';
-  const lastRun = [...cells].reverse().find((cell): cell is Extract<ThreadTimelineCell, { kind: 'active_run' }> => cell.kind === 'active_run');
-  if (lastRun?.timeline.status === 'failed') return 'failed';
-  if (lastRun?.timeline.status === 'running') return 'running';
-  if (lastRun?.timeline.status === 'blocked') return 'waiting';
-  // An interrupted trailing run is not fabricated into complete: the header
-  // shows the idle session state and the run block carries the typed detail.
-  if (lastRun?.timeline.status === 'interrupted') return 'idle';
   for (let index = cells.length - 1; index >= 0; index -= 1) {
     const cell = cells[index];
     if (cell.kind === 'user_turn') break;
@@ -1691,6 +1684,13 @@ function getHeaderStatus(
       && cell.message.sessionItem.scope?.level === 'run'
     ) return 'failed';
   }
+  const lastRun = [...cells].reverse().find((cell): cell is Extract<ThreadTimelineCell, { kind: 'active_run' }> => cell.kind === 'active_run');
+  if (lastRun?.timeline.status === 'failed') return 'failed';
+  if (lastRun?.timeline.status === 'running') return 'running';
+  if (lastRun?.timeline.status === 'blocked') return 'waiting';
+  // An interrupted trailing run is not fabricated into complete: the header
+  // shows the idle session state and the run block carries the typed detail.
+  if (lastRun?.timeline.status === 'interrupted') return 'idle';
   if (cells.length > 0) return 'complete';
   return 'idle';
 }
@@ -1699,7 +1699,7 @@ function normalizedActiveRunStatus(status?: string | null): string | null {
   const value = String(status || '').trim().toLowerCase();
   if (!value) return null;
   if (value === 'idle') return null;
-  if (value === 'completed' || value === 'complete' || value === 'succeeded' || value === 'success') return null;
+  if (value === 'completed' || value === 'complete' || value === 'done' || value === 'succeeded' || value === 'success') return null;
   if (value === 'cancelled' || value === 'canceled' || value === 'killed') return null;
   return value;
 }

@@ -582,6 +582,15 @@ export function shouldPreserveActiveSessionForRequestedId(
   return session.is_pending_session_lookup !== true && session.isPendingSessionLookup !== true;
 }
 
+export function resolvePendingSessionLookup<T extends AgentOwnedSession>(
+  session: T | null,
+  requestedSessionId: string,
+): T | null {
+  if (!session || String(session.id) !== requestedSessionId) return session;
+  if (session.is_pending_session_lookup !== true && session.isPendingSessionLookup !== true) return session;
+  return { ...session, is_pending_session_lookup: false, isPendingSessionLookup: false };
+}
+
 export function sessionBelongsToAgent(session: AgentOwnedSession | null | undefined, agentId: string | null | undefined): boolean {
   if (!session || !agentId) return false;
   const sessionAgentId = session.agent_id ?? session.agentId;

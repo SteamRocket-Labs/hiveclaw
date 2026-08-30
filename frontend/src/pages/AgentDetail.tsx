@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, Component, ErrorInfo, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -26,6 +26,7 @@ import {
     normalizeStoredChatMessage,
     phaseUi,
     replayTranscriptEvents,
+    resolvePendingSessionLookup,
     uiForPhase,
     sessionBelongsToAgent,
     shouldPreserveActiveSessionForRequestedId,
@@ -62,6 +63,7 @@ import { triggerApi } from '../api/domains/triggers';
 import { autonomyApi } from '../api/domains/autonomy';
 import { chatApi, type ChatSession, type ConversationBranchMode, type SessionRun, type StartSessionRunInput } from '../api/domains/chat';
 import { ccParityApi } from '../api/domains/ccParity';
+import { ApiError } from '../api/core';
 import { uploadFileWithProgress } from '../api/core/upload-progress';
 import { useAuthStore } from '../stores';
 import { parseSlashCommandInput } from './agent-detail/slashCommand';
@@ -77,6 +79,7 @@ import {
 import { projectSessionSocketEvent } from './agent-detail/sessionSocketEventProjector';
 import { applyTranscriptToSessionRuntime } from './agent-detail/sessionTranscriptApplier';
 import { buildSessionCommandStatusControl } from './agent-detail/sessionCommandPanelPresentation';
+import { AgentDetailErrorBoundary, SessionAccessErrorSurface, SessionResolvingSurface } from './agent-detail/AgentDetailErrorSurfaces';
 import { liveSubscriptionWatermark, loadCanonicalSessionTranscript, nextSessionBackfillNotice, projectCanonicalTranscriptSnapshot, realtimeSubscriptionCursor } from './agent-detail/sessionTranscriptHydration';
 import type { CompatibilityMessageTimeline, SessionVisibilityBoundary } from './agent-detail/sessionEventConsumer';
 import { buildSessionVisibilityBoundary, createCompatibilityMessageTimeline, installRewindVisibilityBoundary, installRewindVisibilityBoundaryFromStore, seedCompatibilityTimelineIdentities } from './agent-detail/sessionEventConsumer';
@@ -303,6 +306,7 @@ function AgentDetailInner() {
     const [sessionsLoading, setSessionsLoading] = useState(false);
     const [allSessionsLoading, setAllSessionsLoading] = useState(false);
     const [agentExpired, setAgentExpired] = useState(false);
+    const [sessionAccessError, setSessionAccessError] = useState<{ sessionId: string; status: 403 | 404 } | null>(null);
     // Websocket chat state (for 'me' conversation)
     type SessionRuntimeKey = string;
     const sessionUiStateRef = useRef<Record<SessionRuntimeKey, SessionUiState>>({});
@@ -341,7 +345,8 @@ function AgentDetailInner() {
         resetActiveTransportState,
         syncActiveSocketState,
     } = useSessionTransportController({
-        enabled: canLoadAgentScopedData && activeTab === 'chat' && Boolean(id && activeSession?.id),
+        enabled: canLoadAgentScopedData && activeTab === 'chat' && Boolean(id && activeSession?.id)
+            && activeSession?.is_pending_session_lookup !== true && !sessionAccessError,
         agentId: id,
         token,
         activeSession,
@@ -598,6 +603,7 @@ function AgentDetailInner() {
             key: runtimeKey,
             surface: transcriptSurface,
         };
+        setSessionAccessError(null);
         activeSessionIdRef.current = sessionId;
         setCreatedAgentId(null);
         if (writableSession) {
@@ -742,14 +748,35 @@ function AgentDetailInner() {
                 }
             }
             sessionEventFullHydrationKeysRef.current.delete(runtimeKey);
+            setActiveSession((current: any | null) => resolvePendingSessionLookup(current, sessionId));
             setTransportNotice((current) => nextSessionBackfillNotice(current, t('agent.chat.sessionBackfillIncomplete', 'Latest activity is visible, but older session evidence is still recovering.'), false));
         } catch (err: any) {
             if (err?.name === 'AbortError') return;
             if (loadSeq !== sessionLoadSeqRef.current) return;
             if (currentAgentIdRef.current !== targetAgentId) return;
             if (activeSessionIdRef.current !== sessionId) return;
-            console.error('Failed to load session messages:', err);
+            if (err instanceof ApiError && (err.status === 403 || err.status === 404)) {
+                setSessionAccessError({ sessionId, status: err.status });
+                setTransportNotice(null);
+                setChatMessagesAfterQueuedForSession(sessionId, () => []);
+                setChatMessagesSessionId(null);
+                setHistoryMessagesSessionId(null);
+                updateHistoryMsgs([]);
+                setBranchLineage([]);
+                transcriptEventsRef.current[runtimeKey] = [];
+                delete transcriptReplayStateRef.current[runtimeKey];
+                delete sessionCompatibilityTimelinesRef.current[runtimeKey];
+                delete sessionVisibilityBoundariesRef.current[runtimeKey];
+                delete sessionEventStoresRef.current[runtimeKey];
+                delete pendingUserMessagesRef.current[runtimeKey];
+                setActiveRunState(runtimeKey, null);
+                setIsWaiting(false);
+                setIsStreaming(false);
+                syncActivePhase('idle');
+                return;
+            }
             if (publishedCanonicalSnapshot) {
+                console.error('Failed to load session messages:', err);
                 sessionEventFullHydrationKeysRef.current.add(runtimeKey);
                 setTransportNotice(
                     t(
@@ -759,6 +786,7 @@ function AgentDetailInner() {
                 );
                 return;
             }
+            console.error('Failed to load session messages:', err);
             const failureMessage = buildSessionTranscriptLoadFailureMessage(
                 t(
                     'agent.chat.sessionLoadFailed',
@@ -772,6 +800,7 @@ function AgentDetailInner() {
                 setHistoryMessagesSessionId(sessionId);
                 updateHistoryMsgs([failureMessage]);
             }
+            setActiveSession((current: any | null) => resolvePendingSessionLookup(current, sessionId));
         } finally {
             if (transcriptBackfillInFlightRef.current[runtimeKey] === canonicalHydrationInFlight) {
                 delete transcriptBackfillInFlightRef.current[runtimeKey];
@@ -1508,6 +1537,7 @@ function AgentDetailInner() {
         setActiveRunStateBySession({});
         setChatScope('mine');
         setAgentExpired(false);
+        setSessionAccessError(null);
         settingsInitRef.current = false;
     }, [id]);
 
@@ -1627,12 +1657,12 @@ function AgentDetailInner() {
     };
 
     useEffect(() => {
-        if (!canLoadAgentScopedData || activeTab !== 'chat' || !id || !activeSession?.id || isDraftHumanChatSession(activeSession)) {
+        if (!canLoadAgentScopedData || activeTab !== 'chat' || !id || !activeSession?.id || activeSession?.is_pending_session_lookup === true || sessionAccessError || isDraftHumanChatSession(activeSession)) {
             setBranchLineage([]);
             return;
         }
         fetchBranchLineage(id, String(activeSession.id));
-    }, [canLoadAgentScopedData, activeTab, id, activeSession?.id]);
+    }, [canLoadAgentScopedData, activeTab, id, activeSession?.id, activeSession?.is_pending_session_lookup, sessionAccessError]);
 
     useEffect(() => {
         return () => {
@@ -2171,8 +2201,8 @@ function AgentDetailInner() {
                 ? { operatorView: true, operatorReason: 'Agent session administration' }
                 : undefined,
         ),
-        enabled: canLoadAgentScopedData && activeTab === 'chat' && !!activeSession?.id && !isDraftHumanChatSession(activeSession),
-        refetchInterval: activeTab === 'chat' && activeSession?.id && !isDraftHumanChatSession(activeSession) ? 10000 : false,
+        enabled: canLoadAgentScopedData && activeTab === 'chat' && !!activeSession?.id && activeSession?.is_pending_session_lookup !== true && !sessionAccessError && !isDraftHumanChatSession(activeSession),
+        refetchInterval: activeTab === 'chat' && activeSession?.id && activeSession?.is_pending_session_lookup !== true && !sessionAccessError && !isDraftHumanChatSession(activeSession) ? 10000 : false,
     });
 
     const { data: activeSessionRun, dataUpdatedAt: activeSessionRunObservedAt } = useQuery({
@@ -2337,6 +2367,7 @@ function AgentDetailInner() {
     const isSystemHrRaw = (agent as any).agent_class === 'internal_system';
     const isSystemHr = isSystemHrRaw && !isManageMode;
     const sessionWorkbenchMode = Boolean(routeSessionId) || isSessionWorkbenchRoute(activeTab, location.search);
+    const pendingSessionLookup = activeSession?.is_pending_session_lookup === true;
 
     // HR system agent: force chat-only mode
     if (isSystemHr && activeTab !== 'chat') {
@@ -2597,6 +2628,13 @@ function AgentDetailInner() {
                     activeTab === 'chat' && (
                         (agent as any)?.agent_type === 'local_agent' ? (
                             <LocalAgentChatSection key="chat" agentId={id!} agent={agent} agentPermissions={permData ?? null} />
+                        ) : sessionAccessError?.sessionId === String(activeSession?.id) ? (
+                            <SessionAccessErrorSurface status={sessionAccessError.status} onBack={() => {
+                                sessionMsgAbortRef.current?.abort(); activeSessionIdRef.current = null; setActiveSession(null); setSessionAccessError(null);
+                                navigate(`/agents/${id}#chat`, { replace: true });
+                            }} />
+                        ) : pendingSessionLookup ? (
+                            <SessionResolvingSurface />
                         ) : (
                         <AgentChatSection
                             agentId={id}
@@ -2852,41 +2890,6 @@ function AgentDetailInner() {
         </>
     );
 }
-
-// Error boundary to catch unhandled React errors and prevent white screen
-class AgentDetailErrorBoundary extends Component<{ children: React.ReactNode }, { hasError: boolean; error: Error | null }> {
-    constructor(props: { children: React.ReactNode }) {
-        super(props);
-        this.state = { hasError: false, error: null };
-    }
-    static getDerivedStateFromError(error: Error) {
-        return { hasError: true, error };
-    }
-    componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-        console.error('AgentDetail crash caught by error boundary:', error, errorInfo);
-    }
-    render() {
-        if (this.state.hasError) {
-            return (
-                <div className="agent-detail-error">
-                    <div className="agent-detail-error-title">Something went wrong</div>
-                    <div className="agent-detail-error-message">
-                        {this.state.error?.message || 'An unexpected error occurred while loading this page.'}
-                    </div>
-                    <button
-                        className="btn btn-primary agent-detail-error-action"
-                        onClick={() => { this.setState({ hasError: false, error: null }); window.location.reload(); }}
-                    >
-                        Reload Page
-                    </button>
-                </div>
-            );
-        }
-        return this.props.children;
-    }
-}
-
-// Wrap the AgentDetail component with error boundary
 export default function AgentDetailWithErrorBoundary() {
     return (
         <AgentDetailErrorBoundary>

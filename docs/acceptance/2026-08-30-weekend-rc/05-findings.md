@@ -4,8 +4,8 @@ owner: Codex
 status: active
 authority: canonical-active-finding-ledger
 last_reviewed: 2026-08-31
-source_commit: bbf6d234
-verification_status: session-authority-presentation-production-verified
+source_commit: 6a6695e8
+verification_status: runtime-guard-presentation-production-verified
 ---
 
 # 当前 Findings 与 Blockers
@@ -20,13 +20,14 @@ verification_status: session-authority-presentation-production-verified
 
 只有 `Reproduced` 且已记录最早错误状态的 finding 才能生成修复 Issue。Issue 必须回链本文件的 finding ID 和冻结 Journey ID；worker 回执、PR、CI 或 Issue closed 都不能自动推进 finding 状态。
 
-## 当前 P1 findings
+## 当前 P1/P2 findings
 
 ### 当前状态
 
 | ID | 状态 | Severity | Journey | 最早错误状态 | 当前根因边界 | 下一动作 |
 |---|---|---:|---|---|---|---|
 | SESSION-AUTHORITY-PRESENTATION-001 | Verified | P1 | P29-PADMIN | backend 对无 operator authority 的跨用户 Session message/lineage 返回 `Session not found`，但旧前端仍显示“完成 / Read-only · User / 1 个步骤 / 运行错误”与完整 Session runtime shell | exact `bbf6d234` 在 authority resolution 前只显示 skeleton；403/404 清除 Session timeline/runtime cache并呈现 truthful denied/not-found，安全返回 `/agents`；5xx/network retry 与合法 Session 消费保持原语义 | 保持 `Verified`；完成 P29-PADMIN tenant/provider/runtime/compliance 正向面、pass-2、role-change/reload、API/audit 与四角色 screenshot matrix 后才可 `Closed` 或写 P29 PASS |
+| RUNTIME-GUARD-PRESENTATION-001 | Verified | P2 | P29-PADMIN | runtime protection heading/badge 显示“被保护的任务 0”，却列出 5 条 `active` run 并称“系统保护机制已介入” | exact `6a6695e8` 让 API 的 active reason 表达正常运行；无 protected run 时 UI 诚实标为“最近运行”，保留 active rows 与暂停能力，真正 protected run 仍优先展示 | 保持 `Verified`；P29 provider/runtime/compliance pass-1 全证据、fault/reload、pass-2 与四角色 matrix 完成后才可 `Closed` 或写 P29 PASS |
 | TOOL-ARTIFACT-SETTLEMENT-001 | Verified | P1 | P01-MAIN / PJ-02 / PJ-04 | `write_file` effect 已完成，但 canonical terminal `tool_call`/`tool_result` 与 ChatArtifact 在 `chat_artifacts_message_id_fkey` 处回滚；kernel 仍准备下一 provider round | `c37fefc5` 已原子提交 owner/artifact/V2/outbox 并在持久化失败时 hard-stop；`3482b57a` 对 exact unknown-effect invocation fail closed，唯一 operator acknowledgement 保持 unknown fact、禁止旧轮重放并释放 fresh-turn admission | normal/reload 与 supported recovery/no-replay 已 production PASS；保持 `Verified`，完成 clean P01-MAIN/PJ-02/PJ-04 双遍、authority-negative 与 cleanup 后才可 `Closed` |
 | SESSION-RETRY-INPUT-001 | Verified | P1 | P01-MAIN / P02-STREAM | edit branch 的 canonical `human_input.accepted` 保存完整 retry prompt，但首个 `result_commit.prepared.bound_input_ids=[]`；provider 未调用工具并错误回复“这条消息只有「1」”，产品仍把 run/final 标成 `completed` | exact commit `2cee9f3e` 的 production retry Session `b3962147…` 已把完整输入绑定为唯一 `bound_input_id=1fd5cc5b…` 并进入 GLM/Work Ledger；随后失败属于独立的 tool-artifact settlement 与 provider 429，不回退本 finding | 保持 `Verified`；完整 P01/P02 双遍、recovery、authority-negative 和 cleanup 后才能 `Closed` |
 
@@ -41,6 +42,16 @@ verification_status: session-authority-presentation-production-verified
 - exact `bbf6d2340afe593b44f740fabfa178d126b5beca` 已 push；Railway backend `4ad99e93-d3be-48c9-be8d-0107dff44f82`、backend-api `8aa5ccbc-fe9d-4da2-bb39-f16497de044f`、frontend `638da152-1ef6-444c-bcd8-4dd00fa0296d` 均 `SUCCESS`，backend health `status=ok`，frontend HTTP 200。
 - signed-in `platform_admin` 对同一负向 URL 的 production DOM 只显示“找不到此会话 / 此会话不存在，或当前账号无法访问 / 返回数字员工”，没有 `Read-only · User`、完成、运行错误、会话交付物或跨用户正文。点击后 URL 精确为 `/agents`，无 stale denied/not-found alert；随后 hard navigation 到合法 MAPLE Session 仍显示 marker `P01-MAIN-PASS1-3482B-MAPLE-581`、完成终局、3/3 todos、一个 artifact、0 running/0 waiting，且无 authority alert。
 - immutable production verification：`evidence/bbf6d2340afe593b44f740fabfa178d126b5beca/SESSION-AUTHORITY-PRESENTATION-001-production-verification.md`。该证据只把 finding 推进到 `Verified`；P29 正向 platform health/compliance、双遍、role-change recovery、四角色 matrix 与 cleanup 未完成，NPTCR 仍为 `0/96`。
+
+#### RUNTIME-GUARD-PRESENTATION-001 复现、修复与生产验证
+
+- deployed `bbf6d234`、signed-in `platform_admin` 只读打开 `/enterprise/runtime-budgets`：section heading/badge 为“被保护的任务 0”，同一 section 却有 5 条 `active` run、5 个“暂停”按钮，且每条原因均为“系统保护机制已介入”。没有点击暂停或保存。
+- live wiring：`WorkspaceRuntimeBudgetsSection` 计算的 `protectedRuns=[]`，却用 `protectedRuns.length > 0 ? protectedRuns : runs.slice(0, 5)` 渲染普通 recent runs；backend `_user_reason('active', None)` 未有 explicit branch，落入 intervention 默认值。错误同时存在于 canonical API presentation 与唯一 control-plane consumer，不是纯翻译问题。
+- 最小共享修复：backend explicit active reason 为“运行正在正常进行”；frontend 在无 protected run 时把同一 fallback 列表/计数/说明标为“最近运行”，继续保留 active “暂停”控制；一旦存在 protected run，仍沿原路径优先显示 protected section。无 schema、迁移、依赖或持久配置改动。
+- production-shaped RED：backend helper 精确得到旧 intervention 字符串；frontend static render 精确得到 protected heading + active row + intervention reason。GREEN：focused backend 8 / frontend 6，相邻 backend 87 / frontend 142；完整 backend **8439 passed, 2 skipped, 1 warning**、frontend **154 files / 1149 tests**，i18n 3995/3995、Ruff/format、production build/budgets、24 architecture tests 与 manifest validator 全绿。
+- exact `6a6695e88d915a0e37b44e64dcdfe5bdd90a9454` 已 push；Railway backend `cdef3ce1-85e6-4662-a5aa-a6fb9793a21b`、backend-api `2261b169-3c8a-4c3e-a42b-7a1239b2b8e2`、frontend `feb46b17-e017-457a-8c09-b94065730ce1` 均 `SUCCESS`，backend health `status=ok`，frontend HTTP 200。
+- production hard navigation 后页面显示“最近运行 5 / 最近的运行活动；正在运行的任务可在此暂停。”；5 条 active row 全部显示“运行正在正常进行 / 等待当前运行完成”，5 个暂停按钮仍在，旧“系统保护机制已介入”和“被保护的任务”均不在 DOM。证据：`evidence/bbf6d2340afe593b44f740fabfa178d126b5beca/P29-PADMIN-fault-active-runtime-guard-presentation.md` 与 `evidence/6a6695e88d915a0e37b44e64dcdfe5bdd90a9454/RUNTIME-GUARD-PRESENTATION-001-production-verification.md`。
+- finding 推进为 `Verified`；当前没有 production protected run 用于正向 protected-state screenshot，且 P29 provider health、API/audit scope、fault/reload、pass-2、四角色 matrix 尚未完成，所以 P29 不写 PASS，NPTCR 保持 `0/96`。
 
 #### TOOL-ARTIFACT-SETTLEMENT-001 复现证据
 

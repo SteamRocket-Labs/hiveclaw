@@ -51,6 +51,10 @@ interface PlanHubRow {
   href: string;
 }
 
+export function planReviewHref(agentId: string): string {
+  return `/agents/${encodeURIComponent(agentId)}#aware`;
+}
+
 interface ApprovalHubRow {
   id: string;
   actionType: string;
@@ -485,7 +489,7 @@ async function collectPlanRows(agents: Agent[]): Promise<PlanHubRow[]> {
           title: plan.plan_json?.title || plan.original_request,
           status: plan.status,
           updatedAt: plan.updated_at || plan.created_at,
-          href: `/agents/${agent.id}#chat`,
+          href: planReviewHref(agent.id),
         }));
       } catch {
         return [] as PlanHubRow[];
@@ -916,6 +920,7 @@ export default function WorkspaceFeatureHub({ kind, initialAutomationCreateOpen 
                 kind === 'memory' ? `/agents/${agent.id}#knowledge`
                   : kind === 'documents' ? `/agents/${agent.id}#workspace`
                     : kind === 'approvals' ? `/agents/${agent.id}#approvals`
+                      : kind === 'plans' ? planReviewHref(agent.id)
                       : `/agents/${agent.id}#chat`;
               return (
                 <Link key={agent.id} to={target} className="feature-link-row">
@@ -957,7 +962,7 @@ export default function WorkspaceFeatureHub({ kind, initialAutomationCreateOpen 
               </Link>
             )}
             {kind === 'plans' && (
-              <Link to={primaryAgent ? `/agents/${primaryAgent.id}#chat` : '/agents'} className="feature-link-row">
+              <Link to={primaryAgent ? planReviewHref(primaryAgent.id) : '/agents'} className="feature-link-row">
                 <IconCheckbox size={18} stroke={1.7} />
                 <span>
                   <strong>{t('featureHub.sessionPlans', 'Session plan queue')}</strong>

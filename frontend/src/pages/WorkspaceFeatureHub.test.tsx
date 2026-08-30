@@ -120,7 +120,7 @@ vi.mock('@tanstack/react-query', () => ({
             title: 'Confirm product research scope',
             status: 'awaiting_confirmation',
             updatedAt: '2026-06-23T08:00:00Z',
-            href: '/agents/agent-1#chat',
+            href: '/agents/agent-1#aware',
           },
         ],
         isLoading: false,
@@ -190,6 +190,7 @@ import WorkspaceFeatureHub, {
   automationScheduleFacts,
   automationScheduleLabel,
   automationStatus,
+  planReviewHref,
 } from './WorkspaceFeatureHub';
 import zh from '../i18n/zh.json';
 
@@ -266,7 +267,11 @@ describe('WorkspaceFeatureHub', () => {
 
     expect(markup).toContain('Confirm product research scope');
     expect(markup).toContain('awaiting_confirmation');
-    expect(markup).toContain('href="/agents/agent-1#chat"');
+    expect(markup).toContain('href="/agents/agent-1#aware"');
+  });
+
+  it('routes a plan review to the employee confirmation surface instead of an unrelated chat session', () => {
+    expect(planReviewHref('agent-1')).toBe('/agents/agent-1#aware');
   });
 
   it('renders the company approval queue from the enterprise approval adapter', () => {

@@ -4,8 +4,8 @@ owner: Codex
 status: active
 authority: canonical-working-state
 last_reviewed: 2026-08-30
-source_commit: 56ec5dd0
-verification_status: gate0-complete-session-context-p1-reproduced
+source_commit: 8c851403
+verification_status: gate0-complete-session-context-p1-dispatch-contract-validated
 ---
 
 # 当前状态与唯一下一动作
@@ -28,7 +28,8 @@ verification_status: gate0-complete-session-context-p1-reproduced
 | Goal | Codex Goal `01a05189-c369-75f0-a720-ffe16136644f`，API 当前仍为 `paused` | owner 当前消息已明确授权本轮继续；不得把 Goal 机械状态伪写为后台 active |
 | execution roles | Codex 总控/验收；Kimi Code 前端；zCode 后端 | owner 2026-08-30 已批准，见 DEC-008～DEC-012 |
 | delegation protocol | `agent-delegation` Skill `0.1.2` 是唯一派发/授权/receipt 协议；`cwd` 不宣称为 sandbox | owner 2026-08-30 已批准 |
-| delegation readiness | doctor `ok`；Kimi `1.49.0`、zCode ACP `0.1.0+ultra.zcode.0.16.5` 的 stateless read-only correction smoke 均 `exit=0`、零 protocol error、零 worktree diff | receipt `0443f540…` / `9b15c8f7…`；Codex 独立核对包名、版本和 exact commit |
+| delegation readiness | doctor `ok`；zCode registry 的 internal prompt timeout 已从 900s 调整为 3600s；默认保留完整 worker capabilities | 两份 registry exact argv readback + doctor；可恢复 backup `20260830T115555Z-register` |
+| delegation incident | Issue #4 首包在 `approve-all + Terminal` 下运行 901.112s 后被旧 900s target timeout 取消，1943 events、零 protocol error、零 diff；wrapper 同时报 `status=success` / `stop_reason=cancelled` | receipt `f052ff24…`；确认不是权限失败。旧 correction 在改合同前主动取消，worktree 保持 clean |
 | GitHub 控制层 | milestone [#1](https://github.com/SteamRocket-Labs/hiveclaw/milestone/1)、umbrella Issue [#3](https://github.com/SteamRocket-Labs/hiveclaw/issues/3)、7 个 RC role/state labels | 本轮远程 readback 已核验；不构成 acceptance truth |
 | 旧 WIP archive | 原 5,685 行、约 1.29 MB，完整迁移并增加 archive warning | 本轮本地已核验 |
 | 当前 production 业务提交 | `eb61d468221aa22a4f22c1d96353baadef3b51e6` | Railway 三服务 fresh readback；backend `7cf21899…`、backend-api `e7b62bc9…`、frontend `7c133bf2…` 均 `SUCCESS` 且绑定同一应用提交 |
@@ -91,6 +92,9 @@ verification_status: gate0-complete-session-context-p1-reproduced
 - Gate 0 已 fresh 核验 production 三服务 exact commit、账号角色、EventPilot 的 GLM/MiniMax/DeepSeek binding、公共 health 与 Hive Connect。
 - 已用 GLM 在 production 创建唯一标记 Session：第一轮答案满足外部语义判据；同一 Session 第二轮却否认存在上一轮回答。
 - live readback 证明 canonical Session V2 transcript 有 635 个有序事件及两轮完整输入/输出，但兼容 `/messages` 投影只有 10 条 system/debug；runtime 当前仍从 `ChatMessage` 组装历史，`SESSION-CONTEXT-001` 已进入 P1 修复链。
+- 已创建 GitHub Issue #4 并向 zCode 派发首个 backend 实现包；首包暴露 target-internal timeout 与 outer timeout 冲突，而非 worker 权限不足。
+- owner 要求放宽派发规则后，工作流改为默认完整 capability、task-sized timeout、effective-timeout warning、receipt 分类和同 Issue verified checkpoint 续传；不再把固定 stop reason、固定缓冲或是否有 diff 当作语义裁决。
+- 已把 zCode target internal timeout 调整为 3600s，两个 registry 一致且 `agent-delegate doctor --json` 返回 `status=ok`；旧 900s correction 已安全取消，隔离 worktree 无改动。
 
 ## 最近验证
 
@@ -100,15 +104,16 @@ verification_status: gate0-complete-session-context-p1-reproduced
 - task-state resolve 仍指向本文件；`HEAD = main = origin/main = 56ec5dd0` 在 Gate 0 后重新核验。
 - Railway backend/backend-api/frontend 当前均 `SUCCESS`，且部署消息绑定 `eb61d468221aa22a4f22c1d96353baadef3b51e6`；backend health 与 frontend `/` 成功。
 - production `P01`/continuation probe：Session `59257e7a-960b-459a-9652-2ff39be117ee`，两次 run 均 `completed`；第二轮产生 `SESSION-CONTEXT-001`，因此不计入 NPTCR PASS。
+- 宽松 worker contract：18 个 architecture tests 通过；Ruff check/format 与 `git diff --check` 通过；live preflight 对 zCode 报 `effective_timeout_seconds=3300`、无 warning；旧 cancelled receipt 被正确分类为 `interrupted`、仍可 review、且不计算 semantic verdict。
 
 ## 唯一下一动作
 
-把 `SESSION-CONTEXT-001` 固定为 GitHub backend Issue；从 exact `56ec5dd0` 创建隔离 worktree，按 `agent-delegation 0.1.2` 派给 zCode。Codex 独立核验 canonical-history 修复、production-shaped failing-first regression、真 PostgreSQL/相关全量 gate 后再集成。
+从 clean exact-base worktree 按新合同重新派发 GitHub Issue #4 给 zCode；带入已核验根因 checkpoint，Codex 独立核验 canonical-history 修复、production-shaped failing-first regression、真 PostgreSQL/相关全量 gate 后再集成。
 
 ## Not Done / Do Not Redo
 
 - production manifest 已冻结；Gate 0 事实已落盘，但没有任何可计分的 pass-1/pass-2，NPTCR=0/96，Evidence Coverage 尚未成立。
-- 仅完成 Kimi/zCode 只读 smoke；尚未派本轮实现 task，未修改业务代码/UI，未跑测试全量或新应用部署。
+- 已派 Issue #4 两次但尚无业务代码 diff：首包由旧 900s target timeout 取消，第二包在工作流纠偏时主动取消；尚未形成 Fix Candidate、未跑业务测试全量或新应用部署。
 - GLM 与三服务/Hive Connect 已 fresh 验证；MiniMax/DeepSeek live provider 调用尚未完成。
 - Goal API 仍显示 `paused`；进入长时 dispatch/E2E 循环前必须重新读取并如实处理，不能靠文档假定 active。
 - 不触碰 pre-existing `.ultra/.runtime/compact-snapshot.md`、`bp-kingdee/`、`output/`、root `package*.json`、`tmp/pdfs/` 等用户工作树内容。

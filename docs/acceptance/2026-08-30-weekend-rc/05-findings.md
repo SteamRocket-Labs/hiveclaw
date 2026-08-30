@@ -4,8 +4,8 @@ owner: Codex
 status: active
 authority: canonical-active-finding-ledger
 last_reviewed: 2026-08-30
-source_commit: 56ec5dd0
-verification_status: one-p1-reproduced-and-ready-for-backend-work-packet
+source_commit: 8c851403
+verification_status: one-p1-reproduced-and-backend-redispatch-pending
 ---
 
 # 当前 Findings 与 Blockers
@@ -26,7 +26,7 @@ verification_status: one-p1-reproduced-and-ready-for-backend-work-packet
 
 | ID | 状态 | Severity | Journey | 最早错误状态 | 当前根因边界 | 下一动作 |
 |---|---|---:|---|---|---|---|
-| SESSION-CONTEXT-001 | Reproduced | P1 | P01-MAIN / P02-STREAM | 同一 Session 第二轮 provider request 未获得上一轮 user/assistant 语义历史，模型明确称“这是本会话我收到的第一条消息” | canonical Session V2 transcript 保存了两轮完整输入与 `assistant_text.snapshot`；兼容 `/messages` 只有 10 条 system/debug，runtime `_load_runtime_context` 仍从 `ChatMessage` 组装 provider conversation。应恢复一个 canonical、可重放、可 compact/fork 的历史输入合同，而不是仅让 UI 看起来连续 | 建 backend Issue；zCode 在隔离 worktree 实现 production-shaped failing-first regression 与最小权威根因修复；Codex 独立 review/retest |
+| SESSION-CONTEXT-001 | Reproduced | P1 | P01-MAIN / P02-STREAM | 同一 Session 第二轮 provider request 未获得上一轮 user/assistant 语义历史，模型明确称“这是本会话我收到的第一条消息” | canonical Session V2 transcript 保存了两轮完整输入与 `assistant_text.snapshot`；兼容 `/messages` 只有 10 条 system/debug，runtime `_load_runtime_context` 仍从 `ChatMessage` 组装 provider conversation。应恢复一个 canonical、可重放、可 compact/fork 的历史输入合同，而不是仅让 UI 看起来连续 | GitHub Issue #4 已建立；按修正后的 full-capability、task-sized timeout、verified-checkpoint 合同重派 zCode；Codex 独立 review/retest |
 
 #### SESSION-CONTEXT-001 复现证据
 

@@ -11,6 +11,7 @@ ISSUE_TEMPLATE_GROUP = ROOT / ".github" / "ISSUE_TEMPLATE"
 WEEKEND_WORK_PACKET = ISSUE_TEMPLATE_GROUP / "weekend_rc_work_packet.yml"
 PRODUCTION_MANIFEST = ROOT / "acceptance" / "weekend_production_journeys.v1.json"
 PRODUCTION_GATE = ROOT / "backend" / "scripts" / "weekend_rc_gate.py"
+WORKER_GATE = ROOT / "backend" / "scripts" / "weekend_rc_worker_gate.py"
 
 REQUIRED_FILES = (
     "README.md",
@@ -160,12 +161,18 @@ def test_execution_control_contract_is_explicit_and_non_semantic() -> None:
     assert "GitHub Issue 只是" in index
     assert "都不是 Journey/Finding verdict" in index
     assert "agent-delegate" in runbook
-    assert "无状态 packet" in runbook
+    assert "初次派发跨 Issue 无状态" in runbook
+    assert "同一 Issue correction 必须携带已经核验的诊断" in runbook
     assert "隔离 worktree" in runbook
     assert "`cwd` 只是上下文，不是 OS sandbox" in runbook
     assert "approve-all" in runbook
     assert "--authorization-note" in runbook
-    assert "exit=0` 只表示 transport 成功" in runbook
+    assert "`exit=0` 只表示 transport 返回" in runbook
+    assert "任何单字段都不能自动升级为成功" in runbook
+    assert "weekend_rc_worker_gate.py preflight" in runbook
+    assert "stop_reason 只做分类" in runbook
+    assert "semantic_verdict=not_computed_by_tool" in runbook
+    assert WORKER_GATE.is_file()
     for decision_id in ("PDEC-001", "PDEC-002", "PDEC-003", "PDEC-004", "PDEC-005", "PDEC-006"):
         assert decision_id in decisions
     assert "一个可独立回滚的共享根因对应一个 Codex integration commit" in runbook

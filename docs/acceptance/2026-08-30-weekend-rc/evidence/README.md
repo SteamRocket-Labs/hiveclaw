@@ -4,8 +4,8 @@ owner: Codex
 status: active
 authority: canonical-evidence-format
 last_reviewed: 2026-08-30
-source_commit: 45340a3a
-verification_status: format-only-no-production-evidence-created
+source_commit: c18b181c
+verification_status: frozen-machine-contract-no-production-evidence-created
 ---
 
 # Evidence 记录合同
@@ -34,12 +34,16 @@ pass:
 environment:
 source_commit:
 deployed_commit:
+manifest_sha256:
 deployment_ids:
 persona_principal:
 data_version:
 started_at:
 ended_at:
 result: PASS | FAIL | BLOCKED_PRECONDITION
+fault_recovery_result: PASS | FAIL | BLOCKED_PRECONDITION
+negative_authority_result: PASS | FAIL | BLOCKED_PRECONDITION
+cleanup_result: PASS | FAIL | BLOCKED_PRECONDITION
 supersedes:
 ```
 
@@ -65,6 +69,18 @@ supersedes:
 - ambiguous provider delivery 记 `FAIL` 或 `BLOCKED_PRECONDITION`，禁止自动 replay 或称 transient。
 - deployment success 只证明 freshness；signed-in journey 才证明 product consumption。
 - screenshot 只证明 UI observation；需与 canonical mechanical evidence 交叉。
+- pass 1 证明 fresh signed-in clean path；pass 2 必须同时填写 `fault_recovery_result`、`negative_authority_result` 和 `cleanup_result`。额外 fault 文件只在需要独立保存大型故障证据时创建。
+
+## Release Gate 机械字段
+
+`release-gates.md` 的 frontmatter 必须把应用提交 `D` 分别绑定到 `backend_commit`、`backend_api_commit`、`frontend_commit`，三个 status 均为 `SUCCESS`；同时记录五个 `guardrail_*`、五个 `coverage_*`、`zero_known_defects` 和 `cleanup_result`。这些是 Codex 已作出语义判断后的机械投影，不允许脚本自行生成 PASS。
+
+```bash
+python3 backend/scripts/weekend_rc_gate.py score \
+  --deployed-commit <40-char-application-sha>
+```
+
+该命令只检查 96 条旅程的文件、frontmatter、manifest hash、双遍、三服务 exact commit、护栏与覆盖字段。它不读取自然语言来判断答案或 UI 质量，输出固定包含 `semantic_verdict: not_computed_by_tool`。
 
 ## Closed 门槛
 

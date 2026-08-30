@@ -4,8 +4,8 @@ owner: Rocky / Codex
 status: active
 authority: canonical-index
 last_reviewed: 2026-08-30
-source_commit: 45340a3a
-verification_status: structurally-verified-product-acceptance-pending
+source_commit: c18b181c
+verification_status: production-denominator-frozen-product-acceptance-pending
 ---
 
 # Weekend RC 2026-08-30 验收文档组
@@ -49,7 +49,12 @@ verification_status: structurally-verified-product-acceptance-pending
 
 现有 [`acceptance/atomic_user_journeys.v1.json`](../../../acceptance/atomic_user_journeys.v1.json) 是被后端架构测试和 Playwright 消费的 15 条确定性 CI 旅程，允许声明过的受控外部 fake。它是 CI 行为底线，不是本轮生产 NPTCR 分母。
 
-本轮生产分母在 owner 完成旅程过稿后，才生成独立的 `acceptance/weekend_production_journeys.v1.json`。在冻结前，[04-journey-ledger.md](04-journey-ledger.md) 只保存候选覆盖关系，不得宣称 NPTCR 已有分母或结果。
+本轮生产分母已按 owner 裁决冻结在 [`acceptance/weekend_production_journeys.v1.json`](../../../acceptance/weekend_production_journeys.v1.json)：35 个候选组展开为 96 条可独立计分旅程，禁止 external fake。当前没有 production pass，故 NPTCR 仍为 0%。[`backend/scripts/weekend_rc_gate.py`](../../../backend/scripts/weekend_rc_gate.py) 只校验 exact manifest/evidence/deployment facts 并计算机械分数，固定输出 `semantic_verdict=not_computed_by_tool`。
+
+```bash
+python3 backend/scripts/weekend_rc_gate.py validate
+python3 backend/scripts/weekend_rc_gate.py score --deployed-commit <40-char-application-sha>
+```
 
 ## 执行队列边界
 
@@ -57,6 +62,8 @@ verification_status: structurally-verified-product-acceptance-pending
 - GitHub Issue 只是从 fresh finding 投影出的 bounded work packet；label、comment、assignee、open/closed 都不是 Journey/Finding verdict。
 - Kimi Code 只领取前端包，zCode 只领取后端包；两者在隔离 worktree 中无状态执行，回执只证明 transport 与 worker 自报结果。
 - 代码事实由 Git diff、live wiring 和测试证明；生产事实只能进入不可变 evidence。Codex 独立复核前，不得因 worker、Issue、PR 或 CI 显示成功而升级状态。
+- 每个已复现根因使用一个可独立回滚的 Codex integration commit；不为每个 checklist/test/receipt 建 commit，也不在每次 push 后自动部署。
+- 最终应用提交 `D` 同时部署三个 Railway 服务；随后纯证据提交 `E` 记录在 `D` 上完成的生产双遍。`E` 不重新部署，避免证据提交产生新的未验应用身份。
 
 ## 写入路由
 

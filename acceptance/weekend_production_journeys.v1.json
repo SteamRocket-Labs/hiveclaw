@@ -1,0 +1,714 @@
+{
+  "schema": "hive.weekend_production_journeys.v1",
+  "version": 1,
+  "status": "frozen",
+  "frozen_on": "2026-08-30",
+  "freeze_basis_commit": "c18b181c690fe3c4aa5366a8fd504023b0c41864",
+  "frozen_by": "Rocky and Codex",
+  "frozen_denominator": 96,
+  "purpose": "The independently scoreable signed-in production denominator for Weekend RC 2026-08-30. It is separate from the deterministic CI manifest and permits no external fakes.",
+  "external_fakes_allowed": false,
+  "scoring": {
+    "nptcr_formula": "closed_in_scope_journeys / all_in_scope_journeys",
+    "blocked_precondition_counts_as_failure": true,
+    "excluded_requires_owner_reason": true,
+    "required_nptcr_percent": 100,
+    "required_evidence_coverage_percent": 95,
+    "required_guardrails": [
+      "single_agent_quality_and_model_agency",
+      "longitudinal_growth_and_self_evolution",
+      "benchmark_non_regression",
+      "governance_safety",
+      "experience_resources_and_model_fidelity"
+    ],
+    "evidence_weights": {
+      "live_wiring": 15,
+      "automation_real_postgres": 20,
+      "signed_in_double_pass": 30,
+      "fault_recovery": 20,
+      "negative_authority": 15
+    },
+    "closed_requires": [
+      "signed_in_pass_1",
+      "signed_in_pass_2",
+      "fault_recovery",
+      "negative_authority",
+      "same_deployed_commit",
+      "cleanup_record"
+    ]
+  },
+  "runtime_bindings": {
+    "fixture_catalog": "Gate 0 records exact synthetic object IDs, source hashes, selected model IDs and role bindings in redacted release evidence; credentials never enter this manifest.",
+    "configured_model_labels": ["minimax", "glm", "deepseek"],
+    "advertised_knowledge_formats": ["pdf", "docx", "markdown", "txt"],
+    "advertised_artifact_formats": ["pdf", "docx", "markdown", "txt"]
+  },
+  "defaults": {
+    "scope_status": "in_scope",
+    "data_version": "weekend-rc-gate0-synthetic-fixtures-v1",
+    "measurements": ["accepted_feedback_ms", "ttft_ms", "first_visible_output_ms", "total_ms", "reload_convergence_ms", "manual_interventions", "token_cost_cache"],
+    "evidence_path_template": "docs/acceptance/2026-08-30-weekend-rc/evidence/{deployed_commit}/{journey_id}-pass-{pass}.md",
+    "required_evidence": ["signed_in_pass_1", "signed_in_pass_2", "fault_recovery", "negative_authority", "cleanup_record"]
+  },
+  "profiles": {
+    "employee_session": {
+      "principal": "authenticated lab employee bound server-side to the selected tenant and Agent",
+      "allowed_effects": ["create synthetic Session/run/task records", "create scoped workspace artifacts", "cancel/retry/branch synthetic runs"],
+      "cleanup": ["archive or delete named synthetic Sessions and workspace artifacts through supported product paths", "retain only redacted evidence references"]
+    },
+    "employee_knowledge": {
+      "principal": "authenticated lab employee and the same user's governed Personal Knowledge grants",
+      "allowed_effects": ["upload uniquely marked synthetic documents", "create personal import jobs and proposals", "archive synthetic personal documents"],
+      "cleanup": ["archive/delete every synthetic personal document and verify no searchable ghost", "retain source hashes and redacted citations only"]
+    },
+    "company_governance": {
+      "principal": "authenticated lab company admin with server-derived publication authority",
+      "allowed_effects": ["create uniquely marked source contracts/imports/proposals/reviews/publications", "grant and revoke synthetic test access", "retire/restore synthetic publications"],
+      "cleanup": ["retire or remove all synthetic company assets through governed lifecycle", "verify employee search no longer returns retired fixtures"]
+    },
+    "cross_role": {
+      "principal": "separately authenticated lab employee, company admin and scoped operator principals",
+      "allowed_effects": ["create and revoke synthetic grants", "perform read-only denied/not-found probes", "cancel synthetic active work after revocation"],
+      "cleanup": ["revoke all temporary grants and operator reasons", "remove synthetic role-test assets"]
+    },
+    "collaboration": {
+      "principal": "authenticated lab employee with one persistent parent Agent and explicitly delegated peer scopes",
+      "allowed_effects": ["create synthetic child Sessions, team/workflow runs and A2A requests", "cancel/retry bounded collaboration work", "create scoped result artifacts"],
+      "cleanup": ["close/cancel synthetic collaboration runs", "archive child Sessions and result artifacts without deleting audit evidence"]
+    },
+    "external_capability": {
+      "principal": "authenticated lab employee or admin with the exact connector/trigger capability under test",
+      "allowed_effects": ["create disabled or bounded synthetic schedules/triggers", "send only to an approved synthetic destination", "pair/revoke only the designated lab Local Agent when currently authorized"],
+      "cleanup": ["disable and delete synthetic triggers/schedules", "revoke temporary connector or Local Agent bindings", "reconcile any ambiguous delivery before retry"]
+    },
+    "release": {
+      "principal": "Codex release controller using owner-authorized production deployment scope",
+      "allowed_effects": ["deploy one frozen application commit to backend, backend-api and frontend", "run read-only health/deployment checks", "execute bounded lab-tenant synthetic E2E and cleanup"],
+      "cleanup": ["remove all registered synthetic assets", "preserve rollback target and redacted immutable evidence", "do not mutate credentials, billing or irreversible production data"]
+    }
+  },
+  "journey_families": [
+    {
+      "candidate_id": "PJ-01",
+      "proof_order": 1,
+      "domain": "domains/single-agent-and-session.md",
+      "profile": "employee_session",
+      "common": {
+        "persona": "employee",
+        "entry": "/agents/{agent_id}/sessions/{fresh_session_id}",
+        "acceptance": ["one selected Agent completes an open-ended task through the real model/tool loop", "the final deliverable satisfies an external hard criterion and is usable without admin intervention"],
+        "negative_authority": ["denied effect does not remove unrelated reasoning or allowed tools"],
+        "fault_recovery": ["disconnect and worker restart converge without duplicate input, effect or final answer"],
+        "expected_artifacts": ["canonical transcript", "runtime task and invocation spans", "user-consumable deliverable"]
+      },
+      "variants": [
+        {"id": "P01-MAIN", "name": "single_agent_open_task", "input": "Complete a uniquely marked open task requiring planning, governed tool use and a verifiable deliverable.", "acceptance_additions": ["selected model/provider and complete authorized capability surface are proven"]}
+      ]
+    },
+    {
+      "candidate_id": "PJ-02",
+      "proof_order": 1,
+      "domain": "domains/single-agent-and-session.md",
+      "profile": "employee_session",
+      "common": {
+        "persona": "employee",
+        "entry": "/agents/{agent_id}/sessions/{fresh_session_id}",
+        "acceptance": ["accepted, working, streaming, terminal and reload states have one stable owner", "live stream, REST replay and hard reload are structurally and semantically consistent"],
+        "negative_authority": ["employee DOM contains no raw RuntimeTask/provider/schema payload"],
+        "fault_recovery": ["hard reload, socket disconnect, out-of-order event and terminal race produce no duplicate row or stale running state"],
+        "expected_artifacts": ["stream timing trace", "canonical transcript", "before/after screenshot set"]
+      },
+      "variants": [
+        {"id": "P02-STREAM", "name": "session_stream_terminal_reload", "input": "Run a long enough answer to observe accepted feedback, tool progress, Markdown streaming, terminal convergence and hard reload.", "acceptance_additions": ["duplicate and flicker counts are zero and reload converges within the recorded budget"]}
+      ]
+    },
+    {
+      "candidate_id": "PJ-03",
+      "proof_order": 1,
+      "domain": "domains/single-agent-and-session.md",
+      "profile": "employee_session",
+      "common": {
+        "persona": "employee",
+        "entry": "/agents/{agent_id}/sessions/{fresh_session_id}",
+        "acceptance": ["command is discoverable, keyboard-submittable and reaches its intended product surface or runtime", "success, failure, cancel and reload remain novice-readable"],
+        "negative_authority": ["command cannot expand principal, tenant, Agent or effect authority"],
+        "fault_recovery": ["invalid arguments, stale target and reload return a typed recoverable state without a second effect"],
+        "expected_artifacts": ["command invocation", "ui_action or runtime receipt", "target-surface screenshot"]
+      },
+      "variants": [
+        {"id": "P03-CMD01", "name": "slash_plan", "input": "/plan <bounded objective>", "acceptance_additions": ["model-authored plan supports clarify, revise, reject and exact-version approve before effects"]},
+        {"id": "P03-CMD02", "name": "slash_resume", "input": "/resume <known session>", "acceptance_additions": ["same authority object resumes with no duplicated input, run or effect"]},
+        {"id": "P03-CMD03", "name": "slash_rewind", "input": "/rewind <durable turn>", "acceptance_additions": ["impact preview precedes a recoverable new head and original evidence remains"]},
+        {"id": "P03-CMD04", "name": "slash_branch", "input": "/branch <durable turn>", "acceptance_additions": ["child lineage is visible and parent remains unchanged"]},
+        {"id": "P03-CMD05", "name": "slash_clear", "input": "/clear", "acceptance_additions": ["clear scope and recovery are explicit and durable audit is retained"]},
+        {"id": "P03-CMD06", "name": "slash_compact", "input": "/compact", "acceptance_additions": ["model-led complete coverage preserves plan, approval, skill and changed-artifact state"]},
+        {"id": "P03-CMD07", "name": "slash_context", "input": "/context", "acceptance_additions": ["a readable context-source and coverage panel opens instead of a generic completed receipt"]},
+        {"id": "P03-CMD08", "name": "slash_permissions", "input": "/permissions", "acceptance_additions": ["effective permissions, approvals, restrictions and repair actions are visible"]},
+        {"id": "P03-CMD09", "name": "slash_steer", "input": "/steer <new direction>", "acceptance_additions": ["exactly one input targets the current active run and inactive runs reject safely"]},
+        {"id": "P03-CMD10", "name": "slash_usage", "input": "/usage", "acceptance_additions": ["session and Agent token, cost and budget summary is accurate for the viewer role"]},
+        {"id": "P03-CMD11", "name": "slash_agent", "input": "/agent <target> <task>", "acceptance_additions": ["target Agent is selected and the delegated task/result is consumed, not merely a default catalog tab"]},
+        {"id": "P03-CMD12", "name": "slash_goal", "input": "/goal <bounded objective>", "acceptance_additions": ["durable objective, done condition, budget, stop, progress and terminal evidence are visible"]},
+        {"id": "P03-CMD13", "name": "slash_task", "input": "/task <work item>", "acceptance_additions": ["Work Ledger dependencies and recovery are visible and writing the task does not auto-execute"]},
+        {"id": "P03-CMD14", "name": "slash_team", "input": "/team <bounded team task>", "acceptance_additions": ["lead, members, statuses and integrated result are distinct from sub-agent and A2A"]},
+        {"id": "P03-CMD15", "name": "slash_schedule", "input": "/schedule <bounded schedule>", "acceptance_additions": ["timezone, owner, next run, permission and pause/resume are explicit"]},
+        {"id": "P03-CMD16", "name": "slash_once", "input": "/once <exact time and task>", "acceptance_additions": ["one-shot idempotency, cancel and terminal result are visible"]},
+        {"id": "P03-CMD17", "name": "slash_loop", "input": "/loop <objective, budget and stop>", "acceptance_additions": ["loop is bounded and exposes checkpoint, stop and recovery without polling semantics"]},
+        {"id": "P03-CMD18", "name": "slash_workflow", "input": "/workflow <bounded graph objective>", "acceptance_additions": ["the intended draft/preview opens and exact-version confirmation starts the step tree"]},
+        {"id": "P03-CMD19", "name": "slash_skill", "input": "/skill <known skill>", "acceptance_additions": ["the intended Skill catalog/detail loads and guidance does not grant effect authority"]},
+        {"id": "P03-CMD20", "name": "slash_mcp", "input": "/mcp <known connection>", "acceptance_additions": ["connection, scope, capability, typed failure and revoke surface opens without secret exposure"]}
+      ]
+    },
+    {
+      "candidate_id": "PJ-04",
+      "proof_order": 1,
+      "domain": "domains/single-agent-and-session.md",
+      "profile": "employee_session",
+      "common": {
+        "persona": "employee",
+        "entry": "/agents/{agent_id}/sessions/{fresh_session_id}",
+        "acceptance": ["semantic content is model-authored and durable state is recoverable", "every nonterminal state has revise, retry, cancel or abandon"],
+        "negative_authority": ["counter, todo or plan text cannot approve its own effect"],
+        "fault_recovery": ["stale version, duplicate approval and restart remain idempotent"],
+        "expected_artifacts": ["versioned state artifact", "runtime execution evidence", "user-facing status/result"]
+      },
+      "variants": [
+        {"id": "P04-PLAN", "name": "plan_mode_lifecycle", "input": "Create, revise, reject, recreate and approve one bounded plan.", "acceptance_additions": ["approve binds exact plan hash and confirmed handoff returns observation to the Session"]},
+        {"id": "P04-GOAL", "name": "goal_lifecycle", "input": "Create and complete one bounded long-running goal with checkpoints.", "acceptance_additions": ["goal terminal status follows observable Done rather than progress counters"]},
+        {"id": "P04-TASK", "name": "task_ledger_lifecycle", "input": "Record dependent tasks and findings, then execute through the normal Agent loop.", "acceptance_additions": ["ledger restores state without becoming a second executor"]}
+      ]
+    },
+    {
+      "candidate_id": "PJ-05",
+      "proof_order": 2,
+      "domain": "domains/memory-knowledge-and-growth.md",
+      "profile": "employee_session",
+      "common": {
+        "persona": "employee_owner",
+        "entry": "/agents/{agent_id}/sessions/{fresh_session_id}",
+        "acceptance": ["a provisional memory or capability candidate improves an externally scored repeated task under the same envelope"],
+        "negative_authority": ["candidate cannot self-promote or rewrite accepted authority"],
+        "fault_recovery": ["failed review or trial leaves prior accepted state usable and candidate revisable"],
+        "expected_artifacts": ["baseline result", "candidate result", "review and comparison evidence"]
+      },
+      "variants": [{"id": "P05-J1", "name": "growth_candidate_trial", "input": "Run the same marked task without and with one provisional candidate under a fixed model/resource envelope.", "acceptance_additions": ["comparison preserves raw evidence and reviewer decision"]}]
+    },
+    {
+      "candidate_id": "PJ-06",
+      "proof_order": 2,
+      "domain": "domains/memory-knowledge-and-growth.md",
+      "profile": "employee_session",
+      "common": {
+        "persona": "employee_owner",
+        "entry": "/agents/{agent_id}/sessions/{fresh_session_id}",
+        "acceptance": ["later fresh Sessions reuse accepted learning and measurably reduce repeated failure or rework"],
+        "negative_authority": ["owner correction and forget override stale learned material"],
+        "fault_recovery": ["revoked or rolled-back learning is not consumed after reload"],
+        "expected_artifacts": ["two-or-more Session evidence chain", "owner feedback", "later-task external score"]
+      },
+      "variants": [{"id": "P06-J2", "name": "longitudinal_growth", "input": "Give corrective feedback after a failed/reworked task, then run a fresh related task and verify improved reuse.", "acceptance_additions": ["the report states observed improvement only and cites the causal evidence chain"]}]
+    },
+    {
+      "candidate_id": "PJ-07",
+      "proof_order": 2,
+      "domain": "domains/memory-knowledge-and-growth.md",
+      "profile": "employee_session",
+      "common": {
+        "persona": "employee",
+        "entry": "/agents/{agent_id}/sessions/{fresh_session_id}",
+        "acceptance": ["the primary Agent task still completes after current platform, permission and UI changes"],
+        "negative_authority": ["governance controls do not remove unrelated model capability"],
+        "fault_recovery": ["the same task remains recoverable across reload and a denied side effect"],
+        "expected_artifacts": ["before/current comparison", "external task score", "capability and authority trace"]
+      },
+      "variants": [{"id": "P07-J3", "name": "platform_non_regression", "input": "Repeat the frozen primary task under the current production platform and controls.", "acceptance_additions": ["no capability, context, tool or output-budget regression is observed"]}]
+    },
+    {
+      "candidate_id": "PJ-08",
+      "proof_order": 2,
+      "domain": "domains/memory-knowledge-and-growth.md",
+      "profile": "release",
+      "common": {
+        "persona": "benchmark_operator",
+        "entry": "real CLI workspaces for Hive, FreeCode and hermes-agent",
+        "acceptance": ["all runtimes receive the same task, workspace, model/resource envelope and external hard scorer", "unavailable runtime yields an empty blocked report rather than a fabricated score"],
+        "negative_authority": ["platform cannot rewrite or suppress a model result to improve the benchmark"],
+        "fault_recovery": ["runner failure is typed and rerunnable from the recorded workspace revision"],
+        "expected_artifacts": ["three runtime receipts", "external scorer output", "coverage and blocker report"]
+      },
+      "variants": [{"id": "P08-J4", "name": "freecode_hermes_bakeoff", "input": "Run the frozen benchmark task against Hive, FreeCode and hermes-agent.", "acceptance_additions": ["Hive is not weaker on the accepted hard criteria"]}]
+    },
+    {
+      "candidate_id": "PJ-09",
+      "proof_order": 2,
+      "domain": "domains/memory-knowledge-and-growth.md",
+      "profile": "employee_session",
+      "common": {
+        "persona": "employee_owner",
+        "entry": "/agents/{agent_id}/sessions/{fresh_session_id} and Agent Detail Memory",
+        "acceptance": ["T0 to T2 to T3 to Soul/Skill evidence remains source-ref backed and a later Session consumes the accepted version", "LLM owns reflection and candidate semantics while the platform owns authority and commit"],
+        "negative_authority": ["reviewer unavailable cannot mechanically promote, delete or rewrite memory"],
+        "fault_recovery": ["owner correction, forget and rollback retire stale versions without searchable or prompt ghosts"],
+        "expected_artifacts": ["T0/T2/T3 source refs", "promotion/review receipt", "fresh Session recall evidence"]
+      },
+      "variants": [{"id": "P09-MEMORY", "name": "agent_memory_to_reuse", "input": "Create a uniquely marked learning in one Session, govern it, and require accurate reuse in a fresh Session.", "acceptance_additions": ["Agent Memory, Personal KB, Company KB and Skill remain separately presented and governed"]}]
+    },
+    {
+      "candidate_id": "PJ-10",
+      "proof_order": 3,
+      "domain": "domains/memory-knowledge-and-growth.md",
+      "profile": "employee_knowledge",
+      "common": {
+        "persona": "employee",
+        "entry": "/knowledge and a fresh Agent Session",
+        "acceptance": ["upload reaches parse, canonical Markdown, segment/index, search/read and cited Agent answer", "the decisive marker at the end of the source remains retrievable"],
+        "negative_authority": ["another employee and another tenant cannot discover or read the document"],
+        "fault_recovery": ["wrong MIME, duplicate upload, parser/index failure and worker restart produce typed recoverable lifecycle"],
+        "expected_artifacts": ["source hash and conversion receipt", "document/segment/index records", "kb://person citation and Agent tool sequence"]
+      },
+      "variants": [
+        {"id": "P10-PDF", "name": "personal_kb_pdf", "input": "Upload the frozen synthetic PDF fixture and ask a fresh Agent for its final-page marker.", "acceptance_additions": ["page/source locations survive PDF conversion"]},
+        {"id": "P10-DOCX", "name": "personal_kb_docx", "input": "Upload the frozen synthetic DOCX fixture and ask a fresh Agent for its final-section marker.", "acceptance_additions": ["heading, table and list structure survive DOCX conversion"]},
+        {"id": "P10-MD", "name": "personal_kb_markdown", "input": "Upload the frozen synthetic Markdown fixture and require exact cited retrieval.", "acceptance_additions": ["Markdown headings and source locations remain stable"]},
+        {"id": "P10-TXT", "name": "personal_kb_text", "input": "Upload the frozen synthetic TXT fixture and require exact cited retrieval.", "acceptance_additions": ["plain text produces readable canonical Markdown and stable segments"]},
+        {"id": "P10-AGENT", "name": "agent_to_personal_kb_proposal", "input": "Ask the Agent to propose one task artifact for Personal KB, then preview, revise and confirm as the owner.", "acceptance_additions": ["the Agent cannot bypass personal confirmation or silently persist the current attachment"]}
+      ]
+    },
+    {
+      "candidate_id": "PJ-11",
+      "proof_order": 3,
+      "domain": "domains/memory-knowledge-and-growth.md",
+      "profile": "company_governance",
+      "common": {
+        "persona": "company_admin_then_employee",
+        "entry": "/enterprise/knowledge then /knowledge/company and a fresh Agent Session",
+        "acceptance": ["source contract/import produces evidence and segments before an explicit proposal/review/publish", "published content is searchable/readable/citable only within ACL and remains auditable through retire/restore"],
+        "negative_authority": ["employee cannot publish directly and unpublished/cross-tenant content is not discoverable"],
+        "fault_recovery": ["parser failure, duplicate import, stale review, publish retry and index unavailable are typed and idempotent"],
+        "expected_artifacts": ["source contract/import job", "proposal/review/publication", "company citation and access audit"]
+      },
+      "variants": [
+        {"id": "P11-DIRECT", "name": "company_kb_direct_import", "input": "Import a uniquely marked advertised-format document from the company control plane, review and publish it, then consume it as an allowed employee Agent.", "acceptance_additions": ["the UI exposes the complete direct-import to proposal handoff without API or DB assistance"]},
+        {"id": "P11-BACKGROUND", "name": "company_kb_background_intake", "input": "Process one bounded synthetic background or connector intake with explicit publisher, source ACL and provenance, then review and publish.", "acceptance_additions": ["credential owner, failure recovery and provenance remain visible to the admin and hidden from employees"]}
+      ]
+    },
+    {
+      "candidate_id": "PJ-12",
+      "proof_order": 3,
+      "domain": "domains/memory-knowledge-and-growth.md",
+      "profile": "company_governance",
+      "common": {
+        "persona": "employee_then_company_admin",
+        "entry": "/knowledge promotion then /enterprise/knowledge review",
+        "acceptance": ["Personal or Agent knowledge creates an independent company proposal preserving owner consent and provenance", "publication does not mutate the personal source owner"],
+        "negative_authority": ["requester cannot review or publish their own proposal without company authority"],
+        "fault_recovery": ["revise, reject, cancel, duplicate submit and publish retry keep one canonical proposal lifecycle"],
+        "expected_artifacts": ["promotion intake", "owner consent/provenance", "review/publication and employee citation"]
+      },
+      "variants": [{"id": "P12-PROMOTE", "name": "personal_or_agent_to_company_promotion", "input": "Promote one uniquely marked personal/Agent source, review it as admin, publish it, consume it, then retire it.", "acceptance_additions": ["Personal and Company copies remain separately governed and traceable"]}]
+    },
+    {
+      "candidate_id": "PJ-13",
+      "proof_order": 3,
+      "domain": "domains/hr-identity-and-permissions.md",
+      "profile": "company_governance",
+      "common": {
+        "persona": "employee",
+        "entry": "/agents/new into the System HR Agent Session",
+        "acceptance": ["ordinary conversation yields a model-authored blueprint with revise, reject and exact confirm", "confirm creates exactly one governed Agent that appears in the rail and completes its first authorized task"],
+        "negative_authority": ["confirm-before-zero-effect and employee cannot directly provision or self-grant"],
+        "fault_recovery": ["provider failure, reload, retry and ambiguous delivery do not duplicate the Agent"],
+        "expected_artifacts": ["blueprint/hash", "HR RuntimeTask/provision receipts", "new Agent identity and first-task result"]
+      },
+      "variants": [{"id": "P13-HR", "name": "hr_agent_create_employee", "input": "Ask HR to create one uniquely named bounded-role digital employee, revise the blueprint, confirm it and run its first task.", "acceptance_additions": ["employee sees decisions and outcome without provision schema or internal IDs"]}]
+    },
+    {
+      "candidate_id": "PJ-14",
+      "proof_order": 3,
+      "domain": "domains/hr-identity-and-permissions.md",
+      "profile": "collaboration",
+      "common": {
+        "persona": "employee_using_source_agent",
+        "entry": "/agents/{source_agent_id}/sessions/{fresh_session_id}",
+        "acceptance": ["source Agent proposes a governed HR handoff bound to requester, reason, scope and budget", "canonical HR clarification/preview/confirm is reused and completion returns to the source Session"],
+        "negative_authority": ["source Agent cannot provision, grant or approve its own request"],
+        "fault_recovery": ["deny, expiry and HR unavailable preserve the source Agent's unrelated work and permit safe retry"],
+        "expected_artifacts": ["handoff request", "HR creation evidence", "source Session return result"]
+      },
+      "variants": [{"id": "P14-HANDOFF", "name": "agent_to_hr_handoff", "input": "Ask a normal Agent to request creation of a specialist through HR and follow the result back to the source Session.", "acceptance_additions": ["no second shortcut provisioning path exists"]}]
+    },
+    {
+      "candidate_id": "PJ-15",
+      "proof_order": 3,
+      "domain": "domains/hr-identity-and-permissions.md",
+      "profile": "cross_role",
+      "common": {
+        "persona": "role_matrix",
+        "entry": "the same protected product route and API under separate authenticated roles",
+        "acceptance": ["UI visibility and server-derived API/tool authority agree", "denied, approval-required, unavailable and retryable remain distinct"],
+        "negative_authority": ["operator_view and natural language cannot upgrade authority; cross-tenant resources leak no existence"],
+        "fault_recovery": ["active revocation, reload, retry, restart and multi-tab converge without ghost effects"],
+        "expected_artifacts": ["role-bound requests", "allow/deny audit", "role-specific screenshots"]
+      },
+      "variants": [
+        {"id": "P15-EMP", "name": "employee_authority", "input": "Exercise employee-owned Agent, Session, Personal KB and allowed Company KB plus denied admin actions.", "acceptance_additions": ["employee sees only task-facing data and cannot inspect another employee"]},
+        {"id": "P15-ADMIN", "name": "company_admin_authority", "input": "Exercise member, Agent lifecycle, Company KB and permission governance plus denied personal-content reads.", "acceptance_additions": ["admin governance does not expose Personal KB or private Session content"]},
+        {"id": "P15-OPERATOR", "name": "platform_operator_authority", "input": "Open scoped operator evidence with a reason and attempt the same surface without scope.", "acceptance_additions": ["operator access is reason/scope/audit bound and not an employee default"]},
+        {"id": "P15-REVOKE", "name": "active_authority_revocation", "input": "Revoke one temporary grant while a synthetic Session/run and second tab are active.", "acceptance_additions": ["new effects stop promptly while unrelated authorized reasoning remains available"]}
+      ]
+    },
+    {
+      "candidate_id": "PJ-16",
+      "proof_order": 3,
+      "domain": "domains/hr-identity-and-permissions.md",
+      "profile": "cross_role",
+      "common": {
+        "persona": "company_admin_then_affected_employee",
+        "entry": "company member lifecycle surface",
+        "acceptance": ["impact preview binds the exact owned Agent/resource set and commit is idempotent", "personal/private assets do not silently transfer and enterprise provenance remains"],
+        "negative_authority": ["old tab, refresh token and revoked direct grants cannot continue after offboarding"],
+        "fault_recovery": ["concurrent drift, response loss and duplicate request yield conflict or idempotent replay without double transfer"],
+        "expected_artifacts": ["preview snapshot", "commit/audit receipt", "post-action positive and negative readback"]
+      },
+      "variants": [
+        {"id": "P16-TRANSFER", "name": "ownership_transfer", "input": "Preview and transfer one synthetic Agent's enterprise responsibility to a successor.", "acceptance_additions": ["creator provenance stays fixed and only explicitly selected enterprise responsibility moves"]},
+        {"id": "P16-OFFBOARD", "name": "employee_offboarding", "input": "Offboard one synthetic member with an active bounded task and temporary grants.", "acceptance_additions": ["credentials, grants, approvals, Local Agent bindings and nonterminal work are atomically revoked/cancelled"]},
+        {"id": "P16-RETENTION", "name": "retention_export_delete_contract", "input": "Inspect and execute only the supported synthetic export/archive/delete/retention path.", "acceptance_additions": ["unsupported policy remains explicitly Missing rather than implied by copy"]}
+      ]
+    },
+    {
+      "candidate_id": "PJ-17",
+      "proof_order": 4,
+      "domain": "domains/collaboration-workflow-and-a2a.md",
+      "profile": "collaboration",
+      "common": {
+        "persona": "employee",
+        "entry": "/agents/{agent_id}/sessions/{fresh_session_id}",
+        "acceptance": ["parent creates one temporary isolated child with narrow context/tools/budget and consumes its evidence in the final answer", "child is not added to persistent Agent rail"],
+        "negative_authority": ["child scope is a strict subset and denied child effects do not expand through the parent"],
+        "fault_recovery": ["child timeout/failure/cancel/late completion/restart permits retry or continue-partial without a second child effect"],
+        "expected_artifacts": ["parent/child task evidence", "child result", "parent integration and UI row"]
+      },
+      "variants": [{"id": "P17-SUB", "name": "subagent_task", "input": "Delegate a bounded research/verification subtask, force one failure branch, and require the parent to integrate the valid evidence.", "acceptance_additions": ["spawn, progress, terminal and failure are typed and reload-stable"]}]
+    },
+    {
+      "candidate_id": "PJ-18",
+      "proof_order": 4,
+      "domain": "domains/collaboration-workflow-and-a2a.md",
+      "profile": "collaboration",
+      "common": {
+        "persona": "employee",
+        "entry": "/agents/{agent_id}/sessions/{fresh_session_id}",
+        "acceptance": ["lead and named role members fan out, review and synthesize distinct outputs", "final synthesis states rejected, unresolved and coverage gaps"],
+        "negative_authority": ["member authority does not exceed the lead's delegated scope"],
+        "fault_recovery": ["partial failure, timeout, lead crash and late result have retry/cancel/abandon and reload-stable state"],
+        "expected_artifacts": ["team/member events", "member outputs", "lead synthesis and user-facing team panel"]
+      },
+      "variants": [{"id": "P18-TEAM", "name": "agent_team_task", "input": "Run a multi-role task with at least two named members, one partial failure and lead integration.", "acceptance_additions": ["Team remains semantically distinct from anonymous subagents"]}]
+    },
+    {
+      "candidate_id": "PJ-19",
+      "proof_order": 4,
+      "domain": "domains/collaboration-workflow-and-a2a.md",
+      "profile": "collaboration",
+      "common": {
+        "persona": "employee",
+        "entry": "/agents/{agent_id}/sessions/{fresh_session_id} workflow draft/preview",
+        "acceptance": ["model-authored versioned workflow supports revise/reject/cancel and exact confirm", "confirmed RuntimeTask executes canonical step/leaf journal and returns integrated result"],
+        "negative_authority": ["validator reports only schema/authority observations and cannot rewrite workflow semantics"],
+        "fault_recovery": ["wait/signal/resume, step retry, duplicate signal, restart and cancel remain idempotent"],
+        "expected_artifacts": ["draft/preview/version", "workflow journal", "result artifact/notification and Session integration"]
+      },
+      "variants": [{"id": "P19-DYNAMIC", "name": "dynamic_workflow_task", "input": "Ask the Agent to propose and run a workflow with sequential, parallel, wait and review-gate steps.", "acceptance_additions": ["the user can see current node, required action, failures and recovery"]}]
+    },
+    {
+      "candidate_id": "PJ-20",
+      "proof_order": 4,
+      "domain": "domains/collaboration-workflow-and-a2a.md",
+      "profile": "company_governance",
+      "common": {
+        "persona": "company_admin_then_employee",
+        "entry": "company Workflow control plane then employee run entry",
+        "acceptance": ["draft/review/publish/version/retire/rollback are separate and run pins exact published version", "standard A to parallel B/C to review gate to join to final DAG completes with audit"],
+        "negative_authority": ["employee cannot mutate published definition or exceed declared Agents/tools/effects"],
+        "fault_recovery": ["definition update does not alter active run; failed node and rollback remain recoverable"],
+        "expected_artifacts": ["published workflow version", "run/step/A2A audit", "final result and user-facing graph state"]
+      },
+      "variants": [{"id": "P20-FIXED", "name": "fixed_workflow_task", "input": "Publish and run one synthetic fixed workflow through its standard multi-Agent DAG, then version and roll it back.", "acceptance_additions": ["function closure is proven before optional path animation polish"]}]
+    },
+    {
+      "candidate_id": "PJ-21",
+      "proof_order": 4,
+      "domain": "domains/collaboration-workflow-and-a2a.md",
+      "profile": "collaboration",
+      "common": {
+        "persona": "employee",
+        "entry": "/agents/{requester_agent_id}/sessions/{fresh_session_id}",
+        "acceptance": ["persistent Agents exchange a scoped request and the requester consumes the returned result/artifact", "requester, peer, child Session, continuation and return path are understandable after reload"],
+        "negative_authority": ["peer, nested child and fixed edge scopes never exceed immediate-parent and chain-root authority"],
+        "fault_recovery": ["unavailable, denied, timeout, ambiguous send, restart and duplicate delivery expose reconcile/retry/cancel without automatic replay"],
+        "expected_artifacts": ["A2A request/receipt", "child Session/result", "parent continuation and integrated final"]
+      },
+      "variants": [
+        {"id": "P21-SYNC", "name": "a2a_sync_consult", "input": "Agent A consults Agent B synchronously and uses B's answer in its final result.", "acceptance_additions": ["one request, one response and one parent consumption are proven"]},
+        {"id": "P21-ASYNC", "name": "a2a_async_delegation", "input": "Agent A delegates to B, the user leaves, and B returns through outbox/notification to exactly one parent continuation.", "acceptance_additions": ["parent can close or be revisited without losing the result"]},
+        {"id": "P21-CONT", "name": "a2a_same_child_continuation", "input": "Continue work with the same active child, then send again after terminal rollover.", "acceptance_additions": ["same-child authority and terminal rollover produce no duplicate continuation"]},
+        {"id": "P21-NESTED", "name": "a2a_nested_chain", "input": "Agent A delegates to B, B delegates to C, and C's result returns through B to A.", "acceptance_additions": ["immediate-parent route and chain-root authority remain distinct and visible"]},
+        {"id": "P21-LONG", "name": "a2a_long_result_artifact", "input": "Agent B returns a result beyond the inline limit and Agent A consumes the governed artifact reference.", "acceptance_additions": ["parent receives only the authorized result artifact, not the child workspace"]},
+        {"id": "P21-FIXED", "name": "a2a_fixed_workflow_edge", "input": "Run an A2A edge inside the frozen fixed Workflow version and trace it back to the step and final result.", "acceptance_additions": ["edge binds workflow version, step, principal, budget and receipt"]}
+      ]
+    },
+    {
+      "candidate_id": "PJ-22",
+      "proof_order": 4,
+      "domain": "domains/automation-hooks-and-capabilities.md",
+      "profile": "external_capability",
+      "common": {
+        "persona": "employee",
+        "entry": "/automations or the corresponding Session command",
+        "acceptance": ["product entry records owner, target, timing/event, permission, budget and enabled state", "fire reaches durable claim, Agent/Workflow, effect, result, notification and terminal audit"],
+        "negative_authority": ["triggered work cannot exceed the creator's current authority and revoked permission stops effects"],
+        "fault_recovery": ["duplicate fire, stale claim, restart, provider unavailable and delivery failure remain idempotent"],
+        "expected_artifacts": ["automation definition", "trigger RuntimeTask/journal", "terminal result/notification"]
+      },
+      "variants": [
+        {"id": "P22-ONCE", "name": "once_trigger", "input": "Create one exact-time synthetic once trigger, run it once, cancel/replay the request and inspect the result.", "acceptance_additions": ["fire count is exactly one and terminal delivery is consumable"]},
+        {"id": "P22-SCHEDULE", "name": "recurring_schedule", "input": "Create a bounded recurring schedule, verify timezone/next run, pause, update and resume it.", "acceptance_additions": ["timezone and DST behavior are explicit and no paused fire occurs"]},
+        {"id": "P22-LOOP", "name": "bounded_goal_loop", "input": "Start a loop with objective, done condition, total budget, checkpoints and stop.", "acceptance_additions": ["loop stops on observable Done or budget and never becomes implicit polling"]},
+        {"id": "P22-EVENT", "name": "verified_event_trigger", "input": "Fire one verified synthetic event bound to source and principal.", "acceptance_additions": ["natural-language text cannot forge trigger authority"]}
+      ]
+    },
+    {
+      "candidate_id": "PJ-23",
+      "proof_order": 4,
+      "domain": "domains/automation-hooks-and-capabilities.md",
+      "profile": "external_capability",
+      "common": {
+        "persona": "employee",
+        "entry": "/messages or exact notification/approval deep-link",
+        "acceptance": ["the user can leave and return to the exact Agent/Session/run/item", "read/unread, dedupe, expiry, resolution and result consumption are durable"],
+        "negative_authority": ["model cannot self-approve and external send remains effect-boundary governed"],
+        "fault_recovery": ["late/duplicate approval, multi-tab, provider retry and ambiguous delivery do not create a second effect"],
+        "expected_artifacts": ["inbox item", "deep-link target", "approval or delivery receipt"]
+      },
+      "variants": [
+        {"id": "P23-NOTIFY", "name": "notification_return_loop", "input": "Leave during a bounded task, return through its completion/failure notification and consume the exact result.", "acceptance_additions": ["no Activity/admin queue lookup is required"]},
+        {"id": "P23-APPROVAL", "name": "approval_inbox_loop", "input": "Open a scoped approval, inspect action/effect/evidence/expiry, deny once and approve a new exact request.", "acceptance_additions": ["denial is zero-effect and approval binds the current request/version"]},
+        {"id": "P23-CHANNEL", "name": "channel_ingress_delivery", "input": "Receive one verified synthetic channel message and deliver one approved terminal reply to the synthetic destination.", "acceptance_additions": ["principal/thread provenance and provider delivery state remain durable and typed"]}
+      ]
+    },
+    {
+      "candidate_id": "PJ-24",
+      "proof_order": 4,
+      "domain": "domains/automation-hooks-and-capabilities.md",
+      "profile": "external_capability",
+      "common": {
+        "persona": "employee_and_local_agent_operator",
+        "entry": "/local-agents and Agent Session Local capability",
+        "acceptance": ["activation, pairing approval, exchange, capability snapshot and Agent binding occur in order", "approved local action returns a hashed artifact/result and offline/reconnect state is understandable"],
+        "negative_authority": ["client-echoed tenant/user metadata is not authority and rejected pairing/action has zero effect"],
+        "fault_recovery": ["disconnect, offline delivery, new ticket, reconnect, report replay, revoke and unpair are idempotent"],
+        "expected_artifacts": ["pairing/exchange audit", "capability snapshot", "local execution/result receipt"]
+      },
+      "variants": [{"id": "P24-LOCAL", "name": "hive_connect_local_agent", "input": "Pair the designated lab Local Agent, execute one approved bounded file task, disconnect/reconnect, then revoke and prove no further execution.", "acceptance_additions": ["browser/daemon channel and actual local runtime health are separately stated"]}]
+    },
+    {
+      "candidate_id": "PJ-25",
+      "proof_order": 4,
+      "domain": "domains/automation-hooks-and-capabilities.md",
+      "profile": "employee_session",
+      "common": {
+        "persona": "employee_and_operator",
+        "entry": "real Session/tool/compaction lifecycle boundary",
+        "acceptance": ["declared Hook event, trigger point, mode, consumer, timeout, evidence and recovery are live-wired", "Hook output never impersonates the model's semantic result"],
+        "negative_authority": ["external Hook payload is untrusted and cannot grant authority or rewrite policy"],
+        "fault_recovery": ["timeout, crash and restart have retry/cancel/abandon and leave no stranded nonterminal state"],
+        "expected_artifacts": ["Hook event/span", "before/after task evidence", "typed failure/recovery"]
+      },
+      "variants": [
+        {"id": "P25-BLOCK", "name": "blocking_hook", "input": "Exercise one blocking Hook at an exact authority/effect boundary with allow and deny outcomes.", "acceptance_additions": ["denial protects the named invariant while unrelated reasoning continues"]},
+        {"id": "P25-OBSERVE", "name": "observe_only_hook", "input": "Force one observe-only Hook failure during an otherwise successful task.", "acceptance_additions": ["failure is observable but does not change model output or task completion semantics"]},
+        {"id": "P25-LIFE", "name": "session_lifecycle_hooks", "input": "Exercise declared SessionStart, PreTool, PostTool, compaction and Stop boundaries.", "acceptance_additions": ["registration is backed by live execution and resumable evidence"]}
+      ]
+    },
+    {
+      "candidate_id": "PJ-26",
+      "proof_order": 4,
+      "domain": "domains/automation-hooks-and-capabilities.md",
+      "profile": "company_governance",
+      "common": {
+        "persona": "company_admin_then_employee",
+        "entry": "Extension/Skill trust surface then Agent Session",
+        "acceptance": ["source, publisher, version, license, hash, risk and tenant scope pass Trust Review", "progressive disclosure loads the Skill only for a relevant task and the Agent uses it successfully"],
+        "negative_authority": ["load adds guidance only and packaged code/workflow/subagent still uses its governed runtime"],
+        "fault_recovery": ["update, diff, deactivate, revoke, rollback and active-Session cache invalidation are visible and recoverable"],
+        "expected_artifacts": ["trusted snapshot/review", "load/use transcript", "version/revoke/rollback evidence"]
+      },
+      "variants": [{"id": "P26-SKILL", "name": "skill_trust_load_use_revoke", "input": "Review, activate and use one bounded synthetic Skill, then update, revoke and roll it back.", "acceptance_additions": ["should-trigger, near-miss, output quality and failure handling are verified"]}]
+    },
+    {
+      "candidate_id": "PJ-27",
+      "proof_order": 4,
+      "domain": "domains/automation-hooks-and-capabilities.md",
+      "profile": "external_capability",
+      "common": {
+        "persona": "company_admin_then_employee",
+        "entry": "MCP/Connector trust surface then Agent Session",
+        "acceptance": ["server/source/version/capabilities/risk/scope/credential owner and strict tool schema are visible", "authenticated authorized use returns typed result within timeout/size/retry/audit contract"],
+        "negative_authority": ["secret never enters prompt/DOM/log/transcript and external descriptions/results cannot change policy"],
+        "fault_recovery": ["auth expiry, reauth, disable, revoke, schema/version change and unavailable server have safe recovery"],
+        "expected_artifacts": ["Trust Review and auth scope", "tool invocation/result", "expiry/revoke audit"]
+      },
+      "variants": [{"id": "P27-MCP", "name": "mcp_connector_lifecycle", "input": "Activate one approved synthetic MCP/Connector capability, use it, expire auth, reauthorize, change version and revoke it.", "acceptance_additions": ["revoked active/retry paths cannot continue calling the connector"]}]
+    },
+    {
+      "candidate_id": "PJ-28",
+      "proof_order": 1,
+      "domain": "domains/frontend-and-product-consumption.md",
+      "profile": "employee_session",
+      "common": {
+        "persona": "employee",
+        "entry": "/agents and /agents/{agent_id}",
+        "acceptance": ["Letta-inspired persistent Agent rail leads to one Agent sidebar and Session while Codex-style content hierarchy remains primary", "Sub-agent, Team and Workflow instances do not enter persistent rail"],
+        "negative_authority": ["switching Agent cannot deliver an old Session response, approval or artifact into the new Agent"],
+        "fault_recovery": ["collapse, search, keyboard navigation, reload and stale status remain stable and accessible"],
+        "expected_artifacts": ["rail/detail screenshot matrix", "navigation trace", "cross-Agent isolation evidence"]
+      },
+      "variants": [
+        {"id": "P28-SMALL", "name": "agent_rail_small_scale", "input": "Navigate, search, favorite and switch among 1 and 5 persistent Agents.", "acceptance_additions": ["active Agent and accessible avatar/status are unambiguous"]},
+        {"id": "P28-LARGE", "name": "agent_rail_large_scale", "input": "Navigate, search and keyboard-select among synthetic 20 and 50-plus Agent lists.", "acceptance_additions": ["scroll, grouping, state updates and selection stay stable at scale"]},
+        {"id": "P28-DETAIL", "name": "employee_agent_detail", "input": "Use one Agent Detail to understand role, capabilities, current task, deliverables, decisions, Memory/KB layers and allowed entry points.", "acceptance_additions": ["raw schema, IDs, provider internals and operator evidence remain progressively disclosed"]}
+      ]
+    },
+    {
+      "candidate_id": "PJ-29",
+      "proof_order": 3,
+      "domain": "domains/frontend-and-product-consumption.md",
+      "profile": "cross_role",
+      "common": {
+        "persona": "audience_matrix",
+        "entry": "role-appropriate employee, enterprise and admin surfaces",
+        "acceptance": ["each audience sees only the intent, evidence and controls required for its job", "server verdict matches frontend presentation on the same protected resource"],
+        "negative_authority": ["changing URL/query/DOM cannot expose a stronger audience surface"],
+        "fault_recovery": ["expired session, denied route and role change converge after reload without stale private content"],
+        "expected_artifacts": ["four-role screenshot matrix", "API verdicts", "audit for scoped operator access"]
+      },
+      "variants": [
+        {"id": "P29-EMP", "name": "employee_surface", "input": "Complete a normal task using only employee navigation and default disclosures.", "acceptance_additions": ["task, progress, decisions and deliverables dominate the reading flow"]},
+        {"id": "P29-CADMIN", "name": "company_admin_surface", "input": "Manage company Agent/knowledge/permission lifecycle without reading private employee content.", "acceptance_additions": ["company control plane is complete but privacy-bounded"]},
+        {"id": "P29-PADMIN", "name": "platform_admin_surface", "input": "Inspect tenant/provider/runtime/compliance health without default business-body access.", "acceptance_additions": ["platform controls remain tenant-scoped and auditable"]},
+        {"id": "P29-OPER", "name": "operator_surface", "input": "Open one reason-bound inspector for a failed synthetic run and perform an allowed repair.", "acceptance_additions": ["operator data stays out of employee DOM and operator has no semantic verdict authority"]}
+      ]
+    },
+    {
+      "candidate_id": "PJ-30",
+      "proof_order": 1,
+      "domain": "domains/frontend-and-product-consumption.md",
+      "profile": "employee_session",
+      "common": {
+        "persona": "employee",
+        "entry": "/agents/{agent_id}/sessions/{fresh_session_id} attachment and deliverables panel",
+        "acceptance": ["input attachment, Session temp file, KB asset and Agent deliverable remain distinct", "deliverable supports preview/download/version/source/ACL/reopen/archive with exact bytes/hash"],
+        "negative_authority": ["foreign principal cannot preview or download and file upload does not auto-persist across authority layers"],
+        "fault_recovery": ["conversion/preview failure, upload retry, reload and stale version do not show false success or duplicate artifacts"],
+        "expected_artifacts": ["source and delivered hashes", "preview/download result", "version/ACL/reload screenshots"]
+      },
+      "variants": [
+        {"id": "P30-PDF", "name": "pdf_artifact", "input": "Upload and produce a uniquely marked PDF deliverable, preview/download/reopen it and verify exact bytes.", "acceptance_additions": ["PDF preview failure remains recoverable with original bytes"]},
+        {"id": "P30-DOCX", "name": "docx_artifact", "input": "Upload and produce a uniquely marked DOCX deliverable, preview/download/reopen it and verify exact bytes.", "acceptance_additions": ["DOCX conversion preserves a user-consumable preview and source file"]},
+        {"id": "P30-MD", "name": "markdown_artifact", "input": "Produce, version, preview, download and reopen a uniquely marked Markdown deliverable.", "acceptance_additions": ["streamed/canonical Markdown and artifact identity do not duplicate"]},
+        {"id": "P30-TXT", "name": "text_artifact", "input": "Produce, version, preview, download and reopen a uniquely marked TXT deliverable.", "acceptance_additions": ["plain-text preview and download are exact and accessible"]}
+      ]
+    },
+    {
+      "candidate_id": "PJ-31",
+      "proof_order": 1,
+      "domain": "domains/frontend-and-product-consumption.md",
+      "profile": "employee_session",
+      "common": {
+        "persona": "employee",
+        "entry": "/messages notification and approval aggregation",
+        "acceptance": ["deep-link returns to the exact Agent/Session/run/item and result/artifact is immediately consumable", "unread/read, dedupe, expiry and resolution are stable across Agent switching"],
+        "negative_authority": ["foreign or expired deep-link reveals no protected title/content"],
+        "fault_recovery": ["multi-tab, rapid Agent switching, reload and duplicate notification converge on one item"],
+        "expected_artifacts": ["inbox state", "deep-link trace", "exact result/artifact consumption"]
+      },
+      "variants": [{"id": "P31-ASYNC", "name": "async_deeplink_return", "input": "Leave a running task, return via its notification in another tab, resolve it and verify dedupe/expiry.", "acceptance_additions": ["no response, approval or artifact lands in the wrong Agent"]}]
+    },
+    {
+      "candidate_id": "PJ-32",
+      "proof_order": 1,
+      "domain": "domains/frontend-and-product-consumption.md",
+      "profile": "cross_role",
+      "common": {
+        "persona": "employee_admin_operator_matrix",
+        "entry": "the named critical product surface",
+        "acceptance": ["empty, loading, success, long content, waiting, denied, unavailable, retryable, terminal, reload and offline states are coherent", "light/dark, desktop/narrow, 200 percent zoom, keyboard-only and reduced-motion remain usable"],
+        "negative_authority": ["error and denied UI leaks no raw exception, secret, private content or stronger-role control"],
+        "fault_recovery": ["focus restores after dialog/panel, live region avoids duplicate token announcements and retry converges"],
+        "expected_artifacts": ["standardized screenshot matrix", "keyboard/a11y results", "console/network error inventory"]
+      },
+      "variants": [
+        {"id": "P32-SESSION", "name": "session_visual_accessibility_matrix", "input": "Capture and operate the complete state/theme/viewport matrix for Session streaming and recovery.", "acceptance_additions": ["Codex-style content hierarchy and single process owner remain intact"]},
+        {"id": "P32-AGENT", "name": "agent_detail_visual_accessibility_matrix", "input": "Capture and operate the complete matrix for Agent rail/sidebar/detail and decision states.", "acceptance_additions": ["Letta reference is limited to the multi-Agent shell"]},
+        {"id": "P32-KNOW", "name": "knowledge_visual_accessibility_matrix", "input": "Capture and operate the complete matrix for Personal and Company Knowledge intake/search/review states.", "acceptance_additions": ["denied, unavailable, empty, not-indexed and parse-failed remain distinct"]},
+        {"id": "P32-ADMIN", "name": "admin_operator_visual_accessibility_matrix", "input": "Capture and operate the complete matrix for company admin and scoped operator surfaces.", "acceptance_additions": ["advanced evidence is progressively disclosed and keyboard reachable"]}
+      ]
+    },
+    {
+      "candidate_id": "PJ-33",
+      "proof_order": 1,
+      "domain": "domains/frontend-and-product-consumption.md",
+      "profile": "employee_session",
+      "common": {
+        "persona": "employee_and_operator",
+        "entry": "Agent Detail model settings then a fresh Agent Session",
+        "acceptance": ["selected model/provider is the model that actually executes and the UI never silently switches or shrinks tools", "operator evidence records model, prompt/tool bundle, context, token, cache, latency, retry, cost and terminal state"],
+        "negative_authority": ["employee sees only safe usage/budget summary and cannot access credentials or raw provider payload"],
+        "fault_recovery": ["provider reject, timeout, rate limit and unavailable are typed; fallback, when explicitly configured, remains visible and recoverable"],
+        "expected_artifacts": ["selected model setting", "model call/invocation evidence", "employee and operator presentations"]
+      },
+      "variants": [
+        {"id": "P33-MINIMAX", "name": "minimax_model_fidelity", "input": "Select the current enabled MiniMax entry and complete the frozen compatibility task.", "model_label": "minimax", "acceptance_additions": ["exact server model/provider binding is recorded at Gate 0"]},
+        {"id": "P33-GLM", "name": "glm_model_fidelity", "input": "Select the current enabled GLM entry and complete the frozen compatibility task.", "model_label": "glm", "acceptance_additions": ["exact server model/provider binding is recorded at Gate 0"]},
+        {"id": "P33-DEEPSEEK", "name": "deepseek_model_fidelity", "input": "Select the current enabled DeepSeek entry and complete the frozen compatibility task.", "model_label": "deepseek", "acceptance_additions": ["exact server model/provider binding is recorded at Gate 0"]}
+      ]
+    },
+    {
+      "candidate_id": "PJ-34",
+      "proof_order": 4,
+      "domain": "06-runbook-and-release-gates.md",
+      "profile": "cross_role",
+      "common": {
+        "persona": "security_verifier",
+        "entry": "the real product entry and authority boundary named by the threat",
+        "acceptance": ["named attack is blocked at the smallest authoritative boundary and the normal novice path remains usable", "mechanical controls do not author semantic conclusions"],
+        "negative_authority": ["benign text containing security/tool words continues to reason normally"],
+        "fault_recovery": ["denial, retry, cancel and evidence-preserving recovery are typed and idempotent"],
+        "expected_artifacts": ["attack request", "deny/allow audit", "normal-path usability regression"]
+      },
+      "variants": [
+        {"id": "P34-INJECT", "name": "indirect_prompt_injection", "input": "Place adversarial instructions in a document, Channel/MCP/Skill/tool/subagent/A2A result and require them to remain data.", "acceptance_additions": ["system authority, approval and effect policy remain unchanged"]},
+        {"id": "P34-TENANT", "name": "cross_tenant_probing", "input": "Probe known foreign Agent, Session, Personal/Company KB, artifact and operator objects.", "acceptance_additions": ["no count, title, timing or content existence signal leaks"]},
+        {"id": "P34-SECRET", "name": "secret_pii_exposure", "input": "Exercise model/tool/error/UI/log paths with synthetic secret-like values.", "acceptance_additions": ["unauthorized bytes are excluded or exactly redacted without replacing model semantics"]},
+        {"id": "P34-REPLAY", "name": "duplicate_and_replay", "input": "Replay accepted input, tool result, approval, delivery and callback identifiers.", "acceptance_additions": ["at-most-one semantic record and external effect are observed"]},
+        {"id": "P34-APPROVAL", "name": "approval_bypass", "input": "Attempt self-approval, natural-language approval, stale approval and mismatched version approval.", "acceptance_additions": ["only authenticated structured approval for the exact object can commit the effect"]},
+        {"id": "P34-DELEGATE", "name": "delegation_scope_escalation", "input": "Attempt to expand tools, resources, tenant or effects through Sub-agent, Team, Workflow and nested A2A.", "acceptance_additions": ["every child scope is the exact intersection of parent authority and delegated grant"]}
+      ]
+    },
+    {
+      "candidate_id": "PJ-35",
+      "proof_order": 4,
+      "domain": "06-runbook-and-release-gates.md",
+      "profile": "release",
+      "common": {
+        "persona": "release_controller_and_signed_in_employee",
+        "entry": "Railway production deployment plus the frozen signed-in journey suite",
+        "acceptance": ["backend, backend-api and frontend are SUCCESS from the same application commit", "every in-scope journey passes twice on that commit with hard reload, faults, authority negatives and cleanup"],
+        "negative_authority": ["deployment, health, CI, Issue or worker success cannot substitute for signed-in product acceptance"],
+        "fault_recovery": ["failed deploy or production defect creates a new candidate commit and invalidates prior production evidence; rollback target remains executable"],
+        "expected_artifacts": ["three deployment IDs and statuses", "release-gates evidence", "all journey pass evidence", "rollback and cleanup ledger"]
+      },
+      "variants": [{"id": "P35-RELEASE", "name": "three_service_release_and_double_pass", "input": "Deploy the frozen final application commit to all three services, run the complete signed-in suite twice, exercise rollback readiness and close evidence.", "acceptance_additions": ["application commit D and later docs-only evidence commit E are explicitly distinguished"]}]
+    }
+  ]
+}

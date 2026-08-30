@@ -4,15 +4,15 @@ owner: Codex
 status: active
 authority: canonical-working-state
 last_reviewed: 2026-08-30
-source_commit: 228682e5
-verification_status: control-layer-and-provider-smokes-verified-manifest-review-next
+source_commit: c18b181c
+verification_status: owner-approved-production-denominator-frozen-control-commit-in-progress
 ---
 
 # 当前状态与唯一下一动作
 
 [返回索引](README.md) · [旅程账本](04-journey-ledger.md) · [Findings](05-findings.md) · [Runbook](06-runbook-and-release-gates.md)
 
-> 文档重构、远程控制层和真实 delegation smoke 已完成；owner 已批准精简执行模型。产品旅程尚未开始，production manifest 尚未冻结。
+> owner 已接受 PDEC-001～PDEC-006、最终部署和 D/E 双提交合同；96 条 production journeys 已冻结并通过机械结构校验。产品旅程尚未开始，本轮 NPTCR 仍为 0%。
 
 ## 当前目标与可观察 Done
 
@@ -24,8 +24,8 @@ verification_status: control-layer-and-provider-smokes-verified-manifest-review-
 
 | 事实 | 当前值 | 证据等级 |
 |---|---|---|
-| 已推送控制基线 | `228682e53eb9f9dee1a0a97a57c8dd41df2d176a` | 本轮 commit + `origin/main` push 已核验 |
-| active Goal | Codex Goal `01a05189-c369-75f0-a720-ffe16136644f`，状态 `active` | 本轮 Goal API 已核验 |
+| 已推送控制基线 | `c18b181c690fe3c4aa5366a8fd504023b0c41864` | `HEAD = main = origin/main` 本轮重新核验；当前控制冻结改动尚未 commit |
+| Goal | Codex Goal `01a05189-c369-75f0-a720-ffe16136644f`，API 当前仍为 `paused` | owner 新消息已明确继续当前任务，但不得把 Goal 机械状态伪写为 active；进入长时循环前重查 |
 | execution roles | Codex 总控/验收；Kimi Code 前端；zCode 后端 | owner 2026-08-30 已批准，见 DEC-008～DEC-012 |
 | delegation protocol | `agent-delegation` Skill `0.1.2` 是唯一派发/授权/receipt 协议；`cwd` 不宣称为 sandbox | owner 2026-08-30 已批准 |
 | delegation readiness | doctor `ok`；Kimi `1.49.0`、zCode ACP `0.1.0+ultra.zcode.0.16.5` 的 stateless read-only correction smoke 均 `exit=0`、零 protocol error、零 worktree diff | receipt `0443f540…` / `9b15c8f7…`；Codex 独立核对包名、版本和 exact commit |
@@ -34,7 +34,8 @@ verification_status: control-layer-and-provider-smokes-verified-manifest-review-
 | 当前 production 业务提交 | `eb61d468221aa22a4f22c1d96353baadef3b51e6` | 从旧账当前快照迁移；本次未重新查询 Railway |
 | Session terminal/failure | 旧账记录 §7.77/§7.78 已部署并完成 signed-in 双遍 | 历史证据；不外推整体 RC |
 | executable CI manifest | `acceptance/atomic_user_journeys.v1.json`，J-01～J-15，声明受控 external fakes | 本轮源码已核验 |
-| production NPTCR manifest | 尚未创建或冻结 | 明确 Not Done |
+| production NPTCR manifest | `acceptance/weekend_production_journeys.v1.json`，35 组展开 96 条，external fake 禁止 | 已冻结；validator `valid=true`；当前无 production pass |
+| mechanical gate | `backend/scripts/weekend_rc_gate.py` | 只校验 exact facts/算术，固定 `semantic_verdict=not_computed_by_tool` |
 
 ## 当前产品总判断
 
@@ -82,28 +83,26 @@ verification_status: control-layer-and-provider-smokes-verified-manifest-review-
 - 已建立远程 RC milestone、labels 和 umbrella Issue；它们只承担队列/审计，不拥有 verdict。
 - 首轮 smoke 因 worker 请求 `git rev-parse` execute 权限而在 `approve-reads` 下正确 fail-closed；新无状态 correction packet 仅使用 read-file 后，Kimi/zCode 均成功，两个临时 worktree 保持零改动并已安全移除。
 - owner 已进一步批准：Goal 只管最终 Done/停止条件，Skill 管派发协议，Issue 管工作包，Codex 独占验收/集成/生产 E2E。
+- owner 已正式接受 PDEC-001～PDEC-006、最终三服务同应用提交部署和实验 tenant 内可回收合成 E2E；凭据、计费、DDL、不可逆效果仍未授权。
+- 已冻结 96 条 production journeys；20 commands、Personal/Artifact 四格式、A2A 六路径、Automation 四模式、MiniMax/GLM/DeepSeek 和六类安全探针均独立计分。
+- 已新增 manifest validator/evidence scorer；它只计算结构、双遍、部署 identity、护栏和证据覆盖，不判断语义质量。
 
 ## 最近验证
 
-- Weekend document group + existing atomic manifest architecture tests：**13 passed**。
-- 新 Python test：Ruff check passed；Ruff format check passed。
-- required files、metadata、Markdown links、balanced fences、J-01～J-15、PJ-01～PJ-35、active line budgets 全部通过。
-- task-state resolve：`docs/acceptance/2026-08-30-weekend-rc/03-current-status.md`。
-- active 文档合计约 1,300 行，单文件最大 117 行；历史 5,000+ 行内容只存在 archive。
-- `git diff --check`：通过。
-- 控制基线核验：`HEAD = main = origin/main = 228682e5`（本状态更新前）。
-- Weekend document group + existing atomic manifest architecture tests：**15 passed**（包含 execution-control 与 Issue form 新合同）。
-- 新 Python test：Ruff check/format passed；全部 Issue Form YAML 可解析；task-state resolve 与 `git diff --check` passed。
-- Kimi correction receipt `0443f540…` 与 zCode correction receipt `9b15c8f7…`：`status=success`、`exit=0`、无 permission/execute/write 事件；Codex 独立读取验证 `hiveclaw-frontend 0.1.0` / `hive-backend 0.1.0`。
+- 上一控制层：Weekend 文档/CI manifest/Issue contract 15 tests passed；Kimi 与 zCode stateless read-only correction smoke 均 `exit=0`、零 worktree diff。
+- 本轮 manifest：`python3 backend/scripts/weekend_rc_gate.py validate` → `valid=true`、denominator `96`、semantic verdict 未计算。
+- 本轮控制冻结 tests：production manifest、文档组、既有 atomic CI manifest 合计 **18 passed**；Ruff check/format 与 scope-limited `git diff --check` 通过。
+- task-state resolve 仍指向本文件；`HEAD = main = origin/main = c18b181c` 在改动前重新核验。
 
 ## 唯一下一动作
 
-与 owner 过稿 [02-owner-decisions.md](02-owner-decisions.md) 的 PDEC-001～PDEC-006 和 [04-journey-ledger.md](04-journey-ledger.md) 的 35 个候选组；确认后把 aggregate 候选展开为可独立计分的 production manifest 并冻结，随后才进入 Gate 0 和第一条真实 E2E。
+完成控制冻结的全套结构/格式测试并原子 commit/push；随后执行 Gate 0 只读 preflight，重新核验 Goal、三服务 deployment、账号角色、MiniMax/GLM/DeepSeek exact bindings 和 Hive Connect，再开始 `P01-MAIN` 第一条 signed-in E2E。
 
 ## Not Done / Do Not Redo
 
-- 未冻结 production journey manifest，未计算 NPTCR 或 Evidence Coverage Score。
+- production manifest 已冻结，但尚无本轮 production evidence；NPTCR=0/96，Evidence Coverage 尚未成立。
 - 仅完成 Kimi/zCode 只读 smoke；未派实现 task，未修改业务代码/UI，未跑测试全量、Railway 部署或生产写入。
 - 未重新验证 provider、Hive Connect 或生产三服务状态。
+- Goal API 仍显示 `paused`；进入长时 dispatch/E2E 循环前必须重新读取并如实处理，不能靠文档假定 active。
 - 不触碰 pre-existing `.ultra/.runtime/compact-snapshot.md`、`bp-kingdee/`、`output/`、root `package*.json`、`tmp/pdfs/` 等用户工作树内容。
 - 不把 archive 中某个历史 `PASS` 自动迁移成当前 aggregate `Closed loop`。

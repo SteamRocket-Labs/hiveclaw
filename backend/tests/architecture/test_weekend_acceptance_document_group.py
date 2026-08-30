@@ -9,6 +9,8 @@ GROUP = ROOT / "docs" / "acceptance" / "2026-08-30-weekend-rc"
 LEGACY_REDIRECT = ROOT / "docs" / "wip" / "weekend-release-readiness-and-zero-known-defects-2026-08-25.md"
 ISSUE_TEMPLATE_GROUP = ROOT / ".github" / "ISSUE_TEMPLATE"
 WEEKEND_WORK_PACKET = ISSUE_TEMPLATE_GROUP / "weekend_rc_work_packet.yml"
+PRODUCTION_MANIFEST = ROOT / "acceptance" / "weekend_production_journeys.v1.json"
+PRODUCTION_GATE = ROOT / "backend" / "scripts" / "weekend_rc_gate.py"
 
 REQUIRED_FILES = (
     "README.md",
@@ -122,24 +124,28 @@ def test_active_markdown_links_resolve() -> None:
     assert not failures, "broken Weekend RC Markdown links:\n" + "\n".join(failures)
 
 
-def test_journey_ledger_preserves_ci_ids_and_has_one_candidate_denominator() -> None:
+def test_journey_ledger_preserves_ci_ids_and_has_one_frozen_denominator() -> None:
     ledger = (GROUP / "04-journey-ledger.md").read_text(encoding="utf-8")
     ci_ids = re.findall(r"^\| (J-\d{2}) \|", ledger, flags=re.MULTILINE)
     candidate_ids = re.findall(r"^\| (PJ-\d{2}) \|", ledger, flags=re.MULTILINE)
 
     assert ci_ids == [f"J-{index:02d}" for index in range(1, 16)]
     assert candidate_ids == [f"PJ-{index:02d}" for index in range(1, 36)]
-    assert "candidate-denominator-not-frozen" in ledger
+    assert PRODUCTION_MANIFEST.is_file()
+    assert "frozen-production-denominator-96-no-pass-evidence-yet" in ledger
+    assert "共 **96** 条可独立计分的 production journeys" in ledger
     assert "weekend_production_journeys.v1.json" in ledger
-    assert "当前 production manifest 尚未冻结" in ledger
+    assert "0/96 Closed；NPTCR 0%" in ledger
 
 
 def test_structural_checks_do_not_claim_semantic_acceptance() -> None:
     index = (GROUP / "README.md").read_text(encoding="utf-8")
     evidence_contract = (GROUP / "evidence" / "README.md").read_text(encoding="utf-8")
+    production_gate = PRODUCTION_GATE.read_text(encoding="utf-8")
     assert "结构检查只验证文件、ID、链接、字段" in index
     assert "不判断语义质量" in index
-    assert "format-only-no-production-evidence-created" in evidence_contract
+    assert "frozen-machine-contract-no-production-evidence-created" in evidence_contract
+    assert '"semantic_verdict": "not_computed_by_tool"' in production_gate
 
 
 def test_execution_control_contract_is_explicit_and_non_semantic() -> None:
@@ -160,6 +166,10 @@ def test_execution_control_contract_is_explicit_and_non_semantic() -> None:
     assert "approve-all" in runbook
     assert "--authorization-note" in runbook
     assert "exit=0` 只表示 transport 成功" in runbook
+    for decision_id in ("PDEC-001", "PDEC-002", "PDEC-003", "PDEC-004", "PDEC-005", "PDEC-006"):
+        assert decision_id in decisions
+    assert "一个可独立回滚的共享根因对应一个 Codex integration commit" in runbook
+    assert "新增纯 evidence/docs commit `E`" in runbook
 
 
 def test_weekend_work_packet_template_matches_current_repository_and_boundaries() -> None:

@@ -4,8 +4,8 @@ owner: Codex
 status: active
 authority: canonical-execution-and-release-gate
 last_reviewed: 2026-08-30
-source_commit: 228682e5
-verification_status: execution-control-and-skill-boundary-approved-manifest-review-pending
+source_commit: c18b181c
+verification_status: owner-approved-production-manifest-and-delivery-contract-frozen
 ---
 
 # 12 小时 Runbook 与 Release Gates
@@ -45,7 +45,7 @@ verification_status: execution-control-and-skill-boundary-approved-manifest-revi
 
 - 锁定 checkout、production exact commit、三个 Railway service deployment、账号/角色和数据版本。
 - 确认 selected model/provider、semantic runner、Channel、Local Agent 当前可用性。
-- 冻结 production journey manifest；所有 Candidate 展开为可独立计分的旅程。
+- 核对已冻结 production journey manifest 的 Git blob/hash；96 条旅程不得因执行结果变化而删除或合并。
 - 登记合成资产、预期外部效果、成本/时延测量点和 cleanup。
 - 读取 [02-owner-decisions.md](02-owner-decisions.md)；未授权的 credential、DDL、删除、邀请和生产效果不执行。
 - semantic runner 不可用时立即记录 `BLOCKED_PRECONDITION`，不跑伪语义验收。
@@ -55,11 +55,11 @@ verification_status: execution-control-and-skill-boundary-approved-manifest-revi
 | 时间窗 | 主线 | Stop Gate |
 |---:|---|---|
 | 0:00–0:30 | Gate 0 与 semantic runner go/no-go | 无真实 runner 时记录 blocker 并停止相关语义分支 |
-| 0:30–2:00 | 冻结 manifest + 单 Agent North Star | 单 Agent 失败先修基础，不进入多 Agent 装饰 |
+| 0:30–2:00 | 核对 manifest bindings + 单 Agent North Star | 单 Agent 失败先修基础，不进入多 Agent 装饰 |
 | 2:00–4:00 | Session、20 commands、Agent rail/AgentDetail；独立前后端 finding 可双 worker 并行 | 量化 streaming/reload、target panel、角色与 50+ Agent scale |
 | 4:00–6:00 | HR、Growth、三层知识、权限、offboarding | 创建/首任务、纵向收益、多格式/引用、权限负向、数据政策 |
-| 6:00–8:00 | Collaboration、Automation、Hook/Skill/MCP、安全 | 五类协作分别跑；trigger/channel/local；Trust lifecycle；对抗与恢复；8:00 code freeze |
-| 8:00–9:15 | 最终本地/CI gate | 任一修复使受影响 gate 和 code-freeze 重新计时 |
+| 6:00–8:00 | Collaboration、Automation、Hook/Skill/MCP、安全 | 五类协作分别跑；trigger/channel/local；Trust lifecycle；对抗与恢复；`T+8:00` code freeze |
+| 8:00–9:15 | 最终本地/CI gate | 任一 runtime/code/config/schema 修复使当前候选 `D` 作废；生成新候选并重跑受影响门及最终全量门，不是重等八小时 |
 | 9:15–9:45 | 原子交付与三服务 exact deploy | 三服务未同提交 `SUCCESS` 不进入最终计分 |
 | 9:45–11:45 | frozen manifest signed-in 双遍 | 同一 final commit；hard reload、断线、retry/cancel、权限负向、artifact、notification、console/log、latency/cost |
 | 11:45–12:00 | 最终 Verdict | NPTCR、五护栏、Evidence Coverage、七原子、ZKD、Excluded/Blocked、cleanup、下一动作 |
@@ -77,11 +77,32 @@ frozen journey + exact code/data/persona
   -> repair one authoritative contract/root cause
   -> focused + cross-domain + full + real PG + build/i18n/a11y
   -> atomic commit
+  -> continue remaining frozen journeys without per-commit production deploy
+  -> freeze final application candidate D
   -> backend/backend-api/frontend exact same commit deploy
   -> signed-in clean pass 1 + hard reload
   -> signed-in clean pass 2 + fault/recovery + negative authority
   -> evidence file + ledger Closed, or truthful BLOCKED_PRECONDITION
 ```
+
+## Commit、Issue 与交付账本
+
+1. 复现后才创建 Finding/Issue；同一 dispatch wave 可用一个 docs checkpoint 提交多个互不相关的已复现 Finding。
+2. 一个可独立回滚的共享根因对应一个 Codex integration commit，包含实现、failing-first regression 和适用 migration/backfill/rollback；不按页面、worker、测试运行或 receipt 机械拆 commit。
+3. Kimi/zCode 不 commit；Codex 复核 diff、live wiring 和测试后才集成。跨层合同先固定权威层，再消费前端，必要时用有序提交，不允许半个合同进入候选。
+4. 每个集成提交 push 后运行现有 CI，但不自动部署生产。Issue 在本地验证后只能标 `awaiting-production`，不能 Closed。
+5. 最终应用候选记为 `D`；所有 runtime code、schema、migration、config、测试和当时状态文档都在 `D`。三个 Railway 服务只部署同一个 `D`。
+6. `D` 的 signed-in 双遍完成后，新增纯 evidence/docs commit `E`，其父提交为 `D`。最终交付同时报告 Application SHA `D` 和 Evidence SHA `E`；`E` 不重新部署，否则会产生未被双遍验证的新应用身份。
+7. 若 production 暴露缺陷，旧 `D` 和其 pass 立即失效；修复形成 `D2`，三个服务全部重新部署并重新运行完整双遍，最后才生成新的 `E2`。
+
+机械入口：
+
+```bash
+python3 backend/scripts/weekend_rc_gate.py validate
+python3 backend/scripts/weekend_rc_gate.py score --deployed-commit <40-char-application-sha>
+```
+
+该工具只拥有 manifest/evidence/deployment exact facts 和算术，不拥有 Journey、Finding、产品质量或最终语义 verdict。
 
 ## 本地与 CI Release Gate
 
@@ -102,6 +123,7 @@ frozen journey + exact code/data/persona
 - reload、disconnect、worker restart、duplicate delivery、retry、cancel 不造成假成功、永久挂起或重复 effect。
 - permission denied、unavailable、empty、not-indexed、parse-failed 分开表达。
 - Zero Known Defects：范围内无开放 P0/P1/用户可见 P2，其他 defect 也不得以优先级自动延期。
+- `weekend_rc_gate.py score` 必须 `mechanical_ready=true`，但该结果只是 Codex 已接受证据的机械完整性确认，不能独立升级 Journey。
 
 ## 安全与对抗性 Gate
 
@@ -126,7 +148,7 @@ frozen journey + exact code/data/persona
 
 ## 停止并回到 owner
 
-1. 需要生产 DDL、不可逆迁移、删除数据、创建外部账号或发送外部邀请。
+1. 需要生产 DDL、不可逆迁移、删除数据、创建外部账号或发送冻结 manifest 之外的外部邀请/消息。
 2. 发现跨租户泄漏、凭据泄漏或数据破坏风险。
 3. 修复要求改变已接受产品语义，而不是恢复现有合同。
 4. 同一路径连续三次修复暴露不同底层问题；停止补丁，提交根因报告。
@@ -134,8 +156,9 @@ frozen journey + exact code/data/persona
 
 ## 最终交付
 
-- exact code/tests/migration/backfill/rollback；
-- three-service deployment identity；
+- Application SHA `D`：exact code/tests/migration/backfill/rollback；
+- backend/backend-api/frontend 绑定 `D` 的 deployment identity；
+- Evidence SHA `E`：只记录在 `D` 上已发生的生产事实；
 - production journey evidence + screenshot matrix；
 - employee/admin/operator audience verdict；
 - J1/J2/J3/J4 growth and bakeoff；

@@ -4,8 +4,8 @@ owner: Rocky / Codex
 status: active
 authority: canonical-human-journey-ledger
 last_reviewed: 2026-08-30
-source_commit: 45340a3a
-verification_status: candidate-denominator-not-frozen
+source_commit: c18b181c
+verification_status: frozen-production-denominator-96-no-pass-evidence-yet
 ---
 
 # Journey Ledger
@@ -16,9 +16,10 @@ verification_status: candidate-denominator-not-frozen
 
 ## 分母状态
 
-- 当前：`Candidate`，尚未冻结。
-- owner 过稿后：生成独立 `acceptance/weekend_production_journeys.v1.json`，记录 exact persona、entry、data version、allowed effects、acceptance、fault probes、evidence path 和 cleanup。
+- 当前：`Frozen`，共 **96** 条可独立计分的 production journeys。
+- 机器权威：[`acceptance/weekend_production_journeys.v1.json`](../../../acceptance/weekend_production_journeys.v1.json)，freeze basis `c18b181c690fe3c4aa5366a8fd504023b0c41864`；记录 persona、entry、data version、allowed effects、acceptance、fault probes、evidence path 和 cleanup。
 - 冻结后不得删除或合并失败项；owner 只能带理由标为 `Excluded`。
+- `BLOCKED_PRECONDITION` 留在分母并按失败计，不得用受控 fake、历史 PASS 或未执行状态替代。
 - production release 要求全部冻结旅程在同一 exact commit 连续两遍 clean pass；组级通过不能替代子旅程。
 
 ## 现有确定性 CI 基线
@@ -49,41 +50,41 @@ verification_status: candidate-denominator-not-frozen
 
 | Candidate ID | 旅程组 | Domain 权威 | 分母状态 | 当前闭环判断 |
 |---|---|---|---|---|
-| PJ-01 | 单 Agent 真实开放任务与 CCPlus 生命周期 | [Single Agent](domains/single-agent-and-session.md) | Candidate | Partial loop |
-| PJ-02 | Session streaming、terminal、failure、reload 同构 | [Single Agent](domains/single-agent-and-session.md) | Candidate | Partial loop；核心子集 Closed |
-| PJ-03 | 20 条斜杠命令逐条产品闭环 | [Single Agent](domains/single-agent-and-session.md) | Candidate；冻结时拆 20 条 | Breakpoint |
-| PJ-04 | Plan / Goal / Task / Ledger | [Single Agent](domains/single-agent-and-session.md) | Candidate | Partial loop |
-| PJ-05 | J1 candidate provisional trial | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Candidate | Partial loop |
-| PJ-06 | J2 longitudinal growth 与 owner feedback | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Candidate | Partial loop |
-| PJ-07 | J3 platform change non-regression | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Candidate | Partial loop |
-| PJ-08 | J4 FreeCode/Hermes real bakeoff | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Candidate | BLOCKED_PRECONDITION until real run |
-| PJ-09 | Agent Memory T0→T2→T3→Soul/Skill reuse | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Candidate | Partial loop |
-| PJ-10 | Personal KB multi-format ingest/search/read/cite | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Candidate | Partial loop |
-| PJ-11 | Company KB direct import/proposal/review/publish/read | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Candidate | Partial loop |
-| PJ-12 | Personal/Agent→Company promotion 与治理 | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Candidate | Partial loop |
-| PJ-13 | HR 创建、revise/reject/confirm/provision/首任务 | [HR/Identity](domains/hr-identity-and-permissions.md) | Candidate | Partial loop |
-| PJ-14 | Agent→HR 受治理 handoff | [HR/Identity](domains/hr-identity-and-permissions.md) | Candidate | Partial loop |
-| PJ-15 | 角色/权限正负向与 active revocation | [HR/Identity](domains/hr-identity-and-permissions.md) | Candidate | Breakpoint |
-| PJ-16 | owner transfer、offboarding、retention/export/delete | [HR/Identity](domains/hr-identity-and-permissions.md) | Candidate | Partial loop / Missing policies |
-| PJ-17 | Sub-agent 完成、失败、取消、父任务消费 | [Collaboration](domains/collaboration-workflow-and-a2a.md) | Candidate | Partial loop |
-| PJ-18 | Agent Team fanout/review/partial failure/integration | [Collaboration](domains/collaboration-workflow-and-a2a.md) | Candidate | Partial loop |
-| PJ-19 | Dynamic Workflow preview/confirm/run/wait/resume/result | [Collaboration](domains/collaboration-workflow-and-a2a.md) | Candidate | Partial loop |
-| PJ-20 | Fixed A2A Workflow version/publish/run/audit | [Collaboration](domains/collaboration-workflow-and-a2a.md) | Candidate | Partial loop |
-| PJ-21 | A2A sync/async/continuation/nested/artifact | [Collaboration](domains/collaboration-workflow-and-a2a.md) | Candidate；冻结时拆路径 | Partial loop |
-| PJ-22 | once/schedule/bounded loop/event trigger | [Automation](domains/automation-hooks-and-capabilities.md) | Candidate；冻结时拆模式 | Breakpoint aggregate |
-| PJ-23 | Notification/Approval/Channel return loop | [Automation](domains/automation-hooks-and-capabilities.md) | Candidate | Breakpoint aggregate |
-| PJ-24 | Local Agent pair/online/offline/approval/reconnect/revoke | [Automation](domains/automation-hooks-and-capabilities.md) | Candidate | BLOCKED_PRECONDITION until live bridge |
-| PJ-25 | Hook blocking/observe-only/failure/recovery | [Automation](domains/automation-hooks-and-capabilities.md) | Candidate | Breakpoint aggregate |
-| PJ-26 | Skill trust/load/use/update/revoke | [Automation](domains/automation-hooks-and-capabilities.md) | Candidate | Breakpoint aggregate |
-| PJ-27 | MCP/Connector auth/use/expiry/revoke/schema change | [Automation](domains/automation-hooks-and-capabilities.md) | Candidate | Breakpoint aggregate |
-| PJ-28 | Agent rail/AgentDetail employee scale and navigation | [Frontend](domains/frontend-and-product-consumption.md) | Candidate | Breakpoint |
-| PJ-29 | Employee/admin/platform/operator audience split | [Frontend](domains/frontend-and-product-consumption.md) | Candidate | Breakpoint |
-| PJ-30 | Artifact preview/download/version/ACL/reopen | [Frontend](domains/frontend-and-product-consumption.md) | Candidate | Breakpoint aggregate |
-| PJ-31 | Async deep-link/inbox/unread/dedupe/expiry | [Frontend](domains/frontend-and-product-consumption.md) | Candidate | Breakpoint aggregate |
-| PJ-32 | Theme/narrow screen/keyboard/a11y/state screenshots | [Frontend](domains/frontend-and-product-consumption.md) | Candidate | Breakpoint aggregate |
-| PJ-33 | selected-model/provider/latency/token/cost/cache fidelity | [Frontend](domains/frontend-and-product-consumption.md) | Candidate | Breakpoint aggregate |
-| PJ-34 | Prompt injection、cross-tenant、secret、replay、approval bypass | [Release Gates](06-runbook-and-release-gates.md) | Candidate；冻结时拆 threat | Breakpoint aggregate |
-| PJ-35 | three-service exact deploy、rollback 与 production double pass | [Release Gates](06-runbook-and-release-gates.md) | Candidate | Partial loop |
+| PJ-01 | 单 Agent 真实开放任务与 CCPlus 生命周期 | [Single Agent](domains/single-agent-and-session.md) | Frozen ×1 | Partial loop |
+| PJ-02 | Session streaming、terminal、failure、reload 同构 | [Single Agent](domains/single-agent-and-session.md) | Frozen ×1 | Partial loop；核心子集有历史 Closed 证据 |
+| PJ-03 | 20 条斜杠命令逐条产品闭环 | [Single Agent](domains/single-agent-and-session.md) | Frozen ×20 | Breakpoint |
+| PJ-04 | Plan / Goal / Task / Ledger | [Single Agent](domains/single-agent-and-session.md) | Frozen ×3 | Partial loop |
+| PJ-05 | J1 candidate provisional trial | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×1 | Partial loop |
+| PJ-06 | J2 longitudinal growth 与 owner feedback | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×1 | Partial loop |
+| PJ-07 | J3 platform change non-regression | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×1 | Partial loop |
+| PJ-08 | J4 FreeCode/Hermes real bakeoff | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×1 | BLOCKED_PRECONDITION until real run |
+| PJ-09 | Agent Memory T0→T2→T3→Soul/Skill reuse | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×1 | Partial loop |
+| PJ-10 | Personal KB multi-format ingest/search/read/cite | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×5 | Partial loop |
+| PJ-11 | Company KB direct/background import→publish→read | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×2 | Partial loop |
+| PJ-12 | Personal/Agent→Company promotion 与治理 | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×1 | Partial loop |
+| PJ-13 | HR 创建、revise/reject/confirm/provision/首任务 | [HR/Identity](domains/hr-identity-and-permissions.md) | Frozen ×1 | Partial loop |
+| PJ-14 | Agent→HR 受治理 handoff | [HR/Identity](domains/hr-identity-and-permissions.md) | Frozen ×1 | Partial loop |
+| PJ-15 | 角色/权限正负向与 active revocation | [HR/Identity](domains/hr-identity-and-permissions.md) | Frozen ×4 | Breakpoint |
+| PJ-16 | owner transfer、offboarding、retention/export/delete | [HR/Identity](domains/hr-identity-and-permissions.md) | Frozen ×3 | Partial loop / Missing policies |
+| PJ-17 | Sub-agent 完成、失败、取消、父任务消费 | [Collaboration](domains/collaboration-workflow-and-a2a.md) | Frozen ×1 | Partial loop |
+| PJ-18 | Agent Team fanout/review/partial failure/integration | [Collaboration](domains/collaboration-workflow-and-a2a.md) | Frozen ×1 | Partial loop |
+| PJ-19 | Dynamic Workflow preview/confirm/run/wait/resume/result | [Collaboration](domains/collaboration-workflow-and-a2a.md) | Frozen ×1 | Partial loop |
+| PJ-20 | Fixed A2A Workflow version/publish/run/audit | [Collaboration](domains/collaboration-workflow-and-a2a.md) | Frozen ×1 | Partial loop |
+| PJ-21 | A2A sync/async/continuation/nested/artifact/fixed edge | [Collaboration](domains/collaboration-workflow-and-a2a.md) | Frozen ×6 | Partial loop |
+| PJ-22 | once/schedule/bounded loop/event trigger | [Automation](domains/automation-hooks-and-capabilities.md) | Frozen ×4 | Breakpoint aggregate |
+| PJ-23 | Notification/Approval/Channel return loop | [Automation](domains/automation-hooks-and-capabilities.md) | Frozen ×3 | Breakpoint aggregate |
+| PJ-24 | Local Agent pair/online/offline/approval/reconnect/revoke | [Automation](domains/automation-hooks-and-capabilities.md) | Frozen ×1 | BLOCKED_PRECONDITION until live bridge |
+| PJ-25 | Hook blocking/observe-only/lifecycle/recovery | [Automation](domains/automation-hooks-and-capabilities.md) | Frozen ×3 | Breakpoint aggregate |
+| PJ-26 | Skill trust/load/use/update/revoke | [Automation](domains/automation-hooks-and-capabilities.md) | Frozen ×1 | Breakpoint aggregate |
+| PJ-27 | MCP/Connector auth/use/expiry/revoke/schema change | [Automation](domains/automation-hooks-and-capabilities.md) | Frozen ×1 | Breakpoint aggregate |
+| PJ-28 | Agent rail/AgentDetail employee scale and navigation | [Frontend](domains/frontend-and-product-consumption.md) | Frozen ×3 | Breakpoint |
+| PJ-29 | Employee/admin/platform/operator audience split | [Frontend](domains/frontend-and-product-consumption.md) | Frozen ×4 | Breakpoint |
+| PJ-30 | Artifact preview/download/version/ACL/reopen | [Frontend](domains/frontend-and-product-consumption.md) | Frozen ×4 | Breakpoint aggregate |
+| PJ-31 | Async deep-link/inbox/unread/dedupe/expiry | [Frontend](domains/frontend-and-product-consumption.md) | Frozen ×1 | Breakpoint aggregate |
+| PJ-32 | Theme/narrow screen/keyboard/a11y/state screenshots | [Frontend](domains/frontend-and-product-consumption.md) | Frozen ×4 | Breakpoint aggregate |
+| PJ-33 | MiniMax/GLM/DeepSeek model fidelity 与资源观测 | [Frontend](domains/frontend-and-product-consumption.md) | Frozen ×3 | Breakpoint aggregate |
+| PJ-34 | Prompt injection、cross-tenant、secret、replay、approval、delegation | [Release Gates](06-runbook-and-release-gates.md) | Frozen ×6 | Breakpoint aggregate |
+| PJ-35 | three-service exact deploy、rollback 与 production double pass | [Release Gates](06-runbook-and-release-gates.md) | Frozen ×1 | Partial loop |
 
 ## 每条冻结记录必需字段
 
@@ -91,11 +92,11 @@ verification_status: candidate-denominator-not-frozen
 
 ## 最新有效证据索引
 
-当前 production manifest 尚未冻结，因此没有可计入本轮 NPTCR 的 pass。冻结后只在这里登记关系，不复制证据正文：
+分母已冻结，但本轮尚未产生可计入 NPTCR 的 production pass。这里只登记关系，不复制证据正文：
 
 | Journey | Pass 1 | Pass 2 | Fault/Recovery | Negative Authority | Final Verdict |
 |---|---|---|---|---|---|
-| 尚未冻结 | — | — | — | — | 不可计分 |
+| P01-MAIN～P35-RELEASE（96 条） | — | — | — | — | 0/96 Closed；NPTCR 0% |
 
 ## 状态变化规则
 

@@ -4,8 +4,8 @@ owner: Rocky
 status: active
 authority: canonical-release-charter
 last_reviewed: 2026-08-30
-source_commit: 45340a3a
-verification_status: owner-review-required-for-pending-decisions
+source_commit: c18b181c
+verification_status: owner-approved-production-denominator-frozen
 ---
 
 # North Star、指标与边界
@@ -33,7 +33,7 @@ verification_status: owner-review-required-for-pending-decisions
 
 ## 主指标
 
-主指标候选为 **Novice Production Task Closure Rate（NPTCR，普通员工生产任务闭环率）**：
+正式主指标为 **Novice Production Task Closure Rate（NPTCR，普通员工生产任务闭环率）**：
 
 ```text
 NPTCR = 普通员工无需管理员、数据库手改、开发者控制台或人工补状态，
@@ -51,7 +51,7 @@ NPTCR = 普通员工无需管理员、数据库手改、开发者控制台或人
 - 最终产物能直接使用，引用、权限和审计可追溯；
 - Input、Authority、Execution、Evidence、Recovery、Consumption、Acceptance 七原子完整。
 
-进入执行窗前必须冻结 production journey manifest。执行中不得删除、合并或改写失败旅程来提高 NPTCR；范围变化只能由 owner 明确标为 `Excluded` 并保留原因。
+Production journey manifest 已按 owner 裁决冻结为 [`acceptance/weekend_production_journeys.v1.json`](../../../acceptance/weekend_production_journeys.v1.json)。执行中不得删除、合并或改写失败旅程来提高 NPTCR；`BLOCKED_PRECONDITION` 保留在分母并阻止发布，范围变化只能由 owner 明确标为 `Excluded` 并保留原因。
 
 ## 五条不可平均护栏
 

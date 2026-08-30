@@ -4,8 +4,8 @@ owner: Rocky
 status: active
 authority: canonical-owner-decision-ledger
 last_reviewed: 2026-08-30
-source_commit: 228682e5
-verification_status: owner-approved-execution-control-and-skill-boundary
+source_commit: c18b181c
+verification_status: owner-approved-complete-execution-and-delivery-contract
 ---
 
 # Owner 决策账本
@@ -31,6 +31,17 @@ verification_status: owner-approved-execution-control-and-skill-boundary
 | DEC-011 | Codex 保留验收、集成和远程状态权威 | Kimi/zCode 不关闭 Issue、不改 Journey/Finding/Evidence verdict、不 commit/push/deploy、不接触生产或凭据；修正轮次使用引用既有 diff/review 事实的新工作包 |
 | DEC-012 | 当前 `agent-delegation` Skill 是唯一派发协议 | Goal 不复制队列状态，Issue 不复制授权协议，验收文档不另造 ACP supervisor；Skill 管授权继承、无状态调用、chain、timeout 和 receipt。`cwd` 不是 sandbox，只读与实现权限分开，未授权 commit effects 必须停在 worker 外 |
 
+## 2026-08-30 已接受执行裁决
+
+| ID | 已接受决定 | 精确边界 |
+|---|---|---|
+| PDEC-001 | 正式采用 NPTCR、冻结分母、五条不可平均护栏和 Evidence Coverage Score | `NPTCR = Closed / (Frozen - owner 明确 Excluded)`；`BLOCKED_PRECONDITION` 留在分母并阻止发布；Evidence Coverage 不能替代七原子或护栏 |
+| PDEC-002 | 审计全部用户可见 surface，但只修改 fresh reproduction 的真实缺陷 | Session/整体表达以 Codex Desktop 为主；Letta 只参考 `Agent rail → Agent sidebar → Session`；没有 live failure 的页面以 PASS 证据收口，不做猜测性重写 |
+| PDEC-003 | UI 宣传的每种 Knowledge/Artifact 格式必须通过或准确移除 | 默认修复完整 `upload → parse → index → search/cite → preview/download → authority → recovery`；只有现有产品合同明确排除时才由 Codex 记录并移除宣传 |
+| PDEC-004 | 采用 `单 Agent → Growth → HR/Knowledge/Permission → Collaboration/Control Plane` 发布顺序 | 调查和互不重叠的实现可并行，但前一 Gate 未通过时后一层不能升级为 Closed 或用于掩盖基础能力失败 |
+| PDEC-005 | 采用相对执行窗 `T+8:00` RC code freeze 和 final exact-commit 双遍 | 冻结候选记为应用提交 `D`；其后任何 runtime/code/config/schema 变化使 `D` 作废并生成新候选，重跑相关门、三服务部署和完整双遍；docs-only 证据提交 `E` 不使 `D` 作废 |
+| PDEC-006 | 采用真实语义 Runner 与外部前置条件分流合同 | Runner 是 Hive 生产 Agent 经真实 selected model/provider 的执行链，不是 Kimi/zCode；健康 provider 上的 Hive failure 是 Finding，余额/auth/rate-limit/offline 是 `BLOCKED_PRECONDITION`；Hive Connect 只阻塞 Local Agent 旅程；re-login、credential replacement 或充值仍需 action-time owner 授权，恢复后从旅程起点重跑 |
+
 ## 当前动作权限
 
 | 动作 | 状态 |
@@ -41,21 +52,9 @@ verification_status: owner-approved-execution-control-and-skill-boundary
 | 修改业务代码或前端 UI | 已授权于 Codex fresh reproduction 后，以单 finding、隔离 worktree 的 bounded packet 执行；禁止猜测性改写 |
 | 本地测试、独立 review 与原子集成 | 已授权；Codex 必须复核 live wiring、diff 和 production-shaped regression |
 | commit / push | 已授权于验收基线和每个已验证修复；只提交本轮 scope，不夹带用户已有改动 |
-| Railway 部署、write-bearing production E2E 或生产写入 | 执行模型本身不授权；到动作前按 exact effect 进入 owner gate |
+| Railway 部署 | owner 已授权最终冻结应用提交 `D` 同时部署 `backend`、`backend-api`、`frontend`；本授权不覆盖凭据、计费、DDL、不可逆数据效果或非冻结提交 |
+| write-bearing production E2E | 已授权仅在 Rocky 实验账号/tenant 内按冻结 manifest 创建可识别、可登记、可回收的合成资产；必须先登记 cleanup，禁止真实客户数据和未列外部发送 |
 | 登录、充值、替换 credential / bridge token | 未授权，action-time 单独确认 |
 | 生产 DDL、不可逆迁移、删除数据或证据 | 未授权，action-time 单独确认 |
 
-2026-08-25 的旧 RC “开始”授权只解释历史执行，不自动延续为新的凭据、部署或生产效果授权；2026-08-30 的继续执行授权以上表为准。
-
-## 待 owner 最终过稿
-
-| ID | 待裁决点 | 当前推荐 |
-|---|---|---|
-| PDEC-001 | 是否正式采用 NPTCR、五条不可平均护栏、冻结分母和 Evidence Coverage Score | 接受；Evidence Coverage 不得替代七原子或护栏 |
-| PDEC-002 | 是否正式接受全部用户可见 surface 都审计，但只修真实缺陷 | 接受；不做无 live failure 的全站重写 |
-| PDEC-003 | 当前 UI 宣传的文档/Artifact 格式是否必须通过或准确移除 | 接受，禁止“支持但未验” |
-| PDEC-004 | 是否采用 `单 Agent → growth → HR/Knowledge/Permission → collaboration/control plane` 证明顺序 | 接受 |
-| PDEC-005 | 是否采用 8:00 code freeze 和 final exact-commit 双遍 | 接受；freeze 后改动重跑受影响 gate |
-| PDEC-006 | semantic runner 仍不可用时，是否 action-time 授权 Hive Connect re-login / credential replacement | 默认不授权；否则相关旅程诚实 blocked |
-
-待决项没有 owner 明确答复前不得写成 `Accepted`，也不得用执行进度倒推同意。
+2026-08-25 的旧 RC “开始”授权只解释历史执行，不自动延续为新的凭据或不可逆生产效果授权；2026-08-30 owner 的“按照你的建议来”正式接受 PDEC-001～PDEC-006 和上述最终部署边界。任何后续范围扩大仍需新的明确裁决。

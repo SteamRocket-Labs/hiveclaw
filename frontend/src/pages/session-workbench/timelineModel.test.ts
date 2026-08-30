@@ -362,6 +362,62 @@ describe('session workbench timeline model', () => {
     ))).toBe(false);
   });
 
+  it('attaches post-terminal file evidence to a plain run-bound assistant answer', () => {
+    const model = buildThreadTimeline({
+      messages: [
+        {
+          id: 'user-1',
+          role: 'user',
+          content: 'Finish the historical report.',
+          timestamp: '2026-08-29T00:00:00Z',
+        },
+        {
+          id: 'answer-1',
+          role: 'assistant',
+          content: 'The historical report is complete.',
+          timestamp: '2026-08-29T00:01:44Z',
+          eventType: 'assistant_message',
+          eventStatus: 'completed',
+          eventRuntimeTaskId: '831241b7-3e2d-41b5-a359-612f1983fded',
+        },
+        {
+          id: 'file-changes-1',
+          role: 'event',
+          content: 'file_changes',
+          timestamp: '2026-08-29T00:01:45Z',
+          eventType: 'file_changes',
+          eventStatus: 'succeeded',
+          eventRuntimeTaskId: '831241b73e2d41b5a359612f1983fded',
+        },
+      ] as AgentChatMessage[],
+      activeSession: { id: 'session-1', title: 'Historical report' },
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+    });
+
+    expect(model.cells.map((cell) => cell.kind)).toEqual([
+      'user_turn',
+      'active_run',
+      'assistant_final',
+    ]);
+    const runCell = model.cells[1];
+    expect(runCell).toMatchObject({
+      kind: 'active_run',
+      runId: '831241b7-3e2d-41b5-a359-612f1983fded',
+      timeline: {
+        status: 'done',
+        answerMessageId: 'answer-1',
+      },
+    });
+    if (runCell.kind !== 'active_run') return;
+    expect(runCell.sourceMessages.map((entry) => entry.message.id)).toEqual(['file-changes-1']);
+    expect(runCell.timeline.steps).toEqual([
+      expect.objectContaining({ id: 'file-changes-1', kind: 'artifact', status: 'done' }),
+    ]);
+    expect(model.header.status).toBe('complete');
+  });
+
   it('keeps a newly active run separate while its accepted input has not reached the transcript projection', () => {
     const runOneScope = {
       level: 'round' as const,

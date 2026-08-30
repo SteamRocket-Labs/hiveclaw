@@ -2011,6 +2011,10 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
         pushAnsweredRun([...pendingRun], { message, index });
         return;
       }
+      if (messageRunId(message)) {
+        pushAnsweredRun([], { message, index });
+        return;
+      }
       cells.push({
         kind: 'assistant_final',
         id: messageId(message, `assistant-${index}`),

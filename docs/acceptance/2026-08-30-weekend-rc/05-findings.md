@@ -4,8 +4,8 @@ owner: Codex
 status: active
 authority: canonical-active-finding-ledger
 last_reviewed: 2026-08-31
-source_commit: cc6e726218bd491120f942edfa91e51d2d167ff4
-verification_status: llm-probe-audit-production-verified
+source_commit: b23e94210e7e9523bafc3b591b35db8fc2762224
+verification_status: admin-audit-default-disclosure-production-verified
 ---
 
 # 当前 Findings 与 Blockers
@@ -29,6 +29,7 @@ verification_status: llm-probe-audit-production-verified
 | SESSION-AUTHORITY-PRESENTATION-001 | Verified | P1 | P29-PADMIN | backend 对无 operator authority 的跨用户 Session message/lineage 返回 `Session not found`，但旧前端仍显示“完成 / Read-only · User / 1 个步骤 / 运行错误”与完整 Session runtime shell | exact `bbf6d234` 在 authority resolution 前只显示 skeleton；403/404 清除 Session timeline/runtime cache并呈现 truthful denied/not-found，安全返回 `/agents`；5xx/network retry 与合法 Session 消费保持原语义 | 保持 `Verified`；provider health/audit finding 已关闭，仍须完成 P29-PADMIN 其余 API/compliance 正向面、pass-2、role-change/reload 与四角色 screenshot matrix 后才可 `Closed` 或写 P29 PASS |
 | RUNTIME-GUARD-PRESENTATION-001 | Verified | P2 | P29-PADMIN | runtime protection heading/badge 显示“被保护的任务 0”，却列出 5 条 `active` run 并称“系统保护机制已介入” | exact `6a6695e8` 让 API 的 active reason 表达正常运行；无 protected run 时 UI 诚实标为“最近运行”，保留 active rows 与暂停能力，真正 protected run 仍优先展示 | 保持 `Verified`；provider health/audit finding 已关闭，P29 其余 API/compliance evidence、fault/reload、pass-2 与四角色 matrix 完成后才可 `Closed` 或写 P29 PASS |
 | LLM-PROBE-AUDIT-001 | Verified | P1 | P29-PADMIN / P33-GLM | `/enterprise/llm` Test 发生真实 provider/token/cost effect，但 backend 不写 canonical audit；audit UI 只读 legacy agent-bound log，platform admin selected tenant 也未固定到 canonical audit query | exact `cc6e7262` 在 provider effect 前 durable commit started event，终态 durable commit completed event；effect 后 terminal audit 失败返回 non-retryable typed result；canonical selected-tenant audit 与 legacy log 在 UI 合并消费 | 保持 `Verified`；MiniMax/GLM/DeepSeek 的 bounded health verdict 已记录，但 P33 frozen compatibility tasks、P29 pass-1/pass-2、role/fault/negative matrix 均仍 open，不写 Journey PASS |
+| AUDIT-DEFAULT-DISCLOSURE-001 | Verified | P1 | P29-PADMIN | admin audit 默认展开 raw details：production DOM 含 `session_id` 110、`job_id/issues` 各 94、`reason` 41、`agent_name` 77、raw provider error 90；search/CSV/API 也可读 raw payload，export/chain 未固定 selected tenant | exact `b23e9421` 以 server summary schema + CSV/search boundary + frontend allowlist 只暴露 control-plane facts；raw canonical evidence 不改写；list/export/chain 共用 selected-tenant RLS scope | 保持 `Verified`；P29 的 employee/company-admin/operator principals、四角色 screenshot/API matrix、双遍与完整 negative/fault 仍 open，不写 Journey PASS |
 | TOOL-ARTIFACT-SETTLEMENT-001 | Verified | P1 | P01-MAIN / PJ-02 / PJ-04 | `write_file` effect 已完成，但 canonical terminal `tool_call`/`tool_result` 与 ChatArtifact 在 `chat_artifacts_message_id_fkey` 处回滚；kernel 仍准备下一 provider round | `c37fefc5` 已原子提交 owner/artifact/V2/outbox 并在持久化失败时 hard-stop；`3482b57a` 对 exact unknown-effect invocation fail closed，唯一 operator acknowledgement 保持 unknown fact、禁止旧轮重放并释放 fresh-turn admission | normal/reload 与 supported recovery/no-replay 已 production PASS；保持 `Verified`，完成 clean P01-MAIN/PJ-02/PJ-04 双遍、authority-negative 与 cleanup 后才可 `Closed` |
 | SESSION-RETRY-INPUT-001 | Verified | P1 | P01-MAIN / P02-STREAM | edit branch 的 canonical `human_input.accepted` 保存完整 retry prompt，但首个 `result_commit.prepared.bound_input_ids=[]`；provider 未调用工具并错误回复“这条消息只有「1」”，产品仍把 run/final 标成 `completed` | exact commit `2cee9f3e` 的 production retry Session `b3962147…` 已把完整输入绑定为唯一 `bound_input_id=1fd5cc5b…` 并进入 GLM/Work Ledger；随后失败属于独立的 tool-artifact settlement 与 provider 429，不回退本 finding | 保持 `Verified`；完整 P01/P02 双遍、recovery、authority-negative 和 cleanup 后才能 `Closed` |
 
@@ -63,6 +64,16 @@ verification_status: llm-probe-audit-production-verified
 - exact `cc6e726218bd491120f942edfa91e51d2d167ff4` 已 push；首次部署因手工错误扩展 short SHA 且脚本未 fail-fast，三个空上传 deployment `446bb56e…` / `771d44b3…` / `7f139625…` 均立即 `FAILED`，未替换运行实例。恢复后以 `git rev-parse HEAD`、`set -euo pipefail` 和 archive 内容检查重新上传；backend `f619e4a9…`、backend-api `7edd592d…`、frontend `beb9cd36…` 均 `SUCCESS` 并绑定 exact full SHA，health/HTTP 通过。
 - post-fix 只点击 GLM Test 一次；probe `a0f1be98-27bd-4d69-9bde-247b57c6b16c` 在 `05:21:32` started、`05:21:36` completed，`zhipu/glm-5.3`、`max_tokens=16`、`success=true`、`latency_ms=3411`。audit hard reload 后 started/completed 各一、同 probe ID 恰出现两次、无 raw API key、无第二次 provider call。
 - immutable evidence：`evidence/cc6e726218bd491120f942edfa91e51d2d167ff4/LLM-PROBE-AUDIT-001-production-verification.md`。finding 推进为 `Verified`；P29 四角色/双遍/fault/negative 与 P33 三模型 frozen compatibility tasks 仍未完成，NPTCR 保持 `0/96`。
+
+#### AUDIT-DEFAULT-DISCLOSURE-001 复现、修复与生产验证
+
+- exact deployed `cc6e7262` 的 signed-in `/enterprise/audit` 默认合并 400 条记录；DOM 量化为 `session_id=110`、`job_id=94`、`issues=94`、`reason=41`、`agent_name=77`、raw `Insufficient Balance=90`。无需 operator reason 或展开即可读到用户 recovery note、Session/job identity 与 raw provider payload。
+- live API trace 证明 legacy list 返回完整 `details/user/ip`，canonical list 返回完整 `details/ip/user-agent/hash/execution identity`；raw details 还参与 admin search 并进入 CSV。export/chain 直接使用 home tenant，未复用 platform-admin selected tenant resolution/pinning。
+- 最小共享修复保留 action、actor/resource、hash identity 与明确 model/runtime summary fields；server response、CSV 与 frontend consumer 均用 exact key allowlist，raw details 不再参与 admin search。canonical DB row/hash input 不改写；list/export/chain 共用 `resolve_and_pin_tenant_scope()`。没有 schema、migration、dependency、feature flag 或生产数据变更。
+- RED：backend 4、frontend 1；GREEN：backend adjacent 30、frontend module 3。full gates：backend **8448 passed, 2 skipped, 1 warning**；frontend **154 files / 1149 tests**；i18n 3995/3995、9 node tests、Ruff/format、production build/budgets、35 architecture tests、manifest validate 与 diff check 全绿。
+- exact `b23e94210e7e9523bafc3b591b35db8fc2762224` 已 push；backend `03d0919e…`、backend-api `b0bb7ca3…`、frontend `0dd299d8…` 均 `SUCCESS` 并绑定 full SHA；health `ok`、RLS strict、runtime bus no error、frontend HTTP 200。
+- production hard reload 后仍有 400 条记录；GLM probe ID 恰两次且 provider/model/success 可读，六类 raw/default disclosure counts 全部为 0。跨用户 Session hard navigation 仍收敛到 truthful not-found，无 workbench/artifact/body。
+- immutable evidence：`evidence/b23e94210e7e9523bafc3b591b35db8fc2762224/AUDIT-DEFAULT-DISCLOSURE-001-production-verification.md`。finding 为 `Verified`；单一 platform-admin 身份不能替代 P29 四角色/双遍/完整 fault-negative evidence，NPTCR 保持 `0/96`。
 
 #### TOOL-ARTIFACT-SETTLEMENT-001 复现证据
 

@@ -4,8 +4,8 @@ owner: Codex
 status: active
 authority: canonical-active-finding-ledger
 last_reviewed: 2026-08-31
-source_commit: b23e94210e7e9523bafc3b591b35db8fc2762224
-verification_status: admin-audit-default-disclosure-production-verified
+source_commit: 8f6a726375452042cf1252977394c647dd2aba80
+verification_status: platform-admin-business-body-production-verified
 ---
 
 # 当前 Findings 与 Blockers
@@ -30,6 +30,7 @@ verification_status: admin-audit-default-disclosure-production-verified
 | RUNTIME-GUARD-PRESENTATION-001 | Verified | P2 | P29-PADMIN | runtime protection heading/badge 显示“被保护的任务 0”，却列出 5 条 `active` run 并称“系统保护机制已介入” | exact `6a6695e8` 让 API 的 active reason 表达正常运行；无 protected run 时 UI 诚实标为“最近运行”，保留 active rows 与暂停能力，真正 protected run 仍优先展示 | 保持 `Verified`；provider health/audit finding 已关闭，P29 其余 API/compliance evidence、fault/reload、pass-2 与四角色 matrix 完成后才可 `Closed` 或写 P29 PASS |
 | LLM-PROBE-AUDIT-001 | Verified | P1 | P29-PADMIN / P33-GLM | `/enterprise/llm` Test 发生真实 provider/token/cost effect，但 backend 不写 canonical audit；audit UI 只读 legacy agent-bound log，platform admin selected tenant 也未固定到 canonical audit query | exact `cc6e7262` 在 provider effect 前 durable commit started event，终态 durable commit completed event；effect 后 terminal audit 失败返回 non-retryable typed result；canonical selected-tenant audit 与 legacy log 在 UI 合并消费 | 保持 `Verified`；MiniMax/GLM/DeepSeek 的 bounded health verdict 已记录，但 P33 frozen compatibility tasks、P29 pass-1/pass-2、role/fault/negative matrix 均仍 open，不写 Journey PASS |
 | AUDIT-DEFAULT-DISCLOSURE-001 | Verified | P1 | P29-PADMIN | admin audit 默认展开 raw details：production DOM 含 `session_id` 110、`job_id/issues` 各 94、`reason` 41、`agent_name` 77、raw provider error 90；search/CSV/API 也可读 raw payload，export/chain 未固定 selected tenant | exact `b23e9421` 以 server summary schema + CSV/search boundary + frontend allowlist 只暴露 control-plane facts；raw canonical evidence 不改写；list/export/chain 共用 selected-tenant RLS scope | 保持 `Verified`；P29 的 employee/company-admin/operator principals、四角色 screenshot/API matrix、双遍与完整 negative/fault 仍 open，不写 Journey PASS |
+| PLATFORM-ADMIN-BUSINESS-BODY-001 | Verified | P1 | P29-PADMIN | `/enterprise/info` 对 platform admin 默认显示公司介绍正文、legacy export 与 broadcast controls；raw info 和 `company_intro*` API 也允许该角色读写业务正文 | exact `8f6a7263` 让 backend raw route 在 authenticated role boundary 返回 403，frontend 不请求/挂载 org-admin content，并把页面描述收敛为 role-appropriate actions；tenant identity/timezone/presentation 保留 | 保持 `Verified`；直接 production API 403 receipt 与 employee/company-admin/operator principals、四角色双遍/完整 fault-negative 仍 open，不写 Journey PASS |
 | TOOL-ARTIFACT-SETTLEMENT-001 | Verified | P1 | P01-MAIN / PJ-02 / PJ-04 | `write_file` effect 已完成，但 canonical terminal `tool_call`/`tool_result` 与 ChatArtifact 在 `chat_artifacts_message_id_fkey` 处回滚；kernel 仍准备下一 provider round | `c37fefc5` 已原子提交 owner/artifact/V2/outbox 并在持久化失败时 hard-stop；`3482b57a` 对 exact unknown-effect invocation fail closed，唯一 operator acknowledgement 保持 unknown fact、禁止旧轮重放并释放 fresh-turn admission | normal/reload 与 supported recovery/no-replay 已 production PASS；保持 `Verified`，完成 clean P01-MAIN/PJ-02/PJ-04 双遍、authority-negative 与 cleanup 后才可 `Closed` |
 | SESSION-RETRY-INPUT-001 | Verified | P1 | P01-MAIN / P02-STREAM | edit branch 的 canonical `human_input.accepted` 保存完整 retry prompt，但首个 `result_commit.prepared.bound_input_ids=[]`；provider 未调用工具并错误回复“这条消息只有「1」”，产品仍把 run/final 标成 `completed` | exact commit `2cee9f3e` 的 production retry Session `b3962147…` 已把完整输入绑定为唯一 `bound_input_id=1fd5cc5b…` 并进入 GLM/Work Ledger；随后失败属于独立的 tool-artifact settlement 与 provider 429，不回退本 finding | 保持 `Verified`；完整 P01/P02 双遍、recovery、authority-negative 和 cleanup 后才能 `Closed` |
 
@@ -74,6 +75,16 @@ verification_status: admin-audit-default-disclosure-production-verified
 - exact `b23e94210e7e9523bafc3b591b35db8fc2762224` 已 push；backend `03d0919e…`、backend-api `b0bb7ca3…`、frontend `0dd299d8…` 均 `SUCCESS` 并绑定 full SHA；health `ok`、RLS strict、runtime bus no error、frontend HTTP 200。
 - production hard reload 后仍有 400 条记录；GLM probe ID 恰两次且 provider/model/success 可读，六类 raw/default disclosure counts 全部为 0。跨用户 Session hard navigation 仍收敛到 truthful not-found，无 workbench/artifact/body。
 - immutable evidence：`evidence/b23e94210e7e9523bafc3b591b35db8fc2762224/AUDIT-DEFAULT-DISCLOSURE-001-production-verification.md`。finding 为 `Verified`；单一 platform-admin 身份不能替代 P29 四角色/双遍/完整 fault-negative evidence，NPTCR 保持 `0/96`。
+
+#### PLATFORM-ADMIN-BUSINESS-BODY-001 复现、修复与生产验证
+
+- exact deployed `b23e9421` 的 signed-in `/enterprise/info` 默认 DOM 直接显示公司介绍正文标记 `AI agents for teams`、legacy-file surface 与 broadcast controls；live source trace 同时证明 raw `/enterprise/info` 和 `company_intro*` system-setting route 允许 platform admin 读取或改写业务正文。
+- 最小共享修复在 backend 现有 route 用 authenticated role + exact setting prefix 拦截 platform admin，org admin 语义不变；frontend 只对 org admin 请求、挂载和保存 business content，platform admin 保留 tenant identity/timezone/presentation 与 truthful role-boundary callout。没有 schema、migration、依赖、feature flag 或生产数据变更。
+- `170c30e8` 首次生产部署后主体 section 已消失，但页面说明仍宣称 company profile/legacy export/broadcast 能力；该残余在同轮 hard reload 被捕获，`8f6a7263` 以一行产品文案和 mounted regression 收敛，而非把残余留成文档债。
+- RED backend 4 / frontend 2；GREEN target backend 16、frontend 3，adjacent backend 52、frontend 37。full gates：backend **8453 passed, 2 skipped, 1 warning**；frontend **155 files / 1151 tests**；i18n 3997/3997、9 node tests、build/budgets、31 permission/RLS/RC architecture tests、manifest、Ruff/format 与 diff check 全绿。
+- exact `8f6a726375452042cf1252977394c647dd2aba80` 已 push；backend `35e6d6e5…`、backend-api `86615c7d…`、frontend `cfa5f254…` 均 `SUCCESS` 并绑定 full SHA；health `ok`、RLS strict、runtime bus no error、frontend HTTP 200。
+- production `/enterprise/info` hard reload 后新说明与 role-boundary 各一，company intro/pre-fix body/legacy export/broadcast/runtime error 均为 0，tenant name/timezone 保留；audit 400-summary 与 denied Session route 同时保持既有安全结果。
+- immutable evidence：`evidence/8f6a726375452042cf1252977394c647dd2aba80/PLATFORM-ADMIN-BUSINESS-BODY-001-production-verification.md`。没有读取浏览器 token/localStorage 来制造直接 production API 403 回执；FastAPI route-entry 与 exact deployment 证明 backend wiring，单一 platform-admin 身份仍不能替代 P29 四角色/双遍/完整 fault-negative evidence。finding 为 `Verified`，NPTCR 保持 `0/96`。
 
 #### TOOL-ARTIFACT-SETTLEMENT-001 复现证据
 

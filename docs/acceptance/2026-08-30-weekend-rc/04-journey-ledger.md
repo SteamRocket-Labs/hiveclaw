@@ -94,7 +94,7 @@ verification_status: frozen-production-denominator-96-no-pass-evidence-yet
 
 分母已冻结，但本轮尚未产生可计入 NPTCR 的 production pass。这里只登记关系，不复制证据正文：
 
-最新 finding-level production verification 为 [`AUDIT-DEFAULT-DISCLOSURE-001`](evidence/b23e94210e7e9523bafc3b591b35db8fc2762224/AUDIT-DEFAULT-DISCLOSURE-001-production-verification.md)：它关闭 P29-PADMIN 的默认 audit business-payload disclosure，但没有完成四角色 signed-in 双遍、完整 fault、negative authority 或 cleanup，因此下表保持空值。
+最新 finding-level production verification 为 [`PLATFORM-ADMIN-BUSINESS-BODY-001`](evidence/8f6a726375452042cf1252977394c647dd2aba80/PLATFORM-ADMIN-BUSINESS-BODY-001-production-verification.md)：它关闭 P29-PADMIN 的默认公司正文/业务动作披露，但没有完成直接 production API receipt、四角色 signed-in 双遍、完整 fault、negative authority 或 cleanup，因此下表保持空值。
 
 | Journey | Pass 1 | Pass 2 | Fault/Recovery | Negative Authority | Final Verdict |
 |---|---|---|---|---|---|

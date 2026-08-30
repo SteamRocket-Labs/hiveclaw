@@ -1363,6 +1363,7 @@ def _history_msg(
 @pytest.mark.asyncio
 async def test_load_runtime_context_resolves_model_inside_tenant_transaction(monkeypatch):
     import app.services.model_resolution as model_resolution
+    import app.services.session_semantic_history as semantic_history
     import app.services.web_chat_runtime as runtime
 
     run_id = uuid4()
@@ -1447,11 +1448,15 @@ async def test_load_runtime_context_resolves_model_inside_tenant_transaction(mon
     async def resolve_run_tenant(_run_id, **_kwargs):
         return tenant_id
 
+    async def empty_semantic_history(*_args, **_kwargs):
+        return SimpleNamespace(messages=[], receipt={"status": "empty"})
+
     monkeypatch.setattr(runtime, "resolve_tenant_for_runtime_task", resolve_run_tenant)
     monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *a, **k: _TenantContext(db))
     monkeypatch.setattr(runtime, "_materialize_initial_user_turn_for_worker", noop_materialize)
     monkeypatch.setattr(runtime, "_apply_active_projection_to_history", noop_projection)
     monkeypatch.setattr(model_resolution, "resolve_default_model_for_tenant", no_default_model)
+    monkeypatch.setattr(semantic_history, "load_session_semantic_history", empty_semantic_history)
 
     _task, _agent, _user, resolved_model, _fallback, _history, _session = await runtime._load_runtime_context(run_id)
 
@@ -1461,6 +1466,7 @@ async def test_load_runtime_context_resolves_model_inside_tenant_transaction(mon
 
 @pytest.mark.asyncio
 async def test_load_runtime_context_uses_validated_team_member_model_override(monkeypatch):
+    import app.services.session_semantic_history as semantic_history
     import app.services.web_chat_runtime as runtime
 
     run_id = uuid4()
@@ -1547,12 +1553,16 @@ async def test_load_runtime_context_uses_validated_team_member_model_override(mo
     async def resolve_run_tenant(_run_id, **_kwargs):
         return tenant_id
 
+    async def empty_semantic_history(*_args, **_kwargs):
+        return SimpleNamespace(messages=[], receipt={"status": "empty"})
+
     db = _Session()
     monkeypatch.setattr(runtime, "resolve_tenant_for_runtime_task", resolve_run_tenant)
     monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *a, **k: _TenantContext())
     monkeypatch.setattr(runtime, "_materialize_initial_user_turn_for_worker", noop_materialize)
     monkeypatch.setattr(runtime, "_apply_active_projection_to_history", noop_projection)
     monkeypatch.setattr(runtime, "_resolve_runtime_models_for_task", resolve_models)
+    monkeypatch.setattr(semantic_history, "load_session_semantic_history", empty_semantic_history)
 
     _task, _agent, _user, resolved_model, fallback, _history, _session = await runtime._load_runtime_context(run_id)
 
@@ -1757,6 +1767,8 @@ async def test_active_rewind_projection_excludes_selected_user_checkpoint_and_ke
     tail_message_id = uuid4()
     session = SimpleNamespace(
         id=session_id,
+        tenant_id=uuid4(),
+        agent_id=uuid4(),
         transcript_metadata_json={
             "active_projection": {
                 "projection_reason": "rewind",

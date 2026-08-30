@@ -1485,6 +1485,25 @@ def conversation_from_history_messages(history_messages) -> list[dict]:
                 conversation.append(entry)
             continue
 
+        if msg.role != "tool_call":
+            role = str(getattr(msg, "role", "") or "").strip()
+            content = getattr(msg, "content", None)
+            tool_calls = getattr(msg, "tool_calls", None)
+            has_tool_calls = role == "assistant" and isinstance(tool_calls, list)
+            if role not in {"system", "user", "assistant", "tool"} or (content is None and not has_tool_calls):
+                continue
+            entry = {"role": role, "content": content}
+            if role == "tool" and getattr(msg, "tool_call_id", None):
+                entry["tool_call_id"] = str(msg.tool_call_id)
+            if has_tool_calls:
+                entry["tool_calls"] = list(tool_calls)
+            if getattr(msg, "thinking", None) is not None:
+                entry["reasoning_content"] = msg.thinking
+            if getattr(msg, "thinking_signature", None) is not None:
+                entry["reasoning_signature"] = msg.thinking_signature
+            conversation.append(entry)
+            continue
+
         if msg.role == "tool_call":
             try:
                 tc_data = json.loads(msg.content)
@@ -1527,12 +1546,6 @@ def conversation_from_history_messages(history_messages) -> list[dict]:
                 )
             continue
 
-        entry = {"role": msg.role, "content": msg.content}
-        if getattr(msg, "thinking", None):
-            entry["reasoning_content"] = msg.thinking
-        if getattr(msg, "thinking_signature", None):
-            entry["reasoning_signature"] = msg.thinking_signature
-        conversation.append(entry)
     return conversation
 
 
@@ -1740,12 +1753,27 @@ async def _rewind_projected_history(
         select(ChatTranscriptEvent).where(
             ChatTranscriptEvent.id == checkpoint_event_id,
             ChatTranscriptEvent.session_id == session.id,
+            ChatTranscriptEvent.tenant_id == session.tenant_id,
+            ChatTranscriptEvent.agent_id == session.agent_id,
         )
     )
     anchor = anchor_result.scalar_one_or_none()
     if not anchor:
         return history_messages
 
+    semantic_entries = [
+        msg
+        for msg in history_messages
+        if isinstance(getattr(msg, "sequence_start", None), int) and isinstance(getattr(msg, "sequence_end", None), int)
+    ]
+    if semantic_entries:
+        prefix = [msg for msg in semantic_entries if int(msg.sequence_end) < int(anchor.sequence)]
+        tail = _history_tail_after_projection(history_messages, applied_at)
+        return _dedupe_history_projection([*prefix, *tail])
+
+    # Compatibility for pre-Session-V2 callers that still pass materialized
+    # ChatMessage rows. The canonical loader above always supplies sequence
+    # coordinates, including for copied branch prefixes and legacy anchors.
     ids_result = await db.execute(
         select(ChatTranscriptEvent.message_id)
         .where(
@@ -4958,7 +4986,7 @@ async def _resolve_runtime_models_for_task(
 
 async def _load_runtime_context(
     run_uuid: uuid.UUID,
-) -> tuple[RuntimeTask, Agent, User, LLMModel | None, LLMModel | None, list[ChatMessage], ChatSession | None]:
+) -> tuple[RuntimeTask, Agent, User, LLMModel | None, LLMModel | None, list[Any], ChatSession | None]:
     tenant_id = await resolve_tenant_for_runtime_task(
         run_uuid,
         session_factory=_async_session,
@@ -5064,23 +5092,20 @@ async def _load_runtime_context(
             metadata=metadata,
         )
 
-        from app.services.memory_service import compute_history_limit
+        if session is None:
+            raise RuntimeError(f"RuntimeTask {run_uuid.hex} has no canonical ChatSession")
+        from app.services.session_semantic_history import load_session_semantic_history
 
-        history_limit = compute_history_limit(
-            primary_model.provider if primary_model else "openai",
-            primary_model.model if primary_model else "",
-            getattr(primary_model, "max_input_tokens", None) if primary_model else None,
+        semantic_history = await load_session_semantic_history(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent.id,
+            session_id=session.id,
+            current_run_id=run_uuid,
         )
-        history_result = await db.execute(
-            select(ChatMessage)
-            .where(
-                ChatMessage.agent_id == agent.id,
-                ChatMessage.conversation_id == str(runtime_task.parent_session_id),
-            )
-            .order_by(ChatMessage.created_at.desc())
-            .limit(history_limit)
-        )
-        history_messages = list(reversed(history_result.scalars().all()))
+        history_messages: list[Any] = list(semantic_history.messages)
+        metadata["session_semantic_history"] = dict(semantic_history.receipt)
+        runtime_task.metadata_json = metadata
         history_messages = await _apply_active_projection_to_history(db, session, history_messages)
         resume_history, resume_round_index, resume_tokens_used = await _session_permission_resume_history(
             db, runtime_task

@@ -17,6 +17,7 @@ from app.runtime.invoker import AgentInvocationRequest
 from app.runtime.runtime_phase import RunPhaseEmitter, RuntimePhase
 from app.services.llm_client import LLMError
 from app.services.runtime_budget_failover import runtime_budget_model_notice, runtime_budget_payload
+from app.services.session_semantic_history import SessionSemanticHistoryUnavailable
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +27,8 @@ class RuntimeExceptionFailure:
 
 def _runtime_exception_failure(exc: Exception) -> RuntimeExceptionFailure:
     """Classify runtime failures from authoritative exception types, never message text."""
+    if isinstance(exc, SessionSemanticHistoryUnavailable):
+        return RuntimeExceptionFailure(terminal_reason=TerminalReason.PERSISTENCE_ERROR.value)
     if isinstance(exc, (SQLAlchemyError, PostgresTextContractError)):
         return RuntimeExceptionFailure(terminal_reason=TerminalReason.PERSISTENCE_ERROR.value)
     if isinstance(exc, LLMError):
@@ -1490,18 +1493,36 @@ async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> N
     if isinstance(exc, ProviderRequestNeedsReconciliation):
         await _handle_provider_reconciliation_required(state, exc)
         return
-    summary = f"Web chat run failed: {type(exc).__name__}"
+    summary = (
+        "Canonical session history is unavailable; model invocation did not start."
+        if isinstance(exc, SessionSemanticHistoryUnavailable)
+        else f"Web chat run failed: {type(exc).__name__}"
+    )
     failure = _runtime_exception_failure(exc)
     metadata = {"error": str(exc), "terminal_reason": failure.terminal_reason}
+    if isinstance(exc, SessionSemanticHistoryUnavailable):
+        metadata.update(
+            {
+                "delivery_state": "not_started",
+                "error_code": exc.code,
+                "retryable": exc.retryable,
+                "session_semantic_history": exc.receipt(),
+            }
+        )
     try:
         if state.stream_batcher is not None:
             await state.stream_batcher.flush()
-        runtime_task, agent, user, *_ = await state.ports.context.load_runtime_context(state.run_uuid)
-        session_id = str(runtime_task.parent_session_id)
+        if isinstance(exc, SessionSemanticHistoryUnavailable):
+            agent_id = exc.agent_id
+            session_id = str(exc.session_id)
+        else:
+            runtime_task, agent, user, *_ = await state.ports.context.load_runtime_context(state.run_uuid)
+            agent_id = agent.id
+            session_id = str(runtime_task.parent_session_id)
         changes = _failed_file_change_kwargs(state)
         finalized = await state.ports.terminal.finalize_without_assistant(
             run_uuid=state.run_uuid,
-            agent_id=agent.id,
+            agent_id=agent_id,
             session_id=session_id,
             status="failed",
             result_summary=summary,
@@ -1513,7 +1534,7 @@ async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> N
                 state.run_uuid, status="failed", result_summary=summary, metadata_json=metadata
             )
         await state.ports.terminal.emit_terminal_hook(
-            agent_id=agent.id,
+            agent_id=agent_id,
             session_id=session_id,
             run_uuid=state.run_uuid,
             runtime_metadata=state.metadata or None,

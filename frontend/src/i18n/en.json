@@ -331,6 +331,7 @@
       "documentAuthor": "By {{name}}",
       "expandRuntime": "Expand runtime panel",
       "noAdditionalDetails": "No additional details",
+      "resultDelivered": "Result delivered",
       "workerRetry": "Retry with new worker",
       "workerRetryTitle": "Ask the main Agent to inspect the failure and create a new one-shot worker if safe"
     },

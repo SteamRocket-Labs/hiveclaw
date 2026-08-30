@@ -92,6 +92,41 @@ describe('session experience information policy', () => {
     expect(runtimeItemDisplayMeta(item)).not.toContain('team_member');
   });
 
+  it('presents an exact hash-pinned runtime receipt as a user-facing delivery state', () => {
+    const receipt = 'Durable result committed: ref=runtime-result://3be99530-7c50-5adc-9aa6-bdd6e401ffba/22664ea63afefe92980bbc9293ea8c711fcec8226ad46ad1b62c0109534a9a6d sha256=22664ea63afefe92980bbc9293ea8c711fcec8226ad46ad1b62c0109534a9a6d bytes=795.';
+    const item = {
+      id: '83fd572f-fc55-44b8-9deb-98809a53a2d5',
+      label: 'delegation',
+      status: 'completed',
+      state: 'completed',
+      runtimeKind: 'peer_a2a',
+      summary: receipt,
+      childSessionId: '437323b5-44bb-4d4d-8fb9-231e1df42421',
+      enterable: true,
+      metrics: {
+        elapsedSeconds: null,
+        elapsedLabel: null,
+        tokenCount: null,
+        tokenLabel: null,
+        toolUseCount: null,
+        toolUseLabel: null,
+        lastActivityLabel: null,
+      },
+      members: [],
+      steps: [],
+      leafCalls: [],
+      userBlocker: null,
+      raw: {},
+    } satisfies RuntimeSectionItemModel;
+
+    expect(runtimeItemDisplayMeta(item)).toBe('Result delivered');
+    expect(runtimeItemDisplayMeta(item)).not.toContain('runtime-result://');
+    expect(runtimeItemDisplayMeta(item)).not.toContain('sha256');
+    expect(item.summary).toBe(receipt);
+    expect(en.sessionWorkbench.rightPanel.resultDelivered).toBe('Result delivered');
+    expect(zh.sessionWorkbench.rightPanel.resultDelivered).toBe('结果已交付');
+  });
+
   it('shows a failed Team close as recoverable semantic state', () => {
     const item = {
       id: 'team-1',

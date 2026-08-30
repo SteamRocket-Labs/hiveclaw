@@ -157,7 +157,12 @@ export function runtimeMetricSummary(item: RuntimeSectionItemModel): string {
   ].filter(Boolean).join(' · ');
 }
 
-export function runtimeItemDisplayMeta(item: RuntimeSectionItemModel): string {
+const DURABLE_RUNTIME_RESULT_RECEIPT = /^Durable result committed: ref=runtime-result:\/\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/[0-9a-f]{64} sha256=[0-9a-f]{64} bytes=\d+\.$/i;
+
+export function runtimeItemDisplayMeta(
+  item: RuntimeSectionItemModel,
+  resultDeliveredLabel = 'Result delivered',
+): string {
   const metadata = isRuntimeRecord(item.raw.metadata) ? item.raw.metadata : {};
   const role = stringValue(
     item.raw.member_role
@@ -166,7 +171,11 @@ export function runtimeItemDisplayMeta(item: RuntimeSectionItemModel): string {
       || metadata.member_role
       || metadata.memberRole,
   ).trim();
-  return [role, item.summary, runtimeMetricSummary(item)].filter(Boolean).join(' · ');
+  const summary = stringValue(item.summary).trim();
+  const userFacingSummary = DURABLE_RUNTIME_RESULT_RECEIPT.test(summary)
+    ? resultDeliveredLabel
+    : summary;
+  return [role, userFacingSummary, runtimeMetricSummary(item)].filter(Boolean).join(' · ');
 }
 
 export function runtimeItemDisplayStatus(item: RuntimeSectionItemModel, t?: RuntimeStatusTranslator): string {
@@ -393,7 +402,10 @@ export function SessionRuntimePanel({
   const renderRuntimeItem = (item: RuntimeSectionItemModel, fallback: string) => {
     const sessionId = item.childSessionId;
     const clickable = Boolean(item.enterable && sessionId && onSelectSession);
-    const meta = runtimeItemDisplayMeta(item);
+    const meta = runtimeItemDisplayMeta(
+      item,
+      t('sessionWorkbench.rightPanel.resultDelivered', 'Result delivered'),
+    );
     const content = (
       <>
         <span className="session-runtime-row-main">
@@ -473,7 +485,10 @@ export function SessionRuntimePanel({
   };
 
   const renderWorkflowRoot = (workflow: RuntimeSectionItemModel, fallback: string) => {
-    const meta = runtimeItemDisplayMeta(workflow);
+    const meta = runtimeItemDisplayMeta(
+      workflow,
+      t('sessionWorkbench.rightPanel.resultDelivered', 'Result delivered'),
+    );
     const content = (
       <>
         <span className="session-runtime-row-main">
@@ -507,7 +522,10 @@ export function SessionRuntimePanel({
     fallback: string,
   ) => {
     const sessionId = member.childSessionId;
-    const meta = runtimeItemDisplayMeta(member);
+    const meta = runtimeItemDisplayMeta(
+      member,
+      t('sessionWorkbench.rightPanel.resultDelivered', 'Result delivered'),
+    );
     return (
       <div key={member.id || fallback} className="session-runtime-row" data-testid="session-agent-team-member-row">
         <span className="session-runtime-row-main">
@@ -532,7 +550,10 @@ export function SessionRuntimePanel({
   const renderSubagentWorkerItem = (worker: RuntimeSectionItemModel, fallback: string) => {
     const sessionId = worker.childSessionId;
     const canInspect = Boolean(sessionId && onSelectSession);
-    const meta = runtimeItemDisplayMeta(worker);
+    const meta = runtimeItemDisplayMeta(
+      worker,
+      t('sessionWorkbench.rightPanel.resultDelivered', 'Result delivered'),
+    );
     const recovery = subagentWorkerRecoveryModel(worker);
     const workerAction = (
       action: 'inspect' | 'retry',

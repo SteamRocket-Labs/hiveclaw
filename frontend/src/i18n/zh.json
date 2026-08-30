@@ -331,6 +331,7 @@
       "documentAuthor": "作者：{{name}}",
       "expandRuntime": "展开运行面板",
       "noAdditionalDetails": "暂无更多详情",
+      "resultDelivered": "结果已交付",
       "workerRetry": "使用新 Worker 重试",
       "workerRetryTitle": "让主 Agent 检查失败，并在安全时创建新的单次 Worker"
     },

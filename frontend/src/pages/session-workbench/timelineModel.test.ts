@@ -3077,4 +3077,89 @@ describe('DAY1-A2A-LIVE-STATE-001: live A2A runtime state converges without relo
     ).toEqual(['delegation-task-1', 'delegation-task-2']);
     expect(rightPanel.runtimeSections.summary.running).toBe(0);
   });
+
+  it('(e) canonical terminal UUID suppresses a legacy compact-UUID running worker projection', () => {
+    const canonicalRuntimeTaskId = '123e4567-e89b-12d3-a456-426614174000';
+    const legacyCompactRuntimeTaskId = '123e4567e89b12d3a456426614174000';
+    const rightPanel = buildSessionRightPanelModel({
+      messages: [
+        {
+          id: 'evt-subagent-running-legacy',
+          role: 'event',
+          content: 'Subagent is running in the background.',
+          eventType: 'runtime_action_started',
+          eventStatus: 'running',
+          eventNotificationSource: 'subagent_wake',
+          eventRuntimeTaskId: legacyCompactRuntimeTaskId,
+          eventChildSessionId: 'child-session-legacy',
+        },
+      ] as AgentChatMessage[],
+      sessionWorkbench: {
+        runtime_tasks: [
+          {
+            id: canonicalRuntimeTaskId,
+            runtime_task_id: canonicalRuntimeTaskId,
+            task_type: 'subagent',
+            runtime_kind: 'subagent',
+            label: 'Historical worker',
+            status: 'needs_reconciliation',
+            child_session_id: 'child-session-legacy',
+          },
+        ],
+      } as unknown as SessionWorkbench,
+    });
+
+    expect(rightPanel.runtimeConsole.workers.items).toHaveLength(1);
+    expect(rightPanel.runtimeConsole.workers.items[0]).toMatchObject({
+      status: 'needs_reconciliation',
+    });
+    expect(rightPanel.runtimeConsole.summary).toMatchObject({
+      state: 'blocked',
+      runningCount: 0,
+      blockedCount: 1,
+    });
+  });
+
+  it('(f) a canonical runtime section is complete authority over identity-poor transcript fallbacks', () => {
+    const rightPanel = buildSessionRightPanelModel({
+      messages: [
+        {
+          id: 'legacy-notification-1',
+          role: 'event',
+          content: 'Historical completion notification.',
+          eventType: 'agent_task_notification',
+          eventStatus: 'completed',
+          eventNotificationSource: 'subagent_wake',
+          eventChildSessionId: 'child-session-legacy',
+        },
+      ] as AgentChatMessage[],
+      sessionWorkbench: {
+        runtime_sections: {
+          notifications: {
+            schema: 'hive.ccplus.runtime_section.v1',
+            key: 'notifications',
+            count: 1,
+            items: [
+              {
+                id: 'runtime_task:123e4567-e89b-12d3-a456-426614174000',
+                runtime_kind: 'notification',
+                label: 'Canonical completion notification',
+                status: 'completed',
+                runtime_task_id: '123e4567-e89b-12d3-a456-426614174000',
+                child_session_id: 'child-session-legacy',
+              },
+            ],
+          },
+        },
+      } as unknown as SessionWorkbench,
+    });
+
+    expect(rightPanel.runtimeSections.notifications).toHaveLength(1);
+    expect(rightPanel.runtimeConsole.activity.notifications).toHaveLength(1);
+    expect(rightPanel.runtimeConsole.summary).toMatchObject({
+      state: 'idle',
+      runningCount: 0,
+      totalCount: 1,
+    });
+  });
 });

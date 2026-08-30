@@ -919,7 +919,7 @@ function runtimeItemMergeKeys(item: RuntimeSectionItemModel): string[] {
   const keys: string[] = [];
   const raw = item.raw as Record<string, unknown> | undefined;
   const taskId = readString(raw ?? {}, ['runtime_task_id', 'runtimeTaskId'], '');
-  if (taskId) keys.push(`runtime_task:${taskId}`);
+  if (taskId) keys.push(`runtime_task:${normalizeSessionRunId(taskId)}`);
   const workflowRunId = readString(raw ?? {}, ['workflow_run_id', 'workflowRunId'], '');
   if (workflowRunId) keys.push(`workflow_run:${workflowRunId}`);
   keys.push(runtimeItemIdentity(item));
@@ -941,16 +941,38 @@ function mergeRuntimeItemLists(
   return merged;
 }
 
-function mergeRuntimeSections(primary: RuntimeSectionsModel, fallback: RuntimeSectionsModel): RuntimeSectionsModel {
+function hasCanonicalRuntimeSection(
+  sections: Record<string, unknown> | null,
+  key: RuntimeSectionName,
+): boolean {
+  if (!sections || !Object.prototype.hasOwnProperty.call(sections, key)) return false;
+  const value = sections[key];
+  if (Array.isArray(value)) return true;
+  const envelope = asRecord(value);
+  return Boolean(envelope && Array.isArray(envelope.items));
+}
+
+function mergeRuntimeSections(
+  primary: RuntimeSectionsModel,
+  fallback: RuntimeSectionsModel,
+  canonicalSections: Record<string, unknown> | null = null,
+): RuntimeSectionsModel {
+  const items = (
+    key: RuntimeSectionName,
+    canonical: RuntimeSectionItemModel[],
+    compatibility: RuntimeSectionItemModel[],
+  ) => (hasCanonicalRuntimeSection(canonicalSections, key)
+    ? canonical
+    : mergeRuntimeItemLists(canonical, compatibility));
   return buildRuntimeSectionsSummary({
-    agentTeams: mergeRuntimeItemLists(primary.agentTeams, fallback.agentTeams),
-    peerA2A: mergeRuntimeItemLists(primary.peerA2A, fallback.peerA2A),
-    subagents: mergeRuntimeItemLists(primary.subagents, fallback.subagents),
-    workflows: mergeRuntimeItemLists(primary.workflows, fallback.workflows),
-    background: mergeRuntimeItemLists(primary.background, fallback.background),
-    notifications: mergeRuntimeItemLists(primary.notifications, fallback.notifications),
-    runs: mergeRuntimeItemLists(primary.runs, fallback.runs),
-    raw: mergeRuntimeItemLists(primary.raw, fallback.raw),
+    agentTeams: items('agent_teams', primary.agentTeams, fallback.agentTeams),
+    peerA2A: items('peer_a2a', primary.peerA2A, fallback.peerA2A),
+    subagents: items('subagents', primary.subagents, fallback.subagents),
+    workflows: items('workflows', primary.workflows, fallback.workflows),
+    background: items('background', primary.background, fallback.background),
+    notifications: items('notifications', primary.notifications, fallback.notifications),
+    runs: items('runs', primary.runs, fallback.runs),
+    raw: items('raw', primary.raw, fallback.raw),
   });
 }
 
@@ -1401,9 +1423,11 @@ export function buildSessionRightPanelModel({
   presentationStatus?: SessionWorkbenchStatus | null;
 }): SessionRightPanelModel {
   const workbenchRecord = asRecord(sessionWorkbench) ?? null;
+  const canonicalRuntimeSections = asRecord(workbenchRecord?.runtime_sections);
   const evidenceRuntimeSections = mergeRuntimeSections(
     buildRuntimeSectionsModel(workbenchRecord),
     runtimeSectionsFromMessages(messages),
+    canonicalRuntimeSections,
   );
   const presentationRunStatus = presentationStatus === 'waiting'
     ? 'waiting'

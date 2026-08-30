@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.policy import compute_audit_event_hash, compute_legacy_audit_event_hash
 from app.models.security_audit import SecurityAuditEvent
-from app.schemas.audit_schemas import AuditQueryParams
+from app.schemas.audit_schemas import AuditQueryParams, project_admin_audit_details
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +45,7 @@ def _apply_filters(
         query = query.where(SecurityAuditEvent.created_at <= params.date_to)
     if params.search:
         pattern = f"%{params.search}%"
-        query = query.where(
-            SecurityAuditEvent.action.ilike(pattern)
-            | SecurityAuditEvent.event_type.ilike(pattern)
-            | SecurityAuditEvent.details.cast(str).ilike(pattern)
-        )
+        query = query.where(SecurityAuditEvent.action.ilike(pattern) | SecurityAuditEvent.event_type.ilike(pattern))
 
     return query
 
@@ -107,7 +103,6 @@ async def export_csv(
             "action",
             "resource_type",
             "resource_id",
-            "ip_address",
             "details",
         ]
     )
@@ -122,8 +117,7 @@ async def export_csv(
                 evt.action,
                 evt.resource_type or "",
                 str(evt.resource_id) if evt.resource_id else "",
-                evt.ip_address or "",
-                json.dumps(evt.details, ensure_ascii=False) if evt.details else "",
+                json.dumps(project_admin_audit_details(evt.details), ensure_ascii=False) if evt.details else "",
             ]
         )
 

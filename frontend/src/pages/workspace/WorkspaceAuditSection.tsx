@@ -30,6 +30,28 @@ const BACKGROUND_ACTIONS = [
   'server_startup',
 ];
 
+const ADMIN_AUDIT_DETAIL_KEYS = new Set([
+  'capability',
+  'changed_fields',
+  'force',
+  'latency_ms',
+  'max_tokens',
+  'model',
+  'outcome',
+  'phase',
+  'probe_id',
+  'provider',
+  'retry_count',
+  'status',
+  'success',
+  'tool',
+]);
+
+function projectAdminAuditDetails(details: Record<string, unknown> | null | undefined) {
+  if (!details) return {};
+  return Object.fromEntries(Object.entries(details).filter(([key]) => ADMIN_AUDIT_DETAIL_KEYS.has(key)));
+}
+
 export default function WorkspaceAuditSection({
   selectedTenantId,
 }: WorkspaceAuditSectionProps) {
@@ -45,14 +67,18 @@ export default function WorkspaceAuditSection({
   });
 
   const combinedAuditLogs: WorkspaceAuditLog[] = [
-    ...(auditLogs as AuditLog[]).map((log) => ({ ...log, reference_id: log.agent_id })),
+    ...(auditLogs as AuditLog[]).map((log) => ({
+      ...log,
+      reference_id: log.agent_id,
+      details: projectAdminAuditDetails(log.details),
+    })),
     ...((securityAuditEvents?.items || []) as SecurityAuditEvent[]).map((event) => ({
       id: `security:${event.id}`,
       action: event.action,
       created_at: event.created_at,
       reference_id: event.resource_id || event.actor_id,
       details: {
-        ...event.details,
+        ...projectAdminAuditDetails(event.details),
         event_type: event.event_type,
         severity: event.severity,
       },

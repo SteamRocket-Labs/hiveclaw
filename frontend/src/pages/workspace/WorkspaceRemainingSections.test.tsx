@@ -67,7 +67,15 @@ vi.mock('@tanstack/react-query', () => ({
             action: 'schedule_tick',
             created_at: '2026-03-27T09:00:00Z',
             agent_id: 'agent-12345678',
-            details: { job: 'nightly' },
+            details: {
+              status: 'completed',
+              job_id: 'job-private',
+              session_id: 'session-private',
+              reason: 'customer recovery note',
+              issues: ['customer-private-error'],
+              api_key: 'secret-key',
+              agent_name: 'Private Employee Agent',
+            },
           },
         ],
       };
@@ -86,7 +94,14 @@ vi.mock('@tanstack/react-query', () => ({
               resource_type: 'llm_model',
               resource_id: 'model-12345678',
               action: 'test_llm_model_completed',
-              details: { provider: 'zhipu', model: 'glm-5.3', success: true },
+              details: {
+                provider: 'zhipu',
+                model: 'glm-5.3',
+                success: true,
+                probe_id: 'probe-safe',
+                user_agent: 'private-user-agent',
+                execution_identity_label: 'Private Employee',
+              },
               created_at: '2026-03-27T09:01:00Z',
             },
           ],
@@ -175,7 +190,16 @@ describe('Workspace remaining sections', () => {
     expect(auditMarkup).toContain('test_llm_model_completed');
     expect(auditMarkup).toContain('llm_model.test_completed');
     expect(auditMarkup).toContain('model-12');
+    expect(auditMarkup).toContain('probe_id=probe-safe');
+    expect(auditMarkup).toContain('status=completed');
     expect(auditMarkup).toContain('records:2');
+    expect(auditMarkup).not.toContain('job-private');
+    expect(auditMarkup).not.toContain('session-private');
+    expect(auditMarkup).not.toContain('customer recovery note');
+    expect(auditMarkup).not.toContain('customer-private-error');
+    expect(auditMarkup).not.toContain('secret-key');
+    expect(auditMarkup).not.toContain('Private Employee');
+    expect(auditMarkup).not.toContain('private-user-agent');
   });
 
   it('renders the org, quotas, and tools sections outside of EnterpriseSettings', () => {

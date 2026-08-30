@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -26,6 +27,22 @@ class _FakeAuditQueryDB:
         return _ScalarResult(self._values.pop(0) if self._values else None)
 
 
+class _AuditListResult:
+    def __init__(self, values: list[object]) -> None:
+        self._values = values
+
+    def scalars(self):
+        return SimpleNamespace(all=lambda: self._values)
+
+
+class _FakeAuditExportDB:
+    def __init__(self, values: list[object]) -> None:
+        self._values = values
+
+    async def execute(self, _statement):
+        return _AuditListResult(self._values)
+
+
 def _legacy_audit_hash(event) -> str:
     payload = json.dumps(
         {
@@ -39,6 +56,66 @@ def _legacy_audit_hash(event) -> str:
         sort_keys=True,
     )
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def test_admin_audit_search_never_queries_raw_details() -> None:
+    from sqlalchemy import select
+
+    from app.models.security_audit import SecurityAuditEvent
+    from app.schemas.audit_schemas import AuditQueryParams
+    from app.services.audit_query_service import _apply_filters
+
+    query = _apply_filters(
+        select(SecurityAuditEvent.id),
+        uuid4(),
+        AuditQueryParams(search="customer-private-marker"),
+    )
+
+    where_sql = str(query.whereclause)
+    assert "security_audit_events.action" in where_sql
+    assert "security_audit_events.event_type" in where_sql
+    assert "security_audit_events.details" not in where_sql
+
+
+@pytest.mark.asyncio
+async def test_admin_audit_csv_exports_only_summary_details() -> None:
+    from app.schemas.audit_schemas import AuditQueryParams
+    from app.services.audit_query_service import export_csv
+
+    event = SimpleNamespace(
+        created_at=datetime.now(timezone.utc),
+        event_type="llm_model.test_completed",
+        severity="info",
+        actor_type="user",
+        actor_id=uuid4(),
+        action="test_llm_model_completed",
+        resource_type="llm_model",
+        resource_id=uuid4(),
+        ip_address="203.0.113.10",
+        details={
+            "provider": "zhipu",
+            "model": "glm-5.3",
+            "success": True,
+            "probe_id": "probe-safe",
+            "session_id": "session-private",
+            "reason": "customer recovery note",
+            "api_key": "secret-key",
+        },
+    )
+
+    result = await export_csv(
+        _FakeAuditExportDB([event]),  # type: ignore[arg-type]
+        uuid4(),
+        AuditQueryParams(),
+    )
+
+    assert "provider" in result
+    assert "probe-safe" in result
+    assert "session-private" not in result
+    assert "customer recovery note" not in result
+    assert "secret-key" not in result
+    assert "203.0.113.10" not in result
+    assert "ip_address" not in result.splitlines()[0]
 
 
 @pytest.mark.asyncio

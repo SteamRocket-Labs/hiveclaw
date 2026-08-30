@@ -29,13 +29,13 @@ from app.models.user import User
 from app.schemas.schemas import (
     ApprovalAction,
     ApprovalRequestOut,
-    AuditLogOut,
     EnterpriseInfoOut,
     EnterpriseInfoUpdate,
     LLMModelCreate,
     LLMModelOut,
     LLMModelUpdate,
 )
+from app.schemas.audit_schemas import AuditLogSummaryOut
 from app.services.approval_service import approval_service
 from app.services.enterprise_approval_visibility import enterprise_visible_approval_filter
 from app.services.enterprise_sync import enterprise_sync_service
@@ -695,7 +695,7 @@ async def verify_platform_security_audit_chain(
     return await verify_persisted_platform_security_audit_chain()
 
 
-@router.get("/audit-logs", response_model=list[AuditLogOut])
+@router.get("/audit-logs", response_model=list[AuditLogSummaryOut])
 async def list_audit_logs(
     agent_id: uuid.UUID | None = None,
     tenant_id: str | None = None,
@@ -712,7 +712,7 @@ async def list_audit_logs(
     if agent_id:
         query = query.where(AuditLog.agent_id == agent_id)
     result = await db.execute(query)
-    return [AuditLogOut.model_validate(log) for log in result.scalars().all()]
+    return [AuditLogSummaryOut.model_validate(log) for log in result.scalars().all()]
 
 
 # ─── Security Audit (SecurityAuditEvent table) ─────────
@@ -765,6 +765,7 @@ async def query_audit_events(
 
 @router.get("/audit/export")
 async def export_audit_csv(
+    tenant_id: str | None = None,
     event_type: str | None = None,
     severity: str | None = None,
     actor_id: uuid.UUID | None = None,
@@ -795,7 +796,8 @@ async def export_audit_csv(
         date_to=dt.fromisoformat(date_to) if date_to else None,
     )
 
-    csv_data = await export_csv(db, current_user.tenant_id, params)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    csv_data = await export_csv(db, target_tenant_id, params)
     return StreamingResponse(
         iter([csv_data]),
         media_type="text/csv",
@@ -806,16 +808,15 @@ async def export_audit_csv(
 @router.get("/audit/{event_id}/chain")
 async def verify_audit_chain(
     event_id: uuid.UUID,
+    tenant_id: str | None = None,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
     """Verify hash-chain integrity for a single audit event (admin only, tenant-scoped)."""
     from app.services.audit_query_service import verify_chain
 
-    if not current_user.tenant_id:
-        return {"valid": False, "event_hash": "", "computed_hash": "", "predecessor_id": None}
-
-    return await verify_chain(db, event_id, current_user.tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    return await verify_chain(db, event_id, target_tenant_id)
 
 
 # ─── Dashboard Stats ────────────────────────────────────

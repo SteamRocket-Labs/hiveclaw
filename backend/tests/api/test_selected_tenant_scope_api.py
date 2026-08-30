@@ -582,6 +582,136 @@ async def test_platform_admin_queries_selected_tenant_security_audit(monkeypatch
     assert captured == {"tenant_id": target_tenant_id, "page_size": 200}
 
 
+def test_admin_audit_schemas_expose_only_control_plane_summary_fields():
+    from app.schemas.audit_schemas import AuditEventOut, AuditLogSummaryOut
+
+    now = datetime.now(timezone.utc)
+    safe_details = {
+        "provider": "zhipu",
+        "model": "glm-5.3",
+        "phase": "completed",
+        "success": True,
+        "latency_ms": 3411,
+        "max_tokens": 16,
+        "probe_id": "probe-safe",
+        "status": "held",
+    }
+    private_details = {
+        "session_id": "session-private",
+        "job_id": "job-private",
+        "issues": ["customer-private-error"],
+        "reason": "customer recovery note",
+        "api_key": "secret-key",
+        "agent_name": "Private Employee Agent",
+    }
+    event = AuditEventOut.model_validate(
+        SimpleNamespace(
+            id=uuid4(),
+            event_type="llm_model.test_completed",
+            severity="info",
+            actor_type="user",
+            actor_id=uuid4(),
+            tenant_id=uuid4(),
+            resource_type="llm_model",
+            resource_id=uuid4(),
+            action="test_llm_model_completed",
+            details={**safe_details, **private_details},
+            ip_address="203.0.113.8",
+            user_agent="private-user-agent",
+            created_at=now,
+            prev_hash="private-prev-hash",
+            event_hash="private-event-hash",
+            execution_identity_type="delegated_user",
+            execution_identity_id=uuid4(),
+            execution_identity_label="Private Employee",
+        )
+    ).model_dump()
+    legacy = AuditLogSummaryOut.model_validate(
+        SimpleNamespace(
+            id=uuid4(),
+            user_id=uuid4(),
+            agent_id=uuid4(),
+            action="runtime_reconciliation.acknowledge_tool_effect",
+            details={**safe_details, **private_details},
+            ip_address="203.0.113.9",
+            created_at=now,
+        )
+    ).model_dump()
+
+    assert event["details"] == safe_details
+    assert legacy["details"] == safe_details
+    for projection in (event, legacy):
+        serialized = str(projection)
+        assert "session-private" not in serialized
+        assert "customer recovery note" not in serialized
+        assert "secret-key" not in serialized
+        assert "Private Employee" not in serialized
+        assert "203.0.113" not in serialized
+    assert "user_agent" not in event
+    assert event["prev_hash"] == "private-prev-hash"
+    assert event["event_hash"] == "private-event-hash"
+    assert event["execution_identity_type"] == "delegated_user"
+    assert event["execution_identity_id"] is not None
+    assert legacy["user_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_exports_selected_tenant_audit_summary(monkeypatch):
+    import app.api.enterprise as enterprise_api
+
+    own_tenant_id = uuid4()
+    target_tenant_id = uuid4()
+    captured = {}
+
+    async def fake_export_csv(_db, tenant_id, _params):
+        captured["tenant_id"] = tenant_id
+        return "timestamp,event_type\n"
+
+    monkeypatch.setattr("app.services.audit_query_service.export_csv", fake_export_csv)
+
+    await enterprise_api.export_audit_csv(
+        tenant_id=str(target_tenant_id),
+        event_type=None,
+        severity=None,
+        actor_id=None,
+        resource_type=None,
+        resource_id=None,
+        search=None,
+        date_from=None,
+        date_to=None,
+        current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=own_tenant_id),
+        db=_FakeDB([]),
+    )
+
+    assert captured == {"tenant_id": target_tenant_id}
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_verifies_selected_tenant_audit_chain(monkeypatch):
+    import app.api.enterprise as enterprise_api
+
+    own_tenant_id = uuid4()
+    target_tenant_id = uuid4()
+    event_id = uuid4()
+    captured = {}
+
+    async def fake_verify_chain(_db, received_event_id, tenant_id):
+        captured.update(event_id=received_event_id, tenant_id=tenant_id)
+        return {"valid": True}
+
+    monkeypatch.setattr("app.services.audit_query_service.verify_chain", fake_verify_chain)
+
+    result = await enterprise_api.verify_audit_chain(
+        event_id=event_id,
+        tenant_id=str(target_tenant_id),
+        current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=own_tenant_id),
+        db=_FakeDB([]),
+    )
+
+    assert result == {"valid": True}
+    assert captured == {"event_id": event_id, "tenant_id": target_tenant_id}
+
+
 @pytest.mark.asyncio
 async def test_llm_test_applies_gpt55_responses_request_options(monkeypatch):
     import app.api.enterprise as enterprise_api

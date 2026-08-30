@@ -3,7 +3,7 @@ document_id: weekend-rc-2026-08-30-journey-ledger
 owner: Rocky / Codex
 status: active
 authority: canonical-human-journey-ledger
-last_reviewed: 2026-08-30
+last_reviewed: 2026-08-31
 source_commit: c18b181c
 verification_status: frozen-production-denominator-96-no-pass-evidence-yet
 ---
@@ -93,6 +93,8 @@ verification_status: frozen-production-denominator-96-no-pass-evidence-yet
 ## 最新有效证据索引
 
 分母已冻结，但本轮尚未产生可计入 NPTCR 的 production pass。这里只登记关系，不复制证据正文：
+
+最新 finding-level production verification 为 [`LLM-PROBE-AUDIT-001`](evidence/cc6e726218bd491120f942edfa91e51d2d167ff4/LLM-PROBE-AUDIT-001-production-verification.md)：它关闭 P29/P33 共用的 provider Test 审计断点，但没有完成任一冻结 Journey 的 signed-in 双遍、fault、negative authority 或 cleanup，因此下表保持空值。
 
 | Journey | Pass 1 | Pass 2 | Fault/Recovery | Negative Authority | Final Verdict |
 |---|---|---|---|---|---|

@@ -4,8 +4,8 @@ owner: Codex
 status: active
 authority: canonical-active-finding-ledger
 last_reviewed: 2026-08-31
-source_commit: 6a6695e8
-verification_status: runtime-guard-presentation-production-verified
+source_commit: cc6e726218bd491120f942edfa91e51d2d167ff4
+verification_status: llm-probe-audit-production-verified
 ---
 
 # 当前 Findings 与 Blockers
@@ -26,8 +26,9 @@ verification_status: runtime-guard-presentation-production-verified
 
 | ID | 状态 | Severity | Journey | 最早错误状态 | 当前根因边界 | 下一动作 |
 |---|---|---:|---|---|---|---|
-| SESSION-AUTHORITY-PRESENTATION-001 | Verified | P1 | P29-PADMIN | backend 对无 operator authority 的跨用户 Session message/lineage 返回 `Session not found`，但旧前端仍显示“完成 / Read-only · User / 1 个步骤 / 运行错误”与完整 Session runtime shell | exact `bbf6d234` 在 authority resolution 前只显示 skeleton；403/404 清除 Session timeline/runtime cache并呈现 truthful denied/not-found，安全返回 `/agents`；5xx/network retry 与合法 Session 消费保持原语义 | 保持 `Verified`；完成 P29-PADMIN tenant/provider/runtime/compliance 正向面、pass-2、role-change/reload、API/audit 与四角色 screenshot matrix 后才可 `Closed` 或写 P29 PASS |
-| RUNTIME-GUARD-PRESENTATION-001 | Verified | P2 | P29-PADMIN | runtime protection heading/badge 显示“被保护的任务 0”，却列出 5 条 `active` run 并称“系统保护机制已介入” | exact `6a6695e8` 让 API 的 active reason 表达正常运行；无 protected run 时 UI 诚实标为“最近运行”，保留 active rows 与暂停能力，真正 protected run 仍优先展示 | 保持 `Verified`；P29 provider/runtime/compliance pass-1 全证据、fault/reload、pass-2 与四角色 matrix 完成后才可 `Closed` 或写 P29 PASS |
+| SESSION-AUTHORITY-PRESENTATION-001 | Verified | P1 | P29-PADMIN | backend 对无 operator authority 的跨用户 Session message/lineage 返回 `Session not found`，但旧前端仍显示“完成 / Read-only · User / 1 个步骤 / 运行错误”与完整 Session runtime shell | exact `bbf6d234` 在 authority resolution 前只显示 skeleton；403/404 清除 Session timeline/runtime cache并呈现 truthful denied/not-found，安全返回 `/agents`；5xx/network retry 与合法 Session 消费保持原语义 | 保持 `Verified`；provider health/audit finding 已关闭，仍须完成 P29-PADMIN 其余 API/compliance 正向面、pass-2、role-change/reload 与四角色 screenshot matrix 后才可 `Closed` 或写 P29 PASS |
+| RUNTIME-GUARD-PRESENTATION-001 | Verified | P2 | P29-PADMIN | runtime protection heading/badge 显示“被保护的任务 0”，却列出 5 条 `active` run 并称“系统保护机制已介入” | exact `6a6695e8` 让 API 的 active reason 表达正常运行；无 protected run 时 UI 诚实标为“最近运行”，保留 active rows 与暂停能力，真正 protected run 仍优先展示 | 保持 `Verified`；provider health/audit finding 已关闭，P29 其余 API/compliance evidence、fault/reload、pass-2 与四角色 matrix 完成后才可 `Closed` 或写 P29 PASS |
+| LLM-PROBE-AUDIT-001 | Verified | P1 | P29-PADMIN / P33-GLM | `/enterprise/llm` Test 发生真实 provider/token/cost effect，但 backend 不写 canonical audit；audit UI 只读 legacy agent-bound log，platform admin selected tenant 也未固定到 canonical audit query | exact `cc6e7262` 在 provider effect 前 durable commit started event，终态 durable commit completed event；effect 后 terminal audit 失败返回 non-retryable typed result；canonical selected-tenant audit 与 legacy log 在 UI 合并消费 | 保持 `Verified`；MiniMax/GLM/DeepSeek 的 bounded health verdict 已记录，但 P33 frozen compatibility tasks、P29 pass-1/pass-2、role/fault/negative matrix 均仍 open，不写 Journey PASS |
 | TOOL-ARTIFACT-SETTLEMENT-001 | Verified | P1 | P01-MAIN / PJ-02 / PJ-04 | `write_file` effect 已完成，但 canonical terminal `tool_call`/`tool_result` 与 ChatArtifact 在 `chat_artifacts_message_id_fkey` 处回滚；kernel 仍准备下一 provider round | `c37fefc5` 已原子提交 owner/artifact/V2/outbox 并在持久化失败时 hard-stop；`3482b57a` 对 exact unknown-effect invocation fail closed，唯一 operator acknowledgement 保持 unknown fact、禁止旧轮重放并释放 fresh-turn admission | normal/reload 与 supported recovery/no-replay 已 production PASS；保持 `Verified`，完成 clean P01-MAIN/PJ-02/PJ-04 双遍、authority-negative 与 cleanup 后才可 `Closed` |
 | SESSION-RETRY-INPUT-001 | Verified | P1 | P01-MAIN / P02-STREAM | edit branch 的 canonical `human_input.accepted` 保存完整 retry prompt，但首个 `result_commit.prepared.bound_input_ids=[]`；provider 未调用工具并错误回复“这条消息只有「1」”，产品仍把 run/final 标成 `completed` | exact commit `2cee9f3e` 的 production retry Session `b3962147…` 已把完整输入绑定为唯一 `bound_input_id=1fd5cc5b…` 并进入 GLM/Work Ledger；随后失败属于独立的 tool-artifact settlement 与 provider 429，不回退本 finding | 保持 `Verified`；完整 P01/P02 双遍、recovery、authority-negative 和 cleanup 后才能 `Closed` |
 
@@ -51,7 +52,17 @@ verification_status: runtime-guard-presentation-production-verified
 - production-shaped RED：backend helper 精确得到旧 intervention 字符串；frontend static render 精确得到 protected heading + active row + intervention reason。GREEN：focused backend 8 / frontend 6，相邻 backend 87 / frontend 142；完整 backend **8439 passed, 2 skipped, 1 warning**、frontend **154 files / 1149 tests**，i18n 3995/3995、Ruff/format、production build/budgets、24 architecture tests 与 manifest validator 全绿。
 - exact `6a6695e88d915a0e37b44e64dcdfe5bdd90a9454` 已 push；Railway backend `cdef3ce1-85e6-4662-a5aa-a6fb9793a21b`、backend-api `2261b169-3c8a-4c3e-a42b-7a1239b2b8e2`、frontend `feb46b17-e017-457a-8c09-b94065730ce1` 均 `SUCCESS`，backend health `status=ok`，frontend HTTP 200。
 - production hard navigation 后页面显示“最近运行 5 / 最近的运行活动；正在运行的任务可在此暂停。”；5 条 active row 全部显示“运行正在正常进行 / 等待当前运行完成”，5 个暂停按钮仍在，旧“系统保护机制已介入”和“被保护的任务”均不在 DOM。证据：`evidence/bbf6d2340afe593b44f740fabfa178d126b5beca/P29-PADMIN-fault-active-runtime-guard-presentation.md` 与 `evidence/6a6695e88d915a0e37b44e64dcdfe5bdd90a9454/RUNTIME-GUARD-PRESENTATION-001-production-verification.md`。
-- finding 推进为 `Verified`；当前没有 production protected run 用于正向 protected-state screenshot，且 P29 provider health、API/audit scope、fault/reload、pass-2、四角色 matrix 尚未完成，所以 P29 不写 PASS，NPTCR 保持 `0/96`。
+- finding 推进为 `Verified`；当前没有 production protected run 用于正向 protected-state screenshot。后续 `LLM-PROBE-AUDIT-001` 已关闭 provider health audit 断点，但 P29 其余 API/compliance evidence、fault/reload、pass-2、四角色 matrix 尚未完成，所以 P29 不写 PASS，NPTCR 保持 `0/96`。
+
+#### LLM-PROBE-AUDIT-001 复现、修复与生产验证
+
+- deployed `6a6695e8` 的 signed-in `/enterprise/llm` health Test 会真实调用外部 provider，但 `test_llm_model()` 没有 audit writer；`/enterprise/audit` 无对应事件，前端也只消费 agent-bound legacy audit log。pre-fix bounded verdict 为 MiniMax success `7623ms`、DeepSeek 一次 `HTTP 402 Insufficient Balance`、GLM success `7575ms`；没有重试 DeepSeek、充值、换 credential 或修改模型配置。
+- 最小共享修复在 provider effect 前写并 commit `llm_model.test_started`；provider success/failure 后写 `llm_model.test_completed`。两者共用生成的 probe/request ID，只持久化 provider、model、max_tokens、phase、success、latency 或 exception type。started audit 不可用时 HTTP 503 且禁止 provider call；effect 后 terminal audit persistence 失败则返回 `retryable=false` typed result，保留 started evidence 并禁止自动重试。
+- `/enterprise/audit` 复用 selected-tenant server authority；frontend 并行读取 canonical security audit 与 legacy operational audit，合并排序后展示 action/event/severity/resource。没有 schema、migration、dependency、feature flag 或持久配置。
+- RED：正确 Python 3.12 venv 下 backend 5 failures、frontend 2 failures；GREEN：focused backend 6、selected-tenant API file 22、frontend adjacent 34。full gates：backend **8443 passed, 2 skipped, 1 warning**；frontend **154 files / 1149 tests**；i18n 3995/3995、9 node tests、Ruff/format、production build/budgets、24 architecture tests、manifest validate 与 diff check 全绿。
+- exact `cc6e726218bd491120f942edfa91e51d2d167ff4` 已 push；首次部署因手工错误扩展 short SHA 且脚本未 fail-fast，三个空上传 deployment `446bb56e…` / `771d44b3…` / `7f139625…` 均立即 `FAILED`，未替换运行实例。恢复后以 `git rev-parse HEAD`、`set -euo pipefail` 和 archive 内容检查重新上传；backend `f619e4a9…`、backend-api `7edd592d…`、frontend `beb9cd36…` 均 `SUCCESS` 并绑定 exact full SHA，health/HTTP 通过。
+- post-fix 只点击 GLM Test 一次；probe `a0f1be98-27bd-4d69-9bde-247b57c6b16c` 在 `05:21:32` started、`05:21:36` completed，`zhipu/glm-5.3`、`max_tokens=16`、`success=true`、`latency_ms=3411`。audit hard reload 后 started/completed 各一、同 probe ID 恰出现两次、无 raw API key、无第二次 provider call。
+- immutable evidence：`evidence/cc6e726218bd491120f942edfa91e51d2d167ff4/LLM-PROBE-AUDIT-001-production-verification.md`。finding 推进为 `Verified`；P29 四角色/双遍/fault/negative 与 P33 三模型 frozen compatibility tasks 仍未完成，NPTCR 保持 `0/96`。
 
 #### TOOL-ARTIFACT-SETTLEMENT-001 复现证据
 
@@ -141,7 +152,7 @@ verification_status: runtime-guard-presentation-production-verified
 
 | ID | 状态 | 历史事实 | 允许的当前动作 |
 |---|---|---|---|
-| BLOCKER-MODEL-001 | PARTIAL_PRECONDITION | GLM production 调用成功；MiniMax/DeepSeek exact binding 已确认但尚未 live probe | 各做一次 bounded semantic call；充值或 credential change 需 action-time 授权 |
+| BLOCKER-MODEL-001 | BLOCKED_PRECONDITION | MiniMax 与 GLM bounded production probe 成功；DeepSeek exact binding 已确认，但唯一 live probe 返回 `HTTP 402 Insufficient Balance` | 保留 typed blocker且不重试；充值、billing 或 credential change 需 action-time 授权，恢复后仍须执行 P33 frozen compatibility task |
 | BLOCKER-BRIDGE-001 | BLOCKED_PRECONDITION | Hive Connect daemon running，但 `hive-connect status` fresh 返回 `401 Invalid bridge token`，UI linked `0` / offline | 保留 blocker；re-login/token replacement 需 action-time 授权 |
 
 外部 blocker 必须在执行窗重新验证；恢复后回到真实语义路径，不以旧失败永久阻断。

@@ -139,6 +139,8 @@ function shouldCollapse(item: ThreadItem): boolean {
 
 function translateRuntimeFailure(t: TFunction, presentation: RuntimeFailurePresentation): string {
   switch (presentation.kind) {
+    case 'model_missing':
+      return t('sessionWorkbench.threadItem.failure.modelMissing', presentation.fallback);
     case 'quota_exhausted':
       return t('sessionWorkbench.threadItem.failure.quotaExhausted', presentation.fallback);
     case 'rate_limited':

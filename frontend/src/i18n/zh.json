@@ -69,6 +69,7 @@
       "approvalActions": "审批操作",
       "retryTurn": "重试本轮",
       "failure": {
+        "modelMissing": "当前 Agent 尚未配置模型。请在“权限与设置”中选择模型，或联系管理员配置后再重试。",
         "quotaExhausted": "模型额度或余额不足，请联系管理员检查额度，或切换模型后重试。",
         "rateLimited": "模型服务当前繁忙，请稍后重试，或切换模型后再试。",
         "retryable": "模型服务暂时不可用，本次任务可以安全重试。",

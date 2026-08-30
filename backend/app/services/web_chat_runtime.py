@@ -1986,6 +1986,92 @@ async def _find_active_run(db: AsyncSession, *, agent_id: uuid.UUID, session_id:
     return task
 
 
+async def _repair_latest_missing_model_terminal_event(
+    db: AsyncSession,
+    *,
+    agent_id: uuid.UUID,
+    session_id: str | uuid.UUID,
+) -> bool:
+    """Repair the bounded legacy gap that caused Session live-state flicker.
+
+    A pre-invocation model-configuration failure used to settle RuntimeTask as
+    failed without appending the canonical run terminal. Only the latest
+    ``web_chat_turn`` is eligible, and only when both typed terminal facts
+    identify ``llm_model_missing``. The session/task locks make repeated active
+    polls idempotent; no assistant content or semantic conclusion is invented.
+    """
+
+    candidate_result = await db.execute(
+        select(RuntimeTask)
+        .where(
+            RuntimeTask.task_type == WEB_CHAT_TURN_TASK_TYPE,
+            RuntimeTask.parent_agent_id == agent_id,
+            RuntimeTask.parent_session_id == str(session_id),
+        )
+        .order_by(RuntimeTask.created_at.desc())
+        .limit(1)
+    )
+    candidate = candidate_result.scalars().first()
+    candidate_metadata = dict(getattr(candidate, "metadata_json", None) or {}) if candidate is not None else {}
+    if (
+        candidate is None
+        or getattr(candidate, "status", None) != "failed"
+        or str(getattr(candidate, "result_summary", None) or "") != "llm_model_missing"
+        or str(candidate_metadata.get("error_code") or "") != "llm_model_missing"
+    ):
+        return False
+
+    tenant_id = getattr(candidate, "tenant_id", None)
+    if tenant_id is None:
+        return False
+    task = await _lock_runtime_task_for_session_mutation(
+        db,
+        run_uuid=candidate.id,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+    )
+    metadata = dict(getattr(task, "metadata_json", None) or {}) if task is not None else {}
+    if (
+        task is None
+        or getattr(task, "status", None) != "failed"
+        or str(getattr(task, "result_summary", None) or "") != "llm_model_missing"
+        or str(metadata.get("error_code") or "") != "llm_model_missing"
+    ):
+        return False
+
+    existing_result = await db.execute(
+        select(ChatTranscriptEvent.id)
+        .where(
+            ChatTranscriptEvent.session_id == uuid.UUID(str(session_id)),
+            ChatTranscriptEvent.run_id == task.id,
+            ChatTranscriptEvent.event_type == "runtime_failure.recorded",
+        )
+        .limit(1)
+    )
+    if existing_result.scalar_one_or_none() is not None:
+        return False
+
+    from app.services.web_chat_run_orchestrator import _llm_model_missing_failure_payload
+
+    await _append_web_chat_runtime_failure_event(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=str(session_id),
+        run_uuid=task.id,
+        turn_id=str(metadata.get("turn_id") or f"turn-{task.id.hex}"),
+        status="failed",
+        failure=_llm_model_missing_failure_payload(),
+    )
+    await db.commit()
+    logger.warning(
+        "[WebChatRun] Repaired missing llm_model_missing terminal event for run {}",
+        task.id,
+    )
+    return True
+
+
 def _is_active_web_chat_unique_violation(exc: IntegrityError) -> bool:
     orig = getattr(exc, "orig", None)
     diag = getattr(orig, "diag", None)
@@ -2033,6 +2119,12 @@ async def get_active_web_chat_run(
     session_id: str | uuid.UUID,
 ) -> dict[str, Any] | None:
     task = await _find_active_run(db, agent_id=agent_id, session_id=session_id)
+    if task is None:
+        await _repair_latest_missing_model_terminal_event(
+            db,
+            agent_id=agent_id,
+            session_id=session_id,
+        )
     return _runtime_task_to_run(task) if task else None
 
 
@@ -3766,6 +3858,22 @@ async def _append_web_chat_runtime_failure_event(
     return serialize_session_event(rows[0], audience="direct_user")
 
 
+def _runtime_failure_payload_from_terminal_metadata(
+    metadata_json: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build a content-free canonical witness from typed terminal metadata."""
+
+    metadata = dict(metadata_json or {})
+    return {
+        "failure_code": metadata.get("error_code"),
+        "delivery_state": metadata.get("delivery_state"),
+        "requires_user_decision": bool(metadata.get("requires_user_decision")),
+        "terminal_reason": str(metadata.get("terminal_reason") or "failed"),
+        "message": "",
+        "retryable": bool(metadata.get("retryable")),
+    }
+
+
 async def _finalize_web_chat_run_without_assistant(
     *,
     run_uuid: uuid.UUID,
@@ -3825,7 +3933,7 @@ async def _finalize_web_chat_run_without_assistant(
         )
         merged_metadata = dict(getattr(task, "metadata_json", None) or {})
         failure_envelope: dict[str, Any] | None = None
-        if failure is not None and status == "failed":
+        if status == "failed":
             failure_envelope = await _append_web_chat_runtime_failure_event(
                 db,
                 tenant_id=tenant_id,
@@ -3834,7 +3942,7 @@ async def _finalize_web_chat_run_without_assistant(
                 run_uuid=run_uuid,
                 turn_id=str(merged_metadata.get("turn_id") or f"turn-{run_uuid.hex}"),
                 status=status,
-                failure=failure,
+                failure=failure or _runtime_failure_payload_from_terminal_metadata(metadata_json),
             )
         await _project_agent_team_terminal_state(
             db=db,

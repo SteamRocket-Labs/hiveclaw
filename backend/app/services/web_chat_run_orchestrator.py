@@ -376,6 +376,19 @@ def _copy_optional_runtime_metadata(state: _WebChatRunState) -> None:
         context.metadata["side_session_kind"] = state.metadata.get("side_session_kind") or "btw"
 
 
+def _llm_model_missing_failure_payload() -> dict[str, Any]:
+    """Typed infrastructure fact for a turn rejected before provider delivery."""
+
+    return {
+        "failure_code": "llm_model_missing",
+        "delivery_state": "unavailable",
+        "requires_user_decision": True,
+        "terminal_reason": TerminalReason.PROVIDER_ERROR.value,
+        "message": "",
+        "retryable": False,
+    }
+
+
 async def _handle_pre_invocation_terminal(state: _WebChatRunState) -> bool:
     plan_response = None
     if not state.internal_runtime_context_turn:
@@ -403,8 +416,11 @@ async def _handle_pre_invocation_terminal(state: _WebChatRunState) -> bool:
         metadata_json={
             "terminal_reason": TerminalReason.PROVIDER_ERROR.value,
             "error_code": "llm_model_missing",
+            "delivery_state": "unavailable",
+            "requires_user_decision": True,
             "retryable": False,
         },
+        failure=_llm_model_missing_failure_payload(),
         **_file_change_kwargs(state),
     )
     if finalized:

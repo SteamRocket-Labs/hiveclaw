@@ -7,6 +7,9 @@ vi.mock('react-i18next', () => ({
       if (_key === 'sessionWorkbench.threadItem.failure.quotaExhausted') {
         return '模型额度或余额不足，请联系管理员检查额度，或切换模型后重试。';
       }
+      if (_key === 'sessionWorkbench.threadItem.failure.modelMissing') {
+        return '当前 Agent 尚未配置模型。请在“权限与设置”中选择模型，或联系管理员配置后再重试。';
+      }
       const value = typeof fallback === 'string' ? fallback : String(options?.defaultValue || _key);
       return value.replace('{{status}}', String(options?.status || '')).replace('{{count}}', String(options?.count || ''));
     },
@@ -117,6 +120,31 @@ describe('ThreadItemRenderer', () => {
     expect(markup).not.toContain('Model quota or balance');
     expect(markup).not.toContain('[LLM Error]');
     expect(markup).not.toContain('#1');
+  });
+
+  it('renders a missing-model failure as a stable localized recovery card', () => {
+    const failure: ThreadItem = {
+      ...item('error'),
+      id: 'failure-model-missing-1',
+      item_type: 'error',
+      item_status: 'failed',
+      event_type: 'runtime_failure',
+      content: '',
+      user_summary: '',
+      audience: 'user',
+      item_data: {
+        code: 'llm_model_missing',
+        reason: 'provider_error',
+        retryable: false,
+        retry_reason: null,
+      },
+    } as ThreadItem;
+
+    expect(shouldRenderThreadItemInConversation(failure, false)).toBe(true);
+    const markup = renderToStaticMarkup(<ThreadItemRenderer item={failure} onSelect={() => undefined} />);
+    expect(markup).toContain('当前 Agent 尚未配置模型');
+    expect(markup).toContain('权限与设置');
+    expect(markup).not.toContain('llm_model_missing');
   });
 
   it('keeps non-blocking memory degradation out of the conversation while retaining it for operators', () => {

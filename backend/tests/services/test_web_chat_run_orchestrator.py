@@ -930,6 +930,63 @@ def _failure_finalize_harness(finalize_calls: list[dict]) -> SimpleNamespace:
 
 
 @pytest.mark.asyncio
+async def test_missing_model_pre_invocation_carries_canonical_failure_payload():
+    from app.kernel.contracts import TerminalReason
+    from app.runtime.runtime_phase import RuntimePhase
+    from app.services import web_chat_run_orchestrator as orchestrator
+
+    finalize_calls: list[dict] = []
+    broadcasts: list[dict] = []
+
+    async def fake_finalize_without_assistant(**kwargs):
+        finalize_calls.append(kwargs)
+        return True
+
+    async def fake_broadcast(_agent_id, _session_id, event):
+        broadcasts.append(event)
+
+    state = SimpleNamespace(
+        internal_runtime_context_turn=True,
+        llm_model=None,
+        terminal_phase_hint=None,
+        run_uuid=uuid4(),
+        agent=SimpleNamespace(id=uuid4()),
+        session_id=str(uuid4()),
+        runtime_session_context=SimpleNamespace(),
+        ports=SimpleNamespace(
+            terminal=SimpleNamespace(finalize_without_assistant=fake_finalize_without_assistant),
+            events=SimpleNamespace(broadcast=fake_broadcast),
+            artifacts=SimpleNamespace(
+                file_change_paths=lambda _context: [],
+                file_change_states=lambda _context: {},
+                file_change_lineage=lambda _context: [],
+            ),
+        ),
+    )
+
+    handled = await orchestrator._handle_pre_invocation_terminal(state)
+
+    assert handled is True
+    assert state.terminal_phase_hint == RuntimePhase.FAILED
+    assert finalize_calls[0]["failure"] == {
+        "failure_code": "llm_model_missing",
+        "delivery_state": "unavailable",
+        "requires_user_decision": True,
+        "terminal_reason": TerminalReason.PROVIDER_ERROR.value,
+        "message": "",
+        "retryable": False,
+    }
+    assert broadcasts == [
+        {
+            "type": "runtime_failure",
+            "status": "unavailable",
+            "reason": "llm_model_missing",
+            "retryable": False,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_retry_safe_typed_rate_limit_failure_payload_is_user_retryable():
     """Codex finding 3: a typed 429 rejection is safe for a user retry after
     transport retries — the payload derives replay safety from the typed

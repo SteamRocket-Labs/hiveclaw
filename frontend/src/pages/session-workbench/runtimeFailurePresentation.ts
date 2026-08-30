@@ -1,5 +1,5 @@
 export type RuntimeFailurePresentation = {
-  kind: 'quota_exhausted' | 'rate_limited' | 'retryable' | 'unavailable';
+  kind: 'model_missing' | 'quota_exhausted' | 'rate_limited' | 'retryable' | 'unavailable';
   fallback: string;
 };
 
@@ -7,6 +7,12 @@ export function runtimeFailurePresentation(
   failureCode: unknown,
   retryable: boolean,
 ): RuntimeFailurePresentation {
+  if (failureCode === 'llm_model_missing') {
+    return {
+      kind: 'model_missing',
+      fallback: 'No model is configured for this Agent. Choose one in Permissions & Settings, or ask an administrator to configure it before retrying.',
+    };
+  }
   if (failureCode === 'quota_exhausted') {
     return {
       kind: 'quota_exhausted',

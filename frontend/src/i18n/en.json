@@ -69,6 +69,7 @@
       "approvalActions": "Approval actions",
       "retryTurn": "Retry turn",
       "failure": {
+        "modelMissing": "No model is configured for this Agent. Choose one in Permissions & Settings, or ask an administrator to configure it before retrying.",
         "quotaExhausted": "Model quota or balance is insufficient. Ask an administrator to check quota, or switch models and retry.",
         "rateLimited": "The model service is busy. Try again later, or switch models and retry.",
         "retryable": "The model service is temporarily unavailable. This task can be retried safely.",

@@ -13,6 +13,8 @@ finalization.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import func, select
@@ -121,6 +123,174 @@ def _runtime_failure_events_query(session_id):
         ChatTranscriptEvent.session_id == session_id,
         ChatTranscriptEvent.item_kind == "runtime_failure",
     )
+
+
+@pytest.mark.asyncio
+async def test_missing_model_pre_invocation_persists_canonical_terminal_event(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    from app.models.runtime_task import RuntimeTask
+    from app.runtime.runtime_phase import RuntimePhase
+    from app.services import web_chat_run_orchestrator, web_chat_runtime
+
+    tenant_id, user_id, agent_id, session_id = await _seed_session(owner_sessionmaker)
+    run_id, _turn_id = await _seed_running_task(
+        owner_sessionmaker,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        session_id=session_id,
+    )
+    _install_finalizer_fakes(owner_sessionmaker, monkeypatch, tenant_id=tenant_id)
+    live_frames: list[dict] = []
+
+    async def capture_live_frame(_agent_id, _session_id, event):
+        live_frames.append(dict(event))
+
+    state = SimpleNamespace(
+        internal_runtime_context_turn=True,
+        llm_model=None,
+        terminal_phase_hint=None,
+        run_uuid=run_id,
+        agent=SimpleNamespace(id=agent_id),
+        session_id=str(session_id),
+        runtime_session_context=SimpleNamespace(),
+        ports=SimpleNamespace(
+            terminal=SimpleNamespace(
+                finalize_without_assistant=web_chat_runtime._finalize_web_chat_run_without_assistant,
+            ),
+            events=SimpleNamespace(broadcast=capture_live_frame),
+            artifacts=SimpleNamespace(
+                file_change_paths=lambda _context: [],
+                file_change_states=lambda _context: {},
+                file_change_lineage=lambda _context: [],
+            ),
+        ),
+    )
+
+    handled = await web_chat_run_orchestrator._handle_pre_invocation_terminal(state)
+
+    assert handled is True
+    assert state.terminal_phase_hint == RuntimePhase.FAILED
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, run_id)
+        assert task is not None
+        assert task.status == "failed"
+        rows = list((await db.execute(_runtime_failure_events_query(session_id))).scalars())
+        assert len(rows) == 1
+        payload = dict(rows[0].metadata_json["v2_payload"])
+        assert payload == {
+            "status": "failed",
+            "terminal_reason": "provider_error",
+            "retryable": False,
+            "requires_user_decision": True,
+            "content": "",
+            "message": "",
+            "failure_code": "llm_model_missing",
+            "delivery_state": "unavailable",
+        }
+    assert live_frames == [
+        {
+            "type": "runtime_failure",
+            "status": "unavailable",
+            "reason": "llm_model_missing",
+            "retryable": False,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_failed_finalize_without_explicit_failure_still_persists_terminal_witness(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    from app.services import web_chat_runtime
+
+    tenant_id, user_id, agent_id, session_id = await _seed_session(owner_sessionmaker)
+    run_id, _turn_id = await _seed_running_task(
+        owner_sessionmaker,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        session_id=session_id,
+    )
+    _install_finalizer_fakes(owner_sessionmaker, monkeypatch, tenant_id=tenant_id)
+
+    assert await web_chat_runtime._finalize_web_chat_run_without_assistant(
+        run_uuid=run_id,
+        agent_id=agent_id,
+        session_id=str(session_id),
+        status="failed",
+        result_summary="runtime_exception",
+        metadata_json={
+            "terminal_reason": "turn_abort",
+            "error_code": "runtime_exception",
+            "retryable": True,
+        },
+    ) is True
+
+    async with owner_sessionmaker() as db:
+        rows = list((await db.execute(_runtime_failure_events_query(session_id))).scalars())
+        assert len(rows) == 1
+        payload = dict(rows[0].metadata_json["v2_payload"])
+        assert payload["failure_code"] == "runtime_exception"
+        assert payload["terminal_reason"] == "turn_abort"
+        assert payload["retryable"] is True
+
+
+@pytest.mark.asyncio
+async def test_active_run_absence_repairs_latest_missing_model_terminal_once(
+    owner_sessionmaker,
+) -> None:
+    from app.models.runtime_task import RuntimeTask
+    from app.services import web_chat_runtime
+
+    tenant_id, user_id, agent_id, session_id = await _seed_session(owner_sessionmaker)
+    run_id, _turn_id = await _seed_running_task(
+        owner_sessionmaker,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        session_id=session_id,
+    )
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, run_id)
+        assert task is not None
+        task.status = "failed"
+        task.result_summary = "llm_model_missing"
+        task.completed_at = datetime.now(timezone.utc)
+        task.metadata_json = {
+            **dict(task.metadata_json or {}),
+            "terminal_reason": "provider_error",
+            "error_code": "llm_model_missing",
+            "retryable": False,
+        }
+        await db.commit()
+
+    async with owner_sessionmaker() as db:
+        assert await web_chat_runtime.get_active_web_chat_run(
+            db=db,
+            agent_id=agent_id,
+            session_id=session_id,
+        ) is None
+
+    async with owner_sessionmaker() as db:
+        rows = list((await db.execute(_runtime_failure_events_query(session_id))).scalars())
+        assert len(rows) == 1
+        assert rows[0].run_id == run_id
+        assert rows[0].metadata_json["v2_payload"]["failure_code"] == "llm_model_missing"
+
+    async with owner_sessionmaker() as db:
+        assert await web_chat_runtime.get_active_web_chat_run(
+            db=db,
+            agent_id=agent_id,
+            session_id=session_id,
+        ) is None
+
+    async with owner_sessionmaker() as db:
+        rows = list((await db.execute(_runtime_failure_events_query(session_id))).scalars())
+        assert len(rows) == 1
 
 
 @pytest.mark.asyncio

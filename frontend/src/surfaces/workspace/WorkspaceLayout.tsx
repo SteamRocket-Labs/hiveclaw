@@ -27,7 +27,7 @@ export default function WorkspaceLayout() {
   const role = useAuthStore((state) => state.user?.role);
   return (
     <SurfaceLayout
-      headingKey="nav.enterprise"
+      headingKey={role === 'platform_admin' ? 'nav.superAdmin' : 'nav.enterprise'}
       headingFallback={role === 'platform_admin' ? 'Platform Admin' : 'Company Admin'}
       navItems={workspaceSectionsForRole(role).map((section) => ({
         to: section.path,

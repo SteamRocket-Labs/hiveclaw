@@ -10,8 +10,8 @@ vi.mock('../../stores', () => ({
 }));
 
 vi.mock('../shared/SurfaceLayout', () => ({
-  default: ({ headingFallback, navItems }: { headingFallback: string; navItems: Array<{ to: string }> }) => (
-    <div data-heading={headingFallback}>
+  default: ({ headingKey, headingFallback, navItems }: { headingKey: string; headingFallback: string; navItems: Array<{ to: string }> }) => (
+    <div data-heading-key={headingKey} data-heading={headingFallback}>
       {navItems.map((item) => <a key={item.to} href={item.to}>{item.to}</a>)}
     </div>
   ),
@@ -27,6 +27,7 @@ describe('WorkspaceLayout audience navigation', () => {
   it('renders the full company workspace for an organization administrator', () => {
     const markup = renderToStaticMarkup(<WorkspaceLayout />);
 
+    expect(markup).toContain('data-heading-key="nav.enterprise"');
     expect(markup).toContain('data-heading="Company Admin"');
     expect(markup).toContain('href="/enterprise/knowledge"');
     expect(markup).toContain('href="/enterprise/users"');
@@ -37,6 +38,7 @@ describe('WorkspaceLayout audience navigation', () => {
 
     const markup = renderToStaticMarkup(<WorkspaceLayout />);
 
+    expect(markup).toContain('data-heading-key="nav.superAdmin"');
     expect(markup).toContain('data-heading="Platform Admin"');
     expect(markup).toContain('href="/enterprise/runtime-budgets"');
     expect(markup).not.toContain('href="/enterprise/knowledge"');

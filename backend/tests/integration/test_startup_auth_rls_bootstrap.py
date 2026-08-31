@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from types import SimpleNamespace
 
 from sqlalchemy import delete, func, select
 
 from app.api import auth as auth_api
+from app.api import tenants as tenants_api
 from app.models.audit import AuditLog
 from app.models.participant import Participant
 from app.models.skill import Skill
@@ -69,6 +71,65 @@ async def test_public_registration_creates_tenantless_user_and_participant_under
             )
         ).scalar_one()
     assert participant.display_name == username
+
+
+async def test_platform_admin_assigns_tenantless_org_admin_under_app_rls(
+    owner_sessionmaker,
+    app_user_sessionmaker,
+):
+    suffix = uuid.uuid4().hex[:10]
+    email = f"bootstrap-{suffix}@example.com"
+    async with owner_sessionmaker() as db:
+        tenant = Tenant(
+            name=f"Bootstrap {suffix}",
+            slug=f"bootstrap-{suffix}",
+            im_provider="web_only",
+            default_tokens_per_day=1_000,
+            default_tokens_per_month=20_000,
+        )
+        platform_admin = User(
+            username=f"platform-{suffix}",
+            email=f"platform-{suffix}@example.com",
+            password_hash="hash",
+            display_name="Platform Admin",
+            role="platform_admin",
+        )
+        target = User(
+            username=f"bootstrap-{suffix}",
+            email=email,
+            password_hash="hash",
+            display_name="Bootstrap Admin",
+            role="member",
+        )
+        db.add_all([tenant, platform_admin, target])
+        await db.commit()
+
+    async with app_user_sessionmaker() as db:
+        receipt = await tenants_api.assign_user_to_tenant_by_email(
+            tenant_id=tenant.id,
+            data=tenants_api.TenantUserAssignment(email=email.upper(), role="org_admin"),
+            current_user=SimpleNamespace(id=platform_admin.id, role="platform_admin"),
+            db=db,
+        )
+        await db.commit()
+
+    assert receipt["reauthentication_required"] is True
+    async with owner_sessionmaker() as db:
+        assigned = (await db.execute(select(User).where(User.id == target.id))).scalar_one()
+        audit = (
+            await db.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "tenant:user_assigned",
+                    AuditLog.user_id == platform_admin.id,
+                )
+            )
+        ).scalar_one()
+    assert assigned.tenant_id == tenant.id
+    assert assigned.role == "org_admin"
+    assert assigned.quota_tokens_per_day == 1_000
+    assert assigned.quota_tokens_per_month == 20_000
+    assert audit.tenant_id == tenant.id
+    assert audit.details["target_user_id"] == str(target.id)
 
 
 async def test_startup_default_tenant_seed_sees_existing_row_under_app_rls(

@@ -7,6 +7,22 @@ vi.mock('../core', () => ({
 }));
 
 describe('adminApi runtime reconciliation adapter', () => {
+  it('assigns a tenantless user by email through the platform tenant API', async () => {
+    const { put } = await import('../core');
+    const { adminApi } = await import('./admin');
+    vi.mocked(put).mockClear();
+
+    await adminApi.assignUserToTenant('tenant/1', {
+      email: 'new-admin@example.com',
+      role: 'org_admin',
+    });
+
+    expect(vi.mocked(put)).toHaveBeenCalledWith('/tenants/tenant%2F1/assign-user', {
+      email: 'new-admin@example.com',
+      role: 'org_admin',
+    });
+  });
+
   it('builds list/get/action URLs for runtime reconciliation', async () => {
     const { get, post } = await import('../core');
     const { adminApi } = await import('./admin');

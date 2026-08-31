@@ -3944,6 +3944,13 @@
     "filterStatus": "Filter by status",
     "noFilterResults": "No companies match the current filter.",
     "orgAdmin": "Admin Email",
+    "assignAdmin": "Assign admin",
+    "assignAdminTitle": "Assign company admin",
+    "assignAdminFor": "Assign administrator for {{company}}",
+    "confirmAssignAdmin": "Assign {{email}} as an administrator of {{company}}? The account must already be registered and not belong to another company.",
+    "registeredEmailPlaceholder": "Registered account email",
+    "adminAssigned": "Company administrator assigned. They must sign in again.",
+    "assignAdminFailed": "Failed to assign company administrator.",
     "platformSettingsDesc": "Manage platform-wide settings and company tenants.",
     "publicUrl": {
       "desc": "The external URL used for webhook callbacks (Slack, Feishu, Discord, etc.) and published page links. Include the protocol (e.g. https://example.com).",

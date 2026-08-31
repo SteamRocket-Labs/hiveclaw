@@ -323,7 +323,7 @@ export default function AppSidebar({
       setResolvedHrAgent(providedHrAgent);
       return;
     }
-    if (!user) {
+    if (!user || user.role === 'platform_admin') {
       setResolvedHrAgent(null);
       return;
     }

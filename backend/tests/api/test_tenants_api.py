@@ -42,6 +42,7 @@ class _SequenceDB:
     def __init__(self, results):
         self._results = list(results)
         self.flushed = False
+        self.added = []
 
     async def execute(self, _stmt):
         if not self._results:
@@ -50,6 +51,9 @@ class _SequenceDB:
 
     async def flush(self):
         self.flushed = True
+
+    def add(self, value):
+        self.added.append(value)
 
 
 def _build_client(*, current_user, tenant):
@@ -76,6 +80,8 @@ def _tenant(tenant_id):
         im_provider="web_only",
         timezone="UTC",
         is_active=True,
+        default_tokens_per_day=1000,
+        default_tokens_per_month=20000,
         created_at=None,
     )
 
@@ -196,7 +202,14 @@ def test_platform_admin_assign_user_to_tenant_uses_audited_bypass(monkeypatch):
     tenant_id = uuid4()
     user_id = uuid4()
     current_user = SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=uuid4())
-    target_user = SimpleNamespace(id=user_id, tenant_id=None, role="member")
+    target_user = SimpleNamespace(
+        id=user_id,
+        tenant_id=None,
+        role="member",
+        department_id=uuid4(),
+        quota_tokens_per_day=None,
+        quota_tokens_per_month=None,
+    )
     fake_db = _SequenceDB([_ScalarResult(_tenant(tenant_id)), _ScalarResult(target_user)])
     bypass_calls: list[dict] = []
 
@@ -219,6 +232,17 @@ def test_platform_admin_assign_user_to_tenant_uses_audited_bypass(monkeypatch):
     assert payload["status"] == "ok"
     assert target_user.tenant_id == tenant_id
     assert target_user.role == "org_admin"
+    assert target_user.department_id is None
+    assert target_user.quota_tokens_per_day == 1000
+    assert target_user.quota_tokens_per_month == 20000
+    assert len(fake_db.added) == 1
+    assert fake_db.added[0].action == "tenant:user_assigned"
+    assert fake_db.added[0].details == {
+        "target_user_id": str(user_id),
+        "previous_tenant_id": None,
+        "previous_role": "member",
+        "role": "org_admin",
+    }
     assert fake_db.flushed is True
     assert bypass_calls == [
         {
@@ -227,3 +251,96 @@ def test_platform_admin_assign_user_to_tenant_uses_audited_bypass(monkeypatch):
             "actor_id": str(current_user.id),
         }
     ]
+
+
+def test_platform_admin_assign_user_by_email_uses_same_tenantless_gate(monkeypatch):
+    tenant_id = uuid4()
+    user_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=uuid4())
+    target_user = SimpleNamespace(
+        id=user_id,
+        email="new-admin@example.com",
+        tenant_id=None,
+        role="member",
+        department_id=None,
+        quota_tokens_per_day=None,
+        quota_tokens_per_month=None,
+    )
+    fake_db = _SequenceDB([_ScalarResult(_tenant(tenant_id)), _ScalarResult(target_user)])
+
+    @contextlib.asynccontextmanager
+    async def fake_enter_rls_bypass(session, *, reason: str, actor_id: str | None = None):
+        yield session
+
+    monkeypatch.setattr(tenants_api, "enter_rls_bypass", fake_enter_rls_bypass, raising=False)
+
+    result = tenants_api.assign_user_to_tenant_by_email(
+        tenant_id=tenant_id,
+        data=tenants_api.TenantUserAssignment(email="NEW-ADMIN@example.com", role="org_admin"),
+        current_user=current_user,
+        db=fake_db,
+    )
+    payload = __import__("asyncio").run(result)
+
+    assert payload == {
+        "status": "ok",
+        "user_id": str(user_id),
+        "tenant_id": str(tenant_id),
+        "role": "org_admin",
+        "reauthentication_required": True,
+    }
+
+
+def test_platform_admin_assign_user_rejects_cross_tenant_move(monkeypatch):
+    tenant_id = uuid4()
+    other_tenant_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=uuid4())
+    target_user = SimpleNamespace(id=uuid4(), tenant_id=other_tenant_id, role="member")
+    fake_db = _SequenceDB([_ScalarResult(_tenant(tenant_id)), _ScalarResult(target_user)])
+
+    @contextlib.asynccontextmanager
+    async def fake_enter_rls_bypass(session, *, reason: str, actor_id: str | None = None):
+        yield session
+
+    monkeypatch.setattr(tenants_api, "enter_rls_bypass", fake_enter_rls_bypass, raising=False)
+
+    result = tenants_api.assign_user_to_tenant(
+        tenant_id=tenant_id,
+        user_id=target_user.id,
+        role="org_admin",
+        current_user=current_user,
+        db=fake_db,
+    )
+
+    with __import__("pytest").raises(Exception) as exc_info:
+        __import__("asyncio").run(result)
+    assert getattr(exc_info.value, "status_code", None) == 409
+    assert target_user.tenant_id == other_tenant_id
+
+
+def test_platform_admin_assign_user_rejects_ambiguous_case_insensitive_email(monkeypatch):
+    tenant_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=uuid4())
+    matching_users = [
+        SimpleNamespace(id=uuid4(), email="Owner@example.com"),
+        SimpleNamespace(id=uuid4(), email="owner@example.com"),
+    ]
+    fake_db = _SequenceDB([_ScalarResult(_tenant(tenant_id)), _ScalarResult(matching_users)])
+
+    @contextlib.asynccontextmanager
+    async def fake_enter_rls_bypass(session, *, reason: str, actor_id: str | None = None):
+        yield session
+
+    monkeypatch.setattr(tenants_api, "enter_rls_bypass", fake_enter_rls_bypass, raising=False)
+
+    result = tenants_api.assign_user_to_tenant_by_email(
+        tenant_id=tenant_id,
+        data=tenants_api.TenantUserAssignment(email="owner@example.com", role="org_admin"),
+        current_user=current_user,
+        db=fake_db,
+    )
+
+    with __import__("pytest").raises(Exception) as exc_info:
+        __import__("asyncio").run(result)
+    assert getattr(exc_info.value, "status_code", None) == 409
+    assert fake_db.added == []

@@ -42,6 +42,9 @@ class _ScalarResult:
     def scalar_one_or_none(self):
         return self._value
 
+    def scalar(self):
+        return self._value
+
 
 class _ScalarsResult:
     def __init__(self, rows):
@@ -70,6 +73,38 @@ async def test_platform_admin_create_company_pins_new_tenant_before_invite_inser
     assert db.added[1].tenant_id == tenant_id
     assert db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(tenant_id)
     assert any(f"SET LOCAL app.current_tenant_id = '{tenant_id}'" in stmt for stmt in db.statements)
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_company_list_exposes_the_active_org_admin_email():
+    from app.api import admin as admin_api
+
+    tenant_id = uuid4()
+    tenant = SimpleNamespace(
+        id=tenant_id,
+        name="Rocky Lab",
+        slug="rocky-lab",
+        is_active=True,
+        created_at=datetime.now(timezone.utc),
+    )
+    db = _FakeDB(
+        results=[
+            _ScalarsResult([tenant]),
+            _ScalarResult(3),
+            _ScalarResult("owner@example.com"),
+            _ScalarResult(2),
+            _ScalarResult(1),
+            _ScalarResult(123),
+        ]
+    )
+
+    result = await admin_api.list_companies(
+        current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=uuid4()),
+        db=db,
+    )
+
+    assert len(result) == 1
+    assert result[0].org_admin_email == "owner@example.com"
 
 
 @pytest.mark.asyncio

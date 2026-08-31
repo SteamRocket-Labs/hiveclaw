@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func as sqla_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +19,7 @@ from app.core.security import create_access_token, get_current_user, require_rol
 from app.core.tenant_scope import TENANT_SCOPE_QUARANTINE_ID
 from app.database import enter_rls_bypass, get_db, pin_rls_tenant_context
 from app.models.agent import Agent
+from app.models.audit import AuditLog
 from app.models.tenant import Tenant
 from app.models.user import User
 
@@ -54,6 +55,11 @@ class TenantUpdate(BaseModel):
 class TenantDeleteOut(BaseModel):
     fallback_tenant_id: uuid.UUID | None = None
     needs_company_setup: bool = False
+
+
+class TenantUserAssignment(BaseModel):
+    email: EmailStr
+    role: str = Field(default="member", pattern="^(member|org_admin)$")
 
 
 # ─── Helpers ────────────────────────────────────────────
@@ -423,6 +429,103 @@ async def delete_tenant(
         )
 
 
+async def _assign_user_to_tenant(
+    *,
+    tenant_id: uuid.UUID,
+    role: str,
+    current_user: User,
+    db: AsyncSession,
+    user_id: uuid.UUID | None = None,
+    email: str | None = None,
+) -> dict[str, object]:
+    if role not in ("org_admin", "member"):
+        raise HTTPException(status_code=400, detail="Invalid role")
+
+    async with enter_rls_bypass(
+        db,
+        reason="platform-admin assign user to tenant",
+        actor_id=str(current_user.id),
+    ) as bypass_db:
+        t_result = await bypass_db.execute(select(Tenant).where(Tenant.id == tenant_id).with_for_update())
+        tenant = t_result.scalar_one_or_none()
+        if tenant is None:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        if not tenant.is_active:
+            raise HTTPException(status_code=409, detail="Cannot assign users to a disabled tenant")
+
+        if user_id is not None:
+            u_result = await bypass_db.execute(select(User).where(User.id == user_id).with_for_update())
+            user = u_result.scalar_one_or_none()
+        else:
+            u_result = await bypass_db.execute(
+                select(User)
+                .where(sqla_func.lower(User.email) == str(email).lower())
+                .order_by(User.id)
+                .limit(2)
+                .with_for_update()
+            )
+            users = u_result.scalars().all()
+            if len(users) > 1:
+                raise HTTPException(status_code=409, detail="Multiple accounts match this email")
+            user = users[0] if users else None
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        if not getattr(user, "is_active", True):
+            raise HTTPException(status_code=409, detail="Cannot assign a disabled user")
+        if user.role == "platform_admin":
+            raise HTTPException(status_code=403, detail="Platform administrator membership cannot be changed here")
+        previous_tenant_id = user.tenant_id
+        if previous_tenant_id is not None and previous_tenant_id != tenant_id:
+            raise HTTPException(status_code=409, detail="User already belongs to another tenant")
+        previous_role = user.role
+        user.tenant_id = tenant_id
+        user.role = role
+        if previous_tenant_id is None:
+            user.department_id = None
+        if getattr(user, "quota_tokens_per_day", None) is None:
+            user.quota_tokens_per_day = tenant.default_tokens_per_day
+        if getattr(user, "quota_tokens_per_month", None) is None:
+            user.quota_tokens_per_month = tenant.default_tokens_per_month
+        bypass_db.add(
+            AuditLog(
+                user_id=current_user.id,
+                tenant_id=tenant_id,
+                action="tenant:user_assigned",
+                details={
+                    "target_user_id": str(user.id),
+                    "previous_tenant_id": str(previous_tenant_id) if previous_tenant_id else None,
+                    "previous_role": previous_role,
+                    "role": role,
+                },
+            )
+        )
+        await bypass_db.flush()
+    return {
+        "status": "ok",
+        "user_id": str(user.id),
+        "tenant_id": str(tenant_id),
+        "role": role,
+        "reauthentication_required": True,
+    }
+
+
+@router.put("/{tenant_id}/assign-user")
+async def assign_user_to_tenant_by_email(
+    tenant_id: uuid.UUID,
+    data: TenantUserAssignment,
+    current_user: User = Depends(require_role("platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Assign a registered tenantless user by email from the platform control plane."""
+    return await _assign_user_to_tenant(
+        tenant_id=tenant_id,
+        email=str(data.email),
+        role=data.role,
+        current_user=current_user,
+        db=db,
+    )
+
+
 @router.put("/{tenant_id}/assign-user/{user_id}")
 async def assign_user_to_tenant(
     tenant_id: uuid.UUID,
@@ -431,27 +534,11 @@ async def assign_user_to_tenant(
     current_user: User = Depends(require_role("platform_admin")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Assign a user to a tenant with a specific role."""
-    async with enter_rls_bypass(
-        db,
-        reason="platform-admin assign user to tenant",
-        actor_id=str(current_user.id),
-    ) as bypass_db:
-        # Verify tenant
-        t_result = await bypass_db.execute(select(Tenant).where(Tenant.id == tenant_id))
-        if not t_result.scalar_one_or_none():
-            raise HTTPException(status_code=404, detail="Tenant not found")
-
-        # Verify user
-        u_result = await bypass_db.execute(select(User).where(User.id == user_id))
-        user = u_result.scalar_one_or_none()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        if role not in ("org_admin", "member"):
-            raise HTTPException(status_code=400, detail="Invalid role")
-
-        user.tenant_id = tenant_id
-        user.role = role
-        await bypass_db.flush()
-    return {"status": "ok", "user_id": str(user_id), "tenant_id": str(tenant_id), "role": role}
+    """Assign a registered tenantless user by id; retained for API compatibility."""
+    return await _assign_user_to_tenant(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        role=role,
+        current_user=current_user,
+        db=db,
+    )

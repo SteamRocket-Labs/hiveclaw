@@ -116,6 +116,7 @@ RLS_BYPASS_ALLOWLIST = (
                 "select:sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_total), 0)",
                 "select:Tenant",
                 "select:sqla_func.count()",
+                "select:User.email",
             ),
         )
     ),
@@ -230,7 +231,7 @@ RLS_BYPASS_ALLOWLIST = (
     _grant(
         *(
             "app/api/tenants.py",
-            "assign_user_to_tenant",
+            "_assign_user_to_tenant",
             "'platform-admin assign user to tenant'",
             ("select:Tenant", "select:User"),
         )

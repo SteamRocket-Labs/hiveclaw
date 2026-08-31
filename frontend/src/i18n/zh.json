@@ -3944,6 +3944,13 @@
     "filterStatus": "按状态筛选",
     "noFilterResults": "没有公司符合当前筛选条件。",
     "orgAdmin": "管理员邮箱",
+    "assignAdmin": "分配管理员",
+    "assignAdminTitle": "分配公司管理员",
+    "assignAdminFor": "为 {{company}} 分配管理员",
+    "confirmAssignAdmin": "将 {{email}} 分配为 {{company}} 的管理员？该账号必须已注册且尚未加入其他公司。",
+    "registeredEmailPlaceholder": "已注册账号邮箱",
+    "adminAssigned": "公司管理员已分配，对方需要重新登录。",
+    "assignAdminFailed": "分配公司管理员失败。",
     "platformSettingsDesc": "管理平台级设置与公司租户。",
     "publicUrl": {
       "desc": "用于 Webhook 回调（Slack、飞书、Discord 等）及发布页面链接的外部 URL。请包含协议，例如 https://example.com。",

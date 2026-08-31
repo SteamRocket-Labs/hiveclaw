@@ -49,6 +49,7 @@ class CompanyStats(BaseModel):
     slug: str
     is_active: bool
     created_at: datetime | None = None
+    org_admin_email: str | None = None
     user_count: int = 0
     agent_count: int = 0
     agent_running_count: int = 0
@@ -158,6 +159,18 @@ async def list_companies(
             uc = await bypass_db.execute(select(sqla_func.count()).select_from(User).where(User.tenant_id == tid))
             user_count = uc.scalar() or 0
 
+            admin_email_result = await bypass_db.execute(
+                select(User.email)
+                .where(
+                    User.tenant_id == tid,
+                    User.role == "org_admin",
+                    User.is_active.is_(True),
+                )
+                .order_by(User.created_at.asc())
+                .limit(1)
+            )
+            org_admin_email = admin_email_result.scalar_one_or_none()
+
             # Agent count
             ac = await bypass_db.execute(select(sqla_func.count()).select_from(Agent).where(Agent.tenant_id == tid))
             agent_count = ac.scalar() or 0
@@ -186,6 +199,7 @@ async def list_companies(
                     slug=tenant.slug,
                     is_active=tenant.is_active,
                     created_at=tenant.created_at,
+                    org_admin_email=org_admin_email,
                     user_count=user_count,
                     agent_count=agent_count,
                     agent_running_count=agent_running,

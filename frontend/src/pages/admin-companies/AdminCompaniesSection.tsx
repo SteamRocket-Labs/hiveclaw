@@ -42,6 +42,9 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
   const [creating, setCreating] = useState(false);
+  const [assignCompany, setAssignCompany] = useState<any | null>(null);
+  const [adminEmail, setAdminEmail] = useState('');
+  const [assigningAdmin, setAssigningAdmin] = useState(false);
   const [createdCode, setCreatedCode] = useState('');
   const [createdCompanyName, setCreatedCompanyName] = useState('');
   const [codeCopied, setCodeCopied] = useState(false);
@@ -137,6 +140,32 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
     });
   };
 
+  const handleAssignAdmin = async () => {
+    const email = adminEmail.trim();
+    if (!assignCompany || !email) return;
+    const confirmed = await requestAppConfirm({
+      title: t('admin.assignAdminTitle', 'Assign company admin'),
+      message: t(
+        'admin.confirmAssignAdmin',
+        'Assign {{email}} as an administrator of {{company}}? The account must already be registered and not belong to another company.',
+        { email, company: assignCompany.name },
+      ),
+      confirmLabel: t('admin.assignAdmin', 'Assign admin'),
+    });
+    if (!confirmed) return;
+    setAssigningAdmin(true);
+    try {
+      await adminApi.assignUserToTenant(assignCompany.id, { email, role: 'org_admin' });
+      await loadCompanies();
+      showToast(t('admin.adminAssigned', 'Company administrator assigned. They must sign in again.'));
+      setAssignCompany(null);
+      setAdminEmail('');
+    } catch (e: any) {
+      showToast(e.message || t('admin.assignAdminFailed', 'Failed to assign company administrator.'), 'error');
+    }
+    setAssigningAdmin(false);
+  };
+
   const handleToggle = async (id: string, currentlyActive: boolean) => {
     const action = currentlyActive ? 'disable' : 'enable';
     if (currentlyActive) {
@@ -171,7 +200,7 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
     { key: 'created_at', label: t('admin.createdAt', 'Created'), flex: '100px' },
   ];
   const statusColFlex = '80px';
-  const actionColFlex = '80px';
+  const actionColFlex = '168px';
   const gridCols = columns.map((c) => c.flex).join(' ') + ' ' + statusColFlex + ' ' + actionColFlex;
 
   return (
@@ -268,6 +297,31 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
         </div>
       )}
 
+      {assignCompany && (
+        <div className="card admin-companies-create-form">
+          <div className="admin-companies-create-title">
+            {t('admin.assignAdminFor', 'Assign administrator for {{company}}', { company: assignCompany.name })}
+          </div>
+          <div className="admin-companies-row">
+            <input
+              className="form-input admin-companies-grow"
+              type="email"
+              value={adminEmail}
+              onChange={(e) => setAdminEmail(e.target.value)}
+              placeholder={t('admin.registeredEmailPlaceholder', 'Registered account email')}
+              onKeyDown={(e) => e.key === 'Enter' && handleAssignAdmin()}
+              autoFocus
+            />
+            <button className="btn btn-primary" onClick={handleAssignAdmin} disabled={assigningAdmin || !adminEmail.trim()}>
+              {assigningAdmin ? '...' : t('admin.assignAdmin', 'Assign admin')}
+            </button>
+            <button className="btn btn-secondary" onClick={() => { setAssignCompany(null); setAdminEmail(''); }}>
+              {t('common.cancel', 'Cancel')}
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="card admin-companies-table">
         <div className="admin-companies-thead" style={{ gridTemplateColumns: gridCols }}>
           {columns.map((col) => (
@@ -334,7 +388,15 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
                     {company.is_active ? t('admin.active', 'Active') : t('admin.disabled', 'Disabled')}
                   </span>
                 </div>
-                <div>
+                <div className="admin-companies-actions">
+                  {company.is_active && (
+                    <button
+                      className="btn btn-ghost admin-companies-toggle-btn"
+                      onClick={() => { setAssignCompany(company); setAdminEmail(''); }}
+                    >
+                      {t('admin.assignAdmin', 'Assign admin')}
+                    </button>
+                  )}
                   <button
                     className={`btn btn-ghost admin-companies-toggle-btn${company.slug === 'default' ? ' is-locked' : ''}`}
                     style={{ color: company.slug === 'default' ? 'var(--text-tertiary)' : company.is_active ? 'var(--error)' : 'var(--success)' }}

@@ -63,5 +63,6 @@ describe('Admin companies extracted sections', () => {
     expect(markup).toContain('Acme');
     expect(markup).toContain('admin@acme.test');
     expect(markup).toContain('123K');
+    expect(markup).toContain('Assign admin');
   });
 });

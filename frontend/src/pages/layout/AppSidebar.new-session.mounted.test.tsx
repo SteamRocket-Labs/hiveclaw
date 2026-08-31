@@ -8,6 +8,7 @@ const harness = vi.hoisted(() => ({
   navigate: vi.fn(),
   createSession: vi.fn(() => new Promise(() => undefined)),
   createLocalSession: vi.fn(),
+  getHrAgent: vi.fn(),
   location: {
     pathname: '/agents/agent-1/sessions/session-old',
     search: '',
@@ -48,6 +49,12 @@ vi.mock('../../api/domains/localBridge', () => ({
   },
 }));
 
+vi.mock('../../api/domains/agents', () => ({
+  agentApi: {
+    getHrAgent: harness.getHrAgent,
+  },
+}));
+
 import AppSidebar from './AppSidebar';
 
 describe('AppSidebar new conversation authority', () => {
@@ -55,9 +62,39 @@ describe('AppSidebar new conversation authority', () => {
     harness.navigate.mockReset();
     harness.createSession.mockClear();
     harness.createLocalSession.mockReset();
+    harness.getHrAgent.mockReset();
   });
 
   afterEach(() => cleanup());
+
+  it('does not request the company HR agent for a platform administrator', async () => {
+    render(
+      <AppSidebar
+        user={{ id: 'platform-user', role: 'platform_admin' }}
+        theme="light"
+        isSidebarCollapsed={false}
+        onToggleSidebar={vi.fn()}
+        tenants={[{ id: 'tenant-1', name: 'Company A' }]}
+        currentTenant="tenant-1"
+        onSwitchTenant={vi.fn()}
+        agents={[]}
+        isChinese={false}
+        onToggleTheme={vi.fn()}
+        onOpenNotifications={vi.fn()}
+        unreadCount={0}
+        accountMenuRef={React.createRef<HTMLDivElement>()}
+        showAccountMenu={false}
+        onToggleAccountMenu={vi.fn()}
+        onToggleLang={vi.fn()}
+        onOpenAccountSettings={vi.fn()}
+        onLogout={vi.fn()}
+        versionDisplay={null}
+      />,
+    );
+
+    await Promise.resolve();
+    expect(harness.getHrAgent).not.toHaveBeenCalled();
+  });
 
   it('hands a native new-conversation click to the draft route before durable Session creation', () => {
     render(

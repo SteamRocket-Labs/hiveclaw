@@ -186,7 +186,7 @@ describe('Layout extracted sections', () => {
     expect(markup).toContain('title="Home"');
     expect(markup).toContain('Digital Employees');
     expect(markup).toContain('Automation');
-    expect(markup).toContain('Agent Circle');
+    expect(markup).not.toContain('Agent Circle');
     expect(markup).toContain('title="Knowledge"');
     expect(markup).not.toContain('Conversations &amp; Tasks');
     expect(markup).not.toContain('Plan Review');

@@ -88,7 +88,7 @@ _TENANT_ADMIN_METADATA_ACTIONS = frozenset(
         "curate",
     }
 )
-_ADMIN_ROLES = frozenset({"platform_admin", "org_admin"})
+_ADMIN_ROLES = frozenset({"org_admin"})
 
 
 @dataclass(frozen=True, slots=True)

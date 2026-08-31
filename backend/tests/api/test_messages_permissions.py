@@ -34,9 +34,13 @@ class _MessagesDB:
         self.sessions = sessions or []
         self.messages = messages or []
         self.participants = participants or {}
+        self.statements = []
+        self.statement_objects = []
 
     async def execute(self, stmt):
         sql = str(stmt)
+        self.statements.append(sql)
+        self.statement_objects.append(stmt)
         if "FROM agent_permissions" in sql:
             return _ListResult(self.permission_rows)
         if "FROM agents" in sql and "agents.id" in sql:
@@ -73,6 +77,28 @@ async def test_list_accessible_agent_ids_includes_permission_scopes():
     result = await messages_api._list_accessible_agent_ids(db, current_user)
 
     assert result == [creator_agent_id, permitted_agent_id]
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_message_agents_use_only_owner_and_exact_user_scope():
+    import app.api.messages as messages_api
+
+    current_user = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        department_id=uuid4(),
+        role="platform_admin",
+    )
+    db = _MessagesDB()
+
+    assert await messages_api._list_accessible_agent_ids(db, current_user) == []
+    permission_statement = next(
+        statement for statement in db.statement_objects if "FROM agent_permissions" in str(statement)
+    )
+    permission_sql = str(permission_statement.compile(compile_kwargs={"literal_binds": True}))
+    assert "agent_permissions.scope_type = 'user'" in permission_sql
+    assert "agent_permissions.scope_type = 'company'" not in permission_sql
+    assert "agent_permissions.scope_type = 'department'" not in permission_sql
 
 
 @pytest.mark.asyncio

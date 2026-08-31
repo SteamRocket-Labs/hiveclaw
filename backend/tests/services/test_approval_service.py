@@ -361,6 +361,16 @@ def test_org_admin_cannot_resolve_other_tenant_agent_approval() -> None:
     assert _can_resolve_agent_approval(agent, user) is False
 
 
+def test_platform_admin_role_does_not_resolve_another_users_agent_approval() -> None:
+    from app.services.approval_service import _can_resolve_agent_approval
+
+    tenant_id = uuid4()
+    agent = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, role="platform_admin")
+
+    assert _can_resolve_agent_approval(agent, user) is False
+
+
 def test_only_current_owner_not_creator_or_sponsor_can_resolve_approval() -> None:
     from app.services.approval_service import _can_resolve_agent_approval
 

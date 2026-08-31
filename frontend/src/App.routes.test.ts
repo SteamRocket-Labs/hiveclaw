@@ -27,6 +27,27 @@ describe('application surface routes', () => {
       "const CompanyKnowledgeControlPlane = lazy(() => import('./pages/CompanyKnowledgeControlPlane'))",
     );
     expect(source).toContain('<Route path="knowledge/company" element={<CompanyKnowledgeLibrary />} />');
-    expect(source).toContain('<Route path="knowledge" element={<CompanyKnowledgeControlPlane />} />');
+    expect(source).toContain(
+      '<Route path="knowledge" element={<OrgAdminGuard><CompanyKnowledgeControlPlane /></OrgAdminGuard>} />',
+    );
+  });
+
+  it('keeps platform administrators out of the company Plaza surface', () => {
+    const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
+
+    expect(source).toContain('<Route path="plaza" element={<CompanyMemberGuard><Plaza /></CompanyMemberGuard>} />');
+  });
+
+  it('does not upgrade a platform role above the Agent access level in Agent Detail', () => {
+    const source = readFileSync(new URL('./pages/AgentDetail.tsx', import.meta.url), 'utf8');
+
+    expect(source).not.toContain("currentUser?.role === 'platform_admin' || currentUser?.role === 'org_admin'");
+    expect(source).toContain("const canManage = !!agent && (agent as any).access_level === 'manage';");
+  });
+
+  it('does not advertise Company Knowledge management to a platform-only principal', () => {
+    const source = readFileSync(new URL('./pages/CompanyKnowledgeLibrary.tsx', import.meta.url), 'utf8');
+
+    expect(source).toContain("canManage={user?.role === 'org_admin'}");
   });
 });

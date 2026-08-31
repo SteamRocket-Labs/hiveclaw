@@ -11,7 +11,7 @@ import { useAuthStore } from './stores';
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { authApi } from './api/domains/auth';
 import { get } from './api/core';
-import { ProtectedRoute, WorkspaceGuard, AdminGuard } from './guards';
+import { ProtectedRoute, WorkspaceGuard, OrgAdminGuard, CompanyMemberGuard, AdminGuard } from './guards';
 import { WORKSPACE_SETTINGS_SECTIONS } from './surfaces/workspace/sections';
 import AppDialogs from './components/AppDialogs';
 
@@ -149,7 +149,7 @@ export default function App() {
                         <Route path="documents" element={<WorkspaceFeatureHub kind="documents" />} />
                         <Route path="approvals" element={<WorkspaceFeatureHub kind="approvals" />} />
                         <Route path="team" element={<WorkspaceFeatureHub kind="team" />} />
-                        <Route path="plaza" element={<Plaza />} />
+                        <Route path="plaza" element={<CompanyMemberGuard><Plaza /></CompanyMemberGuard>} />
                         <Route path="local-agents" element={<LocalAgents />} />
                         <Route path="local-bridge/activate" element={<LocalAgents />} />
                         <Route path="agents/new" element={<AgentCreate />} />
@@ -165,7 +165,7 @@ export default function App() {
                     <Route path="/enterprise" element={<ProtectedRoute><WorkspaceGuard><WorkspaceLayout /></WorkspaceGuard></ProtectedRoute>}>
                         <Route index element={<Navigate to="dashboard" replace />} />
                         <Route path="dashboard" element={<ControlPlane />} />
-                        <Route path="knowledge" element={<CompanyKnowledgeControlPlane />} />
+                        <Route path="knowledge" element={<OrgAdminGuard><CompanyKnowledgeControlPlane /></OrgAdminGuard>} />
                         {WORKSPACE_SETTINGS_SECTIONS.map((section) => (
                             <Route
                                 key={section.tab}

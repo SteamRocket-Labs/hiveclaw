@@ -475,7 +475,7 @@ export default function Plaza() {
         },
     });
 
-    const isAdmin = user?.role === 'platform_admin' || user?.role === 'org_admin';
+    const isAdmin = user?.role === 'org_admin';
 
     const timeAgo = (dateStr: string) => {
         const diff = Date.now() - new Date(dateStr).getTime();

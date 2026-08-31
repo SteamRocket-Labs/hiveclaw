@@ -199,7 +199,6 @@ function AgentDetailInner() {
     }, [location.hash]);
     const token = useAuthStore((s) => s.token);
     const currentUser = useAuthStore((s) => s.user);
-    const isAdmin = currentUser?.role === 'platform_admin' || currentUser?.role === 'org_admin';
 
     const { data: agent, isLoading, error: agentError } = useQuery({
         queryKey: ['agent', id],
@@ -209,7 +208,7 @@ function AgentDetailInner() {
         refetchOnWindowFocus: true, // page stays mounted across tabs; global focus-refetch is off, this query opts in
     });
     const canLoadAgentScopedData = !!id && !!agent;
-    const canManage = !!agent && ((agent as any).access_level === 'manage' || isAdmin);
+    const canManage = !!agent && (agent as any).access_level === 'manage';
 
     // ── Aware tab data: triggers ──
     const { data: awareTriggers = [], refetch: refetchTriggers } = useQuery({
@@ -2477,7 +2476,7 @@ function AgentDetailInner() {
                                     <span className="agent-detail-expires-text">
                                         {t('agent.settings.expiry.expiresAt', 'Expires: {{time}}', { time: new Date((agent as any).expires_at).toLocaleString() })}
                                     </span>
-                                )}                                {isAdmin && (
+                                )}                                {canManage && (
                                     <button
                                         onClick={openExpiryModal}
                                         title={t('agent.settings.expiry.editTitle', 'Edit expiry time')}
@@ -2640,7 +2639,7 @@ function AgentDetailInner() {
                             agentId={id}
                             agent={agent}
                             currentUser={currentUser}
-                            isAdmin={isSystemHr ? false : isAdmin}
+                            isAdmin={isSystemHr ? false : canManage}
                             chatScope={chatScope}
                             onSetChatScope={setChatScope}
                             onLoadAllSessions={fetchAllSessions}

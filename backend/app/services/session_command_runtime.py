@@ -25,6 +25,7 @@ from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_task import RuntimeTask
 from app.models.user import User
+from app.core.permissions import can_manage_agent_sessions
 from app.memory.t0.ledger import T0SessionEvent, replay_t0_session_events_tail
 from app.runtime.hooks import HookEvent, emit_hook
 from app.services.chat_transcript import append_session_event, read_transcript_revision
@@ -72,14 +73,6 @@ _INTERRUPTED_TAIL_EVENT_TYPES = {"user_message", "tool_call", "tool_result", "as
 _FENCED_CODE_BLOCK_RE = re.compile(r"```([^\n`]*)\n(.*?)```", re.DOTALL)
 
 
-def _can_manage_sessions(user: User, agent: Agent, access_level: str) -> bool:
-    return (
-        getattr(user, "role", None) in ("platform_admin", "org_admin")
-        or str(getattr(agent, "creator_id", "")) == str(getattr(user, "id", ""))
-        or access_level == "manage"
-    )
-
-
 async def _load_session(
     db: AsyncSession,
     *,
@@ -100,7 +93,7 @@ async def _load_session(
     session = result.scalar_one_or_none()
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    if str(session.user_id) != str(user.id) and not _can_manage_sessions(user, agent, access_level):
+    if str(session.user_id) != str(user.id) and not can_manage_agent_sessions(access_level):
         raise HTTPException(status_code=403, detail="Not authorized to use this session")
     return session
 

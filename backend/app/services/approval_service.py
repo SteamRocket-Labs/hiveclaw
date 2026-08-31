@@ -40,8 +40,6 @@ def _can_resolve_agent_approval(agent: Agent, user: User) -> bool:
     owner_user_id = getattr(agent, "owner_user_id", None) or getattr(agent, "creator_id", None)
     if _same_uuid(owner_user_id, user_id):
         return True
-    if getattr(user, "role", None) == "platform_admin":
-        return True
     if getattr(user, "role", None) == "org_admin":
         return _same_uuid(getattr(agent, "tenant_id", None), getattr(user, "tenant_id", None))
     return False
@@ -167,7 +165,7 @@ class ApprovalService:
         if agent and getattr(approval, "tenant_id", None) is None:
             approval.tenant_id = agent.tenant_id
         if agent and not _can_resolve_agent_approval(agent, user):
-            raise ValueError("Only the agent creator, tenant org admin, or platform admin can resolve approvals")
+            raise ValueError("Only the current Agent owner or tenant organization admin can resolve approvals")
 
         local_agent_resolution = None
 

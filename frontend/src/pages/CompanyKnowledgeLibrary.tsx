@@ -319,7 +319,7 @@ export default function CompanyKnowledgeLibrary() {
         void activeListQuery.refetch();
         if (selected) void readQuery.refetch();
       }}
-      canManage={user?.role === 'org_admin' || user?.role === 'platform_admin'}
+      canManage={user?.role === 'org_admin'}
     />
   );
 }

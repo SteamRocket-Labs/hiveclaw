@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.tenant_scope import resolve_and_pin_tenant_scope
 from app.core.security import get_current_user
 from app.core.permissions import agent_owned_by_clause
-from app.database import enter_rls_bypass, get_db, pin_rls_tenant_context
+from app.database import get_db
 from app.models.agent import Agent
 from app.models.audit import AuditLog
 from app.models.user import User
@@ -23,6 +23,11 @@ from app.services.user_offboarding_service import (
 )
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+
+def _require_org_admin(current_user: User) -> None:
+    if current_user.role != "org_admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Organization administrator access required")
 
 
 class UserQuotaUpdate(BaseModel):
@@ -142,13 +147,10 @@ async def list_users(
     db: AsyncSession = Depends(get_db),
 ):
     """List all users in the specified tenant (admin only)."""
-    if current_user.role not in ("platform_admin", "org_admin"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
-
-    # Platform admins can view any selected tenant; org_admins stay pinned to their own tenant.
+    _require_org_admin(current_user)
     tid = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
 
-    # Filter users by tenant — platform_admins only shown in their own tenant
+    # Organization membership is always scoped to the administrator's tenant.
     result = await db.execute(
         select(User)
         .where(
@@ -174,8 +176,7 @@ async def update_user_role(
     db: AsyncSession = Depends(get_db),
 ):
     """Change a tenant member role without trusting a browser-side role guess."""
-    if current_user.role not in ("platform_admin", "org_admin"):
-        raise HTTPException(status_code=403, detail="Admin access required")
+    _require_org_admin(current_user)
     target = await _load_target_user(
         db,
         current_user=current_user,
@@ -197,7 +198,9 @@ async def update_user_role(
             )
         )
         if int(remaining.scalar() or 0) == 0:
-            raise HTTPException(status_code=409, detail="Assign another company administrator before changing this role")
+            raise HTTPException(
+                status_code=409, detail="Assign another company administrator before changing this role"
+            )
     old_role = target.role
     target.role = data.role
     db.add(
@@ -220,8 +223,7 @@ async def preview_user_offboarding(
     db: AsyncSession = Depends(get_db),
 ):
     """Return the exact impact and eligible successor set before offboarding."""
-    if current_user.role not in ("platform_admin", "org_admin"):
-        raise HTTPException(status_code=403, detail="Admin access required")
+    _require_org_admin(current_user)
     target = await _load_target_user(
         db,
         current_user=current_user,
@@ -263,8 +265,7 @@ async def offboard_user(
     db: AsyncSession = Depends(get_db),
 ):
     """Atomically transfer Agent ownership, revoke authority, and deactivate a User."""
-    if current_user.role not in ("platform_admin", "org_admin"):
-        raise HTTPException(status_code=403, detail="Admin access required")
+    _require_org_admin(current_user)
     target = await _load_target_user(
         db,
         current_user=current_user,
@@ -288,9 +289,7 @@ async def offboard_user(
         return _offboarding_response(replay)
     successor = (
         await db.execute(
-            select(User)
-            .where(User.id == data.successor_user_id, User.tenant_id == target.tenant_id)
-            .with_for_update()
+            select(User).where(User.id == data.successor_user_id, User.tenant_id == target.tenant_id).with_for_update()
         )
     ).scalar_one_or_none()
     if successor is None:
@@ -320,26 +319,13 @@ async def update_user_quota(
     db: AsyncSession = Depends(get_db),
 ):
     """Update a user's quota settings (admin only)."""
-    if current_user.role not in ("platform_admin", "org_admin"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
-
-    if current_user.role == "platform_admin":
-        async with enter_rls_bypass(
-            db,
-            reason=f"platform-admin user quota target lookup for {user_id}",
-            actor_id=str(getattr(current_user, "id", "")) or None,
-        ) as bypass_db:
-            result = await bypass_db.execute(select(User).where(User.id == user_id))
-    else:
-        result = await db.execute(select(User).where(User.id == user_id))
+    _require_org_admin(current_user)
+    result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if current_user.role == "platform_admin" and user.tenant_id:
-        await pin_rls_tenant_context(db, user.tenant_id)
-
-    if current_user.role != "platform_admin" and user.tenant_id != current_user.tenant_id:
+    if user.tenant_id != current_user.tenant_id:
         raise HTTPException(status_code=403, detail="Cannot modify users outside your organization")
 
     if "quota_tokens_per_day" in data.model_fields_set:

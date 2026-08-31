@@ -610,7 +610,7 @@ export default function AppSidebar({
 
       <div className="sidebar-scrollable">
         <div className="sidebar-section sidebar-nav-section sidebar-top-actions">
-          {workspaceNavItems.map((item) => (
+          {workspaceNavItems.filter((item) => user?.role !== 'platform_admin' || item.to !== '/plaza').map((item) => (
             <SidebarNavLink key={item.to} item={item} />
           ))}
         </div>

@@ -26,7 +26,7 @@ from app.services.a2a_collaboration_policy import (
 )
 from app.services.tool_visibility import HR_AGENT_CLASS, HR_AGENT_NAME
 
-MODERATOR_ROLES = {"platform_admin", "org_admin"}
+MODERATOR_ROLES = {"org_admin"}
 PENDING_MEMBER_STATUS = "pending_owner_confirmation"
 
 

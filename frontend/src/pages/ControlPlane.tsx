@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -17,7 +17,13 @@ import {
 } from '@tabler/icons-react';
 
 import { enterpriseApi } from '../api/domains/enterprise';
-import { WORKSPACE_SETTINGS_SECTIONS, type WorkspaceSettingsSectionTab } from '../surfaces/workspace/sections';
+import { useAuthStore } from '../stores';
+import {
+  canRoleAccessWorkspaceSection,
+  WORKSPACE_SETTINGS_SECTIONS,
+  workspaceSectionsForRole,
+  type WorkspaceSettingsSectionTab,
+} from '../surfaces/workspace/sections';
 import EnterpriseSettings from './EnterpriseSettings';
 
 type ControlPlaneTab = WorkspaceSettingsSectionTab;
@@ -182,12 +188,18 @@ function readCurrentTenantId() {
 
 export default function ControlPlane({ tab }: ControlPlaneProps) {
   const { t } = useTranslation();
+  const role = useAuthStore((state) => state.user?.role);
   const selectedTenantId = readCurrentTenantId();
   const section = cardForTab(tab);
   const { data: stats } = useQuery({
     queryKey: ['enterprise-stats', selectedTenantId],
     queryFn: () => enterpriseApi.getStats(selectedTenantId || undefined),
+    enabled: role === 'org_admin',
   });
+
+  if (tab && !canRoleAccessWorkspaceSection(role, tab)) {
+    return <Navigate to="/enterprise/dashboard" replace />;
+  }
 
   if (tab && section) {
     return (
@@ -209,7 +221,13 @@ export default function ControlPlane({ tab }: ControlPlaneProps) {
     );
   }
 
-  const workspaceSections = WORKSPACE_SETTINGS_SECTIONS.length;
+  const allowedPaths = new Set(workspaceSectionsForRole(role).map((item) => item.path));
+  const visibleCards = CONTROL_PLANE_CARDS.filter((card) =>
+    card.to === '/local-agents' ? role === 'org_admin' : allowedPaths.has(card.to),
+  );
+  const workspaceSections = WORKSPACE_SETTINGS_SECTIONS.filter((item) =>
+    canRoleAccessWorkspaceSection(role, item.tab),
+  ).length;
 
   return (
     <div className="workbench-page control-plane-page">
@@ -230,18 +248,22 @@ export default function ControlPlane({ tab }: ControlPlaneProps) {
       </div>
 
       <div className="workbench-metrics">
-        <div className="workbench-metric">
-          <span>{t('controlPlane.metrics.users', 'Users')}</span>
-          <strong>{stats?.total_users ?? '-'}</strong>
-        </div>
-        <div className="workbench-metric">
-          <span>{t('controlPlane.metrics.agents', 'Employees')}</span>
-          <strong>{stats ? `${stats.running_agents}/${stats.total_agents}` : '-'}</strong>
-        </div>
-        <div className="workbench-metric">
-          <span>{t('controlPlane.metrics.approvals', 'Pending approvals')}</span>
-          <strong>{stats?.pending_approvals ?? '-'}</strong>
-        </div>
+        {role === 'org_admin' && (
+          <>
+            <div className="workbench-metric">
+              <span>{t('controlPlane.metrics.users', 'Users')}</span>
+              <strong>{stats?.total_users ?? '-'}</strong>
+            </div>
+            <div className="workbench-metric">
+              <span>{t('controlPlane.metrics.agents', 'Employees')}</span>
+              <strong>{stats ? `${stats.running_agents}/${stats.total_agents}` : '-'}</strong>
+            </div>
+            <div className="workbench-metric">
+              <span>{t('controlPlane.metrics.approvals', 'Pending approvals')}</span>
+              <strong>{stats?.pending_approvals ?? '-'}</strong>
+            </div>
+          </>
+        )}
         <div className="workbench-metric">
           <span>{t('controlPlane.metrics.sections', 'Admin surfaces')}</span>
           <strong>{workspaceSections}</strong>
@@ -256,7 +278,7 @@ export default function ControlPlane({ tab }: ControlPlaneProps) {
           </div>
         </div>
         <div className="control-plane-grid">
-          {CONTROL_PLANE_CARDS.map((card) => (
+          {visibleCards.map((card) => (
             <Link key={card.to} to={card.to} className={`control-plane-card ${card.group}`}>
               <span className="control-plane-card-icon">{card.icon}</span>
               <span>

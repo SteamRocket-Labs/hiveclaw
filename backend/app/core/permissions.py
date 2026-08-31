@@ -23,10 +23,12 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
     Returns (agent, access_level) where access_level is 'manage' or 'use'.
 
     Access is granted if:
-    1. User is platform admin → manage
-    2. User is org admin for the agent's tenant → manage
-    3. User is the current agent owner → manage
-    4. User has explicit permission (company/user scope) → from permission record
+    1. User is org admin for the agent's tenant → manage
+    2. User is the current agent owner → manage
+    3. User has an applicable explicit permission → from permission record
+
+    Platform administrators have no implicit company/department Agent access;
+    they act as a user only through ownership or an exact user-scoped grant.
     """
     if user.role == "platform_admin":
         async with enter_rls_bypass(
@@ -35,7 +37,9 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
             actor_id=str(user.id),
         ) as bypass_db:
             result = await bypass_db.execute(
-                select(Agent).options(selectinload(Agent.owner), selectinload(Agent.creator)).where(Agent.id == agent_id)
+                select(Agent)
+                .options(selectinload(Agent.owner), selectinload(Agent.creator))
+                .where(Agent.id == agent_id)
             )
     else:
         result = await db.execute(
@@ -61,13 +65,9 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
     if agent.tenant_id is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
 
-    # Platform admins can access everything with manage
     if user.role == "platform_admin":
         await pin_rls_tenant_context(db, agent.tenant_id)
-        return agent, "manage"
-
-    # Tenant boundary: non-platform users can only access agents in their own tenant
-    if user.tenant_id is None or user.tenant_id != agent.tenant_id:
+    elif user.tenant_id is None or user.tenant_id != agent.tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
 
     # Organization admins can audit and manage every agent in their own tenant,
@@ -86,6 +86,8 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
     permissions = perms.scalars().all()
 
     for perm in permissions:
+        if user.role == "platform_admin" and perm.scope_type != "user":
+            continue
         if perm.scope_type == "company":
             return agent, perm.access_level or "use"
         if perm.scope_type == "user" and perm.scope_id == user.id:
@@ -95,7 +97,7 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
                 return agent, perm.access_level or "use"
 
     resource_principals: list[tuple[str, uuid.UUID]] = [("user", user.id)]
-    if user.department_id:
+    if user.role != "platform_admin" and user.department_id:
         resource_principals.append(("department", user.department_id))
 
     for action, access_level in (("manage", "manage"), ("execute", "use"), ("read", "use")):
@@ -122,6 +124,12 @@ def effective_agent_owner_id(agent: Agent) -> uuid.UUID | None:
     """Return the current owner, falling back to creator for legacy rows."""
 
     return getattr(agent, "owner_user_id", None) or getattr(agent, "creator_id", None)
+
+
+def can_manage_agent_sessions(access_level: str) -> bool:
+    """Use the resolved Agent capability; a platform role is not an upgrade."""
+
+    return access_level == "manage"
 
 
 def agent_owned_by_clause(user_id: uuid.UUID):
@@ -152,16 +160,12 @@ async def require_agent_owner_or_admin(
     """Require root ownership authority, excluding delegated ``manage`` grants.
 
     Ownership changes are stronger than ordinary configuration management.
-    They are available only to the current owner, a same-tenant org admin, or
-    a platform admin. The lookup intentionally ignores inactive-owner lifecycle
-    blocking so an administrator can recover an orphaned Agent.
+    They are available only to the current owner or a same-tenant org admin.
+    The lookup intentionally ignores inactive-owner lifecycle blocking so an
+    organization administrator can recover an orphaned Agent.
     """
 
-    stmt = (
-        select(Agent)
-        .options(selectinload(Agent.owner), selectinload(Agent.creator))
-        .where(Agent.id == agent_id)
-    )
+    stmt = select(Agent).options(selectinload(Agent.owner), selectinload(Agent.creator)).where(Agent.id == agent_id)
     if lock:
         stmt = stmt.with_for_update()
 
@@ -182,8 +186,7 @@ async def require_agent_owner_or_admin(
 
     if user.role == "platform_admin":
         await pin_rls_tenant_context(db, agent.tenant_id)
-        return agent
-    if user.tenant_id is None or user.tenant_id != agent.tenant_id:
+    elif user.tenant_id is None or user.tenant_id != agent.tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
     if user.role == "org_admin" or effective_agent_owner_id(agent) == user.id:
         return agent

@@ -26,6 +26,14 @@ from app.tools.guard_policy import validate_guard_policy_snapshot
 router = APIRouter(tags=["guard-policies"])
 
 
+def _require_org_admin(current_user: User) -> None:
+    if current_user.role != "org_admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Organization administrator access required",
+        )
+
+
 # ─── Schemas ────────────────────────────────────────────
 
 
@@ -100,6 +108,7 @@ async def get_guard_policy(
     db: AsyncSession = Depends(get_db),
 ):
     """Get the Guard policy for the current tenant."""
+    _require_org_admin(current_user)
     if not current_user.tenant_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No tenant assigned")
 
@@ -118,6 +127,7 @@ async def update_guard_policy(
     Bumps the policy version and the tenant sync_version so Desktop
     clients pick up the change on their next sync poll.
     """
+    _require_org_admin(current_user)
     if not current_user.tenant_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No tenant assigned")
 

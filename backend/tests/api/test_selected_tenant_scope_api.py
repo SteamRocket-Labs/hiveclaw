@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 
 
@@ -75,49 +76,22 @@ def _first_business_statement(db: _FakeDB):
 
 
 @pytest.mark.asyncio
-async def test_platform_admin_list_users_pins_selected_tenant():
+async def test_platform_admin_cannot_list_selected_tenant_users():
     import app.api.users as users_api
 
     own_tenant_id = uuid4()
     target_tenant_id = uuid4()
-    target_user = SimpleNamespace(
-        id=uuid4(),
-        tenant_id=target_tenant_id,
-        username="target-user",
-        email="target@example.com",
-        display_name="Target User",
-        role="member",
-        is_active=True,
-        quota_tokens_per_day=None,
-        quota_tokens_per_month=None,
-        tokens_used_today=0,
-        tokens_used_month=0,
-        tokens_used_total=0,
-        feishu_open_id=None,
-        created_at=datetime.now(timezone.utc),
-    )
-    db = _FakeDB([_ListResult([target_user]), _ScalarResult(3)])
+    db = _FakeDB([])
 
-    result = await users_api.list_users(
-        tenant_id=str(target_tenant_id),
-        current_user=SimpleNamespace(role="platform_admin", tenant_id=own_tenant_id),
-        db=db,
-    )
+    with pytest.raises(HTTPException) as exc_info:
+        await users_api.list_users(
+            tenant_id=str(target_tenant_id),
+            current_user=SimpleNamespace(role="platform_admin", tenant_id=own_tenant_id),
+            db=db,
+        )
 
-    assert result[0].id == target_user.id
-    assert result[0].agents_count == 3
-    assert any(f"SET LOCAL app.current_tenant_id = '{target_tenant_id}'" in str(stmt) for stmt in db.statements)
-    user_query = str(_first_business_statement(db).compile(compile_kwargs={"literal_binds": True}))
-    for suffix in (
-        "@slack.local",
-        "@telegram.local",
-        "@discord.local",
-        "@teams.local",
-        "@wecom.local",
-        "@wechat.local",
-        "@dingtalk.local",
-    ):
-        assert suffix in user_query
+    assert exc_info.value.status_code == 403
+    assert db.statements == []
 
 
 @pytest.mark.asyncio
@@ -150,40 +124,22 @@ async def test_platform_admin_can_update_selected_tenant_quotas():
 
 
 @pytest.mark.asyncio
-async def test_platform_admin_can_update_other_tenant_user_quota():
-    from app import database
+async def test_platform_admin_cannot_update_other_tenant_user_quota():
     import app.api.users as users_api
 
     own_tenant_id = uuid4()
-    target_tenant_id = uuid4()
-    user = SimpleNamespace(
-        id=uuid4(),
-        tenant_id=target_tenant_id,
-        username="alice",
-        email="alice@example.com",
-        display_name="Alice",
-        role="member",
-        is_active=True,
-        quota_tokens_per_day=None,
-        quota_tokens_per_month=None,
-        tokens_used_today=0,
-        tokens_used_month=0,
-        tokens_used_total=0,
-    )
-    db = _FakeDB([_ScalarResult(user), _ScalarResult(1)])
+    db = _FakeDB([])
 
-    result = await users_api.update_user_quota(
-        user_id=user.id,
-        data=users_api.UserQuotaUpdate(quota_tokens_per_day=50000),
-        current_user=SimpleNamespace(role="platform_admin", tenant_id=own_tenant_id),
-        db=db,
-    )
+    with pytest.raises(HTTPException) as exc_info:
+        await users_api.update_user_quota(
+            user_id=uuid4(),
+            data=users_api.UserQuotaUpdate(quota_tokens_per_day=50000),
+            current_user=SimpleNamespace(role="platform_admin", tenant_id=own_tenant_id),
+            db=db,
+        )
 
-    assert result.quota_tokens_per_day == 50000
-    assert user.quota_tokens_per_day == 50000
-    assert db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(target_tenant_id)
-    assert any(f"SET LOCAL app.current_tenant_id = '{target_tenant_id}'" in str(stmt) for stmt in db.statements)
-    assert db.committed is True
+    assert exc_info.value.status_code == 403
+    assert db.statements == []
 
 
 @pytest.mark.asyncio
@@ -291,79 +247,44 @@ async def test_platform_admin_can_get_selected_tenant_oidc_config():
 
 
 @pytest.mark.asyncio
-async def test_platform_admin_can_create_invitation_codes_for_selected_tenant():
+async def test_platform_admin_cannot_create_invitation_codes_for_selected_tenant():
     import app.api.enterprise as enterprise_api
 
     own_tenant_id = uuid4()
     target_tenant_id = uuid4()
     db = _FakeDB([])
 
-    result = await enterprise_api.create_invitation_codes(
-        data=enterprise_api.InvitationCodeCreate(count=2, max_uses=3),
-        tenant_id=str(target_tenant_id),
-        current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=own_tenant_id),
-        db=db,
-    )
+    with pytest.raises(HTTPException) as exc_info:
+        await enterprise_api.create_invitation_codes(
+            data=enterprise_api.InvitationCodeCreate(count=2, max_uses=3),
+            tenant_id=str(target_tenant_id),
+            current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=own_tenant_id),
+            db=db,
+        )
 
-    assert result["created"] == 2
-    assert len(db.added) == 2
-    assert {code.tenant_id for code in db.added} == {target_tenant_id}
-    assert any(f"SET LOCAL app.current_tenant_id = '{target_tenant_id}'" in str(stmt) for stmt in db.statements)
-    assert db.committed is True
+    assert exc_info.value.status_code == 403
+    assert db.statements == []
+    assert db.added == []
 
 
 @pytest.mark.asyncio
-async def test_platform_admin_create_agent_pins_selected_tenant(monkeypatch):
+async def test_platform_admin_cannot_create_agent_for_selected_tenant():
     import app.api.agents as agents_api
     from app.schemas.schemas import AgentCreate
 
     own_tenant_id = uuid4()
     target_tenant_id = uuid4()
-    target_tenant = SimpleNamespace(
-        id=target_tenant_id,
-        default_max_triggers=20,
-        min_poll_interval_floor=5,
-        max_webhook_rate_ceiling=5,
-    )
-    db = _FakeDB(
-        [
-            _ScalarResult(target_tenant),
-            _ListResult([]),
-            _ScalarResult(None),  # AIAssetRecord lookup
-            _ScalarResult(None),  # active ConfigRevision lookup
-        ]
-    )
+    db = _FakeDB([])
 
-    async def noop_async(*_args, **_kwargs):
-        return None
+    with pytest.raises(HTTPException) as exc_info:
+        await agents_api.create_agent(
+            data=AgentCreate(name="投研助手", tenant_id=target_tenant_id),
+            current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=own_tenant_id),
+            db=db,
+        )
 
-    class _FakeAgentManager:
-        def _agent_dir(self, _agent_id):
-            from pathlib import Path
-
-            return Path("/tmp")
-
-        async def initialize_agent_files(self, *_args, **_kwargs):
-            return None
-
-        async def start_container(self, *_args, **_kwargs):
-            return None
-
-    monkeypatch.setattr(agents_api, "ensure_agent_identity", noop_async)
-    monkeypatch.setattr(agents_api, "_agent_out", lambda agent: SimpleNamespace(name=agent.name))
-    monkeypatch.setattr("app.services.tool_seeder.assign_default_tools_to_agent", noop_async)
-    monkeypatch.setattr("app.services.agent_manager.agent_manager", _FakeAgentManager())
-    monkeypatch.setattr("app.core.policy.write_audit_event", noop_async)
-
-    result = await agents_api.create_agent(
-        data=AgentCreate(name="投研助手", tenant_id=target_tenant_id),
-        current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=own_tenant_id),
-        db=db,
-    )
-
-    assert result.name == "投研助手"
-    assert db.added[0].tenant_id == target_tenant_id
-    assert any(f"SET LOCAL app.current_tenant_id = '{target_tenant_id}'" in str(stmt) for stmt in db.statements)
+    assert exc_info.value.status_code == 403
+    assert db.statements == []
 
 
 @pytest.mark.asyncio

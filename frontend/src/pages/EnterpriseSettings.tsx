@@ -417,6 +417,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
     const { data: stats } = useQuery({
         queryKey: ['enterprise-stats', selectedTenantId],
         queryFn: () => enterpriseApi.getStats(selectedTenantId || undefined),
+        enabled: canManageCompanyContent,
     });
 
     // ─── LLM Models

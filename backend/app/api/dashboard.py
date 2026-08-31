@@ -42,7 +42,7 @@ async def _load_accessible_agent_ids(
     current_user: User,
     tenant_id: uuid.UUID | None,
 ) -> list[uuid.UUID]:
-    if current_user.role in ("platform_admin", "org_admin"):
+    if current_user.role == "org_admin":
         target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
         statement = select(Agent.id).where(
             Agent.tenant_id == target_tenant_id,
@@ -50,14 +50,19 @@ async def _load_accessible_agent_ids(
             agent_lifecycle_active_clause(),
         )
     else:
-        target_tenant_id = current_user.tenant_id
+        target_tenant_id = (
+            await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+            if current_user.role == "platform_admin"
+            else current_user.tenant_id
+        )
         if target_tenant_id is None:
             return []
         if tenant_id is not None and tenant_id != target_tenant_id:
             raise HTTPException(status_code=403, detail="Dashboard tenant scope mismatch")
-        permission_scopes = [AgentPermission.scope_type == "company"]
-        permission_scopes.append((AgentPermission.scope_type == "user") & (AgentPermission.scope_id == current_user.id))
-        if current_user.department_id:
+        permission_scopes = [(AgentPermission.scope_type == "user") & (AgentPermission.scope_id == current_user.id)]
+        if current_user.role != "platform_admin":
+            permission_scopes.append(AgentPermission.scope_type == "company")
+        if current_user.role != "platform_admin" and current_user.department_id:
             permission_scopes.append(
                 (AgentPermission.scope_type == "department") & (AgentPermission.scope_id == current_user.department_id)
             )

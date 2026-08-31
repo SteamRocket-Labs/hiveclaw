@@ -238,14 +238,6 @@ RLS_BYPASS_ALLOWLIST = (
     _grant(*("app/api/tenants.py", "_platform_admin_bypass_scope", "reason", ("session-state-only",))),
     _grant(
         *(
-            "app/api/users.py",
-            "update_user_quota",
-            "f'platform-admin user quota target lookup for {user_id}'",
-            ("select:User",),
-        )
-    ),
-    _grant(
-        *(
             "app/api/webhooks.py",
             "receive_webhook",
             "'public webhook token resolution (tenant unknown until trigger found)'",

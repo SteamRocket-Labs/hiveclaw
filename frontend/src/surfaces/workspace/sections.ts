@@ -50,6 +50,29 @@ export const WORKSPACE_SETTINGS_SECTIONS = WORKSPACE_SECTIONS.filter(
     section.tab !== 'dashboard' && section.tab !== 'knowledge',
 );
 
+const PLATFORM_ADMIN_WORKSPACE_TABS = new Set<WorkspaceSectionTab>([
+  'dashboard',
+  'info',
+  'llm',
+  'memory',
+  'extensions',
+  'runtime_budgets',
+  'quotas',
+  'audit',
+]);
+
+export function workspaceSectionsForRole(role: string | undefined): WorkspaceSection[] {
+  if (role === 'org_admin') return WORKSPACE_SECTIONS;
+  if (role === 'platform_admin') {
+    return WORKSPACE_SECTIONS.filter((section) => PLATFORM_ADMIN_WORKSPACE_TABS.has(section.tab));
+  }
+  return [];
+}
+
+export function canRoleAccessWorkspaceSection(role: string | undefined, tab: WorkspaceSectionTab): boolean {
+  return workspaceSectionsForRole(role).some((section) => section.tab === tab);
+}
+
 export const WORKSPACE_DEFAULT_PATH = WORKSPACE_SECTIONS[0].path;
 
 export const WORKSPACE_LEGACY_REDIRECTS = [

@@ -328,7 +328,7 @@ async def invite_a2a_group_member(
 
 
 def _can_moderate_a2a_member(current_user: User, member: AgentCollaborationGroupMember) -> bool:
-    if current_user.role in {"platform_admin", "org_admin"}:
+    if current_user.role == "org_admin":
         return True
     return member.agent_owner_user_id == current_user.id
 
@@ -338,9 +338,7 @@ def _require_admin_moderation_reason(
     member: AgentCollaborationGroupMember,
     reason: str,
 ) -> None:
-    is_admin_fallback = (
-        current_user.role in {"platform_admin", "org_admin"} and member.agent_owner_user_id != current_user.id
-    )
+    is_admin_fallback = current_user.role == "org_admin" and member.agent_owner_user_id != current_user.id
     if is_admin_fallback and not reason.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

@@ -234,6 +234,61 @@ async def test_check_agent_access_fail_closes_for_tenantless_agent_even_for_plat
 
 
 @pytest.mark.asyncio
+async def test_platform_admin_requires_explicit_user_scoped_agent_permission(monkeypatch):
+    import app.core.permissions as permissions_module
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=tenant_id, department_id=uuid4())
+    agent = SimpleNamespace(id=agent_id, creator_id=uuid4(), tenant_id=tenant_id)
+    permission = SimpleNamespace(scope_type="user", scope_id=user.id, access_level="manage")
+    db = _PermissionsDB(agent=agent, permissions=[permission])
+
+    async def deny_resource_permission(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(permissions_module, "check_permission", deny_resource_permission)
+
+    resolved_agent, access_level = await permissions_module.check_agent_access(db, user, agent_id)
+
+    assert resolved_agent is agent
+    assert access_level == "manage"
+    assert any("FROM agent_permissions" in statement for statement in db.statements)
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_does_not_inherit_company_or_department_agent_scope(monkeypatch):
+    import app.core.permissions as permissions_module
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=tenant_id, department_id=uuid4())
+    agent = SimpleNamespace(id=agent_id, creator_id=uuid4(), tenant_id=tenant_id)
+    permissions = [
+        SimpleNamespace(scope_type="company", scope_id=None, access_level="manage"),
+        SimpleNamespace(scope_type="department", scope_id=user.department_id, access_level="manage"),
+    ]
+    db = _PermissionsDB(agent=agent, permissions=permissions)
+
+    async def deny_resource_permission(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(permissions_module, "check_permission", deny_resource_permission)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await permissions_module.check_agent_access(db, user, agent_id)
+
+    assert exc_info.value.status_code == 403
+
+
+def test_platform_admin_role_does_not_upgrade_agent_use_to_session_manage():
+    import app.core.permissions as permissions_module
+
+    assert permissions_module.can_manage_agent_sessions("use") is False
+    assert permissions_module.can_manage_agent_sessions("manage") is True
+
+
+@pytest.mark.asyncio
 async def test_check_agent_access_hides_soft_deleted_agent_before_role_grants():
     import app.core.permissions as permissions_module
 

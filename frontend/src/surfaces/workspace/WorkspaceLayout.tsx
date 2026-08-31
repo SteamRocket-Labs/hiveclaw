@@ -1,7 +1,8 @@
 import { IconBook, IconBrain, IconChecklist, IconFileText, IconLayoutDashboard, IconRobot, IconShieldCheck, IconSitemap, IconUserStar, IconUsers } from '@tabler/icons-react';
 
 import SurfaceLayout from '../shared/SurfaceLayout';
-import { WORKSPACE_SECTIONS } from './sections';
+import { useAuthStore } from '../../stores';
+import { workspaceSectionsForRole } from './sections';
 
 const ICONS = {
   dashboard: <IconLayoutDashboard size={16} stroke={1.5} />,
@@ -23,11 +24,12 @@ const ICONS = {
 } as const;
 
 export default function WorkspaceLayout() {
+  const role = useAuthStore((state) => state.user?.role);
   return (
     <SurfaceLayout
       headingKey="nav.enterprise"
-      headingFallback="Company Admin"
-      navItems={WORKSPACE_SECTIONS.map((section) => ({
+      headingFallback={role === 'platform_admin' ? 'Platform Admin' : 'Company Admin'}
+      navItems={workspaceSectionsForRole(role).map((section) => ({
         to: section.path,
         labelKey: section.labelKey,
         fallbackLabel: section.fallbackLabel,

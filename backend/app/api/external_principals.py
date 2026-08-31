@@ -27,6 +27,11 @@ from app.services.external_principal_service import (
 router = APIRouter(tags=["external-principals"])
 
 
+def _require_org_admin(current_user: User) -> None:
+    if current_user.role != "org_admin":
+        raise HTTPException(status_code=403, detail="Organization administrator access required")
+
+
 class ExternalPrincipalOut(BaseModel):
     id: uuid.UUID
     provider: str
@@ -70,7 +75,7 @@ async def list_external_principals(
     db: AsyncSession = Depends(get_db),
 ):
     """List external identities without projecting them as licensed members."""
-
+    _require_org_admin(current_user)
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     query = select(ExternalPrincipal).where(ExternalPrincipal.tenant_id == target_tenant_id)
     if provider:
@@ -93,6 +98,7 @@ async def unlink_external_principal_route(
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    _require_org_admin(current_user)
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     try:
         resolution = await unlink_external_principal(

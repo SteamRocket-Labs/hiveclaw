@@ -97,7 +97,7 @@ async def _get_admin_deletable_sub_agent(db: AsyncSession, user: User, agent_id:
     if agent.parent_agent_id is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Desktop can only delete sub-agents")
     agent_tenant_id = getattr(agent, "tenant_id", None)
-    if user.role != "platform_admin" and agent_tenant_id is not None and agent_tenant_id != user.tenant_id:
+    if agent_tenant_id is not None and agent_tenant_id != user.tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
     return agent
 
@@ -196,7 +196,7 @@ async def delete_sub_agent(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a Sub-Agent asset (admin only)."""
-    if current_user.role not in ("org_admin", "platform_admin"):
+    if current_user.role != "org_admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Sub-agent is an enterprise asset; only an admin can delete it.",

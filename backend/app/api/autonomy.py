@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import check_agent_access
+from app.core.permissions import can_manage_agent_sessions, check_agent_access
 from app.core.execution_context import ExecutionPrincipal
 from app.core.security import get_current_user
 from app.database import get_db
@@ -129,14 +129,6 @@ async def _authorize_runtime_task_read(
     return task, decision
 
 
-def _can_manage_sessions(user: User, agent: object, access_level: str) -> bool:
-    return (
-        getattr(user, "role", None) in ("platform_admin", "org_admin")
-        or str(getattr(agent, "creator_id", "")) == str(getattr(user, "id", ""))
-        or access_level == "manage"
-    )
-
-
 async def _get_accessible_session_for_work_ledger(
     *,
     db: AsyncSession,
@@ -163,7 +155,7 @@ async def _get_accessible_session_for_work_ledger(
     if str(session.user_id) == str(current_user.id):
         return session, "session_owner"
     reason = str(operator_reason or "").strip()
-    if _can_manage_sessions(current_user, agent, access_level) and operator_override and reason:
+    if can_manage_agent_sessions(access_level) and operator_override and reason:
         from app.services.audit_logger import write_audit_log
 
         await write_audit_log(

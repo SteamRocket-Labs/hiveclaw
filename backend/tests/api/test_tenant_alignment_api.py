@@ -165,32 +165,23 @@ async def test_platform_admin_cannot_update_enterprise_business_body_by_default(
 
 
 @pytest.mark.asyncio
-async def test_feishu_org_sync_setting_scopes_to_selected_tenant():
+async def test_platform_admin_cannot_read_selected_tenant_feishu_org_sync_setting():
     import app.api.enterprise as enterprise_api
 
     own_tenant_id = uuid4()
     target_tenant_id = uuid4()
-    db = _FakeDB(
-        [
-            _ScalarResult(
-                SimpleNamespace(
-                    tenant_id=target_tenant_id,
-                    key="feishu_org_sync",
-                    value={"app_id": "tenant-b-app"},
-                    updated_at=datetime.now(timezone.utc),
-                )
-            )
-        ]
-    )
+    db = _FakeDB([])
 
-    result = await enterprise_api.get_system_setting(
-        key="feishu_org_sync",
-        tenant_id=str(target_tenant_id),
-        current_user=SimpleNamespace(role="platform_admin", tenant_id=own_tenant_id),
-        db=db,
-    )
+    with pytest.raises(HTTPException) as exc_info:
+        await enterprise_api.get_system_setting(
+            key="feishu_org_sync",
+            tenant_id=str(target_tenant_id),
+            current_user=SimpleNamespace(role="platform_admin", tenant_id=own_tenant_id),
+            db=db,
+        )
 
-    assert result["value"]["app_id"] == "tenant-b-app"
+    assert exc_info.value.status_code == 403
+    assert db._results == []
 
 
 @pytest.mark.asyncio
@@ -301,71 +292,42 @@ def test_platform_admin_business_body_routes_fail_closed_before_db():
 
 
 @pytest.mark.asyncio
-async def test_behavior_eval_runtime_setting_scopes_to_selected_tenant():
+async def test_unknown_system_setting_key_is_denied_before_selected_tenant_lookup():
     import app.api.enterprise as enterprise_api
 
     own_tenant_id = uuid4()
     target_tenant_id = uuid4()
-    agent_id = uuid4()
-    user_id = uuid4()
-    db = _FakeDB(
-        [
-            _ScalarResult(
-                SimpleNamespace(
-                    tenant_id=target_tenant_id,
-                    key="behavior_eval_runtime",
-                    value={"agent_id": str(agent_id), "user_id": str(user_id)},
-                    updated_at=datetime.now(timezone.utc),
-                )
-            )
-        ]
-    )
+    db = _FakeDB([])
 
-    result = await enterprise_api.get_system_setting(
-        key="behavior_eval_runtime",
-        tenant_id=str(target_tenant_id),
-        current_user=SimpleNamespace(role="platform_admin", tenant_id=own_tenant_id),
-        db=db,
-    )
+    with pytest.raises(HTTPException) as exc_info:
+        await enterprise_api.get_system_setting(
+            key="behavior_eval_runtime",
+            tenant_id=str(target_tenant_id),
+            current_user=SimpleNamespace(role="platform_admin", tenant_id=own_tenant_id),
+            db=db,
+        )
 
-    assert result["value"] == {"agent_id": str(agent_id), "user_id": str(user_id)}
+    assert exc_info.value.status_code == 403
+    assert db._results == []
 
 
 @pytest.mark.asyncio
-async def test_org_sync_route_uses_selected_tenant(monkeypatch):
+async def test_platform_admin_cannot_trigger_selected_tenant_org_sync():
     import app.api.enterprise as enterprise_api
 
     own_tenant_id = uuid4()
     target_tenant_id = uuid4()
-    captured: dict[str, object] = {}
+    db = _FakeDB([])
 
-    async def fake_full_sync(tenant_id):
-        captured["tenant_id"] = tenant_id
-        return {"departments": 3}
+    with pytest.raises(HTTPException) as exc_info:
+        await enterprise_api.trigger_org_sync(
+            tenant_id=str(target_tenant_id),
+            current_user=SimpleNamespace(role="platform_admin", tenant_id=own_tenant_id),
+            db=db,
+        )
 
-    async def fake_sync_org_structure(db, tenant_id):
-        captured["workspace_sync_tenant_id"] = tenant_id
-
-    class _FakeSessionContext:
-        async def __aenter__(self):
-            return "db"
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr("app.services.org_sync_service.org_sync_service.full_sync", fake_full_sync)
-    monkeypatch.setattr("app.services.workspace_sync.sync_org_structure", fake_sync_org_structure)
-    monkeypatch.setattr("app.database.tenant_scoped_session", lambda *a, **k: _FakeSessionContext())
-
-    result = await enterprise_api.trigger_org_sync(
-        tenant_id=str(target_tenant_id),
-        current_user=SimpleNamespace(role="platform_admin", tenant_id=own_tenant_id),
-        db=_FakeDB([]),
-    )
-
-    assert result["departments"] == 3
-    assert captured["tenant_id"] == target_tenant_id
-    assert captured["workspace_sync_tenant_id"] == target_tenant_id
+    assert exc_info.value.status_code == 403
+    assert db._results == []
 
 
 @pytest.mark.asyncio

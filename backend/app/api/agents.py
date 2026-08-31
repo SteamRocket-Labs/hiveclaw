@@ -227,8 +227,8 @@ async def list_agents(
     db: AsyncSession = Depends(get_db),
 ):
     """List all agents the current user has access to."""
-    # platform_admin & org_admin see all agents (optionally filtered by tenant)
-    if current_user.role in ("platform_admin", "org_admin"):
+    # Organization administrators manage the complete employee inventory.
+    if current_user.role == "org_admin":
         target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
         stmt = _agent_list_summary_stmt().where(
             Agent.tenant_id == target_tenant_id,
@@ -244,7 +244,11 @@ async def list_agents(
     # All users see their currently owned agents + permitted agents. Creator is
     # only the fallback for legacy rows that have not yet been backfilled.
     # All scoped to user's tenant
-    user_tenant = current_user.tenant_id
+    user_tenant = (
+        await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+        if current_user.role == "platform_admin"
+        else current_user.tenant_id
+    )
 
     owned_ids = select(Agent.id).where(
         (Agent.owner_user_id == current_user.id)
@@ -255,11 +259,14 @@ async def list_agents(
     )
 
     # Get agents user has permission to (within their tenant)
-    permitted_ids = select(AgentPermission.agent_id).where(
-        (AgentPermission.scope_type == "company")
-        | ((AgentPermission.scope_type == "user") & (AgentPermission.scope_id == current_user.id))
-        | ((AgentPermission.scope_type == "department") & (AgentPermission.scope_id == current_user.department_id))
-    )
+    permission_scope = (AgentPermission.scope_type == "user") & (AgentPermission.scope_id == current_user.id)
+    if current_user.role != "platform_admin":
+        permission_scope = (
+            (AgentPermission.scope_type == "company")
+            | permission_scope
+            | ((AgentPermission.scope_type == "department") & (AgentPermission.scope_id == current_user.department_id))
+        )
+    permitted_ids = select(AgentPermission.agent_id).where(permission_scope)
     # Union
     combined = union_all(owned_ids, permitted_ids).subquery()
     result = await db.execute(
@@ -415,6 +422,11 @@ async def get_or_create_hr_agent(
     db: AsyncSession = Depends(get_db),
 ):
     """Get the HR onboarding agent for the current tenant. Creates one if it doesn't exist."""
+    if getattr(current_user, "role", None) == "platform_admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="HR Agent requires organization membership",
+        )
     tenant_id = current_user.tenant_id
     if not tenant_id:
         raise HTTPException(status_code=400, detail="User has no tenant")
@@ -585,16 +597,13 @@ async def create_agent(
     db: AsyncSession = Depends(get_db),
 ):
     """Administrative creation endpoint; standard users create through System HR."""
-    if current_user.role not in ("platform_admin", "org_admin"):
+    if current_user.role != "org_admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="请通过 HR Agent 创建数字员工；直接创建接口仅供组织管理员使用。",
         )
 
-    # Determine target tenant: normally user's tenant; admins can override via payload
-    target_tenant_id = current_user.tenant_id
-    if current_user.role in ("platform_admin", "org_admin"):
-        target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, data.tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, data.tenant_id)
 
     # Get default limits from target tenant
     default_max_triggers = 20
@@ -1227,12 +1236,12 @@ async def delete_agent(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a digital employee (admin only)."""
-    agent, _access = await check_agent_access(db, current_user, agent_id)
-    if current_user.role not in ("org_admin", "platform_admin"):
+    if current_user.role != "org_admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Agent is an enterprise asset; only an admin can delete it.",
         )
+    agent, _access = await check_agent_access(db, current_user, agent_id)
 
     # Stop container and archive files (best effort)
     from app.services.agent_manager import agent_manager

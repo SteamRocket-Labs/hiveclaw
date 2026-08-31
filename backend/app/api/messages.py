@@ -24,13 +24,6 @@ router = APIRouter(tags=["messages"])
 
 
 async def _list_accessible_agent_ids(db: AsyncSession, current_user: User) -> list[uuid.UUID]:
-    if current_user.role == "platform_admin":
-        stmt = select(Agent.id)
-        if current_user.tenant_id:
-            stmt = stmt.where(Agent.tenant_id == current_user.tenant_id)
-        result = await db.execute(stmt)
-        return [row[0] for row in result.fetchall()]
-
     if current_user.role == "org_admin" and current_user.tenant_id:
         result = await db.execute(select(Agent.id).where(Agent.tenant_id == current_user.tenant_id))
         return [row[0] for row in result.fetchall()]
@@ -39,10 +32,11 @@ async def _list_accessible_agent_ids(db: AsyncSession, current_user: User) -> li
     created_ids = [row[0] for row in created_result.fetchall()]
 
     permission_filters = [
-        AgentPermission.scope_type == "company",
         (AgentPermission.scope_type == "user") & (AgentPermission.scope_id == current_user.id),
     ]
-    if current_user.department_id:
+    if current_user.role != "platform_admin":
+        permission_filters.append(AgentPermission.scope_type == "company")
+    if current_user.role != "platform_admin" and current_user.department_id:
         permission_filters.append(
             (AgentPermission.scope_type == "department") & (AgentPermission.scope_id == current_user.department_id)
         )

@@ -125,7 +125,7 @@ def _validate_common_request(
 def _source_acl(*, user_id: uuid.UUID) -> dict[str, Any]:
     return {
         "user_ids": [str(user_id)],
-        "role_names": ["org_admin", "platform_admin"],
+        "role_names": ["org_admin"],
         "scope_change_attested": True,
     }
 
@@ -524,10 +524,7 @@ class CompanyKnowledgePromotionService:
             idempotency_key=request.idempotency_key,
             trace_id=request.trace_id,
         )
-        if principal.actor_type != "user" or principal.accountable_role not in {
-            "org_admin",
-            "platform_admin",
-        }:
+        if principal.actor_type != "user" or principal.accountable_role != "org_admin":
             raise PermissionError("legacy_company_promotion_requires_tenant_admin")
         sensitivity = canonicalize_sensitivity(request.proposed_sensitivity).value
         try:

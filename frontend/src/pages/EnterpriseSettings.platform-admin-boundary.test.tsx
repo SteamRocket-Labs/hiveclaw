@@ -91,6 +91,7 @@ describe('EnterpriseSettings platform-admin company-content boundary', () => {
     await waitFor(() => expect(mocks.getTenant).toHaveBeenCalled());
     expect(mocks.getSetting).not.toHaveBeenCalled();
     expect(mocks.getLegacyCompanyFilesStatus).not.toHaveBeenCalled();
+    expect(mocks.getStats).not.toHaveBeenCalled();
     expect(screen.getByText('Tenant configuration only')).toBeTruthy();
     expect(screen.queryByText('PRIVATE-COMPANY-BODY')).toBeNull();
     expect(screen.queryByText('Broadcast Notification')).toBeNull();

@@ -4,6 +4,7 @@ import {
   WORKSPACE_DEFAULT_PATH,
   WORKSPACE_LEGACY_REDIRECTS,
   WORKSPACE_SECTIONS,
+  workspaceSectionsForRole,
 } from './sections';
 
 describe('workspace section routing', () => {
@@ -40,5 +41,23 @@ describe('workspace section routing', () => {
       { from: '/enterprise/skills', to: '/enterprise/extensions' },
       { from: '/enterprise/subagents', to: '/enterprise/extensions' },
     ]);
+  });
+
+  it('gives platform administrators only platform health and configuration sections', () => {
+    expect(workspaceSectionsForRole('platform_admin').map((section) => section.tab)).toEqual([
+      'dashboard',
+      'info',
+      'llm',
+      'memory',
+      'extensions',
+      'runtime_budgets',
+      'quotas',
+      'audit',
+    ]);
+  });
+
+  it('keeps every company workspace section for organization administrators', () => {
+    expect(workspaceSectionsForRole('org_admin')).toEqual(WORKSPACE_SECTIONS);
+    expect(workspaceSectionsForRole('member')).toEqual([]);
   });
 });

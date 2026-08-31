@@ -163,7 +163,7 @@ async def test_personal_promotion_copies_exact_authorized_artifact_into_recovera
     assert queued.proposed_sensitivity == "PL2_pii"
     assert queued.source_acl_snapshot == {
         "user_ids": [str(owner_user_id)],
-        "role_names": ["org_admin", "platform_admin"],
+        "role_names": ["org_admin"],
         "scope_change_attested": True,
     }
     handoff = queued.promotion_handoff

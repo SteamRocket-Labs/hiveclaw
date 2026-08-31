@@ -70,13 +70,15 @@ async def _resolve_plaza_tenant(
     tenant_id: str | uuid.UUID | None = None,
 ) -> uuid.UUID:
     """Resolve the effective tenant scope for plaza queries."""
+    if current_user.role == "platform_admin":
+        raise HTTPException(403, "Agent Circle requires organization membership")
     return await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
 
 
 def _ensure_post_visible(post: PlazaPost, current_user: User) -> None:
     """Hide posts outside the caller's tenant."""
     if current_user.role == "platform_admin":
-        return
+        raise HTTPException(403, "Agent Circle requires organization membership")
     if not current_user.tenant_id or post.tenant_id != current_user.tenant_id:
         raise HTTPException(404, "Post not found")
 

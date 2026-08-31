@@ -41,6 +41,15 @@ _FAKE_ADMIN_USER = SimpleNamespace(
     tenant_id=_TENANT_ID,
     is_active=True,
 )
+_FAKE_PLATFORM_ADMIN_USER = SimpleNamespace(
+    id=_USER_ID,
+    username="platform",
+    email="platform@test.com",
+    display_name="平台管理员",
+    role="platform_admin",
+    tenant_id=_TENANT_ID,
+    is_active=True,
+)
 
 _FAKE_MAIN_AGENT = SimpleNamespace(
     id=_MAIN_AGENT_ID,
@@ -303,6 +312,29 @@ def test_admin_can_delete_same_tenant_sub_agent_owned_by_another_user():
     assert resp.status_code == 204
     assert fake_db.deleted == []
     soft_delete.assert_awaited_once_with(fake_db, sub, actor_id=_USER_ID, reason="desktop_delete_sub_agent")
+
+
+def test_platform_admin_cannot_delete_company_sub_agent_by_role_alone():
+    sub = SimpleNamespace(
+        id=_SUB_AGENT_ID,
+        name="公司 Sub-Agent",
+        agent_kind="sub",
+        owner_user_id=_OTHER_USER_ID,
+        parent_agent_id=_MAIN_AGENT_ID,
+        tenant_id=_TENANT_ID,
+        deleted_at=None,
+        deactivated_at=None,
+    )
+    client, fake_db = _build_client(
+        agents_by_id={_SUB_AGENT_ID: sub},
+        user=_FAKE_PLATFORM_ADMIN_USER,
+    )
+    with patch.object(agents_mod, "soft_delete_agent", new_callable=AsyncMock) as soft_delete:
+        resp = client.delete(f"/desktop/agents/{_SUB_AGENT_ID}")
+
+    assert resp.status_code == 403
+    assert fake_db.deleted == []
+    soft_delete.assert_not_awaited()
 
 
 def test_org_admin_cannot_delete_cross_tenant_sub_agent_even_when_owner_matches():

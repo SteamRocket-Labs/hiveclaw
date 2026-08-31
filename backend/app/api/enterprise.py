@@ -47,6 +47,7 @@ settings = get_settings()
 
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
 TENANT_SYSTEM_SETTING_KEYS = {"agent_permission_default", "feishu_org_sync"}
+PLATFORM_SYSTEM_SETTING_KEYS = {"notification_bar", "platform"}
 
 
 def _deny_platform_admin_default_business_body(current_user: User) -> None:
@@ -57,8 +58,36 @@ def _deny_platform_admin_default_business_body(current_user: User) -> None:
         )
 
 
+def _require_org_admin(current_user: User) -> None:
+    if current_user.role != "org_admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Organization administrator access required",
+        )
+
+
 def _is_company_intro_setting(key: str) -> bool:
     return key == "company_intro" or key.startswith("company_intro_")
+
+
+def _authorize_system_setting(current_user: User, key: str) -> None:
+    allowed = (
+        key in PLATFORM_SYSTEM_SETTING_KEYS
+        if current_user.role == "platform_admin"
+        else key in TENANT_SYSTEM_SETTING_KEYS or _is_company_intro_setting(key)
+    )
+    if current_user.role not in {"platform_admin", "org_admin"} or not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="System setting is not available to this administrator role",
+        )
+
+
+def _project_system_setting_value(key: str, value: dict | None) -> dict:
+    projected = dict(value or {})
+    if key == "feishu_org_sync":
+        projected["app_secret_configured"] = bool(projected.pop("app_secret", None))
+    return projected
 
 
 # ─── LLM Model Pool ────────────────────────────────────
@@ -615,6 +644,7 @@ async def list_approvals(
     db: AsyncSession = Depends(get_db),
 ):
     """List approval requests scoped to a tenant."""
+    _deny_platform_admin_default_business_body(current_user)
     query = select(ApprovalRequest)
     # Scope by tenant: only show approvals for agents belonging to this tenant
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
@@ -656,6 +686,7 @@ async def resolve_approval(
     db: AsyncSession = Depends(get_db),
 ):
     """Approve or reject a pending approval request."""
+    _deny_platform_admin_default_business_body(current_user)
     try:
         approval = await approval_service.resolve_approval(db, approval_id, current_user, data.action)
         return ApprovalRequestOut.model_validate(approval)
@@ -843,6 +874,7 @@ async def get_enterprise_stats(
     db: AsyncSession = Depends(get_db),
 ):
     """Get enterprise dashboard statistics, optionally scoped to a tenant."""
+    _deny_platform_admin_default_business_body(current_user)
     # Determine which tenant to filter by
     tid = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
 
@@ -1103,8 +1135,7 @@ async def get_system_setting(
     db: AsyncSession = Depends(get_db),
 ):
     """Get a system setting by key (admin only)."""
-    if _is_company_intro_setting(key):
-        _deny_platform_admin_default_business_body(current_user)
+    _authorize_system_setting(current_user, key)
     if key in TENANT_SYSTEM_SETTING_KEYS:
         from app.models.tenant_setting import TenantSetting
 
@@ -1117,10 +1148,10 @@ async def get_system_setting(
         )
         setting = result.scalar_one_or_none()
         if not setting:
-            return {"key": key, "value": {}}
+            return {"key": key, "value": _project_system_setting_value(key, {})}
         return {
             "key": setting.key,
-            "value": setting.value,
+            "value": _project_system_setting_value(key, setting.value),
             "updated_at": setting.updated_at.isoformat() if setting.updated_at else None,
         }
 
@@ -1130,7 +1161,7 @@ async def get_system_setting(
         return {"key": key, "value": {}}
     return {
         "key": setting.key,
-        "value": setting.value,
+        "value": _project_system_setting_value(key, setting.value),
         "updated_at": setting.updated_at.isoformat() if setting.updated_at else None,
     }
 
@@ -1144,8 +1175,7 @@ async def update_system_setting(
     db: AsyncSession = Depends(get_db),
 ):
     """Create or update a system setting."""
-    if _is_company_intro_setting(key):
-        _deny_platform_admin_default_business_body(current_user)
+    _authorize_system_setting(current_user, key)
     if key in TENANT_SYSTEM_SETTING_KEYS:
         from app.models.tenant_setting import TenantSetting
 
@@ -1174,7 +1204,7 @@ async def update_system_setting(
             setting = TenantSetting(tenant_id=target_tenant_id, key=key, value=data.value)
             db.add(setting)
         await db.commit()
-        return {"key": setting.key, "value": setting.value}
+        return {"key": setting.key, "value": _project_system_setting_value(key, setting.value)}
 
     result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
     setting = result.scalar_one_or_none()
@@ -1184,7 +1214,7 @@ async def update_system_setting(
         setting = SystemSetting(key=key, value=data.value)
         db.add(setting)
     await db.commit()
-    return {"key": setting.key, "value": setting.value}
+    return {"key": setting.key, "value": _project_system_setting_value(key, setting.value)}
 
 
 # ─── Org Structure ──────────────────────────────────────
@@ -1197,6 +1227,7 @@ async def list_org_departments(
     db: AsyncSession = Depends(get_db),
 ):
     """List all departments, optionally filtered by tenant."""
+    _deny_platform_admin_default_business_body(current_user)
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     query = select(OrgDepartment).where(OrgDepartment.tenant_id == target_tenant_id)
     result = await db.execute(query.order_by(OrgDepartment.name))
@@ -1223,6 +1254,7 @@ async def list_org_members(
     db: AsyncSession = Depends(get_db),
 ):
     """List org members, optionally filtered by department, search, or tenant."""
+    _deny_platform_admin_default_business_body(current_user)
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     query = select(OrgMember).where(
         OrgMember.status == "active",
@@ -1255,6 +1287,7 @@ async def trigger_org_sync(
     db: AsyncSession = Depends(get_db),
 ):
     """Manually trigger org structure sync from Feishu."""
+    _require_org_admin(current_user)
     from app.services.org_sync_service import org_sync_service
 
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
@@ -1281,10 +1314,9 @@ class InvitationCodeCreate(BaseModel):
 
 
 def _require_tenant_admin(current_user: User) -> None:
-    """Check that the user is org_admin or platform_admin with a tenant."""
-    if current_user.role not in ("platform_admin", "org_admin"):
-        raise HTTPException(status_code=403, detail="Requires admin privileges")
-    if current_user.role != "platform_admin" and not current_user.tenant_id:
+    """Check that the user is an organization administrator with a tenant."""
+    _require_org_admin(current_user)
+    if not current_user.tenant_id:
         raise HTTPException(status_code=400, detail="No company assigned")
 
 

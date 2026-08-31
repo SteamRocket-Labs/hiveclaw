@@ -6,6 +6,45 @@ from uuid import uuid4
 import pytest
 
 
+class _Rows:
+    def scalars(self):
+        return SimpleNamespace(all=lambda: [])
+
+
+class _CaptureDB:
+    def __init__(self):
+        self.statement = None
+
+    async def execute(self, statement):
+        self.statement = statement
+        return _Rows()
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_dashboard_agent_scope_requires_exact_user_grant(monkeypatch):
+    import app.api.dashboard as dashboard_api
+
+    tenant_id = uuid4()
+    user = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        department_id=uuid4(),
+        role="platform_admin",
+    )
+    db = _CaptureDB()
+
+    async def fixed_tenant(*_args, **_kwargs):
+        return tenant_id
+
+    monkeypatch.setattr(dashboard_api, "resolve_and_pin_tenant_scope", fixed_tenant)
+
+    assert await dashboard_api._load_accessible_agent_ids(db, user, tenant_id) == []
+    sql = str(db.statement.compile(compile_kwargs={"literal_binds": True}))
+    assert "agent_permissions.scope_type = 'user'" in sql
+    assert "agent_permissions.scope_type = 'company'" not in sql
+    assert "agent_permissions.scope_type = 'department'" not in sql
+
+
 @pytest.mark.asyncio
 async def test_dashboard_overview_uses_fixed_bulk_loaders_for_any_agent_count(monkeypatch):
     import app.api.dashboard as dashboard_api

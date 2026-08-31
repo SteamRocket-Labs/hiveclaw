@@ -90,7 +90,7 @@ async def _has_explicit_resource_grant(
     action: str,
 ) -> bool:
     principals: list[tuple[str, uuid.UUID]] = [("user", user.id)]
-    if getattr(user, "department_id", None):
+    if getattr(user, "role", None) != "platform_admin" and getattr(user, "department_id", None):
         principals.append(("department", user.department_id))
     context = {"tenant_id": str(user.tenant_id) if getattr(user, "tenant_id", None) else None}
     for principal_type, principal_id in principals:
@@ -123,7 +123,7 @@ async def load_explicit_resource_grant_ids(
 
     principal_clauses = [and_(ResourcePermission.principal_type == "user", ResourcePermission.principal_id == user.id)]
     department_id = getattr(user, "department_id", None)
-    if department_id:
+    if getattr(user, "role", None) != "platform_admin" and department_id:
         principal_clauses.append(
             and_(
                 ResourcePermission.principal_type == "department",

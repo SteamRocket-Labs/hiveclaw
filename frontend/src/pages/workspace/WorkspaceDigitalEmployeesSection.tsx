@@ -20,7 +20,7 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
     const { t } = useTranslation();
     const queryClient = useQueryClient();
     const currentUser = useAuthStore((state) => state.user);
-    const canManageEmployees = currentUser?.role === 'org_admin' || currentUser?.role === 'platform_admin';
+    const canManageEmployees = currentUser?.role === 'org_admin';
     const [ownershipAgent, setOwnershipAgent] = useState<Agent | null>(null);
     const [ownerCandidates, setOwnerCandidates] = useState<AgentOwnerCandidate[]>([]);
     const [newOwnerId, setNewOwnerId] = useState('');

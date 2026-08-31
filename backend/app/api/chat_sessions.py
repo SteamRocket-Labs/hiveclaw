@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import check_agent_access, effective_agent_owner_id
+from app.core.permissions import can_manage_agent_sessions, check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.audit import ChatMessage
@@ -67,14 +67,6 @@ async def _resolve_tenant_permission_default(db: AsyncSession, tenant_id: uuid.U
         )
     )
     return _tenant_permission_default_from_value(result.scalar_one_or_none())
-
-
-def _is_admin_or_owner(user: User, agent: Agent) -> bool:
-    return user.role in ("platform_admin", "org_admin") or str(effective_agent_owner_id(agent)) == str(user.id)
-
-
-def _can_manage_sessions(user: User, agent: Agent, access_level: str) -> bool:
-    return _is_admin_or_owner(user, agent) or access_level == "manage"
 
 
 def _artifact_agent_ids(artifacts: list[dict]) -> set[uuid.UUID]:
@@ -964,7 +956,7 @@ async def list_sessions(
     agent, access_level = await check_agent_access(db, current_user, agent_id)
 
     if scope == "all":
-        if not _can_manage_sessions(current_user, agent, access_level):
+        if not can_manage_agent_sessions(access_level):
             raise HTTPException(status_code=403, detail="Not authorized to view all sessions")
         reason = operator_reason if isinstance(operator_reason, str) else None
         reason = str(reason or "").strip()

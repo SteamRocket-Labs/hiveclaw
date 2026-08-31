@@ -95,6 +95,14 @@ def test_member_capabilities_keep_target_owner_and_admin_reason_authoritative():
         "moderation_reason_required": False,
     }
 
+    platform_admin = SimpleNamespace(id=uuid4(), role="platform_admin")
+    assert member_action_capabilities(platform_admin, member) == {
+        "can_approve": False,
+        "can_reject": False,
+        "can_revoke": False,
+        "moderation_reason_required": False,
+    }
+
     group_owner_member = SimpleNamespace(
         agent_owner_user_id=owner_id,
         status="active",

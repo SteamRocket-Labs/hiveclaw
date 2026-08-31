@@ -693,3 +693,23 @@ async def test_plaza_get_post_hides_other_tenant_records():
         await plaza_api.get_post(post_id=foreign_post.id, current_user=current_user, db=db)
 
     assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_cannot_open_company_plaza_body_before_db_access():
+    import app.api.plaza as plaza_api
+
+    current_user = SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4(), role="platform_admin")
+
+    class _BombDB:
+        async def execute(self, _statement):
+            raise AssertionError("platform admin must fail before plaza DB access")
+
+    with pytest.raises(HTTPException) as exc:
+        await plaza_api.list_posts(
+            tenant_id=str(current_user.tenant_id),
+            current_user=current_user,
+            db=_BombDB(),
+        )
+
+    assert exc.value.status_code == 403

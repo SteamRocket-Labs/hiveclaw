@@ -1,5 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const auth = vi.hoisted(() => ({ role: 'org_admin' }));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -20,7 +22,7 @@ vi.mock('react-router-dom', () => ({
 
 vi.mock('../../stores', () => ({
   useAuthStore: (selector?: any) => {
-    const state = { user: { id: 'admin-1', role: 'org_admin', tenant_id: 'tenant-1' } };
+    const state = { user: { id: 'admin-1', role: auth.role, tenant_id: 'tenant-1' } };
     return typeof selector === 'function' ? selector(state) : state;
   },
 }));
@@ -113,6 +115,10 @@ vi.mock('../../components/AppDialogs', () => ({
 import WorkspaceDigitalEmployeesSection from './WorkspaceDigitalEmployeesSection';
 
 describe('WorkspaceDigitalEmployeesSection', () => {
+  beforeEach(() => {
+    auth.role = 'org_admin';
+  });
+
   it('renders the standalone admin-only digital employee list with guarded delete actions', () => {
     const markup = renderToStaticMarkup(<WorkspaceDigitalEmployeesSection selectedTenantId="tenant-1" />);
 
@@ -124,5 +130,15 @@ describe('WorkspaceDigitalEmployeesSection', () => {
     expect(markup).toContain('Delete employee');
     expect(markup).toContain('System protected');
     expect(markup).not.toContain('Delete __system_hr__');
+  });
+
+  it('does not mount company employee data for a platform administrator', () => {
+    auth.role = 'platform_admin';
+
+    const markup = renderToStaticMarkup(<WorkspaceDigitalEmployeesSection selectedTenantId="tenant-1" />);
+
+    expect(markup).toContain('Only company administrators can manage digital employees here.');
+    expect(markup).not.toContain('AI Product Manager');
+    expect(markup).not.toContain('Delete employee');
   });
 });

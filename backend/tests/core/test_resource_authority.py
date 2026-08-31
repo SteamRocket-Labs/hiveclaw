@@ -200,6 +200,39 @@ async def test_explicit_resource_grants_are_loaded_once_with_canonical_condition
 
 
 @pytest.mark.asyncio
+async def test_platform_admin_resource_grants_use_only_the_exact_user_principal():
+    from app.core.resource_authority import load_explicit_resource_grant_ids
+
+    tenant_id = uuid4()
+    user = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        department_id=uuid4(),
+        role="platform_admin",
+    )
+
+    class _GrantDB:
+        def __init__(self):
+            self.statement = None
+
+        async def execute(self, statement):
+            self.statement = statement
+            return _ScalarResult([])
+
+    db = _GrantDB()
+    await load_explicit_resource_grant_ids(
+        db,
+        user=user,
+        resource_kind="agent_activity",
+        action="read",
+    )
+
+    sql = str(db.statement.compile(compile_kwargs={"literal_binds": True}))
+    assert "resource_permissions.principal_type = 'user'" in sql
+    assert "resource_permissions.principal_type = 'department'" not in sql
+
+
+@pytest.mark.asyncio
 async def test_filter_authorized_resources_hides_foreign_rows_and_operator_view_is_explicit(monkeypatch):
     import app.core.resource_authority as authority
 

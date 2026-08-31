@@ -71,7 +71,7 @@ verification_status: p29-production-verified-p08-runtime-precondition-confirmed
 
 ## 已知外部前置条件
 
-- 当前唯一可用的 signed-in Browser identity 经 server-side 核验为 `platform_admin`；现有三个 Browser tabs 共用该身份，没有已登录的 `member/employee` principal。P01/P02/P03/P04 等 frozen employee journeys 必须从真实 member 登录状态重跑；登录、创建账号、角色/grant 变更未授权，当前停在 login/principal gate。
+- 当前唯一可用的 signed-in Browser identity 经 server-side 核验为 `platform_admin`。2026-08-31 fresh 复核时 in-app browser 没有遗留 tab；重新打开 dashboard 仍为“超级管理员”。唯一已连接 Chrome profile 的既有 Hive tab 与独立新 dashboard 也解析为同一 `platform_admin`，没有已登录的 `member/employee`、`org_admin` 或 scoped `operator`。P01/P02/P03/P04 等 frozen employee journeys 必须从真实 member 登录状态重跑；登录、创建账号、角色/grant 变更未授权，当前停在 login/principal gate。
 - 三个 configured provider 的一次性 bounded live probe 已完成：MiniMax 与 GLM 成功；DeepSeek 单次返回 `HTTP 402 Insufficient Balance`。该 blocker 需要 owner 另行授权 billing/credential action 才可能改变；当前不充值、不换 credential、不盲重试。bounded health verdict 也不等于 P33 frozen compatibility task。
 - Hive Connect 已 fresh reproduce `HTTP 401 Invalid bridge token`；daemon running 不等于 product path 可用。修复需要 re-login/token replacement，当前停在 owner action gate。
 

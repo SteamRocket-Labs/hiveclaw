@@ -5,7 +5,7 @@ status: active
 authority: canonical-working-state
 last_reviewed: 2026-08-31
 source_commit: bf94b76a1706510daf2d11c4e98fd5051f23f28f
-verification_status: p29-platform-admin-workspace-and-system-setting-secret-production-verified
+verification_status: p29-production-verified-p08-runtime-precondition-confirmed
 ---
 
 # 当前状态与唯一下一动作
@@ -44,6 +44,7 @@ verification_status: p29-platform-admin-workspace-and-system-setting-secret-prod
 | executable CI manifest | `acceptance/atomic_user_journeys.v1.json`，J-01～J-15，声明受控 external fakes | 本轮源码已核验 |
 | production NPTCR manifest | `acceptance/weekend_production_journeys.v1.json`，35 组展开 96 条，external fake 禁止 | 已冻结；validator `valid=true`；当前有 P29-PADMIN pass 1，但无双遍 Closed journey |
 | mechanical gate | `backend/scripts/weekend_rc_gate.py` | 只校验 exact facts/算术，固定 `semantic_verdict=not_computed_by_tool` |
+| P08-J4 runtime preflight | frozen contract 要求 Hive、FreeCode、Hermes 同 task/workspace/model/resource envelope；current manual runner 仅支持官方 Claude Code/Hermes，FreeCode 无 built CLI，Hive live runner 已退役 | `BLOCKED_PRECONDITION`；没有运行模型、安装依赖、登录或造分，证据见 `evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/P08-J4-blocked-runtime-contract.md` |
 
 ## 当前产品总判断
 
@@ -55,7 +56,7 @@ verification_status: p29-platform-admin-workspace-and-system-setting-secret-prod
 | Rewind / Resume / Fork / Rollback | 旧账标 `Closed loop` | 只在 fresh journey 复现新错误时重开 |
 | Personal / Company KB | `Partial loop` | 多格式、多入口、权限负向、失败恢复、Agent/Personal→Company/后台路径统一生产矩阵 |
 | Agent Memory | `Partial loop` | coverage、T3 consumption、fresh Session recall |
-| Growth / Eval | `Partial loop` | J1/J2 longitudinal reuse、owner feedback/rework、真实 J4 FreeCode/Hermes bakeoff |
+| Growth / Eval | `Partial loop` | J1/J2 longitudinal reuse、owner feedback/rework；P08-J4 已确认缺少 Hive/FreeCode/same-envelope runtime，保持空 `BLOCKED_PRECONDITION`，不以官方 Claude 或单方 Hermes 造分 |
 | HR 创建 Agent | `Partial loop` | Agent→HR 与普通员工 fresh 双遍、被创建 Agent 首任务 |
 | Plan Mode | `Partial loop` | model-authored plan、revise/reject/cancel、exact-version approve、execute/recover |
 | Sub-agent / Team | `Partial loop` | 两类真实语义任务双遍、成员失败与父结果 UI 消费 |
@@ -164,6 +165,7 @@ verification_status: p29-platform-admin-workspace-and-system-setting-secret-prod
 - P29 D1/D2 修复：`24f012ba` 以 exact role route/API/Agent boundary 完成同根修复；首次 production hard reload 捕获 sidebar 仍显示“公司后台”，`bf94b76a` 复用既有“超级管理员”文案收口。最终 local gates：backend **8484 passed, 2 skipped, 1 warning**、真实 PG **13 passed**、platform-admin contract **423 passed**、frontend **156 files / 1161 tests**、build/budgets、Weekend **18 passed**、manifest、Ruff 与 diff check 全绿。
 - P29 D2 production：三服务 `07059ce5…` / `c70ff972…` / `308e7789…` 均 `SUCCESS`；dashboard nav 8/card 7、无业务 metrics/Plaza，九个 company direct URL 均回 dashboard，14 个 authenticated status-only API 全为 403；`/agents` 的 ownership/exact-user surface 保持 200、EventPilot 可见，system HR 403；info/audit 正向面保持 200。未读取 token/header/storage/response body。两个新 finding 均为 `Verified`，immutable evidence 位于 `evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/`。
 - P29 formal evidence：`2026-08-31T00:30:43Z–00:32:49Z` clean pass 1 为 `PASS`，manifest hash `d320edce…`；dashboard screenshot PNG 25,461 B / SHA-256 `a5686a85…`。pass 2 attempt `00:32:59Z–00:33:26Z` 再次通过 dashboard reload、User denied、stats/Feishu 403 与 Agent 正向，但 expired-session/role-change 缺少新 identity authority，因此只写 noncanonical blocker evidence，不伪造 `P29-PADMIN-pass-2.md`。mechanical scorer 精确报告该文件缺失、`closed=0`、NPTCR `0%`、semantic verdict 未计算。
+- P08-J4 read-only preflight：current runner 无 Hive/FreeCode target；installed `claude` 是官方 `2.1.251`，不能替代 FreeCode source `2.1.87`，后者当前无 built CLI/dependencies；Hermes 仅核对版本。没有模型调用、安装、登录或 credential/config 读取。eval/retirement focused regression **21 passed**，Journey 仍为 `BLOCKED_PRECONDITION`。
 
 ## 当前合成资产登记（待后续清理授权）
 
@@ -191,13 +193,14 @@ Cleanup wiring 只读核验：普通 `workspace/` 文件有受治理的 `delete_
 
 ## 唯一下一动作
 
-当前 signed-in `platform_admin` 的独立只读工作已穷尽。下一动作需要 owner 提供现成 signed-in `member/employee`、`org_admin` 与 scoped `operator` identity（或明确授权相应 login/account/role/grant 操作），再从 P29 四角色 matrix 与 employee journeys 继续。未获得该 authority 前，不登录、不创建账号、不改角色/grant；也不读取 credential、重试 DeepSeek 402 或重登 Hive Connect。
+当前 signed-in `platform_admin` 的独立只读工作与 P08-J4 runtime preflight 均已穷尽。下一动作需要 owner 提供现成 signed-in `member/employee`、`org_admin` 与 scoped `operator` identity（或明确授权相应 login/account/role/grant 操作），再从 P29 四角色 matrix 与 employee journeys 继续。未获得该 authority 前，不登录、不创建账号、不改角色/grant；也不安装 FreeCode 依赖、不读取 credential、不重试 DeepSeek 402 或重登 Hive Connect。
 
 ## Not Done / Do Not Redo
 
 - production manifest 已冻结；Gate 0 事实已落盘，P29-PADMIN 只有 pass 1、没有 canonical pass 2，故仍无可计分的双遍 Closed journey；NPTCR=0/96，Evidence Coverage 尚未成立。
 - Issue #4 前两次派发未形成业务 diff；Attempt 3 被拒绝、Attempt 4 已停止。Session history、retry input、tool-artifact settlement、unknown-effect recovery admission、Session authority presentation、runtime guard presentation、model probe audit、admin audit default disclosure、platform-admin business-body/workspace audience 与 system-setting secret boundary 的单 Codex application commits 均已 push/deploy；十个根因为 production `Verified`，完整相关 Journey 双遍仍未执行。
 - MiniMax/GLM bounded provider call 已成功；DeepSeek live call 以 typed `402 Insufficient Balance` 阻塞。三者都没有完成 P33 frozen compatibility task，DeepSeek 不得在未获 billing/credential 授权时重试。
+- P08-J4 preflight 已确认现有 J4 manual runner 不满足 frozen Hive/FreeCode/Hermes same-envelope contract；保持 empty blocker report，不运行官方 Claude 代替 FreeCode、不恢复常设 Hive eval runner、不安装依赖或改认证。
 - Goal 机械状态已因三次 action-gate 等待变为 `blocked`，但 owner 新输入已恢复执行；不得因 Goal 状态、历史 PASS、Railway/health 绿或候选单测绿而升级任何 Journey verdict。
 - 不触碰 pre-existing `.ultra/.runtime/compact-snapshot.md`、`bp-kingdee/`、`output/`、root `package*.json`、`tmp/pdfs/` 等用户工作树内容。
 - 不把 archive 中某个历史 `PASS` 自动迁移成当前 aggregate `Closed loop`。

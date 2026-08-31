@@ -57,7 +57,7 @@ verification_status: frozen-production-denominator-96-p29-padmin-pass1-only
 | PJ-05 | J1 candidate provisional trial | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×1 | Partial loop |
 | PJ-06 | J2 longitudinal growth 与 owner feedback | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×1 | Partial loop |
 | PJ-07 | J3 platform change non-regression | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×1 | Partial loop |
-| PJ-08 | J4 FreeCode/Hermes real bakeoff | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×1 | BLOCKED_PRECONDITION until real run |
+| PJ-08 | J4 FreeCode/Hermes real bakeoff | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×1 | `BLOCKED_PRECONDITION`：无 Hive/FreeCode/same-envelope runtime，见 [preflight](evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/P08-J4-blocked-runtime-contract.md) |
 | PJ-09 | Agent Memory T0→T2→T3→Soul/Skill reuse | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×1 | Partial loop |
 | PJ-10 | Personal KB multi-format ingest/search/read/cite | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×5 | Partial loop |
 | PJ-11 | Company KB direct/background import→publish→read | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×2 | Partial loop |

@@ -194,6 +194,7 @@ verification_status: p29-platform-admin-workspace-and-system-setting-secret-prod
 
 | ID | 状态 | 历史事实 | 允许的当前动作 |
 |---|---|---|---|
+| BLOCKER-J4-RUNTIME-001 | BLOCKED_PRECONDITION | frozen P08-J4 要求 Hive/FreeCode/Hermes 同 task/workspace/model/resource envelope；current manual runner 只有官方 Claude Code/Hermes targets，FreeCode 未构建且 Hive live runner 已退役 | 保持空报告、不造分；见 `evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/P08-J4-blocked-runtime-contract.md`。依赖安装、共享模型认证或 benchmark contract 变更需对应 authority |
 | BLOCKER-MODEL-001 | BLOCKED_PRECONDITION | MiniMax 与 GLM bounded production probe 成功；DeepSeek exact binding 已确认，但唯一 live probe 返回 `HTTP 402 Insufficient Balance` | 保留 typed blocker且不重试；充值、billing 或 credential change 需 action-time 授权，恢复后仍须执行 P33 frozen compatibility task |
 | BLOCKER-BRIDGE-001 | BLOCKED_PRECONDITION | Hive Connect daemon running，但 `hive-connect status` fresh 返回 `401 Invalid bridge token`，UI linked `0` / offline | 保留 blocker；re-login/token replacement 需 action-time 授权 |
 

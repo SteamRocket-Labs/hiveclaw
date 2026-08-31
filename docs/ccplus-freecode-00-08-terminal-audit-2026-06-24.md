@@ -82,15 +82,15 @@ FreeCode 生命周期语义
 
 FreeCode 文档：
 
-- `/Users/rocky243/vc-saas/free-code-main/docs/00-architecture-overview.md`
-- `/Users/rocky243/vc-saas/free-code-main/docs/01-query-engine.md`
-- `/Users/rocky243/vc-saas/free-code-main/docs/02-tool-system.md`
-- `/Users/rocky243/vc-saas/free-code-main/docs/03-permission-system.md`
-- `/Users/rocky243/vc-saas/free-code-main/docs/04-context-management.md`
-- `/Users/rocky243/vc-saas/free-code-main/docs/05-state-and-ui.md`
-- `/Users/rocky243/vc-saas/free-code-main/docs/06-memory-system.md`
-- `/Users/rocky243/vc-saas/free-code-main/docs/07-subagents-and-teams.md`
-- `/Users/rocky243/vc-saas/free-code-main/docs/08-extensions.md`
+- `/Users/example-owner/vc-saas/free-code-main/docs/00-architecture-overview.md`
+- `/Users/example-owner/vc-saas/free-code-main/docs/01-query-engine.md`
+- `/Users/example-owner/vc-saas/free-code-main/docs/02-tool-system.md`
+- `/Users/example-owner/vc-saas/free-code-main/docs/03-permission-system.md`
+- `/Users/example-owner/vc-saas/free-code-main/docs/04-context-management.md`
+- `/Users/example-owner/vc-saas/free-code-main/docs/05-state-and-ui.md`
+- `/Users/example-owner/vc-saas/free-code-main/docs/06-memory-system.md`
+- `/Users/example-owner/vc-saas/free-code-main/docs/07-subagents-and-teams.md`
+- `/Users/example-owner/vc-saas/free-code-main/docs/08-extensions.md`
 
 FreeCode 源码抽样：
 
@@ -653,7 +653,7 @@ Migration / Backfill / Rollback：
 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q -k "session_contract or turn_state or permission_profile or tool_contract or terminal_reconciliation"
 ```
@@ -671,7 +671,7 @@ pytest tests -q -k "session_contract or turn_state or permission_profile or tool
 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q -k "streaming_tool_executor or latency_hiding or skill_prefetch or memory_prefetch"
 ```
@@ -709,7 +709,7 @@ accepted user input
 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q -k "accepted_prompt_first or terminal_reason or orphan_tool_use or subagent_resume"
 ```
@@ -736,7 +736,7 @@ Migration / Backfill / Rollback：
 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q -k "tool_result or command_safety or permission_profile or capability_gate or coordinator_force_async or subagent_deny"
 ```
@@ -762,7 +762,7 @@ Migration / Backfill / Rollback：
 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q -k "context_policy or content_replacement or resume_byte_identical or diagnostic_context or tool_result_eviction"
 ```
@@ -776,10 +776,10 @@ state-diff 副作用通道可作为优化项；若不实现，必须明确它不
 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q -k "session_workbench or timeline_projection or active_turn"
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run build
 ```
 
@@ -796,7 +796,7 @@ npm run build
 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q -k "memory_activation or source_refs or trusting_recall or memory_age or memory_write_gate"
 ```
@@ -822,7 +822,7 @@ Migration / Backfill / Rollback：
 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q -k "extension_registry or command_registry or skill_access or hook_emitter or mcp_discovery"
 ```

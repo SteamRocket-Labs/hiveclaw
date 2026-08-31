@@ -48,6 +48,8 @@ def test_provider_prompt_ledger_accounts_tool_schema_tokens() -> None:
     assert ledger["tool_schema_tokens"] == categories["tool_schemas"]["tokens"]
     assert ledger["projected_input_tokens"] >= (categories["messages"]["tokens"] + categories["tool_schemas"]["tokens"])
     assert ledger["projected_uncached_input_tokens"] >= ledger["tool_schema_tokens"]
+    assert ledger["tool_names"] == ["web_fetch"]
+    assert len(ledger["tool_schema_sha256"]) == 64
     assert ledger["cache_hints_applied"] is True
 
 

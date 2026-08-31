@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.dialects import postgresql
 
 
@@ -96,6 +97,9 @@ def test_runtime_task_claim_statement_reclaims_only_expired_active_rows():
         "approval_execution",
         "hr_provisioning",
         "dream",
+        # Reclaimed delegation execution is fenced again in the worker and
+        # mutating profiles are quarantined before hydration or replay.
+        "delegation",
         # Added after 2,107 leaseless ``running`` trigger rows accumulated over
         # 38 days with no runtime path able to reach them.
         "trigger",
@@ -154,6 +158,32 @@ async def test_claim_available_marks_tasks_running_with_lease():
     assert task.metadata_json["claim_fence"] == f"{task.id.hex}:1"
     assert db.commits == 1
     assert db.rollbacks == 0
+
+
+@pytest.mark.asyncio
+async def test_fresh_pending_delegation_claim_clears_old_reclaim_marker():
+    from app.models.runtime_task import RuntimeTask
+    from app.services.runtime_task_claim_service import RuntimeTaskClaimService
+
+    task = RuntimeTask(
+        id=uuid4(),
+        task_type="delegation",
+        status="pending",
+        parent_agent_id=uuid4(),
+        tenant_id=uuid4(),
+        parent_session_id=str(uuid4()),
+        metadata_json={"reclaimed_expired_claim": True, "tool_profile": "worker_safe"},
+    )
+
+    claimed = await RuntimeTaskClaimService(
+        db=_FakeDB([task]),
+        worker_id="worker-a",
+        task_types=("delegation",),
+        lease_seconds=60,
+    ).claim_available(batch_size=1)
+
+    assert claimed == [task]
+    assert "reclaimed_expired_claim" not in task.metadata_json
 
 
 @pytest.mark.asyncio
@@ -267,7 +297,7 @@ async def test_business_task_claim_updates_both_state_projections_in_one_commit(
 
 
 @pytest.mark.asyncio
-async def test_business_task_claim_quarantines_an_invalid_projection_link():
+async def test_business_task_claim_quarantines_an_invalid_projection_link(monkeypatch):
     from app.models.runtime_task import RuntimeTask
     from app.services.runtime_task_claim_service import RuntimeTaskClaimService
 
@@ -279,8 +309,19 @@ async def test_business_task_claim_quarantines_an_invalid_projection_link():
         tenant_id=uuid4(),
         metadata_json={"business_task_id": str(uuid4()), "phase": "queued"},
         attempt_count=0,
+        terminal_boundary_generation=1,
     )
     db = _BusinessTaskDB([runtime_task], None)
+    enqueued = []
+
+    async def fake_settle(_db, task, **_kwargs):
+        enqueued.append((task.id, task.status))
+        task.terminal_boundary_enqueued_at = datetime.now(timezone.utc)
+
+    monkeypatch.setattr(
+        "app.services.runtime_terminal_settlement.settle_and_enqueue_runtime_task_terminal",
+        fake_settle,
+    )
 
     claimed = await RuntimeTaskClaimService(
         db=db,
@@ -293,4 +334,74 @@ async def test_business_task_claim_quarantines_an_invalid_projection_link():
     assert runtime_task.status == "needs_reconciliation"
     assert runtime_task.metadata_json["phase"] == "terminal"
     assert "link" in runtime_task.result_summary
+    assert enqueued == [(runtime_task.id, "needs_reconciliation")]
     assert db.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_invalid_business_task_claim_commits_terminal_outbox_atomically(owner_sessionmaker):
+    from app.database import tenant_scoped_session
+    from app.models.agent import Agent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+    from app.models.tenant import Tenant
+    from app.models.user import User
+    from app.services.runtime_task_claim_service import RuntimeTaskClaimService
+
+    tenant_id, user_id, agent_id, runtime_task_id = (uuid4() for _ in range(4))
+    async with owner_sessionmaker() as db:
+        db.add(Tenant(id=tenant_id, name="Claim quarantine", slug=f"claim-{tenant_id.hex[:12]}"))
+        db.add(
+            User(
+                id=user_id,
+                username=f"claim-{user_id.hex[:12]}",
+                email=f"claim-{user_id.hex[:12]}@test.local",
+                password_hash="x",
+                display_name="Claim Owner",
+                tenant_id=tenant_id,
+            )
+        )
+        await db.flush()
+        db.add(
+            Agent(
+                id=agent_id,
+                tenant_id=tenant_id,
+                name="Claim Agent",
+                creator_id=user_id,
+                owner_user_id=user_id,
+            )
+        )
+        await db.flush()
+        db.add(
+            RuntimeTask(
+                id=runtime_task_id,
+                tenant_id=tenant_id,
+                task_type="business_task",
+                parent_agent_id=agent_id,
+                status="pending",
+                prompt="missing business task projection",
+                metadata_json={"business_task_id": str(uuid4()), "phase": "queued"},
+            )
+        )
+        await db.commit()
+
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        claimed = await RuntimeTaskClaimService(
+            db=db,
+            worker_id="quarantine-worker",
+            task_types=("business_task",),
+        ).claim_available(batch_size=1)
+    assert claimed == []
+
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, runtime_task_id)
+        outbox = await db.scalar(
+            select(RuntimeTerminalBoundaryOutbox).where(
+                RuntimeTerminalBoundaryOutbox.runtime_task_id == runtime_task_id
+            )
+        )
+    assert task is not None and task.status == "needs_reconciliation"
+    assert task.terminal_boundary_enqueued_at is not None
+    assert outbox is not None
+    assert outbox.event_kind == "runtime_terminal"
+    assert outbox.status == "pending"

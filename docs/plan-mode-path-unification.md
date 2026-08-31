@@ -49,7 +49,7 @@
 
 ## 2. CC 基线:只有一条 plan 路径
 
-(证据:`/Users/rocky243/Context Engineering/claude-code-org`)
+(证据:`/Users/example-owner/Context Engineering/claude-code-org`)
 
 - CC 的 plan mode = `permissionMode='plan'`,agent 在**主 ReAct 循环**里只读探索 + 规划 →
   `ExitPlanMode` 工具 → 人类审批 → 批准后继续同一循环执行。

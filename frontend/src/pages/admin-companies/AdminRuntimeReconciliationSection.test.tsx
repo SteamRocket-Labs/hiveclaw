@@ -51,6 +51,14 @@ describe('AdminRuntimeReconciliationSection', () => {
             reason: 'session_bound_mutating_trigger',
             side_effect_risk: 'mutating',
             retry_allowed: false,
+            supported_trigger_dispositions: ['confirmed_success', 'confirmed_failure', 'release'],
+            trigger_disposition_readiness: {
+              schema: 'runtime_trigger_disposition_readiness.v1',
+              ready: false,
+              blocker: 'terminal_projection_pending',
+              terminal_projection_id: 'projection-1',
+            },
+            trace_id: 'trace-static',
             created_at: '2026-07-24T00:00:00Z',
           },
           {
@@ -72,6 +80,13 @@ describe('AdminRuntimeReconciliationSection', () => {
     expect(markup).toContain('session_bound_mutating_trigger');
     expect(markup).toContain('heartbeat');
     expect(markup).toContain('direct_core_audit_session_bound');
+    expect(markup).toContain('Confirm success');
+    expect(markup).toContain('Confirm failure');
+    expect(markup).toContain('Release hold');
+    expect(markup).toContain('Disposition actions blocked: terminal_projection_pending');
+    expect(markup).toContain('Trace ID');
+    expect(markup).toContain('trace-static');
+    expect(markup).toContain('aria-required="true"');
     expect(markup).toContain('Resolve');
     expect(markup).toContain('Archive');
     expect(markup).not.toContain('Retry');

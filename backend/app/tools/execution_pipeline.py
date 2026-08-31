@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.execution_context import A2A_TOOL_AUTHORITY_FRAME_SCHEMA, A2AToolAuthorityFrame, ExecutionPrincipal
@@ -101,6 +102,7 @@ async def run_tool_execution(
     for stage in (
         _prepare_runtime_context,
         _apply_exact_secret_preflight,
+        _apply_exact_session_scope,
         _apply_plan_mode_and_runtime_arguments,
         _apply_hooks_and_assets,
         _apply_governance,
@@ -255,6 +257,125 @@ async def _apply_exact_secret_preflight(
         reasons=("unauthorized_secret_bytes",),
     )
     return _Stop(block)
+
+
+_EXACT_SESSION_PATH_FIELDS = {
+    "read_file": "path",
+    "write_file": "path",
+    "edit_file": "path",
+    "glob_search": "root",
+    "grep_search": "root",
+}
+
+
+def _canonical_exact_session_root(value: Any) -> str | None:
+    raw = str(value or "").strip()
+    if not raw or "\\" in raw:
+        return None
+    path = PurePosixPath(raw)
+    if (
+        path.is_absolute()
+        or len(path.parts) < 2
+        or path.parts[0] != "workspace"
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or path.as_posix() != raw
+    ):
+        return None
+    return raw
+
+
+def _scoped_session_path(root: str, value: Any, *, allow_empty: bool) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return root if allow_empty else None
+    if "\\" in raw:
+        return None
+    path = PurePosixPath(raw)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts) or path.as_posix() != raw:
+        return None
+    if raw == root or raw.startswith(f"{root}/"):
+        return raw
+    if path.parts and path.parts[0] == "workspace":
+        return None
+    return f"{root}/{raw}"
+
+
+def _exact_scope_stop(state: _ToolExecutionState, *, reason: str, message: str) -> _Stop:
+    _record_precontext_block(state, outcome=state.ports.decision_outcome_type.DENY, reason=reason)
+    return _Stop(
+        state.ports.render_tool_error(
+            tool_name=state.request.tool_name,
+            error_class="auth_or_permission",
+            message=message,
+            provider="session_permission_profile",
+            retryable=False,
+            actionable_hint="Use only the exact tools and evaluation workspace bound to this session.",
+            extra={"outcome": "denied", "reason_code": reason},
+        )
+    )
+
+
+async def _apply_exact_session_scope(state: _ToolExecutionState) -> _Stop | None:
+    profile = permission_profile_snapshot(state.request.permission_profile)
+    snapshot = profile.get("capability_policy_snapshot")
+    if not isinstance(snapshot, dict) or snapshot.get("session_exact_scope") is not True:
+        return None
+    allowed = profile.get("allowed_tools")
+    writable_roots = profile.get("writable_roots")
+    readable_roots = profile.get("readable_roots")
+    if (
+        not isinstance(allowed, list)
+        or not allowed
+        or any(not isinstance(name, str) or not name.strip() for name in allowed)
+        or len(allowed) != len(set(allowed))
+        or not isinstance(writable_roots, list)
+        or len(writable_roots) != 1
+        or readable_roots != writable_roots
+    ):
+        return _exact_scope_stop(
+            state,
+            reason="invalid_exact_session_permission_profile",
+            message="The exact session permission profile is incomplete or invalid.",
+        )
+    root = _canonical_exact_session_root(writable_roots[0])
+    if root is None:
+        return _exact_scope_stop(
+            state,
+            reason="invalid_exact_session_workspace_root",
+            message="The exact session workspace root is invalid.",
+        )
+    if state.request.tool_name not in allowed:
+        return _exact_scope_stop(
+            state,
+            reason="exact_session_tool_scope_denied",
+            message=f"Tool '{state.request.tool_name}' is outside this session's exact tool scope.",
+        )
+    field = _EXACT_SESSION_PATH_FIELDS.get(state.request.tool_name)
+    if field is None:
+        return None
+    scoped = _scoped_session_path(root, state.arguments.get(field), allow_empty=field == "root")
+    if scoped is None:
+        return _exact_scope_stop(
+            state,
+            reason="exact_session_workspace_scope_denied",
+            message="The requested path is outside this session's exact workspace root.",
+        )
+    if state.request.tool_name == "glob_search":
+        pattern = str(state.arguments.get("pattern") or "")
+        pattern_path = PurePosixPath(pattern)
+        if (
+            not pattern
+            or "\\" in pattern
+            or pattern_path.is_absolute()
+            or any(part == ".." for part in pattern_path.parts)
+        ):
+            return _exact_scope_stop(
+                state,
+                reason="exact_session_workspace_scope_denied",
+                message="The glob pattern may not escape this session's exact workspace root.",
+            )
+    state.arguments[field] = scoped
+    return None
 
 
 async def _apply_plan_mode_and_runtime_arguments(

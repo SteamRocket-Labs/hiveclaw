@@ -47,6 +47,20 @@ def test_business_task_worker_never_unconditionally_marks_completed() -> None:
     assert "finalize_business_task_execution" in worker_source
 
 
+def test_business_task_executor_defers_terminal_lifecycle_to_atomic_finalizer() -> None:
+    source = (APP_ROOT / "services/task_executor.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    executor = next(
+        node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == "execute_task"
+    )
+    executor_source = ast.get_source_segment(source, executor) or ""
+    invoker_source = (APP_ROOT / "runtime/invoker.py").read_text(encoding="utf-8")
+
+    assert "emit_turn_stop" not in invoker_source
+    assert "emit_turn_stop" not in executor_source
+    assert "_seal_task_t0_segment" not in executor_source
+
+
 def test_task_log_routes_bind_task_id_to_path_agent() -> None:
     source = (APP_ROOT / "api/tasks.py").read_text(encoding="utf-8")
     tree = ast.parse(source)

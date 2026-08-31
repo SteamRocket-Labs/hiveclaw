@@ -4,7 +4,7 @@
   "used_default_base_url": true,
   "weekday_local": "Thursday",
   "is_monday": false,
-  "snapshot_dir": "/Users/rocky243/vc-saas/hiveclaw-main/tmp/reports/h7/20260507-110009",
+  "snapshot_dir": "/Users/example-owner/vc-saas/hiveclaw-main/tmp/reports/h7/20260507-110009",
   "token_sources": [
     {
       "source": "HIVE_PLATFORM_ADMIN_TOKEN",
@@ -21,14 +21,14 @@
     {
       "source": ".h7.env",
       "status": "missing",
-      "path": "/Users/rocky243/vc-saas/hiveclaw-main/.h7.env"
+      "path": "/Users/example-owner/vc-saas/hiveclaw-main/.h7.env"
     },
     {
       "source": "browser_storage_fallback",
       "status": "invalid_or_missing",
       "scanned_roots": [
-        "/Users/rocky243/Library/Application Support/Google/Chrome",
-        "/Users/rocky243/Library/Application Support/Codex"
+        "/Users/example-owner/Library/Application Support/Google/Chrome",
+        "/Users/example-owner/Library/Application Support/Codex"
       ],
       "scanned_files": 42,
       "valid_candidates": 0,
@@ -46,6 +46,6 @@
     "error": "URLError: <urlopen error [Errno 8] nodename nor servname provided, or not known>"
   },
   "final_status": "FAIL",
-  "summary_path": "/Users/rocky243/vc-saas/hiveclaw-main/tmp/reports/h7/20260507-110009/H7_SUMMARY.md",
+  "summary_path": "/Users/example-owner/vc-saas/hiveclaw-main/tmp/reports/h7/20260507-110009/H7_SUMMARY.md",
   "run_finished_at": "2026-05-07T11:00:12.518091+08:00"
 }

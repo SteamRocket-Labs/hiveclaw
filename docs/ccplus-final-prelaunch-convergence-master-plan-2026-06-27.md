@@ -680,7 +680,7 @@ cd backend && source .venv/bin/activate && pytest \
 ### 5.1 后端目标测试组
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 
 pytest \
@@ -705,7 +705,7 @@ pytest \
 ### 5.2 前端目标测试组
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 
 npm run test -- \
   src/pages/agent-detail/AgentDetailSections.test.tsx \
@@ -718,11 +718,11 @@ npm run test -- \
 ### 5.3 最终 smoke
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run build
 ```
 

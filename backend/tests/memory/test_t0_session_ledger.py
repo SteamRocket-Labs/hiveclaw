@@ -4,16 +4,43 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
+
+import pytest
 
 from app.memory.t0.ledger import (
     EVENT_RECORD_SCHEMA_VERSION,
     EVENTS_FILENAME,
+    T0BoundaryTargetMismatch,
+    T0SegmentBoundaryPending,
     append_t0_session_event,
     import_legacy_t0_file,
     replay_t0_session_events,
     seal_t0_session_segment,
 )
+
+
+def _append_turn_event(
+    *,
+    data_root: Path,
+    agent_id: UUID,
+    session_id: UUID,
+    run_id: UUID,
+    turn_id: str,
+    role: str,
+    content: str,
+):
+    return append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        event_type=f"{role}_message",
+        role=role,
+        content=content,
+        runtime_task_id=run_id,
+        source="web",
+        metadata={"turn_id": turn_id},
+        data_root=data_root,
+    )
 
 
 def test_append_user_and_assistant_messages_to_unified_session_ledger(tmp_path: Path) -> None:
@@ -226,6 +253,200 @@ def test_seal_segment_preserves_append_only_history_and_next_turn_gets_new_segme
         (1, "user_message", "第一段"),
         (2, "segment_boundary", "session_idle"),
         (3, "user_message", "恢复后的第二段"),
+    ]
+
+
+def test_stable_boundary_replay_and_target_mismatch_never_seal_new_segment(tmp_path: Path) -> None:
+    agent_id = uuid4()
+    session_id = uuid4()
+    previous_run_id = uuid4()
+    next_run_id = uuid4()
+    previous_turn_id = f"turn-{previous_run_id.hex}"
+    next_turn_id = f"turn-{next_run_id.hex}"
+
+    _append_turn_event(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        session_id=session_id,
+        run_id=previous_run_id,
+        turn_id=previous_turn_id,
+        role="user",
+        content="previous turn",
+    )
+    first_receipt = seal_t0_session_segment(
+        agent_id=agent_id,
+        session_id=session_id,
+        reason="turn_stop",
+        boundary_id="boundary-previous-turn",
+        idempotency_key="turn-stop:previous-turn",
+        expected_runtime_task_id=previous_run_id,
+        expected_turn_id=previous_turn_id,
+        data_root=tmp_path,
+    )
+    assert first_receipt is not None
+
+    next_user = _append_turn_event(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        session_id=session_id,
+        run_id=next_run_id,
+        turn_id=next_turn_id,
+        role="user",
+        content="next turn",
+    )
+    for stable_identity in (
+        {"boundary_id": "boundary-previous-turn"},
+        {"idempotency_key": "turn-stop:previous-turn"},
+        {"boundary_id": "boundary-previous-turn", "idempotency_key": "turn-stop:previous-turn"},
+    ):
+        replay_receipt = seal_t0_session_segment(
+            agent_id=agent_id,
+            session_id=session_id,
+            reason="turn_stop",
+            expected_runtime_task_id=previous_run_id,
+            expected_turn_id=previous_turn_id,
+            data_root=tmp_path,
+            **stable_identity,
+        )
+        assert replay_receipt == first_receipt
+
+    with pytest.raises(T0BoundaryTargetMismatch) as identity_raised:
+        seal_t0_session_segment(
+            agent_id=agent_id,
+            session_id=session_id,
+            reason="turn_stop",
+            boundary_id="boundary-previous-turn",
+            idempotency_key="turn-stop:different-turn",
+            expected_runtime_task_id=previous_run_id,
+            expected_turn_id=previous_turn_id,
+            data_root=tmp_path,
+        )
+    assert identity_raised.value.field == "boundary_identity"
+
+    for suffix, expected_run_id, expected_turn_id, mismatch_field in (
+        ("run", previous_run_id, next_turn_id, "runtime_task_id"),
+        ("turn", next_run_id, previous_turn_id, "turn_id"),
+    ):
+        with pytest.raises(T0BoundaryTargetMismatch) as raised:
+            seal_t0_session_segment(
+                agent_id=agent_id,
+                session_id=session_id,
+                reason="turn_stop",
+                boundary_id=f"boundary-stale-{suffix}",
+                idempotency_key=f"turn-stop:stale-{suffix}",
+                expected_runtime_task_id=expected_run_id,
+                expected_turn_id=expected_turn_id,
+                data_root=tmp_path,
+            )
+        assert raised.value.segment_id == next_user.segment_id
+        assert raised.value.field == mismatch_field
+
+    next_assistant = _append_turn_event(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        session_id=session_id,
+        run_id=next_run_id,
+        turn_id=next_turn_id,
+        role="assistant",
+        content="next answer",
+    )
+    assert next_assistant.segment_id == next_user.segment_id
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    assert [event.event_type for event in events] == [
+        "user_message",
+        "segment_boundary",
+        "user_message",
+        "assistant_message",
+    ]
+
+
+def test_uuid_boundary_identity_replays_across_string_and_uuid_forms(tmp_path: Path) -> None:
+    agent_id = uuid4()
+    session_id = uuid4()
+    run_id = uuid4()
+    turn_id = f"turn-{run_id.hex}"
+    boundary_id = uuid4()
+    _append_turn_event(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        session_id=session_id,
+        run_id=run_id,
+        turn_id=turn_id,
+        role="user",
+        content="canonical UUID boundary",
+    )
+    first = seal_t0_session_segment(
+        agent_id=agent_id,
+        session_id=session_id,
+        reason="turn_stop",
+        boundary_id=str(boundary_id),
+        idempotency_key=f"turn-stop:{boundary_id}",
+        expected_runtime_task_id=run_id,
+        expected_turn_id=turn_id,
+        data_root=tmp_path,
+    )
+    replay = seal_t0_session_segment(
+        agent_id=agent_id,
+        session_id=session_id,
+        reason="turn_stop",
+        boundary_id=boundary_id,
+        idempotency_key=f"turn-stop:{boundary_id}",
+        expected_runtime_task_id=run_id,
+        expected_turn_id=turn_id,
+        data_root=tmp_path,
+    )
+
+    assert replay == first
+
+
+def test_next_run_user_event_does_not_reuse_open_segment_left_by_terminal_sidecar_crash(
+    tmp_path: Path,
+) -> None:
+    agent_id = uuid4()
+    session_id = uuid4()
+    previous_run_id = uuid4()
+    next_run_id = uuid4()
+
+    previous = _append_turn_event(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        session_id=session_id,
+        run_id=previous_run_id,
+        turn_id=f"turn-{previous_run_id.hex}",
+        role="assistant",
+        content="previous committed final",
+    )
+    # Simulate a crash after canonical terminal commit but before TURN_STOP
+    # sealed the active segment. A new run must never join that segment.
+    with pytest.raises(T0SegmentBoundaryPending) as raised:
+        _append_turn_event(
+            data_root=tmp_path,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=next_run_id,
+            turn_id=f"turn-{next_run_id.hex}",
+            role="user",
+            content="next turn",
+        )
+
+    assert raised.value.active_segment_id == previous.segment_id
+    assert raised.value.active_runtime_task_id == previous_run_id.hex
+    assert raised.value.incoming_runtime_task_id == next_run_id.hex
+    with pytest.raises(T0SegmentBoundaryPending) as turn_raised:
+        _append_turn_event(
+            data_root=tmp_path,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=previous_run_id,
+            turn_id=f"turn-{next_run_id.hex}",
+            role="user",
+            content="wrong turn in the same run",
+        )
+    assert turn_raised.value.active_turn_id == f"turn-{previous_run_id.hex}"
+    assert turn_raised.value.incoming_turn_id == f"turn-{next_run_id.hex}"
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    assert [(event.runtime_task_id, event.content) for event in events] == [
+        (previous_run_id.hex, "previous committed final")
     ]
 
 

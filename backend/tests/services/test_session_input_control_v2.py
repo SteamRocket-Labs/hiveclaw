@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
@@ -56,6 +56,29 @@ async def _seed_session(owner_sessionmaker, *, active_run: bool = False):
             )
         await db.commit()
     return tenant_id, user_id, agent_id, session_id, run_id
+
+
+async def _mark_web_terminal_boundary_delivered(db, *, task, agent_id, session_id) -> None:
+    from app.services.runtime_terminal_boundary_outbox import enqueue_terminal_boundary
+
+    boundary = await enqueue_terminal_boundary(
+        db,
+        task=task,
+        event_kind="turn_stop",
+        agent_id=agent_id,
+        session_id=session_id,
+        terminal_status=task.status,
+        authority_ref="runtime_task",
+        authority_id=task.id,
+        binding={
+            "terminal_event_id": uuid.uuid5(task.id, "test-terminal-boundary-event"),
+            "terminal_sequence": 1,
+            "authority_sha256": "a" * 64,
+        },
+    )
+    boundary.status = "delivered"
+    boundary.delivered_at = datetime.now(timezone.utc)
+    boundary.delivery_receipt_json = {"source_ref": f"t0-boundary:{boundary.id}"}
 
 
 async def _authority(db, *, user_id, agent_id, session_id):
@@ -166,6 +189,406 @@ async def test_live_rest_ws_adapter_persists_full_human_input_authority(owner_se
             .where(SessionEventOutbox.event_id.in_([event.id for event in events]))
         )
         assert outbox_count == len(events)
+
+
+async def test_new_start_turn_waits_for_previous_terminal_boundary_sidecars(owner_sessionmaker) -> None:
+    """A committed input waits durably until the prior terminal boundary is acked."""
+
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.runtime_task import RuntimeTask
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+    from app.models.session_v2 import SessionInputAdmission, SessionTurnInput
+    from app.models.user import User
+    from app.services.runtime_terminal_boundary_outbox import enqueue_terminal_boundary
+    from app.services.session_input_dispatch import recover_admitted_session_inputs_once
+    from app.services.session_live_input import submit_live_human_input
+
+    tenant_id, user_id, agent_id, session_id, previous_run_id = await _seed_session(
+        owner_sessionmaker,
+        active_run=True,
+    )
+    assert previous_run_id is not None
+    next_input_id = uuid.uuid4()
+
+    async with owner_sessionmaker() as db:
+        previous_run = await db.get(RuntimeTask, previous_run_id)
+        assert previous_run is not None
+        previous_run.status = "completed"
+        terminal_boundary = await enqueue_terminal_boundary(
+            db,
+            task=previous_run,
+            event_kind="turn_stop",
+            agent_id=agent_id,
+            session_id=session_id,
+            terminal_status="completed",
+            authority_ref="runtime_task",
+            authority_id=previous_run_id,
+            binding={
+                "terminal_event_id": uuid.uuid4(),
+                "terminal_sequence": 1,
+                "authority_sha256": "a" * 64,
+            },
+        )
+        terminal_boundary_id = terminal_boundary.id
+        terminal_boundary_status = terminal_boundary.status
+        await db.commit()
+
+        assert terminal_boundary_status == "pending"
+
+        agent = await db.get(Agent, agent_id)
+        user = await db.get(User, user_id)
+        session = await db.get(ChatSession, session_id)
+        assert agent is not None and user is not None and session is not None
+        receipt = await submit_live_human_input(
+            db=db,
+            agent=agent,
+            user=user,
+            session=session,
+            content="must wait for the previous terminal boundary",
+            source="terminal-boundary-red",
+            input_id=next_input_id,
+            idempotency_key=f"terminal-boundary:{next_input_id}",
+            requested_kind="auto",
+        )
+        admission = await db.scalar(
+            select(SessionInputAdmission).where(SessionInputAdmission.input_id == next_input_id)
+        )
+        pending_successor_count = int(
+            await db.scalar(
+                select(func.count(RuntimeTask.id)).where(
+                    RuntimeTask.parent_session_id == str(session_id),
+                    RuntimeTask.id != previous_run_id,
+                )
+            )
+            or 0
+        )
+
+    assert receipt["admission_state"] == "admitted"
+    assert receipt["dispatch_status"] == "pending"
+    assert receipt["run"] is None
+    assert receipt["dispatch"] == {
+        "kind": "deferred",
+        "status": "waiting_for_terminal_boundary_ack",
+        "code": "terminal_boundary_ack_pending",
+        "retryable": True,
+        "input_id": str(next_input_id),
+        "session_id": str(session_id),
+        "terminal_boundary_id": str(terminal_boundary_id),
+        "blocking_runtime_task_id": str(previous_run_id),
+        "terminal_boundary_status": "pending",
+    }
+    assert admission is not None
+    assert admission.state == "admitted" and admission.dispatch_state == "pending"
+    assert pending_successor_count == 0
+
+    async with owner_sessionmaker() as db:
+        terminal_boundary = await db.get(RuntimeTerminalBoundaryOutbox, terminal_boundary_id)
+        assert terminal_boundary is not None
+        terminal_boundary.status = "delivered"
+        terminal_boundary.delivered_at = datetime.now(timezone.utc)
+        terminal_boundary.delivery_receipt_json = {
+            "source_ref": f"t0-boundary:{terminal_boundary.id}",
+        }
+        await db.commit()
+
+        first_recovery = await recover_admitted_session_inputs_once(
+            db,
+            worker_id="terminal-boundary-recovery",
+            tenant_id=tenant_id,
+        )
+        second_recovery = await recover_admitted_session_inputs_once(
+            db,
+            worker_id="terminal-boundary-recovery",
+            tenant_id=tenant_id,
+        )
+        admission = await db.scalar(
+            select(SessionInputAdmission).where(SessionInputAdmission.input_id == next_input_id)
+        )
+        row = await db.get(SessionTurnInput, next_input_id)
+        successor_runs = list(
+            (
+                await db.execute(
+                    select(RuntimeTask).where(
+                        RuntimeTask.parent_session_id == str(session_id),
+                        RuntimeTask.id != previous_run_id,
+                    )
+                )
+            ).scalars()
+        )
+
+    expected_run_id = uuid.uuid5(next_input_id, "session-v2-runtime-run")
+    assert first_recovery == {"claimed": 1, "dispatched": 1, "deferred": 0, "retried": 0}
+    assert second_recovery == {"claimed": 0, "dispatched": 0, "deferred": 0, "retried": 0}
+    assert admission is not None
+    assert admission.state == "admitted" and admission.dispatch_state == "dispatched"
+    assert admission.dispatch_receipt_json["run_id"] == str(expected_run_id)
+    assert row is not None and row.target_run_id == expected_run_id
+    assert [run.id for run in successor_runs] == [expected_run_id]
+
+
+async def test_dead_letter_terminal_boundary_holds_input_until_redrive_delivery(owner_sessionmaker) -> None:
+    """An unchanged dead letter is quiescent, but status changes wake dispatch."""
+
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionInputAdmission, SessionTurnInput
+    from app.models.user import User
+    from app.services.runtime_terminal_boundary_outbox import (
+        RuntimeTerminalBoundaryOutboxService,
+        enqueue_terminal_boundary,
+    )
+    from app.services.session_input_dispatch import recover_admitted_session_inputs_once
+    from app.services.session_live_input import submit_live_human_input
+
+    tenant_id, user_id, agent_id, session_id, previous_run_id = await _seed_session(
+        owner_sessionmaker,
+        active_run=True,
+    )
+    assert previous_run_id is not None
+    next_input_id = uuid.uuid4()
+
+    async with owner_sessionmaker() as db:
+        previous_run = await db.get(RuntimeTask, previous_run_id)
+        assert previous_run is not None
+        previous_run.status = "completed"
+        boundary = await enqueue_terminal_boundary(
+            db,
+            task=previous_run,
+            event_kind="turn_stop",
+            agent_id=agent_id,
+            session_id=session_id,
+            terminal_status="completed",
+            authority_ref="runtime_task",
+            authority_id=previous_run_id,
+            binding={
+                "terminal_event_id": uuid.uuid4(),
+                "terminal_sequence": 1,
+                "authority_sha256": "a" * 64,
+            },
+        )
+        boundary_id = boundary.id
+        await db.commit()
+
+        agent = await db.get(Agent, agent_id)
+        user = await db.get(User, user_id)
+        session = await db.get(ChatSession, session_id)
+        assert agent is not None and user is not None and session is not None
+        receipt = await submit_live_human_input(
+            db=db,
+            agent=agent,
+            user=user,
+            session=session,
+            content="resume only after the dead-lettered boundary is delivered",
+            source="terminal-boundary-dead-letter-red",
+            input_id=next_input_id,
+            idempotency_key=f"terminal-boundary-dead-letter:{next_input_id}",
+            requested_kind="auto",
+        )
+
+    assert receipt["dispatch"]["terminal_boundary_status"] == "pending"
+    service = RuntimeTerminalBoundaryOutboxService(
+        session_factory=owner_sessionmaker,
+        retry_base_seconds=0,
+        max_attempts=1,
+    )
+    claimed_boundary = await service.claim_batch(
+        tenant_id=tenant_id,
+        worker_id="terminal-boundary-failing-worker",
+    )
+    assert [item.id for item in claimed_boundary] == [boundary_id]
+    assert (
+        await service.fail_terminal_boundary(
+            item=claimed_boundary[0],
+            worker_id="terminal-boundary-failing-worker",
+            error=RuntimeError("terminal consumer failed"),
+        )
+        == "dead_letter"
+    )
+
+    async with owner_sessionmaker() as db:
+        first_dead_letter = await recover_admitted_session_inputs_once(
+            db,
+            worker_id="dead-letter-input-worker",
+            tenant_id=tenant_id,
+        )
+        repeated_dead_letter = await recover_admitted_session_inputs_once(
+            db,
+            worker_id="dead-letter-input-worker",
+            tenant_id=tenant_id,
+        )
+        repeated_dead_letter_again = await recover_admitted_session_inputs_once(
+            db,
+            worker_id="dead-letter-input-worker",
+            tenant_id=tenant_id,
+        )
+        admission = await db.scalar(
+            select(SessionInputAdmission).where(SessionInputAdmission.input_id == next_input_id)
+        )
+        assert admission is not None
+        assert (admission.dispatch_receipt_json or {})["terminal_boundary_status"] == "dead_letter"
+
+    assert first_dead_letter == {"claimed": 1, "dispatched": 0, "deferred": 1, "retried": 0}
+    assert repeated_dead_letter == {"claimed": 0, "dispatched": 0, "deferred": 0, "retried": 0}
+    assert repeated_dead_letter_again == repeated_dead_letter
+
+    await service.redrive_dead_letter(
+        tenant_id=tenant_id,
+        outbox_id=boundary_id,
+        actor_user_id=user_id,
+        reason="Retry the terminal consumer after operator review.",
+    )
+    async with owner_sessionmaker() as db:
+        redriven_pending = await recover_admitted_session_inputs_once(
+            db,
+            worker_id="dead-letter-input-worker",
+            tenant_id=tenant_id,
+        )
+        repeated_pending = await recover_admitted_session_inputs_once(
+            db,
+            worker_id="dead-letter-input-worker",
+            tenant_id=tenant_id,
+        )
+        admission = await db.scalar(
+            select(SessionInputAdmission).where(SessionInputAdmission.input_id == next_input_id)
+        )
+        successor_count = int(
+            await db.scalar(
+                select(func.count(RuntimeTask.id)).where(
+                    RuntimeTask.tenant_id == tenant_id,
+                    RuntimeTask.parent_session_id == str(session_id),
+                    RuntimeTask.id != previous_run_id,
+                )
+            )
+            or 0
+        )
+        assert admission is not None
+        assert (admission.dispatch_receipt_json or {})["terminal_boundary_status"] == "pending"
+
+    assert redriven_pending == {"claimed": 1, "dispatched": 0, "deferred": 1, "retried": 0}
+    assert repeated_pending == {"claimed": 0, "dispatched": 0, "deferred": 0, "retried": 0}
+    assert successor_count == 0
+
+    delivered_claim = await service.claim_batch(
+        tenant_id=tenant_id,
+        worker_id="terminal-boundary-delivery-worker",
+    )
+    assert [item.id for item in delivered_claim] == [boundary_id]
+
+    async def exact_boundary(_db, item):
+        return dict(item.binding)
+
+    async def deliver_boundary(item):
+        return {"source_ref": f"runtime-terminal-boundary://{item.id}"}
+
+    assert await service.process_terminal_boundary(
+        item=delivered_claim[0],
+        worker_id="terminal-boundary-delivery-worker",
+        canonical_validator=exact_boundary,
+        process_callback=deliver_boundary,
+    )
+
+    async with owner_sessionmaker() as db:
+        delivered = await recover_admitted_session_inputs_once(
+            db,
+            worker_id="dead-letter-input-worker",
+            tenant_id=tenant_id,
+        )
+        replay = await recover_admitted_session_inputs_once(
+            db,
+            worker_id="dead-letter-input-worker",
+            tenant_id=tenant_id,
+        )
+        admission = await db.scalar(
+            select(SessionInputAdmission).where(SessionInputAdmission.input_id == next_input_id)
+        )
+        row = await db.get(SessionTurnInput, next_input_id)
+        successor_runs = list(
+            (
+                await db.execute(
+                    select(RuntimeTask).where(
+                        RuntimeTask.tenant_id == tenant_id,
+                        RuntimeTask.parent_session_id == str(session_id),
+                        RuntimeTask.id != previous_run_id,
+                    )
+                )
+            ).scalars()
+        )
+
+    expected_run_id = uuid.uuid5(next_input_id, "session-v2-runtime-run")
+    assert delivered == {"claimed": 1, "dispatched": 1, "deferred": 0, "retried": 0}
+    assert replay == {"claimed": 0, "dispatched": 0, "deferred": 0, "retried": 0}
+    assert admission is not None and admission.dispatch_state == "dispatched"
+    assert row is not None and row.target_run_id == expected_run_id
+    assert [run.id for run in successor_runs] == [expected_run_id]
+
+
+async def test_new_start_turn_waits_when_terminal_boundary_row_is_missing(owner_sessionmaker) -> None:
+    """A terminal commit/outbox crash gap cannot admit the next Session turn."""
+
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionInputAdmission
+    from app.models.user import User
+    from app.services.session_live_input import submit_live_human_input
+
+    tenant_id, user_id, agent_id, session_id, previous_run_id = await _seed_session(
+        owner_sessionmaker,
+        active_run=True,
+    )
+    assert previous_run_id is not None
+    next_input_id = uuid.uuid4()
+
+    async with owner_sessionmaker() as db:
+        previous_run = await db.get(RuntimeTask, previous_run_id)
+        assert previous_run is not None
+        previous_run.status = "completed"
+        previous_run.completed_at = datetime.now(timezone.utc)
+        await db.commit()
+
+        agent = await db.get(Agent, agent_id)
+        user = await db.get(User, user_id)
+        session = await db.get(ChatSession, session_id)
+        assert agent is not None and user is not None and session is not None
+        receipt = await submit_live_human_input(
+            db=db,
+            agent=agent,
+            user=user,
+            session=session,
+            content="must wait for terminal boundary reconciliation",
+            source="terminal-boundary-missing-red",
+            input_id=next_input_id,
+            idempotency_key=f"terminal-boundary-missing:{next_input_id}",
+            requested_kind="auto",
+        )
+        admission = await db.scalar(
+            select(SessionInputAdmission).where(SessionInputAdmission.input_id == next_input_id)
+        )
+        successor_count = int(
+            await db.scalar(
+                select(func.count(RuntimeTask.id)).where(
+                    RuntimeTask.tenant_id == tenant_id,
+                    RuntimeTask.parent_session_id == str(session_id),
+                    RuntimeTask.id != previous_run_id,
+                )
+            )
+            or 0
+        )
+
+    assert receipt["dispatch"] == {
+        "kind": "deferred",
+        "status": "waiting_for_terminal_boundary_reconciliation",
+        "code": "terminal_boundary_ack_pending",
+        "retryable": True,
+        "input_id": str(next_input_id),
+        "session_id": str(session_id),
+        "blocking_runtime_task_id": str(previous_run_id),
+        "terminal_boundary_status": "missing",
+    }
+    assert admission is not None and admission.dispatch_state == "pending"
+    assert successor_count == 0
 
 
 async def test_new_start_turn_is_rejected_before_admission_when_tool_effect_is_unresolved(
@@ -1569,9 +1992,10 @@ async def test_existing_runtime_worker_tick_recovers_and_signals_cancel(owner_se
         assert control is not None and control.status == "applying"
 
 
-async def test_existing_runtime_worker_tick_claims_turn_replacement_saga(owner_sessionmaker) -> None:
+async def test_existing_runtime_worker_tick_claims_turn_replacement_saga(owner_sessionmaker, monkeypatch) -> None:
     from app.models.session_v2 import SessionControlInput, SessionTurnReplacement
     from app.runtime.hooks import HookResult
+    from app.services import session_turn_replacement
     from app.services.runtime_task_worker import recover_turn_replacement_sagas_once
     from app.services.session_input_admission import run_user_prompt_admission
     from app.services.session_turn_replacement import request_turn_replacement
@@ -1582,6 +2006,17 @@ async def test_existing_runtime_worker_tick_claims_turn_replacement_saga(owner_s
 
     async def signal(*, run_id, **_kwargs):
         signals.append(uuid.UUID(str(run_id)))
+
+    original_recover = session_turn_replacement.recover_turn_replacements_once
+    recovery_tenant_scopes: list[str] = []
+
+    async def recover_inside_tenant_scope(db, **kwargs):
+        recovery_tenant_scopes.append(
+            str(await db.scalar(text("SELECT current_setting('app.current_tenant_id', true)")))
+        )
+        return await original_recover(db, **kwargs)
+
+    monkeypatch.setattr(session_turn_replacement, "recover_turn_replacements_once", recover_inside_tenant_scope)
 
     async with owner_sessionmaker() as db:
         authority = await _authority(db, user_id=user_id, agent_id=agent_id, session_id=session_id)
@@ -1617,6 +2052,7 @@ async def test_existing_runtime_worker_tick_claims_turn_replacement_saga(owner_s
     assert counts["signalled"] == 1
     assert counts["needs_reconciliation"] == 0
     assert signals == [run_id]
+    assert recovery_tenant_scopes == [str(tenant_id)]
     async with owner_sessionmaker() as db:
         saga = await db.get(SessionTurnReplacement, requested.saga_id)
         control = await db.get(SessionControlInput, saga.cancel_control_id if saga else None)
@@ -1962,10 +2398,11 @@ async def test_queue_next_turn_is_fifo_and_creates_turn_only_after_admission(own
         assert [event.lifecycle for event in turn_events] == ["accepted", "queued", "accepted", "queued"]
 
 
-async def test_runtime_worker_recovers_admitted_start_input_after_api_crash(owner_sessionmaker) -> None:
+async def test_runtime_worker_recovers_admitted_start_input_after_api_crash(owner_sessionmaker, monkeypatch) -> None:
     from app.models.runtime_task import RuntimeTask
     from app.models.session_v2 import SessionInputAdmission, SessionTurnInput
     from app.runtime.hooks import HookResult
+    from app.services import session_input_dispatch
     from app.services.runtime_task_worker import recover_session_input_dispatches_once
     from app.services.session_input_admission import run_user_prompt_admission
 
@@ -1973,6 +2410,17 @@ async def test_runtime_worker_recovers_admitted_start_input_after_api_crash(owne
 
     async def allow(**_kwargs):
         return HookResult()
+
+    original_start = session_input_dispatch._start_input_runtime
+    runtime_tenant_scopes: list[str] = []
+
+    async def start_inside_tenant_scope(db, **kwargs):
+        runtime_tenant_scopes.append(
+            str(await db.scalar(text("SELECT current_setting('app.current_tenant_id', true)")))
+        )
+        return await original_start(db, **kwargs)
+
+    monkeypatch.setattr(session_input_dispatch, "_start_input_runtime", start_inside_tenant_scope)
 
     async with owner_sessionmaker() as db:
         authority = await _authority(db, user_id=user_id, agent_id=agent_id, session_id=session_id)
@@ -2011,6 +2459,7 @@ async def test_runtime_worker_recovers_admitted_start_input_after_api_crash(owne
         assert admission is not None and admission.dispatch_state == "dispatched"
         assert row is not None and row.status == "queued" and row.target_run_id == expected_run_id
         assert run is not None and run.prompt == "recover the accepted API input"
+    assert runtime_tenant_scopes == [str(tenant_id)]
 
 
 async def test_runtime_worker_terminally_holds_admitted_input_behind_unknown_tool_effect(
@@ -2235,8 +2684,10 @@ async def test_queue_next_turn_worker_starts_exactly_one_fifo_successor_after_te
     owner_sessionmaker,
 ) -> None:
     from app.models.runtime_task import RuntimeTask
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
     from app.models.session_v2 import SessionInputAdmission, SessionTurnInput
     from app.runtime.hooks import HookResult
+    from app.services.runtime_terminal_boundary_outbox import enqueue_terminal_boundary
     from app.services.runtime_task_worker import recover_session_input_dispatches_once
     from app.services.session_input_admission import run_user_prompt_admission
 
@@ -2281,6 +2732,37 @@ async def test_queue_next_turn_worker_starts_exactly_one_fifo_successor_after_te
         assert active is not None
         active.status = "completed"
         active.completed_at = datetime.now(timezone.utc)
+        terminal_boundary = await enqueue_terminal_boundary(
+            db,
+            task=active,
+            event_kind="turn_stop",
+            agent_id=agent_id,
+            session_id=session_id,
+            terminal_status="completed",
+            authority_ref="runtime_task",
+            authority_id=active_run_id,
+            binding={
+                "terminal_event_id": uuid.uuid4(),
+                "terminal_sequence": 1,
+                "authority_sha256": "a" * 64,
+            },
+        )
+        terminal_boundary_id = terminal_boundary.id
+        await db.commit()
+
+    boundary_wait = await recover_session_input_dispatches_once(
+        worker_id="queue-dispatch-worker",
+        tenant_id=tenant_id,
+        session_factory=owner_sessionmaker,
+    )
+    assert boundary_wait == {"claimed": 2, "dispatched": 0, "deferred": 2, "retried": 0}
+
+    async with owner_sessionmaker() as db:
+        terminal_boundary = await db.get(RuntimeTerminalBoundaryOutbox, terminal_boundary_id)
+        assert terminal_boundary is not None
+        terminal_boundary.status = "delivered"
+        terminal_boundary.delivered_at = datetime.now(timezone.utc)
+        terminal_boundary.delivery_receipt_json = {"source_ref": f"t0-boundary:{terminal_boundary.id}"}
         await db.commit()
 
     first_dispatch = await recover_session_input_dispatches_once(
@@ -2308,6 +2790,24 @@ async def test_queue_next_turn_worker_starts_exactly_one_fifo_successor_after_te
         assert active_count == 1
         first_run.status = "completed"
         first_run.completed_at = datetime.now(timezone.utc)
+        first_boundary = await enqueue_terminal_boundary(
+            db,
+            task=first_run,
+            event_kind="turn_stop",
+            agent_id=agent_id,
+            session_id=session_id,
+            terminal_status="completed",
+            authority_ref="runtime_task",
+            authority_id=first_run.id,
+            binding={
+                "terminal_event_id": uuid.uuid4(),
+                "terminal_sequence": 2,
+                "authority_sha256": "b" * 64,
+            },
+        )
+        first_boundary.status = "delivered"
+        first_boundary.delivered_at = datetime.now(timezone.utc)
+        first_boundary.delivery_receipt_json = {"source_ref": f"t0-boundary:{first_boundary.id}"}
         await db.commit()
 
     second_dispatch = await recover_session_input_dispatches_once(
@@ -2380,6 +2880,12 @@ async def test_steer_terminal_fallback_rolls_over_atomically(owner_sessionmaker)
         task = await db.get(RuntimeTask, run_id)
         assert task is not None
         task.status = "completed"
+        await _mark_web_terminal_boundary_delivered(
+            db,
+            task=task,
+            agent_id=agent_id,
+            session_id=session_id,
+        )
         await db.commit()
         rolled = await queue_admitted_human_input(
             db,
@@ -2510,13 +3016,19 @@ async def test_dispatched_steer_rolls_over_once_after_target_run_terminalizes(ow
         # the steer was already dispatched into it.
         task = await db.get(RuntimeTask, run_id)
         assert task is not None
-        await _apply_terminal_task_update_and_settle(
+        task = await _apply_terminal_task_update_and_settle(
             db,
             task,
             status="completed",
             result_summary="Delegation finished without consuming the steer mailbox.",
             metadata_json={},
             terminal_source="test_terminal_rollover_owner",
+        )
+        await _mark_web_terminal_boundary_delivered(
+            db,
+            task=task,
+            agent_id=agent_id,
+            session_id=session_id,
         )
         await db.commit()
 
@@ -2657,13 +3169,19 @@ async def test_terminal_steer_rollover_lane_respects_fifo_and_active_run_gate(ow
     async with owner_sessionmaker() as db:
         task = await db.get(RuntimeTask, run_id)
         assert task is not None
-        await _apply_terminal_task_update_and_settle(
+        task = await _apply_terminal_task_update_and_settle(
             db,
             task,
             status="completed",
             result_summary="Terminal before steer consumption.",
             metadata_json={},
             terminal_source="test_rollover_fifo_terminal",
+        )
+        await _mark_web_terminal_boundary_delivered(
+            db,
+            task=task,
+            agent_id=agent_id,
+            session_id=session_id,
         )
         await db.commit()
 
@@ -2702,13 +3220,19 @@ async def test_terminal_steer_rollover_lane_respects_fifo_and_active_run_gate(ow
 
         earlier_run = await db.get(RuntimeTask, earlier_successor_id)
         assert earlier_run is not None
-        await _apply_terminal_task_update_and_settle(
+        earlier_run = await _apply_terminal_task_update_and_settle(
             db,
             earlier_run,
             status="completed",
             result_summary="FIFO successor finished.",
             metadata_json={},
             terminal_source="test_rollover_fifo_first_successor_terminal",
+        )
+        await _mark_web_terminal_boundary_delivered(
+            db,
+            task=earlier_run,
+            agent_id=agent_id,
+            session_id=session_id,
         )
         await db.commit()
 
@@ -2768,13 +3292,19 @@ async def test_terminal_steer_rollover_ack_loss_replay_never_duplicates(owner_se
     async with owner_sessionmaker() as db:
         task = await db.get(RuntimeTask, run_id)
         assert task is not None
-        await _apply_terminal_task_update_and_settle(
+        task = await _apply_terminal_task_update_and_settle(
             db,
             task,
             status="completed",
             result_summary="Terminal before steer consumption.",
             metadata_json={},
             terminal_source="test_rollover_ack_terminal",
+        )
+        await _mark_web_terminal_boundary_delivered(
+            db,
+            task=task,
+            agent_id=agent_id,
+            session_id=session_id,
         )
         await db.commit()
 
@@ -2842,13 +3372,19 @@ async def test_terminal_steer_rollover_ack_loss_replay_never_duplicates(owner_se
     async with owner_sessionmaker() as db:
         successor = await db.get(RuntimeTask, successor_run_id)
         assert successor is not None
-        await _apply_terminal_task_update_and_settle(
+        successor = await _apply_terminal_task_update_and_settle(
             db,
             successor,
             status="completed",
             result_summary="Successor finished.",
             metadata_json={},
             terminal_source="test_rollover_ack_successor_terminal",
+        )
+        await _mark_web_terminal_boundary_delivered(
+            db,
+            task=successor,
+            agent_id=agent_id,
+            session_id=session_id,
         )
         await db.commit()
 
@@ -4142,6 +4678,12 @@ async def test_prevented_hook_context_is_carried_once_into_next_turn_provider_sn
         old_run = await db.get(RuntimeTask, old_run_id)
         assert old_run is not None
         old_run.status = "completed"
+        await _mark_web_terminal_boundary_delivered(
+            db,
+            task=old_run,
+            agent_id=agent_id,
+            session_id=session_id,
+        )
         await db.commit()
 
         agent = await db.get(Agent, agent_id)
@@ -4279,6 +4821,7 @@ async def test_prepared_provider_request_is_not_replayed_by_a_new_runtime_claim(
 async def test_ambiguous_provider_failure_fences_result_run_and_event_chain(owner_sessionmaker) -> None:
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_task import RuntimeTask
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
     from app.models.session_v2 import SessionModelResult
     from app.services.session_model_round import bind_round_inputs, fail_model_request, prepare_model_request
 
@@ -4332,6 +4875,12 @@ async def test_ambiguous_provider_failure_fences_result_run_and_event_chain(owne
             select(SessionModelResult).where(SessionModelResult.provider_request_id == provider_request_id)
         )
         task = await db.get(RuntimeTask, run_id)
+        terminal_boundary = await db.scalar(
+            select(RuntimeTerminalBoundaryOutbox).where(
+                RuntimeTerminalBoundaryOutbox.tenant_id == tenant_id,
+                RuntimeTerminalBoundaryOutbox.runtime_task_id == run_id,
+            )
+        )
         event_types = set(
             (
                 await db.execute(
@@ -4353,6 +4902,11 @@ async def test_ambiguous_provider_failure_fences_result_run_and_event_chain(owne
         }
         assert task is not None and task.status == "needs_reconciliation"
         assert task.metadata_json["session_v2_reconciliation"]["provider_request_id"] == provider_request_id
+        assert task.terminal_boundary_enqueued_at is not None
+        assert terminal_boundary is not None
+        assert terminal_boundary.status == "pending"
+        assert terminal_boundary.terminal_status == "needs_reconciliation"
+        assert terminal_boundary.binding_json["runtime_task_id"] == str(run_id)
         assert event_types == {"result_commit.needs_reconciliation", "run.needs_reconciliation"}
 
 
@@ -4400,7 +4954,13 @@ async def test_provider_reconciliation_handler_settles_once_after_canonical_fail
     cancel_control_id = uuid.uuid4()
     async with owner_sessionmaker() as db:
         await db.execute(
-            update(RuntimeTask).where(RuntimeTask.id == run_id).values(claim_version=1, claimed_by="worker-a")
+            update(RuntimeTask)
+            .where(RuntimeTask.id == run_id)
+            .values(
+                claim_version=1,
+                claimed_by="worker-a",
+                claim_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            )
         )
         await register_runtime_root_item(
             db,
@@ -4922,6 +5482,7 @@ async def test_replacement_child_cancel_and_turn_admission_are_fenced_and_idempo
 
 async def test_replacement_durable_owner_recovers_every_state_and_keeps_input_settlement_separate(
     owner_sessionmaker,
+    monkeypatch,
 ) -> None:
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_task import RuntimeTask
@@ -4966,6 +5527,11 @@ async def test_replacement_durable_owner_recovers_every_state_and_keeps_input_se
         await db.flush()
         await admit_replacement_run(db, authority=authority, saga_id=saga.id, run_id=run_id)
 
+    monkeypatch.setattr(
+        "app.services.session_turn_replacement._start_replacement_runtime",
+        start_replacement,
+    )
+
     async with owner_sessionmaker() as db:
         authority = await _authority(db, user_id=user_id, agent_id=agent_id, session_id=session_id)
         input_receipt = await _accepted_input(
@@ -4999,7 +5565,6 @@ async def test_replacement_durable_owner_recovers_every_state_and_keeps_input_se
                 db,
                 worker_id=f"replacement-recovery:{expected_state}",
                 signal_callback=signal,
-                start_replacement_callback=start_replacement,
                 stale_after=timedelta(seconds=0),
                 tenant_id=tenant_id,
                 max_transitions_per_saga=1,
@@ -5035,7 +5600,6 @@ async def test_replacement_durable_owner_recovers_every_state_and_keeps_input_se
                 db,
                 worker_id=f"replacement-recovery:{expected_state}",
                 signal_callback=signal,
-                start_replacement_callback=start_replacement,
                 stale_after=timedelta(seconds=0),
                 tenant_id=tenant_id,
                 max_transitions_per_saga=1,
@@ -5178,7 +5742,6 @@ async def test_replacement_old_run_completed_race_is_typed_and_does_not_drop_inp
                 db,
                 worker_id="replacement-race-worker",
                 signal_callback=noop,
-                start_replacement_callback=noop,
                 stale_after=timedelta(seconds=0),
                 tenant_id=tenant_id,
                 max_transitions_per_saga=1,
@@ -5203,7 +5766,6 @@ async def test_replacement_old_run_completed_race_is_typed_and_does_not_drop_inp
             db,
             worker_id="replacement-race-fence",
             signal_callback=noop,
-            start_replacement_callback=noop,
             stale_after=timedelta(seconds=0),
             tenant_id=tenant_id,
             max_transitions_per_saga=1,

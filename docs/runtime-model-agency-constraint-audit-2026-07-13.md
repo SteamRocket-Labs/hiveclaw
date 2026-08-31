@@ -237,12 +237,12 @@ flowchart TD
 
 对照位置：
 
-- FreeCode：`/Users/rocky243/vc-saas/free-code-main/src/query.ts`
+- FreeCode：`/Users/example-owner/vc-saas/free-code-main/src/query.ts`
   - tool-use 决定是否继续 loop；
   - abort 来自显式中止、hook 或最大轮数；
   - 未发现 final-answer evidence regex rewriter。
 
-- Codex：`/Users/rocky243/Context Engineering/codex/codex-rs/core/src/session/turn.rs`
+- Codex：`/Users/example-owner/Context Engineering/codex/codex-rs/core/src/session/turn.rs`
   - 使用 `needs_follow_up` 和 typed event 决定 turn 生命周期；
   - 原始 `last_agent_message` 作为完成结果；
   - 未发现按工具名关键词重写模型最终语义。
@@ -1419,7 +1419,7 @@ python -m app.scripts.repair_false_tool_evidence_notices --apply --confirm
 现有测试通过只能证明当前 contract 被实现，不证明 contract 正确。审计时的一个定向基线为：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/kernel/test_tool_evidence_honesty.py \
   tests/kernel/test_loop_guard.py \
@@ -1435,7 +1435,7 @@ pytest tests/kernel/test_tool_evidence_honesty.py \
 ### 14.2 实施后的 backend 验收
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 
 pytest \
@@ -1469,7 +1469,7 @@ ruff check app/ tests/
 ### 14.3 实施后的 frontend 验收
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- \
   src/pages/agent-detail/HrBlueprintPreviewCard.test.tsx \
   src/pages/agent-detail/PlanCard.test.tsx \

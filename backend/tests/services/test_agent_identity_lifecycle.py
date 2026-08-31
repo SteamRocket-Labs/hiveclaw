@@ -34,17 +34,22 @@ def test_new_agent_identity_bootstraps_are_explicit_audited_rls_boundaries(relat
 
 
 class _ScalarResult:
-    def __init__(self, value):
+    def __init__(self, value, *, values=()):
         self._value = value
+        self._values = values
 
     def scalar_one_or_none(self):
         return self._value
 
+    def scalars(self):
+        return self._values
+
 
 class _LifecycleDb:
-    def __init__(self, participant=None, *, require_no_autoflush: bool = False) -> None:
+    def __init__(self, participant=None, *, require_no_autoflush: bool = False, runtime_tasks=()) -> None:
         self.participant = participant
         self.require_no_autoflush = require_no_autoflush
+        self.runtime_tasks = runtime_tasks
         self.added: list[object] = []
         self.statements: list[str] = []
         self.flushes = 0
@@ -68,7 +73,10 @@ class _LifecycleDb:
     async def execute(self, stmt):
         if self.require_no_autoflush:
             assert self._no_autoflush_depth > 0
-        self.statements.append(str(stmt))
+        statement = str(stmt)
+        self.statements.append(statement)
+        if "FROM runtime_tasks" in statement:
+            return _ScalarResult(None, values=self.runtime_tasks)
         return _ScalarResult(self.participant)
 
     def add(self, obj):
@@ -234,7 +242,8 @@ async def test_ensure_agent_identity_can_use_audited_rls_bypass(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_soft_delete_agent_preserves_identity_and_disables_execution_entrypoints() -> None:
+async def test_soft_delete_agent_preserves_identity_and_disables_execution_entrypoints(monkeypatch) -> None:
+    from app.services import runtime_terminal_settlement
     from app.services.agent_identity_lifecycle import soft_delete_agent
 
     agent = SimpleNamespace(
@@ -247,7 +256,21 @@ async def test_soft_delete_agent_preserves_identity_and_disables_execution_entry
         container_port=18888,
         participant_id=uuid4(),
     )
-    db = _LifecycleDb()
+    runtime_task = SimpleNamespace(
+        status="running",
+        completed_at=None,
+        result_summary=None,
+        claim_version=4,
+        claimed_by="worker-1",
+        claim_expires_at=object(),
+    )
+    settlements = []
+
+    async def fake_settle(db_arg, task_arg, **kwargs):
+        settlements.append((db_arg, task_arg, kwargs))
+
+    monkeypatch.setattr(runtime_terminal_settlement, "settle_and_enqueue_runtime_task_terminal", fake_settle)
+    db = _LifecycleDb(runtime_tasks=(runtime_task,))
 
     await soft_delete_agent(db, agent, actor_id=uuid4(), reason="owner offboarded")
 
@@ -261,6 +284,20 @@ async def test_soft_delete_agent_preserves_identity_and_disables_execution_entry
     sql = "\n".join(db.statements)
     assert "UPDATE agent_triggers SET is_enabled" in sql
     assert "UPDATE agent_schedules SET is_enabled" in sql
-    assert "UPDATE runtime_tasks SET status" in sql
+    assert "FROM runtime_tasks" in sql
     assert "status IN" in sql
+    assert runtime_task.status == "killed"
+    assert runtime_task.claim_version == 5
+    assert runtime_task.claimed_by is None
+    assert runtime_task.claim_expires_at is None
+    assert settlements == [
+        (
+            db,
+            runtime_task,
+            {
+                "terminal_source": "agent_identity_lifecycle:soft_delete_agent",
+                "root_reason_code": "owner offboarded",
+            },
+        )
+    ]
     assert db.flushes == 1

@@ -106,11 +106,13 @@ async def reconcile_orphaned_trigger_runs(*, apply: bool, older_than_minutes: in
             tasks = list(
                 (
                     await db.execute(
-                        select(RuntimeTask).where(
+                        select(RuntimeTask)
+                        .where(
                             RuntimeTask.id.in_(task_ids),
                             RuntimeTask.task_type == "trigger",
                             RuntimeTask.status == "running",
                         )
+                        .with_for_update(skip_locked=True)
                     )
                 )
                 .scalars()
@@ -163,6 +165,14 @@ async def reconcile_orphaned_trigger_runs(*, apply: bool, older_than_minutes: in
                 task.result_summary = task.result_summary or summary
                 task.completed_at = _utcnow()
                 task.metadata_json = metadata
+                from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
+
+                await settle_and_enqueue_runtime_task_terminal(
+                    db,
+                    task,
+                    terminal_source="reconcile_orphaned_trigger_runs",
+                    root_reason_code=blocker,
+                )
             if apply and tasks:
                 await db.commit()
 

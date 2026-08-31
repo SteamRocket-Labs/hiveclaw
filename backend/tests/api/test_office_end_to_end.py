@@ -40,7 +40,7 @@ async def test_office_create_agent_update_preview_and_readback_loop(tmp_path, mo
     agent_id = uuid4()
     user_id = uuid4()
     tenant_id = uuid4()
-    user = SimpleNamespace(id=user_id, tenant_id=tenant_id, name="Rocky")
+    user = SimpleNamespace(id=user_id, tenant_id=tenant_id, name="Example Owner")
     monkeypatch.setattr(
         office_api,
         "settings",

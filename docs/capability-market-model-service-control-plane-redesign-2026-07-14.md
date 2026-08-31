@@ -1374,7 +1374,7 @@ Raw payload、trace ID、schema、hash 放详情抽屉。
 先创建失败测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 
 pytest tests/services/test_capability_shelf_service.py -q
@@ -1416,7 +1416,7 @@ pytest tests/migrations/test_llm_service_connection_migration.py -q
 ### 17.2 Frontend Red tests
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 
 npm run test -- CapabilityMarketPage
 npm run test -- AgentExtensionsSection
@@ -1442,12 +1442,12 @@ npm run test -- AgentSettingsSection
 ### 17.3 回归与构建
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q
 ruff check app tests
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test
 npm run build
 ```

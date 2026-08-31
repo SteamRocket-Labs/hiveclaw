@@ -76,7 +76,7 @@ async def test_agent_kernel_retries_once_with_fallback_model():
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=2),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             resolve_retrieval_context=lambda *_args, **_kwargs: "",
@@ -157,7 +157,7 @@ async def test_agent_kernel_uses_fallback_for_provider_overloaded_529():
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=2),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             resolve_retrieval_context=lambda *_args, **_kwargs: "",
@@ -254,7 +254,7 @@ async def test_agent_kernel_does_not_fallback_for_provider_account_errors(error,
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=2),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             resolve_retrieval_context=lambda *_args, **_kwargs: "",
@@ -314,7 +314,7 @@ async def test_agent_kernel_returns_stopped_result_when_cancel_event_fires():
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=2),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             resolve_retrieval_context=lambda *_args, **_kwargs: "",
@@ -394,7 +394,7 @@ async def test_agent_kernel_cancels_running_tool_when_cancel_event_fires():
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=2),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             resolve_retrieval_context=lambda *_args, **_kwargs: "",

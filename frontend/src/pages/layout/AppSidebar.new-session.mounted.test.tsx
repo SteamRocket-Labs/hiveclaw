@@ -99,7 +99,7 @@ describe('AppSidebar new conversation authority', () => {
   it('hands a native new-conversation click to the draft route before durable Session creation', () => {
     render(
       <AppSidebar
-        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Rocky' }}
+        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Example Owner' }}
         theme="light"
         isSidebarCollapsed={false}
         onToggleSidebar={vi.fn()}

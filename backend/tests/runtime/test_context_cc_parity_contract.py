@@ -5,18 +5,16 @@ from pathlib import Path
 
 def test_full_lifecycle_context_map_is_documented_in_runtime_instructions() -> None:
     repo_root = Path(__file__).resolve().parents[3]
-    text = "\n".join(
-        [
-            (repo_root / "AGENTS.md").read_text(encoding="utf-8"),
-            (repo_root / "CLAUDE.md").read_text(encoding="utf-8"),
-        ]
-    )
+    reference = "docs/ccplus-north-star-contract-2026-06-24.md"
+    agents = (repo_root / "AGENTS.md").read_text(encoding="utf-8")
+    text = (repo_root / reference).read_text(encoding="utf-8")
 
-    assert "Full Lifecycle Parity" in text
-    assert "CC `CLAUDE.md` / project instructions" in text
-    assert "Hive `soul.md`" in text
-    assert "Skill, Sub-agent, Workflow, and Hooks" in text
-    assert "Memory / Iter self-evolution system" in text
+    assert reference in agents
+    assert "CC / FreeCode local runtime semantics" in text
+    assert "session loop, transcript append, tool loop, hooks, Plan Mode" in text
+    assert "resume/rewind/fork/compact" in text
+    assert "Web UI, API, RuntimeTask, ChatSession, T0, or Session Workbench" in text
+    assert "Memory / Iter: Hive-native self-evolution layer" in text
 
 
 def test_skill_catalog_stays_out_of_frozen_prefix() -> None:

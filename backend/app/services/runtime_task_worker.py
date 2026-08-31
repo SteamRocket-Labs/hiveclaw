@@ -9,16 +9,38 @@ from typing import Any
 from uuid import UUID
 
 from loguru import logger
+from sqlalchemy import and_, case, func, or_, select, union_all
 
 from app.config import get_settings
-from app.database import async_session, enter_rls_bypass
-from app.models.runtime_task import RuntimeTask
+from app.database import async_session, enter_rls_bypass, tenant_scoped_session
+from app.models.runtime_task import (
+    TERMINAL_BOUNDARY_REQUIRED_TASK_TYPES,
+    TERMINAL_BOUNDARY_RETRY_SECONDS,
+    TERMINAL_BOUNDARY_TERMINAL_STATUSES,
+    RuntimeTask,
+)
+from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
 from app.services.budget_transition_outbox import BudgetTransitionOutboxService
 from app.services.channel_delivery_outbox import ChannelDeliveryOutboxService
 from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService
+from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
+from app.services.direct_invocation_terminal_boundary_processor import (
+    DIRECT_INVOCATION_TASK_TYPES,
+    DirectInvocationTerminalBoundaryProcessor,
+)
 from app.services.runtime_task_claim_service import RuntimeTaskClaimService
 from app.services.runtime_task_fence import run_claimed_runtime_task
-from app.services.web_chat_runtime import active_web_chat_run_count, dispatch_web_chat_run, is_executable_chat_task_type
+from app.services.web_chat_runtime import (
+    EXECUTABLE_CHAT_TASK_TYPES,
+    active_web_chat_run_count,
+    dispatch_web_chat_run,
+    is_executable_chat_task_type,
+)
+from app.services.web_terminal_boundary_processor import WebTerminalBoundaryProcessor
+
+
+if (*EXECUTABLE_CHAT_TASK_TYPES, *DIRECT_INVOCATION_TASK_TYPES) != TERMINAL_BOUNDARY_REQUIRED_TASK_TYPES:
+    raise RuntimeError("terminal boundary task types no longer match the live Web/direct consumers")
 
 
 _LOCAL_WAKEUP_EVENT: asyncio.Event | None = None
@@ -80,6 +102,15 @@ _STATE: dict[str, Any] = {
     "session_terminal_outcomes_needs_reconciliation": 0,
     "session_terminal_candidates_committed": 0,
     "session_terminal_candidates_held": 0,
+    "terminal_boundary_tenants": 0,
+    "terminal_boundaries_enqueued": 0,
+    "terminal_boundaries_held": 0,
+    "terminal_boundaries_claimed": 0,
+    "terminal_boundaries_delivered": 0,
+    "terminal_boundaries_retried": 0,
+    "terminal_boundaries_dead_lettered": 0,
+    "terminal_boundaries_failed": 0,
+    "terminal_boundary_worker_running": False,
     "turn_replacements_claimed": 0,
     "turn_replacements_transitioned": 0,
     "turn_replacements_signalled": 0,
@@ -263,7 +294,7 @@ async def claim_and_dispatch_once(*, worker_id: str | None = None) -> list[str]:
     if reclaimed_count:
         _STATE["expired_claims_reclaimed"] = int(_STATE.get("expired_claims_reclaimed") or 0) + reclaimed_count
         logger.warning(
-            "[RuntimeTaskWorker] reclaimed {} expired web-chat claim(s) with new fences",
+            "[RuntimeTaskWorker] reclaimed {} expired runtime-task claim(s) with new fences",
             reclaimed_count,
         )
 
@@ -288,6 +319,230 @@ async def drain_runtime_notification_outbox_once(*, worker_id: str) -> dict[str,
         _STATE[state_key] = int(_STATE.get(state_key) or 0) + int(counts.get(key) or 0)
     if str(_STATE.get("last_error") or "").startswith("outbox:"):
         _STATE["last_error"] = None
+    return counts
+
+
+async def _discover_terminal_boundary_tenants(
+    *,
+    worker_id: str,
+    task_types: tuple[str, ...],
+    limit: int = 20,
+    now: datetime | None = None,
+    session_factory=async_session,
+) -> list[UUID]:
+    """Use one bounded bypass read to find tenant-scoped terminal work."""
+
+    current = now or _utcnow()
+    retry_before = current - timedelta(seconds=TERMINAL_BOUNDARY_RETRY_SECONDS)
+    outbox_ready_at = case(
+        (RuntimeTerminalBoundaryOutbox.status == "pending", RuntimeTerminalBoundaryOutbox.available_at),
+        else_=func.coalesce(
+            RuntimeTerminalBoundaryOutbox.lease_expires_at,
+            RuntimeTerminalBoundaryOutbox.created_at,
+        ),
+    )
+    outbox_candidates = (
+        select(
+            RuntimeTerminalBoundaryOutbox.tenant_id.label("tenant_id"),
+            outbox_ready_at.label("ready_at"),
+        )
+        .join(
+            RuntimeTask,
+            and_(
+                RuntimeTask.id == RuntimeTerminalBoundaryOutbox.runtime_task_id,
+                RuntimeTask.tenant_id == RuntimeTerminalBoundaryOutbox.tenant_id,
+            ),
+        )
+        .where(
+            RuntimeTask.task_type.in_(task_types),
+            or_(
+                and_(
+                    RuntimeTerminalBoundaryOutbox.status == "pending",
+                    RuntimeTerminalBoundaryOutbox.available_at <= current,
+                ),
+                and_(
+                    RuntimeTerminalBoundaryOutbox.status == "processing",
+                    or_(
+                        RuntimeTerminalBoundaryOutbox.lease_expires_at.is_(None),
+                        RuntimeTerminalBoundaryOutbox.lease_expires_at <= current,
+                    ),
+                ),
+            ),
+        )
+    )
+    reconcile_candidates = select(
+        RuntimeTask.tenant_id.label("tenant_id"),
+        func.coalesce(
+            RuntimeTask.terminal_boundary_reconcile_attempted_at,
+            RuntimeTask.created_at,
+        ).label("ready_at"),
+    ).where(
+        RuntimeTask.task_type.in_(task_types),
+        RuntimeTask.terminal_boundary_generation.is_not(None),
+        RuntimeTask.terminal_boundary_enqueued_at.is_(None),
+        RuntimeTask.status.in_(TERMINAL_BOUNDARY_TERMINAL_STATUSES),
+        or_(
+            RuntimeTask.terminal_boundary_reconcile_attempted_at.is_(None),
+            RuntimeTask.terminal_boundary_reconcile_attempted_at <= retry_before,
+        ),
+    )
+    candidates = union_all(outbox_candidates, reconcile_candidates).subquery()
+    statement = (
+        select(candidates.c.tenant_id)
+        .group_by(candidates.c.tenant_id)
+        .order_by(func.min(candidates.c.ready_at), candidates.c.tenant_id)
+        .limit(max(1, int(limit)))
+    )
+    async with (
+        session_factory() as db,
+        enter_rls_bypass(
+            db,
+            reason="runtime task worker discover terminal boundary tenants",
+            actor_id=worker_id,
+        ),
+    ):
+        return list((await db.execute(statement)).scalars())
+
+
+async def _build_web_terminal_boundaries(db, task: RuntimeTask):
+    if task.task_type not in EXECUTABLE_CHAT_TASK_TYPES:
+        raise ValueError("terminal boundary Web builder received a non-Web RuntimeTask")
+    from app.services.web_terminal_boundary_processor import enqueue_web_terminal_boundary_for_task
+
+    row = await enqueue_web_terminal_boundary_for_task(db, task)
+    return (row,) if row is not None else ()
+
+
+async def drain_web_terminal_boundary_outbox_once(
+    *,
+    worker_id: str,
+    limit: int = 20,
+    session_factory=async_session,
+    builder=None,
+) -> dict[str, int]:
+    tenant_ids = await _discover_terminal_boundary_tenants(
+        worker_id=worker_id,
+        task_types=EXECUTABLE_CHAT_TASK_TYPES,
+        limit=limit,
+        session_factory=session_factory,
+    )
+    counts = {
+        "tenants": len(tenant_ids),
+        "enqueued": 0,
+        "held": 0,
+        "claimed": 0,
+        "delivered": 0,
+        "retried": 0,
+        "dead_lettered": 0,
+        "failed": 0,
+    }
+    processor = WebTerminalBoundaryProcessor(session_factory=session_factory)
+    service = RuntimeTerminalBoundaryOutboxService(session_factory=session_factory)
+
+    async def _drain_tenant(tenant_id: UUID):
+        reconciled = await service.reconcile_terminal_tasks_once(
+            tenant_id=tenant_id,
+            builder=builder or _build_web_terminal_boundaries,
+            limit=limit,
+            task_types=EXECUTABLE_CHAT_TASK_TYPES,
+        )
+        drained = await service.drain_once(
+            tenant_id=tenant_id,
+            worker_id=worker_id,
+            canonical_validator=processor.validate,
+            process_callback=processor,
+            limit=limit,
+            task_types=EXECUTABLE_CHAT_TASK_TYPES,
+        )
+        return reconciled, drained
+
+    results = await asyncio.gather(*(_drain_tenant(tenant_id) for tenant_id in tenant_ids), return_exceptions=True)
+    for tenant_id, result in zip(tenant_ids, results, strict=True):
+        if isinstance(result, BaseException):
+            counts["failed"] += 1
+            logger.warning("[RuntimeTaskWorker] Web terminal tenant {} failed: {}", tenant_id, result)
+            continue
+        reconciled, drained = result
+        for key in ("enqueued", "held"):
+            counts[key] += int(reconciled.get(key) or 0)
+        for key in ("claimed", "delivered", "retried", "dead_lettered"):
+            counts[key] += int(drained.get(key) or 0)
+    _STATE["terminal_boundary_tenants"] = int(_STATE.get("terminal_boundary_tenants") or 0) + counts["tenants"]
+    for key in ("enqueued", "held", "claimed", "delivered", "retried", "dead_lettered", "failed"):
+        state_key = f"terminal_boundaries_{key}"
+        _STATE[state_key] = int(_STATE.get(state_key) or 0) + counts[key]
+    return counts
+
+
+async def _build_direct_terminal_boundaries(db, task: RuntimeTask):
+    if task.task_type not in DIRECT_INVOCATION_TASK_TYPES:
+        raise ValueError("direct terminal boundary builder received an unsupported RuntimeTask")
+    from app.services.direct_invocation_terminal_boundary_processor import (
+        enqueue_direct_terminal_boundary_for_task,
+    )
+
+    row = await enqueue_direct_terminal_boundary_for_task(db, task)
+    return (row,) if row is not None else ()
+
+
+async def drain_direct_terminal_boundary_outbox_once(
+    *,
+    worker_id: str,
+    limit: int = 20,
+    session_factory=async_session,
+    builder=None,
+) -> dict[str, int]:
+    tenant_ids = await _discover_terminal_boundary_tenants(
+        worker_id=worker_id,
+        task_types=DIRECT_INVOCATION_TASK_TYPES,
+        limit=limit,
+        session_factory=session_factory,
+    )
+    counts = {
+        "tenants": len(tenant_ids),
+        "enqueued": 0,
+        "held": 0,
+        "claimed": 0,
+        "delivered": 0,
+        "retried": 0,
+        "dead_lettered": 0,
+        "failed": 0,
+    }
+    processor = DirectInvocationTerminalBoundaryProcessor(session_factory=session_factory)
+    service = RuntimeTerminalBoundaryOutboxService(session_factory=session_factory)
+
+    async def _drain_tenant(tenant_id: UUID):
+        reconciled = await service.reconcile_terminal_tasks_once(
+            tenant_id=tenant_id,
+            builder=builder or _build_direct_terminal_boundaries,
+            limit=limit,
+            task_types=DIRECT_INVOCATION_TASK_TYPES,
+        )
+        drained = await service.drain_once(
+            tenant_id=tenant_id,
+            worker_id=worker_id,
+            canonical_validator=processor.validate,
+            process_callback=processor,
+            limit=limit,
+            task_types=DIRECT_INVOCATION_TASK_TYPES,
+        )
+        return reconciled, drained
+
+    results = await asyncio.gather(*(_drain_tenant(tenant_id) for tenant_id in tenant_ids), return_exceptions=True)
+    for tenant_id, result in zip(tenant_ids, results, strict=True):
+        if isinstance(result, BaseException):
+            counts["failed"] += 1
+            logger.warning("[RuntimeTaskWorker] direct terminal tenant {} failed: {}", tenant_id, result)
+            continue
+        reconciled, drained = result
+        for key in ("enqueued", "held"):
+            counts[key] += int(reconciled.get(key) or 0)
+        for key in ("claimed", "delivered", "retried", "dead_lettered"):
+            counts[key] += int(drained.get(key) or 0)
+    _STATE["terminal_boundary_tenants"] = int(_STATE.get("terminal_boundary_tenants") or 0) + counts["tenants"]
+    for key in ("enqueued", "held", "claimed", "delivered", "retried", "dead_lettered", "failed"):
+        state_key = f"terminal_boundaries_{key}"
+        _STATE[state_key] = int(_STATE.get(state_key) or 0) + counts[key]
     return counts
 
 
@@ -460,6 +715,8 @@ async def recover_session_terminal_outcomes_once(
     """Recover sealed outcomes, then eligible results, using stable identities."""
 
     from app.services.session_terminal_outcome import (
+        locate_terminal_outcome_recovery_candidates,
+        locate_terminal_result_recovery_candidates,
         recover_terminal_candidates_once,
         recover_terminal_outcomes_once,
     )
@@ -470,30 +727,71 @@ async def recover_session_terminal_outcomes_once(
             db,
             reason="runtime task worker recover sealed Session V2 terminal outcomes",
             actor_id=worker_id,
-        ),
+        ) as locator_db,
     ):
-        sealed = await recover_terminal_outcomes_once(
-            db,
-            worker_id=worker_id,
+        sealed_locators = await locate_terminal_outcome_recovery_candidates(
+            locator_db,
             limit=limit,
             run_id=run_id,
         )
-        await db.commit()
+
+    sealed = {"terminal_committed": 0, "needs_reconciliation": 0}
+    sealed_by_tenant: dict[UUID, list[UUID]] = {}
+    for located_tenant_id, outcome_id in sealed_locators:
+        sealed_by_tenant.setdefault(located_tenant_id, []).append(outcome_id)
+    for located_tenant_id, outcome_ids in sealed_by_tenant.items():
+        async with tenant_scoped_session(
+            located_tenant_id,
+            session_factory=session_factory,
+            require_tenant=True,
+            source="runtime_task_worker:terminal_outcome_recovery",
+        ) as db:
+            recovered = await recover_terminal_outcomes_once(
+                db,
+                worker_id=worker_id,
+                limit=len(outcome_ids),
+                run_id=run_id,
+                tenant_id=located_tenant_id,
+                outcome_ids=tuple(outcome_ids),
+            )
+        for key in sealed:
+            sealed[key] += int(recovered.get(key) or 0)
+
     async with (
         session_factory() as db,
         enter_rls_bypass(
             db,
             reason="runtime task worker recover Session V2 terminal candidates",
             actor_id=worker_id,
-        ),
+        ) as locator_db,
     ):
-        candidates = await recover_terminal_candidates_once(
-            db,
-            worker_id=worker_id,
+        candidate_locators = await locate_terminal_result_recovery_candidates(
+            locator_db,
             limit=limit,
             run_id=run_id,
         )
-        await db.commit()
+
+    candidates = {"terminal_committed": 0, "held": 0}
+    candidates_by_tenant: dict[UUID, list[UUID]] = {}
+    for located_tenant_id, result_id in candidate_locators:
+        candidates_by_tenant.setdefault(located_tenant_id, []).append(result_id)
+    for located_tenant_id, result_ids in candidates_by_tenant.items():
+        async with tenant_scoped_session(
+            located_tenant_id,
+            session_factory=session_factory,
+            require_tenant=True,
+            source="runtime_task_worker:terminal_candidate_recovery",
+        ) as db:
+            recovered = await recover_terminal_candidates_once(
+                db,
+                worker_id=worker_id,
+                limit=len(result_ids),
+                run_id=run_id,
+                tenant_id=located_tenant_id,
+                result_ids=tuple(result_ids),
+            )
+        for key in candidates:
+            candidates[key] += int(recovered.get(key) or 0)
     _STATE["session_terminal_outcomes_committed"] = int(_STATE.get("session_terminal_outcomes_committed") or 0) + int(
         sealed.get("terminal_committed") or 0
     )
@@ -518,15 +816,28 @@ async def recover_turn_replacement_sagas_once(
     *,
     worker_id: str,
     signal_callback=None,
-    start_replacement_callback=None,
     stale_after: timedelta = timedelta(seconds=5),
     tenant_id: UUID | None = None,
+    limit: int = 50,
     session_factory=async_session,
 ) -> dict[str, int]:
-    """Advance durable replacement sagas under the worker's audited RLS lane."""
+    """Discover replacement sagas globally, then recover inside tenant RLS."""
 
+    from app.models.session_v2 import SessionTurnReplacement
     from app.services.session_turn_replacement import recover_turn_replacements_once
 
+    now = _utcnow()
+    locator_statement = (
+        select(SessionTurnReplacement.tenant_id, SessionTurnReplacement.id)
+        .where(
+            SessionTurnReplacement.state.notin_(("completed", "failed", "needs_reconciliation")),
+            (SessionTurnReplacement.lease_expires_at.is_(None) | (SessionTurnReplacement.lease_expires_at <= now)),
+        )
+        .order_by(SessionTurnReplacement.id)
+        .limit(max(1, int(limit)))
+    )
+    if tenant_id is not None:
+        locator_statement = locator_statement.where(SessionTurnReplacement.tenant_id == tenant_id)
     async with (
         session_factory() as db,
         enter_rls_bypass(
@@ -535,14 +846,38 @@ async def recover_turn_replacement_sagas_once(
             actor_id=worker_id,
         ),
     ):
-        counts = await recover_turn_replacements_once(
-            db,
-            worker_id=worker_id,
-            signal_callback=signal_callback,
-            start_replacement_callback=start_replacement_callback,
-            stale_after=stale_after,
-            tenant_id=tenant_id,
-        )
+        locators = list((await db.execute(locator_statement)).tuples())
+
+    counts = {
+        "claimed": 0,
+        "transitioned": 0,
+        "signalled": 0,
+        "started_runs": 0,
+        "completed": 0,
+        "retryable_failures": 0,
+        "needs_reconciliation": 0,
+    }
+    sagas_by_tenant: dict[UUID, list[UUID]] = {}
+    for located_tenant_id, saga_id in locators:
+        sagas_by_tenant.setdefault(located_tenant_id, []).append(saga_id)
+    for located_tenant_id, saga_ids in sagas_by_tenant.items():
+        async with tenant_scoped_session(
+            located_tenant_id,
+            session_factory=session_factory,
+            require_tenant=True,
+            source="runtime_task_worker:turn_replacement_recovery",
+        ) as db:
+            recovered = await recover_turn_replacements_once(
+                db,
+                worker_id=worker_id,
+                signal_callback=signal_callback,
+                stale_after=stale_after,
+                tenant_id=located_tenant_id,
+                saga_ids=tuple(saga_ids),
+                limit=len(saga_ids),
+            )
+        for key in counts:
+            counts[key] += int(recovered.get(key) or 0)
     for key in (
         "claimed",
         "transitioned",
@@ -595,11 +930,15 @@ async def recover_session_input_dispatches_once(
     worker_id: str,
     stale_after: timedelta = timedelta(seconds=5),
     tenant_id: UUID | None = None,
+    limit: int = 100,
     session_factory=async_session,
 ) -> dict[str, int]:
-    """Dispatch every admitted HumanInput from the durable database lane."""
+    """Discover admitted inputs globally, then dispatch inside tenant RLS."""
 
-    from app.services.session_input_dispatch import recover_admitted_session_inputs_once
+    from app.services.session_input_dispatch import (
+        discover_admitted_session_input_locators,
+        recover_admitted_session_inputs_once,
+    )
 
     async with (
         session_factory() as db,
@@ -609,12 +948,32 @@ async def recover_session_input_dispatches_once(
             actor_id=worker_id,
         ),
     ):
-        counts = await recover_admitted_session_inputs_once(
+        locators = await discover_admitted_session_input_locators(
             db,
-            worker_id=worker_id,
-            stale_after=stale_after,
             tenant_id=tenant_id,
+            limit=limit,
         )
+    counts = {"claimed": 0, "dispatched": 0, "deferred": 0, "retried": 0}
+    admissions_by_tenant: dict[UUID, list[UUID]] = {}
+    for located_tenant_id, admission_id in locators:
+        admissions_by_tenant.setdefault(located_tenant_id, []).append(admission_id)
+    for located_tenant_id, admission_ids in admissions_by_tenant.items():
+        async with tenant_scoped_session(
+            located_tenant_id,
+            session_factory=session_factory,
+            require_tenant=True,
+            source="runtime_task_worker:session_input_dispatch",
+        ) as db:
+            dispatched = await recover_admitted_session_inputs_once(
+                db,
+                worker_id=worker_id,
+                stale_after=stale_after,
+                tenant_id=located_tenant_id,
+                admission_ids=tuple(admission_ids),
+                limit=len(admission_ids),
+            )
+        for key in counts:
+            counts[key] += int(dispatched.get(key) or 0)
     for key in ("claimed", "dispatched", "deferred", "retried"):
         state_key = f"session_input_dispatches_{key}"
         _STATE[state_key] = int(_STATE.get(state_key) or 0) + int(counts.get(key) or 0)
@@ -626,11 +985,15 @@ async def recover_terminal_target_session_inputs_once(
     worker_id: str,
     stale_after: timedelta = timedelta(seconds=5),
     tenant_id: UUID | None = None,
+    limit: int = 100,
     session_factory=async_session,
 ) -> dict[str, int]:
-    """Roll over dispatched steers whose target run terminalized after mailing."""
+    """Discover terminal steers globally, then roll them over inside tenant RLS."""
 
-    from app.services.session_input_dispatch import recover_dispatched_terminal_steers_once
+    from app.services.session_input_dispatch import (
+        discover_terminal_steer_locators,
+        recover_dispatched_terminal_steers_once,
+    )
 
     async with (
         session_factory() as db,
@@ -640,12 +1003,32 @@ async def recover_terminal_target_session_inputs_once(
             actor_id=worker_id,
         ),
     ):
-        counts = await recover_dispatched_terminal_steers_once(
+        locators = await discover_terminal_steer_locators(
             db,
-            worker_id=worker_id,
-            stale_after=stale_after,
             tenant_id=tenant_id,
+            limit=limit,
         )
+    counts = {"claimed": 0, "dispatched": 0, "deferred": 0, "retried": 0}
+    admissions_by_tenant: dict[UUID, list[UUID]] = {}
+    for located_tenant_id, admission_id in locators:
+        admissions_by_tenant.setdefault(located_tenant_id, []).append(admission_id)
+    for located_tenant_id, admission_ids in admissions_by_tenant.items():
+        async with tenant_scoped_session(
+            located_tenant_id,
+            session_factory=session_factory,
+            require_tenant=True,
+            source="runtime_task_worker:session_input_terminal_rollover",
+        ) as db:
+            rolled_over = await recover_dispatched_terminal_steers_once(
+                db,
+                worker_id=worker_id,
+                stale_after=stale_after,
+                tenant_id=located_tenant_id,
+                admission_ids=tuple(admission_ids),
+                limit=len(admission_ids),
+            )
+        for key in counts:
+            counts[key] += int(rolled_over.get(key) or 0)
     for key in ("claimed", "dispatched", "deferred", "retried"):
         state_key = f"session_input_rollovers_{key}"
         _STATE[state_key] = int(_STATE.get(state_key) or 0) + int(counts.get(key) or 0)
@@ -753,7 +1136,7 @@ async def _execute_claimed_delegation_task(task_id: UUID) -> None:
     try:
         from app.agents.orchestrator import dispatch_persisted_async_delegation
 
-        ok = await dispatch_persisted_async_delegation(task_id.hex)
+        ok = await dispatch_persisted_async_delegation(task_id.hex, wait_for_completion=True)
         if not ok:
             logger.warning("[RuntimeTaskWorker] delegation task {} could not be dispatched", task_id)
     except Exception as exc:  # noqa: BLE001
@@ -842,6 +1225,7 @@ async def _execute_claimed_business_task(runtime_task_id: UUID) -> None:
                     agent_id,
                     requester_user_id=requester_user_id,
                     cancel_event=cancel_event,
+                    runtime_task_id=runtime_task_id,
                 )
             except Exception as exc:  # convert operational executor failure into the typed terminal contract.
                 outcome = TaskExecutionOutcome(
@@ -850,7 +1234,8 @@ async def _execute_claimed_business_task(runtime_task_id: UUID) -> None:
                     error_code=type(exc).__name__,
                     retryable=True,
                 )
-            if not await finalize_business_task_execution(runtime_task_id=runtime_task_id, outcome=outcome):
+            finalization = await finalize_business_task_execution(runtime_task_id=runtime_task_id, outcome=outcome)
+            if finalization is None or not finalization.committed:
                 raise RuntimeError("business task finalization could not locate the claimed runtime task")
         finally:
             release_business_task_cancel_event(runtime_task_id, cancel_event)
@@ -876,6 +1261,39 @@ async def _execute_claimed_business_task(runtime_task_id: UUID) -> None:
             )
 
 
+async def _terminal_boundary_lane_loop(*, worker_id: str, lane: str) -> None:
+    drain = drain_web_terminal_boundary_outbox_once if lane == "web" else drain_direct_terminal_boundary_outbox_once
+    poll_seconds = max(0.05, float(_settings().RUNTIME_TASK_CLAIM_POLL_SECONDS))
+    while True:
+        try:
+            await drain(worker_id=worker_id)
+        except Exception as exc:  # noqa: BLE001 - the durable claim remains retryable.
+            _STATE["last_error"] = f"{lane}_terminal_boundary:{type(exc).__name__}: {exc}"
+            logger.exception("[RuntimeTaskWorker] {} terminal boundary tick failed", lane)
+        await asyncio.sleep(poll_seconds)
+
+
+async def start_terminal_boundary_worker_loop(*, worker_id: str | None = None) -> None:
+    """Run required terminal consumers independently from new task claims."""
+
+    exact_worker_id = worker_id or _worker_id()
+    lane_tasks = [
+        asyncio.create_task(
+            _terminal_boundary_lane_loop(worker_id=exact_worker_id, lane=lane),
+            name=f"runtime-terminal-boundary-{lane}",
+        )
+        for lane in ("web", "direct")
+    ]
+    _STATE["terminal_boundary_worker_running"] = True
+    try:
+        await asyncio.gather(*lane_tasks)
+    finally:
+        _STATE["terminal_boundary_worker_running"] = False
+        for task in lane_tasks:
+            task.cancel()
+        await asyncio.gather(*lane_tasks, return_exceptions=True)
+
+
 async def start_runtime_task_worker_loop() -> None:
     if not runtime_task_worker_enabled():
         logger.info("[RuntimeTaskWorker] disabled for process role {}", _settings().HIVE_PROCESS_ROLE)
@@ -884,6 +1302,10 @@ async def start_runtime_task_worker_loop() -> None:
     worker_id = _worker_id()
     _STATE.update({"running": True, "worker_id": worker_id, "last_error": None})
     listener_task = asyncio.create_task(_redis_wakeup_listener(), name="runtime-task-worker-wakeup-listener")
+    terminal_boundary_task = asyncio.create_task(
+        start_terminal_boundary_worker_loop(worker_id=worker_id),
+        name="runtime-terminal-boundary-worker",
+    )
     logger.info("[RuntimeTaskWorker] started worker_id={}", worker_id)
     try:
         while True:
@@ -908,16 +1330,6 @@ async def start_runtime_task_worker_loop() -> None:
                 _STATE["last_error"] = f"input_admission_recovery:{type(exc).__name__}: {exc}"
                 logger.exception("[RuntimeTaskWorker] input admission recovery tick failed")
             try:
-                await recover_session_input_dispatches_once(worker_id=worker_id)
-            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
-                _STATE["last_error"] = f"session_input_dispatch:{type(exc).__name__}: {exc}"
-                logger.exception("[RuntimeTaskWorker] Session V2 input dispatch tick failed")
-            try:
-                await recover_terminal_target_session_inputs_once(worker_id=worker_id)
-            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
-                _STATE["last_error"] = f"session_input_terminal_rollover:{type(exc).__name__}: {exc}"
-                logger.exception("[RuntimeTaskWorker] Session V2 terminal steer rollover tick failed")
-            try:
                 await recover_turn_replacement_sagas_once(worker_id=worker_id)
             except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
                 _STATE["last_error"] = f"turn_replacement_recovery:{type(exc).__name__}: {exc}"
@@ -932,6 +1344,16 @@ async def start_runtime_task_worker_loop() -> None:
             except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
                 _STATE["last_error"] = f"session_terminal_recovery:{type(exc).__name__}: {exc}"
                 logger.exception("[RuntimeTaskWorker] Session V2 terminal recovery tick failed")
+            try:
+                await recover_session_input_dispatches_once(worker_id=worker_id)
+            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
+                _STATE["last_error"] = f"session_input_dispatch:{type(exc).__name__}: {exc}"
+                logger.exception("[RuntimeTaskWorker] Session V2 input dispatch tick failed")
+            try:
+                await recover_terminal_target_session_inputs_once(worker_id=worker_id)
+            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
+                _STATE["last_error"] = f"session_input_terminal_rollover:{type(exc).__name__}: {exc}"
+                logger.exception("[RuntimeTaskWorker] Session V2 terminal steer rollover tick failed")
             try:
                 await reconcile_hr_creation_drafts_once()
             except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
@@ -976,10 +1398,8 @@ async def start_runtime_task_worker_loop() -> None:
     finally:
         _STATE["running"] = False
         listener_task.cancel()
-        try:
-            await listener_task
-        except asyncio.CancelledError:
-            pass
+        terminal_boundary_task.cancel()
+        await asyncio.gather(listener_task, terminal_boundary_task, return_exceptions=True)
 
 
 def runtime_task_worker_snapshot() -> dict[str, Any]:

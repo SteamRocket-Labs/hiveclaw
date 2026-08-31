@@ -212,7 +212,33 @@ async def test_call_llm_delegates_to_runtime_invoker(monkeypatch):
     assert captured["request"].session_context.session_id == "session-1"
     assert captured["request"].session_context.source == "web"
     assert captured["request"].session_context.channel == "web"
-    assert captured["request"].emit_turn_stop is False
+
+
+@pytest.mark.asyncio
+async def test_call_llm_can_return_the_full_terminal_receipt(monkeypatch):
+    from app.api.websocket import call_llm
+
+    invocation_result = SimpleNamespace(
+        content="trigger result",
+        terminal_reason="turn_stop",
+        response_complete_payload={"metadata": {"final_response": "trigger result"}},
+    )
+
+    async def fake_invoke_agent(_request):
+        return invocation_result
+
+    monkeypatch.setattr("app.api.websocket.invoke_agent", fake_invoke_agent)
+
+    result = await call_llm(
+        model=SimpleNamespace(),
+        messages=[{"role": "user", "content": "run"}],
+        agent_name="Agent",
+        role_description="",
+        session_id="trigger-session",
+        return_result=True,
+    )
+
+    assert result is invocation_result
 
 
 @pytest.mark.asyncio
@@ -238,7 +264,7 @@ async def test_call_llm_strips_upstream_system_messages_and_passes_execution_ide
     execution_identity = ExecutionIdentityRef(
         identity_type="delegated_user",
         identity_id=uuid4(),
-        label="Rocky via web",
+        label="Example Owner via web",
     )
 
     result = await call_llm(
@@ -303,154 +329,3 @@ async def test_call_llm_reuses_provided_session_context(monkeypatch):
     assert captured["request"].session_context is session_context
     assert captured["request"].session_context.prompt_prefix == "CACHED_PREFIX"
     assert captured["request"].session_context.active_skills == ["Skill A"]
-
-
-@pytest.mark.asyncio
-async def test_call_llm_auto_close_emits_session_close(monkeypatch):
-    from app.api.websocket import call_llm
-    from app.runtime.hooks import HookEvent
-
-    captured = {"events": []}
-
-    async def fake_invoke_agent(request):
-        captured["request"] = request
-        return SimpleNamespace(content="runtime-result")
-
-    async def fake_emit_hook(event, **kwargs):
-        captured["events"].append((event, kwargs))
-
-    monkeypatch.setattr("app.api.websocket.invoke_agent", fake_invoke_agent)
-    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
-
-    model = SimpleNamespace(
-        provider="openai",
-        model="gpt-4.1",
-        api_key="key",
-        base_url=None,
-        max_output_tokens=None,
-    )
-
-    result = await call_llm(
-        model=model,
-        messages=[{"role": "user", "content": "hello"}],
-        agent_name="Agent",
-        role_description="desc",
-        agent_id=uuid4(),
-        user_id=uuid4(),
-        session_id="session-auto-close",
-        memory_messages=[{"role": "user", "content": "hello"}],
-        auto_close_session=True,
-        session_source="feishu",
-        session_channel="feishu",
-    )
-
-    assert result == "runtime-result"
-    assert len(captured["events"]) == 1
-    event, payload = captured["events"][0]
-    assert event == HookEvent.TURN_STOP
-    assert payload["session_id"] == "session-auto-close"
-    assert payload["source"] == "feishu"
-    assert payload["metadata"]["reason"] == "invoke_complete"
-    assert payload["metadata"]["checkpoint_kind"] == "user_turn_stop"
-    assert payload["messages"][-1] == {"role": "assistant", "content": "runtime-result"}
-
-
-@pytest.mark.asyncio
-async def test_call_llm_auto_close_emits_turn_abort_from_typed_terminal_reason(monkeypatch):
-    from app.api.websocket import call_llm
-    from app.kernel.contracts import TerminalReason
-    from app.runtime.hooks import HookEvent
-
-    captured = {"events": []}
-
-    async def fake_invoke_agent(request):
-        captured["request"] = request
-        return SimpleNamespace(
-            content="Provider failure display without a magic prefix",
-            terminal_reason=TerminalReason.PROVIDER_ERROR,
-        )
-
-    async def fake_emit_hook(event, **kwargs):
-        captured["events"].append((event, kwargs))
-
-    monkeypatch.setattr("app.api.websocket.invoke_agent", fake_invoke_agent)
-    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
-
-    model = SimpleNamespace(
-        provider="openai",
-        model="gpt-4.1",
-        api_key="key",
-        base_url=None,
-        max_output_tokens=None,
-    )
-
-    result = await call_llm(
-        model=model,
-        messages=[{"role": "user", "content": "hello"}],
-        agent_name="Agent",
-        role_description="desc",
-        agent_id=uuid4(),
-        user_id=uuid4(),
-        session_id="session-auto-abort",
-        memory_messages=[{"role": "user", "content": "hello"}],
-        auto_close_session=True,
-        session_source="feishu",
-        session_channel="feishu",
-    )
-
-    assert result == "Provider failure display without a magic prefix"
-    assert captured["request"].emit_turn_stop is False
-    assert len(captured["events"]) == 1
-    event, payload = captured["events"][0]
-    assert event == HookEvent.TURN_ABORT
-    assert payload["session_id"] == "session-auto-abort"
-    assert payload["source"] == "feishu"
-    assert payload["metadata"]["reason"] == "invoke_failed"
-    assert payload["metadata"]["checkpoint_kind"] == "turn_abort"
-    assert payload["metadata"]["semantic_memory_eligible"] is False
-    assert payload["messages"] == [{"role": "user", "content": "hello"}]
-
-
-@pytest.mark.asyncio
-async def test_call_llm_auto_close_does_not_infer_abort_from_model_authored_prefix(monkeypatch):
-    from app.api.websocket import call_llm
-    from app.kernel.contracts import TerminalReason
-    from app.runtime.hooks import HookEvent
-
-    captured = {"events": []}
-
-    async def fake_invoke_agent(_request):
-        return SimpleNamespace(
-            content="[LLM Error] is the literal format being discussed by the model.",
-            terminal_reason=TerminalReason.TURN_STOP,
-        )
-
-    async def fake_emit_hook(event, **kwargs):
-        captured["events"].append((event, kwargs))
-
-    monkeypatch.setattr("app.api.websocket.invoke_agent", fake_invoke_agent)
-    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
-    model = SimpleNamespace(
-        provider="openai",
-        model="gpt-4.1",
-        api_key="key",
-        base_url=None,
-        max_output_tokens=None,
-    )
-
-    result = await call_llm(
-        model=model,
-        messages=[{"role": "user", "content": "Explain the legacy format"}],
-        agent_name="Agent",
-        role_description="desc",
-        agent_id=uuid4(),
-        user_id=uuid4(),
-        session_id="session-prefix-is-content",
-        memory_messages=[{"role": "user", "content": "Explain the legacy format"}],
-        auto_close_session=True,
-    )
-
-    assert result == "[LLM Error] is the literal format being discussed by the model."
-    event, payload = captured["events"][0]
-    assert event == HookEvent.TURN_STOP
-    assert payload["messages"][-1]["content"] == result

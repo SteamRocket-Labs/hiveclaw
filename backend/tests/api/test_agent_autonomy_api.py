@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
 
 import app.api.autonomy as autonomy_api
 from app.core.security import get_current_user
@@ -95,11 +96,28 @@ def _client(monkeypatch, db=None, *, user=None, access_level="manage", agent=Non
     return TestClient(app), user
 
 
-def _allow_runtime_resource(monkeypatch):
-    async def allow(**_kwargs):
-        return SimpleNamespace(), SimpleNamespace(authority_source="root_owner")
+def _allow_runtime_resource(monkeypatch, *, status="completed", artifact_bound=True, artifact_projected=True):
+    from app.services.trigger_artifacts import trigger_output_artifact_ref
+
+    async def allow(**kwargs):
+        task_id = UUID(str(kwargs["runtime_task_id"]))
+        metadata = {"output_artifact": trigger_output_artifact_ref(str(task_id))} if artifact_bound else {}
+        return (
+            SimpleNamespace(
+                id=task_id,
+                task_type="trigger",
+                status=status,
+                metadata_json=metadata,
+            ),
+            SimpleNamespace(authority_source="root_owner"),
+        )
 
     monkeypatch.setattr(autonomy_api, "_authorize_runtime_task_read", allow)
+
+    async def projection_delivered(_db, _task):
+        return artifact_projected
+
+    monkeypatch.setattr(autonomy_api, "trigger_artifact_projection_delivered", projection_delivered)
 
 
 def test_agent_autonomy_overview_is_agent_scoped_and_readable_by_member(monkeypatch):
@@ -451,8 +469,62 @@ def test_agent_runtime_artifact_endpoint_returns_display_payload(monkeypatch):
     assert response.status_code == 200
     assert response.json()["summary"] == "Report delivered."
     assert captured["agent_id"] == agent_id
-    assert captured["runtime_task_id"] == runtime_task_id
+    assert UUID(captured["runtime_task_id"]) == UUID(runtime_task_id)
     assert captured["include_diagnostics"] is False
+
+
+def test_runtime_artifact_allows_failed_canonical_task_after_projection(monkeypatch):
+    agent_id = uuid4()
+    task_id = uuid4()
+    read_called = False
+
+    async def fake_artifact(**_kwargs):
+        nonlocal read_called
+        read_called = True
+        return {"summary": "partial evidence"}
+
+    monkeypatch.setattr(autonomy_api, "read_agent_trigger_artifact_view", fake_artifact)
+    _allow_runtime_resource(monkeypatch, status="failed", artifact_bound=True)
+    client, _user = _client(monkeypatch)
+
+    response = client.get(f"/agents/{agent_id}/runtime-artifacts/{task_id}")
+
+    assert response.status_code == 200
+    assert response.json()["summary"] == "partial evidence"
+    assert read_called is True
+
+
+@pytest.mark.parametrize(
+    ("artifact_bound", "artifact_projected"),
+    [(True, False), (False, True)],
+)
+def test_runtime_artifact_requires_canonical_binding_and_delivered_projection(
+    monkeypatch,
+    artifact_bound,
+    artifact_projected,
+):
+    agent_id = uuid4()
+    task_id = uuid4()
+    read_called = False
+
+    async def fake_artifact(**_kwargs):
+        nonlocal read_called
+        read_called = True
+        return {"summary": "uncommitted"}
+
+    monkeypatch.setattr(autonomy_api, "read_agent_trigger_artifact_view", fake_artifact)
+    _allow_runtime_resource(
+        monkeypatch,
+        status="needs_reconciliation",
+        artifact_bound=artifact_bound,
+        artifact_projected=artifact_projected,
+    )
+    client, _user = _client(monkeypatch)
+
+    response = client.get(f"/agents/{agent_id}/runtime-artifacts/{task_id}")
+
+    assert response.status_code == 404
+    assert read_called is False
 
 
 def test_runtime_artifact_rejects_foreign_root_principal_before_reading_file(monkeypatch):

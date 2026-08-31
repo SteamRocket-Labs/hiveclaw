@@ -233,7 +233,7 @@
   function userFooter() {
     return `<div style="display:flex;align-items:center;gap:9px;padding:8px;border-top:1px solid var(--border);">
       <span class="hex" style="display:inline-flex;width:26px;height:26px;background:oklch(0.6 0.1 280);"></span>
-      <div style="min-width:0;flex:1;"><div style="font-size:12.5px;font-weight:500;">林见 Jen Lin</div>
+      <div style="min-width:0;flex:1;"><div style="font-size:12.5px;font-weight:500;">示例用户 A</div>
       <div class="mono" style="font-size:10px;color:var(--text-3);">产品 · Product</div></div>
       <span style="color:var(--text-4);">${icons.gear}</span>
     </div>`;

@@ -316,6 +316,54 @@ async def insert_runtime_task_at_schema_revision(
     return task_id
 
 
+async def insert_chat_session_at_schema_revision(
+    db: Any,
+    **overrides: Any,
+) -> uuid.UUID:
+    """Insert a ChatSession through columns available at a historical revision."""
+    from app.models.chat_session import ChatSession
+
+    connection = await db.connection()
+
+    def reflect_chat_sessions(sync_connection):
+        return Table("chat_sessions", MetaData(), autoload_with=sync_connection)
+
+    historical_sessions = await connection.run_sync(reflect_chat_sessions)
+    session_id = overrides.get("id") or uuid.uuid4()
+    values: dict[str, Any] = {"id": session_id, **overrides}
+    for column in ChatSession.__table__.columns:
+        if column.name in values or column.name not in historical_sessions.c:
+            continue
+        if column.default is not None and column.default.is_scalar:
+            values[column.name] = column.default.arg
+    await db.execute(
+        historical_sessions.insert().values(
+            **{name: value for name, value in values.items() if name in historical_sessions.c}
+        )
+    )
+    return session_id
+
+
+async def insert_table_row_at_schema_revision(
+    db: Any,
+    table_name: str,
+    **values: Any,
+) -> None:
+    """Insert only columns that exist at the currently checked-out revision."""
+
+    connection = await db.connection()
+
+    def reflect_table(sync_connection):
+        return Table(table_name, MetaData(), autoload_with=sync_connection)
+
+    historical_table = await connection.run_sync(reflect_table)
+    await db.execute(
+        historical_table.insert().values(
+            **{name: value for name, value in values.items() if name in historical_table.c}
+        )
+    )
+
+
 @pytest.fixture(scope="session")
 def revision_parent_migrated_pg_url(pg_container) -> str:  # noqa: F811  (pytest fixture param)
     """Prove the newest revision from its exact projected parent using normal Alembic."""

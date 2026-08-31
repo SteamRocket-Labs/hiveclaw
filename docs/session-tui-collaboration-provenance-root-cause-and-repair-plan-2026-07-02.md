@@ -30,8 +30,8 @@
 | FE-1 | Hive 前端事件路由 | WS 通道粒度、事件过滤、thinking 累积、右栏数据源、消息缓存、artifact 卡片 |
 | FE-2 | Hive 前端 vs 06-28 文档 | §2–§9 全量要求逐条实装核对 + 07-02 根因稿前端指控复核 |
 | BE-1 | Hive 后端 | Agent Team 工具链、Plan Mode 合约、workbench read model、artifact 交付链、WS 广播 |
-| BASE-1 | Codex（`/Users/rocky243/Context Engineering/codex/codex-rs`） | TurnDiffTracker、thread/turn/item 身份、collab agent、Plan 模式、交付物形态 |
-| BASE-2 | CC/FreeCode（`/Users/rocky243/vc-saas/free-code-main`） | Task 类型体系、AgentTool teammate 分支、TeamCreate 引导、TUI 呈现、文件清单行为 |
+| BASE-1 | Codex（`/Users/example-owner/Context Engineering/codex/codex-rs`） | TurnDiffTracker、thread/turn/item 身份、collab agent、Plan 模式、交付物形态 |
+| BASE-2 | CC/FreeCode（`/Users/example-owner/vc-saas/free-code-main`） | Task 类型体系、AgentTool teammate 分支、TeamCreate 引导、TUI 呈现、文件清单行为 |
 
 ### 0.2 Owner 视角总览（大白话，2026-07-02 与 owner 对齐并拍板）
 

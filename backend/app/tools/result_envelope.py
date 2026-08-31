@@ -37,7 +37,8 @@ class ToolContentEnvelope:
     forward extension point with NO production producer yet. The kernel
     *consumes* them (``AgentKernel._extract_tool_side_effects`` injects
     ``new_messages`` into the live conversation and ends the turn on
-    ``terminal_signal``; covered by ``tests/kernel/test_ccplus_side_effects.py``),
+    ``terminal_signal``; the outer runtime preserves that typed signal and
+    finalizes without fabricating an assistant message),
     but every live terminal/clarification flow today is driven by the JSON-status
     marker path (``_tool_result_requests_user_clarification`` →
     ``awaiting_user_clarification`` / ``plan_mode_entry_requested``), so these two

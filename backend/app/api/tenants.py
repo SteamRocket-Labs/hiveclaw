@@ -9,10 +9,11 @@ import re
 import secrets
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import func as sqla_func, select
+from sqlalchemy import func as sqla_func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_access_token, get_current_user, require_role
@@ -62,6 +63,15 @@ class TenantUserAssignment(BaseModel):
     role: str = Field(default="member", pattern="^(member|org_admin)$")
 
 
+class TenantUserAssignmentOut(BaseModel):
+    status: Literal["ok", "already_assigned"]
+    user_id: uuid.UUID
+    tenant_id: uuid.UUID
+    role: Literal["member", "org_admin"]
+    membership_committed: bool
+    client_token_refresh_required: bool
+
+
 # ─── Helpers ────────────────────────────────────────────
 
 
@@ -87,6 +97,19 @@ async def _scope_session_to_tenant(db: AsyncSession, tenant_id: uuid.UUID | str)
     if pinned is None:
         raise HTTPException(status_code=400, detail="No tenant assigned")
     return pinned
+
+
+def _apply_new_tenant_membership(user: User, tenant: Tenant, *, role: str) -> None:
+    """Apply a fresh membership without carrying usage from a former company."""
+    user.tenant_id = tenant.id
+    user.role = role
+    user.department_id = None
+    user.quota_tokens_per_day = tenant.default_tokens_per_day
+    user.quota_tokens_per_month = tenant.default_tokens_per_month
+    user.tokens_used_today = 0
+    user.tokens_used_month = 0
+    user.tokens_used_total = 0
+    user.tokens_reset_at = None
 
 
 @contextlib.asynccontextmanager
@@ -133,6 +156,13 @@ async def self_create_company(
         reason="self-service company creation",
         actor_id=str(current_user.id),
     ) as bypass_db:
+        user_result = await bypass_db.execute(select(User).where(User.id == current_user.id).with_for_update())
+        locked_user = user_result.scalar_one_or_none()
+        if locked_user is None or not locked_user.is_active:
+            raise HTTPException(status_code=409, detail="User is no longer eligible to create a company")
+        if locked_user.tenant_id is not None:
+            raise HTTPException(status_code=409, detail="User already belongs to a company")
+
         tenant = Tenant(name=data.name, slug=slug, im_provider="web_only")
         bypass_db.add(tenant)
         await bypass_db.flush()
@@ -140,10 +170,8 @@ async def self_create_company(
         # The old User row is tenantless, so a tenant-scoped UPDATE cannot see
         # it through RLS USING.  Perform the validated NULL→tenant transition
         # before leaving the bootstrap authority scope.
-        current_user.tenant_id = tenant.id
-        current_user.role = "org_admin" if current_user.role == "member" else current_user.role
-        current_user.quota_tokens_per_day = tenant.default_tokens_per_day
-        current_user.quota_tokens_per_month = tenant.default_tokens_per_month
+        role = "org_admin" if locked_user.role == "member" else locked_user.role
+        _apply_new_tenant_membership(locked_user, tenant, role=role)
         await bypass_db.flush()
 
     await _scope_session_to_tenant(db, tenant.id)
@@ -156,6 +184,8 @@ async def self_create_company(
 
 class JoinRequest(BaseModel):
     invitation_code: str = Field(min_length=1, max_length=32)
+
+    model_config = {"extra": "forbid"}
 
 
 class JoinResponse(BaseModel):
@@ -171,14 +201,46 @@ async def join_company(
     db: AsyncSession = Depends(get_db),
 ):
     """Join an existing company using an invitation code."""
-    if current_user.tenant_id is not None:
-        raise HTTPException(status_code=400, detail="You already belong to a company")
+    if current_user.role == "platform_admin":
+        raise HTTPException(status_code=409, detail="Platform administrators cannot consume company invitations")
 
     from app.models.invitation_code import InvitationCode
 
     normalized_code = _normalize_invitation_code(data.invitation_code)
     if not normalized_code:
         raise HTTPException(status_code=400, detail="Invalid invitation code")
+
+    if current_user.tenant_id is not None:
+        # Recover an exact post-commit retry without consuming the code again.
+        # The explicit tenant predicate keeps a code from another company
+        # indistinguishable from any other invalid replay under normal RLS.
+        existing_tenant_id = await _scope_session_to_tenant(db, current_user.tenant_id)
+        code_result = await db.execute(
+            select(InvitationCode.id).where(
+                InvitationCode.code == normalized_code,
+                InvitationCode.tenant_id == existing_tenant_id,
+            )
+        )
+        if code_result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=409, detail="User already belongs to another company")
+        tenant_result = await db.execute(
+            select(Tenant).where(
+                Tenant.id == existing_tenant_id,
+                Tenant.is_active,
+            )
+        )
+        tenant = tenant_result.scalar_one_or_none()
+        if tenant is None:
+            raise HTTPException(status_code=409, detail="User's company is no longer available")
+        return JoinResponse(
+            tenant=TenantOut.model_validate(tenant),
+            role=current_user.role,
+            access_token=create_access_token(
+                str(current_user.id),
+                current_user.role,
+                tenant_id=str(existing_tenant_id),
+            ),
+        )
 
     async with enter_rls_bypass(
         db,
@@ -201,35 +263,30 @@ async def join_company(
             raise HTTPException(status_code=400, detail="Invitation code has reached its usage limit")
 
         # Find the company while tenantless users still have no RLS tenant scope.
-        t_result = await bypass_db.execute(select(Tenant).where(Tenant.id == code_obj.tenant_id))
+        t_result = await bypass_db.execute(select(Tenant).where(Tenant.id == code_obj.tenant_id).with_for_update())
         tenant = t_result.scalar_one_or_none()
         if not tenant or not tenant.is_active:
             raise HTTPException(status_code=400, detail="Company not found or is disabled")
+
+        user_result = await bypass_db.execute(select(User).where(User.id == current_user.id).with_for_update())
+        locked_user = user_result.scalar_one_or_none()
+        if locked_user is None or not locked_user.is_active:
+            raise HTTPException(status_code=409, detail="User is no longer eligible to join a company")
+        if locked_user.tenant_id is not None:
+            raise HTTPException(status_code=409, detail="User already belongs to a company")
+        if locked_user.role == "platform_admin":
+            raise HTTPException(status_code=409, detail="Platform administrators cannot consume company invitations")
 
         # The old User row is tenantless and therefore invisible to a target-
         # tenant UPDATE policy.  Complete the validated NULL→tenant transition
         # and invitation receipt while this narrow, row-bound authority scope
         # is still active; only then pin normal route consumption to the tenant.
-        admin_check = await bypass_db.execute(
-            select(sqla_func.count())
-            .select_from(User)
-            .where(
-                User.tenant_id == tenant.id,
-                User.role.in_(["org_admin", "platform_admin"]),
-            )
-        )
-        has_admin = admin_check.scalar() > 0
+        invited_role = code_obj.granted_role
+        if invited_role not in {"member", "org_admin"}:
+            raise HTTPException(status_code=409, detail="Invitation code role is invalid")
 
-        # First joiner of an empty company becomes org_admin
-        assigned_role = "member" if has_admin else "org_admin"
-
-        # Assign user to company
-        current_user.tenant_id = tenant.id
-        if current_user.role == "member":
-            current_user.role = assigned_role
-        # Inherit token quota defaults from tenant
-        current_user.quota_tokens_per_day = tenant.default_tokens_per_day
-        current_user.quota_tokens_per_month = tenant.default_tokens_per_month
+        role = invited_role
+        _apply_new_tenant_membership(locked_user, tenant, role=role)
 
         # Increment invitation code usage in the same transaction as membership.
         code_obj.used_count += 1
@@ -240,10 +297,10 @@ async def join_company(
 
     return JoinResponse(
         tenant=TenantOut.model_validate(tenant),
-        role=current_user.role,
+        role=locked_user.role,
         access_token=create_access_token(
-            str(current_user.id),
-            current_user.role,
+            str(locked_user.id),
+            locked_user.role,
             tenant_id=str(target_tenant_id),
         ),
     )
@@ -332,6 +389,11 @@ async def update_tenant(
                 status_code=403,
                 detail="Org admins can only update company name and timezone",
             )
+    if "is_active" in updates:
+        raise HTTPException(
+            status_code=400,
+            detail="Use the company toggle endpoint to change company status",
+        )
 
     async with _platform_admin_bypass_scope(
         db,
@@ -361,7 +423,7 @@ async def delete_tenant(
     tenant-linked records without uniform cascade rules, so hard deletion would
     be unsafe. Instead we:
     - mark the tenant inactive,
-    - pause running agents in that tenant,
+    - stop running agents in that tenant,
     - detach users from the tenant and departments,
     - optionally move platform admins to another active tenant for continuity.
     """
@@ -375,22 +437,34 @@ async def delete_tenant(
         current_user,
         reason="platform-admin delete tenant",
     ) as scoped_db:
-        result = await scoped_db.execute(select(Tenant).where(Tenant.id == tenant_id))
-        tenant = result.scalar_one_or_none()
+        # ponytail: tenant deletion globally locks active tenant rows; replace
+        # with ordered lifecycle advisory locks only if delete throughput matters.
+        result = await scoped_db.execute(
+            select(Tenant).where(or_(Tenant.id == tenant_id, Tenant.is_active)).order_by(Tenant.id).with_for_update()
+        )
+        locked_tenants = result.scalars().all()
+        tenant = next((row for row in locked_tenants if row.id == tenant_id), None)
         if not tenant:
             raise HTTPException(status_code=404, detail="Tenant not found")
 
         fallback_tenant_id: uuid.UUID | None = None
+        fallback_tenant: Tenant | None = None
         if current_user.role == "platform_admin":
-            fallback_result = await scoped_db.execute(
-                select(Tenant)
-                .where(
-                    Tenant.id != tenant_id,
-                    Tenant.is_active,
-                )
-                .order_by(Tenant.created_at.asc())
+            fallback_tenant = next(
+                (
+                    row
+                    for row in sorted(
+                        locked_tenants,
+                        key=lambda candidate: (
+                            candidate.created_at is None,
+                            str(candidate.created_at or ""),
+                            str(candidate.id),
+                        ),
+                    )
+                    if row.id != tenant_id and row.is_active
+                ),
+                None,
             )
-            fallback_tenant = fallback_result.scalar_one_or_none()
             fallback_tenant_id = fallback_tenant.id if fallback_tenant else None
 
         running_agents = await scoped_db.execute(
@@ -400,13 +474,15 @@ async def delete_tenant(
             )
         )
         for agent in running_agents.scalars().all():
-            agent.status = "paused"
+            agent.status = "stopped"
 
-        tenant_users = await scoped_db.execute(select(User).where(User.tenant_id == tenant_id))
+        tenant_users = await scoped_db.execute(
+            select(User).where(User.tenant_id == tenant_id).order_by(User.id).with_for_update()
+        )
         for user in tenant_users.scalars().all():
             user.department_id = None
-            if user.role == "platform_admin" and fallback_tenant_id is not None:
-                user.tenant_id = fallback_tenant_id
+            if user.role == "platform_admin" and fallback_tenant is not None:
+                _apply_new_tenant_membership(user, fallback_tenant, role="platform_admin")
                 continue
 
             user.tenant_id = None
@@ -437,7 +513,7 @@ async def _assign_user_to_tenant(
     db: AsyncSession,
     user_id: uuid.UUID | None = None,
     email: str | None = None,
-) -> dict[str, object]:
+) -> TenantUserAssignmentOut:
     if role not in ("org_admin", "member"):
         raise HTTPException(status_code=400, detail="Invalid role")
 
@@ -475,17 +551,24 @@ async def _assign_user_to_tenant(
         if user.role == "platform_admin":
             raise HTTPException(status_code=403, detail="Platform administrator membership cannot be changed here")
         previous_tenant_id = user.tenant_id
-        if previous_tenant_id is not None and previous_tenant_id != tenant_id:
-            raise HTTPException(status_code=409, detail="User already belongs to another tenant")
+        if previous_tenant_id is not None:
+            if str(previous_tenant_id) != str(tenant_id):
+                raise HTTPException(status_code=409, detail="User already belongs to another tenant")
+            if user.role == role:
+                return TenantUserAssignmentOut(
+                    status="already_assigned",
+                    user_id=user.id,
+                    tenant_id=tenant_id,
+                    role=role,
+                    membership_committed=True,
+                    client_token_refresh_required=True,
+                )
+            raise HTTPException(
+                status_code=409,
+                detail="User already belongs to this tenant; use tenant user management to change roles",
+            )
         previous_role = user.role
-        user.tenant_id = tenant_id
-        user.role = role
-        if previous_tenant_id is None:
-            user.department_id = None
-        if getattr(user, "quota_tokens_per_day", None) is None:
-            user.quota_tokens_per_day = tenant.default_tokens_per_day
-        if getattr(user, "quota_tokens_per_month", None) is None:
-            user.quota_tokens_per_month = tenant.default_tokens_per_month
+        _apply_new_tenant_membership(user, tenant, role=role)
         bypass_db.add(
             AuditLog(
                 user_id=current_user.id,
@@ -499,17 +582,26 @@ async def _assign_user_to_tenant(
                 },
             )
         )
-        await bypass_db.flush()
-    return {
-        "status": "ok",
-        "user_id": str(user.id),
-        "tenant_id": str(tenant_id),
-        "role": role,
-        "reauthentication_required": True,
-    }
+        try:
+            await bypass_db.flush()
+            await bypass_db.commit()
+        except Exception as exc:
+            await bypass_db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="User assignment was not committed",
+            ) from exc
+    return TenantUserAssignmentOut(
+        status="ok",
+        user_id=user.id,
+        tenant_id=tenant_id,
+        role=role,
+        membership_committed=True,
+        client_token_refresh_required=True,
+    )
 
 
-@router.put("/{tenant_id}/assign-user")
+@router.put("/{tenant_id}/assign-user", response_model=TenantUserAssignmentOut)
 async def assign_user_to_tenant_by_email(
     tenant_id: uuid.UUID,
     data: TenantUserAssignment,
@@ -526,7 +618,7 @@ async def assign_user_to_tenant_by_email(
     )
 
 
-@router.put("/{tenant_id}/assign-user/{user_id}")
+@router.put("/{tenant_id}/assign-user/{user_id}", response_model=TenantUserAssignmentOut)
 async def assign_user_to_tenant(
     tenant_id: uuid.UUID,
     user_id: uuid.UUID,

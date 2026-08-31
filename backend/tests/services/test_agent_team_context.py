@@ -334,7 +334,7 @@ async def test_agent_runtime_context_includes_team_context(monkeypatch) -> None:
 
     rendered = await agent_context.build_agent_runtime_context(
         uuid4(),
-        current_user_name="Rocky",
+        current_user_name="Example Owner",
         tenant_id="tenant-1",
         session_id="session-1",
     )

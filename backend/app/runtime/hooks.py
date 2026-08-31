@@ -226,9 +226,9 @@ _HOOK_RUNTIME_CONSUMERS: dict[HookEvent, str] = {
     HookEvent.PRE_TOOL_USE: "kernel_pre_tool_use",
     HookEvent.USER_PROMPT_SUBMIT: "invoker_user_prompt_submit",
     HookEvent.SESSION_START: "invoker_session_start",
-    HookEvent.SESSION_END: "invoker_session_end",
-    HookEvent.TURN_STOP: "invoker_turn_stop",
-    HookEvent.TURN_ABORT: "invoker_turn_abort",
+    HookEvent.SESSION_END: "caller_session_lifecycle",
+    HookEvent.TURN_STOP: "caller_terminal_commit",
+    HookEvent.TURN_ABORT: "caller_terminal_commit",
     HookEvent.STOP: "kernel_stop_continuation",
     HookEvent.STOP_FAILURE: "hook_registry_stop_failure",
     HookEvent.SUBAGENT_START: "subagent_lifecycle_start",
@@ -1643,6 +1643,61 @@ async def emit_hook(
     except Exception as exc:  # evidence projection cannot become a runtime availability dependency
         logger.warning("[Hooks] Failed to persist boundary evidence for %s: %s", event.value, exc)
     return result
+
+
+def schedule_committed_response_complete(
+    *,
+    payload: dict[str, Any],
+    commit_receipt: dict[str, Any],
+) -> asyncio.Task[None]:
+    """Emit RESPONSE_COMPLETE only from an authoritative committed response.
+
+    The caller must invoke this after its terminal transaction commits. The
+    receipt is an exact internal machine contract used for provenance and
+    idempotency; model-authored text never grants this authority.
+    """
+
+    receipt = dict(commit_receipt or {})
+    source_refs = [str(ref).strip() for ref in receipt.get("source_refs") or [] if str(ref).strip()]
+    if (
+        receipt.get("schema") != "hive.response_commit.v1"
+        or receipt.get("committed") is not True
+        or not str(receipt.get("commit_kind") or "").strip()
+        or not str(receipt.get("idempotency_key") or "").strip()
+        or not source_refs
+    ):
+        raise ValueError("RESPONSE_COMPLETE requires an authoritative committed response receipt")
+    if not isinstance(payload, dict) or payload.get("agent_id") is None:
+        raise ValueError("RESPONSE_COMPLETE requires a caller-owned response payload")
+
+    metadata = {
+        **dict(payload.get("metadata") or {}),
+        "response_commit": receipt,
+        "source_refs": source_refs,
+        "semantic_memory_eligible": True,
+    }
+
+    async def _emit() -> None:
+        await emit_hook(
+            HookEvent.RESPONSE_COMPLETE,
+            evidence_mode="independent",
+            agent_id=payload.get("agent_id"),
+            session_id=str(payload.get("session_id") or "") or None,
+            messages=list(payload.get("messages") or []),
+            source=str(payload.get("source") or "runtime"),
+            metadata=metadata,
+        )
+
+    task = asyncio.create_task(_emit())
+
+    def _log_failure(done_task: asyncio.Task[None]) -> None:
+        try:
+            done_task.result()
+        except Exception as exc:  # noqa: BLE001 - committed answer remains authoritative
+            logger.warning("Committed RESPONSE_COMPLETE sidecar failed: %s", type(exc).__name__)
+
+    task.add_done_callback(_log_failure)
+    return task
 
 
 async def _persist_hook_boundary_evidence(

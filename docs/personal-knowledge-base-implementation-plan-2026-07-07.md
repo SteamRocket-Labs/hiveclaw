@@ -775,7 +775,7 @@ Personal KB M1 完成必须满足：
 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/models/test_knowledge_records.py \
   tests/migrations/test_personal_knowledge_core_migration.py \
@@ -809,7 +809,7 @@ alembic heads
 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_personal_knowledge_service.py -q
 # 6 passed in 0.13s
@@ -831,7 +831,7 @@ ruff check app/services/personal_knowledge_service.py tests/services/test_person
 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/runtime/test_personal_knowledge_provider.py \
   tests/tools/test_personal_knowledge_tool.py \
@@ -869,7 +869,7 @@ ruff check app/runtime/retrieval/personal_knowledge_provider.py \
 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_personal_knowledge_service.py tests/api/test_agent_personal_knowledge_api.py -q
 # 13 passed in 0.29s
@@ -921,12 +921,12 @@ ruff check app/api/agent_knowledge.py app/services/personal_knowledge_service.py
 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/api/test_agent_personal_knowledge_api.py -q
 # 5 passed in 0.48s
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- src/api/domains/knowledge.test.ts src/pages/layout/LayoutSections.test.tsx src/pages/PersonalKnowledge.test.tsx
 # Test Files  3 passed (3)
 # Tests  18 passed (18)
@@ -935,12 +935,12 @@ npm run test -- src/api/domains/knowledge.test.ts src/pages/layout/LayoutSection
 红测证据：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/api/test_agent_personal_knowledge_api.py -q
 # initially failed: AttributeError: module 'app.api.agent_knowledge' has no attribute 'personal_router'
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- src/api/domains/knowledge.test.ts src/pages/layout/LayoutSections.test.tsx src/pages/PersonalKnowledge.test.tsx
 # initially failed: myPersonalDocuments is not a function; Cannot find module './PersonalKnowledge'; AppSidebar missing Knowledge
 ```
@@ -962,7 +962,7 @@ npm run test -- src/api/domains/knowledge.test.ts src/pages/layout/LayoutSection
 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/models/test_knowledge_records.py \
   tests/migrations/test_personal_knowledge_core_migration.py \
@@ -995,7 +995,7 @@ ruff check app/models/knowledge.py app/db_bootstrap.py \
   tests/runtime/test_invoker.py tests/services/test_agent_message_runtime.py
 # All checks passed!
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- src/api/domains/knowledge.test.ts src/pages/layout/LayoutSections.test.tsx src/pages/PersonalKnowledge.test.tsx src/pages/agent-detail/AgentKnowledgeSection.test.tsx
 # Test Files  4 passed (4)
 # Tests  22 passed (22)

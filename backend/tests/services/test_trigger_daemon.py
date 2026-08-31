@@ -20,7 +20,11 @@ async def test_terminal_trigger_update_forwards_completion_outbox_atomically(mon
         captured["fields"] = fields
         return True
 
+    async def noop_settle(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr(daemon, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(daemon, "_settle_trigger_runtime_budget", noop_settle)
     notification = CompletionNotification(
         tenant_id=uuid4(),
         source_kind="trigger",
@@ -58,7 +62,11 @@ async def test_terminal_trigger_update_preserves_full_result_summary(monkeypatch
         captured["fields"] = fields
         return True
 
+    async def noop_settle(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr(daemon, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(daemon, "_settle_trigger_runtime_budget", noop_settle)
     full_result = "trigger evidence\n" + ("T" * 3000) + "\nEND_OF_TRIGGER_EVIDENCE"
 
     await daemon._update_trigger_runtime_task(
@@ -70,6 +78,60 @@ async def test_terminal_trigger_update_preserves_full_result_summary(monkeypatch
     assert captured["fields"]["result_summary"] == full_result
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("update_outcome", [True, False, RuntimeError("terminal write failed")])
+async def test_terminal_trigger_update_reports_only_a_committed_transition(monkeypatch, update_outcome):
+    import app.services.trigger_daemon as daemon
+
+    async def fake_update_runtime_task_record(_task_id, **_fields):
+        if isinstance(update_outcome, Exception):
+            raise update_outcome
+        return update_outcome
+
+    settlements = []
+
+    async def fake_settle(runtime_task_id, *, status):
+        settlements.append((runtime_task_id, status))
+
+    monkeypatch.setattr(daemon, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(daemon, "_settle_trigger_runtime_budget", fake_settle)
+
+    committed = await daemon._update_trigger_runtime_task(
+        "trigger-run-terminal",
+        status="completed",
+        result_summary="done",
+    )
+
+    assert committed is (update_outcome is True)
+    assert settlements == ([("trigger-run-terminal", "completed")] if update_outcome is True else [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["completed", "failed", "killed", "skipped", "needs_reconciliation"])
+async def test_each_committed_trigger_terminal_status_settles_once(monkeypatch, status):
+    import app.services.trigger_daemon as daemon
+
+    async def fake_update_runtime_task_record(_task_id, **_fields):
+        return True
+
+    settlements = []
+
+    async def fake_settle(runtime_task_id, *, status):
+        settlements.append((runtime_task_id, status))
+
+    monkeypatch.setattr(daemon, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(daemon, "_settle_trigger_runtime_budget", fake_settle)
+
+    committed = await daemon._update_trigger_runtime_task(
+        "trigger-run-terminal",
+        status=status,
+        result_summary="done",
+    )
+
+    assert committed is True
+    assert settlements == [("trigger-run-terminal", status)]
+
+
 def test_trigger_completion_targets_reflection_projection_without_parent_rerun():
     import app.services.trigger_daemon as daemon
 
@@ -77,8 +139,9 @@ def test_trigger_completion_targets_reflection_projection_without_parent_rerun()
     agent_id = uuid4()
     user_id = uuid4()
     session_id = uuid4()
+    runtime_task_id = uuid4()
     notification = daemon._trigger_completion_notification(
-        runtime_task_id=str(uuid4()),
+        runtime_task_id=runtime_task_id.hex,
         tenant_id=tenant_id,
         agent_id=agent_id,
         user_id=user_id,
@@ -92,6 +155,7 @@ def test_trigger_completion_targets_reflection_projection_without_parent_rerun()
 
     assert notification is not None
     assert notification.source_kind == "trigger"
+    assert notification.source_run_id == str(runtime_task_id)
     assert notification.parent_session_id == session_id
     assert notification.delivery_mode == "session_projection"
     assert notification.metadata["trigger_names"] == ["daily brief"]
@@ -202,6 +266,225 @@ def _route_scoped_session(monkeypatch, trigger_daemon, session_provider, *, tena
     monkeypatch.setattr(trigger_daemon, "admit_agent_runtime_tenant", _fake_admit_tenant)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("terminal_outcome", "terminal_reason", "mixed_workflow_hold"),
+    [
+        (True, "turn_stop", False),
+        (False, "turn_stop", False),
+        (RuntimeError("terminal write failed"), "turn_stop", False),
+        (True, "provider_error", False),
+        (True, "turn_stop", True),
+    ],
+)
+async def test_trigger_terminal_learning_waits_for_committed_outbox(
+    monkeypatch,
+    terminal_outcome,
+    terminal_reason,
+    mixed_workflow_hold,
+):
+    import app.api.websocket as websocket_api
+    import app.runtime.hooks as runtime_hooks
+    import app.services.auto_dream as auto_dream
+    import app.services.dream_runtime as dream_runtime
+    import app.services.heartbeat as heartbeat
+    import app.services.trigger_artifacts as trigger_artifacts
+    import app.services.trigger_daemon as trigger_daemon
+    import app.services.workflow_trigger as workflow_trigger
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    creator_id = uuid4()
+    participant = SimpleNamespace(id=uuid4())
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Terminal Order Agent",
+        role_description="",
+        status="running",
+        creator_id=creator_id,
+        tenant_id=tenant_id,
+        primary_model_id=uuid4(),
+        fallback_model_id=None,
+    )
+    trigger = SimpleNamespace(
+        id=uuid4(),
+        name="daily",
+        type="cron",
+        reason="Run daily",
+        config={},
+        reply_context=None,
+    )
+    workflow_trigger_row = SimpleNamespace(
+        id=uuid4(),
+        name="held workflow",
+        type="cron",
+        reason="Run held workflow",
+        config={"workflow_ref": {"definition_name": "held-workflow"}},
+        reply_context=None,
+    )
+    workflow_run_id = uuid4()
+    workflow_session_id = uuid4()
+    model = SimpleNamespace(id=uuid4(), name="model")
+    order: list[str] = []
+    emitted: list[object] = []
+    terminal_updates: list[dict] = []
+
+    class _InvocationSession(_SequenceSession):
+        def add(self, _value):
+            return None
+
+        async def flush(self):
+            return None
+
+        async def commit(self):
+            order.append("transcript_commit")
+            await super().commit()
+
+    sessions = [
+        _InvocationSession([_ScalarResult(agent), _ScalarResult(participant)]),
+        _InvocationSession([_ScalarResult(participant)]),
+    ]
+
+    def scoped_session(*_args, **_kwargs):
+        if not sessions:
+            raise AssertionError("Unexpected tenant_scoped_session call")
+        return sessions.pop(0)
+
+    async def fake_admit(*_args, **_kwargs):
+        return SimpleNamespace(ok=True, tenant_id=tenant_id)
+
+    async def fake_select_model(*_args, **_kwargs):
+        return model, {}, None
+
+    async def fake_append_session_event(**_kwargs):
+        return SimpleNamespace(message_id=None)
+
+    async def fake_call_llm(**_kwargs):
+        assert _kwargs["return_result"] is True
+        return SimpleNamespace(
+            content="trigger result",
+            terminal_reason=terminal_reason,
+            response_complete_payload=(
+                {
+                    "agent_id": agent_id,
+                    "session_id": _kwargs["session_id"],
+                    "messages": _kwargs["messages"],
+                    "source": "trigger",
+                    "metadata": {
+                        "tenant_id": str(tenant_id),
+                        "final_response": "trigger result",
+                    },
+                }
+                if terminal_reason == "turn_stop"
+                else None
+            ),
+        )
+
+    async def fake_update_runtime_task_record(_task_id, **fields):
+        terminal_updates.append(fields)
+        order.append(f"runtime:{fields.get('status')}")
+        if fields.get("status") != "completed":
+            return True
+        if isinstance(terminal_outcome, Exception):
+            raise terminal_outcome
+        return terminal_outcome
+
+    async def fake_emit_hook(event, **_kwargs):
+        emitted.append(event)
+        order.append(f"hook:{getattr(event, 'value', event)}")
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    async def fake_fire_workflow(**_kwargs):
+        if mixed_workflow_hold and _kwargs["trigger_id"] == workflow_trigger_row.id:
+            return workflow_trigger.WorkflowTriggerFireResult(
+                status="needs_reconciliation",
+                run_id=workflow_run_id,
+                run_status="completed",
+                reason="workflow_asset_usage_evidence_commit_failed",
+                session_id=workflow_session_id,
+            )
+        return None
+
+    def fake_record_session_end(_agent_id, **_kwargs):
+        order.append("dream:record")
+
+    async def fake_enqueue_due_dream(*_args, **_kwargs):
+        order.append("dream:enqueue")
+
+    def fake_write_trigger_output_artifact(**_kwargs):
+        order.append("artifact:prepared")
+        return None
+
+    monkeypatch.setattr(trigger_daemon, "tenant_scoped_session", scoped_session)
+    monkeypatch.setattr(trigger_daemon, "admit_agent_runtime_tenant", fake_admit)
+    monkeypatch.setattr(trigger_daemon, "select_trigger_model", fake_select_model)
+    monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(trigger_daemon, "_recover_reply_target_from_session", noop_async)
+    monkeypatch.setattr(trigger_daemon, "_settle_trigger_runtime_budget", noop_async)
+    monkeypatch.setattr(workflow_trigger, "fire_workflow_for_trigger", fake_fire_workflow)
+    monkeypatch.setattr("app.services.chat_transcript.append_session_event", fake_append_session_event)
+    monkeypatch.setattr(websocket_api, "call_llm", fake_call_llm)
+    monkeypatch.setattr(auto_dream, "record_session_end", fake_record_session_end)
+    monkeypatch.setattr(dream_runtime, "enqueue_due_dream", fake_enqueue_due_dream)
+    monkeypatch.setattr(heartbeat, "_parse_heartbeat_outcome", lambda _reply: ("unknown", None))
+    monkeypatch.setattr(trigger_artifacts, "write_trigger_output_artifact", fake_write_trigger_output_artifact)
+    monkeypatch.setattr(runtime_hooks, "emit_hook", fake_emit_hook)
+
+    await trigger_daemon._invoke_agent_for_triggers(
+        agent_id,
+        [workflow_trigger_row, trigger] if mixed_workflow_hold else [trigger],
+        runtime_task_id=str(uuid4()),
+    )
+
+    if mixed_workflow_hold:
+        terminal_update = next(update for update in terminal_updates if update.get("completion_notification"))
+        notification = terminal_update["completion_notification"]
+        assert terminal_update["status"] == "needs_reconciliation"
+        assert terminal_update["metadata_json"]["trigger_artifact_input"]["triggers"] == [
+            {
+                "id": str(trigger.id),
+                "name": trigger.name,
+                "type": trigger.type,
+                "config": {"trigger_class": ""},
+            }
+        ]
+        assert terminal_update["metadata_json"]["trigger_artifact_input"]["final_reply"] == "trigger result"
+        assert notification.terminal_status == "needs_reconciliation"
+        assert notification.metadata["terminal_reason"] == "turn_stop"
+        assert notification.metadata["trigger_settlement_overrides"] == {
+            str(workflow_trigger_row.id): "hold",
+            str(trigger.id): "success",
+        }
+        assert notification.metadata["workflow_trigger_results"] == [
+            {
+                "trigger_id": str(workflow_trigger_row.id),
+                "trigger_name": workflow_trigger_row.name,
+                "status": "needs_reconciliation",
+                "run_id": str(workflow_run_id),
+                "run_status": "completed",
+                "session_id": str(workflow_session_id),
+                "reason": "workflow_asset_usage_evidence_commit_failed",
+            }
+        ]
+        assert "dream:record" not in order
+    elif terminal_reason != "turn_stop":
+        assert "runtime:completed" not in order
+        assert "runtime:failed" in order
+    elif terminal_outcome is True:
+        assert "runtime:completed" in order
+        assert "artifact:prepared" not in order
+        assert "dream:record" not in order
+        assert "dream:enqueue" not in order
+    else:
+        assert "artifact:prepared" not in order
+        assert "dream:record" not in order
+        assert "dream:enqueue" not in order
+    assert runtime_hooks.HookEvent.TRIGGER_END not in emitted
+    assert runtime_hooks.HookEvent.RESPONSE_COMPLETE not in emitted
+
+
 def _disable_completed_focus_reconciler(monkeypatch, trigger_daemon):
     async def fake_preflight_trigger_group(_agent_id, _triggers, _now):
         return True, None, "", {}
@@ -237,6 +520,29 @@ def test_trigger_invocation_uses_replayable_transcript_writer_not_direct_chat_me
 
     assert direct_chat_message_calls == []
     assert append_session_event_calls
+
+
+def test_trigger_daemon_terminal_status_writes_use_single_helper() -> None:
+    import ast
+
+    source_path = Path(__file__).resolve().parents[2] / "app" / "services" / "trigger_daemon.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    terminal_statuses = {"completed", "failed", "killed", "skipped", "needs_reconciliation"}
+    direct_terminal_updates = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        if node.func.id != "update_runtime_task_record":
+            continue
+        status_keyword = next((keyword for keyword in node.keywords if keyword.arg == "status"), None)
+        if (
+            status_keyword is not None
+            and isinstance(status_keyword.value, ast.Constant)
+            and status_keyword.value.value in terminal_statuses
+        ):
+            direct_terminal_updates.append(node.lineno)
+
+    assert direct_terminal_updates == []
 
 
 @pytest.mark.asyncio
@@ -523,9 +829,9 @@ async def test_tick_does_not_apply_agent_level_dedup_window(monkeypatch):
 
     sessions = [
         _SequenceSession([_RowsResult([trigger_one])]),
-        _SequenceSession([_ScalarResult(trigger_one_db)]),
+        _SequenceSession([_RowsResult([trigger_one_db])]),
         _SequenceSession([_RowsResult([trigger_two])]),
-        _SequenceSession([_ScalarResult(trigger_two_db)]),
+        _SequenceSession([_RowsResult([trigger_two_db])]),
     ]
 
     def fake_async_session():
@@ -602,7 +908,7 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
     trigger_db = SimpleNamespace(**trigger.__dict__)
     sessions = [
         _SequenceSession([_RowsResult([trigger])]),
-        _SequenceSession([_ScalarResult(trigger_db)]),
+        _SequenceSession([_RowsResult([trigger_db])]),
     ]
 
     def fake_async_session():
@@ -710,6 +1016,81 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_tick_mark_inflight_failure_settles_budget_after_failed_terminal_commit(monkeypatch):
+    import app.services.trigger_daemon as trigger_daemon
+
+    agent_id = uuid4()
+    trigger = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        name="mark-inflight-failure",
+        type="cron",
+        config={"expr": "0 9 * * *"},
+        is_enabled=True,
+        fire_count=0,
+        max_fires=None,
+        last_fired_at=None,
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        expires_at=None,
+        cooldown_seconds=0,
+    )
+    session = _SequenceSession([_RowsResult([trigger])])
+
+    async def fake_evaluate_trigger(_trigger, _now):
+        return {"event_key": "daily"}
+
+    async def fake_acquire_trigger_fire_lease(_trigger_id, _event_key):
+        return True
+
+    async def fake_preflight(*_args, **_kwargs):
+        return True, None, "", {}
+
+    async def fake_create_runtime_task(*_args, **_kwargs):
+        return "runtime-task-mark-failed"
+
+    async def fail_mark(*_args, **_kwargs):
+        raise RuntimeError("inflight database unavailable")
+
+    terminal_updates = []
+
+    async def fake_update_runtime_task_record(task_id, **fields):
+        terminal_updates.append((task_id, fields))
+        return True
+
+    settlements = []
+
+    async def fake_settle(runtime_task_id, *, status):
+        settlements.append((runtime_task_id, status))
+
+    async def fail_queue(*_args, **_kwargs):
+        raise AssertionError("mark-inflight failure must not queue the trigger run")
+
+    monkeypatch.setattr(trigger_daemon, "async_session", lambda: session)
+    monkeypatch.setattr(trigger_daemon, "_evaluate_trigger", fake_evaluate_trigger)
+    monkeypatch.setattr(trigger_daemon, "_acquire_trigger_fire_lease", fake_acquire_trigger_fire_lease)
+    monkeypatch.setattr(trigger_daemon, "_preflight_trigger_group", fake_preflight)
+    monkeypatch.setattr(trigger_daemon, "_create_trigger_runtime_task", fake_create_runtime_task)
+    monkeypatch.setattr(trigger_daemon, "_mark_trigger_fire_started", fail_mark)
+    monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(trigger_daemon, "_settle_trigger_runtime_budget", fake_settle)
+    monkeypatch.setattr(trigger_daemon, "_queue_trigger_run_for_worker", fail_queue)
+
+    await trigger_daemon._tick()
+
+    assert terminal_updates == [
+        (
+            "runtime-task-mark-failed",
+            {
+                "status": "failed",
+                "result_summary": "Trigger fire could not be marked in-flight: inflight database unavailable",
+                "metadata_json": {"error": "inflight database unavailable", "stage": "mark_inflight"},
+            },
+        )
+    ]
+    assert settlements == [("runtime-task-mark-failed", "failed")]
+
+
+@pytest.mark.asyncio
 async def test_trigger_budget_approval_wait_persists_claimable_intent_without_starting(monkeypatch):
     import app.services.trigger_daemon as trigger_daemon
     from app.services.runtime_budget_service import RuntimeBudgetApprovalRequired
@@ -805,7 +1186,7 @@ async def test_tick_marks_once_trigger_inflight_without_disabling_before_ack(mon
     trigger_db = SimpleNamespace(**trigger.__dict__)
     sessions = [
         _SequenceSession([_RowsResult([trigger])]),
-        _SequenceSession([_ScalarResult(trigger_db)]),
+        _SequenceSession([_RowsResult([trigger_db])]),
     ]
 
     def fake_async_session():
@@ -850,36 +1231,6 @@ async def test_tick_marks_once_trigger_inflight_without_disabling_before_ack(mon
     assert trigger_db.fire_count == 0
     assert trigger_db.last_fired_at is None
     assert trigger_db.config["_fire_inflight"]["runtime_task_id"] == "runtime-task-1"
-
-
-@pytest.mark.asyncio
-async def test_record_trigger_success_ack_disables_once_trigger(monkeypatch):
-    import app.services.trigger_daemon as trigger_daemon
-
-    agent_id = uuid4()
-    trigger_id = uuid4()
-    trigger = SimpleNamespace(
-        id=trigger_id,
-        agent_id=agent_id,
-        name="one_shot",
-        type="once",
-        config={"_fire_inflight": {"event_key": "once:event"}},
-        is_enabled=True,
-        fire_count=0,
-        max_fires=None,
-        last_fired_at=None,
-    )
-    session = _SequenceSession([_ScalarResult(trigger)])
-
-    _route_scoped_session(monkeypatch, trigger_daemon, session, tenant_id=None)
-
-    await trigger_daemon._record_trigger_success_state(agent_id, [trigger_id])
-
-    assert trigger.fire_count == 1
-    assert trigger.is_enabled is False
-    assert trigger.last_fired_at is not None
-    assert "_fire_inflight" not in trigger.config
-    assert session.commits == 1
 
 
 @pytest.mark.asyncio
@@ -969,7 +1320,12 @@ async def test_resume_persisted_trigger_runs_requeues_unstarted_run(monkeypatch)
     updates: list[tuple[str, dict]] = []
     scheduled: list[tuple[object, list[object], str | None]] = []
 
-    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+    async def fake_list_active_runtime_task_records(
+        limit=50,
+        statuses=("pending", "running"),
+        task_types=None,
+    ):
+        assert task_types == ("trigger",)
         return [
             {
                 "task_id": run_id,
@@ -1049,7 +1405,12 @@ async def test_resume_persisted_trigger_runs_requires_reconciliation_after_sessi
     run_id = uuid4().hex
     updates: list[tuple[str, dict]] = []
 
-    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+    async def fake_list_active_runtime_task_records(
+        limit=50,
+        statuses=("pending", "running"),
+        task_types=None,
+    ):
+        assert task_types == ("trigger",)
         return [
             {
                 "task_id": run_id,
@@ -1071,11 +1432,17 @@ async def test_resume_persisted_trigger_runs_requires_reconciliation_after_sessi
         updates.append((task_id, fields))
         return True
 
+    settlements = []
+
+    async def fake_settle(runtime_task_id, *, status):
+        settlements.append((runtime_task_id, status))
+
     def fake_create_task(*_args, **_kwargs):  # pragma: no cover - must not run
         raise AssertionError("session-bound mutating trigger must not be replayed blindly")
 
     monkeypatch.setattr(trigger_daemon, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
     monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(trigger_daemon, "_settle_trigger_runtime_budget", fake_settle)
     monkeypatch.setattr(trigger_daemon.asyncio, "create_task", fake_create_task)
 
     resumed = await trigger_daemon.resume_persisted_trigger_runs()
@@ -1085,6 +1452,7 @@ async def test_resume_persisted_trigger_runs_requires_reconciliation_after_sessi
     assert updates[-1][1]["status"] == "needs_reconciliation"
     assert updates[-1][1]["metadata_json"]["needs_reconciliation"] is True
     assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "session_bound_mutating_trigger"
+    assert settlements == [(run_id, "needs_reconciliation")]
 
 
 @pytest.mark.asyncio

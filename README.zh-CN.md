@@ -156,8 +156,8 @@ Hive 是组织控制平面：
 ## 快速开始
 
 ```bash
-git clone https://github.com/rocky2431/hive-agents.git
-cd hive-agents
+git clone https://github.com/SteamRocket-Labs/hiveclaw.git
+cd hiveclaw
 bash setup.sh --dev
 bash restart.sh
 ```

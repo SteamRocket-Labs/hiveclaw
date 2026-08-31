@@ -421,7 +421,7 @@ def test_update_trigger_disable_is_not_gated(monkeypatch):
         created_at=None,
         expires_at=None,
     )
-    db = _QueuedDB([_ScalarResult(trigger)])
+    db = _QueuedDB([_ScalarResult(trigger), _ScalarResult(trigger)])
     app, _user, allow_access = _make_client(mod, db=db)
     trigger.config.update(created_by=str(_user.id), authority_state="owned")
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
@@ -466,7 +466,7 @@ def test_update_trigger_enable_after_user_declines_plan_recommendation_passes(mo
         user=user,
         action_kind="enable_autonomous_wake",
     )
-    db = _QueuedDB([_ScalarResult(trigger), _ScalarResult(recommendation)])
+    db = _QueuedDB([_ScalarResult(trigger), _ScalarResult(recommendation), _ScalarResult(trigger)])
     app, _user, allow_access = _make_client(mod, db=db, user=user)
     trigger.config.update(created_by=str(user.id), authority_state="owned")
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
@@ -508,7 +508,7 @@ def test_update_trigger_reason_only_is_not_gated(monkeypatch):
         created_at=None,
         expires_at=None,
     )
-    db = _QueuedDB([_ScalarResult(trigger)])
+    db = _QueuedDB([_ScalarResult(trigger), _ScalarResult(trigger)])
     app, _user, allow_access = _make_client(mod, db=db)
     trigger.config.update(created_by=str(_user.id), authority_state="owned")
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
@@ -668,7 +668,7 @@ def test_update_schedule_enable_after_user_declines_plan_recommendation_passes(m
         user=user,
         action_kind="enable_autonomous_wake",
     )
-    db = _QueuedDB([_ScalarResult(schedule), _ScalarResult(recommendation)])
+    db = _QueuedDB([_ScalarResult(schedule), _ScalarResult(recommendation), _ScalarResult(schedule)])
     app, _user, allow_access = _make_client(mod, db=db, user=user)
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     monkeypatch.setattr(
@@ -1279,6 +1279,15 @@ def test_cancel_business_task_updates_both_projections_and_publishes_interrupt(m
     monkeypatch.setattr("app.services.runtime_control_bus.publish_business_task_cancel", fake_publish)
     monkeypatch.setattr("app.core.policy.write_audit_event", fake_audit)
     monkeypatch.setattr(mod, "_business_task_detail", fake_detail)
+    terminal_boundaries = []
+
+    async def fake_terminal_boundary(_db, runtime_task):
+        terminal_boundaries.append(runtime_task.id)
+
+    monkeypatch.setattr(
+        "app.services.business_task_runtime.enqueue_business_task_terminal_boundary",
+        fake_terminal_boundary,
+    )
 
     response = TestClient(app).post(
         f"/agents/{agent_id}/tasks/{task_id}/cancel",
@@ -1288,6 +1297,7 @@ def test_cancel_business_task_updates_both_projections_and_publishes_interrupt(m
     assert response.status_code == 200
     assert task.status == "cancelled"
     assert runtime.status == "killed"
+    assert terminal_boundaries == [runtime_id]
     assert published == [{"task_id": task_id, "runtime_task_id": runtime_id}]
 
 

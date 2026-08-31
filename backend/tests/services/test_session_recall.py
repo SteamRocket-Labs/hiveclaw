@@ -198,7 +198,7 @@ async def test_search_session_history_prefers_t0_chat_logs(monkeypatch, tmp_path
 type: chat
 session_id: sess-1
 source: web
-user: Rocky
+user: Example Owner
 started: 2026-04-09T09:00:00+00:00
 turns: 2
 tools: []
@@ -246,7 +246,7 @@ async def test_search_session_history_t0_summary_keeps_adjacent_resolution(monke
 type: chat
 session_id: sess-2
 source: web
-user: Rocky
+user: Example Owner
 started: 2026-04-09T10:30:00+00:00
 turns: 1
 tools: []
@@ -341,7 +341,7 @@ async def test_search_session_history_builds_transcript_focused_recap(monkeypatc
 type: chat
 session_id: sess-3
 source: web
-user: Rocky
+user: Example Owner
 started: 2026-04-09T15:00:00+00:00
 turns: 2
 tools: []

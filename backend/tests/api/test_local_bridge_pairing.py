@@ -58,7 +58,7 @@ def test_pairing_init_returns_device_flow_payload(monkeypatch) -> None:
     resp = client.post(
         "/local-bridge/pairing/init",
         json={
-            "device_name": "Rocky's MacBook",
+            "device_name": "Example Laptop",
             "client_kind": "codex",
             "device_fingerprint": "fp-1",
             "scopes": ["local_agent:receive", "files:upload"],
@@ -70,7 +70,7 @@ def test_pairing_init_returns_device_flow_payload(monkeypatch) -> None:
     assert body["device_code"] == "dev_secret"
     assert body["user_code"] == "HIVE-ABCD"
     assert body["verification_uri_complete"].endswith("user_code=HIVE-ABCD")
-    assert captured["request"].device_name == "Rocky's MacBook"
+    assert captured["request"].device_name == "Example Laptop"
     assert captured["request"].client_kind == "codex"
     assert captured["request"].device_fingerprint == "fp-1"
 
@@ -96,7 +96,7 @@ def test_pairing_init_defaults_to_hive_connect_client_kind(monkeypatch) -> None:
     resp = client.post(
         "/local-bridge/pairing/init",
         json={
-            "device_name": "Rocky's MacBook",
+            "device_name": "Example Laptop",
             "device_fingerprint": "fp-1",
         },
     )
@@ -105,7 +105,9 @@ def test_pairing_init_defaults_to_hive_connect_client_kind(monkeypatch) -> None:
     assert captured["request"].client_kind == "hive-connect"
 
 
-def test_install_guide_exposes_hive_connect_only() -> None:
+def test_install_guide_exposes_hive_connect_only(monkeypatch) -> None:
+    monkeypatch.delenv("HIVE_CONNECT_SKILL_REPO_URL", raising=False)
+    monkeypatch.delenv("HIVE_CONNECT_NPM_PACKAGE", raising=False)
     client, _ = _client()
 
     resp = client.get("/local-bridge/install-guide")
@@ -114,22 +116,16 @@ def test_install_guide_exposes_hive_connect_only() -> None:
     body = resp.json()
     assert body["product_name"] == "Hive Connect"
     assert body["skill_name"] == "hive-connect"
-    assert body["skill_repo_url"] == "https://github.com/rocky2431/hive-connect-skill"
-    assert body["npm_package"] == "@hiveclaw243/hive-connect"
+    assert body["skill_repo_url"] == ""
+    assert body["npm_package"] == ""
+    assert body["install_skill_command"] == ""
+    assert body["install_cli_command"] == ""
+    assert body["login_command"] == ""
+    assert body["status_command"] == ""
+    assert body["run_command"] == ""
+    assert len(body["instructions"]) == 3
+    assert "安装源不可用（unavailable）；请停止" in body["instructions"][2]
     assert body["binary_name"] == "hive-connect"
-    assert body["login_command"] == "hive-connect login"
-    assert (
-        body["instructions"][6]
-        == "5. 执行 hive-connect daemon install --config ~/.hive-connect/config.toml --force，安装并启动后台常驻服务。"
-    )
-    assert body["instructions"][7] == "6. 执行 hive-connect daemon status，确认后台服务正在运行。"
-    assert (
-        body["instructions"][8] == "7. 可选：执行 hive-connect status，确认本机仍保留 Hive 登录绑定（这不代表在线）。"
-    )
-    assert (
-        body["instructions"][9]
-        == "8. 回到 Hive 页面查看本地 Agent 在线标记；如果离线，重新执行第 5-6 步，不要重复 login。"
-    )
     serialized = str(body)
     assert "验证 Hive 连接状态" not in serialized
     assert "runner" not in serialized.lower()
@@ -137,6 +133,25 @@ def test_install_guide_exposes_hive_connect_only() -> None:
     assert "--hive-url" not in serialized
     assert "hive-bridge" not in serialized.lower()
     assert "cc-connect" not in serialized.lower()
+
+
+def test_install_guide_uses_deployment_configured_cli_package(monkeypatch) -> None:
+    monkeypatch.setenv("HIVE_CONNECT_SKILL_REPO_URL", "https://example.com/hive-connect-skill.git")
+    monkeypatch.setenv("HIVE_CONNECT_NPM_PACKAGE", "@example/hive-connect")
+    client, _ = _client()
+
+    body = client.get("/local-bridge/install-guide").json()
+
+    assert body["skill_repo_url"] == "https://example.com/hive-connect-skill.git"
+    assert body["npm_package"] == "@example/hive-connect"
+    assert (
+        body["install_skill_command"]
+        == "npx skills add https://example.com/hive-connect-skill.git --skill hive-connect"
+    )
+    assert body["install_cli_command"] == "npm install -g @example/hive-connect"
+    assert "npm install -g @example/hive-connect" in body["instructions"][3]
+    assert body["login_command"] == "hive-connect login"
+    assert body["run_command"] == "hive-connect daemon install --config ~/.hive-connect/config.toml --force"
 
 
 def test_approve_pairing_binds_current_user_tenant_and_default_local_agent(monkeypatch) -> None:

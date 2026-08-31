@@ -33,7 +33,7 @@ SESSION_V2_EXISTING_TRANSCRIPT_INDEXES = (
 )
 
 SESSION_V2_PARENT_REVISION = "hr_runtime_authority_0715"
-SESSION_V2_HEAD_REVISION = "a2a_continuation_task_0828"
+SESSION_V2_HEAD_REVISION = "invitation_role_binding_0831"
 
 
 def test_session_v2_migration_is_the_single_head_and_secure_downgrade_preserves_evidence() -> None:
@@ -158,10 +158,13 @@ async def test_session_v2_admission_revision_backfills_legacy_attempt_without_re
     session_v2_admission_revision_parent_pg_url: str,
 ) -> None:
     from app.models.agent import Agent
-    from app.models.chat_session import ChatSession
     from app.models.tenant import Tenant
     from app.models.user import User
-    from tests.migrations.conftest import _alembic_downgrade, _alembic_upgrade
+    from tests.migrations.conftest import (
+        _alembic_downgrade,
+        _alembic_upgrade,
+        insert_chat_session_at_schema_revision,
+    )
 
     tenant_id, user_id, agent_id, session_id, command_id, input_id, admission_id = (uuid.uuid4() for _ in range(7))
     original_hook_run_id = uuid.uuid4()
@@ -183,8 +186,13 @@ async def test_session_v2_admission_revision_backfills_legacy_attempt_without_re
             await db.flush()
             db.add(Agent(id=agent_id, tenant_id=tenant_id, name="Admission Revision Agent", creator_id=user_id))
             await db.flush()
-            db.add(ChatSession(id=session_id, agent_id=agent_id, tenant_id=tenant_id, user_id=user_id))
-            await db.flush()
+            await insert_chat_session_at_schema_revision(
+                db,
+                id=session_id,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+            )
             await db.execute(
                 text(
                     """
@@ -1285,12 +1293,12 @@ async def test_downgrade_rejects_any_v2_event_even_before_cutover(
     """A schema-v2 fact is not mechanically provable as safe for an older binary."""
 
     from app.models.agent import Agent
-    from app.models.chat_session import ChatSession
     from app.models.tenant import Tenant
     from app.models.user import User
     from tests.migrations.conftest import (
         _alembic_downgrade,
         _alembic_upgrade,
+        insert_chat_session_at_schema_revision,
     )
 
     # This test belongs to the original Session V2 revision.  Put the shared
@@ -1326,8 +1334,13 @@ async def test_downgrade_rejects_any_v2_event_even_before_cutover(
             await db.flush()
             db.add(Agent(id=agent_id, tenant_id=tenant_id, name="Pre-cutover Agent", creator_id=user_id))
             await db.flush()
-            db.add(ChatSession(id=session_id, agent_id=agent_id, tenant_id=tenant_id, user_id=user_id))
-            await db.flush()
+            await insert_chat_session_at_schema_revision(
+                db,
+                id=session_id,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+            )
             await db.execute(
                 text("""
                   INSERT INTO chat_transcript_events(
@@ -1397,13 +1410,12 @@ async def test_downgrade_rejects_after_generation_two_facts_without_mutating_hea
     """A V2-aware rollback artifact is mandatory after the generation-2 fence."""
 
     from app.models.agent import Agent
-    from app.models.chat_session import ChatSession
     from app.models.tenant import Tenant
     from app.models.user import User
-    from app.services.session_v2_persistence import SessionEventDraft, append_session_events
     from tests.migrations.conftest import (
         _alembic_downgrade,
         _alembic_upgrade,
+        insert_chat_session_at_schema_revision,
         insert_runtime_task_at_schema_revision,
     )
 
@@ -1454,15 +1466,13 @@ async def test_downgrade_rejects_after_generation_two_facts_without_mutating_hea
                 )
             )
             await db.flush()
-            db.add(
-                ChatSession(
-                    id=session_id,
-                    agent_id=agent_id,
-                    tenant_id=tenant_id,
-                    user_id=user_id,
-                )
+            await insert_chat_session_at_schema_revision(
+                db,
+                id=session_id,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
             )
-            await db.flush()
             await insert_runtime_task_at_schema_revision(
                 db,
                 id=run_id,
@@ -1492,30 +1502,39 @@ async def test_downgrade_rejects_after_generation_two_facts_without_mutating_hea
                     "allowed": "[1,2]" if epoch_state == "v1_draining" else "[2]",
                 },
             )
-            rows = await append_session_events(
-                db,
-                tenant_id=tenant_id,
-                agent_id=agent_id,
-                session_id=session_id,
-                drafts=[
-                    SessionEventDraft(
-                        event_id=event_id,
-                        item_id=uuid.uuid4(),
-                        item_kind="runtime_failure",
-                        lifecycle="recorded",
-                        scope={
-                            "level": "run",
-                            "session_id": str(session_id),
-                            "thread_id": str(session_id),
-                            "turn_id": "turn-generation-2",
-                            "run_id": str(run_id),
-                        },
-                        actor={"type": "runtime"},
-                        payload={"domain": "migration", "code": "generation_two_fact"},
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO chat_transcript_events(
+                      id,sequence,tenant_id,agent_id,session_id,run_id,schema_version,
+                      item_id,item_kind,lifecycle,payload_schema,scope_json,item_type,
+                      item_status,actor_type,event_type,visibility_scope,listed_surface,
+                      content,metadata_json,projection_status,projection_attempts
+                    ) VALUES (
+                      :id,1,:tenant_id,:agent_id,:session_id,:run_id,2,
+                      :item_id,'runtime_failure','recorded',
+                      'hive.session.payload.runtime_failure.recorded.v2',CAST(:scope AS jsonb),
+                      'runtime_failure','recorded','runtime','runtime_failure.recorded',
+                      'operator','ops','',
+                      '{"v2_payload":{"domain":"migration","code":"generation_two_fact"},'
+                      '"actor":{"type":"runtime"},"visibility":{"audience":"operator"}}'::jsonb,
+                      'pending',0
                     )
-                ],
+                    """
+                ),
+                {
+                    "id": event_id,
+                    "tenant_id": tenant_id,
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "item_id": uuid.uuid4(),
+                    "scope": (
+                        '{"level":"run","session_id":"%s","thread_id":"%s",'
+                        '"turn_id":"turn-generation-2","run_id":"%s"}' % (session_id, session_id, run_id)
+                    ),
+                },
             )
-            assert rows[0].id == event_id
             await db.commit()
 
         async with engine.connect() as connection:

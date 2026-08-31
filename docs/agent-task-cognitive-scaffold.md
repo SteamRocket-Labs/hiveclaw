@@ -71,7 +71,7 @@ Plan 填表反模式、task "创建即执行"耦合、Work Ledger 无 agent 入�
 
 ## 2. CC 基线：V2 Task 机制是什么
 
-（证据：CC 源码 `/Users/rocky243/Context Engineering/claude-code-org`）
+（证据：CC 源码 `/Users/example-owner/Context Engineering/claude-code-org`）
 
 CC 早期的 `TodoWrite`（V1，纯内存认知清单）已淘汰，交互式默认启用 **V2 task 系统**
 （`TaskCreate` / `TaskUpdate` / `TaskList` / `TaskGet` / `TaskOutput` / `TaskStop`）。其本质是

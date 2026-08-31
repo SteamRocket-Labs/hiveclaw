@@ -147,7 +147,7 @@ describe('Layout extracted sections', () => {
   it('renders AppSidebar as a standalone shell module', () => {
     const markup = renderToStaticMarkup(
       <AppSidebar
-        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Rocky' }}
+        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Example Owner' }}
         theme="dark"
         isSidebarCollapsed={false}
         onToggleSidebar={vi.fn()}
@@ -207,7 +207,7 @@ describe('Layout extracted sections', () => {
     expect(markup).toContain('Local');
     expect(markup).toContain('New digital employee');
     expect(markup).toContain('Settings');
-    expect(markup).toContain('Rocky');
+    expect(markup).toContain('Example Owner');
     expect(markup).toContain('Super Admin');
     expect(markup).toContain('Company Admin');
     expect(markup).toContain('Platform Settings');
@@ -222,7 +222,7 @@ describe('Layout extracted sections', () => {
   it('labels the language action with its destination when the current locale is Chinese', () => {
     const markup = renderToStaticMarkup(
       <AppSidebar
-        user={{ id: 'user-1', role: 'member', display_name: 'Rocky' }}
+        user={{ id: 'user-1', role: 'member', display_name: 'Example Owner' }}
         theme="light"
         isSidebarCollapsed={false}
         onToggleSidebar={vi.fn()}
@@ -251,7 +251,7 @@ describe('Layout extracted sections', () => {
   it('keeps employee creation as a simple action below the employee tree', () => {
     const markup = renderToStaticMarkup(
       <AppSidebar
-        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Rocky' }}
+        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Example Owner' }}
         theme="light"
         isSidebarCollapsed={false}
         onToggleSidebar={vi.fn()}
@@ -291,7 +291,7 @@ describe('Layout extracted sections', () => {
     routeState.location = { pathname: '/agents/hr-agent-1', search: '?session_id=hr-session-1', hash: '#chat' };
     const markup = renderToStaticMarkup(
       <AppSidebar
-        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Rocky' }}
+        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Example Owner' }}
         theme="light"
         isSidebarCollapsed={false}
         onToggleSidebar={vi.fn()}
@@ -337,7 +337,7 @@ describe('Layout extracted sections', () => {
     routeState.location = { pathname: '/home', search: '', hash: '' };
     const markup = renderToStaticMarkup(
       <AppSidebar
-        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Rocky' }}
+        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Example Owner' }}
         theme="light"
         isSidebarCollapsed={false}
         onToggleSidebar={vi.fn()}
@@ -360,7 +360,7 @@ describe('Layout extracted sections', () => {
     );
 
     expect(markup).toContain('Settings');
-    expect(markup).not.toContain('Rocky');
+    expect(markup).not.toContain('Example Owner');
     expect(markup).not.toContain('Super Admin');
     expect(markup).not.toContain('sidebar-account-row-static');
   });
@@ -369,7 +369,7 @@ describe('Layout extracted sections', () => {
     routeState.location = { pathname: '/agents/agent-1', search: '?session_id=session-1', hash: '#chat' };
     const markup = renderToStaticMarkup(
       <AppSidebar
-        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Rocky' }}
+        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Example Owner' }}
         theme="light"
         isSidebarCollapsed={false}
         onToggleSidebar={vi.fn()}
@@ -439,7 +439,7 @@ describe('Layout extracted sections', () => {
     routeState.location = { pathname: '/agents/agent-1', search: '?session_id=session-branch', hash: '#chat' };
     const markup = renderToStaticMarkup(
       <AppSidebar
-        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Rocky' }}
+        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Example Owner' }}
         theme="light"
         isSidebarCollapsed={false}
         onToggleSidebar={vi.fn()}
@@ -499,7 +499,7 @@ describe('Layout extracted sections', () => {
     routeState.location = { pathname: '/agents/agent-1/sessions/session-2', search: '', hash: '' };
     const markup = renderToStaticMarkup(
       <AppSidebar
-        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Rocky' }}
+        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Example Owner' }}
         theme="light"
         isSidebarCollapsed={false}
         onToggleSidebar={vi.fn()}
@@ -549,7 +549,7 @@ describe('Layout extracted sections', () => {
     routeState.location = { pathname: '/agents/local-agent-1', search: '?session_id=chat-session-1', hash: '#chat' };
     const markup = renderToStaticMarkup(
       <AppSidebar
-        user={{ id: 'user-1', role: 'member', display_name: 'Rocky' }}
+        user={{ id: 'user-1', role: 'member', display_name: 'Example Owner' }}
         theme="light"
         isSidebarCollapsed={false}
         onToggleSidebar={vi.fn()}

@@ -3,12 +3,34 @@ from __future__ import annotations
 from pathlib import Path
 
 
+def test_output_directory_is_unique_for_two_runs_in_the_same_second(monkeypatch, tmp_path: Path) -> None:
+    import app.evals.run as eval_run
+
+    fixed = eval_run.datetime(2026, 8, 31, 1, 2, 3, tzinfo=eval_run.timezone.utc)
+
+    class FrozenDateTime:
+        @staticmethod
+        def now(_timezone):
+            return fixed
+
+    monkeypatch.setattr(eval_run, "datetime", FrozenDateTime)
+
+    first = eval_run._resolve_output_dir(
+        suite="core_v1", target="hive", mode="bakeoff", ablation="full", output_root=tmp_path
+    )
+    second = eval_run._resolve_output_dir(
+        suite="core_v1", target="hive", mode="bakeoff", ablation="full", output_root=tmp_path
+    )
+
+    assert first != second
+
+
 def test_run_eval_suite_writes_json_markdown_and_scenario_artifacts(tmp_path: Path) -> None:
     from app.evals.run import run_eval_suite
 
     report = run_eval_suite(
         suite="core_v1",
-        target="clawith",
+        target="hive",
         mode="internal",
         ablation="full",
         output_root=tmp_path,
@@ -16,7 +38,7 @@ def test_run_eval_suite_writes_json_markdown_and_scenario_artifacts(tmp_path: Pa
 
     output_dir = Path(report["output_dir"])
     assert report["suite"] == "core_v1"
-    assert report["target"] == "clawith"
+    assert report["target"] == "hive"
     assert report["mode"] == "internal"
     assert report["summary"]["scenario_count"] == 8
     assert report["analysis"]["strengths"]
@@ -263,14 +285,14 @@ def test_run_eval_suite_supports_continuity_and_skill_internal_suites(tmp_path: 
 
     continuity_report = run_eval_suite(
         suite="continuity_v1",
-        target="clawith",
+        target="hive",
         mode="internal",
         ablation="full",
         output_root=tmp_path,
     )
     skill_report = run_eval_suite(
         suite="skill_v1",
-        target="clawith",
+        target="hive",
         mode="internal",
         ablation="full",
         output_root=tmp_path,
@@ -281,3 +303,55 @@ def test_run_eval_suite_supports_continuity_and_skill_internal_suites(tmp_path: 
     assert skill_report["suite"] == "skill_v1"
     assert skill_report["summary"]["scenario_count"] == 4
     assert skill_report["summary"]["pass_rate"] == 100.0
+
+
+def test_j4_cli_reads_only_the_explicitly_named_bearer_env(monkeypatch, tmp_path: Path) -> None:
+    import app.evals.run as eval_run
+
+    captured: list[dict[str, object]] = []
+
+    def fake_run_eval_suite(**kwargs):
+        captured.append(kwargs)
+        accepted = bool(kwargs["j4_config"].hive_bearer)
+        return {
+            "suite": kwargs["suite"],
+            "target": kwargs["target"],
+            "mode": kwargs["mode"],
+            "ablation": kwargs["ablation"],
+            "summary": {"average_score": 0.0, "pass_rate": 0.0},
+            "output_dir": str(tmp_path),
+            "benchmark_complete": True,
+            "acceptance_ready": accepted,
+        }
+
+    monkeypatch.setattr(eval_run, "run_eval_suite", fake_run_eval_suite)
+    monkeypatch.setenv("HIVE_BEARER", "implicit-secret")
+    monkeypatch.setenv("EXPLICIT_J4_TOKEN", "explicit-secret")
+
+    assert (
+        eval_run.main(
+            ["--suite", "core_v1", "--target", "hive", "--mode", "bakeoff", "--j4-same-envelope"],
+            output_root=tmp_path,
+        )
+        == 1
+    )
+    assert captured[-1]["j4_config"].hive_bearer is None
+
+    assert (
+        eval_run.main(
+            [
+                "--suite",
+                "core_v1",
+                "--target",
+                "hive",
+                "--mode",
+                "bakeoff",
+                "--j4-same-envelope",
+                "--hive-bearer-env",
+                "EXPLICIT_J4_TOKEN",
+            ],
+            output_root=tmp_path,
+        )
+        == 0
+    )
+    assert captured[-1]["j4_config"].hive_bearer == "explicit-secret"

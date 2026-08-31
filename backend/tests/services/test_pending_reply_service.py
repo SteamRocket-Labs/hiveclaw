@@ -37,7 +37,7 @@ class TestExtractRecipientInfo:
         result = extract_recipient_info(
             "send_feishu_message",
             {
-                "member_name": "王天怡",
+                "member_name": "Example User B",
                 "user_id": "u_abc",
                 "open_id": "ou_xyz",
                 "message": "hello",
@@ -45,14 +45,14 @@ class TestExtractRecipientInfo:
         )
         assert result is not None
         assert result["channel"] == "feishu"
-        assert result["name"] == "王天怡"
+        assert result["name"] == "Example User B"
         assert result["identity"] == "feishu:u_abc"
 
     def test_feishu_fallback_to_open_id(self) -> None:
         result = extract_recipient_info(
             "send_feishu_message",
             {
-                "member_name": "天怡",
+                "member_name": "Example User B",
                 "open_id": "ou_xyz",
                 "message": "hi",
             },
@@ -64,12 +64,12 @@ class TestExtractRecipientInfo:
         result = extract_recipient_info(
             "send_feishu_message",
             {
-                "member_name": "王天怡",
+                "member_name": "Example User B",
                 "message": "hi",
             },
         )
         assert result is not None
-        assert result["identity"] == "feishu:王天怡"
+        assert result["identity"] == "feishu:Example User B"
 
     def test_web(self) -> None:
         result = extract_recipient_info(
@@ -131,14 +131,14 @@ class TestExtractRecipientInfo:
 class TestBuildTaskContext:
     def test_extracts_from_messages(self) -> None:
         messages = [
-            {"role": "user", "content": "帮我约王天怡周二下午开会"},
-            {"role": "assistant", "content": "好的，我先给王天怡发消息确认时间"},
+            {"role": "user", "content": "帮我约 Example User B 周二下午开会"},
+            {"role": "assistant", "content": "好的，我先给 Example User B 发消息确认时间"},
             {"role": "assistant", "content": "", "tool_calls": [{"id": "tc1"}]},
         ]
-        ctx = build_task_context(messages, {"message": "天怡你好，慕涵想约你开会"})
-        assert "王天怡" in ctx["originator_message"]
-        assert "王天怡" in ctx["agent_reasoning"]
-        assert "天怡你好" in ctx["outbound_message"]
+        ctx = build_task_context(messages, {"message": "Example User B 你好，Example User A 想约你开会"})
+        assert "Example User B" in ctx["originator_message"]
+        assert "Example User B" in ctx["agent_reasoning"]
+        assert "Example User B 你好" in ctx["outbound_message"]
 
     def test_empty_messages(self) -> None:
         ctx = build_task_context([], {"message": "hello"})
@@ -181,7 +181,7 @@ class TestShouldCapturePendingReplyContext:
     def test_skips_one_way_channel_delivery_without_originator(self) -> None:
         recipient = {
             "channel": "feishu",
-            "name": "翁吉义",
+            "name": "Example User A",
             "identity": "feishu:7baa7g22",
         }
 
@@ -194,27 +194,27 @@ class TestShouldCapturePendingReplyContext:
     def test_skips_when_originator_is_same_as_recipient(self) -> None:
         recipient = {
             "channel": "feishu",
-            "name": "翁吉义",
+            "name": "Example User A",
             "identity": "feishu:7baa7g22",
         }
 
         assert not should_capture_pending_reply_context(
             recipient=recipient,
-            originator_name="翁吉义",
+            originator_name="Example User A",
             originator_identity="feishu:7baa7g22",
         )
 
     def test_captures_real_cross_user_reply_context(self) -> None:
         recipient = {
             "channel": "feishu",
-            "name": "王天怡",
-            "identity": "feishu:ou_tianyi",
+            "name": "Example User B",
+            "identity": "feishu:ou_example_user_b",
         }
 
         assert should_capture_pending_reply_context(
             recipient=recipient,
-            originator_name="慕涵",
-            originator_identity="web:muhan",
+            originator_name="Example User A",
+            originator_identity="web:example-user-a",
         )
 
 
@@ -268,11 +268,11 @@ class TestFormatPendingReplyContext:
     def _make_pending(self, **kwargs) -> object:
         """Create a mock PendingReplyContext-like object."""
         defaults = {
-            "originator_name": "慕涵",
-            "originator_identity": "feishu:u_muhan",
-            "recipient_identity": "feishu:u_tianyi",
-            "outbound_message": "天怡你好！慕涵想约你周二14:00开会",
-            "task_summary": "帮我约王天怡周二下午开会",
+            "originator_name": "Example User A",
+            "originator_identity": "feishu:u_example_user_a",
+            "recipient_identity": "feishu:u_example_user_b",
+            "outbound_message": "Example User B 你好！Example User A 想约你周二14:00开会",
+            "task_summary": "帮我约 Example User B 周二下午开会",
             "expected_action": "确认后创建日程并邀请双方",
             "created_at": datetime(2026, 4, 14, 9, 30, tzinfo=timezone.utc),
         }
@@ -292,11 +292,11 @@ class TestFormatPendingReplyContext:
     def test_single_pending(self) -> None:
         result = format_pending_reply_context([self._make_pending()])
         assert "待回复任务上下文" in result
-        assert "慕涵" in result
-        assert "feishu:u_muhan" in result
-        assert "feishu:u_tianyi" in result
+        assert "Example User A" in result
+        assert "feishu:u_example_user_a" in result
+        assert "feishu:u_example_user_b" in result
         assert "2026-04-14" in result
-        assert "天怡你好" in result
+        assert "Example User B 你好" in result
         assert "周二" in result
         assert "不要重复询问" in result
 

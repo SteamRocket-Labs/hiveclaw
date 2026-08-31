@@ -43,6 +43,7 @@ from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.plan_authorization_lease import require_active_plan_authorization
 from app.models.agent import Agent
 from app.models.trigger import AgentTrigger
+from app.services.trigger_resource_authority import preserve_trigger_authority, strip_trigger_runtime_config
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +97,7 @@ def _trigger_payload_from_plan(plan: Any, *, force_once: bool = False, now: date
     if trigger_type not in _SCHEDULED_TRIGGER_TYPES:
         trigger_type = "cron"
 
-    config: dict[str, Any] = dict(wake_policy.get("config") or {})
+    config: dict[str, Any] = strip_trigger_runtime_config(wake_policy.get("config"))
     # Promote top-level schedule keys (skeleton shape) into config.
     for key in ("expr", "at", "minutes", "interval_min", "delay_seconds"):
         if key in wake_policy and key not in config:
@@ -191,13 +192,15 @@ async def _ensure_enabled_trigger(db: Any, agent: Any, plan: Any, *, force_once:
     """
     payload = _trigger_payload_from_plan(plan, force_once=force_once)
 
-    trigger_result = await db.execute(select(AgentTrigger).where(AgentTrigger.agent_id == agent.id))
+    trigger_result = await db.execute(
+        select(AgentTrigger).where(AgentTrigger.agent_id == agent.id).order_by(AgentTrigger.id).with_for_update()
+    )
     triggers = list(trigger_result.scalars().all())
     existing = _find_plan_trigger(triggers, plan)
 
     if existing is not None:
         existing.type = payload["type"]
-        existing.config = payload["config"]
+        existing.config = preserve_trigger_authority(existing, payload["config"])
         existing.reason = payload["reason"]
         existing.is_enabled = True
         await db.flush()

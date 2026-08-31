@@ -64,7 +64,7 @@ async def test_invocation_trace_service_persists_and_reads_cross_invocation_tree
             request_id=request_id,
             execution_identity_type="delegated_user",
             execution_identity_id=delegated_user_id,
-            execution_identity_label="Rocky via web",
+            execution_identity_label="Example Owner via web",
             metadata={
                 "source": "web",
                 "decision_id": "decision-1",
@@ -123,7 +123,7 @@ async def test_invocation_trace_service_persists_and_reads_cross_invocation_tree
     assert root["execution_identity"] == {
         "type": "delegated_user",
         "id": str(delegated_user_id),
-        "label": "Rocky via web",
+        "label": "Example Owner via web",
     }
     assert root["decision_id"] == "decision-1"
     assert root["input_hash"] == "a" * 64

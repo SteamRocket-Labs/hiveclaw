@@ -26,6 +26,7 @@ from app.services.plan_mode_recommendation_service import (
     require_declined_plan_recommendation,
 )
 from app.services.channel_secret_storage import redact_delivery_target
+from app.services.trigger_resource_authority import lock_trigger_for_update, require_trigger_not_fire_inflight
 
 router = APIRouter(prefix="/agents/{agent_id}/schedules", tags=["schedules"])
 
@@ -449,6 +450,14 @@ async def update_schedule(
                 },
                 evidence_id=evidence_id,
             )
+    trigger = await lock_trigger_for_update(
+        db,
+        agent_id=agent_id,
+        trigger_id=schedule_id,
+        trigger_type="cron",
+    )
+    if trigger is None:
+        raise HTTPException(status_code=404, detail="Schedule not found")
     if "name" in updates and updates["name"] is not None:
         trigger.name = str(updates["name"]).strip()
     if "instruction" in updates and updates["instruction"] is not None:
@@ -514,6 +523,15 @@ async def delete_schedule(
         operator_view=operator_view,
         operator_reason=operator_reason,
     )
+    trigger = await lock_trigger_for_update(
+        db,
+        agent_id=agent_id,
+        trigger_id=schedule_id,
+        trigger_type="cron",
+    )
+    if trigger is None:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    require_trigger_not_fire_inflight(trigger)
     await db.delete(trigger)
     await db.flush()
 

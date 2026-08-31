@@ -26,7 +26,7 @@ async def test_execute_tool_inner_prefers_tool_execution_registry(monkeypatch):
         lambda: ExecutionIdentity(
             identity_type="delegated_user",
             identity_id=user_id,
-            label="Rocky via web",
+            label="Example Owner via web",
         ),
     )
 
@@ -41,7 +41,7 @@ async def test_execute_tool_inner_prefers_tool_execution_registry(monkeypatch):
             execution_identity=ExecutionIdentity(
                 identity_type="delegated_user",
                 identity_id=user_id,
-                label="Rocky via web",
+                label="Example Owner via web",
             ),
         ),
     )

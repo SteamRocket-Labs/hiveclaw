@@ -62,7 +62,7 @@ async def test_tool_round_warnings_record_state_in_work_ledger() -> None:
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "FROZEN",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             resolve_retrieval_context=lambda *_args, **_kwargs: "",
@@ -163,7 +163,7 @@ async def test_runtime_config_execution_mode_reaches_prompt_builder_and_tool_fil
                 max_tool_rounds=3,
                 execution_mode="coordinator",
             ),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=build_system_prompt,
             resolve_memory_context=lambda *_args, **_kwargs: "",
             resolve_retrieval_context=lambda *_args, **_kwargs: "",

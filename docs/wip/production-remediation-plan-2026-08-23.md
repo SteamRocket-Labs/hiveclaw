@@ -367,7 +367,7 @@ P0-D 51 个 agent 分类与配模型                       ← 需 owner。放�
 - `p0_agent_classification.csv`（可直接填「分类」列）
 - `p0_agent_classification.md`（带勾选框）
 
-两份文件**含 owner 邮箱，故未入库**，留在 session scratchpad：`/private/tmp/claude-501/-Users-rocky243-vc-saas-hiveclaw-main/a4df9afc-f0b1-460f-bfcc-7595730e6c18/scratchpad/`。
+两份文件**含 owner 邮箱，故未入库**，留在 session scratchpad：`/private/tmp/claude-501/-Users-example-owner-vc-saas-hiveclaw-main/a4df9afc-f0b1-460f-bfcc-7595730e6c18/scratchpad/`。
 
 分类判据（实测）：**近 30 天有人类会话的只有 1/51**，最后一次成功触发全部早于 2026-07-16。
 涉及 21 个 owner，前三名：SimonXu1212（10）、Leslie Lu（9）、Zhuocheng Shi（4）。

@@ -34,6 +34,7 @@ from app.api.enterprise import router as enterprise_router
 from app.api.external_capabilities import router as external_capabilities_router
 from app.api.external_principals import router as external_principals_router
 from app.api.channel_deliveries import router as channel_deliveries_router
+from app.api.runtime_terminal_boundaries import router as runtime_terminal_boundaries_router
 from app.api.feature_flags import router as feature_flags_router
 from app.api.feishu import router as feishu_router
 from app.api.files import router as files_router
@@ -905,6 +906,7 @@ _api_routers = [
     external_capabilities_router,
     external_principals_router,
     channel_deliveries_router,
+    runtime_terminal_boundaries_router,
     tools_router,
     workflows_router,
     workflow_definitions_router,
@@ -931,6 +933,7 @@ app.include_router(metrics_router)
 @app.get("/api/health", response_model=HealthResponse, tags=["health"])
 async def health_check():
     """Health check endpoint."""
+    from app.build_identity import current_build_identity
     from app.database import snapshot_db_pool, snapshot_postgres_text_contract
     from app.services.daemon_liveness import daemon_health_status, daemon_liveness_snapshot
     from app.services.event_loop_monitor import event_loop_lag_monitor
@@ -941,6 +944,14 @@ async def health_check():
 
     db_pool = snapshot_db_pool()
     rls_runtime_role = latest_runtime_rls_role_health()
+    try:
+        build_identity = current_build_identity()
+    except (OSError, ValueError) as exc:
+        build_identity = {
+            "schema": "hive.build_identity.v1",
+            "status": "unavailable",
+            "error": type(exc).__name__,
+        }
     try:
         sandbox_probe = await latest_sandbox_probe_health()
     except Exception as exc:
@@ -961,10 +972,13 @@ async def health_check():
         status = "degraded"
     if db_pool["saturation_pct"] >= 100.0 and status == "ok":
         status = "degraded"
+    if build_identity["status"] != "ok" and status == "ok":
+        status = "degraded"
     return HealthResponse(
         status=status,
         version=settings.APP_VERSION,
         components={
+            "build_identity": build_identity,
             "daemons": daemon_liveness_snapshot(),
             "rls_runtime_role": rls_runtime_role,
             "code_execution_sandbox_probe": sandbox_probe,

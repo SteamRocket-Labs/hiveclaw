@@ -9,12 +9,16 @@ RUN apt-get update && \
 
 COPY pyproject.toml ./
 COPY scripts/patch_lark_oapi.py ./scripts/patch_lark_oapi.py
+ARG HIVE_PIP_INDEX_URL
+ARG HIVE_PIP_TRUSTED_HOST
 ARG CLAWITH_PIP_INDEX_URL
 ARG CLAWITH_PIP_TRUSTED_HOST
-RUN if [ -n "$CLAWITH_PIP_INDEX_URL" ] && [ -n "$CLAWITH_PIP_TRUSTED_HOST" ]; then \
-        pip install --no-cache-dir --index-url "$CLAWITH_PIP_INDEX_URL" --trusted-host "$CLAWITH_PIP_TRUSTED_HOST" .; \
-    elif [ -n "$CLAWITH_PIP_INDEX_URL" ]; then \
-        pip install --no-cache-dir --index-url "$CLAWITH_PIP_INDEX_URL" .; \
+RUN EFFECTIVE_PIP_INDEX_URL="${HIVE_PIP_INDEX_URL:-$CLAWITH_PIP_INDEX_URL}"; \
+    EFFECTIVE_PIP_TRUSTED_HOST="${HIVE_PIP_TRUSTED_HOST:-$CLAWITH_PIP_TRUSTED_HOST}"; \
+    if [ -n "$EFFECTIVE_PIP_INDEX_URL" ] && [ -n "$EFFECTIVE_PIP_TRUSTED_HOST" ]; then \
+        pip install --no-cache-dir --index-url "$EFFECTIVE_PIP_INDEX_URL" --trusted-host "$EFFECTIVE_PIP_TRUSTED_HOST" .; \
+    elif [ -n "$EFFECTIVE_PIP_INDEX_URL" ]; then \
+        pip install --no-cache-dir --index-url "$EFFECTIVE_PIP_INDEX_URL" .; \
     else \
         pip install --no-cache-dir .; \
     fi

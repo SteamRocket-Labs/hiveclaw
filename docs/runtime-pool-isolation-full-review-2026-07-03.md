@@ -45,7 +45,7 @@
 **后端全量**
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q
 # 5359 passed, 1 skipped, 6 warnings in 93.13s
@@ -54,7 +54,7 @@ pytest tests -q
 **B1-B4 / P1 目标与相关回归**
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_runtime_control_bus.py \
   tests/services/test_web_chat_runtime.py::test_cancel_web_chat_run_sets_cancel_event_and_marks_runtime_task_killed \
@@ -70,16 +70,16 @@ pytest tests/services/test_runtime_control_bus.py \
 **lint / frontend / compose**
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 ruff check app/services/runtime_control_bus.py app/services/web_chat_runtime.py app/agents/orchestrator.py app/services/chat_transcript.py app/api/websocket.py app/main.py app/api/tasks.py app/services/runtime_task_worker.py tests/services/test_runtime_control_bus.py tests/services/test_web_chat_runtime.py tests/services/test_chat_transcript.py tests/test_startup_background_config.py tests/api/test_websocket_call_llm.py tests/api/test_plan_mode_rest_gate.py tests/services/test_runtime_task_worker.py
 # All checks passed!
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run build
 # tsc && vite build succeeded
 
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 docker compose config | sed -n '68,105p'
 # frontend: BACKEND_HOST=backend:8000, published 3008 -> target 80
 ```

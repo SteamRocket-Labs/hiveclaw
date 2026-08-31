@@ -4,7 +4,7 @@ import importlib.util
 from pathlib import Path
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -78,6 +78,7 @@ async def test_upgrade_repairs_exact_legacy_collaboration_rows(migrated_pg_url: 
     from tests.migrations.conftest import (
         _alembic_downgrade,
         _alembic_upgrade,
+        insert_chat_session_at_schema_revision,
         insert_runtime_task_at_schema_revision,
     )
 
@@ -108,35 +109,34 @@ async def test_upgrade_repairs_exact_legacy_collaboration_rows(migrated_pg_url: 
                 ]
             )
             await db.flush()
-            db.add_all(
-                [
-                    ChatSession(
-                        id=parent_session_id,
-                        agent_id=parent_agent_id,
-                        tenant_id=tenant_id,
-                        user_id=user_id,
-                    ),
-                    ChatSession(
-                        id=team_session_id,
-                        agent_id=parent_agent_id,
-                        tenant_id=tenant_id,
-                        user_id=user_id,
-                        session_kind="team_member",
-                        runtime_source="team_member",
-                        listed_surface="chat",
-                        parent_session_id=parent_session_id,
-                    ),
-                    ChatSession(
-                        id=child_session_id,
-                        agent_id=child_agent_id,
-                        tenant_id=tenant_id,
-                        user_id=user_id,
-                        session_kind="subagent_run",
-                        runtime_source="subagent",
-                        listed_surface="parent",
-                        parent_session_id=parent_session_id,
-                    ),
-                ]
+            await insert_chat_session_at_schema_revision(
+                db,
+                id=parent_session_id,
+                agent_id=parent_agent_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+            )
+            await insert_chat_session_at_schema_revision(
+                db,
+                id=team_session_id,
+                agent_id=parent_agent_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                session_kind="team_member",
+                runtime_source="team_member",
+                listed_surface="chat",
+                parent_session_id=parent_session_id,
+            )
+            await insert_chat_session_at_schema_revision(
+                db,
+                id=child_session_id,
+                agent_id=child_agent_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                session_kind="subagent_run",
+                runtime_source="subagent",
+                listed_surface="parent",
+                parent_session_id=parent_session_id,
             )
             await db.flush()
             await insert_runtime_task_at_schema_revision(
@@ -155,9 +155,9 @@ async def test_upgrade_repairs_exact_legacy_collaboration_rows(migrated_pg_url: 
                 metadata_json={"interaction_type": "delegation"},
             )
             await db.flush()
-            child_session = await db.get(ChatSession, child_session_id)
-            assert child_session is not None
-            child_session.runtime_task_id = task_id
+            await db.execute(
+                update(ChatSession).where(ChatSession.id == child_session_id).values(runtime_task_id=task_id)
+            )
             db.add(
                 RuntimeRootItem(
                     tenant_id=tenant_id,

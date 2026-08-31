@@ -82,7 +82,7 @@ Scope: CCPlus V1 单 Agent runtime 收口后的全系统断点取证 + "是否�
 
 | # | 断点 | 证据 | 判定 | 严重度 |
 |---|---|---|---|---|
-| C-1 | **多租户 RLS 真生效与否押在代码看不到的部署事实**:运行时以 owner 连库(从不切 `app_rls`);若 owner 是 superuser(测试注释自述生产 `clawith` 是)则 FORCE 全被绕过。策略 USING-only(无 WITH CHECK)+`OR tenant_id IS NULL`→NULL 行跨租户可见、写入侧不设防。无测试证明 FORCE 拦得住 owner 连接 | `entrypoint.sh:226`、`conftest.py:148-153`、`db_bootstrap.py:148-160` | 未决取证 | **P0** |
+| C-1 | **多租户 RLS 真生效与否押在代码看不到的部署事实**:运行时以 owner 连库(从不切 `app_rls`);若 owner 是 superuser(测试注释自述生产 `hive` 是)则 FORCE 全被绕过。策略 USING-only(无 WITH CHECK)+`OR tenant_id IS NULL`→NULL 行跨租户可见、写入侧不设防。无测试证明 FORCE 拦得住 owner 连接 | `entrypoint.sh:226`、`conftest.py:148-153`、`db_bootstrap.py:148-160` | 未决取证 | **P0** |
 | C-2 | **自进化"上膛但从未击发"**:6-15 两条 P0 命门(save_skill 自授权、无 behavior writer)已修复,晋升链全 live、默认开、硬门正确;但 committed baseline 自 6-13 仍是 `pending-e2-live-run`、6 场景全 0.0,无证据表明生产真跑出过一份全绿 live 报告 | `evolution_verification.py:596-634`、baseline `core_behavior_v1.json` | 运行时未证 | **P0** |
 
 ### 取证确认的"真闭环"(勿误伤)

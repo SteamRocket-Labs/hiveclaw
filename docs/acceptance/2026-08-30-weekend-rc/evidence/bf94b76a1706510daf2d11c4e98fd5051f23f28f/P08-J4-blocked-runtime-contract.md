@@ -31,7 +31,7 @@ cleanup_result: PASS
 
 - deployed application 仍为 exact `bf94b76a`；backend `07059ce5…`、backend-api `c70ff972…`、frontend `308e7789…` 均为 `SUCCESS`，backend health `status=ok`，frontend HTTP 200。
 - current manual runner `backend/app/evals/bakeoff_runtime.py` 只接受 `claude_code` 和 `hermes_agent`；没有 Hive 或 FreeCode target。Claude command 固定 `--model sonnet`，Hermes command不绑定相同 model，故当前入口无法证明 same-model envelope。
-- installed `claude` 是官方 Claude Code `2.1.251`。FreeCode live source 位于 `/Users/rocky243/Context Engineering/free-code-main`、revision `7dc15d6c8fb0c40c7fcc02ce9b58204324252632`、package `2.1.87`；当前没有 built `./cli`，也没有 `node_modules`。未把官方 CLI 冒充 FreeCode，未安装 supply-chain dependencies。
+- installed `claude` 是官方 Claude Code `2.1.251`。FreeCode live source 位于 `/Users/example-owner/Context Engineering/free-code-main`、revision `7dc15d6c8fb0c40c7fcc02ce9b58204324252632`、package `2.1.87`；当前没有 built `./cli`，也没有 `node_modules`。未把官方 CLI 冒充 FreeCode，未安装 supply-chain dependencies。
 - installed Hermes 为 `0.20.6`；只读取版本，没有发起 benchmark task。Hive checkout 没有可供该 manual runner 使用的 local CLI target；已退役的常设 `hive_live_runner` 由 architecture regression 明确禁止恢复。
 
 ## Validation and verdict

@@ -7,7 +7,7 @@ def test_render_agent_soul_from_blueprint_includes_operating_contract_sections()
     soul = _render_agent_soul_from_blueprint(
         agent_name="研究助理",
         role_description="追踪市场与融资动态",
-        creator_name="Rocky",
+        creator_name="Example Owner",
         created_at="2026-04-02",
         personality="严谨\n结论先行",
         boundaries="不捏造来源\n敏感操作先说明风险",
@@ -15,7 +15,7 @@ def test_render_agent_soul_from_blueprint_includes_operating_contract_sections()
             "primary_users": ["投资团队", "研究团队"],
             "core_outputs": ["行业日报", "投研简报"],
             "company_name": "Acme Capital",
-            "owner_name": "Rocky",
+            "owner_name": "Example Owner",
             "permission_scope": "company",
             "triggers": [{"name": "daily_report", "type": "cron"}],
             "skill_names": ["feishu-integration"],
@@ -33,7 +33,7 @@ def test_render_agent_soul_from_blueprint_includes_operating_contract_sections()
     assert '<soul_quality_bar id="what-good-looks-like" stability="seed">' in soul
     assert '<soul_user_model id="primary-users-and-outputs" stability="seed">' in soul
     assert '<soul_principle id="operating-style" stability="seed">' in soul
-    assert "直接支持 Rocky" in soul
+    assert "直接支持 Example Owner" in soul
     assert "Acme Capital" in soul
     assert "full_authority" in soul
     assert "confirm_first" in soul

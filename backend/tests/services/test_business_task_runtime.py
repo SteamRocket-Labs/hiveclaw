@@ -48,6 +48,10 @@ class _FakeDb:
         return self.records.get(record_id)
 
 
+async def _mark_terminal_boundary(_db: object, runtime_task: object) -> None:
+    runtime_task.terminal_boundary_enqueued_at = datetime(2026, 7, 12, tzinfo=timezone.utc)
+
+
 def test_task_execution_outcome_has_one_total_terminal_mapping() -> None:
     from app.services.business_task_runtime import TaskExecutionOutcome, TaskExecutionStatus
 
@@ -374,14 +378,17 @@ def test_business_task_projection_opens_retry_only_for_retryable_terminal_outcom
     assert projection["stages"][-1]["status"] == "failed"
 
 
-def test_business_task_cancel_is_safe_before_execution_and_retryable() -> None:
-    from app.services.business_task_runtime import apply_business_task_cancellation
+async def test_business_task_cancel_is_safe_before_execution_and_retryable(monkeypatch) -> None:
+    import app.services.business_task_runtime as business_runtime
+
+    monkeypatch.setattr(business_runtime, "enqueue_business_task_terminal_boundary", _mark_terminal_boundary)
+    apply_business_task_cancellation = business_runtime.apply_business_task_cancellation
 
     db = _FakeDb()
     task, runtime = _business_task_pair(task_status="pending", runtime_status="pending", phase="queued")
     user_id = uuid.uuid4()
 
-    outcome = apply_business_task_cancellation(
+    outcome = await apply_business_task_cancellation(
         db=db,  # type: ignore[arg-type]
         task=task,
         runtime_task=runtime,
@@ -400,13 +407,17 @@ def test_business_task_cancel_is_safe_before_execution_and_retryable() -> None:
     assert any(getattr(item, "task_id", None) == task.id for item in db.added)
 
 
-def test_business_task_cancel_while_running_requires_side_effect_reconciliation() -> None:
-    from app.services.business_task_runtime import apply_business_task_cancellation, project_business_task
+async def test_business_task_cancel_while_running_requires_side_effect_reconciliation(monkeypatch) -> None:
+    import app.services.business_task_runtime as business_runtime
+
+    monkeypatch.setattr(business_runtime, "enqueue_business_task_terminal_boundary", _mark_terminal_boundary)
+    apply_business_task_cancellation = business_runtime.apply_business_task_cancellation
+    project_business_task = business_runtime.project_business_task
 
     db = _FakeDb()
     task, runtime = _business_task_pair(task_status="doing", runtime_status="running", phase="invoking")
 
-    outcome = apply_business_task_cancellation(
+    outcome = await apply_business_task_cancellation(
         db=db,  # type: ignore[arg-type]
         task=task,
         runtime_task=runtime,
@@ -481,13 +492,16 @@ def test_business_task_reconciliation_requires_reason_before_retry() -> None:
     assert project_business_task(task=task, runtime_task=runtime)["actions"]["can_retry"] is True
 
 
-def test_expired_running_business_task_is_never_automatically_replayed() -> None:
-    from app.services.business_task_runtime import quarantine_stale_business_task
+async def test_expired_running_business_task_is_never_automatically_replayed(monkeypatch) -> None:
+    import app.services.business_task_runtime as business_runtime
+
+    monkeypatch.setattr(business_runtime, "enqueue_business_task_terminal_boundary", _mark_terminal_boundary)
+    quarantine_stale_business_task = business_runtime.quarantine_stale_business_task
 
     db = _FakeDb()
     task, runtime = _business_task_pair(task_status="doing", runtime_status="running", phase="invoking")
 
-    quarantine_stale_business_task(
+    await quarantine_stale_business_task(
         db=db,  # type: ignore[arg-type]
         task=task,
         runtime_task=runtime,

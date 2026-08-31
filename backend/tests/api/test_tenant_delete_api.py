@@ -30,8 +30,10 @@ class _FakeDB:
     def __init__(self, results):
         self._results = list(results)
         self.flushed = False
+        self.statements = []
 
-    async def execute(self, _stmt):
+    async def execute(self, stmt):
+        self.statements.append(str(stmt))
         if not self._results:
             raise AssertionError("Unexpected execute() call")
         return self._results.pop(0)
@@ -48,6 +50,8 @@ def _tenant(tenant_id):
         im_provider="web_only",
         timezone="UTC",
         is_active=True,
+        default_tokens_per_day=100,
+        default_tokens_per_month=1000,
         created_at=None,
     )
 
@@ -73,7 +77,7 @@ async def test_org_admin_delete_own_tenant_detaches_users_and_requires_setup():
     target_tenant = _tenant(tenant_id)
     db = _FakeDB(
         [
-            _ScalarResult(target_tenant),
+            _ListResult([target_tenant]),
             _ListResult([running_agent]),
             _ListResult([current_user, member]),
             _ListResult([]),  # scrub_tenant_tool_secrets: no tool-config overrides
@@ -98,13 +102,15 @@ async def test_org_admin_delete_own_tenant_detaches_users_and_requires_setup():
     assert result.fallback_tenant_id is None
     assert result.needs_company_setup is True
     assert target_tenant.is_active is False
-    assert running_agent.status == "paused"
+    assert running_agent.status == "stopped"
     assert current_user.tenant_id is None
     assert current_user.department_id is None
     assert current_user.role == "member"
     assert member.tenant_id is None
     assert member.department_id is None
     assert member.role == "member"
+    assert "FOR UPDATE" in db.statements[0]
+    assert "FOR UPDATE" in db.statements[2]
     assert db.flushed is True
 
 
@@ -119,12 +125,24 @@ async def test_platform_admin_delete_tenant_returns_fallback_and_rehomes_platfor
         role="platform_admin",
         tenant_id=tenant_id,
         department_id=uuid4(),
+        quota_tokens_per_day=999,
+        quota_tokens_per_month=9999,
+        tokens_used_today=3,
+        tokens_used_month=30,
+        tokens_used_total=300,
+        tokens_reset_at=object(),
     )
     another_platform_admin = SimpleNamespace(
         id=uuid4(),
         role="platform_admin",
         tenant_id=tenant_id,
         department_id=uuid4(),
+        quota_tokens_per_day=999,
+        quota_tokens_per_month=9999,
+        tokens_used_today=4,
+        tokens_used_month=40,
+        tokens_used_total=400,
+        tokens_reset_at=object(),
     )
     member = SimpleNamespace(
         id=uuid4(),
@@ -137,8 +155,7 @@ async def test_platform_admin_delete_tenant_returns_fallback_and_rehomes_platfor
     fallback_tenant = _tenant(fallback_tenant_id)
     db = _FakeDB(
         [
-            _ScalarResult(target_tenant),
-            _ScalarResult(fallback_tenant),
+            _ListResult([target_tenant, fallback_tenant]),
             _ListResult([running_agent]),
             _ListResult([current_user, another_platform_admin, member]),
             _ListResult([]),  # scrub_tenant_tool_secrets: no tool-config overrides
@@ -175,16 +192,30 @@ async def test_platform_admin_delete_tenant_returns_fallback_and_rehomes_platfor
     assert result.fallback_tenant_id == fallback_tenant_id
     assert result.needs_company_setup is False
     assert target_tenant.is_active is False
-    assert running_agent.status == "paused"
+    assert running_agent.status == "stopped"
     assert current_user.tenant_id == fallback_tenant_id
     assert current_user.department_id is None
     assert current_user.role == "platform_admin"
+    assert current_user.quota_tokens_per_day == 100
+    assert current_user.quota_tokens_per_month == 1000
+    assert current_user.tokens_used_today == 0
+    assert current_user.tokens_used_month == 0
+    assert current_user.tokens_used_total == 0
+    assert current_user.tokens_reset_at is None
     assert another_platform_admin.tenant_id == fallback_tenant_id
     assert another_platform_admin.department_id is None
     assert another_platform_admin.role == "platform_admin"
+    assert another_platform_admin.quota_tokens_per_day == 100
+    assert another_platform_admin.quota_tokens_per_month == 1000
+    assert another_platform_admin.tokens_used_today == 0
+    assert another_platform_admin.tokens_used_month == 0
+    assert another_platform_admin.tokens_used_total == 0
+    assert another_platform_admin.tokens_reset_at is None
     assert member.tenant_id is None
     assert member.department_id is None
     assert member.role == "member"
+    assert "FOR UPDATE" in db.statements[0]
+    assert "FOR UPDATE" in db.statements[2]
     assert db.flushed is True
     assert bypass_calls == [
         {

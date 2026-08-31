@@ -136,47 +136,57 @@ const initialActivationCodeFromUrl = () => {
 
 export const DEFAULT_HIVE_CONNECT_INSTALL_GUIDE: LocalBridgeInstallGuide = {
   product_name: 'Hive Connect',
-  skill_repo_url: 'https://github.com/rocky2431/hive-connect-skill',
+  skill_repo_url: '',
   skill_name: 'hive-connect',
-  npm_package: '@hiveclaw243/hive-connect',
+  npm_package: '',
   binary_name: 'hive-connect',
-  install_skill_command: 'npx skills add https://github.com/rocky2431/hive-connect-skill --skill hive-connect',
-  install_cli_command: 'npm install -g @hiveclaw243/hive-connect',
-  login_command: 'hive-connect login',
-  status_command: 'hive-connect status',
-  run_command: 'hive-connect daemon install --config ~/.hive-connect/config.toml --force',
+  install_skill_command: '',
+  install_cli_command: '',
+  login_command: '',
+  status_command: '',
+  run_command: '',
   user_prompt: '帮我安装 Hive Connect skill，并连接到 Hive。',
   instructions: [
     '帮我安装 Hive Connect skill，并连接到 Hive。',
-    '',
     '请按下面流程自动完成：',
-    '1. 执行 npx skills add https://github.com/rocky2431/hive-connect-skill --skill hive-connect 安装 Hive Connect skill。',
-    '2. 按 skill 执行 npm install -g @hiveclaw243/hive-connect 安装本地 CLI。',
-    '3. 执行 hive-connect login。',
-    '4. 浏览器打开 Hive 后登录；Hive 会自动完成本地 Agent 认证，不需要复制任何一次性码。',
-    '5. 执行 hive-connect daemon install --config ~/.hive-connect/config.toml --force，安装并启动后台常驻服务。',
-    '6. 执行 hive-connect daemon status，确认后台服务正在运行。',
-    '7. 可选：执行 hive-connect status，确认本机仍保留 Hive 登录绑定（这不代表在线）。',
-    '8. 回到 Hive 页面查看本地 Agent 在线标记；如果离线，重新执行第 5-6 步，不要重复 login。',
+    '1. Hive Connect 安装源不可用（unavailable）；请停止并联系 Hive 管理员，配置已批准的 HIVE_CONNECT_SKILL_REPO_URL 与 HIVE_CONNECT_NPM_PACKAGE。不要猜测仓库或 package 名称。',
   ],
 };
 
+export const hasCompleteHiveConnectInstallGuide = (guide: LocalBridgeInstallGuide) =>
+  Boolean(
+    guide.skill_repo_url &&
+      guide.npm_package &&
+      guide.install_skill_command &&
+      guide.install_cli_command &&
+      guide.login_command &&
+      guide.status_command &&
+      guide.run_command,
+  );
+
 export const buildSetupInstruction = (guide: LocalBridgeInstallGuide = DEFAULT_HIVE_CONNECT_INSTALL_GUIDE) => {
+  const sourcesConfigured = hasCompleteHiveConnectInstallGuide(guide);
   const instructions = guide.instructions?.length
     ? guide.instructions
-    : [
-        guide.user_prompt,
-        '',
-        '请按下面流程自动完成：',
-        `1. 执行 ${guide.install_skill_command} 安装 ${guide.product_name} skill。`,
-        `2. 按 skill 执行 ${guide.install_cli_command} 安装本地 CLI。`,
-        `3. 执行 ${guide.login_command}。`,
-        '4. 浏览器打开 Hive 后登录；Hive 会自动完成本地 Agent 认证，不需要复制任何一次性码。',
-        `5. 执行 ${guide.run_command}，安装并启动后台常驻服务。`,
-        `6. 执行 ${guide.binary_name} daemon status，确认后台服务正在运行。`,
-        `7. 可选：执行 ${guide.status_command}，确认本机仍保留 Hive 登录绑定（这不代表在线）。`,
-        '8. 回到 Hive 页面查看本地 Agent 在线标记；如果离线，重新执行第 5-6 步，不要重复 login。',
-      ];
+    : sourcesConfigured
+      ? [
+          guide.user_prompt,
+          '',
+          '请按下面流程自动完成：',
+          `1. 执行 ${guide.install_skill_command} 安装 ${guide.product_name} skill。`,
+          `2. 按 skill 执行 ${guide.install_cli_command} 安装本地 CLI。`,
+          `3. 执行 ${guide.login_command}。`,
+          '4. 浏览器打开 Hive 后登录；Hive 会自动完成本地 Agent 认证，不需要复制任何一次性码。',
+          `5. 执行 ${guide.run_command}，安装并启动后台常驻服务。`,
+          `6. 执行 ${guide.binary_name} daemon status，确认后台服务正在运行。`,
+          `7. 可选：执行 ${guide.status_command}，确认本机仍保留 Hive 登录绑定（这不代表在线）。`,
+          '8. 回到 Hive 页面查看本地 Agent 在线标记；如果离线，重新执行第 5-6 步，不要重复 login。',
+        ]
+      : [
+          guide.user_prompt,
+          '请按下面流程自动完成：',
+          '1. Hive Connect 安装源不可用（unavailable）；请停止并联系 Hive 管理员，配置已批准的 HIVE_CONNECT_SKILL_REPO_URL 与 HIVE_CONNECT_NPM_PACKAGE。不要猜测仓库或 package 名称。',
+        ];
   return instructions.join('\n');
 };
 
@@ -292,6 +302,7 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
   });
 
   const setupInstruction = useMemo(() => buildSetupInstruction(installGuide), [installGuide]);
+  const installSourcesConfigured = hasCompleteHiveConnectInstallGuide(installGuide);
 
   const copyInstruction = async () => {
     await navigator.clipboard?.writeText(setupInstruction);
@@ -677,9 +688,14 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
                     'localAgents.autoAuthDetected',
                     'Hive Connect login link detected. Hive is completing this local agent authentication automatically.',
                   )
-                : t(
+                : installSourcesConfigured
+                  ? t(
                     'localAgents.autoAuthHint',
                     'Run hive-connect login. The browser opens this page, you sign in, and Hive completes authentication automatically.',
+                  )
+                  : t(
+                    'localAgents.autoAuthUnavailable',
+                    'Hive Connect install source unavailable. Ask your Hive administrator to configure approved Skill and CLI sources.',
                   )}
             </div>
             {activationBusy && (

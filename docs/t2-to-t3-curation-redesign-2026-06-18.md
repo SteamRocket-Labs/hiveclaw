@@ -1318,7 +1318,7 @@ backend/tests/runtime/test_runtime_context_composition.py
 文档落地后，代码整改应使用以下回归入口：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 
 pytest \
@@ -1338,7 +1338,7 @@ ruff check app tests
 文档本身检查：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 git diff --check docs/t2-to-t3-curation-redesign-2026-06-18.md
 ```
 

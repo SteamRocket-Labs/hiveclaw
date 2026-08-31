@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "artifact_kind": "agent_native_extreme_concurrency_a2a_review",
   "snapshot": {
-    "repo": "/Users/rocky243/vc-saas/hiveclaw-main",
+    "repo": "/Users/example/vc-saas/hiveclaw-main",
     "head": "501db6555dae374e5fcf43a6fdcfe8a3dd89343e",
     "state": "dirty_current_worktree",
     "review_date": "2026-07-14",

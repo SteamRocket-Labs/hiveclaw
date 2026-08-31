@@ -41,7 +41,7 @@ def _build_kernel(persisted: list) -> AgentKernel:
         return RuntimeConfig(tenant_id=uuid.uuid4(), max_tool_rounds=5)
 
     async def resolve_current_user_name(_user_id):
-        return "Rocky"
+        return "Example Owner"
 
     async def build_system_prompt(request, tenant_id, memory_context, current_user_name):
         return "PROMPT"
@@ -92,7 +92,7 @@ def _request(source: str) -> InvocationRequest:
     )
 
 
-async def _run_and_capture_hooks(monkeypatch, source: str) -> tuple[list, list]:
+async def _run_and_capture_hooks(monkeypatch, source: str) -> tuple[list, list, object]:
     persisted: list = []
     hook_events: list = []
 
@@ -106,21 +106,23 @@ async def _run_and_capture_hooks(monkeypatch, source: str) -> tuple[list, list]:
     assert result.content == "final answer"
     # RESPONSE_COMPLETE is fired via ensure_future — let scheduled tasks run.
     await asyncio.sleep(0)
-    return persisted, hook_events
+    return persisted, hook_events, result
 
 
 @pytest.mark.asyncio
 async def test_subagent_source_skips_host_memory_pipeline(monkeypatch):
-    persisted, hook_events = await _run_and_capture_hooks(monkeypatch, "subagent")
+    persisted, hook_events, result = await _run_and_capture_hooks(monkeypatch, "subagent")
     assert persisted == [], "subagent transcript must not persist into the host memory session"
+    assert result.response_complete_payload is None
     assert all(name != "response_complete" for name, _src in hook_events), (
         "RESPONSE_COMPLETE must not fire for subagent runs (no T2 extraction of internals)"
     )
 
 
 @pytest.mark.asyncio
-async def test_regular_source_still_runs_memory_pipeline(monkeypatch):
-    """Control case: the default path persists + extracts as before."""
-    persisted, hook_events = await _run_and_capture_hooks(monkeypatch, "web")
-    assert persisted, "regular sessions must keep persisting memory"
-    assert any(name == "response_complete" and src == "web" for name, src in hook_events)
+async def test_regular_source_returns_learning_input_without_kernel_side_effect(monkeypatch):
+    persisted, hook_events, result = await _run_and_capture_hooks(monkeypatch, "web")
+    assert persisted == []
+    assert result.response_complete_payload is not None
+    assert result.response_complete_payload["source"] == "web"
+    assert all(name != "response_complete" for name, _src in hook_events)

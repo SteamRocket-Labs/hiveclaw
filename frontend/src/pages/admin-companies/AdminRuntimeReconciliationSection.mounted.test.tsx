@@ -96,7 +96,9 @@ describe('AdminRuntimeReconciliationSection — projection repair (mounted)', ()
     expect(screen.queryByRole('button', { name: 'Resolve' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
-    const acknowledge = screen.getByRole('button', { name: 'Acknowledge effect and stop' }) as HTMLButtonElement;
+    const acknowledge = screen.getByRole('button', {
+      name: 'Acknowledge effect and stop — writer-effect',
+    }) as HTMLButtonElement;
     expect(acknowledge.disabled).toBe(true);
 
     fireEvent.change(screen.getByPlaceholderText('Required effect evidence note'), {
@@ -114,6 +116,285 @@ describe('AdminRuntimeReconciliationSection — projection repair (mounted)', ()
       },
     ));
     await screen.findByText('0 open items');
+  });
+
+  it('sends an explicit disposition for trigger reconciliation and never exposes generic retry', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    const heldTrigger: RuntimeReconciliationTask = {
+      ...makeTask('task-trigger-hold', 'trigger-agent'),
+      task_type: 'trigger',
+      reason: 'effect_outcome_unknown',
+      retry_allowed: false,
+      supported_actions: ['mark_resolved', 'archive'],
+      supported_trigger_dispositions: ['confirmed_success', 'confirmed_failure', 'release'],
+      trigger_disposition_readiness: {
+        schema: 'runtime_trigger_disposition_readiness.v1',
+        ready: true,
+        blocker: null,
+        terminal_projection_id: 'terminal-projection-1',
+      },
+      parent_agent_id: '11111111-1111-4111-8111-111111111111',
+      child_session_id: '22222222-2222-4222-8222-222222222222',
+      trace_id: 'trace-trigger-1',
+      output_artifact: {
+        schema: 'trigger_output_artifact.v1',
+        path: 'runtime_artifacts/triggers/task-trigger-hold.json',
+      },
+      completion_outbox_id: 'completion-outbox-1',
+      settlement_audit_ref: { kind: 'audit_log', id: 'audit-log-1' },
+      metadata: {
+        workflow_trigger_results: [{
+          trigger_id: 'workflow-trigger-1',
+          trigger_name: 'weekly-report',
+          status: 'needs_reconciliation',
+          run_id: 'workflow-run-1',
+          run_status: 'completed',
+          session_id: 'workflow-session-1',
+          reason: 'workflow_asset_usage_evidence_commit_failed',
+        }],
+        trigger_settlement_overrides: {
+          'workflow-trigger-1': 'hold',
+          'react-trigger-1': 'success',
+          'legacy-trigger-ignored': 'failure',
+        },
+        trigger_settlement: {
+          trigger_outcomes: {
+            'workflow-trigger-1': 'hold',
+            'react-trigger-1': 'success',
+          },
+        },
+      },
+    };
+    api.applyRuntimeReconciliationAction.mockResolvedValue({
+      ...heldTrigger,
+      status: 'completed',
+    });
+    api.listRuntimeReconciliation.mockResolvedValue([]);
+
+    render(
+      <AdminRuntimeReconciliationSection
+        initialTenantId="tenant-1"
+        initialTasks={[heldTrigger]}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'Resolve' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+    expect(screen.getByText(/weekly-report: needs_reconciliation/)).toBeTruthy();
+    expect(screen.getByText(/workflow-run-1/)).toBeTruthy();
+    expect(screen.getByText(/workflow-session-1/)).toBeTruthy();
+    expect(screen.getByText(/workflow_asset_usage_evidence_commit_failed/)).toBeTruthy();
+    expect(screen.getByText(/workflow-trigger-1: hold/)).toBeTruthy();
+    expect(screen.getByText(/react-trigger-1: success/)).toBeTruthy();
+    expect(screen.queryByText(/legacy-trigger-ignored/)).toBeNull();
+    expect(screen.getByText('Disposition evidence is ready.')).toBeTruthy();
+    expect(screen.getByText('trace-trigger-1')).toBeTruthy();
+    expect(screen.getByText(/trigger_output_artifact.v1/)).toBeTruthy();
+    expect(screen.getByText('completion-outbox-1')).toBeTruthy();
+    expect(screen.getByText('audit-log-1')).toBeTruthy();
+    expect(
+      (screen.getByRole('link', { name: 'Open Child session ID — trigger-agent' }) as HTMLAnchorElement).href,
+    ).toContain(
+      '/agents/11111111-1111-4111-8111-111111111111/sessions/22222222-2222-4222-8222-222222222222',
+    );
+    expect(screen.queryByRole('link', { name: 'Open Trace ID — trigger-agent' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy Trace ID — trigger-agent' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('trace-trigger-1'));
+
+    const confirmSuccess = screen.getByRole('button', {
+      name: 'Confirm success — trigger-agent',
+    }) as HTMLButtonElement;
+    const confirmFailure = screen.getByRole('button', {
+      name: 'Confirm failure — trigger-agent',
+    }) as HTMLButtonElement;
+    const release = screen.getByRole('button', {
+      name: 'Release hold — trigger-agent',
+    }) as HTMLButtonElement;
+    expect(confirmSuccess.disabled).toBe(true);
+    expect(confirmFailure.disabled).toBe(true);
+    expect(release.disabled).toBe(true);
+    fireEvent.change(screen.getByPlaceholderText('Required trigger evidence note'), {
+      target: { value: 'Verified child evidence and canonical artifact receipt.' },
+    });
+    expect(confirmSuccess.disabled).toBe(false);
+    expect(confirmFailure.disabled).toBe(false);
+    expect(release.disabled).toBe(false);
+    fireEvent.click(confirmSuccess);
+
+    await waitFor(() => expect(api.applyRuntimeReconciliationAction).toHaveBeenCalledWith(
+      'task-trigger-hold',
+      {
+        tenantId: 'tenant-1',
+        action: 'mark_resolved',
+        reason: 'Verified child evidence and canonical artifact receipt.',
+        triggerDisposition: 'confirmed_success',
+      },
+    ));
+    await screen.findByText('0 open items');
+  });
+
+  it('keeps legacy trigger evidence visible while fail-closing not-ready dispositions', () => {
+    const heldTrigger: RuntimeReconciliationTask = {
+      ...makeTask('task-trigger-legacy', 'legacy-trigger-agent'),
+      task_type: 'trigger',
+      parent_agent_id: '11111111-1111-4111-8111-111111111111',
+      child_session_id: 'legacy-session-not-routable',
+      supported_trigger_dispositions: ['confirmed_success', 'confirmed_failure', 'release'],
+      trigger_disposition_readiness: {
+        schema: 'runtime_trigger_disposition_readiness.v1',
+        ready: false,
+        blocker: 'canonical_trigger_settlement_missing',
+        terminal_projection_id: null,
+      },
+      metadata: {
+        trigger_settlement_overrides: { 'legacy-trigger-1': 'hold' },
+      },
+    };
+
+    render(
+      <AdminRuntimeReconciliationSection
+        initialTenantId="tenant-1"
+        initialTasks={[heldTrigger]}
+      />,
+    );
+
+    expect(screen.getByText(/legacy-trigger-1: hold/)).toBeTruthy();
+    expect(screen.getByText(/canonical_trigger_settlement_missing/)).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'Open Child session ID — legacy-trigger-agent' })).toBeNull();
+    const confirmSuccess = screen.getByRole('button', {
+      name: 'Confirm success — legacy-trigger-agent',
+    }) as HTMLButtonElement;
+    fireEvent.change(screen.getByLabelText('Required trigger evidence note'), {
+      target: { value: '   ' },
+    });
+    expect(confirmSuccess.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('Required trigger evidence note'), {
+      target: { value: 'Verified only legacy evidence.' },
+    });
+    expect(confirmSuccess.disabled).toBe(true);
+    fireEvent.click(confirmSuccess);
+    expect(api.applyRuntimeReconciliationAction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['confirmed_failure', 'Confirm failure', 'mark_resolved'],
+    ['release', 'Release hold', 'archive'],
+  ] as const)(
+    'sends the %s disposition with its exact action and operator evidence',
+    async (triggerDisposition, buttonLabel, action) => {
+      const heldTrigger: RuntimeReconciliationTask = {
+        ...makeTask(`task-${triggerDisposition}`, 'typed-trigger-agent'),
+        task_type: 'trigger',
+        supported_trigger_dispositions: ['confirmed_success', 'confirmed_failure', 'release'],
+        trigger_disposition_readiness: {
+          schema: 'runtime_trigger_disposition_readiness.v1',
+          ready: true,
+          blocker: null,
+          terminal_projection_id: 'terminal-projection-1',
+        },
+      };
+      api.applyRuntimeReconciliationAction.mockResolvedValue({ ...heldTrigger, status: 'completed' });
+      api.listRuntimeReconciliation.mockResolvedValue([]);
+
+      render(
+        <AdminRuntimeReconciliationSection
+          initialTenantId="tenant-1"
+          initialTasks={[heldTrigger]}
+        />,
+      );
+      fireEvent.change(screen.getByLabelText('Required trigger evidence note'), {
+        target: { value: `Verified evidence for ${triggerDisposition}.` },
+      });
+      fireEvent.click(screen.getByRole('button', { name: `${buttonLabel} — typed-trigger-agent` }));
+
+      await waitFor(() => expect(api.applyRuntimeReconciliationAction).toHaveBeenCalledWith(
+        `task-${triggerDisposition}`,
+        {
+          tenantId: 'tenant-1',
+          action,
+          reason: `Verified evidence for ${triggerDisposition}.`,
+          triggerDisposition,
+        },
+      ));
+    },
+  );
+
+  it.each([
+    ['confirmed_success', 'Confirm success'],
+    ['confirmed_failure', 'Confirm failure'],
+    ['release', 'Release hold'],
+  ] as const)(
+    'uses the explicit atomic tool-effect acknowledgement for %s',
+    async (triggerDisposition, buttonLabel) => {
+      const heldTrigger: RuntimeReconciliationTask = {
+        ...makeTask(`task-tool-${triggerDisposition}`, 'tool-trigger-agent'),
+        task_type: 'trigger',
+        tool_effect_reconciliation_required: true,
+        supported_actions: ['acknowledge_tool_effect'],
+        supported_trigger_dispositions: ['confirmed_success', 'confirmed_failure', 'release'],
+        trigger_disposition_readiness: {
+          schema: 'runtime_trigger_disposition_readiness.v1',
+          ready: true,
+          blocker: null,
+          terminal_projection_id: 'terminal-projection-1',
+        },
+      };
+      api.applyRuntimeReconciliationAction.mockResolvedValue({ ...heldTrigger, status: 'completed' });
+      api.listRuntimeReconciliation.mockResolvedValue([]);
+
+      render(
+        <AdminRuntimeReconciliationSection
+          initialTenantId="tenant-1"
+          initialTasks={[heldTrigger]}
+        />,
+      );
+      fireEvent.change(screen.getByLabelText('Required effect evidence note'), {
+        target: { value: `Verified atomic evidence for ${triggerDisposition}.` },
+      });
+      fireEvent.click(screen.getByRole('button', { name: `${buttonLabel} — tool-trigger-agent` }));
+
+      await waitFor(() => expect(api.applyRuntimeReconciliationAction).toHaveBeenCalledWith(
+        `task-tool-${triggerDisposition}`,
+        {
+          tenantId: 'tenant-1',
+          action: 'acknowledge_tool_effect',
+          reason: `Verified atomic evidence for ${triggerDisposition}.`,
+          triggerDisposition,
+        },
+      ));
+    },
+  );
+
+  it('labels required inputs, scopes action names to the task, and announces API errors', async () => {
+    api.applyRuntimeReconciliationAction.mockRejectedValue(new Error('operator evidence rejected'));
+    const task = makeTask('task-accessible', 'writer-accessible');
+
+    render(
+      <AdminRuntimeReconciliationSection
+        initialTenantId="tenant-1"
+        initialTasks={[task]}
+      />,
+    );
+
+    const tenant = screen.getByLabelText('Tenant ID') as HTMLInputElement;
+    const evidence = screen.getByLabelText('Required reconciliation evidence note') as HTMLInputElement;
+    expect(tenant.required).toBe(true);
+    expect(tenant.getAttribute('aria-required')).toBe('true');
+    expect(evidence.required).toBe(true);
+    expect(evidence.getAttribute('aria-required')).toBe('true');
+    const resolve = screen.getByRole('button', { name: 'Resolve — writer-accessible' }) as HTMLButtonElement;
+    expect(resolve.disabled).toBe(true);
+
+    fireEvent.change(evidence, { target: { value: 'Verified the canonical task evidence.' } });
+    expect(resolve.disabled).toBe(false);
+    fireEvent.click(resolve);
+
+    expect((await screen.findByRole('alert')).textContent).toContain('operator evidence rejected');
   });
 
   it('repairs projections through the authenticated adapter, shows the truthful receipt, and reloads the queue in place', async () => {
@@ -207,9 +488,9 @@ describe('AdminRuntimeReconciliationSection — projection repair (mounted)', ()
     expect(busyButton.disabled).toBe(true);
     expect((screen.getByPlaceholderText('Tenant ID') as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'Refresh' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: 'Resolve' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: 'Archive' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Resolve — writer-a' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Archive — writer-a' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Retry — writer-a' }) as HTMLButtonElement).disabled).toBe(true);
     expect(api.applyRuntimeReconciliationAction).not.toHaveBeenCalled();
 
     repair.resolve({ examined: 1, repaired_task_ids: ['task-a'] });

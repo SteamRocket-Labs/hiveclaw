@@ -7,8 +7,8 @@
 >
 > **关键纠正**：本文中的“A2A 工作流”不是协议互操作，也不是 Dynamic Workflow。它指企业真实业务流程中，多个完整 Agent 作为受治理节点，按照确定性图、数据合同、审批、等待、重试和恢复规则完成协作。
 >
-> **Bisheng 对照基线**：`/Users/rocky243/vc-saas/bisheng`，commit `e87e2655eea412a8422f0a425e6712d3fa63504f`。
-> **Hive 对照基线**：`/Users/rocky243/vc-saas/hiveclaw-main`，commit `27f1a55b4b07e0cbf569e0b2ad32bd609ecd7fb0`。
+> **Bisheng 对照基线**：`/Users/example-owner/vc-saas/bisheng`，commit `e87e2655eea412a8422f0a425e6712d3fa63504f`。
+> **Hive 对照基线**：`/Users/example-owner/vc-saas/hiveclaw-main`，commit `27f1a55b4b07e0cbf569e0b2ad32bd609ecd7fb0`。
 > **状态**：只读源码审计与设计校正，未施工、未部署、未运行 Bisheng 外部依赖。
 > **日期**：2026-07-19。
 

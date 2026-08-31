@@ -254,13 +254,13 @@ function Eyebrow({ children, style }) {
    DATA MODEL
    ============================================================ */
 const WS = { name: 'Acme Inc.', domain: 'hive.acme.com', plan: 'Enterprise' };
-const ME = { name: '林见 Jen Lin', role: '产品 · Product', color: 'oklch(0.55 0.11 285)', abbr: 'JL' };
+const ME = { name: '示例用户 A', role: '产品 · Product', color: 'oklch(0.55 0.11 285)', abbr: 'UA' };
 
 const AGENTS = [
   { id: 'atlas', abbr: 'DR', name: '调研助理 Atlas', en: 'Atlas', role: '市场与竞品研究', status: 'ok', statusLabel: '运行中', color: 'oklch(0.60 0.13 250)', scope: '研究组可见', scopeIcon: 'users', owner: '我', perm: 'manage', caps: ['对话与任务', '文件与产物', '工具', '技能', 'A2A 协作'], last: '正在汇总 Q2 竞品报告 · 步骤 3/5', when: '2 分钟前', alert: false, tasks: 3 },
   { id: 'ledger', abbr: 'FC', name: '财务对账 Ledger', en: 'Ledger', role: '月度对账与报表', status: 'warn', statusLabel: '计划待确认', color: 'oklch(0.62 0.12 150)', scope: '财务组可见', scopeIcon: 'users', owner: '我', perm: 'manage', caps: ['对话与任务', '文件与产物', '工具', '审批'], last: '已生成 8 月对账计划，等待你确认', when: '12 分钟前', alert: true, tasks: 1 },
   { id: 'pace', abbr: 'HR', name: '招聘协调 Pace', en: 'Pace', role: '简历筛选与排期', status: 'idle', statusLabel: '空闲', color: 'oklch(0.60 0.12 25)', scope: '仅自己可见', scopeIcon: 'lock', owner: '我', perm: 'manage', caps: ['对话与任务', '渠道', '技能'], last: '上次任务已完成', when: '昨天', alert: false, tasks: 0 },
-  { id: 'relay', abbr: 'OP', name: '运营自动化 Relay', en: 'Relay', role: '工单分发与跟进', status: 'purple', statusLabel: 'A2A 协作中', color: 'oklch(0.56 0.11 300)', scope: '全公司可见', scopeIcon: 'globe', owner: '陈航 Hang', perm: 'use', caps: ['对话与任务', '工作流', 'A2A 协作', '渠道'], last: '正委派 Warden 执行安全检查', when: '刚刚', alert: false, tasks: 2 },
+  { id: 'relay', abbr: 'OP', name: '运营自动化 Relay', en: 'Relay', role: '工单分发与跟进', status: 'purple', statusLabel: 'A2A 协作中', color: 'oklch(0.56 0.11 300)', scope: '全公司可见', scopeIcon: 'globe', owner: '示例用户 B', perm: 'use', caps: ['对话与任务', '工作流', 'A2A 协作', '渠道'], last: '正委派 Warden 执行安全检查', when: '刚刚', alert: false, tasks: 2 },
   { id: 'warden', abbr: 'SE', name: '安全审查 Warden', en: 'Warden', role: '合规与风险扫描', status: 'danger', statusLabel: '最近失败', color: 'oklch(0.52 0.05 60)', scope: '全公司可见', scopeIcon: 'globe', owner: '公司标准', perm: 'use', caps: ['对话与任务', '工具', '审批', '工作流'], last: '工具「漏洞库」连接超时', when: '1 小时前', alert: true, tasks: 0 },
   { id: 'quill', abbr: 'WR', name: '文档撰写 Quill', en: 'Quill', role: '报告与纪要生成', status: 'ok', statusLabel: '运行中', color: 'oklch(0.60 0.12 200)', scope: '研究组可见', scopeIcon: 'users', owner: '我', perm: 'manage', caps: ['对话与任务', '文件与产物', '记忆与知识', '技能'], last: '正在整理用户访谈纪要', when: '8 分钟前', alert: false, tasks: 1 },
 ];

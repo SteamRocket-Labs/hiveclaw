@@ -10,8 +10,10 @@ from typing import Any
 from sqlalchemy import or_, select
 
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
+from app.models.audit import AuditLog
 from app.models.runtime_task import RuntimeTask
 from app.models.task import Task
+from app.models.trigger import AgentTrigger
 from app.runtime.tenant_admission import RuntimeTenantPreconditionError, raise_runtime_tenant_precondition
 from app.services.runtime_tenant_admission import admit_agent_runtime_tenant
 from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
@@ -98,6 +100,8 @@ def _task_to_dict(task: RuntimeTask) -> dict[str, Any]:
         "budget_reservation_key": task.budget_reservation_key,
         "budget_admission_status": task.budget_admission_status,
         "budget_terminal_reason": task.budget_terminal_reason,
+        "claimed_by": getattr(task, "claimed_by", None),
+        "claim_expires_at": (task.claim_expires_at.isoformat() if getattr(task, "claim_expires_at", None) else None),
         "claim_version": int(getattr(task, "claim_version", 0) or 0),
         "root_idempotency_key": getattr(task, "root_idempotency_key", None),
         "config_snapshot_hash": getattr(task, "config_snapshot_hash", None),
@@ -107,6 +111,245 @@ def _task_to_dict(task: RuntimeTask) -> dict[str, Any]:
         "started_at": task.started_at.isoformat() if task.started_at else None,
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,
     }
+
+
+def _trigger_inflight_matches(config: dict[str, Any], runtime_task_id: uuid.UUID) -> bool:
+    inflight = config.get("_fire_inflight")
+    if not isinstance(inflight, dict):
+        return False
+    return _coerce_task_id(inflight.get("runtime_task_id")) == runtime_task_id
+
+
+async def _settle_trigger_runtime_task(
+    db: Any,
+    task: RuntimeTask,
+    *,
+    status: str,
+    reconciliation_outcome: str | None = None,
+) -> dict[str, Any] | None:
+    """Settle exact trigger fire intents in the RuntimeTask transaction."""
+
+    metadata = dict(task.metadata_json or {})
+    existing = metadata.get("trigger_settlement")
+    reconciling_hold = reconciliation_outcome is not None
+    if (
+        isinstance(existing, dict)
+        and str(existing.get("runtime_task_id") or "") == str(task.id)
+        and not reconciling_hold
+    ):
+        return existing
+    prior_outcomes: dict[str, str] = {}
+    if reconciling_hold:
+        if reconciliation_outcome not in {"success", "failure", "release"}:
+            raise ValueError(f"Unsupported trigger reconciliation outcome: {reconciliation_outcome!r}")
+        if not isinstance(existing, dict) or str(existing.get("runtime_task_id") or "") != str(task.id):
+            raise ValueError("trigger reconciliation requires the exact prior settlement receipt")
+        raw_prior_outcomes = existing.get("trigger_outcomes")
+        if not isinstance(raw_prior_outcomes, dict):
+            raise ValueError("trigger reconciliation prior settlement outcomes are missing")
+        prior_outcomes = {str(key): str(value) for key, value in raw_prior_outcomes.items()}
+        if not prior_outcomes or any(
+            value not in {"success", "failure", "hold", "release"} for value in prior_outcomes.values()
+        ):
+            raise ValueError("trigger reconciliation prior settlement outcomes are invalid")
+        held_ids = [
+            trigger_id
+            for value, prior_outcome in prior_outcomes.items()
+            if prior_outcome == "hold" and (trigger_id := _coerce_task_id(value)) is not None
+        ]
+        if not held_ids or len(held_ids) != sum(value == "hold" for value in prior_outcomes.values()):
+            raise ValueError("trigger reconciliation has no exact held trigger settlement")
+        trigger_ids = held_ids
+    else:
+        trigger_ids = [
+            trigger_id
+            for value in metadata.get("trigger_ids") or []
+            if (trigger_id := _coerce_task_id(value)) is not None
+        ]
+    if not trigger_ids or task.parent_agent_id is None:
+        return None
+
+    rows = list(
+        (
+            await db.execute(
+                select(AgentTrigger)
+                .where(
+                    AgentTrigger.id.in_(trigger_ids),
+                    AgentTrigger.agent_id == task.parent_agent_id,
+                )
+                .order_by(AgentTrigger.id)
+                .with_for_update()
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if reconciling_hold:
+        rows_by_id = {str(trigger.id): trigger for trigger in rows}
+        held_id_text = {str(trigger_id) for trigger_id in trigger_ids}
+        if set(rows_by_id) != held_id_text or any(
+            not _trigger_inflight_matches(dict(trigger.config or {}), task.id) for trigger in rows
+        ):
+            raise ValueError("trigger reconciliation hold no longer matches canonical inflight state")
+    now = datetime.now(timezone.utc)
+    skip_reason = str(metadata.get("skip_reason") or "").strip()
+    outcome = reconciliation_outcome or (
+        "success"
+        if status == "completed" or (status == "skipped" and skip_reason == "workflow_ref_handled")
+        else "failure"
+        if status in {"failed", "killed"}
+        else "hold"
+        if status == "needs_reconciliation"
+        else "release"
+    )
+    overrides = metadata.get("trigger_settlement_overrides")
+    overrides = {} if reconciling_hold else (dict(overrides) if isinstance(overrides, dict) else {})
+    settled: list[str] = list(prior_outcomes)
+    settled_outcomes: dict[str, str] = dict(prior_outcomes)
+    failure_backoff = (
+        [dict(item) for item in existing.get("failure_backoff", []) if isinstance(item, dict)]
+        if reconciling_hold and isinstance(existing, dict)
+        else []
+    )
+    newly_settled_outcomes: dict[str, str] = {}
+    for trigger in rows:
+        config = dict(trigger.config or {})
+        if not _trigger_inflight_matches(config, task.id):
+            continue
+        trigger_outcome = str(overrides.get(str(trigger.id)) or outcome)
+        if trigger_outcome not in {"success", "failure", "hold", "release"}:
+            raise ValueError(f"Unsupported trigger settlement outcome: {trigger_outcome!r}")
+        if trigger_outcome == "hold":
+            inflight = dict(config["_fire_inflight"])
+            inflight["hold"] = True
+            inflight["hold_reason"] = str(
+                metadata.get("reconciliation_reason") or metadata.get("restart_resume_blocker") or status
+            )
+            config["_fire_inflight"] = inflight
+            trigger.config = config
+        elif trigger_outcome == "success":
+            from app.services.trigger_failure_policy import reset_trigger_failure_policy
+
+            reset_trigger_failure_policy(trigger)
+            config = dict(trigger.config or {})
+            config.pop("_fire_inflight", None)
+            if trigger.type == "webhook":
+                config["_webhook_pending"] = False
+                config["_webhook_payload"] = None
+            trigger.config = config
+            trigger.last_fired_at = now
+            trigger.fire_count = int(trigger.fire_count or 0) + 1
+            if trigger.type == "once":
+                trigger.is_enabled = False
+            if trigger.max_fires is not None and trigger.fire_count >= trigger.max_fires:
+                trigger.is_enabled = False
+        elif trigger_outcome == "failure":
+            from app.services.trigger_failure_policy import apply_trigger_failure_policy
+
+            failure = apply_trigger_failure_policy(
+                trigger,
+                error=str(metadata.get("terminal_reason") or metadata.get("error") or task.result_summary or status),
+                now=now,
+            )
+            config = dict(trigger.config or {})
+            config.pop("_fire_inflight", None)
+            trigger.config = config
+            failure_backoff.append(
+                {
+                    "trigger_id": str(trigger.id),
+                    "trigger_name": trigger.name,
+                    **failure,
+                }
+            )
+        else:
+            config.pop("_fire_inflight", None)
+            trigger.config = config
+        trigger_id_text = str(trigger.id)
+        if trigger_id_text not in settled:
+            settled.append(trigger_id_text)
+        settled_outcomes[trigger_id_text] = trigger_outcome
+        newly_settled_outcomes[trigger_id_text] = trigger_outcome
+
+    receipt: dict[str, Any] = {
+        "schema": "trigger_runtime_settlement.v1",
+        "runtime_task_id": str(task.id),
+        "status": status,
+        "outcome": outcome,
+        "trigger_ids": settled,
+        "trigger_outcomes": settled_outcomes,
+    }
+    if failure_backoff:
+        receipt["failure_backoff"] = failure_backoff
+    existing_audit_id = str(existing.get("audit_log_id") or "") if isinstance(existing, dict) else ""
+    if existing_audit_id:
+        receipt["audit_log_id"] = existing_audit_id
+    elif any(value == "success" for value in newly_settled_outcomes.values()):
+        audit_id = uuid.uuid5(task.id, "trigger-settlement-audit")
+        db.add(
+            AuditLog(
+                id=audit_id,
+                tenant_id=task.tenant_id,
+                agent_id=task.parent_agent_id,
+                action="trigger_fired",
+                details={
+                    "runtime_task_id": str(task.id),
+                    "terminal_status": status,
+                    "trigger_ids": settled,
+                    "trigger_names": list(metadata.get("trigger_names") or []),
+                    "trigger_types": list(metadata.get("trigger_types") or []),
+                    "trigger_outcomes": settled_outcomes,
+                },
+            )
+        )
+        receipt["audit_log_id"] = str(audit_id)
+    return receipt
+
+
+async def settle_trigger_runtime_reconciliation(
+    db: Any,
+    task: RuntimeTask,
+    *,
+    disposition: str,
+) -> tuple[str, dict[str, Any]]:
+    """Advance only held trigger intents after an authenticated operator decision."""
+
+    outcome_by_disposition = {
+        "confirmed_success": "success",
+        "confirmed_failure": "failure",
+        "release": "release",
+    }
+    outcome = outcome_by_disposition.get(str(disposition or "").strip())
+    if outcome is None:
+        raise ValueError(f"Unsupported trigger reconciliation disposition: {disposition!r}")
+    existing = dict(task.metadata_json or {}).get("trigger_settlement")
+    prior_outcomes = dict(existing.get("trigger_outcomes") or {}) if isinstance(existing, dict) else {}
+    final_outcomes = {
+        str(trigger_id): outcome if str(prior_outcome) == "hold" else str(prior_outcome)
+        for trigger_id, prior_outcome in prior_outcomes.items()
+    }
+    if not final_outcomes or final_outcomes == prior_outcomes or "hold" in final_outcomes.values():
+        raise ValueError("trigger reconciliation requires at least one exact held settlement")
+    target_status = (
+        "failed"
+        if "failure" in final_outcomes.values()
+        else "completed"
+        if "success" in final_outcomes.values()
+        else "killed"
+    )
+    settlement = await _settle_trigger_runtime_task(
+        db,
+        task,
+        status=target_status,
+        reconciliation_outcome=outcome,
+    )
+    if settlement is None or dict(settlement.get("trigger_outcomes") or {}) != final_outcomes:
+        raise ValueError("trigger reconciliation did not settle the exact held trigger set")
+    settlement["status"] = target_status
+    settlement["outcome"] = (
+        "failure" if target_status == "failed" else "success" if target_status == "completed" else "release"
+    )
+    settlement["reconciliation_disposition"] = disposition
+    return target_status, settlement
 
 
 def _group_runtime_task_locators(
@@ -151,10 +394,15 @@ def _is_restart_resumable_runtime_task(task: RuntimeTask) -> bool:
             and metadata.get(resume_flag)
             and has_restart_replay_contract(metadata, task_type=str(task_type), task_id=task_id_text)
         )
-    return bool(
-        metadata.get("resume_after_restart")
-        and (metadata.get("resumable_delegation") or metadata.get("resumable_subagent"))
-    )
+    if task_type == "delegation":
+        return bool(
+            metadata.get("resume_after_restart")
+            and metadata.get("resumable_delegation")
+            and has_restart_replay_contract(metadata, task_type="delegation", task_id=task_id_text)
+        )
+    if task_type == "subagent":
+        return bool(metadata.get("resume_after_restart") and metadata.get("resumable_subagent"))
+    return False
 
 
 def build_restart_replay_contract(
@@ -598,6 +846,18 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
                 await db.commit()
                 return False
 
+            direct_terminal_snapshot = None
+            if (
+                current_status in _TERMINAL_STATUSES
+                and getattr(task, "task_type", None) in {"business_task", "trigger", "delegation"}
+                and getattr(task, "terminal_boundary_enqueued_at", None) is not None
+            ):
+                from app.services.direct_invocation_terminal_boundary_processor import (
+                    direct_terminal_authority_snapshot,
+                )
+
+                direct_terminal_snapshot = direct_terminal_authority_snapshot(task)
+
             for key, value in fields.items():
                 if hasattr(task, key):
                     if key == "metadata_json" and isinstance(value, dict) and isinstance(task.metadata_json, dict):
@@ -609,6 +869,14 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
 
             now = datetime.now(timezone.utc)
             status = fields.get("status")
+            if status in _TERMINAL_STATUSES and task.task_type == "trigger":
+                settlement = await _settle_trigger_runtime_task(db, task, status=str(status))
+                if settlement is not None:
+                    metadata = dict(task.metadata_json or {})
+                    metadata["trigger_settlement"] = settlement
+                    if settlement.get("failure_backoff"):
+                        metadata["failure_backoff"] = list(settlement["failure_backoff"])
+                    task.metadata_json = metadata
             if status in _TERMINAL_STATUSES:
                 existing_metadata = dict(getattr(task, "metadata_json", None) or {})
                 persisted_task_id = getattr(task, "id", None)
@@ -633,16 +901,35 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
                 task.started_at = now
             if status in _TERMINAL_STATUSES and task.completed_at is None:
                 task.completed_at = now
-            if (
-                status == "skipped"
-                and getattr(task, "task_type", None) == "trigger"
+            if direct_terminal_snapshot is not None:
+                from app.services.direct_invocation_terminal_boundary_processor import (
+                    direct_terminal_authority_snapshot,
+                )
+
+                if direct_terminal_authority_snapshot(task) != direct_terminal_snapshot:
+                    await db.rollback()
+                    logger.warning(
+                        "Rejected RuntimeTask %s mutation after its direct terminal boundary was sealed",
+                        runtime_task_id,
+                    )
+                    return False
+            trigger_delivery = str((getattr(task, "metadata_json", None) or {}).get("delivery") or "")
+            intentional_trigger_no_delivery = (
+                getattr(task, "task_type", None) == "trigger"
                 and completion_notification is None
-            ):
-                # Trigger polling creates a RuntimeTask even when no Agent run
-                # is required. That intentional no-delivery outcome must leave
-                # the recovery index instead of becoming an eternal candidate.
+                and (status == "skipped" or trigger_delivery == "workflow")
+            )
+            if intentional_trigger_no_delivery:
+                # Skipped polls have no result to deliver. Pure-workflow
+                # wrappers leave user delivery to the child workflow run.
+                # Both still enqueue their direct terminal evidence below.
                 task.completion_outbox_settled_at = now
                 task.completion_outbox_last_error = None
+                metadata = dict(getattr(task, "metadata_json", None) or {})
+                metadata["completion_delivery_disposition"] = (
+                    "workflow_child_owned" if trigger_delivery == "workflow" else "intentional_no_delivery"
+                )
+                task.metadata_json = metadata
             if completion_notification is not None:
                 if status not in _TERMINAL_STATUSES:
                     raise ValueError("completion_notification requires a terminal RuntimeTask status")
@@ -651,7 +938,24 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
                 metadata["completion_outbox_id"] = str(outbox_id)
                 task.metadata_json = metadata
 
-            if requested_status and getattr(task, "root_runtime_task_id", None) is not None:
+            if status in _TERMINAL_STATUSES:
+                from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
+
+                await settle_and_enqueue_runtime_task_terminal(
+                    db,
+                    task,
+                    terminal_source="runtime_task_service.update",
+                    root_reason_code=(
+                        root_item_reason_code or str(fields.get("budget_terminal_reason") or "").strip() or None
+                    ),
+                    root_state=_runtime_task_root_state(str(status), override=root_item_state),
+                )
+
+            if (
+                requested_status
+                and requested_status not in _TERMINAL_STATUSES
+                and getattr(task, "root_runtime_task_id", None) is not None
+            ):
                 from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
 
                 await transition_runtime_root_item_by_task(
@@ -835,7 +1139,8 @@ async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None 
             source="startup_orphan_runtime_task_reconciliation",
         ) as db:
             result = await db.execute(
-                select(RuntimeTask).where(
+                select(RuntimeTask)
+                .where(
                     RuntimeTask.id.in_(task_ids),
                     RuntimeTask.status == "running",
                     or_(
@@ -843,12 +1148,18 @@ async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None 
                         RuntimeTask.task_type.notin_(_RESTART_RESUMABLE_TASK_TYPES),
                     ),
                 )
+                .with_for_update(skip_locked=True)
             )
             for task in result.scalars().all():
                 if getattr(task, "id", None) in excluded:
                     continue
                 task_type = str(getattr(task, "task_type", None) or "runtime_task")
                 metadata = dict(getattr(task, "metadata_json", None) or {})
+                if task_type in {"delegation", "trigger"} and _is_restart_resumable_runtime_task(task):
+                    # Runs beyond a bounded startup scan remain reachable
+                    # through lease reclaim. Replay safety is enforced after
+                    # the worker binds a fresh claim fence.
+                    continue
                 if _is_restart_resumable_runtime_task(task):
                     if task_type in _RESTART_RESUMABLE_TASK_TYPES:
                         continue
@@ -895,6 +1206,14 @@ async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None 
                                 business_task.last_error = task.result_summary
                                 business_task.completed_at = now
                     task.completed_at = now
+                    from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
+
+                    await settle_and_enqueue_runtime_task_terminal(
+                        db,
+                        task,
+                        terminal_source="runtime_task_service.startup_orphan_reconciliation",
+                        root_reason_code=blocker,
+                    )
                     updated += 1
                     continue
                 task.status = "failed"
@@ -903,5 +1222,13 @@ async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None 
                     task.result_summary = "Task failed because the worker process restarted before completion."
                 metadata["orphaned_by_restart"] = True
                 task.metadata_json = metadata
+                from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
+
+                await settle_and_enqueue_runtime_task_terminal(
+                    db,
+                    task,
+                    terminal_source="runtime_task_service.startup_orphan_reconciliation",
+                    root_reason_code="worker_restart_orphan",
+                )
                 updated += 1
     return updated

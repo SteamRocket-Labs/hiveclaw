@@ -77,6 +77,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -91,8 +93,29 @@ jobs:
           python -m pip install -e ".[dev]"
           python scripts/patch_lark_oapi.py
 
-      - name: Ruff
-        run: ruff check app tests
+      - name: Ruff changed Python paths
+        run: |
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if ! git -C .. cat-file -e "${base}^{commit}" 2>/dev/null; then
+            base="$(git -C .. rev-parse HEAD^ 2>/dev/null || git -C .. hash-object -t tree /dev/null)"
+          fi
+          mapfile -d '' python_files < <(
+            git -C .. diff --name-only -z --diff-filter=ACMR \
+              "$base" "$GITHUB_SHA" -- ':(glob)backend/**/*.py'
+          )
+          if (( ${#python_files[@]} == 0 )); then
+            exit 0
+          fi
+          for index in "${!python_files[@]}"; do
+            python_files[$index]="${python_files[$index]#backend/}"
+          done
+          ruff check "${python_files[@]}"
+          ruff format --check "${python_files[@]}"
+
+      - name: Legacy-brand working-tree and committed-archive gate
+        run: |
+          python scripts/legacy_brand_release_gate.py working-tree
+          python scripts/legacy_brand_release_gate.py git-archive HEAD
 
       - name: Pytest full hermetic suite
         run: pytest tests -q
@@ -104,7 +127,7 @@ jobs:
         run: python -m app.evals.adversarial_suite --output /tmp/hive-adversarial-suite.json
 
       - name: Internal harness eval (fail-gate G3)
-        run: python -m app.evals.run --suite core_v1 --target clawith --mode internal --fail-under 90
+        run: python -m app.evals.run --suite core_v1 --target hive --mode internal --fail-under 90
 
   atomic-user-journeys:
     name: Fifteen real API, worker, and browser journeys

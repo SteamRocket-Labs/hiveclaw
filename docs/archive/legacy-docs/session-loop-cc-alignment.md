@@ -89,7 +89,7 @@
 **落地方向（用户 2026-06-08 定稿：一切皆 suggest、零强加）**：
 - **唯一进入路径 = 用户显式反馈**（`explicit`）。删除一切"强加"——`auto` 自动触发必须砍。硬不变量："除用户显式外，无任何代码路径能激活 Plan Mode。"
 - **判断主体从 pre-LLM 正则挪进 agent 提示词**：agent 在正常 ReAct 循环里，依 system prompt 引导判断"要不要提醒/建议用户进入 Plan Mode"，以普通文本输出一句建议；判断归模型（L1）、触发归用户。
-- **CC 实证的落地形态**（`/Users/rocky243/Context Engineering/claude-code-org`）：CC 用一个 AI 可调的 `EnterPlanMode` 工具实现——AI 自主判断何时该规划并主动调用（prompt 教它 7 种该用/不该用情况，`prompt.ts`），但工具语义 = 请求许可，**用户审批确认才真正进入**（`prompt.ts:95` "REQUIRES user approval"；子代理内禁用 `EnterPlanModeTool.ts:78`）。这是"AI 判断 + 用户决定 + 零强加"的标准答案，比"输出一句建议文本"更结构化；Hive 可用 `ask_user_question` / PlanCard 承接"用户批准"。
+- **CC 实证的落地形态**（`/Users/example-owner/Context Engineering/claude-code-org`）：CC 用一个 AI 可调的 `EnterPlanMode` 工具实现——AI 自主判断何时该规划并主动调用（prompt 教它 7 种该用/不该用情况，`prompt.ts`），但工具语义 = 请求许可，**用户审批确认才真正进入**（`prompt.ts:95` "REQUIRES user approval"；子代理内禁用 `EnterPlanModeTool.ts:78`）。这是"AI 判断 + 用户决定 + 零强加"的标准答案，比"输出一句建议文本"更结构化；Hive 可用 `ask_user_question` / PlanCard 承接"用户批准"。
 - 架构含义：`classify_plan_mode_entry` 的 `recommend`/`auto` 两条 pre-LLM 正则分类整体让位（`recommend` 的"建议不触发"语义保留，判断改由 agent 提示词产生）。这是简化，不是加层。
 
 > 修正：本病灶早期定性为"entry 该改成 LLM 自动判断进入"是误读——用户的设计是进入归用户、判断归模型、agent 只 suggest 零强加。
@@ -164,7 +164,7 @@
 - **Plan Mode 与 Workflow 无直接 handoff**：5 个 handoff target 里没有 `workflow`（`plan_mode_registry.py:24-33`）——**确认的计划无法"变成"一个 workflow**。关系是"Plan Mode 门控 Workflow 启动"，不是"Plan 产出 Workflow"。
 - **`long_task` 一词三义**：plan 的 intent / 高风险 workflow 确认时的 intent / 已废弃的 handoff target 别名（`plan_mode_session_handoff.py:34`）。
 
-**CC 源码基线（实证 `/Users/rocky243/Context Engineering/claude-code-org`）——根本没有"模式调度器"**：CC 把这些分到两条互不相干的轴：
+**CC 源码基线（实证 `/Users/example-owner/Context Engineering/claude-code-org`）——根本没有"模式调度器"**：CC 把这些分到两条互不相干的轴：
 - **权限/模式轴**：Plan Mode 是一个 *permission mode* 枚举值（`PermissionMode.ts:52`），叠在主 loop 上的状态修饰。四入口：`--permission-mode plan` / `/plan` / Shift+Tab cycle（用户）+ `EnterPlanMode` 工具（AI 发起、需用户批准）。
 - **工具轴**：Sub-agent（`AgentTool`，旧名 Task）和 Workflow（`WorkflowTool`，ant-only、公开版编译期剔除）都是模型工具池里的**普通工具**，AI 在 ReAct loop 里自主调用、prompt 教它何时用。
 - **普通 ReAct** = `query.ts` 的 `while(true)` 底座，永远在跑。

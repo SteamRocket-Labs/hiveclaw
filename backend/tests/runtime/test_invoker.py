@@ -284,6 +284,31 @@ async def test_invoke_agent_preserves_canonical_model_result_receipt(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_invoke_agent_preserves_tool_terminal_signal(monkeypatch):
+    from app.kernel import InvocationResult
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+
+    class FakeKernel:
+        async def handle(self, _request):
+            return InvocationResult(content="", tool_terminal_signal="waiting_for_user")
+
+    monkeypatch.setattr("app.runtime.invoker._resolve_kernel_for_request", lambda _request: FakeKernel())
+
+    result = await invoke_agent(
+        AgentInvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None),
+            messages=[{"role": "user", "content": "Pause after the tool result."}],
+            agent_name="Agent",
+            role_description="desc",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+        )
+    )
+
+    assert result.tool_terminal_signal == "waiting_for_user"
+
+
+@pytest.mark.asyncio
 async def test_invoke_agent_preserves_typed_provider_failure_facts(monkeypatch):
     from app.kernel import InvocationResult
     from app.kernel.contracts import TerminalReason
@@ -440,6 +465,7 @@ async def test_invoke_agent_redacts_only_exact_model_secret_from_stream_final_an
                 "model_response_commit": 1,
                 "content": 1,
                 "parts": 2,
+                "response_complete_payload": 0,
             },
             "source_refs": [f"llm-model://{model_id}/selected/api_key"],
         }
@@ -497,6 +523,7 @@ async def test_invoke_agent_records_stream_only_secret_redaction(monkeypatch):
                 "thinking": 0,
                 "content": 0,
                 "parts": 0,
+                "response_complete_payload": 0,
             },
             "source_refs": [f"llm-model://{model_id}/selected/api_key"],
         }
@@ -638,6 +665,7 @@ async def test_invoke_agent_loads_tenant_secret_boundary_before_tool_event(monke
                 "tool_event": 1,
                 "content": 0,
                 "parts": 0,
+                "response_complete_payload": 0,
             },
             "source_refs": [source_ref],
         }
@@ -797,6 +825,7 @@ async def test_invoke_agent_redacts_exact_secret_before_prompt_hook_and_kernel(m
         "model_request_prepare": 1,
         "content": 0,
         "parts": 0,
+        "response_complete_payload": 0,
     }
     assert secret_events[0]["source_refs"] == [f"llm-model://{model_id}/selected/api_key"]
     assert result.content == "clean final"
@@ -936,7 +965,7 @@ async def test_build_system_prompt_uses_static_agent_context_only(monkeypatch):
         request,
         tenant_id=uuid4(),
         resolved_memory_context="MEMORY_SNAPSHOT",
-        current_user_name="Rocky",
+        current_user_name="Example Owner",
     )
 
     # Frozen prefix now includes only stable sections; memory snapshot stays dynamic.
@@ -1911,7 +1940,7 @@ Use tool_search to discover web tools, then call the matching tool.
 
 
 @pytest.mark.asyncio
-async def test_invoke_agent_emits_response_complete_and_session_close_hooks(monkeypatch):
+async def test_invoke_agent_returns_response_complete_payload_without_terminal_hooks(monkeypatch):
     from app.runtime.hooks import HookEvent
     from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 
@@ -1937,11 +1966,14 @@ async def test_invoke_agent_emits_response_complete_and_session_close_hooks(monk
     async def fake_emit_hook(event, **kwargs):
         emitted.append((event, kwargs))
 
-    async def fake_build_agent_context(*args, **kwargs):
+    async def fake_build_system_prompt(*args, **kwargs):
         return "BASE_PROMPT"
 
     async def fake_compress(messages, **kwargs):
         return messages
+
+    async def no_deferred_tool_candidates(_agent_id):
+        return []
 
     async def fake_get_agent_tools_for_llm(_agent_id, core_only=False, requested_names=None):
         return [
@@ -1950,14 +1982,19 @@ async def test_invoke_agent_emits_response_complete_and_session_close_hooks(monk
 
     monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
     monkeypatch.setattr("app.kernel.engine.asyncio.ensure_future", lambda coro: asyncio.create_task(coro))
-    monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
+    monkeypatch.setattr("app.runtime.invoker._build_system_prompt", fake_build_system_prompt)
     monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
     monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", fake_get_agent_tools_for_llm)
+    monkeypatch.setattr(
+        "app.services.agent_tools.available_deferred_tool_candidates_for_agent",
+        no_deferred_tool_candidates,
+    )
     monkeypatch.setattr("app.runtime.invoker.create_llm_client", lambda **kwargs: fake_client)
     monkeypatch.setattr("app.runtime.invoker.record_token_usage", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.runtime.invoker.persist_invocation_span", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.runtime.invoker.get_max_tokens", lambda *args, **kwargs: 2048)
 
-    await invoke_agent(
+    result = await invoke_agent(
         AgentInvocationRequest(
             model=model,
             messages=[{"role": "user", "content": "帮我总结当前差距"}],
@@ -1973,78 +2010,89 @@ async def test_invoke_agent_emits_response_complete_and_session_close_hooks(monk
 
     event_names = [event for event, _ in emitted]
     assert HookEvent.SESSION_START in event_names
-    assert HookEvent.RESPONSE_COMPLETE in event_names
-    assert HookEvent.TURN_STOP in event_names
-    response_payload = next(payload for event, payload in emitted if event == HookEvent.RESPONSE_COMPLETE)
-    close_payload = next(payload for event, payload in emitted if event == HookEvent.TURN_STOP)
+    assert HookEvent.RESPONSE_COMPLETE not in event_names
+    assert HookEvent.SESSION_END not in event_names
+    assert HookEvent.TURN_STOP not in event_names
+    response_payload = result.response_complete_payload
+    assert response_payload is not None
     assert response_payload["messages"][-1]["role"] == "user"
+    assert response_payload["agent_id"] is not None
+    assert response_payload["session_id"] == "session-123"
+    assert response_payload["source"] == "websocket"
+    assert response_payload["metadata"]["final_response"] == "final answer"
     assert response_payload["metadata"]["skill_candidate_loop_enabled"] is False
-    assert close_payload["messages"][-1]["role"] == "assistant"
-    assert close_payload["messages"][-1]["content"] == "final answer"
-    assert close_payload["metadata"]["checkpoint_kind"] == "user_turn_stop"
+    assert "response_commit" not in response_payload["metadata"]
 
 
 @pytest.mark.asyncio
-async def test_invoke_agent_emits_response_complete_only_once(monkeypatch):
+async def test_invoke_agent_redacts_pending_response_complete_payload_without_emitting_hook(monkeypatch):
+    from app.kernel import InvocationResult
     from app.runtime.hooks import HookEvent
     from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 
-    model = SimpleNamespace(
-        provider="openai",
-        model="gpt-4.1",
-        api_key="test-key",
-        base_url=None,
-        max_output_tokens=None,
-    )
-    fake_client = _FakeClient(
-        [
-            SimpleNamespace(
-                content="final answer",
-                tool_calls=[],
-                reasoning_content=None,
-                usage={"total_tokens": 5},
-            ),
-        ]
-    )
+    active_secret = "sk-pending-response-complete-secret-0123456789"
+    model_id = uuid4()
+    agent_id = uuid4()
     emitted: list[tuple[HookEvent, dict]] = []
+    runtime_events: list[dict] = []
 
     async def fake_emit_hook(event, **kwargs):
         emitted.append((event, kwargs))
 
-    async def fake_build_agent_context(*args, **kwargs):
-        return "BASE_PROMPT"
-
-    async def fake_compress(messages, **kwargs):
-        return messages
+    class FakeKernel:
+        async def handle(self, _request):
+            return InvocationResult(
+                content="safe final",
+                response_complete_payload={
+                    "agent_id": agent_id,
+                    "session_id": "session-pending-response",
+                    "messages": [{"role": "user", "content": "safe input"}],
+                    "source": "web",
+                    "metadata": {
+                        "last_response": f"before::{active_secret}::after",
+                        "final_response": active_secret,
+                    },
+                },
+            )
 
     monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
-    monkeypatch.setattr("app.kernel.engine.asyncio.ensure_future", lambda coro: asyncio.create_task(coro))
-    monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
-    monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
-    monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", lambda *args, **kwargs: [])
-    monkeypatch.setattr(
-        "app.runtime.invoker.build_skill_catalog_section_for_agent",
-        lambda *args, **kwargs: "## Skills\n- load_skill",
-    )
-    monkeypatch.setattr("app.runtime.invoker.create_llm_client", lambda **kwargs: fake_client)
-    monkeypatch.setattr("app.runtime.invoker.record_token_usage", lambda *args, **kwargs: None)
-    monkeypatch.setattr("app.runtime.invoker.get_max_tokens", lambda *args, **kwargs: 2048)
+    monkeypatch.setattr("app.runtime.invoker._resolve_kernel_for_request", lambda _request: FakeKernel())
 
-    await invoke_agent(
+    result = await invoke_agent(
         AgentInvocationRequest(
-            model=model,
-            messages=[{"role": "user", "content": "帮我总结当前差距"}],
+            model=SimpleNamespace(
+                id=model_id,
+                provider="openai",
+                model="gpt-4.1",
+                api_key=active_secret,
+                base_url=None,
+            ),
+            messages=[{"role": "user", "content": "Return the safe payload."}],
             agent_name="Planner",
             role_description="Planning agent",
-            agent_id=uuid4(),
+            agent_id=agent_id,
             user_id=uuid4(),
-            memory_session_id="session-123",
-            session_context=SessionContext(session_id="session-123", source="websocket"),
+            memory_session_id="session-pending-response",
+            session_context=SessionContext(session_id="session-pending-response", source="web"),
+            on_event=runtime_events.append,
         )
     )
-    await asyncio.sleep(0)
 
-    assert [event for event, _ in emitted].count(HookEvent.RESPONSE_COMPLETE) == 1
+    assert HookEvent.RESPONSE_COMPLETE not in [event for event, _ in emitted]
+    assert result.response_complete_payload == {
+        "agent_id": agent_id,
+        "session_id": "session-pending-response",
+        "messages": [{"role": "user", "content": "safe input"}],
+        "source": "web",
+        "metadata": {
+            "last_response": "before::[REDACTED_SECRET]::after",
+            "final_response": "[REDACTED_SECRET]",
+        },
+    }
+    assert active_secret not in repr(result.response_complete_payload)
+    secret_event = next(event for event in runtime_events if event.get("type") == "secret_egress_redacted")
+    assert secret_event["surfaces"]["response_complete_payload"] == 2
+    assert secret_event["source_refs"] == [f"llm-model://{model_id}/selected/api_key"]
 
 
 def test_resolve_context_budget_initializes_missing_session_metadata():
@@ -2857,7 +2905,7 @@ async def test_invoke_agent_forwards_permission_events(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_invoke_agent_loads_and_persists_runtime_memory(monkeypatch):
+async def test_invoke_agent_loads_runtime_memory_and_defers_projection_until_terminal_commit(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 
     agent_id = uuid4()
@@ -2950,15 +2998,7 @@ async def test_invoke_agent_loads_and_persists_runtime_memory(monkeypatch):
         "MANUAL_MEMORY" in (getattr(message, "content", "") or "") for message in fake_client.calls[0]["messages"]
     )
     assert "## System" in _sys_prompt
-    assert captured["persisted"] == {
-        "agent_id": agent_id,
-        "session_id": "session-1",
-        "tenant_id": tenant_id,
-        "messages": [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "done"},
-        ],
-    }
+    assert "persisted" not in captured
 
 
 @pytest.mark.asyncio

@@ -201,7 +201,7 @@ async def test_user_initiated_delegation_bypasses_plan_gate_db_lookup(monkeypatc
             execution_identity=ExecutionIdentityRef(
                 identity_type="delegated_user",
                 identity_id=uuid4(),
-                label="Rocky via wechat_personal",
+                label="Example Owner via wechat_personal",
             )
         )
     )

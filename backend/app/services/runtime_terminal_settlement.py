@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_task import RuntimeTask
 
 TERMINAL_SETTLEMENT_STATUSES = frozenset({"completed", "failed", "killed", "skipped", "needs_reconciliation"})
@@ -39,6 +42,8 @@ async def settle_runtime_task_terminal(
     *,
     terminal_source: str,
     root_reason_code: str | None = None,
+    root_state: str | None = None,
+    settle_root: bool = True,
 ) -> str:
     """Stamp the terminal fence, transition the root item, settle controls.
 
@@ -74,13 +79,13 @@ async def settle_runtime_task_terminal(
     task.metadata_json = metadata
     await db.flush()
 
-    if getattr(task, "root_runtime_task_id", None) is not None:
+    if settle_root and getattr(task, "root_runtime_task_id", None) is not None:
         from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
 
         await transition_runtime_root_item_by_task(
             db,
             runtime_task_id=task.id,
-            requested_state=str(task.status),
+            requested_state=str(root_state or task.status),
             reason_code=str(root_reason_code or f"runtime_task_terminal:{terminal_source}"),
             result_refs=(f"runtime-task://{task.id}",),
             metadata={"terminal_execution_fence_ref": terminal_fence},
@@ -99,7 +104,79 @@ async def settle_runtime_task_terminal(
     return terminal_fence
 
 
+async def settle_and_enqueue_runtime_task_terminal(
+    db: AsyncSession,
+    task: RuntimeTask,
+    *,
+    terminal_source: str,
+    root_reason_code: str | None = None,
+    root_state: str | None = None,
+) -> str:
+    """Commit the mechanical terminal evidence and required outbox atomically."""
+
+    terminal_fence = await settle_runtime_task_terminal(
+        db,
+        task,
+        terminal_source=terminal_source,
+        root_reason_code=root_reason_code,
+        root_state=root_state,
+    )
+    if task.terminal_boundary_generation is None:
+        return terminal_fence
+
+    from app.services.web_chat_runtime import EXECUTABLE_CHAT_TASK_TYPES
+
+    if task.task_type in EXECUTABLE_CHAT_TASK_TYPES:
+        if task.tenant_id is None or task.parent_agent_id is None or not str(task.parent_session_id or "").strip():
+            raise ValueError("web_terminal_runtime_authority_required")
+        session_id = uuid.UUID(str(task.parent_session_id))
+        event_type = f"run.{task.status}"
+        terminal_event = await db.scalar(
+            select(ChatTranscriptEvent.id)
+            .where(
+                ChatTranscriptEvent.tenant_id == task.tenant_id,
+                ChatTranscriptEvent.agent_id == task.parent_agent_id,
+                ChatTranscriptEvent.session_id == session_id,
+                ChatTranscriptEvent.run_id == task.id,
+                ChatTranscriptEvent.event_type == event_type,
+            )
+            .limit(1)
+        )
+        if terminal_event is None:
+            from app.services.session_v2_persistence import SessionEventDraft, append_session_events
+
+            metadata = dict(task.metadata_json or {})
+            turn_id = str(metadata.get("turn_id") or f"turn-{task.id.hex}")
+            await append_session_events(
+                db,
+                tenant_id=task.tenant_id,
+                agent_id=task.parent_agent_id,
+                session_id=session_id,
+                drafts=[
+                    SessionEventDraft(
+                        item_id=task.id,
+                        item_kind="run",
+                        lifecycle=str(task.status),
+                        scope={
+                            "level": "run",
+                            "session_id": str(session_id),
+                            "thread_id": str(session_id),
+                            "turn_id": turn_id,
+                            "run_id": str(task.id),
+                        },
+                        actor={"type": "runtime"},
+                        payload={"reason_code": str(root_reason_code or terminal_source)},
+                    )
+                ],
+            )
+    from app.services.runtime_terminal_boundary_outbox import enqueue_required_terminal_boundary_for_task
+
+    await enqueue_required_terminal_boundary_for_task(db, task)
+    return terminal_fence
+
+
 __all__ = [
     "TERMINAL_SETTLEMENT_STATUSES",
+    "settle_and_enqueue_runtime_task_terminal",
     "settle_runtime_task_terminal",
 ]

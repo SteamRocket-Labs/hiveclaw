@@ -18,7 +18,7 @@
 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/runtime/test_hooks.py tests/tools/test_workflow_tool.py tests/agents/test_subagent.py tests/kernel/test_engine_stop_hooks.py tests/runtime/test_invoker_cc_hooks.py tests/runtime/test_hooks_cc_parity.py tests/runtime/test_context_cc_parity_contract.py tests/kernel/test_parallel_tool_batch.py::test_parallel_batch_applies_pre_tool_hook_modifications -q
 ruff check app/runtime/hooks.py app/runtime/invoker.py app/kernel/engine.py app/agents/subagent.py app/tools/handlers/workflow.py tests/runtime/test_hooks_cc_parity.py tests/runtime/test_invoker_cc_hooks.py tests/kernel/test_engine_stop_hooks.py tests/runtime/test_context_cc_parity_contract.py tests/tools/test_workflow_tool.py tests/agents/test_subagent.py tests/runtime/test_hooks.py
@@ -39,7 +39,7 @@ ruff check app/runtime/hooks.py app/runtime/invoker.py app/kernel/engine.py app/
 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/runtime/test_hooks.py tests/runtime/test_hooks_cc_parity.py tests/runtime/test_t0_to_t2_session_close.py tests/runtime/test_invoker_cc_hooks.py tests/runtime/test_invoker.py tests/api/test_websocket_call_llm.py tests/services/test_web_chat_runtime.py tests/services/test_channel_agent_runtime_t0.py -q
 ```
@@ -67,18 +67,18 @@ Memory / Iter 是 Hive 的非对标增量：它不应该退化成 CC 的 session
 本轮 review 按项目指令使用 FreeCode 作为 CC 第一参考源：
 
 ```text
-/Users/rocky243/vc-saas/free-code-main
+/Users/example-owner/vc-saas/free-code-main
 ```
 
 关键证据：
 
-- FreeCode 在进入 query loop 前先写 transcript，避免进程被 kill 后 `--resume` 找不到刚接受的用户输入：`/Users/rocky243/vc-saas/free-code-main/src/QueryEngine.ts:436`。
-- CC hook schema 明确包含 `UserPromptSubmit`、`SessionEnd`、`Stop`、`StopFailure`、`SubagentStart`、`SubagentStop`、`PreCompact`、`PostCompact`：`/Users/rocky243/vc-saas/free-code-main/src/entrypoints/sdk/coreSchemas.ts:360`。
-- CC `Stop` input 带 `stop_hook_active` 和 `last_assistant_message`：`/Users/rocky243/vc-saas/free-code-main/src/entrypoints/sdk/coreSchemas.ts:513`。
-- CC `SubagentStop` input 带 `agent_transcript_path`、`agent_type` 和 `last_assistant_message`：`/Users/rocky243/vc-saas/free-code-main/src/entrypoints/sdk/coreSchemas.ts:550`。
-- CC `handleStopHooks` 在 assistant 生成后、允许停止前执行；它可产生 blocking error 或 `preventContinuation`：`/Users/rocky243/vc-saas/free-code-main/src/query/stopHooks.ts:65`、`/Users/rocky243/vc-saas/free-code-main/src/query/stopHooks.ts:257`、`/Users/rocky243/vc-saas/free-code-main/src/query/stopHooks.ts:268`。
-- CC compaction 会保留 plan / planMode / skill / deferredTools / agentListing / mcpInstructions，并通过 session start hooks 恢复 `CLAUDE.md` 等上下文：`/Users/rocky243/vc-saas/free-code-main/docs/04-context-management.md:642`。
-- CC subagent lifecycle 是 mini query engine：执行 `SubagentStart` hooks、注册 Stop->SubagentStop、预载 skills、创建 child context、记录 sidechain transcript：`/Users/rocky243/vc-saas/free-code-main/docs/07-subagents-and-teams.md:202`。
+- FreeCode 在进入 query loop 前先写 transcript，避免进程被 kill 后 `--resume` 找不到刚接受的用户输入：`/Users/example-owner/vc-saas/free-code-main/src/QueryEngine.ts:436`。
+- CC hook schema 明确包含 `UserPromptSubmit`、`SessionEnd`、`Stop`、`StopFailure`、`SubagentStart`、`SubagentStop`、`PreCompact`、`PostCompact`：`/Users/example-owner/vc-saas/free-code-main/src/entrypoints/sdk/coreSchemas.ts:360`。
+- CC `Stop` input 带 `stop_hook_active` 和 `last_assistant_message`：`/Users/example-owner/vc-saas/free-code-main/src/entrypoints/sdk/coreSchemas.ts:513`。
+- CC `SubagentStop` input 带 `agent_transcript_path`、`agent_type` 和 `last_assistant_message`：`/Users/example-owner/vc-saas/free-code-main/src/entrypoints/sdk/coreSchemas.ts:550`。
+- CC `handleStopHooks` 在 assistant 生成后、允许停止前执行；它可产生 blocking error 或 `preventContinuation`：`/Users/example-owner/vc-saas/free-code-main/src/query/stopHooks.ts:65`、`/Users/example-owner/vc-saas/free-code-main/src/query/stopHooks.ts:257`、`/Users/example-owner/vc-saas/free-code-main/src/query/stopHooks.ts:268`。
+- CC compaction 会保留 plan / planMode / skill / deferredTools / agentListing / mcpInstructions，并通过 session start hooks 恢复 `CLAUDE.md` 等上下文：`/Users/example-owner/vc-saas/free-code-main/docs/04-context-management.md:642`。
+- CC subagent lifecycle 是 mini query engine：执行 `SubagentStart` hooks、注册 Stop->SubagentStop、预载 skills、创建 child context、记录 sidechain transcript：`/Users/example-owner/vc-saas/free-code-main/docs/07-subagents-and-teams.md:202`。
 
 Hive 当前证据：
 
@@ -137,7 +137,7 @@ Hive 的 `HookEvent` 缺少 CC session-middle 的关键事件：`UserPromptSubmi
 先写测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/runtime/test_hooks_cc_parity.py tests/kernel/test_engine_stop_hooks.py -q
 ```
@@ -173,7 +173,7 @@ Hive 的 subagent 已有很多正确设计：built-in explorer/worker/critic、s
 先写测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/agents/test_subagent.py tests/kernel/test_subagent_memory_isolation.py tests/runtime/test_subagent_hooks_cc_parity.py -q
 ```
@@ -194,7 +194,7 @@ Hive 不应该把 Workflow 降级为 CC slash command 或 JS script。当前 str
 先写测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/tools/test_workflow_handler_preview_start.py tests/services/test_workflow_runtime_service.py -q
 ```
@@ -240,7 +240,7 @@ Hive Skill 方向比 CC 更完整：Skill 是 progressive capability capsule，�
 先写测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/tools/test_workspace.py tests/runtime/test_skill_lifecycle_cc_parity.py tests/kernel/test_compaction_skill_restore.py -q
 ```
@@ -276,7 +276,7 @@ pytest tests/tools/test_workspace.py tests/runtime/test_skill_lifecycle_cc_parit
 验收：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/runtime/test_hooks.py tests/runtime/test_hooks_cc_parity.py tests/kernel/test_engine_stop_hooks.py -q
 ```

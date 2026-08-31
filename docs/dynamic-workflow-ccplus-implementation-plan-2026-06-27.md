@@ -289,7 +289,7 @@ Dynamic Workflow 是 “To Session Worker”。A2A 是 “To Employee”。这�
 测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/runtime/test_dynamic_workflow_proposal.py
 ```
@@ -306,7 +306,7 @@ pytest tests/runtime/test_dynamic_workflow_proposal.py
 测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/tools/test_dynamic_workflow_tool.py
 ```
@@ -323,7 +323,7 @@ pytest tests/tools/test_dynamic_workflow_tool.py
 测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_plan_mode_dynamic_workflow.py tests/tools/test_workflow_preview_start_binding.py
 ```
@@ -340,7 +340,7 @@ pytest tests/services/test_plan_mode_dynamic_workflow.py tests/tools/test_workfl
 测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_runtime_guidance_catalog.py tests/services/test_agent_tools.py
 ```
@@ -357,7 +357,7 @@ pytest tests/services/test_runtime_guidance_catalog.py tests/services/test_agent
 测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_workflow_runtime_service.py tests/runtime/test_workflow_engine.py tests/services/test_workflow_promote_suggestions.py
 ```
@@ -374,7 +374,7 @@ pytest tests/services/test_workflow_runtime_service.py tests/runtime/test_workfl
 测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run build
 npm run test -- AgentWorkflowsSection workflows
 ```
@@ -391,7 +391,7 @@ npm run test -- AgentWorkflowsSection workflows
 测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/api/test_workflow_definitions.py tests/services/test_workflow_trigger.py
 ```

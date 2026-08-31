@@ -1,10 +1,10 @@
 ---
-name: Clawith project architecture
-description: Key architecture details for the Clawith/Hive AI agent management platform - FastAPI backend, PostgreSQL, Redis, T3 MD memory pyramid
+name: Hive project architecture
+description: Key architecture details for the Hive AI agent management platform - FastAPI backend, PostgreSQL, Redis, T3 MD memory pyramid
 type: project
 ---
 
-Clawith/Hive is a multi-tenant AI agent management platform.
+Hive is a multi-tenant AI agent management platform.
 
 **Stack**: FastAPI (Python 3.11+ per ruff target, 3.13 runtime observed via .pyc), PostgreSQL (asyncpg), Redis, Nginx frontend proxy, Docker Compose.
 

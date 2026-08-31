@@ -2091,12 +2091,48 @@ def record_dream_activity(agent_id: uuid.UUID, outcome_type: str) -> None:
     record_session_end(agent_id)
 
 
-def record_session_end(agent_id: uuid.UUID) -> None:
-    """Increment session counter for dream gate evaluation."""
+def record_session_end(agent_id: uuid.UUID, *, idempotency_key: str | None = None) -> bool:
+    """Increment the Dream cadence once for an optional durable event key."""
     key = agent_id.hex
+    durable_key = str(idempotency_key or "").strip()
+    if durable_key:
+        agent_root = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+        with AgentAssetTransaction(
+            agent_root,
+            operation="record_dream_session_end",
+            idempotency_key=f"dream-session-end:{durable_key}",
+            evidence_refs=(f"runtime-task://{durable_key}",),
+        ) as transaction:
+            if transaction.is_replay:
+                return False
+            for state in (
+                _last_dream_time,
+                _sessions_since_dream,
+                _heartbeat_ticks_since_dream,
+                _dream_version,
+                _dream_history,
+            ):
+                state.pop(key, None)
+            _, sessions = _load_dream_state(agent_id)
+            _sessions_since_dream[key] = sessions + 1
+            last_time = _last_dream_time.get(key)
+            payload = {
+                "last_dream_time": last_time.isoformat() if last_time else None,
+                "sessions_since_dream": _sessions_since_dream[key],
+                "heartbeat_ticks_since_dream": _heartbeat_ticks_since_dream.get(key, 0),
+                "version": _dream_version.get(key, 0),
+                "history": _dream_history.get(key, [])[-_DREAM_HISTORY_MAX:],
+            }
+            transaction.stage_text(
+                "memory/control/auto_dream_state.json",
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            )
+            transaction.commit()
+        return True
     _, sessions = _load_dream_state(agent_id)
     _sessions_since_dream[key] = sessions + 1
     _persist_dream_state(agent_id)
+    return True
 
 
 def should_dream(agent_id: uuid.UUID) -> bool:

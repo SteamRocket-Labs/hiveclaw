@@ -102,7 +102,7 @@ export default function CompanySetup() {
                 </div>
 
                 {error && (
-                    <div className="login-error company-setup-error">
+                    <div className="login-error company-setup-error" role="alert">
                         <span aria-hidden="true">!</span>
                         <span>{error}</span>
                     </div>
@@ -118,8 +118,9 @@ export default function CompanySetup() {
                             </div>
                         </div>
                         <div className="login-field">
-                            <label>{t('companySetup.inviteCode', 'Invitation Code')}</label>
+                            <label htmlFor="company-invitation-code">{t('companySetup.inviteCode', 'Invitation Code')}</label>
                             <input
+                                id="company-invitation-code"
                                 className="company-invite-input"
                                 value={inviteCode}
                                 onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
@@ -147,8 +148,9 @@ export default function CompanySetup() {
                                 </div>
                             </div>
                             <div className="login-field">
-                                <label>{t('companySetup.companyName', 'Company Name')}</label>
+                                <label htmlFor="company-setup-name">{t('companySetup.companyName', 'Company Name')}</label>
                                 <input
+                                    id="company-setup-name"
                                     value={companyName}
                                     onChange={(e) => setCompanyName(e.target.value)}
                                     required

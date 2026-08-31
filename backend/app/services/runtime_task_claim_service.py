@@ -22,6 +22,9 @@ LEASE_RECLAIMABLE_RUNTIME_TASK_TYPES = (
     "approval_execution",
     "hr_provisioning",
     "dream",
+    # Delegation replay policy is enforced after the worker binds a new fence:
+    # read-only profiles may resume, while mutating profiles are quarantined.
+    "delegation",
     # A trigger run whose worker died must be reachable again. Without this,
     # 2,107 ``running`` trigger rows with no lease accumulated over 38 days with
     # no runtime path able to touch them (only a process restart could).
@@ -75,7 +78,8 @@ def build_runtime_task_claim_statement(
     return stmt
 
 
-def _quarantine_business_task_claim(
+async def _quarantine_business_task_claim(
+    db: AsyncSession,
     runtime_task: RuntimeTask,
     *,
     metadata: dict[str, Any],
@@ -96,6 +100,9 @@ def _quarantine_business_task_claim(
         }
     )
     runtime_task.metadata_json = metadata
+    from app.services.business_task_runtime import enqueue_business_task_terminal_boundary
+
+    await enqueue_business_task_terminal_boundary(db, runtime_task)
 
 
 async def _bind_business_task_claim(
@@ -110,7 +117,8 @@ async def _bind_business_task_claim(
     try:
         business_task_id = UUID(str(metadata["business_task_id"]))
     except (KeyError, TypeError, ValueError):
-        _quarantine_business_task_claim(
+        await _quarantine_business_task_claim(
+            db,
             runtime_task,
             metadata=metadata,
             now=now,
@@ -118,13 +126,7 @@ async def _bind_business_task_claim(
         )
         return False
     if runtime_task.tenant_id is None or runtime_task.parent_agent_id is None:
-        _quarantine_business_task_claim(
-            runtime_task,
-            metadata=metadata,
-            now=now,
-            reason="business task projection link has no tenant or Agent authority",
-        )
-        return False
+        raise RuntimeError("business task projection link has no tenant or Agent authority")
     business_task = (
         await db.execute(
             select(Task)
@@ -137,7 +139,8 @@ async def _bind_business_task_claim(
         )
     ).scalar_one_or_none()
     if business_task is None or business_task.active_runtime_task_id != runtime_task.id:
-        _quarantine_business_task_claim(
+        await _quarantine_business_task_claim(
+            db,
             runtime_task,
             metadata=metadata,
             now=now,
@@ -210,6 +213,17 @@ class RuntimeTaskClaimService:
                 metadata["previous_claim"] = previous_claim
                 if previous_claim["claim_version"] == 0:
                     metadata["legacy_claim_backfilled"] = True
+            else:
+                # These fields describe only the claim that is being recovered.
+                # A fresh pending claim must not inherit an older reclaim gate.
+                for key in (
+                    "reclaimed_expired_claim",
+                    "reclaimed_at",
+                    "previous_claim",
+                    "legacy_claim_backfilled",
+                    "recovery_state",
+                ):
+                    metadata.pop(key, None)
             metadata["claimed_by"] = self.worker_id
             metadata["claimed_at"] = now.isoformat()
             metadata["claim_expires_at"] = claim_expires_at.isoformat()

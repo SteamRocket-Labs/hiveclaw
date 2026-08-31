@@ -134,12 +134,23 @@ def test_shared_terminal_settlement_boundary_settles_root_and_controls() -> None
 
     # The canonical ambiguous-provider-send commit, the operator terminal
     # actions, and the exact projection-recovery sweep all use the boundary.
-    assert "settle_runtime_task_terminal" in _called_names("app/services/session_model_round.py", "fail_model_request")
+    assert "settle_and_enqueue_runtime_task_terminal" in _called_names(
+        "app/services/session_model_round.py", "fail_model_request"
+    )
     assert "settle_runtime_task_terminal" in _called_names(
         "app/services/runtime_reconciliation.py", "apply_runtime_reconciliation_action"
     )
-    assert "settle_runtime_task_terminal" in _called_names(
+    assert "settle_and_enqueue_runtime_task_terminal" in _called_names(
         "app/services/runtime_reconciliation.py", "repair_ambiguous_provider_send_terminal_projections"
+    )
+    assert "settle_runtime_task_terminal" in _called_names(
+        "app/services/session_terminal_outcome.py", "commit_terminal_outcome"
+    )
+    assert "settle_and_enqueue_runtime_task_terminal" in _called_names(
+        "app/services/runtime_task_service.py", "update_runtime_task_record"
+    )
+    assert "settle_and_enqueue_runtime_task_terminal" in _called_names(
+        "app/services/runtime_task_service.py", "reconcile_orphaned_runtime_tasks"
     )
 
 
@@ -190,6 +201,7 @@ def test_existing_runtime_worker_owns_turn_replacement_saga_progress() -> None:
     assert "recover_turn_replacement_sagas_once" in tick_calls
     assert "recover_turn_replacements_once" in sweep_calls
     assert "enter_rls_bypass" in sweep_calls
+    assert "tenant_scoped_session" in sweep_calls
     assert {"start_web_chat_run", "admit_replacement_run"} <= starter_calls
     assert {
         "_get_run_session_and_agent",
@@ -276,9 +288,11 @@ def test_runtime_worker_owns_post_admission_input_dispatch() -> None:
     assert "recover_session_input_dispatches_once" in tick_calls
     assert "recover_admitted_session_inputs_once" in sweep_calls
     assert "enter_rls_bypass" in sweep_calls
+    assert "tenant_scoped_session" in sweep_calls
     assert "recover_terminal_target_session_inputs_once" in tick_calls
     assert "recover_dispatched_terminal_steers_once" in rollover_sweep_calls
     assert "enter_rls_bypass" in rollover_sweep_calls
+    assert "tenant_scoped_session" in rollover_sweep_calls
 
 
 def test_web_and_channel_run_creation_bind_database_writer_epoch_before_flush() -> None:

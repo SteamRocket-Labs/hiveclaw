@@ -12,11 +12,11 @@ from sqlalchemy import select
 from app.core.permissions import check_agent_access, is_agent_expired
 from app.core.security import decode_access_token
 from app.database import tenant_scoped_session
-from app.kernel.contracts import ExecutionIdentityRef, TerminalReason
+from app.kernel.contracts import ExecutionIdentityRef
 from app.models.audit import ChatMessage
 from app.models.llm import LLMModel
 from app.models.user import User
-from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+from app.runtime.invoker import AgentInvocationRequest, AgentInvocationResult, invoke_agent
 from app.runtime.session import SessionContext
 from app.services.session_live_input import submit_live_cancel_input, submit_live_human_input
 from app.services.session_tool_runtime import ToolEffectReconciliationRequired
@@ -147,13 +147,13 @@ async def call_llm(
     cancel_event: asyncio.Event | None = None,
     execution_identity: ExecutionIdentityRef | None = None,
     session_context: SessionContext | None = None,
-    auto_close_session: bool = False,
     session_source: str | None = None,
     session_channel: str | None = None,
     system_prompt_suffix: str = "",
     allowed_tool_names: tuple[str, ...] = (),
     excluded_tool_names: tuple[str, ...] = (),
-) -> str:
+    return_result: bool = False,
+) -> str | AgentInvocationResult:
     """Call LLM via the unified agent runtime."""
     runtime_messages = [msg for msg in messages if msg.get("role") != "system"]
     runtime_memory_messages = None
@@ -197,55 +197,10 @@ async def call_llm(
             system_prompt_suffix=system_prompt_suffix,
             allowed_tool_names=allowed_tool_names,
             excluded_tool_names=excluded_tool_names,
-            emit_turn_stop=False,
         )
     )
 
-    if auto_close_session and agent_id is not None:
-        close_messages = list(runtime_memory_messages or runtime_messages)
-        terminal_reason = getattr(result, "terminal_reason", TerminalReason.TURN_STOP)
-        try:
-            typed_terminal_reason = (
-                terminal_reason if isinstance(terminal_reason, TerminalReason) else TerminalReason(str(terminal_reason))
-            )
-        except ValueError:
-            # An untyped/unknown terminal receipt cannot be inferred from the
-            # model-authored bytes. Treat the lifecycle authority as failed.
-            typed_terminal_reason = TerminalReason.TURN_ABORT
-        turn_aborted = typed_terminal_reason not in {
-            TerminalReason.TURN_STOP,
-            TerminalReason.CLARIFICATION_REQUIRED,
-        }
-        if not turn_aborted:
-            close_messages.append({"role": "assistant", "content": result.content})
-        try:
-            from app.runtime.hooks import HookEvent, emit_hook
-
-            await emit_hook(
-                HookEvent.TURN_ABORT if turn_aborted else HookEvent.TURN_STOP,
-                evidence_mode="independent",
-                agent_id=agent_id,
-                session_id=effective_session_context.session_id or session_id,
-                source=effective_session_context.source,
-                messages=close_messages,
-                metadata={
-                    "tenant_id": effective_session_context.metadata.get("tenant_id"),
-                    "reason": "invoke_failed" if turn_aborted else "invoke_complete",
-                    "channel": effective_session_context.channel,
-                    "checkpoint_kind": "turn_abort" if turn_aborted else "user_turn_stop",
-                    "semantic_memory_eligible": not turn_aborted,
-                    "terminal_reason": typed_terminal_reason.value,
-                    "turn_id": effective_session_context.metadata.get("turn_id"),
-                    "intent_id": effective_session_context.metadata.get("intent_id"),
-                    "runtime_task_id": effective_session_context.metadata.get("runtime_task_id"),
-                    "request_id": effective_session_context.metadata.get("request_id"),
-                    "trace_id": effective_session_context.metadata.get("trace_id"),
-                },
-            )
-        except Exception as close_err:
-            logger.debug("[call_llm] TURN_STOP hook failed (non-fatal): {}", close_err)
-
-    return result.content
+    return result if return_result else result.content
 
 
 @router.websocket("/ws/chat/{agent_id}")

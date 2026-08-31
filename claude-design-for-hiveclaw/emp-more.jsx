@@ -193,7 +193,7 @@ function DocumentsPage({ navigate }) {
 function ApprovalsPage({ navigate }) {
   const [items, setItems] = muS([
     { id: 1, agent: 'Ledger', abbr: 'FC', color: 'oklch(0.62 0.12 150)', action: '向外部邮箱发送对账报告', risk: '中', scope: '财务数据外发', from: '系统自动', when: '12 分钟前' },
-    { id: 2, agent: 'Relay', abbr: 'OP', color: 'oklch(0.56 0.11 300)', action: '在飞书群批量发送通知', risk: '低', scope: '影响 38 人', from: '陈航 Hang', when: '1 小时前' },
+    { id: 2, agent: 'Relay', abbr: 'OP', color: 'oklch(0.56 0.11 300)', action: '在飞书群批量发送通知', risk: '低', scope: '影响 38 人', from: '示例用户 B', when: '1 小时前' },
   ]);
   const [done, setDone] = muS([]);
   const act = (id, verb) => { setItems(its => its.filter(i => i.id !== id)); setDone(d => [...d, verb]); };

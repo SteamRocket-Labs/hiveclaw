@@ -16,8 +16,20 @@ def test_harness_ci_runs_pytest_prompt_eval_and_hard_gates() -> None:
     # self_evolution_bakeoff demoted to a plain integration test (spec §2.3):
     # its behavior assertions run inside `pytest tests/evals` now.
     assert "python -m app.evals.self_evolution_bakeoff" not in source
-    assert "python -m app.evals.run --suite core_v1 --target clawith --mode internal" in source
+    assert "python -m app.evals.run --suite core_v1 --target hive --mode internal" in source
     assert "python -m app.evals.adversarial_suite" in source
+
+
+def test_harness_ci_lints_only_changed_python_paths() -> None:
+    workflow = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "harness-ci.yml"
+    source = workflow.read_text(encoding="utf-8")
+    backend_job = source.split("  backend-harness:", 1)[1].split("  atomic-user-journeys:", 1)[0]
+
+    assert "fetch-depth: 0" in backend_job
+    assert "git -C .. diff --name-only -z --diff-filter=ACMR" in backend_job
+    assert 'ruff check "${python_files[@]}"' in backend_job
+    assert 'ruff format --check "${python_files[@]}"' in backend_job
+    assert "ruff check app tests" not in backend_job
 
 
 def test_harness_ci_has_no_nightly_behavior_eval_or_eval_environment_secrets() -> None:

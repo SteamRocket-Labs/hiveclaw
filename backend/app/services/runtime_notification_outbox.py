@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 import uuid
 from typing import Any, Literal
 
-from sqlalchemy import and_, exists, or_, select, text
+from sqlalchemy import String, and_, cast, exists, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -31,6 +31,7 @@ from app.models.runtime_task import (
     COMPLETION_OUTBOX_TERMINAL_STATUSES,
     RuntimeTask,
 )
+from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
 from app.models.user import User
 from app.services.execution_admission import ExecutionAdmission, ExecutionAdmissionDecision
 from app.services.runtime_budget_service import RuntimeBudgetReservation, RuntimeBudgetService
@@ -38,6 +39,7 @@ from app.services.runtime_result_store import (
     RuntimeResultDescriptor,
     RuntimeResultIntegrationPage as RuntimeResultIntegrationPageValue,
     build_runtime_result_integration_pages,
+    decode_runtime_result_payload,
     encode_runtime_result_payload,
     runtime_result_object_id,
     runtime_result_ref,
@@ -424,9 +426,19 @@ def _completion_outbox_eligible(task: RuntimeTask) -> bool:
         getattr(task, "completion_outbox_generation", None) is not None
         and str(task.task_type or "") in COMPLETION_OUTBOX_TASK_TYPES
         and str(task.status or "") in COMPLETION_OUTBOX_TERMINAL_STATUSES
-        and not (task.task_type == "trigger" and str(task.status or "") == "skipped")
+        and _intentional_trigger_no_delivery(task) is None
         and task.parent_agent_id is not None
     )
+
+
+def _intentional_trigger_no_delivery(task: RuntimeTask) -> str | None:
+    if task.task_type != "trigger":
+        return None
+    if str(task.status or "") == "skipped":
+        return "intentional_no_delivery"
+    if str((task.metadata_json or {}).get("delivery") or "").strip() == "workflow":
+        return "workflow_child_owned"
+    return None
 
 
 async def produce_terminal_task_completion_notification(
@@ -631,9 +643,10 @@ async def enqueue_completion_notification(
         task_metadata["runtime_result_sha256"] = encoded.sha256
         task_metadata["runtime_result_size_bytes"] = encoded.size_bytes
         task.metadata_json = task_metadata
-        task.result_summary = (
-            f"Durable result committed: ref={result_ref} sha256={encoded.sha256} bytes={encoded.size_bytes}."
-        )
+        if task.task_type not in {"business_task", "trigger", "delegation"}:
+            task.result_summary = (
+                f"Durable result committed: ref={result_ref} sha256={encoded.sha256} bytes={encoded.size_bytes}."
+            )
         if task.root_runtime_task_id is not None:
             from app.services.runtime_root_ledger import RUNTIME_ROOT_STATES, transition_runtime_root_item_by_task
 
@@ -795,6 +808,23 @@ class RuntimeNotificationOutboxService:
         lease_expires_at = current + timedelta(seconds=self._lease_seconds)
         effective_limit = max(1, int(limit))
         first_observed: list[tuple[str, int]] = []
+        delivery_ready = or_(
+            RuntimeNotificationOutbox.source_kind != "trigger",
+            RuntimeNotificationOutbox.artifact_count == 0,
+            exists(
+                select(RuntimeTerminalBoundaryOutbox.id).where(
+                    RuntimeTerminalBoundaryOutbox.tenant_id == RuntimeNotificationOutbox.tenant_id,
+                    func.replace(cast(RuntimeTerminalBoundaryOutbox.runtime_task_id, String), "-", "")
+                    == func.replace(RuntimeNotificationOutbox.source_run_id, "-", ""),
+                    RuntimeTerminalBoundaryOutbox.terminal_status == RuntimeNotificationOutbox.terminal_status,
+                    RuntimeTerminalBoundaryOutbox.event_kind.in_(("turn_stop", "turn_abort")),
+                    RuntimeTerminalBoundaryOutbox.authority_ref == "runtime_task",
+                    func.replace(RuntimeTerminalBoundaryOutbox.authority_id, "-", "")
+                    == func.replace(RuntimeNotificationOutbox.source_run_id, "-", ""),
+                    RuntimeTerminalBoundaryOutbox.status == "delivered",
+                )
+            ),
+        )
         async with self._worker_session("claim") as db:
             claimed_rows: list[RuntimeNotificationOutbox] = []
             page_limit = max(
@@ -814,11 +844,20 @@ class RuntimeNotificationOutboxService:
                                             == RuntimeResultIntegrationPage.id,
                                             RuntimeNotificationOutbox.status == "pending",
                                             RuntimeNotificationOutbox.available_at <= current,
+                                            delivery_ready,
                                         )
                                     ),
                                 ),
                                 and_(
                                     RuntimeResultIntegrationPage.status == "processing",
+                                    exists(
+                                        select(RuntimeNotificationOutbox.id).where(
+                                            RuntimeNotificationOutbox.integration_page_id
+                                            == RuntimeResultIntegrationPage.id,
+                                            RuntimeNotificationOutbox.status.in_(("pending", "processing")),
+                                            delivery_ready,
+                                        )
+                                    ),
                                     or_(
                                         RuntimeResultIntegrationPage.lease_expires_at.is_(None),
                                         RuntimeResultIntegrationPage.lease_expires_at <= current,
@@ -849,6 +888,7 @@ class RuntimeNotificationOutboxService:
                             .where(
                                 RuntimeNotificationOutbox.integration_page_id == page.id,
                                 RuntimeNotificationOutbox.status.in_(("pending", "processing")),
+                                delivery_ready,
                             )
                             .order_by(RuntimeNotificationOutbox.mailbox_sequence)
                             .with_for_update()
@@ -877,6 +917,7 @@ class RuntimeNotificationOutboxService:
                             select(RuntimeNotificationOutbox)
                             .where(
                                 RuntimeNotificationOutbox.integration_page_id.is_(None),
+                                delivery_ready,
                                 or_(
                                     and_(
                                         RuntimeNotificationOutbox.status == "pending",
@@ -965,6 +1006,14 @@ class RuntimeNotificationOutboxService:
             )
             repaired = 0
             for task in tasks:
+                no_delivery_disposition = _intentional_trigger_no_delivery(task)
+                if no_delivery_disposition is not None:
+                    _settle_runtime_task_completion_outbox(task)
+                    metadata = dict(task.metadata_json or {})
+                    metadata["completion_delivery_disposition"] = no_delivery_disposition
+                    task.metadata_json = metadata
+                    repaired += 1
+                    continue
                 existing_outbox_id = await db.scalar(
                     select(RuntimeNotificationOutbox.id)
                     .where(
@@ -1371,6 +1420,11 @@ class RuntimeNotificationOutboxService:
     async def _deliver_page(self, page: ClaimedResultIntegrationPage) -> dict[str, Any]:
         from app.services.agent_session_continuation import continue_parent_session_with_result_page
 
+        subagent_items = [
+            item for item in page.items if item.source_kind == "subagent" and item.child_session_id is not None
+        ]
+        subagent_summaries: dict[uuid.UUID, str] = {}
+
         async with tenant_scoped_session(
             page.tenant_id,
             session_factory=self._session_factory,
@@ -1390,8 +1444,37 @@ class RuntimeNotificationOutboxService:
                     .limit(1)
                 )
             ).scalar_one_or_none()
+            if subagent_items:
+                result_objects = list(
+                    (
+                        await sequence_db.execute(
+                            select(RuntimeResultObject).where(
+                                RuntimeResultObject.id.in_([item.result_object_id for item in subagent_items])
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                subagent_summaries = {
+                    result_object.id: str(
+                        decode_runtime_result_payload(result_object.payload_bytes).get("summary") or ""
+                    )
+                    for result_object in result_objects
+                }
         if prior_pending_page is not None:
             raise CompletionDeliveryDeferred("prior_integration_page_pending")
+
+        if len(subagent_summaries) != len(subagent_items):
+            raise RuntimeError("subagent runtime result payload is unavailable for completion projection")
+        for item in subagent_items:
+            from app.services.subagent_run_service import update_subagent_child_session_state_for_run
+
+            await update_subagent_child_session_state_for_run(
+                run_id=item.source_run_id,
+                status=item.terminal_status,
+                summary=subagent_summaries[item.result_object_id],
+            )
 
         if page.delivery_mode == "parent_continuation" and any(
             item.task_type == "agent_team_close" for item in page.items

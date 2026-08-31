@@ -243,8 +243,8 @@ class TestEnvironmentSection:
         assert "## Environment" in build_environment_section()
 
     def test_includes_user(self) -> None:
-        section = build_environment_section(user_name="Rocky")
-        assert "Rocky" in section
+        section = build_environment_section(user_name="Example Owner")
+        assert "Example Owner" in section
 
     def test_includes_channel(self) -> None:
         section = build_environment_section(channel="feishu")
@@ -261,7 +261,7 @@ class TestEnvironmentSection:
     def test_dynamic_suffix_omits_utc_environment_time_when_runtime_time_exists(self) -> None:
         suffix = build_dynamic_prompt_suffix(
             runtime_metadata_context="## Current Time\n2026-06-12 09:30:00 (Asia/Shanghai)",
-            user_name="Rocky",
+            user_name="Example Owner",
             channel="web",
         )
 
@@ -365,9 +365,9 @@ class TestDynamicSuffixIntegration:
         assert "feedback: test data" in ds
 
     def test_contains_environment(self) -> None:
-        ds = build_dynamic_prompt_suffix(user_name="Rocky", channel="web")
+        ds = build_dynamic_prompt_suffix(user_name="Example Owner", channel="web")
         assert "## Environment" in ds
-        assert "Rocky" in ds
+        assert "Example Owner" in ds
 
     def test_no_memory_when_empty(self) -> None:
         ds = build_dynamic_prompt_suffix(memory_snapshot="")

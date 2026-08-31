@@ -33,11 +33,24 @@ describe('adminApi runtime reconciliation adapter', () => {
       tenantId: 'tenant-1',
       action: 'mark_resolved',
       reason: 'verified',
+      triggerDisposition: 'confirmed_success',
     });
     await adminApi.applyRuntimeReconciliationAction('task-2', {
       tenantId: 'tenant-1',
       action: 'acknowledge_tool_effect',
       reason: 'verified effect evidence',
+    });
+    await adminApi.applyRuntimeReconciliationAction('task-3', {
+      tenantId: 'tenant-1',
+      action: 'mark_resolved',
+      reason: 'verified failure',
+      triggerDisposition: 'confirmed_failure',
+    });
+    await adminApi.applyRuntimeReconciliationAction('task-4', {
+      tenantId: 'tenant-1',
+      action: 'archive',
+      reason: 'verified release',
+      triggerDisposition: 'release',
     });
 
     expect(vi.mocked(get).mock.calls[0][0]).toBe(
@@ -46,11 +59,27 @@ describe('adminApi runtime reconciliation adapter', () => {
     expect(vi.mocked(get).mock.calls[1][0]).toBe('/admin/runtime-reconciliation/task-1?tenant_id=tenant-1');
     expect(vi.mocked(post).mock.calls[0]).toEqual([
       '/admin/runtime-reconciliation/task-1/action?tenant_id=tenant-1',
-      { action: 'mark_resolved', reason: 'verified' },
+      {
+        action: 'mark_resolved',
+        reason: 'verified',
+        trigger_disposition: 'confirmed_success',
+      },
     ]);
     expect(vi.mocked(post).mock.calls[1]).toEqual([
       '/admin/runtime-reconciliation/task-2/action?tenant_id=tenant-1',
       { action: 'acknowledge_tool_effect', reason: 'verified effect evidence' },
+    ]);
+    expect(vi.mocked(post).mock.calls[2]).toEqual([
+      '/admin/runtime-reconciliation/task-3/action?tenant_id=tenant-1',
+      {
+        action: 'mark_resolved',
+        reason: 'verified failure',
+        trigger_disposition: 'confirmed_failure',
+      },
+    ]);
+    expect(vi.mocked(post).mock.calls[3]).toEqual([
+      '/admin/runtime-reconciliation/task-4/action?tenant_id=tenant-1',
+      { action: 'archive', reason: 'verified release', trigger_disposition: 'release' },
     ]);
   });
 

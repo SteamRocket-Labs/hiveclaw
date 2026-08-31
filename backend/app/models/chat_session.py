@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, Text, ForeignKey, Index, func, UniqueConstraint, text
+from sqlalchemy import BigInteger, DateTime, String, Text, ForeignKey, Index, func, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -77,6 +77,9 @@ class ChatSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # CAS watermark for post-terminal summary projection. Historical summaries
+    # have no mechanically provable source sequence and intentionally stay NULL.
+    summary_through_sequence: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 # Keep isolated ChatSession imports mapper-safe for runtime_task_id flushes.

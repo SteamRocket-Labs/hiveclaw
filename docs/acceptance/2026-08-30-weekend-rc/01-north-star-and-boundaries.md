@@ -1,11 +1,11 @@
 ---
 document_id: weekend-rc-2026-08-30-north-star
-owner: Rocky
+owner: Example Owner
 status: active
 authority: canonical-release-charter
-last_reviewed: 2026-08-30
+last_reviewed: 2026-08-31
 source_commit: c18b181c
-verification_status: owner-approved-production-denominator-frozen
+verification_status: owner-approved-model-agency-rls-and-release-boundaries
 ---
 
 # North Star、指标与边界
@@ -51,7 +51,7 @@ NPTCR = 普通员工无需管理员、数据库手改、开发者控制台或人
 - 最终产物能直接使用，引用、权限和审计可追溯；
 - Input、Authority、Execution、Evidence、Recovery、Consumption、Acceptance 七原子完整。
 
-Production journey manifest 已按 owner 裁决冻结为 [`acceptance/weekend_production_journeys.v1.json`](../../../acceptance/weekend_production_journeys.v1.json)。执行中不得删除、合并或改写失败旅程来提高 NPTCR；`BLOCKED_PRECONDITION` 保留在分母并阻止发布，范围变化只能由 owner 明确标为 `Excluded` 并保留原因。
+Production journey manifest 已按 owner 裁决冻结为 [`acceptance/weekend_production_journeys.v1.json`](../../../acceptance/weekend_production_journeys.v1.json)。执行中不得删除、合并或改写失败旅程来提高 NPTCR。只有未解决的 Hive/product-controlled requirement 才能记录 blocking fact `BLOCKED_PRECONDITION`；underlying Journey 保持 `Breakpoint` 或 `Missing`，留在分母并阻止发布。缺少可恢复的合成身份/fixture 或仓库 runtime/adapter 不符合该 blocking fact；经独立确认的第三方不可用按 PDEC-009 进入 external readiness。范围变化只能由 owner 明确标为 `Excluded` 并保留原因。
 
 ## 五条不可平均护栏
 
@@ -65,14 +65,20 @@ Production journey manifest 已按 owner 裁决冻结为 [`acceptance/weekend_pr
 
 Evidence Coverage Score 只衡量发布证据覆盖，不是统计置信度：源码/live wiring 15、自动化/真 PG 20、signed-in 生产双遍 30、故障恢复 20、权限负向 15。达到 95 仍不能覆盖七原子缺失、护栏失败、开放 P0/P1/用户可见 P2、三服务版本漂移、真实路径依赖 fake 或普通用户必须使用 raw ID/控制台。
 
+## Model Agency 与 RLS 尺度
+
+Hive 产品 turn 内，selected runtime LLM 在已认证权限框架中拥有任务推理、语义判断、综合与回答表达；RC 验收循环内，主 Codex 拥有验收分解、证据解释、优先级、Journey/Finding verdict 和最终交付表达；owner 拥有产品语义与风险授权裁决。subagent、NPTCR、Evidence Coverage、CI、测试、receipt、timeout、attempt count、deployment/health 与 `mechanical_ready` 都不拥有这些语义权威，只能校验 exact facts 或聚合已被主 Codex 基于真实证据接受的 verdict；它们不能决定语义 truth、quality、failure、`blocked`、priority 或 final language，不能改写/压制模型输出，也不能删除无关能力。exact invariant 缺失时，机械门只 hold 对应 read/effect/release，并返回可恢复的 typed observation。
+
+RLS/ACL 在 server-derived tenant、principal、Agent、Session、resource、delegation、action 与 approval 的 data-ingress/read/write/effect 边界 fail closed；未授权字节不得进入模型 context、API response 或 UI。已登记的 read-only cross-tenant existence/deny probe 仍在验收范围内，但只能得到不泄漏存在性的 `deny/not-found`，不得读取 protected row 或产生效果；若 probe 意外返回 protected bytes，立即停止该 lane，不继续读取、传播或把 raw bytes 写入 evidence，只保留最小脱敏 P0 事故证据。一个 denial 只阻断该次 read/effect，不能裁剪已授权证据、中断无关推理或移除获准工具。platform/operator 路径必须先有应用层 authority，再使用 exact tenant/reason/scope、审计和恢复明确的窄 bypass；数据库 bypass 不能创造业务授权，owner 指令也不能把未授权访问变成授权。
+
 ## 证明顺序
 
-1. 先证明单 Agent 在真实 Session 中完成开放任务且不弱于基准。
-2. 再证明 Memory / Skill / Soul 的进化在后续真实任务中产生收益。
-3. 再证明 HR、知识、权限和员工生命周期。
-4. 最后扩展 Sub-agent、Team、Workflow、A2A、Automation 与控制中台。
+1. 先证明 Agent 智能：单 Agent 在真实 Session 中完成开放任务，语义质量与自进化不弱于 FreeCode/Hermes 基准；机械规则不得替代、改写或压低模型智能。
+2. 再完成全部前后端功能主路径与功能性恢复：Session/20 commands、Memory/Growth、Personal/Company KB、Agent/HR 创建、Subagent、Team、Workflow、A2A、Automation、Hook/Skill/MCP/Local Agent、Artifact 与所有普通员工/后台 UI 消费。功能不存在、未接线、前后端不一致或小白不可用，先修到真实可用。
+3. 所有功能性路径成立后，再集中验收并修复 employee/company-admin/platform-admin/operator 权限、RLS/ACL、active revocation、secret/PII、prompt injection、replay、approval 与 delegation escalation。
+4. 最后冻结 coherent `D`，完成三服务 exact deploy、同提交双遍、故障/权限负向、evidence 与 cleanup。
 
-复杂控制面围绕一个更弱的 Agent，不计产品成功。
+“功能优先、安全后验收”是排查与修复顺序，不是关闭现有安全控制：未授权数据/效果始终 fail closed，真实泄漏立即停该 lane；但不得用权限加固、额外 RLS 拒绝或安全评分提前阻断无关功能补全，也不得用“更安全”掩盖产品不能用。复杂控制面或更严格权限围绕一个更弱、不可用的 Agent，都不计产品成功。
 
 ## Included
 
@@ -94,12 +100,12 @@ Evidence Coverage Score 只衡量发布证据覆盖，不是统计置信度：�
 ## Excluded 或 action-time 单独授权
 
 - Agent Sandbox provider 重构、Extension/plugin convergence、Knowledge Graph/Ontology、新 Office/多模态引擎、新 Connector 集成，以及没有真实用户旅程失败证据的全站视觉重写。
-- 充值、替换模型凭据、重新登录 Hive Connect、签发或替换 bridge credential、邀请外部成员。
-- 生产 DDL、不可逆迁移、删除生产数据或历史证据。
+- 充值、替换/轮换/暴露真实模型或 bridge credential、读取组织 secret、邀请真实外部成员；已登记 lab Local Agent 的受支持 login/pair/revoke 生命周期属于 PDEC-008。
+- 不可逆生产 DDL/迁移、删除真实生产数据或历史证据；additive/backward-compatible migration 仅在完整 migration test、backfill、rollout safety、幂等 retry 和 rollback/forward recovery 下属于已授权实现工作。
 - Letta 的 Memory、Secrets、Working directory、Connect Models 信息架构；截图只授权多 Agent rail → Agent sidebar → Session 的布局参考。
 
-12 小时是执行预算，不是降低 Release Gate 的理由。真实 semantic runner 不可用时，相关旅程保持 `BLOCKED_PRECONDITION`，不得用 deterministic green、mock、历史 Session 或平台补写语义代替。
+最初 12 小时窗口只保留为计划背景，不是 Goal-wide terminal condition、语义 verdict 或降低 Release Gate 的理由；不得设置人工 Goal-wide timeout、step cap 或 attempt cap。每次 provider/tool/subagent 调用仍使用 task-sized timeout、cancel、quota 与 backoff 保护资源，但 expiry 只终止或恢复当前 attempt。仓库内 semantic runner/adapter 缺失是必须实现的 product-controlled gap；经独立确认且不由 Hive 造成的第三方不可用进入 external readiness，park 该 provider-success assertion 并继续其他安全路径。两者都不得用 deterministic green、mock、历史 Session 或平台补写语义代替。
 
 ## 完成状态
 
-只使用：`Closed loop`、`Partial loop`、`Breakpoint`、`Missing`、`Excluded`、`BLOCKED_PRECONDITION`。测试通过、部署成功、单次生产成功分别是证据层，不是额外完成状态。
+Journey completion state 只使用：`Closed loop`、`Partial loop`、`Breakpoint`、`Missing`、`Excluded`。`BLOCKED_PRECONDITION` 与 `EXTERNAL_UNAVAILABLE` 分别是独立的 blocking/readiness fact，不是 completion state；前者只绑定未解决的 product-controlled requirement 并阻止发布，后者按 PDEC-009 处理，二者都不产生 PASS/Closed。若冻结旅程要求真实 provider success，它在 provider 恢复或 owner 明确 `Excluded` 前保持未闭环。测试通过、部署成功、单次生产成功分别是证据层，不是额外完成状态。

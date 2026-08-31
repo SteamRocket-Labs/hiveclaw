@@ -68,7 +68,7 @@ Hive 当前不是“边界太多”或“边界太少”二选一的问题，而
 
 ### 4.1 CC / FreeCode 是语义下限，不是无条件照抄
 
-当前可读源码事实表明：FreeCode 主要围绕物理 context window 做 AutoCompact，保留 output/recovery 空间，provider 413 后可 reactive compact，并用 circuit breaker 与 stop hook 避免 compact 自循环。Skill 预算不足时退化描述，但保留全部名称可发现。这是 Hive 应保持的“模型先看见、超窗再恢复”语义下限。源码落点：`/Users/rocky243/vc-saas/free-code-main/src/services/compact/autoCompact.ts:30-91,241-351`、`src/query.ts:592-647,1065-1182,1258-1265,1292-1297`、`src/tools/SkillTool/prompt.ts:20-40,70-171`。
+当前可读源码事实表明：FreeCode 主要围绕物理 context window 做 AutoCompact，保留 output/recovery 空间，provider 413 后可 reactive compact，并用 circuit breaker 与 stop hook 避免 compact 自循环。Skill 预算不足时退化描述，但保留全部名称可发现。这是 Hive 应保持的“模型先看见、超窗再恢复”语义下限。源码落点：`/Users/example-owner/vc-saas/free-code-main/src/services/compact/autoCompact.ts:30-91,241-351`、`src/query.ts:592-647,1065-1182,1258-1265,1292-1297`、`src/tools/SkillTool/prompt.ts:20-40,70-171`。
 
 但 CC/FreeCode 自身也有极端缺口：concurrency-safe Agent tool 没有数值 admission；成功 child conclusion 可全量 fan-in；aggregate spill 的保护受默认关闭 flag 控制；ToolSearch 结果数也缺稳定上界。源码落点：`src/services/tools/StreamingToolExecutor.ts:129-150`、`src/tools/AgentTool/agentToolUtils.ts:276-356`、`src/constants/toolLimits.ts:6-49`、`src/utils/toolResultStorage.ts:447-462`。因此 CC 是普通单 Agent 行为下限，不是 Hive 的 100-Agent 容量答案。
 
@@ -76,11 +76,11 @@ Hive 当前不是“边界太多”或“边界太少”二选一的问题，而
 
 ### 4.2 Codex 是工程参考，也不能照抄
 
-Codex 值得吸收的是 typed `AgentLimitReached`、durable AgentJob 遇 cap 保持 pending、stream retry 与 transport fallback、typed thread/turn 状态，证据位于 `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/config/mod.rs:203-211,1428-1441`、`core/src/agent/control/execution.rs:59-72`、`core/src/tools/handlers/agent_jobs.rs:185-227`、`core/src/responses_retry.rs:20-79`。不能照抄的是固定 4/6 thread cap 作为产品语义、超预算 omit skills、compaction blind drop/truncate，以及 completion mailbox 全量 drain；对应 `core-skills/src/render.rs:376-412`、`core/src/compact.rs:284-292`、`core/src/compact_remote.rs:368-459`、`core/src/session/input_queue.rs:72-102,197-224`。
+Codex 值得吸收的是 typed `AgentLimitReached`、durable AgentJob 遇 cap 保持 pending、stream retry 与 transport fallback、typed thread/turn 状态，证据位于 `/Users/example-owner/Context Engineering/codex/codex-rs/core/src/config/mod.rs:203-211,1428-1441`、`core/src/agent/control/execution.rs:59-72`、`core/src/tools/handlers/agent_jobs.rs:185-227`、`core/src/responses_retry.rs:20-79`。不能照抄的是固定 4/6 thread cap 作为产品语义、超预算 omit skills、compaction blind drop/truncate，以及 completion mailbox 全量 drain；对应 `core-skills/src/render.rs:376-412`、`core/src/compact.rs:284-292`、`core/src/compact_remote.rs:368-459`、`core/src/session/input_queue.rs:72-102,197-224`。
 
 ### 4.3 Hermes 是 Goal 1 行为基准，不是边界事实源
 
-本轮补读 `/Users/rocky243/vc-saas/hermes-agent@18e840469ffe9f8235331c787e34ebbe908564b8`。其 `tools/delegate_tool.py:590-598,1624-1714,2649-2656` 已按 parent 剩余 headroom 给 batch summary 分配预算，并把完整超长结果 spill 到文件后返指针；这是 Hive 当前 full child result 直接回灌路径至少应达到的 lean benchmark。它在 `agent/chat_completion_helpers.py:1500-1509,1656-1719` 命中 max iterations 后再次请求模型总结，也比平台固定 prose 更接近 Model Agency。
+本轮补读 `/Users/example-owner/vc-saas/hermes-agent@18e840469ffe9f8235331c787e34ebbe908564b8`。其 `tools/delegate_tool.py:590-598,1624-1714,2649-2656` 已按 parent 剩余 headroom 给 batch summary 分配预算，并把完整超长结果 spill 到文件后返指针；这是 Hive 当前 full child result 直接回灌路径至少应达到的 lean benchmark。它在 `agent/chat_completion_helpers.py:1500-1509,1656-1719` 命中 max iterations 后再次请求模型总结，也比平台固定 prose 更接近 Model Agency。
 
 但 Hermes `run_agent.py:3756-3784` 会静默截掉超出的 `delegate_task` calls，默认并发/summary ceiling 仍是应用常量；这些不是 CCPlus 可照抄的治理契约。Hive 应保留 Hermes 的 lossless spill 与 model-authored summary，同时用 durable `not_admitted/deferred` 取代静默 truncation，并用 progress certificate 取代“总结后把 task 当完结”。
 

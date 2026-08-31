@@ -566,7 +566,18 @@ export function useSessionTransportController(options: SessionTransportControlle
       // open WebSocket. In that case ensureSessionSocket is intentionally a
       // no-op, so resync the existing socket instead of leaving the UI stuck
       // in "reconnecting" forever.
-      syncActiveSocketState(activeSession, agentId);
+      const socket = socketsRef.current[key];
+      if (socket?.readyState === WebSocket.OPEN) {
+        const current = connectionState(key);
+        commitConnectionState(
+          key,
+          { ...current, transport: { ...current.transport, phase: 'connected' } },
+          agentId,
+          String(activeSession.id),
+        );
+      } else {
+        syncActiveSocketState(activeSession, agentId);
+      }
     };
     const handleOffline = () => {
       clearReconnectTimer(key);

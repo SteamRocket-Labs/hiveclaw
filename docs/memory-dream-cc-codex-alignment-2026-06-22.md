@@ -61,9 +61,9 @@ FreeCode 不是只有一个 Dream。它有三层：
 
 | Layer | FreeCode source | Semantics | Hive mapping |
 | --- | --- | --- | --- |
-| Session Memory | `/Users/rocky243/vc-saas/free-code-main/src/services/SessionMemory/sessionMemory.ts` | forked subagent 异步维护当前 conversation 的 markdown notes，用于当前会话连续性、resume、compact | 新增 `session_memory.md` hot lane |
-| extractMemories | `/Users/rocky243/vc-saas/free-code-main/src/services/extractMemories/extractMemories.ts` | 每轮完整 query loop 结束后由 Stop Hook 触发，后台 forked agent 抽取 durable memories 到 project memory dir | Hive T0 segment seal / response complete -> T2 package extraction |
-| autoDream | `/Users/rocky243/vc-saas/free-code-main/src/services/autoDream/autoDream.ts` | 时间 + session 数 + lock 满足后，forked agent 读取 memory root 和 transcript dir，整理 memory topic files / `MEMORY.md` | Hive `Memory Dream`: T2/T3 global consolidation |
+| Session Memory | `/Users/example-owner/vc-saas/free-code-main/src/services/SessionMemory/sessionMemory.ts` | forked subagent 异步维护当前 conversation 的 markdown notes，用于当前会话连续性、resume、compact | 新增 `session_memory.md` hot lane |
+| extractMemories | `/Users/example-owner/vc-saas/free-code-main/src/services/extractMemories/extractMemories.ts` | 每轮完整 query loop 结束后由 Stop Hook 触发，后台 forked agent 抽取 durable memories 到 project memory dir | Hive T0 segment seal / response complete -> T2 package extraction |
+| autoDream | `/Users/example-owner/vc-saas/free-code-main/src/services/autoDream/autoDream.ts` | 时间 + session 数 + lock 满足后，forked agent 读取 memory root 和 transcript dir，整理 memory topic files / `MEMORY.md` | Hive `Memory Dream`: T2/T3 global consolidation |
 
 关键结论：
 
@@ -78,9 +78,9 @@ Codex 的 memory write path 是更工程化的两阶段 pipeline：
 
 | Phase | Codex source | Semantics | Hive mapping |
 | --- | --- | --- | --- |
-| Phase 1: Rollout Extraction | `/Users/rocky243/Context Engineering/codex/codex-rs/memories/README.md` | 从 state DB claim eligible rollouts，过滤 memory-relevant response items，并行抽取 `raw_memory` / `rollout_summary` / `rollout_slug`，写回 DB | Hive T2 Segment Package / rollout summary |
+| Phase 1: Rollout Extraction | `/Users/example-owner/Context Engineering/codex/codex-rs/memories/README.md` | 从 state DB claim eligible rollouts，过滤 memory-relevant response items，并行抽取 `raw_memory` / `rollout_summary` / `rollout_slug`，写回 DB | Hive T2 Segment Package / rollout summary |
 | Phase 2: Global Consolidation | same | claim 全局 lock，同步 `raw_memories.md` / `rollout_summaries/`，生成 git-style workspace diff，启动受限 consolidation sub-agent 写 filesystem memory | Hive T3 Markdown Wiki consolidation |
-| Read path | `/Users/rocky243/Context Engineering/codex/codex-rs/memories/read` | `memory_summary.md` 常驻，`MEMORY.md` / skills / rollout summaries progressive disclosure，要求 memory citation | Hive `wiki_map.md` / T3 retriever / T2 source refs |
+| Read path | `/Users/example-owner/Context Engineering/codex/codex-rs/memories/read` | `memory_summary.md` 常驻，`MEMORY.md` / skills / rollout summaries progressive disclosure，要求 memory citation | Hive `wiki_map.md` / T3 retriever / T2 source refs |
 
 关键结论：
 
@@ -95,11 +95,11 @@ Hive 已经对齐的部分：
 
 | Area | Current source | Judgment |
 | --- | --- | --- |
-| T0 mechanical truth | `/Users/rocky243/vc-saas/hiveclaw-main/backend/app/memory/t0/ledger.py` | 已对齐，甚至强于 CC: `events.jsonl` truth + `source.md` projection + `index.json` + hash chain |
-| T2 source package | `/Users/rocky243/vc-saas/hiveclaw-main/backend/app/memory/t2/segment_package.py` | 已有 canonical `source_bundle.json -> summary/labels/review -> Platform Gate` |
-| T3 staging | `/Users/rocky243/vc-saas/hiveclaw-main/backend/app/memory/t3_consolidation.py` | 已遵守 LLM staging, Platform Gate commit |
-| T3 Platform Gate | `/Users/rocky243/vc-saas/hiveclaw-main/backend/app/memory/t3_platform_gate.py` | 已有 target file、source refs、base revision、atomic commit checks |
-| Flow map | `/Users/rocky243/vc-saas/hiveclaw-main/docs/memory-system-flow-map-2026-06-17.md` | 已定义 `T0 -> T2 -> T3 -> soul.md` 梯度 |
+| T0 mechanical truth | `/Users/example-owner/vc-saas/hiveclaw-main/backend/app/memory/t0/ledger.py` | 已对齐，甚至强于 CC: `events.jsonl` truth + `source.md` projection + `index.json` + hash chain |
+| T2 source package | `/Users/example-owner/vc-saas/hiveclaw-main/backend/app/memory/t2/segment_package.py` | 已有 canonical `source_bundle.json -> summary/labels/review -> Platform Gate` |
+| T3 staging | `/Users/example-owner/vc-saas/hiveclaw-main/backend/app/memory/t3_consolidation.py` | 已遵守 LLM staging, Platform Gate commit |
+| T3 Platform Gate | `/Users/example-owner/vc-saas/hiveclaw-main/backend/app/memory/t3_platform_gate.py` | 已有 target file、source refs、base revision、atomic commit checks |
+| Flow map | `/Users/example-owner/vc-saas/hiveclaw-main/docs/memory-system-flow-map-2026-06-17.md` | 已定义 `T0 -> T2 -> T3 -> soul.md` 梯度 |
 
 Hive 当前错位的部分：
 

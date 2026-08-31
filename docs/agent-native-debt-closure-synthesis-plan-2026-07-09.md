@@ -26,7 +26,7 @@
 | `/steer` 孤儿别名 | 成立。`session_command_runtime.execute_session_command()` 支持 `turn_steer` 和 `steer`，但 `command_registry` 只注册 `turn_steer`。 | 第一部分 P0 |
 | workspace rewind UI 半接 | 成立。后端 `rewind_mode=conversation|workspace|both` 和 `confirm_workspace_restore` 存在，前端 checkpoint selector 仍主要走对话 rewind。 | 第一部分 P0 |
 | T3 two-plane 与 legacy flat T3 双轨 | 成立。prompt 和新读面偏 two-plane，但 `auto_dream._T3_FILES`、`reference_index._T3_FILENAMES`、部分 view 仍引用 legacy 文件名。 | 第一部分 P1 |
-| `codex_optimization_ledger` 本机路径脆弱 | 成立。控制面 payload 不应携带 `/Users/rocky243/...` 这种本机绝对路径作为可运行事实。 | 第一部分 P1 |
+| `codex_optimization_ledger` 本机路径脆弱 | 成立。控制面 payload 不应携带 `/Users/example-owner/...` 这种本机绝对路径作为可运行事实。 | 第一部分 P1 |
 | STRICT capability mapping 是新工具上线风险 | 成立，但不是当前 drift。它是机制性清债点：必须有测试和启动审计防止新工具未注册就上线。 | 第一部分 P1 |
 
 ### 1.2 需要修正
@@ -134,7 +134,7 @@ async def admit_agent_runtime_tenant(
 先写失败测试，再改实现。
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/services/test_runtime_tenant_admission.py \
@@ -170,7 +170,7 @@ pytest \
 红测证据：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_runtime_tenant_admission.py tests/test_database_tenant_scoped_session.py tests/services/test_runtime_task_service.py::test_create_runtime_task_record_blocks_parent_agent_without_tenant tests/services/test_trigger_daemon.py::test_invoke_trigger_blocks_when_agent_tenant_missing tests/services/test_heartbeat.py::test_execute_heartbeat_blocks_when_agent_tenant_missing -q
 ```
@@ -180,7 +180,7 @@ pytest tests/services/test_runtime_tenant_admission.py tests/test_database_tenan
 绿测证据：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_runtime_tenant_admission.py tests/test_database_tenant_scoped_session.py tests/services/test_trigger_daemon.py tests/services/test_heartbeat.py tests/services/test_runtime_task_service.py tests/tools/test_resolver.py tests/architecture/test_rls_tenant_write_contracts.py -q
 ```
@@ -194,7 +194,7 @@ pytest tests/services/test_runtime_tenant_admission.py tests/test_database_tenan
 静态检查：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 ruff check app/runtime/tenant_admission.py app/services/runtime_tenant_admission.py app/database.py app/services/runtime_task_service.py app/services/trigger_daemon.py app/services/heartbeat.py app/tools/resolver.py tests/services/test_runtime_tenant_admission.py tests/test_database_tenant_scoped_session.py tests/services/test_runtime_task_service.py tests/services/test_trigger_daemon.py tests/services/test_heartbeat.py tests/tools/test_resolver.py
 ```
@@ -226,7 +226,7 @@ All checks passed!
 测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/api/test_cc_codex_parity_api.py \
@@ -237,7 +237,7 @@ pytest \
 前端：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run \
   src/pages/agent-detail/slashCommand.test.ts \
   src/pages/agent-detail/CommandPalette.test.tsx \
@@ -268,11 +268,11 @@ npm test -- --run \
 红测证据：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/api/test_cc_codex_parity_api.py::test_commands_api_lists_compact_index_and_schema -q
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run src/pages/agent-detail/slashCommand.test.ts
 ```
 
@@ -281,7 +281,7 @@ npm test -- --run src/pages/agent-detail/slashCommand.test.ts
 绿测证据：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/api/test_cc_codex_parity_api.py tests/api/test_commands_loop.py tests/services/test_session_command_runtime.py -q
 ```
@@ -295,7 +295,7 @@ pytest tests/api/test_cc_codex_parity_api.py tests/api/test_commands_loop.py tes
 前端：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run src/pages/agent-detail/slashCommand.test.ts src/pages/agent-detail/CommandPalette.test.tsx src/pages/agent-detail/SlashCommandMenu.test.tsx
 ```
 
@@ -309,7 +309,7 @@ Tests  21 passed (21)
 静态检查：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 ruff check app/services/command_registry.py app/api/commands.py tests/api/test_cc_codex_parity_api.py tests/api/test_commands_loop.py
 ```
@@ -355,14 +355,14 @@ confirm_workspace_restore = true
 验收：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/services/test_session_workspace_snapshot.py \
   tests/services/test_session_command_runtime.py \
   -q
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run \
   src/pages/agent-detail/AgentDetailSections.test.tsx \
   src/pages/agent-detail/sessionCommandResult.test.ts
@@ -383,11 +383,11 @@ npm test -- --run \
 红测证据：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_session_command_runtime.py -q
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx src/pages/agent-detail/sessionCommandResult.test.ts
 ```
 
@@ -401,7 +401,7 @@ frontend: missing session-rewind-mode-* controls; buildSessionRewindCommandArgs 
 绿测证据：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_session_command_runtime.py -q
 ```
@@ -413,7 +413,7 @@ pytest tests/services/test_session_command_runtime.py -q
 ```
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx src/pages/agent-detail/sessionCommandResult.test.ts
 ```
 
@@ -427,11 +427,11 @@ Tests 100 passed (100)
 构建与静态检查：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 ruff check app/services/session_command_runtime.py tests/services/test_session_command_runtime.py
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run build
 ```
 
@@ -473,7 +473,7 @@ frontend build: tsc && vite build completed successfully
 测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/memory/test_t3_platform_gate.py \
@@ -498,7 +498,7 @@ pytest \
 红测证据：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/memory/test_t2_retention.py::test_legacy_flat_t3_blocks_do_not_count_as_active_referrers \
   tests/services/test_dream_phase6.py::TestT3ReadWriteBoundary::test_dream_t3_file_manifest_uses_two_plane_paths \
@@ -517,7 +517,7 @@ agent_evolution_view path_contract still exposed t3_capabilities=memory/t3/capab
 绿测证据：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/memory/test_t2_retention.py tests/memory/test_c8_derived_tables.py tests/memory/test_source_ref_system.py tests/memory/test_retrieval_pipeline.py tests/memory/test_two_plane_migration.py tests/services/test_dream_phase6.py tests/services/test_agent_evolution_view_v2.py tests/api/test_agent_evolution_api.py tests/scripts/test_rebuild_reference_index.py -q
 ```
@@ -531,7 +531,7 @@ pytest tests/memory/test_t2_retention.py tests/memory/test_c8_derived_tables.py 
 Prompt/path 合同回归：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/runtime/test_dream_template.py tests/runtime/test_t3_prompt_contracts.py tests/runtime/test_memory_section.py tests/memory/test_t3_file_boundary.py tests/memory/test_t3_gate_four_planes.py -q
 ```
@@ -545,7 +545,7 @@ pytest tests/runtime/test_dream_template.py tests/runtime/test_t3_prompt_contrac
 静态检查：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 ruff check app/memory/reference_index.py app/services/auto_dream.py app/services/agent_evolution_view.py tests/memory/test_t2_retention.py tests/services/test_dream_phase6.py tests/services/test_agent_evolution_view_v2.py tests/api/test_agent_evolution_api.py
 ```
@@ -564,7 +564,7 @@ All checks passed!
 
 | 文件 | 改动 |
 |---|---|
-| `backend/app/runtime/codex_optimization_ledger.py` | 移除 `/Users/rocky243/...` 绝对路径；改成相对 source family 或文档 ref |
+| `backend/app/runtime/codex_optimization_ledger.py` | 移除 `/Users/example-owner/...` 绝对路径；改成相对 source family 或文档 ref |
 | `backend/tests/runtime/test_runtime_context_composition.py` | 断言 ledger 不含本机绝对路径 |
 
 ### 7.2 heartbeat round budget 文档/实现不一致
@@ -594,7 +594,7 @@ All checks passed!
 测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/runtime/test_runtime_context_composition.py \
@@ -615,7 +615,7 @@ pytest \
 验证：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/runtime/test_runtime_context_composition.py \
@@ -669,7 +669,7 @@ ruff check \
 验证：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/services/test_session_feedback.py \
@@ -747,7 +747,7 @@ MemoryAssembler.assemble()
 建议测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/memory/test_assembler.py -q
 ```
@@ -755,7 +755,7 @@ pytest tests/memory/test_assembler.py -q
 测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/services/test_personal_knowledge_service.py \
@@ -782,7 +782,7 @@ pytest \
 验证：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/services/test_personal_knowledge_service.py \
@@ -798,7 +798,7 @@ pytest \
 ruff check app/api/chat_sessions.py app/memory/assembler.py tests/api/test_chat_sessions_permissions.py tests/memory/test_assembler.py
 # All checks passed!
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run src/pages/session-workbench/SessionNativeControls.test.tsx
 # Test Files 1 passed; Tests 2 passed
 ```
@@ -808,7 +808,7 @@ npm test -- --run src/pages/session-workbench/SessionNativeControls.test.tsx
 第一部分施工完成后至少跑：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/services/test_runtime_tenant_admission.py \
@@ -824,7 +824,7 @@ pytest \
   tests/architecture/test_rls_tenant_write_contracts.py \
   -q
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run \
   src/pages/agent-detail/AgentDetailSections.test.tsx \
   src/pages/agent-detail/sessionCommandResult.test.ts \
@@ -832,14 +832,14 @@ npm test -- --run \
   src/pages/agent-detail/CommandPalette.test.tsx \
   src/pages/session-workbench/timelineModel.test.ts
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run build
 ```
 
 最终再跑完整后端：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q
 ```
@@ -857,7 +857,7 @@ pytest tests -q
 验证：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/services/test_runtime_tenant_admission.py \
@@ -880,7 +880,7 @@ pytest tests -q
 ruff check app tests
 # All checks passed!
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run
 # Test Files 84 passed; Tests 528 passed
 

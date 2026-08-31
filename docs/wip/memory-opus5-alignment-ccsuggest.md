@@ -9,7 +9,7 @@
   - `message_id`: `msg_019fa61f-3b7d-7b30-83d6-6c2a5127d6ed`
   - 原文：“我觉得你说的是对的，应该是允许的，但边界非常的窄，我觉得这件事是没有问题的。”
   - 本地原始证据：
-    `/Users/rocky243/.codex/sessions/2026/07/28/rollout-2026-07-28T08-13-00-019fa611-4fb9-7d03-8781-62ed256e12bd.jsonl:325`
+    `/Users/example-owner/.codex/sessions/2026/07/28/rollout-2026-07-28T08-13-00-019fa611-4fb9-7d03-8781-62ed256e12bd.jsonl:325`
 - Owner 对本轮细化方案的实施确认（`user_committed`，只记录接受的 gist）：
   - 被接受的方案：assistant message
     `msg_041aae202496f718016a67fceb7160819190dc53a1fc951458`
@@ -940,7 +940,7 @@ rg -n "one-pass|全局发布锁" \
   docs/agent-native-unified-atomic-review-2026-07-14.md
 
 rg -n 'msg_019fa61f-3b7d-7b30-83d6-6c2a5127d6ed|msg_041aae202496f718016a67fceb7160819190dc53a1fc951458|msg_019fa638-66e5-70b0-822c-c2a9d52cbc5e|msg_019fa69f-15dc-7e13-adc5-676d81e9736a' \
-  /Users/rocky243/.codex/sessions/2026/07/28/rollout-2026-07-28T08-13-00-019fa611-4fb9-7d03-8781-62ed256e12bd.jsonl
+  /Users/example-owner/.codex/sessions/2026/07/28/rollout-2026-07-28T08-13-00-019fa611-4fb9-7d03-8781-62ed256e12bd.jsonl
 ```
 
 ### 10.4 WIP 生命周期

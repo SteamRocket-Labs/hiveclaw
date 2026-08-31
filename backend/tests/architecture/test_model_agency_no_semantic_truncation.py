@@ -9,51 +9,37 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 FRONTEND_ROOT = REPO_ROOT / "frontend/src"
 
 
-def _handbook_section(source: str, heading: str, next_heading: str) -> str:
-    return source.split(heading, 1)[1].split(next_heading, 1)[0]
-
-
 def test_agent_handbooks_share_one_exact_model_agency_contract() -> None:
-    heading = "## Model Agency Boundary — 模型语义主权与平台治理边界"
-    next_heading = "## Delivery Discipline — One Complete Pass, No MVP"
     agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
     claude = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
 
-    agents_contract = _handbook_section(agents, heading, next_heading)
-    claude_contract = _handbook_section(claude, heading, next_heading)
-
-    assert agents_contract == claude_contract
+    assert "[AGENTS.md](AGENTS.md)" in claude
+    assert "thin compatibility entry point" in claude
+    assert len(claude.splitlines()) <= 10
     for required in (
-        "the LLM is the sole owner of semantic judgment",
-        "Hard-constraint allowlist",
-        "Forbidden implementation patterns",
-        "Mechanical fallback contract",
-        "explicit anchored command grammar",
-        "treating a client-echoed server hash as semantic authority",
+        "Inside the authenticated frame, the model normally owns interpretation",
+        "The platform\nowns identities",
+        "natural-language keywords, regexes, counters, or similarity heuristics",
+        "exact unauthorized bytes",
+        "narrowest boundary that can actually protect it",
     ):
-        assert required in agents_contract
+        assert required in agents
 
 
 def test_agent_handbooks_share_one_exact_north_star_decision_order() -> None:
-    heading = "## North Star Decision Order — 北极星裁决顺序"
-    next_heading = "## Reference Baselines — 对照物顺序"
     agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
     claude = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
 
-    agents_contract = _handbook_section(agents, heading, next_heading)
-    claude_contract = _handbook_section(claude, heading, next_heading)
-
-    assert agents_contract == claude_contract
+    assert "[AGENTS.md](AGENTS.md)" in claude
     for required in (
-        "Goal 1 is built and judged first",
-        "AI-native and Model Agency Boundary",
-        "complete authorized evidence availability",
-        "Personal Knowledge Base is tool-only",
-        "Codex Desktop",
-        "seven-atom standard",
-        "not by making model behavior easier for the platform to predict",
+        "Agent capability is foundational",
+        "capability-preserving determinism",
+        "selected model's effective capability envelope",
+        "complete **authorized evidence availability**",
+        "Input, Authority, Execution, Evidence, Recovery,\nConsumption, and Acceptance",
+        "Historical baselines",
     ):
-        assert required in agents_contract
+        assert required in agents
 
 
 def test_reusable_atomic_review_prompt_is_timeless_and_north_star_complete() -> None:

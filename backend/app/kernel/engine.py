@@ -3811,24 +3811,18 @@ class AgentKernel:
         api_messages: list[LLMMessage] | None = None,
         terminal_reason: TerminalReason = TerminalReason.TURN_ABORT,
     ) -> None:
-        """Best-effort memory persistence on abnormal exit paths."""
-        if not request.agent_id or not runtime_config.tenant_id:
+        """Repair in-memory tool protocol before returning a typed terminal result.
+
+        Durable summaries and learning projections belong to the caller's
+        post-commit terminal boundary.  The model loop has no authority to
+        write them on either success or failure.
+        """
+        del request, runtime_config, final_content
+        if api_messages is None:
             return
-        try:
-            if api_messages is not None:
-                sealed_count = _seal_orphan_tool_uses(api_messages, terminal_reason=terminal_reason)
-                if sealed_count:
-                    logger.info("[Kernel] Sealed %d orphan tool_use block(s) before terminal persist", sealed_count)
-            await _maybe_await(
-                self._deps.persist_memory(
-                    agent_id=request.agent_id,
-                    session_id=request.memory_session_id,
-                    tenant_id=runtime_config.tenant_id,
-                    messages=_build_persisted_memory_messages(request, final_content, api_messages),
-                )
-            )
-        except Exception as exc:
-            logger.warning("[Kernel] Best-effort persist_memory failed on exit: %s", exc)
+        sealed_count = _seal_orphan_tool_uses(api_messages, terminal_reason=terminal_reason)
+        if sealed_count:
+            logger.info("[Kernel] Sealed %d orphan tool_use block(s) before terminal return", sealed_count)
 
     async def handle(self, request: InvocationRequest) -> InvocationResult:
         """Delegate to the single run_agent_turn lifecycle owner."""

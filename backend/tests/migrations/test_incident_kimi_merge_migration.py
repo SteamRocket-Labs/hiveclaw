@@ -18,7 +18,7 @@ KIMI_HEAD = "retire_agent_agent_relationships_table_0724"
 MERGE_HEAD = "merge_incident_kimi_0725"
 # The merge revision itself is immutable history; the closure head moves with
 # every newer revision (currently the A2A continuation task contract).
-CURRENT_HEAD = "a2a_continuation_task_0828"
+CURRENT_HEAD = "invitation_role_binding_0831"
 BRANCH_POINT = "im_unverified_transport_0719"
 
 

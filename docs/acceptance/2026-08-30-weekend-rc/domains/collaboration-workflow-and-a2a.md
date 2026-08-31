@@ -1,6 +1,6 @@
 ---
 document_id: weekend-rc-domain-collaboration-workflow-a2a
-owner: Rocky / Codex
+owner: Example Owner / Codex
 status: active
 authority: canonical-domain-acceptance
 last_reviewed: 2026-08-30

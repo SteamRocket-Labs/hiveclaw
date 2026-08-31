@@ -30,7 +30,7 @@
 Red phase：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/kernel/test_ccplus_runtime_contracts.py -q
 ```
@@ -51,7 +51,7 @@ ModuleNotFoundError: No module named 'app.runtime.ccplus_contracts'
 Green phase：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/kernel/test_ccplus_runtime_contracts.py tests/kernel/test_contracts.py tests/tools/test_tool_content_envelope.py -q
 ```
@@ -65,7 +65,7 @@ pytest tests/kernel/test_ccplus_runtime_contracts.py tests/kernel/test_contracts
 Lint：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 ruff check app/kernel/contracts.py app/kernel/engine.py app/runtime/ccplus_contracts.py app/runtime/invoker.py app/tools/result_envelope.py tests/kernel/test_ccplus_runtime_contracts.py
 ```
@@ -102,7 +102,7 @@ All checks passed!
 Red phase：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_web_chat_runtime.py -q -k terminal_task_update
 pytest tests/kernel/test_ccplus_runtime_contracts.py -q -k seal_orphan
@@ -118,7 +118,7 @@ ImportError: cannot import name '_seal_orphan_tool_uses'
 Green phase：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/kernel/test_ccplus_runtime_contracts.py tests/services/test_web_chat_runtime.py -q -k "ccplus or seal_orphan or terminal_task_update"
 ```
@@ -132,7 +132,7 @@ pytest tests/kernel/test_ccplus_runtime_contracts.py tests/services/test_web_cha
 Lint：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 ruff check app/kernel/engine.py app/services/web_chat_runtime.py tests/kernel/test_ccplus_runtime_contracts.py tests/services/test_web_chat_runtime.py
 ```
@@ -183,7 +183,7 @@ All checks passed!
 Red phase：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/tools/test_governance.py tests/services/test_capability_gate_strict_mapping.py tests/services/test_custom_api_capability.py tests/services/test_agent_tools_core_surface.py tests/kernel/test_parallel_tool_batch.py -q -k "dangerous_run_command_subcommand or shell_expansion_path_syntax or without_policy_escalates or custom_api_tool_maps or share_one_base_exclusion_policy or aborts_later_siblings"
 pytest tests/runtime/test_coordinator.py -q
@@ -223,7 +223,7 @@ assert 'send_agent_session_message' in CORE_TOOL_NAMES
 Green phase：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/tools/test_governance.py tests/services/test_capability_gate_strict_mapping.py tests/services/test_custom_api_capability.py tests/services/test_agent_tools_core_surface.py tests/kernel/test_parallel_tool_batch.py tests/runtime/test_coordinator.py tests/services/test_tool_registry.py tests/tools/test_bridge_equivalence.py tests/tools/test_request_plan_mode.py tests/tools/test_ask_user_question.py -q
 ```
@@ -237,7 +237,7 @@ pytest tests/tools/test_governance.py tests/services/test_capability_gate_strict
 Lint：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 ruff check app/services/capability_gate.py app/tools/governance.py app/agents/tool_policies.py app/agents/subagent.py app/agents/orchestrator.py app/kernel/engine.py app/runtime/coordinator.py app/services/agent_tools.py tests/tools/test_governance.py tests/services/test_capability_gate_strict_mapping.py tests/services/test_custom_api_capability.py tests/services/test_agent_tools_core_surface.py tests/kernel/test_parallel_tool_batch.py tests/runtime/test_coordinator.py tests/services/test_tool_registry.py tests/tools/test_bridge_equivalence.py
 ```
@@ -281,7 +281,7 @@ All checks passed!
 Red phase：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_diagnostic_command_runtime.py tests/tools/test_tool_contract.py tests/kernel/test_ccplus_runtime_contracts.py tests/services/test_web_chat_runtime.py -q -k "context_diagnostic_reports_only_live_context_ladder or declared_tool_result_threshold_is_clamped or tool_result_eviction_is_exclusive or conversation_reload_reuses_frozen"
 ```
@@ -305,7 +305,7 @@ AssertionError: assert 'call_db-message-id' == 'call_original'
 Green phase：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_diagnostic_command_runtime.py tests/tools/test_tool_contract.py tests/kernel/test_ccplus_runtime_contracts.py tests/services/test_web_chat_runtime.py -q
 ```
@@ -319,7 +319,7 @@ pytest tests/services/test_diagnostic_command_runtime.py tests/tools/test_tool_c
 Lint：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 ruff check app/kernel/engine.py app/services/web_chat_runtime.py app/services/diagnostic_command_runtime.py tests/services/test_diagnostic_command_runtime.py tests/tools/test_tool_contract.py tests/kernel/test_ccplus_runtime_contracts.py tests/services/test_web_chat_runtime.py
 ```
@@ -357,7 +357,7 @@ All checks passed!
 Red phase：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 .venv/bin/pytest tests/services/test_session_control_plane.py -q
 ```
 
@@ -371,7 +371,7 @@ KeyError: 'active_turn'
 Green phase：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 .venv/bin/pytest tests/services/test_session_control_plane.py tests/api/test_cc_codex_parity_api.py tests/runtime/test_codex_substrate.py -q
 ```
 
@@ -384,7 +384,7 @@ cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 Frontend verification：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- --run src/pages/session-workbench/timelineModel.test.ts src/api/domains/ccParity.test.ts
 npm run build
 ```
@@ -400,7 +400,7 @@ vite build ✓ built
 Lint：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 .venv/bin/ruff check app/services/session_control_plane.py tests/services/test_session_control_plane.py
 ```
 
@@ -444,7 +444,7 @@ Migration / Backfill / Rollback：
 Red phase：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 .venv/bin/pytest tests/memory/test_assembler.py tests/runtime/test_memory_section.py tests/memory/test_navigation_telemetry.py -q
 ```
 
@@ -467,7 +467,7 @@ AssertionError: assert '1d ago' in ...
 Green phase：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 .venv/bin/pytest tests/memory/test_assembler.py tests/runtime/test_memory_section.py tests/memory/test_navigation_telemetry.py -q
 ```
 
@@ -480,7 +480,7 @@ cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 Package acceptance：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 .venv/bin/pytest tests -q -k "memory_activation or source_refs or trusting_recall or memory_age or memory_write_gate"
 ```
 
@@ -493,7 +493,7 @@ cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 Lint：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 .venv/bin/ruff check app/memory/assembler.py app/runtime/prompt_sections/memory.py app/runtime/prompt_sections/memory_navigation.py tests/memory/test_assembler.py tests/runtime/test_memory_section.py tests/memory/test_navigation_telemetry.py
 ```
 
@@ -541,7 +541,7 @@ Migration / Backfill / Rollback：
 Red phase：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 .venv/bin/pytest tests/skills/test_parser_v2.py tests/skills/test_registry.py tests/kernel/test_engine.py::test_execute_tool_with_hooks_consumes_post_tool_output_rewrite tests/services/test_extension_registry.py -q
 ```
 
@@ -556,7 +556,7 @@ ModuleNotFoundError: No module named 'app.services.extension_registry'
 Green phase：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 .venv/bin/pytest tests/skills/test_parser_v2.py tests/skills/test_registry.py tests/kernel/test_engine.py::test_hook_emitter_consumes_post_tool_output_rewrite tests/services/test_extension_registry.py -q
 ```
 
@@ -569,7 +569,7 @@ cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 Package acceptance：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 .venv/bin/pytest tests -q -k "extension_registry or command_registry or skill_access or hook_emitter or mcp_discovery"
 ```
 
@@ -582,7 +582,7 @@ cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 Additional regression：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 .venv/bin/pytest tests/runtime/test_hooks.py tests/runtime/test_hooks_cc_parity.py tests/skills/test_parser_v2.py tests/skills/test_registry.py tests/services/test_extension_registry.py -q
 ```
 
@@ -595,7 +595,7 @@ cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 Lint：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 .venv/bin/ruff check app/skills/types.py app/skills/parser.py app/skills/registry.py app/runtime/hooks.py app/kernel/engine.py app/services/extension_registry.py tests/skills/test_parser_v2.py tests/skills/test_registry.py tests/kernel/test_engine.py tests/services/test_extension_registry.py
 ```
 
@@ -638,7 +638,7 @@ Migration / Backfill / Rollback：
 最终验收命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 .venv/bin/pytest tests/services/test_session_control_plane.py tests/api/test_cc_codex_parity_api.py tests/runtime/test_codex_substrate.py tests/memory/test_assembler.py tests/runtime/test_memory_section.py tests/memory/test_navigation_telemetry.py tests/services/test_diagnostic_command_runtime.py tests/tools/test_tool_contract.py tests/kernel/test_ccplus_runtime_contracts.py tests/services/test_web_chat_runtime.py tests/tools/test_governance.py tests/services/test_capability_gate_strict_mapping.py tests/services/test_custom_api_capability.py tests/services/test_agent_tools_core_surface.py tests/kernel/test_parallel_tool_batch.py tests/runtime/test_coordinator.py tests/services/test_tool_registry.py tests/tools/test_bridge_equivalence.py tests/tools/test_request_plan_mode.py tests/tools/test_ask_user_question.py tests/runtime/test_hooks.py tests/runtime/test_hooks_cc_parity.py tests/skills/test_parser_v2.py tests/skills/test_registry.py tests/services/test_extension_registry.py -q
 ```
 
@@ -649,7 +649,7 @@ cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 ```
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- --run src/pages/session-workbench/timelineModel.test.ts src/api/domains/ccParity.test.ts
 ```
 
@@ -661,7 +661,7 @@ Tests  16 passed (16)
 ```
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run build
 ```
 
@@ -752,7 +752,7 @@ CCPlus 范围外、保留的既存 infra/env 债（非本轮回归、`main` 上�
 Red phase：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 .venv/bin/pytest tests/kernel/test_ccplus_side_effects.py tests/tools/test_governance_resolver.py tests/api/test_extension_registry_api.py tests/tools/test_tool_spec_v1.py -q
 ```
 
@@ -775,7 +775,7 @@ AssertionError: assert None is not None
 Green phase：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 .venv/bin/pytest tests/kernel/test_ccplus_side_effects.py tests/tools/test_governance_resolver.py tests/api/test_extension_registry_api.py tests/tools/test_tool_spec_v1.py -q
 ```
 
@@ -788,7 +788,7 @@ cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 Regression：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 .venv/bin/pytest tests/kernel/test_ccplus_side_effects.py tests/kernel/test_parallel_tool_batch.py tests/tools/test_governance_resolver.py tests/services/test_permission_profile_v1.py tests/tools/test_service.py tests/api/test_extension_registry_api.py tests/services/test_extension_registry.py tests/tools/test_tool_spec_v1.py tests/services/test_session_control_plane.py -q
 ```
 
@@ -799,7 +799,7 @@ cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 ```
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 .venv/bin/pytest tests/services/test_session_graph_projection.py tests/kernel/test_turn_state_acceptance.py tests/runtime/test_accepted_prompt_first.py tests/services/test_no_bypass_audit.py -q
 ```
 
@@ -812,7 +812,7 @@ cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 Lint：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 .venv/bin/ruff check app/api/agents.py app/kernel/engine.py app/runtime/ccplus_contracts.py app/runtime/invoker.py app/services/agent_tools.py app/services/session_control_plane.py app/tools/governance_resolver.py app/tools/registry.py app/tools/resolver.py app/tools/runtime.py app/tools/service.py tests/kernel/test_ccplus_side_effects.py tests/tools/test_governance_resolver.py tests/api/test_extension_registry_api.py tests/tools/test_tool_spec_v1.py
 ```
 

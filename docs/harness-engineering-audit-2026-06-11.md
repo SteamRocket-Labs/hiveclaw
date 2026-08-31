@@ -291,21 +291,21 @@ invocation_id 贯通(一表+一 ContextVar,撬动 O1/O2/审计链关联)→ O3 �
 本节用于防止审计文档再次漂移。每次准备修复或引用本文结论前,先在当前 checkout 上重跑这些只读命令;若输出与本文不一致,以 live code 为准。
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 git status --short --branch
 git rev-parse --short HEAD
 git log --oneline -8
 ```
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 rg -n "synthetic_signature|HTTPStatusError|resp.status_code >= 400|finish_reason|safe_env = dict\\(os.environ\\)|check_user_token_quota|DecisionTraceStore|_DREAM_TEMPLATE_PATH" backend/app --glob '!backend/tests/**'
 rg -n "reconcile_orphaned_runtime_tasks|RuntimeTask.status == \"running\"|_TOOL_TIMEOUTS|get\\(tool_name, 30\\.0\\)|COORDINATION_BACKEND|workflow_completed" backend/app --glob '!backend/tests/**'
 rg -n "SCHEMA_DATABASE_URL|RLS_BACKFILL_ON_DEPLOY|grant_rls_app_role|alembic upgrade head|create_all|enter_rls_bypass|tenant_scoped_session" backend/app backend/entrypoint.sh backend/alembic --glob '!backend/tests/**'
 ```
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_llm_client_token_limits.py tests/services/test_runtime_task_service.py tests/tools/test_service.py tests/services/test_decision_trace.py -q
 ```
@@ -335,7 +335,7 @@ pytest tests/services/test_llm_client_token_limits.py tests/services/test_runtim
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_llm_client_streaming.py \
   tests/services/test_runtime_task_service.py::test_reconcile_orphaned_runtime_tasks_preserves_workflow_runs \
@@ -348,7 +348,7 @@ pytest tests/services/test_llm_client_streaming.py \
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 python -m py_compile app/services/llm_client.py app/services/runtime_task_service.py app/tools/service.py app/services/subprocess_env.py app/services/agent_tool_domains/code_exec.py app/tools/handlers/hr.py app/evals/bakeoff_runtime.py
 pytest tests/services/test_llm_client_streaming.py \
@@ -379,7 +379,7 @@ pytest tests/services/test_llm_client_streaming.py \
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_workflow_completion_signal_gateway.py -q
 ```
@@ -389,7 +389,7 @@ pytest tests/services/test_workflow_completion_signal_gateway.py -q
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 python -m py_compile app/services/workflow_runtime_service.py
 pytest tests/services/test_workflow_completion_signal_gateway.py -q
@@ -421,7 +421,7 @@ pytest tests/services/test_workflow_completion_signal_gateway.py -q
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_evolution_verification.py::test_evolution_verification_supports_skill_guard_grader \
   tests/services/test_evolution_verification.py::test_evolution_verification_skill_guard_rejects_unsafe_skill \
@@ -431,7 +431,7 @@ pytest tests/services/test_evolution_verification.py::test_evolution_verificatio
 初始结果:3 failed。失败点:`skill_guard` grader unknown;flywheel eval report 仍是同义反复 `state_check`。
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_skill_distiller.py::test_run_skill_distillation_cycle_promotes_high_confidence_candidate \
   tests/services/test_skill_distiller.py::test_run_skill_distillation_cycle_blocks_unsafe_skill_draft -q
@@ -442,7 +442,7 @@ pytest tests/services/test_skill_distiller.py::test_run_skill_distillation_cycle
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_evolution_verification.py tests/services/test_skill_flywheel.py tests/services/test_skill_distiller.py -q
 ```
@@ -471,7 +471,7 @@ pytest tests/services/test_evolution_verification.py tests/services/test_skill_f
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 python -m py_compile app/services/auto_dream.py
 pytest tests/services/test_auto_dream.py::TestDreamSystemPromptStructure \
@@ -486,7 +486,7 @@ pytest tests/services/test_auto_dream.py::TestDreamSystemPromptStructure \
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 python -m py_compile app/services/auto_dream.py
 pytest tests/services/test_auto_dream.py::TestDreamSystemPromptStructure \
@@ -518,7 +518,7 @@ pytest tests/services/test_auto_dream.py::TestDreamSystemPromptStructure \
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_fast_reflection_candidate.py::test_fast_reflection_prefers_llm_classification_over_marker_fallback \
   tests/services/test_fast_reflection_candidate.py::test_fast_reflection_llm_low_signal_suppresses_marker_fallback \
@@ -531,7 +531,7 @@ pytest tests/services/test_fast_reflection_candidate.py::test_fast_reflection_pr
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 python -m py_compile app/services/fast_reflection_service.py app/runtime/hooks_setup.py app/services/skill_distiller.py
 pytest tests/services/test_fast_reflection_candidate.py \
@@ -558,7 +558,7 @@ pytest tests/services/test_fast_reflection_candidate.py \
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_memory_service.py::test_maybe_compress_uses_real_usage_anchor_when_estimate_is_too_low -q
 ```
@@ -568,7 +568,7 @@ pytest tests/services/test_memory_service.py::test_maybe_compress_uses_real_usag
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 python -m py_compile app/services/memory_service.py app/kernel/engine.py
 pytest tests/services/test_memory_service.py -q
@@ -594,7 +594,7 @@ pytest tests/kernel/test_prompt_cache_integration.py::test_kernel_reuses_frozen_
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/runtime/test_invoker.py::test_invoke_agent_composes_system_prompt_once -q
 ```
@@ -604,7 +604,7 @@ pytest tests/runtime/test_invoker.py::test_invoke_agent_composes_system_prompt_o
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 python -m py_compile app/kernel/engine.py
 pytest tests/runtime/test_prompt_cache.py \
@@ -631,7 +631,7 @@ pytest tests/runtime/test_prompt_cache.py \
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_command_tooling.py::test_run_command_fails_closed_without_sandbox_or_explicit_dev_bypass -q
 ```
@@ -641,7 +641,7 @@ pytest tests/services/test_command_tooling.py::test_run_command_fails_closed_wit
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 python -m py_compile app/services/agent_tool_domains/code_exec.py
 pytest tests/services/test_command_tooling.py -q
@@ -664,7 +664,7 @@ pytest tests/services/test_command_tooling.py -q
 **回归测试**
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 python -m py_compile app/services/invocation_trace.py app/kernel/engine.py
 pytest tests/kernel/test_invocation_trace.py -q
@@ -688,7 +688,7 @@ pytest tests/kernel/test_invocation_trace.py -q
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_decision_trace.py::test_decision_trace_store_persists_decisions_and_feedback -q
 ```
@@ -698,7 +698,7 @@ pytest tests/services/test_decision_trace.py::test_decision_trace_store_persists
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 python -m py_compile app/services/decision_trace.py app/tools/service.py
 pytest tests/services/test_decision_trace.py -q
@@ -728,7 +728,7 @@ pytest tests/tools/test_service.py::test_tool_runtime_service_preflight_asks_bef
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_llm_usage_metering.py \
   tests/api/test_admin_metrics.py::test_timeseries_returns_daily_cumulative_all_metrics -q
@@ -741,7 +741,7 @@ pytest tests/services/test_llm_usage_metering.py \
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 python -m py_compile app/services/llm_client.py app/services/token_tracker.py app/models/token_usage_event.py \
   app/api/admin.py app/services/subagent_generator.py app/agents/subagent_evolution.py \
@@ -774,7 +774,7 @@ pytest tests/services/test_llm_usage_metering.py tests/api/test_admin_metrics.py
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/runtime/test_invoker.py::test_invoke_agent_enforces_user_token_quota_before_kernel -q
 ```
@@ -784,7 +784,7 @@ pytest tests/runtime/test_invoker.py::test_invoke_agent_enforces_user_token_quot
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/runtime/test_invoker.py \
   tests/kernel/test_engine.py::test_humanize_llm_error_reports_quota_instead_of_auth_for_403_quota -q
@@ -808,7 +808,7 @@ pytest tests/runtime/test_invoker.py \
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/kernel/test_engine.py::test_kernel_continues_streaming_output_after_output_cap -q
 ```
@@ -818,7 +818,7 @@ pytest tests/kernel/test_engine.py::test_kernel_continues_streaming_output_after
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/kernel/test_engine.py::test_kernel_continues_streaming_output_after_output_cap -q
 pytest tests/kernel/test_engine.py tests/services/test_llm_client_token_limits.py \
@@ -849,7 +849,7 @@ ruff check app/kernel/engine.py tests/kernel/test_engine.py
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_web_chat_runtime.py::test_start_web_chat_run_queues_user_message_when_run_is_active \
   tests/kernel/test_engine.py::test_kernel_drains_mid_run_user_messages_between_tool_rounds -q
@@ -862,7 +862,7 @@ pytest tests/services/test_web_chat_runtime.py::test_start_web_chat_run_queues_u
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_web_chat_runtime.py tests/api/test_chat_session_runs.py \
   tests/api/test_websocket_call_llm.py tests/kernel/test_engine.py tests/runtime/test_invoker.py -q
@@ -892,7 +892,7 @@ ruff check app/kernel/contracts.py app/kernel/engine.py app/runtime/invoker.py \
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_trigger_daemon.py::test_evaluate_trigger_skips_fresh_inflight_fire \
   tests/services/test_trigger_daemon.py::test_tick_marks_once_trigger_inflight_without_disabling_before_ack \
@@ -907,7 +907,7 @@ pytest tests/services/test_trigger_daemon.py::test_evaluate_trigger_skips_fresh_
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_trigger_daemon.py tests/api/test_triggers_p6_api.py \
   tests/api/test_plan_mode_rest_gate.py -q
@@ -935,7 +935,7 @@ ruff check app/services/trigger_daemon.py tests/services/test_trigger_daemon.py
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_web_chat_runtime.py::test_resume_persisted_web_chat_runs_schedules_running_turns_with_resume_context \
   tests/services/test_web_chat_runtime.py::test_execute_web_chat_run_injects_restart_resume_context -q
@@ -948,7 +948,7 @@ pytest tests/services/test_web_chat_runtime.py::test_resume_persisted_web_chat_r
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_web_chat_runtime.py tests/services/test_runtime_task_service.py \
   tests/services/test_long_task_runtime.py tests/services/test_long_task_validation.py -q
@@ -976,7 +976,7 @@ ruff check app/services/web_chat_runtime.py app/services/long_task_runtime.py ap
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_workflow_completion_signal_gateway.py::test_completion_delivery_uses_runtime_delivery_target -q
 ```
@@ -986,7 +986,7 @@ pytest tests/services/test_workflow_completion_signal_gateway.py::test_completio
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_workflow_completion_signal_gateway.py \
   tests/runtime/test_workflow_completion_signal.py tests/services/test_workflow_runtime_service.py \
@@ -1013,7 +1013,7 @@ ruff check app/services/workflow_runtime_service.py app/services/workflow_launch
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/memory/test_retrieval_pipeline.py::test_retrieve_includes_high_priority_t2_feedback -q
 ```
@@ -1023,7 +1023,7 @@ pytest tests/memory/test_retrieval_pipeline.py::test_retrieve_includes_high_prio
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/memory/test_retrieval_pipeline.py tests/memory/test_retriever_rerank_wiring.py \
   tests/memory/test_retriever_rerank_prompt.py tests/services/test_memory_service.py -q
@@ -1052,7 +1052,7 @@ ruff check app/memory/retriever.py tests/memory/test_retrieval_pipeline.py
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_skill_distiller.py::test_run_skill_distillation_cycle_applies_verified_patch -q
 ```
@@ -1062,7 +1062,7 @@ pytest tests/services/test_skill_distiller.py::test_run_skill_distillation_cycle
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_skill_distiller.py::test_run_skill_distillation_cycle_applies_verified_patch -q
 pytest tests/services/test_skill_distiller.py tests/services/test_evolution_validation.py -q
@@ -1095,7 +1095,7 @@ ruff check app/services/skill_distiller.py app/services/evolution_validation.py 
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/tools/test_memory_handler.py::test_update_memory_supersedes_old_entry_through_write_gate \
   tests/tools/test_memory_handler.py::test_retire_memory_archives_entry_without_deleting_evidence \
@@ -1110,7 +1110,7 @@ pytest tests/tools/test_memory_handler.py::test_update_memory_supersedes_old_ent
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/tools/test_memory_handler.py::test_update_memory_supersedes_old_entry_through_write_gate \
   tests/tools/test_memory_handler.py::test_retire_memory_archives_entry_without_deleting_evidence \
@@ -1154,7 +1154,7 @@ ruff check app/tools/handlers/memory.py app/memory/t3_store.py app/memory/md_sto
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/memory/test_metrics.py::TestPrometheusExport::test_prometheus_export_includes_extract_failure_ratio_and_alert \
   tests/memory/test_metrics.py::TestPrometheusExport::test_prometheus_export_escapes_label_values \
@@ -1169,7 +1169,7 @@ pytest tests/memory/test_metrics.py::TestPrometheusExport::test_prometheus_expor
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/memory/test_metrics.py::TestPrometheusExport::test_prometheus_export_includes_extract_failure_ratio_and_alert \
   tests/memory/test_metrics.py::TestPrometheusExport::test_prometheus_export_escapes_label_values \
@@ -1203,7 +1203,7 @@ ruff check app/memory/metrics.py app/api/metrics.py app/main.py \
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/memory/test_metrics.py::TestPrometheusExport::test_snapshot_and_prometheus_include_hook_failures \
   tests/runtime/test_hooks.py::TestHookRegistry::test_handler_exception_does_not_crash \
@@ -1218,7 +1218,7 @@ pytest tests/memory/test_metrics.py::TestPrometheusExport::test_snapshot_and_pro
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/memory/test_metrics.py::TestPrometheusExport::test_snapshot_and_prometheus_include_hook_failures \
   tests/runtime/test_hooks.py::TestHookRegistry::test_handler_exception_does_not_crash \
@@ -1235,7 +1235,7 @@ ruff check app/memory/metrics.py app/runtime/hooks.py app/kernel/engine.py \
 ### 12.23 2026-06-12 第二十三批:P1-13 CI/eval gate + behavior-level self-evolution bakeoff
 
 **范围**
-- 新增 `.github/workflows/harness-ci.yml`,PR/push 运行 backend harness gates:ruff、pytest eval/prompt suites、`python -m app.runtime.prompt_eval`、`python -m app.evals.run --suite core_v1 --target clawith --mode internal`、`python -m app.evals.self_evolution_bakeoff`。
+- 新增 `.github/workflows/harness-ci.yml`,PR/push 运行 backend harness gates:ruff、pytest eval/prompt suites、`python -m app.runtime.prompt_eval`、`python -m app.evals.run --suite core_v1 --target hive --mode internal`、`python -m app.evals.self_evolution_bakeoff`。
 - `self_evolution_bakeoff` 的 Hive 侧从 `deterministic_checks(path contains string)` 改为 `local_behavior_scenarios`:每个场景在临时 agent workspace 执行真实服务函数并按行为断言计分。
 - 行为场景覆盖 next-turn session learning projection、repeated workflow → skill candidate、loaded skill failure → patch route + eval ledger、skill lifecycle promote/patch、long-task artifact resume、manifest/preflight/skill guard safety。
 - `docs/self-evolution-bakeoff-report.json` 已重生成,数据集字段为 `behavior_assertions`,Hive source 为 `local_behavior_scenarios`,不再含 `contains` 型证据。
@@ -1253,7 +1253,7 @@ ruff check app/memory/metrics.py app/runtime/hooks.py app/kernel/engine.py \
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/evals/test_self_evolution_bakeoff.py tests/evals/test_harness_ci_workflow.py -q
 ```
@@ -1266,12 +1266,12 @@ pytest tests/evals/test_self_evolution_bakeoff.py tests/evals/test_harness_ci_wo
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/evals/test_self_evolution_bakeoff.py tests/evals/test_harness_ci_workflow.py -q
 pytest tests/evals tests/runtime/test_prompt_eval.py tests/services/test_prompt_contracts.py -q
 python -m app.runtime.prompt_eval --fail-severity=critical,high
-python -m app.evals.run --suite core_v1 --target clawith --mode internal
+python -m app.evals.run --suite core_v1 --target hive --mode internal
 python -m app.evals.self_evolution_bakeoff \
   --hermes-scores-json '{"next_turn_adaptation":85,"repeated_workflow_learning":84,"tool_failure_lesson_reuse":80,"skill_candidate_creation":78,"long_task_resume":70,"safety_tenant_policy":60}'
 python -m app.evals.self_evolution_bakeoff \
@@ -1304,7 +1304,7 @@ ruff check app/evals/self_evolution_bakeoff.py app/evals/run.py app/runtime/prom
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/tools/test_governance_resolver.py::test_tool_governance_resolver_dependencies_wrap_services \
   tests/services/test_approval_service.py::test_approval_result_is_published_to_origin_session_and_active_run -q
@@ -1317,7 +1317,7 @@ pytest tests/tools/test_governance_resolver.py::test_tool_governance_resolver_de
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/tools/test_governance_resolver.py::test_tool_governance_resolver_dependencies_wrap_services \
   tests/services/test_approval_service.py::test_approval_result_is_published_to_origin_session_and_active_run -q
@@ -1355,7 +1355,7 @@ ruff check app/services/approval_service.py app/tools/governance.py app/tools/go
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_trigger_daemon.py::test_trigger_fire_lease_failure_fails_closed \
   tests/services/test_heartbeat.py::test_heartbeat_distributed_lease_failure_fails_closed -q
@@ -1368,7 +1368,7 @@ pytest tests/services/test_web_chat_runtime.py::test_start_web_chat_run_queues_w
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_trigger_daemon.py::test_trigger_fire_lease_failure_fails_closed \
   tests/services/test_heartbeat.py::test_heartbeat_distributed_lease_failure_fails_closed -q
@@ -1411,12 +1411,12 @@ ruff check app/services/trigger_daemon.py app/services/heartbeat.py \
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_llm_client_streaming.py::test_openai_compatible_streaming_retry_tombstones_partial_content \
   tests/services/test_chat_message_parts.py::test_stream_event_builders_include_structured_parts -q
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- src/pages/agent-detail/chatRuntime.test.ts
 ```
 
@@ -1425,7 +1425,7 @@ npm run test -- src/pages/agent-detail/chatRuntime.test.ts
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_llm_client_streaming.py tests/services/test_chat_message_parts.py \
   tests/kernel/test_engine.py::test_kernel_converts_stream_retry_tombstone_to_runtime_event \
@@ -1436,7 +1436,7 @@ ruff check app/services/llm_client.py app/services/llm_utils.py app/services/cha
   app/kernel/engine.py app/services/web_chat_runtime.py \
   tests/services/test_llm_client_streaming.py tests/services/test_chat_message_parts.py tests/kernel/test_engine.py
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- src/pages/agent-detail/chatRuntime.test.ts
 npm run build
 ```
@@ -1461,7 +1461,7 @@ npm run build
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/kernel/test_engine.py::test_force_evict_writes_exempt_tool_result_for_round_aggregate_overflow -q
 ```
@@ -1471,7 +1471,7 @@ pytest tests/kernel/test_engine.py::test_force_evict_writes_exempt_tool_result_f
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/kernel/test_engine.py::test_force_evict_writes_exempt_tool_result_for_round_aggregate_overflow \
   tests/kernel/test_engine.py::test_maybe_evict_tool_result_truncates_large_output \
@@ -1501,7 +1501,7 @@ ruff check app/kernel/engine.py tests/kernel/test_engine.py
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/memory/test_metrics.py::test_prompt_cache_metrics_snapshot_and_prometheus_export \
   tests/kernel/test_engine.py::test_kernel_records_prompt_cache_metrics_from_response_usage -q
@@ -1512,7 +1512,7 @@ pytest tests/memory/test_metrics.py::test_prompt_cache_metrics_snapshot_and_prom
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/memory/test_metrics.py tests/api/test_prometheus_metrics.py \
   tests/services/test_prompt_cache.py \
@@ -1545,7 +1545,7 @@ ruff check app/memory/metrics.py app/kernel/engine.py app/services/prompt_cache.
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/runtime/test_memory_query_routing.py \
   backend/tests/kernel/test_prompt_cache_integration.py::test_kernel_routes_runtime_metadata_outside_knowledge_section -q
 ```
@@ -1555,7 +1555,7 @@ pytest backend/tests/runtime/test_memory_query_routing.py \
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/runtime/test_memory_query_routing.py backend/tests/runtime/test_invoker.py \
   backend/tests/runtime/test_standalone_prompt.py backend/tests/runtime/test_context_engine.py \
   backend/tests/architecture/test_context_memory_boundaries.py \
@@ -1592,7 +1592,7 @@ ruff check backend/app/runtime/invoker.py backend/app/kernel/engine.py \
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/runtime/test_prompt_builder.py::TestDynamicSuffixCaps::test_memory_context_within_memory_budget_is_not_second_trimmed_to_ratio -q
 ```
 
@@ -1601,7 +1601,7 @@ pytest backend/tests/runtime/test_prompt_builder.py::TestDynamicSuffixCaps::test
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/runtime/test_prompt_builder.py::TestDynamicSuffixCaps \
   backend/tests/runtime/test_memory_section.py \
   backend/tests/runtime/test_prompt_sections.py::TestDynamicSuffixIntegration -q
@@ -1628,7 +1628,7 @@ ruff check backend/app/runtime/prompt_builder.py backend/app/runtime/prompt_sect
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/services/test_auto_dream.py::TestDreamFrozenMissionGate::test_repeated_feedback_promotion_contradicting_frozen_mission_is_held -q
 ```
 
@@ -1637,7 +1637,7 @@ pytest backend/tests/services/test_auto_dream.py::TestDreamFrozenMissionGate::te
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/services/test_auto_dream.py backend/tests/runtime/test_dream_template.py -q
 python -m py_compile backend/app/services/auto_dream.py
 ruff check backend/app/services/auto_dream.py backend/tests/services/test_auto_dream.py \
@@ -1668,7 +1668,7 @@ ruff check backend/app/services/auto_dream.py backend/tests/services/test_auto_d
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/memory/test_activation_scoring.py \
   backend/tests/memory/test_md_store_metadata.py::test_t3_manifest_derives_activation_aliases_from_sidecar \
   backend/tests/memory/test_retrieval_pipeline.py::test_high_priority_t2_preserves_activation_metadata -q
@@ -1679,7 +1679,7 @@ pytest backend/tests/memory/test_activation_scoring.py \
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/memory/test_activation_scoring.py backend/tests/memory/test_md_store_metadata.py \
   backend/tests/memory/test_retrieval_pipeline.py backend/tests/memory/test_t2_store.py \
   backend/tests/memory/test_t3_store.py backend/tests/memory/test_navigation_telemetry.py -q
@@ -1714,7 +1714,7 @@ ruff check backend/app/memory/activation.py backend/app/memory/md_store.py \
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/memory/test_retrieval_pipeline.py::test_retrieve_includes_ppr_wiki_pages_in_prompt_memory -q
 pytest backend/tests/memory/test_graph_ppr_eval.py::test_retrieval_eval_cli_runs_both_suites -q
 cd backend && pytest tests/evals/test_harness_ci_workflow.py::test_harness_ci_runs_pytest_prompt_eval_and_self_evolution_bakeoff -q
@@ -1725,11 +1725,11 @@ cd backend && pytest tests/evals/test_harness_ci_workflow.py::test_harness_ci_ru
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/memory/test_graph_ppr_eval.py backend/tests/memory/test_retrieval_pipeline.py \
   backend/tests/evals/test_harness_ci_workflow.py -q
 cd backend && python -m app.memory.retrieval_eval --data-root /tmp/hive-memory-eval-local
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 python -m py_compile backend/app/memory/retriever.py backend/app/memory/retrieval_eval.py
 ruff check backend/app/memory/retriever.py backend/app/memory/retrieval_eval.py \
   backend/tests/memory/test_retrieval_pipeline.py backend/tests/memory/test_graph_ppr_eval.py \
@@ -1760,7 +1760,7 @@ ruff check backend/app/memory/retriever.py backend/app/memory/retrieval_eval.py 
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/api/test_health_liveness.py -q
 ```
 
@@ -1769,7 +1769,7 @@ pytest backend/tests/api/test_health_liveness.py -q
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/api/test_health_liveness.py backend/tests/api/test_prometheus_metrics.py \
   backend/tests/memory/test_metrics.py -q
 python -m py_compile backend/app/services/daemon_liveness.py backend/app/main.py \
@@ -1812,7 +1812,7 @@ ruff check backend/app/services/daemon_liveness.py backend/app/main.py \
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/api/test_channel_durable_runtime.py \
   backend/tests/services/test_channel_delivery_service.py::TestSendText::test_send_text_slack_uses_channel_id \
   backend/tests/services/test_channel_delivery_service.py::TestSendText::test_send_text_dingtalk_uses_session_webhook \
@@ -1825,7 +1825,7 @@ pytest backend/tests/api/test_channel_durable_runtime.py \
 Teams 被纳入无 MVP 覆盖后的新增 Red:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/services/test_channel_delivery_service.py::TestResolveCapabilities::test_microsoft_teams_matrix \
   backend/tests/services/test_channel_delivery_service.py::TestIdentityFromDeliveryTarget::test_microsoft_teams_identity_uses_conversation_and_sender \
   backend/tests/services/test_channel_delivery_service.py::TestSendText::test_send_text_microsoft_teams_uses_saved_conversation \
@@ -1837,7 +1837,7 @@ pytest backend/tests/services/test_channel_delivery_service.py::TestResolveCapab
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/api/test_channel_durable_runtime.py \
   backend/tests/services/test_channel_delivery_service.py::TestResolveCapabilities::test_microsoft_teams_matrix \
   backend/tests/services/test_channel_delivery_service.py::TestIdentityFromDeliveryTarget::test_microsoft_teams_identity_uses_conversation_and_sender \
@@ -1893,7 +1893,7 @@ ruff check backend/app/api/feishu.py backend/app/api/dingtalk.py backend/app/api
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/kernel/test_parallel_tool_batch.py::test_mixed_batch_parallelizes_read_only_segment_before_write \
   backend/tests/kernel/test_cancel_and_fallback.py::test_agent_kernel_cancels_running_tool_when_cancel_event_fires \
   backend/tests/kernel/test_engine.py::test_empty_tool_result_is_wrapped_with_actionable_message \
@@ -1906,7 +1906,7 @@ pytest backend/tests/kernel/test_parallel_tool_batch.py::test_mixed_batch_parall
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/kernel/test_parallel_tool_batch.py::test_mixed_batch_parallelizes_read_only_segment_before_write \
   backend/tests/kernel/test_cancel_and_fallback.py::test_agent_kernel_cancels_running_tool_when_cancel_event_fires \
   backend/tests/kernel/test_engine.py::test_empty_tool_result_is_wrapped_with_actionable_message \
@@ -1939,7 +1939,7 @@ ruff check backend/app/kernel/engine.py backend/app/kernel/contracts.py \
 **回归测试**
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/kernel/test_engine.py::test_agent_kernel_emits_ptl_full_compress_before_round_group_retry_event \
   backend/tests/kernel/test_engine.py::test_agent_kernel_emits_runtime_fallback_event_after_prompt_too_long \
   backend/tests/kernel/test_prompt_cache_integration.py -q
@@ -1976,7 +1976,7 @@ ruff check backend/app/kernel/engine.py backend/app/kernel/contracts.py \
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/runtime/test_session_skill_lifecycle.py::test_file_tracking_records_version_snapshots \
   backend/tests/kernel/test_engine.py::test_build_restoration_context_resolves_relative_recent_file_paths \
   backend/tests/kernel/test_engine.py::test_runtime_attachment_sections_report_tool_refresh_and_external_file_changes -q
@@ -1991,7 +1991,7 @@ pytest backend/tests/runtime/test_prompt_sections.py::TestTasksSection::test_thr
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/runtime/test_session_skill_lifecycle.py::test_file_tracking_records_version_snapshots \
   backend/tests/kernel/test_engine.py::test_build_restoration_context_resolves_relative_recent_file_paths \
   backend/tests/kernel/test_engine.py::test_runtime_attachment_sections_report_tool_refresh_and_external_file_changes -q
@@ -2045,7 +2045,7 @@ ruff check backend/app/runtime/session.py backend/app/kernel/engine.py \
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/services/test_secrets_provider.py \
   backend/tests/services/test_approval_service.py::test_org_admin_can_resolve_same_tenant_agent_approval \
   backend/tests/services/test_approval_service.py::test_org_admin_cannot_resolve_other_tenant_agent_approval \
@@ -2058,7 +2058,7 @@ pytest backend/tests/services/test_secrets_provider.py \
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/services/test_secrets_provider.py \
   backend/tests/services/test_approval_service.py::test_org_admin_can_resolve_same_tenant_agent_approval \
   backend/tests/services/test_approval_service.py::test_org_admin_cannot_resolve_other_tenant_agent_approval \
@@ -2088,7 +2088,7 @@ pytest backend/tests/services/test_secrets_provider.py \
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/core/test_policy_audit.py::test_write_audit_event_hash_covers_details \
   backend/tests/core/test_policy_audit.py::test_write_audit_event_previous_hash_query_is_tenant_scoped \
   backend/tests/tools/test_service.py::test_tool_runtime_service_logs_readonly_tool_calls \
@@ -2100,7 +2100,7 @@ pytest backend/tests/core/test_policy_audit.py::test_write_audit_event_hash_cove
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/core/test_policy_audit.py::test_write_audit_event_hash_covers_details \
   backend/tests/core/test_policy_audit.py::test_write_audit_event_previous_hash_query_is_tenant_scoped \
   backend/tests/tools/test_service.py::test_tool_runtime_service_logs_readonly_tool_calls \
@@ -2134,7 +2134,7 @@ pytest backend/tests/core/test_policy_audit.py \
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/core/test_logging_config.py::test_log_record_enrichment_uses_stable_process_trace_without_context \
   backend/tests/core/test_logging_config.py::test_configure_logging_defaults_to_json -q
 ```
@@ -2144,7 +2144,7 @@ pytest backend/tests/core/test_logging_config.py::test_log_record_enrichment_use
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/core/test_logging_config.py -q
 ```
 
@@ -2168,7 +2168,7 @@ pytest backend/tests/core/test_logging_config.py -q
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/memory/test_write_gate.py::test_prepare_memory_write_rejects_prompt_injection_bait \
   backend/tests/services/test_team_memory_service.py::test_team_memory_store_masks_pii_through_write_gate \
   backend/tests/services/test_team_memory_service.py::test_team_memory_store_rejects_prompt_injection_through_write_gate -q
@@ -2179,7 +2179,7 @@ pytest backend/tests/memory/test_write_gate.py::test_prepare_memory_write_reject
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/memory/test_write_gate.py::test_prepare_memory_write_rejects_prompt_injection_bait \
   backend/tests/services/test_team_memory_service.py::test_team_memory_store_masks_pii_through_write_gate \
   backend/tests/services/test_team_memory_service.py::test_team_memory_store_rejects_prompt_injection_through_write_gate -q
@@ -2209,7 +2209,7 @@ pytest backend/tests/memory/test_write_gate.py \
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/services/test_heartbeat.py::test_parse_heartbeat_outcome_accepts_curated_alias \
   backend/tests/services/test_heartbeat.py::test_update_evolution_files_counts_curated_as_useful_lane -q
 ```
@@ -2219,7 +2219,7 @@ pytest backend/tests/services/test_heartbeat.py::test_parse_heartbeat_outcome_ac
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/services/test_heartbeat.py::test_parse_heartbeat_outcome_accepts_curated_alias \
   backend/tests/services/test_heartbeat.py::test_update_evolution_files_counts_curated_as_useful_lane -q
 
@@ -2238,14 +2238,14 @@ pytest backend/tests/services/test_heartbeat.py -q
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 ```
 
 
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 
 ```
 
@@ -2269,12 +2269,12 @@ cd /Users/rocky243/vc-saas/hiveclaw-main
 **验收命令**
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests -q
 ruff check backend/app backend/tests
 python -m compileall -q backend/app backend/tests
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run build
 npm run test
 ```
@@ -2301,7 +2301,7 @@ npm run test
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/architecture/test_deployment_contracts.py \
   backend/tests/test_alembic_bootstrap.py::test_bootstrap_alembic_version_accepts_long_revision_ids \
   backend/tests/test_alembic_bootstrap.py::test_normal_migration_path_prepares_wide_alembic_version_table \
@@ -2311,7 +2311,7 @@ pytest backend/tests/architecture/test_deployment_contracts.py \
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 pytest backend/tests/architecture/test_deployment_contracts.py \
   backend/tests/test_alembic_bootstrap.py::test_bootstrap_alembic_version_accepts_long_revision_ids \
   backend/tests/test_alembic_bootstrap.py::test_normal_migration_path_prepares_wide_alembic_version_table \
@@ -2349,7 +2349,7 @@ backend/.venv/bin/python -m pytest backend/tests -q
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 backend/.venv/bin/python -m pytest \
   backend/tests/services/test_audit_query_service.py::test_verify_chain_accepts_legacy_pre_details_hashes \
   backend/tests/services/test_approval_service.py::test_resolve_approval_commits_before_approved_external_action \
@@ -2369,7 +2369,7 @@ backend/.venv/bin/python -m pytest \
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 backend/.venv/bin/python -m pytest \
   backend/tests/services/test_audit_query_service.py::test_verify_chain_accepts_legacy_pre_details_hashes \
   backend/tests/services/test_approval_service.py::test_resolve_approval_commits_before_approved_external_action \
@@ -2428,7 +2428,7 @@ backend/.venv/bin/python -m pytest backend/tests -q
 Red 阶段失败摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 backend/.venv/bin/python -m pytest \
   backend/tests/memory/test_write_gate.py::test_prepare_memory_write_allows_business_confidentiality \
   backend/tests/memory/test_write_gate.py::test_prepare_memory_write_with_llm_primary_accepts_business_confidentiality \
@@ -2444,7 +2444,7 @@ backend/.venv/bin/python -m pytest \
 Green 阶段通过摘要:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 backend/.venv/bin/python -m pytest \
   backend/tests/memory/test_write_gate.py::test_prepare_memory_write_allows_business_confidentiality \
   backend/tests/memory/test_write_gate.py::test_prepare_memory_write_with_llm_primary_accepts_business_confidentiality \
@@ -2475,7 +2475,7 @@ backend/.venv/bin/ruff check backend/app backend/tests
 backend/.venv/bin/python -m compileall -q backend/app backend/tests
 backend/.venv/bin/python -m pytest backend/tests -q
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run build
 npm run test
 ```

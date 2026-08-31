@@ -37,7 +37,7 @@ supersedes: none
 ## Authority
 
 - 三服务上传来自 `git archive` 的同一 committed application SHA `3482b57a383d3c5bd33a5bcf813b87c6fab23339`；验收文档、证据和 owner 既有 dirty/untracked 路径均不在 archive commit 中。
-- 产品读取复用已登录的实验账号与选中 tenant `rocky的实验室`；管理员页显示当前 principal `rocky243`，没有读取 cookie、local storage、credential 或密码。
+- 产品读取复用已登录的实验账号与选中 tenant `example-owner的实验室`；管理员页显示当前 principal `example-owner`，没有读取 cookie、local storage、credential 或密码。
 - 没有 DDL、计费、凭据、权限、账号、业务数据、恢复状态或外部消息写入。
 
 ## Execution

@@ -2,7 +2,7 @@
 
 - Timestamp: `2026-04-29T20:51:46.386695+08:00`
 - Base URL: `https://backend-production-326d.up.railway.app`
-- Snapshot Dir: `/Users/rocky243/vc-saas/hiveclaw-main/tmp/reports/h7/20260429-205143`
+- Snapshot Dir: `/Users/example-owner/vc-saas/hiveclaw-main/tmp/reports/h7/20260429-205143`
 - Token source: `browser_local_storage_leveldb`
 - 168h Monday check required: `False`
 

@@ -21,7 +21,7 @@
 最终验证：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 .venv/bin/python -m pytest tests/runtime/test_recovery_manifest_persistence.py::test_recovery_manifest_hydrates_session_context_runtime_state tests/kernel/test_engine.py::test_recovered_pending_tool_frame_replays_read_only_tool_through_governed_runtime tests/kernel/test_engine.py::test_recovered_pending_tool_frame_fails_closed_for_mutating_tool tests/api/test_chat_session_runs.py::test_session_permission_event_broadcast_delivers_im_realtime_copy tests/services/test_agent_tools_core_surface.py::test_l2_taxonomy_decorator_and_pack_manifests_are_consistent tests/services/test_subagent_run_service.py::test_start_subagent_run_real_pg_creates_child_session_and_runtime_task tests/services/test_pack_skill_alignment.py tests/tools/test_pack_manifest.py -q
 # 20 passed, 4 warnings in 3.60s
 
@@ -52,7 +52,7 @@ git diff --check
 最终验证：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 .venv/bin/python -m pytest tests/runtime/test_recovery_manifest_persistence.py::test_recovery_manifest_hydrates_session_context_runtime_state tests/services/test_agent_tools_core_surface.py::test_runtime_tool_groups_are_compat_projection_of_taxonomy tests/api/test_chat_session_runs.py::test_resolve_session_permission_allow_uses_channel_native_continuation_for_im tests/api/test_chat_session_runs.py::test_resolve_session_permission_finds_session_native_permission_event tests/api/test_chat_session_runs.py::test_resolve_session_permission_allow_records_checkpoint_and_replays_original_tool_call_id tests/kernel/test_engine.py::test_load_skill_frontmatter_fork_executes_in_same_tool_call -q
 # 6 passed, 4 warnings in 0.31s
 
@@ -86,7 +86,7 @@ cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 最终验证：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 .venv/bin/python -m pytest tests/kernel/test_engine.py::test_load_skill_frontmatter_fork_executes_in_same_tool_call tests/kernel/test_engine.py::test_execute_tool_with_hooks_writes_trace_metadata_sink_to_span tests/kernel/test_engine.py::test_runtime_attachment_sections_include_persisted_recovery_manifest tests/tools/test_service.py::test_tool_runtime_service_exports_truth_evidence_to_trace_metadata_sink tests/api/test_chat_session_runs.py::test_resolve_session_permission_allow_records_checkpoint_and_replays_original_tool_call_id tests/services/test_agent_tools_core_surface.py::test_session_and_extension_surfaces_use_taxonomy_facade_instead_of_runtime_groups -q
 # 6 passed, 4 warnings in 2.05s
 

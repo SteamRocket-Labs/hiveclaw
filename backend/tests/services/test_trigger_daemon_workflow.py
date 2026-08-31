@@ -314,3 +314,266 @@ async def test_workflow_trigger_feature_flag_fails_closed_before_launch(
     assert result.status == "disabled"
     assert "WORKFLOW_TRIGGER_ENABLED" in (result.reason or "")
     assert calls == []
+
+
+@pytest.mark.parametrize("usage_failure", ["revision_drift", "database_error"])
+async def test_workflow_launch_receipt_survives_asset_usage_evidence_failure_and_replay(
+    tenant_id,
+    agent_id,
+    definition_service,
+    owner_sessionmaker,
+    workflow_principals,
+    monkeypatch,
+    usage_failure,
+):
+    from app.services import ai_assets
+
+    record = await _register_active(
+        definition_service,
+        tenant_id,
+        f"wf-usage-recovery-{usage_failure}",
+        workflow_principals.user_id,
+    )
+    runtime_task_id = uuid.uuid4()
+    trigger_id = uuid.uuid4()
+    launch_calls: list[dict] = []
+    child_effect_ids: set[uuid.UUID] = set()
+
+    async def deterministic_launch(**kwargs):
+        launch_calls.append(kwargs)
+        child_effect_ids.add(kwargs["run_id"])
+        return WorkflowRunHandle(
+            run_id=kwargs["run_id"],
+            outcome=WorkflowRunOutcome(
+                status="completed",
+                reason="idempotent_replay" if len(launch_calls) > 1 else None,
+            ),
+        )
+
+    async def fail_usage(*_args, **_kwargs):
+        if usage_failure == "database_error":
+            raise RuntimeError("usage database unavailable")
+        return False
+
+    monkeypatch.setattr(ai_assets, "record_resolved_asset_usage", fail_usage)
+    kwargs = {
+        "agent_id": agent_id,
+        "trigger_config": {
+            "workflow_ref": {
+                "definition_name": record.name,
+                "definition_version": record.definition_version,
+                "definition_hash": record.definition_hash,
+                "args": {"week": "W23"},
+            }
+        },
+        "trigger_name": "usage-recovery",
+        "trigger_id": trigger_id,
+        "runtime_task_id": runtime_task_id,
+        "session_factory": owner_sessionmaker,
+        "definition_service": definition_service,
+        "launch": deterministic_launch,
+    }
+
+    first = await fire_workflow_for_trigger(**kwargs)
+    replay = await fire_workflow_for_trigger(**kwargs)
+
+    assert first is not None and first.status == "needs_reconciliation"
+    assert replay is not None and replay.status == "needs_reconciliation"
+    assert first.run_id == replay.run_id == launch_calls[0]["run_id"]
+    assert first.session_id == replay.session_id
+    assert len(child_effect_ids) == 1
+    assert "asset_usage" in (first.reason or "")
+
+
+async def test_workflow_asset_evidence_recovery_holds_trigger_and_wrapper(monkeypatch):
+    import app.services.trigger_daemon as trigger_daemon
+    import app.services.workflow_trigger as workflow_trigger
+
+    agent_id = uuid.uuid4()
+    trigger_id = uuid.uuid4()
+    child_run_id = uuid.uuid4()
+    child_session_id = uuid.uuid4()
+    trigger = type(
+        "WorkflowTrigger",
+        (),
+        {
+            "id": trigger_id,
+            "name": "workflow-with-pending-evidence",
+            "type": "cron",
+            "config": {"workflow_ref": {"definition_name": "wf"}},
+        },
+    )()
+
+    async def fake_fire_workflow(**_kwargs):
+        return workflow_trigger.WorkflowTriggerFireResult(
+            status="needs_reconciliation",
+            run_id=child_run_id,
+            run_status="completed",
+            reason="workflow_asset_usage_evidence_commit_failed",
+            session_id=child_session_id,
+        )
+
+    terminal_updates = []
+
+    async def fake_update_runtime_task(runtime_task_id, **fields):
+        terminal_updates.append({"runtime_task_id": runtime_task_id, **fields})
+        return True
+
+    budget_settlements = []
+
+    async def fake_settle_budget(runtime_task_id, *, status):
+        budget_settlements.append((runtime_task_id, status))
+
+    monkeypatch.setattr(workflow_trigger, "fire_workflow_for_trigger", fake_fire_workflow)
+    monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task)
+    monkeypatch.setattr(trigger_daemon, "_settle_trigger_runtime_budget", fake_settle_budget)
+
+    await trigger_daemon._invoke_agent_for_triggers(
+        agent_id,
+        [trigger],
+        runtime_task_id="workflow-wrapper",
+    )
+
+    assert terminal_updates[0]["status"] == "needs_reconciliation"
+    metadata = terminal_updates[0]["metadata_json"]
+    assert metadata["trigger_settlement_overrides"] == {str(trigger_id): "hold"}
+    assert metadata["workflow_trigger_results"][0]["run_id"] == str(child_run_id)
+    assert metadata["workflow_trigger_results"][0]["status"] == "needs_reconciliation"
+    assert budget_settlements == [("workflow-wrapper", "needs_reconciliation")]
+
+
+async def test_workflow_asset_usage_error_replay_recovers_without_second_child_effect(
+    tenant_id,
+    agent_id,
+    definition_service,
+    owner_sessionmaker,
+    workflow_principals,
+    monkeypatch,
+):
+    from app.services import ai_assets
+
+    record = await _register_active(
+        definition_service,
+        tenant_id,
+        "wf-usage-transient-recovery",
+        workflow_principals.user_id,
+    )
+    runtime_task_id = uuid.uuid4()
+    trigger_id = uuid.uuid4()
+    launch_calls: list[uuid.UUID] = []
+    child_effect_ids: set[uuid.UUID] = set()
+    usage_attempts = 0
+
+    async def deterministic_launch(**kwargs):
+        launch_calls.append(kwargs["run_id"])
+        child_effect_ids.add(kwargs["run_id"])
+        return WorkflowRunHandle(
+            run_id=kwargs["run_id"],
+            outcome=WorkflowRunOutcome(
+                status="completed",
+                reason="idempotent_replay" if len(launch_calls) > 1 else None,
+            ),
+        )
+
+    async def flaky_usage(*_args, **_kwargs):
+        nonlocal usage_attempts
+        usage_attempts += 1
+        if usage_attempts == 1:
+            raise RuntimeError("usage database unavailable")
+        return True
+
+    monkeypatch.setattr(ai_assets, "record_resolved_asset_usage", flaky_usage)
+    kwargs = {
+        "agent_id": agent_id,
+        "trigger_config": {
+            "workflow_ref": {
+                "definition_name": record.name,
+                "definition_version": record.definition_version,
+                "definition_hash": record.definition_hash,
+                "args": {"week": "W23"},
+            }
+        },
+        "trigger_name": "usage-transient-recovery",
+        "trigger_id": trigger_id,
+        "runtime_task_id": runtime_task_id,
+        "session_factory": owner_sessionmaker,
+        "definition_service": definition_service,
+        "launch": deterministic_launch,
+    }
+
+    first = await fire_workflow_for_trigger(**kwargs)
+    replay = await fire_workflow_for_trigger(**kwargs)
+
+    assert first is not None and first.status == "needs_reconciliation"
+    assert replay is not None and replay.status == "launched"
+    assert first.run_id == replay.run_id
+    assert launch_calls == [first.run_id, first.run_id]
+    assert len(child_effect_ids) == 1
+    assert usage_attempts == 2
+
+
+async def test_workflow_wrapper_terminal_commit_crash_replays_receipt_without_failure(monkeypatch):
+    import app.services.trigger_daemon as trigger_daemon
+    import app.services.workflow_trigger as workflow_trigger
+
+    agent_id = uuid.uuid4()
+    trigger_id = uuid.uuid4()
+    child_run_id = uuid.uuid4()
+    child_session_id = uuid.uuid4()
+    trigger = type(
+        "WorkflowTrigger",
+        (),
+        {
+            "id": trigger_id,
+            "name": "workflow-wrapper-replay",
+            "type": "cron",
+            "config": {"workflow_ref": {"definition_name": "wf"}},
+        },
+    )()
+    fire_calls = []
+
+    async def fake_fire_workflow(**kwargs):
+        fire_calls.append(kwargs)
+        return workflow_trigger.WorkflowTriggerFireResult(
+            status="needs_reconciliation",
+            run_id=child_run_id,
+            run_status="completed",
+            reason="workflow_asset_usage_evidence_commit_failed",
+            session_id=child_session_id,
+        )
+
+    terminal_outcomes = iter((False, True))
+    terminal_updates = []
+
+    async def fake_update_runtime_task(runtime_task_id, **fields):
+        terminal_updates.append({"runtime_task_id": runtime_task_id, **fields})
+        return next(terminal_outcomes)
+
+    budget_settlements = []
+
+    async def fake_settle_budget(runtime_task_id, *, status):
+        budget_settlements.append((runtime_task_id, status))
+
+    monkeypatch.setattr(workflow_trigger, "fire_workflow_for_trigger", fake_fire_workflow)
+    monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task)
+    monkeypatch.setattr(trigger_daemon, "_settle_trigger_runtime_budget", fake_settle_budget)
+
+    with pytest.raises(RuntimeError, match="wrapper terminal transaction did not commit"):
+        await trigger_daemon._invoke_agent_for_triggers(
+            agent_id,
+            [trigger],
+            runtime_task_id="workflow-wrapper-replay",
+        )
+    await trigger_daemon._invoke_agent_for_triggers(
+        agent_id,
+        [trigger],
+        runtime_task_id="workflow-wrapper-replay",
+    )
+
+    assert len(fire_calls) == 2
+    assert all(update["status"] == "needs_reconciliation" for update in terminal_updates)
+    assert all(
+        update["metadata_json"]["workflow_trigger_results"][0]["run_id"] == str(child_run_id)
+        for update in terminal_updates
+    )
+    assert budget_settlements == [("workflow-wrapper-replay", "needs_reconciliation")]

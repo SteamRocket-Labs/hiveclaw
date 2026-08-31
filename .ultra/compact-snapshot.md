@@ -1,6 +1,6 @@
 # Compact Snapshot
 *Generated: 2026-07-15 16:51:50 UTC*
-*Working dir: /Users/rocky243/vc-saas/hiveclaw-main*
+*Working dir: /Users/example/vc-saas/hiveclaw-main*
 
 ## Git State
 Branch: `main`
@@ -60,4 +60,4 @@ V2 commit aac7149 only half-landed - worker layer added but synthesis still eats
 
 ## Recovery Instructions
 After compact, read this file to restore context:
-`Read /Users/rocky243/vc-saas/hiveclaw-main/.ultra/compact-snapshot.md`
+`Read /Users/example/vc-saas/hiveclaw-main/.ultra/compact-snapshot.md`

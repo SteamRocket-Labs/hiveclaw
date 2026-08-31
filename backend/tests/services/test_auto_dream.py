@@ -191,6 +191,32 @@ class TestDreamGates:
         record_session_end(agent_id)
         assert _sessions_since_dream[agent_id.hex] == 2
 
+    def test_session_count_durable_idempotency_survives_memory_reset(self, tmp_path, monkeypatch) -> None:
+        import app.services.auto_dream as auto_dream
+
+        _reset_state()
+        auto_dream._dream_version.clear()
+        auto_dream._dream_history.clear()
+        monkeypatch.setattr(
+            auto_dream,
+            "get_settings",
+            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+        )
+        agent_id = uuid.uuid4()
+        runtime_task_id = uuid.uuid4().hex
+
+        assert record_session_end(agent_id, idempotency_key=runtime_task_id) is True
+        assert record_session_end(agent_id, idempotency_key=runtime_task_id) is False
+        _reset_state()
+        auto_dream._dream_version.clear()
+        auto_dream._dream_history.clear()
+        assert record_session_end(agent_id, idempotency_key=runtime_task_id) is False
+
+        state = json.loads(
+            (tmp_path / str(agent_id) / "memory" / "control" / "auto_dream_state.json").read_text(encoding="utf-8")
+        )
+        assert state["sessions_since_dream"] == 1
+
     def test_independent_per_agent(self) -> None:
         _reset_state()
         a1 = uuid.uuid4()

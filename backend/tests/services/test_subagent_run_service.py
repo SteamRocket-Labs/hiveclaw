@@ -798,17 +798,29 @@ async def test_start_subagent_run_marks_readonly_types_restart_resumable(monkeyp
 @pytest.mark.asyncio
 async def test_run_completer_maps_ok_to_completed(monkeypatch):
     captured: dict = {}
+    tenant_id = uuid.uuid4()
+    parent_agent_id = uuid.uuid4()
+    parent_user_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+    child_session_id = uuid.uuid4()
 
     async def _fake_update(run_id, **fields):
         captured["run_id"] = run_id
         captured.update(fields)
         return True
 
-    async def _fake_session_state(**kwargs):
-        captured["session_state_update"] = kwargs
+    async def _fake_get(_run_id):
+        return {
+            "tenant_id": str(tenant_id),
+            "parent_agent_id": str(parent_agent_id),
+            "parent_session_id": str(parent_session_id),
+            "child_session_id": str(child_session_id),
+            **_runtime_requester_fields(requester_user_id=parent_user_id),
+            "metadata": {"subagent_name": "scout"},
+        }
 
     monkeypatch.setattr(svc, "update_runtime_task_record", _fake_update)
-    monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", _fake_session_state)
+    monkeypatch.setattr(svc, "get_runtime_task_record", _fake_get)
     completer = svc.make_run_completer("run-1")
     await completer(SubagentResult(name="scout", type="worker", status="completed", content="done", tokens_used=42))
     assert captured["run_id"] == "run-1"
@@ -817,25 +829,39 @@ async def test_run_completer_maps_ok_to_completed(monkeypatch):
     assert captured["token_usage"] == {"total_tokens": 42}
     assert captured["metadata_json"]["completion_journal"][-1]["status"] == "completed"
     assert captured["metadata_json"]["completion_journal"][-1]["idempotency_key"] == "subagent:run-1:completed"
-    assert captured["session_state_update"]["run_id"] == "run-1"
-    assert captured["session_state_update"]["status"] == "completed"
-    assert captured["session_state_update"]["summary"] == "done"
+    notification = captured["completion_notification"]
+    assert notification.parent_session_id == parent_session_id
+    assert notification.child_session_id == child_session_id
+    assert notification.summary == "done"
+    assert notification.metadata["subagent_decision_entry"]["child_session_id"] == str(child_session_id)
 
 
 @pytest.mark.asyncio
 async def test_run_completer_preserves_full_result_for_runtime_and_child_session(monkeypatch):
     captured: dict = {}
+    tenant_id = uuid.uuid4()
+    parent_agent_id = uuid.uuid4()
+    parent_user_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+    child_session_id = uuid.uuid4()
 
     async def _fake_update(run_id, **fields):
         captured["run_id"] = run_id
         captured.update(fields)
         return True
 
-    async def _fake_session_state(**kwargs):
-        captured["session_state_update"] = kwargs
+    async def _fake_get(_run_id):
+        return {
+            "tenant_id": str(tenant_id),
+            "parent_agent_id": str(parent_agent_id),
+            "parent_session_id": str(parent_session_id),
+            "child_session_id": str(child_session_id),
+            **_runtime_requester_fields(requester_user_id=parent_user_id),
+            "metadata": {"subagent_name": "scout"},
+        }
 
     monkeypatch.setattr(svc, "update_runtime_task_record", _fake_update)
-    monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", _fake_session_state)
+    monkeypatch.setattr(svc, "get_runtime_task_record", _fake_get)
     full_result = "child evidence\n" + ("E" * 9000) + "\nEND_OF_CHILD_EVIDENCE"
 
     await svc.make_run_completer("run-full")(
@@ -843,7 +869,7 @@ async def test_run_completer_preserves_full_result_for_runtime_and_child_session
     )
 
     assert captured["result_summary"] == full_result
-    assert captured["session_state_update"]["summary"] == full_result
+    assert captured["completion_notification"].summary == full_result
     assert captured["metadata_json"]["completion_journal"][-1]["summary"] == full_result
 
 
@@ -895,6 +921,9 @@ async def test_subagent_completion_projects_child_session_event_to_parent(monkey
     class _FakeSession:
         async def execute(self, _stmt):
             return _Scalar()
+
+        async def scalar(self, _stmt):
+            return None
 
         async def commit(self):
             return None
@@ -1473,6 +1502,7 @@ async def test_dispatch_persisted_subagent_run_uses_full_spec_snapshot(monkeypat
     monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
     monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
     monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", fake_update_child_session)
+    monkeypatch.setattr(svc, "_subagent_completion_notification_from_record", lambda *_args, **_kwargs: None)
 
     dispatched = await svc.dispatch_persisted_subagent_run(run_id)
 
@@ -1496,7 +1526,7 @@ async def test_dispatch_persisted_subagent_run_uses_full_spec_snapshot(monkeypat
     assert calls["kwargs"]["fork"] == "worktree"
     assert calls["updates"][0][1]["metadata_json"]["worker_dispatched"] is True
     assert calls["updates"][-1][1]["status"] == "completed"
-    assert calls["child_session_update"]["status"] == "completed"
+    assert "child_session_update" not in calls
 
 
 @pytest.mark.asyncio
@@ -1557,6 +1587,7 @@ async def test_dispatch_persisted_subagent_run_rebinds_creator_context_to_durabl
     monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent)
     monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
     monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", fake_update_child_session)
+    monkeypatch.setattr(svc, "_subagent_completion_notification_from_record", lambda *_args, **_kwargs: None)
 
     assert await svc.dispatch_persisted_subagent_run(run_id) is True
     ctx = calls["ctx"]
@@ -1622,6 +1653,7 @@ async def test_dispatch_persisted_subagent_runs_keep_concurrent_requesters_isola
     monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent)
     monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
     monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", fake_update_child_session)
+    monkeypatch.setattr(svc, "_subagent_completion_notification_from_record", lambda *_args, **_kwargs: None)
 
     results = await asyncio.gather(*(svc.dispatch_persisted_subagent_run(run_id) for run_id in requester_by_run))
 
@@ -1797,6 +1829,7 @@ async def test_dispatch_general_purpose_with_child_transcript_uses_resume_messag
     monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
     monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
     monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", fake_update_child_session)
+    monkeypatch.setattr(svc, "_subagent_completion_notification_from_record", lambda *_args, **_kwargs: None)
 
     dispatched = await svc.dispatch_persisted_subagent_run(run_id)
 
@@ -2049,6 +2082,7 @@ async def test_dispatch_allows_audited_non_idempotent_reconciliation_retry(monke
     monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
     monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
     monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", fake_update_child_session)
+    monkeypatch.setattr(svc, "_subagent_completion_notification_from_record", lambda *_args, **_kwargs: None)
 
     dispatched = await svc.dispatch_persisted_subagent_run(run_id)
 
@@ -2140,6 +2174,7 @@ async def test_dispatch_persisted_subagent_run_restores_model_resolver_for_real_
     monkeypatch.setattr(subagent_core, "_emit_subagent_lifecycle_hook", lambda **_kwargs: None)
     monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
     monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", fake_update_child_session)
+    monkeypatch.setattr(svc, "_subagent_completion_notification_from_record", lambda *_args, **_kwargs: None)
 
     dispatched = await svc.dispatch_persisted_subagent_run(run_id)
 
@@ -2151,7 +2186,7 @@ async def test_dispatch_persisted_subagent_run_restores_model_resolver_for_real_
     assert calls["request"].session_context.metadata["requester_user_id"] == str(requester_user_id)
     assert calls["request"].session_context.metadata["requester_authority_source"] == "runtime_tasks.root_user_id"
     assert calls["updates"][-1][1]["status"] == "completed"
-    assert calls["child_session_update"]["status"] == "completed"
+    assert "child_session_update" not in calls
 
 
 @pytest.mark.asyncio
@@ -2264,6 +2299,7 @@ async def test_dispatch_persisted_subagent_run_restores_memory_and_fork_context(
     monkeypatch.setattr(subagent_core, "_emit_subagent_lifecycle_hook", noop_async)
     monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
     monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", fake_update_child_session)
+    monkeypatch.setattr(svc, "_subagent_completion_notification_from_record", lambda *_args, **_kwargs: None)
 
     dispatched = await svc.dispatch_persisted_subagent_run(run_id)
 
@@ -2620,6 +2656,7 @@ async def test_resume_persisted_subagent_runs_reconciles_mutating_child_pending_
     monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
     monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
     monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", fake_update_child_session_state)
+    monkeypatch.setattr(svc, "_subagent_completion_notification_from_record", lambda *_args, **_kwargs: None)
 
     resumed = await svc.resume_persisted_subagent_runs()
 
@@ -2901,6 +2938,7 @@ async def test_dispatch_persisted_subagent_run_honors_cancel_arriving_during_hyd
     monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
     monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
     monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", fake_update_child_session_state_for_run)
+    monkeypatch.setattr(svc, "_subagent_completion_notification_from_record", lambda *_args, **_kwargs: None)
 
     dispatched = await svc.dispatch_persisted_subagent_run(run_id)
 

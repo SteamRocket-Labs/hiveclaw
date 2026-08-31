@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -14,6 +14,12 @@ class InvitationCode(Base):
     """An invitation code that can be used to register new accounts."""
 
     __tablename__ = "invitation_codes"
+    __table_args__ = (
+        CheckConstraint(
+            "granted_role IN ('member', 'org_admin')",
+            name="ck_invitation_codes_granted_role",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
@@ -24,4 +30,9 @@ class InvitationCode(Base):
     used_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    granted_role: Mapped[str] = mapped_column(
+        String(20),
+        default="member",
+        nullable=False,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

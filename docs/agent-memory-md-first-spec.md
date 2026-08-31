@@ -1214,7 +1214,7 @@ Evidence:
 
 - `rg` over `backend/app` found no runtime importer/caller.
 - Codebase graph inbound trace for
-  `Users-rocky243-vc-saas-hiveclaw-main.backend.app.memory.promotion_router.route_promotion_signal`
+  `Users-example-owner-vc-saas-hiveclaw-main.backend.app.memory.promotion_router.route_promotion_signal`
   returned `callers=[]`.
 - `fast_path_route` was only called by the same orphan module.
 - Guard test: `backend/tests/memory/test_promotion_router_retirement.py`

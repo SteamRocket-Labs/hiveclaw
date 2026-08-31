@@ -115,6 +115,9 @@ async def _bind_round_one(
 ):
     from app.services.session_model_round import bind_round_inputs
 
+    # These tests drive the model worker seam directly, so bind the same
+    # pending -> running claim the production worker establishes first.
+    await _set_run_status(owner_sessionmaker, run_id=run_id, status="running")
     async with owner_sessionmaker() as db:
         await bind_round_inputs(
             db,
@@ -274,6 +277,7 @@ async def _terminate_run(
     """Finish a run through the real canonical terminal outcome transaction."""
 
     from app.services.session_terminal_outcome import commit_terminal_outcome, prepare_and_seal_run_outcome
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
 
     outcome = await prepare_and_seal_run_outcome(
         db,
@@ -292,6 +296,22 @@ async def _terminate_run(
         run_id=run_id,
         outcome_id=outcome.id,
     )
+    await db.commit()
+    boundaries = list(
+        (
+            await db.execute(
+                select(RuntimeTerminalBoundaryOutbox).where(
+                    RuntimeTerminalBoundaryOutbox.tenant_id == tenant_id,
+                    RuntimeTerminalBoundaryOutbox.session_id == str(session_id),
+                    RuntimeTerminalBoundaryOutbox.status == "pending",
+                )
+            )
+        ).scalars()
+    )
+    for boundary in boundaries:
+        boundary.status = "delivered"
+        boundary.delivered_at = datetime.now(timezone.utc)
+        boundary.delivery_receipt_json = {"test_consumer": "session_semantic_history"}
     await db.commit()
 
 
@@ -423,11 +443,38 @@ async def _run_v2_turn(
 
 async def _set_run_status(owner_sessionmaker, *, run_id, status):
     from app.models.runtime_task import RuntimeTask
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+    from app.services.runtime_terminal_settlement import (
+        TERMINAL_SETTLEMENT_STATUSES,
+        settle_and_enqueue_runtime_task_terminal,
+    )
 
     async with owner_sessionmaker() as db:
         task = await db.get(RuntimeTask, run_id)
         assert task is not None
         task.status = status
+        if status in TERMINAL_SETTLEMENT_STATUSES:
+            task.completed_at = datetime.now(timezone.utc)
+            await settle_and_enqueue_runtime_task_terminal(
+                db,
+                task,
+                terminal_source="session_semantic_history.test_fixture",
+                root_reason_code="test_terminal_transition",
+            )
+            boundaries = list(
+                (
+                    await db.execute(
+                        select(RuntimeTerminalBoundaryOutbox).where(
+                            RuntimeTerminalBoundaryOutbox.runtime_task_id == task.id,
+                            RuntimeTerminalBoundaryOutbox.status == "pending",
+                        )
+                    )
+                ).scalars()
+            )
+            for boundary in boundaries:
+                boundary.status = "delivered"
+                boundary.delivered_at = datetime.now(timezone.utc)
+                boundary.delivery_receipt_json = {"test_consumer": "session_semantic_history"}
         await db.commit()
 
 
@@ -1317,9 +1364,6 @@ async def test_history_unavailable_fails_closed_before_any_provider_call(monkeyp
         terminal_calls.append(("finalize", kwargs))
         return True
 
-    async def emit_terminal_hook(**kwargs):
-        terminal_calls.append(("hook", kwargs))
-
     async def update_runtime_task(*_args, **kwargs):
         terminal_calls.append(("update", kwargs))
 
@@ -1329,7 +1373,6 @@ async def test_history_unavailable_fails_closed_before_any_provider_call(monkeyp
     monkeypatch.setattr(runtime, "_load_runtime_context", unavailable)
     monkeypatch.setattr(runtime, "invoke_agent", forbidden_provider)
     monkeypatch.setattr(runtime, "_finalize_web_chat_run_without_assistant", finalize_without_assistant)
-    monkeypatch.setattr(runtime, "_emit_terminal_turn_hook", emit_terminal_hook)
     monkeypatch.setattr(runtime, "_update_runtime_task", update_runtime_task)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", noop)
 

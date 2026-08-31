@@ -1,6 +1,6 @@
 # Sub-Agent / Agent Team — CC 全面对齐审计与差异清单（2026-07-03）
 
-**基线**：FreeCode TS runnable baseline `/Users/rocky243/vc-saas/free-code-main`（第一参考），claude-code-org 去混淆源码交叉验证（行号一致，同代码库）。
+**基线**：FreeCode TS runnable baseline `/Users/example-owner/vc-saas/free-code-main`（第一参考），claude-code-org 去混淆源码交叉验证（行号一致，同代码库）。
 **对照物**：Hive `backend/app`（工作区当前内容，含未提交改动）。
 **方法**：5 个并行研究 agent 全文精读 CC `src/tools/AgentTool/**` + `src/tasks/**` + Hive `agents/subagent.py` / `services/subagent_run_service.py` / `services/runtime_task_worker.py` 等，主 session 第一手复核关键文件与全部进报告的数字。所有论断带 `file:line`，区分 **Fact**（代码直证）/ **Inference**（据证据推断）。
 

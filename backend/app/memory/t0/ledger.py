@@ -51,6 +51,47 @@ class T0AppendResult:
     sequence: int
 
 
+class T0SegmentBoundaryPending(RuntimeError):
+    """A new turn cannot append until the currently open segment is sealed."""
+
+    code = "t0_previous_segment_boundary_pending"
+    retryable = True
+
+    def __init__(
+        self,
+        *,
+        active_segment_id: str,
+        active_runtime_task_id: str | None,
+        active_turn_id: str | None,
+        incoming_runtime_task_id: str | None,
+        incoming_turn_id: str | None,
+    ) -> None:
+        self.active_segment_id = active_segment_id
+        self.active_runtime_task_id = active_runtime_task_id
+        self.active_turn_id = active_turn_id
+        self.incoming_runtime_task_id = incoming_runtime_task_id
+        self.incoming_turn_id = incoming_turn_id
+        super().__init__(
+            f"{self.code}: active_segment_id={active_segment_id} "
+            f"active_runtime_task_id={active_runtime_task_id!r} active_turn_id={active_turn_id!r} "
+            f"incoming_runtime_task_id={incoming_runtime_task_id!r} incoming_turn_id={incoming_turn_id!r}"
+        )
+
+
+class T0BoundaryTargetMismatch(RuntimeError):
+    """A boundary command targets a different segment owner."""
+
+    code = "t0_boundary_target_mismatch"
+    retryable = False
+
+    def __init__(self, *, segment_id: str, field: str, expected: str, actual: str | None) -> None:
+        self.segment_id = segment_id
+        self.field = field
+        self.expected = expected
+        self.actual = actual
+        super().__init__(f"{self.code}: segment_id={segment_id} field={field} expected={expected!r} actual={actual!r}")
+
+
 @dataclass(frozen=True, slots=True)
 class T0SealResult:
     path: Path
@@ -58,6 +99,7 @@ class T0SealResult:
     sequence: int
     jsonl_path: Path | None = None
     event_id: str = ""
+    boundary_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,17 +158,26 @@ def append_t0_session_event(
     now = _utc_now(created_at)
     session_dir = _session_dir(data_root, agent_id, session_id)
     index = _load_or_create_index(session_dir, agent_id=agent_id, session_id=session_id, now=now)
-    segment = _ensure_open_segment(index, now=now)
-    sequence = int(index.get("next_sequence") or 1)
-    path = session_dir / segment["path"]
-    jsonl_path = session_dir / _segment_events_path(segment)
-    event_id = _new_event_id()
     event_metadata = _clean_metadata(metadata)
     event_metadata = enrich_knowledge_event_metadata(
         event_type=event_type,
         content=content,
         metadata=event_metadata,
     )
+    incoming_runtime_task_id = _canonical_runtime_task_id(
+        runtime_task_id or _metadata_text(event_metadata, "runtime_task_id") or None
+    )
+    incoming_turn_id = _metadata_text(event_metadata, "turn_id") or None
+    segment = _ensure_open_segment(
+        index,
+        now=now,
+        runtime_task_id=incoming_runtime_task_id,
+        turn_id=incoming_turn_id,
+    )
+    sequence = int(index.get("next_sequence") or 1)
+    path = session_dir / segment["path"]
+    jsonl_path = session_dir / _segment_events_path(segment)
+    event_id = _new_event_id()
     sanitized_content, detected_sensitivity, form_warnings = _sanitize_t0_content(content)
     declared_sensitivity = event_metadata.get("content_sensitivity")
     try:
@@ -212,19 +263,45 @@ def seal_t0_session_segment(
     session_id: uuid.UUID | str,
     reason: str,
     metadata: dict[str, Any] | None = None,
+    boundary_id: uuid.UUID | str | None = None,
+    idempotency_key: str | None = None,
+    expected_runtime_task_id: uuid.UUID | str | None = None,
+    expected_turn_id: str | None = None,
     data_root: Path | str | None = None,
     created_at: datetime | None = None,
 ) -> T0SealResult | None:
     """Seal the active segment by appending a boundary event.
 
     Sealing creates a resume boundary; it does not end or summarize the DB
-    ChatSession. The next append will create a new segment under the same
-    session ledger.
+    ChatSession. A stable boundary identity replays its original receipt even
+    when a newer segment is active. Expected target mismatches fail before any
+    append, so recovery can never seal the wrong turn.
     """
 
     now = _utc_now(created_at)
     session_dir = _session_dir(data_root, agent_id, session_id)
     index = _load_or_create_index(session_dir, agent_id=agent_id, session_id=session_id, now=now)
+    requested_boundary_id, idempotency_key_hash = _boundary_identity(
+        boundary_id=boundary_id,
+        idempotency_key=idempotency_key,
+    )
+    event_metadata_input = _clean_metadata(metadata)
+    expected_runtime_task_id_value = _canonical_runtime_task_id(expected_runtime_task_id)
+    expected_turn_id_value = _optional_text(expected_turn_id)
+    replay_segment = _find_boundary_segment(
+        index,
+        boundary_id=requested_boundary_id,
+        idempotency_key_hash=idempotency_key_hash,
+    )
+    if replay_segment is not None:
+        _validate_boundary_target(
+            replay_segment,
+            expected_runtime_task_id=expected_runtime_task_id_value,
+            expected_turn_id=expected_turn_id_value,
+            bind_missing=False,
+        )
+        return _seal_result_from_segment(session_dir, replay_segment)
+
     active_segment_id = index.get("active_segment_id")
     if not active_segment_id:
         return None
@@ -234,11 +311,30 @@ def seal_t0_session_segment(
         _write_index(session_dir, index)
         return None
 
+    _validate_boundary_target(
+        segment,
+        expected_runtime_task_id=expected_runtime_task_id_value,
+        expected_turn_id=expected_turn_id_value,
+        bind_missing=True,
+    )
+
     sequence = int(index.get("next_sequence") or 1)
     path = session_dir / segment["path"]
     jsonl_path = session_dir / _segment_events_path(segment)
     event_id = _new_event_id()
-    event_metadata = _boundary_metadata(reason=reason, event_id=event_id, metadata=metadata)
+    effective_boundary_id = (
+        requested_boundary_id or (f"boundary_{idempotency_key_hash[:32]}" if idempotency_key_hash else None) or event_id
+    )
+    event_metadata = _boundary_metadata(reason=reason, event_id=event_id, metadata=event_metadata_input)
+    event_metadata["boundary_id"] = effective_boundary_id
+    if idempotency_key_hash:
+        event_metadata["boundary_idempotency_key_sha256"] = idempotency_key_hash
+    segment_runtime_task_id = _canonical_runtime_task_id(segment.get("runtime_task_id"))
+    segment_turn_id = _optional_text(segment.get("turn_id"))
+    if segment_runtime_task_id:
+        event_metadata["runtime_task_id"] = segment_runtime_task_id
+    if segment_turn_id:
+        event_metadata["turn_id"] = segment_turn_id
     event_record = _build_event_record(
         agent_id=agent_id,
         session_id=session_id,
@@ -254,7 +350,7 @@ def seal_t0_session_segment(
         message_id=None,
         actor_id=None,
         tenant_id=None,
-        runtime_task_id=None,
+        runtime_task_id=segment_runtime_task_id,
         source="t0_ledger",
         sensitivity="PL1_public",
         metadata=event_metadata,
@@ -272,7 +368,7 @@ def seal_t0_session_segment(
         message_id=None,
         actor_id=None,
         tenant_id=None,
-        runtime_task_id=None,
+        runtime_task_id=segment_runtime_task_id,
         source="t0_ledger",
         sensitivity="PL1_public",
         metadata=event_metadata,
@@ -282,6 +378,9 @@ def seal_t0_session_segment(
     segment["state"] = "sealed"
     segment["sealed_at"] = _iso(now)
     segment["seal_reason"] = reason
+    segment["boundary_id"] = effective_boundary_id
+    segment["boundary_idempotency_key_sha256"] = idempotency_key_hash
+    segment["boundary_sequence"] = sequence
     _record_turn_boundary_metadata(segment, event_id=event_id, metadata=event_metadata)
     index["active_segment_id"] = None
     index["next_sequence"] = sequence + 1
@@ -296,6 +395,7 @@ def seal_t0_session_segment(
         sequence=sequence,
         jsonl_path=jsonl_path,
         event_id=event_id,
+        boundary_id=effective_boundary_id,
     )
 
 
@@ -535,11 +635,138 @@ def _write_index(session_dir: Path, index: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
-def _ensure_open_segment(index: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+def _boundary_identity(
+    *,
+    boundary_id: uuid.UUID | str | None,
+    idempotency_key: str | None,
+) -> tuple[str | None, str | None]:
+    boundary_id_value = _canonical_boundary_id(boundary_id)
+    idempotency_key_value = _optional_text(idempotency_key)
+    idempotency_key_hash = (
+        hashlib.sha256(idempotency_key_value.encode("utf-8")).hexdigest() if idempotency_key_value else None
+    )
+    return boundary_id_value, idempotency_key_hash
+
+
+def _find_boundary_segment(
+    index: dict[str, Any],
+    *,
+    boundary_id: str | None,
+    idempotency_key_hash: str | None,
+) -> dict[str, Any] | None:
+    if boundary_id is None and idempotency_key_hash is None:
+        return None
+    segments = list(index.get("segments") or [])
+    boundary_matches = [
+        segment
+        for segment in segments
+        if boundary_id is not None and _canonical_boundary_id(segment.get("boundary_id")) == boundary_id
+    ]
+    key_matches = [
+        segment
+        for segment in segments
+        if idempotency_key_hash is not None
+        and _optional_text(segment.get("boundary_idempotency_key_sha256")) == idempotency_key_hash
+    ]
+    if len(boundary_matches) > 1 or len(key_matches) > 1:
+        matches = boundary_matches if len(boundary_matches) > 1 else key_matches
+        raise T0BoundaryTargetMismatch(
+            segment_id=str(matches[0].get("segment_id") or ""),
+            field="boundary_identity",
+            expected=boundary_id or str(idempotency_key_hash),
+            actual=",".join(str(segment.get("segment_id") or "") for segment in matches),
+        )
+    if boundary_id is not None and idempotency_key_hash is not None:
+        if not boundary_matches and not key_matches:
+            return None
+        if boundary_matches and key_matches and boundary_matches[0] is key_matches[0]:
+            return boundary_matches[0]
+        matches = boundary_matches or key_matches
+        raise T0BoundaryTargetMismatch(
+            segment_id=str(matches[0].get("segment_id") or ""),
+            field="boundary_identity",
+            expected=f"{boundary_id}:{idempotency_key_hash}",
+            actual=",".join(str(segment.get("segment_id") or "") for segment in boundary_matches + key_matches),
+        )
+    matches = boundary_matches or key_matches
+    return matches[0] if matches else None
+
+
+def _canonical_boundary_id(value: Any) -> str | None:
+    text = _optional_text(value)
+    if text is None:
+        return None
+    try:
+        return str(uuid.UUID(text))
+    except ValueError:
+        return text
+
+
+def _validate_boundary_target(
+    segment: dict[str, Any],
+    *,
+    expected_runtime_task_id: str | None,
+    expected_turn_id: str | None,
+    bind_missing: bool,
+) -> None:
+    targets = (
+        ("runtime_task_id", expected_runtime_task_id, _canonical_runtime_task_id(segment.get("runtime_task_id"))),
+        ("turn_id", expected_turn_id, _optional_text(segment.get("turn_id"))),
+    )
+    for field, expected, actual in targets:
+        if expected is None:
+            continue
+        if actual is not None and actual != expected or actual is None and not bind_missing:
+            raise T0BoundaryTargetMismatch(
+                segment_id=str(segment.get("segment_id") or ""),
+                field=field,
+                expected=expected,
+                actual=actual,
+            )
+        if actual is None:
+            segment[field] = expected
+
+
+def _seal_result_from_segment(session_dir: Path, segment: dict[str, Any]) -> T0SealResult:
+    return T0SealResult(
+        path=session_dir / str(segment["path"]),
+        segment_id=str(segment["segment_id"]),
+        sequence=int(segment["boundary_sequence"]),
+        jsonl_path=session_dir / _segment_events_path(segment),
+        event_id=str(segment["boundary_event_id"]),
+        boundary_id=_optional_text(segment.get("boundary_id")),
+    )
+
+
+def _ensure_open_segment(
+    index: dict[str, Any],
+    *,
+    now: datetime,
+    runtime_task_id: str | None,
+    turn_id: str | None,
+) -> dict[str, Any]:
     active_segment_id = index.get("active_segment_id")
     if active_segment_id:
         segment = _segment_by_id(index, str(active_segment_id))
         if segment is not None and segment.get("state") == "open":
+            active_runtime_task_id = _canonical_runtime_task_id(segment.get("runtime_task_id"))
+            active_turn_id = _optional_text(segment.get("turn_id"))
+            runtime_mismatch = bool(
+                active_runtime_task_id and runtime_task_id and active_runtime_task_id != runtime_task_id
+            )
+            turn_mismatch = bool(active_turn_id and turn_id and active_turn_id != turn_id)
+            if runtime_mismatch or turn_mismatch:
+                raise T0SegmentBoundaryPending(
+                    active_segment_id=str(segment["segment_id"]),
+                    active_runtime_task_id=active_runtime_task_id,
+                    active_turn_id=active_turn_id,
+                    incoming_runtime_task_id=runtime_task_id,
+                    incoming_turn_id=turn_id,
+                )
+            if runtime_task_id and not active_runtime_task_id:
+                segment["runtime_task_id"] = runtime_task_id
+            if turn_id and not active_turn_id:
+                segment["turn_id"] = turn_id
             return segment
 
     segment_id = f"seg-{now.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
@@ -552,6 +779,10 @@ def _ensure_open_segment(index: dict[str, Any], *, now: datetime) -> dict[str, A
         "sealed_at": None,
         "origin": "session",
     }
+    if runtime_task_id:
+        segment["runtime_task_id"] = runtime_task_id
+    if turn_id:
+        segment["turn_id"] = turn_id
     index.setdefault("segments", []).append(segment)
     index["active_segment_id"] = segment_id
     return segment
@@ -921,6 +1152,21 @@ def _clean_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
 def _metadata_text(metadata: dict[str, Any], key: str) -> str:
     value = metadata.get(key)
     return "" if value in (None, "") else str(value)
+
+
+def _optional_text(value: Any) -> str | None:
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
+def _canonical_runtime_task_id(value: Any) -> str | None:
+    text = _optional_text(value)
+    if text is None:
+        return None
+    try:
+        return uuid.UUID(text).hex
+    except ValueError:
+        return text
 
 
 def _record_turn_start_metadata(

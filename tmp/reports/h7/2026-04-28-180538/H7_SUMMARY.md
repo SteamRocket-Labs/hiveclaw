@@ -8,7 +8,7 @@ Base URL: https://backend-production-326d.up.railway.app
 
 ```json
 {
-  "run_dir": "/Users/rocky243/vc-saas/hiveclaw-main/tmp/reports/h7/2026-04-28-180538",
+  "run_dir": "/Users/example-owner/vc-saas/hiveclaw-main/tmp/reports/h7/2026-04-28-180538",
   "status": "FAIL",
   "endpoint_errors": {},
   "autonomous_audit_totals": {

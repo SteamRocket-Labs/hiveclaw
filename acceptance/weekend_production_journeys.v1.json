@@ -4,22 +4,26 @@
   "status": "frozen",
   "frozen_on": "2026-08-30",
   "freeze_basis_commit": "c18b181c690fe3c4aa5366a8fd504023b0c41864",
-  "frozen_by": "Rocky and Codex",
+  "frozen_by": "Example Owner and Codex",
   "frozen_denominator": 96,
   "purpose": "The independently scoreable signed-in production denominator for Weekend RC 2026-08-30. It is separate from the deterministic CI manifest and permits no external fakes.",
   "external_fakes_allowed": false,
   "contract_amended_on": "2026-08-31",
   "execution_contract": {
-    "executor": "single Codex only; no delegated or parallel coding workers",
-    "fixture_policy": "Codex creates, authenticates, reuses, revokes and cleans registered synthetic identities and objects in the Rocky experimental tenant; missing pre-existing sessions or fixtures are not blockers.",
+    "executor": "one primary Codex owns the Goal, integration, production E2E and A2A, verdicts, deployment, evidence and delivery; native Codex multi-agent and subagents may perform bounded investigation, implementation, testing and review; external agent harnesses are prohibited",
+    "model_agency_policy": "Inside a Hive product turn, the selected runtime LLM owns task reasoning, semantic judgment, synthesis and answer language within the authenticated frame. In the RC loop, the primary Codex owns acceptance decomposition, evidence interpretation, priority, Journey or Finding verdicts and final handoff; the owner owns product-semantic and risk-authorization decisions. Subagents and mechanical checks own none of those semantics; checks may verify exact authority, manifest, commit, deployment, evidence, arithmetic, resource, recovery and machine-contract facts, but may not create, reject, upgrade, rewrite or prioritize a semantic verdict.",
+    "proof_order_policy": "First prove Agent intelligence and self-evolution, then complete every frontend and backend functional path and functional recovery, then perform the exhaustive role-permission, RLS and adversarial-security pass, and only then freeze the release. Existing authorization, secret and external-effect boundaries remain enforced throughout, but permission hardening or stricter denial may not preempt or hide unrelated functional completion.",
+    "fixture_policy": "The primary Codex creates, authenticates, reuses, revokes and cleans registered synthetic identities and objects in the Example Owner experimental tenant only through supported authenticated product or control-plane paths. Missing pre-existing sessions or fixtures are not blockers; forged claims or tokens, direct tenant or role database mutation, RLS weakening and broad bypass as business authority are prohibited.",
     "local_runtime_policy": "Missing in-repository builds, CLIs or benchmark adapters are implementation work and must be built from the repository and installed toolchain.",
-    "external_readiness_policy": "A third-party unavailable condition is scored separately after Hive truthfully types it, audits it, preserves unrelated capability and presents recovery guidance; it is not converted into provider success.",
-    "hard_stop_policy": "Only real non-synthetic or cross-tenant data, real external recipients, billing, real credentials or secrets, irreversible production data effects without recovery, unresolved product-semantics changes, or safety/legal violations require owner input."
+    "timeout_policy": "No artificial Goal-wide timeout, step cap or attempt cap may decide completion. Task-sized per-call or per-attempt timeouts, cancellation, quotas and backoff remain resource controls; expiry ends or recovers only that attempt and creates no semantic verdict.",
+    "external_readiness_policy": "An independently verified third-party unavailable condition is recorded separately after Hive truthfully types it, audits it, preserves unrelated capability and presents recovery guidance. It is not a Hive defect, BLOCKED_PRECONDITION, provider success or semantic Closed; it parks only that provider-success assertion, and a frozen journey requiring real provider success remains unclosed unless the provider recovers or the owner explicitly marks it Excluded.",
+    "cleanup_policy": "Cleanup is limited to exact Goal-created and registered synthetic targets through supported authenticated paths. Pre-existing fixtures, the owner's Example Owner base account, immutable evidence and unrelated data are never cleanup targets.",
+    "hard_stop_policy": "Pause before the exact next effect would attempt or require access outside the authorized synthetic scope, including real non-synthetic or another tenant's protected data, real external recipients, billing, real credentials or secrets, irreversible production data effects without recovery, unresolved product-semantics changes, or safety/legal violations. Owner instruction cannot convert unauthorized access into authorization. Registered read-only negative probes that can return only non-leaking deny or not-found without protected bytes or effects remain allowed; if a probe unexpectedly returns protected bytes, stop that lane immediately, do not continue reading, propagating or storing raw bytes, and retain only minimal redacted P0 incident evidence."
   },
   "scoring": {
     "nptcr_formula": "closed_in_scope_journeys / all_in_scope_journeys",
     "blocked_precondition_counts_as_failure": true,
-    "blocked_precondition_scope": "Only an unresolved product-controlled requirement may use BLOCKED_PRECONDITION. Missing reusable sessions, synthetic fixtures or local runtimes do not qualify; verified external unavailability uses the external-readiness contract.",
+    "blocked_precondition_scope": "BLOCKED_PRECONDITION is an evidence-level blocking fact, not a Journey completion state, and may be recorded only for an unresolved product-controlled requirement. The underlying Journey remains Breakpoint or Missing, stays in the denominator and blocks release. Missing reusable sessions, synthetic fixtures or local runtimes do not qualify; verified external unavailability uses the external-readiness contract and remains unclosed rather than becoming PASS.",
     "excluded_requires_owner_reason": true,
     "required_nptcr_percent": 100,
     "required_evidence_coverage_percent": 95,
@@ -47,7 +51,7 @@
     ]
   },
   "runtime_bindings": {
-    "fixture_catalog": "Gate 0 records exact synthetic object IDs, source hashes, selected model IDs and role bindings in redacted release evidence. Codex may create or recover the required lab identities and fixtures; credentials never enter this manifest.",
+    "fixture_catalog": "Gate 0 records exact synthetic object IDs, source hashes, selected model IDs and role bindings in redacted release evidence. The primary Codex may create or recover required lab identities and fixtures through supported authenticated paths; subagents do not perform production fixture effects, and credentials never enter this manifest.",
     "configured_model_labels": ["minimax", "glm", "deepseek"],
     "advertised_knowledge_formats": ["pdf", "docx", "markdown", "txt"],
     "advertised_artifact_formats": ["pdf", "docx", "markdown", "txt"]
@@ -63,37 +67,37 @@
     "employee_session": {
       "principal": "authenticated lab employee bound server-side to the selected tenant and Agent",
       "allowed_effects": ["create synthetic Session/run/task records", "create scoped workspace artifacts", "cancel/retry/branch synthetic runs"],
-      "cleanup": ["archive or delete named synthetic Sessions and workspace artifacts through supported product paths", "retain only redacted evidence references"]
+      "cleanup": ["archive or delete exact Goal-created and registered synthetic Sessions and workspace artifacts through supported product paths", "retain only redacted evidence references"]
     },
     "employee_knowledge": {
       "principal": "authenticated lab employee and the same user's governed Personal Knowledge grants",
       "allowed_effects": ["upload uniquely marked synthetic documents", "create personal import jobs and proposals", "archive synthetic personal documents"],
-      "cleanup": ["archive/delete every synthetic personal document and verify no searchable ghost", "retain source hashes and redacted citations only"]
+      "cleanup": ["archive/delete every Goal-created and registered synthetic personal document and verify no searchable ghost", "retain source hashes and redacted citations only"]
     },
     "company_governance": {
       "principal": "authenticated lab company admin with server-derived publication authority",
       "allowed_effects": ["create uniquely marked source contracts/imports/proposals/reviews/publications", "grant and revoke synthetic test access", "retire/restore synthetic publications"],
-      "cleanup": ["retire or remove all synthetic company assets through governed lifecycle", "verify employee search no longer returns retired fixtures"]
+      "cleanup": ["retire or remove all Goal-created and registered synthetic company assets through governed lifecycle", "verify employee search no longer returns retired fixtures"]
     },
     "cross_role": {
       "principal": "separately authenticated lab employee, company admin and scoped operator principals",
       "allowed_effects": ["create and revoke synthetic grants", "perform read-only denied/not-found probes", "cancel synthetic active work after revocation"],
-      "cleanup": ["revoke all temporary grants and operator reasons", "remove synthetic role-test assets"]
+      "cleanup": ["revoke exact Goal-created and registered temporary grants and operator reasons", "remove Goal-created and registered synthetic role-test assets"]
     },
     "collaboration": {
       "principal": "authenticated lab employee with one persistent parent Agent and explicitly delegated peer scopes",
       "allowed_effects": ["create synthetic child Sessions, team/workflow runs and A2A requests", "cancel/retry bounded collaboration work", "create scoped result artifacts"],
-      "cleanup": ["close/cancel synthetic collaboration runs", "archive child Sessions and result artifacts without deleting audit evidence"]
+      "cleanup": ["close/cancel Goal-created and registered synthetic collaboration runs", "archive Goal-created child Sessions and result artifacts without deleting audit evidence"]
     },
     "external_capability": {
       "principal": "authenticated lab employee or admin with the exact connector/trigger capability under test",
       "allowed_effects": ["create disabled or bounded synthetic schedules/triggers", "send only to an approved synthetic destination", "pair/revoke only the designated lab Local Agent when currently authorized"],
-      "cleanup": ["disable and delete synthetic triggers/schedules", "revoke temporary connector or Local Agent bindings", "reconcile any ambiguous delivery before retry"]
+      "cleanup": ["disable and delete Goal-created and registered synthetic triggers/schedules", "revoke Goal-created temporary connector or Local Agent bindings", "reconcile any ambiguous delivery before retry"]
     },
     "release": {
       "principal": "Codex release controller using owner-authorized production deployment scope",
       "allowed_effects": ["deploy one frozen application commit to backend, backend-api and frontend", "run read-only health/deployment checks", "execute bounded lab-tenant synthetic E2E and cleanup"],
-      "cleanup": ["remove all registered synthetic assets", "preserve rollback target and redacted immutable evidence", "do not mutate credentials, billing or irreversible production data"]
+      "cleanup": ["remove exact Goal-created and registered synthetic assets only", "preserve pre-existing fixtures, the owner Example Owner base account, rollback target and redacted immutable evidence", "do not mutate unrelated data, credentials, billing or irreversible production data"]
     }
   },
   "journey_families": [
@@ -116,7 +120,7 @@
     },
     {
       "candidate_id": "PJ-02",
-      "proof_order": 1,
+      "proof_order": 2,
       "domain": "domains/single-agent-and-session.md",
       "profile": "employee_session",
       "common": {
@@ -133,7 +137,7 @@
     },
     {
       "candidate_id": "PJ-03",
-      "proof_order": 1,
+      "proof_order": 2,
       "domain": "domains/single-agent-and-session.md",
       "profile": "employee_session",
       "common": {
@@ -169,7 +173,7 @@
     },
     {
       "candidate_id": "PJ-04",
-      "proof_order": 1,
+      "proof_order": 2,
       "domain": "domains/single-agent-and-session.md",
       "profile": "employee_session",
       "common": {
@@ -188,7 +192,7 @@
     },
     {
       "candidate_id": "PJ-05",
-      "proof_order": 2,
+      "proof_order": 1,
       "domain": "domains/memory-knowledge-and-growth.md",
       "profile": "employee_session",
       "common": {
@@ -203,7 +207,7 @@
     },
     {
       "candidate_id": "PJ-06",
-      "proof_order": 2,
+      "proof_order": 1,
       "domain": "domains/memory-knowledge-and-growth.md",
       "profile": "employee_session",
       "common": {
@@ -218,7 +222,7 @@
     },
     {
       "candidate_id": "PJ-07",
-      "proof_order": 2,
+      "proof_order": 1,
       "domain": "domains/memory-knowledge-and-growth.md",
       "profile": "employee_session",
       "common": {
@@ -233,7 +237,7 @@
     },
     {
       "candidate_id": "PJ-08",
-      "proof_order": 2,
+      "proof_order": 1,
       "domain": "domains/memory-knowledge-and-growth.md",
       "profile": "release",
       "common": {
@@ -248,7 +252,7 @@
     },
     {
       "candidate_id": "PJ-09",
-      "proof_order": 2,
+      "proof_order": 1,
       "domain": "domains/memory-knowledge-and-growth.md",
       "profile": "employee_session",
       "common": {
@@ -263,7 +267,7 @@
     },
     {
       "candidate_id": "PJ-10",
-      "proof_order": 3,
+      "proof_order": 2,
       "domain": "domains/memory-knowledge-and-growth.md",
       "profile": "employee_knowledge",
       "common": {
@@ -284,7 +288,7 @@
     },
     {
       "candidate_id": "PJ-11",
-      "proof_order": 3,
+      "proof_order": 2,
       "domain": "domains/memory-knowledge-and-growth.md",
       "profile": "company_governance",
       "common": {
@@ -302,7 +306,7 @@
     },
     {
       "candidate_id": "PJ-12",
-      "proof_order": 3,
+      "proof_order": 2,
       "domain": "domains/memory-knowledge-and-growth.md",
       "profile": "company_governance",
       "common": {
@@ -317,7 +321,7 @@
     },
     {
       "candidate_id": "PJ-13",
-      "proof_order": 3,
+      "proof_order": 2,
       "domain": "domains/hr-identity-and-permissions.md",
       "profile": "company_governance",
       "common": {
@@ -332,7 +336,7 @@
     },
     {
       "candidate_id": "PJ-14",
-      "proof_order": 3,
+      "proof_order": 2,
       "domain": "domains/hr-identity-and-permissions.md",
       "profile": "collaboration",
       "common": {
@@ -386,7 +390,7 @@
     },
     {
       "candidate_id": "PJ-17",
-      "proof_order": 4,
+      "proof_order": 2,
       "domain": "domains/collaboration-workflow-and-a2a.md",
       "profile": "collaboration",
       "common": {
@@ -401,7 +405,7 @@
     },
     {
       "candidate_id": "PJ-18",
-      "proof_order": 4,
+      "proof_order": 2,
       "domain": "domains/collaboration-workflow-and-a2a.md",
       "profile": "collaboration",
       "common": {
@@ -416,7 +420,7 @@
     },
     {
       "candidate_id": "PJ-19",
-      "proof_order": 4,
+      "proof_order": 2,
       "domain": "domains/collaboration-workflow-and-a2a.md",
       "profile": "collaboration",
       "common": {
@@ -431,7 +435,7 @@
     },
     {
       "candidate_id": "PJ-20",
-      "proof_order": 4,
+      "proof_order": 2,
       "domain": "domains/collaboration-workflow-and-a2a.md",
       "profile": "company_governance",
       "common": {
@@ -446,7 +450,7 @@
     },
     {
       "candidate_id": "PJ-21",
-      "proof_order": 4,
+      "proof_order": 2,
       "domain": "domains/collaboration-workflow-and-a2a.md",
       "profile": "collaboration",
       "common": {
@@ -468,7 +472,7 @@
     },
     {
       "candidate_id": "PJ-22",
-      "proof_order": 4,
+      "proof_order": 2,
       "domain": "domains/automation-hooks-and-capabilities.md",
       "profile": "external_capability",
       "common": {
@@ -488,7 +492,7 @@
     },
     {
       "candidate_id": "PJ-23",
-      "proof_order": 4,
+      "proof_order": 2,
       "domain": "domains/automation-hooks-and-capabilities.md",
       "profile": "external_capability",
       "common": {
@@ -507,7 +511,7 @@
     },
     {
       "candidate_id": "PJ-24",
-      "proof_order": 4,
+      "proof_order": 2,
       "domain": "domains/automation-hooks-and-capabilities.md",
       "profile": "external_capability",
       "common": {
@@ -522,7 +526,7 @@
     },
     {
       "candidate_id": "PJ-25",
-      "proof_order": 4,
+      "proof_order": 2,
       "domain": "domains/automation-hooks-and-capabilities.md",
       "profile": "employee_session",
       "common": {
@@ -541,7 +545,7 @@
     },
     {
       "candidate_id": "PJ-26",
-      "proof_order": 4,
+      "proof_order": 2,
       "domain": "domains/automation-hooks-and-capabilities.md",
       "profile": "company_governance",
       "common": {
@@ -556,7 +560,7 @@
     },
     {
       "candidate_id": "PJ-27",
-      "proof_order": 4,
+      "proof_order": 2,
       "domain": "domains/automation-hooks-and-capabilities.md",
       "profile": "external_capability",
       "common": {
@@ -571,7 +575,7 @@
     },
     {
       "candidate_id": "PJ-28",
-      "proof_order": 1,
+      "proof_order": 2,
       "domain": "domains/frontend-and-product-consumption.md",
       "profile": "employee_session",
       "common": {
@@ -610,7 +614,7 @@
     },
     {
       "candidate_id": "PJ-30",
-      "proof_order": 1,
+      "proof_order": 2,
       "domain": "domains/frontend-and-product-consumption.md",
       "profile": "employee_session",
       "common": {
@@ -630,7 +634,7 @@
     },
     {
       "candidate_id": "PJ-31",
-      "proof_order": 1,
+      "proof_order": 2,
       "domain": "domains/frontend-and-product-consumption.md",
       "profile": "employee_session",
       "common": {
@@ -645,7 +649,7 @@
     },
     {
       "candidate_id": "PJ-32",
-      "proof_order": 1,
+      "proof_order": 2,
       "domain": "domains/frontend-and-product-consumption.md",
       "profile": "cross_role",
       "common": {
@@ -684,7 +688,7 @@
     },
     {
       "candidate_id": "PJ-34",
-      "proof_order": 4,
+      "proof_order": 3,
       "domain": "06-runbook-and-release-gates.md",
       "profile": "cross_role",
       "common": {

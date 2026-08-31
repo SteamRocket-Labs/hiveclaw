@@ -7,7 +7,7 @@ Production (entrypoint.sh / app/database.py) connects the runtime engine via
 ``DATABASE_URL`` — the *same* role that ran the migrations/DDL, i.e. the table
 **owner**. The non-owner ``app_rls`` role is only created in a "stage-3 prep"
 cutover gated on ``RLS_APP_PASSWORD`` and is NOT the default. On Railway that
-owner role is ``clawith`` — a SUPERUSER.
+owner role is ``hive`` — a SUPERUSER.
 
 The existing suite never tested this exact question:
 
@@ -30,7 +30,7 @@ Two independent role attributes decide whether RLS is bypassed:
    cannot be overridden by FORCE.
 
 The production-mirroring fixture's default user (``test``, == conftest's stated
-``clawith`` analogue) is ``rolsuper=t, rolbypassrls=t`` — so the conflated
+``hive`` analogue) is ``rolsuper=t, rolbypassrls=t`` — so the conflated
 truth is: **production's owner connection bypasses even a FORCE table because
 it is a superuser, not merely because it is the owner.** This file pins both
 truths separately so the blind spot becomes falsifiable behavior, and shows the
@@ -120,7 +120,7 @@ async def _drop_force_probe(owner_engine) -> None:
 
 async def test_production_owner_connection_is_superuser_bypassrls(owner_engine):
     """Pin the fixture's ground truth: the production-mirroring ``owner_engine``
-    role IS a superuser with BYPASSRLS (conftest's stated ``clawith`` analogue).
+    role IS a superuser with BYPASSRLS (conftest's stated ``hive`` analogue).
 
     This is the root of the blind spot — every FORCE assertion below only makes
     sense once we know the owner connection also carries superuser/BYPASSRLS,
@@ -131,7 +131,7 @@ async def test_production_owner_connection_is_superuser_bypassrls(owner_engine):
         ).one()
     rolsuper, rolbypassrls = row
     # Observed truth on postgres:16-alpine Testcontainer default ``test`` user.
-    assert rolsuper is True, "production owner connection is expected to be a superuser (Railway clawith)"
+    assert rolsuper is True, "production owner connection is expected to be a superuser (Railway hive)"
     assert rolbypassrls is True, "superuser implies BYPASSRLS — RLS cannot constrain this connection"
 
 

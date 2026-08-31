@@ -383,6 +383,74 @@ def test_runtime_session_permission_metadata_prefers_latest_session_override():
     }
 
 
+def test_runtime_session_permission_metadata_preserves_exact_scope_profile():
+    import app.services.web_chat_runtime as runtime
+    from app.runtime.session import SessionContext
+
+    root = "workspace/p08-j4/attempt-1/coding"
+    allowed_tools = ["read_file", "write_file", "edit_file", "glob_search", "grep_search"]
+    context = SessionContext(session_id="session-1", source="web", channel="web")
+    exact_profile = {
+        "mode": "bypassPermissions",
+        "allowed_tools": allowed_tools,
+        "writable_roots": [root],
+        "readable_roots": [root],
+        "capability_policy_snapshot": {"session_exact_scope": True},
+    }
+
+    merged = runtime._merge_runtime_permission_metadata(
+        runtime_metadata={
+            "permission_mode": "default",
+            "writable_roots": ["workspace/"],
+            "permission_profile": {"mode": "default", "allowed_tools": [], "writable_roots": ["workspace/"]},
+        },
+        session_metadata={
+            "permission_mode": "bypassPermissions",
+            "writable_roots": [root],
+            "permission_profile": exact_profile,
+        },
+    )
+    runtime._sync_runtime_session_permission_metadata(context, merged)
+
+    expected_profile = {**exact_profile, "session_grants": []}
+    assert merged["writable_roots"] == [root]
+    assert merged["permission_profile"] == expected_profile
+    assert context.metadata["permission_profile"] == expected_profile
+
+
+def test_runtime_session_permission_metadata_keeps_active_exact_scope_immutable():
+    import app.services.web_chat_runtime as runtime
+
+    root = "workspace/p08-j4/attempt-1/coding"
+    exact_profile = {
+        "mode": "bypassPermissions",
+        "allowed_tools": ["read_file"],
+        "writable_roots": [root],
+        "readable_roots": [root],
+        "capability_policy_snapshot": {"session_exact_scope": True},
+    }
+
+    merged = runtime._merge_runtime_permission_metadata(
+        runtime_metadata={
+            "permission_mode": "bypassPermissions",
+            "writable_roots": [root],
+            "permission_profile": exact_profile,
+        },
+        session_metadata={
+            "permission_mode": "bypassPermissions",
+            "writable_roots": ["workspace/"],
+            "permission_profile": {
+                "mode": "bypassPermissions",
+                "allowed_tools": ["read_file", "write_file"],
+                "writable_roots": ["workspace/"],
+            },
+        },
+    )
+
+    assert merged["writable_roots"] == [root]
+    assert merged["permission_profile"] == {**exact_profile, "session_grants": []}
+
+
 @pytest.mark.asyncio
 async def test_execute_web_chat_run_keeps_channel_delivery_tools_visible_for_web_turn(monkeypatch):
     import app.services.web_chat_runtime as runtime
@@ -412,7 +480,7 @@ async def test_execute_web_chat_run_keeps_channel_delivery_tools_visible_for_web
         tenant_id=uuid4(),
         agent_type="native",
     )
-    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    user = SimpleNamespace(id=user_id, display_name="Example Owner", username="example-owner")
     llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
     captured = {}
 
@@ -486,7 +554,7 @@ async def test_execute_web_chat_run_allows_channel_delivery_tools_for_typed_web_
         tenant_id=uuid4(),
         agent_type="native",
     )
-    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    user = SimpleNamespace(id=user_id, display_name="Example Owner", username="example-owner")
     llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
     captured = {}
 
@@ -804,7 +872,7 @@ async def test_execute_web_chat_run_resets_turn_writes_and_scopes_deliverables(m
         tenant_id=tenant_id,
         agent_type="native",
     )
-    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    user = SimpleNamespace(id=user_id, display_name="Example Owner", username="example-owner")
     llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
     runtime_context = SessionContext(session_id=session_id, source="web", channel="web")
     runtime_context.track_file_write("workspace/old.md")
@@ -873,7 +941,6 @@ async def test_execute_web_chat_run_resets_turn_writes_and_scopes_deliverables(m
     monkeypatch.setattr(runtime, "_persist_tool_call", noop_async)
     monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", noop_async)
-    monkeypatch.setattr(runtime, "_emit_terminal_turn_hook", noop_async)
 
     await runtime.execute_web_chat_run(run_id)
 
@@ -914,7 +981,7 @@ async def test_execute_web_chat_run_records_turn_tokens_for_goal_accounting(monk
         tenant_id=uuid4(),
         agent_type="native",
     )
-    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    user = SimpleNamespace(id=user_id, display_name="Example Owner", username="example-owner")
     llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
     runtime_context = SessionContext(session_id=session_id, source="web", channel="web")
     captured: dict[str, object] = {}
@@ -944,7 +1011,6 @@ async def test_execute_web_chat_run_records_turn_tokens_for_goal_accounting(monk
     monkeypatch.setattr(runtime, "_persist_tool_call", noop_async)
     monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", noop_async)
-    monkeypatch.setattr(runtime, "_emit_terminal_turn_hook", noop_async)
 
     await runtime.execute_web_chat_run(run_id)
 
@@ -975,7 +1041,7 @@ def _phase_run_fixtures():
         tenant_id=uuid4(),
         agent_type="native",
     )
-    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    user = SimpleNamespace(id=user_id, display_name="Example Owner", username="example-owner")
     llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
     return run_id, agent, user, llm_model, runtime_task
 
@@ -1045,7 +1111,6 @@ def _patch_phase_run(
     monkeypatch.setattr(runtime, "_persist_tool_call", noop_async)
     monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", capture_broadcast)
-    monkeypatch.setattr(runtime, "_emit_terminal_turn_hook", noop_async)
     monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
     if not persist_stream_steps:
         monkeypatch.setattr(runtime, "_persist_stream_step_event", fake_persist_stream_step)
@@ -1304,7 +1369,7 @@ async def test_execute_web_chat_run_awaiting_approval_phase_survives_run_release
 def test_web_chat_final_message_has_database_idempotency_guard():
     from pathlib import Path
 
-    migration = Path("alembic/versions/web_chat_final_message_idempotency_0702.py")
+    migration = Path(__file__).resolve().parents[2] / "alembic/versions/web_chat_final_message_idempotency_0702.py"
     assert migration.exists()
     text = migration.read_text(encoding="utf-8")
     assert "CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_messages_web_chat_final_decision_trace" in text
@@ -1436,8 +1501,11 @@ async def test_load_runtime_context_resolves_model_inside_tenant_transaction(mon
 
     db = _Session()
 
-    async def noop_materialize(**_kwargs):
-        return None
+    async def materialize(**kwargs):
+        materialized = dict(kwargs["runtime_task"].metadata_json or {})
+        materialized["initial_user_message_t0_materialized"] = True
+        materialized["initial_user_message_t0_event_id"] = "event-1"
+        kwargs["runtime_task"].metadata_json = materialized
 
     async def noop_projection(_db, _session, messages):
         return messages
@@ -1453,7 +1521,7 @@ async def test_load_runtime_context_resolves_model_inside_tenant_transaction(mon
 
     monkeypatch.setattr(runtime, "resolve_tenant_for_runtime_task", resolve_run_tenant)
     monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *a, **k: _TenantContext(db))
-    monkeypatch.setattr(runtime, "_materialize_initial_user_turn_for_worker", noop_materialize)
+    monkeypatch.setattr(runtime, "_materialize_initial_user_turn_for_worker", materialize)
     monkeypatch.setattr(runtime, "_apply_active_projection_to_history", noop_projection)
     monkeypatch.setattr(model_resolution, "resolve_default_model_for_tenant", no_default_model)
     monkeypatch.setattr(semantic_history, "load_session_semantic_history", empty_semantic_history)
@@ -1461,6 +1529,8 @@ async def test_load_runtime_context_resolves_model_inside_tenant_transaction(mon
     _task, _agent, _user, resolved_model, _fallback, _history, _session = await runtime._load_runtime_context(run_id)
 
     assert resolved_model is model
+    assert task.metadata_json["initial_user_message_t0_materialized"] is True
+    assert task.metadata_json["initial_user_message_t0_event_id"] == "event-1"
     assert db.commits == 1
 
 
@@ -2584,8 +2654,10 @@ async def test_finalize_web_chat_run_sets_run_scoped_assistant_marker(monkeypatc
         metadata_json={},
         result_summary=None,
         completed_at=None,
+        terminal_boundary_generation=1,
     )
     added = []
+    order = []
 
     class _Session:
         def __init__(self):
@@ -2608,6 +2680,7 @@ async def test_finalize_web_chat_run_sets_run_scoped_assistant_marker(monkeypatc
             return None
 
         async def commit(self):
+            order.append("commit")
             self.commits += 1
 
     session = _Session()
@@ -2615,9 +2688,22 @@ async def test_finalize_web_chat_run_sets_run_scoped_assistant_marker(monkeypatc
     async def fake_resolve_tenant_for_agent(_agent_id):
         return tenant_id
 
+    async def fake_enqueue_terminal_boundary(_db, received_task):
+        assert received_task is task
+        assert task.status == "completed"
+        assert any(getattr(item, "event_type", None) == "assistant_message" for item in added)
+        order.append("terminal_boundary")
+
+    async def fake_continue_goal_after_terminal_turn(*, db, **_kwargs):
+        order.append("goal_continuation")
+        await db.commit()
+        return {"ok": True}
+
     monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
     monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: session)
     monkeypatch.setattr(runtime, "_enqueue_terminal_channel_delivery", _noop_async)
+    monkeypatch.setattr(runtime, "_enqueue_web_terminal_boundary", fake_enqueue_terminal_boundary)
+    monkeypatch.setattr(runtime, "_maybe_continue_goal_after_terminal_turn", fake_continue_goal_after_terminal_turn)
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     finalized = await runtime._finalize_web_chat_run_with_assistant(
@@ -2647,10 +2733,84 @@ async def test_finalize_web_chat_run_sets_run_scoped_assistant_marker(monkeypatc
     ]
     assert task.status == "completed"
     assert task.result_summary == "final answer"
-    assert session.commits == 1
+    assert session.commits == 2
+    assert order == ["terminal_boundary", "goal_continuation", "commit", "commit"]
     assert transcript_events[0].projection_status == "pending"
     assert transcript_events[0].run_id == run_id
     assert transcript_events[0].metadata_json["t0_bridge_pending"] is True
+
+
+@pytest.mark.asyncio
+async def test_web_terminal_finalizer_never_commits_without_required_boundary(monkeypatch, tmp_path):
+    import app.services.tenant_resolver as tenant_resolver
+    import app.services.web_chat_runtime as runtime
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    run_id = uuid4()
+    task = SimpleNamespace(
+        id=run_id,
+        task_type="web_chat_turn",
+        status="running",
+        metadata_json={},
+        result_summary=None,
+        completed_at=None,
+        terminal_boundary_generation=1,
+    )
+
+    class _Session:
+        def __init__(self):
+            self.results = [task, None, None]
+            self.commits = 0
+            self.exit_error = None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, error_type, *_args):
+            self.exit_error = error_type
+            return False
+
+        async def execute(self, _stmt):
+            return _ScalarResult(self.results.pop(0))
+
+        def add(self, _value):
+            return None
+
+        async def flush(self):
+            return None
+
+        async def commit(self):
+            self.commits += 1
+
+    session = _Session()
+
+    async def fake_resolve_tenant_for_agent(_agent_id):
+        return tenant_id
+
+    async def fail_boundary(_db, _task):
+        raise RuntimeError("required terminal boundary unavailable")
+
+    monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: session)
+    monkeypatch.setattr(runtime, "_enqueue_terminal_channel_delivery", _noop_async)
+    monkeypatch.setattr(runtime, "_enqueue_web_terminal_boundary", fail_boundary)
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    with pytest.raises(RuntimeError, match="required terminal boundary unavailable"):
+        await runtime._finalize_web_chat_run_with_assistant(
+            run_uuid=run_id,
+            agent_id=agent_id,
+            user_id=uuid4(),
+            session_id=uuid4().hex,
+            content="must not commit without boundary",
+            thinking=None,
+            status="completed",
+            result_summary="must not commit without boundary",
+        )
+
+    assert session.commits == 0
+    assert session.exit_error is RuntimeError
 
 
 @pytest.mark.asyncio
@@ -3198,7 +3358,7 @@ async def test_execute_web_chat_run_does_not_broadcast_done_when_finalization_lo
         tenant_id=uuid4(),
         agent_type="native",
     )
-    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    user = SimpleNamespace(id=user_id, display_name="Example Owner", username="example-owner")
     llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
     broadcasts: list[dict] = []
 
@@ -3256,7 +3416,7 @@ async def test_execute_web_chat_run_marks_terminal_persistence_error_when_finali
         tenant_id=uuid4(),
         agent_type="native",
     )
-    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    user = SimpleNamespace(id=user_id, display_name="Example Owner", username="example-owner")
     llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
     task_updates: list[dict] = []
     broadcasts: list[dict] = []
@@ -3288,7 +3448,6 @@ async def test_execute_web_chat_run_marks_terminal_persistence_error_when_finali
     monkeypatch.setattr(runtime, "_update_runtime_task", fake_update_runtime_task)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
     monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
-    monkeypatch.setattr(runtime, "_emit_terminal_turn_hook", noop_async)
 
     await runtime.execute_web_chat_run(run_id)
 
@@ -3324,7 +3483,7 @@ async def test_execute_web_chat_run_treats_final_marker_unique_violation_as_lost
         tenant_id=uuid4(),
         agent_type="native",
     )
-    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    user = SimpleNamespace(id=user_id, display_name="Example Owner", username="example-owner")
     llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
     task_updates: list[dict] = []
     broadcasts: list[dict] = []
@@ -3359,7 +3518,6 @@ async def test_execute_web_chat_run_treats_final_marker_unique_violation_as_lost
     monkeypatch.setattr(runtime, "_update_runtime_task", fake_update_runtime_task)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
     monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
-    monkeypatch.setattr(runtime, "_emit_terminal_turn_hook", noop_async)
 
     await runtime.execute_web_chat_run(run_id)
 
@@ -3397,7 +3555,7 @@ async def test_execute_web_chat_run_disables_tools_for_side_question(monkeypatch
         tenant_id=uuid4(),
         agent_type="native",
     )
-    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    user = SimpleNamespace(id=user_id, display_name="Example Owner", username="example-owner")
     llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
     captured = {}
 
@@ -3529,7 +3687,7 @@ async def test_execute_web_chat_run_finalizes_blocking_clarification_without_emp
         tenant_id=uuid4(),
         agent_type="native",
     )
-    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    user = SimpleNamespace(id=user_id, display_name="Example Owner", username="example-owner")
     llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
     broadcasts: list[dict] = []
     persisted_tools: list[dict] = []
@@ -3647,7 +3805,7 @@ async def test_execute_web_chat_run_interrupts_kernel_after_terminal_tool_card(m
         tenant_id=uuid4(),
         agent_type="native",
     )
-    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    user = SimpleNamespace(id=user_id, display_name="Example Owner", username="example-owner")
     llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
     broadcasts: list[dict] = []
     finalized_without_assistant: list[dict] = []
@@ -3739,7 +3897,7 @@ async def test_execute_web_chat_run_delivers_session_permission_prompt_to_channe
         tenant_id=uuid4(),
         agent_type="native",
     )
-    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    user = SimpleNamespace(id=user_id, display_name="Example Owner", username="example-owner")
     llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
     session = SimpleNamespace(delivery_target_json={"channel": "telegram", "chat_id": "100", "sender_id": "200"})
     finalized_without_assistant: list[dict] = []
@@ -3846,7 +4004,7 @@ async def test_execute_web_chat_run_releases_active_run_inside_terminal_tool_cal
         tenant_id=uuid4(),
         agent_type="native",
     )
-    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    user = SimpleNamespace(id=user_id, display_name="Example Owner", username="example-owner")
     llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
     finalized_without_assistant: list[dict] = []
     broadcasts: list[dict] = []
@@ -3934,7 +4092,7 @@ async def test_execute_web_chat_run_stops_after_create_employee_success_card(mon
         tenant_id=uuid4(),
         agent_type="native",
     )
-    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    user = SimpleNamespace(id=user_id, display_name="Example Owner", username="example-owner")
     llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
     broadcasts: list[dict] = []
     finalized_without_assistant: list[dict] = []
@@ -4006,7 +4164,7 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
     user_id = uuid4()
     session_id = uuid4()
     agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
-    user = SimpleNamespace(id=user_id, username="rocky", display_name="Rocky")
+    user = SimpleNamespace(id=user_id, username="example-owner", display_name="Example Owner")
     session = SimpleNamespace(
         id=session_id,
         agent_id=agent_id,
@@ -4163,7 +4321,7 @@ async def test_start_web_chat_run_blocks_new_run_before_writes_for_unsettled_too
         await runtime.start_web_chat_run(
             db=db,
             agent=SimpleNamespace(id=agent_id, name="Agent", tenant_id=tenant_id),
-            user=SimpleNamespace(id=uuid4(), username="rocky", display_name="Rocky"),
+            user=SimpleNamespace(id=uuid4(), username="example-owner", display_name="Example Owner"),
             session=SimpleNamespace(id=session_id, title="Held session", delivery_target_json=None),
             content="do not replay the prior write",
         )
@@ -4188,7 +4346,7 @@ async def test_start_web_chat_run_accepts_goal_continuation_task_type(monkeypatc
     user_id = uuid4()
     session_id = uuid4()
     agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
-    user = SimpleNamespace(id=user_id, username="rocky", display_name="Rocky")
+    user = SimpleNamespace(id=user_id, username="example-owner", display_name="Example Owner")
     session = SimpleNamespace(
         id=session_id,
         agent_id=agent_id,
@@ -4245,7 +4403,7 @@ async def test_start_web_chat_run_inherits_existing_budget_run_without_creating_
     session_id = uuid4()
     inherited_budget_run_id = uuid4()
     agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
-    user = SimpleNamespace(id=user_id, username="rocky", display_name="Rocky")
+    user = SimpleNamespace(id=user_id, username="example-owner", display_name="Example Owner")
     session = SimpleNamespace(
         id=session_id,
         agent_id=agent_id,
@@ -4292,7 +4450,7 @@ async def test_start_web_chat_run_does_not_append_t0_or_dispatch_from_api(monkey
     user_id = uuid4()
     session_id = uuid4()
     agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
-    user = SimpleNamespace(id=user_id, username="rocky", display_name="Rocky")
+    user = SimpleNamespace(id=user_id, username="example-owner", display_name="Example Owner")
     session = SimpleNamespace(
         id=session_id,
         agent_id=agent_id,
@@ -4355,7 +4513,7 @@ async def test_worker_materializes_initial_user_turn_to_transcript_without_dupli
     run_id = uuid4()
     message_id = uuid4()
     agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
-    user = SimpleNamespace(id=user_id, username="rocky", display_name="Rocky")
+    user = SimpleNamespace(id=user_id, username="example-owner", display_name="Example Owner")
     session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id)
     runtime_task = SimpleNamespace(
         id=run_id,
@@ -4726,7 +4884,7 @@ async def test_start_web_chat_run_queues_user_message_when_run_is_active(monkeyp
     session_id = uuid4()
     existing_run_id = uuid4()
     agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
-    user = SimpleNamespace(id=user_id, username="rocky", display_name="Rocky")
+    user = SimpleNamespace(id=user_id, username="example-owner", display_name="Example Owner")
     session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id)
     active_run = SimpleNamespace(
         id=existing_run_id,
@@ -4770,7 +4928,7 @@ async def test_start_web_chat_run_preserves_structured_mid_run_attachment_queue(
     session_id = uuid4()
     existing_run_id = uuid4()
     agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
-    user = SimpleNamespace(id=user_id, username="rocky", display_name="Rocky")
+    user = SimpleNamespace(id=user_id, username="example-owner", display_name="Example Owner")
     session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id)
     active_run = SimpleNamespace(
         id=existing_run_id,
@@ -4817,7 +4975,7 @@ async def test_steer_active_web_chat_turn_queues_message_for_matching_turn(monke
     session_id = uuid4()
     existing_run_id = uuid4()
     agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
-    user = SimpleNamespace(id=user_id, username="rocky", display_name="Rocky")
+    user = SimpleNamespace(id=user_id, username="example-owner", display_name="Example Owner")
     session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id)
     active_run = SimpleNamespace(
         id=existing_run_id,
@@ -4862,7 +5020,7 @@ async def test_steer_active_web_chat_turn_rejects_stale_turn_id():
     user_id = uuid4()
     session_id = uuid4()
     agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
-    user = SimpleNamespace(id=user_id, username="rocky", display_name="Rocky")
+    user = SimpleNamespace(id=user_id, username="example-owner", display_name="Example Owner")
     session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id)
     active_run = SimpleNamespace(
         id=uuid4(),
@@ -5249,7 +5407,7 @@ async def test_start_web_chat_run_queues_when_active_run_unique_index_conflicts(
     session_id = uuid4()
     existing_run_id = uuid4()
     agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
-    user = SimpleNamespace(id=user_id, username="rocky", display_name="Rocky")
+    user = SimpleNamespace(id=user_id, username="example-owner", display_name="Example Owner")
     session = SimpleNamespace(
         id=session_id,
         agent_id=agent_id,
@@ -5788,7 +5946,7 @@ async def test_execute_web_chat_run_injects_restart_resume_context(monkeypatch):
         tenant_id=uuid4(),
         agent_type="standard",
     )
-    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    user = SimpleNamespace(id=user_id, display_name="Example Owner", username="example-owner")
     llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
     captured = {}
 
@@ -6112,7 +6270,7 @@ async def test_execute_web_chat_run_persists_typed_failure_without_platform_auth
         tenant_id=uuid4(),
         agent_type="native",
     )
-    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    user = SimpleNamespace(id=user_id, display_name="Example Owner", username="example-owner")
     llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
     finalized_without_assistant: list[dict] = []
     updates: list[tuple] = []
@@ -6196,7 +6354,7 @@ async def test_execute_web_chat_run_does_not_deliver_web_turn_to_historical_im_t
         tenant_id=uuid4(),
         agent_type="native",
     )
-    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    user = SimpleNamespace(id=user_id, display_name="Example Owner", username="example-owner")
     llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
     session = SimpleNamespace(delivery_target_json={"channel": "feishu", "chat_id": "oc_x"})
     finalized = {"n": 0}
@@ -6221,7 +6379,6 @@ async def test_execute_web_chat_run_does_not_deliver_web_turn_to_historical_im_t
     monkeypatch.setattr(runtime, "_persist_runtime_event", noop_async)
     monkeypatch.setattr(runtime, "_persist_tool_call", noop_async)
     monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
-    monkeypatch.setattr(runtime, "_emit_terminal_turn_hook", noop_async)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", noop_async)
     monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
 

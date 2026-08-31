@@ -23,6 +23,7 @@ from app.services.autonomy_overview import (
     read_agent_trigger_artifact_view,
 )
 from app.services.agent_work_ledger import read_agent_work_ledger_view, read_latest_session_work_ledger_view
+from app.services.direct_invocation_terminal_boundary_processor import trigger_artifact_projection_delivered
 from app.services.action_preflight import CharterZone
 from app.services.config_versioning import get_history
 from app.services.owner_action_policy import (
@@ -422,7 +423,7 @@ async def get_agent_runtime_artifact(
 ):
     """Read a display-safe trigger output artifact for one accessible agent."""
     agent, access_level = await check_agent_access(db, current_user, agent_id)
-    _task, decision = await _authorize_runtime_task_read(
+    task, decision = await _authorize_runtime_task_read(
         db=db,
         agent=agent,
         access_level=access_level,
@@ -431,9 +432,18 @@ async def get_agent_runtime_artifact(
         operator_override=operator_override,
         operator_reason=operator_reason,
     )
+    from app.services.trigger_artifacts import trigger_output_artifact_ref
+
+    expected_artifact = trigger_output_artifact_ref(str(task.id))
+    if (
+        task.task_type != "trigger"
+        or (task.metadata_json or {}).get("output_artifact") != expected_artifact
+        or not await trigger_artifact_projection_delivered(db, task)
+    ):
+        raise HTTPException(status_code=404, detail="Runtime artifact not found")
     artifact = await read_agent_trigger_artifact_view(
         agent_id=agent_id,
-        runtime_task_id=runtime_task_id,
+        runtime_task_id=str(task.id),
         include_diagnostics=diagnostics,
     )
     if artifact is None:

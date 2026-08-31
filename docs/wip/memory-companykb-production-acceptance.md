@@ -1,7 +1,7 @@
 # WIP：Agent Memory 生产迁移 + Company KB 生产验收
 
 > 建档 2026-08-19，生产核查 2026-08-20
-> 执行：Claude　　授权：owner (rocky243)
+> 执行：Claude　　授权：owner (example-owner)
 > 状态：**代码与前端全部完成并已在生产运行；任务 A 已完成（历史）、B1 完成、B2 不需要。**
 > **统一行动方案见 `docs/wip/production-remediation-plan-2026-08-23.md`**（本文档为诊断证据，方案在那里）
 > 未决：① **51 个 agent trigger 空转 = P0 静默产品故障（§3.6.4 诊断，方案 P0）**；② B3 首次真实业务数据录入（待 owner 参与）；③ 图投影流转（设计已定稿，见 `docs/company-knowledge-graph-projection-design-2026-08-23.md`，未施工）；④ SA-07 T0→T2 生产回填（§3.6.2，与已完成的 two-plane migration 是两件事）

@@ -448,6 +448,7 @@ def test_all_dream_boundaries_use_the_durable_enqueue_contract() -> None:
     evolution = (root / "evolution_daemon.py").read_text(encoding="utf-8")
     memory = (root / "memory_service.py").read_text(encoding="utf-8")
     trigger = (root / "trigger_daemon.py").read_text(encoding="utf-8")
+    terminal_processor = (root / "direct_invocation_terminal_boundary_processor.py").read_text(encoding="utf-8")
 
     assert 'asyncio.create_task(run_bounded("dream"' not in evolution
     assert 'asyncio.create_task(run_bounded("dream"' not in trigger
@@ -455,4 +456,5 @@ def test_all_dream_boundaries_use_the_durable_enqueue_contract() -> None:
     assert "asyncio.create_task(run_soft_dream" not in memory
     assert "enqueue_due_dream" in evolution
     assert "enqueue_due_dream" in memory
-    assert "enqueue_due_dream" in trigger
+    assert "enqueue_due_dream" not in trigger
+    assert "enqueue_due_dream" in terminal_processor

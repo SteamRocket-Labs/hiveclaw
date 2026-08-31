@@ -1,26 +1,26 @@
 ---
 document_id: weekend-rc-2026-08-30-journey-ledger
-owner: Rocky / Codex
+owner: Example Owner / Codex
 status: active
 authority: canonical-human-journey-ledger
 last_reviewed: 2026-08-31
 source_commit: bf94b76a1706510daf2d11c4e98fd5051f23f28f
-verification_status: frozen-production-denominator-96-p29-padmin-pass1-only
+verification_status: frozen-96-current-blocker-scope-aligned-no-current-manifest-pass
 ---
 
 # Journey Ledger
 
 [返回索引](README.md) · [当前状态](03-current-status.md) · [Runbook](06-runbook-and-release-gates.md)
 
-本文件拥有旅程分母候选、闭环状态和证据链接。Domain 文档拥有验收标准；Evidence 文件拥有实际结果；本文件不复制两者正文。
+本文件记录旅程分母、主 Codex/owner 已接受的闭环状态和证据链接。Domain 文档记录验收标准；Evidence 文件记录实际结果；本文件不复制两者正文，也不从机械字段自行推导语义 verdict。
 
 ## 分母状态
 
 - 当前：`Frozen`，共 **96** 条可独立计分的 production journeys。
 - 机器权威：[`acceptance/weekend_production_journeys.v1.json`](../../../acceptance/weekend_production_journeys.v1.json)，freeze basis `c18b181c690fe3c4aa5366a8fd504023b0c41864`；记录 persona、entry、data version、allowed effects、acceptance、fault probes、evidence path 和 cleanup。
 - 冻结后不得删除或合并失败项；owner 只能带理由标为 `Excluded`。
-- `BLOCKED_PRECONDITION` 留在分母并按失败计，不得用受控 fake、历史 PASS 或未执行状态替代。
-- production release 要求全部冻结旅程在同一 exact commit 连续两遍 clean pass；组级通过不能替代子旅程。
+- 只有 unresolved product-controlled requirement 可记录 blocking fact `BLOCKED_PRECONDITION`；underlying Journey 保持 `Breakpoint` 或 `Missing`，留在分母并按未闭环计。可恢复的合成 fixture、仓库 runtime/adapter 和已验证第三方 external readiness 不得冒充该 fact，也不得用 fake、历史 PASS 或未执行状态替代。
+- production release 要求全部 in-scope 冻结旅程在同一 exact commit 连续两遍 clean pass；owner 带理由明确 `Excluded` 的旅程不进入 NPTCR 分母，组级通过不能替代子旅程。
 
 ## 现有确定性 CI 基线
 
@@ -57,7 +57,7 @@ verification_status: frozen-production-denominator-96-p29-padmin-pass1-only
 | PJ-05 | J1 candidate provisional trial | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×1 | Partial loop |
 | PJ-06 | J2 longitudinal growth 与 owner feedback | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×1 | Partial loop |
 | PJ-07 | J3 platform change non-regression | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×1 | Partial loop |
-| PJ-08 | J4 FreeCode/Hermes real bakeoff | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×1 | `BLOCKED_PRECONDITION`：无 Hive/FreeCode/same-envelope runtime，见 [preflight](evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/P08-J4-blocked-runtime-contract.md) |
+| PJ-08 | J4 FreeCode/Hermes real bakeoff | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×1 | `Breakpoint / IMPLEMENTATION_QUEUED`：构建 Hive/FreeCode same-envelope adapter；旧 [preflight](evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/P08-J4-blocked-runtime-contract.md) 只保留历史事实 |
 | PJ-09 | Agent Memory T0→T2→T3→Soul/Skill reuse | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×1 | Partial loop |
 | PJ-10 | Personal KB multi-format ingest/search/read/cite | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×5 | Partial loop |
 | PJ-11 | Company KB direct/background import→publish→read | [Memory/Growth](domains/memory-knowledge-and-growth.md) | Frozen ×2 | Partial loop |
@@ -73,7 +73,7 @@ verification_status: frozen-production-denominator-96-p29-padmin-pass1-only
 | PJ-21 | A2A sync/async/continuation/nested/artifact/fixed edge | [Collaboration](domains/collaboration-workflow-and-a2a.md) | Frozen ×6 | Partial loop |
 | PJ-22 | once/schedule/bounded loop/event trigger | [Automation](domains/automation-hooks-and-capabilities.md) | Frozen ×4 | Breakpoint aggregate |
 | PJ-23 | Notification/Approval/Channel return loop | [Automation](domains/automation-hooks-and-capabilities.md) | Frozen ×3 | Breakpoint aggregate |
-| PJ-24 | Local Agent pair/online/offline/approval/reconnect/revoke | [Automation](domains/automation-hooks-and-capabilities.md) | Frozen ×1 | BLOCKED_PRECONDITION until live bridge |
+| PJ-24 | Local Agent pair/online/offline/approval/reconnect/revoke | [Automation](domains/automation-hooks-and-capabilities.md) | Frozen ×1 | `Breakpoint / RECOVERY_QUEUED`：PDEC-008 已授权 lab login/pair/revoke，真实 bridge/provider secret 仍不可读取或轮换 |
 | PJ-25 | Hook blocking/observe-only/lifecycle/recovery | [Automation](domains/automation-hooks-and-capabilities.md) | Frozen ×3 | Breakpoint aggregate |
 | PJ-26 | Skill trust/load/use/update/revoke | [Automation](domains/automation-hooks-and-capabilities.md) | Frozen ×1 | Breakpoint aggregate |
 | PJ-27 | MCP/Connector auth/use/expiry/revoke/schema change | [Automation](domains/automation-hooks-and-capabilities.md) | Frozen ×1 | Breakpoint aggregate |
@@ -82,7 +82,7 @@ verification_status: frozen-production-denominator-96-p29-padmin-pass1-only
 | PJ-30 | Artifact preview/download/version/ACL/reopen | [Frontend](domains/frontend-and-product-consumption.md) | Frozen ×4 | Breakpoint aggregate |
 | PJ-31 | Async deep-link/inbox/unread/dedupe/expiry | [Frontend](domains/frontend-and-product-consumption.md) | Frozen ×1 | Breakpoint aggregate |
 | PJ-32 | Theme/narrow screen/keyboard/a11y/state screenshots | [Frontend](domains/frontend-and-product-consumption.md) | Frozen ×4 | Breakpoint aggregate |
-| PJ-33 | MiniMax/GLM/DeepSeek model fidelity 与资源观测 | [Frontend](domains/frontend-and-product-consumption.md) | Frozen ×3 | Breakpoint aggregate |
+| PJ-33 | MiniMax/GLM/DeepSeek model fidelity 与资源观测 | [Frontend](domains/frontend-and-product-consumption.md) | Frozen ×3 | Breakpoint aggregate；DeepSeek 当前 `EXTERNAL_UNAVAILABLE`，P33-DEEPSEEK 保持未闭环且不伪造 success |
 | PJ-34 | Prompt injection、cross-tenant、secret、replay、approval、delegation | [Release Gates](06-runbook-and-release-gates.md) | Frozen ×6 | Breakpoint aggregate |
 | PJ-35 | three-service exact deploy、rollback 与 production double pass | [Release Gates](06-runbook-and-release-gates.md) | Frozen ×1 | Partial loop |
 
@@ -92,15 +92,15 @@ verification_status: frozen-production-denominator-96-p29-padmin-pass1-only
 
 ## 最新有效证据索引
 
-分母已冻结。`P29-PADMIN` 已产生一次 production clean-path PASS，但单次 pass 不计入 NPTCR；这里只登记关系，不复制证据正文：
+分母已冻结。旧 manifest hash 上的 `P29-PADMIN` production clean-path pass 1 只保留为 historical supporting evidence；current manifest 下 pass 1/pass 2 均未运行，不计入 NPTCR。这里只登记关系，不复制证据正文：
 
-latest exact `bf94b76a` finding verification 为 [`PLATFORM-ADMIN-WORKSPACE-AUDIENCE-001`](evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/PLATFORM-ADMIN-WORKSPACE-AUDIENCE-001-production-verification.md) 与 [`SYSTEM-SETTING-SECRET-DISCLOSURE-001`](evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/SYSTEM-SETTING-SECRET-DISCLOSURE-001-production-verification.md)。clean pass 1 见 [`P29-PADMIN-pass-1`](evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/P29-PADMIN-pass-1.md)；pass 2 因缺少可安全消耗的 expired-session/role-change principal 而停在 [`BLOCKED_PRECONDITION`](evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/P29-PADMIN-fault-pass-2-role-session-precondition.md)。
+latest exact `bf94b76a` finding verification 为 [`PLATFORM-ADMIN-WORKSPACE-AUDIENCE-001`](evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/PLATFORM-ADMIN-WORKSPACE-AUDIENCE-001-production-verification.md) 与 [`SYSTEM-SETTING-SECRET-DISCLOSURE-001`](evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/SYSTEM-SETTING-SECRET-DISCLOSURE-001-production-verification.md)。旧 [`P29-PADMIN-pass-1`](evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/P29-PADMIN-pass-1.md) 绑定 manifest `d320edce…`，不能迁移为 current-manifest PASS；旧 [`BLOCKED_PRECONDITION`](evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/P29-PADMIN-fault-pass-2-role-session-precondition.md) 文件也只保存当时缺身份的历史事实。PDEC-008 后当前状态是 supported-path fixture setup pending，current-manifest canonical pass 1/pass 2 均未运行。
 
 | Journey | Pass 1 | Pass 2 | Fault/Recovery | Negative Authority | Final Verdict |
 |---|---|---|---|---|---|
-| P29-PADMIN | PASS | `BLOCKED_PRECONDITION`，canonical pass-2 文件不存在 | denied-route/reload PASS；expired-session/role-change blocked | PASS，9 URL + 14 API | `Partial loop`，未 Closed |
+| P29-PADMIN | 未运行；旧 `d320edce…` pass 1 仅历史 supporting evidence | 未运行；supported-path fixture setup pending | 旧 denied-route/reload evidence retained；current-manifest expired-session/role-change 待测 | 旧 9 URL + 14 API evidence retained；current-manifest 待测 | `Partial loop`，未 Closed |
 | 其余 95 条 | — | — | — | — | 未执行或仅有 finding-level evidence |
-| Aggregate | 1 次单遍，不计 Closed | 0 次双遍 | — | — | 0/96 Closed；NPTCR 0% |
+| Aggregate | 0 次 current-manifest pass | 0 次 current-manifest 双遍 | — | — | 0/96 Closed；NPTCR 0% |
 
 ## 状态变化规则
 

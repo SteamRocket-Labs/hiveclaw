@@ -70,6 +70,124 @@ class _FakeRegistry:
 
 
 @pytest.mark.asyncio
+async def test_exact_session_scope_prefixes_paths_and_denies_escape_or_tool_widening():
+    from app.tools import execution_pipeline as pipeline
+
+    root = "workspace/p08-j4/attempt-1/coding"
+    profile = {
+        "mode": "bypassPermissions",
+        "allowed_tools": ["read_file", "write_file", "edit_file", "glob_search", "grep_search"],
+        "writable_roots": [root],
+        "readable_roots": [root],
+        "capability_policy_snapshot": {"session_exact_scope": True},
+    }
+    ports = SimpleNamespace(
+        decision_outcome_type=SimpleNamespace(DENY="deny"),
+        record_precontext_decision=lambda **_kwargs: None,
+        render_tool_error=lambda **kwargs: kwargs,
+    )
+
+    def state(tool_name, arguments):
+        return pipeline._ToolExecutionState(
+            service=None,
+            request=pipeline.ToolExecutionRequest(
+                tool_name=tool_name,
+                arguments=arguments,
+                agent_id=uuid4(),
+                user_id=uuid4(),
+                permission_profile=profile,
+            ),
+            ports=ports,
+            tool_call_id="call-1",
+            arguments=dict(arguments),
+        )
+
+    scoped_arguments = {
+        "read_file": ("path", {"path": "nested/TASK.md"}),
+        "write_file": ("path", {"path": "nested/TASK.md", "content": "result"}),
+        "edit_file": ("path", {"path": "nested/TASK.md", "old_text": "a", "new_text": "b"}),
+        "glob_search": ("root", {"root": "nested", "pattern": "*.md"}),
+        "grep_search": ("root", {"root": "nested", "pattern": "result"}),
+    }
+    for tool_name, (field, arguments) in scoped_arguments.items():
+        scoped = state(tool_name, arguments)
+        assert await pipeline._apply_exact_session_scope(scoped) is None
+        assert scoped.arguments[field].startswith(f"{root}/")
+
+        for escape in ("../other", "/tmp/other", "workspace/other/file", "..\\other"):
+            escaping_arguments = dict(arguments)
+            escaping_arguments[field] = escape
+            traversal = state(tool_name, escaping_arguments)
+            traversal_stop = await pipeline._apply_exact_session_scope(traversal)
+            assert traversal_stop.value["extra"]["reason_code"] == "exact_session_workspace_scope_denied"
+
+    widening = state("send_channel_message", {"content": "no"})
+    widening_stop = await pipeline._apply_exact_session_scope(widening)
+    assert widening_stop.value["extra"]["reason_code"] == "exact_session_tool_scope_denied"
+
+
+def test_exact_session_filesystem_handlers_reject_symlink_escape(tmp_path: Path):
+    from app.tools.handlers.filesystem import edit_file, glob_search, grep_search, read_file, write_file
+
+    root = "workspace/p08-j4/attempt-1/coding"
+    workspace = tmp_path / "agent"
+    scoped = workspace / root
+    outside = workspace / "workspace" / "outside"
+    scoped.mkdir(parents=True)
+    outside.mkdir(parents=True)
+    secret = outside / "secret.txt"
+    secret.write_text("outside secret", encoding="utf-8")
+    (scoped / "escape").symlink_to(outside, target_is_directory=True)
+    profile = {
+        "mode": "bypassPermissions",
+        "allowed_tools": ["read_file", "write_file", "edit_file", "glob_search", "grep_search"],
+        "writable_roots": [root],
+        "readable_roots": [root],
+        "capability_policy_snapshot": {"session_exact_scope": True},
+    }
+
+    results = [
+        read_file(workspace, {"path": f"{root}/escape/secret.txt"}, permission_profile=profile),
+        write_file(
+            workspace,
+            {"path": f"{root}/escape/new.txt", "content": "must not escape"},
+            permission_profile=profile,
+        ),
+        edit_file(
+            workspace,
+            {
+                "path": f"{root}/escape/secret.txt",
+                "old_text": "outside",
+                "new_text": "changed",
+            },
+            permission_profile=profile,
+        ),
+        glob_search(
+            workspace,
+            {"root": f"{root}/escape", "pattern": "*.txt"},
+            permission_profile=profile,
+        ),
+        grep_search(
+            workspace,
+            {"root": f"{root}/escape", "pattern": "secret"},
+            permission_profile=profile,
+        ),
+    ]
+
+    assert all("Access denied" in str(result) for result in results)
+    for path in (
+        str(secret),
+        f"{root}/../outside/secret.txt",
+        f"{root}\\escape\\secret.txt",
+        f"{root}/./escape/secret.txt",
+        "enterprise_info/company_profile.md",
+    ):
+        assert "Access denied" in str(read_file(workspace, {"path": path}, permission_profile=profile))
+    assert secret.read_text(encoding="utf-8") == "outside secret"
+    assert not (outside / "new.txt").exists()
+
+
+@pytest.mark.asyncio
 async def test_successful_skill_load_emits_instructions_loaded_boundary(monkeypatch, tmp_path):
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
@@ -2620,7 +2738,7 @@ async def test_tool_runtime_service_allows_delegated_user_feishu_message():
         execution_identity=ExecutionIdentity(
             identity_type="delegated_user",
             identity_id=uuid4(),
-            label="Rocky via web",
+            label="Example Owner via web",
         ),
     )
     registry = _FakeRegistry("SENT")

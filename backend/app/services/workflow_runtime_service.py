@@ -789,6 +789,23 @@ class WorkflowRuntimeService:
         # A caller may pre-generate the id so run-scoped artifacts can land
         # BEFORE execution starts.
         run_id = run_id or uuid.uuid4()
+        existing = await self.load_run(run_id, tenant_id=tenant_id)
+        if existing is not None:
+            metadata = dict(existing.task.metadata_json or {})
+            if (
+                existing.task.tenant_id != tenant_id
+                or existing.task.parent_agent_id != agent_id
+                or str(metadata.get("definition_hash") or "") != compiled.definition_hash
+                or str(metadata.get("args_hash") or "") != args_hash
+            ):
+                raise WorkflowAdmissionError("workflow run id is already bound to another execution")
+            return WorkflowRunHandle(
+                run_id=run_id,
+                outcome=WorkflowRunOutcome(
+                    status=str(existing.task.status or "pending"),
+                    reason="idempotent_replay",
+                ),
+            )
         budget_uuid = _uuid_or_none(budget_run_id)
         runtime_budget_service = budget_service or RuntimeBudgetService(session_factory=self._session_factory)
         budget_admission_status = "inherited" if budget_uuid is not None else None

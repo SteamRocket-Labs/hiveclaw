@@ -40,7 +40,7 @@ async def reconcile_stale_business_tasks_in_session(
     current = now or datetime.now(timezone.utc)
     rows = (await db.execute(stale_business_task_statement(now=current, limit=limit))).all()
     for runtime_task, task in rows:
-        quarantine_stale_business_task(
+        await quarantine_stale_business_task(
             db=db,
             task=task,
             runtime_task=runtime_task,

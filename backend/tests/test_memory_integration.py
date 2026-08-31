@@ -349,7 +349,7 @@ class TestFullPipeline:
         from app.runtime.prompt_builder import build_frozen_prompt_prefix, build_dynamic_prompt_suffix
 
         fp = build_frozen_prompt_prefix(agent_context="You are TestAgent.", skill_catalog="- skill_a")
-        ds = build_dynamic_prompt_suffix(memory_snapshot="feedback: data", user_name="Rocky", channel="web")
+        ds = build_dynamic_prompt_suffix(memory_snapshot="feedback: data", user_name="Example Owner", channel="web")
         full = fp + "\n\n" + ds
         # Verify all key sections present
         assert "## System" in full

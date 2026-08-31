@@ -705,7 +705,7 @@ tool_call(send_email)
 建议测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/kernel/test_ccplus_runtime_contracts.py tests/services/test_permission_profile_v1.py -q
 ```
@@ -717,7 +717,7 @@ pytest tests/kernel/test_ccplus_runtime_contracts.py tests/services/test_permiss
 - 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/kernel/test_ccplus_runtime_contracts.py tests/services/test_permission_profile_v1.py -q
 ```
@@ -739,7 +739,7 @@ pytest tests/kernel/test_ccplus_runtime_contracts.py tests/services/test_permiss
 建议测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_agent_tools_core_surface.py tests/tools/test_tool_contract.py tests/services/test_mcp_tool_discovery.py -q
 ```
@@ -752,7 +752,7 @@ pytest tests/services/test_agent_tools_core_surface.py tests/tools/test_tool_con
 - 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_agent_tools_core_surface.py tests/api/test_tools_api_surface.py tests/tools/test_tool_contract.py tests/services/test_mcp_tool_discovery.py -q
 ```
@@ -775,7 +775,7 @@ pytest tests/services/test_agent_tools_core_surface.py tests/api/test_tools_api_
 建议测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/tools/test_search_provider_tool_definitions.py tests/services/test_pack_skill_alignment.py tests/tools/test_bridge_equivalence.py -q
 ```
@@ -791,7 +791,7 @@ pytest tests/tools/test_search_provider_tool_definitions.py tests/services/test_
 - 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_agent_tools_core_surface.py tests/api/test_tools_api_surface.py tests/tools/test_search_provider_tool_definitions.py tests/services/test_pack_skill_alignment.py tests/tools/test_bridge_equivalence.py -q
 ```
@@ -801,7 +801,7 @@ pytest tests/services/test_agent_tools_core_surface.py tests/api/test_tools_api_
 - ownership 收口验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_tool_registry.py::test_minimal_kernel_tool_set_stays_small_and_explicit tests/tools/test_core_pack_disjoint.py tests/tools/test_pack_manifest.py::test_assert_core_pack_disjoint_covers_manifest_owns tests/tools/test_pack_manifest.py::test_requires_core_may_reference_core tests/tools/test_pack_manifest.py::test_all_shipped_manifests_valid tests/tools/test_pack_manifest.py::test_assert_manifests_valid_passes_on_shipped tests/services/test_pack_service.py::test_iter_runtime_tool_groups_does_not_return_core_office_runtime_tools tests/services/test_pack_service.py::test_office_pack_is_manifest_only_and_does_not_own_core_runtime_tools tests/services/test_pack_policy_service.py::test_policy_pack_names_include_manifest_owned_tools_only tests/tools/test_office_tools.py::test_office_tools_are_registered_as_agent_base_capability_surface tests/services/test_agent_tools_core_surface.py::test_office_runtime_is_core_but_browser_office_is_l2 -q
 ```
@@ -823,7 +823,7 @@ pytest tests/services/test_tool_registry.py::test_minimal_kernel_tool_set_stays_
 建议测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_permission_profile_v1.py tests/services/test_web_chat_runtime.py tests/tools/test_governance.py -q
 ```
@@ -839,7 +839,7 @@ pytest tests/services/test_permission_profile_v1.py tests/services/test_web_chat
 - 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_permission_profile_v1.py tests/api/test_chat_session_runs.py tests/services/test_cc_permission_modes.py tests/tools/test_service.py tests/tools/test_governance.py tests/kernel/test_ccplus_runtime_contracts.py -q
 ```
@@ -867,7 +867,7 @@ pytest tests/services/test_permission_profile_v1.py tests/api/test_chat_session_
 建议测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_skill_tool_runtime.py tests/runtime/test_skill_frontmatter_hooks.py tests/runtime/test_governed_hook_runner.py tests/runtime/test_hook_wire_standard.py tests/runtime/test_hooks_cc_parity.py -q
 ```
@@ -879,7 +879,7 @@ pytest tests/services/test_skill_tool_runtime.py tests/runtime/test_skill_frontm
 - 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/runtime/test_skill_frontmatter_hooks.py -q
 ```
@@ -894,7 +894,7 @@ pytest tests/runtime/test_skill_frontmatter_hooks.py -q
 - 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/runtime/test_skill_frontmatter_hooks.py tests/runtime/test_hooks_cc_parity.py tests/runtime/test_hooks.py tests/runtime/test_hook_wire_standard.py tests/runtime/test_governed_hook_runner.py tests/kernel/test_engine.py::test_execute_tool_with_hooks_records_lifecycle_records_in_tool_span tests/kernel/test_engine.py::test_hook_emitter_consumes_post_tool_output_rewrite tests/kernel/test_engine_stop_hooks.py -q
 ```
@@ -916,7 +916,7 @@ pytest tests/runtime/test_skill_frontmatter_hooks.py tests/runtime/test_hooks_cc
 建议测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_memory_service.py tests/tools/test_governance.py tests/services/test_web_chat_runtime.py -q
 ```
@@ -934,7 +934,7 @@ pytest tests/services/test_memory_service.py tests/tools/test_governance.py test
 - 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_action_preflight.py tests/services/test_truth_search_service.py tests/tools/test_service.py tests/tools/test_tool_runtime_preflight.py -q
 ```
@@ -956,7 +956,7 @@ pytest tests/services/test_action_preflight.py tests/services/test_truth_search_
 建议测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/tools/test_mcp_call_tool.py tests/services/test_mcp_tool_discovery.py tests/tools/test_bridge_equivalence.py -q
 ```
@@ -970,7 +970,7 @@ pytest tests/tools/test_mcp_call_tool.py tests/services/test_mcp_tool_discovery.
 - 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_mcp_authz.py tests/tools/test_mcp_call_tool.py tests/services/test_mcp_server_service.py tests/api/test_mcp_servers_api.py tests/services/test_mcp_tool_discovery.py tests/tools/test_bridge_equivalence.py -q
 ```
@@ -993,7 +993,7 @@ pytest tests/services/test_mcp_authz.py tests/tools/test_mcp_call_tool.py tests/
 建议测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/tools/test_bridge_equivalence.py tests/services/test_mcp_tool_discovery.py tests/tools/test_governance.py -q
 ```
@@ -1007,7 +1007,7 @@ pytest tests/tools/test_bridge_equivalence.py tests/services/test_mcp_tool_disco
 - 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_command_registry_optional_packs.py tests/services/test_agent_tools_core_surface.py tests/api/test_cc_codex_parity_api.py tests/api/test_extension_registry_api.py tests/tools/test_bridge_equivalence.py -q
 ```
@@ -1032,7 +1032,7 @@ pytest tests/services/test_command_registry_optional_packs.py tests/services/tes
 原计划建议测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/e2e/test_tool_call_killed_process_recovery.py tests/e2e/test_session_permission_pending_frame_recovery.py tests/e2e/test_hook_lifecycle_recovery.py tests/e2e/test_compaction_lifecycle_recovery.py -q
 ```
@@ -1049,7 +1049,7 @@ pytest tests/e2e/test_tool_call_killed_process_recovery.py tests/e2e/test_sessio
 - 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/e2e/test_tool_call_recovery_closure.py tests/runtime/test_session_context_controller.py tests/kernel/test_session_context_controller_integration.py tests/kernel/test_turn_state_acceptance.py tests/runtime/test_session_skill_lifecycle.py tests/services/test_agent_tools.py::test_requested_discovered_tool_does_not_bypass_disabled_pack_policy -q
 ```
@@ -1058,7 +1058,7 @@ pytest tests/e2e/test_tool_call_recovery_closure.py tests/runtime/test_session_c
 - 静态检查：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 ruff check app/runtime/recovery_manifest.py app/kernel/engine.py app/runtime/session_context_controller.py tests/e2e/test_tool_call_recovery_closure.py tests/services/test_agent_tools.py tests/runtime/test_session_context_controller.py
 ```

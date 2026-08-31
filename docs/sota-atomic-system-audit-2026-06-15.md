@@ -10,9 +10,9 @@
 - 本轮未修改业务逻辑；仅刷新本审计文档。`.ultra/debug/subagent-log.jsonl` 是本地运行日志，不属于审计结论或业务改动。
 - 目标口径只取 `docs/hive-sota-master-goal.md`：该文明确要求“已达成”必须有当前代码路径、测试、部署或生产证据，且做完外部行为 eval 前不能宣称整体超越 SOTA。
 - 本地对标项目：
-  - Claude Code / CC：`/Users/rocky243/vc-saas/free-code-main`，commit `7dc15d6`。
-  - Hermes：`/Users/rocky243/vc-saas/hermes-agent`，commit `75643a615`。
-  - Codex：`/Users/rocky243/Context Engineering/codex`，commit `9f4fac8ec4`。
+  - Claude Code / CC：`/Users/example-owner/vc-saas/free-code-main`，commit `7dc15d6`。
+  - Hermes：`/Users/example-owner/vc-saas/hermes-agent`，commit `75643a615`。
+  - Codex：`/Users/example-owner/Context Engineering/codex`，commit `9f4fac8ec4`。
 - 外部对标重新核对 GitHub/官方资料：Voyager、Reflexion、DGM、ADAS、Letta/MemGPT、Graphiti/Zep、LangGraph、Magentic-One/AutoGen、Temporal、Vercel Sandbox、E2B、Glean、SEAL、AlphaEvolve、AZR、R-Zero。
 
 ## 1. 95% 置信答案
@@ -78,7 +78,7 @@ Codex 的强项是 sandbox/approval/rollout/memory consolidation：exec policy�
 ## 5. 本轮验证命令
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/evals/test_hive_live_runner.py \
   tests/services/test_skill_distiller.py::test_distiller_cannot_promote_without_external_behavior_eval \
@@ -88,7 +88,7 @@ pytest tests/evals/test_hive_live_runner.py \
 ```
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/runtime/test_invoker.py::test_invoke_agent_records_skill_runtime_usage_and_preserves_tool_callback \
   tests/runtime/test_invoker.py::test_invoke_agent_records_failed_skill_runtime_usage_when_kernel_raises \
@@ -98,7 +98,7 @@ pytest tests/runtime/test_invoker.py::test_invoke_agent_records_skill_runtime_us
 ```
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_plan_mode_core.py::test_explicit_plan_mode_does_not_seed_retired_manage_tasks_tool \
   tests/services/test_plan_mode_core.py::test_retired_manage_tasks_is_not_a_plan_mode_display_label \
@@ -112,7 +112,7 @@ pytest tests/services/test_plan_mode_core.py::test_explicit_plan_mode_does_not_s
 ```
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_vercel_code_execution.py \
   tests/services/test_code_execution_probe.py \
@@ -123,7 +123,7 @@ pytest tests/services/test_vercel_code_execution.py \
 ```
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/runtime/test_workflow_restart_resume.py \
   tests/runtime/test_workflow_worker_lease.py \
@@ -138,7 +138,7 @@ pytest tests/runtime/test_workflow_restart_resume.py \
 ```
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_connector_acl.py \
   tests/services/test_knowledge_inject.py \
@@ -148,7 +148,7 @@ pytest tests/services/test_connector_acl.py \
 ```
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- AgentDetailSections.test.tsx
 # 1 test file passed, 36 tests passed
 ```

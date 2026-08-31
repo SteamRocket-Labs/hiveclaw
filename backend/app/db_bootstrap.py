@@ -173,6 +173,7 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "workflow_proposal_artifacts",
     "workflow_preview_artifacts",
     "runtime_notification_outbox",
+    "runtime_terminal_boundary_outbox",
     "runtime_result_objects",
     "runtime_result_mailbox_cursors",
     "runtime_result_integration_pages",
@@ -297,6 +298,7 @@ STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
     "workflow_proposal_artifacts",
     "workflow_preview_artifacts",
     "runtime_notification_outbox",
+    "runtime_terminal_boundary_outbox",
     "runtime_result_objects",
     "runtime_result_mailbox_cursors",
     "runtime_result_integration_pages",
@@ -823,6 +825,63 @@ def apply_audit_evidence_immutability(connection: Connection) -> None:
         )
 
 
+_RUNTIME_TERMINAL_BOUNDARY_TASK_TYPES: tuple[str, ...] = (
+    "web_chat_turn",
+    "goal_continuation",
+    "team_member",
+    "advanced_plan",
+    "a2a_continuation",
+    "business_task",
+    "trigger",
+    "delegation",
+)
+
+
+def apply_runtime_terminal_boundary_generation_contract(connection: Connection) -> None:
+    """Install the task-type-aware generation guard skipped by create_all."""
+
+    if connection.dialect.name != "postgresql":
+        return
+    if "runtime_tasks" not in set(inspect(connection).get_table_names()):
+        return
+    terminal_task_types = ", ".join(f"'{task_type}'" for task_type in _RUNTIME_TERMINAL_BOUNDARY_TASK_TYPES)
+    connection.execute(
+        text(
+            f"""
+            CREATE OR REPLACE FUNCTION public.set_runtime_task_terminal_boundary_generation()
+            RETURNS trigger
+            LANGUAGE plpgsql
+            AS $$
+            BEGIN
+              IF NEW.task_type IN ({terminal_task_types}) THEN
+                IF NEW.terminal_boundary_generation IS NULL THEN
+                  NEW.terminal_boundary_generation := 1;
+                END IF;
+              ELSE
+                NEW.terminal_boundary_generation := NULL;
+              END IF;
+              RETURN NEW;
+            END;
+            $$
+            """
+        )
+    )
+    connection.execute(
+        text("DROP TRIGGER IF EXISTS trg_runtime_task_terminal_boundary_generation ON public.runtime_tasks")
+    )
+    connection.execute(
+        text(
+            """
+            CREATE TRIGGER trg_runtime_task_terminal_boundary_generation
+            BEFORE INSERT OR UPDATE OF task_type, terminal_boundary_generation
+            ON public.runtime_tasks
+            FOR EACH ROW
+            EXECUTE FUNCTION public.set_runtime_task_terminal_boundary_generation()
+            """
+        )
+    )
+
+
 def apply_session_v2_contracts(connection: Connection) -> None:
     """Install exact Session V2 event/writer guards on create_all bootstraps."""
 
@@ -930,6 +989,7 @@ def prepare_runtime_schema(connection: Connection, metadata: MetaData) -> bool:
     apply_hr_creation_blueprint_immutability(connection)
     apply_workflow_promotion_immutability(connection)
     apply_audit_evidence_immutability(connection)
+    apply_runtime_terminal_boundary_generation_contract(connection)
     apply_session_v2_contracts(connection)
     return True
 
@@ -973,6 +1033,7 @@ def bootstrap_database_to_head(connection: Connection, metadata: MetaData, heads
     apply_hr_creation_blueprint_immutability(connection)
     apply_workflow_promotion_immutability(connection)
     apply_audit_evidence_immutability(connection)
+    apply_runtime_terminal_boundary_generation_contract(connection)
     apply_session_v2_contracts(connection)
     ensure_alembic_version_table_width(connection)
     connection.execute(text("DELETE FROM alembic_version"))

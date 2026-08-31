@@ -4,7 +4,7 @@
 - Base URL: `https://backend-production-326d.up.railway.app`
 - Base URL source: `default`
 - Weekday: `Saturday`
-- Snapshot dir: `/Users/rocky243/vc-saas/hiveclaw-main/tmp/reports/h7/20260509-093142`
+- Snapshot dir: `/Users/example-owner/vc-saas/hiveclaw-main/tmp/reports/h7/20260509-093142`
 - Stage result: `BLOCKED_PRECONDITION`
 
 ## Preflight Result

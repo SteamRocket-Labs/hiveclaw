@@ -88,7 +88,7 @@ TrustGraph Context Core / graph / vector / retrieval
 
 原请求中出现一次 “A2I”。当前 Hive 仓库没有独立的 A2I 领域定义，结合后续完整描述，本文件按 A2A runtime/interface 问题处理，不另行发明第四套概念。
 
-原请求文字中的 “StackDeck” 按用户同时提供的本地仓库 `/Users/rocky243/vc-saas/StaffDeck/` 解释为 **StaffDeck**。
+原请求文字中的 “StackDeck” 按用户同时提供的本地仓库 `/Users/example-owner/vc-saas/StaffDeck/` 解释为 **StaffDeck**。
 
 ### 0.5 三个方向的正确排序：不是串行三阶段，而是交叉汇合
 

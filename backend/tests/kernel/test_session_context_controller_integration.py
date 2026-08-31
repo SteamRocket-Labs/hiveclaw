@@ -65,7 +65,7 @@ async def test_kernel_preserves_unrecoverable_tool_result_before_next_model_requ
                 max_tool_rounds=4,
                 quota_message=None,
             ),
-            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            resolve_current_user_name=lambda *_args, **_kwargs: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "SYSTEM",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [
@@ -150,7 +150,7 @@ async def test_kernel_reports_context_skipped_with_cumulative_usage_anchor() -> 
                 max_tool_rounds=2,
                 quota_message=None,
             ),
-            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            resolve_current_user_name=lambda *_args, **_kwargs: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "SYSTEM",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [],

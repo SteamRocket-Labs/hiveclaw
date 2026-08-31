@@ -603,8 +603,11 @@ async def _invoke_and_close(state: _InvocationState) -> AgentInvocationResult:
     result.content = redaction.text
     parts_redaction = state.exact_secret_boundary.redact_payload_with_evidence(result.parts)
     result.parts = parts_redaction.value
+    response_complete_redaction = state.exact_secret_boundary.redact_payload_with_evidence(
+        getattr(result, "response_complete_payload", None)
+    )
+    result.response_complete_payload = response_complete_redaction.value
     _record_skill_usage(state, "completed", str(result.content or ""))
-    await _emit_close_hooks(state, result)
     stream_surfaces, stream_refs = _secret_stream_evidence(state)
     aux_surfaces, aux_refs = _secret_aux_evidence(state)
     source_refs = tuple(
@@ -614,6 +617,7 @@ async def _invoke_and_close(state: _InvocationState) -> AgentInvocationResult:
                 *aux_refs,
                 *redaction.matched_refs,
                 *parts_redaction.matched_refs,
+                *response_complete_redaction.matched_refs,
             ]
         )
     )
@@ -624,6 +628,7 @@ async def _invoke_and_close(state: _InvocationState) -> AgentInvocationResult:
             **aux_surfaces,
             "content": redaction.redacted_count,
             "parts": parts_redaction.redacted_count,
+            "response_complete_payload": response_complete_redaction.redacted_count,
         },
         source_refs=source_refs,
     )
@@ -634,7 +639,9 @@ async def _invoke_and_close(state: _InvocationState) -> AgentInvocationResult:
         parts=result.parts,
         reasoning_signature=getattr(result, "reasoning_signature", None),
         terminal_reason=getattr(result, "terminal_reason", state.ports.terminal_reason_type.TURN_STOP),
+        tool_terminal_signal=getattr(result, "tool_terminal_signal", None),
         model_result_receipt=getattr(result, "model_result_receipt", None),
+        response_complete_payload=getattr(result, "response_complete_payload", None),
         failure_code=getattr(result, "failure_code", None),
         failure_delivery_state=getattr(result, "failure_delivery_state", None),
         failure_requires_user_decision=bool(getattr(result, "failure_requires_user_decision", False)),
@@ -736,65 +743,3 @@ async def _finish_secret_streams(state: _InvocationState) -> None:
                 surface,
                 type(exc).__name__,
             )
-
-
-async def _emit_close_hooks(state: _InvocationState, result: Any) -> None:
-    from app.runtime.context import ensure_runtime_assembly_state
-    from app.runtime.hooks import HookEvent, emit_hook
-
-    request = state.request
-    completed_messages = [
-        *state.kernel_request.messages,
-        {"role": "assistant", "content": result.content},
-    ]
-    source, _session_id, metadata = _hook_identity(state)
-    hook_metadata = {
-        "agent_name": state.kernel_request.agent_name,
-        "tenant_id": metadata.get("tenant_id"),
-        "runtime_task_id": metadata.get("runtime_task_id") or metadata.get("task_id"),
-        "request_id": metadata.get("request_id"),
-        "trace_id": metadata.get("trace_id"),
-        "turn_id": metadata.get("turn_id"),
-        "intent_id": metadata.get("intent_id"),
-        "turn_count": len(completed_messages),
-        "reason": "invoke_return",
-        "checkpoint_kind": "user_turn_stop",
-        "important_files": list(getattr(request.session_context, "recent_files", []) or [])
-        if request.session_context
-        else [],
-        "pending_work": list(getattr(request.session_context, "pending_items", []) or [])
-        if request.session_context
-        else [],
-        "last_successful_step": result.content,
-        "activation_events": list(ensure_runtime_assembly_state(request.session_context).activation_events)
-        if request.session_context
-        else [],
-    }
-    metadata_redaction = state.exact_secret_boundary.redact_payload_with_evidence(hook_metadata)
-    _record_state_redaction(state, "close_hook_metadata", metadata_redaction)
-    hook_metadata = metadata_redaction.value
-    try:
-        await emit_hook(
-            HookEvent.SESSION_END,
-            evidence_mode="independent",
-            agent_id=request.agent_id,
-            session_id=request.memory_session_id,
-            source=source,
-            messages=completed_messages,
-            metadata=hook_metadata,
-        )
-        if request.emit_turn_stop:
-            await emit_hook(
-                HookEvent.TURN_STOP,
-                evidence_mode="independent",
-                agent_id=request.agent_id,
-                session_id=request.memory_session_id,
-                source=source,
-                messages=completed_messages,
-                metadata=hook_metadata,
-            )
-    except Exception as exc:
-        state.ports.logger.debug(
-            "[Invoker] response/session close hooks failed (non-fatal): %s",
-            type(exc).__name__,
-        )

@@ -841,10 +841,11 @@ async def test_response_and_pre_compaction_only_update_canonical_projection(monk
 
     _patch_t0_root(monkeypatch, tmp_path)
     agent_id = uuid4()
+    outcome_id = uuid4()
     updates: list[tuple] = []
 
-    def fake_update_session_memory(update_agent_id, payload):
-        updates.append((update_agent_id, payload))
+    def fake_update_session_memory(update_agent_id, payload, **kwargs):
+        updates.append((update_agent_id, payload, kwargs))
 
     monkeypatch.setattr("app.runtime.hooks_setup.update_session_memory", fake_update_session_memory)
 
@@ -854,7 +855,16 @@ async def test_response_and_pre_compaction_only_update_canonical_projection(monk
         session_id="chat-session-1",
         source="web",
         messages=[{"role": "user", "content": "只更新临时 projection，不写旧 learnings。"}],
-        metadata={"turn_count": 1},
+        metadata={
+            "turn_count": 1,
+            "response_commit": {
+                "schema": "hive.response_commit.v1",
+                "committed": True,
+                "commit_kind": "session_v2_terminal_outcome",
+                "idempotency_key": f"session-run-outcome:{outcome_id}",
+                "source_refs": [f"session-run-outcome://{outcome_id}"],
+            },
+        },
     )
     await hooks_setup._project_on_response(ctx)
     await hooks_setup._project_on_pre_compaction(
@@ -869,6 +879,8 @@ async def test_response_and_pre_compaction_only_update_canonical_projection(monk
     )
 
     assert [item[0] for item in updates] == [agent_id, agent_id]
+    assert updates[0][2]["transaction"].operation == "response_complete_session_projection"
+    assert updates[1][2] == {}
     assert not (tmp_path / str(agent_id) / "memory" / "learnings").exists()
 
 

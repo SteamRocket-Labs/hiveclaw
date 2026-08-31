@@ -1215,6 +1215,33 @@ async def project_agent_team_close_completion(
     return receipt
 
 
+async def project_agent_team_terminal_state(
+    *,
+    db: Any,
+    task: Any,
+    status: str,
+    result_summary: str | None,
+    metadata_json: dict[str, Any] | None = None,
+) -> None:
+    """Apply exact Team member/close projections in the terminal transaction."""
+
+    await project_agent_team_member_completion(
+        db=db,
+        task=task,
+        status=status,
+        result_summary=result_summary,
+        metadata_json=metadata_json,
+    )
+    task_metadata = dict(getattr(task, "metadata_json", None) or {})
+    if task_metadata.get("agent_team_close_id") or task_metadata.get("integration_page_id"):
+        await project_agent_team_close_completion(
+            db=db,
+            task=task,
+            status=status,
+            result_summary=result_summary,
+        )
+
+
 async def reopen_agent_team_close_after_delivery_failure(
     *,
     db: Any,

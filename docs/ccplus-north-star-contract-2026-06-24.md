@@ -47,11 +47,11 @@ These goals are coupled. A strong agent without company governance is not Hive. 
 
 For CCPlus parity decisions, use local sources in this order:
 
-1. `/Users/rocky243/vc-saas/free-code-main` as the runnable CC / FreeCode semantic baseline.
-2. `/Users/rocky243/Context Engineering/claw-code/src` as Python-port reference only, not a full parity source.
-3. `/Users/rocky243/Context Engineering/claw-code/rust` for session hygiene, workspace partition, JSONL rotation, resume, fork, and compact lessons.
-4. `/Users/rocky243/Context Engineering/claude-code-org` as a cross-check against FreeCode.
-5. `/Users/rocky243/Context Engineering/codex/codex-rs` as Codex delta only.
+1. `/Users/example-owner/vc-saas/free-code-main` as the runnable CC / FreeCode semantic baseline.
+2. `/Users/example-owner/Context Engineering/claw-code/src` as Python-port reference only, not a full parity source.
+3. `/Users/example-owner/Context Engineering/claw-code/rust` for session hygiene, workspace partition, JSONL rotation, resume, fork, and compact lessons.
+4. `/Users/example-owner/Context Engineering/claude-code-org` as a cross-check against FreeCode.
+5. `/Users/example-owner/Context Engineering/codex/codex-rs` as Codex delta only.
 
 If sources conflict, CC / FreeCode wins for lifecycle and capability semantics. It does not authorize copying an implementation accident, prompt constant, provider habit, or model-capability restriction. Codex wins only where it is a non-conflicting engineering or interaction improvement, and both remain subordinate to the AI-native and Model Agency laws.
 

@@ -179,7 +179,7 @@ docker ps --format '{{.Names}}\t{{.Image}}\t{{.Ports}}'   # → hindsight  ghcr.
 curl -s http://127.0.0.1:8888/version                      # → audit_log:false, llm_trace:true
 curl -s http://127.0.0.1:8888/v1/default/banks             # → 2 banks, 94 + 126 facts
 
-cd "/Users/rocky243/Context Engineering/semantica"
+cd "/Users/example-owner/Context Engineering/semantica"
 
 # Semantica 本体生成（真实，domain/range 推断正确）
 python3 -c "
@@ -217,7 +217,7 @@ print(OntologyValidator().validate({'uri':'https://x/','name':'t','version':'1.0
 Hive 侧关键事实复现：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 
 # T3 真实布局：两平面 + 动态页，旧四文件已退役
 sed -n '20,48p' app/memory/t3_platform_gate.py

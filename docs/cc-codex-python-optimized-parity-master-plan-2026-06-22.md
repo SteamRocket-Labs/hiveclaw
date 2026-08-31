@@ -128,12 +128,12 @@ Full backend suite (`pytest tests -q`) and production/live browser checks remain
 
 本计划是后续实现的 canonical 入口。其他文档降级为 evidence / appendix：
 
-1. FreeCode baseline：`/Users/rocky243/vc-saas/free-code-main`
-2. CC TS cross-check：`/Users/rocky243/Context Engineering/claude-code-org`
-3. claw-code Python direction：`/Users/rocky243/Context Engineering/claw-code/src`
-4. claw-code Rust runtime：`/Users/rocky243/Context Engineering/claw-code/rust`
-5. Codex delta：`/Users/rocky243/Context Engineering/codex/codex-rs`
-6. Hive implementation：`/Users/rocky243/vc-saas/hiveclaw-main`
+1. FreeCode baseline：`/Users/example-owner/vc-saas/free-code-main`
+2. CC TS cross-check：`/Users/example-owner/Context Engineering/claude-code-org`
+3. claw-code Python direction：`/Users/example-owner/Context Engineering/claw-code/src`
+4. claw-code Rust runtime：`/Users/example-owner/Context Engineering/claw-code/rust`
+5. Codex delta：`/Users/example-owner/Context Engineering/codex/codex-rs`
+6. Hive implementation：`/Users/example-owner/vc-saas/hiveclaw-main`
 
 Existing evidence docs:
 

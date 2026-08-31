@@ -512,7 +512,7 @@ This is an internal execution order, not a phased delivery boundary.
 Focused design closure:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/architecture/test_memory_intelligence_boundaries.py \
@@ -530,7 +530,7 @@ pytest \
 Full memory/self-evolution regression:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/memory \

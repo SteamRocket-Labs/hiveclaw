@@ -864,8 +864,8 @@ test_exhaustive_request_emits_complete_coverage_ledger
 
 | 基线 | 当前快照 | 本文用途 |
 |---|---|---|
-| FreeCode / CC runnable baseline | `/Users/rocky243/vc-saas/free-code-main` @ `7dc15d6c8fb0c40c7fcc02ce9b58204324252632` | 裁决 CC 的 agent loop、context、tool、Skill、subagent、compaction 语义底座 |
-| Codex Rust | `/Users/rocky243/Context Engineering/codex/codex-rs` @ `5c19155cbd93bfa099016e7487259f61669823ff` | 只提取不削弱 CC 能力面的 typed state、approval、sandbox、replay、deferred tools 等工程增量 |
+| FreeCode / CC runnable baseline | `/Users/example-owner/vc-saas/free-code-main` @ `7dc15d6c8fb0c40c7fcc02ce9b58204324252632` | 裁决 CC 的 agent loop、context、tool、Skill、subagent、compaction 语义底座 |
+| Codex Rust | `/Users/example-owner/Context Engineering/codex/codex-rs` @ `5c19155cbd93bfa099016e7487259f61669823ff` | 只提取不削弱 CC 能力面的 typed state、approval、sandbox、replay、deferred tools 等工程增量 |
 | Hive current checkout | 本仓库 @ `7b67989336c5` 加本轮 Memory worktree | 判断 Hive 当前真实消费路径；不能把文档、schema 或未接入口的模块当作闭环 |
 
 对齐目标不是逐行复刻，而是：先保住 CC 的完整生命周期语义，再吸收 Codex 的控制与恢复能力，最后把 Hive-native Memory / Workflow / A2A / enterprise authority 接入同一个 Runtime。
@@ -1432,19 +1432,19 @@ Group 4 只关闭本架构中的“大型 child/runtime result 如何无损外�
 
 | 结论 | 当前源码锚点 |
 |---|---|
-| CC provider 前治理与 tool-result 回流 | `/Users/rocky243/vc-saas/free-code-main/src/query.ts` |
-| CC Hook/permission/tool effect 边界 | `/Users/rocky243/vc-saas/free-code-main/src/services/tools/toolExecution.ts` |
-| CC project context 注入与会话缓存 | `/Users/rocky243/vc-saas/free-code-main/src/context.ts`、`src/utils/claudemd.ts` |
-| CC auto-memory 一跳召回 | `/Users/rocky243/vc-saas/free-code-main/src/memdir/memoryScan.ts`、`findRelevantMemories.ts`、`src/utils/attachments.ts` |
-| CC deferred Tool Search | `/Users/rocky243/vc-saas/free-code-main/src/tools/ToolSearchTool/ToolSearchTool.ts` |
-| CC Skill 1% listing budget | `/Users/rocky243/vc-saas/free-code-main/src/tools/SkillTool/prompt.ts` |
-| CC task result durability/notification | `/Users/rocky243/vc-saas/free-code-main/src/tasks/LocalAgentTask/LocalAgentTask.tsx`、`src/tools/TaskOutputTool/TaskOutputTool.tsx`、`src/utils/task/diskOutput.ts` |
-| Codex turn snapshot 与 Skill/plugin injection | `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/session/turn.rs` |
-| Codex deferred tool registry/BM25 search | `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/tools/spec_plan.rs`、`tools/handlers/tool_search.rs` |
-| Codex approval/sandbox/retry | `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/tools/orchestrator.rs` |
-| Codex history projection/compaction | `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/context_manager/history.rs`、`core/src/compact.rs` |
-| Codex AGENTS/Skill budget | `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/agents_md.rs`、`codex-rs/core-skills/src/render.rs` |
-| Codex typed multi-agent wait/status | `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/tools/handlers/multi_agents/wait.rs`、`multi_agents_common.rs` |
+| CC provider 前治理与 tool-result 回流 | `/Users/example-owner/vc-saas/free-code-main/src/query.ts` |
+| CC Hook/permission/tool effect 边界 | `/Users/example-owner/vc-saas/free-code-main/src/services/tools/toolExecution.ts` |
+| CC project context 注入与会话缓存 | `/Users/example-owner/vc-saas/free-code-main/src/context.ts`、`src/utils/claudemd.ts` |
+| CC auto-memory 一跳召回 | `/Users/example-owner/vc-saas/free-code-main/src/memdir/memoryScan.ts`、`findRelevantMemories.ts`、`src/utils/attachments.ts` |
+| CC deferred Tool Search | `/Users/example-owner/vc-saas/free-code-main/src/tools/ToolSearchTool/ToolSearchTool.ts` |
+| CC Skill 1% listing budget | `/Users/example-owner/vc-saas/free-code-main/src/tools/SkillTool/prompt.ts` |
+| CC task result durability/notification | `/Users/example-owner/vc-saas/free-code-main/src/tasks/LocalAgentTask/LocalAgentTask.tsx`、`src/tools/TaskOutputTool/TaskOutputTool.tsx`、`src/utils/task/diskOutput.ts` |
+| Codex turn snapshot 与 Skill/plugin injection | `/Users/example-owner/Context Engineering/codex/codex-rs/core/src/session/turn.rs` |
+| Codex deferred tool registry/BM25 search | `/Users/example-owner/Context Engineering/codex/codex-rs/core/src/tools/spec_plan.rs`、`tools/handlers/tool_search.rs` |
+| Codex approval/sandbox/retry | `/Users/example-owner/Context Engineering/codex/codex-rs/core/src/tools/orchestrator.rs` |
+| Codex history projection/compaction | `/Users/example-owner/Context Engineering/codex/codex-rs/core/src/context_manager/history.rs`、`core/src/compact.rs` |
+| Codex AGENTS/Skill budget | `/Users/example-owner/Context Engineering/codex/codex-rs/core/src/agents_md.rs`、`codex-rs/core-skills/src/render.rs` |
+| Codex typed multi-agent wait/status | `/Users/example-owner/Context Engineering/codex/codex-rs/core/src/tools/handlers/multi_agents/wait.rs`、`multi_agents_common.rs` |
 | Hive provider prompt ledger | `backend/app/runtime/provider_prompt_ledger.py`、`backend/app/services/runtime_budget_llm.py` |
 | Hive current system prompt planner | `backend/app/runtime/context_budget.py`、`backend/app/runtime/prompt_builder.py` |
 | Hive current Memory selection/assembly | `backend/app/memory/retriever.py`、`backend/app/memory/assembler.py`、`backend/app/tools/handlers/memory.py` |

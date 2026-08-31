@@ -128,10 +128,10 @@ class TestFormatChatLog:
             {"role": "user", "content": "Hello"},
             {"role": "assistant", "content": "Hi there!"},
         ]
-        result = _format_chat_log(messages, {"source": "web", "session_id": "abc-123", "user_name": "Rocky"})
+        result = _format_chat_log(messages, {"source": "web", "session_id": "abc-123", "user_name": "Example Owner"})
         assert "type: chat" in result
         assert "source: web" in result
-        assert "user: Rocky" in result
+        assert "user: Example Owner" in result
         assert "turns: 1" in result
         assert "## Turn 1" in result
         assert "**User**: Hello" in result

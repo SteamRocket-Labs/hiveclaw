@@ -1,13 +1,11 @@
-"""T-G1 — M2 pin: runtime reminders never leak into memory persistence.
+"""T-G1 — M2 pin: runtime reminders never leak into terminal learning input.
 
 docs/runtime-guidance-cc-alignment.md §3 M2: ``_build_persisted_memory_messages``
 only skips ``api_messages[0]``, so under the old per-round append the stacked
-role="system" reminders flowed straight into persist → polluting the T0/T2
-distillation input. Transient injection is the root fix: reminders take part in
-the per-round LLM request only and never enter ``api_messages``, so the persist
-path is clean by construction. These tests pin that behaviour from the persist
-sink's point of view — and pin the inverse: real conversation content (user,
-assistant, tool results) must keep flowing to persist unfiltered.
+role="system" reminders flowed into semantic projections. Transient injection
+is the root fix: reminders take part in the per-round LLM request only and never
+enter ``api_messages``. These tests pin the post-commit RESPONSE_COMPLETE input;
+the Kernel itself has no durable-write authority.
 """
 
 from __future__ import annotations
@@ -62,7 +60,7 @@ def _kernel(client, persist_sink: list):
     return AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=6),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda *_a, **_k: "PROMPT",
             resolve_memory_context=lambda *_a, **_k: "",
             resolve_retrieval_context=lambda *_a, **_k: "",
@@ -95,13 +93,16 @@ def _model():
     )
 
 
-def _persisted_texts(persist_sink: list) -> list[str]:
+def _response_texts(result) -> list[str]:
     texts: list[str] = []
-    for call in persist_sink:
-        for message in call["messages"]:
-            content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
-            if isinstance(content, str):
-                texts.append(content)
+    payload = result.response_complete_payload or {}
+    for message in payload.get("messages") or []:
+        content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+        if isinstance(content, str):
+            texts.append(content)
+    final_response = (payload.get("metadata") or {}).get("final_response")
+    if isinstance(final_response, str):
+        texts.append(final_response)
     return texts
 
 
@@ -115,7 +116,7 @@ async def test_persisted_messages_contain_no_plan_reminder_text():
     sc = SessionContext()
     sc.plan_mode = PlanModeState(active=True)
 
-    await kernel.handle(
+    result = await kernel.handle(
         InvocationRequest(
             model=_model(),
             messages=[{"role": "user", "content": "plan the rollout"}],
@@ -127,8 +128,8 @@ async def test_persisted_messages_contain_no_plan_reminder_text():
         )
     )
 
-    assert persist_sink, "persist_memory was never called on the normal completion path"
-    texts = _persisted_texts(persist_sink)
+    assert persist_sink == []
+    texts = _response_texts(result)
     assert not any("Plan Mode is active" in t for t in texts), "FULL plan reminder leaked into persist"
     assert not any("Plan Mode is still active" in t for t in texts), "SPARSE plan reminder leaked into persist"
 
@@ -150,7 +151,7 @@ async def test_persisted_messages_contain_no_ledger_or_pressure_reminder_text():
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=15),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda *_a, **_k: "PROMPT",
             resolve_memory_context=lambda *_a, **_k: "",
             resolve_retrieval_context=lambda *_a, **_k: "",
@@ -173,7 +174,7 @@ async def test_persisted_messages_contain_no_ledger_or_pressure_reminder_text():
     sc = SessionContext()
     sc.metadata = {"work_ledger_enabled": True}
 
-    await kernel.handle(
+    result = await kernel.handle(
         InvocationRequest(
             model=_model(),
             messages=[{"role": "user", "content": "do the long task"}],
@@ -185,8 +186,8 @@ async def test_persisted_messages_contain_no_ledger_or_pressure_reminder_text():
         )
     )
 
-    assert persist_sink
-    texts = _persisted_texts(persist_sink)
+    assert persist_sink == []
+    texts = _response_texts(result)
     assert not any("gentle reminder" in t for t in texts), "ledger reminder leaked into persist"
     assert not any("Current Work Ledger snapshot" in t for t in texts), "ledger snapshot leaked into persist"
     assert not any("tool rounds used" in t for t in texts), "round-pressure warning leaked into persist"
@@ -202,7 +203,7 @@ async def test_persisted_messages_keep_real_conversation():
     client = _ToolLoopClient(tool_rounds=2)
     kernel = _kernel(client, persist_sink)
 
-    await kernel.handle(
+    result = await kernel.handle(
         InvocationRequest(
             model=_model(),
             messages=[{"role": "user", "content": "summarize the quarterly file"}],
@@ -214,8 +215,8 @@ async def test_persisted_messages_keep_real_conversation():
         )
     )
 
-    assert persist_sink
-    texts = _persisted_texts(persist_sink)
-    assert any("summarize the quarterly file" in t for t in texts), "user message missing from persist"
-    assert any("file content" in t for t in texts), "tool result missing from persist"
-    assert any("final answer" in t for t in texts), "final assistant content missing from persist"
+    assert persist_sink == []
+    texts = _response_texts(result)
+    assert any("summarize the quarterly file" in t for t in texts), "user message missing from learning input"
+    assert any("file content" in t for t in texts), "tool result missing from learning input"
+    assert any("final answer" in t for t in texts), "final assistant content missing from learning input"

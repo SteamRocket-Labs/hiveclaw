@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import secrets
 import uuid
 from dataclasses import dataclass
@@ -35,9 +36,9 @@ DEFAULT_SCOPES = (
     "files:upload",
 )
 HIVE_CONNECT_PRODUCT_NAME = "Hive Connect"
-HIVE_CONNECT_SKILL_REPO_URL = "https://github.com/rocky2431/hive-connect-skill"
 HIVE_CONNECT_SKILL_NAME = "hive-connect"
-HIVE_CONNECT_NPM_PACKAGE = "@hiveclaw243/hive-connect"
+HIVE_CONNECT_SKILL_REPO_URL_ENV = "HIVE_CONNECT_SKILL_REPO_URL"
+HIVE_CONNECT_NPM_PACKAGE_ENV = "HIVE_CONNECT_NPM_PACKAGE"
 HIVE_CONNECT_BINARY_NAME = "hive-connect"
 HIVE_CONNECT_CLIENT_KIND = "hive-connect"
 LOCAL_AGENT_PRESENCE_ONLINE_TTL_SECONDS = 90
@@ -96,26 +97,22 @@ async def _return_seeded_local_agent(db: AsyncSession, agent: Agent) -> Agent:
 def hive_connect_install_guide(*, base_url: str | None = None) -> dict[str, Any]:
     """Return the product-owned local runtime install guide for Hub surfaces."""
 
-    install_skill = f"npx skills add {HIVE_CONNECT_SKILL_REPO_URL} --skill {HIVE_CONNECT_SKILL_NAME}"
-    install_cli = f"npm install -g {HIVE_CONNECT_NPM_PACKAGE}"
-    login = f"{HIVE_CONNECT_BINARY_NAME} login"
-    status = f"{HIVE_CONNECT_BINARY_NAME} status"
-    run = f"{HIVE_CONNECT_BINARY_NAME} daemon install --config ~/.hive-connect/config.toml --force"
-    daemon_status = f"{HIVE_CONNECT_BINARY_NAME} daemon status"
+    skill_repo_url = os.getenv(HIVE_CONNECT_SKILL_REPO_URL_ENV, "").strip()
+    npm_package = os.getenv(HIVE_CONNECT_NPM_PACKAGE_ENV, "").strip()
+    sources_configured = bool(skill_repo_url and npm_package)
+    install_skill = f"npx skills add {skill_repo_url} --skill {HIVE_CONNECT_SKILL_NAME}" if sources_configured else ""
+    install_cli = f"npm install -g {npm_package}" if sources_configured else ""
+    login = f"{HIVE_CONNECT_BINARY_NAME} login" if sources_configured else ""
+    status = f"{HIVE_CONNECT_BINARY_NAME} status" if sources_configured else ""
+    run = (
+        f"{HIVE_CONNECT_BINARY_NAME} daemon install --config ~/.hive-connect/config.toml --force"
+        if sources_configured
+        else ""
+    )
     user_prompt = "帮我安装 Hive Connect skill，并连接到 Hive。"
-    return {
-        "product_name": HIVE_CONNECT_PRODUCT_NAME,
-        "skill_repo_url": HIVE_CONNECT_SKILL_REPO_URL,
-        "skill_name": HIVE_CONNECT_SKILL_NAME,
-        "npm_package": HIVE_CONNECT_NPM_PACKAGE,
-        "binary_name": HIVE_CONNECT_BINARY_NAME,
-        "install_skill_command": install_skill,
-        "install_cli_command": install_cli,
-        "login_command": login,
-        "status_command": status,
-        "run_command": run,
-        "user_prompt": user_prompt,
-        "instructions": [
+    if sources_configured:
+        daemon_status = f"{HIVE_CONNECT_BINARY_NAME} daemon status"
+        instructions = [
             user_prompt,
             "请按下面流程自动完成：",
             f"1. 执行 {install_skill} 安装 Hive Connect skill。",
@@ -126,7 +123,27 @@ def hive_connect_install_guide(*, base_url: str | None = None) -> dict[str, Any]
             f"6. 执行 {daemon_status}，确认后台服务正在运行。",
             f"7. 可选：执行 {status}，确认本机仍保留 Hive 登录绑定（这不代表在线）。",
             "8. 回到 Hive 页面查看本地 Agent 在线标记；如果离线，重新执行第 5-6 步，不要重复 login。",
-        ],
+        ]
+    else:
+        instructions = [
+            user_prompt,
+            "请按下面流程自动完成：",
+            "1. Hive Connect 安装源不可用（unavailable）；请停止并联系 Hive 管理员，配置已批准的 "
+            "HIVE_CONNECT_SKILL_REPO_URL 与 HIVE_CONNECT_NPM_PACKAGE。不要猜测仓库或 package 名称。",
+        ]
+    return {
+        "product_name": HIVE_CONNECT_PRODUCT_NAME,
+        "skill_repo_url": skill_repo_url,
+        "skill_name": HIVE_CONNECT_SKILL_NAME,
+        "npm_package": npm_package,
+        "binary_name": HIVE_CONNECT_BINARY_NAME,
+        "install_skill_command": install_skill,
+        "install_cli_command": install_cli,
+        "login_command": login,
+        "status_command": status,
+        "run_command": run,
+        "user_prompt": user_prompt,
+        "instructions": instructions,
     }
 
 

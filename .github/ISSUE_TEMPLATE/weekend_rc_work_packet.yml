@@ -1,5 +1,5 @@
-name: "Weekend RC Work Packet"
-description: A bounded implementation packet derived from a freshly reproduced Weekend RC finding
+name: "Weekend RC Finding Reference"
+description: An optional audit reference derived from a freshly reproduced Weekend RC finding
 title: "[Weekend RC] "
 labels: ["rc:weekend"]
 body:
@@ -22,13 +22,12 @@ body:
       required: true
 
   - type: dropdown
-    id: worker
+    id: execution_owner
     attributes:
-      label: Worker
+      label: Execution owner
       options:
-        - Kimi Code — frontend
-        - zCode — backend
-        - Codex — integration or cross-layer review
+        - Primary Codex
+        - Native Codex subagent — primary Codex remains accountable
     validations:
       required: true
 
@@ -75,13 +74,15 @@ body:
   - type: checkboxes
     id: authority
     attributes:
-      label: Authority and isolation contract
+      label: Authority contract
       options:
         - label: Codex freshly reproduced this finding and recorded the earliest wrong state.
           required: true
-        - label: This packet will run statelessly in one isolated Git worktree.
+        - label: This Issue is an optional audit reference and does not assign execution or own a verdict.
           required: true
-        - label: The worker cannot self-accept, close the finding, commit, push, deploy, or edit canonical verdict/evidence.
+        - label: Native subagent results remain candidates until the primary Codex integrates and independently verifies them.
+          required: true
+        - label: No external agent harness or second semantic controller is used.
           required: true
         - label: This packet grants no production, credential, billing, destructive, or irreversible effect.
           required: true

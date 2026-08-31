@@ -36,6 +36,51 @@ def test_production_manifest_is_frozen_complete_and_secret_free() -> None:
     assert {journey["candidate_id"] for journey in journeys} == set(GATE.EXPECTED_CANDIDATES)
     assert [journey["id"] for journey in journeys if journey["candidate_id"] == "PJ-03"] == (GATE.EXPECTED_COMMAND_IDS)
 
+    contract = manifest["execution_contract"]
+    assert "selected runtime LLM owns task reasoning" in contract["model_agency_policy"]
+    assert "primary Codex owns acceptance decomposition" in contract["model_agency_policy"]
+    assert "First prove Agent intelligence and self-evolution" in contract["proof_order_policy"]
+    assert (
+        "then perform the exhaustive role-permission, RLS and adversarial-security pass"
+        in contract["proof_order_policy"]
+    )
+    proof_orders = {family["candidate_id"]: family["proof_order"] for family in manifest["journey_families"]}
+    assert {candidate_id for candidate_id, order in proof_orders.items() if order == 1} == {
+        "PJ-01",
+        "PJ-05",
+        "PJ-06",
+        "PJ-07",
+        "PJ-08",
+        "PJ-09",
+        "PJ-33",
+    }
+    assert {candidate_id for candidate_id, order in proof_orders.items() if order == 3} == {
+        "PJ-15",
+        "PJ-16",
+        "PJ-29",
+        "PJ-34",
+    }
+    assert {candidate_id for candidate_id, order in proof_orders.items() if order == 4} == {"PJ-35"}
+    assert set(proof_orders.values()) == {1, 2, 3, 4}
+    assert "supported authenticated product or control-plane paths" in contract["fixture_policy"]
+    assert "direct tenant or role database mutation" in contract["fixture_policy"]
+    assert "No artificial Goal-wide timeout" in contract["timeout_policy"]
+    assert "creates no semantic verdict" in contract["timeout_policy"]
+    assert (
+        "not a Hive defect, BLOCKED_PRECONDITION, provider success or semantic Closed"
+        in (contract["external_readiness_policy"])
+    )
+    assert "remains unclosed" in contract["external_readiness_policy"]
+    assert "exact Goal-created and registered synthetic targets" in contract["cleanup_policy"]
+    assert "Pre-existing fixtures" in contract["cleanup_policy"]
+    assert "Registered read-only negative probes" in contract["hard_stop_policy"]
+    assert "without protected bytes or effects" in contract["hard_stop_policy"]
+    assert "Owner instruction cannot convert unauthorized access" in contract["hard_stop_policy"]
+    assert "stop that lane immediately" in contract["hard_stop_policy"]
+    assert "not a Journey completion state" in manifest["scoring"]["blocked_precondition_scope"]
+    for profile in manifest["profiles"].values():
+        assert "Goal-created" in " ".join(profile["cleanup"])
+
 
 def test_production_manifest_freezes_formats_models_and_non_semantic_gate() -> None:
     manifest = GATE.load_manifest(MANIFEST)

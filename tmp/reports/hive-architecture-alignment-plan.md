@@ -366,7 +366,7 @@ tests/architecture/
 
 ### 3.2 Hermes Agent 核心设计哲学
 
-来源:[Hermes Agent Architecture](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture) · 本地 `/Users/rocky243/vc-saas/hermes-agent` 源码 · Hermes self-evolution companion repo
+来源:[Hermes Agent Architecture](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture) · 本地 `/Users/example-owner/vc-saas/hermes-agent` 源码 · Hermes self-evolution companion repo
 
 **核心原则**:
 1. **AIAgent loop 是中心** — 不是 gateway control plane,而是以 agent 自身的 reasoning + tool + skill + self-evaluation 闭环为一等公民
@@ -651,16 +651,16 @@ L5 Surfaces
 1. 固化当前绿基线
    - 保留并持续运行当前回归命令:
    ```bash
-   cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+   cd /Users/example-owner/vc-saas/hiveclaw-main/backend
    .venv/bin/python -m pytest
    .venv/bin/python -m ruff check app tests
    .venv/bin/alembic heads
 
-   cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+   cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
    npm test
    npm run build
 
-   cd /Users/rocky243/vc-saas/hiveclaw-main
+   cd /Users/example-owner/vc-saas/hiveclaw-main
    git diff --check
    ```
    - 当前期望:backend `1887 passed,7 skipped`;ruff pass;frontend `70 passed`;build pass;Alembic 单 head。
@@ -1225,7 +1225,7 @@ self-evolution/skill agent
 **当前 Autonomy P6 后绿基线**:
 
 ```text
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 ./.venv/bin/python -m pytest
 # 1887 passed,7 skipped,4 warnings
 
@@ -1235,14 +1235,14 @@ cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 ./.venv/bin/alembic heads
 # add_agent_objectives_0427 (head)
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test
 # 18 files,70 tests passed
 
 npm run build
 # passed
 
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 git diff --check
 # clean
 ```

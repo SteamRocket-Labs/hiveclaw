@@ -144,7 +144,7 @@ Migration / Backfill / Rollback：
 验收：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q -k "session_contract or turn_state or permission_profile or tool_contract or terminal_reconciliation"
 ```
@@ -160,7 +160,7 @@ pytest tests -q -k "session_contract or turn_state or permission_profile or tool
 验收：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q -k "streaming_tool_executor or latency_hiding or skill_prefetch or memory_prefetch"
 ```
@@ -185,7 +185,7 @@ Migration / Backfill / Rollback：
 验收：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q -k "accepted_prompt_first or terminal_reason or orphan_tool_use or subagent_resume"
 ```
@@ -211,7 +211,7 @@ Migration / Backfill / Rollback：
 验收：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q -k "tool_result or command_safety or permission_profile or capability_gate or coordinator_force_async or subagent_deny"
 ```
@@ -235,7 +235,7 @@ Migration / Backfill / Rollback：
 验收：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q -k "context_policy or content_replacement or resume_byte_identical or diagnostic_context or tool_result_eviction"
 ```
@@ -256,7 +256,7 @@ Migration / Backfill / Rollback：
 验收：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 cd backend && source .venv/bin/activate && pytest tests -q -k "session_workbench or timeline_projection or active_turn"
 cd ../frontend && npm run build
 ```
@@ -279,7 +279,7 @@ Migration / Backfill / Rollback：
 验收：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q -k "memory_activation or source_refs or trusting_recall or memory_age or memory_write_gate"
 ```
@@ -304,7 +304,7 @@ Migration / Backfill / Rollback：
 验收：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q -k "extension_registry or command_registry or skill_access or hook_emitter or mcp_discovery"
 ```

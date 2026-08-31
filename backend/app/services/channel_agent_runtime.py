@@ -988,7 +988,6 @@ async def call_agent_llm(
             session_id=session_id,
             memory_messages=messages,
             session_context=session_context,
-            auto_close_session=False,
             session_source=session_source,
             session_channel=session_channel,
             system_prompt_suffix=pending_reply_suffix,

@@ -47,7 +47,7 @@ _AGENT_TOKEN_QUOTA_COLUMNS = (
     "quota_tokens_per_day",
     "quota_tokens_per_month",
 )
-_CURRENT_CLOSURE_HEAD = "a2a_continuation_task_0828"
+_CURRENT_CLOSURE_HEAD = "invitation_role_binding_0831"
 
 
 async def _seed_tenant(owner_engine, tenant_id: uuid.UUID, label: str) -> None:
@@ -373,7 +373,7 @@ async def test_bootstrap_path_has_no_workflow_step_phase(migrated_pg_url):
 async def test_workflow_tables_cross_tenant_invisible(migrated_pg_url, owner_engine, app_user_engine):
     """Tenant isolation through the non-superuser role — the only kind of
     connection RLS actually filters. (The container's ``test`` user, like
-    production's ``clawith``, is a SUPERUSER and bypasses every policy even
+    production's ``hive``, is a SUPERUSER and bypasses every policy even
     under FORCE — switching the app to a non-superuser role is the P15
     deployment task; FORCE makes that switch sufficient.)"""
     tenant_a, tenant_b = uuid.uuid4(), uuid.uuid4()

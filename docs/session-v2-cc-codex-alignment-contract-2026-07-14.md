@@ -3346,31 +3346,31 @@ Group 4 严格消费 Group 2 的 canonical Session event/item 与 Group 3 的 ro
 
 ### FreeCode / CC
 
-- `/Users/rocky243/vc-saas/free-code-main/src/utils/messages.ts`：`normalizeMessages`
-- `/Users/rocky243/vc-saas/free-code-main/src/utils/messages.ts`：`getMessagesAfterCompactBoundary`
-- `/Users/rocky243/vc-saas/free-code-main/src/utils/handlePromptSubmit.ts`：用户输入提交与 queue/abort 入口
-- `/Users/rocky243/vc-saas/free-code-main/src/utils/messageQueueManager.ts`：运行中输入队列
-- `/Users/rocky243/vc-saas/free-code-main/src/components/PromptInput/PromptInputQueuedCommands.tsx`：queued input 产品消费
-- `/Users/rocky243/vc-saas/free-code-main/src/query.ts`：canonical model/tool loop、safe-boundary queue drain、Stop hook retry、tool pair repair 与 compaction continuation
-- `/Users/rocky243/vc-saas/free-code-main/src/QueryEngine.ts`：SDK/print wrapper、accepted prompt durability、stream/transcript projection 与 compact boundary flush
-- `/Users/rocky243/vc-saas/free-code-main/src/utils/processUserInput/processUserInput.ts`：`UserPromptSubmit` blocking 与 preventContinuation 精确差异
-- `/Users/rocky243/vc-saas/free-code-main/src/utils/sessionStart.ts`、`src/query/stopHooks.ts`、`src/utils/hooks.ts`：SessionStart/PreToolUse/Stop/SubagentStop 边界语义
-- `/Users/rocky243/vc-saas/free-code-main/src/services/compact/compact.ts::buildPostCompactMessages`：boundary → summary → preserved → attachments → hook results 精确顺序
-- `/Users/rocky243/vc-saas/free-code-main/src/tools/AgentTool/UI.tsx`：child live progress、最近活动、tool count 与 token usage
-- `/Users/rocky243/vc-saas/free-code-main/src/tasks/LocalAgentTask/LocalAgentTask.tsx`、`src/tools/TaskOutputTool/TaskOutputTool.tsx`、`src/utils/task/diskOutput.ts`：atomic completion notification、完整 task output/ref 与 durable disk result 底线
-- `/Users/rocky243/vc-saas/free-code-main/src/screens/REPL.tsx`、`src/components/Messages.tsx`：running queue、abort、稳定 streaming identity、完整 transcript/虚拟滚动/展开消费
+- `/Users/example-owner/vc-saas/free-code-main/src/utils/messages.ts`：`normalizeMessages`
+- `/Users/example-owner/vc-saas/free-code-main/src/utils/messages.ts`：`getMessagesAfterCompactBoundary`
+- `/Users/example-owner/vc-saas/free-code-main/src/utils/handlePromptSubmit.ts`：用户输入提交与 queue/abort 入口
+- `/Users/example-owner/vc-saas/free-code-main/src/utils/messageQueueManager.ts`：运行中输入队列
+- `/Users/example-owner/vc-saas/free-code-main/src/components/PromptInput/PromptInputQueuedCommands.tsx`：queued input 产品消费
+- `/Users/example-owner/vc-saas/free-code-main/src/query.ts`：canonical model/tool loop、safe-boundary queue drain、Stop hook retry、tool pair repair 与 compaction continuation
+- `/Users/example-owner/vc-saas/free-code-main/src/QueryEngine.ts`：SDK/print wrapper、accepted prompt durability、stream/transcript projection 与 compact boundary flush
+- `/Users/example-owner/vc-saas/free-code-main/src/utils/processUserInput/processUserInput.ts`：`UserPromptSubmit` blocking 与 preventContinuation 精确差异
+- `/Users/example-owner/vc-saas/free-code-main/src/utils/sessionStart.ts`、`src/query/stopHooks.ts`、`src/utils/hooks.ts`：SessionStart/PreToolUse/Stop/SubagentStop 边界语义
+- `/Users/example-owner/vc-saas/free-code-main/src/services/compact/compact.ts::buildPostCompactMessages`：boundary → summary → preserved → attachments → hook results 精确顺序
+- `/Users/example-owner/vc-saas/free-code-main/src/tools/AgentTool/UI.tsx`：child live progress、最近活动、tool count 与 token usage
+- `/Users/example-owner/vc-saas/free-code-main/src/tasks/LocalAgentTask/LocalAgentTask.tsx`、`src/tools/TaskOutputTool/TaskOutputTool.tsx`、`src/utils/task/diskOutput.ts`：atomic completion notification、完整 task output/ref 与 durable disk result 底线
+- `/Users/example-owner/vc-saas/free-code-main/src/screens/REPL.tsx`、`src/components/Messages.tsx`：running queue、abort、稳定 streaming identity、完整 transcript/虚拟滚动/展开消费
 
 ### Codex
 
-- `/Users/rocky243/Context Engineering/codex/codex-rs/protocol/src/models.rs`：`MessagePhase`
-- `/Users/rocky243/Context Engineering/codex/codex-rs/app-server-protocol/src/protocol/v2/item.rs`：`ThreadItem`、Item lifecycle 与 delta notifications
-- `/Users/rocky243/Context Engineering/codex/codex-rs/app-server-protocol/src/protocol/thread_history.rs`：stable item upsert
-- `/Users/rocky243/Context Engineering/codex/codex-rs/app-server-protocol/src/protocol/thread_history_projection.rs`：durable rollout 到 Thread history 的 typed projection
-- `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/session/input_queue.rs`：session input queue
-- `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/session/inject.rs`、`core/src/session/mod.rs::steer_input`：运行中输入注入与 session 语义
-- `/Users/rocky243/Context Engineering/codex/codex-rs/app-server-protocol/src/protocol/v2/turn.rs::TurnSteerParams`：typed steer contract
-- `/Users/rocky243/Context Engineering/codex/codex-rs/app-server/src/request_processors/turn_processor.rs`：turn steer request processing
-- `/Users/rocky243/Context Engineering/codex/codex-rs/app-server/tests/suite/v2/turn_steer.rs`：steer acceptance/regression evidence
-- `/Users/rocky243/Context Engineering/codex/codex-rs/app-server/src/thread_state.rs`、`app-server/src/request_processors/thread_lifecycle.rs`：active turn lock、lifecycle 与 terminal follow-up
-- `/Users/rocky243/Context Engineering/codex/codex-rs/tui/src/chatwidget.rs`、`tui/src/streaming/controller.rs`、`tui/src/chatwidget/input_queue.rs`：committed history、active streaming tail 与 pending input 产品表达
-- `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/tools/handlers/multi_agents/wait.rs`、`multi_agents_common.rs`：typed agent wait/status 与 collaboration state 工程增量
+- `/Users/example-owner/Context Engineering/codex/codex-rs/protocol/src/models.rs`：`MessagePhase`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/app-server-protocol/src/protocol/v2/item.rs`：`ThreadItem`、Item lifecycle 与 delta notifications
+- `/Users/example-owner/Context Engineering/codex/codex-rs/app-server-protocol/src/protocol/thread_history.rs`：stable item upsert
+- `/Users/example-owner/Context Engineering/codex/codex-rs/app-server-protocol/src/protocol/thread_history_projection.rs`：durable rollout 到 Thread history 的 typed projection
+- `/Users/example-owner/Context Engineering/codex/codex-rs/core/src/session/input_queue.rs`：session input queue
+- `/Users/example-owner/Context Engineering/codex/codex-rs/core/src/session/inject.rs`、`core/src/session/mod.rs::steer_input`：运行中输入注入与 session 语义
+- `/Users/example-owner/Context Engineering/codex/codex-rs/app-server-protocol/src/protocol/v2/turn.rs::TurnSteerParams`：typed steer contract
+- `/Users/example-owner/Context Engineering/codex/codex-rs/app-server/src/request_processors/turn_processor.rs`：turn steer request processing
+- `/Users/example-owner/Context Engineering/codex/codex-rs/app-server/tests/suite/v2/turn_steer.rs`：steer acceptance/regression evidence
+- `/Users/example-owner/Context Engineering/codex/codex-rs/app-server/src/thread_state.rs`、`app-server/src/request_processors/thread_lifecycle.rs`：active turn lock、lifecycle 与 terminal follow-up
+- `/Users/example-owner/Context Engineering/codex/codex-rs/tui/src/chatwidget.rs`、`tui/src/streaming/controller.rs`、`tui/src/chatwidget/input_queue.rs`：committed history、active streaming tail 与 pending input 产品表达
+- `/Users/example-owner/Context Engineering/codex/codex-rs/core/src/tools/handlers/multi_agents/wait.rs`、`multi_agents_common.rs`：typed agent wait/status 与 collaboration state 工程增量

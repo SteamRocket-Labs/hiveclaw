@@ -528,7 +528,7 @@ V2 完成不能只看功能能跑，必须看证据和治理闭环。
 文档阶段先做 markdown/diff 检查：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 git diff --check -- docs
 rg -n "CCPlus Round 2|Hive Connect|CompanyKnowledgeOntologyPlaneV1|A2AWorkflowProcessGraphV1|SkillEvolutionPipelineV1|SessionConversationControlV1" docs
 ```
@@ -536,7 +536,7 @@ rg -n "CCPlus Round 2|Hive Connect|CompanyKnowledgeOntologyPlaneV1|A2AWorkflowPr
 后续实现阶段需要新增专项测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_company_permission_control_plane.py -q
 pytest tests/services/test_relationship_graph_v1.py -q

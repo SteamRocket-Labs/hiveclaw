@@ -12,6 +12,8 @@ Phase 2: session projection on RESPONSE_COMPLETE/PRE_COMPACTION; canonical
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import re
 import uuid
@@ -36,6 +38,8 @@ from app.services.session_memory import (
 logger = logging.getLogger(__name__)
 _DEFAULT_HOOK_REGISTRY = hook_registry
 _T2_BACKGROUND_TASKS: dict[str, asyncio.Task[None]] = {}
+_REQUIRED_TURN_BOUNDARY_MARKER = "required_terminal_boundary_projected"
+_REQUIRED_RESPONSE_COMPLETE_MARKER = "required_response_complete_projected"
 
 
 # ── Logging-only handlers (Phase 0, kept for events without active handler) ──
@@ -97,21 +101,38 @@ async def _audit_permission_denied(ctx: HookContext) -> None:
 # ── Session projection handlers (Phase 2) ──
 
 
-async def _project_on_response(ctx: HookContext) -> None:
+def _has_committed_response_receipt(ctx: HookContext) -> bool:
+    receipt = ctx.metadata.get("response_commit")
+    return bool(
+        isinstance(receipt, dict)
+        and receipt.get("schema") == "hive.response_commit.v1"
+        and receipt.get("committed") is True
+        and str(receipt.get("commit_kind") or "").strip()
+        and str(receipt.get("idempotency_key") or "").strip()
+        and any(str(ref).strip() for ref in receipt.get("source_refs") or [])
+    )
+
+
+async def _project_on_response(ctx: HookContext) -> dict[str, object] | None:
     """RESPONSE_COMPLETE → update volatile session projection only.
 
     Durable T2 is now built only from sealed T0 segments. This avoids the old
     direct messages -> learnings/*.md path and keeps T2 one-to-one with T0
     segment source ranges.
     """
+    if ctx.metadata.get(_REQUIRED_RESPONSE_COMPLETE_MARKER):
+        return None
+    if not _has_committed_response_receipt(ctx):
+        logger.warning("[Hooks] RESPONSE_COMPLETE held: missing committed response receipt")
+        return None
     agent_id = _parse_agent_id(ctx)
     if not agent_id:
-        return
+        return None
     turn = ctx.metadata.get("turn_count", "?")
     logger.info(
         "[Hooks] RESPONSE_COMPLETE: agent=%s source=%s turn=%s projection_only=true", ctx.agent_id, ctx.source, turn
     )
-    await _update_session_memory_projection(ctx, agent_id, ctx.messages or [])
+    return await _project_committed_response_session_memory(ctx, agent_id, ctx.messages or [])
 
 
 def _agent_data_root() -> Path:
@@ -126,6 +147,104 @@ def _session_memory_metadata(ctx: HookContext) -> dict:
         metadata["session_id"] = str(ctx.session_id)
     metadata.setdefault("source", ctx.source or str(ctx.event))
     return metadata
+
+
+def _committed_response_base_ref(ctx: HookContext) -> str:
+    receipt = ctx.metadata.get("response_commit")
+    refs = [str(ref).strip() for ref in (receipt or {}).get("source_refs") or [] if str(ref).strip()]
+    if isinstance(receipt, dict) and receipt.get("commit_kind") == "runtime_terminal_boundary":
+        boundary_id = str(ctx.metadata.get("terminal_boundary_id") or "").strip()
+        idempotency_key = str(ctx.metadata.get("terminal_boundary_idempotency_key") or "").strip()
+        runtime_task_id = str(ctx.metadata.get("runtime_task_id") or "").strip()
+        if (
+            str(receipt.get("terminal_boundary_id") or "").strip() != boundary_id
+            or str(receipt.get("idempotency_key") or "").strip() != idempotency_key
+            or str(receipt.get("runtime_task_id") or "").strip() != runtime_task_id
+        ):
+            return ""
+        try:
+            canonical = f"runtime-terminal-boundary://{uuid.UUID(boundary_id)}"
+        except ValueError:
+            return ""
+        return canonical if canonical in refs else ""
+    prefix = "session-run-outcome://"
+    for ref in refs:
+        if not ref.startswith(prefix):
+            continue
+        identifier = ref.removeprefix(prefix)
+        if "/" in identifier:
+            continue
+        try:
+            return f"{prefix}{uuid.UUID(identifier)}"
+        except ValueError:
+            continue
+    return ""
+
+
+async def _project_committed_response_session_memory(
+    ctx: HookContext,
+    agent_id: uuid.UUID,
+    messages: list[dict],
+) -> dict[str, object]:
+    """Commit the volatile session projection exactly once per response receipt."""
+
+    from app.services.agent_asset_transaction import AgentAssetTransaction
+
+    response_commit = dict(ctx.metadata.get("response_commit") or {})
+    response_idempotency_key = str(response_commit.get("idempotency_key") or "").strip()
+    if not response_idempotency_key:
+        raise ValueError("committed session projection requires response_commit.idempotency_key")
+    evidence_refs = [str(ref).strip() for ref in response_commit.get("source_refs") or [] if str(ref).strip()]
+    response_base_ref = _committed_response_base_ref(ctx)
+    if not response_base_ref:
+        raise ValueError("committed session projection requires a canonical source ref")
+    data_root = _agent_data_root()
+    agent_root = data_root / str(agent_id)
+    with AgentAssetTransaction(
+        agent_root,
+        operation="response_complete_session_projection",
+        idempotency_key=f"session-memory:{response_idempotency_key}",
+        evidence_refs=evidence_refs,
+    ) as transaction:
+        if transaction.is_replay:
+            receipt = transaction.commit()
+            logger.info(
+                "[Hooks] RESPONSE_COMPLETE session projection replay agent=%s session=%s revision=%d",
+                agent_id,
+                ctx.session_id,
+                receipt.revision,
+            )
+            return {
+                "source_ref": response_base_ref,
+                "transaction_id": receipt.transaction_id,
+                "revision": receipt.revision,
+                "idempotent_replay": True,
+            }
+        payload = await build_session_memory_payload_with_llm(
+            messages,
+            metadata=_session_memory_metadata(ctx),
+            agent_id=agent_id,
+            tenant_id=ctx.metadata.get("tenant_id"),
+        )
+        update_session_memory(
+            agent_id,
+            payload,
+            data_root=data_root,
+            transaction=transaction,
+        )
+        receipt = transaction.commit()
+        logger.info(
+            "[Hooks] RESPONSE_COMPLETE session projection committed agent=%s session=%s revision=%d",
+            agent_id,
+            ctx.session_id,
+            receipt.revision,
+        )
+        return {
+            "source_ref": response_base_ref,
+            "transaction_id": receipt.transaction_id,
+            "revision": receipt.revision,
+            "idempotent_replay": False,
+        }
 
 
 def _t0_safe_metadata(metadata: dict | None) -> dict:
@@ -183,12 +302,9 @@ def schedule_fast_reflection_candidate(
     messages: list[dict],
     metadata: dict,
 ) -> dict[str, str]:
-    from app.services.fast_reflection_service import create_fast_reflection_candidate
-
     async def _run() -> None:
         try:
-            await asyncio.to_thread(
-                create_fast_reflection_candidate,
+            await _create_fast_reflection_candidate(
                 data_root=data_root,
                 agent_id=agent_id,
                 session_id=session_id,
@@ -202,16 +318,81 @@ def schedule_fast_reflection_candidate(
     return {"status": "scheduled"}
 
 
-async def _fast_reflection_on_response(ctx: HookContext) -> None:
-    """RESPONSE_COMPLETE → non-blocking candidate creation for strong correction signals."""
+async def _create_fast_reflection_candidate(
+    *,
+    data_root: Path,
+    agent_id: uuid.UUID,
+    session_id: str,
+    messages: list[dict],
+    metadata: dict,
+) -> dict[str, object]:
+    """Commit one idempotent fast-reflection candidate before returning."""
+
+    from app.services.fast_reflection_service import create_fast_reflection_candidate
+
+    return await asyncio.to_thread(
+        create_fast_reflection_candidate,
+        data_root=data_root,
+        agent_id=agent_id,
+        session_id=session_id,
+        messages=messages,
+        metadata=metadata,
+    )
+
+
+async def _load_fast_reflection_disposition(
+    *,
+    data_root: Path,
+    agent_id: uuid.UUID,
+    session_id: str,
+    response_idempotency_key: str,
+) -> dict[str, object] | None:
+    """Read a committed disposition before any auxiliary provider call."""
+
+    from app.services.fast_reflection_service import load_fast_reflection_disposition
+
+    return await asyncio.to_thread(
+        load_fast_reflection_disposition,
+        data_root=data_root,
+        agent_id=agent_id,
+        session_id=session_id,
+        response_idempotency_key=response_idempotency_key,
+    )
+
+
+def _fast_reflection_source_ref(ctx: HookContext) -> str:
+    base_ref = _committed_response_base_ref(ctx)
+    if not base_ref:
+        raise ValueError("committed fast reflection requires a canonical SessionRunOutcome source ref")
+    return base_ref
+
+
+async def _fast_reflection_on_response(ctx: HookContext) -> dict[str, object] | None:
+    """RESPONSE_COMPLETE → durable candidate creation for strong correction signals."""
+    if ctx.metadata.get(_REQUIRED_RESPONSE_COMPLETE_MARKER):
+        return None
+    if not _has_committed_response_receipt(ctx):
+        logger.warning("[Hooks] fast reflection held: missing committed response receipt")
+        return None
     agent_id = _parse_agent_id(ctx)
     if not agent_id:
-        return
+        raise ValueError("committed fast reflection requires an Agent UUID")
     messages = ctx.messages or []
     if not messages:
-        return
+        result: dict[str, object] = {"status": "skipped", "reason": "no_messages"}
+        return {**result, "source_ref": _fast_reflection_source_ref(ctx)}
     metadata = dict(ctx.metadata or {})
     metadata.setdefault("source", ctx.source or "web")
+    response_commit = metadata.get("response_commit") if isinstance(metadata.get("response_commit"), dict) else {}
+    response_idempotency_key = str(response_commit.get("idempotency_key") or "").strip()
+    replay = await _load_fast_reflection_disposition(
+        data_root=_agent_data_root(),
+        agent_id=agent_id,
+        session_id=str(ctx.session_id or ""),
+        response_idempotency_key=response_idempotency_key,
+    )
+    if replay is not None:
+        return {**replay, "source_ref": _fast_reflection_source_ref(ctx)}
     tenant_id = metadata.get("tenant_id")
     classification = await _run_fast_reflection_learning_brain(
         agent_id=agent_id,
@@ -222,13 +403,77 @@ async def _fast_reflection_on_response(ctx: HookContext) -> None:
     )
     if classification is not None:
         metadata["fast_reflection_classification"] = classification
-    schedule_fast_reflection_candidate(
+    result = await _create_fast_reflection_candidate(
         data_root=_agent_data_root(),
         agent_id=agent_id,
         session_id=str(ctx.session_id or ""),
         messages=messages,
         metadata=metadata,
     )
+    source_ref = _fast_reflection_source_ref(ctx)
+    logger.info(
+        "[Hooks] fast reflection projected agent=%s session=%s status=%s source_ref=%s",
+        agent_id,
+        ctx.session_id,
+        str(result.get("status") or "unknown"),
+        source_ref,
+    )
+    return {**result, "source_ref": source_ref}
+
+
+def _required_response_projection_sha256(
+    *,
+    session_projection: dict[str, object],
+    fast_reflection: dict[str, object],
+) -> str:
+    """Hash a replay-stable, prose-free receipt for required consumers."""
+
+    receipt = {
+        "session_projection": {
+            "transaction_id": str(session_projection.get("transaction_id") or ""),
+            "revision": int(session_projection.get("revision") or 0),
+        },
+        "fast_reflection": {
+            "status": str(fast_reflection.get("status") or "unknown"),
+            "reason": str(fast_reflection.get("reason") or ""),
+            "candidate_id": str(fast_reflection.get("candidate_id") or ""),
+            "signal_type": str(fast_reflection.get("signal_type") or ""),
+            "classification_method": str(fast_reflection.get("classification_method") or ""),
+        },
+    }
+    encoded = json.dumps(receipt, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+async def project_committed_response_complete(ctx: HookContext) -> dict[str, object]:
+    """Await the two required RESPONSE_COMPLETE projections.
+
+    ``HookRegistry.emit`` intentionally treats observer failures as advisory and
+    records them instead of raising.  A durable terminal-boundary outbox cannot
+    acknowledge work on that basis, so its processor calls this narrow helper
+    and lets either required projection failure propagate for retry.
+    """
+
+    if ctx.event != HookEvent.RESPONSE_COMPLETE or not _has_committed_response_receipt(ctx):
+        raise ValueError("committed RESPONSE_COMPLETE projection requires an authoritative receipt")
+    if _parse_agent_id(ctx) is None or not str(ctx.session_id or "").strip():
+        raise ValueError("committed RESPONSE_COMPLETE projection requires Agent and session authority")
+    session_projection = await _project_on_response(ctx)
+    fast_reflection = await _fast_reflection_on_response(ctx)
+    if not isinstance(session_projection, dict) or not isinstance(fast_reflection, dict):
+        raise RuntimeError("committed RESPONSE_COMPLETE projection did not produce required receipts")
+    source_refs = [str(receipt.get("source_ref") or "").strip() for receipt in (session_projection, fast_reflection)]
+    response_base_ref = _committed_response_base_ref(ctx)
+    if not response_base_ref or source_refs != [response_base_ref, response_base_ref]:
+        raise RuntimeError("committed RESPONSE_COMPLETE projection did not produce canonical source refs")
+    ctx.metadata[_REQUIRED_RESPONSE_COMPLETE_MARKER] = True
+    return {
+        "source_refs": [response_base_ref],
+        "receipt_sha256": _required_response_projection_sha256(
+            session_projection=session_projection,
+            fast_reflection=fast_reflection,
+        ),
+    }
 
 
 async def _project_on_pre_compaction(ctx: HookContext) -> None:
@@ -445,8 +690,10 @@ def _session_lineage_metadata(ctx: HookContext) -> dict[str, object] | None:
     return payload or None
 
 
-async def _t0_turn_stop(ctx: HookContext) -> None:
+async def _t0_turn_stop(ctx: HookContext, *, required_t2: bool = False) -> None:
     """TURN_STOP → seal the completed user turn and start canonical T2 packaging."""
+    if ctx.metadata.get(_REQUIRED_TURN_BOUNDARY_MARKER):
+        return
     agent_id = _parse_agent_id(ctx)
     if not agent_id:
         return
@@ -468,6 +715,10 @@ async def _t0_turn_stop(ctx: HookContext) -> None:
         session_id=str(ctx.session_id),
         reason=reason,
         metadata=metadata,
+        boundary_id=ctx.metadata.get("terminal_boundary_id"),
+        idempotency_key=ctx.metadata.get("terminal_boundary_idempotency_key"),
+        expected_runtime_task_id=ctx.metadata.get("runtime_task_id"),
+        expected_turn_id=ctx.metadata.get("turn_id"),
     )
     if not sealed:
         return
@@ -481,11 +732,18 @@ async def _t0_turn_stop(ctx: HookContext) -> None:
         sealed.segment_id,
         sealed.sequence,
     )
-    await _build_t2_for_sealed_segment(ctx=ctx, agent_id=agent_id, segment_id=sealed.segment_id)
+    await _build_t2_for_sealed_segment(
+        ctx=ctx,
+        agent_id=agent_id,
+        segment_id=sealed.segment_id,
+        required=required_t2,
+    )
 
 
 async def _t0_turn_abort(ctx: HookContext) -> None:
     """TURN_ABORT → seal a dirty/aborted turn without semantic T2 packaging."""
+    if ctx.metadata.get(_REQUIRED_TURN_BOUNDARY_MARKER):
+        return
     agent_id = _parse_agent_id(ctx)
     if not agent_id or not ctx.session_id:
         return
@@ -502,6 +760,10 @@ async def _t0_turn_abort(ctx: HookContext) -> None:
         session_id=str(ctx.session_id),
         reason=reason,
         metadata=metadata,
+        boundary_id=ctx.metadata.get("terminal_boundary_id"),
+        idempotency_key=ctx.metadata.get("terminal_boundary_idempotency_key"),
+        expected_runtime_task_id=ctx.metadata.get("runtime_task_id"),
+        expected_turn_id=ctx.metadata.get("turn_id"),
     )
     if sealed:
         logger.info(
@@ -600,7 +862,13 @@ async def _t0_session_idle(ctx: HookContext) -> None:
         await _build_t2_for_sealed_segment(ctx=ctx, agent_id=agent_id, segment_id=sealed.segment_id)
 
 
-async def _build_t2_for_sealed_segment(*, ctx: HookContext, agent_id: uuid.UUID, segment_id: str) -> None:
+async def _build_t2_for_sealed_segment(
+    *,
+    ctx: HookContext,
+    agent_id: uuid.UUID,
+    segment_id: str,
+    required: bool = False,
+) -> None:
     """Kick canonical T0 -> T2 package creation for a sealed semantic session segment."""
 
     if not ctx.session_id:
@@ -612,7 +880,9 @@ async def _build_t2_for_sealed_segment(*, ctx: HookContext, agent_id: uuid.UUID,
     tenant_id_raw = ctx.metadata.get("tenant_id")
     try:
         metadata_tenant_id = uuid.UUID(str(tenant_id_raw)) if tenant_id_raw else None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
+        if required:
+            raise ValueError("required T0->T2 projection has invalid tenant authority metadata") from exc
         metadata_tenant_id = None
         logger.warning("[Hooks] Ignoring invalid T0->T2 tenant metadata for agent=%s", agent_id)
     try:
@@ -622,8 +892,12 @@ async def _build_t2_for_sealed_segment(*, ctx: HookContext, agent_id: uuid.UUID,
         if tenant_id is None:
             raise LookupError(f"Agent tenant authority not found for {agent_id}")
         if metadata_tenant_id is not None and metadata_tenant_id != tenant_id:
+            if required:
+                raise ValueError("required T0->T2 tenant metadata disagrees with Agent authority")
             logger.warning("[Hooks] T0->T2 tenant metadata disagrees with Agent authority for agent=%s", agent_id)
     except Exception as exc:  # noqa: BLE001 - the durable job below preserves evidence for later repair
+        if required:
+            raise
         tenant_id = None
         logger.warning("[Hooks] T0->T2 tenant resolution failed for agent=%s: %s", agent_id, exc)
     try:
@@ -647,6 +921,9 @@ async def _build_t2_for_sealed_segment(*, ctx: HookContext, agent_id: uuid.UUID,
             receipt.job_id,
             receipt.package_dir,
         )
+        accepted_statuses = {"queued", "running", "committed", "held", "not_applicable"}
+        if required and receipt.status not in accepted_statuses:
+            raise RuntimeError(f"required T0->T2 job was not durably accepted: {receipt.status}")
         if receipt.status == "queued":
             _schedule_t2_segment_package_job(
                 data_root=_agent_data_root(),
@@ -662,6 +939,8 @@ async def _build_t2_for_sealed_segment(*, ctx: HookContext, agent_id: uuid.UUID,
             # detached from the terminal RuntimeTask claim.
             await asyncio.sleep(0)
     except Exception as exc:  # noqa: BLE001
+        if required:
+            raise
         logger.warning("[Hooks] T0->T2 package build failed for agent=%s segment=%s: %s", agent_id, segment_id, exc)
 
 
@@ -745,6 +1024,8 @@ def _t0_segment_t2_eligible(ctx: HookContext) -> tuple[bool, str]:
 
 async def _t0_trigger_end(ctx: HookContext) -> None:
     """TRIGGER_END → seal the already-written runtime transcript, then build T2."""
+    if ctx.metadata.get(_REQUIRED_TURN_BOUNDARY_MARKER):
+        return
     agent_id = _parse_agent_id(ctx)
     if not agent_id:
         return
@@ -765,6 +1046,8 @@ async def _t0_trigger_end(ctx: HookContext) -> None:
 
 async def _t0_delegation_end(ctx: HookContext) -> None:
     """DELEGATION_END → seal the already-written runtime transcript, then build T2."""
+    if ctx.metadata.get(_REQUIRED_TURN_BOUNDARY_MARKER):
+        return
     agent_id = _parse_agent_id(ctx)
     if not agent_id:
         return
@@ -874,6 +1157,8 @@ def _unique_text(values: list[str]) -> list[str]:
 
 async def _summarize_activation_feedback_on_turn_stop(ctx: HookContext) -> None:
     """TURN_STOP → summarize activation feedback before T0 sealing."""
+    if ctx.metadata.get(_REQUIRED_TURN_BOUNDARY_MARKER):
+        return
     from app.runtime.context import runtime_assembly_metadata
 
     raw_events = runtime_assembly_metadata(ctx.metadata).get("activation_events")
@@ -901,6 +1186,35 @@ async def _summarize_activation_feedback_on_turn_stop(ctx: HookContext) -> None:
         "query_ids": _unique_text([str(event.get("query_id") or "") for event in events]),
         "event_ids": _unique_text([str(event.get("event_id") or "") for event in events]),
     }
+
+
+async def project_required_turn_boundary(ctx: HookContext) -> None:
+    """Await the required terminal T0 projection without advisory hook semantics.
+
+    The generic hook registry records handler failures and continues.  A claimed
+    terminal-boundary outbox row must instead stay retryable until its stable
+    run/turn boundary is sealed and the durable T2 job is accepted.
+    """
+
+    required_metadata = (
+        "terminal_boundary_id",
+        "terminal_boundary_idempotency_key",
+        "runtime_task_id",
+        "turn_id",
+    )
+    missing = [key for key in required_metadata if ctx.metadata.get(key) in (None, "")]
+    if missing:
+        raise ValueError(f"required terminal boundary metadata missing: {', '.join(missing)}")
+    if ctx.event == HookEvent.TURN_STOP:
+        await _summarize_activation_feedback_on_turn_stop(ctx)
+        await _t0_turn_stop(ctx, required_t2=True)
+        ctx.metadata[_REQUIRED_TURN_BOUNDARY_MARKER] = True
+        return
+    if ctx.event == HookEvent.TURN_ABORT:
+        await _t0_turn_abort(ctx)
+        ctx.metadata[_REQUIRED_TURN_BOUNDARY_MARKER] = True
+        return
+    raise ValueError("required terminal boundary projection only accepts TURN_STOP or TURN_ABORT")
 
 
 async def _capture_pending_reply(ctx: HookContext) -> None:

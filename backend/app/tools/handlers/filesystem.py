@@ -101,10 +101,17 @@ def read_file(
     arguments: dict,
     tenant_id: str | None = None,
     authority_scope=None,
+    permission_profile=None,
 ) -> "str | ToolContentEnvelope":
     from app.services.agent_tool_domains.workspace import _read_file
 
-    return _read_file(workspace, arguments.get("path", ""), tenant_id, authority_scope=authority_scope)
+    return _read_file(
+        workspace,
+        arguments.get("path", ""),
+        tenant_id,
+        authority_scope=authority_scope,
+        permission_profile=permission_profile,
+    )
 
 
 # -- write_file ---------------------------------------------------------------
@@ -149,7 +156,13 @@ def read_file(
         adapter="workspace_args",
     )
 )
-def write_file(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None) -> str:
+def write_file(
+    workspace: Path,
+    arguments: dict,
+    tenant_id: str | None = None,
+    authority_scope=None,
+    permission_profile=None,
+) -> str:
     from app.services.agent_tool_domains.workspace import _write_file
 
     return _write_file(
@@ -157,6 +170,7 @@ def write_file(workspace: Path, arguments: dict, tenant_id: str | None = None, a
         arguments.get("path", ""),
         arguments.get("content", ""),
         authority_scope=authority_scope,
+        permission_profile=permission_profile,
     )
 
 
@@ -206,7 +220,13 @@ def write_file(workspace: Path, arguments: dict, tenant_id: str | None = None, a
         adapter="workspace_args",
     )
 )
-def edit_file(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None) -> str:
+def edit_file(
+    workspace: Path,
+    arguments: dict,
+    tenant_id: str | None = None,
+    authority_scope=None,
+    permission_profile=None,
+) -> str:
     from app.services.agent_tool_domains.workspace import _edit_file
 
     return _edit_file(
@@ -216,6 +236,7 @@ def edit_file(workspace: Path, arguments: dict, tenant_id: str | None = None, au
         arguments.get("new_text", ""),
         arguments.get("replace_all", False),
         authority_scope=authority_scope,
+        permission_profile=permission_profile,
     )
 
 
@@ -248,7 +269,13 @@ def edit_file(workspace: Path, arguments: dict, tenant_id: str | None = None, au
         adapter="workspace_args",
     )
 )
-def glob_search(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None) -> str:
+def glob_search(
+    workspace: Path,
+    arguments: dict,
+    tenant_id: str | None = None,
+    authority_scope=None,
+    permission_profile=None,
+) -> str:
     from app.services.agent_tool_domains.workspace import _glob_search
 
     return _glob_search(
@@ -256,6 +283,7 @@ def glob_search(workspace: Path, arguments: dict, tenant_id: str | None = None, 
         arguments.get("pattern", ""),
         arguments.get("root", ""),
         authority_scope=authority_scope,
+        permission_profile=permission_profile,
     )
 
 
@@ -293,7 +321,13 @@ def glob_search(workspace: Path, arguments: dict, tenant_id: str | None = None, 
         adapter="workspace_args",
     )
 )
-def grep_search(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None) -> str:
+def grep_search(
+    workspace: Path,
+    arguments: dict,
+    tenant_id: str | None = None,
+    authority_scope=None,
+    permission_profile=None,
+) -> str:
     from app.services.agent_tool_domains.workspace import _grep_search
 
     return _grep_search(
@@ -302,6 +336,7 @@ def grep_search(workspace: Path, arguments: dict, tenant_id: str | None = None, 
         arguments.get("root", ""),
         arguments.get("max_results"),
         authority_scope=authority_scope,
+        permission_profile=permission_profile,
     )
 
 

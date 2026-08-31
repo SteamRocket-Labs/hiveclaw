@@ -129,7 +129,7 @@ Knowledge 不从 `B -> C` 自动进入。Personal 当前只能通过 `search_per
 ## 8. 当前验收入口
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 
 pytest -q \

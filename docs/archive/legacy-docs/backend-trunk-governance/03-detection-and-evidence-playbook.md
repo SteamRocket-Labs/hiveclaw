@@ -15,7 +15,7 @@ rg -n "focus.md|agent_objectives|RuntimeTask|task_type=\"trigger\"|task_type=\"h
 Use these tests as proof that the current trunk still holds:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/architecture tests/tools/test_governance.py tests/tools/test_service.py tests/services/test_trigger_daemon.py tests/services/test_runtime_task_service.py
 ```

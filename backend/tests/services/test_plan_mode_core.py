@@ -646,7 +646,7 @@ def test_normalize_plan_json_rewrites_internal_capabilities_and_drops_placeholde
                 {"kind": "", "channel": "", "audience": ""},
                 "外部动作",
                 "Send weekly report notification",
-                {"kind": "message", "channel": "wechat", "audience": "rocky243", "requires_confirmation": True},
+                {"kind": "message", "channel": "wechat", "audience": "example-owner", "requires_confirmation": True},
             ],
         }
     )
@@ -658,7 +658,7 @@ def test_normalize_plan_json_rewrites_internal_capabilities_and_drops_placeholde
     ]
     assert normalized["external_side_effects"] == [
         {"description": "Send weekly report notification", "requires_confirmation": True},
-        {"kind": "message", "channel": "wechat", "audience": "rocky243", "requires_confirmation": True},
+        {"kind": "message", "channel": "wechat", "audience": "example-owner", "requires_confirmation": True},
     ]
 
 

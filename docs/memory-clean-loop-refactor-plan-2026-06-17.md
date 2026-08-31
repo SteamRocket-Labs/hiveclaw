@@ -1618,7 +1618,7 @@ class PlatformGate:
 ### 13.1 架构/所有权
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/architecture/test_memory_clean_loop_ownership.py -q
 ```

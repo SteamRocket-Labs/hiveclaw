@@ -155,8 +155,8 @@ function SpaceScreen({ user, onEnter, onCreate }) {
     { name: 'Acme Inc.', domain: 'hive.acme.com', members: 128, role: '管理员', color: 'var(--honey)', abbr: 'H' },
   ];
   const invites = [
-    { name: 'Nova Labs', domain: 'hive.nova.io', from: '王磊', members: 42, color: 'oklch(0.58 0.12 250)', abbr: 'N' },
-    { name: '青柠设计', domain: 'hive.qingn.com', from: '李工', members: 16, color: 'oklch(0.58 0.12 150)', abbr: '青' },
+    { name: 'Nova Labs', domain: 'hive.nova.io', from: '示例成员 A', members: 42, color: 'oklch(0.58 0.12 250)', abbr: 'N' },
+    { name: '青柠设计', domain: 'hive.qingn.com', from: '示例成员 B', members: 16, color: 'oklch(0.58 0.12 150)', abbr: '青' },
   ];
   return (
     <div style={{ height: '100vh', overflow: 'auto', background: 'var(--bg)', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '56px 24px' }} className="thin-scroll">

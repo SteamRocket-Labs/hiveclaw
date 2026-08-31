@@ -458,10 +458,10 @@ CLI:
 第一版本地安装按标准 Skills CLI 路径安装 Skill，再由 Skill 安装 npm CLI；不再把 pipx/brew 作为 P0 主入口：
 
 ```text
-1. 发布 GitHub Skill package: rocky2431/hive-bridge-skill。
-2. 用户或本地 agent 执行 npx skills add https://github.com/rocky2431/hive-bridge-skill --skill hive-bridge。
+1. 发布 GitHub Skill package: <legacy-owner>/hive-bridge-skill。
+2. 用户或本地 agent 执行 npx skills add https://github.com/<legacy-owner>/hive-bridge-skill --skill hive-bridge。
 3. Skill 里写清楚 npm CLI 安装命令、登录命令、验证命令和 runner 启动命令。
-4. 本地 agent 执行 npm install -g @hiveclaw243/hive-bridge。
+4. 本地 agent 执行 npm install -g @<legacy-publisher>/hive-bridge。
 5. 本地 agent 执行 hive-bridge login。
 6. 用户在 Hive Web Local Agent 页面批准绑定。
 7. 本地 agent 执行 hive-bridge status 验证。
@@ -909,7 +909,7 @@ CLI 自动打开 `verification_uri_complete`。用户在浏览器登录 Hive、�
 {
   "pairing_id": "...",
   "device_code": "...",
-  "device_name": "Rocky MacBook Pro",
+  "device_name": "Example Owner MacBook Pro",
   "client_kind": "claude_code",
   "device_fingerprint": "sha256:..."
 }
@@ -920,7 +920,7 @@ Web UI 轮询 pairing session，显示 claimed device：
 ```json
 {
   "status": "claimed",
-  "device_name": "Rocky MacBook Pro",
+  "device_name": "Example Owner MacBook Pro",
   "client_kind": "claude_code",
   "device_fingerprint": "sha256:...",
   "requested_scopes": ["message:read", "message:write", "file:upload", "session:read"]
@@ -1250,16 +1250,16 @@ local_bridge/
 
 ### 6.2 Install and Distribution
 
-P0 目标是按标准 Skill 安装路径把链路调通并上线可用：**`npx skills add <GitHub repo>` 是面向本地 agent 的 Skill 入口，`npm install -g @hiveclaw243/hive-bridge` 是 Skill 内部安装 CLI 的执行入口**。P0 不承担完整独立安装包、签名、公证、多平台 native installer 成本。
+P0 目标是按标准 Skill 安装路径把链路调通并上线可用：**`npx skills add <GitHub repo>` 是面向本地 agent 的 Skill 入口，`npm install -g @<legacy-publisher>/hive-bridge` 是 Skill 内部安装 CLI 的执行入口**。P0 不承担完整独立安装包、签名、公证、多平台 native installer 成本。
 
 安装策略分两档：
 
 ```text
 P0 / first usable release:
-  skill package: https://github.com/rocky2431/hive-bridge-skill
-  skill command: npx skills add https://github.com/rocky2431/hive-bridge-skill --skill hive-bridge
-  npm package: @hiveclaw243/hive-bridge
-  cli command inside Skill: npm install -g @hiveclaw243/hive-bridge
+  skill package: https://github.com/<legacy-owner>/hive-bridge-skill
+  skill command: npx skills add https://github.com/<legacy-owner>/hive-bridge-skill --skill hive-bridge
+  npm package: @<legacy-publisher>/hive-bridge
+  cli command inside Skill: npm install -g @<legacy-publisher>/hive-bridge
   optimized for getting Claude Code / Codex / generic local agent users connected quickly
   user can ask local agent to run the install steps from the Skill
 
@@ -1287,9 +1287,9 @@ P0 安装方式优先级：
 
 ```text
 1. Standard Skill path:
-   npx skills add https://github.com/rocky2431/hive-bridge-skill --skill hive-bridge
+   npx skills add https://github.com/<legacy-owner>/hive-bridge-skill --skill hive-bridge
 2. Skill installs CLI:
-   npm install -g @hiveclaw243/hive-bridge
+   npm install -g @<legacy-publisher>/hive-bridge
 3. Then run:
    hive-bridge login
    hive-bridge status
@@ -1305,12 +1305,12 @@ Public npm package registration is part of the P0 release path.
 Required P0 path:
   1. Keep hive-bridge npm package source in local_bridge/.
   2. Validate npm package locally with `npm --prefix local_bridge test`.
-  3. Reserve/publish @hiveclaw243/hive-bridge.
+  3. Reserve/publish @<legacy-publisher>/hive-bridge.
   4. Publish Skill package repo whose root contains `skills/hive-bridge/SKILL.md`.
   5. User-facing Skill install command uses:
-     npx skills add https://github.com/rocky2431/hive-bridge-skill --skill hive-bridge
+     npx skills add https://github.com/<legacy-owner>/hive-bridge-skill --skill hive-bridge
   6. Skill internal CLI install command uses:
-     npm install -g @hiveclaw243/hive-bridge
+     npm install -g @<legacy-publisher>/hive-bridge
   7. Python package remains a repository development fallback only, not a Skill install path.
 
 Why:
@@ -1319,18 +1319,18 @@ Why:
   - pipx/brew/native packages are useful, but they are secondary packaging channels.
 ```
 
-P0 的验收标准是 `npx skills add https://github.com/rocky2431/hive-bridge-skill --skill hive-bridge` 能被本地 agent 识别，随后 Skill 引导执行 `npm install -g @hiveclaw243/hive-bridge`，并让 `hive-bridge login/status/upload/run` 跑通。
+P0 的验收标准是 `npx skills add https://github.com/<legacy-owner>/hive-bridge-skill --skill hive-bridge` 能被本地 agent 识别，随后 Skill 引导执行 `npm install -g @<legacy-publisher>/hive-bridge`，并让 `hive-bridge login/status/upload/run` 跑通。
 
 P0 user-facing Skill install path:
 
 ```bash
-npx skills add https://github.com/rocky2431/hive-bridge-skill --skill hive-bridge
+npx skills add https://github.com/<legacy-owner>/hive-bridge-skill --skill hive-bridge
 ```
 
 P0 Skill must use this CLI install path only:
 
 ```bash
-npm install -g @hiveclaw243/hive-bridge
+npm install -g @<legacy-publisher>/hive-bridge
 hive-bridge status
 ```
 
@@ -1370,14 +1370,14 @@ P0 的重点是确保 `hive-bridge` CLI 能通过 npm 装到用户机器，并�
 "帮我安装 Hive Bridge skill，并连接到 Hive。"
 
 可复制给本地 agent 的标准 Skill 安装命令：
-npx skills add https://github.com/rocky2431/hive-bridge-skill --skill hive-bridge
+npx skills add https://github.com/<legacy-owner>/hive-bridge-skill --skill hive-bridge
 ```
 
 Skill 内的安装手册必须让本地 agent 做这些动作：
 
 - 检测当前环境：Claude Code / Codex / Cursor / Windsurf / shell / unknown。
-- 通过 `npx skills add https://github.com/rocky2431/hive-bridge-skill --skill hive-bridge` 安装 Hive Bridge Skill。
-- 通过 `npm install -g @hiveclaw243/hive-bridge` 安装 `hive-bridge`。
+- 通过 `npx skills add https://github.com/<legacy-owner>/hive-bridge-skill --skill hive-bridge` 安装 Hive Bridge Skill。
+- 通过 `npm install -g @<legacy-publisher>/hive-bridge` 安装 `hive-bridge`。
 - 执行 `hive-bridge login`。默认连接 Hive production；`--base-url` 只用于本地开发或私有部署 override。
 - 引导用户完成浏览器登录和 Local Agent Link 批准。
 - 执行 `hive-bridge status` 验证连接。
@@ -1448,7 +1448,7 @@ P0 adapter：
 ```text
 generic_cli:
   适用于任何能执行 shell command 的本地 agent。
-  install = npm install -g @hiveclaw243/hive-bridge
+  install = npm install -g @<legacy-publisher>/hive-bridge
   verify = hive-bridge status
   run = hive-bridge run --transport websocket
 
@@ -1499,12 +1499,12 @@ Hive cloud backend/frontend:
 
 hive-bridge local package:
   发布为 CLI + WebSocket runner npm 包。
-  由 Skill 执行 npm install -g @hiveclaw243/hive-bridge。
+  由 Skill 执行 npm install -g @<legacy-publisher>/hive-bridge。
   这是分发 artifact，不是云端部署服务。
 
 hive-bridge skill package:
   发布为 GitHub repo，根目录包含 skills/hive-bridge/SKILL.md。
-  由 npx skills add https://github.com/rocky2431/hive-bridge-skill --skill hive-bridge 安装。
+  由 npx skills add https://github.com/<legacy-owner>/hive-bridge-skill --skill hive-bridge 安装。
   这是本地 agent 的说明书入口，不是云端部署服务。
 ```
 
@@ -1648,7 +1648,7 @@ Process: hive-bridge run --transport websocket
 不是 remote MCP server。
 
 它安装在用户本机：
-  npm install -g @hiveclaw243/hive-bridge 安装 hive-bridge
+  npm install -g @<legacy-publisher>/hive-bridge 安装 hive-bridge
   本地 agent 按 Skill 执行 login/status/run
   本地 agent 或用户启动这个 runner
 ```
@@ -1723,7 +1723,7 @@ P0 按这条主流程走。
 ```text
 1. 我们发布 hive-bridge 本地包
    P0 使用 npm:
-   npm install -g @hiveclaw243/hive-bridge
+   npm install -g @<legacy-publisher>/hive-bridge
    里面包含：
    - hive-bridge login
    - hive-bridge status
@@ -1813,7 +1813,7 @@ Release:
 ```text
 P0 在当前 hiveclaw-main monorepo 里实现。
 云端只部署现有 Hive backend/frontend。
-本地发布 `@hiveclaw243/hive-bridge` npm package，P0 优先简单可用：先支持 `npm install -g @hiveclaw243/hive-bridge` 和 tarball 验证。
+本地发布 `@<legacy-publisher>/hive-bridge` npm package，P0 优先简单可用：先支持 `npm install -g @<legacy-publisher>/hive-bridge` 和 tarball 验证。
 PyPI、brew、standalone installer、signing 进入 post-alpha/P1。
 不单独部署 remote MCP server。
 ```
@@ -1950,8 +1950,8 @@ AgentDetail
 Local Agent Link
   Status: Connected / Pending / Not connected
   Client: Claude Code / Codex / Claude Desktop / Cursor / Custom
-  Device: Rocky MacBook Pro
-  Bound user: Rocky
+  Device: Example Owner MacBook Pro
+  Bound user: Example Owner
   Last seen: 2 minutes ago
   [Copy Skill Instruction] [Approve] [Reject] [Revoke]
 ```
@@ -2057,7 +2057,7 @@ agentApi.revokeLocalBridgeConnection(agentId, connectionId)
 用户不需要自己理解这些命令；这些命令由本地 agent 按 Skill 执行。排障时可以显式展示：
 
 ```bash
-npm install -g @hiveclaw243/hive-bridge
+npm install -g @<legacy-publisher>/hive-bridge
 hive-bridge login
 hive-bridge status
 hive-bridge run --transport websocket
@@ -2316,7 +2316,7 @@ Hive cloud
 
 ### 8.10 cc-connect Source-Derived Shape
 
-2026-06-22 进一步读了本地源码 `/Users/rocky243/vc-saas/cc-connect/`。结论不是“直接嵌入 cc-connect”，而是采用它已经跑成熟的形态：
+2026-06-22 进一步读了本地源码 `/Users/example-owner/vc-saas/cc-connect/`。结论不是“直接嵌入 cc-connect”，而是采用它已经跑成熟的形态：
 
 ```text
 cc-connect mature shape:

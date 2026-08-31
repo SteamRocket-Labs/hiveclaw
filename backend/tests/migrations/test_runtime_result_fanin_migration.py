@@ -12,7 +12,6 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.agent import Agent
-from app.models.chat_session import ChatSession
 from app.models.tenant import Tenant
 from app.models.user import User
 
@@ -21,6 +20,7 @@ from tests.migrations.conftest import (
     _alembic_upgrade,
     _async_url,
     _bootstrap_current_head,
+    insert_chat_session_at_schema_revision,
 )
 
 
@@ -102,35 +102,33 @@ async def test_runtime_result_upgrade_backfills_legacy_payload_losslessly(runtim
             )
         )
         await db.flush()
-        db.add(
-            ChatSession(
-                id=session_id,
-                tenant_id=tenant_id,
-                agent_id=agent_id,
-                user_id=user_id,
-                title="session",
-                source_channel="web",
-                session_kind="human_chat",
-                actor_type="user",
-                runtime_source="web_chat",
-                visibility_scope="direct_user",
-                listed_surface="chat",
-            )
+        await insert_chat_session_at_schema_revision(
+            db,
+            id=session_id,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            user_id=user_id,
+            title="session",
+            source_channel="web",
+            session_kind="human_chat",
+            actor_type="user",
+            runtime_source="web_chat",
+            visibility_scope="direct_user",
+            listed_surface="chat",
         )
-        db.add(
-            ChatSession(
-                id=second_session_id,
-                tenant_id=tenant_id,
-                agent_id=agent_id,
-                user_id=user_id,
-                title="second session",
-                source_channel="web",
-                session_kind="human_chat",
-                actor_type="user",
-                runtime_source="web_chat",
-                visibility_scope="direct_user",
-                listed_surface="chat",
-            )
+        await insert_chat_session_at_schema_revision(
+            db,
+            id=second_session_id,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            user_id=user_id,
+            title="second session",
+            source_channel="web",
+            session_kind="human_chat",
+            actor_type="user",
+            runtime_source="web_chat",
+            visibility_scope="direct_user",
+            listed_surface="chat",
         )
         await db.commit()
     async with engine.begin() as connection:

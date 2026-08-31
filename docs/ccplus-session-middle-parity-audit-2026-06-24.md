@@ -80,13 +80,13 @@ Hook 的严格标准也适用于 Plan Mode、Subagent、Agent Team、Schedule/Tr
 本轮用本地 FreeCode 作为 CC 第一参考：
 
 ```text
-/Users/rocky243/vc-saas/free-code-main
+/Users/example-owner/vc-saas/free-code-main
 ```
 
 关键 baseline：
 
 1. Plan Mode exit 不只是“确认计划”。FreeCode 支持 clear context / keep context / permission mode / auto mode / bypass permissions / manual approve / team hint；其中 `auto mode`、`bypass permissions`、`accept edits` 这类产品标签不逐字复刻，Hive 只映射其底层语义：确认后的上下文策略、治理安全的 approval/policy mode、执行 handoff、team handoff。本轮不把 CC 专属远程高级计划入口纳入范围：
-   - `/Users/rocky243/vc-saas/free-code-main/src/components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.tsx`
+   - `/Users/example-owner/vc-saas/free-code-main/src/components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.tsx`
 2. Hooks 不是单一 event bus。FreeCode schema 包含完整事件和 hook-specific outputs。Hive 的目标是对齐全部 CC hook semantic surface：事件、typed input、hook-specific output、runtime consumer、可观察执行记录都要有。某些 hook 可以在当前部署形态下默认不触发或被 policy disabled，但不能缺 schema/契约/映射。
    - `PreToolUse`
    - `PostToolUse`
@@ -115,17 +115,17 @@ Hook 的严格标准也适用于 Plan Mode、Subagent、Agent Team、Schedule/Tr
    - `InstructionsLoaded`
    - `CwdChanged`
    - `FileChanged`
-   - `/Users/rocky243/vc-saas/free-code-main/src/entrypoints/sdk/coreSchemas.ts`
+   - `/Users/example-owner/vc-saas/free-code-main/src/entrypoints/sdk/coreSchemas.ts`
 3. Agent Team 不是静态索引。FreeCode team create 会写 team file、lead session、task list，并把 team context 放进 AppState；local agent task 有 pending message queue、drain、foreground/background、abort/background signal。Hive 应对齐的是 team session、member mailbox、running/waiting/blocked/cancel lifecycle；FreeCode 的 React state 和 `AbortController` 机制是本地实现细节，不作为 Hive 复刻目标。
-   - `/Users/rocky243/vc-saas/free-code-main/src/tools/TeamCreateTool/TeamCreateTool.ts`
-   - `/Users/rocky243/vc-saas/free-code-main/src/tasks/LocalAgentTask/LocalAgentTask.tsx`
+   - `/Users/example-owner/vc-saas/free-code-main/src/tools/TeamCreateTool/TeamCreateTool.ts`
+   - `/Users/example-owner/vc-saas/free-code-main/src/tasks/LocalAgentTask/LocalAgentTask.tsx`
 
 ### 2.2 Codex delta
 
 Codex 的可吸收优势不是替代 CC baseline，而是给 Hive 加统一 thread/turn 操作面：
 
 ```text
-/Users/rocky243/Context Engineering/codex/codex-rs/docs/codex_mcp_interface.md
+/Users/example-owner/Context Engineering/codex/codex-rs/docs/codex_mcp_interface.md
 ```
 
 Codex v2 RPC 重点：

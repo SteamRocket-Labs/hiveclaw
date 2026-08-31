@@ -34,6 +34,7 @@ from app.services.runtime_task_service import (
     build_restart_replay_journal_entry,
     create_runtime_task_record,
     get_runtime_task_record,
+    has_restart_replay_contract,
     list_active_runtime_task_records,
     merge_restart_replay_journal,
     update_runtime_task_record,
@@ -64,6 +65,14 @@ _DELEGATION_MEMORY_WRITE_TOOLS = (
     "submit_t3_memory_gate_review",
     "submit_t3_revised_patch",
 )
+
+
+def _delegation_tenant_session(tenant_id: uuid.UUID, session_factory: Any | None = None):
+    from app.database import tenant_scoped_session
+
+    if session_factory is None:
+        return tenant_scoped_session(tenant_id)
+    return tenant_scoped_session(tenant_id, session_factory=session_factory)
 
 
 @dataclass(slots=True, frozen=True)
@@ -409,6 +418,8 @@ def _execution_identity_from_metadata(value: Any) -> ExecutionIdentityRef | None
 def _runtime_json_safe(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
+    if isinstance(value, uuid.UUID):
+        return str(value)
     if isinstance(value, tuple):
         return [_runtime_json_safe(item) for item in value]
     if isinstance(value, list):
@@ -1112,6 +1123,10 @@ class AgentDelegationResult:
     parts: tuple[dict[str, Any], ...] = ()
     artifact_refs: tuple[str, ...] = ()
     terminal_reason: str | None = None
+    transcript_committed: bool = False
+    # Caller-owned, secret-redacted projection input. It is intentionally not
+    # exposed through to_dict()/to_json() to the parent Agent.
+    response_complete_payload: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """P1-W3-2: structured representation for parent agents that need
@@ -1154,6 +1169,47 @@ class AgentDelegationResult:
         import json
 
         return json.dumps(self.to_dict(), ensure_ascii=False)
+
+
+async def _emit_delegation_end_after_commit(
+    request: AgentDelegationRequest,
+    result: AgentDelegationResult,
+) -> None:
+    """Publish the delegation learning boundary after its durable authority fact."""
+    if request.interaction_type != "delegation" or not getattr(result, "transcript_committed", False):
+        return
+    if result.timed_out:
+        status = "timeout"
+    elif result.failed:
+        status = "error"
+    else:
+        status = "success"
+    transcript_tenant_id = _maybe_uuid(request.tenant_id) or _maybe_uuid(getattr(request.target, "tenant_id", None))
+    try:
+        from app.runtime.hooks import HookEvent, emit_hook
+
+        await emit_hook(
+            HookEvent.DELEGATION_END,
+            evidence_mode="independent",
+            agent_id=request.target.id,
+            session_id=result.child_session_id,
+            messages=[],
+            source="agent",
+            metadata={
+                "tenant_id": str(transcript_tenant_id) if transcript_tenant_id else None,
+                "runtime_task_id": request.runtime_task_id,
+                "semantic_memory_eligible": True,
+                "from_agent": str(request.parent_agent_id) if request.parent_agent_id else None,
+                "to_agent": str(request.target.id),
+                "to_agent_name": request.target.name,
+                "trace_id": result.trace_id,
+                "depth": request.depth,
+                "status": status,
+                "failed": result.failed,
+            },
+        )
+    except Exception as hook_err:
+        logger.debug("[Orchestrator] DELEGATION_END hook failed (non-fatal): %s", hook_err)
 
 
 def _delegation_user_message(conversation_messages: list[dict[str, Any]]) -> str:
@@ -1577,6 +1633,29 @@ async def _settle_delegation_budget(
         logger.debug("[Orchestrator] delegation budget settlement failed for %s", task_id, exc_info=True)
 
 
+async def _settle_persisted_delegation_budget(
+    record: dict[str, Any],
+    *,
+    task_id: str,
+    status: str,
+) -> None:
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    budget_run_id = str(record.get("budget_run_id") or metadata.get("budget_run_id") or "").strip()
+    if not budget_run_id:
+        return
+    await _settle_delegation_budget(
+        request=SimpleNamespace(
+            budget_run_id=budget_run_id,
+            target=SimpleNamespace(
+                id=record.get("child_agent_id") or metadata.get("target_agent_id"),
+                name=record.get("child_agent_name") or metadata.get("target_agent_name"),
+            ),
+        ),
+        task_id=task_id,
+        status=status,
+    )
+
+
 def _authority_receipt_failure_result(
     request: AgentDelegationRequest,
     *,
@@ -1883,15 +1962,44 @@ async def _delegate_after_cycle_check(
         metadata: dict[str, Any] | None = None,
         parts: list[dict[str, Any]] | None = None,
         artifact_paths: list[str] | None = None,
-    ) -> None:
+    ) -> bool:
         if not transcript_enabled or transcript_tenant_id is None or transcript_session_id is None:
-            return
+            return False
         from app.database import tenant_scoped_session
         from app.config import get_settings
         from app.services.chat_artifact_delivery import create_chat_artifacts_for_message
         from app.services.chat_transcript import append_session_event
 
         async with tenant_scoped_session(transcript_tenant_id) as db:
+            if actor_type == "assistant" and transcript_runtime_task_id is not None:
+                from sqlalchemy import select
+
+                from app.models.runtime_task import RuntimeTask
+                from app.services.runtime_task_fence import current_runtime_task_fence
+
+                fence = current_runtime_task_fence()
+                if fence is None or fence.task_id != transcript_runtime_task_id:
+                    return False
+
+                # Linearize the final transcript write against cross-process
+                # cancellation. A cancelled/terminal RuntimeTask must never
+                # receive late model bytes after its abort boundary was sealed.
+                active_task = await db.scalar(
+                    select(RuntimeTask)
+                    .where(
+                        RuntimeTask.id == transcript_runtime_task_id,
+                        RuntimeTask.tenant_id == transcript_tenant_id,
+                        RuntimeTask.task_type == "delegation",
+                        RuntimeTask.child_agent_id == request.target.id,
+                        RuntimeTask.status == "running",
+                        RuntimeTask.claim_version == fence.claim_version,
+                        RuntimeTask.claimed_by == fence.worker_id,
+                        RuntimeTask.claim_expires_at > datetime.now(timezone.utc),
+                    )
+                    .with_for_update()
+                )
+                if active_task is None:
+                    return False
             append_result = await append_session_event(
                 db=db,
                 agent_id=request.target.id,
@@ -1955,6 +2063,7 @@ async def _delegate_after_cycle_check(
                 )
                 append_result.transcript_event.metadata_json = next_metadata
             await db.commit()
+        return True
 
     if is_delegation and transcript_tenant_id is not None and transcript_session_id is not None:
         transcript_enabled = await _ensure_peer_delegation_session(request, state="running")
@@ -2071,6 +2180,11 @@ async def _delegate_after_cycle_check(
             ),
             failed=terminal_failed,
             terminal_reason=terminal_reason_value,
+            response_complete_payload=(
+                _runtime_json_safe(getattr(result, "response_complete_payload", None))
+                if isinstance(getattr(result, "response_complete_payload", None), dict)
+                else None
+            ),
         )
     except asyncio.TimeoutError:
         _delegation_status = "timeout"
@@ -2104,7 +2218,7 @@ async def _delegate_after_cycle_check(
             failed=True,
         )
 
-    await _append_child_transcript_event(
+    delegation_result.transcript_committed = await _append_child_transcript_event(
         actor_type="assistant",
         event_type="assistant_message",
         role="assistant",
@@ -2114,35 +2228,15 @@ async def _delegate_after_cycle_check(
             "failed": delegation_result.failed,
             "timed_out": delegation_result.timed_out,
             "depth_limited": delegation_result.depth_limited,
+            "terminal_reason": delegation_result.terminal_reason,
         },
     )
 
-    if is_delegation:
-        try:
-            from app.runtime.hooks import HookEvent, emit_hook
-
-            await emit_hook(
-                HookEvent.DELEGATION_END,
-                evidence_mode="independent",
-                agent_id=request.target.id,
-                session_id=child_session_id,
-                messages=[],
-                source="agent",
-                metadata={
-                    "tenant_id": str(transcript_tenant_id) if transcript_tenant_id else None,
-                    "runtime_task_id": request.runtime_task_id,
-                    "semantic_memory_eligible": True,
-                    "from_agent": str(request.parent_agent_id) if request.parent_agent_id else None,
-                    "to_agent": str(request.target.id),
-                    "to_agent_name": request.target.name,
-                    "trace_id": trace_id,
-                    "depth": request.depth,
-                    "status": _delegation_status,
-                    "failed": delegation_result.failed,
-                },
-            )
-        except Exception as _hook_err:
-            logger.debug("[Orchestrator] DELEGATION_END hook failed (non-fatal): %s", _hook_err)
+    # Synchronous delegation has no outer RuntimeTask terminal transition. Its
+    # authoritative terminal fact is the committed assistant transcript above.
+    # Async delegation defers this hook until its outer RuntimeTask is sealed.
+    if not request.runtime_task_id:
+        await _emit_delegation_end_after_commit(request, delegation_result)
 
     return delegation_result
 
@@ -2151,6 +2245,7 @@ async def _ensure_peer_delegation_session(
     request: AgentDelegationRequest,
     *,
     state: str,
+    session_factory: Any | None = None,
 ) -> bool:
     """Admit one peer digital-employee A2A run onto its task-scoped Session.
 
@@ -2174,7 +2269,6 @@ async def _ensure_peer_delegation_session(
 
     from sqlalchemy import select
 
-    from app.database import tenant_scoped_session
     from app.models.chat_session import ChatSession
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.participant import Participant
@@ -2195,7 +2289,7 @@ async def _ensure_peer_delegation_session(
     instruction = _delegation_user_message(request.conversation_messages)
     task_marker = str(request.runtime_task_id or "").strip() or None
 
-    async with tenant_scoped_session(tenant_id) as db:
+    async with _delegation_tenant_session(tenant_id, session_factory) as db:
         result = await db.execute(select(ChatSession).where(ChatSession.id == session_id).with_for_update())
         session = result.scalar_one_or_none()
         if session is None:
@@ -2308,14 +2402,14 @@ async def _collect_delegation_child_artifact_parts(
     tenant_id: uuid.UUID,
     child_session_id: uuid.UUID,
     delivery_agent_id: uuid.UUID | None = None,
+    session_factory: Any | None = None,
 ) -> list[dict[str, Any]]:
     from sqlalchemy import select
 
-    from app.database import tenant_scoped_session
     from app.models.chat_artifact import ChatArtifact
     from app.services.chat_artifact_delivery import artifact_part_from_model
 
-    async with tenant_scoped_session(tenant_id) as db:
+    async with _delegation_tenant_session(tenant_id, session_factory) as db:
         result = await db.execute(
             select(ChatArtifact)
             .where(ChatArtifact.session_id == child_session_id)
@@ -2417,7 +2511,9 @@ async def _project_delegation_completion_to_parent(
     status: str,
     summary: str,
     reason: str | None = None,
-) -> None:
+    required: bool = False,
+    session_factory: Any | None = None,
+) -> dict[str, Any] | None:
     """Project an async-delegation terminal state onto the parent session timeline.
 
     Mirrors `update_subagent_child_session_state_for_run` in
@@ -2430,14 +2526,13 @@ async def _project_delegation_completion_to_parent(
     parent_session_uuid = _maybe_uuid(request.parent_session_id)
     child_session_uuid = _maybe_uuid(request.session_id)
     if parent_session_uuid is None or child_session_uuid is None:
-        return
+        return None
 
     tenant_uuid = _maybe_uuid(request.tenant_id) or _maybe_uuid(getattr(request.target, "tenant_id", None))
     parent_agent_uuid = _maybe_uuid(request.parent_agent_id)
     if tenant_uuid is None or parent_agent_uuid is None:
-        return
+        return None
 
-    from app.database import tenant_scoped_session
     from app.services.chat_message_parts import build_session_native_event
     from app.services.chat_transcript import append_session_event
 
@@ -2446,6 +2541,7 @@ async def _project_delegation_completion_to_parent(
             tenant_id=tenant_uuid,
             child_session_id=child_session_uuid,
             delivery_agent_id=parent_agent_uuid,
+            session_factory=session_factory,
         )
         if artifact_parts:
             from app.config import get_settings
@@ -2460,6 +2556,8 @@ async def _project_delegation_completion_to_parent(
             if projected_artifact_parts:
                 artifact_parts = projected_artifact_parts
     except Exception as exc:
+        if required:
+            raise
         logger.warning(
             "[Orchestrator] Failed to collect delegation artifacts for child session %s (task=%s): %s",
             child_session_uuid,
@@ -2507,26 +2605,42 @@ async def _project_delegation_completion_to_parent(
     parent_event = build_session_native_event(parent_event_payload)
 
     try:
-        async with tenant_scoped_session(tenant_uuid) as db:
+        async with _delegation_tenant_session(tenant_uuid, session_factory) as db:
             projection_exists = False
+            parent_projection_event_id = None
             task_uuid = _maybe_uuid(task_id)
             if task_uuid is not None:
                 from sqlalchemy import select
                 from sqlalchemy.ext.asyncio import AsyncSession
 
+                from app.models.chat_session import ChatSession
                 from app.models.chat_transcript_event import ChatTranscriptEvent
 
                 if isinstance(db, AsyncSession):
+                    parent_session = await db.scalar(
+                        select(ChatSession.id)
+                        .where(
+                            ChatSession.id == parent_session_uuid,
+                            ChatSession.tenant_id == tenant_uuid,
+                            ChatSession.agent_id == parent_agent_uuid,
+                        )
+                        .with_for_update()
+                    )
+                    if parent_session is None:
+                        raise RuntimeError("delegation parent Session is missing")
                     existing_projection = await db.execute(
                         select(ChatTranscriptEvent.id)
                         .where(
+                            ChatTranscriptEvent.tenant_id == tenant_uuid,
+                            ChatTranscriptEvent.agent_id == parent_agent_uuid,
                             ChatTranscriptEvent.session_id == parent_session_uuid,
                             ChatTranscriptEvent.run_id == task_uuid,
                             ChatTranscriptEvent.event_type == "child_session",
                         )
                         .limit(1)
                     )
-                    projection_exists = existing_projection.scalar_one_or_none() is not None
+                    parent_projection_event_id = existing_projection.scalar_one_or_none()
+                    projection_exists = parent_projection_event_id is not None
             runtime_event_type = _delegation_runtime_action_event_type(projected_status)
             runtime_event_message = _delegation_runtime_action_message(
                 target_name=request.target.name,
@@ -2577,7 +2691,7 @@ async def _project_delegation_completion_to_parent(
                     listed_surface="chat",
                     source="agent",
                 )
-                await append_session_event(
+                parent_projection = await append_session_event(
                     db=db,
                     agent_id=parent_agent_uuid,
                     tenant_id=tenant_uuid,
@@ -2601,7 +2715,8 @@ async def _project_delegation_completion_to_parent(
                     listed_surface="chat",
                     source="agent",
                 )
-            await _wake_parent_session_from_delegation_completion(
+                parent_projection_event_id = parent_projection.event_id
+            notification_id = await _wake_parent_session_from_delegation_completion(
                 db=db,
                 request=request,
                 task_id=task_id,
@@ -2610,13 +2725,26 @@ async def _project_delegation_completion_to_parent(
                 artifacts=artifact_parts,
             )
             await db.commit()
+            return {
+                "schema": "hive.delegation_parent_projection.v1",
+                "runtime_task_id": task_id,
+                "parent_session_id": str(parent_session_uuid),
+                "child_session_id": str(child_session_uuid),
+                "parent_event_id": str(parent_projection_event_id or ""),
+                "notification_id": str(notification_id or ""),
+                "status": projected_status,
+                "reason": projected_reason,
+            }
     except Exception as exc:
+        if required:
+            raise
         logger.warning(
             "[Orchestrator] Failed to project delegation completion to parent session %s (task=%s): %s",
             parent_session_uuid,
             task_id,
             exc,
         )
+        return None
 
 
 async def _wake_parent_session_from_delegation_completion(
@@ -2627,15 +2755,15 @@ async def _wake_parent_session_from_delegation_completion(
     status: str,
     summary: str,
     artifacts: list[dict[str, Any]] | None = None,
-) -> None:
+) -> uuid.UUID | None:
     parent_session_uuid = _maybe_uuid(request.parent_session_id)
     child_session_uuid = _maybe_uuid(request.session_id)
     parent_agent_uuid = _maybe_uuid(request.parent_agent_id)
     tenant_uuid = _maybe_uuid(request.tenant_id) or _maybe_uuid(getattr(request.target, "tenant_id", None))
     if parent_session_uuid is None or child_session_uuid is None or parent_agent_uuid is None or tenant_uuid is None:
-        return
+        return None
 
-    await enqueue_completion_notification(
+    return await enqueue_completion_notification(
         db,
         CompletionNotification(
             tenant_id=tenant_uuid,
@@ -2696,26 +2824,40 @@ def _spawn_async_delegation_task(
                     "Plan Mode blocked async delegation: "
                     f"{plan_reason or 'plan_required'}. Confirm a plan before delegating autonomous work."
                 )
-                receipt = await _persist_delegation_terminal_evidence(
+                receipt = _build_delegation_execution_receipt(
                     request=request,
                     task_id=task_id,
                     trace_id=trace_id,
                     status="failed",
-                    started_at=started_at,
-                    error=content,
                 )
+                terminal_committed = False
                 try:
-                    await update_runtime_task_record(
-                        task_id,
-                        status="failed",
-                        result_summary=content,
-                        trace_id=trace_id,
-                        child_session_id=request.session_id,
-                        metadata_json={"plan_gate_reason": plan_reason, "execution_receipt": receipt},
+                    terminal_committed = (
+                        await update_runtime_task_record(
+                            task_id,
+                            status="failed",
+                            result_summary=content,
+                            trace_id=trace_id,
+                            child_session_id=request.session_id,
+                            metadata_json={"plan_gate_reason": plan_reason, "execution_receipt": receipt},
+                        )
+                        is True
                     )
                 except Exception as exc:
                     logger.warning("[Orchestrator] Failed to persist plan gate block %s: %s", task_id, exc)
-                await _settle_delegation_budget(request=request, task_id=task_id, status="failed")
+                if terminal_committed:
+                    try:
+                        await _persist_delegation_terminal_evidence(
+                            request=request,
+                            task_id=task_id,
+                            trace_id=trace_id,
+                            status="failed",
+                            started_at=started_at,
+                            error=content,
+                        )
+                    except Exception as exc:
+                        logger.warning("[Orchestrator] Failed to persist plan gate evidence %s: %s", task_id, exc)
+                    await _settle_delegation_budget(request=request, task_id=task_id, status="failed")
                 return AgentDelegationResult(
                     content=content,
                     child_session_id=request.session_id,
@@ -2724,91 +2866,168 @@ def _spawn_async_delegation_task(
                     failed=True,
                 )
             delegation_result = await _delegate(request)
-            terminal_status = "failed" if delegation_result.failed else "completed"
-            receipt = await _persist_delegation_terminal_evidence(
-                request=request,
+            transcript_commit_missing = bool(
+                not delegation_result.failed
+                and delegation_result.terminal_reason == TerminalReason.TURN_STOP.value
+                and not delegation_result.transcript_committed
+            )
+            if transcript_commit_missing:
+                delegation_result.failed = True
+                delegation_result.content = (
+                    "Delegation terminal output was not committed because its RuntimeTask was no longer active; "
+                    "reconciliation is required."
+                )
+                delegation_result.response_complete_payload = None
+            response_receipt_missing = bool(
+                not delegation_result.failed
+                and delegation_result.terminal_reason == TerminalReason.TURN_STOP.value
+                and delegation_result.response_complete_payload is None
+            )
+            if response_receipt_missing:
+                delegation_result.failed = True
+            terminal_status = (
+                "needs_reconciliation"
+                if response_receipt_missing or transcript_commit_missing
+                else "failed"
+                if delegation_result.failed
+                else "completed"
+            )
+            receipt = _build_delegation_execution_receipt(
+                request,
                 task_id=task_id,
                 trace_id=delegation_result.trace_id or trace_id,
                 status=terminal_status,
-                started_at=started_at,
-                error=delegation_result.content if delegation_result.failed else None,
             )
+            terminal_committed = False
             try:
-                await update_runtime_task_record(
-                    task_id,
-                    status=terminal_status,
-                    result_summary=delegation_result.content,
-                    trace_id=delegation_result.trace_id,
-                    child_session_id=delegation_result.child_session_id,
-                    metadata_json={
-                        "timed_out": delegation_result.timed_out,
-                        "depth_limited": delegation_result.depth_limited,
-                        "execution_receipt": receipt,
-                    },
+                terminal_committed = (
+                    await update_runtime_task_record(
+                        task_id,
+                        status=terminal_status,
+                        result_summary=delegation_result.content,
+                        trace_id=delegation_result.trace_id,
+                        child_session_id=delegation_result.child_session_id,
+                        metadata_json={
+                            "timed_out": delegation_result.timed_out,
+                            "depth_limited": delegation_result.depth_limited,
+                            "terminal_reason": delegation_result.terminal_reason,
+                            "response_complete_payload": delegation_result.response_complete_payload,
+                            "response_projection_error": (
+                                "transcript_commit_fenced"
+                                if transcript_commit_missing
+                                else "response_complete_payload_missing"
+                                if response_receipt_missing
+                                else None
+                            ),
+                            "execution_receipt": receipt,
+                        },
+                    )
+                    is True
                 )
             except Exception as exc:
                 logger.warning("[Orchestrator] Failed to update runtime task %s: %s", task_id, exc)
-            await _settle_delegation_budget(request=request, task_id=task_id, status=terminal_status)
-            await _project_delegation_completion_to_parent(
-                request=request,
-                task_id=task_id,
-                status=terminal_status,
-                summary=delegation_result.content or "",
-            )
+            if terminal_committed:
+                try:
+                    await _persist_delegation_terminal_evidence(
+                        request=request,
+                        task_id=task_id,
+                        trace_id=delegation_result.trace_id or trace_id,
+                        status=terminal_status,
+                        started_at=started_at,
+                        error=delegation_result.content if delegation_result.failed else None,
+                    )
+                except Exception as exc:
+                    logger.warning("[Orchestrator] Failed to persist terminal evidence %s: %s", task_id, exc)
+                await _settle_delegation_budget(request=request, task_id=task_id, status=terminal_status)
+            else:
+                delegation_result.failed = True
+                delegation_result.content = (
+                    "Delegation terminal output was dropped because its RuntimeTask authority changed; "
+                    "read the durable task state for the canonical outcome."
+                )
+                delegation_result.response_complete_payload = None
             return delegation_result
         except asyncio.CancelledError:
-            receipt = await _persist_delegation_terminal_evidence(
-                request=request,
+            receipt = _build_delegation_execution_receipt(
+                request,
                 task_id=task_id,
                 trace_id=trace_id,
                 status="killed",
-                started_at=started_at,
-                error="Task cancelled by parent agent",
             )
+            terminal_committed = False
             try:
-                await update_runtime_task_record(
-                    task_id,
-                    status="killed",
-                    result_summary="Task cancelled by parent agent",
-                    trace_id=trace_id,
-                    child_session_id=request.session_id,
-                    metadata_json={
-                        "timed_out": False,
-                        "depth_limited": False,
-                        "cancelled": True,
-                        "execution_receipt": receipt,
-                    },
+                terminal_committed = (
+                    await update_runtime_task_record(
+                        task_id,
+                        status="killed",
+                        result_summary="Task cancelled by parent agent",
+                        trace_id=trace_id,
+                        child_session_id=request.session_id,
+                        metadata_json={
+                            "timed_out": False,
+                            "depth_limited": False,
+                            "cancelled": True,
+                            "execution_receipt": receipt,
+                        },
+                    )
+                    is True
                 )
             except Exception as update_exc:
                 logger.warning("[Orchestrator] Failed to persist runtime task cancellation %s: %s", task_id, update_exc)
-            await _settle_delegation_budget(request=request, task_id=task_id, status="killed")
+            if terminal_committed:
+                try:
+                    await _persist_delegation_terminal_evidence(
+                        request=request,
+                        task_id=task_id,
+                        trace_id=trace_id,
+                        status="killed",
+                        started_at=started_at,
+                        error="Task cancelled by parent agent",
+                    )
+                except Exception as exc:
+                    logger.warning("[Orchestrator] Failed to persist cancellation evidence %s: %s", task_id, exc)
+                await _settle_delegation_budget(request=request, task_id=task_id, status="killed")
             raise
         except Exception as exc:
             logger.error("[Orchestrator] Async delegation %s failed: %s", task_id, exc)
-            receipt = await _persist_delegation_terminal_evidence(
-                request=request,
+            receipt = _build_delegation_execution_receipt(
+                request,
                 task_id=task_id,
                 trace_id=trace_id,
                 status="failed",
-                started_at=started_at,
-                error=str(exc),
             )
+            terminal_committed = False
             try:
-                await update_runtime_task_record(
-                    task_id,
-                    status="failed",
-                    result_summary=f"Async task {task_id} failed: {exc}",
-                    trace_id=trace_id,
-                    child_session_id=request.session_id,
-                    metadata_json={
-                        "timed_out": False,
-                        "depth_limited": False,
-                        "execution_receipt": receipt,
-                    },
+                terminal_committed = (
+                    await update_runtime_task_record(
+                        task_id,
+                        status="failed",
+                        result_summary=f"Async task {task_id} failed: {exc}",
+                        trace_id=trace_id,
+                        child_session_id=request.session_id,
+                        metadata_json={
+                            "timed_out": False,
+                            "depth_limited": False,
+                            "execution_receipt": receipt,
+                        },
+                    )
+                    is True
                 )
             except Exception as update_exc:
                 logger.warning("[Orchestrator] Failed to persist runtime task failure %s: %s", task_id, update_exc)
-            await _settle_delegation_budget(request=request, task_id=task_id, status="failed")
+            if terminal_committed:
+                try:
+                    await _persist_delegation_terminal_evidence(
+                        request=request,
+                        task_id=task_id,
+                        trace_id=trace_id,
+                        status="failed",
+                        started_at=started_at,
+                        error=str(exc),
+                    )
+                except Exception as evidence_exc:
+                    logger.warning("[Orchestrator] Failed to persist failure evidence %s: %s", task_id, evidence_exc)
+                await _settle_delegation_budget(request=request, task_id=task_id, status="failed")
             return AgentDelegationResult(
                 content=f"Async task {task_id} failed: {exc}",
                 child_session_id=request.session_id,
@@ -2914,12 +3133,53 @@ def _delegation_projection_request_from_record(record: dict[str, Any]) -> AgentD
     )
 
 
+def _build_delegation_terminal_receipt_from_runtime_record(
+    record: dict[str, Any],
+    *,
+    task_id: str,
+    status: str,
+) -> dict[str, Any] | None:
+    """Rebuild a terminal receipt without inventing authority hashes."""
+    request = _delegation_projection_request_from_record(record)
+    if request is not None:
+        try:
+            return _build_delegation_execution_receipt(
+                request,
+                task_id=task_id,
+                trace_id=str(record.get("trace_id") or request.trace_id or ""),
+                status=status,
+            )
+        except (AttributeError, KeyError, TypeError, ValueError):
+            pass
+
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    previous = metadata.get("execution_receipt") if isinstance(metadata.get("execution_receipt"), dict) else {}
+    request_hash = str(previous.get("request_hash") or "").strip()
+    capability_snapshot_hash = str(previous.get("capability_snapshot_hash") or "").strip()
+    if not request_hash or not capability_snapshot_hash:
+        return None
+    receipt = build_execution_receipt(
+        request_hash=request_hash,
+        capability_snapshot_hash=capability_snapshot_hash,
+        result_refs=previous.get("result_refs") or (),
+        status=status,
+        replay_key=str(previous.get("replay_key") or f"delegation:{task_id}"),
+        trace_id=str(previous.get("trace_id") or record.get("trace_id") or ""),
+        span_id=str(previous.get("span_id") or f"remote-action:{task_id}"),
+    )
+    for key in ("policy_snapshot_hash", "authority_frame_schema", "execution_principal"):
+        if key in previous:
+            receipt[key] = previous[key]
+    return receipt
+
+
 async def _append_peer_delegation_terminal_state(
     *,
     request: AgentDelegationRequest,
     status: str,
     summary: str,
     reason: str,
+    session_factory: Any | None = None,
 ) -> None:
     tenant_id = _maybe_uuid(request.tenant_id) or _maybe_uuid(getattr(request.target, "tenant_id", None))
     session_id = _maybe_uuid(request.session_id)
@@ -2929,13 +3189,12 @@ async def _append_peer_delegation_terminal_state(
 
     from sqlalchemy import select
 
-    from app.database import tenant_scoped_session
     from app.models.chat_session import ChatSession
     from app.services.chat_message_parts import build_session_native_event
     from app.services.chat_transcript import append_session_event
 
     projection_key = f"{request.runtime_task_id or request.session_id}:{status}:{reason}"
-    async with tenant_scoped_session(tenant_id) as db:
+    async with _delegation_tenant_session(tenant_id, session_factory) as db:
         result = await db.execute(select(ChatSession).where(ChatSession.id == session_id).with_for_update())
         session = result.scalar_one_or_none()
         if session is None:
@@ -3002,42 +3261,25 @@ async def _project_delegation_request_terminal_to_parent(
     status: str,
     summary: str,
     reason: str,
-) -> None:
-    await _ensure_peer_delegation_session(request, state=status)
+    required: bool = False,
+    session_factory: Any | None = None,
+) -> dict[str, Any] | None:
+    await _ensure_peer_delegation_session(request, state=status, session_factory=session_factory)
     await _append_peer_delegation_terminal_state(
         request=request,
         status=status,
         summary=summary,
         reason=reason,
+        session_factory=session_factory,
     )
-    await _project_delegation_completion_to_parent(
+    return await _project_delegation_completion_to_parent(
         request=request,
         task_id=str(request.runtime_task_id or ""),
         status=status,
         summary=summary,
         reason=reason,
-    )
-
-
-async def _project_delegation_record_terminal_to_parent(
-    *,
-    record: dict[str, Any],
-    status: str,
-    summary: str,
-    reason: str,
-) -> None:
-    request = _delegation_projection_request_from_record(record)
-    if request is None:
-        logger.warning(
-            "[Orchestrator] Terminal A2A task %s lacks the identity needed for Session projection",
-            record.get("task_id"),
-        )
-        return
-    await _project_delegation_request_terminal_to_parent(
-        request=request,
-        status=status,
-        summary=summary,
-        reason=reason,
+        required=required,
+        session_factory=session_factory,
     )
 
 
@@ -3056,24 +3298,50 @@ async def _build_delegation_request_from_runtime_record(record: dict[str, Any]) 
         or not isinstance(conversation_messages, list)
     ):
         logger.warning("[Orchestrator] Runtime task %s missing delegation claim metadata; cannot dispatch", task_id)
+        if task_id:
+            summary = (
+                "Task could not be dispatched because its durable delegation request snapshot is incomplete. "
+                "Reconciliation is required before retry."
+            )
+            await update_runtime_task_record(
+                task_id,
+                status="needs_reconciliation",
+                result_summary=summary,
+                root_item_state="needs_reconciliation",
+                root_item_reason_code="dispatch_request_unavailable",
+                metadata_json=build_restart_reconciliation_metadata(
+                    metadata,
+                    task_type="delegation",
+                    task_id=task_id,
+                    blocker="dispatch_request_unavailable",
+                    summary=summary,
+                    trace_id=str(record.get("trace_id") or ""),
+                    session_id=str(record.get("child_session_id") or record.get("parent_session_id") or ""),
+                ),
+            )
         return None
 
     resolved = await _resolve_resumable_target_runtime(target_agent_id, tenant_id=tenant_id)
     if resolved is None:
-        summary = "Task could not be dispatched because the target agent runtime is unavailable."
+        summary = (
+            "Task could not be dispatched because the target agent runtime is unavailable. "
+            "Reconciliation is required before retry."
+        )
         await update_runtime_task_record(
             task_id,
-            status="failed",
+            status="needs_reconciliation",
             result_summary=summary,
-            root_item_state="failed",
-            root_item_reason_code="target_runtime_unavailable",
-            metadata_json={"dispatch_failed": True, "dispatch_failure_reason": "target_runtime_unavailable"},
-        )
-        await _project_delegation_record_terminal_to_parent(
-            record=record,
-            status="failed",
-            summary=summary,
-            reason="target_runtime_unavailable",
+            root_item_state="needs_reconciliation",
+            root_item_reason_code="dispatch_request_unavailable",
+            metadata_json=build_restart_reconciliation_metadata(
+                metadata,
+                task_type="delegation",
+                task_id=task_id,
+                blocker="dispatch_request_unavailable",
+                summary=summary,
+                trace_id=str(record.get("trace_id") or ""),
+                session_id=str(record.get("child_session_id") or record.get("parent_session_id") or ""),
+            ),
         )
         return None
 
@@ -3326,10 +3594,19 @@ async def _ensure_delegation_coordination_published(
         )
 
 
-async def dispatch_persisted_async_delegation(task_id: str) -> bool:
+async def dispatch_persisted_async_delegation(
+    task_id: str,
+    *,
+    wait_for_completion: bool = False,
+) -> bool:
     """Dispatch a RuntimeTask-claimed delegation inside the worker process."""
-    if task_id in _async_tasks:
-        return False
+    existing_state = _async_tasks.get(task_id)
+    if existing_state is not None:
+        if not existing_state.task.done():
+            return False
+        _async_tasks.pop(task_id, None)
+        _async_task_parent_ids.pop(task_id, None)
+        _async_task_fallback_records.pop(task_id, None)
     record = await get_runtime_task_record(task_id)
     if record is None:
         return False
@@ -3337,6 +3614,49 @@ async def dispatch_persisted_async_delegation(task_id: str) -> bool:
         return False
     if str(record.get("status") or "") not in {"pending", "running"}:
         return False
+    metadata = dict(record.get("metadata") or {})
+    if metadata.get("reclaimed_expired_claim"):
+        replay_blocker: str | None = None
+        replay_summary: str | None = None
+        if not (
+            metadata.get("resume_after_restart")
+            and metadata.get("resumable_delegation")
+            and has_restart_replay_contract(metadata, task_type="delegation", task_id=task_id)
+        ):
+            replay_blocker = "restart_replay_contract_missing"
+            replay_summary = (
+                "Task was not replayed after its worker lease expired because its durable delegation restart "
+                "contract is missing or invalid. Reconciliation is required before retry."
+            )
+        elif not _delegation_profile_restart_replay_safe(metadata.get("tool_profile")):
+            replay_blocker = "non_idempotent_tool_profile"
+            replay_summary = (
+                "Task was not replayed after its worker lease expired because its delegation tool profile may "
+                "perform non-idempotent side effects. Reconciliation is required before retry."
+            )
+        if replay_blocker is not None and replay_summary is not None:
+            reconciled = await update_runtime_task_record(
+                task_id,
+                status="needs_reconciliation",
+                result_summary=replay_summary,
+                root_item_state="needs_reconciliation",
+                root_item_reason_code=replay_blocker,
+                metadata_json=build_restart_reconciliation_metadata(
+                    metadata,
+                    task_type="delegation",
+                    task_id=task_id,
+                    blocker=replay_blocker,
+                    summary=replay_summary,
+                    trace_id=str(record.get("trace_id") or ""),
+                    session_id=str(record.get("child_session_id") or record.get("parent_session_id") or ""),
+                ),
+            )
+            if reconciled:
+                await _release_delegation_coordination_lease_from_record(
+                    record,
+                    reason="restart_replay_not_safe",
+                )
+            return False
     request = await _build_delegation_request_from_runtime_record(record)
     if request is None:
         await _release_delegation_coordination_lease_from_record(
@@ -3360,7 +3680,6 @@ async def dispatch_persisted_async_delegation(task_id: str) -> bool:
             reason="dispatch_authority_unavailable",
         )
         return False
-    metadata = dict(record.get("metadata") or {})
     coordination_metadata: dict[str, Any] = {}
     if metadata.get("coordination_publish_state") != "published":
         try:
@@ -3428,6 +3747,11 @@ async def dispatch_persisted_async_delegation(task_id: str) -> bool:
         )
         return False
     _spawn_async_delegation_task(task_id=task_id, request=request, trace_id=request.trace_id or uuid.uuid4().hex)
+    if wait_for_completion:
+        state = _async_tasks.get(task_id)
+        if state is None:
+            return False
+        await state.task
     return True
 
 
@@ -4008,6 +4332,25 @@ async def check_async_delegation(
             "receipt": state.receipt,
             **_session_payload(state.child_session_id),
         }
+    try:
+        persisted = await get_runtime_task_record(task_id)
+    except Exception as exc:
+        logger.warning("[Orchestrator] Failed to load terminal runtime task %s: %s", task_id, exc)
+        persisted = None
+    if persisted is not None:
+        persisted_status = str(persisted.get("status") or "")
+        if persisted_status in {"completed", "failed", "killed", "skipped", "needs_reconciliation"}:
+            _async_tasks.pop(task_id, None)
+            _async_task_parent_ids.pop(task_id, None)
+            _async_task_fallback_records.pop(task_id, None)
+            return {
+                "task_id": task_id,
+                "status": persisted_status,
+                "result": persisted.get("result"),
+                "timed_out": bool((persisted.get("metadata") or {}).get("timed_out", False)),
+                "receipt": (persisted.get("metadata") or {}).get("execution_receipt"),
+                **_session_payload(persisted.get("child_session_id"), persisted.get("parent_session_id")),
+            }
     # Remove completed task from registry after reading
     _async_tasks.pop(task_id, None)
     _async_task_parent_ids.pop(task_id, None)
@@ -4111,7 +4454,7 @@ async def cancel_async_delegation(
         ):
             return {"task_id": task_id, "status": "forbidden", "result": None}
         status = persisted.get("status") or "not_found"
-        if status in {"completed", "failed", "killed"}:
+        if status in {"completed", "failed", "killed", "skipped", "needs_reconciliation"}:
             return {
                 "task_id": task_id,
                 "status": status,
@@ -4135,16 +4478,69 @@ async def cancel_async_delegation(
                         min_runtime_seconds=min_runtime_seconds,
                     )
         if status in {"pending", "running"}:
+            cancellation_committed = False
+            cancellation_error: Exception | None = None
+            killed_receipt = _build_delegation_terminal_receipt_from_runtime_record(
+                persisted,
+                task_id=task_id,
+                status="killed",
+            )
+            cancellation_metadata: dict[str, Any] = {
+                "cancelled": True,
+                # Explicitly clear an unverifiable pending receipt instead of
+                # merging it into a terminal RuntimeTask as false evidence.
+                "execution_receipt": killed_receipt,
+            }
+            if killed_receipt is None:
+                cancellation_metadata["execution_receipt_error"] = "terminal_receipt_unavailable"
             try:
-                await update_runtime_task_record(
-                    task_id,
-                    status="killed",
-                    result_summary="Task cancelled by parent agent",
-                    trace_id=persisted.get("trace_id"),
-                    metadata_json={"cancelled": True},
+                cancellation_committed = (
+                    await update_runtime_task_record(
+                        task_id,
+                        status="killed",
+                        result_summary="Task cancelled by parent agent",
+                        trace_id=persisted.get("trace_id"),
+                        metadata_json=cancellation_metadata,
+                    )
+                    is True
                 )
             except Exception as exc:
+                cancellation_error = exc
                 logger.warning("[Orchestrator] Failed to persist runtime task cancellation %s: %s", task_id, exc)
+            if not cancellation_committed:
+                try:
+                    canonical = await get_runtime_task_record(task_id)
+                except Exception as exc:
+                    logger.warning(
+                        "[Orchestrator] Failed to reload runtime task %s after cancel race: %s", task_id, exc
+                    )
+                    canonical = None
+                if canonical is not None:
+                    canonical_status = str(canonical.get("status") or "not_found")
+                    if canonical_status in {"completed", "failed", "killed", "skipped", "needs_reconciliation"}:
+                        return {
+                            "task_id": task_id,
+                            "status": canonical_status,
+                            "result": canonical.get("result"),
+                            "receipt": (canonical.get("metadata") or {}).get("execution_receipt"),
+                            **_session_payload(
+                                canonical.get("child_session_id"),
+                                canonical.get("parent_session_id"),
+                            ),
+                        }
+                return {
+                    "task_id": task_id,
+                    "status": "needs_reconciliation",
+                    "result": (
+                        "Cancellation did not win the RuntimeTask terminal commit; reload the durable task state."
+                    ),
+                    "error": type(cancellation_error).__name__ if cancellation_error is not None else None,
+                    **_session_payload(
+                        (canonical or persisted).get("child_session_id"),
+                        (canonical or persisted).get("parent_session_id"),
+                    ),
+                }
+            await _settle_persisted_delegation_budget(persisted, task_id=task_id, status="killed")
             try:
                 from app.services.runtime_control_bus import publish_delegation_cancel
 
@@ -4155,7 +4551,7 @@ async def cancel_async_delegation(
                 "task_id": task_id,
                 "status": "killed",
                 "result": "Task cancelled by parent agent",
-                "receipt": (persisted.get("metadata") or {}).get("execution_receipt"),
+                "receipt": killed_receipt,
                 **_session_payload(persisted.get("child_session_id"), persisted.get("parent_session_id")),
             }
         return {
@@ -4195,15 +4591,49 @@ async def cancel_async_delegation(
         _async_task_fallback_records.pop(task_id, None)
 
     try:
-        await update_runtime_task_record(
-            task_id,
-            status="killed",
-            result_summary="Task cancelled by parent agent",
-            trace_id=state.trace_id,
-            metadata_json={"timed_out": False, "depth_limited": False, "cancelled": True},
-        )
+        persisted = await get_runtime_task_record(task_id)
     except Exception as exc:
-        logger.warning("[Orchestrator] Failed to persist cancelled runtime task %s: %s", task_id, exc)
+        logger.warning("[Orchestrator] Failed to reload cancelled runtime task %s: %s", task_id, exc)
+        persisted = None
+    persisted_status = str((persisted or {}).get("status") or "")
+    if persisted_status not in {"completed", "failed", "killed", "skipped", "needs_reconciliation"}:
+        cancellation_committed = False
+        try:
+            cancellation_committed = (
+                await update_runtime_task_record(
+                    task_id,
+                    status="killed",
+                    result_summary="Task cancelled by parent agent",
+                    trace_id=state.trace_id,
+                    metadata_json={"timed_out": False, "depth_limited": False, "cancelled": True},
+                )
+                is True
+            )
+        except Exception as exc:
+            logger.warning("[Orchestrator] Failed to persist cancelled runtime task %s: %s", task_id, exc)
+        if cancellation_committed:
+            if persisted is not None:
+                await _settle_persisted_delegation_budget(persisted, task_id=task_id, status="killed")
+            persisted_status = "killed"
+        else:
+            try:
+                persisted = await get_runtime_task_record(task_id)
+            except Exception as exc:
+                logger.warning("[Orchestrator] Failed to resolve cancel race for %s: %s", task_id, exc)
+                persisted = None
+            persisted_status = str((persisted or {}).get("status") or "needs_reconciliation")
+
+    if persisted_status != "killed":
+        return {
+            "task_id": task_id,
+            "status": persisted_status,
+            "result": (persisted or {}).get("result"),
+            "receipt": ((persisted or {}).get("metadata") or {}).get("execution_receipt"),
+            **_session_payload(
+                (persisted or {}).get("child_session_id") or state.child_session_id,
+                (persisted or {}).get("parent_session_id"),
+            ),
+        }
 
     await _persist_delegation_event(
         task_id=task_id,
@@ -4217,8 +4647,8 @@ async def cancel_async_delegation(
         "task_id": task_id,
         "status": "killed",
         "result": "Task cancelled by parent agent",
-        "receipt": state.receipt,
-        **_session_payload(state.child_session_id),
+        "receipt": ((persisted or {}).get("metadata") or {}).get("execution_receipt") or state.receipt,
+        **_session_payload((persisted or {}).get("child_session_id") or state.child_session_id),
     }
 
 
@@ -4264,6 +4694,7 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
         records = await list_active_runtime_task_records(
             limit=limit,
             statuses=("pending", "running", "suspended"),
+            task_types=("delegation",),
         )
     except Exception as exc:
         logger.warning("[Orchestrator] Failed to load active runtime tasks for resume: %s", exc)
@@ -4273,41 +4704,39 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
         task_id = str(record.get("task_id") or "")
         if not task_id or task_id in _async_tasks:
             continue
+        if str(record.get("task_type") or "") != "delegation":
+            continue
 
         metadata = record.get("metadata") or {}
         if not metadata.get("resumable_delegation") or not metadata.get("resume_after_restart"):
             continue
-        replay_safe = _delegation_profile_restart_replay_safe(metadata.get("tool_profile"))
-        if not replay_safe:
+
+        status = str(record.get("status") or "")
+        if status in {"pending", "running"}:
+            if status == "running":
+                claim_expires_at = _coerce_aware_datetime(record.get("claim_expires_at"))
+                if claim_expires_at is not None and claim_expires_at > datetime.now(timezone.utc):
+                    # The canonical lease still belongs to a live worker. Keep
+                    # it out of orphan reconciliation without duplicating it.
+                    resumed.append(task_id)
+                    continue
+                wake_reason = "delegation_lease_reclaimable"
+            else:
+                wake_reason = "delegation_restart_pending"
             try:
-                await update_runtime_task_record(
-                    task_id,
-                    status="needs_reconciliation",
-                    result_summary=(
-                        "Task was not resumed after restart because its delegation tool profile is not "
-                        "safe to replay without duplicating side effects. Reconciliation is required before retry."
-                    ),
-                    metadata_json=build_restart_reconciliation_metadata(
-                        metadata,
-                        task_type="delegation",
-                        task_id=task_id,
-                        blocker="non_idempotent_tool_profile",
-                        summary=(
-                            "Task was not resumed after restart because its delegation tool profile is not "
-                            "safe to replay without duplicating side effects. Reconciliation is required before retry."
-                        ),
-                        trace_id=str(record.get("trace_id") or ""),
-                        session_id=str(record.get("child_session_id") or record.get("parent_session_id") or ""),
-                    ),
+                from app.services.runtime_task_worker import notify_runtime_task_worker
+
+                await notify_runtime_task_worker(
+                    reason=wake_reason,
+                    runtime_task_id=uuid.UUID(task_id),
                 )
             except Exception as exc:
                 logger.warning(
-                    "[Orchestrator] Failed to persist non-replay-safe resume failure for %s: %s", task_id, exc
+                    "[Orchestrator] Failed to wake runtime worker for persisted delegation %s: %s",
+                    task_id,
+                    exc,
                 )
-            await _release_delegation_coordination_lease_from_record(
-                record,
-                reason="restart_replay_not_safe",
-            )
+            resumed.append(task_id)
             continue
 
         request = await _build_delegation_request_from_runtime_record(record)
@@ -4401,33 +4830,5 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
             )
             resumed.append(task_id)
             continue
-
-        _spawn_async_delegation_task(task_id=task_id, request=request, trace_id=request.trace_id or uuid.uuid4().hex)
-        try:
-            resume_metadata = merge_restart_replay_journal(
-                metadata,
-                build_restart_replay_journal_entry(
-                    task_type="delegation",
-                    task_id=task_id,
-                    side_effect_risk=str(metadata.get("side_effect_risk") or "read_only"),
-                    phase="resume_intent_recorded",
-                    trace_id=request.trace_id,
-                    session_id=request.session_id,
-                ),
-            )
-            await update_runtime_task_record(
-                task_id,
-                status="running",
-                trace_id=request.trace_id,
-                child_session_id=request.session_id,
-                metadata_json={
-                    "resumed_after_restart": True,
-                    "resumed_at": datetime.now(timezone.utc).isoformat(),
-                    "restart_replay_journal": resume_metadata.get("restart_replay_journal"),
-                },
-            )
-        except Exception as exc:
-            logger.warning("[Orchestrator] Failed to mark resumed runtime task %s as running: %s", task_id, exc)
-        resumed.append(task_id)
 
     return resumed

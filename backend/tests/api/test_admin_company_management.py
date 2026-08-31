@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 
 class _FakeDB:
@@ -13,6 +15,7 @@ class _FakeDB:
         self.statements: list[str] = []
         self.added: list[object] = []
         self._results = list(results or [])
+        self.commits = 0
 
     def add(self, value):
         self.added.append(value)
@@ -25,6 +28,9 @@ class _FakeDB:
                 value.is_active = True
             if hasattr(value, "created_at") and getattr(value, "created_at", None) is None:
                 value.created_at = datetime.now(timezone.utc)
+
+    async def commit(self):
+        self.commits += 1
 
     async def execute(self, stmt):
         self.statements.append(str(stmt))
@@ -57,6 +63,32 @@ class _ScalarsResult:
         return list(self._rows)
 
 
+@pytest.mark.parametrize("role", ("org_admin", "member"))
+def test_only_platform_admin_can_create_company(role):
+    from app.api import admin as admin_api
+    from app.core.security import get_current_user
+    from app.database import get_db
+
+    db = _FakeDB()
+    app = FastAPI()
+    app.include_router(admin_api.router)
+
+    async def override_current_user():
+        return SimpleNamespace(id=uuid4(), role=role, tenant_id=uuid4())
+
+    async def override_db():
+        yield db
+
+    app.dependency_overrides[get_current_user] = override_current_user
+    app.dependency_overrides[get_db] = override_db
+    with TestClient(app) as client:
+        response = client.post("/admin/companies", json={"name": "Denied Company"})
+
+    assert response.status_code == 403
+    assert db.statements == []
+    assert db.added == []
+
+
 @pytest.mark.asyncio
 async def test_platform_admin_create_company_pins_new_tenant_before_invite_insert():
     from app import database
@@ -71,8 +103,11 @@ async def test_platform_admin_create_company_pins_new_tenant_before_invite_inser
 
     tenant_id = result.company.id
     assert db.added[1].tenant_id == tenant_id
+    assert db.added[1].granted_role == "org_admin"
+    assert db.commits == 1
     assert db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(tenant_id)
     assert any(f"SET LOCAL app.current_tenant_id = '{tenant_id}'" in stmt for stmt in db.statements)
+    assert all("BYPASS" not in stmt for stmt in db.statements)
 
 
 @pytest.mark.asyncio
@@ -82,8 +117,8 @@ async def test_platform_admin_company_list_exposes_the_active_org_admin_email():
     tenant_id = uuid4()
     tenant = SimpleNamespace(
         id=tenant_id,
-        name="Rocky Lab",
-        slug="rocky-lab",
+        name="Example Owner Lab",
+        slug="example-owner-lab",
         is_active=True,
         created_at=datetime.now(timezone.utc),
     )
@@ -108,7 +143,7 @@ async def test_platform_admin_company_list_exposes_the_active_org_admin_email():
 
 
 @pytest.mark.asyncio
-async def test_platform_admin_toggle_company_pins_target_tenant_before_agent_pause():
+async def test_platform_admin_toggle_company_pins_target_tenant_before_agent_stop():
     from app import database
     from app.api import admin as admin_api
 
@@ -125,7 +160,9 @@ async def test_platform_admin_toggle_company_pins_target_tenant_before_agent_pau
 
     assert result == {"ok": True, "is_active": False}
     assert tenant.is_active is False
-    assert running_agent.status == "paused"
+    assert running_agent.status == "stopped"
+    assert any("FOR UPDATE" in stmt for stmt in db.statements)
+    assert db.commits == 1
     assert db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(company_id)
     assert any(f"SET LOCAL app.current_tenant_id = '{company_id}'" in stmt for stmt in db.statements)
 

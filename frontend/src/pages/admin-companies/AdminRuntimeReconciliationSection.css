@@ -43,6 +43,12 @@
   font-size: var(--text-row);
 }
 
+.admin-reconcile-field-label {
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  font-weight: 600;
+}
+
 .admin-reconcile-error {
   padding: var(--space-3) var(--space-5);
   color: var(--status-error);
@@ -101,9 +107,68 @@
   color: var(--text-primary);
 }
 
+.admin-reconcile-evidence {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  margin-top: var(--space-1);
+  overflow-wrap: anywhere;
+}
+
+.admin-reconcile-readiness,
+.admin-reconcile-blocker {
+  margin-top: var(--space-2);
+  font-size: var(--text-caption);
+}
+
+.admin-reconcile-readiness {
+  color: var(--status-success);
+}
+
+.admin-reconcile-blocker {
+  color: var(--status-warning);
+}
+
+.admin-reconcile-evidence-ref {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: var(--space-1);
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+  overflow-wrap: anywhere;
+}
+
+.admin-reconcile-evidence-label {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.admin-reconcile-ref-actions {
+  display: inline-flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.admin-reconcile-ref-actions .btn-secondary {
+  min-height: 28px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-caption);
+}
+
+.admin-reconcile-unavailable {
+  color: var(--text-tertiary);
+}
+
 .admin-reconcile-actions {
   display: flex;
   justify-content: flex-end;
   gap: var(--space-2);
   flex-wrap: wrap;
+}
+
+.admin-reconcile-actions .admin-reconcile-field-label,
+.admin-reconcile-actions .admin-reconcile-input {
+  flex-basis: 100%;
 }

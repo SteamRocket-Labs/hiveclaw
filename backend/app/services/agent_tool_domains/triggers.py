@@ -23,9 +23,11 @@ from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.trigger_resource_authority import (
     authorize_trigger_action,
     filter_authorized_triggers,
+    lock_trigger_for_update,
     load_trigger_requester,
     preserve_trigger_authority,
     stamp_trigger_authority,
+    strip_trigger_runtime_config,
     trigger_authority_state,
     trigger_owner_user_id,
 )
@@ -415,7 +417,7 @@ async def _handle_set_trigger(
 
     name = arguments.get("name", "").strip()
     ttype = arguments.get("type", "").strip()
-    config = dict(arguments.get("config", {}) or {})
+    config = strip_trigger_runtime_config(arguments.get("config"))
     reason = arguments.get("reason", "").strip()
 
     if not name:
@@ -567,6 +569,17 @@ async def _handle_set_trigger(
                         "set_trigger",
                         "auth_or_permission",
                         "A trigger with this name exists outside the requester authority.",
+                    )
+                existing = await lock_trigger_for_update(
+                    db,
+                    agent_id=agent_id,
+                    trigger_id=existing.id,
+                )
+                if existing is None:
+                    return _trigger_error(
+                        "set_trigger",
+                        "not_found",
+                        f"Trigger '{name}' no longer exists.",
                     )
                 if existing.is_enabled:
                     return _trigger_error(
@@ -750,6 +763,13 @@ async def _handle_update_trigger(
                     "auth_or_permission",
                     "The trigger belongs to a different requester.",
                 )
+            trigger = await lock_trigger_for_update(
+                db,
+                agent_id=agent_id,
+                trigger_id=trigger.id,
+            )
+            if trigger is None:
+                return _trigger_error("update_trigger", "not_found", f"Trigger '{name}' no longer exists.")
 
             changes = []
             final_config = dict(trigger.config or {})

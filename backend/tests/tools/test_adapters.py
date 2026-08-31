@@ -143,6 +143,32 @@ async def test_adapter_workspace_args():
 
 
 @pytest.mark.asyncio
+async def test_adapter_workspace_args_passes_permission_profile_to_authoritative_handler():
+    captured = {}
+    profile = {"capability_policy_snapshot": {"session_exact_scope": True}}
+
+    async def handler(
+        workspace: Path,
+        arguments: dict,
+        tenant_id: str | None,
+        permission_profile=None,
+    ) -> str:
+        captured.update(
+            workspace=workspace,
+            args=arguments,
+            tenant_id=tenant_id,
+            permission_profile=permission_profile,
+        )
+        return "read"
+
+    req = _make_request()
+    req.context.permission_profile = profile
+
+    assert await adapt_and_call(_make_meta("workspace_args"), handler, req) == "read"
+    assert captured["permission_profile"] is profile
+
+
+@pytest.mark.asyncio
 async def test_adapter_sync_handler():
     """Sync handlers should also work."""
 

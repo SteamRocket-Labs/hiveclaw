@@ -136,3 +136,37 @@ def test_loaded_skill_frontmatter_records_execution_plan_and_permission_profile(
             "permission_profile": plan["permission_profile"],
         }
     ]
+
+
+def test_loaded_skill_frontmatter_cannot_widen_exact_session_scope(tmp_path: Path) -> None:
+    from app.runtime.session import SessionContext
+    from app.runtime.skill_hooks import register_loaded_skill_hooks
+
+    workspace = tmp_path / "agent"
+    _write_fork_skill(workspace)
+    exact_profile = {
+        "mode": "bypassPermissions",
+        "allowed_tools": ["read_file"],
+        "writable_roots": ["workspace/p08-j4/attempt-1/"],
+        "readable_roots": ["workspace/p08-j4/attempt-1/"],
+        "capability_policy_snapshot": {"session_exact_scope": True},
+    }
+    session = SessionContext(
+        session_id="session-1",
+        metadata={"tenant_id": "tenant-1", "permission_profile": exact_profile},
+    )
+
+    registered = register_loaded_skill_hooks(
+        workspace,
+        "research",
+        session_context=session,
+        agent_id="agent-1",
+    )
+
+    assert registered
+    assert session.metadata["permission_profile"] == exact_profile
+    assert "pending_skill_handoffs" not in session.metadata
+    assert session.metadata["skill_execution_plans"][0]["permission_profile"]["allowed_tools"] == [
+        "web_search",
+        "read_file",
+    ]

@@ -173,7 +173,7 @@ getSessionLineage(agentId, sessionId)
 Backend tests:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/api/test_chat_session_branches.py tests/services/test_conversation_branch_service.py tests/services/test_web_chat_runtime.py -q
 ```
@@ -192,7 +192,7 @@ Required backend cases:
 Frontend tests:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx src/pages/agent-detail/chatRuntime.test.ts
 npm run build
 ```
@@ -220,13 +220,13 @@ This is one complete feature, but it should land as tight, tested slices:
 Before deploy:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 alembic heads
 pytest tests/api/test_chat_session_branches.py tests/services/test_conversation_branch_service.py tests/services/test_web_chat_runtime.py -q
 ruff check app/api/chat_sessions.py app/services/web_chat_runtime.py app/services/chat_transcript.py
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx src/pages/agent-detail/chatRuntime.test.ts
 npm run build
 ```
@@ -256,7 +256,7 @@ Implemented locally, not yet deployed:
 Local verification:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_chat_transcript.py tests/services/test_conversation_branch_service.py tests/api/test_chat_session_branches.py tests/services/test_conversation_interaction_service.py tests/services/test_web_chat_runtime.py tests/kernel/test_engine.py tests/memory/test_t2_segment_package_builder.py -q
 # 122 passed, 4 warnings
@@ -264,7 +264,7 @@ pytest tests/services/test_chat_transcript.py tests/services/test_conversation_b
 ruff check app/services/chat_transcript.py app/services/conversation_branch_service.py app/memory/t2/segment_package.py tests/services/test_chat_transcript.py tests/services/test_conversation_branch_service.py tests/memory/test_t2_segment_package_builder.py
 # All checks passed
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run src/api/domains/chat.test.ts src/pages/agent-detail/AgentDetailSections.test.tsx src/pages/agent-detail/chatRuntime.test.ts src/pages/agent-detail/AskUserQuestionCard.test.tsx
 # 4 files passed, 95 tests passed
 

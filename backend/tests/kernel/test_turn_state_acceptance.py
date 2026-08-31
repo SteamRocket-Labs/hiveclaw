@@ -60,7 +60,7 @@ def _kernel_with(runtime_config, *, client=None, execute_tool=None, get_tools=No
     return AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: runtime_config,
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda *_a, **_k: "PROMPT",
             resolve_memory_context=lambda *_a, **_k: "",
             resolve_retrieval_context=lambda *_a, **_k: "",

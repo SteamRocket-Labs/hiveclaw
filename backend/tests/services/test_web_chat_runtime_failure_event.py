@@ -111,6 +111,7 @@ def _install_finalizer_fakes(owner_sessionmaker, monkeypatch, *, tenant_id: uuid
     monkeypatch.setattr(web_chat_runtime, "_project_agent_team_terminal_state", noop_async)
     monkeypatch.setattr(web_chat_runtime, "_append_file_changes_event", noop_async)
     monkeypatch.setattr(web_chat_runtime, "_enqueue_terminal_channel_delivery", noop_async)
+    monkeypatch.setattr(web_chat_runtime, "_enqueue_web_terminal_boundary", noop_async)
     monkeypatch.setattr(web_chat_runtime, "_maybe_continue_goal_after_terminal_turn", noop_async)
     monkeypatch.setattr(web_chat_runtime, "broadcast_web_chat_event", capture_broadcast)
     return broadcasts
@@ -213,18 +214,21 @@ async def test_failed_finalize_without_explicit_failure_still_persists_terminal_
     )
     _install_finalizer_fakes(owner_sessionmaker, monkeypatch, tenant_id=tenant_id)
 
-    assert await web_chat_runtime._finalize_web_chat_run_without_assistant(
-        run_uuid=run_id,
-        agent_id=agent_id,
-        session_id=str(session_id),
-        status="failed",
-        result_summary="runtime_exception",
-        metadata_json={
-            "terminal_reason": "turn_abort",
-            "error_code": "runtime_exception",
-            "retryable": True,
-        },
-    ) is True
+    assert (
+        await web_chat_runtime._finalize_web_chat_run_without_assistant(
+            run_uuid=run_id,
+            agent_id=agent_id,
+            session_id=str(session_id),
+            status="failed",
+            result_summary="runtime_exception",
+            metadata_json={
+                "terminal_reason": "turn_abort",
+                "error_code": "runtime_exception",
+                "retryable": True,
+            },
+        )
+        is True
+    )
 
     async with owner_sessionmaker() as db:
         rows = list((await db.execute(_runtime_failure_events_query(session_id))).scalars())
@@ -265,11 +269,14 @@ async def test_active_run_absence_repairs_latest_missing_model_terminal_once(
         await db.commit()
 
     async with owner_sessionmaker() as db:
-        assert await web_chat_runtime.get_active_web_chat_run(
-            db=db,
-            agent_id=agent_id,
-            session_id=session_id,
-        ) is None
+        assert (
+            await web_chat_runtime.get_active_web_chat_run(
+                db=db,
+                agent_id=agent_id,
+                session_id=session_id,
+            )
+            is None
+        )
 
     async with owner_sessionmaker() as db:
         rows = list((await db.execute(_runtime_failure_events_query(session_id))).scalars())
@@ -278,11 +285,14 @@ async def test_active_run_absence_repairs_latest_missing_model_terminal_once(
         assert rows[0].metadata_json["v2_payload"]["failure_code"] == "llm_model_missing"
 
     async with owner_sessionmaker() as db:
-        assert await web_chat_runtime.get_active_web_chat_run(
-            db=db,
-            agent_id=agent_id,
-            session_id=session_id,
-        ) is None
+        assert (
+            await web_chat_runtime.get_active_web_chat_run(
+                db=db,
+                agent_id=agent_id,
+                session_id=session_id,
+            )
+            is None
+        )
 
     async with owner_sessionmaker() as db:
         rows = list((await db.execute(_runtime_failure_events_query(session_id))).scalars())

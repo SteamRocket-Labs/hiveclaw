@@ -32,7 +32,7 @@ async def test_tool_runtime_resolver_builds_execution_context(monkeypatch):
         lambda: ExecutionIdentity(
             identity_type="delegated_user",
             identity_id=user_id,
-            label="Rocky via web",
+            label="Example Owner via web",
         ),
     )
 

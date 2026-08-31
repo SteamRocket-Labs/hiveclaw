@@ -63,6 +63,34 @@ COMPLETION_OUTBOX_PENDING_SQL = (
     "AND parent_agent_id IS NOT NULL"
 )
 
+TERMINAL_BOUNDARY_GENERATION = 1
+TERMINAL_BOUNDARY_RETRY_SECONDS = 30
+TERMINAL_BOUNDARY_REQUIRED_TASK_TYPES = (
+    "web_chat_turn",
+    "goal_continuation",
+    "team_member",
+    "advanced_plan",
+    "a2a_continuation",
+    "business_task",
+    "trigger",
+    "delegation",
+)
+TERMINAL_BOUNDARY_TERMINAL_STATUSES = (
+    "completed",
+    "failed",
+    "killed",
+    "skipped",
+    "needs_reconciliation",
+)
+TERMINAL_BOUNDARY_PENDING_SQL = (
+    "terminal_boundary_generation IS NOT NULL "
+    "AND terminal_boundary_enqueued_at IS NULL "
+    "AND task_type IN ('web_chat_turn', 'goal_continuation', 'team_member', 'advanced_plan', "
+    "'a2a_continuation', 'business_task', 'trigger', 'delegation') "
+    "AND status IN ('completed', 'failed', 'killed', 'skipped', 'needs_reconciliation') "
+    "AND tenant_id IS NOT NULL"
+)
+
 
 class RuntimeTask(Base):
     """Persistent record of a subagent delegation task."""
@@ -116,6 +144,14 @@ class RuntimeTask(Base):
             text("created_at ASC"),
             postgresql_where=text(COMPLETION_OUTBOX_PENDING_SQL),
             sqlite_where=text(COMPLETION_OUTBOX_PENDING_SQL),
+        ),
+        Index(
+            "ix_runtime_tasks_terminal_boundary_pending",
+            text("(terminal_boundary_reconcile_attempted_at IS NOT NULL)"),
+            text("terminal_boundary_reconcile_attempted_at ASC"),
+            text("created_at ASC"),
+            postgresql_where=text(TERMINAL_BOUNDARY_PENDING_SQL),
+            sqlite_where=text(TERMINAL_BOUNDARY_PENDING_SQL),
         ),
     )
 
@@ -197,6 +233,26 @@ class RuntimeTask(Base):
     )
     completion_outbox_last_error: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
+    # Cutover/recovery ledger for caller-owned terminal hook boundaries.  Old
+    # terminal rows retain a NULL generation and are never replayed as fresh
+    # learning events. Only task types with a live Web/direct consumer use
+    # generation 1; the database trigger mirrors this for rolling/raw writers.
+    terminal_boundary_generation: Mapped[int | None] = mapped_column(
+        SmallInteger,
+        nullable=True,
+    )
+    terminal_boundary_enqueued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    terminal_boundary_reconcile_attempted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    terminal_boundary_reconcile_attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    terminal_boundary_reconcile_last_error: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
     # Cross-process queue claim / lease metadata
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"), index=True)
     claimed_by: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
@@ -233,6 +289,10 @@ class RuntimeTask(Base):
 def _set_runtime_task_root_idempotency_key(_mapper, _connection, target: RuntimeTask) -> None:
     if target.id is None:
         target.id = uuid.uuid4()
+    terminal_task_type = str(target.task_type or "delegation")
+    target.terminal_boundary_generation = (
+        TERMINAL_BOUNDARY_GENERATION if terminal_task_type in TERMINAL_BOUNDARY_REQUIRED_TASK_TYPES else None
+    )
     if not str(getattr(target, "root_idempotency_key", "") or "").strip():
         target.root_idempotency_key = f"{target.task_type}:{target.id}"
     metadata = dict(getattr(target, "metadata_json", None) or {})

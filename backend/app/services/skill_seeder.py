@@ -290,9 +290,8 @@ async def seed_skills():
 
     async with (
         async_session() as db,
-        enter_rls_bypass(db, reason="startup builtin skill registry seed") as bypass_db,
+        enter_rls_bypass(db, reason="startup builtin skill registry seed"),
     ):
-        db = bypass_db
         for skill_data in all_skill_dicts:
             result = await db.execute(
                 select(Skill).where(
@@ -417,11 +416,8 @@ async def cleanup_retired_builtin_skills() -> dict:
     # it runs under an explicit audited bypass.
     async with (
         async_session() as db,
-        enter_rls_bypass(
-            db, reason="startup maintenance: remove retired builtin skills across all agent workspaces"
-        ) as bdb,
+        enter_rls_bypass(db, reason="startup maintenance: remove retired builtin skills across all agent workspaces"),
     ):
-        db = bdb
         result = await db.execute(
             select(Skill).where(
                 Skill.is_builtin == True,  # noqa: E712
@@ -519,9 +515,8 @@ async def push_default_skills_to_existing_agents():
     # explicit audited bypass.
     async with (
         async_session() as db,
-        enter_rls_bypass(db, reason="startup: push default skills to every existing agent across tenants") as bdb,
+        enter_rls_bypass(db, reason="startup: push default skills to every existing agent across tenants"),
     ):
-        db = bdb
         # Load all is_default skills with their files
         default_skills_r = await db.execute(
             select(Skill).where(Skill.is_default, Skill.tenant_id.is_(None)).options(selectinload(Skill.files))

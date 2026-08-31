@@ -22,7 +22,7 @@
 Run before and after each governance change:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/architecture tests/tools/test_governance.py tests/tools/test_service.py
 ruff check app tests

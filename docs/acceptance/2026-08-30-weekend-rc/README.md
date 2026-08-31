@@ -1,11 +1,11 @@
 ---
 document_id: weekend-rc-2026-08-30-index
-owner: Rocky / Codex
+owner: Example Owner / Codex
 status: active
 authority: canonical-index
-last_reviewed: 2026-08-30
+last_reviewed: 2026-08-31
 source_commit: c18b181c
-verification_status: production-denominator-frozen-product-acceptance-pending
+verification_status: model-agency-rls-and-external-readiness-aligned
 ---
 
 # Weekend RC 2026-08-30 验收文档组
@@ -22,6 +22,8 @@ verification_status: production-denominator-frozen-product-acceptance-pending
 
 自动恢复入口固定为 `03-current-status.md`；本页是人类与 Agent 的文档地图。两者职责不同，不构成双事实源。
 
+`03-current-status.md` 是唯一可变的恢复状态文件，不是唯一需要更新的 canonical 文件。Journey、Finding 和真实运行结果仍分别按本页路由写入既有 ledger、findings 与 evidence；禁止的是另建第二套 state system、shadow ledger 或 semantic controller。
+
 ## 权威地图
 
 | 文件 | 唯一职责 | 更新节奏 |
@@ -31,7 +33,7 @@ verification_status: production-denominator-frozen-product-acceptance-pending
 | [03-current-status.md](03-current-status.md) | 当前提交、生产基线、阻塞、下一动作、Not Done | 每个证据批次或计划步骤后 |
 | [04-journey-ledger.md](04-journey-ledger.md) | 验收分母、旅程状态、领域与最新证据关系 | 旅程冻结或状态变化时 |
 | [05-findings.md](05-findings.md) | 当前有效 finding、严重度、最早错误状态和修复闭环 | 复现、修复、复验时 |
-| [06-runbook-and-release-gates.md](06-runbook-and-release-gates.md) | 12 小时执行顺序、测试、部署、停止与发布门 | 执行合同变化时 |
+| [06-runbook-and-release-gates.md](06-runbook-and-release-gates.md) | 执行顺序、测试、部署、停止与发布门 | 执行合同变化时 |
 | [domains/](domains/single-agent-and-session.md) | 各能力的验收标准；不记录运行结果 | 产品契约变化时 |
 | [evidence/](evidence/README.md) | exact commit / persona / run 的不可变证据记录 | 每次实际运行后新增 |
 | [archive/](archive/README.md) | 旧总账、历史推理和过时状态 | 只归档，不作为当前权威 |
@@ -49,7 +51,7 @@ verification_status: production-denominator-frozen-product-acceptance-pending
 
 现有 [`acceptance/atomic_user_journeys.v1.json`](../../../acceptance/atomic_user_journeys.v1.json) 是被后端架构测试和 Playwright 消费的 15 条确定性 CI 旅程，允许声明过的受控外部 fake。它是 CI 行为底线，不是本轮生产 NPTCR 分母。
 
-本轮生产分母已按 owner 裁决冻结在 [`acceptance/weekend_production_journeys.v1.json`](../../../acceptance/weekend_production_journeys.v1.json)：35 个候选组展开为 96 条可独立计分旅程，禁止 external fake。当前没有 production pass，故 NPTCR 仍为 0%。[`backend/scripts/weekend_rc_gate.py`](../../../backend/scripts/weekend_rc_gate.py) 只校验 exact manifest/evidence/deployment facts 并计算机械分数，固定输出 `semantic_verdict=not_computed_by_tool`。
+本轮生产分母已按 owner 裁决冻结在 [`acceptance/weekend_production_journeys.v1.json`](../../../acceptance/weekend_production_journeys.v1.json)：35 个候选组展开为 96 条可独立计分旅程，禁止 external fake。当前 manifest 下 pass 1/pass 2 均未运行，没有任何同提交双遍 `Closed loop` 旅程，故 NPTCR 仍为 0%；旧 manifest hash 上的 `P29-PADMIN` pass 1 只保留为历史 supporting evidence，不迁移成当前 PASS。[`backend/scripts/weekend_rc_gate.py`](../../../backend/scripts/weekend_rc_gate.py) 只校验 exact manifest/evidence/deployment facts并计算机械分数，固定输出 `semantic_verdict=not_computed_by_tool`。
 
 ```bash
 python3 backend/scripts/weekend_rc_gate.py validate
@@ -58,9 +60,9 @@ python3 backend/scripts/weekend_rc_gate.py score --deployed-commit <40-char-appl
 
 ## 执行队列边界
 
-- Codex Goal 只保存最终目标和停止条件；本目录与冻结 manifest 才拥有验收语义。
+- Codex Goal 只保存最终目标和停止条件；本目录与冻结 manifest 记录 owner 接受的验收合同。Hive 产品 turn 的 selected runtime LLM 负责任务语义，RC 循环的主 Codex负责解释真实证据并形成验收 verdict，owner 负责产品/风险裁决；文档和机器清单都不能机械地产生语义结论。
 - GitHub Issue 只是从 fresh finding 投影出的 bounded work packet；label、comment、assignee、open/closed 都不是 Journey/Finding verdict。
-- Kimi Code 只领取前端包，zCode 只领取后端包；两者在隔离 worktree 中无状态执行，回执只证明 transport 与 worker 自报结果。
+- 主 Codex 独占 Goal、最终验收和交付权威；允许使用 Codex 原生 Multi-Agent 与 subagent 处理有边界的调查、实现、测试和 review。Kimi、zCode、Coze、ACP、`agent-delegation` 等外部 Harness 仍禁用；原生 worker 结果也不拥有 verdict。
 - 代码事实由 Git diff、live wiring 和测试证明；生产事实只能进入不可变 evidence。Codex 独立复核前，不得因 worker、Issue、PR 或 CI 显示成功而升级状态。
 - 每个已复现根因使用一个可独立回滚的 Codex integration commit；不为每个 checklist/test/receipt 建 commit，也不在每次 push 后自动部署。
 - 最终应用提交 `D` 同时部署三个 Railway 服务；随后纯证据提交 `E` 记录在 `D` 上完成的生产双遍。`E` 不重新部署，避免证据提交产生新的未验应用身份。

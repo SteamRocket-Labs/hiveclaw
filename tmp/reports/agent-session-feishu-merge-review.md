@@ -2,7 +2,7 @@
 
 审查时间：2026-04-27  
 审查对象：`origin/feature/agent-session-feishu` -> `origin/main`  
-本地参考：`/Users/rocky243/Context Engineering/claude-code`、`/Users/rocky243/vc-saas/hermes-agent`
+本地参考：`/Users/example-owner/Context Engineering/claude-code`、`/Users/example-owner/vc-saas/hermes-agent`
 
 ## 1. 结论
 
@@ -15,7 +15,7 @@
 ## 2. 当前 Git 状态
 
 - 当前 `hiveclaw-main` 工作区在 `main`，HEAD 为 `f8883df`，与 `origin/main` 对齐。
-- 另一个 worktree `/Users/rocky243/vc-saas/hiveclaw` 在 `feature/agent-session-feishu`，HEAD 为 `fc356d6`，与 `origin/feature/agent-session-feishu` 对齐。
+- 另一个 worktree `/Users/example-owner/vc-saas/hiveclaw` 在 `feature/agent-session-feishu`，HEAD 为 `fc356d6`，与 `origin/feature/agent-session-feishu` 对齐。
 - feature worktree 有本地未提交运行时文件：
   - `.ultra/memory/chroma/.../data_level0.bin`
   - `.ultra/memory/chroma/chroma.sqlite3`
@@ -36,7 +36,7 @@ git diff --stat origin/main...origin/feature/agent-session-feishu
 
 ## 3. 验证结果
 
-在 feature worktree `/Users/rocky243/vc-saas/hiveclaw` 上已执行：
+在 feature worktree `/Users/example-owner/vc-saas/hiveclaw` 上已执行：
 
 ```bash
 backend/.venv/bin/python -m pytest backend/tests
@@ -121,7 +121,7 @@ git diff --check origin/main...origin/feature/agent-session-feishu
 建议不要从 `feature/agent-session-feishu` 直接点 merge。应新建集成分支：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 git switch main
 git pull --ff-only
 git switch -c codex/integrate-agent-session-feishu
@@ -139,7 +139,7 @@ git merge origin/feature/agent-session-feishu
 合并后必须重新执行：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw
+cd /Users/example-owner/vc-saas/hiveclaw
 backend/.venv/bin/python -m pytest backend/tests
 backend/.venv/bin/python -m ruff check backend/app backend/tests
 cd frontend
@@ -150,7 +150,7 @@ npm run build
 以及：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 git diff --check origin/main...HEAD
 ```
 

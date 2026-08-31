@@ -2,7 +2,7 @@
 
 > 状态：v1.5 设计定稿 + **Step 0-11 已实施落地**（2026-06-15，证据见 §8 实施日志）+ 2026-07-07 plugin hook 兼容性修复。review 补齐 pass 已覆盖 hooks/dependencies/per-agent plugin/product surface/legacy packs retirement。
 > 方法：Workflow `cc-tooling-alignment-audit`（12 agents / 177万 token / 327 工具调用 / 27min）——
-> 8 维度并行深读 CC 源码(`/Users/rocky243/Context Engineering/claude-code-org`)+ Hive 源码，
+> 8 维度并行深读 CC 源码(`/Users/example-owner/Context Engineering/claude-code-org`)+ Hive 源码，
 > 综合统一方案，再过 3 道对抗 critic（漏链路 / 残留债 / 自创概念检测）。所有论断带 file:line。
 > 吸收并取代 `docs/capability-pack-consolidation.md`（web_search/SearXNG 专项详情仍见该文 §3）。
 > 纪律：一次改完零债（[[feedback_no_mvp_finish_completely]]）+ AI-Native L1/L2/L3 + 北极星。

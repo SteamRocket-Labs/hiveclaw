@@ -49,11 +49,13 @@ fi
 
 # --- Optional package mirror overrides ---
 PIP_INSTALL_ARGS=()
-if [ -n "${CLAWITH_PIP_INDEX_URL:-}" ]; then
-    PIP_INSTALL_ARGS+=(--index-url "$CLAWITH_PIP_INDEX_URL")
+EFFECTIVE_PIP_INDEX_URL="${HIVE_PIP_INDEX_URL:-${CLAWITH_PIP_INDEX_URL:-}}"
+EFFECTIVE_PIP_TRUSTED_HOST="${HIVE_PIP_TRUSTED_HOST:-${CLAWITH_PIP_TRUSTED_HOST:-}}"
+if [ -n "$EFFECTIVE_PIP_INDEX_URL" ]; then
+    PIP_INSTALL_ARGS+=(--index-url "$EFFECTIVE_PIP_INDEX_URL")
 fi
-if [ -n "${CLAWITH_PIP_TRUSTED_HOST:-}" ]; then
-    PIP_INSTALL_ARGS+=(--trusted-host "$CLAWITH_PIP_TRUSTED_HOST")
+if [ -n "$EFFECTIVE_PIP_TRUSTED_HOST" ]; then
+    PIP_INSTALL_ARGS+=(--trusted-host "$EFFECTIVE_PIP_TRUSTED_HOST")
 fi
 NPM_MIRROR="--registry https://registry.npmmirror.com"
 

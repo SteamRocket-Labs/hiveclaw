@@ -9,7 +9,7 @@
 
 ## 0. 缘起与北极星
 
-对标 Claude Code(`/Users/rocky243/Context Engineering/claude-code-org`)的工具体系时发现：CC 没有
+对标 Claude Code(`/Users/example-owner/Context Engineering/claude-code-org`)的工具体系时发现：CC 没有
 "capability pack"这层概念——它用 `getAllBaseTools()`(`src/tools.ts:193`)**扁平全暴露**所有内置工具，
 靠 **ToolSearch defer** 控制 context 膨胀。Hive 用 **CORE 常驻 + pack 按需激活 + MCP** 三层。
 

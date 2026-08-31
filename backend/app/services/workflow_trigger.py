@@ -31,8 +31,16 @@ from app.services.workflow_launch import start_ephemeral_workflow_for_agent
 logger = logging.getLogger(__name__)
 
 _REQUIRED_REF_FIELDS = ("definition_name", "definition_version", "definition_hash")
+_WORKFLOW_TRIGGER_EFFECT_NAMESPACE = uuid.UUID("dc184b13-dd48-56c2-a55c-a0db04a8c067")
 
-FireStatus = Literal["launched", "needs_reconfirmation", "rejected_args", "invalid_ref", "disabled"]
+FireStatus = Literal[
+    "launched",
+    "needs_reconciliation",
+    "needs_reconfirmation",
+    "rejected_args",
+    "invalid_ref",
+    "disabled",
+]
 
 
 @dataclass(slots=True)
@@ -42,6 +50,23 @@ class WorkflowTriggerFireResult:
     run_status: str | None = None
     reason: str | None = None
     session_id: uuid.UUID | None = None
+
+
+def _workflow_trigger_effect_id(
+    runtime_task_id: uuid.UUID | str | None,
+    *,
+    trigger_id: uuid.UUID | str | None,
+    trigger_name: str,
+    kind: str,
+) -> uuid.UUID | None:
+    if runtime_task_id is None:
+        return None
+    try:
+        task_id = uuid.UUID(str(runtime_task_id))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    discriminator = str(trigger_id or trigger_name or "workflow-trigger")
+    return uuid.uuid5(_WORKFLOW_TRIGGER_EFFECT_NAMESPACE, f"{task_id}:{kind}:{discriminator}")
 
 
 def extract_workflow_ref(trigger_config: dict | None) -> dict | None:
@@ -95,6 +120,7 @@ async def _record_blocked_run(
     ref: dict,
     reason: str,
     parent_session_id: uuid.UUID | str | None = None,
+    run_id: uuid.UUID | None = None,
     session_factory=None,
 ) -> uuid.UUID:
     """A mismatch/rejection leaves a SUSPENDED run record (audit anchor for
@@ -102,8 +128,17 @@ async def _record_blocked_run(
     from app.database import tenant_scoped_session
     from app.models.runtime_task import RuntimeTask
 
-    run_id = uuid.uuid4()
+    run_id = run_id or uuid.uuid4()
     async with tenant_scoped_session(str(tenant_id), session_factory=session_factory) as session:
+        existing = await session.get(RuntimeTask, run_id)
+        if existing is not None:
+            if (
+                existing.task_type != "workflow"
+                or existing.tenant_id != tenant_id
+                or existing.parent_agent_id != agent_id
+            ):
+                raise RuntimeError("workflow trigger run id is already bound to another execution")
+            return run_id
         task = RuntimeTask(
             id=run_id,
             task_type="workflow",
@@ -203,6 +238,7 @@ async def _create_workflow_trigger_session(
     agent_id: uuid.UUID,
     trigger_name: str,
     ref: dict,
+    session_id: uuid.UUID | None = None,
     session_factory=None,
 ) -> tuple[uuid.UUID | None, uuid.UUID | None]:
     from sqlalchemy import select
@@ -222,6 +258,17 @@ async def _create_workflow_trigger_session(
             logger.warning("[WorkflowTrigger] agent %s has no creator_id; cannot bind trigger session", agent_id)
             return None, None
 
+        if session_id is not None:
+            existing = await session.get(ChatSession, session_id)
+            if existing is not None:
+                if (
+                    existing.tenant_id != tenant_id
+                    or existing.agent_id != agent_id
+                    or existing.runtime_source != "workflow_trigger"
+                ):
+                    raise RuntimeError("workflow trigger session id is already bound to another execution")
+                return existing.id, agent.creator_id
+
         participant = (
             await session.execute(
                 select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id)
@@ -229,6 +276,7 @@ async def _create_workflow_trigger_session(
         ).scalar_one_or_none()
         display_name = trigger_name or str(ref.get("definition_name") or "workflow trigger")
         chat_session = ChatSession(
+            id=session_id or uuid.uuid4(),
             agent_id=agent_id,
             tenant_id=tenant_id,
             user_id=agent.creator_id,
@@ -280,6 +328,8 @@ async def fire_workflow_for_trigger(
     agent_id: uuid.UUID,
     trigger_config: dict | None,
     trigger_name: str = "",
+    trigger_id: uuid.UUID | str | None = None,
+    runtime_task_id: uuid.UUID | str | None = None,
     webhook_payload: str | None = None,
     session_factory=None,
     definition_service: WorkflowDefinitionService | None = None,
@@ -302,11 +352,25 @@ async def fire_workflow_for_trigger(
     if tenant_id is None:
         return WorkflowTriggerFireResult(status="invalid_ref", reason=f"agent {agent_id} not found or tenant-less")
 
+    parent_session_effect_id = _workflow_trigger_effect_id(
+        runtime_task_id,
+        trigger_id=trigger_id,
+        trigger_name=trigger_name,
+        kind="session",
+    )
+    workflow_run_effect_id = _workflow_trigger_effect_id(
+        runtime_task_id,
+        trigger_id=trigger_id,
+        trigger_name=trigger_name,
+        kind="run",
+    )
+
     parent_session_id, trigger_user_id = await _create_workflow_trigger_session(
         tenant_id=tenant_id,
         agent_id=agent_id,
         trigger_name=trigger_name,
         ref=ref,
+        session_id=parent_session_effect_id,
         session_factory=session_factory,
     )
 
@@ -347,6 +411,7 @@ async def fire_workflow_for_trigger(
             ref=ref,
             reason=reason,
             parent_session_id=parent_session_id,
+            run_id=workflow_run_effect_id,
             session_factory=session_factory,
         )
         if parent_session_id:
@@ -386,6 +451,7 @@ async def fire_workflow_for_trigger(
             definition_source="registered",
             parent_session_id=parent_session_id,
             root_session_id=parent_session_id,
+            run_id=workflow_run_effect_id,
             session_factory=session_factory,
         )
     except (WorkflowAdmissionError, WorkflowCompileError) as exc:
@@ -396,6 +462,7 @@ async def fire_workflow_for_trigger(
             ref=ref,
             reason=reason,
             parent_session_id=parent_session_id,
+            run_id=workflow_run_effect_id,
             session_factory=session_factory,
         )
         if parent_session_id:
@@ -437,29 +504,68 @@ async def fire_workflow_for_trigger(
     from app.database import tenant_scoped_session
     from app.services.ai_assets import record_resolved_asset_usage
 
-    async with tenant_scoped_session(
-        tenant_id,
-        session_factory=session_factory,
-        require_tenant=True,
-        source="workflow_run_asset_usage",
-    ) as usage_db:
-        recorded = await record_resolved_asset_usage(
-            usage_db,
-            tenant_id=tenant_id,
-            asset_ref=resolved.asset_ref,
-            evidence={
-                "kind": "workflow_run",
-                "idempotency_key": f"workflow-run:{handle.run_id}",
-                "runtime_task_id": str(handle.run_id),
-                "session_id": parent_session_id,
-                "agent_id": str(agent_id),
-                "definition_id": str(resolved.record.id),
-                "definition_version": resolved.record.definition_version,
-                "definition_hash": resolved.record.definition_hash,
-            },
+    asset_usage_recovery_reason: str | None = None
+    try:
+        async with tenant_scoped_session(
+            tenant_id,
+            session_factory=session_factory,
+            require_tenant=True,
+            source="workflow_run_asset_usage",
+        ) as usage_db:
+            recorded = await record_resolved_asset_usage(
+                usage_db,
+                tenant_id=tenant_id,
+                asset_ref=resolved.asset_ref,
+                evidence={
+                    "kind": "workflow_run",
+                    "idempotency_key": f"workflow-run:{handle.run_id}",
+                    "runtime_task_id": str(handle.run_id),
+                    "session_id": parent_session_id,
+                    "agent_id": str(agent_id),
+                    "definition_id": str(resolved.record.id),
+                    "definition_version": resolved.record.definition_version,
+                    "definition_hash": resolved.record.definition_hash,
+                },
+            )
+            if not recorded:
+                asset_usage_recovery_reason = "workflow_asset_usage_revision_drift"
+    except Exception:
+        logger.exception(
+            "[WorkflowTrigger] workflow %s launched as run %s but asset usage evidence commit failed",
+            trigger_name,
+            handle.run_id,
         )
-        if not recorded:
-            raise RuntimeError("workflow asset revision drifted before usage evidence commit")
+        asset_usage_recovery_reason = "workflow_asset_usage_evidence_commit_failed"
+
+    if asset_usage_recovery_reason is not None:
+        if parent_session_id:
+            try:
+                await _append_workflow_trigger_session_event(
+                    tenant_id=tenant_id,
+                    agent_id=agent_id,
+                    session_id=parent_session_id,
+                    user_id=trigger_user_id,
+                    trigger_name=trigger_name,
+                    ref=ref,
+                    status="needs_reconciliation",
+                    run_id=handle.run_id,
+                    reason=asset_usage_recovery_reason,
+                    session_factory=session_factory,
+                )
+            except Exception:
+                # The workflow RuntimeTask is the durable effect receipt. A
+                # secondary session projection must not erase that receipt.
+                logger.exception(
+                    "[WorkflowTrigger] failed to project reconciliation event for run %s",
+                    handle.run_id,
+                )
+        return WorkflowTriggerFireResult(
+            status="needs_reconciliation",
+            run_id=handle.run_id,
+            run_status=handle.outcome.status,
+            reason=asset_usage_recovery_reason,
+            session_id=parent_session_id,
+        )
 
     if parent_session_id:
         await _append_workflow_trigger_session_event(

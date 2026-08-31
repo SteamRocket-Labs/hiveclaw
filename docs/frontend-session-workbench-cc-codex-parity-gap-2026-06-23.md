@@ -78,7 +78,7 @@ Hive 的单 Agent 会话能力已经在 runtime/API 层长出很多 CC/Codex par
 验证结果：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run
 # 61 passed, 297 tests passed
 
@@ -175,10 +175,10 @@ AssistantFinalCell / finalized history cell
 
 Codex 本地源码的测试里反复验证 `InsertHistoryCell`、`display_lines`、`active_cell_transcript_lines`、`CommandExecution` 等统一 history/cell 表达。参考：
 
-- `/Users/rocky243/Context Engineering/codex/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs:2738`
-- `/Users/rocky243/Context Engineering/codex/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs:3355`
-- `/Users/rocky243/Context Engineering/codex/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs:3504`
-- `/Users/rocky243/Context Engineering/codex/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs:3537`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs:2738`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs:3355`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs:3504`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs:3537`
 
 管理判断：
 
@@ -192,8 +192,8 @@ Codex 本地源码的测试里反复验证 `InsertHistoryCell`、`display_lines`
 
 Codex slash 命令本质是 composer 行为，不是页面模块。参考：
 
-- `/Users/rocky243/Context Engineering/codex/codex-rs/tui/src/slash_command.rs:7`
-- `/Users/rocky243/Context Engineering/codex/codex-rs/tui/src/slash_command.rs:249`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/tui/src/slash_command.rs:7`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/tui/src/slash_command.rs:249`
 
 管理判断：
 
@@ -545,14 +545,14 @@ Command Palette 只保留 advanced/debug。
 文档改动本身只需要格式校验：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 git diff --check -- docs/frontend-session-workbench-cc-codex-parity-gap-2026-06-23.md docs/README.md
 ```
 
 后续实现必须按 TDD：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run \
   src/pages/session-workbench/timelineModel.test.ts \
   src/pages/agent-detail/chatRuntime.test.ts \

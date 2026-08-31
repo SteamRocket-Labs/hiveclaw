@@ -29,6 +29,7 @@ from app.agents.subagent_memory import make_llm_how_distiller, memory_store_for_
 from app.database import async_session, tenant_scoped_session
 from app.models.agent import Agent
 from app.models.chat_session import ChatSession
+from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.llm import LLMModel
 from app.models.runtime_task import RuntimeTask
 from app.runtime.subagent_decision_entry import build_subagent_decision_entry, subagent_decision_entry_from_metadata
@@ -521,6 +522,8 @@ def make_run_completer(run_id: str):
     async def _complete(result: SubagentResult) -> None:
         status = "completed" if result.ok else "failed"
         summary = result.content or result.error or ""
+        record = await get_runtime_task_record(run_id)
+        record_metadata = dict((record or {}).get("metadata") or {})
         decision_entry = build_subagent_decision_entry(
             run_id=run_id,
             status=status,
@@ -530,9 +533,18 @@ def make_run_completer(run_id: str):
             safe_to_retry=status == "completed",
             retry_available=False,
             required_user_action="observe_result" if status == "completed" else "inspect_failure_and_decide_retry",
+            child_session_id=(record or {}).get("child_session_id") or record_metadata.get("child_session_id"),
+            parent_session_id=(record or {}).get("parent_session_id") or record_metadata.get("parent_session_id"),
             summary=summary,
         )
-        await update_runtime_task_record(
+        completion_notification = _subagent_completion_notification_from_record(
+            record,
+            run_id=run_id,
+            status=status,
+            summary=summary,
+            decision_entry=decision_entry,
+        )
+        updated = await update_runtime_task_record(
             run_id,
             status=status,
             result_summary=summary,
@@ -556,12 +568,10 @@ def make_run_completer(run_id: str):
                     )
                 ],
             },
+            **({"completion_notification": completion_notification} if completion_notification is not None else {}),
         )
-        await update_subagent_child_session_state_for_run(
-            run_id=run_id,
-            status=status,
-            summary=summary,
-        )
+        if not updated:
+            raise RuntimeError(f"subagent terminal transaction did not commit for run {run_id}")
         await _settle_subagent_budget(run_id=run_id, result=result)
 
     return _complete
@@ -605,12 +615,13 @@ async def update_subagent_child_session_state_for_run(
     *,
     run_id: str,
     status: str,
-    summary: str,
+    summary: str | None,
 ) -> None:
     record = await get_runtime_task_record(run_id)
     if record is None:
         return
     record_metadata = dict(record.get("metadata") or {})
+    summary = str(summary if summary is not None else record.get("result") or "")
     try:
         requester_user_id = runtime_task_requester_user_id(record)
     except RuntimeTaskRequesterUnavailable as exc:
@@ -665,28 +676,37 @@ async def update_subagent_child_session_state_for_run(
         )
         metadata["subagent_decision_entry"] = decision_entry
         session.transcript_metadata_json = metadata
-        await append_session_event(
-            db=db,
-            agent_id=parent_agent_uuid,
-            tenant_id=tenant_id,
-            session_id=child_session_uuid,
-            actor_type="agent",
-            event_type="subagent_task_completed" if status == "completed" else "subagent_task_failed",
-            content=summary,
-            role="assistant",
-            user_id=requester_user_id,
-            run_id=run_id,
-            runtime_task_id=run_id,
-            root_session_id=session.root_session_id,
-            parent_session_id=session.parent_session_id,
-            metadata={
-                **metadata,
-                "status": status,
-            },
-            visibility_scope=session.visibility_scope,
-            listed_surface=session.listed_surface,
-            source="subagent",
+        completion_event_type = "subagent_task_completed" if status == "completed" else "subagent_task_failed"
+        existing_child_event = await db.scalar(
+            select(ChatTranscriptEvent.id).where(
+                ChatTranscriptEvent.session_id == child_session_uuid,
+                ChatTranscriptEvent.run_id == _uuid_or_none(run_id),
+                ChatTranscriptEvent.event_type == completion_event_type,
+            )
         )
+        if existing_child_event is None:
+            await append_session_event(
+                db=db,
+                agent_id=parent_agent_uuid,
+                tenant_id=tenant_id,
+                session_id=child_session_uuid,
+                actor_type="agent",
+                event_type=completion_event_type,
+                content=summary,
+                role="assistant",
+                user_id=requester_user_id,
+                run_id=run_id,
+                runtime_task_id=run_id,
+                root_session_id=session.root_session_id,
+                parent_session_id=session.parent_session_id,
+                metadata={
+                    **metadata,
+                    "status": status,
+                },
+                visibility_scope=session.visibility_scope,
+                listed_surface=session.listed_surface,
+                source="subagent",
+            )
         if session.parent_session_id:
             parent_session_id = session.parent_session_id
             root_session_id = session.root_session_id or parent_session_id
@@ -701,31 +721,39 @@ async def update_subagent_child_session_state_for_run(
                 "reason": "subagent_task_completed" if status == "completed" else "subagent_task_failed",
                 "subagent_decision_entry": decision_entry,
             }
-            parent_event = build_session_native_event(parent_event_payload)
-            await append_session_event(
-                db=db,
-                agent_id=parent_agent_uuid,
-                tenant_id=tenant_id,
-                session_id=parent_session_id,
-                actor_type="system",
-                event_type="child_session",
-                content=summary,
-                role="system",
-                user_id=requester_user_id,
-                run_id=run_id,
-                runtime_task_id=run_id,
-                root_session_id=root_session_id,
-                parent_session_id=parent_session_id,
-                parts=[parent_event["part"]],
-                metadata={
-                    **parent_event_payload,
-                    "source": "subagent",
-                    "subagent_session_state": status,
-                },
-                visibility_scope="team",
-                listed_surface="chat",
-                source="subagent",
+            existing_parent_event = await db.scalar(
+                select(ChatTranscriptEvent.id).where(
+                    ChatTranscriptEvent.session_id == parent_session_id,
+                    ChatTranscriptEvent.run_id == _uuid_or_none(run_id),
+                    ChatTranscriptEvent.event_type == "child_session",
+                )
             )
+            if existing_parent_event is None:
+                parent_event = build_session_native_event(parent_event_payload)
+                await append_session_event(
+                    db=db,
+                    agent_id=parent_agent_uuid,
+                    tenant_id=tenant_id,
+                    session_id=parent_session_id,
+                    actor_type="system",
+                    event_type="child_session",
+                    content=summary,
+                    role="system",
+                    user_id=requester_user_id,
+                    run_id=run_id,
+                    runtime_task_id=run_id,
+                    root_session_id=root_session_id,
+                    parent_session_id=parent_session_id,
+                    parts=[parent_event["part"]],
+                    metadata={
+                        **parent_event_payload,
+                        "source": "subagent",
+                        "subagent_session_state": status,
+                    },
+                    visibility_scope="team",
+                    listed_surface="chat",
+                    source="subagent",
+                )
             wake_kwargs = {
                 "db": db,
                 "run_id": run_id,
@@ -803,6 +831,78 @@ async def update_subagent_child_session_state(
         await db.commit()
 
 
+def _subagent_completion_notification(
+    *,
+    run_id: str,
+    tenant_id: uuid.UUID,
+    parent_agent_id: uuid.UUID,
+    parent_user_id: uuid.UUID,
+    parent_session_id: uuid.UUID,
+    child_session_id: uuid.UUID,
+    status: str,
+    summary: str,
+    child_agent_name: str | None,
+    subagent_decision_entry: dict[str, Any] | None = None,
+    budget_run_id: uuid.UUID | str | None = None,
+    root_runtime_task_id: uuid.UUID | str | None = None,
+) -> CompletionNotification:
+    run_uuid = _uuid_or_none(run_id)
+    return CompletionNotification(
+        tenant_id=tenant_id,
+        source_kind="subagent",
+        source_run_id=str(run_uuid or run_id),
+        parent_session_id=parent_session_id,
+        parent_agent_id=parent_agent_id,
+        parent_user_id=parent_user_id,
+        child_session_id=child_session_id,
+        child_agent_name=child_agent_name or "Subagent",
+        terminal_status=status,
+        task_type=SUBAGENT_RUN_TASK_TYPE,
+        summary=summary,
+        root_runtime_task_id=root_runtime_task_id,
+        delivery_mode="parent_continuation",
+        metadata={
+            "subagent_session_state": status,
+            "parent_agent_id": str(parent_agent_id),
+            **({"subagent_decision_entry": subagent_decision_entry} if subagent_decision_entry else {}),
+            **({"budget_run_id": str(budget_run_id)} if budget_run_id else {}),
+        },
+    )
+
+
+def _subagent_completion_notification_from_record(
+    record: dict[str, Any] | None,
+    *,
+    run_id: str,
+    status: str,
+    summary: str,
+    decision_entry: dict[str, Any],
+) -> CompletionNotification | None:
+    if record is None:
+        return None
+    metadata = dict(record.get("metadata") or {})
+    tenant_id = _uuid_or_none(record.get("tenant_id"))
+    parent_agent_id = _uuid_or_none(record.get("parent_agent_id"))
+    parent_session_id = _uuid_or_none(record.get("parent_session_id") or metadata.get("parent_session_id"))
+    child_session_id = _uuid_or_none(record.get("child_session_id") or metadata.get("child_session_id"))
+    if None in (tenant_id, parent_agent_id, parent_session_id, child_session_id):
+        raise ValueError(f"subagent run {run_id} is missing its durable completion route")
+    return _subagent_completion_notification(
+        run_id=run_id,
+        tenant_id=tenant_id,
+        parent_agent_id=parent_agent_id,
+        parent_user_id=runtime_task_requester_user_id(record),
+        parent_session_id=parent_session_id,
+        child_session_id=child_session_id,
+        status=status,
+        summary=summary,
+        child_agent_name=str(record.get("child_agent_name") or metadata.get("subagent_name") or "Subagent"),
+        subagent_decision_entry=decision_entry,
+        budget_run_id=record.get("budget_run_id") or metadata.get("budget_run_id"),
+        root_runtime_task_id=record.get("root_runtime_task_id") or metadata.get("root_runtime_task_id"),
+    )
+
+
 async def _wake_parent_session_from_subagent_completion(
     *,
     db: Any,
@@ -819,25 +919,18 @@ async def _wake_parent_session_from_subagent_completion(
 ) -> None:
     await enqueue_completion_notification(
         db,
-        CompletionNotification(
+        _subagent_completion_notification(
+            run_id=run_id,
             tenant_id=tenant_id,
-            source_kind="subagent",
-            source_run_id=run_id,
-            parent_session_id=parent_session_id,
             parent_agent_id=parent_agent_id,
             parent_user_id=parent_user_id,
+            parent_session_id=parent_session_id,
             child_session_id=child_session_id,
-            child_agent_name="Subagent",
-            terminal_status=status,
-            task_type=SUBAGENT_RUN_TASK_TYPE,
+            status=status,
             summary=summary,
-            delivery_mode="parent_continuation",
-            metadata={
-                "subagent_session_state": status,
-                "parent_agent_id": str(parent_agent_id),
-                **({"subagent_decision_entry": subagent_decision_entry} if subagent_decision_entry else {}),
-                **({"budget_run_id": str(budget_run_id)} if budget_run_id else {}),
-            },
+            child_agent_name="Subagent",
+            subagent_decision_entry=subagent_decision_entry,
+            budget_run_id=budget_run_id,
         ),
     )
 

@@ -6,7 +6,7 @@
 >
 > **状态**:v1 草案,待 owner 在文档上拍板后实现。对标基线 [[project_hive_cc_superset]](Hive = CC 加强版,先对标 CC 基线再谈 delta);遵循 [[feedback_foundation_first_doc]](先文档后叠加)、[[feedback_no_mvp_finish_completely]](单次完整、禁 MVP)。
 >
-> **证据**:本轮三个调研 agent 全源码实证(Hive 后端 `backend/app/` + CC 源码 `/Users/rocky243/Context Engineering/claude-code-org/src/`),所有论断带 `file:line`。
+> **证据**:本轮三个调研 agent 全源码实证(Hive 后端 `backend/app/` + CC 源码 `/Users/example-owner/Context Engineering/claude-code-org/src/`),所有论断带 `file:line`。
 
 ---
 

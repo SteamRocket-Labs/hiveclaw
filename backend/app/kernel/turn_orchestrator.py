@@ -524,7 +524,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
     _build_error_result = support._build_error_result
     _build_frozen_prompt_cache_key = support._build_frozen_prompt_cache_key
     _build_permissions_context = support._build_permissions_context
-    _build_persisted_memory_messages = support._build_persisted_memory_messages
     _build_restoration_context = support._build_restoration_context
     _build_runtime_attachment_sections = support._build_runtime_attachment_sections
     _cached_prompt_prefix = support._cached_prompt_prefix
@@ -1104,6 +1103,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 final_tools=tools_for_llm,
                 parts=collected_parts + build_done_event(content)["parts"],
                 terminal_reason=TerminalReason.TURN_STOP,
+                tool_terminal_signal=reason,
             )
 
         async def _inject_loop_guard_warning(decision: LoopGuardDecision) -> None:
@@ -2209,38 +2209,28 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     # session (the spawn tool result) — persisting/extracting the
                     # subagent session too would double-count it as tool noise.
                     _memory_isolated = _session_source == "subagent"
-                    if request.agent_id and runtime_config.tenant_id and not _memory_isolated:
-                        try:
-                            await _maybe_await(
-                                self._deps.persist_memory(
-                                    agent_id=request.agent_id,
-                                    session_id=request.memory_session_id,
-                                    tenant_id=runtime_config.tenant_id,
-                                    messages=_build_persisted_memory_messages(request, final_content, api_messages),
-                                )
-                            )
-                        except Exception as exc:
-                            logger.error("[Kernel] Failed to persist memory for agent %s: %s", request.agent_id, exc)
                     await _record_new_token_usage()
 
-                    # ── RESPONSE_COMPLETE hook: fire-and-forget extraction trigger ──
-                    # (skipped for heartbeat — SOP-driven distiller — and for
-                    # subagent internals, per the isolation note above)
+                    # RESPONSE_COMPLETE is a post-commit learning boundary. The
+                    # Kernel can assemble its exact input, but cannot emit it:
+                    # Web/Channel/Task callers own different durable terminal
+                    # transactions outside this model loop.
+                    response_complete_payload = None
                     if _session_source != "heartbeat" and not _memory_isolated:
-                        _schedule_runtime_hook(
-                            HookEvent.RESPONSE_COMPLETE,
-                            agent_id=request.agent_id,
-                            session_id=request.memory_session_id,
-                            messages=_llm_messages_to_dicts(api_messages[1:]),
-                            source=_session_source,
-                            metadata={
+                        response_complete_payload = {
+                            "agent_id": request.agent_id,
+                            "session_id": request.memory_session_id,
+                            "messages": _llm_messages_to_dicts(api_messages[1:]),
+                            "source": _session_source,
+                            "metadata": {
                                 "last_response": final_content or "",
+                                "final_response": final_content or "",
                                 "turn_count": logical_round_index,
                                 "tenant_id": str(runtime_config.tenant_id) if runtime_config.tenant_id else None,
                                 "agent_name": request.agent_name or "Agent",
                                 "skill_candidate_loop_enabled": runtime_config.skill_candidate_loop_enabled,
                             },
-                        )
+                        }
 
                     return InvocationResult(
                         content=final_content,
@@ -2253,6 +2243,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             thinking=response.reasoning_content,
                         )["parts"],
                         model_result_receipt=last_model_result_receipt,
+                        response_complete_payload=response_complete_payload,
                     )
 
                 # Tier 1-4: recover from DeepSeek-V4 style concatenated tool_call args

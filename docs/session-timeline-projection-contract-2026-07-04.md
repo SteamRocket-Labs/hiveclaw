@@ -722,13 +722,13 @@ Historical / unattributed = diagnostic only, 默认隐藏，不进入主 Workspa
 
 源代码核对：
 
-- `/Users/rocky243/vc-saas/free-code-main/src/QueryEngine.ts`
+- `/Users/example-owner/vc-saas/free-code-main/src/QueryEngine.ts`
   - accepted user prompt 在进入 query loop 前写入 transcript。
   - query loop 对 `assistant` / `user` / `compact_boundary` 写 transcript。
   - assistant message fire-and-forget 写入，但仍进入同一个 ordered message chain。
-- `/Users/rocky243/vc-saas/free-code-main/src/utils/messages.ts`
+- `/Users/example-owner/vc-saas/free-code-main/src/utils/messages.ts`
   - assistant message 的多个 content block 会拆成多个 normalized message，保持 `text` / `thinking` / `tool_use` 的相对顺序。
-- `/Users/rocky243/vc-saas/free-code-main/src/components/messages/*`
+- `/Users/example-owner/vc-saas/free-code-main/src/components/messages/*`
   - assistant text、assistant thinking、assistant tool use 是独立渲染单元，而不是只显示工具调用。
 
 结论：CC 的语义不是“工具调用记录 + 最终答案”，而是完整 assistant/tool/result 消息链。中间 assistant text 或 thinking 只要进入 provider message stream，就必须能被 transcript replay 还原。

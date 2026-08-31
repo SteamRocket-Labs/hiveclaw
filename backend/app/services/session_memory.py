@@ -9,10 +9,13 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from app.config import get_settings
+
+if TYPE_CHECKING:
+    from app.services.agent_asset_transaction import AgentAssetTransaction
 
 logger = logging.getLogger(__name__)
 
@@ -462,6 +465,7 @@ def update_session_memory(
     payload: SessionMemoryPayload,
     *,
     data_root: str | Path | None = None,
+    transaction: AgentAssetTransaction | None = None,
 ) -> Path:
     safe_session_id = _safe_session_id(payload.session_id)
     path = get_session_memory_path(agent_id, session_id=safe_session_id, data_root=data_root)
@@ -484,13 +488,31 @@ def update_session_memory(
         compaction_count=max(int(payload.compaction_count or 0), 0),
         last_compaction_at=(payload.last_compaction_at or "").strip() or None,
     )
-    path.write_text(render_session_memory(normalized), encoding="utf-8")
+    rendered = render_session_memory(normalized)
+    if transaction is not None:
+        try:
+            relative_path = path.resolve().relative_to(transaction.agent_root).as_posix()
+        except ValueError as exc:
+            raise ValueError("session memory path is outside the Agent asset transaction root") from exc
+        transaction.stage_text(relative_path, rendered)
+    else:
+        path.write_text(rendered, encoding="utf-8")
     if safe_session_id:
-        _remove_legacy_runtime_file(_legacy_runtime_session_memory_path(agent_id, data_root=data_root))
+        legacy_runtime_path = _legacy_runtime_session_memory_path(agent_id, data_root=data_root)
         legacy_hot_path = _legacy_memory_sessions_hot_path(agent_id, session_id=safe_session_id, data_root=data_root)
-        if legacy_hot_path is not None:
-            _remove_legacy_runtime_file(legacy_hot_path)
-    _remove_legacy_runtime_file(_legacy_session_memory_path(agent_id, data_root=data_root))
+        if transaction is not None:
+            transaction.stage_delete(legacy_runtime_path.resolve().relative_to(transaction.agent_root))
+            if legacy_hot_path is not None:
+                transaction.stage_delete(legacy_hot_path.resolve().relative_to(transaction.agent_root))
+        else:
+            _remove_legacy_runtime_file(legacy_runtime_path)
+            if legacy_hot_path is not None:
+                _remove_legacy_runtime_file(legacy_hot_path)
+    legacy_workspace_path = _legacy_session_memory_path(agent_id, data_root=data_root)
+    if transaction is not None:
+        transaction.stage_delete(legacy_workspace_path.resolve().relative_to(transaction.agent_root))
+    else:
+        _remove_legacy_runtime_file(legacy_workspace_path)
     return path
 
 

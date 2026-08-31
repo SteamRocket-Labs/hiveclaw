@@ -19,6 +19,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 logger = logging.getLogger(__name__)
 
 _FERNET_PREFIX = "gAAAAA"
+_KDF_SALT = b"clawith-secrets-v1"
 
 
 @runtime_checkable
@@ -49,7 +50,7 @@ class FernetSecretsProvider:
             derived = HKDF(
                 algorithm=SHA256(),
                 length=32,
-                salt=b"clawith-secrets-v1",
+                salt=_KDF_SALT,
                 info=b"fernet-key",
             ).derive(key.encode("utf-8"))
             key_id = hashlib.sha256(derived).hexdigest()[:16]
@@ -83,6 +84,9 @@ class FernetSecretsProvider:
         try:
             return self.decrypt_strict(ciphertext)
         except InvalidToken:
+            if is_encrypted(ciphertext):
+                logger.error("Failed to decrypt Fernet ciphertext; refusing to treat it as plaintext")
+                raise
             logger.warning("Failed to decrypt value (possibly plaintext pre-migration), returning raw")
             return ciphertext
 

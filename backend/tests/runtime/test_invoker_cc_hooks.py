@@ -61,8 +61,6 @@ async def test_invoker_emits_setup_before_user_prompt_submit_and_session_start(m
         ("user_prompt_submit", "hello"),
         ("session_start", "session-1"),
         ("kernel", "hello"),
-        ("session_end", "session-1"),
-        ("turn_stop", "session-1"),
     ]
 
 

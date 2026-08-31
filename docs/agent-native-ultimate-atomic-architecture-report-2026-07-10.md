@@ -39,10 +39,10 @@ Hive 已经不是“缺少 Agent Runtime 的产品壳”。当前代码中，CC 
 
 | 对象 | 本地路径 | 当前提交 | 用途 |
 |---|---|---|---|
-| Hive | `/Users/rocky243/vc-saas/hiveclaw-main` | `512200142c247922566afb6497dee67febc1c2f2` | 被审计系统 |
-| CC / FreeCode | `/Users/rocky243/vc-saas/free-code-main` | `7dc15d6c8fb0c40c7fcc02ce9b58204324252632` | CC 可运行语义基线，优先级最高 |
-| Codex | `/Users/rocky243/Context Engineering/codex` | `be33f80bc65159c094ecd06bf155afa3061ce23d` | 工程、协议、沙箱、线程与桌面交互增量 |
-| Hive Connect | `/Users/rocky243/vc-saas/hive-connect` | `20718e629be1a1d506aa366a526bff245edd8277` | Local Agent / Bridge 基线 |
+| Hive | `/Users/example-owner/vc-saas/hiveclaw-main` | `512200142c247922566afb6497dee67febc1c2f2` | 被审计系统 |
+| CC / FreeCode | `/Users/example-owner/vc-saas/free-code-main` | `7dc15d6c8fb0c40c7fcc02ce9b58204324252632` | CC 可运行语义基线，优先级最高 |
+| Codex | `/Users/example-owner/Context Engineering/codex` | `be33f80bc65159c094ecd06bf155afa3061ce23d` | 工程、协议、沙箱、线程与桌面交互增量 |
+| Hive Connect | `/Users/example-owner/vc-saas/hive-connect` | `20718e629be1a1d506aa366a526bff245edd8277` | Local Agent / Bridge 基线 |
 
 Hive 工作树中有用户自己的 Personal KB 文档改动，本报告未覆盖、未修改这些文件。
 
@@ -924,13 +924,13 @@ sequenceDiagram
 ### 10.4 交付后必须全部为绿的命令
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q
 alembic heads
 ruff check app tests
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- --run
 npm run build
 ```
@@ -938,7 +938,7 @@ npm run build
 还必须新增并执行：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 python -m app.scripts.audit_rls_integrity --dry-run
 python -m app.scripts.reconcile_agent_events --dry-run

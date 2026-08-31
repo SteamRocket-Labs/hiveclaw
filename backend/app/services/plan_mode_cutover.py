@@ -98,6 +98,7 @@ async def mark_existing_triggers_plan_exempt(
         stmt = select(AgentTrigger).where(AgentTrigger.is_enabled.is_(True))
         if agent_id is not None:
             stmt = stmt.where(AgentTrigger.agent_id == agent_id)
+        stmt = stmt.order_by(AgentTrigger.id).with_for_update()
         result = await bypass_db.execute(stmt)
         triggers = list(result.scalars().all())
 

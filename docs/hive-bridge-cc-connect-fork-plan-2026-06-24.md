@@ -154,13 +154,13 @@ Hive 主仓库不应该承载 cc-connect runtime 源码。
 建议新仓库：
 
 ```text
-rocky2431/hive-bridge
+<legacy-owner>/hive-bridge
 ```
 
 或者组织名确定后：
 
 ```text
-hiveclaw243/hive-bridge
+<legacy-publisher>/hive-bridge
 ```
 
 目录建议：
@@ -445,13 +445,13 @@ Local Agent detail
 Skill 安装：
 
 ```bash
-npx skills add https://github.com/rocky2431/hive-bridge-skill --skill hive-bridge
+npx skills add https://github.com/<legacy-owner>/hive-bridge-skill --skill hive-bridge
 ```
 
 Skill 指导本地 Agent 执行：
 
 ```bash
-npm install -g @hiveclaw243/hive-bridge
+npm install -g @<legacy-publisher>/hive-bridge
 hive-bridge login
 hive-bridge run
 ```
@@ -719,8 +719,8 @@ A2A 结果要进入调用方可见 transcript，同时保留 local agent 自己�
 
 ### 16.6 发布
 
-1. npm package：`@hiveclaw243/hive-bridge`。
-2. skill repo：`rocky2431/hive-bridge-skill`。
+1. npm package：`@<legacy-publisher>/hive-bridge`。
+2. skill repo：`<legacy-owner>/hive-bridge-skill`。
 3. skill 内只写用户/agent 操作手册，不塞复杂实现。
 4. npm 包内包含或下载平台对应 binary。
 

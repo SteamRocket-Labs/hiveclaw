@@ -855,9 +855,9 @@ async def recover_turn_replacements_once(
     *,
     worker_id: str,
     signal_callback: Callable[..., Awaitable[None]] | None = None,
-    start_replacement_callback: Callable[..., Awaitable[None]] | None = None,
     stale_after: timedelta = timedelta(seconds=5),
     tenant_id: uuid.UUID | None = None,
+    saga_ids: tuple[uuid.UUID, ...] | None = None,
     limit: int = 50,
     max_transitions_per_saga: int = 8,
 ) -> dict[str, int]:
@@ -876,6 +876,8 @@ async def recover_turn_replacements_once(
     )
     if tenant_id is not None:
         claim_statement = claim_statement.where(SessionTurnReplacement.tenant_id == tenant_id)
+    if saga_ids is not None:
+        claim_statement = claim_statement.where(SessionTurnReplacement.id.in_(saga_ids))
     claimed = list((await db.execute(claim_statement)).scalars())
     lease_seconds = max(1.0, float(stale_after.total_seconds()) or 30.0)
     claimed_ids: list[uuid.UUID] = []
@@ -890,7 +892,6 @@ async def recover_turn_replacements_once(
         from app.services.web_chat_runtime import signal_web_chat_cancel
 
         signal_callback = signal_web_chat_cancel
-    start_callback = start_replacement_callback or _start_replacement_runtime
     counts = {
         "claimed": len(claimed_ids),
         "transitioned": 0,
@@ -955,7 +956,7 @@ async def recover_turn_replacements_once(
                     await db.commit()
                 elif state == "replacement_queued":
                     replacement_run_id = uuid.uuid5(saga.id, "replacement-run")
-                    await start_callback(
+                    await _start_replacement_runtime(
                         db=db,
                         authority=authority,
                         saga=saga,

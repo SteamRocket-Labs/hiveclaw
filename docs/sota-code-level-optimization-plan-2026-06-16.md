@@ -438,7 +438,7 @@ Workflow 机制层很强，但缺 behavior eval。建议新增 workflow-native b
 ## 6. 最小推荐验证命令
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_subagent_run_service.py tests/services/test_runtime_task_service.py tests/agents/test_orchestrator.py -q
 pytest tests/agents/test_coordination_wiring.py tests/services/test_agent_team_context.py -q
@@ -453,7 +453,7 @@ pytest tests/services/test_code_execution_probe.py -q
 Frontend/API reconciliation 面完成后追加：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- AgentDetailSections.test.tsx
 npm run build
 ```

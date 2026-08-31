@@ -42,7 +42,7 @@ def _make_deps(*, execute_tool=None, **overrides):
 
     defaults = {
         "resolve_runtime_config": lambda _id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=5, quota_message=None),
-        "resolve_current_user_name": lambda *_a, **_kw: "Rocky",
+        "resolve_current_user_name": lambda *_a, **_kw: "Example Owner",
         "build_system_prompt": lambda *_a, **_kw: "PROMPT",
         "resolve_memory_context": lambda *_a, **_kw: "",
         "get_tools": lambda *_a, **_kw: [

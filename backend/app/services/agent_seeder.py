@@ -104,9 +104,8 @@ async def seed_default_agents():
         async_session() as db,
         enter_rls_bypass(
             db, reason="first-startup default-agent seeding: resolve platform admin + seed Morty/Meeseeks"
-        ) as bdb,
+        ),
     ):
-        db = bdb
         # Persistent marker — survives agent hard-delete
         marker = await db.execute(select(SystemSetting).where(SystemSetting.key == "default_agents_seeded"))
         if marker.scalar_one_or_none():

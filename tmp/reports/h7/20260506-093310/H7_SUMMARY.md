@@ -1,7 +1,7 @@
 # H7 Summary
 
 - Timestamp: `2026-05-06T01:33:10.751110+00:00`
-- Snapshot dir: `/Users/rocky243/vc-saas/hiveclaw-main/tmp/reports/h7/20260506-093310`
+- Snapshot dir: `/Users/example-owner/vc-saas/hiveclaw-main/tmp/reports/h7/20260506-093310`
 - Base URL: `https://backend-production-326d.up.railway.app`
 - Base URL source: `default`
 - Verdict: `FAIL`
@@ -28,8 +28,8 @@
 - `HIVE_PLATFORM_ADMIN_TOKEN`: missing
 - `HIVE_ADMIN_TOKEN`: missing
 - `HIVE_TOKEN`: missing
-- Repo-root `.h7.env`: missing at `/Users/rocky243/vc-saas/hiveclaw-main/.h7.env`
-- Browser storage fallback scanned only `/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb` and found no valid `platform_admin` JWT candidate
+- Repo-root `.h7.env`: missing at `/Users/example-owner/vc-saas/hiveclaw-main/.h7.env`
+- Browser storage fallback scanned only `/Users/example-owner/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb` and found no valid `platform_admin` JWT candidate
 - Base host `backend-production-326d.up.railway.app` did not resolve locally: `[Errno 8] nodename nor servname provided, or not known`
 
 ## 1h Recheck

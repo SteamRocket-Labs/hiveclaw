@@ -9,7 +9,7 @@ from app.evals.run import main
 
 def test_fail_under_exits_nonzero_below_threshold(tmp_path: Path) -> None:
     code = main(
-        ["--suite", "core_v1", "--target", "clawith", "--mode", "internal", "--fail-under", "101"],
+        ["--suite", "core_v1", "--target", "hive", "--mode", "internal", "--fail-under", "101"],
         output_root=str(tmp_path),
     )
     assert code == 1
@@ -17,7 +17,7 @@ def test_fail_under_exits_nonzero_below_threshold(tmp_path: Path) -> None:
 
 def test_fail_under_passes_when_threshold_met(tmp_path: Path) -> None:
     code = main(
-        ["--suite", "core_v1", "--target", "clawith", "--mode", "internal", "--fail-under", "0"],
+        ["--suite", "core_v1", "--target", "hive", "--mode", "internal", "--fail-under", "0"],
         output_root=str(tmp_path),
     )
     assert code == 0
@@ -25,7 +25,7 @@ def test_fail_under_passes_when_threshold_met(tmp_path: Path) -> None:
 
 def test_no_fail_under_returns_zero(tmp_path: Path) -> None:
     code = main(
-        ["--suite", "core_v1", "--target", "clawith", "--mode", "internal"],
+        ["--suite", "core_v1", "--target", "hive", "--mode", "internal"],
         output_root=str(tmp_path),
     )
     assert code == 0

@@ -132,7 +132,7 @@ def test_journey_ledger_preserves_ci_ids_and_has_one_frozen_denominator() -> Non
     assert ci_ids == [f"J-{index:02d}" for index in range(1, 16)]
     assert candidate_ids == [f"PJ-{index:02d}" for index in range(1, 36)]
     assert PRODUCTION_MANIFEST.is_file()
-    assert "frozen-production-denominator-96-p29-padmin-pass1-only" in ledger
+    assert "verification_status: frozen-96-current-blocker-scope-aligned-no-current-manifest-pass" in ledger
     assert "共 **96** 条可独立计分的 production journeys" in ledger
     assert "weekend_production_journeys.v1.json" in ledger
     assert "0/96 Closed；NPTCR 0%" in ledger
@@ -151,22 +151,66 @@ def test_structural_checks_do_not_claim_semantic_acceptance() -> None:
 def test_execution_control_contract_is_explicit_and_non_semantic() -> None:
     decisions = (GROUP / "02-owner-decisions.md").read_text(encoding="utf-8")
     index = (GROUP / "README.md").read_text(encoding="utf-8")
+    north_star = (GROUP / "01-north-star-and-boundaries.md").read_text(encoding="utf-8")
+    ledger = (GROUP / "04-journey-ledger.md").read_text(encoding="utf-8")
     runbook = (GROUP / "06-runbook-and-release-gates.md").read_text(encoding="utf-8")
+    automation = (GROUP / "domains" / "automation-hooks-and-capabilities.md").read_text(encoding="utf-8")
+    evidence = (GROUP / "evidence" / "README.md").read_text(encoding="utf-8")
+    findings = (GROUP / "05-findings.md").read_text(encoding="utf-8")
 
     assert "Kimi Code 负责前端，zCode 负责后端" in decisions
     assert "Codex 是唯一验收总控" in decisions
     assert "当前 `agent-delegation` Skill 是唯一派发协议" in decisions
-    assert "保留为历史记录，已由 PDEC-007 覆盖" in decisions
-    assert "本轮改为单 Codex 全栈执行与验收" in decisions
+    assert "保留为历史记录，已分别由 PDEC-005/PDEC-007 覆盖" in decisions
+    assert "允许 Codex 原生 Multi-Agent 与 subagent" in decisions
     assert "缺少预存会话或 fixture 不是 owner gate" in decisions
     assert "GitHub Issue 只是" in index
     assert "都不是 Journey/Finding verdict" in index
-    assert "Kimi Code、zCode、Coze、ACP、agent-delegation、subagent 和并行 Codex 任务均禁用" in runbook
+    assert "允许使用 Codex 原生 Multi-Agent 与 subagent" in runbook
+    assert "外部 Harness 仍禁用" in runbook
+    assert "产品 turn 的 selected runtime LLM 负责任务语义" in runbook
+    assert "主 Codex负责验收语义" in runbook
+    assert "不得决定 semantic truth、quality、failure、`blocked`、priority" in runbook
+    assert "只经受支持、经过认证的 product/control-plane path" in runbook
+    assert "禁止 forged claim/JWT/token" in runbook
+    assert "denial 只阻断该操作" in runbook
+    assert "已登记 read-only deny/not-found/existence probe 必须继续" in runbook
+    assert "若意外返回 protected bytes，立即停止该 lane" in runbook
+    assert "owner 指令不能把未授权访问变成授权" in runbook
     assert "缺少预存身份、fixture、Session 或仓库内 runtime/build/adapter" in runbook
-    assert "不是停止条件" in runbook
-    assert "超时、尝试次数或缺 fixture 不参与产品语义判断" in runbook
+    assert "不属于停止条件" in runbook
+    assert "不设人工 Goal-wide timeout、step cap 或 attempt cap" in runbook
+    assert "expiry 只结束或恢复当前 attempt" in runbook
     assert "每个 worker 调用必须满足" not in runbook
     assert "不拥有 Journey、Finding、产品质量或最终语义 verdict" in runbook
+    assert (
+        "只有未解决的 Hive/product-controlled requirement 才能记录 blocking fact `BLOCKED_PRECONDITION`" in north_star
+    )
+    assert "Journey completion state 只使用" in north_star
+    assert "`BLOCKED_PRECONDITION` 与 `EXTERNAL_UNAVAILABLE`" in north_star
+    assert "Breakpoint / IMPLEMENTATION_QUEUED" in ledger
+    assert "Breakpoint / RECOVERY_QUEUED" in ledger
+    assert "P33-DEEPSEEK 保持未闭环" in ledger
+    assert "本 Goal 创建并登记的合成资产 cleanup 已授权" in decisions
+    assert "全部 in-scope 冻结旅程" in ledger
+    assert "全部 in-scope 冻结旅程" in runbook
+    assert "Agent 智能 → 全部前后端功能可用 → 权限/RLS/安全 → Release" in decisions
+    assert "最小真实 Session 中的单 Agent 智能" in runbook
+    assert "完整 Session streaming/20 commands" in runbook
+    assert "功能未完成时先修功能，不以安全工作掩盖" in runbook
+    assert "权限加固、RLS 扩张和安全评分不得提前阻断无关功能补全" in runbook
+    assert "当前 manifest 下 pass 1/pass 2 均未运行" in index
+    assert "0 次 current-manifest pass" in ledger
+    assert "真实 external provider/bridge 不可用时单列 `EXTERNAL_UNAVAILABLE`" in automation
+    assert "真实 external provider 或 bridge 不可用时诚实 `BLOCKED_PRECONDITION`" not in automation
+    assert "PDEC-008 已授权 Example Owner 实验 tenant synthetic scope" in evidence
+    assert "超出该 scope 的写入才需要 owner action-time authorization" in evidence
+    assert "不是 Journey completion state" in evidence
+    assert "UI-CMD-003 | Fix Candidate" in findings
+    assert "production verification pending" in findings
+    assert "fix commit `1b4be5d2`" in findings
+    assert "余额/auth/rate-limit/offline 是 `BLOCKED_PRECONDITION`" not in decisions
+    assert "不降低产品 NPTCR" not in decisions
     for decision_id in tuple(f"PDEC-{index:03d}" for index in range(1, 12)):
         assert decision_id in decisions
     assert "一个可独立回滚的共享根因对应一个 Codex integration commit" in runbook
@@ -178,13 +222,12 @@ def test_weekend_work_packet_template_matches_current_repository_and_boundaries(
     packet = WEEKEND_WORK_PACKET.read_text(encoding="utf-8")
     issue_templates = "\n".join(path.read_text(encoding="utf-8") for path in sorted(ISSUE_TEMPLATE_GROUP.glob("*.yml")))
 
-    assert "dataelement/hive-agents" not in issue_templates
     assert "https://github.com/SteamRocket-Labs/hiveclaw/issues" in issue_templates
     assert 'labels: ["rc:weekend"]' in packet
     for field_id in (
         "finding_id",
         "journey_ids",
-        "worker",
+        "execution_owner",
         "base_commit",
         "objective",
         "reproduction",
@@ -194,8 +237,11 @@ def test_weekend_work_packet_template_matches_current_repository_and_boundaries(
     ):
         assert re.search(rf"^    id: {field_id}$", packet, flags=re.MULTILINE)
 
-    assert "statelessly in one isolated Git worktree" in packet
-    assert "cannot self-accept" in packet
+    assert "Native Codex subagent" in packet
+    assert "primary Codex integrates and independently verifies" in packet
+    assert "No external agent harness or second semantic controller" in packet
+    assert "Kimi Code" not in packet
+    assert "zCode" not in packet
     assert "grants no production, credential, billing, destructive" in packet
 
 

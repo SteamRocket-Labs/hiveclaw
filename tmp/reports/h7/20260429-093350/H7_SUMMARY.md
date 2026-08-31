@@ -3,7 +3,7 @@
 - Timestamp: `2026-04-29T09:33:50+08:00`
 - Base URL: `https://backend-production-326d.up.railway.app`
 - Token source: Chrome Local Storage leveldb fallback (`platform_admin`, non-expired, token not printed)
-- Endpoint set confirmed from [`/Users/rocky243/vc-saas/hiveclaw-main/backend/docs/autonomous-trigger-system.md`](/Users/rocky243/vc-saas/hiveclaw-main/backend/docs/autonomous-trigger-system.md) and [`/Users/rocky243/vc-saas/hiveclaw-main/tmp/reports/hive-architecture-alignment-plan.md`](/Users/rocky243/vc-saas/hiveclaw-main/tmp/reports/hive-architecture-alignment-plan.md): `autonomous-audit`, `autonomy-repair-plan`, `harness-validation`
+- Endpoint set confirmed from [`/Users/example-owner/vc-saas/hiveclaw-main/backend/docs/autonomous-trigger-system.md`](/Users/example-owner/vc-saas/hiveclaw-main/backend/docs/autonomous-trigger-system.md) and [`/Users/example-owner/vc-saas/hiveclaw-main/tmp/reports/hive-architecture-alignment-plan.md`](/Users/example-owner/vc-saas/hiveclaw-main/tmp/reports/hive-architecture-alignment-plan.md): `autonomous-audit`, `autonomy-repair-plan`, `harness-validation`
 - Monday 168h check: not required (`2026-04-29`, Wednesday)
 
 ## Endpoint Status

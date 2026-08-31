@@ -18,7 +18,7 @@ def test_update_session_memory_writes_structured_markdown(tmp_path: Path) -> Non
             session_id=session_id,
             source="response_complete",
             session_title="Claude 对标补齐",
-            current_state="Comparing Clawith with external agents and fixing gaps.",
+            current_state="Comparing Hive with external agents and fixing gaps.",
             task_spec="Implement eval runner, session continuity, skill loop, and team memory.",
             important_files=["backend/app/kernel/engine.py", "backend/app/runtime/task_eval.py"],
             workflow=["Write failing tests", "Implement minimum behavior", "Re-run full gates"],

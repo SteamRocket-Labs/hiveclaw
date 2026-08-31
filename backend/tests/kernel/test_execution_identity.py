@@ -31,7 +31,7 @@ async def test_agent_kernel_sets_execution_identity_for_tool_resolution():
         return RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=2, quota_message=None)
 
     async def resolve_current_user_name(_user_id):
-        return "Rocky"
+        return "Example Owner"
 
     async def build_system_prompt(*args, **kwargs):
         return "PROMPT"
@@ -114,7 +114,7 @@ async def test_agent_kernel_sets_execution_identity_for_tool_resolution():
             execution_identity=ExecutionIdentityRef(
                 identity_type="delegated_user",
                 identity_id=uuid4(),
-                label="Rocky via web",
+                label="Example Owner via web",
             ),
         )
     )
@@ -122,7 +122,7 @@ async def test_agent_kernel_sets_execution_identity_for_tool_resolution():
     assert result.content == "done"
     assert captured["identity"] is not None
     assert captured["identity"].identity_type == "delegated_user"
-    assert captured["identity"].label == "Rocky via web"
+    assert captured["identity"].label == "Example Owner via web"
 
 
 @pytest.mark.asyncio
@@ -144,7 +144,7 @@ async def test_runtime_invoker_captures_current_execution_identity(monkeypatch):
     monkeypatch.setattr("app.runtime.invoker.check_user_token_quota", allow_quota, raising=False)
 
     identity_id = uuid4()
-    set_execution_identity(ExecutionIdentity("delegated_user", identity_id, "Rocky via web"))
+    set_execution_identity(ExecutionIdentity("delegated_user", identity_id, "Example Owner via web"))
 
     result = await invoke_agent(
         AgentInvocationRequest(
@@ -163,4 +163,4 @@ async def test_runtime_invoker_captures_current_execution_identity(monkeypatch):
     assert captured["request"].execution_identity is not None
     assert captured["request"].execution_identity.identity_type == "delegated_user"
     assert captured["request"].execution_identity.identity_id == identity_id
-    assert captured["request"].execution_identity.label == "Rocky via web"
+    assert captured["request"].execution_identity.label == "Example Owner via web"

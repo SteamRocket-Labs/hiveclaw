@@ -7,10 +7,13 @@ and control platform-level settings.
 import secrets
 import uuid
 from datetime import datetime, timedelta
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from loguru import logger
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func as sqla_func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import require_role
@@ -107,6 +110,14 @@ class WorkflowReplayFromStepRequest(BaseModel):
 class RuntimeReconciliationActionRequest(BaseModel):
     action: str = Field(pattern="^(mark_resolved|archive|retry|acknowledge_tool_effect)$")
     reason: str = Field(min_length=1, max_length=1000)
+    trigger_disposition: Literal["confirmed_success", "confirmed_failure", "release"] | None = None
+
+    @field_validator("reason")
+    @classmethod
+    def require_evidence_reason(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("reconciliation evidence reason is required")
+        return value
 
 
 async def _pin_admin_tenant_scope(db: AsyncSession, tenant_id: uuid.UUID | None) -> None:
@@ -224,21 +235,38 @@ async def create_company(
         slug = "company"
     slug = f"{slug}-{secrets.token_hex(3)}"
 
-    tenant = Tenant(name=data.name, slug=slug, im_provider="web_only")
-    db.add(tenant)
-    await db.flush()
+    # The authenticated control plane chooses this UUID. Pinning it before the
+    # first write satisfies the tenant catalog WITH CHECK policy without
+    # granting cross-tenant visibility to the request transaction.
+    tenant = Tenant(id=uuid.uuid4(), name=data.name, slug=slug, im_provider="web_only")
     await _pin_admin_tenant_scope(db, tenant.id)
+    db.add(tenant)
+    try:
+        # Materialize the tenant before its FK-dependent invitation row while
+        # retaining one atomic transaction.
+        await db.flush()
 
-    # Generate admin invitation code (single-use)
-    code_str = secrets.token_urlsafe(12)[:16].upper()
-    invite = InvitationCode(
-        code=code_str,
-        tenant_id=tenant.id,
-        max_uses=1,
-        created_by=current_user.id,
-    )
-    db.add(invite)
-    await db.flush()
+        # Generate admin invitation code (single-use)
+        code_str = secrets.token_urlsafe(12)[:16].upper()
+        db.add(
+            InvitationCode(
+                code=code_str,
+                tenant_id=tenant.id,
+                max_uses=1,
+                created_by=current_user.id,
+                granted_role="org_admin",
+            )
+        )
+        await db.flush()
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        logger.warning(
+            "Company creation constraint conflict for tenant {} ({})",
+            tenant.id,
+            type(exc.orig).__name__,
+        )
+        raise HTTPException(status_code=409, detail="Company creation conflicted; retry") from exc
 
     return CompanyCreateResponse(
         company=CompanyStats(
@@ -408,6 +436,7 @@ async def apply_runtime_reconciliation(
             action=payload.action,
             reason=payload.reason,
             actor_user_id=current_user.id,
+            trigger_disposition=payload.trigger_disposition,
         )
     except RuntimeReconciliationNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -592,22 +621,29 @@ async def toggle_company(
     db: AsyncSession = Depends(get_db),
 ):
     """Enable or disable a company."""
-    result = await db.execute(select(Tenant).where(Tenant.id == company_id))
-    tenant = result.scalar_one_or_none()
-    if not tenant:
-        raise HTTPException(status_code=404, detail="Company not found")
+    async with enter_rls_bypass(
+        db,
+        reason="platform admin company status transition",
+        actor_id=str(current_user.id),
+    ) as bypass_db:
+        result = await bypass_db.execute(select(Tenant).where(Tenant.id == company_id).with_for_update())
+        tenant = result.scalar_one_or_none()
+        if not tenant:
+            raise HTTPException(status_code=404, detail="Company not found")
     await _pin_admin_tenant_scope(db, company_id)
 
     new_state = not tenant.is_active
     tenant.is_active = new_state
 
-    # When disabling: pause all running agents
+    # When disabling: stop all running agents. ``stopped`` is the persisted
+    # Agent lifecycle state; ``paused`` belongs to session/goal runtimes.
     if not new_state:
         agents = await db.execute(select(Agent).where(Agent.tenant_id == company_id, Agent.status == "running"))
         for agent in agents.scalars().all():
-            agent.status = "paused"
+            agent.status = "stopped"
 
     await db.flush()
+    await db.commit()
     return {"ok": True, "is_active": new_state}
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +13,24 @@ from app.models.trigger import AgentTrigger
 from app.models.user import User
 
 _AUTHORITY_KEYS = ("created_by", "root_session_id", "authority_state")
+_RUNTIME_CONFIG_KEYS = frozenset(
+    {
+        "failure_count",
+        "last_failure_at",
+        "last_failure",
+        "backoff_until",
+    }
+)
+
+
+def _runtime_config_key(key: object) -> bool:
+    return isinstance(key, str) and (key.startswith("_") or key in _RUNTIME_CONFIG_KEYS)
+
+
+def strip_trigger_runtime_config(candidate_config: dict | None) -> dict:
+    """Drop platform-owned runtime keys from an external config candidate."""
+
+    return {key: value for key, value in dict(candidate_config or {}).items() if not _runtime_config_key(key)}
 
 
 def _uuid_value(config: dict, *keys: str) -> uuid.UUID | None:
@@ -71,16 +90,51 @@ def stamp_trigger_authority(
 
 
 def preserve_trigger_authority(current: AgentTrigger, candidate_config: dict | None) -> dict:
-    """A content update cannot transfer or erase the existing owner."""
+    """A content update cannot alter authority or daemon-owned runtime state."""
 
     current_config = dict(current.config or {})
-    candidate = dict(candidate_config or {})
+    candidate = strip_trigger_runtime_config(candidate_config)
+    for key, value in current_config.items():
+        if _runtime_config_key(key):
+            candidate[key] = value
     for key in _AUTHORITY_KEYS:
         if key in current_config:
             candidate[key] = current_config[key]
         else:
             candidate.pop(key, None)
     return candidate
+
+
+async def lock_trigger_for_update(
+    db: AsyncSession,
+    *,
+    agent_id: uuid.UUID,
+    trigger_id: uuid.UUID,
+    trigger_type: str | None = None,
+) -> AgentTrigger | None:
+    """Reload the canonical trigger row under the mutation transaction lock."""
+
+    statement = select(AgentTrigger).where(
+        AgentTrigger.id == trigger_id,
+        AgentTrigger.agent_id == agent_id,
+    )
+    if trigger_type is not None:
+        statement = statement.where(AgentTrigger.type == trigger_type)
+    return (await db.execute(statement.with_for_update())).scalar_one_or_none()
+
+
+def require_trigger_not_fire_inflight(trigger: AgentTrigger) -> None:
+    marker = dict(trigger.config or {}).get("_fire_inflight")
+    if not isinstance(marker, dict):
+        return
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "ok": False,
+            "status": "trigger_fire_inflight",
+            "runtime_task_id": str(marker.get("runtime_task_id") or "") or None,
+        },
+    )
 
 
 async def load_trigger_requester(db: AsyncSession, user_id: uuid.UUID | None) -> User | None:

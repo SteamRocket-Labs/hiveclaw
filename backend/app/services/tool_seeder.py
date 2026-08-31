@@ -38,11 +38,8 @@ async def seed_builtin_tools():
     # and audited rather than relying on the owner-role bypass.
     async with (
         async_session() as db,
-        enter_rls_bypass(
-            db, reason="startup builtin-tool seeding: upsert platform tools + auto-assign to all agents"
-        ) as bdb,
+        enter_rls_bypass(db, reason="startup builtin-tool seeding: upsert platform tools + auto-assign to all agents"),
     ):
-        db = bdb
         new_tool_ids = []
         for t in BUILTIN_TOOLS:
             result = await db.execute(select(Tool).where(Tool.name == t["name"]))

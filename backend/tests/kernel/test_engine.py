@@ -126,7 +126,7 @@ async def test_empty_provider_response_is_typed_failure_without_platform_assista
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda *_a, **_k: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=1),
-            resolve_current_user_name=lambda *_a, **_k: "Rocky",
+            resolve_current_user_name=lambda *_a, **_k: "Example Owner",
             build_system_prompt=lambda *_a, **_k: "PROMPT",
             resolve_memory_context=lambda *_a, **_k: "",
             get_tools=lambda *_a, **_k: [],
@@ -257,6 +257,48 @@ def test_permissions_context_consumes_skill_execution_plans() -> None:
     assert session.metadata["permission_profile"]["allowed_tools"] == ["web_search", "read_file"]
 
 
+def test_exact_session_permission_profile_cannot_be_widened_by_skill_plan() -> None:
+    from app.kernel import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import _build_permissions_context
+    from app.runtime.session import SessionContext
+
+    root = "workspace/p08-j4/attempt/coding"
+    session = SessionContext(
+        session_id="session-exact-skill",
+        metadata={
+            "permission_profile": {
+                "mode": "bypassPermissions",
+                "allowed_tools": ["read_file"],
+                "writable_roots": [root],
+                "readable_roots": [root],
+                "capability_policy_snapshot": {"session_exact_scope": True},
+            },
+            "skill_execution_plans": [
+                {
+                    "skill": "Research",
+                    "skill_slug": "research",
+                    "execution_tool": "spawn_subagent",
+                    "permission_profile": {"mode": "auto", "allowed_tools": ["web_search"]},
+                }
+            ],
+        },
+    )
+    request = InvocationRequest(
+        model=SimpleNamespace(),
+        messages=[],
+        agent_name="agent",
+        role_description="role",
+        session_context=session,
+    )
+
+    prompt = _build_permissions_context(request, RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3))
+
+    assert session.metadata["permission_profile"]["allowed_tools"] == ["read_file"]
+    assert "- read_file" in prompt
+    assert "- web_search" not in prompt
+    assert "Pending Skill Execution Handoffs" not in prompt
+
+
 def test_split_concatenated_json_returns_single_object_when_valid():
     """T1-4: a single valid JSON object passes through untouched."""
     from app.kernel.engine import _split_concatenated_json
@@ -296,7 +338,7 @@ async def test_kernel_continues_streaming_output_after_output_cap() -> None:
                 max_tool_rounds=3,
                 quota_message=None,
             ),
-            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            resolve_current_user_name=lambda *_args, **_kwargs: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [],
@@ -392,7 +434,7 @@ async def test_kernel_converts_stream_retry_tombstone_to_runtime_event() -> None
                 max_tool_rounds=3,
                 quota_message=None,
             ),
-            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            resolve_current_user_name=lambda *_args, **_kwargs: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [],
@@ -450,7 +492,7 @@ async def test_kernel_records_prompt_cache_metrics_from_response_usage() -> None
                 max_tool_rounds=3,
                 quota_message=None,
             ),
-            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            resolve_current_user_name=lambda *_args, **_kwargs: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [],
@@ -484,7 +526,7 @@ async def test_kernel_records_prompt_cache_metrics_from_response_usage() -> None
 
 
 @pytest.mark.asyncio
-async def test_response_complete_hook_failure_is_counted_without_failing_invocation(monkeypatch) -> None:
+async def test_response_complete_is_returned_for_post_commit_projection_without_kernel_hook(monkeypatch) -> None:
     from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
     from app.memory.metrics import reset_all, snapshot
 
@@ -515,7 +557,7 @@ async def test_response_complete_hook_failure_is_counted_without_failing_invocat
                 max_tool_rounds=3,
                 quota_message=None,
             ),
-            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            resolve_current_user_name=lambda *_args, **_kwargs: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [],
@@ -542,11 +584,10 @@ async def test_response_complete_hook_failure_is_counted_without_failing_invocat
     )
 
     assert result.content == "done"
-    for _ in range(10):
-        if "response_complete:kernel:RuntimeError" in snapshot()["hook_failure_total"]:
-            break
-        await asyncio.sleep(0.01)
-    assert snapshot()["hook_failure_total"]["response_complete:kernel:RuntimeError"] == 1
+    await asyncio.sleep(0)
+    assert result.response_complete_payload is not None
+    assert result.response_complete_payload["metadata"]["final_response"] == "done"
+    assert "response_complete:kernel:RuntimeError" not in snapshot()["hook_failure_total"]
 
 
 @pytest.mark.asyncio
@@ -586,7 +627,7 @@ async def test_kernel_drains_mid_run_user_messages_between_tool_rounds() -> None
                 max_tool_rounds=3,
                 quota_message=None,
             ),
-            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            resolve_current_user_name=lambda *_args, **_kwargs: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [
@@ -667,7 +708,7 @@ async def test_kernel_binds_round_inputs_and_commits_exact_provider_request_rece
                 max_tool_rounds=1,
                 quota_message=None,
             ),
-            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            resolve_current_user_name=lambda *_args, **_kwargs: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [],
@@ -743,7 +784,7 @@ async def test_kernel_never_retries_an_ambiguous_provider_send_on_a_fallback_mod
                 max_tool_rounds=1,
                 quota_message=None,
             ),
-            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            resolve_current_user_name=lambda *_args, **_kwargs: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [],
@@ -817,7 +858,7 @@ async def test_kernel_classifies_typed_http_402_as_rejected_quota_without_replay
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda *_a, **_k: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=1),
-            resolve_current_user_name=lambda *_a, **_k: "Rocky",
+            resolve_current_user_name=lambda *_a, **_k: "Example Owner",
             build_system_prompt=lambda *_a, **_k: "PROMPT",
             resolve_memory_context=lambda *_a, **_k: "",
             get_tools=lambda *_a, **_k: [],
@@ -883,7 +924,7 @@ async def test_kernel_binds_402_quota_policy_to_typed_status_with_opaque_body() 
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda *_a, **_k: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=1),
-            resolve_current_user_name=lambda *_a, **_k: "Rocky",
+            resolve_current_user_name=lambda *_a, **_k: "Example Owner",
             build_system_prompt=lambda *_a, **_k: "PROMPT",
             resolve_memory_context=lambda *_a, **_k: "",
             get_tools=lambda *_a, **_k: [],
@@ -950,7 +991,7 @@ async def test_kernel_threads_typed_402_failure_code_across_invocation_result() 
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda *_a, **_k: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=1),
-            resolve_current_user_name=lambda *_a, **_k: "Rocky",
+            resolve_current_user_name=lambda *_a, **_k: "Example Owner",
             build_system_prompt=lambda *_a, **_k: "PROMPT",
             resolve_memory_context=lambda *_a, **_k: "",
             get_tools=lambda *_a, **_k: [],
@@ -1014,7 +1055,7 @@ async def test_kernel_threads_typed_429_rate_limit_failure_facts_across_invocati
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda *_a, **_k: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=1),
-            resolve_current_user_name=lambda *_a, **_k: "Rocky",
+            resolve_current_user_name=lambda *_a, **_k: "Example Owner",
             build_system_prompt=lambda *_a, **_k: "PROMPT",
             resolve_memory_context=lambda *_a, **_k: "",
             get_tools=lambda *_a, **_k: [],
@@ -1072,7 +1113,7 @@ async def test_text_only_http_402_without_typed_rejection_stays_needs_reconcilia
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda *_a, **_k: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=1),
-            resolve_current_user_name=lambda *_a, **_k: "Rocky",
+            resolve_current_user_name=lambda *_a, **_k: "Example Owner",
             build_system_prompt=lambda *_a, **_k: "PROMPT",
             resolve_memory_context=lambda *_a, **_k: "",
             get_tools=lambda *_a, **_k: [],
@@ -1123,7 +1164,7 @@ async def test_provider_error_text_cannot_authorize_replay_without_typed_rejecti
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda *_a, **_k: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=1),
-            resolve_current_user_name=lambda *_a, **_k: "Rocky",
+            resolve_current_user_name=lambda *_a, **_k: "Example Owner",
             build_system_prompt=lambda *_a, **_k: "PROMPT",
             resolve_memory_context=lambda *_a, **_k: "",
             get_tools=lambda *_a, **_k: [],
@@ -2945,7 +2986,7 @@ async def test_recovery_manifest_reloads_recovered_mcp_deferred_tool_schema(tmp_
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda *_args, **_kwargs: runtime_config,
-            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            resolve_current_user_name=lambda *_args, **_kwargs: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [core_tool],
@@ -3253,11 +3294,11 @@ async def test_agent_kernel_handles_tool_round_and_collects_parts():
         return RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=5, quota_message=None)
 
     async def resolve_current_user_name(_user_id):
-        return "Rocky"
+        return "Example Owner"
 
     async def build_system_prompt(request, tenant_id, memory_context, current_user_name):
         assert tenant_id is not None
-        assert current_user_name == "Rocky"
+        assert current_user_name == "Example Owner"
         assert memory_context == ""
         return f"PROMPT::{request.agent_name}"
 
@@ -3349,7 +3390,7 @@ async def test_agent_kernel_handles_tool_round_and_collects_parts():
         {"type": "reasoning", "text": "final reasoning"},
         {"type": "text", "text": "final answer"},
     ]
-    assert persisted_payloads
+    assert persisted_payloads == []
 
 
 @pytest.mark.asyncio
@@ -3393,7 +3434,7 @@ async def test_kernel_round_trips_reasoning_signature_after_tool_call() -> None:
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda *_args, **_kwargs: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
-            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            resolve_current_user_name=lambda *_args, **_kwargs: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [
@@ -3491,7 +3532,7 @@ async def test_plan_mode_tool_intercept_notice_follows_tool_result_message() -> 
                 max_tool_rounds=3,
                 quota_message=None,
             ),
-            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            resolve_current_user_name=lambda *_args, **_kwargs: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [],
@@ -3588,7 +3629,7 @@ async def test_agent_kernel_stops_after_blocking_ask_user_question_result():
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=5),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda request, tenant_id, memory_context, current_user_name: "PROMPT",
             resolve_memory_context=lambda request, tenant_id: "",
             get_tools=lambda _agent_id, _core_only: [
@@ -3630,7 +3671,8 @@ async def test_agent_kernel_stops_after_blocking_ask_user_question_result():
     assert tool_events[-1]["name"] == "ask_user_question"
     assert tool_events[-1]["status"] == "done"
     assert tool_events[-1]["result"] == clarification_result
-    assert persisted_payloads
+    assert persisted_payloads == []
+    assert result.response_complete_payload is None
 
 
 @pytest.mark.asyncio
@@ -3682,7 +3724,7 @@ async def test_agent_kernel_propagates_terminal_tool_card_signal_from_callback()
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=5),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda request, tenant_id, memory_context, current_user_name: "PROMPT",
             resolve_memory_context=lambda request, tenant_id: "",
             get_tools=lambda _agent_id, _core_only: [
@@ -3782,7 +3824,7 @@ async def test_agent_kernel_stops_after_tool_lifecycle_persistence_failure():
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=5),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda request, tenant_id, memory_context, current_user_name: "PROMPT",
             resolve_memory_context=lambda request, tenant_id: "",
             get_tools=lambda _agent_id, _core_only: [
@@ -3870,7 +3912,7 @@ async def test_agent_kernel_never_executes_tool_when_started_lifecycle_cannot_pe
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=5),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda request, tenant_id, memory_context, current_user_name: "PROMPT",
             resolve_memory_context=lambda request, tenant_id: "",
             get_tools=lambda _agent_id, _core_only: [
@@ -3966,7 +4008,7 @@ async def test_agent_kernel_splits_concatenated_tool_arguments_into_separate_cal
                 max_tool_rounds=3,
                 quota_message=None,
             ),
-            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            resolve_current_user_name=lambda *_args, **_kwargs: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [
@@ -4113,7 +4155,7 @@ async def test_agent_kernel_emits_ptl_full_compress_before_round_group_retry_eve
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=5),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             resolve_retrieval_context=lambda *_args, **_kwargs: "",
@@ -4214,7 +4256,7 @@ async def test_agent_kernel_emits_runtime_fallback_event_after_prompt_too_long()
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=2),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             resolve_retrieval_context=lambda *_args, **_kwargs: "",
@@ -4302,7 +4344,7 @@ async def test_agent_kernel_keeps_core_tools_when_load_skill_has_no_declared_exp
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=resolve_runtime_config,
-            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            resolve_current_user_name=lambda *_args, **_kwargs: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=get_tools,
@@ -4427,7 +4469,7 @@ async def test_agent_kernel_does_not_expand_tools_after_load_skill():
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=resolve_runtime_config,
-            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            resolve_current_user_name=lambda *_args, **_kwargs: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=get_tools,
@@ -4532,7 +4574,7 @@ async def test_agent_kernel_does_not_auto_expand_without_skill_or_mcp_trigger():
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=resolve_runtime_config,
-            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            resolve_current_user_name=lambda *_args, **_kwargs: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=get_tools,
@@ -4637,7 +4679,7 @@ async def test_midloop_compaction_triggers_after_interval():
                 max_tool_rounds=10,
                 quota_message=None,
             ),
-            resolve_current_user_name=lambda *_a, **_kw: "Rocky",
+            resolve_current_user_name=lambda *_a, **_kw: "Example Owner",
             build_system_prompt=lambda *_a, **_kw: "SYSTEM",
             resolve_memory_context=lambda *_a, **_kw: "",
             get_tools=lambda *_a, **_kw: [
@@ -4860,7 +4902,7 @@ async def test_large_tool_result_evicted_in_kernel_loop():
                 max_tool_rounds=5,
                 quota_message=None,
             ),
-            resolve_current_user_name=lambda *_a, **_kw: "Rocky",
+            resolve_current_user_name=lambda *_a, **_kw: "Example Owner",
             build_system_prompt=lambda *_a, **_kw: "SYSTEM",
             resolve_memory_context=lambda *_a, **_kw: "",
             get_tools=lambda *_a, **_kw: [
@@ -4921,7 +4963,7 @@ async def test_empty_tool_result_is_wrapped_with_actionable_message():
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda *_a, **_kw: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
-            resolve_current_user_name=lambda *_a, **_kw: "Rocky",
+            resolve_current_user_name=lambda *_a, **_kw: "Example Owner",
             build_system_prompt=lambda *_a, **_kw: "SYSTEM",
             resolve_memory_context=lambda *_a, **_kw: "",
             get_tools=lambda *_a, **_kw: [
@@ -4957,8 +4999,8 @@ async def test_empty_tool_result_is_wrapped_with_actionable_message():
 
 
 @pytest.mark.asyncio
-async def test_persist_memory_called_on_max_rounds_exceeded():
-    """persist_memory must be called even when max tool rounds exhausted."""
+async def test_max_rounds_exit_never_persists_memory_before_terminal_commit():
+    """A typed limit result has no authority to write durable projections."""
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
 
@@ -4994,7 +5036,7 @@ async def test_persist_memory_called_on_max_rounds_exceeded():
                 max_tool_rounds=2,
                 quota_message=None,
             ),
-            resolve_current_user_name=lambda *_a, **_kw: "Rocky",
+            resolve_current_user_name=lambda *_a, **_kw: "Example Owner",
             build_system_prompt=lambda *_a, **_kw: "SYSTEM",
             resolve_memory_context=lambda *_a, **_kw: "",
             get_tools=lambda *_a, **_kw: [
@@ -5028,8 +5070,7 @@ async def test_persist_memory_called_on_max_rounds_exceeded():
 
     assert "tool-round limit" in result.content
     assert "continue" in result.content.lower()
-    assert len(persist_calls) == 1, f"Expected 1 persist call, got {len(persist_calls)}"
-    assert persist_calls[0]["session_id"] == "sess-max"
+    assert persist_calls == []
 
 
 @pytest.mark.asyncio
@@ -5072,7 +5113,7 @@ async def test_turn_token_budget_stops_before_next_tool_round_with_typed_receipt
                 max_tool_rounds=3,
                 turn_token_budget=40,
             ),
-            resolve_current_user_name=lambda *_a, **_kw: "Rocky",
+            resolve_current_user_name=lambda *_a, **_kw: "Example Owner",
             build_system_prompt=lambda *_a, **_kw: "SYSTEM",
             resolve_memory_context=lambda *_a, **_kw: "",
             get_tools=lambda *_a, **_kw: [
@@ -5114,16 +5155,11 @@ async def test_turn_token_budget_stops_before_next_tool_round_with_typed_receipt
         "provider_request_id": "provider-request-budget-1",
         "round_index": 1,
     }
-    assert persist_calls[0]["session_id"] == "sess-budget"
+    assert persist_calls == []
+    assert result.response_complete_payload is None
     assert any(
         part.get("event_type") == "turn_token_budget_exhausted" for part in result.parts if isinstance(part, dict)
     )
-    persisted_text = "\n".join(
-        str(message.get("content") or "")
-        for message in persist_calls[0].get("messages", [])
-        if isinstance(message, dict)
-    )
-    assert "[Runtime Limit]" in persisted_text
     budget_events = [event for event in runtime_events if event.get("type") == "turn_token_budget_exhausted"]
     assert budget_events == [
         {
@@ -5175,7 +5211,7 @@ async def test_turn_token_budget_counts_recovered_usage_without_double_billing()
                 max_tool_rounds=3,
                 turn_token_budget=40,
             ),
-            resolve_current_user_name=lambda *_a, **_kw: "Rocky",
+            resolve_current_user_name=lambda *_a, **_kw: "Example Owner",
             build_system_prompt=lambda *_a, **_kw: "SYSTEM",
             resolve_memory_context=lambda *_a, **_kw: "",
             get_tools=lambda *_a, **_kw: [
@@ -5253,7 +5289,7 @@ async def test_turn_token_budget_ignores_cached_prompt_reads_before_tool_round()
                 max_tool_rounds=3,
                 turn_token_budget=100,
             ),
-            resolve_current_user_name=lambda *_a, **_kw: "Rocky",
+            resolve_current_user_name=lambda *_a, **_kw: "Example Owner",
             build_system_prompt=lambda *_a, **_kw: "SYSTEM",
             resolve_memory_context=lambda *_a, **_kw: "",
             get_tools=lambda *_a, **_kw: [
@@ -5284,13 +5320,9 @@ async def test_turn_token_budget_ignores_cached_prompt_reads_before_tool_round()
 
     assert result.content == "done"
     assert executed == ["read_file"]
-    assert len(persist_calls) == 1
-    persisted_text = "\n".join(
-        str(message.get("content") or "")
-        for message in persist_calls[0].get("messages", [])
-        if isinstance(message, dict)
-    )
-    assert "[Runtime Limit]" not in persisted_text
+    assert persist_calls == []
+    assert result.response_complete_payload is not None
+    assert result.response_complete_payload["metadata"]["final_response"] == "done"
     assert len(fake_client.calls) == 2
 
 
@@ -5331,7 +5363,7 @@ async def test_turn_token_budget_does_not_replace_zero_cache_miss_usage_with_ful
                 max_tool_rounds=3,
                 turn_token_budget=1,
             ),
-            resolve_current_user_name=lambda *_a, **_kw: "Rocky",
+            resolve_current_user_name=lambda *_a, **_kw: "Example Owner",
             build_system_prompt=lambda *_a, **_kw: "SYSTEM",
             resolve_memory_context=lambda *_a, **_kw: "",
             get_tools=lambda *_a, **_kw: [
@@ -5390,7 +5422,7 @@ async def test_turn_token_budget_preserves_a_completed_model_answer_byte_for_byt
                 max_tool_rounds=3,
                 turn_token_budget=40,
             ),
-            resolve_current_user_name=lambda *_a, **_kw: "Rocky",
+            resolve_current_user_name=lambda *_a, **_kw: "Example Owner",
             build_system_prompt=lambda *_a, **_kw: "SYSTEM",
             resolve_memory_context=lambda *_a, **_kw: "",
             get_tools=lambda *_a, **_kw: [],
@@ -5421,8 +5453,8 @@ async def test_turn_token_budget_preserves_a_completed_model_answer_byte_for_byt
 
 
 @pytest.mark.asyncio
-async def test_persist_memory_called_on_llm_error():
-    """persist_memory must be called when LLM returns an error (after fallback exhausted)."""
+async def test_llm_error_never_persists_memory_before_terminal_commit():
+    """Provider failure bytes cannot become summary or learning truth."""
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
     from app.services.llm_client import LLMError
@@ -5453,7 +5485,7 @@ async def test_persist_memory_called_on_llm_error():
                 max_tool_rounds=5,
                 quota_message=None,
             ),
-            resolve_current_user_name=lambda *_a, **_kw: "Rocky",
+            resolve_current_user_name=lambda *_a, **_kw: "Example Owner",
             build_system_prompt=lambda *_a, **_kw: "SYSTEM",
             resolve_memory_context=lambda *_a, **_kw: "",
             get_tools=lambda *_a, **_kw: [],
@@ -5481,8 +5513,7 @@ async def test_persist_memory_called_on_llm_error():
     )
 
     assert "LLM Error" in result.content
-    assert len(persist_calls) == 1
-    assert persist_calls[0]["session_id"] == "sess-err"
+    assert persist_calls == []
 
 
 class TestPromptTooLongDetection:

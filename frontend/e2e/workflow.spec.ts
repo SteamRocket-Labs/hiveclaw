@@ -141,8 +141,8 @@ test('low-risk ephemeral: preview → confirm → run completes', async ({ page 
     confirmed_plan_id: null,
     ledger_todo_id: null,
     plan_version: null,
-    plan_hash: null,
   }]);
+  expect(startBodies[0]).not.toHaveProperty('plan_hash');
 });
 
 test('confirmation-required ephemeral: explicit action starts the immutable preview', async ({ page }) => {
@@ -164,6 +164,6 @@ test('confirmation-required ephemeral: explicit action starts the immutable prev
     confirmed_plan_id: null,
     ledger_todo_id: null,
     plan_version: null,
-    plan_hash: null,
   }]);
+  expect(startBodies[0]).not.toHaveProperty('plan_hash');
 });

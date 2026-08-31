@@ -73,6 +73,19 @@ def assert_runtime_task_fence(task: Any) -> None:
             f"stale RuntimeTask worker fence for {fence.task_id}: "
             f"expected claim_version={fence.claim_version}, current={current_version}"
         )
+    current_worker = str(getattr(task, "claimed_by", None) or "")
+    current_status = str(getattr(task, "status", None) or "")
+    claim_expires_at = getattr(task, "claim_expires_at", None)
+    if isinstance(claim_expires_at, datetime) and claim_expires_at.tzinfo is None:
+        claim_expires_at = claim_expires_at.replace(tzinfo=timezone.utc)
+    claim_active = isinstance(claim_expires_at, datetime) and claim_expires_at > datetime.now(timezone.utc)
+    if current_worker != fence.worker_id or current_status != "running" or not claim_active:
+        raise StaleRuntimeTaskFenceError(
+            f"stale RuntimeTask worker fence for {fence.task_id}: "
+            f"expected claimed_by={fence.worker_id}, status=running, active lease; "
+            f"current claimed_by={current_worker or None}, status={current_status or None}, "
+            f"claim_expires_at={claim_expires_at.isoformat() if isinstance(claim_expires_at, datetime) else None}"
+        )
 
 
 async def renew_current_runtime_task_lease(*, lease_seconds: float) -> datetime | None:
@@ -90,7 +103,8 @@ async def renew_current_runtime_task_lease(*, lease_seconds: float) -> datetime 
     from app.models.runtime_task import RuntimeTask
     from app.services.tenant_resolver import resolve_tenant_for_runtime_task
 
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=max(0.03, float(lease_seconds)))
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=max(0.03, float(lease_seconds)))
     tenant_id = await resolve_tenant_for_runtime_task(
         fence.task_id,
         session_factory=async_session,
@@ -110,6 +124,7 @@ async def renew_current_runtime_task_lease(*, lease_seconds: float) -> datetime 
                 RuntimeTask.claim_version == fence.claim_version,
                 RuntimeTask.claimed_by == fence.worker_id,
                 RuntimeTask.status == "running",
+                RuntimeTask.claim_expires_at > now,
             )
             .values(claim_expires_at=expires_at)
         )

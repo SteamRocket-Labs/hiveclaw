@@ -843,6 +843,76 @@ async def test_reaper_expires_run_releases_reservations_and_kills_pending_runtim
     assert stored_run.reserved_subagents == 0
     assert stored_task.status == "killed"
     assert stored_task.budget_terminal_reason == "budget_run_expired"
+    assert stored_task.metadata_json["terminal_execution_fence_ref"].startswith("runtime-task-terminal:")
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_reaper_enqueues_required_terminal_boundary_in_the_same_task_settlement(owner_sessionmaker):
+    from app.models.agent import Agent
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+    from app.models.runtime_task import RuntimeTask
+    from app.models.user import User
+    from app.services.runtime_budget_service import RuntimeBudgetService
+
+    tenant_id = await _seed_tenant(owner_sessionmaker)
+    user_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    task_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+    run = await _create_run(service, tenant_id, expires_at=now - timedelta(seconds=1))
+    async with owner_sessionmaker() as db:
+        db.add(
+            User(
+                id=user_id,
+                username=f"budget-{user_id.hex[:10]}",
+                email=f"{user_id.hex[:12]}@budget.test",
+                password_hash="x",
+                display_name="Budget Owner",
+                tenant_id=tenant_id,
+            )
+        )
+        await db.flush()
+        db.add(
+            Agent(
+                id=agent_id,
+                tenant_id=tenant_id,
+                name="Budget Agent",
+                role_description="budget terminal boundary test",
+                creator_id=user_id,
+                sponsor_user_id=user_id,
+            )
+        )
+        await db.flush()
+        db.add(
+            RuntimeTask(
+                id=task_id,
+                tenant_id=tenant_id,
+                task_type="trigger",
+                status="pending",
+                parent_agent_id=agent_id,
+                budget_run_id=run.id,
+            )
+        )
+        await db.commit()
+
+    assert await service.reap_expired_runs(now=now) == 1
+
+    async with owner_sessionmaker() as db:
+        stored_task = await db.scalar(select(RuntimeTask).where(RuntimeTask.id == task_id))
+        boundary = await db.scalar(
+            select(RuntimeTerminalBoundaryOutbox).where(
+                RuntimeTerminalBoundaryOutbox.runtime_task_id == task_id,
+                RuntimeTerminalBoundaryOutbox.tenant_id == tenant_id,
+            )
+        )
+
+    assert stored_task is not None
+    assert stored_task.status == "killed"
+    assert stored_task.terminal_boundary_enqueued_at is not None
+    assert boundary is not None
+    assert boundary.status == "pending"
+    assert boundary.terminal_status == "killed"
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
@@ -935,6 +1005,159 @@ async def test_reconcile_orphaned_reservations_releases_terminal_task_reservatio
     assert stored_run.reserved_subagents == 0
     assert [event.event_type for event in events] == ["reservation", "settlement"]
     assert events[-1].reason == "orphaned_reservation_reconciled"
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_budget_reconciliation_skips_settled_history_and_accounts_terminal_trigger(owner_sessionmaker):
+    from sqlalchemy import func
+
+    from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
+    from app.models.runtime_task import RuntimeTask
+    from app.services.runtime_budget_service import (
+        RuntimeBudgetReservation,
+        RuntimeBudgetService,
+        RuntimeBudgetSettlement,
+    )
+
+    tenant_id = await _seed_tenant(owner_sessionmaker)
+    service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+    run = await _create_run(service, tenant_id, max_background_tasks=10)
+    for index in range(2):
+        key = f"settled-history-{index}"
+        await service.reserve(
+            RuntimeBudgetReservation(
+                budget_run_id=run.id,
+                reservation_key=key,
+                background_tasks=1,
+            )
+        )
+        await service.settle(
+            RuntimeBudgetSettlement(
+                budget_run_id=run.id,
+                reservation_key=key,
+            )
+        )
+
+    task_id = uuid.uuid4()
+    await service.reserve(
+        RuntimeBudgetReservation(
+            budget_run_id=run.id,
+            reservation_key="new-terminal-trigger",
+            background_tasks=1,
+            runtime_task_id=task_id,
+        )
+    )
+    async with owner_sessionmaker() as db:
+        db.add(
+            RuntimeTask(
+                id=task_id,
+                tenant_id=tenant_id,
+                task_type="trigger",
+                status="skipped",
+                budget_run_id=run.id,
+                budget_reservation_key="new-terminal-trigger",
+                budget_admission_status="reserved",
+            )
+        )
+        await db.commit()
+
+    assert await service.reconcile_orphaned_reservations(limit=2) == 1
+
+    async with owner_sessionmaker() as db:
+        stored_run = await db.get(RuntimeBudgetRun, run.id)
+        stored_task = await db.get(RuntimeTask, task_id)
+        settlements = await db.scalar(
+            select(func.count())
+            .select_from(RuntimeBudgetEvent)
+            .where(
+                RuntimeBudgetEvent.budget_run_id == run.id,
+                RuntimeBudgetEvent.reservation_key == "new-terminal-trigger",
+                RuntimeBudgetEvent.event_type == "settlement",
+            )
+        )
+        settlement = await db.scalar(
+            select(RuntimeBudgetEvent).where(
+                RuntimeBudgetEvent.budget_run_id == run.id,
+                RuntimeBudgetEvent.reservation_key == "new-terminal-trigger",
+                RuntimeBudgetEvent.event_type == "settlement",
+            )
+        )
+
+    assert stored_run is not None and stored_task is not None and settlement is not None
+    assert stored_run.reserved_background_tasks == 0
+    assert stored_run.used_background_tasks == 1
+    assert stored_task.budget_admission_status == "settled"
+    assert settlements == 1
+    assert settlement.amounts_json == {"background_tasks": 1}
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_budget_reconciliation_repairs_marker_after_settlement_split_commit(owner_sessionmaker):
+    from sqlalchemy import func
+
+    from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
+    from app.models.runtime_task import RuntimeTask
+    from app.services.runtime_budget_service import (
+        RuntimeBudgetReservation,
+        RuntimeBudgetService,
+        RuntimeBudgetSettlement,
+    )
+
+    tenant_id = await _seed_tenant(owner_sessionmaker)
+    service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+    run = await _create_run(service, tenant_id, max_background_tasks=10)
+    task_id = uuid.uuid4()
+    reservation_key = "split-terminal-trigger"
+    await service.reserve(
+        RuntimeBudgetReservation(
+            budget_run_id=run.id,
+            reservation_key=reservation_key,
+            background_tasks=1,
+            runtime_task_id=task_id,
+        )
+    )
+    async with owner_sessionmaker() as db:
+        db.add(
+            RuntimeTask(
+                id=task_id,
+                tenant_id=tenant_id,
+                task_type="trigger",
+                status="completed",
+                budget_run_id=run.id,
+                budget_reservation_key=reservation_key,
+                budget_admission_status="reserved",
+            )
+        )
+        await db.commit()
+    await service.settle(
+        RuntimeBudgetSettlement(
+            budget_run_id=run.id,
+            reservation_key=reservation_key,
+            actual_background_tasks=1,
+            runtime_task_id=task_id,
+        )
+    )
+
+    assert await service.reconcile_orphaned_reservations() == 1
+
+    async with owner_sessionmaker() as db:
+        stored_run = await db.get(RuntimeBudgetRun, run.id)
+        stored_task = await db.get(RuntimeTask, task_id)
+        settlements = await db.scalar(
+            select(func.count())
+            .select_from(RuntimeBudgetEvent)
+            .where(
+                RuntimeBudgetEvent.budget_run_id == run.id,
+                RuntimeBudgetEvent.reservation_key == reservation_key,
+                RuntimeBudgetEvent.event_type == "settlement",
+            )
+        )
+
+    assert stored_run is not None and stored_task is not None
+    assert stored_run.reserved_background_tasks == 0
+    assert stored_run.used_background_tasks == 1
+    assert stored_task.budget_admission_status == "settled"
+    assert settlements == 1
 
 
 @pytest.mark.usefixtures("migrated_pg_url")

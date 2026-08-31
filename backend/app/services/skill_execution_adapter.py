@@ -114,6 +114,9 @@ def apply_skill_execution_plans_to_metadata(metadata: dict[str, Any]) -> dict[st
         return metadata
 
     permission_profile = dict(metadata.get("permission_profile") or {})
+    capability_snapshot = permission_profile.get("capability_policy_snapshot")
+    if isinstance(capability_snapshot, dict) and capability_snapshot.get("session_exact_scope") is True:
+        return metadata
     merged_allowed = _string_list(permission_profile.get("allowed_tools"))
     handoffs_by_slug = {
         str(item.get("skill_slug") or item.get("skill")): dict(item)

@@ -20,7 +20,7 @@
 ## Red 证据
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/runtime/test_invoker.py::test_custom_tool_executor_disables_inner_runtime_hooks \
   tests/services/test_agent_message_runtime.py::test_build_agent_message_tool_executor_persists_tool_calls -q
@@ -35,7 +35,7 @@ pytest tests/runtime/test_invoker.py::test_custom_tool_executor_disables_inner_r
 ## Green / 回归证据
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 ruff check app/runtime/invoker.py app/services/agent_tool_domains/messaging.py \
   tests/runtime/test_invoker.py tests/services/test_agent_message_runtime.py
@@ -44,7 +44,7 @@ ruff check app/runtime/invoker.py app/services/agent_tool_domains/messaging.py \
 结果：`All checks passed!`
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/runtime/test_invoker.py::test_custom_tool_executor_receives_delegation_token \
   tests/runtime/test_invoker.py::test_custom_tool_executor_disables_inner_runtime_hooks \

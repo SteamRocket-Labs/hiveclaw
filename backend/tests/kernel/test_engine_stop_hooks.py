@@ -51,7 +51,7 @@ async def test_stop_hook_blocking_result_forces_continuation() -> None:
                 max_tool_rounds=3,
                 quota_message=None,
             ),
-            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            resolve_current_user_name=lambda *_args, **_kwargs: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [],

@@ -33,8 +33,11 @@ from app.services.autonomy_overview import build_trigger_view
 from app.services.trigger_resource_authority import (
     authorize_trigger_action,
     filter_authorized_triggers,
+    lock_trigger_for_update,
     preserve_trigger_authority,
+    require_trigger_not_fire_inflight,
     stamp_trigger_authority,
+    strip_trigger_runtime_config,
 )
 
 router = APIRouter(prefix="/agents", tags=["triggers"])
@@ -221,7 +224,7 @@ async def create_trigger(
     if trigger_type not in VALID_TRIGGER_TYPES:
         raise HTTPException(status_code=400, detail=f"Invalid trigger type: {trigger_type}")
 
-    config = dict(body.config or {})
+    config = strip_trigger_runtime_config(body.config)
     if body.trigger_class is not None:
         config["trigger_class"] = body.trigger_class
 
@@ -372,7 +375,6 @@ async def update_trigger(
         operator_view=use_operator_view,
         operator_reason=normalized_operator_reason,
     )
-
     # Plan Mode early intercept (§9.3): only enabling an autonomous wake is
     # gated. Disables, config edits, and reason/lifecycle changes are low-risk
     # and keep their existing contract.
@@ -413,6 +415,9 @@ async def update_trigger(
                 evidence_id=evidence_id,
             )
 
+    trigger = await lock_trigger_for_update(db, agent_id=agent_id, trigger_id=trigger_id)
+    if trigger is None:
+        raise HTTPException(404, "Trigger not found")
     if body.config is not None:
         trigger.config = preserve_trigger_authority(trigger, body.config)
     if body.is_enabled is True:
@@ -502,6 +507,10 @@ async def delete_trigger(
         operator_view=use_operator_view,
         operator_reason=normalized_operator_reason,
     )
+    trigger = await lock_trigger_for_update(db, agent_id=agent_id, trigger_id=trigger_id)
+    if trigger is None:
+        raise HTTPException(404, "Trigger not found")
+    require_trigger_not_fire_inflight(trigger)
 
     await db.delete(trigger)
     await db.commit()

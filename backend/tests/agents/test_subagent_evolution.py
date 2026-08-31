@@ -334,7 +334,7 @@ def test_apply_proposal_writes_definition_marks_absorbed_and_ledgers(tmp_path, m
     agent_id = uuid.uuid4()
     ids, proposal = _nominated(tmp_path, monkeypatch, agent_id)
 
-    result = apply_proposal(agent_id, "scout", approved_by="rocky", agent_data_dir=tmp_path)
+    result = apply_proposal(agent_id, "scout", approved_by="example-owner", agent_data_dir=tmp_path)
 
     assert result.applied is True
     # definition body replaced; frontmatter (contract) untouched by construction
@@ -351,7 +351,7 @@ def test_apply_proposal_writes_definition_marks_absorbed_and_ledgers(tmp_path, m
     # ledger row written
     ledger = (tmp_path / str(agent_id) / "evolution" / "evolution_ledger.jsonl").read_text()
     assert "subagent_definition_promotion" in ledger
-    assert '"approved"' in ledger and "rocky" in ledger
+    assert '"approved"' in ledger and "example-owner" in ledger
 
 
 def test_apply_proposal_stale_base_is_rejected(tmp_path, monkeypatch):
@@ -364,7 +364,7 @@ def test_apply_proposal_stale_base_is_rejected(tmp_path, monkeypatch):
         SubagentSpec(name="scout", description="d", type="explorer", system_prompt="manually edited body")
     )
 
-    result = apply_proposal(agent_id, "scout", approved_by="rocky", agent_data_dir=tmp_path)
+    result = apply_proposal(agent_id, "scout", approved_by="example-owner", agent_data_dir=tmp_path)
 
     assert result.applied is False
     assert result.error == "stale_base"
@@ -377,7 +377,7 @@ def test_apply_proposal_stale_base_is_rejected(tmp_path, monkeypatch):
 def test_apply_proposal_without_pending_returns_error(tmp_path):
     from app.agents.subagent_evolution import apply_proposal
 
-    result = apply_proposal(uuid.uuid4(), "scout", approved_by="rocky", agent_data_dir=tmp_path)
+    result = apply_proposal(uuid.uuid4(), "scout", approved_by="example-owner", agent_data_dir=tmp_path)
     assert result.applied is False
     assert result.error == "no_pending"
 
@@ -388,7 +388,7 @@ def test_reject_proposal_closes_and_ledgers(tmp_path, monkeypatch):
     agent_id = uuid.uuid4()
     _nominated(tmp_path, monkeypatch, agent_id)
 
-    assert reject_proposal(agent_id, "scout", rejected_by="rocky", agent_data_dir=tmp_path) is True
+    assert reject_proposal(agent_id, "scout", rejected_by="example-owner", agent_data_dir=tmp_path) is True
     assert proposal_store_for_agent(agent_id, agent_data_dir=tmp_path).load_pending("scout") is None
     # memory untouched on reject
     memory_store = SubagentMemoryStore(tmp_path / str(agent_id) / "subagents" / ".memory")

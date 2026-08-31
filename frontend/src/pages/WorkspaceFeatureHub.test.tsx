@@ -165,9 +165,9 @@ vi.mock('../stores', () => ({
     const state = {
       user: {
         id: 'user-1',
-        username: 'rocky',
-        email: 'rocky@example.com',
-        display_name: 'rocky',
+        username: 'example-owner',
+        email: 'example-owner@example.com',
+        display_name: 'example-owner',
         role: 'member',
         is_active: true,
         created_at: '2026-06-01T00:00:00Z',

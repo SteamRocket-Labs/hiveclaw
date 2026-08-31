@@ -69,7 +69,7 @@
   "hive": {
     "source": "local_behavior_scenarios",
     "behavior_complete": true,
-    "repo_root": "/Users/rocky243/vc-saas/hiveclaw-main",
+    "repo_root": "/Users/example-owner/vc-saas/hiveclaw-main",
     "scenarios": {
       "next_turn_adaptation": {
         "score": 92,
@@ -224,7 +224,7 @@
   },
   "hermes": {
     "source": "unavailable",
-    "repo_root": "/Users/rocky243/vc-saas/hermes-agent",
+    "repo_root": "/Users/example-owner/vc-saas/hermes-agent",
     "scores": {}
   },
   "comparisons": {

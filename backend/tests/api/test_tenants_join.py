@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 
 class _ScalarResult:
@@ -74,6 +75,211 @@ def _tenant(tenant_id):
 
 
 @pytest.mark.asyncio
+async def test_platform_admin_cannot_consume_invitation_before_database_access():
+    import app.api.tenants as tenants_api
+
+    current_user = SimpleNamespace(id=uuid4(), tenant_id=None, role="platform_admin")
+    db = _FakeDB([])
+
+    with pytest.raises(HTTPException) as exc_info:
+        await tenants_api.join_company(
+            data=tenants_api.JoinRequest(invitation_code="ADMINCODE1"),
+            current_user=current_user,
+            db=db,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert db.statements == []
+    assert db.added == []
+    assert db.flushed is False
+    assert db.committed is False
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_role_observed_after_lock_cannot_consume_invitation(monkeypatch):
+    import app.api.tenants as tenants_api
+
+    tenant_id = uuid4()
+    code = SimpleNamespace(
+        code="ADMINCODE2",
+        tenant_id=tenant_id,
+        is_active=True,
+        max_uses=1,
+        used_count=0,
+        granted_role="org_admin",
+    )
+    tenant = _tenant(tenant_id)
+    locked_user = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=None,
+        role="platform_admin",
+        is_active=True,
+    )
+    request_user = SimpleNamespace(
+        id=locked_user.id,
+        tenant_id=None,
+        role="member",
+        is_active=True,
+    )
+    db = _FakeDB([_ScalarResult(code), _ScalarResult(tenant), _ScalarResult(locked_user)])
+
+    @contextlib.asynccontextmanager
+    async def fake_enter_rls_bypass(session, *, reason: str, actor_id: str | None = None):
+        del reason, actor_id
+        yield session
+
+    monkeypatch.setattr(tenants_api, "enter_rls_bypass", fake_enter_rls_bypass, raising=False)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await tenants_api.join_company(
+            data=tenants_api.JoinRequest(invitation_code=code.code),
+            current_user=request_user,
+            db=db,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert code.used_count == 0
+    assert locked_user.tenant_id is None
+    assert db.flushed is False
+    assert db.committed is False
+    assert not any(stmt.lstrip().upper().startswith("SET LOCAL") for stmt in db.statements)
+
+
+@pytest.mark.asyncio
+async def test_join_company_exact_replay_returns_current_membership_without_reconsuming(monkeypatch):
+    import app.api.tenants as tenants_api
+
+    tenant_id = uuid4()
+    current_user = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        role="org_admin",
+    )
+    db = _FakeDB([_ScalarResult(uuid4()), _ScalarResult(_tenant(tenant_id))])
+    token_calls: list[dict] = []
+
+    def fake_create_access_token(user_id: str, role: str, tenant_id: str | None = None):
+        token_calls.append({"user_id": user_id, "role": role, "tenant_id": tenant_id})
+        return "recovered-membership-token"
+
+    monkeypatch.setattr(tenants_api, "create_access_token", fake_create_access_token)
+
+    result = await tenants_api.join_company(
+        data=tenants_api.JoinRequest(invitation_code="  replaycode  "),
+        current_user=current_user,
+        db=db,
+    )
+
+    assert result.tenant.id == tenant_id
+    assert result.role == "org_admin"
+    assert result.access_token == "recovered-membership-token"
+    assert token_calls == [
+        {
+            "user_id": str(current_user.id),
+            "role": "org_admin",
+            "tenant_id": str(tenant_id),
+        }
+    ]
+    assert db.flushed is False
+    assert db.committed is False
+    lookup_params = [value for params in db.params for value in params.values()]
+    assert "REPLAYCODE" in lookup_params
+    assert tenant_id in lookup_params
+
+
+@pytest.mark.asyncio
+async def test_join_company_cross_tenant_replay_is_rejected_without_consumption():
+    import app.api.tenants as tenants_api
+
+    current_user = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        role="member",
+    )
+    db = _FakeDB([_ScalarResult(None)])
+
+    with pytest.raises(HTTPException) as exc_info:
+        await tenants_api.join_company(
+            data=tenants_api.JoinRequest(invitation_code="OTHERCOMPANY"),
+            current_user=current_user,
+            db=db,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "User already belongs to another company"
+    assert db.flushed is False
+    assert db.committed is False
+    assert len(db._results) == 0
+
+
+@pytest.mark.parametrize(
+    ("granted_role", "existing_admin_count"),
+    [
+        pytest.param("member", 0, id="member-invite-without-existing-admin"),
+        pytest.param("org_admin", 1, id="admin-invite-with-existing-admin"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_join_company_uses_the_role_bound_to_the_invitation(
+    monkeypatch,
+    granted_role,
+    existing_admin_count,
+):
+    import app.api.tenants as tenants_api
+
+    tenant_id = uuid4()
+    code = SimpleNamespace(
+        code="ROLEBOUND1",
+        tenant_id=tenant_id,
+        is_active=True,
+        max_uses=1,
+        used_count=0,
+        granted_role=granted_role,
+    )
+    tenant = _tenant(tenant_id)
+    current_user = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=None,
+        role="member",
+        is_active=True,
+        department_id=None,
+        quota_tokens_per_day=None,
+        quota_tokens_per_month=None,
+        tokens_used_today=0,
+        tokens_used_month=0,
+        tokens_used_total=0,
+        tokens_reset_at=None,
+    )
+    db = _FakeDB(
+        [
+            _ScalarResult(code),
+            _ScalarResult(tenant),
+            _ScalarResult(current_user),
+            _ScalarResult(existing_admin_count),
+        ]
+    )
+
+    @contextlib.asynccontextmanager
+    async def fake_enter_rls_bypass(session, *, reason: str, actor_id: str | None = None):
+        del reason, actor_id
+        yield session
+
+    monkeypatch.setattr(tenants_api, "enter_rls_bypass", fake_enter_rls_bypass, raising=False)
+    monkeypatch.setattr(tenants_api, "create_access_token", lambda *_args, **_kwargs: "role-bound-token")
+
+    result = await tenants_api.join_company(
+        data=tenants_api.JoinRequest(invitation_code=code.code),
+        current_user=current_user,
+        db=db,
+    )
+
+    assert result.role == granted_role
+    assert current_user.role == granted_role
+    assert len(db._results) == 1
+    assert db._results[0].scalar() == existing_admin_count
+
+
+@pytest.mark.asyncio
 async def test_self_create_company_pins_new_tenant_before_assigning_creator(monkeypatch):
     import app.api.tenants as tenants_api
 
@@ -81,10 +287,16 @@ async def test_self_create_company_pins_new_tenant_before_assigning_creator(monk
         id=uuid4(),
         tenant_id=None,
         role="member",
+        is_active=True,
+        department_id=uuid4(),
         quota_tokens_per_day=None,
         quota_tokens_per_month=None,
+        tokens_used_today=4,
+        tokens_used_month=40,
+        tokens_used_total=400,
+        tokens_reset_at=datetime.now(timezone.utc),
     )
-    db = _FakeDB([_ScalarResult(None)])
+    db = _FakeDB([_ScalarResult(None), _ScalarResult(current_user)])
     bypass_calls: list[dict] = []
     bypass_exit_flushed: list[bool] = []
     bypass_exit_user_tenant: list[object] = []
@@ -110,6 +322,12 @@ async def test_self_create_company_pins_new_tenant_before_assigning_creator(monk
     assert result.name == "Acme"
     assert current_user.tenant_id is not None
     assert current_user.role == "org_admin"
+    assert current_user.department_id is None
+    assert current_user.tokens_used_today == 0
+    assert current_user.tokens_used_month == 0
+    assert current_user.tokens_used_total == 0
+    assert current_user.tokens_reset_at is None
+    assert "FOR UPDATE" in db.statements[1]
     assert any(f"SET LOCAL app.current_tenant_id = '{current_user.tenant_id}'" in stmt for stmt in db.statements)
     assert db.flushed is True
     assert bypass_exit_flushed == [True]
@@ -128,16 +346,29 @@ async def test_join_company_uses_audited_bypass_for_invite_lookup_then_scopes_ta
     import app.api.tenants as tenants_api
 
     tenant_id = uuid4()
-    code = SimpleNamespace(code="Z53GS9R3", tenant_id=tenant_id, is_active=True, max_uses=5, used_count=0)
+    code = SimpleNamespace(
+        code="Z53GS9R3",
+        tenant_id=tenant_id,
+        is_active=True,
+        max_uses=5,
+        used_count=0,
+        granted_role="member",
+    )
     tenant = _tenant(tenant_id)
     current_user = SimpleNamespace(
         id=uuid4(),
         tenant_id=None,
         role="member",
+        is_active=True,
+        department_id=uuid4(),
         quota_tokens_per_day=None,
         quota_tokens_per_month=None,
+        tokens_used_today=4,
+        tokens_used_month=40,
+        tokens_used_total=400,
+        tokens_reset_at=datetime.now(timezone.utc),
     )
-    db = _FakeDB([_ScalarResult(code), _ScalarResult(tenant), _ScalarResult(1)])
+    db = _FakeDB([_ScalarResult(code), _ScalarResult(tenant), _ScalarResult(current_user)])
     bypass_calls: list[dict] = []
     bypass_exit_flushed: list[bool] = []
     token_calls: list[dict] = []
@@ -175,6 +406,14 @@ async def test_join_company_uses_audited_bypass_for_invite_lookup_then_scopes_ta
     assert current_user.tenant_id == tenant_id
     assert current_user.quota_tokens_per_day == 100
     assert current_user.quota_tokens_per_month == 1000
+    assert current_user.department_id is None
+    assert current_user.tokens_used_today == 0
+    assert current_user.tokens_used_month == 0
+    assert current_user.tokens_used_total == 0
+    assert current_user.tokens_reset_at is None
+    assert "FOR UPDATE" in db.statements[0]
+    assert "FOR UPDATE" in db.statements[1]
+    assert "FOR UPDATE" in db.statements[2]
     assert code.used_count == 1
     assert bypass_exit_flushed == [True]
     assert result.role == "member"
@@ -189,16 +428,29 @@ async def test_join_company_normalizes_invitation_code_before_lookup(monkeypatch
     import app.api.tenants as tenants_api
 
     tenant_id = uuid4()
-    code = SimpleNamespace(code="ABC12345", tenant_id=tenant_id, is_active=True, max_uses=5, used_count=0)
+    code = SimpleNamespace(
+        code="ABC12345",
+        tenant_id=tenant_id,
+        is_active=True,
+        max_uses=5,
+        used_count=0,
+        granted_role="member",
+    )
     tenant = _tenant(tenant_id)
     current_user = SimpleNamespace(
         id=uuid4(),
         tenant_id=None,
         role="member",
+        is_active=True,
+        department_id=None,
         quota_tokens_per_day=None,
         quota_tokens_per_month=None,
+        tokens_used_today=0,
+        tokens_used_month=0,
+        tokens_used_total=0,
+        tokens_reset_at=None,
     )
-    db = _FakeDB([_ScalarResult(code), _ScalarResult(tenant), _ScalarResult(1)])
+    db = _FakeDB([_ScalarResult(code), _ScalarResult(tenant), _ScalarResult(current_user)])
 
     @contextlib.asynccontextmanager
     async def fake_enter_rls_bypass(session, *, reason: str, actor_id: str | None = None):

@@ -3,7 +3,7 @@
 - Timestamp: `2026-05-08T10:10:29.340736+08:00`
 - Base URL: `https://backend-production-326d.up.railway.app`
 - Weekday: `Friday`
-- Snapshot dir: `/Users/rocky243/vc-saas/hiveclaw-main/tmp/reports/h7/20260508-101029`
+- Snapshot dir: `/Users/example-owner/vc-saas/hiveclaw-main/tmp/reports/h7/20260508-101029`
 - Token source: `none`
 
 ## Endpoint Status

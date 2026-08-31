@@ -60,13 +60,23 @@ def test_admin_runtime_reconciliation_routes_delegate_to_service(monkeypatch) ->
         captured["get"] = {"tenant_id": tenant_id, "task_id": task_id}
         return {"task_id": str(task_id), "status": "needs_reconciliation"}
 
-    async def fake_apply(db, *, tenant_id, task_id, action, reason, actor_user_id):
+    async def fake_apply(
+        db,
+        *,
+        tenant_id,
+        task_id,
+        action,
+        reason,
+        actor_user_id,
+        trigger_disposition=None,
+    ):
         call = {
             "tenant_id": tenant_id,
             "task_id": task_id,
             "action": action,
             "reason": reason,
             "actor_user_id": actor_user_id,
+            "trigger_disposition": trigger_disposition,
         }
         captured["apply"] = call
         captured["apply_calls"].append(call)
@@ -82,12 +92,34 @@ def test_admin_runtime_reconciliation_routes_delegate_to_service(monkeypatch) ->
     action_resp = client.post(
         f"/admin/runtime-reconciliation/{task_id}/action",
         params={"tenant_id": str(tenant_id)},
-        json={"action": "mark_resolved", "reason": "operator verified no duplicate side effect"},
+        json={
+            "action": "mark_resolved",
+            "reason": "operator verified no duplicate side effect",
+            "trigger_disposition": "confirmed_success",
+        },
     )
     acknowledge_resp = client.post(
         f"/admin/runtime-reconciliation/{task_id}/action",
         params={"tenant_id": str(tenant_id)},
         json={"action": "acknowledge_tool_effect", "reason": "operator verified the effect evidence"},
+    )
+    failure_resp = client.post(
+        f"/admin/runtime-reconciliation/{task_id}/action",
+        params={"tenant_id": str(tenant_id)},
+        json={
+            "action": "mark_resolved",
+            "reason": "operator verified failure evidence",
+            "trigger_disposition": "confirmed_failure",
+        },
+    )
+    release_resp = client.post(
+        f"/admin/runtime-reconciliation/{task_id}/action",
+        params={"tenant_id": str(tenant_id)},
+        json={
+            "action": "archive",
+            "reason": "operator verified release evidence",
+            "trigger_disposition": "release",
+        },
     )
 
     assert list_resp.status_code == 200
@@ -96,16 +128,59 @@ def test_admin_runtime_reconciliation_routes_delegate_to_service(monkeypatch) ->
     assert get_resp.json()["status"] == "needs_reconciliation"
     assert action_resp.status_code == 200
     assert acknowledge_resp.status_code == 200
+    assert failure_resp.status_code == 200
+    assert release_resp.status_code == 200
     assert action_resp.json()["status"] == "completed"
     assert captured["list"]["tenant_id"] == tenant_id
     assert captured["list"]["limit"] == 25
     assert [call["action"] for call in captured["apply_calls"]] == [
         "mark_resolved",
         "acknowledge_tool_effect",
+        "mark_resolved",
+        "archive",
     ]
-    assert captured["apply"]["reason"] == "operator verified the effect evidence"
+    assert [call["trigger_disposition"] for call in captured["apply_calls"]] == [
+        "confirmed_success",
+        None,
+        "confirmed_failure",
+        "release",
+    ]
+    assert captured["apply_calls"][1]["reason"] == "operator verified the effect evidence"
     assert fake_db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(tenant_id)
     assert any(f"SET LOCAL app.current_tenant_id = '{tenant_id}'" in stmt for stmt in fake_db.statements)
+
+
+def test_admin_runtime_reconciliation_rejects_unknown_trigger_disposition() -> None:
+    client, _fake_db = _client()
+
+    response = client.post(
+        f"/admin/runtime-reconciliation/{uuid4()}/action",
+        params={"tenant_id": str(uuid4())},
+        json={
+            "action": "mark_resolved",
+            "reason": "operator decision",
+            "trigger_disposition": "probably_success",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_admin_runtime_reconciliation_rejects_whitespace_evidence_reason() -> None:
+    client, _fake_db = _client()
+
+    response = client.post(
+        f"/admin/runtime-reconciliation/{uuid4()}/action",
+        params={"tenant_id": str(uuid4())},
+        json={
+            "action": "archive",
+            "reason": "   ",
+            "trigger_disposition": "release",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "reconciliation evidence reason is required" in str(response.json())
 
 
 def test_admin_projection_repair_requires_platform_admin_and_delegates(monkeypatch) -> None:

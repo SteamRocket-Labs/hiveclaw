@@ -3,206 +3,114 @@ document_id: weekend-rc-2026-08-30-current-status
 owner: Codex
 status: active
 authority: canonical-working-state
-last_reviewed: 2026-08-31
-source_commit: bf94b76a1706510daf2d11c4e98fd5051f23f28f
-verification_status: single-codex-contract-corrected-ui-cmd-003-local-fix-candidate
+last_reviewed: 2026-09-01
+source_commit: b2fb8b28ec00b24eca1235340a1ecc7ee4383fd4
+verification_status: local-full-regression-green-release-candidate-review
 ---
 
 # 当前状态与唯一下一动作
 
 [返回索引](README.md) · [旅程账本](04-journey-ledger.md) · [Findings](05-findings.md) · [Runbook](06-runbook-and-release-gates.md)
 
-> owner 已接受 PDEC-001～PDEC-011、最终部署和 D/E 双提交合同；96 条 production journeys 的 denominator/语义保持冻结，执行合同已改为单 Codex 自建实验 fixture。十个 Session/tool/authority/runtime/audit 根因已完成 production 复验；`P29-PADMIN` 只有 clean pass 1，pass 2 与四角色矩阵仍未执行。NPTCR 保持 0%。
+> owner 已接受 PDEC-001～PDEC-011 与 D/E 合同：主 Codex 独占 Goal、语义 verdict、生产 E2E/A2A、集成、部署和交付，可使用 Codex 原生 Multi-Agent/subagent 做 bounded repo 调查、实现、测试、build 与 review；Kimi、zCode、Coze、ACP、`agent-delegation` 和第二语义控制器仍禁用。96 条 production journeys 保持冻结；当前 manifest 下 pass 1/pass 2 均未运行，没有同提交双遍 Closed journey，NPTCR 为 0%。
 
 ## 当前目标与可观察 Done
 
-完成 Weekend RC 整体验收与修复闭环：由单一 Codex 直接持续执行“真实 E2E → finding → 前后端修复 → 本地验证 → 集成 → 三服务部署 → 生产重验 → 更新文档”，不再派发 Kimi Code、zCode、Coze/ACP 或任何 sub-agent，直到全部 in-scope 旅程 `Closed loop`。
+完成 Weekend RC 整体验收与修复闭环：真实 E2E → earliest defect → live-path root cause → 完整修复与回归 → 主 Codex 独立 review/integration → coherent application `D` 三服务部署 → signed-in 双遍、权限负向与故障恢复 → evidence-only `E` → 合成资产 cleanup。
 
-可观察 Done：NPTCR=100%；五条不可平均护栏全部通过；Evidence Coverage ≥95 且不抵消七原子缺口；Zero Known Defects；backend/backend-api/frontend 同一 exact commit `SUCCESS`；frozen manifest signed-in 双遍、故障恢复和权限负向全部通过；合成资产 cleanup 完成。
+可观察 Done：全部 in-scope frozen journeys `Closed loop`；NPTCR=100%；五条护栏全部通过；Evidence Coverage ≥95 且不抵消七原子缺口；Zero Known Defects；backend/backend-api/frontend 运行同一 exact `D`；双遍、故障、权限、cleanup 和 rollback evidence 完整。
+
+当前 proof order 固定为：`Agent 智能 → 全部前后端功能可用 → 权限/RLS/安全 → Release`。现有 authority/secret/effect 边界全程保留，但权限加固与安全评分不得抢在功能补全前或阻断无关功能；最终必须同时达到“很好用”和“很安全”。
 
 ## 当前事实快照
 
-| 事实 | 当前值 | 证据等级 |
+| 事实 | 当前值 | 证据边界 |
 |---|---|---|
-| 已推送控制基线 | `8771fb840e51f5743114f39a2b643f355da5c7a0` | 96 条 manifest、机械 gate、宽松 worker contract 的历史控制提交；当前 application HEAD 见 `bf94b76a` production 行 |
-| Goal | 当前 Goal `01a052d8-903d-7982-b149-6d3b0040424e` 已由 2026-08-31 完整目标重写并继续执行 | attempt count、缺会话/fixture/runtime 或历史机械 `blocked` 不再是停止依据；只按新目标的 narrow hard-stop boundary 停 |
-| execution roles | Codex 独自负责总控、前后端实现、独立验收、生产 E2E、文档与交付 | owner 2026-08-30 紧急改策；禁止 Kimi Code、zCode、Coze/ACP 和任何 sub-agent/delegation |
-| delegation status | 全部外部派发已停止；原 Attempt 4 的 wrapper/zCode 进程已退出 | 精确 PID `99847/99850/99851` 已不在进程表；机器上其他 zCode 进程属于其他任务，未误杀 |
-| delegation incident | Issue #4 首包在 `approve-all + Terminal` 下运行 901.112s 后被旧 900s target timeout 取消，1943 events、零 protocol error、零 diff；wrapper 同时报 `status=success` / `stop_reason=cancelled` | receipt `f052ff24…`；确认不是权限失败。旧 correction 在改合同前主动取消，worktree 保持 clean |
-| 已拒绝 worker candidate | Attempt 3 `cd7a85f…` 正常返回并形成 3-path candidate；Codex 因 silent fallback、机械截断、pure-V2 rewind/branch/current-run legacy 缺口拒绝接受。Attempt 4 `b3708fd9…` 已按 owner 指令停止，未产生新 diff | 原 3-path 未提交候选仍保存在 `/tmp/hiveclaw-issue4-zcode.INEFH2`，仅作历史受审查输入，不得直接认定完成或盲目合入 |
-| shared-config drift | Attempt 4 首次启动时发现另一写入把 wrapper/acpx/zCode 统一改成 7200s；约 10 秒内主动终止，未新增 diff。两个 registry 已恢复 43200s，doctor/dry-run/preflight 全部重新通过后再派 | 被终止 receipt `e2cea004…` 不计 worker attempt 或业务进展；当前实际 zCode argv 为 `--prompt-timeout-secs 43200` |
-| GitHub 控制层 | milestone [#1](https://github.com/SteamRocket-Labs/hiveclaw/milestone/1)、umbrella Issue [#3](https://github.com/SteamRocket-Labs/hiveclaw/issues/3)、7 个 RC role/state labels | 本轮远程 readback 已核验；不构成 acceptance truth |
-| 旧 WIP archive | 原 5,685 行、约 1.29 MB，完整迁移并增加 archive warning | 本轮本地已核验 |
-| 当前 production 业务提交 | `bf94b76a1706510daf2d11c4e98fd5051f23f28f` | Railway 三服务 archive deployment：backend `07059ce5…`、backend-api `c70ff972…`、frontend `308e7789…` 均 `SUCCESS` 且 message 绑定 D2；backend health `status=ok` / RLS strict / `runtime_control_bus.last_error=null`，frontend `/` 为 `HTTP 200` |
-| production 身份/模型 | 实验 tenant，当前账号为 `超级管理员`；EventPilot primary `zhipu/glm-5.3`、fallback `minimax/MiniMax-M3`，可选 `deepseek/deepseek-v4-flash` | signed-in UI + bounded live readback：MiniMax success `7623ms`、GLM pre-fix success `7575ms`、post-fix audited GLM success `3411ms`；DeepSeek 单次 `HTTP 402 Insufficient Balance`，未重试或改 credential/billing |
-| Local Agent | launchd daemon running；CLI/API `401 Invalid bridge token`；UI linked `0`、offline | 这是待恢复的 lab fixture；支持的 re-login/pair/session-token/binding 生命周期已授权，真实 provider/组织 secret 未授权 |
-| fresh Session P1 | `SESSION-CONTEXT-001` 的同一 Session 语义缺失已在 production exact commit `d0c9fffd` 上复验通过 | Session `3ce68041…`：P01 probe 只答 `ACK-FIRST` 且未回显 marker；P02 未携带 marker，却正确答 `HIVE-CANONICAL-Q7M4-83NP NO_TOOL`；operator workbench receipt 证明 current-run input 已排除、历史恰含前一轮 user+assistant、无机械上限或 held item |
-| P01-MAIN pass-1 | MAPLE fresh Session 的开放任务、GLM-5.3、73-tool surface、3/3 todos、write/read、七项 artifact 标准、reload/no-replay 与普通预览均通过；但实际主体为 `platform_admin`，冻结 persona 要求 `employee`，故仍无可计分 pass-1 | immutable precondition evidence：`evidence/3482b57a383d3c5bd33a5bcf813b87c6fab23339/P01-MAIN-blocked-persona-platform-admin.md`；不得把功能 PASS 覆盖 principal mismatch |
-| P29-PADMIN negative | 跨用户 Session URL 的 backend authority 与 frontend presentation 已在 `bbf6d234` 对齐：只显示 not-found、无 Session shell/正文，返回 `/agents` 无 stale error；合法 MAPLE Session 保持可消费 | immutable pre-fix FAIL：`evidence/3482b57a383d3c5bd33a5bcf813b87c6fab23339/P29-PADMIN-fault-denied-session-shell.md`；production verification：`evidence/bbf6d2340afe593b44f740fabfa178d126b5beca/SESSION-AUTHORITY-PRESENTATION-001-production-verification.md`。finding 为 `Verified`，不等于 P29 Journey PASS |
-| P29-PADMIN | clean pass 1 已 `PASS`：8 个允许页、9 URL negative、14 API 403、Agent 正向与 dashboard screenshot state；六个 P29 根因均 production `Verified` | pass 2 与 expired-session/role-change 未完整执行；Codex 将创建/恢复 member/company-admin/scoped-operator 合成身份，旧 precondition evidence 仅保留历史事实 |
-| Session terminal/failure | 旧账记录 §7.77/§7.78 已部署并完成 signed-in 双遍 | 历史证据；不外推整体 RC |
-| executable CI manifest | `acceptance/atomic_user_journeys.v1.json`，J-01～J-15，声明受控 external fakes | 本轮源码已核验 |
-| production NPTCR manifest | `acceptance/weekend_production_journeys.v1.json`，35 组展开 96 条，external fake 禁止 | 已冻结；validator `valid=true`；当前有 P29-PADMIN pass 1，但无双遍 Closed journey |
-| mechanical gate | `backend/scripts/weekend_rc_gate.py` | 只校验 exact facts/算术，固定 `semantic_verdict=not_computed_by_tool` |
-| P08-J4 runtime preflight | frozen contract 要求 Hive、FreeCode、Hermes 同 task/workspace/model/resource envelope；current manual runner 仅支持官方 Claude Code/Hermes，FreeCode 尚无 built CLI，Hive live runner 已退役 | 旧 `BLOCKED_PRECONDITION` 只保留历史；当前是待实现的 local build/adapter 工作，不得用官方 Claude 代替 FreeCode或造分 |
+| execution roles | 主 Codex 全责；原生 Codex subagent 只做 bounded repo 工作 | subagent 结果是 candidate，不拥有 verdict、生产 effect、部署或交付权威 |
+| 当前 production | `b2fb8b28ec00b24eca1235340a1ecc7ee4383fd4` | backend `c93dafab…`、backend-api `f4750d4b…`、frontend `8110c8be…` 均 `SUCCESS`；health 绿不等于 RC 完成 |
+| production manifest | 35 组 / 96 条，external fake 禁止 | `valid=true`，hash `7994b502361de0eafbea17b0fa5fd33eaa47d8a1381dc151126a463e2416d93a`；只改 execution metadata/proof order，旅程 ID、分母和语义未改 |
+| NPTCR | 0/96 Closed | current manifest pass 1/pass 2 均未运行；机械 scorer 固定 `semantic_verdict=not_computed_by_tool` |
+| P29-PADMIN | 旧 manifest hash 有 historical pass-1 supporting evidence；六个 audience/secret 根因 production `Verified` | current manifest pass 1/pass 2、expired-session/role-change 与四角色矩阵均未运行；历史 evidence 不迁移为当前 PASS |
+| role fixture | tenantless synthetic admin `c51b38e8…` 已公开注册，尚未改变 tenant/role | `IDENTITY-FIXTURE-BOOTSTRAP-001` 本地 candidate 已停在无生产 effect 状态；final persona acceptance 前再恢复，不阻断 Stage 1 功能探针 |
+| P08-J4 | `Breakpoint / LOCAL_SEAM_GREEN` | exact-session tool + resolved-path boundary、active-run profile lock、run-scoped provider/terminal evidence、完整 authority attestation 与 server-derived build identity 已形成 local candidate；169 项 J4/Session/tool/health seam 回归通过，仍须完整 profile、部署和 same-envelope production bakeoff |
+| admin company / invite | `Breakpoint / LOCAL_FULL_GREEN` | RLS-safe company create、显式 org-admin/member invite role、join/token refresh、后台返回 App 与 rolling migration/backfill 已通过真实 non-owner PostgreSQL、完整 backend 与前端 mounted 回归；仍须 coherent D production 复验 |
+| Legacy-brand release residue | `Deployment gate / WORKING_TREE_GREEN` | working-tree 3175 paths 与结构测试 6 项通过；只保留旧 KDF salt、旧 env input fallback、一次性 theme-key 迁移及 LICENSE attribution，最终 committed archive `D` gate 仍待跑 |
+| backend local validation | `LOCAL_GREEN` | 最新源码完整套件 **8784 passed / 2 skipped / 0 failed**（14:08）；OfficeCLI 本机二进制缺失留给 Railway 同一 verifier，DingTalk Skill 为 MCP-dynamic/纯指南无静态 tools；变更路径 Ruff check/format 全绿 |
+| frontend local validation | `LOCAL_GREEN` | Vitest **161 files / 1193 tests**、串行 Playwright **34/34**、i18n **9/9**（en/zh 各 4039 keys、全部 gap 0）、build/bundle budgets 与 npm audit 0 全绿 |
+| atomic full-stack journeys | `LOCAL_GREEN 15/15` | 从 fresh schema 固定顺序跑完整真实 frontend→API→worker→PostgreSQL/Redis 套件，**15 passed / 0 failed / 3.0m**；覆盖 J-01～J-15，但只属 local application slice，不改变 production 96 条分母或 NPTCR |
+| response learning | `Breakpoint / LOCAL_RECOVERY_GREEN` | required post-commit terminal outbox 已把 canonical binding、claim/validate/process/ack、retry/dead-letter/reconciliation 与 input admission hold 接入共享 terminal settlement；backend full-suite 已绿，仍须 frontend/build、fresh-chain、部署与 production crash/replay 证明 |
+| session summary | `Breakpoint / LOCAL_RECOVERY_GREEN` | Kernel 不再提前持久化 summary；Web terminal processor 只从 committed transcript/result 生成 summary，未知 provider outcome 进入 durable reconciliation，旧 sequence 不覆盖新 summary；仍须 coherent D production hold/abort/replay 证明 |
+| Local Agent | daemon running；API `401 Invalid bridge token`；UI linked 0/offline | `Breakpoint / RECOVERY_QUEUED`；PDEC-008 授权 lab login/pair/revoke，不授权读取或轮换真实 secret |
+| model readiness | MiniMax 与 GLM bounded live probe 成功；DeepSeek 单次 `HTTP 402 Insufficient Balance` | DeepSeek 为 `EXTERNAL_UNAVAILABLE`，不是 Hive defect、PASS 或 Closed；P33-DEEPSEEK 在恢复或 owner Excluded 前保持未闭环 |
+| Stage 1 probe | `P01-STAGE1-FRESH-FALCON-682` | signed-in `platform_admin` + EventPilot Session `65b98e1a…` 已完成并 hard reload：GLM-5.3、3/3 todos、一次写、一次读、1 artifact、0 running/0 waiting；只作功能 supporting evidence，不替代 employee persona PASS |
+| workspace boundary | 保留 owner 既有 `.ultra/.runtime/compact-snapshot.md`、`bp-kingdee/`、`output/`、root `package*.json`、`tmp/pdfs/` 等内容 | 不纳入本轮提交、不清理、不覆盖 |
 
 ## 当前产品总判断
 
 | 验收域 | 当前判断 | 仍需证明 |
 |---|---|---|
-| Git / Production | 基线健康，不等于 RC 完成 | 后续代码变更后 exact same commit 三服务部署和全旅程重验 |
-| Session 核心终局 | `Partial loop` | 四个已复现 P1 根因保持 production `Verified`；MAPLE 功能路径 principal mismatch，须用真实 server-bound 合成员工身份重跑。Codex 自建/登录该身份，不用 platform_admin、DB 或 mock 代替 |
-| 整体前端 | `Partial loop` | `SESSION-AUTHORITY-PRESENTATION-001`、`RUNTIME-GUARD-PRESENTATION-001`、`LLM-PROBE-AUDIT-001`、`AUDIT-DEFAULT-DISCLOSURE-001`、`PLATFORM-ADMIN-BUSINESS-BODY-001`、`PLATFORM-ADMIN-WORKSPACE-AUDIENCE-001` 与 `SYSTEM-SETTING-SECRET-DISCLOSURE-001` 已 production `Verified`；仍需 P29 其余三角色 screenshot/API/compliance matrix，以及密度、双主题、窄屏、键盘、Agent rail 规模 |
-| Rewind / Resume / Fork / Rollback | 旧账标 `Closed loop` | 只在 fresh journey 复现新错误时重开 |
-| Personal / Company KB | `Partial loop` | 多格式、多入口、权限负向、失败恢复、Agent/Personal→Company/后台路径统一生产矩阵 |
-| Agent Memory | `Partial loop` | coverage、T3 consumption、fresh Session recall |
-| Growth / Eval | `Partial loop` | J1/J2 longitudinal reuse、owner feedback/rework；构建 FreeCode/Hive local adapter 后按 same-envelope 跑 J4，不以官方 Claude 或单方 Hermes 造分 |
-| HR 创建 Agent | `Partial loop` | Agent→HR 与普通员工 fresh 双遍、被创建 Agent 首任务 |
-| Plan Mode | `Partial loop` | model-authored plan、revise/reject/cancel、exact-version approve、execute/recover |
-| Sub-agent / Team | `Partial loop` | 两类真实语义任务双遍、成员失败与父结果 UI 消费 |
-| Dynamic / Fixed Workflow | `Partial loop` | 各自从真实产品入口到结果双遍 |
-| A2A | `Partial loop` | async continuation、A→B→C nested、长结果/artifact、固定路径 UI |
-| Commands / AgentDetail | `Fix Candidate` | `UI-CMD-003` production 复现后已本地补 typed panel、URL reload 与准确 usage 去重；目标回归、架构护栏、TypeScript/build 和文档 gate 已绿，尚未 commit/deploy/production 双遍 |
-| 权限与角色 UI | `Breakpoint` | employee/admin/platform/operator 正负向矩阵 |
-| Offboarding | `Partial loop` | signed-in 停用/重放/并发、通知、数据保留/导出/删除政策 |
-| Trigger / Channel / Local Agent | `Breakpoint` aggregate | create→fire→execute→deliver→notify→retry/cancel/audit；offline/reconnect/revoke |
-| Hooks / Skill / MCP | `Breakpoint` aggregate | lifecycle、Trust Review、真实调用、update/revoke/auth expiry |
-| Artifact / async return / model-cost | `Breakpoint` aggregate | preview/download/version/ACL、deep-link、selected-model fidelity、latency/token/cost/cache |
+| Git / Production | 基线健康，不等于 RC 完成 | 后续修复形成 coherent `D` 后三服务同提交部署和完整双遍 |
+| Single Agent / Session | `Partial loop` | employee persona 开放任务、stream/reload/recovery、20 commands 完整双遍 |
+| Memory / Growth | `Partial loop` | T0→T2→T3→Soul/Skill 真实消费、J1/J2 纵向收益、J4 same-envelope bakeoff |
+| Personal / Company KB | `Partial loop` | 多格式、多入口、解析/索引/引用、promotion/import、权限负向与恢复 |
+| HR / Agent creation / identity usability | `Breakpoint` aggregate | 最小 supported-path employee fixture、Agent/HR 创建、首个任务与正常生命周期主路径 |
+| Permission / RLS / Security | `Breakpoint` aggregate | 功能补全后再验四角色矩阵、offboarding/active revocation、RLS no-leak 与完整安全对抗 |
+| Subagent / Team / Workflow / A2A | `Partial loop` | 五种独立语义的真实入口、失败恢复、父任务/最终 UI 消费 |
+| Automation / Hook / Skill / MCP / Local Agent | `Breakpoint` aggregate | lifecycle、Trust Review、真实调用、offline/reconnect/revoke |
+| Frontend / Agent Detail / Artifact | `Partial loop` | Codex Desktop streaming/recovery、Letta-only rail、角色信息边界、格式/preview/download、a11y 矩阵 |
+| Model fidelity | `Breakpoint` aggregate | MiniMax/GLM/DeepSeek frozen compatibility task、selected-model fidelity、token/cache/cost/operator evidence |
+| Release | `Partial loop` | final `D`、三服务 exact deployment、两遍 96 journeys、fault/negative/cleanup、evidence-only `E` |
 
-## Active setup 与 external readiness
+## Model Agency、RLS 与 fixture 当前边界
 
-- 当前浏览器只有 server-side `platform_admin` 会话；member/employee、company-admin、scoped-operator fixture 尚未建立。Codex 已获授权通过支持的产品路径创建/登录/切换/撤销这些合成身份与 grant；这是当前 setup 工作，不是 blocker。
-- 三个 configured provider 的一次性 bounded live probe 已完成：MiniMax 与 GLM 成功；DeepSeek 单次返回 `HTTP 402 Insufficient Balance`。该 blocker 需要 owner 另行授权 billing/credential action 才可能改变；当前不充值、不换 credential、不盲重试。bounded health verdict 也不等于 P33 frozen compatibility task。
-- Hive Connect 已 fresh reproduce `HTTP 401 Invalid bridge token`；daemon running 不等于 product path 可用。Codex 可恢复 lab-scoped login/pair/session token/binding 并验证 revoke/reconnect；不得读取或轮换真实 provider/组织 secret。
+- Hive 产品 turn 的 selected runtime LLM 拥有任务语义与回答表达；RC 循环由主 Codex解释 evidence、决定验收 priority/quality/Closed 与最终交付表达，owner 裁决产品语义和风险授权；subagent、NPTCR、CI、测试、receipt、timeout、attempt、health、Railway 和 `mechanical_ready` 只报告 exact facts 或聚合已接受 verdict。
+- fixture 只经受支持、经过认证的 UI/API/control-plane path 建立。禁止 forged JWT/token、直接修改 tenant/role DB 字段、RLS weakening 或用 broad bypass 创造业务授权。
+- RLS/ACL 只在 exact unauthorized ingress/read/write/effect 处 fail closed。已登记 read-only cross-tenant deny/not-found probe 继续执行，但不得获取 protected bytes 或产生效果；一个 denial 不得停止无关推理或获准工具。probe 若意外返回 protected bytes，立即停止该 lane，不传播或保存 raw bytes，只留最小脱敏 P0 事故证据。
+- 不设人工 Goal-wide timeout/step/attempt cap；task-sized per-call/per-attempt timeout、cancel、quota 与 backoff 只控制当前 attempt。
 
-## 本次已完成
+## 最近有效进展与验证
 
-- owner 已授权文档组重构。
-- 已加载并应用 `task-state-with-files` 与 `agents-best-practices`。
-- 已确认现有 CI manifest 与未来 production manifest 必须分账。
-- 已建立索引、North Star、owner decisions、current status、journey ledger、findings、runbook、六个 domain 和 evidence contract。
-- 已把旧总账完整移入 `archive/legacy-ledger-2026-08-25.md` 并加入显著历史警告；旧路径缩为 21 行兼容跳转。
-- 已把 `work/task-state.ref` 切换到本文件，恢复解析成功。
-- 已更新 `docs/README.md`，并增加纯结构架构测试。
-- owner 已批准一个 Goal + GitHub Issue work packet + stateless `agent-delegate` + isolated worktree 的执行模型。
-- 已启动唯一 Goal；已明确 Codex/Kimi/zCode 权限边界、独立验收和上下文隔离合同。
-- 验收文档与 Issue form 已原子提交并 push 为 `228682e5`；用户已有 dirty/untracked 内容未进入提交。
-- 已建立远程 RC milestone、labels 和 umbrella Issue；它们只承担队列/审计，不拥有 verdict。
-- 首轮 smoke 因 worker 请求 `git rev-parse` execute 权限而在 `approve-reads` 下正确 fail-closed；新无状态 correction packet 仅使用 read-file 后，Kimi/zCode 均成功，两个临时 worktree 保持零改动并已安全移除。
-- owner 已进一步批准：Goal 只管最终 Done/停止条件，Skill 管派发协议，Issue 管工作包，Codex 独占验收/集成/生产 E2E。
-- owner 已正式接受 PDEC-001～PDEC-011：单 Codex、实验 tenant 合成多角色/fixture、lab Local Agent lifecycle、仓库 runtime build、最终三服务同应用提交部署与 cleanup；真实凭据、计费、跨 tenant、真实外部收件人与不可逆真实数据效果仍未授权。
-- 已冻结 96 条 production journeys；20 commands、Personal/Artifact 四格式、A2A 六路径、Automation 四模式、MiniMax/GLM/DeepSeek 和六类安全探针均独立计分。
-- 已新增 manifest validator/evidence scorer；它只计算结构、双遍、部署 identity、护栏和证据覆盖，不判断语义质量。
-- 控制冻结已 commit/push 为 `56ec5dd0`；18 个结构/架构测试、Ruff 与 diff check 通过。
-- Gate 0 已 fresh 核验 production 三服务 exact commit、账号角色、EventPilot 的 GLM/MiniMax/DeepSeek binding、公共 health 与 Hive Connect。
-- 已用 GLM 在 production 创建唯一标记 Session：第一轮答案满足外部语义判据；同一 Session 第二轮却否认存在上一轮回答。
-- live readback 证明 canonical Session V2 transcript 有 635 个有序事件及两轮完整输入/输出，但兼容 `/messages` 投影只有 10 条 system/debug；runtime 当前仍从 `ChatMessage` 组装历史，`SESSION-CONTEXT-001` 已进入 P1 修复链。
-- 已创建 GitHub Issue #4 并向 zCode 派发首个 backend 实现包；首包暴露 target-internal timeout 与 outer timeout 冲突，而非 worker 权限不足。
-- owner 要求放宽派发规则后，工作流改为默认完整 capability、task-sized timeout、effective-timeout warning、receipt 分类和同 Issue verified checkpoint 续传；不再把固定 stop reason、固定缓冲或是否有 diff 当作语义裁决。
-- owner 进一步撤销任意单任务 timeout；wrapper default/max 与 zCode target internal timeout 已统一为整轮 12 小时窗口 43200s，两个 registry 一致、dry-run 为 `approve-all + Terminal`，且 `agent-delegate doctor --json` 返回 `status=ok`。旧 900s correction 已安全取消，隔离 worktree 无改动。
-- Issue #4 第三次无状态实现包已从 clean exact base `8771fb84` 派给 zCode；本次不传单任务 timeout，进程持续运行。Codex 已建立相关 Session history/reload/compact/rewind 的 7-test 绿基线，但尚未收到或接受 fix candidate。
-- Attempt 3 已正常返回：新增 canonical semantic-history loader、live runtime 接线和 5 个真 PostgreSQL 回归；Codex 独立复跑为 `5 passed`，但 review 发现其仍会在 loader 异常时退回旧 `ChatMessage`、按固定窗口静默裁剪，并明确留下 pure-V2 rewind/branch 缺口，因此未接受、未集成、未部署。
-- GitHub Issue #4 已追加 Attempt 3 receipt 与 rejection finding；Attempt 4 correction 在同一未提交 worktree 无状态重发，要求一次关闭所有 Issue 内边界。共享 timeout 漂移已在启动检查中捕获并恢复为 43200s 后才正式运行。
-- owner 因剩余窗口不足 10 小时终止外部派发策略；Attempt 4 已停止且候选 diff 保留。后续改为新对话内单 Codex 直接实现、验证、部署和留证，不再运行任何 delegation 工作流。
-- 单 Codex 已沿 live HTTP/runtime wiring 完成源码追踪，并用当前 production ingress、Session V2 round commit、terminal outcome 和 `_load_runtime_context` 建立 12 条 production-shaped 回归；实现前结果为 **12 failed**，明确覆盖同 Session 语义、tool pair、current-run ownership、legacy 去重、跨旧 model-derived cap 的完整历史、provider seal 字节保真、system/debug 排除、pure-V2 rewind、真实 branch prefix、typed empty 与 fail-closed unavailable。
-- 主工作树现已形成 Codex 自审可接受的本地 Fix Candidate：canonical history 只读 tenant/agent/session 绑定的 transcript、committed model seal、settled tool result 和 anchored legacy row；无固定消息窗口、无不可用时 silent fallback，pure-V2 rewind 和真实 branch copied prefix 均由 canonical sequence/lineage 消费。
-- Fix Candidate 已作为 application commit `d0c9fffd1ca4995ddea6d367e04e206e973560d5` 原子提交并 push，提交只含 3 个 runtime 路径与 2 个测试路径；RC evidence 本文件和所有 owner dirty/untracked 路径未进入 application commit。
-- 三个 Railway production service 已部署同一 exact application commit `d0c9fffd1ca4995ddea6d367e04e206e973560d5` 并全部 `SUCCESS`；随后在 fresh production Session 完成两轮根因语义探针，证明 canonical history 已进入真实 provider path。
-- `SESSION-RETRY-INPUT-001` 的 D2 application commit `2cee9f3e` 已完成完整 backend gate、push 和三服务部署；production retry round 精确绑定 durable input 并进入 GLM/Work Ledger，因此该 finding 推进为 `Verified`，但同一 run 在 write effect 后暴露新的 `TOOL-ARTIFACT-SETTLEMENT-001` P1 与独立 provider 429。
-- `TOOL-ARTIFACT-SETTLEMENT-001` 已从真实 PostgreSQL FK failure 建立 RED，完成无 DDL 的原子 owner/artifact/V2/outbox settlement、typed reconciliation、kernel 串并行 hard-stop 与 frontend identity dedupe/artifact consumption；application commit `c37fefc56b92e658bfb64a3e79d685249a2a3add` 已 push。
-- backend `62e4ef56-7e6b-456e-a505-fea90fd286a0`、backend-api `307f0df7-6ae0-4c57-817e-f9ca07fd59fc`、frontend `db6b605d-7b8b-40ea-8da8-247259db29f8` 已部署同一 exact D3 commit 并均为 `SUCCESS`。旧故障 run reload 不会自动 replay；fresh normal settlement/reload/preview 已通过。该 checkpoint 后续已由 `3482b57a` supported recovery 复验补齐。
-- 单 Codex 已为旧 unknown-effect failure 补齐 fail-closed admission 与唯一 operator recovery：所有 fresh turn/branch/run 在 exact unresolved invocation 前返回 non-retryable typed blocker；抢先 admitted input 会落为 no-replay `needs_reconciliation` 而不是被 worker 无限 sweep；管理员只能提交必填 evidence reason 后 acknowledge/stop，系统不创建 `tool_result`、不恢复旧 provider round。应用 commit `3482b57a383d3c5bd33a5bcf813b87c6fab23339` 已 push。
-- recovery candidate 本地最终门：后端定向 **310 passed**，完整 backend **8438 passed, 2 skipped, 1 warning**；frontend **1145 passed**、i18n、production build 与 AgentDetail/vendor bundle budgets 通过；Ruff/format、`git diff --check`、18 条 Weekend/atomic architecture tests 和 manifest `valid=true` / denominator `96` / hash `d320edce…` 均通过。React 结构门曾以 2439>2400 失败，未放宽预算，提取 recovery/feedback surfaces 后 AgentChatSection 为 2392 行并重验全绿。
-- backend `7c196980-34c6-4846-bf25-0397b7b55c0e`、backend-api `8e7545b8-9b6c-4b32-a77d-48883191728a`、frontend `6f6bd18c-1681-4049-ac20-6660a3f84fc3` 已部署同一 exact `3482b57a` 并均为 `SUCCESS`。旧 D2 Session 的 fail-closed admission 与管理员队列 precheck 先只读通过；随后只对 `76a32f8e…` 提交一次 evidence-backed acknowledgement，并完成 canonical no-result reconciliation、旧 run no-replay、fresh-turn release 与 reload 复验。证据分别见 `evidence/3482b57a383d3c5bd33a5bcf813b87c6fab23339/TOOL-ARTIFACT-SETTLEMENT-001-recovery-admission-precheck.md` 和同目录 `TOOL-ARTIFACT-SETTLEMENT-001-recovery-verification.md`。
-- recovery production result：目标 invocation 仍为 `needs_reconciliation` / `result_event_id=null`，`recovery_owner` 清空；sequence `312/313` 恰为 `tool_call.reconciled` / `recovery_action.reconciled`，outbox 均 `published` / attempts 1。旧 run 保持 `failed`；新的 no-tool run `f8cdd9ac…` 独立绑定 input `ad602cdc…`、返回精确 `D4_RECOVERY_OK` 并 `completed`，tool invocation 为 0。Session/Workspace/admin 三面 reload 均无旧轮重放、重复 write/artifact 或 operational hold，因此 finding 推进为 `Verified`。
-- `SESSION-AUTHORITY-PRESENTATION-001` 已完成三个递进 application commits：`d4ae15fd` 建立 resolving/403/404 truthful surface，`57823bcf` 阻止离开 denied route 时重复选择同一 Session，`bbf6d234` 将安全恢复入口收敛到 `/agents`，避免共享 HR Agent 的默认 chat 再选中不可访问 Session。三次均以 mounted regression 驱动，未放宽结构或 bundle 预算。
-- 最终 frontend gate 为 **154 files / 1148 tests passed**；i18n 双语各 3993 keys、全部 anomaly gate 为 0；production build 与 AgentDetail/vendor bundle budgets 通过，AgentDetail 恰为 2900 行。Weekend/atomic architecture **24 passed**，manifest `valid=true` / denominator `96` / hash `d320edce…`。
-- exact `bbf6d2340afe593b44f740fabfa178d126b5beca` 已部署到 backend `4ad99e93-d3be-48c9-be8d-0107dff44f82`、backend-api `8aa5ccbc-fe9d-4da2-bb39-f16497de044f`、frontend `638da152-1ef6-444c-bcd8-4dd00fa0296d`，三者均 `SUCCESS`。signed-in 生产负向 route 只显示“找不到此会话”与“返回数字员工”，不显示 `Read-only · User`、完成、运行错误或会话交付物；返回后 URL 为 `/agents` 且无 stale alert。合法 MAPLE Session hard navigation 仍显示 marker、终局、3/3 todos、一个 artifact 和 0 running/0 waiting，finding 推进为 `Verified`，P29 不写 PASS。
-- P29-PADMIN 正向只读检查在 deployed `bbf6d234` 的 `/enterprise/runtime-budgets` fresh 复现 `RUNTIME-GUARD-PRESENTATION-001`：heading/badge 为“被保护的任务 0”，但同一列表展示 5 条 `active` run、5 个暂停按钮，并把每条原因写成“系统保护机制已介入”。source path 证明 frontend 在无 protected run 时把 `runs.slice(0, 5)` 塞入 protected section，backend `_user_reason('active')` 又落入 intervention 默认值。
-- application `6a6695e88d915a0e37b44e64dcdfe5bdd90a9454` 保留 recent active run 与暂停控制，只把 fallback section 明确命名为“最近运行”并将 active API 原因改为“运行正在正常进行”；真正 protected 状态仍优先使用原 section。RED 两条 → focused backend 8 / frontend 6、相邻 backend 87 / frontend 142、完整 backend **8439 passed, 2 skipped, 1 warning**、frontend **154 files / 1149 tests**；i18n 3995/3995、Ruff/format、build/budgets、24 architecture tests 与 96 manifest validate 全绿。
-- `6a6695e8` 已部署到 backend `cdef3ce1-85e6-4662-a5aa-a6fb9793a21b`、backend-api `2261b169-3c8a-4c3e-a42b-7a1239b2b8e2`、frontend `feb46b17-e017-457a-8c09-b94065730ce1`，均 `SUCCESS`。signed-in hard navigation 后 DOM 为“最近运行 5”，5 条 active run 都显示“运行正在正常进行 / 等待当前运行完成”并保留暂停按钮；旧 intervention 文案与 protected heading 均不存在，finding 推进为 `Verified`，P29 不写 PASS。
-- `LLM-PROBE-AUDIT-001` 从 deployed `6a6695e8` 真实复现：MiniMax/DeepSeek/GLM health Test 会产生外部 provider/token/cost effect，但 backend 无 canonical audit writer，audit UI 只消费 agent-bound legacy log。`cc6e7262` 在 effect 前 durable commit started audit、终态 durable commit completed audit；selected-tenant canonical audit 与 legacy log 由 platform admin UI 合并消费，且只保存安全字段。
-- application `cc6e726218bd491120f942edfa91e51d2d167ff4` 的 RED/GREEN/full gates 全绿：backend focused 6 / selected-tenant file 22 / full **8443 passed, 2 skipped, 1 warning**；frontend adjacent 34 / full **154 files / 1149 tests**；i18n 3995/3995、9 node tests、Ruff/format、production build/budgets、24 architecture tests、manifest validate 与 diff check 通过。
-- 首次 `cc6e7262` Railway 打包因手工扩展错误 full SHA 且脚本未 fail-fast，backend `446bb56e…`、backend-api `771d44b3…`、frontend `7f139625…` 三个空上传均立即 `FAILED`，未替换运行实例。恢复时使用 `git rev-parse HEAD`、`set -euo pipefail` 和 archive 内容校验；正确 deployment backend `f619e4a9…`、backend-api `7edd592d…`、frontend `beb9cd36…` 均 `SUCCESS` 且绑定 exact full SHA。
-- post-fix production 只对 GLM Test 点击一次；probe `a0f1be98-27bd-4d69-9bde-247b57c6b16c` 形成 `05:21:32` started / `05:21:36` completed，`zhipu/glm-5.3`、`max_tokens=16`、`success=true`、`latency_ms=3411`。hard reload 后 started/completed 各一、probe ID 恰两次、无 raw API key、无第二次 provider call；finding 为 `Verified`，P29/P33 均不写 PASS。
-- `AUDIT-DEFAULT-DISCLOSURE-001` 从 exact deployed `cc6e7262` 真实复现：`/enterprise/audit` 默认 DOM 含 `session_id=110`、`job_id/issues=94`、`reason=41`、`agent_name=77`、raw provider error 90；legacy/canonical API、raw-detail search、CSV 与 selected-tenant export/chain 共用同一根 authority/disclosure 断点。
-- application `b23e94210e7e9523bafc3b591b35db8fc2762224` 以共享 server summary projection、CSV/search boundary、selected-tenant RLS pinning 和 frontend exact allowlist 修复，保留 canonical raw evidence/hash；RED backend 4 + frontend 1，GREEN backend 30 + frontend 3，full backend **8448 passed, 2 skipped, 1 warning**、frontend **154 files / 1149 tests**，i18n/build/budgets、35 architecture tests、manifest 与 diff check 全绿。
-- `b23e9421` 已部署到 backend `03d0919e…`、backend-api `b0bb7ca3…`、frontend `0dd299d8…`，三者均 `SUCCESS` 且绑定 exact full SHA。production audit hard reload 后仍有 400 条 summary，GLM probe correlation/provider/model/success 保留，六类业务/取证 payload counts 全部为 0；跨用户 Session hard navigation 仍 truthful not-found、无 workbench/artifact/body，finding 推进为 `Verified`，P29 不写 PASS。
-- `PLATFORM-ADMIN-BUSINESS-BODY-001` 从 exact deployed `b23e9421` 真实复现：`/enterprise/info` 默认展示公司介绍正文标记、legacy-file surface 与 broadcast controls；backend raw info 和 `company_intro*` setting route 也把 platform admin 放进了 business-body authority。
-- application `170c30e80d00709a314c2838c6c4842e906800a3` 在现有 backend route 和 frontend consumer 上按 authenticated role 收敛 raw body/业务动作；production hard reload 捕获残余页面说明仍宣称这些能力，随后 `8f6a726375452042cf1252977394c647dd2aba80` 以一行 role-appropriate description 与 mounted regression 完整收口。full backend **8453 passed, 2 skipped, 1 warning**、frontend **155 files / 1151 tests**，i18n 3997/3997、build/budgets、31 architecture tests、manifest、Ruff/format 与 diff check 全绿。
-- `8f6a7263` 已部署到 backend `35e6d6e5…`、backend-api `86615c7d…`、frontend `cfa5f254…`，三者均 `SUCCESS` 且绑定 exact full SHA。production info hard reload 后新说明/角色边界存在，company intro/pre-fix marker/legacy/broadcast/runtime error 为 0，tenant name/timezone 保留；audit 和 denied Session route 同时保持既有安全结果。finding 推进为 `Verified`，P29 不写 PASS。
+- fresh-schema atomic suite 已完整 **15/15 passed（3.0m）**。迭代中依次修复：Goal 初始输入未走 canonical admission、terminal boundary 对 T0 relay metadata 误判、T0 UUID hex/hyphen identity 漂移、artifact trigger 的 terminal UUID 文本匹配、subagent terminal 与 durable notification 非原子、canonical `session_terminal_outcome` 绕过 Team close projection。最终整组固定顺序无失败；该证据不迁移为 production Journey PASS。
+- 十个 Session/tool/authority/runtime/audit 根因已有 production `Verified` evidence；finding-level Verified 不自动升级 Journey。
+- 旧 manifest hash 上的 `P29-PADMIN` clean pass 1 与 pass-2 blocker 文件只保留为历史 supporting evidence；current manifest 下 pass 1/pass 2 均未运行。缺少 employee/operator fixture 不再阻断 Agent 功能探针，只影响后续 canonical persona acceptance。
+- signed-in Browser 只读复核确认 D3 Session `0731ec15…` 在生产显示 `完成 · GLM-5.3`、精确 final、一个 77 B artifact、0 running/0 waiting；它只证明真实 Session/model/tool/artifact 基础路径存在，不是当前 manifest P01 PASS。
+- `RESPONSE-LEARNING-COMMIT-ORDER-001` 已形成本地 `Fix Candidate`：Kernel/invoker 不再发低层 terminal hook；Web 只在 canonical commit receipt 后调度 secret-redacted `RESPONSE_COMPLETE`；candidate/projection 按稳定 key 原子幂等。主 Codex跨域 **304 passed**，独立 review **52 passed**，Ruff/format/diff check 绿；但 postcommit crash recovery 尚未闭环，不能标 `Verified`。
+- `SESSION-SUMMARY-COMMIT-ORDER-001` 已 production-shaped RED **1 failed**：实际顺序为 `summary_projection → canonical_hold`；`ChatSession.summary/last_message_at` 在 final authority 前已 commit，并可经 Session recall 回流后续 Agent。
+- owner action-time 确认后，`P01-STAGE1-FRESH-FALCON-682` 只发送一次。production GLM-5.3 完成公开 3 步计划、3/3 Work Ledger todos、一次 `write_file`、一次 `read_file`、七项硬判据 final 与一个 artifact；主 Codex通过 artifact preview 独立核对标题、marker、3 行议程、`TOTAL_MINUTES=90`、2 行风险、`RISK_ROWS=2`、四项现场清单。hard reload 后 final/todos/artifact/0 running/0 waiting 全部恢复。该 principal 为 `platform_admin`，只证明功能 supporting evidence，NPTCR 不变。
+- 本轮合同修订后 production manifest 为 `valid=true`、denominator 96、hash `7994b502361de0eafbea17b0fa5fd33eaa47d8a1381dc151126a463e2416d93a`，且 `semantic_verdict=not_computed_by_tool`；96 个 variant ID 与 HEAD 基线逐项相同，未新增、删除或重排旅程。
+- P08-J4 candidate 已把四个 seam-level P1 收口到共享 authoritative boundary：exact-session 工具/路径在 execution pipeline 与最终文件 I/O 双重校验，active exact profile 在 terminal 前锁定，provider/final/terminal evidence 绑定 exact run，authority/build identity 不完整即 fail closed；J4/Session/tool/health 合并 **169 passed**，尚未升级 Journey verdict。
+- terminal/learning/reconciliation candidate 的合并回归已达 **497 passed**（含真实 PostgreSQL）；Web、Session V2、trigger、business task、delegation、budget、worker、startup/orphan/reconciliation 均复用 required terminal outbox。重跑还发现并修复 delegation parent projection 脱离注入 tenant DB 的旁路，direct real-PG **21 passed**；backend full-suite 已绿，仍须 frontend/build、fresh-chain 与 production crash/replay 证明。
+- 最新源码完整 backend 套件 **8784 passed / 2 skipped / 0 failed**。此前同一套件捕获的 5 个失败来自 terminal recovery 把 BYPASS DB capability 带入动态 HookRegistry；现按既有 locator→tenant-scoped pattern 只在 BYPASS 下定位 `(tenant_id,id)`，实际 sealed/candidate recovery 在 tenant session 执行，RLS scope 回归 **17 passed**、terminal/Team 邻域 **51 passed**。两项 skip 的 exact 原因已登记；该结果只建立 local candidate，不迁移为 production Journey PASS。
+- GitHub Harness CI 的既有全仓 Ruff 步骤会把 5082 条历史债务误算成本次提交失败；现与发布合同对齐为仅检查本次新增/修改/重命名 Python 路径，同时执行 `ruff check` 与 `ruff format --check`，full pytest 保留。工作流结构 **3 passed**、YAML 解析、230 个变更 Python 路径 Ruff/format、prompt/adversarial/internal eval 均绿。
+- frontend 完整回归已绿：Vitest **161 files / 1193 tests**，Playwright **34/34**，i18n **9/9** 且双语 catalog 均为 4039 keys、全部 gap 为 0，production build 通过。E2E 收口了 server-owned plan hash 不回显、live-tail cursor、offline→online 连接态与完成态 disclosure 合同；4 张旧视觉图逐张核对后仅更新 stale baseline，桌面/窄屏/深色及 Axe 均通过。
+- admin company/invite candidate 已通过 backend API + migration + real non-owner RLS lifecycle **33 passed**、最新 rolling/backfill 聚焦 **19 passed** 与 frontend mounted/UI **20 passed**。production 只读盘点为 113 个历史码、105 个 active unused，105 个目标 tenant 均已有 admin，因此部署回填全部保持 `member`；empty-tenant bootstrap 才授予 `org_admin`。完整 backend 已绿，仍不等于 production PASS。
+- 旧品牌 release hygiene 的 working-tree gate 当前通过（3175 paths），对应结构回归 6 passed；已登记本机路径、个人账号和真实形态测试身份已从 tracked candidate 中性化，历史 KDF salt、旧 env input fallback、一次性 theme-key 迁移与 LICENSE attribution 保留。最终 committed archive `D` 尚未形成，因此 archive gate 仍待跑，不得提前宣布部署安全。
+- task-state resolve 指向本文件；本文件只保存当前目标、事实、证据摘要、唯一下一动作和 Not Done，不再保存旧 Kimi/zCode/ACP/timeout 执行日记。
+- `backend/scripts/weekend_rc_worker_gate.py` 与对应 zCode/`agent-delegate` 测试仍是未被 active RC gate 调用的 legacy compatibility artifact；本 Goal 不调用它们，也不把其结果当作当前工作流或验收证据。
 
-## 最近验证
+## 当前合成资产登记
 
-- 上一控制层：Weekend 文档/CI manifest/Issue contract 15 tests passed；Kimi 与 zCode stateless read-only correction smoke 均 `exit=0`、零 worktree diff。
-- 本轮 manifest：`python3 backend/scripts/weekend_rc_gate.py validate` → `valid=true`、denominator `96`、semantic verdict 未计算。
-- 本轮控制冻结 tests：production manifest、文档组、既有 atomic CI manifest 合计 **18 passed**；Ruff check/format 与 scope-limited `git diff --check` 通过。
-- task-state resolve 仍指向本文件；Goal 在三次 action-gate 等待后机械标为 `blocked`，owner 新输入已恢复实际执行；当前 deployed application 与 push checkpoint 为 `bf94b76a1706510daf2d11c4e98fd5051f23f28f`。工作树只在本验收文档/证据之外保留 owner 既有 dirty/untracked 路径，未触碰或纳入提交。
-- D0 历史部署 checkpoint：backend/backend-api/frontend 曾在 `eb61d468221aa22a4f22c1d96353baadef3b51e6` 为 `SUCCESS`，随后产生 `SESSION-CONTEXT-001`；该 checkpoint 已被 D1/D2/D3 应用提交取代，不代表当前 production freshness。
-- production `P01`/continuation probe：Session `59257e7a-960b-459a-9652-2ff39be117ee`，两次 run 均 `completed`；第二轮产生 `SESSION-CONTEXT-001`，因此不计入 NPTCR PASS。
-- 宽松 worker contract：18 个 architecture tests 通过；Ruff check/format 与 `git diff --check` 通过；旧 cancelled receipt 被正确分类为 `interrupted`、仍可 review、且不计算 semantic verdict。43200s window-level preflight 为 `ready=true`、effective/internal/outer 全部一致、无 warning。
-- `uv run pytest -q tests/services/test_session_semantic_history.py` 实现前 RED → **12 failed**，实现后真实 PostgreSQL → **12 passed**；日志中的 `runtime_budget_runs.root_external_principal_id` / `invocation_spans.decision_id` 缺列来自 helper 未注入 fixture 时触达的本机旧开发库，不是 Testcontainers schema，也未被当作通过证据。
-- 完整 backend gate → **8413 passed, 2 skipped, 1 warning**；两个 skip 已精确核对为本机 OfficeCLI binary 缺失和 DingTalk guide 无静态 declared tools，Docker/Testcontainers 未整体 skip。另有 runtime 124、commands 46、terminal outcome 16、branch 14 和 Weekend/atomic architecture 18 条定向回归通过；Ruff、format、diff check 与 manifest validator 均通过。
-- D1 push checkpoint：GitHub 首次 push 因 TLS `SSL_ERROR_SYSCALL` 失败且远端未变；同一 `d0c9fffd` commit 在只读连通性核验后以 HTTP/1.1 重试成功。该历史 HEAD 已被 D2/D3 application commits 取代。
-- Railway 最终 readback：backend `ce0bdbf4-c8b6-4cd3-bbe2-77e74a75ca2e`、backend-api `ef4f7c81-b8cb-44d8-bbd7-37499e1765fb`、frontend `f6932ba1-9f7e-4b61-8b38-54ae709ba278` 均为 `SUCCESS`，三者 deployment message 均绑定 exact application commit `d0c9fffd1ca4995ddea6d367e04e206e973560d5`；backend `/api/health` 返回 `status=ok` 且 `runtime_control_bus.last_error=null`，frontend `/` 返回 `HTTP 200`。这只关闭部署原子，不升级任何 Journey verdict。
-- production 根因复验：fresh Session `3ce68041-ccc4-4d4e-b729-ec9ace46d222`；run `71cffdb6-ef6b-53fa-9a63-ea57ac98349f` 的 assistant 只输出 `ACK-FIRST`，run `40c3e678-0ca9-59f8-8abd-e65ef64a4cf9` 在自身输入没有 marker 的情况下输出 `HIVE-CANONICAL-Q7M4-83NP NO_TOOL`。operator workbench 的 `hive.session_semantic_history_receipt.v1` 为 `complete`，truth source 为 `chat_transcript_events+session_model_results`，`message_count=2`、`user_checkpoints=1`、`committed_provider_messages=1`、`mechanical_message_limit_applied=false`、`held_items=[]`，且排除了 P02 current-run input。该证据只把 `SESSION-CONTEXT-001` 推进到 `Verified`，不构成完整 P01-MAIN/P02-STREAM PASS。
-- P01-MAIN pass-1 Attempt 1：fresh Session `d1a2c63f-7082-424d-a9f3-a3330398e371` / RuntimeTask `ff9536bd-39fa-5bf3-bd02-f07aa6fb0e81`；GLM-5.3 真实完成公开 3 步计划、3 个 Work Ledger todo、只读失败恢复、受治理 `write_file` 和 `read_file`，并生成可在产品 Workspace 预览的 `workspace/WEEKEND-RC-P01-MAIN-PASS-1.md`。终稿生成前 provider 返回 busy；RuntimeTask `failed` / `result_summary=provider_error`，UI 为 typed `失败`、`可重试`、0 running/0 waiting，work ledger 2 completed + 1 in_progress。因此 Attempt 1 如实记 `FAIL`，不写 evidence PASS；一次“重试本轮”已从 canonical user event 建立 edit branch Session `ef9d6498-f4dc-49c1-a566-6446e220f0ef`，不得自动外推为 recovery PASS。
-- P01-MAIN retry recovery：edit branch Session `ef9d6498-f4dc-49c1-a566-6446e220f0ef` / RuntimeTask `03419d5f-6166-479d-ad02-d929759c57df` 在无任何 tool call、Work Ledger 或 artifact write 的情况下被标记 `completed`，final 错称用户只发送了「1」。operator transcript 证明 seq `1` 的 `human_input.accepted` 是完整 P01-MAIN 原 prompt；workbench receipt 证明语义历史为合法 typed `empty`；但 seq `4` 的 `result_commit.prepared.bound_input_ids=[]`。live wiring 进一步确认 branch HTTP entry 直接调用 legacy `start_web_chat_run()`，未经过正常 `/runs` 使用的 `submit_live_human_input()` Session V2 admission/dispatch，因此 current input 没有进入 round binding。这一独立根因记为 `SESSION-RETRY-INPUT-001`，不回退 `SESSION-CONTEXT-001` 的 verified 状态。
-- `SESSION-RETRY-INPUT-001` 本地 fix candidate：content-bearing branch modes 已统一进入 `submit_live_human_input()`，以 branch Session + mode 派生确定性 input/idempotency key，经 Hook admission 和 Session V2 dispatch 启动 run；`regenerate` 继续复用 canonical copied user prefix，禁止制造重复 HumanInput。RED 阶段 API 与真 PostgreSQL 测试分别证明 legacy bypass 和 branch 无 `SessionTurnInput`；GREEN 阶段长 Unicode retry prompt 成为 round-one 唯一 user message，`bound_input_ids` 精确等于 durable input。定向/cross-domain **139 passed**，完整 backend **8419 passed, 2 skipped, 1 warning**；Ruff check、目标文件 format check、manifest validate 与 `git diff --check` 通过。全仓 format check 仍报告 43 个与本 diff 无关的既有文件，未擅自格式化。
-- D2 production retry：Session `b3962147-07cd-4223-8f23-f00193d7735c` / run `76a32f8e-f5d8-5a63-b02a-e591598321e9` 的 round one `bound_input_ids=[1fd5cc5b-8378-5629-8cdc-98fd8250f27f]`；GLM 消费完整 prompt 并创建 3 todos，故 `SESSION-RETRY-INPUT-001` 为 `Verified`。`write_file` 后的 sequence `304/305` 无 terminal pair、ChatArtifact FK rollback、sequence `308` 继续 provider 和随后 429 单独记为 `TOOL-ARTIFACT-SETTLEMENT-001`，不计 Journey PASS。
-- D3 local final：核心交叉 **330 passed**；完整 backend 首轮唯一架构 owner-line budget 红点未放宽预算而通过 helper extraction 修复，第二轮最终 **8428 passed, 2 skipped, 1 warning**；frontend **1143 passed**、production build、AgentDetail/vendor bundle budgets 通过；Ruff、format、diff check 和 manifest validate 通过。
-- D3 deployment：`HEAD = origin/main = c37fefc56b92e658bfb64a3e79d685249a2a3add`；三服务 deployment IDs `62e4ef56…` / `307f0df7…` / `db6b605d…` 均 `SUCCESS` 且 message 绑定 exact commit；backend health `status=ok` / `runtime_control_bus.last_error=null`，frontend HTTP 200。部署绿不升级 finding/Journey。
-- D3 fresh normal probe：owner 确认后只发送一次；Session `0731ec15-c662-4552-9500-3f68f1094f11` / RuntimeTask `c124e51f-c09e-5b0d-9265-38b48ae0db27` 在 GLM-5.3 下 `completed`，attempt 1 / claim version 2。canonical spans 只有 `write_file` 与 `read_file` 两个 tool span且均 `status=ok`；invocation 计数为 write 1 / read 1，两者 `effect_committed`、无 recovery owner。
-- D3 canonical settlement：write sequence `121 started → 122 effect_started → 123 tool_call.completed → 124 tool_result.completed`，下一 round 到 `127 result_commit.prepared` 才开始；read sequence `167 → 168 → 169 → 170`，下一 round 到 `173 prepared` 才开始。write terminal pair 共用非空 message ID `07afe8cd-ff96-5c03-b0f1-e54ca9c12462`；目标 ChatArtifact `be17c252-8a97-4782-ae3e-17e05d2f3519` 恰一行，owner ChatMessage 恰一行，对应 terminal outbox 均 `published` / attempts 1 / no error。invocation、event、RuntimeTask 的 reconciliation 计数均为 0。
-- D3 artifact / Consumption：目标 snapshot 为 77 B，正文三行无尾随换行，content SHA-256 `2c3f309736338d6185614a50e56875de7fc1092cd239c765b7df1661f7ec07e6` 与期望逐字相等；canonical read tool-result event `24dabf4f…` 的 529 B provider-visible wrapper 完整包含同一 77 B 字节。normal AgentDetail 显示精确 final、一个文件、右栏一个 snapshot artifact、0 running/0 waiting。hard reload 后同一 Session/run/终答/tool pair/artifact 仍为唯一值且无自动 replay；普通「打开」预览显示 heading 与两个 marker 字段。
-- D3 read-only production proof：Railway backend 内 `asyncpg` readonly transaction + 精确 tenant `set_config`，仅执行显式 tenant/session SELECT，事务 rollback；未输出 credential、无 DDL/写入/RLS 绕过。`2026-08-30T17:10:00Z–17:12:30Z` 的 backend/backend-api 精确部署日志对 FK / lifecycle persistence / reconciliation 五个错误码过滤均为 0；日志只作反证辅助，happy path 由 DB 与 signed-in UI 共同证明。
-- `3482b57a` supported recovery：只对旧 D2 run `76a32f8e…` 点击一次 evidence-backed acknowledgement；canonical sequence `312/313`、published outbox、invocation `result_event_id=null`、旧 run 仍 `failed`、0 新 artifact 共同证明 no-result/no-replay。fresh input sequence `314` 建立独立 run `f8cdd9ac…`，唯一 round 绑定唯一 input、sequence `375` 为精确 `D4_RECOVERY_OK`、sequence `385/386` 正常终局且 0 tool invocation。signed-in Session hard reload 为 prompt/final 各一、0 blocker/running/waiting/Stop；Workspace 目标文件与三个验收字段各一；管理员目标 row 0、error 0。
-- MAPLE P01 functional path：从真实 sidebar new-conversation draft 只发送一次，fresh Session `52ddde7f-63bf-44a6-973f-ffb1da06d14a` / run `38381d84-779d-59fe-954d-dd75b2c07079` 在 GLM-5.3 下 `completed`。round 1 保存完整 73-tool bundle 与唯一 input；公开 plan 先于工具。canonical invocation 为 `track_todo=7`、`write_file=1`、`read_file=1`，全部 `effect_committed` 且 result 非空；3/3 todos、一个 owned artifact、七项正文硬标准与用户 snapshot 预览均通过。660 个 outbox 全 `published` / attempts 1 / errors 0；两次 reload 后 input/run/artifact 仍 1、max sequence 660，计时 reload 2.920 s 收敛。server principal 同时核验为 `platform_admin` + user-scoped manage grant，违反 frozen `persona=employee`，所以只写 blocked-precondition evidence、不写 P01 pass-1。
-- model health/audit：pre-fix MiniMax success `7623ms`、DeepSeek 单次 `HTTP 402 Insufficient Balance`、GLM success `7575ms`；post-fix audited GLM probe `a0f1be98…` success `3411ms`。audit hard reload 后同 probe 的 started/completed 各一且无 raw API key。immutable evidence：`evidence/cc6e726218bd491120f942edfa91e51d2d167ff4/LLM-PROBE-AUDIT-001-production-verification.md`。
-- admin audit default disclosure：post-fix hard reload 仍显示 400 条；`session_id/job_id/issues/reason/agent_name/raw provider error` 均为 0，GLM probe ID 恰两次且安全 model/provider/success 仍可读。denied cross-user route 同时保持 truthful not-found。immutable evidence：`evidence/b23e94210e7e9523bafc3b591b35db8fc2762224/AUDIT-DEFAULT-DISCLOSURE-001-production-verification.md`。
-- platform admin business-body boundary：exact `8f6a7263` 的 info hard reload 只保留 tenant name/timezone/presentation 与 role-boundary；company intro/pre-fix marker/legacy export/broadcast/runtime error 均为 0。没有读取浏览器 token 来制造直接 API receipt；backend FastAPI route-entry 与 exact deployed source 证明 403 wiring。immutable evidence：`evidence/8f6a726375452042cf1252977394c647dd2aba80/PLATFORM-ADMIN-BUSINESS-BODY-001-production-verification.md`。
-- P29 fresh fault：exact `8f6a7263` 的 platform admin dashboard 展示全部 company-admin cards，company direct URL/API 为 200；`feishu_org_sync` generic setting route 同样为 200 且 exact source 原样返回 stored value。未读取 response body、浏览器 auth storage 或实际 credential。immutable reproduction：`evidence/8f6a726375452042cf1252977394c647dd2aba80/P29-PADMIN-fault-company-admin-workspace-audience.md` 与 `SYSTEM-SETTING-SECRET-DISCLOSURE-001-reproduction.md`。
-- P29 D1/D2 修复：`24f012ba` 以 exact role route/API/Agent boundary 完成同根修复；首次 production hard reload 捕获 sidebar 仍显示“公司后台”，`bf94b76a` 复用既有“超级管理员”文案收口。最终 local gates：backend **8484 passed, 2 skipped, 1 warning**、真实 PG **13 passed**、platform-admin contract **423 passed**、frontend **156 files / 1161 tests**、build/budgets、Weekend **18 passed**、manifest、Ruff 与 diff check 全绿。
-- P29 D2 production：三服务 `07059ce5…` / `c70ff972…` / `308e7789…` 均 `SUCCESS`；dashboard nav 8/card 7、无业务 metrics/Plaza，九个 company direct URL 均回 dashboard，14 个 authenticated status-only API 全为 403；`/agents` 的 ownership/exact-user surface 保持 200、EventPilot 可见，system HR 403；info/audit 正向面保持 200。未读取 token/header/storage/response body。两个新 finding 均为 `Verified`，immutable evidence 位于 `evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/`。
-- P29 formal evidence：`2026-08-31T00:30:43Z–00:32:49Z` clean pass 1 为 `PASS`，manifest hash `d320edce…`；dashboard screenshot PNG 25,461 B / SHA-256 `a5686a85…`。pass 2 attempt `00:32:59Z–00:33:26Z` 再次通过 dashboard reload、User denied、stats/Feishu 403 与 Agent 正向，但 expired-session/role-change 缺少新 identity authority，因此只写 noncanonical blocker evidence，不伪造 `P29-PADMIN-pass-2.md`。mechanical scorer 精确报告该文件缺失、`closed=0`、NPTCR `0%`、semantic verdict 未计算。
-- P08-J4 read-only preflight：current runner 无 Hive/FreeCode target；installed `claude` 是官方 `2.1.251`，不能替代 FreeCode source `2.1.87`；Hermes 仅核对版本。eval/retirement focused regression **21 passed**。下一次进入该 lane 时构建 FreeCode/Hive adapter，不沿用旧 blocker verdict。
-- UI-CMD-003 local candidate：backend **8484 passed, 2 skipped, 1 warning**；两条 skip 精确为本机缺 OfficeCLI binary 与无 declared tools 的纯指南型 DingTalk Skill，非真实 PostgreSQL test class；frontend **156 files / 1163 tests**、TypeScript/Vite build 与 AgentDetail bundle budgets、Weekend 文档 **18 passed**、manifest validate、Ruff 与 diff check 均通过。
+| marker | 目标与允许效果 | 禁止效果 | cleanup 状态 |
+|---|---|---|---|
+| `D3-SETTLEMENT-C37-8K4P` | EventPilot synthetic Session；已新建/读回一个 marker 文件 | 不外发、不建 workflow/trigger/delegation、不读 credential；write failure 不重试 | `created-evidence-retained`；已登记 final cleanup，删除前 exact-target/readback |
+| `P01-MAIN-CLEAN-P1-3482B-LARCH-927` | 历史无效入口 probe；run 成功但不是 frozen fresh Session | 不修改其他路径或外部系统 | `invalid-entry-evidence-retained`；永不计 PASS，待 final cleanup |
+| `P01-MAIN-PASS1-3482B-MAPLE-581` | 历史功能 probe；实际 principal 为 platform_admin | 不外发、不读 credential、不外推 employee persona | `invalid-persona-evidence-retained`；永不计 PASS，待 final cleanup |
+| `UI-CMD-003-PROBE` | read-only `/context`、`/usage`、`/permissions` probe | 不调用 provider/tool、不改权限 | `failure-evidence-retained`；待 final cleanup |
+| `WEEKEND-RC-ROLE-FIXTURE-1B4BE5D2` | 通过公开 register/assignment/join 与正式 role/permission API 建立 synthetic company-admin、employee、scoped-operator | 不复用真实邮箱/密码、不跨 tenant、不外发、不读取/修改 provider credential；禁止 forged token、直接 DB role mutation 或 RLS weakening | `tenantless-admin-registered`；user `c51b38e8…` 尚未变更 tenant/role，密码/token 未落盘 |
+| `P01-STAGE1-FRESH-FALCON-682` | EventPilot fresh production Session 的当前提交功能 truth test；3-step plan、Work Ledger、一次 write/read、硬判据 deliverable | 不外发、不调其他 Agent/外网/workflow/trigger/delegation、不读 credential；仅允许目标 `workspace/` 文件 | `completed-supporting-evidence-retained`；Session `65b98e1a…` 与唯一 artifact 已登记 final cleanup；platform-admin evidence 永不冒充 employee PASS |
 
-## 当前合成资产登记（待后续清理授权）
-
-| marker | 目标 | 唯一允许效果 | 禁止效果 | cleanup 状态 |
-|---|---|---|---|---|
-| `D3-SETTLEMENT-C37-8K4P` | 指定私有实验 tenant 的 EventPilot fresh Session | 新建并只读回 `workspace/WEEKEND-RC-TOOL-SETTLEMENT-C37-8K4P.md`；正文只含可识别测试 marker/预期值 | 不修改其他路径，不外发消息，不创建 workflow/trigger/delegation，不读取 credential；write 失败不重试 | `created-evidence-retained`；Session `0731ec15…` / run `c124e51f…` / artifact `be17c252…`。已登记到最终 cleanup，删除前须 exact-target/readback，毋须再次请求确认 |
-| `P01-MAIN-CLEAN-P1-3482B-LARCH-927` | 无效验收操作：普通 `Open EventPilot` 链接仍选择既有 Session，不是侧栏加号 `New conversation with EventPilot` | 已在旧 Session 新建并读回 `workspace/WEEKEND-RC-P01-MAIN-CLEAN-PASS-1-3482B.md`；run 自身成功但违反 frozen fresh-Session input，永不计 Journey PASS | 不修改其他路径，不外发消息，不创建 workflow/trigger/delegation，不搜索外网，不读取 credential；write unknown/failure 不重试 | `invalid-entry-evidence-retained`；Session `b3962147…` / run `ee3703f0…`，terminal completed、write 一次/read 一次、final/artifact 可见；待最终 cleanup gate 清理 |
-| `P01-MAIN-PASS1-3482B-MAPLE-581` | P01 功能路径 probe；真实 sidebar fresh Session，但实际 server principal 为 `platform_admin`，不满足 frozen employee persona | 已新建并读回 `workspace/WEEKEND-RC-P01-MAIN-PASS-1-3482B-MAPLE.md`，公开 3-step plan、3 个完成 todo、七项 hard criteria、reload/no-replay 与用户 snapshot 预览均通过 | 不修改其他路径，不外发消息，不创建 workflow/trigger/delegation，不搜索外网，不读取 credential；write unknown/failure 不重试 | `invalid-persona-evidence-retained`；Session `52ddde7f…` / run `38381d84…` / artifact `a8a036af…`，功能路径通过但永不计当前 P01 pass-1；待最终 cleanup gate 清理 |
-| `UI-CMD-003-PROBE` | EventPilot fresh Session 的共享 read-only slash-command 消费链路 | 仅执行 `/context`、`/usage`、`/permissions`，用于观察 typed panel 与 reload | 不调用 provider/tool、不外发、不改权限、不读取 credential | `failure-evidence-retained`；Session `e786e8bb…`。三个命令均缺 reload-safe panel；待最终 cleanup gate 清理 |
-
-### D3 探针七原子判定边界
-
-| 原子 | 必须观察到的 PASS 事实 | FAIL / 不得外推 |
-|---|---|---|
-| Input | fresh Session 接受完整 marker、唯一路径和 no-retry 边界；round 绑定该 durable input | UI 里出现文字但 provider 未绑定输入 |
-| Authority | principal/tenant/Agent/session 与实验范围一致；只访问 Agent-owned `workspace/` | 跨 tenant、credential、外部消息或未登记路径 |
-| Execution | `write_file` 成功后只执行一次 `read_file`；每个 invocation 的 `effect_started → tool_call.completed → tool_result.completed` 均在后续 model round 之前有序落盘 | effect 已发生但 terminal pair 缺失、write 自动重试、terminal 前进入下一 round |
-| Evidence | write 的 canonical `tool_result.message_id` 非空；同 message ID 只对应一个 ChatMessage owner、一个目标 ChatArtifact 与一个 outbox/event identity；无 `needs_reconciliation` | 仅凭文件存在、日志或兼容消息宣称 settlement 完成 |
-| Recovery | hard reload 后相同 Session/run/event 顺序稳定，无重复 invocation、effect、artifact 或 final；旧 D2 failure 保持不自动 replay | reload 生成第二次 write、第二个 artifact 或掩盖 failure |
-| Consumption | 普通 AgentDetail chat 只显示一张合并后的 write tool/artifact 卡，可预览精确 marker；read 与 final 均可读 | canonical/compatibility 双卡、0 artifact、附件丢失或 operator-only 可见 |
-| Acceptance | exact c37 normal-path 与 exact 3482 supported-recovery deployment identity、真实 selected provider、normal/reload/no-replay/fresh-turn 证据全部成立，finding 才可到 `Verified` | health、Railway `SUCCESS`、本地绿测或 bounded finding probe 直接升级 Journey PASS/Closed |
-
-2026-08-31 owner action-time confirmation 后，Codex 从 fresh EventPilot Session 只发送一次已登记探针；发送后输入框清空并绑定 Session `0731ec15…`，未发生重复 click/send。先观察到 write/read/final，再等待 RuntimeTask 与 artifact settlement 进入终态；证据见 `evidence/c37fefc56b92e658bfb64a3e79d685249a2a3add/TOOL-ARTIFACT-SETTLEMENT-001-normal-revalidation.md`。
-
-Cleanup wiring 只读核验：普通 `workspace/` 文件的受治理 `delete_file` 与文件 API/UI 会物理 unlink，并通过 `workspace.command.destructive_delete` / `destructive_once` 治理。新 PDEC-011 已授权清理已登记合成目标；执行前仍须 exact-target/readback，真实数据或证据不删除，未实际清理前不写 cleanup PASS。
+共享合成 fixture 保留到所有依赖旅程完成；lane-local transient effect 在 reconciliation 后清理；final `D` 双遍结束后清理全部 Goal-created synthetic assets。owner Example Owner 基础账号、immutable evidence 和无关数据永不作为 cleanup target。
 
 ## 唯一下一动作
 
-完成 `UI-CMD-003` 的剩余 release loop：全量前端/后端相关门、scoped diff review、应用提交 `D`、push、三服务同 `D` 部署，并在现有与新建合成员工 Session 各做 normal + hard-reload production 重验；随后建立完整四角色 reusable fixture set。
+本地 application/full-stack/frontend/backend/migration/release/security gates 已绿；下一步主 Codex精确暂存授权范围、对 prospective Git tree 跑 committed-archive legacy/personal gate并 review staged diff，形成 coherent `D` 后 push/CI/三服务部署。随后执行 signed-in 96 journeys 双遍、四角色权限负向、fault/recovery、cleanup 与 evidence-only `E`。D3/P01 supporting probe 不重发；DeepSeek 未获 billing/credential 授权不重试。
 
 ## Not Done / Do Not Redo
 
-- production manifest 已冻结；Gate 0 事实已落盘，P29-PADMIN 只有 pass 1、没有 canonical pass 2，故仍无可计分的双遍 Closed journey；NPTCR=0/96，Evidence Coverage 尚未成立。
-- Issue #4 前两次派发未形成业务 diff；Attempt 3 被拒绝、Attempt 4 已停止。Session history、retry input、tool-artifact settlement、unknown-effect recovery admission、Session authority presentation、runtime guard presentation、model probe audit、admin audit default disclosure、platform-admin business-body/workspace audience 与 system-setting secret boundary 的单 Codex application commits 均已 push/deploy；十个根因为 production `Verified`，完整相关 Journey 双遍仍未执行。
-- MiniMax/GLM bounded provider call 已成功；DeepSeek live call 以 typed `402 Insufficient Balance` 阻塞。三者都没有完成 P33 frozen compatibility task，DeepSeek 不得在未获 billing/credential 授权时重试。
-- P08-J4 preflight 已确认现有 manual runner 不满足 Hive/FreeCode/Hermes same-envelope contract；历史空报告保留，不运行官方 Claude 代替 FreeCode；后续从仓库构建所需 FreeCode/Hive adapter。
-- Goal 机械状态已因三次 action-gate 等待变为 `blocked`，但 owner 新输入已恢复执行；不得因 Goal 状态、历史 PASS、Railway/health 绿或候选单测绿而升级任何 Journey verdict。
-- 不触碰 pre-existing `.ultra/.runtime/compact-snapshot.md`、`bp-kingdee/`、`output/`、root `package*.json`、`tmp/pdfs/` 等用户工作树内容。
-- 不把 archive 中某个历史 `PASS` 自动迁移成当前 aggregate `Closed loop`。
+- 96 条 production journeys 未完成双遍；NPTCR=0/96，Evidence Coverage 尚未成立。
+- MiniMax/GLM 只完成 bounded probe，不是 P33 compatibility PASS；DeepSeek 为 `EXTERNAL_UNAVAILABLE`，不得在未获 billing/credential 授权时盲重试。
+- P08-J4 adapter、四角色 fixture、Local Agent recovery、完整权限负向、全产品 E2E/A2A、final `D/E`、rollback 与 cleanup 均未完成。
+- 平台管理员创建公司 RLS 500、管理员/成员邀请链路、后台返回 App 与旧品牌分类/兼容 release gate 均已纳入本 Goal，尚未完成，不得在 coherent D 部署时遗漏。
+- Goal/Issue/subagent/CI/Railway/health 的机械状态不得升级 Journey verdict，也不得因失败/timeout 停止所有无关工作。
+- 不把 archive、旧 manifest hash、历史 PASS、无效 persona/entry probe 或 finding-level `Verified` 自动迁移成当前 aggregate `Closed loop`。
+- 不触碰或提交 owner 既有无关 dirty/untracked 路径。

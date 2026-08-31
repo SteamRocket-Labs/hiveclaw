@@ -13,9 +13,9 @@
 - 方法：实跑取证（不止读码）。32 个审计 agent，306 万 token，846 次工具调用，~13.6 分钟；主理人对承重发现逐条独立抽查。
 - Hive checkout：`4a02e2be`，分支 `main`，worktree 有未提交改动（主要修正 Plan Mode / Work Ledger 命名边界），按当前真实状态审计。
 - 本地对标项目（commit 与读码版一致 → 参考代码未变）：
-  - CC / Claude Code：`/Users/rocky243/vc-saas/free-code-main` `7dc15d6`
-  - Hermes（须达到/超过的 lean benchmark）：`/Users/rocky243/vc-saas/hermes-agent` `75643a615`
-  - Codex：`/Users/rocky243/Context Engineering/codex` `9f4fac8ec4`
+  - CC / Claude Code：`/Users/example-owner/vc-saas/free-code-main` `7dc15d6`
+  - Hermes（须达到/超过的 lean benchmark）：`/Users/example-owner/vc-saas/hermes-agent` `75643a615`
+  - Codex：`/Users/example-owner/Context Engineering/codex` `9f4fac8ec4`
 - 外部对标：Voyager、Reflexion、DGM、ADAS、Letta/MemGPT、Graphiti/Zep、LangGraph、Magentic-One/AutoGen、Temporal、Vercel Sandbox、E2B、Glean、SEAL、AlphaEvolve、AZR、R-Zero、MS Entra Agent ID、Purview。
 - 判定口径取自目标文档 §0：`achieved` 必须有当前代码路径 + 测试 + 部署/生产证据且生产可达；`near`/`partial`/`not_achieved` 见目标文档；**built-but-never-called（暗臂）即使测试全绿也不算 achieved**；做完外部行为 eval 前不宣称整体超越。
 

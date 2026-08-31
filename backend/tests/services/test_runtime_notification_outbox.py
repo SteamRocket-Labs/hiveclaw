@@ -14,6 +14,7 @@ from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
 from app.models.runtime_result import RuntimeResultIntegrationPage, RuntimeResultMailboxCursor, RuntimeResultObject
 from app.models.runtime_task import RuntimeTask
+from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.runtime_notification_outbox import (
@@ -384,6 +385,70 @@ async def test_claim_retry_and_terminal_ack_are_durable(owner_sessionmaker):
     assert stored.status == "delivered"
     assert stored.attempt_count == 2
     assert stored.delivery_receipt_json["runtime_task_id"] == "parent-run"
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_artifact_trigger_notification_waits_for_delivered_projection(owner_sessionmaker):
+    from app.services.runtime_terminal_boundary_outbox import enqueue_terminal_boundary
+
+    await _clear_outbox(owner_sessionmaker)
+    tenant_id, user_id, agent_id, session_id = await _seed_parent_session(owner_sessionmaker)
+    task_id = uuid.uuid4()
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        task = RuntimeTask(
+            id=task_id,
+            tenant_id=tenant_id,
+            task_type="trigger",
+            status="needs_reconciliation",
+            parent_agent_id=agent_id,
+            child_session_id=str(session_id),
+            result_summary="partial trigger result",
+            metadata_json={"terminal_reason": "turn_stop"},
+        )
+        db.add(task)
+        await db.flush()
+        boundary = await enqueue_terminal_boundary(
+            db,
+            task=task,
+            event_kind="turn_abort",
+            agent_id=agent_id,
+            session_id=session_id,
+            terminal_status="needs_reconciliation",
+            authority_ref="runtime_task",
+            authority_id=task_id,
+            binding={},
+        )
+        notification_id = await enqueue_completion_notification(
+            db,
+            CompletionNotification(
+                tenant_id=tenant_id,
+                source_kind="trigger",
+                source_run_id=task_id.hex,
+                parent_session_id=session_id,
+                parent_agent_id=agent_id,
+                parent_user_id=user_id,
+                terminal_status="needs_reconciliation",
+                task_type="trigger",
+                summary="partial trigger result",
+                delivery_mode="session_projection",
+                artifacts=[{"path": "runtime_artifacts/triggers/result.json"}],
+            ),
+        )
+        await db.commit()
+
+    service = RuntimeNotificationOutboxService(session_factory=owner_sessionmaker)
+    assert await service.claim_batch(worker_id="notification-before-artifact", limit=10) == []
+
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        await db.execute(
+            update(RuntimeTerminalBoundaryOutbox)
+            .where(RuntimeTerminalBoundaryOutbox.id == boundary.id)
+            .values(status="delivered", delivered_at=datetime.now(UTC))
+        )
+        await db.commit()
+
+    claimed = await service.claim_batch(worker_id="notification-after-artifact", limit=10)
+    assert [item.id for item in claimed] == [notification_id]
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
@@ -904,6 +969,49 @@ async def test_reconciler_settles_rollout_gap_when_outbox_already_exists(owner_s
     assert repaired == 1
     assert outbox_count == 1
     assert task is not None and task.completion_outbox_settled_at is not None
+
+
+@pytest.mark.parametrize("terminal_status", ["completed", "failed", "needs_reconciliation"])
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_reconciler_settles_legacy_pure_workflow_trigger_without_notification(
+    owner_sessionmaker,
+    terminal_status,
+):
+    await _clear_outbox(owner_sessionmaker)
+    tenant_id, _user_id, agent_id, _session_id = await _seed_parent_session(owner_sessionmaker)
+    task_id = uuid.uuid4()
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        db.add(
+            RuntimeTask(
+                id=task_id,
+                tenant_id=tenant_id,
+                task_type="trigger",
+                status=terminal_status,
+                parent_agent_id=agent_id,
+                result_summary="Workflow child owns result delivery.",
+                metadata_json={"delivery": "workflow"},
+            )
+        )
+        await db.commit()
+
+    repaired = await RuntimeNotificationOutboxService(session_factory=owner_sessionmaker).reconcile_terminal_tasks_once(
+        limit=10
+    )
+
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, task_id)
+        outbox_count = await db.scalar(
+            select(func.count(RuntimeNotificationOutbox.id)).where(
+                RuntimeNotificationOutbox.source_run_id == str(task_id)
+            )
+        )
+
+    assert repaired == 1
+    assert outbox_count == 0
+    assert task is not None
+    assert task.completion_outbox_settled_at is not None
+    assert task.completion_outbox_last_error is None
+    assert task.metadata_json["completion_delivery_disposition"] == "workflow_child_owned"
 
 
 @pytest.mark.usefixtures("migrated_pg_url")

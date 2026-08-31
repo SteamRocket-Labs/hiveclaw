@@ -139,7 +139,7 @@ def test_compute_audit_event_hash_covers_execution_identity() -> None:
         prev_hash="same-prev",
         execution_identity_type="delegated_user",
         execution_identity_id=delegated_user_id,
-        execution_identity_label="Rocky via web",
+        execution_identity_label="Example Owner via web",
     )
     second = compute_audit_event_hash(
         event_type="tool.execution",
@@ -155,7 +155,7 @@ def test_compute_audit_event_hash_covers_execution_identity() -> None:
         prev_hash="same-prev",
         execution_identity_type="delegated_user",
         execution_identity_id=delegated_user_id,
-        execution_identity_label="Rocky via feishu",
+        execution_identity_label="Example Owner via feishu",
     )
 
     assert first != second
@@ -169,7 +169,7 @@ async def test_write_audit_event_hash_chains_execution_identity() -> None:
     actor_id = uuid.uuid4()
     delegated_user_id = uuid.uuid4()
     db = _CaptureAuditDB(previous_hash="same-prev")
-    set_execution_identity(ExecutionIdentity("delegated_user", delegated_user_id, "Rocky via web"))
+    set_execution_identity(ExecutionIdentity("delegated_user", delegated_user_id, "Example Owner via web"))
     try:
         await write_audit_event(
             db,  # type: ignore[arg-type]
@@ -189,7 +189,7 @@ async def test_write_audit_event_hash_chains_execution_identity() -> None:
     event = db.added[0]
     assert event.execution_identity_type == "delegated_user"
     assert event.execution_identity_id == delegated_user_id
-    assert event.execution_identity_label == "Rocky via web"
+    assert event.execution_identity_label == "Example Owner via web"
     assert event.event_hash == compute_audit_event_hash(
         event_type="tool.execution",
         severity="info",
@@ -203,7 +203,7 @@ async def test_write_audit_event_hash_chains_execution_identity() -> None:
         prev_hash="same-prev",
         execution_identity_type="delegated_user",
         execution_identity_id=delegated_user_id,
-        execution_identity_label="Rocky via web",
+        execution_identity_label="Example Owner via web",
     )
     assert event.event_hash != compute_audit_event_hash(
         event_type="tool.execution",

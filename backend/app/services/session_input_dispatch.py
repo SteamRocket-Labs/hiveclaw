@@ -15,12 +15,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import String, cast, or_, select
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent
+from app.models.agent_session_goal import AgentSessionGoal
 from app.models.chat_session import ChatSession
-from app.models.runtime_task import RuntimeTask
+from app.models.runtime_task import TERMINAL_BOUNDARY_TERMINAL_STATUSES, RuntimeTask
+from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
 from app.models.session_v2 import SessionCommand, SessionInputAdmission, SessionTurnInput
 from app.services.chat_transcript import lock_transcript_session
 from app.services.runtime_terminal_settlement import TERMINAL_SETTLEMENT_STATUSES
@@ -60,6 +62,66 @@ def _json_receipt(value: Any) -> Any:
 
 _TOOL_EFFECT_RECONCILIATION_CODE = "tool_effect_reconciliation_required"
 _TOOL_EFFECT_DISPATCH_RECOVERY_OWNER = "platform_admin:tool_effect_reconciliation"
+_TERMINAL_BOUNDARY_ACK_PENDING_CODE = "terminal_boundary_ack_pending"
+
+
+async def _terminal_boundary_dispatch_hold(
+    db: AsyncSession,
+    *,
+    admission: SessionInputAdmission,
+    row: SessionTurnInput,
+    agent: Agent,
+    session: ChatSession,
+) -> dict[str, Any] | None:
+    missing = await db.scalar(
+        select(RuntimeTask)
+        .where(
+            RuntimeTask.tenant_id == admission.tenant_id,
+            RuntimeTask.parent_agent_id == agent.id,
+            RuntimeTask.parent_session_id == str(session.id),
+            RuntimeTask.task_type.in_(EXECUTABLE_CHAT_TASK_TYPES),
+            RuntimeTask.status.in_(TERMINAL_BOUNDARY_TERMINAL_STATUSES),
+            RuntimeTask.terminal_boundary_generation.is_not(None),
+            RuntimeTask.terminal_boundary_enqueued_at.is_(None),
+        )
+        .order_by(RuntimeTask.completed_at, RuntimeTask.created_at, RuntimeTask.id)
+        .limit(1)
+    )
+    if missing is not None:
+        return {
+            "kind": "deferred",
+            "status": "waiting_for_terminal_boundary_reconciliation",
+            "code": _TERMINAL_BOUNDARY_ACK_PENDING_CODE,
+            "retryable": True,
+            "input_id": str(row.id),
+            "session_id": str(session.id),
+            "blocking_runtime_task_id": str(missing.id),
+            "terminal_boundary_status": "missing",
+        }
+    boundary = await db.scalar(
+        select(RuntimeTerminalBoundaryOutbox)
+        .where(
+            RuntimeTerminalBoundaryOutbox.tenant_id == admission.tenant_id,
+            RuntimeTerminalBoundaryOutbox.agent_id == agent.id,
+            RuntimeTerminalBoundaryOutbox.session_id == str(session.id),
+            RuntimeTerminalBoundaryOutbox.status != "delivered",
+        )
+        .order_by(RuntimeTerminalBoundaryOutbox.created_at, RuntimeTerminalBoundaryOutbox.id)
+        .limit(1)
+    )
+    if boundary is None:
+        return None
+    return {
+        "kind": "deferred",
+        "status": "waiting_for_terminal_boundary_ack",
+        "code": _TERMINAL_BOUNDARY_ACK_PENDING_CODE,
+        "retryable": True,
+        "input_id": str(row.id),
+        "session_id": str(session.id),
+        "terminal_boundary_id": str(boundary.id),
+        "blocking_runtime_task_id": str(boundary.runtime_task_id),
+        "terminal_boundary_status": boundary.status,
+    }
 
 
 def _tool_effect_reconciliation_detail(exc: HTTPException) -> dict[str, Any] | None:
@@ -264,6 +326,30 @@ async def _start_input_runtime(
             "session_v2_successor": successor,
         },
     )
+    if str(metadata.get("source") or "") == "session_goal":
+        try:
+            goal_id = uuid.UUID(str(metadata["goal_id"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError("session_goal_runtime_binding_invalid") from exc
+        goal = await db.scalar(
+            select(AgentSessionGoal)
+            .where(
+                AgentSessionGoal.id == goal_id,
+                AgentSessionGoal.tenant_id == agent.tenant_id,
+                AgentSessionGoal.agent_id == agent.id,
+                AgentSessionGoal.chat_session_id == session.id,
+            )
+            .with_for_update()
+        )
+        if goal is None:
+            raise RuntimeError("session_goal_runtime_binding_missing")
+        goal_metadata = dict(goal.metadata_json or {})
+        bound_run_id = str(goal_metadata.get("last_goal_run_id") or "").strip()
+        if bound_run_id and uuid.UUID(bound_run_id) != run_id:
+            raise RuntimeError("session_goal_runtime_binding_conflict")
+        goal_metadata["last_goal_run_id"] = str(run_id)
+        goal_metadata["last_goal_run_status"] = str(payload.get("status") or "pending")
+        goal.metadata_json = goal_metadata
     return {"kind": "runtime", "run_id": str(run_id), "turn_id": turn_id, "run": dict(payload)}
 
 
@@ -278,6 +364,15 @@ async def _start_fifo_successor_if_ready(
     session: ChatSession,
 ) -> dict[str, Any] | None:
     await lock_transcript_session(db, session_id=session.id)
+    terminal_boundary_hold = await _terminal_boundary_dispatch_hold(
+        db,
+        admission=admission,
+        row=row,
+        agent=agent,
+        session=session,
+    )
+    if terminal_boundary_hold is not None:
+        return terminal_boundary_hold
     # Only an EXECUTABLE CHAT run in an active-like status occupies the
     # session: the ``uq_runtime_tasks_active_web_chat_session`` partial unique
     # index and ``web_chat_runtime._find_active_run`` both predicate on the
@@ -347,6 +442,16 @@ async def _dispatch_one(
         admission_id=admission_id,
     )
     if row.intent == "start_turn":
+        await lock_transcript_session(db, session_id=session.id)
+        terminal_boundary_hold = await _terminal_boundary_dispatch_hold(
+            db,
+            admission=admission,
+            row=row,
+            agent=agent,
+            session=session,
+        )
+        if terminal_boundary_hold is not None:
+            return terminal_boundary_hold, True
         try:
             return (
                 await _start_input_runtime(
@@ -421,6 +526,8 @@ async def _dispatch_one(
                 )
             if run is None:
                 return ({"kind": "successor", "status": "waiting_for_terminal"}, True)
+            if run.get("kind") == "deferred":
+                return (run, True)
             return (run, False)
         return (_json_receipt({"kind": "mailbox", **asdict(mailbox)}), False)
     if row.intent == "interrupt_and_replace":
@@ -542,19 +649,31 @@ def _claimed_admission_ids(
     return claimed_ids
 
 
-async def recover_admitted_session_inputs_once(
-    db: AsyncSession,
-    *,
-    worker_id: str,
-    stale_after: timedelta = timedelta(seconds=5),
-    tenant_id: uuid.UUID | None = None,
-    limit: int = 100,
-) -> dict[str, int]:
-    """Claim admitted inputs globally with SKIP LOCKED and replay safe effects."""
-
-    now = datetime.now(timezone.utc)
+def _admitted_input_candidate_statement(
+    *entities: Any,
+    now: datetime,
+    tenant_id: uuid.UUID | None,
+    limit: int,
+):
+    receipt_boundary_id = SessionInputAdmission.dispatch_receipt_json["terminal_boundary_id"].as_string()
+    receipt_boundary_status = SessionInputAdmission.dispatch_receipt_json["terminal_boundary_status"].as_string()
+    unchanged_terminal_boundary_hold = (
+        select(RuntimeTerminalBoundaryOutbox.id)
+        .where(
+            SessionInputAdmission.dispatch_state == "pending",
+            SessionInputAdmission.dispatch_receipt_json["code"].as_string() == _TERMINAL_BOUNDARY_ACK_PENDING_CODE,
+            RuntimeTerminalBoundaryOutbox.tenant_id == SessionInputAdmission.tenant_id,
+            func.replace(RuntimeTerminalBoundaryOutbox.session_id, "-", "")
+            == func.replace(cast(SessionInputAdmission.session_id, String), "-", ""),
+            RuntimeTerminalBoundaryOutbox.status != "delivered",
+            RuntimeTerminalBoundaryOutbox.status == receipt_boundary_status,
+            func.replace(cast(RuntimeTerminalBoundaryOutbox.id, String), "-", "")
+            == func.replace(receipt_boundary_id, "-", ""),
+        )
+        .exists()
+    )
     statement = (
-        select(SessionInputAdmission)
+        select(*entities)
         .join(SessionTurnInput, SessionTurnInput.id == SessionInputAdmission.input_id)
         .where(
             SessionInputAdmission.input_revision == SessionTurnInput.revision,
@@ -564,13 +683,55 @@ async def recover_admitted_session_inputs_once(
                 (SessionInputAdmission.dispatch_state == "dispatching")
                 & (SessionInputAdmission.lease_expires_at <= now),
             ),
+            ~unchanged_terminal_boundary_hold,
         )
         .order_by(SessionTurnInput.queue_ordinal, SessionInputAdmission.id)
         .limit(max(1, int(limit)))
-        .with_for_update(skip_locked=True)
     )
     if tenant_id is not None:
         statement = statement.where(SessionInputAdmission.tenant_id == tenant_id)
+    return statement
+
+
+async def discover_admitted_session_input_locators(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID | None = None,
+    limit: int = 100,
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """Return only bounded tenant/admission locators for the global worker."""
+
+    statement = _admitted_input_candidate_statement(
+        SessionInputAdmission.tenant_id,
+        SessionInputAdmission.id,
+        now=datetime.now(timezone.utc),
+        tenant_id=tenant_id,
+        limit=limit,
+    )
+    return list((await db.execute(statement)).tuples())
+
+
+async def recover_admitted_session_inputs_once(
+    db: AsyncSession,
+    *,
+    worker_id: str,
+    stale_after: timedelta = timedelta(seconds=5),
+    tenant_id: uuid.UUID | None = None,
+    admission_ids: tuple[uuid.UUID, ...] | None = None,
+    limit: int = 100,
+) -> dict[str, int]:
+    """Claim tenant-scoped admitted inputs with SKIP LOCKED and replay effects."""
+
+    now = datetime.now(timezone.utc)
+    statement = _admitted_input_candidate_statement(
+        SessionInputAdmission,
+        now=now,
+        tenant_id=tenant_id,
+        limit=limit,
+    )
+    if admission_ids is not None:
+        statement = statement.where(SessionInputAdmission.id.in_(admission_ids))
+    statement = statement.with_for_update(skip_locked=True)
     claimed = list((await db.execute(statement)).scalars())
     lease_seconds = max(1.0, float(stale_after.total_seconds()) or 5.0)
     claimed_ids = _claimed_admission_ids(
@@ -589,6 +750,7 @@ async def recover_dispatched_terminal_steers_once(
     worker_id: str,
     stale_after: timedelta = timedelta(seconds=5),
     tenant_id: uuid.UUID | None = None,
+    admission_ids: tuple[uuid.UUID, ...] | None = None,
     limit: int = 100,
 ) -> dict[str, int]:
     """Re-claim dispatched steers whose target run terminalized after mailing.
@@ -608,8 +770,33 @@ async def recover_dispatched_terminal_steers_once(
     """
 
     now = datetime.now(timezone.utc)
+    statement = _terminal_steer_candidate_statement(
+        SessionInputAdmission,
+        tenant_id=tenant_id,
+        limit=limit,
+    )
+    if admission_ids is not None:
+        statement = statement.where(SessionInputAdmission.id.in_(admission_ids))
+    statement = statement.with_for_update(of=(SessionInputAdmission, SessionTurnInput), skip_locked=True)
+    claimed = list((await db.execute(statement)).scalars())
+    lease_seconds = max(1.0, float(stale_after.total_seconds()) or 5.0)
+    claimed_ids = _claimed_admission_ids(
+        claimed,
+        worker_id=worker_id,
+        now=now,
+        lease_seconds=lease_seconds,
+    )
+    await db.commit()
+    return await _dispatch_claimed_admissions(db, claimed_ids)
+
+
+def _terminal_steer_candidate_statement(
+    *entities: Any,
+    tenant_id: uuid.UUID | None,
+    limit: int,
+):
     statement = (
-        select(SessionInputAdmission)
+        select(*entities)
         .join(SessionTurnInput, SessionTurnInput.id == SessionInputAdmission.input_id)
         .join(
             RuntimeTask,
@@ -629,20 +816,27 @@ async def recover_dispatched_terminal_steers_once(
         )
         .order_by(SessionTurnInput.queue_ordinal, SessionInputAdmission.id)
         .limit(max(1, int(limit)))
-        .with_for_update(of=(SessionInputAdmission, SessionTurnInput), skip_locked=True)
     )
     if tenant_id is not None:
         statement = statement.where(SessionInputAdmission.tenant_id == tenant_id)
-    claimed = list((await db.execute(statement)).scalars())
-    lease_seconds = max(1.0, float(stale_after.total_seconds()) or 5.0)
-    claimed_ids = _claimed_admission_ids(
-        claimed,
-        worker_id=worker_id,
-        now=now,
-        lease_seconds=lease_seconds,
+    return statement
+
+
+async def discover_terminal_steer_locators(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID | None = None,
+    limit: int = 100,
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """Return bounded terminal-steer locators without retaining bypass."""
+
+    statement = _terminal_steer_candidate_statement(
+        SessionInputAdmission.tenant_id,
+        SessionInputAdmission.id,
+        tenant_id=tenant_id,
+        limit=limit,
     )
-    await db.commit()
-    return await _dispatch_claimed_admissions(db, claimed_ids)
+    return list((await db.execute(statement)).tuples())
 
 
 async def dispatch_admitted_input_fast_path(

@@ -62,9 +62,9 @@
 
 跨仓设计文档不能绑定某个开发者的绝对文件路径。本文使用 `@hive-connect:<repo-relative-path>` 作为可移植逻辑地址；权威快照是 remote + commit + file SHA-256，当前本机 checkout 只用于读取和复核，不是文档身份。
 
-- remote：`https://github.com/rocky2431/hive-connect.git`
+- remote：`https://github.com/<legacy-owner>/hive-connect.git`
 - snapshot commit：`6cf0b591c037c52ab6b0542c1756006023c7f218`
-- 当前本机 convenience root：`/Users/rocky243/vc-saas/hive-connect`（不进入 `@` 路由，不作为 CI 必需路径）
+- 当前本机 convenience root：`/Users/example-owner/vc-saas/hive-connect`（不进入 `@` 路由，不作为 CI 必需路径）
 
 <!-- external-doc-registry-start -->
 - hive-connect | 6cf0b591c037c52ab6b0542c1756006023c7f218 | AGENTS.md | 6ccb105ee0c6d79e7015e4aec5b66c94bb49f214ce6359d365c1c6befc4dd1fc
@@ -378,7 +378,7 @@ FreeCode 当前本地源码证明它保有完整 model/tool loop、permission/ho
 
 因此 Hive 不能以“CC 也没有”为理由保留 fan-in 爆炸，也不能为了稳定而删掉 CC 的 Sub-agent/Skill/Tool 语义。
 
-`claude-code-org` 的 `/Users/rocky243/Context Engineering/claude-code-org/src/tools/AgentTool/**`、`/Users/rocky243/Context Engineering/claude-code-org/src/utils/forkedAgent.ts`、`/Users/rocky243/Context Engineering/claude-code-org/src/utils/sessionStorage.ts` 对 fork/resume/background/transcript 语义给出同向交叉证据。claw-code Python port 只用于识别现有移植边界；其中按固定 turn 数保留尾部的简化实现不能反向定义 CC 语义。claw-code Rust 的 JSONL session、fork、resume、compact 与 health-probe 只作为低层 session hygiene 参考。发生冲突时仍以 FreeCode 为 CC semantic floor。
+`claude-code-org` 的 `/Users/example-owner/Context Engineering/claude-code-org/src/tools/AgentTool/**`、`/Users/example-owner/Context Engineering/claude-code-org/src/utils/forkedAgent.ts`、`/Users/example-owner/Context Engineering/claude-code-org/src/utils/sessionStorage.ts` 对 fork/resume/background/transcript 语义给出同向交叉证据。claw-code Python port 只用于识别现有移植边界；其中按固定 turn 数保留尾部的简化实现不能反向定义 CC 语义。claw-code Rust 的 JSONL session、fork、resume、compact 与 health-probe 只作为低层 session hygiene 参考。发生冲突时仍以 FreeCode 为 CC semantic floor。
 
 ### 6.2 Codex：工程增量
 
@@ -389,10 +389,10 @@ Codex 当前源码提供两个本轮最有价值的参考：
 
 源码锚点：
 
-- `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/tools/handlers/agent_jobs.rs`
-- `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/tools/handlers/agent_jobs/spawn_agents_on_csv.rs`
-- `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/tools/handlers/agent_jobs/report_agent_job_result.rs`
-- `/Users/rocky243/Context Engineering/codex/codex-rs/protocol/src/protocol.rs`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/core/src/tools/handlers/agent_jobs.rs`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/core/src/tools/handlers/agent_jobs/spawn_agents_on_csv.rs`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/core/src/tools/handlers/agent_jobs/report_agent_job_result.rs`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/protocol/src/protocol.rs`
 
 不能照抄固定 4/6/64 thread cap、omit skills、blind truncate 或仅本地 CSV 假设。Hive 应吸收 typed/durable/bounded/result-ref 结构，并用 tenant/RLS、root execution、Workspace Artifact、Memory source refs 与跨渠道治理扩展它。
 
@@ -1610,7 +1610,7 @@ context_read_receipt:
 - Red 2：首次运行整份 ledger validator → `1 failed, 9 passed`；新证据把本仓 Markdown 通配模式误写成反引号内的真实 `@` 路由，portable-route 校验正确将其判为不存在文件。修复为普通描述文字，不通过放宽 path validator 掩盖错误。
 - 实现：新增 §0.6 的 11 行 Group 上下文包总索引；每行指名最先打开的 `primary` 文档、必须带回施工的 `purpose`、§9 完整 `@` 路由和 §12.4 `EVID-Gn-*` sink。§9 仍是完整清单的唯一事实源，索引不复制所有长文档列表；未登记的新权威必须先更新路由/receipt/validator，纯历史或被覆盖方案不得污染 `@必须先读`。同步把 Group 1 AA 入口补到 `EVID-G1-005`，并更新 Group 0 顶部状态、§9 汇总和 §12.3 索引。
 - 本仓文档审计：AA 当前解析出 79 个唯一的本仓 Markdown `@` 路由，`is_file + git ls-files --error-unmatch` 结果 `missing_or_untracked=0`；两份关键 Context/Session 合同和三份原始 Review 的文档引用差集只出现示例/运行时文件名 `AGENTS.md`、`CLAUDE.md`、`SKILL.md`、`backend-session-audit.md`、`soul.md`、`source.md`，没有遗漏新的子系统施工合同。
-- 跨仓审计：`https://github.com/rocky2431/hive-connect.git` 的本地/remote HEAD 均为固定快照 `6cf0b591c037c52ab6b0542c1756006023c7f218`；对 §0.3 registry 的 8 个文件逐一执行 `git show <commit>:<path> | shasum -a 256`，结果 `verified=8 failed=0`。Group 7 仍必须在实际开工时 fresh-check registry delta，不能继承本次结果冒充未来状态。
+- 跨仓审计：`https://github.com/<legacy-owner>/hive-connect.git` 的本地/remote HEAD 均为固定快照 `6cf0b591c037c52ab6b0542c1756006023c7f218`；对 §0.3 registry 的 8 个文件逐一执行 `git show <commit>:<path> | shasum -a 256`，结果 `verified=8 failed=0`。Group 7 仍必须在实际开工时 fresh-check registry delta，不能继承本次结果冒充未来状态。
 - Green 1：新增门单测 → `1 passed in 0.23s`。
 - Green 2：`cd backend && source .venv/bin/activate && pytest -q tests/architecture/test_agent_native_repair_ledger.py` → `10 passed in 0.29s`。
 - Green 3：`cd backend && source .venv/bin/activate && ruff check tests/architecture/test_agent_native_repair_ledger.py` → `All checks passed!`；owned paths `git diff --check` → exit `0`。
@@ -2068,7 +2068,7 @@ context_read_receipt:
 
 ```bash
 cd /tmp/hive-kbprop-index-20260715-a/backend
-/Users/rocky243/vc-saas/hiveclaw-main/backend/.venv/bin/pytest tests/services/test_knowledge_provenance.py tests/services/test_knowledge_provenance_repair.py tests/services/test_agent_tools_channel_delivery.py tests/services/test_chat_transcript.py tests/services/test_channel_delivery_outbox.py tests/agents/test_subagent.py tests/agents/test_subagent_spawn_tool.py -q
+/Users/example-owner/vc-saas/hiveclaw-main/backend/.venv/bin/pytest tests/services/test_knowledge_provenance.py tests/services/test_knowledge_provenance_repair.py tests/services/test_agent_tools_channel_delivery.py tests/services/test_chat_transcript.py tests/services/test_channel_delivery_outbox.py tests/agents/test_subagent.py tests/agents/test_subagent_spawn_tool.py -q
 ```
 
 - production deploy/health：同一 commit archive 部署 backend=`dcb72fa7-964f-47a7-bc79-0c415891045b`、backend-api=`02101bee-5473-437f-a19f-a760929f1264`、frontend=`c56ae319-0b43-4dc4-aa41-4233695fa17c`，三项最终均 `SUCCESS`。backend `/api/health`=`status=ok/version=1.7.0`，runtime role=`app_rls`、`strict`、non-superuser、non-BYPASSRLS，evolution/trigger/workflow daemon 均 healthy；frontend=`HTTP/2 200`。
@@ -2408,7 +2408,7 @@ context_read_receipt:
 - 数据库权威：`llm_models(tenant_id,id)` 增加 `uq_llm_models_tenant_id_id`；tenant-owned `agents(tenant_id,primary_model_id/fallback_model_id)` 与 `agent_templates(tenant_id,model_id)` 分别增加 `fk_agents_primary_model_tenant`、`fk_agents_fallback_model_tenant`、`fk_agent_templates_model_tenant`。composite FK 是绕过 API 时仍成立的 cross-tenant hard boundary；“enabled”仍由 governed mutation preflight 判断，没有伪装成数据库可表达的静态 FK 事实。
 - migration/backfill/recovery：revision=`agent_model_tenant_authority_0715`。升级先把 legacy missing/cross-tenant Agent 与 Role Template ref 写入 canonical `audit_logs`（`migration.agent_model_reference_quarantined` / `migration.agent_template_model_reference_quarantined`，含原 model、原因和 recovery），再只将无效 ref 置空；随后以 `NOT VALID` 建约束并 `VALIDATE CONSTRAINT`。secure downgrade 故意保留约束与不可变 quarantine evidence，旧应用与约束兼容，避免 rollback 重开越权写。production preflight 证明实际 backfill 为 0：102 个 Agent 的 primary/fallback missing/cross-tenant 全为 0，Role Template 当前 0 条。
 - Red：metadata test 先因 `fk_agents_primary_model_tenant` 不存在而 `KeyError`；AI Asset rollback 对 foreign model 未抛错；migration contract 文件不存在。扩展到全部同根写路径后，Role Template foreign model create 仍返回 201、update 进入未类型化 500，且 template composite FK 缺失。每个失败都发生在预期 authority seam，不是 fixture 或网络噪声。
-- Green/Refactor：`cd backend && .venv/bin/pytest tests/migrations/test_agent_model_tenant_authority_migration.py tests/integration/test_ai_asset_control_plane.py tests/integration/test_schema_readiness.py -q` → 真实 PostgreSQL 组合 `7 passed in 15.06s`；补强 secure-downgrade audit preservation 后，`.venv/bin/pytest tests/migrations/test_agent_model_tenant_authority_migration.py::test_real_migration_quarantines_legacy_refs_and_enforces_tenant_pair -q` → `1 passed in 5.67s`。所有 owned Python files 的 `ruff check`、`ruff format --check` 与 `git diff --check` 均 clean。部署后在 detached checkout `/tmp/hive-p2-f6-4bae5e0e3/backend` 执行 `/Users/rocky243/vc-saas/hiveclaw-main/backend/.venv/bin/pytest tests/models/test_agent_model_tenant_constraints.py tests/services/test_agent_model_reference_authority.py tests/api/test_role_templates.py tests/integration/test_ai_asset_control_plane.py -q` → `14 passed, 4 skipped in 0.42s`；4 个 skip 是该无 production DB 环境下既有 integration fixture 条件，不替代前述真实 PG 结果。
+- Green/Refactor：`cd backend && .venv/bin/pytest tests/migrations/test_agent_model_tenant_authority_migration.py tests/integration/test_ai_asset_control_plane.py tests/integration/test_schema_readiness.py -q` → 真实 PostgreSQL 组合 `7 passed in 15.06s`；补强 secure-downgrade audit preservation 后，`.venv/bin/pytest tests/migrations/test_agent_model_tenant_authority_migration.py::test_real_migration_quarantines_legacy_refs_and_enforces_tenant_pair -q` → `1 passed in 5.67s`。所有 owned Python files 的 `ruff check`、`ruff format --check` 与 `git diff --check` 均 clean。部署后在 detached checkout `/tmp/hive-p2-f6-4bae5e0e3/backend` 执行 `/Users/example-owner/vc-saas/hiveclaw-main/backend/.venv/bin/pytest tests/models/test_agent_model_tenant_constraints.py tests/services/test_agent_model_reference_authority.py tests/api/test_role_templates.py tests/integration/test_ai_asset_control_plane.py -q` → `14 passed, 4 skipped in 0.42s`；4 个 skip 是该无 production DB 环境下既有 integration fixture 条件，不替代前述真实 PG 结果。
 - clean-checkout 全量与 gate 修复：第一次 detached checkout HEAD=`32778e239` 执行完整 backend 得到 `7190 passed, 2 skipped, 1 failed in 262.52s`；唯一失败是 `test_alembic_single_head_is_current_closure_head` 仍硬编码旧 revision，不能被隐藏。`4bae5e0e3` 只更新该 closure-head gate 后，在 `/tmp/hive-p2-f6-4bae5e0e3` 复跑同一 `pytest tests -q` 得到 `7191 passed, 2 skipped in 269.34s`、exit `0`。
 - CC/FreeCode current-source 对照：FreeCode HEAD=`7dc15d6c8fb0c40c7fcc02ce9b58204324252632`；`src/utils/model/agent.ts` SHA-256=`f5f1551da0cdcc261b28b3df8fecc81af05c1213e4bd99f2a5d7fb7541bad89b` 保留显式 model、`inherit`、parent tier 与 Bedrock region 的模型选择语义，不存在多租户 DB model UUID。Hive 没有把 tenant authority 变成 alias/region/model-quality 裁判，也没有降低 CC 的可选模型能力。
 - Codex current-source 对照：Codex HEAD=`5c19155cbd93bfa099016e7487259f61669823ff`；`codex-rs/config/src/config_toml.rs` SHA-256=`fd3b7b600552e0567eb78ae0a45842e9a32011ebdf581ca18b6e5c3ed0ad7537` 以 `model`/`model_provider` 字符串表达显式选择，`config_requirements.rs` SHA-256=`c404fe3723779fa9f8d50963cab01f8a343a512d3760e951cacd232c57dba5a1` 提供 managed new-thread defaults，同样没有 Hive 的 tenant row authority。composite FK 与 typed preflight 因此是 Hive enterprise control-plane 增量，不是对 CC/Codex 模型语义的改写。

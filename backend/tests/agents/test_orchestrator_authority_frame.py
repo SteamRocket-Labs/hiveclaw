@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -196,17 +196,12 @@ async def test_fresh_sync_delegation_stamps_generated_trace_into_authority_snaps
 
 
 @pytest.mark.asyncio
-async def test_restart_resume_uses_canonical_request_rehydration_and_holds_drift(monkeypatch):
+async def test_restart_resume_defers_authority_rehydration_to_claimed_worker(monkeypatch):
     from app.agents import orchestrator
 
-    request = _delegation_request()
-    request.permission_profile = {
-        "mode": "dontAsk",
-        "allowed_tools": ["read_file", "write_file"],
-        "sandbox": "workspace_write",
-    }
+    task_id = uuid4().hex
     record = {
-        "task_id": "task-a2a",
+        "task_id": task_id,
         "task_type": "delegation",
         "status": "pending",
         "trace_id": "trace-a2a",
@@ -217,35 +212,39 @@ async def test_restart_resume_uses_canonical_request_rehydration_and_holds_drift
             "tool_profile": "research_readonly",
         },
     }
-    builds: list[dict] = []
-    updates: list[dict] = []
+    notifications: list[tuple[str, str]] = []
 
-    async def fake_list_active(**_kwargs):
+    async def fake_list_active(**kwargs):
+        assert kwargs["task_types"] == ("delegation",)
         return [record]
 
-    async def fake_build(runtime_record):
-        builds.append(runtime_record)
-        return request
+    async def forbidden_build(_runtime_record):  # pragma: no cover - must not run
+        raise AssertionError("startup must leave authority rehydration to the claimed worker")
 
-    async def fake_update(_task_id, **kwargs):
-        updates.append(kwargs)
+    async def forbidden_update(_task_id, **_kwargs):  # pragma: no cover - must not run
+        raise AssertionError("startup must not mutate a pending delegation before worker claim")
+
+    async def fake_notify_runtime_task_worker(*, reason, runtime_task_id):
+        notifications.append((reason, str(runtime_task_id)))
 
     monkeypatch.setattr(orchestrator, "list_active_runtime_task_records", fake_list_active)
-    monkeypatch.setattr(orchestrator, "_build_delegation_request_from_runtime_record", fake_build)
-    monkeypatch.setattr(orchestrator, "update_runtime_task_record", fake_update)
+    monkeypatch.setattr(orchestrator, "_build_delegation_request_from_runtime_record", forbidden_build)
+    monkeypatch.setattr(orchestrator, "update_runtime_task_record", forbidden_update)
     monkeypatch.setattr(
         orchestrator,
         "_spawn_async_delegation_task",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("drifted task must not spawn")),
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("startup must not spawn delegation work")),
+    )
+    monkeypatch.setattr(
+        "app.services.runtime_task_worker.notify_runtime_task_worker",
+        fake_notify_runtime_task_worker,
     )
     orchestrator._async_tasks.clear()
 
     resumed = await orchestrator.resume_persisted_async_delegations()
 
-    assert resumed == []
-    assert builds == [record]
-    assert updates[-1]["status"] == "needs_reconciliation"
-    assert updates[-1]["metadata_json"]["restart_resume_blocker"] == "a2a_authority_snapshot_drift"
+    assert resumed == [task_id]
+    assert notifications == [("delegation_restart_pending", str(UUID(task_id)))]
 
 
 def test_nested_a2a_principal_preserves_root_and_extends_chain():

@@ -375,7 +375,7 @@ Red phase 测试项：
 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_web_mcp_resilience.py tests/tools/test_search_provider_tool_definitions.py tests/services/test_prompt_contracts.py -q
 ruff check app/services/agent_tool_domains/web_mcp.py app/tools/handlers/search.py tests/services/test_web_mcp_resilience.py tests/tools/test_search_provider_tool_definitions.py tests/services/test_prompt_contracts.py

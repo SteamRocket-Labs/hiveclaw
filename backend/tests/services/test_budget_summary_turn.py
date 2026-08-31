@@ -78,7 +78,7 @@ def _goal(goal_id=None, status=GoalStatus.ACTIVE.value):
 def _actors():
     agent = SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4(), name="Agent")
     session = SimpleNamespace(id=uuid.uuid4())
-    user = SimpleNamespace(id=uuid.uuid4(), display_name="Rocky", username="rocky")
+    user = SimpleNamespace(id=uuid.uuid4(), display_name="Example Owner", username="example-owner")
     return agent, session, user
 
 

@@ -47,6 +47,8 @@ cleanup_result: PASS | FAIL | BLOCKED_PRECONDITION
 supersedes:
 ```
 
+这里的 `BLOCKED_PRECONDITION` 是某个 evidence dimension 的 product-controlled blocking fact，不是 Journey completion state；Journey 仍按 `Closed loop`、`Partial loop`、`Breakpoint`、`Missing`、`Excluded` 五态记录。
+
 正文固定为：
 
 1. Input：从哪个真实入口、什么输入、是否可恢复。
@@ -63,10 +65,10 @@ supersedes:
 
 - 只保存精确命令与简短结果；完整 stdout、trace、video、screenshot 和 payload 放在 artifact storage，并保存不可变 reference/hash。
 - 不保存 secret、token、个人隐私或真实客户内容。
-- read-only DB 查询要声明 transaction/read-only/tenant scope；生产写入要有 owner action-time authorization。
+- read-only DB 查询要声明 transaction/read-only/tenant scope；落在 PDEC-008 已授权 Example Owner 实验 tenant synthetic scope 内的生产写入按 registered fixture/effect/cleanup 合同执行，超出该 scope 的写入才需要 owner action-time authorization。
 - 受控 fake 必须逐项披露，且结果只能进入 CI evidence，不能进入 production NPTCR。
 - `PASS` 必须说明无管理员、DB 手改、console 或人工补状态。
-- ambiguous provider delivery 记 `FAIL` 或 `BLOCKED_PRECONDITION`，禁止自动 replay 或称 transient。
+- Hive 未能判定是否已送达的 ambiguous delivery 记 `FAIL`，若存在未解决的 product-controlled requirement 才可记 `BLOCKED_PRECONDITION`，禁止自动 replay 或称 transient；经独立确认的第三方 external unavailability 另记 `EXTERNAL_UNAVAILABLE`，对应 provider-success journey 仍未闭环。
 - deployment success 只证明 freshness；signed-in journey 才证明 product consumption。
 - screenshot 只证明 UI observation；需与 canonical mechanical evidence 交叉。
 - pass 1 证明 fresh signed-in clean path；pass 2 必须同时填写 `fault_recovery_result`、`negative_authority_result` 和 `cleanup_result`。额外 fault 文件只在需要独立保存大型故障证据时创建。

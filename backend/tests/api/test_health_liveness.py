@@ -5,6 +5,46 @@ from pathlib import Path
 import pytest
 
 
+def test_build_identity_is_deterministic_and_changes_with_source(tmp_path: Path) -> None:
+    from app.build_identity import source_build_identity
+
+    source = tmp_path / "app"
+    source.mkdir()
+    module = source / "main.py"
+    module.write_text("VALUE = 1\n", encoding="utf-8")
+
+    first = source_build_identity(tmp_path, included_paths=("app",))
+    second = source_build_identity(tmp_path, included_paths=("app",))
+    module.write_text("VALUE = 2\n", encoding="utf-8")
+    changed = source_build_identity(tmp_path, included_paths=("app",))
+
+    assert first == second
+    assert first["revision"] == f"source-sha256:{first['sha256']}"
+    assert first["sha256"] != changed["sha256"]
+
+
+@pytest.mark.asyncio
+async def test_health_includes_server_derived_build_identity(monkeypatch) -> None:
+    from app.main import health_check
+    from app.services.daemon_liveness import reset_daemon_liveness
+    from app.services.rls_runtime_guard import reset_runtime_rls_role_guard_for_tests
+
+    reset_daemon_liveness()
+    reset_runtime_rls_role_guard_for_tests()
+    expected = {
+        "schema": "hive.build_identity.v1",
+        "status": "ok",
+        "revision": "source-sha256:" + "a" * 64,
+        "sha256": "a" * 64,
+        "file_count": 7,
+    }
+    monkeypatch.setattr("app.build_identity.current_build_identity", lambda: expected)
+
+    response = await health_check()
+
+    assert response.components["build_identity"] == expected
+
+
 @pytest.mark.asyncio
 async def test_health_reports_degraded_when_daemon_crashed() -> None:
     from app.main import health_check

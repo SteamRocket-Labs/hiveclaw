@@ -1,6 +1,6 @@
 # Track 3 — 系统提示词 (I) + MCP→tool_search 暴露 (J) 完整设计
 
-> 对标 CC `/Users/rocky243/Context Engineering/claude-code-org`。设计稿，不写代码（prompt 文本给骨架）。
+> 对标 CC `/Users/example-owner/Context Engineering/claude-code-org`。设计稿，不写代码（prompt 文本给骨架）。
 
 ## 读码发现的两处事实纠正（影响 brief）
 

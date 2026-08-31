@@ -623,11 +623,14 @@ async def test_coordination_publish_failure_releases_newly_acquired_lease() -> N
             coordination_gateway=gateway,
         )
 
-    assert runtime.acquire_lease(
-        task_key=_delegation_coordination_key(request),
-        agent_id="runtime-task:retry",
-        ttl_seconds=60,
-    ).acquired is True
+    assert (
+        runtime.acquire_lease(
+            task_key=_delegation_coordination_key(request),
+            agent_id="runtime-task:retry",
+            ttl_seconds=60,
+        ).acquired
+        is True
+    )
 
 
 @pytest.mark.asyncio
@@ -653,20 +656,25 @@ async def test_terminal_coordination_release_records_evidence_and_unblocks_retry
 
     monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update)
 
-    assert await _release_delegation_coordination_lease(
-        task_id=task_id,
-        tenant_id=uuid4(),
-        task_key=task_key,
-        lease_id=lease.lease.id if lease.lease else None,
-        reason="delegation_terminal",
-        coordination_gateway=gateway,
-    ) is True
+    assert (
+        await _release_delegation_coordination_lease(
+            task_id=task_id,
+            tenant_id=uuid4(),
+            task_key=task_key,
+            lease_id=lease.lease.id if lease.lease else None,
+            reason="delegation_terminal",
+            coordination_gateway=gateway,
+        )
+        is True
+    )
     assert updates[-1]["metadata_json"]["coordination_release_state"] == "released"
-    assert (await gateway.acquire_lease(
-        task_key=task_key,
-        agent_id="runtime-task:retry",
-        ttl_seconds=60,
-    )).acquired is True
+    assert (
+        await gateway.acquire_lease(
+            task_key=task_key,
+            agent_id="runtime-task:retry",
+            ttl_seconds=60,
+        )
+    ).acquired is True
 
 
 @pytest.mark.asyncio
@@ -901,15 +909,12 @@ async def test_unavailable_resumable_target_projects_terminal_parent_state(monke
 
     assert request is None
     assert resolved_tenants == [tenant_id]
-    assert updates[0]["status"] == "failed"
-    assert projections == [
-        {
-            "record": record,
-            "status": "failed",
-            "summary": "Task could not be dispatched because the target agent runtime is unavailable.",
-            "reason": "target_runtime_unavailable",
-        }
-    ]
+    assert updates[0]["status"] == "needs_reconciliation"
+    assert updates[0]["root_item_reason_code"] == "dispatch_request_unavailable"
+    assert updates[0]["metadata_json"]["restart_resume_blocker"] == "dispatch_request_unavailable"
+    # The terminal RuntimeTask/outbox is now the sole parent-projection owner;
+    # the dispatch failure path must not race it with an immediate projection.
+    assert projections == []
 
 
 @pytest.mark.asyncio
@@ -1276,11 +1281,13 @@ async def test_delegate_to_agent_supports_research_readonly_profile(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_agent_message_profile_inherits_target_tools_and_governed_memory(monkeypatch):
+    import app.runtime.hooks as runtime_hooks
     from app.agents.orchestrator import AgentDelegationRequest, OrchestrationPolicy, _delegate
 
     target = SimpleNamespace(id=uuid4(), name="Feishu Knowledge", role_description="Knowledge assistant")
     target_model = SimpleNamespace(provider="openai", model="gpt-4.1")
     captured = {}
+    emitted: list[object] = []
     owner_id = uuid4()
     parent_agent_id = uuid4()
 
@@ -1288,7 +1295,11 @@ async def test_agent_message_profile_inherits_target_tools_and_governed_memory(m
         captured["request"] = request
         return SimpleNamespace(content="looked up")
 
+    async def fake_emit_hook(event, **_kwargs):
+        emitted.append(event)
+
     monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke_agent)
+    monkeypatch.setattr(runtime_hooks, "emit_hook", fake_emit_hook)
 
     result = await _delegate(
         AgentDelegationRequest(
@@ -1318,6 +1329,543 @@ async def test_agent_message_profile_inherits_target_tools_and_governed_memory(m
     assert request.session_context.metadata["agent_message_tool_policy"] == "peer_agent_tool_surface"
     assert request.session_context.metadata["agent_message_memory_policy"] == "peer_governed_memory"
     assert "peer agent request" in request.system_prompt_suffix
+    assert runtime_hooks.HookEvent.DELEGATION_END not in emitted
+    assert runtime_hooks.HookEvent.RESPONSE_COMPLETE not in emitted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("commit_error", [None, RuntimeError("transcript commit failed")])
+async def test_sync_delegation_end_follows_committed_transcript_once(monkeypatch, commit_error):
+    import app.runtime.hooks as runtime_hooks
+    from app.agents.orchestrator import AgentDelegationRequest, _delegate
+
+    session_id = uuid4().hex
+    owner_id = uuid4()
+    target = SimpleNamespace(id=uuid4(), name="Sync Worker", role_description="", tenant_id=uuid4())
+    order: list[str] = []
+    emitted: list[object] = []
+
+    class _TranscriptSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def commit(self):
+            order.append("transcript_commit")
+            if commit_error is not None:
+                raise commit_error
+
+    async def fake_invoke_agent(_request):
+        return SimpleNamespace(content="done")
+
+    async def fake_ensure_session(_request, *, state):
+        assert state == "running"
+        return True
+
+    async def fake_append_session_event(**_kwargs):
+        return SimpleNamespace(
+            message_id=None,
+            transcript_event=SimpleNamespace(parts_json=None, metadata_json={}),
+        )
+
+    async def fake_emit_hook(event, **_kwargs):
+        emitted.append(event)
+        order.append(f"hook:{getattr(event, 'value', event)}")
+
+    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke_agent)
+    monkeypatch.setattr("app.agents.orchestrator._ensure_peer_delegation_session", fake_ensure_session)
+    monkeypatch.setattr("app.database.tenant_scoped_session", lambda *_args, **_kwargs: _TranscriptSession())
+    monkeypatch.setattr("app.services.chat_transcript.append_session_event", fake_append_session_event)
+    monkeypatch.setattr(runtime_hooks, "emit_hook", fake_emit_hook)
+
+    request = AgentDelegationRequest(
+        target=target,
+        target_model=SimpleNamespace(),
+        conversation_messages=[{"role": "user", "content": "work"}],
+        owner_id=owner_id,
+        session_id=session_id,
+        tenant_id=target.tenant_id,
+        **_a2a_authority_kwargs(target=target, owner_id=owner_id, session_id=session_id),
+    )
+    if commit_error is not None:
+        with pytest.raises(RuntimeError, match="transcript commit failed"):
+            await _delegate(request)
+        assert runtime_hooks.HookEvent.DELEGATION_END not in emitted
+    else:
+        result = await _delegate(request)
+        assert result.transcript_committed is True
+        assert emitted.count(runtime_hooks.HookEvent.DELEGATION_END) == 1
+        assert order.index("transcript_commit") < order.index("hook:delegation_end")
+    assert runtime_hooks.HookEvent.RESPONSE_COMPLETE not in emitted
+
+
+@pytest.mark.asyncio
+async def test_sync_delegation_without_committed_transcript_emits_no_terminal_hook(monkeypatch):
+    import app.runtime.hooks as runtime_hooks
+    from app.agents.orchestrator import AgentDelegationRequest, _delegate
+
+    target = SimpleNamespace(id=uuid4(), name="No Transcript Worker", role_description="")
+    owner_id = uuid4()
+    emitted: list[object] = []
+
+    async def fake_invoke_agent(_request):
+        return SimpleNamespace(content="done")
+
+    async def fake_emit_hook(event, **_kwargs):
+        emitted.append(event)
+
+    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke_agent)
+    monkeypatch.setattr(runtime_hooks, "emit_hook", fake_emit_hook)
+
+    result = await _delegate(
+        AgentDelegationRequest(
+            target=target,
+            target_model=SimpleNamespace(),
+            conversation_messages=[{"role": "user", "content": "work"}],
+            owner_id=owner_id,
+            session_id="not-a-uuid",
+            **_a2a_authority_kwargs(target=target, owner_id=owner_id, session_id="not-a-uuid"),
+        )
+    )
+
+    assert result.failed is False
+    assert runtime_hooks.HookEvent.DELEGATION_START in emitted
+    assert runtime_hooks.HookEvent.DELEGATION_END not in emitted
+    assert runtime_hooks.HookEvent.RESPONSE_COMPLETE not in emitted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_outcome", [True, False, RuntimeError("terminal write failed")])
+async def test_async_delegation_terminal_learning_waits_for_committed_outbox(monkeypatch, terminal_outcome):
+    import app.runtime.hooks as runtime_hooks
+    from app.agents.orchestrator import AgentDelegationRequest, _async_tasks, _spawn_async_delegation_task
+    from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
+
+    task_id = uuid4().hex
+    session_id = uuid4().hex
+    owner_id = uuid4()
+    target = SimpleNamespace(id=uuid4(), name="Async Worker", role_description="", tenant_id=uuid4())
+    order: list[str] = []
+    emitted: list[object] = []
+    terminal_updates: list[dict] = []
+
+    class _TranscriptSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def commit(self):
+            order.append("transcript_commit")
+
+        async def scalar(self, _statement):
+            return SimpleNamespace(status="running")
+
+    async def fake_invoke_agent(_request):
+        return SimpleNamespace(
+            content="done",
+            terminal_reason="turn_stop",
+            response_complete_payload={
+                "agent_id": target.id,
+                "session_id": session_id,
+                "messages": [{"role": "user", "content": "work"}],
+                "source": "agent",
+                "metadata": {
+                    "tenant_id": str(target.tenant_id),
+                    "final_response": "done",
+                },
+            },
+        )
+
+    async def fake_ensure_session(_request, *, state):
+        assert state == "running"
+        return True
+
+    async def fake_append_session_event(**_kwargs):
+        return SimpleNamespace(
+            message_id=None,
+            transcript_event=SimpleNamespace(parts_json=None, metadata_json={}),
+        )
+
+    async def fake_emit_hook(event, **_kwargs):
+        emitted.append(event)
+        order.append(f"hook:{getattr(event, 'value', event)}")
+
+    async def fake_update_runtime_task_record(_task_id, **fields):
+        assert fields["status"] == "completed"
+        terminal_updates.append(fields)
+        order.append("runtime_task_terminal")
+        if isinstance(terminal_outcome, Exception):
+            raise terminal_outcome
+        return terminal_outcome
+
+    async def fake_terminal_evidence(**_kwargs):
+        return {"status": "completed"}
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    request = AgentDelegationRequest(
+        target=target,
+        target_model=SimpleNamespace(),
+        conversation_messages=[{"role": "user", "content": "work"}],
+        owner_id=owner_id,
+        session_id=session_id,
+        runtime_task_id=task_id,
+        trace_id="trace-terminal-order",
+        tenant_id=target.tenant_id,
+        **_a2a_authority_kwargs(target=target, owner_id=owner_id, session_id=session_id),
+    )
+
+    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke_agent)
+    monkeypatch.setattr("app.agents.orchestrator._ensure_peer_delegation_session", fake_ensure_session)
+    monkeypatch.setattr("app.database.tenant_scoped_session", lambda *_args, **_kwargs: _TranscriptSession())
+    monkeypatch.setattr("app.services.chat_transcript.append_session_event", fake_append_session_event)
+    monkeypatch.setattr(runtime_hooks, "emit_hook", fake_emit_hook)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator._persist_delegation_terminal_evidence", fake_terminal_evidence)
+    monkeypatch.setattr("app.agents.orchestrator._settle_delegation_budget", noop_async)
+    monkeypatch.setattr("app.agents.orchestrator._project_delegation_completion_to_parent", noop_async)
+    monkeypatch.setattr("app.agents.orchestrator._release_delegation_coordination_lease", noop_async)
+
+    fence_token = set_runtime_task_fence(task_id=task_id, claim_version=1, worker_id="worker-terminal-order")
+    try:
+        _spawn_async_delegation_task(task_id=task_id, request=request, trace_id="trace-terminal-order")
+    finally:
+        reset_runtime_task_fence(fence_token)
+    state = _async_tasks[task_id]
+    await state.task
+    _async_tasks.pop(task_id, None)
+
+    assert len(terminal_updates) == 1
+    assert terminal_updates[0]["metadata_json"]["terminal_reason"] == "turn_stop"
+    assert terminal_updates[0]["metadata_json"]["response_complete_payload"]["metadata"]["final_response"] == "done"
+    if terminal_outcome is True:
+        assert "runtime_task_terminal" in order
+    assert runtime_hooks.HookEvent.DELEGATION_END not in emitted
+    assert runtime_hooks.HookEvent.RESPONSE_COMPLETE not in emitted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lost_authority", ["killed", "reclaimed", "expired"])
+async def test_async_delegation_final_transcript_drops_terminal_reclaimed_or_expired_claim(
+    monkeypatch,
+    lost_authority,
+):
+    import app.runtime.hooks as runtime_hooks
+    from app.agents.orchestrator import AgentDelegationRequest, _delegate
+    from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
+
+    task_id = uuid4().hex
+    session_id = uuid4().hex
+    owner_id = uuid4()
+    target = SimpleNamespace(id=uuid4(), name="Cancelled Worker", role_description="", tenant_id=uuid4())
+    statements: list[str] = []
+    appended: list[dict] = []
+
+    class _CancelledTranscriptSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def scalar(self, statement):
+            rendered = str(statement)
+            statements.append(rendered)
+            assert "runtime_tasks.status =" in rendered
+            assert "runtime_tasks.claim_version =" in rendered
+            assert "runtime_tasks.claimed_by =" in rendered
+            assert "runtime_tasks.claim_expires_at >" in rendered
+            return None
+
+        async def commit(self):
+            raise AssertionError("a fenced assistant event must not commit")
+
+    async def fake_invoke_agent(_request):
+        return SimpleNamespace(
+            content="late model output",
+            terminal_reason="turn_stop",
+            response_complete_payload={"metadata": {"final_response": "late model output"}},
+        )
+
+    async def fake_append_session_event(**kwargs):
+        appended.append(kwargs)
+        raise AssertionError("a killed RuntimeTask must reject late assistant bytes")
+
+    async def fake_ensure_session(*_args, **_kwargs):
+        return True
+
+    async def noop_hook(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke_agent)
+    monkeypatch.setattr("app.agents.orchestrator._ensure_peer_delegation_session", fake_ensure_session)
+    monkeypatch.setattr("app.database.tenant_scoped_session", lambda *_args, **_kwargs: _CancelledTranscriptSession())
+    monkeypatch.setattr("app.services.chat_transcript.append_session_event", fake_append_session_event)
+    monkeypatch.setattr(runtime_hooks, "emit_hook", noop_hook)
+
+    fence_token = set_runtime_task_fence(task_id=task_id, claim_version=4, worker_id="worker-cancel-fence")
+    try:
+        result = await _delegate(
+            AgentDelegationRequest(
+                target=target,
+                target_model=SimpleNamespace(),
+                conversation_messages=[{"role": "user", "content": "work"}],
+                owner_id=owner_id,
+                session_id=session_id,
+                runtime_task_id=task_id,
+                trace_id=f"trace-{lost_authority}-fence",
+                tenant_id=target.tenant_id,
+                **_a2a_authority_kwargs(target=target, owner_id=owner_id, session_id=session_id),
+            )
+        )
+    finally:
+        reset_runtime_task_fence(fence_token)
+
+    assert result.transcript_committed is False
+    assert appended == []
+    assert len(statements) == 1
+    assert "runtime_tasks.status" in statements[0]
+    assert "FOR UPDATE" in statements[0]
+
+
+@pytest.mark.asyncio
+async def test_async_delegation_final_transcript_binds_current_worker_claim(monkeypatch):
+    import app.runtime.hooks as runtime_hooks
+    from app.agents.orchestrator import AgentDelegationRequest, _delegate
+    from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
+
+    task_id = uuid4()
+    session_id = uuid4().hex
+    owner_id = uuid4()
+    target = SimpleNamespace(id=uuid4(), name="Claimed Worker", role_description="", tenant_id=uuid4())
+    statements: list[str] = []
+    appended: list[dict] = []
+
+    class _ClaimedTranscriptSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def scalar(self, statement):
+            rendered = str(statement)
+            statements.append(rendered)
+            assert "runtime_tasks.claim_version =" in rendered
+            assert "runtime_tasks.claimed_by =" in rendered
+            assert "runtime_tasks.claim_expires_at >" in rendered
+            return SimpleNamespace(status="running")
+
+        async def commit(self):
+            return None
+
+    async def fake_invoke_agent(_request):
+        return SimpleNamespace(
+            content="claimed output",
+            terminal_reason="turn_stop",
+            response_complete_payload={"metadata": {"final_response": "claimed output"}},
+        )
+
+    async def fake_append_session_event(**kwargs):
+        appended.append(kwargs)
+        return SimpleNamespace(
+            message_id=None,
+            transcript_event=SimpleNamespace(parts_json=None, metadata_json={}),
+        )
+
+    async def fake_ensure_session(*_args, **_kwargs):
+        return True
+
+    async def noop_hook(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke_agent)
+    monkeypatch.setattr("app.agents.orchestrator._ensure_peer_delegation_session", fake_ensure_session)
+    monkeypatch.setattr("app.database.tenant_scoped_session", lambda *_args, **_kwargs: _ClaimedTranscriptSession())
+    monkeypatch.setattr("app.services.chat_transcript.append_session_event", fake_append_session_event)
+    monkeypatch.setattr(runtime_hooks, "emit_hook", noop_hook)
+
+    fence_token = set_runtime_task_fence(task_id=task_id, claim_version=7, worker_id="worker-a")
+    try:
+        result = await _delegate(
+            AgentDelegationRequest(
+                target=target,
+                target_model=SimpleNamespace(),
+                conversation_messages=[{"role": "user", "content": "work"}],
+                owner_id=owner_id,
+                session_id=session_id,
+                runtime_task_id=task_id.hex,
+                trace_id="trace-current-claim",
+                tenant_id=target.tenant_id,
+                **_a2a_authority_kwargs(target=target, owner_id=owner_id, session_id=session_id),
+            )
+        )
+    finally:
+        reset_runtime_task_fence(fence_token)
+
+    assert result.transcript_committed is True
+    assert len(statements) == 1
+    assert len(appended) == 1
+
+
+@pytest.mark.asyncio
+async def test_async_delegation_fenced_terminal_does_not_persist_late_model_output(monkeypatch):
+    from app.agents.orchestrator import (
+        AgentDelegationRequest,
+        AgentDelegationResult,
+        _async_tasks,
+        _spawn_async_delegation_task,
+    )
+
+    task_id = uuid4().hex
+    session_id = uuid4().hex
+    owner_id = uuid4()
+    target = SimpleNamespace(id=uuid4(), name="Cancelled Worker", role_description="", tenant_id=uuid4())
+    updates: list[dict] = []
+    evidence: list[dict] = []
+    projected: list[dict] = []
+    settlements: list[str] = []
+
+    async def fake_delegate(_request):
+        return AgentDelegationResult(
+            content="late model output",
+            child_session_id=session_id,
+            trace_id="trace-cancel-fence",
+            depth=1,
+            terminal_reason="turn_stop",
+            response_complete_payload={"metadata": {"final_response": "late model output"}},
+            transcript_committed=False,
+        )
+
+    async def fake_terminal_evidence(**kwargs):
+        evidence.append(kwargs)
+        return {"status": kwargs["status"]}
+
+    async def fake_update(_task_id, **fields):
+        updates.append(fields)
+        return False
+
+    async def fake_project(**kwargs):
+        projected.append(kwargs)
+
+    async def fake_settle(*_args, status, **_kwargs):
+        settlements.append(status)
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    request = AgentDelegationRequest(
+        target=target,
+        target_model=SimpleNamespace(),
+        conversation_messages=[{"role": "user", "content": "work"}],
+        owner_id=owner_id,
+        session_id=session_id,
+        runtime_task_id=task_id,
+        trace_id="trace-cancel-fence",
+        tenant_id=target.tenant_id,
+        **_a2a_authority_kwargs(target=target, owner_id=owner_id, session_id=session_id),
+    )
+    monkeypatch.setattr("app.agents.orchestrator._delegate", fake_delegate)
+    monkeypatch.setattr("app.agents.orchestrator._persist_delegation_terminal_evidence", fake_terminal_evidence)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update)
+    monkeypatch.setattr("app.agents.orchestrator._settle_delegation_budget", fake_settle)
+    monkeypatch.setattr("app.agents.orchestrator._project_delegation_completion_to_parent", fake_project)
+    monkeypatch.setattr("app.agents.orchestrator._release_delegation_coordination_lease", noop_async)
+
+    _spawn_async_delegation_task(task_id=task_id, request=request, trace_id="trace-cancel-fence")
+    result = await _async_tasks[task_id].task
+    _async_tasks.pop(task_id, None)
+
+    assert result.failed is True
+    assert "late model output" not in result.content
+    assert result.response_complete_payload is None
+    assert evidence == []
+    assert settlements == []
+    assert updates[0]["status"] == "needs_reconciliation"
+    assert "late model output" not in updates[0]["result_summary"]
+    assert updates[0]["metadata_json"]["response_projection_error"] == "transcript_commit_fenced"
+    assert projected == []
+
+
+@pytest.mark.asyncio
+async def test_async_delegation_completion_lost_to_kill_cas_drops_completed_evidence(monkeypatch):
+    from app.agents.orchestrator import (
+        AgentDelegationRequest,
+        AgentDelegationResult,
+        _async_tasks,
+        _spawn_async_delegation_task,
+    )
+
+    task_id = uuid4().hex
+    session_id = uuid4().hex
+    owner_id = uuid4()
+    target = SimpleNamespace(id=uuid4(), name="Cancelled Worker", role_description="", tenant_id=uuid4())
+    evidence: list[dict] = []
+    settlements: list[str] = []
+    projected: list[dict] = []
+
+    async def fake_delegate(_request):
+        return AgentDelegationResult(
+            content="late completed output",
+            child_session_id=session_id,
+            trace_id="trace-kill-won",
+            depth=1,
+            terminal_reason="turn_stop",
+            response_complete_payload={"metadata": {"final_response": "late completed output"}},
+            transcript_committed=True,
+        )
+
+    async def fake_terminal_evidence(**kwargs):
+        evidence.append(kwargs)
+        return {"status": kwargs["status"]}
+
+    async def fake_update(_task_id, **_fields):
+        return False
+
+    async def fake_settle(*_args, status, **_kwargs):
+        settlements.append(status)
+
+    async def fake_project(**kwargs):
+        projected.append(kwargs)
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    request = AgentDelegationRequest(
+        target=target,
+        target_model=SimpleNamespace(),
+        conversation_messages=[{"role": "user", "content": "work"}],
+        owner_id=owner_id,
+        session_id=session_id,
+        runtime_task_id=task_id,
+        trace_id="trace-kill-won",
+        tenant_id=target.tenant_id,
+        **_a2a_authority_kwargs(target=target, owner_id=owner_id, session_id=session_id),
+    )
+    monkeypatch.setattr("app.agents.orchestrator._delegate", fake_delegate)
+    monkeypatch.setattr("app.agents.orchestrator._persist_delegation_terminal_evidence", fake_terminal_evidence)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update)
+    monkeypatch.setattr("app.agents.orchestrator._settle_delegation_budget", fake_settle)
+    monkeypatch.setattr("app.agents.orchestrator._project_delegation_completion_to_parent", fake_project)
+    monkeypatch.setattr("app.agents.orchestrator._release_delegation_coordination_lease", noop_async)
+
+    _spawn_async_delegation_task(task_id=task_id, request=request, trace_id="trace-kill-won")
+    result = await _async_tasks[task_id].task
+    state_receipt = _async_tasks[task_id].receipt
+    _async_tasks.pop(task_id, None)
+
+    assert result.failed is True
+    assert "late completed output" not in result.content
+    assert result.response_complete_payload is None
+    assert evidence == []
+    assert settlements == []
+    assert projected == []
+    assert state_receipt["status"] == "pending"
 
 
 @pytest.mark.asyncio
@@ -1589,10 +2137,314 @@ async def test_delegate_async_persists_readonly_resumable_payload_for_restart_re
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "claim_expires_at", "expected_reason"),
+    [
+        ("pending", None, "delegation_restart_pending"),
+        (
+            "running",
+            datetime.now(timezone.utc) - timedelta(seconds=1),
+            "delegation_lease_reclaimable",
+        ),
+    ],
+)
+async def test_resume_persisted_delegations_notifies_worker_without_direct_spawn(
+    monkeypatch,
+    status,
+    claim_expires_at,
+    expected_reason,
+):
+    from app.agents.orchestrator import _async_tasks, resume_persisted_async_delegations
+
+    task_id = uuid4().hex
+    notifications = []
+
+    async def fake_list_active_runtime_task_records(*_args, **_kwargs):
+        return [
+            {
+                "task_id": task_id,
+                "task_type": "delegation",
+                "status": status,
+                "claimed_by": "dead-worker" if status == "running" else None,
+                "claim_expires_at": claim_expires_at.isoformat() if claim_expires_at else None,
+                "metadata": {
+                    "resume_after_restart": True,
+                    "resumable_delegation": True,
+                    "tool_profile": "review_readonly",
+                },
+            }
+        ]
+
+    async def fake_notify_runtime_task_worker(*, reason, runtime_task_id):
+        notifications.append((reason, str(runtime_task_id)))
+
+    async def forbidden_build(_record):  # pragma: no cover - must not run
+        raise AssertionError("startup must leave pending/reclaimable delegation hydration to the claimed worker")
+
+    def forbidden_spawn(**_kwargs):  # pragma: no cover - must not run
+        raise AssertionError("startup must never spawn a delegation outside run_claimed_runtime_task")
+
+    monkeypatch.setattr(
+        "app.agents.orchestrator.list_active_runtime_task_records",
+        fake_list_active_runtime_task_records,
+    )
+    monkeypatch.setattr("app.agents.orchestrator._build_delegation_request_from_runtime_record", forbidden_build)
+    monkeypatch.setattr("app.agents.orchestrator._spawn_async_delegation_task", forbidden_spawn)
+    monkeypatch.setattr(
+        "app.services.runtime_task_worker.notify_runtime_task_worker",
+        fake_notify_runtime_task_worker,
+    )
+
+    _async_tasks.clear()
+    try:
+        assert await resume_persisted_async_delegations() == [task_id]
+        assert task_id not in _async_tasks
+        assert notifications == [(expected_reason, str(UUID(task_id)))]
+    finally:
+        _async_tasks.clear()
+
+
+@pytest.mark.asyncio
+async def test_resume_persisted_active_running_delegation_does_not_duplicate_dispatch(monkeypatch):
+    from app.agents.orchestrator import _async_tasks, resume_persisted_async_delegations
+
+    task_id = uuid4().hex
+    notifications = []
+
+    async def fake_list_active_runtime_task_records(*_args, **_kwargs):
+        return [
+            {
+                "task_id": task_id,
+                "task_type": "delegation",
+                "status": "running",
+                "claimed_by": "live-worker",
+                "claim_expires_at": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat(),
+                "metadata": {
+                    "resume_after_restart": True,
+                    "resumable_delegation": True,
+                    "tool_profile": "review_readonly",
+                },
+            }
+        ]
+
+    async def fake_notify_runtime_task_worker(**kwargs):
+        notifications.append(kwargs)
+
+    async def forbidden_build(_record):  # pragma: no cover - must not run
+        raise AssertionError("an active running lease already has an owning worker")
+
+    def forbidden_spawn(**_kwargs):  # pragma: no cover - must not run
+        raise AssertionError("startup must not duplicate an active delegation")
+
+    monkeypatch.setattr(
+        "app.agents.orchestrator.list_active_runtime_task_records",
+        fake_list_active_runtime_task_records,
+    )
+    monkeypatch.setattr("app.agents.orchestrator._build_delegation_request_from_runtime_record", forbidden_build)
+    monkeypatch.setattr("app.agents.orchestrator._spawn_async_delegation_task", forbidden_spawn)
+    monkeypatch.setattr(
+        "app.services.runtime_task_worker.notify_runtime_task_worker",
+        fake_notify_runtime_task_worker,
+    )
+
+    _async_tasks.clear()
+    try:
+        assert await resume_persisted_async_delegations() == [task_id]
+        assert task_id not in _async_tasks
+        assert notifications == []
+    finally:
+        _async_tasks.clear()
+
+
+@pytest.mark.asyncio
+async def test_resume_persisted_delegations_scopes_scan_and_rejects_cross_type_record(monkeypatch):
+    from app.agents.orchestrator import resume_persisted_async_delegations
+
+    async def fake_list_active_runtime_task_records(*, limit, statuses, task_types):
+        assert limit == 50
+        assert statuses == ("pending", "running", "suspended")
+        assert task_types == ("delegation",)
+        return [
+            {
+                "task_id": uuid4().hex,
+                "task_type": "subagent",
+                "status": "pending",
+                "metadata": {
+                    "resume_after_restart": True,
+                    "resumable_delegation": True,
+                },
+            }
+        ]
+
+    async def forbidden_notify(**_kwargs):  # pragma: no cover - must not run
+        raise AssertionError("cross-type record must not reach the delegation worker wakeup")
+
+    monkeypatch.setattr(
+        "app.agents.orchestrator.list_active_runtime_task_records",
+        fake_list_active_runtime_task_records,
+    )
+    monkeypatch.setattr(
+        "app.services.runtime_task_worker.notify_runtime_task_worker",
+        forbidden_notify,
+    )
+
+    assert await resume_persisted_async_delegations() == []
+
+
+@pytest.mark.asyncio
+async def test_dispatch_reclaimed_mutating_delegation_requires_reconciliation_before_hydration(monkeypatch):
+    from app.agents.orchestrator import dispatch_persisted_async_delegation
+
+    task_id = uuid4().hex
+    record = {
+        "task_id": task_id,
+        "task_type": "delegation",
+        "status": "running",
+        "trace_id": "trace-reclaimed-mutating",
+        "metadata": {
+            "resume_after_restart": True,
+            "resumable_delegation": True,
+            "tool_profile": "worker_safe",
+            "side_effect_risk": "mutating",
+            "reclaimed_expired_claim": True,
+            "restart_replay_contract": {
+                "schema": "runtime_restart_replay_contract.v1",
+                "idempotency_key": f"delegation:{task_id}:restart",
+                "task_type": "delegation",
+                "task_id": task_id,
+            },
+        },
+    }
+    updates = []
+    releases = []
+
+    async def fake_get_runtime_task_record(_task_id):
+        assert _task_id == task_id
+        return record
+
+    async def forbidden_build(_record):  # pragma: no cover - must not run
+        raise AssertionError("expired mutating work must be reconciled before runtime hydration or replay")
+
+    async def fake_update_runtime_task_record(_task_id, **kwargs):
+        updates.append((_task_id, kwargs))
+        return True
+
+    async def fake_release(_record, *, reason):
+        releases.append((_record, reason))
+
+    monkeypatch.setattr("app.agents.orchestrator.get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator._build_delegation_request_from_runtime_record", forbidden_build)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(
+        "app.agents.orchestrator._release_delegation_coordination_lease_from_record",
+        fake_release,
+    )
+
+    assert await dispatch_persisted_async_delegation(task_id) is False
+    assert updates[-1][0] == task_id
+    assert updates[-1][1]["status"] == "needs_reconciliation"
+    assert updates[-1][1]["metadata_json"]["needs_reconciliation"] is True
+    assert updates[-1][1]["metadata_json"]["side_effect_risk"] == "mutating"
+    assert releases == [(record, "restart_replay_not_safe")]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_reclaimed_readonly_delegation_requires_exact_restart_contract(monkeypatch):
+    from app.agents.orchestrator import dispatch_persisted_async_delegation
+
+    task_id = uuid4().hex
+    record = {
+        "task_id": task_id,
+        "task_type": "delegation",
+        "status": "running",
+        "trace_id": "trace-reclaimed-missing-contract",
+        "metadata": {
+            "resume_after_restart": True,
+            "resumable_delegation": True,
+            "tool_profile": "review_readonly",
+            "side_effect_risk": "read_only",
+            "reclaimed_expired_claim": True,
+        },
+    }
+    updates = []
+    releases = []
+
+    async def fake_get_runtime_task_record(_task_id):
+        assert _task_id == task_id
+        return record
+
+    async def forbidden_build(_record):  # pragma: no cover - must not run
+        raise AssertionError("reclaimed work without an exact restart contract must not hydrate")
+
+    async def fake_update_runtime_task_record(_task_id, **kwargs):
+        updates.append((_task_id, kwargs))
+        return True
+
+    async def fake_release(_record, *, reason):
+        releases.append((_record, reason))
+
+    monkeypatch.setattr("app.agents.orchestrator.get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator._build_delegation_request_from_runtime_record", forbidden_build)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(
+        "app.agents.orchestrator._release_delegation_coordination_lease_from_record",
+        fake_release,
+    )
+
+    assert await dispatch_persisted_async_delegation(task_id) is False
+    assert updates[-1][1]["status"] == "needs_reconciliation"
+    assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "restart_replay_contract_missing"
+    assert releases == [(record, "restart_replay_not_safe")]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_claimed_delegation_with_incomplete_request_is_typed_reconciliation(monkeypatch):
+    from app.agents.orchestrator import dispatch_persisted_async_delegation
+
+    task_id = uuid4().hex
+    record = {
+        "task_id": task_id,
+        "task_type": "delegation",
+        "status": "running",
+        "trace_id": "trace-incomplete-request",
+        "metadata": {
+            "resume_after_restart": True,
+            "resumable_delegation": True,
+            "tool_profile": "review_readonly",
+            "conversation_messages": [{"role": "user", "content": "missing durable identity"}],
+        },
+    }
+    updates = []
+    releases = []
+
+    async def fake_get_runtime_task_record(_task_id):
+        assert _task_id == task_id
+        return record
+
+    async def fake_update_runtime_task_record(_task_id, **kwargs):
+        updates.append((_task_id, kwargs))
+        return True
+
+    async def fake_release(_record, *, reason):
+        releases.append((_record, reason))
+
+    monkeypatch.setattr("app.agents.orchestrator.get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(
+        "app.agents.orchestrator._release_delegation_coordination_lease_from_record",
+        fake_release,
+    )
+
+    assert await dispatch_persisted_async_delegation(task_id) is False
+    assert updates[-1][1]["status"] == "needs_reconciliation"
+    assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "dispatch_request_unavailable"
+    assert releases == [(record, "dispatch_request_unavailable")]
+
+
+@pytest.mark.asyncio
 async def test_resume_persisted_async_delegations_rehydrates_tasks(monkeypatch):
     from app.agents.orchestrator import (
         _async_tasks,
-        check_async_delegation,
         resume_persisted_async_delegations,
     )
 
@@ -1603,6 +2455,7 @@ async def test_resume_persisted_async_delegations_rehydrates_tasks(monkeypatch):
     target = SimpleNamespace(id=uuid4(), name="Worker", role_description="helper")
     model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
     updates: list[tuple[str, dict]] = []
+    notifications: list[tuple[str, str]] = []
     execution_identity_metadata = {
         "identity_type": "delegated_user",
         "identity_id": str(delegated_user_id),
@@ -1623,12 +2476,19 @@ async def test_resume_persisted_async_delegations_rehydrates_tasks(monkeypatch):
         execution_identity_metadata=execution_identity_metadata,
     )
 
-    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+    async def fake_list_active_runtime_task_records(
+        limit=50,
+        statuses=("pending", "running"),
+        task_types=None,
+    ):
         assert "pending" in statuses
         assert "running" in statuses
+        assert task_types == ("delegation",)
         return [
             {
                 "task_id": task_id,
+                "task_type": "delegation",
+                "status": "pending",
                 "trace_id": "trace-resume",
                 "parent_agent_id": str(parent_agent_id),
                 "child_agent_id": str(target.id),
@@ -1668,26 +2528,27 @@ async def test_resume_persisted_async_delegations_rehydrates_tasks(monkeypatch):
         updates.append((task_id_arg, kwargs))
         return True
 
+    async def fake_notify_runtime_task_worker(*, reason, runtime_task_id):
+        notifications.append((reason, str(runtime_task_id)))
+
     monkeypatch.setattr(
         "app.agents.orchestrator.list_active_runtime_task_records", fake_list_active_runtime_task_records
     )
     monkeypatch.setattr("app.agents.orchestrator._resolve_resumable_target_runtime", fake_resolve_target_runtime)
     monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke)
     monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(
+        "app.services.runtime_task_worker.notify_runtime_task_worker",
+        fake_notify_runtime_task_worker,
+    )
 
     _async_tasks.clear()
     try:
         resumed = await resume_persisted_async_delegations()
         assert resumed == [task_id]
-        assert task_id in _async_tasks
-
-        await asyncio.wait_for(_async_tasks[task_id].task, timeout=2.0)
-        status = await check_async_delegation(task_id, parent_agent_id=parent_agent_id)
-
-        assert status["status"] == "completed"
-        assert status["result"] == "resumed async result"
-        assert any(task_id_arg == task_id and payload.get("status") == "running" for task_id_arg, payload in updates)
-        assert any(task_id_arg == task_id and payload.get("status") == "completed" for task_id_arg, payload in updates)
+        assert task_id not in _async_tasks
+        assert updates == []
+        assert notifications == [("delegation_restart_pending", str(UUID(task_id)))]
     finally:
         _async_tasks.clear()
 
@@ -1699,11 +2560,19 @@ async def test_resume_persisted_async_delegations_refuses_mutating_profile_witho
     task_id = uuid4().hex
     target = SimpleNamespace(id=uuid4(), name="Worker", role_description="helper")
     updates: list[tuple[str, dict]] = []
+    notifications: list[tuple[str, str]] = []
 
-    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+    async def fake_list_active_runtime_task_records(
+        limit=50,
+        statuses=("pending", "running"),
+        task_types=None,
+    ):
+        assert task_types == ("delegation",)
         return [
             {
                 "task_id": task_id,
+                "task_type": "delegation",
+                "status": "pending",
                 "trace_id": "trace-resume",
                 "parent_agent_id": str(uuid4()),
                 "child_agent_id": str(target.id),
@@ -1729,22 +2598,26 @@ async def test_resume_persisted_async_delegations_refuses_mutating_profile_witho
         updates.append((task_id_arg, kwargs))
         return True
 
+    async def fake_notify_runtime_task_worker(*, reason, runtime_task_id):
+        notifications.append((reason, str(runtime_task_id)))
+
     monkeypatch.setattr(
         "app.agents.orchestrator.list_active_runtime_task_records", fake_list_active_runtime_task_records
     )
     monkeypatch.setattr("app.agents.orchestrator._resolve_resumable_target_runtime", fake_resolve_target_runtime)
     monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(
+        "app.services.runtime_task_worker.notify_runtime_task_worker",
+        fake_notify_runtime_task_worker,
+    )
 
     _async_tasks.clear()
     try:
         resumed = await resume_persisted_async_delegations()
-        assert resumed == []
+        assert resumed == [task_id]
         assert task_id not in _async_tasks
-        assert updates[-1][0] == task_id
-        assert updates[-1][1]["status"] == "needs_reconciliation"
-        assert updates[-1][1]["metadata_json"]["needs_reconciliation"] is True
-        assert updates[-1][1]["metadata_json"]["side_effect_risk"] == "mutating"
-        assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "non_idempotent_tool_profile"
+        assert updates == []
+        assert notifications == [("delegation_restart_pending", str(UUID(task_id)))]
     finally:
         _async_tasks.clear()
 
@@ -1761,11 +2634,21 @@ async def test_resume_persisted_async_delegations_reconciles_worker_safe_even_wi
     owner_id = uuid4()
     target = SimpleNamespace(id=uuid4(), name="Worker", role_description="helper")
     updates: list[tuple[str, dict]] = []
+    notifications: list[tuple[str, str]] = []
 
-    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+    async def fake_list_active_runtime_task_records(
+        limit=50,
+        statuses=("pending", "running"),
+        task_types=None,
+    ):
+        assert task_types == ("delegation",)
         return [
             {
                 "task_id": task_id,
+                "task_type": "delegation",
+                "status": "running",
+                "claimed_by": "dead-worker",
+                "claim_expires_at": (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),
                 "trace_id": "trace-resume",
                 "parent_agent_id": str(parent_agent_id),
                 "child_agent_id": str(target.id),
@@ -1809,22 +2692,27 @@ async def test_resume_persisted_async_delegations_reconciles_worker_safe_even_wi
         updates.append((task_id_arg, kwargs))
         return True
 
+    async def fake_notify_runtime_task_worker(*, reason, runtime_task_id):
+        notifications.append((reason, str(runtime_task_id)))
+
     monkeypatch.setattr(
         "app.agents.orchestrator.list_active_runtime_task_records", fake_list_active_runtime_task_records
     )
     monkeypatch.setattr("app.agents.orchestrator._resolve_resumable_target_runtime", fake_resolve_target_runtime)
     monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke)
     monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(
+        "app.services.runtime_task_worker.notify_runtime_task_worker",
+        fake_notify_runtime_task_worker,
+    )
 
     _async_tasks.clear()
     try:
         resumed = await resume_persisted_async_delegations()
-        assert resumed == []
+        assert resumed == [task_id]
         assert task_id not in _async_tasks
-        assert updates[-1][0] == task_id
-        assert updates[-1][1]["status"] == "needs_reconciliation"
-        assert updates[-1][1]["metadata_json"]["needs_reconciliation"] is True
-        assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "non_idempotent_tool_profile"
+        assert updates == []
+        assert notifications == [("delegation_lease_reclaimable", str(UUID(task_id)))]
     finally:
         _async_tasks.clear()
 
@@ -1836,11 +2724,19 @@ async def test_resume_persisted_async_delegations_refuses_mutating_contract_with
     task_id = uuid4().hex
     target = SimpleNamespace(id=uuid4(), name="Worker", role_description="helper")
     updates: list[tuple[str, dict]] = []
+    notifications: list[tuple[str, str]] = []
 
-    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+    async def fake_list_active_runtime_task_records(
+        limit=50,
+        statuses=("pending", "running"),
+        task_types=None,
+    ):
+        assert task_types == ("delegation",)
         return [
             {
                 "task_id": task_id,
+                "task_type": "delegation",
+                "status": "pending",
                 "trace_id": "trace-resume",
                 "parent_agent_id": str(uuid4()),
                 "child_agent_id": str(target.id),
@@ -1872,20 +2768,26 @@ async def test_resume_persisted_async_delegations_refuses_mutating_contract_with
         updates.append((task_id_arg, kwargs))
         return True
 
+    async def fake_notify_runtime_task_worker(*, reason, runtime_task_id):
+        notifications.append((reason, str(runtime_task_id)))
+
     monkeypatch.setattr(
         "app.agents.orchestrator.list_active_runtime_task_records", fake_list_active_runtime_task_records
     )
     monkeypatch.setattr("app.agents.orchestrator._resolve_resumable_target_runtime", fake_resolve_target_runtime)
     monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(
+        "app.services.runtime_task_worker.notify_runtime_task_worker",
+        fake_notify_runtime_task_worker,
+    )
 
     _async_tasks.clear()
     try:
         resumed = await resume_persisted_async_delegations()
-        assert resumed == []
+        assert resumed == [task_id]
         assert task_id not in _async_tasks
-        assert updates[-1][0] == task_id
-        assert updates[-1][1]["status"] == "needs_reconciliation"
-        assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "non_idempotent_tool_profile"
+        assert updates == []
+        assert notifications == [("delegation_restart_pending", str(UUID(task_id)))]
     finally:
         _async_tasks.clear()
 
@@ -2108,6 +3010,367 @@ async def test_cancel_async_delegation_rejects_other_parent(monkeypatch):
     assert status["status"] == "forbidden"
 
     never_finish.set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_status", ["skipped", "needs_reconciliation"])
+async def test_db_only_cancel_returns_all_canonical_terminal_statuses(monkeypatch, terminal_status):
+    from app.agents.orchestrator import cancel_async_delegation
+
+    task_id = uuid4().hex
+    parent_agent_id = uuid4()
+
+    async def fake_get_runtime_task_record(_task_id):
+        assert _task_id == task_id
+        return {
+            "task_id": task_id,
+            "status": terminal_status,
+            "result": f"durable {terminal_status}",
+            "parent_agent_id": str(parent_agent_id),
+            "child_session_id": str(uuid4()),
+            "metadata": {"execution_receipt": {"status": terminal_status}},
+        }
+
+    async def forbidden_update(*_args, **_kwargs):  # pragma: no cover - must not run
+        raise AssertionError("canonical terminal RuntimeTask state must not be cancelled again")
+
+    monkeypatch.setattr("app.agents.orchestrator.get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", forbidden_update)
+
+    result = await cancel_async_delegation(task_id, parent_agent_id=parent_agent_id, force=True)
+
+    assert result["status"] == terminal_status
+    assert result["result"] == f"durable {terminal_status}"
+    assert result["receipt"] == {"status": terminal_status}
+
+
+@pytest.mark.asyncio
+async def test_db_only_cancel_lost_cas_returns_canonical_terminal_state(monkeypatch):
+    from app.agents.orchestrator import cancel_async_delegation
+
+    task_id = uuid4().hex
+    parent_agent_id = uuid4()
+    reads = 0
+    published: list[dict] = []
+    settled: list[tuple[str, str]] = []
+
+    async def fake_get_runtime_task_record(_task_id):
+        nonlocal reads
+        assert _task_id == task_id
+        reads += 1
+        if reads == 1:
+            return {
+                "task_id": task_id,
+                "status": "running",
+                "parent_agent_id": str(parent_agent_id),
+                "child_session_id": "child-cancel-race",
+                "metadata": {"execution_receipt": {"status": "pending"}},
+            }
+        return {
+            "task_id": task_id,
+            "status": "completed",
+            "result": "durable completed result",
+            "parent_agent_id": str(parent_agent_id),
+            "child_session_id": "child-cancel-race",
+            "metadata": {"execution_receipt": {"status": "completed"}},
+        }
+
+    async def fake_update(*_args, **_kwargs):
+        return False
+
+    async def fake_publish(**kwargs):
+        published.append(kwargs)
+
+    async def fake_settle(record, *, task_id, status):
+        settled.append((task_id, status))
+
+    monkeypatch.setattr("app.agents.orchestrator.get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update)
+    monkeypatch.setattr("app.services.runtime_control_bus.publish_delegation_cancel", fake_publish)
+    monkeypatch.setattr(
+        "app.agents.orchestrator._settle_persisted_delegation_budget",
+        fake_settle,
+        raising=False,
+    )
+
+    result = await cancel_async_delegation(task_id, parent_agent_id=parent_agent_id, force=True)
+
+    assert result["status"] == "completed"
+    assert result["result"] == "durable completed result"
+    assert result["receipt"] == {"status": "completed"}
+    assert published == []
+    assert settled == []
+
+
+@pytest.mark.asyncio
+async def test_db_only_cancel_committed_cas_settles_budget_once(monkeypatch):
+    from app.agents.orchestrator import cancel_async_delegation
+
+    task_id = uuid4().hex
+    parent_agent_id = uuid4()
+    persisted = {
+        "task_id": task_id,
+        "status": "running",
+        "parent_agent_id": str(parent_agent_id),
+        "child_agent_id": str(uuid4()),
+        "child_agent_name": "Remote Worker",
+        "child_session_id": "child-db-only-cancel",
+        "budget_run_id": str(uuid4()),
+        "metadata": {"execution_receipt": {"status": "pending"}},
+    }
+    published: list[dict] = []
+    settled: list[tuple[str, str]] = []
+    updates: list[dict] = []
+
+    async def fake_get_runtime_task_record(_task_id):
+        assert _task_id == task_id
+        return persisted
+
+    async def fake_update(*_args, **kwargs):
+        updates.append(kwargs)
+        return True
+
+    async def fake_publish(**kwargs):
+        published.append(kwargs)
+
+    async def fake_settle(record, *, task_id, status):
+        assert record is persisted
+        settled.append((task_id, status))
+
+    monkeypatch.setattr("app.agents.orchestrator.get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update)
+    monkeypatch.setattr("app.services.runtime_control_bus.publish_delegation_cancel", fake_publish)
+    monkeypatch.setattr(
+        "app.agents.orchestrator._settle_persisted_delegation_budget",
+        fake_settle,
+        raising=False,
+    )
+
+    result = await cancel_async_delegation(task_id, parent_agent_id=parent_agent_id, force=True)
+
+    assert result["status"] == "killed"
+    assert result["receipt"] is None
+    assert updates[0]["metadata_json"]["execution_receipt"] is None
+    assert updates[0]["metadata_json"]["execution_receipt_error"] == "terminal_receipt_unavailable"
+    assert settled == [(task_id, "killed")]
+    assert published == [{"task_id": task_id, "parent_agent_id": parent_agent_id}]
+
+
+@pytest.mark.asyncio
+async def test_db_only_cancel_commits_and_returns_killed_execution_receipt(monkeypatch):
+    from app.agents.orchestrator import cancel_async_delegation
+
+    task_id = uuid4().hex
+    parent_agent_id = uuid4()
+    owner_id = uuid4()
+    child_session_id = str(uuid4())
+    target = SimpleNamespace(id=uuid4(), name="Receipt Worker", role_description="")
+    target_model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1",
+        api_key="test-key",
+        base_url=None,
+        max_output_tokens=None,
+    )
+    authority_metadata = _persisted_a2a_authority_metadata(
+        task_id=task_id,
+        trace_id="trace-db-only-cancel-receipt",
+        target=target,
+        target_model=target_model,
+        owner_id=owner_id,
+        parent_agent_id=parent_agent_id,
+        parent_session_id="parent-session-db-only-cancel",
+        child_session_id=child_session_id,
+        conversation_messages=[{"role": "user", "content": "cancel this delegated task"}],
+        tool_profile="review_readonly",
+    )
+    pending_receipt = authority_metadata["execution_receipt"]
+    persisted = {
+        "task_id": task_id,
+        "task_type": "delegation",
+        "status": "running",
+        "trace_id": "trace-db-only-cancel-receipt",
+        "tenant_id": authority_metadata["tenant_id"],
+        "parent_agent_id": str(parent_agent_id),
+        "child_agent_id": str(target.id),
+        "child_agent_name": target.name,
+        "parent_session_id": "parent-session-db-only-cancel",
+        "child_session_id": child_session_id,
+        "depth": 1,
+        "metadata": {
+            "owner_id": str(owner_id),
+            "target_agent_id": str(target.id),
+            "conversation_messages": [{"role": "user", "content": "cancel this delegated task"}],
+            "tool_profile": "review_readonly",
+            **authority_metadata,
+        },
+    }
+
+    async def fake_get_runtime_task_record(_task_id):
+        assert _task_id == task_id
+        return persisted
+
+    async def fake_update_runtime_task_record(_task_id, **kwargs):
+        assert _task_id == task_id
+        persisted["status"] = kwargs["status"]
+        persisted["result"] = kwargs["result_summary"]
+        persisted["metadata"] = {**persisted["metadata"], **kwargs["metadata_json"]}
+        return True
+
+    async def fake_settle(*_args, **_kwargs):
+        return None
+
+    async def fake_publish(**_kwargs):
+        return None
+
+    monkeypatch.setattr("app.agents.orchestrator.get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator._settle_persisted_delegation_budget", fake_settle)
+    monkeypatch.setattr("app.services.runtime_control_bus.publish_delegation_cancel", fake_publish)
+
+    result = await cancel_async_delegation(task_id, parent_agent_id=parent_agent_id, force=True)
+
+    durable_receipt = persisted["metadata"]["execution_receipt"]
+    assert durable_receipt["status"] == "killed"
+    assert durable_receipt["request_hash"] == pending_receipt["request_hash"]
+    assert durable_receipt["capability_snapshot_hash"] == pending_receipt["capability_snapshot_hash"]
+    assert result["receipt"] == durable_receipt
+
+
+@pytest.mark.asyncio
+async def test_persisted_delegation_budget_settlement_rehydrates_required_identity(monkeypatch):
+    from app.agents.orchestrator import _settle_persisted_delegation_budget
+
+    task_id = uuid4().hex
+    budget_run_id = uuid4()
+    child_agent_id = uuid4()
+    captured: list[dict] = []
+
+    async def fake_settle(*, request, task_id, status):
+        captured.append(
+            {
+                "budget_run_id": request.budget_run_id,
+                "target_id": request.target.id,
+                "target_name": request.target.name,
+                "task_id": task_id,
+                "status": status,
+            }
+        )
+
+    monkeypatch.setattr("app.agents.orchestrator._settle_delegation_budget", fake_settle)
+
+    await _settle_persisted_delegation_budget(
+        {
+            "budget_run_id": str(budget_run_id),
+            "child_agent_id": str(child_agent_id),
+            "child_agent_name": "Remote Worker",
+            "metadata": {},
+        },
+        task_id=task_id,
+        status="killed",
+    )
+
+    assert captured == [
+        {
+            "budget_run_id": str(budget_run_id),
+            "target_id": str(child_agent_id),
+            "target_name": "Remote Worker",
+            "task_id": task_id,
+            "status": "killed",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_local_cancel_after_transcript_commit_publishes_only_killed_terminal_evidence(monkeypatch):
+    from app.agents.orchestrator import (
+        AgentDelegationRequest,
+        _async_tasks,
+        _spawn_async_delegation_task,
+        cancel_async_delegation,
+    )
+
+    task_id = uuid4().hex
+    session_id = uuid4().hex
+    parent_agent_id = uuid4()
+    owner_id = uuid4()
+    target = SimpleNamespace(id=uuid4(), name="Race Worker", role_description="", tenant_id=uuid4())
+    transcript_committed = asyncio.Event()
+    durable = {
+        "task_id": task_id,
+        "status": "running",
+        "result": None,
+        "parent_agent_id": str(parent_agent_id),
+        "child_agent_id": str(target.id),
+        "child_agent_name": target.name,
+        "child_session_id": session_id,
+        "metadata": {"execution_receipt": {"status": "pending"}},
+    }
+    evidence: list[str] = []
+    settlements: list[str] = []
+
+    async def fake_delegate(_request):
+        transcript_committed.set()
+        await asyncio.Event().wait()
+        raise AssertionError("cancelled provider output must not return")
+
+    async def fake_update(_task_id, **fields):
+        assert _task_id == task_id
+        if durable["status"] != "running":
+            return False
+        durable["status"] = fields["status"]
+        durable["result"] = fields.get("result_summary")
+        durable["metadata"] = dict(fields.get("metadata_json") or {})
+        return True
+
+    async def fake_get(_task_id):
+        assert _task_id == task_id
+        return dict(durable)
+
+    async def fake_terminal_evidence(**kwargs):
+        evidence.append(kwargs["status"])
+        return {"status": kwargs["status"]}
+
+    async def fake_settle(*_args, status, **_kwargs):
+        settlements.append(status)
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    request = AgentDelegationRequest(
+        target=target,
+        target_model=SimpleNamespace(),
+        conversation_messages=[{"role": "user", "content": "work"}],
+        owner_id=owner_id,
+        session_id=session_id,
+        runtime_task_id=task_id,
+        trace_id="trace-local-cancel",
+        tenant_id=target.tenant_id,
+        **_a2a_authority_kwargs(
+            target=target,
+            owner_id=owner_id,
+            session_id=session_id,
+            parent_agent_id=parent_agent_id,
+        ),
+    )
+    monkeypatch.setattr("app.agents.orchestrator._delegate", fake_delegate)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update)
+    monkeypatch.setattr("app.agents.orchestrator.get_runtime_task_record", fake_get)
+    monkeypatch.setattr("app.agents.orchestrator._persist_delegation_terminal_evidence", fake_terminal_evidence)
+    monkeypatch.setattr("app.agents.orchestrator._settle_delegation_budget", fake_settle)
+    monkeypatch.setattr("app.agents.orchestrator._persist_delegation_event", noop_async)
+    monkeypatch.setattr("app.agents.orchestrator._release_delegation_coordination_lease", noop_async)
+
+    _spawn_async_delegation_task(task_id=task_id, request=request, trace_id="trace-local-cancel")
+    await asyncio.wait_for(transcript_committed.wait(), timeout=1)
+    result = await cancel_async_delegation(task_id, parent_agent_id=parent_agent_id, force=True)
+
+    assert result["status"] == "killed"
+    assert result["result"] == "Task cancelled by parent agent"
+    assert durable["status"] == "killed"
+    assert evidence == ["killed"]
+    assert settlements == ["killed"]
+    assert task_id not in _async_tasks
 
 
 @pytest.mark.asyncio
@@ -3182,12 +4445,8 @@ async def test_delegation_completion_skips_projection_for_headless_parent(monkey
 
 
 @pytest.mark.asyncio
-async def test_spawn_async_delegation_task_wires_parent_projection_on_completion(monkeypatch):
-    """The background completion path must call the parent projection on terminal state.
-
-    Revert-sensitive: removing the `_project_delegation_completion_to_parent` call from
-    `_spawn_async_delegation_task._run` leaves `projected` empty and fails this.
-    """
+async def test_spawn_async_delegation_task_defers_parent_projection_to_terminal_outbox(monkeypatch):
+    """The producer seals RuntimeTask/outbox state; its consumer owns parent projection."""
     from app.agents.orchestrator import (
         AgentDelegationResult,
         _async_tasks,
@@ -3248,10 +4507,7 @@ async def test_spawn_async_delegation_task_wires_parent_projection_on_completion
     assert state is not None
     await state.task
 
-    assert len(projected) == 1
-    assert projected[0]["task_id"] == task_id
-    assert projected[0]["status"] == "completed"
-    assert projected[0]["summary"] == "child output"
+    assert projected == []
     assert released == [
         {
             "task_id": task_id,

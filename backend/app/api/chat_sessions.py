@@ -5,6 +5,7 @@ import logging
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone as tz
+from pathlib import PurePosixPath
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -46,6 +47,7 @@ from app.services.decision_trace import list_session_decision_traces
 from app.services.session_control_plane import build_session_json_export, build_session_workbench
 from app.services.session_live_input import IdempotencyConflict, submit_live_cancel_input, submit_live_human_input
 from app.services.session_tool_runtime import ToolEffectReconciliationRequired
+from app.services.agent_tools import get_agent_tools_for_llm
 
 router = APIRouter(prefix="/agents", tags=["chat-sessions"])
 logger = logging.getLogger(__name__)
@@ -190,27 +192,71 @@ def _session_contract_fields(session: ChatSession) -> dict[str, Any]:
 def _session_permission_metadata(
     permission_mode: str | None,
     session: ChatSession | None = None,
+    *,
+    allowed_tools: list[str] | None = None,
+    writable_roots: list[str] | None = None,
+    exact_scope: bool | None = None,
 ) -> dict[str, Any]:
     session_metadata = dict(getattr(session, "transcript_metadata_json", None) or {}) if session is not None else {}
+    raw_profile = session_metadata.get("permission_profile")
+    profile = dict(raw_profile) if isinstance(raw_profile, dict) else {}
     requested_mode = permission_mode or session_metadata.get("permission_mode") or DEFAULT_CCPLUS_PERMISSION_MODE.value
     mode = normalize_permission_mode(requested_mode).value
-    allowed_tools = [
-        str(item) for item in (session_metadata.get("session_permission_allowed_tools") or []) if str(item).strip()
-    ]
+    if allowed_tools is None:
+        allowed_tools = [
+            str(item)
+            for item in (profile.get("allowed_tools") or session_metadata.get("session_permission_allowed_tools") or [])
+            if str(item).strip()
+        ]
     session_grants = [
-        dict(item) for item in (session_metadata.get("session_permission_grants") or []) if isinstance(item, dict)
+        dict(item)
+        for item in (session_metadata.get("session_permission_grants") or profile.get("session_grants") or [])
+        if isinstance(item, dict)
     ]
-    writable_roots = list(DEFAULT_CCPLUS_WRITABLE_ROOTS)
+    if writable_roots is None:
+        source_roots = profile.get("writable_roots") or session_metadata.get("writable_roots")
+        writable_roots = (
+            [str(item) for item in source_roots if str(item).strip()]
+            if isinstance(source_roots, (list, tuple))
+            else list(DEFAULT_CCPLUS_WRITABLE_ROOTS)
+        )
+    capability_snapshot = (
+        dict(profile.get("capability_policy_snapshot"))
+        if isinstance(profile.get("capability_policy_snapshot"), dict)
+        else {}
+    )
+    if exact_scope is True:
+        capability_snapshot["session_exact_scope"] = True
+    elif exact_scope is False:
+        capability_snapshot.pop("session_exact_scope", None)
+    profile_payload: dict[str, Any] = {
+        "mode": mode,
+        "allowed_tools": allowed_tools,
+        "writable_roots": writable_roots,
+        "session_grants": session_grants,
+    }
+    if capability_snapshot.get("session_exact_scope") is True:
+        profile_payload.update(
+            {
+                "readable_roots": writable_roots,
+                "capability_policy_snapshot": {"session_exact_scope": True},
+            }
+        )
     return {
         "permission_mode": mode,
         "writable_roots": writable_roots,
-        "permission_profile": {
-            "mode": mode,
-            "allowed_tools": allowed_tools,
-            "writable_roots": writable_roots,
-            "session_grants": session_grants,
-        },
+        "permission_profile": profile_payload,
     }
+
+
+def _has_exact_session_scope(metadata: Any) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    profile = metadata.get("permission_profile")
+    if not isinstance(profile, dict):
+        return False
+    snapshot = profile.get("capability_policy_snapshot")
+    return isinstance(snapshot, dict) and snapshot.get("session_exact_scope") is True
 
 
 def _session_out(
@@ -434,6 +480,9 @@ def _string_tuple(value: Any) -> tuple[str, ...]:
 
 class CreateSessionIn(BaseModel):
     title: Optional[str] = None
+    permission_mode: Literal["default", "auto", "bypassPermissions"] | None = None
+    allowed_tools: list[str] | None = None
+    writable_roots: list[str] | None = None
 
 
 class PatchSessionIn(BaseModel):
@@ -442,6 +491,8 @@ class PatchSessionIn(BaseModel):
 
 class UpdateSessionPermissionProfileIn(BaseModel):
     permission_mode: Literal["default", "auto", "bypassPermissions"] = DEFAULT_CCPLUS_PERMISSION_MODE.value
+    allowed_tools: list[str] | None = None
+    writable_roots: list[str] | None = None
 
 
 class StartSessionRunIn(BaseModel):
@@ -459,6 +510,59 @@ class StartSessionRunIn(BaseModel):
 
 class CreateSessionRunIn(StartSessionRunIn):
     title: Optional[str] = None
+
+
+def _invalid_session_scope(detail: str) -> HTTPException:
+    return HTTPException(
+        status_code=422,
+        detail={"code": "invalid_session_permission_scope", "message": detail},
+    )
+
+
+def _canonical_session_scope_root(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw or "\\" in raw:
+        raise _invalid_session_scope("writable_roots must contain one canonical workspace subdirectory")
+    path = PurePosixPath(raw)
+    parts = path.parts
+    normalized = path.as_posix()
+    if (
+        path.is_absolute()
+        or len(parts) < 2
+        or parts[0] != "workspace"
+        or any(part in {"", ".", ".."} for part in parts)
+        or normalized != raw
+    ):
+        raise _invalid_session_scope("writable_roots must contain one canonical workspace subdirectory")
+    return normalized
+
+
+async def _validated_exact_session_scope(
+    *,
+    agent_id: uuid.UUID,
+    allowed_tools: list[str] | None,
+    writable_roots: list[str] | None,
+) -> tuple[list[str], list[str]] | None:
+    if allowed_tools is None and writable_roots is None:
+        return None
+    if not allowed_tools or not writable_roots or len(writable_roots) != 1:
+        raise _invalid_session_scope("allowed_tools and exactly one writable root are required together")
+    normalized_tools = [str(name).strip() for name in allowed_tools]
+    if any(not name or name != original for name, original in zip(normalized_tools, allowed_tools, strict=True)) or len(
+        normalized_tools
+    ) != len(set(normalized_tools)):
+        raise _invalid_session_scope("allowed_tools must contain unique canonical tool names")
+    root = _canonical_session_scope_root(writable_roots[0])
+    available = await get_agent_tools_for_llm(agent_id, core_only=False)
+    available_names = {
+        str(tool.get("function", {}).get("name") or "")
+        for tool in available
+        if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+    }
+    unavailable = [name for name in normalized_tools if name not in available_names]
+    if unavailable:
+        raise _invalid_session_scope("allowed_tools contains tools that are not available to this Agent")
+    return normalized_tools, [root]
 
 
 class BranchSessionIn(BaseModel):
@@ -1110,6 +1214,11 @@ async def create_session(
 ):
     """Create a new chat session for the current user."""
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    exact_scope = await _validated_exact_session_scope(
+        agent_id=agent_id,
+        allowed_tools=body.allowed_tools,
+        writable_roots=body.writable_roots,
+    )
 
     now = datetime.now(tz.utc)
     new_id = uuid.uuid4()
@@ -1127,9 +1236,15 @@ async def create_session(
         visibility_scope="direct_user",
         listed_surface="chat",
     )
+    permission_mode = body.permission_mode or str(
+        getattr(agent, "default_session_permission_mode", "") or DEFAULT_CCPLUS_PERMISSION_MODE.value
+    )
     session.transcript_metadata_json = _session_permission_metadata(
-        str(getattr(agent, "default_session_permission_mode", "") or DEFAULT_CCPLUS_PERMISSION_MODE.value),
+        permission_mode,
         session,
+        allowed_tools=exact_scope[0] if exact_scope is not None else None,
+        writable_roots=exact_scope[1] if exact_scope is not None else None,
+        exact_scope=exact_scope is not None,
     )
     db.add(session)
     await db.commit()
@@ -1175,7 +1290,7 @@ async def update_session_permission_profile(
     db: AsyncSession = Depends(get_db),
 ):
     """Update the current CCPlus session permission mode immediately."""
-    session, _agent, _authority_source = await _get_run_session_and_agent(
+    session, agent, _authority_source = await _get_run_session_and_agent(
         db=db,
         agent_id=agent_id,
         session_id=session_id,
@@ -1183,12 +1298,18 @@ async def update_session_permission_profile(
         action="update_session_permission_profile",
         require_writable=True,
     )
-    permission_metadata = _session_permission_metadata(body.permission_mode, session)
-    session_metadata = dict(session.transcript_metadata_json or {})
-    session_metadata.pop("break_glass", None)
-    session_metadata.update(permission_metadata)
-    session.transcript_metadata_json = session_metadata
-
+    exact_scope = await _validated_exact_session_scope(
+        agent_id=agent.id,
+        allowed_tools=body.allowed_tools,
+        writable_roots=body.writable_roots,
+    )
+    permission_metadata = _session_permission_metadata(
+        body.permission_mode,
+        session,
+        allowed_tools=exact_scope[0] if exact_scope is not None else None,
+        writable_roots=exact_scope[1] if exact_scope is not None else None,
+        exact_scope=True if exact_scope is not None else None,
+    )
     active_result = await db.execute(
         select(RuntimeTask)
         .where(
@@ -1200,6 +1321,23 @@ async def update_session_permission_profile(
         .limit(1)
     )
     active_run = active_result.scalar_one_or_none()
+    if active_run is not None and (
+        _has_exact_session_scope(session.transcript_metadata_json)
+        or _has_exact_session_scope(getattr(active_run, "metadata_json", None))
+        or exact_scope is not None
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "exact_session_permission_profile_locked",
+                "message": "An exact-scoped active run keeps its admission permission profile until terminal settlement.",
+            },
+        )
+
+    session_metadata = dict(session.transcript_metadata_json or {})
+    session_metadata.pop("break_glass", None)
+    session_metadata.update(permission_metadata)
+    session.transcript_metadata_json = session_metadata
     if active_run is not None:
         active_metadata = dict(getattr(active_run, "metadata_json", None) or {})
         active_metadata.pop("break_glass", None)
@@ -2294,7 +2432,7 @@ async def _cancel_session_run_v2(
         require_writable=True,
     )
     try:
-        return await submit_live_cancel_input(
+        receipt = await submit_live_cancel_input(
             db=db,
             agent=agent,
             user=current_user,
@@ -2303,6 +2441,12 @@ async def _cancel_session_run_v2(
             source="rest_cancel",
             idempotency_key=idempotency_key,
         )
+        receipt_status = str(receipt.get("status") or "")
+        return {
+            **receipt,
+            "run_id": str(run_id),
+            "accepted": receipt_status in {"accepted", "applying", "applied"},
+        }
     except IdempotencyConflict as exc:
         await db.rollback()
         raise HTTPException(

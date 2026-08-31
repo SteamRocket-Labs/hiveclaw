@@ -187,8 +187,8 @@ test('business assignment survives reload and starts exactly once from its confi
     description: null,
     confirmed_plan_id: 'plan-27',
     confirmed_plan_version: 1,
-    confirmed_plan_hash: 'sha256-plan-27',
   });
+  expect(createBodies[0]).not.toHaveProperty('confirmed_plan_hash');
   await expect(page.getByRole('button', { name: 'Confirm and start' })).toHaveCount(0);
 });
 

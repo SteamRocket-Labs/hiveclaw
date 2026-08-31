@@ -518,7 +518,7 @@ Personal KB 不应变成第四个产品，也不应被 Agent Memory 吞掉。
 当前文档基于以下本地代码事实复核：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/services/test_personal_knowledge_service.py::test_ingest_markdown_records_optional_vector_unconfigured_without_pgvector_dependency \

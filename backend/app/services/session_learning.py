@@ -6,7 +6,10 @@ import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.services.agent_asset_transaction import AgentAssetTransaction
 
 
 SESSION_LEARNING_SCHEMA = "session_learning_projection.v1"
@@ -40,7 +43,19 @@ def _projection_path(data_root: Path, agent_id: uuid.UUID) -> Path:
     return path
 
 
-def _append_projection_event(data_root: Path, agent_id: uuid.UUID, payload: dict[str, Any]) -> dict[str, Any]:
+def _append_projection_event(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    payload: dict[str, Any],
+    *,
+    transaction: AgentAssetTransaction | None = None,
+) -> dict[str, Any]:
+    if transaction is not None:
+        transaction.append_text(
+            "evolution/session_learning_projections.jsonl",
+            json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n",
+        )
+        return payload
     path = _projection_path(data_root, agent_id)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
@@ -59,6 +74,7 @@ def record_session_learning_projection(
     now: datetime | None = None,
     ttl_minutes: int = 60,
     promotion_state: str = "candidate",
+    transaction: AgentAssetTransaction | None = None,
 ) -> dict[str, Any]:
     created_at = now or _now()
     expires_at = created_at + timedelta(minutes=max(ttl_minutes, 1))
@@ -75,7 +91,7 @@ def record_session_learning_projection(
         "evidence": str(evidence or "inferred").strip().lower(),
         "promotion_state": str(promotion_state or "candidate").strip().lower(),
     }
-    return _append_projection_event(data_root, agent_id, payload)
+    return _append_projection_event(data_root, agent_id, payload, transaction=transaction)
 
 
 def update_session_learning_projection_state(

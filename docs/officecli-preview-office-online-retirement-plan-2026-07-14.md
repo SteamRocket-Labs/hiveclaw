@@ -572,7 +572,7 @@ Artifact 行为：
 预期命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 python -m app.scripts.retire_onlyoffice_metadata
 python -m app.scripts.retire_onlyoffice_metadata --apply --confirm
@@ -616,7 +616,7 @@ python -m app.scripts.retire_onlyoffice_metadata --apply --confirm
 Red 定向命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/services/test_officecli_adapter.py \
@@ -625,7 +625,7 @@ pytest \
   tests/api/test_resource_owned_surfaces.py \
   tests/tools/test_office_tools.py -q
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run \
   src/api/domains/office.test.ts \
   src/pages/agent-detail/ArtifactSurface.test.tsx \
@@ -637,7 +637,7 @@ npm test -- --run \
 定向回归：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/services/test_officecli_adapter.py \
@@ -649,7 +649,7 @@ pytest \
   tests/integration/test_officecli_binary_contract.py -q
 ruff check app/ tests/
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run \
   src/api/domains/office.test.ts \
   src/pages/agent-detail/ArtifactSurface.test.tsx \
@@ -660,12 +660,12 @@ npm run build
 全量门：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q
 ruff check app/ tests/
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run
 npm run build
 ```
@@ -710,7 +710,7 @@ PPTX：
 生产代码与 infra 预期无匹配：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 rg -n "ONLYOFFICE|OnlyOfficeHost|DocsAPI|onlyoffice-documentserver|onlyoffice_not_configured" \
   backend/app frontend/src .env.example docker-compose.yml deploy
 ```
@@ -777,7 +777,7 @@ rg -n "ONLYOFFICE|OnlyOfficeHost|DocsAPI|onlyoffice-documentserver|onlyoffice_no
 必须部署 `backend`、`backend-api`、`frontend`，不能只部署两个：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 PROJECT_ID=dd959a13-19f9-497a-9704-42c310eae230
 tmp_root=$(mktemp -d /tmp/hiveclaw-railway-upload.XXXXXX)
 mkdir -p "$tmp_root/backend-root" "$tmp_root/frontend-root"

@@ -69,7 +69,7 @@ async def test_find_or_create_feishu_chat_session_uses_canonical_user_id_and_leg
         user_id=user_id,
         provider_user_id=" u_staff_123 ",
         provider_open_id=" ou_app_scoped ",
-        first_message_title="[Agent → 王天怡]",
+        first_message_title="[Agent → Example User B]",
     )
 
     assert result is session
@@ -79,4 +79,4 @@ async def test_find_or_create_feishu_chat_session_uses_canonical_user_id_and_leg
     assert captured["source_channel"] == "feishu"
     assert captured["external_conv_id"] == "feishu_p2p_u_staff_123"
     assert captured["legacy_external_conv_ids"] == ["feishu_p2p_ou_app_scoped"]
-    assert captured["first_message_title"] == "[Agent → 王天怡]"
+    assert captured["first_message_title"] == "[Agent → Example User B]"

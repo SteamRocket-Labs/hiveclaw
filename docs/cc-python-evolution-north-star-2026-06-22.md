@@ -13,7 +13,7 @@
 当前主 baseline 是 FreeCode：
 
 ```text
-/Users/rocky243/vc-saas/free-code-main
+/Users/example-owner/vc-saas/free-code-main
 ```
 
 它是可运行的 Claude Code TS source snapshot，当前 `package.json` 暴露 `claude` / `claude-source` CLI，版本为 `2.1.87`。后续要先从这里确认 CC runtime 语义，再回到其他仓库交叉验证。
@@ -21,19 +21,19 @@
 其他 CC / CloudCode / Python port 参考：
 
 ```text
-/Users/rocky243/Context Engineering/claude-code-org
-/Users/rocky243/Context Engineering/claw-code
+/Users/example-owner/Context Engineering/claude-code-org
+/Users/example-owner/Context Engineering/claw-code
 ```
 
 其中：
 
-- `/Users/rocky243/Context Engineering/claw-code/src` 是 Python port/prototype 参考；当前看到的 session store 是 `.port_sessions/<session>.json`，QueryEngine 是简化版 `QueryEnginePort`，不能把它当作完整 CC baseline。
-- `/Users/rocky243/Context Engineering/claw-code/rust` 是 Rust runtime 参考；重点看 session namespace、workspace fingerprint、JSONL hygiene、resume slash command、compact/recovery。
+- `/Users/example-owner/Context Engineering/claw-code/src` 是 Python port/prototype 参考；当前看到的 session store 是 `.port_sessions/<session>.json`，QueryEngine 是简化版 `QueryEnginePort`，不能把它当作完整 CC baseline。
+- `/Users/example-owner/Context Engineering/claw-code/rust` 是 Rust runtime 参考；重点看 session namespace、workspace fingerprint、JSONL hygiene、resume slash command、compact/recovery。
 
 OpenAI Codex baseline 对应：
 
 ```text
-/Users/rocky243/Context Engineering/codex
+/Users/example-owner/Context Engineering/codex
 ```
 
 Hive 的定位不是“另一个 coding assistant”，而是：
@@ -59,11 +59,11 @@ Claude Code runtime baseline
 
 后续所有单 Session 对齐审计按这个顺序取证：
 
-1. **FreeCode TS runnable baseline**：`/Users/rocky243/vc-saas/free-code-main`。这是第一参考源，用来回答“CC 本质语义是什么”。
-2. **claw-code Python port**：`/Users/rocky243/Context Engineering/claw-code/src`。只用于看 Python 化方向和已有端口边界，不作为完整 parity 判定源。
-3. **claw-code Rust runtime**：`/Users/rocky243/Context Engineering/claw-code/rust`。用于 session hygiene、workspace partition、JSONL rotation、resume/fork/compact 的低层参考。
-4. **claude-code-org TS source**：`/Users/rocky243/Context Engineering/claude-code-org`。用于和 FreeCode 交叉确认。
-5. **Codex Rust**：`/Users/rocky243/Context Engineering/codex/codex-rs`。只作为 Codex delta，不覆盖 CC baseline。
+1. **FreeCode TS runnable baseline**：`/Users/example-owner/vc-saas/free-code-main`。这是第一参考源，用来回答“CC 本质语义是什么”。
+2. **claw-code Python port**：`/Users/example-owner/Context Engineering/claw-code/src`。只用于看 Python 化方向和已有端口边界，不作为完整 parity 判定源。
+3. **claw-code Rust runtime**：`/Users/example-owner/Context Engineering/claw-code/rust`。用于 session hygiene、workspace partition、JSONL rotation、resume/fork/compact 的低层参考。
+4. **claude-code-org TS source**：`/Users/example-owner/Context Engineering/claude-code-org`。用于和 FreeCode 交叉确认。
+5. **Codex Rust**：`/Users/example-owner/Context Engineering/codex/codex-rs`。只作为 Codex delta，不覆盖 CC baseline。
 
 如果这些仓库之间出现冲突，默认以 FreeCode 的 runnable TS baseline 判定 CC parity，以 Codex Rust 判定 Codex delta，以 Hive 当前 checkout 判定 Hive 真实状态。
 
@@ -297,24 +297,24 @@ Skill 是 Memory 体系长出来的 progressive capability capsule，可以包�
 必须读取：
 
 ```text
-/Users/rocky243/vc-saas/free-code-main/src/QueryEngine.ts
-/Users/rocky243/vc-saas/free-code-main/src/query.ts
-/Users/rocky243/vc-saas/free-code-main/src/query/stopHooks.ts
-/Users/rocky243/vc-saas/free-code-main/src/utils/sessionStorage.ts
-/Users/rocky243/vc-saas/free-code-main/src/utils/conversationRecovery.ts
-/Users/rocky243/vc-saas/free-code-main/src/entrypoints/sdk/coreSchemas.ts
-/Users/rocky243/vc-saas/free-code-main/src/commands/resume/resume.tsx
-/Users/rocky243/vc-saas/free-code-main/docs/01-query-engine.md
-/Users/rocky243/vc-saas/free-code-main/docs/02-tool-system.md
-/Users/rocky243/vc-saas/free-code-main/docs/04-context-management.md
-/Users/rocky243/Context Engineering/claude-code-org/src
-/Users/rocky243/Context Engineering/claw-code/src/query_engine.py
-/Users/rocky243/Context Engineering/claw-code/src/session_store.py
-/Users/rocky243/Context Engineering/claw-code/src/transcript.py
-/Users/rocky243/Context Engineering/claw-code/rust/crates/runtime/src/session.rs
-/Users/rocky243/Context Engineering/claw-code/rust/crates/runtime/src/session_control.rs
-/Users/rocky243/Context Engineering/claw-code/rust/crates/runtime/src/hooks.rs
-/Users/rocky243/Context Engineering/codex
+/Users/example-owner/vc-saas/free-code-main/src/QueryEngine.ts
+/Users/example-owner/vc-saas/free-code-main/src/query.ts
+/Users/example-owner/vc-saas/free-code-main/src/query/stopHooks.ts
+/Users/example-owner/vc-saas/free-code-main/src/utils/sessionStorage.ts
+/Users/example-owner/vc-saas/free-code-main/src/utils/conversationRecovery.ts
+/Users/example-owner/vc-saas/free-code-main/src/entrypoints/sdk/coreSchemas.ts
+/Users/example-owner/vc-saas/free-code-main/src/commands/resume/resume.tsx
+/Users/example-owner/vc-saas/free-code-main/docs/01-query-engine.md
+/Users/example-owner/vc-saas/free-code-main/docs/02-tool-system.md
+/Users/example-owner/vc-saas/free-code-main/docs/04-context-management.md
+/Users/example-owner/Context Engineering/claude-code-org/src
+/Users/example-owner/Context Engineering/claw-code/src/query_engine.py
+/Users/example-owner/Context Engineering/claw-code/src/session_store.py
+/Users/example-owner/Context Engineering/claw-code/src/transcript.py
+/Users/example-owner/Context Engineering/claw-code/rust/crates/runtime/src/session.rs
+/Users/example-owner/Context Engineering/claw-code/rust/crates/runtime/src/session_control.rs
+/Users/example-owner/Context Engineering/claw-code/rust/crates/runtime/src/hooks.rs
+/Users/example-owner/Context Engineering/codex
 backend/app/runtime
 backend/app/kernel
 backend/app/services/web_chat_runtime.py
@@ -449,9 +449,9 @@ SESSION_END
 重点参考：
 
 ```text
-/Users/rocky243/Context Engineering/codex/codex-rs/rollout/src/recorder.rs
-/Users/rocky243/Context Engineering/codex/codex-rs/core/src/session/rollout_reconstruction.rs
-/Users/rocky243/Context Engineering/codex/codex-rs/tui/src/session_resume.rs
+/Users/example-owner/Context Engineering/codex/codex-rs/rollout/src/recorder.rs
+/Users/example-owner/Context Engineering/codex/codex-rs/core/src/session/rollout_reconstruction.rs
+/Users/example-owner/Context Engineering/codex/codex-rs/tui/src/session_resume.rs
 ```
 
 可吸收方向先限定为：
@@ -507,20 +507,20 @@ SESSION_END
 ## 9. 本轮启动命令
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 
 # Hive current hook/session surface
 rg -n "HookEvent|emit_hook\\(|append_session_event\\(|replay_t0_session_events|resume_persisted" backend/app backend/tests
 
 # CC hook/session baseline
-rg -n "HOOK_EVENTS|executeStopHooks|executeStopFailureHooks|executeUserPromptSubmitHooks|recordTranscript|loadTranscriptFile|resume" /Users/rocky243/vc-saas/free-code-main/src
-rg -n "HOOK_EVENTS|executeStopHooks|executeStopFailureHooks|executeUserPromptSubmitHooks|recordTranscript|loadTranscriptFile|resume" "/Users/rocky243/Context Engineering/claude-code-org/src"
+rg -n "HOOK_EVENTS|executeStopHooks|executeStopFailureHooks|executeUserPromptSubmitHooks|recordTranscript|loadTranscriptFile|resume" /Users/example-owner/vc-saas/free-code-main/src
+rg -n "HOOK_EVENTS|executeStopHooks|executeStopFailureHooks|executeUserPromptSubmitHooks|recordTranscript|loadTranscriptFile|resume" "/Users/example-owner/Context Engineering/claude-code-org/src"
 
 # CloudCode Python/Rust implementation references
-rg -n "resume|session|transcript|compact|hook|workspace_fingerprint|jsonl" "/Users/rocky243/Context Engineering/claw-code/src" "/Users/rocky243/Context Engineering/claw-code/rust"
+rg -n "resume|session|transcript|compact|hook|workspace_fingerprint|jsonl" "/Users/example-owner/Context Engineering/claw-code/src" "/Users/example-owner/Context Engineering/claw-code/rust"
 
 # Codex local rollout/session baseline
-rg -n "rollout|resume|InitialHistory|compaction|session|TurnContext|replacement_history" "/Users/rocky243/Context Engineering/codex/codex-rs" -g '*.rs'
+rg -n "rollout|resume|InitialHistory|compaction|session|TurnContext|replacement_history" "/Users/example-owner/Context Engineering/codex/codex-rs" -g '*.rs'
 
 # Existing Hive docs to reconcile
 rg -n "CC|Claude Code|Codex|T0|Stop Hook|Plan Mode|Subagent|Workflow|Skill" docs

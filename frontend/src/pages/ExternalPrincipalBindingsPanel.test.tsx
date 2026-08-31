@@ -37,7 +37,7 @@ describe('ExternalPrincipalBindingsPanel', () => {
             installation_ref: 'another-technical-installation',
             channel_config_id: null,
             subject_id: '42',
-            display_name: 'Telegram Rocky',
+            display_name: 'Telegram Example Owner',
             linked_user_id: 'user-1',
             binding_method: 'feishu_qr',
             binding_verified_at: '2026-07-11T10:30:00Z',
@@ -49,7 +49,7 @@ describe('ExternalPrincipalBindingsPanel', () => {
           },
         ]}
         users={[
-          { id: 'user-1', display_name: 'Rocky', username: 'rocky', is_active: true },
+          { id: 'user-1', display_name: 'Example Owner', username: 'example-owner', is_active: true },
           { id: 'inactive', display_name: 'Inactive', username: 'inactive', is_active: false },
         ]}
         loading={false}
@@ -61,7 +61,7 @@ describe('ExternalPrincipalBindingsPanel', () => {
     expect(markup).toContain('External channel identities');
     expect(markup).toContain('Slack Guest');
     expect(markup).toContain('Waiting for the user to verify this identity from the channel connection flow');
-    expect(markup).toContain('Rocky');
+    expect(markup).toContain('Example Owner');
     expect(markup).toContain('Unlink');
     expect(markup).not.toContain('Bind to invited member');
     expect(markup).not.toContain('<select');

@@ -82,7 +82,7 @@
 
 **块1 两个需记录（非严重）**：
 1. **⚠️ 文档-实现偏差（heartbeat round budget）**：CLAUDE.md 与 `docs` 声称"heartbeat override max_tool_rounds=40"，但 **grep 后 heartbeat.py 无 max_tool_rounds 覆盖点**，走同一 `agent.max_tool_rounds or 200`。声称的契约没落地——要么补覆盖，要么改文档。
-2. **⚠️ 脆弱点（本机绝对路径入生产 payload）**：`codex_optimization_ledger.py:50` 内嵌 `/Users/rocky243/Context Engineering/codex/...` 本机路径，被 `session_control_plane.py:1728` 消费进控制面 payload → 换环境即无意义。应改为相对引用或移除。
+2. **⚠️ 脆弱点（本机绝对路径入生产 payload）**：`codex_optimization_ledger.py:50` 内嵌 `/Users/example-owner/Context Engineering/codex/...` 本机路径，被 `session_control_plane.py:1728` 消费进控制面 payload → 换环境即无意义。应改为相对引用或移除。
 3. **○ 显式 deferred（非死字段）**：`ToolContentEnvelope.new_messages`/`terminal_signal` 恒空但有测试守护（`test_side_effect_channel_has_no_production_producer`）——显式延迟通道，不是静默死代码。
 
 ### 1.6 上下文组装 + Prompt cache 边界 + 压缩（AI-Native L1 核心）— ✅ 取证完成

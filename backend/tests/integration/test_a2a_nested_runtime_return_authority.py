@@ -277,6 +277,36 @@ async def _drive_terminal_seam(owner_sessionmaker, *, tenant_id: uuid.UUID, task
         await db.commit()
 
 
+async def _terminalize_and_ack_boundary(owner_sessionmaker, task_id: uuid.UUID) -> None:
+    from app.services.runtime_terminal_boundary_outbox import enqueue_terminal_boundary
+
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, task_id)
+        assert task is not None
+        task.status = "completed"
+        boundary = await enqueue_terminal_boundary(
+            db,
+            task=task,
+            event_kind="runtime_terminal",
+            agent_id=task.parent_agent_id,
+            session_id=task.parent_session_id,
+            terminal_status="completed",
+            authority_ref="runtime_task",
+            authority_id=task.id,
+            binding={
+                "tenant_id": task.tenant_id,
+                "runtime_task_id": task.id,
+                "agent_id": task.parent_agent_id,
+                "session_id": task.parent_session_id,
+                "authority_ref": "runtime_task",
+                "authority_id": task.id,
+            },
+        )
+        boundary.status = "delivered"
+        boundary.delivered_at = datetime.now(UTC)
+        await db.commit()
+
+
 @pytest.mark.asyncio
 async def test_nested_completion_delivers_into_active_delegation_parent(owner_sessionmaker, monkeypatch) -> None:
     """C completes while B's delegation parent is ACTIVE: the durable result
@@ -425,9 +455,7 @@ async def test_terminal_race_successor_stays_a2a_continuation(owner_sessionmaker
             await db.execute(select(SessionTurnInput).where(SessionTurnInput.session_id == seeded["parent_session_id"]))
         ).scalar_one()
         input_id = row.id
-        b_run = await db.get(RuntimeTask, seeded["b_active_run_id"])
-        b_run.status = "completed"
-        await db.commit()
+    await _terminalize_and_ack_boundary(owner_sessionmaker, seeded["b_active_run_id"])
 
     async with owner_sessionmaker() as db:
         recovery = await recover_dispatched_terminal_steers_once(

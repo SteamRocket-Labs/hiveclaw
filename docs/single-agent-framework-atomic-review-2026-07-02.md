@@ -2,7 +2,7 @@
 
 日期：2026-07-02（同日 owner 复核后修订 v1.1；2026-07-03 追加 v1.2/v1.3/v1.4/v1.5/v1.6/v1.7/v1.8/v1.9/v1.10 增量复审与修复闭合）
 状态：审计报告 + 增量修复闭合记录。初始审计取证基准 HEAD `4f211ee7`（main）。**owner 复核时 main 已前进至 `cdabf1c7`（ahead 10）**，其中 `fa27f02f` 新增 web chat RuntimeTask claim/lease 路径——涉及的结论已按 §0.1 修正。**最新闭合点为 HEAD `d72e487f`（`Close remaining session framework review gaps`，已推送 `origin/main`），见 §16 v1.10。**
-方法：11 路并行原子审计（内核循环 / transcript-resume / hooks / Plan Mode / Subagent-Team / Skill-MCP-命令层 / Workflow-Trigger-Ledger / 治理层 / Memory-Iter / UI 结构 / UI 微交互）+ 主控全量测试 + 基线源码对照（FreeCode `/Users/rocky243/vc-saas/free-code-main`、Codex `codex-rs`）+ 主控矛盾仲裁
+方法：11 路并行原子审计（内核循环 / transcript-resume / hooks / Plan Mode / Subagent-Team / Skill-MCP-命令层 / Workflow-Trigger-Ledger / 治理层 / Memory-Iter / UI 结构 / UI 微交互）+ 主控全量测试 + 基线源码对照（FreeCode `/Users/example-owner/vc-saas/free-code-main`、Codex `codex-rs`）+ 主控矛盾仲裁
 评判基准：`docs/ccplus-north-star-contract-2026-06-24.md`（边界契约）、`docs/hive-sota-master-goal.md`（总目标）、`docs/cc-python-evolution-north-star-2026-06-22.md`（单 Session 总纲）
 判定口径：aligned / partial / missing / intentional_delta / violation；P0=破坏北极星或生产事故级，P1=下轮必修，P2=打磨
 

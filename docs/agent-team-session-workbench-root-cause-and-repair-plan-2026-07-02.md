@@ -56,7 +56,7 @@
 
 ### 2.1 CC / FreeCode
 
-本机基线：`/Users/rocky243/vc-saas/free-code-main`
+本机基线：`/Users/example-owner/vc-saas/free-code-main`
 
 关键源码：
 
@@ -83,7 +83,7 @@
 
 ### 2.2 Codex
 
-本机基线：`/Users/rocky243/Context Engineering/codex/codex-rs`
+本机基线：`/Users/example-owner/Context Engineering/codex/codex-rs`
 
 关键源码：
 
@@ -145,7 +145,7 @@ Hive 应吸收的是这个原则：**workspace 可以共享，但 transcript/run
 命令形态：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 railway deployment list --service backend --environment production --limit 3 --json
 curl -fsS https://backend-production-326d.up.railway.app/api/health
 railway logs --service backend --environment production --lines 5000
@@ -486,7 +486,7 @@ Hive 当前存在的偏差：
 新增或扩展测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 
 pytest \
@@ -515,7 +515,7 @@ pytest \
 新增或扩展测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 
 npm run test -- \
   chatDisclosureReducer.test.ts \
@@ -541,7 +541,7 @@ npm run build
 在后续代码实现并部署后，用以下 production smoke 验收：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 
 railway deployment list --service backend --environment production --limit 1 --json
 railway deployment list --service frontend --environment production --limit 1 --json

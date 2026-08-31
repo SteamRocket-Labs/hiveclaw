@@ -1,6 +1,6 @@
 ---
 document_id: weekend-rc-domain-automation-hooks-capabilities
-owner: Rocky / Codex
+owner: Example Owner / Codex
 status: active
 authority: canonical-domain-acceptance
 last_reviewed: 2026-08-30
@@ -85,4 +85,4 @@ verification_status: acceptance-spec-not-execution-result
 
 ## Acceptance
 
-每类从 product entry 到 terminal delivery 连续两遍，并覆盖 duplicate/restart/revoke/unavailable/ambiguous/expiry。真实 external provider 或 bridge 不可用时诚实 `BLOCKED_PRECONDITION`；受控 fake 只能算 CI floor，不能计 production NPTCR。
+每类从 product entry 到 terminal delivery 连续两遍，并覆盖 duplicate/restart/revoke/unavailable/ambiguous/expiry。经独立确认且不由 Hive 造成的真实 external provider/bridge 不可用时单列 `EXTERNAL_UNAVAILABLE`，不得写 `BLOCKED_PRECONDITION`、PASS 或 Closed；若对应冻结旅程要求真实 external success，该旅程在恢复或 owner 明确 `Excluded` 前保持未闭环。受控 fake 只能算 CI floor，不能计 production NPTCR。

@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
 
 def test_trigger_view_default_hides_internal_fields_and_surfaces_backoff():
     from app.services.autonomy_overview import build_trigger_view
@@ -216,6 +218,66 @@ def test_artifact_view_defaults_to_output_not_internal_metadata():
     diagnostic_view = build_artifact_view(raw_payload, include_diagnostics=True)
     assert diagnostic_view["diagnostics"]["runtime_task_id"] == "runtime-1"
     assert diagnostic_view["diagnostics"]["schema"] == "trigger_output_artifact.v1"
+
+
+@pytest.mark.asyncio
+async def test_artifact_reader_uses_canonical_runtime_task_path(tmp_path, monkeypatch):
+    from app.services import autonomy_overview
+    from app.services.trigger_artifacts import write_trigger_output_artifact
+
+    agent_id = uuid4()
+    task_id = uuid4()
+    write_trigger_output_artifact(
+        agent_data_dir=tmp_path,
+        agent_id=agent_id,
+        runtime_task_id=str(task_id),
+        triggers=[{"id": str(uuid4()), "name": "daily", "type": "cron", "config": {}}],
+        final_reply="Done.",
+    )
+    monkeypatch.setattr(autonomy_overview, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    view = await autonomy_overview.read_agent_trigger_artifact_view(
+        agent_id=agent_id,
+        runtime_task_id=str(task_id),
+    )
+
+    assert view is not None
+    assert view["final_reply"] == "Done."
+
+
+@pytest.mark.asyncio
+async def test_artifact_reader_rejects_foreign_payload_at_canonical_path(tmp_path, monkeypatch):
+    import json
+
+    from app.services import autonomy_overview
+    from app.services.trigger_artifacts import trigger_output_artifact_ref
+
+    agent_id = uuid4()
+    task_id = uuid4()
+    artifact = trigger_output_artifact_ref(str(task_id))
+    assert artifact is not None
+    artifact_path = tmp_path / str(agent_id) / artifact["path"]
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "schema": "trigger_output_artifact.v1",
+                "runtime_task_id": uuid4().hex,
+                "agent_id": str(uuid4()),
+                "triggers": [{"name": "foreign"}],
+                "final_reply": "foreign content",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(autonomy_overview, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    view = await autonomy_overview.read_agent_trigger_artifact_view(
+        agent_id=agent_id,
+        runtime_task_id=str(task_id),
+    )
+
+    assert view is None
 
 
 def test_trigger_view_never_falls_back_to_raw_kind_code_in_display_title():

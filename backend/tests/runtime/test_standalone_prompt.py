@@ -79,7 +79,7 @@ async def test_non_standalone_request_still_builds_host_prompt(monkeypatch):
     monkeypatch.setattr(invoker, "build_frozen_prompt_prefix", lambda agent_context, **kwargs: agent_context)
 
     request = _standalone_request("")
-    prompt = await invoker._build_system_prompt(request, uuid4(), "", current_user_name="rocky")
+    prompt = await invoker._build_system_prompt(request, uuid4(), "", current_user_name="example-owner")
     assert prompt == "HOST CONTEXT"
     assert len(calls) == 1
 
@@ -103,7 +103,7 @@ async def test_production_frozen_prefix_excludes_per_turn_state(monkeypatch):
 
     monkeypatch.setattr(invoker, "build_agent_context", fake_build_agent_context)
 
-    prompt = await invoker._build_system_prompt(_standalone_request(""), uuid4(), "", current_user_name="rocky")
+    prompt = await invoker._build_system_prompt(_standalone_request(""), uuid4(), "", current_user_name="example-owner")
 
     assert captured["include_runtime_metadata"] is False
     assert captured["include_memory_file"] is False

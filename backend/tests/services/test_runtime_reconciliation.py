@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -70,7 +71,7 @@ async def _add_runtime_task(
         status=status,
         tenant_id=tenant_id,
         parent_agent_id=parent_agent_id or uuid.uuid4(),
-        child_agent_id=uuid.uuid4(),
+        child_agent_id=parent_agent_id or uuid.uuid4(),
         child_agent_name="worker",
         prompt="mutating work",
         result_summary="Restart interrupted a mutating run.",
@@ -84,6 +85,170 @@ async def _add_runtime_task(
     session.add(task)
     await session.flush()
     return task
+
+
+async def _deliver_terminal_projection(session, task: RuntimeTask) -> None:
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+    from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
+
+    await settle_and_enqueue_runtime_task_terminal(
+        session,
+        task,
+        terminal_source="test:canonical_terminal_projection",
+        root_reason_code="test_terminal_projection",
+    )
+    boundary = await session.scalar(
+        select(RuntimeTerminalBoundaryOutbox).where(
+            RuntimeTerminalBoundaryOutbox.tenant_id == task.tenant_id,
+            RuntimeTerminalBoundaryOutbox.runtime_task_id == task.id,
+            RuntimeTerminalBoundaryOutbox.terminal_status == task.status,
+        )
+    )
+    assert boundary is not None
+    boundary.status = "delivered"
+    boundary.delivered_at = datetime.now(timezone.utc)
+    boundary.delivery_receipt_json = {"boundary_id": str(boundary.id)}
+    await session.flush()
+
+
+async def _seed_held_trigger_runtime_task(
+    session,
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID | None = None,
+    include_response: bool = False,
+):
+    from app.models.trigger import AgentTrigger
+    from app.services.direct_invocation_terminal_boundary_processor import (
+        enqueue_direct_terminal_boundary_for_task,
+    )
+    from app.services.runtime_task_service import _settle_trigger_runtime_task
+
+    task_id = uuid.uuid4()
+    session_id = uuid.uuid4() if include_response else None
+    final_response = "Mixed trigger batch completed with held workflow evidence."
+    trigger = AgentTrigger(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        name="Held once trigger",
+        type="once",
+        config={
+            "at": "2026-08-31T00:00:00+00:00",
+            "_fire_inflight": {
+                "event_key": "once:held-reconciliation",
+                "runtime_task_id": str(task_id),
+                "started_at": "2026-08-31T00:00:00+00:00",
+            },
+        },
+        reason="Prove operator trigger settlement",
+        is_enabled=True,
+        fire_count=0,
+        cooldown_seconds=0,
+    )
+    task = RuntimeTask(
+        id=task_id,
+        task_type="trigger",
+        status="needs_reconciliation",
+        tenant_id=tenant_id,
+        parent_agent_id=agent_id,
+        child_session_id=str(session_id) if session_id else None,
+        root_user_id=user_id,
+        root_session_id=str(session_id) if session_id else None,
+        result_summary="Trigger effect outcome requires operator reconciliation.",
+        completed_at=datetime.now(timezone.utc),
+        metadata_json={
+            "needs_reconciliation": True,
+            "reconciliation_reason": "effect_outcome_unknown",
+            "reconciliation_retry_allowed": True,
+            "trigger_ids": [str(trigger.id)],
+            "trigger_names": [trigger.name],
+            "trigger_types": [trigger.type],
+            **(
+                {
+                    "terminal_reason": "turn_stop",
+                    "response_complete_payload": {
+                        "agent_id": str(agent_id),
+                        "session_id": str(session_id),
+                        "source": "trigger",
+                        "messages": [{"role": "user", "content": "Run the mixed trigger batch."}],
+                        "metadata": {
+                            "tenant_id": str(tenant_id),
+                            "final_response": final_response,
+                        },
+                    },
+                }
+                if include_response
+                else {}
+            ),
+        },
+    )
+    session.add_all((trigger, task))
+    await session.flush()
+    if include_response:
+        assert session_id is not None and user_id is not None
+        from app.models.chat_session import ChatSession
+        from app.services.chat_transcript import append_session_event
+
+        session.add(
+            ChatSession(
+                id=session_id,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                user_id=user_id,
+                runtime_task_id=task_id,
+                source_channel="trigger",
+                runtime_source="runtime_task",
+                visibility_scope="agent_owner",
+                listed_surface="task_updates",
+                title="Mixed trigger reconciliation",
+            )
+        )
+        await session.flush()
+        await append_session_event(
+            db=session,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=task_id,
+            actor_type="user",
+            event_type="user_message",
+            role="user",
+            user_id=user_id,
+            content="Run the mixed trigger batch.",
+            source="trigger",
+            metadata={"turn_id": f"turn-{task_id.hex}"},
+            bridge_to_t0=False,
+        )
+        await append_session_event(
+            db=session,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=task_id,
+            actor_type="assistant",
+            event_type="assistant_message",
+            role="assistant",
+            user_id=user_id,
+            content=final_response,
+            source="trigger",
+            metadata={"turn_id": f"turn-{task_id.hex}"},
+            bridge_to_t0=False,
+        )
+    settlement = await _settle_trigger_runtime_task(
+        session,
+        task,
+        status="needs_reconciliation",
+    )
+    assert settlement is not None
+    metadata = dict(task.metadata_json or {})
+    metadata["trigger_settlement"] = settlement
+    task.metadata_json = metadata
+    outbox = await enqueue_direct_terminal_boundary_for_task(session, task)
+    assert outbox is not None
+    await session.flush()
+    return task, trigger, outbox
 
 
 async def _seed_unresolved_tool_effect(
@@ -201,6 +366,73 @@ async def _seed_unresolved_tool_effect(
     return task, invocation, session_id
 
 
+async def _attach_unresolved_tool_effect_to_task(
+    session,
+    *,
+    task: RuntimeTask,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    agent_id: uuid.UUID,
+):
+    from app.models.chat_session import ChatSession
+    from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+
+    session_id = uuid.uuid4()
+    result_id = uuid.uuid4()
+    invocation_id = uuid.uuid4()
+    turn_id = f"turn-{task.id.hex}"
+    round_id = f"{task.id}:round:effect"
+    provider_request_id = f"provider-effect-{task.id}"
+    session.add(
+        ChatSession(
+            id=session_id,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            session_kind="human_chat",
+            runtime_source="web_chat",
+        )
+    )
+    task.parent_session_id = str(session_id)
+    session.add(
+        SessionModelResult(
+            id=result_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            run_id=task.id,
+            round_id=round_id,
+            provider_request_id=provider_request_id,
+            state="failed",
+            model_request_hash="e" * 64,
+            model_request_snapshot_json={"messages": []},
+            bound_input_ids_json=[],
+        )
+    )
+    await session.flush()
+    invocation = SessionToolInvocation(
+        id=invocation_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        run_id=task.id,
+        round_id=round_id,
+        provider_request_id=provider_request_id,
+        provider_tool_use_id=f"tool-{invocation_id}",
+        tool_name="write_file",
+        provider_arguments_json={"path": "workspace/trigger-probe.md"},
+        invocation_item_id=uuid.uuid4(),
+        args_hash="f" * 64,
+        authority_snapshot_hash="1" * 64,
+        effect_idempotency_key=f"tool-effect:{invocation_id}",
+        effect_state="effect_started",
+        execution_fence_ref=f"tool-effect:{invocation_id}:started",
+        recovery_owner="session_tool_runtime:effect_receipt_pending",
+    )
+    session.add(invocation)
+    await session.flush()
+    return invocation
+
+
 async def test_list_runtime_reconciliation_tasks_filters_by_tenant_and_status(owner_sessionmaker, tenant_ids):
     from app.services.runtime_reconciliation import list_runtime_reconciliation_tasks
 
@@ -229,6 +461,7 @@ async def test_runtime_reconciliation_retry_is_fail_closed_without_retry_contrac
     actor_user_id, agent_id = operator_authority
     async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
         task = await _add_runtime_task(session, tenant_id=tenant_id, parent_agent_id=agent_id)
+        await _deliver_terminal_projection(session, task)
 
     async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
         with pytest.raises(RuntimeReconciliationConflict, match="not marked retryable"):
@@ -258,6 +491,7 @@ async def test_runtime_reconciliation_safe_retry_reopens_task(
             parent_agent_id=agent_id,
             metadata={"reconciliation_retry_allowed": True, "side_effect_risk": "read_only"},
         )
+        await _deliver_terminal_projection(session, task)
 
     async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
         view = await apply_runtime_reconciliation_action(
@@ -276,6 +510,609 @@ async def test_runtime_reconciliation_safe_retry_reopens_task(
         persisted = await get_runtime_reconciliation_task(session, task_id=task.id, tenant_id=tenant_id)
     assert persisted is not None
     assert persisted["status"] == "pending"
+
+
+async def test_trigger_reconciliation_rejects_untyped_generic_resolution(
+    owner_sessionmaker,
+    tenant_ids,
+    operator_authority,
+):
+    from app.models.trigger import AgentTrigger
+    from app.services.runtime_reconciliation import (
+        RuntimeReconciliationConflict,
+        apply_runtime_reconciliation_action,
+    )
+
+    tenant_id, _other = tenant_ids
+    actor_user_id, agent_id = operator_authority
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        task, trigger, _outbox = await _seed_held_trigger_runtime_task(
+            session,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+        )
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        with pytest.raises(RuntimeReconciliationConflict, match="trigger_disposition"):
+            await apply_runtime_reconciliation_action(
+                session,
+                task_id=task.id,
+                tenant_id=tenant_id,
+                action="mark_resolved",
+                reason="generic success must not release a held trigger",
+                actor_user_id=actor_user_id,
+            )
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        persisted_task = await session.get(RuntimeTask, task.id)
+        persisted_trigger = await session.get(AgentTrigger, trigger.id)
+        assert persisted_task.status == "needs_reconciliation"
+        assert persisted_task.metadata_json["trigger_settlement"]["outcome"] == "hold"
+        assert persisted_trigger.config["_fire_inflight"]["hold"] is True
+
+
+async def test_trigger_reconciliation_view_reports_canonical_readiness_and_typed_evidence(
+    owner_sessionmaker,
+    tenant_ids,
+    operator_authority,
+):
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+    from app.services.direct_invocation_terminal_boundary_processor import (
+        build_direct_terminal_boundary_binding,
+    )
+    from app.services.runtime_reconciliation import (
+        RuntimeReconciliationConflict,
+        apply_runtime_reconciliation_action,
+        list_runtime_reconciliation_tasks,
+    )
+    from app.services.runtime_terminal_boundary_outbox import terminal_boundary_binding_sha256
+    from app.services.trigger_artifacts import trigger_output_artifact_ref
+
+    tenant_id, _other = tenant_ids
+    actor_user_id, agent_id = operator_authority
+    session_id = uuid.uuid4()
+    completion_outbox_id = uuid.uuid4()
+    audit_log_id = uuid.uuid4()
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        task, _trigger, outbox = await _seed_held_trigger_runtime_task(
+            session,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+        )
+        task.trace_id = "trace-canonical-trigger"
+        task.child_session_id = str(session_id)
+        metadata = dict(task.metadata_json or {})
+        settlement = dict(metadata["trigger_settlement"])
+        settlement["audit_log_id"] = str(audit_log_id)
+        metadata.update(
+            {
+                "trigger_settlement": settlement,
+                "completion_outbox_id": str(completion_outbox_id),
+                "output_artifact": trigger_output_artifact_ref(str(task.id)),
+            }
+        )
+        task.metadata_json = metadata
+        canonical_binding = await build_direct_terminal_boundary_binding(session, task)
+        outbox.session_id = str(session_id)
+        outbox.binding_json = canonical_binding
+        outbox.binding_sha256 = terminal_boundary_binding_sha256(canonical_binding)
+        legacy = await _add_runtime_task(
+            session,
+            tenant_id=tenant_id,
+            task_type="trigger",
+            parent_agent_id=agent_id,
+            metadata={"trigger_settlement_overrides": {str(uuid.uuid4()): "hold"}},
+        )
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        rows = await list_runtime_reconciliation_tasks(session, tenant_id=tenant_id)
+        canonical_row = next(row for row in rows if row["task_id"] == str(task.id))
+        legacy_row = next(row for row in rows if row["task_id"] == str(legacy.id))
+
+        assert canonical_row["trigger_disposition_readiness"] == {
+            "schema": "runtime_trigger_disposition_readiness.v1",
+            "ready": False,
+            "blocker": "terminal_projection_pending",
+            "terminal_projection_id": str(outbox.id),
+        }
+        assert canonical_row["child_session_id"] == str(session_id)
+        assert canonical_row["trace_id"] == "trace-canonical-trigger"
+        assert canonical_row["output_artifact"] == trigger_output_artifact_ref(str(task.id))
+        assert canonical_row["completion_outbox_id"] == str(completion_outbox_id)
+        assert canonical_row["settlement_audit_ref"] == {
+            "kind": "audit_log",
+            "id": str(audit_log_id),
+        }
+        assert legacy_row["trigger_disposition_readiness"]["ready"] is False
+        assert legacy_row["trigger_disposition_readiness"]["blocker"] == "canonical_trigger_settlement_missing"
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        persisted_outbox = await session.get(RuntimeTerminalBoundaryOutbox, outbox.id)
+        persisted_outbox.status = "delivered"
+        persisted_outbox.delivered_at = datetime.now(timezone.utc)
+        persisted_outbox.delivery_receipt_json = {"boundary_id": str(outbox.id)}
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        rows = await list_runtime_reconciliation_tasks(session, tenant_id=tenant_id)
+        ready_row = next(row for row in rows if row["task_id"] == str(task.id))
+        assert ready_row["trigger_disposition_readiness"] == {
+            "schema": "runtime_trigger_disposition_readiness.v1",
+            "ready": True,
+            "blocker": None,
+            "terminal_projection_id": str(outbox.id),
+        }
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        persisted_outbox = await session.get(RuntimeTerminalBoundaryOutbox, outbox.id)
+        duplicate = RuntimeTerminalBoundaryOutbox(
+            id=uuid.uuid4(),
+            tenant_id=persisted_outbox.tenant_id,
+            runtime_task_id=persisted_outbox.runtime_task_id,
+            agent_id=persisted_outbox.agent_id,
+            session_id=persisted_outbox.session_id,
+            event_kind="turn_abort",
+            terminal_status=persisted_outbox.terminal_status,
+            authority_ref=persisted_outbox.authority_ref,
+            authority_id=persisted_outbox.authority_id,
+            binding_json=dict(persisted_outbox.binding_json),
+            binding_sha256=persisted_outbox.binding_sha256,
+            idempotency_key="d" * 64,
+            status="delivered",
+            delivery_receipt_json={"boundary_id": "duplicate"},
+            delivered_at=datetime.now(timezone.utc),
+        )
+        session.add(duplicate)
+        await session.flush()
+        rows = await list_runtime_reconciliation_tasks(session, tenant_id=tenant_id)
+        duplicate_row = next(row for row in rows if row["task_id"] == str(task.id))
+        assert duplicate_row["trigger_disposition_readiness"]["ready"] is False
+        assert duplicate_row["trigger_disposition_readiness"]["blocker"] == "terminal_projection_mismatch"
+        await session.delete(duplicate)
+        persisted_task = await session.get(RuntimeTask, task.id)
+        persisted_task.trace_id = "trace-drifted-after-delivery"
+        await session.flush()
+        rows = await list_runtime_reconciliation_tasks(session, tenant_id=tenant_id)
+        drifted_row = next(row for row in rows if row["task_id"] == str(task.id))
+        assert drifted_row["trigger_disposition_readiness"]["ready"] is False
+        assert drifted_row["trigger_disposition_readiness"]["blocker"] == "terminal_projection_mismatch"
+        persisted_task.trace_id = "trace-canonical-trigger"
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        persisted_task = await session.get(RuntimeTask, task.id)
+        metadata = dict(persisted_task.metadata_json or {})
+        settlement = dict(metadata["trigger_settlement"])
+        settlement["runtime_task_id"] = str(uuid.uuid4())
+        metadata["trigger_settlement"] = settlement
+        persisted_task.metadata_json = metadata
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        with pytest.raises(RuntimeReconciliationConflict, match="canonical_trigger_settlement_mismatch"):
+            await apply_runtime_reconciliation_action(
+                session,
+                task_id=task.id,
+                tenant_id=tenant_id,
+                action="mark_resolved",
+                reason="The view was ready before canonical evidence drifted.",
+                actor_user_id=actor_user_id,
+                trigger_disposition="confirmed_success",
+            )
+
+
+async def test_trigger_reconciliation_does_not_invert_task_and_outbox_lock_order(
+    monkeypatch,
+    owner_sessionmaker,
+    tenant_ids,
+    operator_authority,
+):
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+    from app.services import runtime_reconciliation
+    from app.services.runtime_reconciliation import RuntimeReconciliationConflict
+
+    tenant_id, _other = tenant_ids
+    actor_user_id, agent_id = operator_authority
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        task, _trigger, outbox = await _seed_held_trigger_runtime_task(
+            session,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+        )
+
+    outbox_locked = asyncio.Event()
+    task_locked_by_operator = asyncio.Event()
+    original_guard = runtime_reconciliation._require_delivered_trigger_terminal_projection
+
+    async def signal_task_lock_then_check(db, locked_task):
+        task_locked_by_operator.set()
+        await original_guard(db, locked_task)
+
+    monkeypatch.setattr(
+        runtime_reconciliation,
+        "_require_delivered_trigger_terminal_projection",
+        signal_task_lock_then_check,
+    )
+
+    async def hold_outbox_then_lock_task():
+        async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+            await session.execute(
+                select(RuntimeTerminalBoundaryOutbox)
+                .where(RuntimeTerminalBoundaryOutbox.id == outbox.id)
+                .with_for_update()
+            )
+            outbox_locked.set()
+            await task_locked_by_operator.wait()
+            await session.execute(select(RuntimeTask).where(RuntimeTask.id == task.id).with_for_update())
+
+    async def reconcile_while_outbox_is_locked():
+        await outbox_locked.wait()
+        async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+            with pytest.raises(RuntimeReconciliationConflict, match="terminal_projection_pending"):
+                await runtime_reconciliation.apply_runtime_reconciliation_action(
+                    session,
+                    task_id=task.id,
+                    tenant_id=tenant_id,
+                    action="mark_resolved",
+                    reason="Pending projection must not invert lock order.",
+                    actor_user_id=actor_user_id,
+                    trigger_disposition="confirmed_success",
+                )
+
+    await asyncio.wait_for(
+        asyncio.gather(hold_outbox_then_lock_task(), reconcile_while_outbox_is_locked()),
+        timeout=2,
+    )
+
+
+async def test_trigger_reconciliation_waits_for_projection_then_settles_hold_atomically_once(
+    monkeypatch,
+    owner_sessionmaker,
+    tenant_ids,
+    operator_authority,
+):
+    from app.models.audit import AuditLog
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+    from app.models.trigger import AgentTrigger
+    from app.services import runtime_terminal_settlement
+    from app.services.runtime_reconciliation import (
+        RuntimeReconciliationConflict,
+        apply_runtime_reconciliation_action,
+    )
+
+    tenant_id, _other = tenant_ids
+    actor_user_id, agent_id = operator_authority
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        task, trigger, outbox = await _seed_held_trigger_runtime_task(
+            session,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+        )
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        with pytest.raises(RuntimeReconciliationConflict, match="terminal_projection_pending"):
+            await apply_runtime_reconciliation_action(
+                session,
+                task_id=task.id,
+                tenant_id=tenant_id,
+                action="mark_resolved",
+                reason="operator confirmed the exact trigger effect",
+                actor_user_id=actor_user_id,
+                trigger_disposition="confirmed_success",
+            )
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        outbox_row = await session.get(RuntimeTerminalBoundaryOutbox, outbox.id)
+        outbox_row.status = "delivered"
+        outbox_row.delivered_at = datetime.now(timezone.utc)
+        outbox_row.delivery_receipt_json = {"boundary_id": str(outbox.id)}
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        with pytest.raises(RuntimeReconciliationConflict, match="new RuntimeTask"):
+            await apply_runtime_reconciliation_action(
+                session,
+                task_id=task.id,
+                tenant_id=tenant_id,
+                action="retry",
+                reason="must not replay the ambiguous trigger wrapper",
+                actor_user_id=actor_user_id,
+                trigger_disposition="release",
+            )
+
+    original_settle_terminal = runtime_terminal_settlement.settle_runtime_task_terminal
+
+    async def fail_after_trigger_settlement(*_args, **_kwargs):
+        raise RuntimeError("terminal fence unavailable")
+
+    monkeypatch.setattr(
+        runtime_terminal_settlement,
+        "settle_runtime_task_terminal",
+        fail_after_trigger_settlement,
+    )
+    with pytest.raises(RuntimeError, match="terminal fence unavailable"):
+        async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+            await apply_runtime_reconciliation_action(
+                session,
+                task_id=task.id,
+                tenant_id=tenant_id,
+                action="mark_resolved",
+                reason="operator confirmed the exact trigger effect",
+                actor_user_id=actor_user_id,
+                trigger_disposition="confirmed_success",
+            )
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        rolled_back_task = await session.get(RuntimeTask, task.id)
+        rolled_back_trigger = await session.get(AgentTrigger, trigger.id)
+        assert rolled_back_task.status == "needs_reconciliation"
+        assert rolled_back_task.metadata_json["trigger_settlement"]["outcome"] == "hold"
+        assert rolled_back_trigger.fire_count == 0
+        assert rolled_back_trigger.is_enabled is True
+        assert rolled_back_trigger.config["_fire_inflight"]["hold"] is True
+
+    monkeypatch.setattr(
+        runtime_terminal_settlement,
+        "settle_runtime_task_terminal",
+        original_settle_terminal,
+    )
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        resolved = await apply_runtime_reconciliation_action(
+            session,
+            task_id=task.id,
+            tenant_id=tenant_id,
+            action="mark_resolved",
+            reason="operator confirmed the exact trigger effect",
+            actor_user_id=actor_user_id,
+            trigger_disposition="confirmed_success",
+        )
+
+    assert resolved["status"] == "completed"
+    assert resolved["metadata"]["trigger_reconciliation_disposition"] == "confirmed_success"
+    assert resolved["metadata"]["trigger_settlement"]["trigger_outcomes"] == {str(trigger.id): "success"}
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        settled_task = await session.get(RuntimeTask, task.id)
+        settled_trigger = await session.get(AgentTrigger, trigger.id)
+        persisted_outbox = await session.get(RuntimeTerminalBoundaryOutbox, outbox.id)
+        audits = list(
+            (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.tenant_id == tenant_id,
+                        AuditLog.action.in_(("trigger_fired", "runtime_reconciliation.mark_resolved")),
+                    )
+                )
+            ).scalars()
+        )
+        assert settled_task.status == "completed"
+        assert settled_task.metadata_json["reconciliation_status"] == "trigger_confirmed_success"
+        assert settled_trigger.fire_count == 1
+        assert settled_trigger.is_enabled is False
+        assert "_fire_inflight" not in settled_trigger.config
+        assert persisted_outbox.status == "delivered"
+        assert persisted_outbox.terminal_status == "needs_reconciliation"
+        assert [audit.action for audit in audits].count("trigger_fired") == 1
+        assert [audit.action for audit in audits].count("runtime_reconciliation.mark_resolved") == 1
+        reconciliation_audit = next(audit for audit in audits if audit.action == "runtime_reconciliation.mark_resolved")
+        assert reconciliation_audit.details["trigger_disposition"] == "confirmed_success"
+
+        with pytest.raises(RuntimeReconciliationConflict, match="no longer awaiting reconciliation"):
+            await apply_runtime_reconciliation_action(
+                session,
+                task_id=task.id,
+                tenant_id=tenant_id,
+                action="mark_resolved",
+                reason="stale duplicate operator action",
+                actor_user_id=actor_user_id,
+                trigger_disposition="confirmed_success",
+            )
+
+        audits_after_duplicate = list(
+            (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.tenant_id == tenant_id,
+                        AuditLog.action.in_(("trigger_fired", "runtime_reconciliation.mark_resolved")),
+                    )
+                )
+            ).scalars()
+        )
+        assert len(audits_after_duplicate) == len(audits)
+
+
+async def test_confirmed_mixed_trigger_success_enqueues_distinct_turn_stop_projection(
+    owner_sessionmaker,
+    tenant_ids,
+    operator_authority,
+):
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+    from app.services.runtime_reconciliation import apply_runtime_reconciliation_action
+
+    tenant_id, _other = tenant_ids
+    actor_user_id, agent_id = operator_authority
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        task, _trigger, original_outbox = await _seed_held_trigger_runtime_task(
+            session,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            user_id=actor_user_id,
+            include_response=True,
+        )
+        assert original_outbox.event_kind == "turn_abort"
+        original_outbox.status = "delivered"
+        original_outbox.delivered_at = datetime.now(timezone.utc)
+        original_outbox.delivery_receipt_json = {"boundary_id": str(original_outbox.id)}
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        resolved = await apply_runtime_reconciliation_action(
+            session,
+            task_id=task.id,
+            tenant_id=tenant_id,
+            action="mark_resolved",
+            reason="Verified the held workflow child and committed ReAct response.",
+            actor_user_id=actor_user_id,
+            trigger_disposition="confirmed_success",
+        )
+
+    assert resolved["status"] == "completed"
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        persisted_task = await session.get(RuntimeTask, task.id)
+        outboxes = list(
+            (
+                await session.execute(
+                    select(RuntimeTerminalBoundaryOutbox)
+                    .where(RuntimeTerminalBoundaryOutbox.runtime_task_id == task.id)
+                    .order_by(RuntimeTerminalBoundaryOutbox.event_kind)
+                )
+            ).scalars()
+        )
+        assert [(row.event_kind, row.terminal_status, row.status) for row in outboxes] == [
+            ("turn_abort", "needs_reconciliation", "delivered"),
+            ("turn_stop", "completed", "pending"),
+        ]
+        assert persisted_task.terminal_boundary_enqueued_at is not None
+
+
+@pytest.mark.parametrize(
+    ("disposition", "action", "expected_status", "expected_outcome"),
+    [
+        ("confirmed_failure", "mark_resolved", "failed", "failure"),
+        ("release", "archive", "killed", "release"),
+    ],
+)
+async def test_trigger_reconciliation_failure_and_release_clear_exact_hold(
+    owner_sessionmaker,
+    tenant_ids,
+    operator_authority,
+    disposition,
+    action,
+    expected_status,
+    expected_outcome,
+):
+    from app.models.audit import AuditLog
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+    from app.models.trigger import AgentTrigger
+    from app.services.runtime_reconciliation import apply_runtime_reconciliation_action
+
+    tenant_id, _other = tenant_ids
+    actor_user_id, agent_id = operator_authority
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        task, trigger, outbox = await _seed_held_trigger_runtime_task(
+            session,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+        )
+        outbox.status = "delivered"
+        outbox.delivered_at = datetime.now(timezone.utc)
+        outbox.delivery_receipt_json = {"boundary_id": str(outbox.id)}
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        resolved = await apply_runtime_reconciliation_action(
+            session,
+            task_id=task.id,
+            tenant_id=tenant_id,
+            action=action,
+            reason=f"operator chose {disposition}",
+            actor_user_id=actor_user_id,
+            trigger_disposition=disposition,
+        )
+
+    assert resolved["status"] == expected_status
+    assert resolved["metadata"]["trigger_settlement"]["trigger_outcomes"] == {str(trigger.id): expected_outcome}
+    assert resolved["metadata"]["trigger_settlement"]["reconciliation_disposition"] == disposition
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        settled_trigger = await session.get(AgentTrigger, trigger.id)
+        persisted_outbox = await session.get(RuntimeTerminalBoundaryOutbox, outbox.id)
+        audits = list(
+            (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.tenant_id == tenant_id,
+                        AuditLog.action.in_(("trigger_fired", f"runtime_reconciliation.{action}")),
+                    )
+                )
+            ).scalars()
+        )
+        assert "_fire_inflight" not in settled_trigger.config
+        assert settled_trigger.fire_count == 0
+        assert settled_trigger.is_enabled is True
+        assert persisted_outbox.status == "delivered"
+        assert [audit.action for audit in audits] == [f"runtime_reconciliation.{action}"]
+        if disposition == "confirmed_failure":
+            assert settled_trigger.config["failure_count"] == 1
+        else:
+            assert "failure_count" not in settled_trigger.config
+
+
+@pytest.mark.parametrize(
+    ("disposition", "expected_status", "expected_outcome"),
+    [
+        ("confirmed_success", "completed", "success"),
+        ("confirmed_failure", "failed", "failure"),
+        ("release", "killed", "release"),
+    ],
+)
+async def test_trigger_tool_effect_hold_uses_explicit_atomic_acknowledgement(
+    owner_sessionmaker,
+    tenant_ids,
+    operator_authority,
+    disposition,
+    expected_status,
+    expected_outcome,
+):
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+    from app.models.session_v2 import SessionToolInvocation
+    from app.services.runtime_reconciliation import (
+        apply_runtime_reconciliation_action,
+        list_runtime_reconciliation_tasks,
+    )
+
+    tenant_id, _other = tenant_ids
+    actor_user_id, agent_id = operator_authority
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        task, trigger, outbox = await _seed_held_trigger_runtime_task(
+            session,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+        )
+        invocation = await _attach_unresolved_tool_effect_to_task(
+            session,
+            task=task,
+            tenant_id=tenant_id,
+            user_id=actor_user_id,
+            agent_id=agent_id,
+        )
+        outbox.status = "delivered"
+        outbox.delivered_at = datetime.now(timezone.utc)
+        outbox.delivery_receipt_json = {"boundary_id": str(outbox.id)}
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        rows = await list_runtime_reconciliation_tasks(session, tenant_id=tenant_id)
+        row = next(item for item in rows if item["task_id"] == str(task.id))
+        assert row["supported_actions"] == ["acknowledge_tool_effect"]
+        assert row["supported_trigger_dispositions"] == [
+            "confirmed_success",
+            "confirmed_failure",
+            "release",
+        ]
+        assert row["trigger_disposition_readiness"]["ready"] is True
+        resolved = await apply_runtime_reconciliation_action(
+            session,
+            task_id=task.id,
+            tenant_id=tenant_id,
+            action="acknowledge_tool_effect",
+            reason=f"Verified the trigger and unknown tool effect for {disposition}.",
+            actor_user_id=actor_user_id,
+            trigger_disposition=disposition,
+        )
+
+    assert resolved["status"] == expected_status
+    assert resolved["tool_effect_reconciliation_required"] is False
+    assert resolved["metadata"]["trigger_settlement"]["trigger_outcomes"] == {str(trigger.id): expected_outcome}
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        persisted_invocation = await session.get(SessionToolInvocation, invocation.id)
+        persisted_outbox = await session.get(RuntimeTerminalBoundaryOutbox, outbox.id)
+        assert persisted_invocation.recovery_owner is None
+        assert persisted_invocation.receipt_ref.startswith("session-event://")
+        assert persisted_outbox.status == "delivered"
 
 
 async def test_failed_tool_effect_hold_is_listed_and_can_only_be_acknowledged(
@@ -324,7 +1161,7 @@ async def test_failed_tool_effect_hold_is_listed_and_can_only_be_acknowledged(
                 session_id=session_id,
             )
 
-        with pytest.raises(ValueError, match="acknowledgement reason is required"):
+        with pytest.raises(ValueError, match="reconciliation evidence reason is required"):
             await apply_runtime_reconciliation_action(
                 session,
                 task_id=task.id,
@@ -459,6 +1296,7 @@ async def test_acknowledging_current_tool_effect_hold_stops_the_run_without_repl
             agent_id=agent_id,
             status="needs_reconciliation",
         )
+        await _deliver_terminal_projection(session, task)
 
     async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
         acknowledged = await apply_runtime_reconciliation_action(
@@ -582,19 +1420,26 @@ async def test_session_bound_trigger_and_heartbeat_rows_are_actionable_without_b
     assert rows_by_type["trigger"]["task_id"] == str(trigger.id)
     assert rows_by_type["trigger"]["reason"] == "session_bound_mutating_trigger"
     assert rows_by_type["trigger"]["retry_allowed"] is False
+    assert rows_by_type["trigger"]["supported_trigger_dispositions"] == [
+        "confirmed_success",
+        "confirmed_failure",
+        "release",
+    ]
     assert rows_by_type["heartbeat"]["task_id"] == str(heartbeat.id)
     assert rows_by_type["heartbeat"]["reason"] == "direct_core_audit_session_bound"
     assert rows_by_type["heartbeat"]["retry_allowed"] is False
+    assert rows_by_type["heartbeat"]["supported_trigger_dispositions"] == []
 
     async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
-        resolved = await apply_runtime_reconciliation_action(
-            session,
-            task_id=trigger.id,
-            tenant_id=tenant_id,
-            action="mark_resolved",
-            reason="operator verified trigger side effects",
-            actor_user_id=actor_user_id,
-        )
+        with pytest.raises(RuntimeReconciliationConflict, match="trigger_disposition"):
+            await apply_runtime_reconciliation_action(
+                session,
+                task_id=trigger.id,
+                tenant_id=tenant_id,
+                action="mark_resolved",
+                reason="operator verified trigger side effects",
+                actor_user_id=actor_user_id,
+            )
         archived = await apply_runtime_reconciliation_action(
             session,
             task_id=heartbeat.id,
@@ -604,8 +1449,6 @@ async def test_session_bound_trigger_and_heartbeat_rows_are_actionable_without_b
             actor_user_id=actor_user_id,
         )
 
-    assert resolved["status"] == "completed"
-    assert resolved["metadata"]["reconciliation_status"] == "resolved"
     assert archived["status"] == "killed"
     assert archived["metadata"]["reconciliation_status"] == "archived"
 
@@ -629,23 +1472,22 @@ async def test_session_bound_trigger_and_heartbeat_rows_are_actionable_without_b
             .scalars()
             .all()
         )
+        trigger_row = await session.get(RuntimeTask, trigger.id)
+        assert trigger_row.status == "needs_reconciliation"
         with pytest.raises(RuntimeReconciliationConflict, match="no longer awaiting reconciliation"):
             await apply_runtime_reconciliation_action(
                 session,
-                task_id=trigger.id,
+                task_id=heartbeat.id,
                 tenant_id=tenant_id,
                 action="archive",
                 reason="stale second operator action",
                 actor_user_id=actor_user_id,
             )
 
-    assert [row.action for row in audit_rows] == [
-        "runtime_reconciliation.mark_resolved",
-        "runtime_reconciliation.archive",
-    ]
+    assert [row.action for row in audit_rows] == ["runtime_reconciliation.archive"]
     assert audit_rows[0].details["previous_status"] == "needs_reconciliation"
-    assert audit_rows[0].details["resulting_status"] == "completed"
-    assert audit_rows[0].details["reconciliation_status"] == "resolved"
+    assert audit_rows[0].details["resulting_status"] == "killed"
+    assert audit_rows[0].details["reconciliation_status"] == "archived"
 
 
 async def _seed_reconciled_session_run(
@@ -774,6 +1616,8 @@ async def test_operator_terminal_actions_settle_root_fence_and_controls_once(
             user_id=actor_user_id,
             accept_cancel=True,
         )
+        await _deliver_terminal_projection(session, resolve_task)
+        await _deliver_terminal_projection(session, archive_task)
 
     async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
         resolved = await apply_runtime_reconciliation_action(
@@ -1047,16 +1891,17 @@ async def test_projection_repair_sweep_selects_only_ambiguous_rows_with_missing_
             actor_user_id=actor_user_id,
         )
 
-    assert set(result["repaired_task_ids"]) == {
-        str(drift_task.id),
-        str(fenceless_task.id),
-        str(partial_root_task.id),
-        str(missing_status_task.id),
-        str(missing_source_task.id),
-    }
-    # Only incomplete projections are claimed; the already-settled row is
-    # filtered out in SQL before the limit.
-    assert result["examined"] == 5
+        assert set(result["repaired_task_ids"]) == {
+            str(drift_task.id),
+            str(fenceless_task.id),
+            str(partial_root_task.id),
+            str(missing_status_task.id),
+            str(missing_source_task.id),
+            str(settled_task.id),
+        }
+        # A settled root/fence without its required terminal outbox remains an
+        # incomplete projection and is repaired in the same lane.
+        assert result["examined"] == 6
 
     async def _root_state(session, task_id):
         return (
@@ -1114,7 +1959,7 @@ async def test_projection_repair_sweep_selects_only_ambiguous_rows_with_missing_
         assert settled_row.status == "needs_reconciliation"
         assert settled_row_root.state == "needs_reconciliation"
         assert settled_row.metadata_json["terminal_execution_fence_ref"] == "runtime-task-terminal:settled-seed"
-        assert "ambiguous_provider_send_projection_repaired_at" not in (settled_row.metadata_json or {})
+        assert settled_row.metadata_json["ambiguous_provider_send_projection_repaired_at"]
 
         # Partial drift A keeps the already-correct root state and only gains
         # the missing fence.
@@ -1235,6 +2080,8 @@ async def test_projection_repair_then_operator_action_generates_new_status_match
         archive_fence_after_repair = archive_repaired.metadata_json["terminal_execution_fence_ref"]
         assert resolve_repaired.status == "needs_reconciliation"
         assert resolve_repaired.metadata_json["terminal_committed_status"] == "needs_reconciliation"
+        await _deliver_terminal_projection(session, resolve_repaired)
+        await _deliver_terminal_projection(session, archive_repaired)
 
         resolved = await apply_runtime_reconciliation_action(
             session,
@@ -1320,7 +2167,7 @@ async def test_projection_repair_limit_does_not_starve_incomplete_rows_behind_co
     now = datetime.now(timezone.utc)
 
     async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
-        _complete_task, _complete_root, _complete_control = await _seed_reconciled_session_run(
+        complete_task, _complete_root, _complete_control = await _seed_reconciled_session_run(
             session,
             tenant_id=tenant_id,
             agent_id=agent_id,
@@ -1338,6 +2185,7 @@ async def test_projection_repair_limit_does_not_starve_incomplete_rows_behind_co
             root_state="needs_reconciliation",
             created_at=now - timedelta(days=1),
         )
+        await _deliver_terminal_projection(session, complete_task)
         drift_task, _drift_root, _drift_control = await _seed_reconciled_session_run(
             session,
             tenant_id=tenant_id,

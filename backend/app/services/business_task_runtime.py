@@ -65,6 +65,8 @@ class TaskExecutionOutcome:
     retryable: bool = False
     reflection_session_id: str | None = None
     evidence_refs: tuple[str, ...] = ()
+    terminal_reason: str | None = None
+    response_complete_payload: dict[str, Any] | None = None
 
     @property
     def task_status(self) -> str:
@@ -79,11 +81,25 @@ class TaskExecutionOutcome:
         return self.status is TaskExecutionStatus.SUCCEEDED
 
     def to_dict(self) -> dict[str, Any]:
-        payload = asdict(self)
+        payload = json.loads(json.dumps(asdict(self), ensure_ascii=False, sort_keys=True, default=str))
         payload["status"] = self.status.value
         payload["task_status"] = self.task_status
         payload["runtime_status"] = self.runtime_status
         return payload
+
+
+@dataclass(frozen=True, slots=True)
+class BusinessTaskFinalizationReceipt:
+    """Post-commit authority for the business-task terminal sidecar."""
+
+    committed: bool
+    terminal_transitioned: bool
+    runtime_task_id: uuid.UUID
+    business_task_id: uuid.UUID
+    agent_id: uuid.UUID
+    tenant_id: uuid.UUID
+    reflection_session_id: str | None
+    terminal_status: str
 
 
 def _canonical_json(value: Any) -> str:
@@ -227,6 +243,8 @@ def apply_business_task_outcome(
     runtime_task.status = outcome.runtime_status
     runtime_task.result_summary = outcome.summary
     runtime_task.completed_at = finished_at
+    if outcome.reflection_session_id:
+        runtime_task.child_session_id = outcome.reflection_session_id
     metadata.update(
         {
             "phase": "terminal",
@@ -384,7 +402,28 @@ def _invalidate_runtime_claim(runtime_task: RuntimeTask) -> None:
     runtime_task.claim_expires_at = None
 
 
-def apply_business_task_cancellation(
+async def enqueue_business_task_terminal_boundary(
+    db: AsyncSession,
+    runtime_task: RuntimeTask,
+) -> None:
+    """Require the direct terminal outbox in the caller's state transaction."""
+
+    if runtime_task.terminal_boundary_generation is None:
+        raise BusinessTaskInvariantError("business task has no terminal boundary generation")
+    from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
+
+    try:
+        await settle_and_enqueue_runtime_task_terminal(
+            db,
+            runtime_task,
+            terminal_source="business_task_runtime",
+            root_reason_code="business_task_terminal",
+        )
+    except ValueError as exc:
+        raise BusinessTaskInvariantError(f"business task terminal boundary is invalid: {exc}") from exc
+
+
+async def apply_business_task_cancellation(
     *,
     db: AsyncSession,
     task: Task,
@@ -429,6 +468,7 @@ def apply_business_task_cancellation(
         outcome=outcome,
         completed_at=completed_at,
     )
+    await enqueue_business_task_terminal_boundary(db, runtime_task)
     return outcome
 
 
@@ -481,7 +521,7 @@ def reconcile_business_task(
     )
 
 
-def quarantine_stale_business_task(
+async def quarantine_stale_business_task(
     *,
     db: AsyncSession,
     task: Task,
@@ -505,6 +545,7 @@ def quarantine_stale_business_task(
         ),
         completed_at=detected_at,
     )
+    await enqueue_business_task_terminal_boundary(db, runtime_task)
 
 
 async def _enqueue_business_task_channel_delivery(
@@ -613,7 +654,7 @@ async def finalize_business_task_execution(
     *,
     runtime_task_id: uuid.UUID,
     outcome: TaskExecutionOutcome,
-) -> bool:
+) -> BusinessTaskFinalizationReceipt | None:
     """Atomically persist Task and RuntimeTask terminal state; idempotent on retry."""
 
     from app.database import async_session, enter_rls_bypass, tenant_scoped_session
@@ -625,19 +666,32 @@ async def finalize_business_task_execution(
             ).one_or_none()
         await locator_db.rollback()
     if row is None or row[0] is None:
-        return False
+        return None
     tenant_id = row[0]
     async with tenant_scoped_session(tenant_id) as db:
         runtime_task = await db.get(RuntimeTask, runtime_task_id, with_for_update=True)
         if runtime_task is None:
-            return False
+            return None
         metadata = dict(runtime_task.metadata_json or {})
-        if metadata.get("phase") == "terminal":
-            return True
         try:
             task_id = uuid.UUID(str(metadata["business_task_id"]))
         except (KeyError, ValueError) as exc:
             raise BusinessTaskInvariantError("business RuntimeTask has no valid Task binding") from exc
+        agent_id = runtime_task.parent_agent_id
+        if agent_id is None:
+            raise BusinessTaskInvariantError("business RuntimeTask has no Agent authority")
+        if metadata.get("phase") == "terminal":
+            persisted_outcome = metadata.get("outcome") if isinstance(metadata.get("outcome"), dict) else {}
+            return BusinessTaskFinalizationReceipt(
+                committed=True,
+                terminal_transitioned=False,
+                runtime_task_id=runtime_task_id,
+                business_task_id=task_id,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                reflection_session_id=str(persisted_outcome.get("reflection_session_id") or "") or None,
+                terminal_status=str(runtime_task.status or persisted_outcome.get("runtime_status") or ""),
+            )
         task = (
             await db.execute(
                 select(Task)
@@ -649,12 +703,23 @@ async def finalize_business_task_execution(
             raise BusinessTaskInvariantError("business Task not found during finalization")
         apply_business_task_outcome(db=db, task=task, runtime_task=runtime_task, outcome=outcome)
         await _enqueue_business_task_channel_delivery(db=db, runtime_task=runtime_task, outcome=outcome)
+        await enqueue_business_task_terminal_boundary(db, runtime_task)
         await db.commit()
-        return True
+        return BusinessTaskFinalizationReceipt(
+            committed=True,
+            terminal_transitioned=True,
+            runtime_task_id=runtime_task_id,
+            business_task_id=task_id,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            reflection_session_id=outcome.reflection_session_id,
+            terminal_status=outcome.runtime_status,
+        )
 
 
 __all__ = [
     "BusinessTaskExecutionSuperseded",
+    "BusinessTaskFinalizationReceipt",
     "BusinessTaskInvariantError",
     "TaskExecutionOutcome",
     "TaskExecutionStatus",
@@ -662,6 +727,7 @@ __all__ = [
     "apply_business_task_outcome",
     "business_task_request_key",
     "business_task_runtime_root_key",
+    "enqueue_business_task_terminal_boundary",
     "finalize_business_task_execution",
     "mark_business_task_execution_started",
     "project_business_task",

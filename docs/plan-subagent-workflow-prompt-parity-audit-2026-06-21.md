@@ -131,10 +131,10 @@ Hive 和 Claude Code 的差异是刻意保留的：
 
 本地取证路径：
 
-- `/Users/rocky243/Context Engineering/claude-code-org/src/tools/EnterPlanModeTool/EnterPlanModeTool.ts`
-- `/Users/rocky243/Context Engineering/claude-code-org/src/tools/EnterPlanModeTool/prompt.ts`
-- `/Users/rocky243/Context Engineering/claude-code-org/src/tools/AgentTool/built-in/exploreAgent.ts`
-- `/Users/rocky243/Context Engineering/claude-code-org/src/tools/AgentTool/built-in/planAgent.ts`
+- `/Users/example-owner/Context Engineering/claude-code-org/src/tools/EnterPlanModeTool/EnterPlanModeTool.ts`
+- `/Users/example-owner/Context Engineering/claude-code-org/src/tools/EnterPlanModeTool/prompt.ts`
+- `/Users/example-owner/Context Engineering/claude-code-org/src/tools/AgentTool/built-in/exploreAgent.ts`
+- `/Users/example-owner/Context Engineering/claude-code-org/src/tools/AgentTool/built-in/planAgent.ts`
 
 对齐点：
 
@@ -153,9 +153,9 @@ Hive 当前状态：
 
 本地取证路径：
 
-- `/Users/rocky243/Context Engineering/codex/CODEX_SESSION_INTERNALS.zh.md`
-- `/Users/rocky243/Context Engineering/codex/codex-rs/app-server-protocol/schema/typescript/v2/ThreadSourceKind.ts`
-- `/Users/rocky243/Context Engineering/codex/codex-rs/app-server-protocol/schema/typescript/v2/ApprovalsReviewer.ts`
+- `/Users/example-owner/Context Engineering/codex/CODEX_SESSION_INTERNALS.zh.md`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/app-server-protocol/schema/typescript/v2/ThreadSourceKind.ts`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/app-server-protocol/schema/typescript/v2/ApprovalsReviewer.ts`
 
 对齐点：
 
@@ -187,7 +187,7 @@ Hive 当前状态：
 本轮新增/更新的最小回归：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 
 pytest \
@@ -204,7 +204,7 @@ pytest \
 建议下一层回归：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 
 pytest \
@@ -224,7 +224,7 @@ pytest \
 上一轮 web chat / T0 FK 修复回归也已复跑：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 
 pytest tests/services/test_web_chat_runtime.py tests/memory/test_t0_session_ledger.py -q

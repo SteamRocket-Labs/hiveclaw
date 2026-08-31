@@ -325,7 +325,7 @@ research_dossier/
 验收:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 rg -n -i "deep_research_|deepResearch|deep research|deep-research" backend/app frontend/src docs
 ```
 
@@ -353,7 +353,7 @@ rg -n -i "deep_research_|deepResearch|deep research|deep-research" backend/app f
 建议测试:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/templates/test_skill_capability_alignment.py tests/services/test_skill_seeder.py tests/skills/test_parser_v2.py -q
 ```
@@ -376,7 +376,7 @@ pytest tests/templates/test_skill_capability_alignment.py tests/services/test_sk
 建议测试:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/tools/test_workflow_tool.py tests/tools/test_plan_mode_policy.py tests/services/test_plan_mode_service.py -q
 ```
@@ -474,7 +474,7 @@ pytest tests/tools/test_workflow_tool.py tests/tools/test_plan_mode_policy.py te
 建议命令:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/templates/test_skill_capability_alignment.py \

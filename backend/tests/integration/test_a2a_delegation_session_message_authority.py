@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -253,10 +253,32 @@ def _message_request(seeded: dict, message: str, **context_overrides) -> ToolExe
 
 
 async def _terminalize_run(owner_sessionmaker, run_id: uuid.UUID) -> None:
+    from app.services.runtime_terminal_boundary_outbox import enqueue_terminal_boundary
+
     async with owner_sessionmaker() as db:
         task = await db.get(RuntimeTask, run_id)
         assert task is not None
         task.status = "completed"
+        boundary = await enqueue_terminal_boundary(
+            db,
+            task=task,
+            event_kind="runtime_terminal",
+            agent_id=task.parent_agent_id,
+            session_id=task.parent_session_id,
+            terminal_status="completed",
+            authority_ref="runtime_task",
+            authority_id=task.id,
+            binding={
+                "tenant_id": task.tenant_id,
+                "runtime_task_id": task.id,
+                "agent_id": task.parent_agent_id,
+                "session_id": task.parent_session_id,
+                "authority_ref": "runtime_task",
+                "authority_id": task.id,
+            },
+        )
+        boundary.status = "delivered"
+        boundary.delivered_at = datetime.now(timezone.utc)
         await db.commit()
 
 

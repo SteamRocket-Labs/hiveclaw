@@ -7,7 +7,7 @@
 > Hive 源码基线：`f901b7f29f570a7cfc6398f5394fc79208e471b4`
 > Bisheng 源码基线：`e87e2655eea412a8422f0a425e6712d3fa63504f`
 > StaffDeck 源码基线：`f7fa7d7c216ca72ac66f346fe0e1ef161f0053a8`
-> 说明：用户口述中的 “StackDeck” 在本地对应仓库 `/Users/rocky243/vc-saas/StaffDeck`，本文统一称 StaffDeck。
+> 说明：用户口述中的 “StackDeck” 在本地对应仓库 `/Users/example-owner/vc-saas/StaffDeck`，本文统一称 StaffDeck。
 
 ---
 
@@ -1579,11 +1579,11 @@ Shadow 期间 live effect 仍只有一个最终 authority；不能旧 allow OR �
 
 ## 附录 C：StaffDeck 源码证据
 
-- `/Users/rocky243/vc-saas/StaffDeck/backend/app/security/auth.py:35-69`：token 绑定 tenant/user，并对 request tenant 做一致性检查。
-- `/Users/rocky243/vc-saas/StaffDeck/backend/app/security/permissions.py:10-82`：admin/member、owner、overall/gallery 的 viewer/manager 入口。
-- `/Users/rocky243/vc-saas/StaffDeck/backend/app/api/traces.py:21-41`：Session/trace 以 tenant + current user 过滤。
-- `/Users/rocky243/vc-saas/StaffDeck/backend/app/api/memories.py:97-106`：Memory 仍以 admin 或 Agent owner 为主要内容访问条件。
-- `/Users/rocky243/vc-saas/StaffDeck/backend/app/api/tools.py:86-110,395-429`：Tool visibility 由 Agent binding 与 open gallery 分支决定。
+- `/Users/example-owner/vc-saas/StaffDeck/backend/app/security/auth.py:35-69`：token 绑定 tenant/user，并对 request tenant 做一致性检查。
+- `/Users/example-owner/vc-saas/StaffDeck/backend/app/security/permissions.py:10-82`：admin/member、owner、overall/gallery 的 viewer/manager 入口。
+- `/Users/example-owner/vc-saas/StaffDeck/backend/app/api/traces.py:21-41`：Session/trace 以 tenant + current user 过滤。
+- `/Users/example-owner/vc-saas/StaffDeck/backend/app/api/memories.py:97-106`：Memory 仍以 admin 或 Agent owner 为主要内容访问条件。
+- `/Users/example-owner/vc-saas/StaffDeck/backend/app/api/tools.py:86-110,395-429`：Tool visibility 由 Agent binding 与 open gallery 分支决定。
 
 ## 附录 D：LangChain/LangGraph 官方资料
 
@@ -1617,6 +1617,6 @@ Shadow 期间 live effect 仍只有一个最终 authority；不能旧 allow OR �
 
 ## 附录 G：CC / FreeCode Runtime 与 Hook 源码证据
 
-- `/Users/rocky243/vc-saas/free-code-main/src/services/tools/toolExecution.ts:800-862,916-931,1207-1222`：同一 Tool execution 中先运行 `PreToolUse`，再解析 permission decision，最后进入同一个 `tool.call()`。
-- `/Users/rocky243/vc-saas/free-code-main/src/services/tools/toolHooks.ts:321-433`：Hook `allow` 可以解决普通交互，但不能覆盖 settings deny/ask rules；Hook deny/ask 仍回到统一 permission flow。
-- `/Users/rocky243/vc-saas/free-code-main/src/entrypoints/sdk/coreTypes.ts:25-53`：CC Hook 是覆盖 Session、Prompt、Tool、Compact、Permission、Subagent、Stop 等节点的 lifecycle surface，不是一套独立 IAM 或第二 Runtime。
+- `/Users/example-owner/vc-saas/free-code-main/src/services/tools/toolExecution.ts:800-862,916-931,1207-1222`：同一 Tool execution 中先运行 `PreToolUse`，再解析 permission decision，最后进入同一个 `tool.call()`。
+- `/Users/example-owner/vc-saas/free-code-main/src/services/tools/toolHooks.ts:321-433`：Hook `allow` 可以解决普通交互，但不能覆盖 settings deny/ask rules；Hook deny/ask 仍回到统一 permission flow。
+- `/Users/example-owner/vc-saas/free-code-main/src/entrypoints/sdk/coreTypes.ts:25-53`：CC Hook 是覆盖 Session、Prompt、Tool、Compact、Permission、Subagent、Stop 等节点的 lifecycle surface，不是一套独立 IAM 或第二 Runtime。

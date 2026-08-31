@@ -114,16 +114,34 @@ async function login(publicApi: APIRequestContext, username: string): Promise<Au
 
 async function bootstrap(playwright: PlaywrightWorkerArgs['playwright']): Promise<void> {
   const publicApi = await playwright.request.newContext({ baseURL: HIVE_JOURNEY_BACKEND_URL, timeout: 120_000 });
+  const platformAdmin = await registerOrLogin(
+    publicApi,
+    'atomic_platform_admin',
+    'atomic.platform.admin@example.com',
+  );
+  expect(platformAdmin.user.role).toBe('platform_admin');
+  const platformAdminApi = await authContext(playwright, platformAdmin);
+
   owner = await registerOrLogin(publicApi, 'atomic_owner', 'atomic.owner@example.com');
   if (!owner.user.tenant_id) {
+    const company = await responseJson<{ admin_invitation_code: string }>(
+      await platformAdminApi.post('/api/admin/companies', {
+        data: { name: 'Atomic Journey Tenant' },
+      }),
+      'create journey company and org-admin invitation',
+    );
     const ownerPreTenant = await authContext(playwright, owner);
-    await responseJson(
-      await ownerPreTenant.post('/api/tenants/self-create', { data: { name: 'Atomic Journey Tenant' } }),
-      'create journey tenant',
+    const joined = await responseJson<{ access_token: string }>(
+      await ownerPreTenant.post('/api/tenants/join', {
+        data: { invitation_code: company.admin_invitation_code },
+      }),
+      'join journey company as org admin',
     );
     await ownerPreTenant.dispose();
-    owner = await login(publicApi, 'atomic_owner');
+    owner = { ...(await login(publicApi, 'atomic_owner')), access_token: joined.access_token };
   }
+  expect(owner.user.role).toBe('org_admin');
+  await platformAdminApi.dispose();
   ownerApi = await authContext(playwright, owner);
 
   const models = await responseJson<Array<Record<string, unknown>>>(
@@ -742,8 +760,26 @@ async function exerciseDomain(
       );
       expect(String(first.id)).toBe(requestId);
       const firstRun = (first.run as Record<string, unknown> | undefined) || {};
-      const goalRunId = String(firstRun.run_id || '');
-      expect(isRunIdToken(goalRunId)).toBe(true);
+      let goalRunId = String(firstRun.run_id || '');
+      if (!isRunIdToken(goalRunId)) {
+        const inputReceipt = (first.input as Record<string, unknown> | undefined) || {};
+        expect(UUID_PATTERN.test(String(inputReceipt.input_id || ''))).toBe(true);
+        expect(String(inputReceipt.admission_state || '')).toBe('admitted');
+        await expect.poll(async () => {
+          const workbenchNow = await responseJson<Record<string, unknown>>(
+            await context.ownerApi.get(
+              `/api/agents/${context.agentId}/sessions/${sessionId}/workbench?operator_view=true&operator_reason=J-04%20goal%20dispatch`,
+            ),
+            'poll deferred goal run binding',
+          );
+          const tasks = (workbenchNow.runtime_tasks as Array<Record<string, unknown>> | undefined) || [];
+          const matched = tasks.filter(
+            (task) => String(((task.metadata as Record<string, unknown> | undefined) || {}).goal_id || '') === requestId,
+          );
+          if (matched.length === 1) goalRunId = String(matched[0].id || '');
+          return isRunIdToken(goalRunId);
+        }, { timeout: 90_000, intervals: [500, 1000] }).toBe(true);
+      }
       // The goal run terminates canonically with the exact J-04 receipt.
       await expect.poll(async () => {
         const canonical = await responseJson<Array<Record<string, unknown>>>(
@@ -1336,16 +1372,22 @@ async function exerciseDomain(
       // binds started+completed to exactly this subagent task, child session,
       // and parent session with exact receipt bytes and contract fields.
       const j09Receipt = 'J-09 terminal receipt from the controlled provider.';
-      const childCanonical = await responseJson<Array<Record<string, unknown>>>(
-        await context.ownerApi.get(
-          `/api/agents/${context.agentId}/sessions/${childSessionId}/transcript`
-            + `?schema_version=2&operator_view=true&operator_reason=${operatorReason}`,
-        ),
-        'read subagent child canonical transcript',
-      );
-      expect(
-        childSubagentCompatibilityProof(childCanonical, j09Receipt, subagentTaskId, childSessionId, baseSessionId),
-      ).toBe(true);
+      await expect.poll(async () => {
+        const childCanonical = await responseJson<Array<Record<string, unknown>>>(
+          await context.ownerApi.get(
+            `/api/agents/${context.agentId}/sessions/${childSessionId}/transcript`
+              + `?schema_version=2&operator_view=true&operator_reason=${operatorReason}`,
+          ),
+          'poll subagent child canonical transcript',
+        );
+        return childSubagentCompatibilityProof(
+          childCanonical,
+          j09Receipt,
+          subagentTaskId,
+          childSessionId,
+          baseSessionId,
+        );
+      }, { timeout: 90_000, intervals: [500, 1000] }).toBe(true);
       // The parent integration notification binds page/outbox/subagent/run/
       // child session/completed through ONE manifest item.
       let integrationPageId = '';

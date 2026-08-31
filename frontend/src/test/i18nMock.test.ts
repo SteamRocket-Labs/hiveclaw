@@ -10,7 +10,7 @@ const catalog = {
 
 describe('translateFromCatalog', () => {
   it('resolves nested catalog keys and interpolates named values', () => {
-    expect(translateFromCatalog(catalog, 'common.greeting', { name: 'Rocky' })).toBe('你好，Rocky');
+    expect(translateFromCatalog(catalog, 'common.greeting', { name: 'Example Owner' })).toBe('你好，Example Owner');
   });
 
   it('uses an explicit fallback only when the catalog key is absent', () => {

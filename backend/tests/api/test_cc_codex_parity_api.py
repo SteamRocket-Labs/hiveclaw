@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4, uuid5
 
 import pytest
 
@@ -1410,12 +1410,12 @@ async def test_goals_api_starts_first_goal_turn_in_the_same_request(monkeypatch)
     async def fake_authorize(_db, _user, **_kwargs):
         return SimpleNamespace(agent=agent, session=session)
 
-    async def fake_start_web_chat_run(**kwargs):
+    async def fake_submit_live_human_input(**kwargs):
         captured.update(kwargs)
-        return {"run_id": "run-1", "status": "pending"}
+        return {"run": {"run_id": "run-1", "status": "pending"}}
 
     monkeypatch.setattr(goals_api, "authorize_session_action", fake_authorize)
-    monkeypatch.setattr(goals_api, "start_web_chat_run", fake_start_web_chat_run)
+    monkeypatch.setattr(goals_api, "submit_live_human_input", fake_submit_live_human_input)
 
     result = await goals_api.start_session_goal(
         agent_id=agent_id,
@@ -1437,9 +1437,11 @@ async def test_goals_api_starts_first_goal_turn_in_the_same_request(monkeypatch)
     assert captured["content"] == "Full model-visible request"
     assert captured["display_content"] == "Finish all parity work."
     assert captured["attachments"] == [{"path": "workspace/brief.md"}]
-    assert captured["runtime_task_type"] == "web_chat_turn"
-    assert captured["budget_interactive"] is False
-    assert captured["extra_metadata"]["goal_id"] == result["id"]
+    assert captured["requested_kind"] == "start_turn"
+    assert captured["input_id"] == uuid5(UUID(result["id"]), "session-goal-initial-input")
+    assert captured["runtime_metadata"]["runtime_task_type"] == "web_chat_turn"
+    assert captured["runtime_metadata"]["budget_interactive"] is False
+    assert captured["runtime_metadata"]["goal_id"] == result["id"]
     assert db.added[0].metadata_json["last_goal_run_id"] == "run-1"
 
 
@@ -1482,7 +1484,7 @@ async def test_goals_api_replays_same_request_without_duplicate_event_or_run(mon
     monkeypatch.setattr(goals_api, "authorize_session_action", fake_authorize)
     monkeypatch.setattr(goals_api, "_create_or_load_goal", fake_create_or_load)
     monkeypatch.setattr(goals_api, "_append_goal_transition_event", fake_event)
-    monkeypatch.setattr(goals_api, "start_web_chat_run", fake_start)
+    monkeypatch.setattr(goals_api, "submit_live_human_input", fake_start)
 
     result = await goals_api.start_session_goal(
         agent_id=agent_id,

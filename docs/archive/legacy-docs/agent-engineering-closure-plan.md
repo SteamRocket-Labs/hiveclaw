@@ -83,7 +83,7 @@
 - **修法**（两段式，先可观测后自救；**重试范围保守**）:
   1. **可观测（全覆盖）**: `llm_client.py` 统一消费 `finish_reason ∈ {length, max_tokens}` → WARNING log + `llm_output_cap_hit` metric（带调用方标签）。覆盖流式与非流式全部出口。
   2. **escalate 重试（仅限非流式、无副作用生成路径）**: 非流式 `chat_complete` 蒸馏/生成路径撞 cap → 以 64k（clamp 到 provider/DB override 上限）**干净重试一次**（重发非续写），仍撞则带截断标记返回并计 metric。六大蒸馏/生成消费方经 `create_llm_client_from_config` 统一工厂自动受益。
-  3. **kernel streaming 主循环明确排除在本切口重试范围外**——贸然重发会重复已 streamed 的内容与 tool-call 上下文。先靠第 1 段 metric 观测真实撞 cap 频率；流式重试语义必须先读 CC 源码锚定（`/Users/rocky243/Context Engineering/claude-code-org`）确认后另行小切口，不自创范式。
+  3. **kernel streaming 主循环明确排除在本切口重试范围外**——贸然重发会重复已 streamed 的内容与 tool-call 上下文。先靠第 1 段 metric 观测真实撞 cap 频率；流式重试语义必须先读 CC 源码锚定（`/Users/example-owner/Context Engineering/claude-code-org`）确认后另行小切口，不自创范式。
 - **红测**: ① 模拟 finish_reason=length → metric+log（流式与非流式双路径）；② 非流式撞 cap → 一次 64k 重试成功路径；③ 重试仍撞 → 标记返回不死循环；④ 正常 stop 零开销；⑤ 流式路径撞 cap 只计 metric 不重发。
 - **验收**: 任何调用点撞 cap 不再静默；蒸馏管线（extract/dream/summarizer/skill_distiller/进化起草）全部在重试覆盖面内；流式主循环零重发行为变更。
 - ✅ **已落地（2026-06-07）**: 红测先钉 `_CapAwareLLMClient` 行为：非流式 `finish_reason=length/max_tokens` 记录 `llm_output_cap_hit_total`，无工具调用时以 65536 干净重试一次；重试仍 cap 时追加 `[Output truncated: ...]` 标记；流式与工具调用只计 metric 不重发。实现接在 `create_llm_client()` 返回外层，`create_llm_client_from_config()` 消费方自动覆盖。验证：`backend/.venv/bin/pytest backend/tests/services/test_llm_client_token_limits.py -q` → `6 passed`；`backend/.venv/bin/pytest backend/tests/services/test_llm_client_token_limits.py backend/tests/services/test_llm_client_streaming.py -q` → `7 passed`；`backend/.venv/bin/ruff check backend/app/services/llm_client.py backend/app/memory/metrics.py backend/tests/services/test_llm_client_token_limits.py` → `All checks passed!`。

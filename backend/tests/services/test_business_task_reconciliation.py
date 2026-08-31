@@ -83,12 +83,27 @@ def test_stale_business_task_query_is_bounded_and_skip_locked() -> None:
     assert "FOR UPDATE OF runtime_tasks SKIP LOCKED" in compiled
 
 
-async def test_stale_business_task_reconciler_quarantines_without_replay() -> None:
+async def test_stale_business_task_reconciler_quarantines_without_replay(monkeypatch) -> None:
+    import app.services.business_task_reconciliation as reconciliation
     from app.services.business_task_reconciliation import reconcile_stale_business_tasks_in_session
 
     now = datetime(2026, 7, 12, tzinfo=timezone.utc)
     runtime, task = _pair(now)
     db = _Db([(runtime, task)])
+    boundaries = []
+
+    async def _terminal_boundary(_db, runtime_task):
+        boundaries.append(runtime_task.id)
+
+    original_quarantine = reconciliation.quarantine_stale_business_task
+
+    async def _quarantine(**kwargs):
+        import app.services.business_task_runtime as business_runtime
+
+        monkeypatch.setattr(business_runtime, "enqueue_business_task_terminal_boundary", _terminal_boundary)
+        await original_quarantine(**kwargs)
+
+    monkeypatch.setattr(reconciliation, "quarantine_stale_business_task", _quarantine)
 
     summary = await reconcile_stale_business_tasks_in_session(db, now=now, limit=10)  # type: ignore[arg-type]
 
@@ -96,6 +111,7 @@ async def test_stale_business_task_reconciler_quarantines_without_replay() -> No
     assert task.status == "needs_reconciliation"
     assert runtime.status == "needs_reconciliation"
     assert runtime.claim_version == 4
+    assert boundaries == [runtime.id]
     assert db.commits == 1
 
 

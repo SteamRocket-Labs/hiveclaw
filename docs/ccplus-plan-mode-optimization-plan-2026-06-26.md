@@ -72,10 +72,10 @@ Plan Mode 要优化的不是一个按钮，而是四件事：
 
 FreeCode 的 Plan Mode 核心路径：
 
-- `/Users/rocky243/vc-saas/free-code-main/src/tools/EnterPlanModeTool/EnterPlanModeTool.ts`
-- `/Users/rocky243/vc-saas/free-code-main/src/utils/messages.ts`
-- `/Users/rocky243/vc-saas/free-code-main/src/tools/ExitPlanModeTool/ExitPlanModeV2Tool.ts`
-- `/Users/rocky243/vc-saas/free-code-main/src/utils/attachments.ts`
+- `/Users/example-owner/vc-saas/free-code-main/src/tools/EnterPlanModeTool/EnterPlanModeTool.ts`
+- `/Users/example-owner/vc-saas/free-code-main/src/utils/messages.ts`
+- `/Users/example-owner/vc-saas/free-code-main/src/tools/ExitPlanModeTool/ExitPlanModeV2Tool.ts`
+- `/Users/example-owner/vc-saas/free-code-main/src/utils/attachments.ts`
 
 关键语义：
 
@@ -101,10 +101,10 @@ CC 的不足：
 
 Codex 的 Plan Mode 核心路径：
 
-- `/Users/rocky243/Context Engineering/codex/codex-rs/collaboration-mode-templates/templates/plan.md`
-- `/Users/rocky243/Context Engineering/codex/codex-rs/utils/stream-parser/src/proposed_plan.rs`
-- `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/session/turn.rs`
-- `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/tools/handlers/plan.rs`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/collaboration-mode-templates/templates/plan.md`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/utils/stream-parser/src/proposed_plan.rs`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/core/src/session/turn.rs`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/core/src/tools/handlers/plan.rs`
 
 关键语义：
 

@@ -12,9 +12,13 @@ export interface Company {
   user_count?: number;
   agent_count?: number;
   org_admin_email?: string | null;
-  admin_invitation_code?: string;
   created_at: string;
   [key: string]: any;
+}
+
+export interface CompanyCreateReceipt {
+  company: Company;
+  admin_invitation_code: string;
 }
 
 export interface PlatformSettings {
@@ -44,6 +48,11 @@ export interface RuntimeReconciliationTask {
   tool_effect_reconciliation_required?: boolean;
   unsettled_tool_effect_count?: number;
   supported_actions?: RuntimeReconciliationAction[];
+  supported_trigger_dispositions?: RuntimeTriggerDisposition[];
+  trigger_disposition_readiness?: RuntimeTriggerDispositionReadiness | null;
+  output_artifact?: { schema: 'trigger_output_artifact.v1'; path: string } | null;
+  completion_outbox_id?: string | null;
+  settlement_audit_ref?: { kind: 'audit_log'; id: string } | null;
   result_summary?: string | null;
   metadata?: Record<string, unknown>;
   created_at?: string | null;
@@ -52,6 +61,20 @@ export interface RuntimeReconciliationTask {
 }
 
 export type RuntimeReconciliationAction = 'mark_resolved' | 'archive' | 'retry' | 'acknowledge_tool_effect';
+export type RuntimeTriggerDisposition = 'confirmed_success' | 'confirmed_failure' | 'release';
+export interface RuntimeTriggerDispositionReadiness {
+  schema: 'runtime_trigger_disposition_readiness.v1';
+  ready: boolean;
+  blocker:
+    | 'canonical_trigger_settlement_missing'
+    | 'canonical_trigger_settlement_mismatch'
+    | 'canonical_trigger_hold_missing'
+    | 'terminal_projection_missing'
+    | 'terminal_projection_pending'
+    | 'terminal_projection_mismatch'
+    | null;
+  terminal_projection_id: string | null;
+}
 
 /**
  * Truthful server receipt of POST /admin/runtime-reconciliation/projection-repair.
@@ -67,10 +90,17 @@ export interface RuntimeProjectionRepairReceipt {
 
 export const adminApi = {
   listCompanies: () => get<Company[]>('/admin/companies'),
-  createCompany: (data: { name: string; slug?: string }) => post<Company>('/admin/companies', data),
+  createCompany: (data: { name: string; slug?: string }) => post<CompanyCreateReceipt>('/admin/companies', data),
   toggleCompany: (id: string) => put<void>(`/admin/companies/${id}/toggle`),
   assignUserToTenant: (tenantId: string, data: { email: string; role: 'org_admin' | 'member' }) =>
-    put<{ status: string; user_id: string; tenant_id: string; role: string; reauthentication_required: boolean }>(
+    put<{
+      status: 'ok' | 'already_assigned';
+      user_id: string;
+      tenant_id: string;
+      role: string;
+      membership_committed: boolean;
+      client_token_refresh_required: boolean;
+    }>(
       `/tenants/${encodeURIComponent(tenantId)}/assign-user`,
       data,
     ),
@@ -97,11 +127,20 @@ export const adminApi = {
     get<RuntimeReconciliationTask>(`/admin/runtime-reconciliation/${taskId}?tenant_id=${encodeURIComponent(params.tenantId)}`),
   applyRuntimeReconciliationAction: (
     taskId: string,
-    params: { tenantId: string; action: RuntimeReconciliationAction; reason: string },
+    params: {
+      tenantId: string;
+      action: RuntimeReconciliationAction;
+      reason: string;
+      triggerDisposition?: RuntimeTriggerDisposition;
+    },
   ) =>
     post<RuntimeReconciliationTask>(
       `/admin/runtime-reconciliation/${taskId}/action?tenant_id=${encodeURIComponent(params.tenantId)}`,
-      { action: params.action, reason: params.reason },
+      {
+        action: params.action,
+        reason: params.reason,
+        ...(params.triggerDisposition ? { trigger_disposition: params.triggerDisposition } : {}),
+      },
     ),
   repairRuntimeReconciliationProjections: (params: { tenantId: string; limit?: number }) => {
     const query = new URLSearchParams({

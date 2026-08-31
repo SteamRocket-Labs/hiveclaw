@@ -1233,6 +1233,8 @@ def test_cancel_session_run_returns_durable_applying_receipt_and_ack_replay_does
 
     assert first.status_code == replay.status_code == 200
     assert first.json()["status"] == replay.json()["status"] == "applying"
+    assert first.json()["accepted"] is replay.json()["accepted"] is True
+    assert first.json()["run_id"] == replay.json()["run_id"] == str(run_id)
     assert first.json()["control_id"] == replay.json()["control_id"] == str(control_id)
     assert replay.json()["replayed"] is True
     assert signals == 1

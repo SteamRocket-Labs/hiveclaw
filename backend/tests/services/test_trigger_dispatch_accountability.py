@@ -180,11 +180,14 @@ def _install_tick_fakes(monkeypatch, trigger_daemon, *, agent_id, trigger, creat
     async def _noop(*_a, **_k):
         return None
 
+    async def _mark_started(*_a, **_k):
+        return True
+
     async def fake_preflight(_agent_id, _triggers, _now):
         return True, None, "", {"model_id": str(uuid4())}
 
     monkeypatch.setattr(trigger_daemon, "_preflight_trigger_group", fake_preflight)
-    monkeypatch.setattr(trigger_daemon, "_mark_trigger_fire_started", _noop)
+    monkeypatch.setattr(trigger_daemon, "_mark_trigger_fire_started", _mark_started)
     monkeypatch.setattr(trigger_daemon, "reconcile_completed_focus_for_agent", _noop, raising=False)
     trigger_daemon._last_invoke.clear()
     trigger_daemon._fire_history.clear()
@@ -221,6 +224,44 @@ async def test_tick_hands_the_run_to_the_worker_instead_of_fire_and_forget(monke
     assert spawned == [], "the tick must not fire-and-forget the agent invocation"
     assert notified, "the tick must wake the runtime task worker for the queued run"
     assert notified[0]["runtime_task_id"]
+
+
+@pytest.mark.asyncio
+async def test_tick_releases_task_without_queue_when_definition_batch_disappears(monkeypatch):
+    import app.services.trigger_daemon as trigger_daemon
+
+    agent_id = uuid4()
+    trigger = _cron_trigger(agent_id)
+    created: list[dict] = []
+    notified: list[dict] = []
+    _install_tick_fakes(
+        monkeypatch,
+        trigger_daemon,
+        agent_id=agent_id,
+        trigger=trigger,
+        created=created,
+        notified=notified,
+        spawned=[],
+    )
+
+    async def _missing_mark(*_args, **_kwargs):
+        return False
+
+    skipped = []
+
+    async def _skip(runtime_task_id, **kwargs):
+        skipped.append((runtime_task_id, kwargs))
+        return True
+
+    monkeypatch.setattr(trigger_daemon, "_mark_trigger_fire_started", _missing_mark)
+    monkeypatch.setattr(trigger_daemon, "_skip_trigger_runtime_task", _skip)
+
+    await trigger_daemon._tick()
+
+    assert created
+    assert notified == []
+    assert skipped[0][1]["skip_reason"] == "trigger_definitions_missing"
+    assert skipped[0][1]["settlement_overrides"] == {str(trigger.id): "release"}
 
 
 async def _run_tick(monkeypatch, trigger_daemon, agent_id, created, notified, spawned):
@@ -457,6 +498,61 @@ async def test_fresh_trigger_intent_still_runs(monkeypatch):
 
     assert await trigger_daemon.execute_claimed_trigger_runtime_task(task_id) is True
     assert invoked and invoked[0][2] == task_id.hex
+
+
+@pytest.mark.asyncio
+async def test_claimed_trigger_releases_complete_batch_when_mark_finds_a_missing_definition(monkeypatch):
+    import app.services.trigger_daemon as trigger_daemon
+
+    task_id = uuid4()
+    agent_id = uuid4()
+    present_id = uuid4()
+    missing_id = uuid4()
+    trigger = SimpleNamespace(id=present_id, agent_id=agent_id, name="daily", type="cron", config={})
+
+    async def fake_get_record(_task_id):
+        return {
+            "task_id": task_id.hex,
+            "task_type": "trigger",
+            "parent_agent_id": agent_id,
+            "tenant_id": uuid4(),
+            "child_session_id": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "metadata": {
+                "trigger_ids": [str(present_id), str(missing_id)],
+                "agent_id": str(agent_id),
+            },
+        }
+
+    async def _missing_mark(*_args, **kwargs):
+        assert kwargs["expected_trigger_ids"] == [present_id, missing_id]
+        return False
+
+    skipped = []
+
+    async def _skip(runtime_task_id, **kwargs):
+        skipped.append((runtime_task_id, kwargs))
+        return True
+
+    async def _fail_invoke(*_args, **_kwargs):
+        raise AssertionError("an incomplete definition batch must not invoke the agent")
+
+    monkeypatch.setattr(trigger_daemon, "get_runtime_task_record", fake_get_record)
+    monkeypatch.setattr(
+        trigger_daemon,
+        "tenant_scoped_session",
+        lambda *a, **k: _SequenceSession([_RowsResult([trigger])]),
+    )
+    monkeypatch.setattr(trigger_daemon, "_mark_trigger_fire_started", _missing_mark)
+    monkeypatch.setattr(trigger_daemon, "_skip_trigger_runtime_task", _skip)
+    monkeypatch.setattr(trigger_daemon, "_invoke_agent_for_triggers", _fail_invoke)
+
+    assert await trigger_daemon.execute_claimed_trigger_runtime_task(task_id) is False
+    assert skipped[0][1]["skip_reason"] == "trigger_definitions_missing"
+    assert skipped[0][1]["settlement_overrides"] == {
+        str(present_id): "release",
+        str(missing_id): "release",
+    }
 
 
 # ── Settling the rows already on disk ──────────────────────────────────────

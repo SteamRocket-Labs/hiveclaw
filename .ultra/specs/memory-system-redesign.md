@@ -140,7 +140,7 @@
 type: chat
 session_id: abc-123
 source: web | feishu | slack | wecom | dingtalk | teams | discord
-user: Rocky
+user: Example Owner
 started: 2026-04-05T14:30:00+08:00
 turns: 8
 tools: [web_search, write_file, read_file]

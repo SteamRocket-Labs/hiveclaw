@@ -34,9 +34,15 @@ def test_heartbeat_reflection_routes_to_memory_hooks_not_legacy_scorecard() -> N
 
 def test_trigger_daemon_uses_trigger_end_hook_not_legacy_evolution_feedback() -> None:
     trigger_daemon = _read("app/services/trigger_daemon.py")
+    runtime_task_service = _read("app/services/runtime_task_service.py")
+    terminal_settlement = _read("app/services/runtime_terminal_settlement.py")
+    terminal_processor = _read("app/services/direct_invocation_terminal_boundary_processor.py")
 
     assert "_update_evolution_files" not in trigger_daemon
-    assert "HookEvent.TRIGGER_END" in trigger_daemon
+    assert "HookEvent.TRIGGER_END" not in trigger_daemon
+    assert "settle_and_enqueue_runtime_task_terminal" in runtime_task_service
+    assert "enqueue_required_terminal_boundary_for_task" in terminal_settlement
+    assert "HookEvent.TRIGGER_END" in terminal_processor
     assert 'source="trigger"' in trigger_daemon
 
 

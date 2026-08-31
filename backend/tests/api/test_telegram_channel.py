@@ -547,7 +547,7 @@ class TestTelegramChannelFileSender:
                     "message": {
                         "text": "给我发文件",
                         "chat": {"id": 12345},
-                        "from": {"id": 42, "is_bot": False, "first_name": "Rocky"},
+                        "from": {"id": 42, "is_bot": False, "first_name": "Example Owner"},
                     },
                 }
             ).encode()
@@ -566,7 +566,7 @@ class TestTelegramChannelFileSender:
                     external_principal_id=external_principal_id,
                     tenant_id=agent.tenant_id,
                     username="telegram_42",
-                    display_name="Rocky",
+                    display_name="Example Owner",
                     role="member",
                     department_id=None,
                     authority_bound=True,
@@ -623,7 +623,7 @@ class TestTelegramChannelFileSender:
             "channel": "telegram",
             "chat_id": 12345,
             "sender_id": "42",
-            "user_label": "Rocky",
+            "user_label": "Example Owner",
             "external_principal_id": str(external_principal_id),
             "session_id": str(session.id),
         }
@@ -634,7 +634,7 @@ class TestTelegramChannelFileSender:
         assert captured["llm_kwargs"]["session_source"] == "telegram"
         assert captured["llm_kwargs"]["session_channel"] == "telegram"
         assert captured["execution_identity"].identity_type == "delegated_user"
-        assert captured["execution_identity"].label == "Rocky via telegram"
+        assert captured["execution_identity"].label == "Example Owner via telegram"
         assert captured["file_send"] == (config.app_secret, 12345, str(report), "请查收")
         assert captured["reply_sent"] is True
 

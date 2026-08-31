@@ -128,6 +128,40 @@ async def test_start_run_completes_and_journals(service, tenant_id, owner_sessio
     assert root_item.state == "completed"
 
 
+async def test_start_run_replay_with_same_run_id_returns_existing_run(service, tenant_id, owner_sessionmaker):
+    run_id = uuid.uuid4()
+    calls: list[LeafRequest] = []
+    first = await service.start_run(
+        tenant_id=tenant_id,
+        definition_data=_definition(),
+        args={"target": "acme"},
+        leaf_executor=_ok_leaf(calls),
+        run_id=run_id,
+    )
+
+    async def fail_if_replayed(_request: LeafRequest) -> LeafOutcome:
+        raise AssertionError("an idempotent workflow replay must not execute leaves again")
+
+    replay = await service.start_run(
+        tenant_id=tenant_id,
+        definition_data=_definition(),
+        args={"target": "acme"},
+        leaf_executor=fail_if_replayed,
+        run_id=run_id,
+    )
+
+    assert first.run_id == run_id
+    assert replay.run_id == run_id
+    assert replay.outcome.status == "completed"
+    assert replay.outcome.reason == "idempotent_replay"
+    assert [call.step_id for call in calls] == ["scan", "report"]
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        tasks = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalars().all()
+        steps = (await session.execute(select(WorkflowStep).where(WorkflowStep.run_id == run_id))).scalars().all()
+    assert len(tasks) == 1
+    assert len(steps) == 2
+
+
 async def test_workflow_root_reserves_and_settles_background_execution(
     service,
     tenant_id,

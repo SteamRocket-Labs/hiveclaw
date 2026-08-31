@@ -76,6 +76,9 @@ def test_daemon_fanout_dispatch_sites_are_bounded() -> None:
     trigger_source = (root / "app" / "services" / "trigger_daemon.py").read_text(encoding="utf-8")
     evolution_source = (root / "app" / "services" / "evolution_daemon.py").read_text(encoding="utf-8")
     runtime_worker_source = (root / "app" / "services" / "runtime_task_worker.py").read_text(encoding="utf-8")
+    terminal_processor_source = (
+        root / "app" / "services" / "direct_invocation_terminal_boundary_processor.py"
+    ).read_text(encoding="utf-8")
 
     def bounded_count(source: str, family: str) -> int:
         return len(re.findall(rf'run_bounded\(\s*"{family}"', source))
@@ -84,7 +87,10 @@ def test_daemon_fanout_dispatch_sites_are_bounded() -> None:
     assert bounded_count(trigger_source, "trigger") == 0, "trigger runs must be queued for the worker, not fanned out"
     assert "_queue_trigger_run_for_worker(" in trigger_source
     assert 'task.task_type == "trigger"' in runtime_worker_source
-    assert "enqueue_due_dream" in trigger_source, "trigger-side Dream must enqueue a durable RuntimeTask"
+    assert "enqueue_due_dream" not in trigger_source
+    assert "enqueue_due_dream" in terminal_processor_source, (
+        "trigger-side Dream must wait for the required terminal boundary before enqueueing"
+    )
     assert "reconcile_due_dream_runtime_tasks" in evolution_source
     assert 'task.task_type == "dream"' in runtime_worker_source
     assert "_dispatch_async_runtime_task(" in runtime_worker_source

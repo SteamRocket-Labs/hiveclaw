@@ -557,7 +557,7 @@ Round 2 / V2 完成不能只看功能能跑，必须看证据和治理是否闭�
 建议验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_a2a_collaboration_policy.py tests/services/test_relationships_file.py -q
 pytest tests/services/test_cc_codex_parity_substrate.py tests/api/test_cc_codex_parity_api.py -q

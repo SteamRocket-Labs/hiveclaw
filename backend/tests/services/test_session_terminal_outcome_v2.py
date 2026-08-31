@@ -1,12 +1,30 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+
+
+def test_terminal_outcome_writers_share_advisory_task_outcome_lock_order() -> None:
+    from app.services.session_terminal_outcome import (
+        commit_terminal_outcome,
+        prepare_and_seal_run_outcome,
+        recover_terminal_candidates_once,
+        recover_terminal_outcomes_once,
+    )
+
+    for writer in (prepare_and_seal_run_outcome, commit_terminal_outcome):
+        source = inspect.getsource(writer)
+        assert source.index("await lock_transcript_session") < source.index("select(RuntimeTask)")
+        assert source.index("select(RuntimeTask)") < source.index("select(SessionRunOutcome)")
+    for recovery in (recover_terminal_outcomes_once, recover_terminal_candidates_once):
+        assert ".with_for_update" not in inspect.getsource(recovery)
 
 
 async def _seed(owner_sessionmaker):
@@ -935,6 +953,7 @@ async def test_terminal_outcome_is_zero_copy_atomic_and_idempotent(owner_session
     from app.models.chat_session import ChatSession
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_task import RuntimeTask
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
     from app.models.runtime_root_item import RuntimeRootItem
     from app.models.session_v2 import SessionModelResult, SessionRunOutcome
     from app.services.session_model_round import commit_model_response
@@ -1064,15 +1083,25 @@ async def test_terminal_outcome_is_zero_copy_atomic_and_idempotent(owner_session
 
         deliveries = list(
             (
-                await db.execute(
-                    select(ChannelDeliveryOutbox).where(ChannelDeliveryOutbox.runtime_task_id == run_id)
-                )
+                await db.execute(select(ChannelDeliveryOutbox).where(ChannelDeliveryOutbox.runtime_task_id == run_id))
             ).scalars()
         )
         assert len(deliveries) == 1
         assert deliveries[0].text_content == exact_final
         assert deliveries[0].delivery_target_json == {"channel": "feishu", "chat_id": "oc_terminal"}
         assert deliveries[0].artifact_ids_json == [str(artifact.id)]
+        terminal_boundaries = list(
+            (
+                await db.execute(
+                    select(RuntimeTerminalBoundaryOutbox).where(RuntimeTerminalBoundaryOutbox.runtime_task_id == run_id)
+                )
+            ).scalars()
+        )
+        assert len(terminal_boundaries) == 1
+        assert terminal_boundaries[0].event_kind == "turn_stop"
+        assert terminal_boundaries[0].authority_ref == "session_run_outcome"
+        assert terminal_boundaries[0].authority_id == str(outcome.id)
+        assert terminal_boundaries[0].status == "pending"
 
         # ACK loss/read-after-write reuses the same outcome and creates no
         # second final or terminal event.
@@ -1105,6 +1134,14 @@ async def test_terminal_outcome_is_zero_copy_atomic_and_idempotent(owner_session
             == 1
         )
         assert (
+            await db.scalar(
+                select(func.count())
+                .select_from(RuntimeTerminalBoundaryOutbox)
+                .where(RuntimeTerminalBoundaryOutbox.runtime_task_id == run_id)
+            )
+            == 1
+        )
+        assert (
             len(
                 list(
                     (
@@ -1123,6 +1160,9 @@ async def test_terminal_outcome_is_zero_copy_atomic_and_idempotent(owner_session
         outcome = await db.scalar(select(SessionRunOutcome).where(SessionRunOutcome.run_id == run_id))
         result = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request_id))
         assert task is not None and task.status == "completed"
+        assert task.metadata_json["terminal_committed_status"] == "completed"
+        assert task.metadata_json["terminal_commit_source"] == "session_terminal_outcome.commit"
+        assert task.metadata_json["terminal_execution_fence_ref"].startswith("runtime-task-terminal:")
         assert root_item is not None and root_item.state == "completed"
         assert root_item.reason_code == "session_v2_terminal_outcome_committed"
         assert f"session-run-outcome://{outcome.id}" in root_item.result_refs_json
@@ -1175,6 +1215,418 @@ async def test_terminal_outcome_is_zero_copy_atomic_and_idempotent(owner_session
                 }
             ]
         ]
+
+
+async def test_terminal_outcome_rolls_back_when_required_boundary_enqueue_fails(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    from app.models.channel_delivery_outbox import ChannelDeliveryOutbox
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+    from app.models.session_v2 import SessionRunOutcome
+    from app.services.session_model_round import commit_model_response
+    from app.services.session_terminal_outcome import commit_terminal_outcome, prepare_and_seal_run_outcome
+
+    tenant_id, agent_id, session_id, run_id, turn_id = await _seed(owner_sessionmaker)
+    async with owner_sessionmaker() as db:
+        request_id, _ = await _prepare(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+        )
+        seal = await commit_model_response(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            round_index=1,
+            provider_request_id=request_id,
+            response={"content": "must stay uncommitted", "tool_calls": [], "finish_reason": "stop", "usage": {}},
+        )
+        outcome = await prepare_and_seal_run_outcome(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            run_id=run_id,
+            terminal_result_id=uuid.UUID(seal["result_id"]),
+        )
+        outcome_id = outcome.id
+        await db.commit()
+
+    async def fail_enqueue(*_args, **_kwargs):
+        raise RuntimeError("terminal-boundary-enqueue-failed")
+
+    monkeypatch.setattr(
+        "app.services.runtime_terminal_boundary_outbox.enqueue_terminal_boundary",
+        fail_enqueue,
+    )
+    async with owner_sessionmaker() as db:
+        with pytest.raises(RuntimeError, match="terminal-boundary-enqueue-failed"):
+            await commit_terminal_outcome(
+                db,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                session_id=session_id,
+                run_id=run_id,
+                outcome_id=outcome_id,
+            )
+        await db.rollback()
+
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, run_id)
+        outcome = await db.get(SessionRunOutcome, outcome_id)
+        assert task is not None and task.status == "running"
+        assert outcome is not None and outcome.state == "sealed"
+        assert (
+            await db.scalar(
+                select(func.count())
+                .select_from(ChatTranscriptEvent)
+                .where(
+                    ChatTranscriptEvent.run_id == run_id,
+                    ChatTranscriptEvent.item_kind == "run_outcome",
+                    ChatTranscriptEvent.lifecycle == "terminal_committed",
+                )
+            )
+            == 0
+        )
+        assert (
+            await db.scalar(
+                select(func.count())
+                .select_from(RuntimeTerminalBoundaryOutbox)
+                .where(RuntimeTerminalBoundaryOutbox.runtime_task_id == run_id)
+            )
+            == 0
+        )
+        assert (
+            await db.scalar(
+                select(func.count())
+                .select_from(ChannelDeliveryOutbox)
+                .where(ChannelDeliveryOutbox.runtime_task_id == run_id)
+            )
+            == 0
+        )
+
+
+async def test_late_outcome_cannot_replace_bound_runtime_task_terminal_authority(owner_sessionmaker) -> None:
+    from app.models.runtime_task import RuntimeTask
+    from app.services.session_model_round import commit_model_response
+    from app.services.session_terminal_outcome import TerminalOutcomeIneligible, prepare_and_seal_run_outcome
+    from app.services.web_terminal_boundary_processor import enqueue_web_terminal_boundary_for_task
+
+    tenant_id, agent_id, session_id, run_id, turn_id = await _seed(owner_sessionmaker)
+    async with owner_sessionmaker() as db:
+        request_id, _ = await _prepare(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+        )
+        seal = await commit_model_response(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            round_index=1,
+            provider_request_id=request_id,
+            response={"content": "late terminal candidate", "tool_calls": [], "finish_reason": "stop", "usage": {}},
+        )
+        task = await db.get(RuntimeTask, run_id, with_for_update=True)
+        task.status = "completed"
+        await db.flush()
+        boundary = await enqueue_web_terminal_boundary_for_task(db, task)
+        assert boundary is not None and boundary.authority_ref == "runtime_task"
+
+        with pytest.raises(TerminalOutcomeIneligible, match="not terminal-eligible: completed"):
+            await prepare_and_seal_run_outcome(
+                db,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                session_id=session_id,
+                turn_id=turn_id,
+                run_id=run_id,
+                terminal_result_id=uuid.UUID(seal["result_id"]),
+            )
+
+
+async def test_sealed_outcome_cannot_overwrite_a_later_terminal_runtime_task(owner_sessionmaker) -> None:
+    from app.models.runtime_task import RuntimeTask
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+    from app.models.session_v2 import SessionRunOutcome
+    from app.services.session_model_round import commit_model_response
+    from app.services.session_terminal_outcome import (
+        TerminalOutcomeIneligible,
+        commit_terminal_outcome,
+        prepare_and_seal_run_outcome,
+    )
+
+    tenant_id, agent_id, session_id, run_id, turn_id = await _seed(owner_sessionmaker)
+    async with owner_sessionmaker() as db:
+        request_id, _ = await _prepare(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+        )
+        seal = await commit_model_response(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            round_index=1,
+            provider_request_id=request_id,
+            response={"content": "sealed before failure", "tool_calls": [], "finish_reason": "stop", "usage": {}},
+        )
+        outcome = await prepare_and_seal_run_outcome(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            run_id=run_id,
+            terminal_result_id=uuid.UUID(seal["result_id"]),
+        )
+        outcome_id = outcome.id
+        await db.commit()
+
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, run_id, with_for_update=True)
+        task.status = "failed"
+        await db.commit()
+
+    async with owner_sessionmaker() as db:
+        with pytest.raises(TerminalOutcomeIneligible, match="changed before terminal commit: failed"):
+            await commit_terminal_outcome(
+                db,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                session_id=session_id,
+                run_id=run_id,
+                outcome_id=outcome_id,
+            )
+        await db.rollback()
+
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, run_id)
+        outcome = await db.get(SessionRunOutcome, outcome_id)
+        assert task is not None and task.status == "failed"
+        assert outcome is not None and outcome.state == "sealed"
+        assert (
+            await db.scalar(
+                select(func.count())
+                .select_from(RuntimeTerminalBoundaryOutbox)
+                .where(RuntimeTerminalBoundaryOutbox.runtime_task_id == run_id)
+            )
+            == 0
+        )
+
+
+async def test_two_recovery_workers_commit_one_sealed_outcome_without_state_downgrade(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+    from app.models.session_v2 import SessionRunOutcome
+    from app.services import session_terminal_outcome
+    from app.services.runtime_task_worker import recover_session_terminal_outcomes_once
+    from app.services.session_model_round import commit_model_response
+
+    tenant_id, agent_id, session_id, run_id, turn_id = await _seed(owner_sessionmaker)
+    async with owner_sessionmaker() as db:
+        request_id, _ = await _prepare(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+        )
+        seal = await commit_model_response(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            round_index=1,
+            provider_request_id=request_id,
+            response={"content": "recover sealed once", "tool_calls": [], "finish_reason": "stop", "usage": {}},
+        )
+        outcome = await session_terminal_outcome.prepare_and_seal_run_outcome(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            run_id=run_id,
+            terminal_result_id=uuid.UUID(seal["result_id"]),
+        )
+        outcome_id = outcome.id
+        await db.commit()
+
+    original_commit = session_terminal_outcome.commit_terminal_outcome
+    both_discovered = asyncio.Event()
+    entrants = 0
+
+    async def synchronize_commit(*args, **kwargs):
+        nonlocal entrants
+        entrants += 1
+        if entrants == 2:
+            both_discovered.set()
+        await asyncio.wait_for(both_discovered.wait(), timeout=5)
+        return await original_commit(*args, **kwargs)
+
+    monkeypatch.setattr(session_terminal_outcome, "commit_terminal_outcome", synchronize_commit)
+
+    async def recover(worker_id: str):
+        return await recover_session_terminal_outcomes_once(
+            worker_id=worker_id,
+            run_id=run_id,
+            session_factory=owner_sessionmaker,
+        )
+
+    results = await asyncio.wait_for(
+        asyncio.gather(recover("sealed-worker-a"), recover("sealed-worker-b")),
+        timeout=15,
+    )
+    assert all(result["sealed_needs_reconciliation"] == 0 for result in results)
+
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, run_id)
+        outcome = await db.get(SessionRunOutcome, outcome_id)
+        assert task is not None and task.status == "completed"
+        assert outcome is not None and outcome.state == "terminal_committed"
+        assert outcome.reconciliation_owner is None
+        assert (
+            await db.scalar(
+                select(func.count())
+                .select_from(ChatTranscriptEvent)
+                .where(
+                    ChatTranscriptEvent.run_id == run_id,
+                    ChatTranscriptEvent.item_kind == "run_outcome",
+                    ChatTranscriptEvent.lifecycle == "terminal_committed",
+                )
+            )
+            == 1
+        )
+        assert (
+            await db.scalar(
+                select(func.count())
+                .select_from(RuntimeTerminalBoundaryOutbox)
+                .where(RuntimeTerminalBoundaryOutbox.runtime_task_id == run_id)
+            )
+            == 1
+        )
+
+
+async def test_two_recovery_workers_commit_one_terminal_candidate_without_duplicates(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+    from app.models.session_v2 import SessionRunOutcome
+    from app.services import session_terminal_outcome
+    from app.services.runtime_task_worker import recover_session_terminal_outcomes_once
+    from app.services.session_model_round import commit_model_response
+
+    tenant_id, agent_id, session_id, run_id, turn_id = await _seed(owner_sessionmaker)
+    async with owner_sessionmaker() as db:
+        request_id, _ = await _prepare(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+        )
+        await commit_model_response(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            round_index=1,
+            provider_request_id=request_id,
+            response={"content": "recover candidate once", "tool_calls": [], "finish_reason": "stop", "usage": {}},
+        )
+        await db.commit()
+
+    original_prepare = session_terminal_outcome.prepare_and_seal_run_outcome
+    both_discovered = asyncio.Event()
+    entrants = 0
+
+    async def synchronize_prepare(*args, **kwargs):
+        nonlocal entrants
+        entrants += 1
+        if entrants == 2:
+            both_discovered.set()
+        await asyncio.wait_for(both_discovered.wait(), timeout=5)
+        return await original_prepare(*args, **kwargs)
+
+    monkeypatch.setattr(session_terminal_outcome, "prepare_and_seal_run_outcome", synchronize_prepare)
+
+    async def recover(worker_id: str):
+        return await recover_session_terminal_outcomes_once(
+            worker_id=worker_id,
+            run_id=run_id,
+            session_factory=owner_sessionmaker,
+        )
+
+    await asyncio.wait_for(
+        asyncio.gather(recover("candidate-worker-a"), recover("candidate-worker-b")),
+        timeout=15,
+    )
+
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, run_id)
+        outcomes = list(
+            (await db.execute(select(SessionRunOutcome).where(SessionRunOutcome.run_id == run_id))).scalars()
+        )
+        assert task is not None and task.status == "completed"
+        assert len(outcomes) == 1
+        assert outcomes[0].state == "terminal_committed"
+        assert outcomes[0].reconciliation_owner is None
+        assert (
+            await db.scalar(
+                select(func.count())
+                .select_from(ChatTranscriptEvent)
+                .where(
+                    ChatTranscriptEvent.run_id == run_id,
+                    ChatTranscriptEvent.item_kind == "run_outcome",
+                    ChatTranscriptEvent.lifecycle == "terminal_committed",
+                )
+            )
+            == 1
+        )
+        assert (
+            await db.scalar(
+                select(func.count())
+                .select_from(RuntimeTerminalBoundaryOutbox)
+                .where(RuntimeTerminalBoundaryOutbox.runtime_task_id == run_id)
+            )
+            == 1
+        )
 
 
 async def test_unresolved_obligation_blocks_terminal_outcome(owner_sessionmaker) -> None:
@@ -1300,9 +1752,7 @@ async def test_recovery_finishes_sealed_round_and_same_terminal_candidate_withou
         outcome = await db.scalar(select(SessionRunOutcome).where(SessionRunOutcome.run_id == run_id))
         deliveries = list(
             (
-                await db.execute(
-                    select(ChannelDeliveryOutbox).where(ChannelDeliveryOutbox.runtime_task_id == run_id)
-                )
+                await db.execute(select(ChannelDeliveryOutbox).where(ChannelDeliveryOutbox.runtime_task_id == run_id))
             ).scalars()
         )
         result_count = len(

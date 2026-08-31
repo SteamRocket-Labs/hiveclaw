@@ -245,7 +245,7 @@ async def _revoke_user_authority(
             .all()
             if business_task.active_runtime_task_id is not None
         }
-    from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
+    from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
 
     for task in runtime_tasks:
         previous_status = str(task.status)
@@ -260,7 +260,7 @@ async def _revoke_user_authority(
         if business_binding_matches:
             from app.services.business_task_runtime import apply_business_task_cancellation
 
-            apply_business_task_cancellation(
+            await apply_business_task_cancellation(
                 db=db,
                 task=business_task,
                 runtime_task=task,
@@ -301,12 +301,11 @@ async def _revoke_user_authority(
                 business_task_id=business_task_id,
             )
         )
-        await transition_runtime_root_item_by_task(
+        await settle_and_enqueue_runtime_task_terminal(
             db,
-            runtime_task_id=task.id,
-            requested_state=task.status,
-            reason_code="root_user_offboarded",
-            metadata={"authority_revoked_user_id": str(target_user_id)},
+            task,
+            terminal_source="user_offboarding_service:authority_revocation",
+            root_reason_code="root_user_offboarded",
         )
 
     pending_approvals = list(

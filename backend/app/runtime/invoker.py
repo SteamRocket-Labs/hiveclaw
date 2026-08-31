@@ -191,9 +191,6 @@ class AgentInvocationRequest:
     # set this so long output is not truncated at the model's chat default; the
     # kernel feeds it into get_max_tokens (still clamped to the hard limit).
     max_output_tokens: int | None = None
-    # Durable chat runtimes append their terminal assistant transcript after the
-    # kernel returns; they emit TURN_STOP themselves once that write has committed.
-    emit_turn_stop: bool = True
 
 
 @dataclass(slots=True)
@@ -204,11 +201,15 @@ class AgentInvocationResult:
     parts: list[dict] | None = None
     reasoning_signature: str | None = None
     terminal_reason: TerminalReason = TerminalReason.TURN_STOP
+    tool_terminal_signal: str | None = None
     # Exact mechanical facts produced by the kernel. The invocation boundary
     # may redact their bytes before this point, but must not drop them: the
     # durable web runtime needs the receipt to commit assistant_final/run/turn
     # atomically, and typed provider failures to make replay-safe decisions.
     model_result_receipt: dict[str, Any] | None = None
+    # Exact, secret-redacted RESPONSE_COMPLETE input. The durable caller owns
+    # emission after its authoritative terminal transaction commits.
+    response_complete_payload: dict[str, Any] | None = None
     failure_code: str | None = None
     failure_delivery_state: str | None = None
     failure_requires_user_decision: bool = False

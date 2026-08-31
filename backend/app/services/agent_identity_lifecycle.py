@@ -192,16 +192,31 @@ async def soft_delete_agent(
         .where(AgentSchedule.agent_id == agent.id, AgentSchedule.is_enabled.is_(True))
         .values(is_enabled=False)
     )
-    await db.execute(
-        update(RuntimeTask)
-        .where(
-            RuntimeTask.parent_agent_id == agent.id,
-            RuntimeTask.status.in_(_ACTIVE_RUNTIME_TASK_STATUSES),
-        )
-        .values(
-            status="killed",
-            completed_at=now,
-            result_summary=f"Agent soft-deleted by {actor_id}: {reason}",
-        )
+    runtime_tasks = list(
+        (
+            await db.execute(
+                select(RuntimeTask)
+                .where(
+                    RuntimeTask.parent_agent_id == agent.id,
+                    RuntimeTask.status.in_(_ACTIVE_RUNTIME_TASK_STATUSES),
+                )
+                .with_for_update()
+            )
+        ).scalars()
     )
+    from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
+
+    for task in runtime_tasks:
+        task.status = "killed"
+        task.completed_at = now
+        task.result_summary = f"Agent soft-deleted by {actor_id}: {reason}"
+        task.claim_version = int(task.claim_version or 0) + 1
+        task.claimed_by = None
+        task.claim_expires_at = None
+        await settle_and_enqueue_runtime_task_terminal(
+            db,
+            task,
+            terminal_source="agent_identity_lifecycle:soft_delete_agent",
+            root_reason_code=reason,
+        )
     await db.flush()

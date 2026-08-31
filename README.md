@@ -156,8 +156,8 @@ Governance constrains what an agent may do. It should not replace the model's re
 ## Quickstart
 
 ```bash
-git clone https://github.com/rocky2431/hive-agents.git
-cd hive-agents
+git clone https://github.com/SteamRocket-Labs/hiveclaw.git
+cd hiveclaw
 bash setup.sh --dev
 bash restart.sh
 ```

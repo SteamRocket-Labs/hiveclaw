@@ -54,7 +54,7 @@ As of the 2026-06-23 final closure pass, the implementation has moved beyond rou
 Code-level verification completed:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run
 npm run build
 git diff --check
@@ -181,7 +181,7 @@ This wireframe reflects the annotated screenshot from 2026-06-23. It is the curr
 ```text
 ┌──────────────────────────┬──────────────────────────────────────────────────────────────┐
 │ ┌ 工作区 ───────────────┐ │ Home / 我的工作区                                             │
-│ │ rocky的实验室         │ │                                                              │
+│ │ example-owner的实验室         │ │                                                              │
 │ └──────────────────────┘ │  ┌──────────────────────────────────────────────────────────┐ │
 │                          │  │ greeting / needs-you / active-work summary                │ │
 │ Home                     │  └──────────────────────────────────────────────────────────┘ │
@@ -211,7 +211,7 @@ This wireframe reflects the annotated screenshot from 2026-06-23. It is the curr
 
 Homepage shell rules from the annotated screenshot:
 
-1. The workspace block stays above navigation and displays the active workspace, for example `我的工作区 / rocky的实验室`.
+1. The workspace block stays above navigation and displays the active workspace, for example `我的工作区 / example-owner的实验室`.
 2. The top action block maps to Hive actions: Home, Agent Circle, Tasks/Automation, Bridge.
 3. The Codex pinned section is ignored for Hive. Do not allocate a primary pinned band.
 4. The Codex Projects section becomes Digital Employees, and each Agent is the project-equivalent row.
@@ -968,7 +968,7 @@ Red tests before implementation:
 Target commands:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run \
   src/pages/layout/LayoutSections.test.tsx \
   src/pages/AgentDetail.test.tsx \
@@ -988,7 +988,7 @@ npm run build
 Latest code-level closure commands:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run src/pages/AgentDetail.query-gating.test.tsx src/pages/agent-detail/AgentDetailSections.test.tsx src/pages/WorkspaceFeatureHub.test.tsx
 npm run build
 ```
@@ -996,7 +996,7 @@ npm run build
 Visual verification:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run dev -- --host 0.0.0.0 --port 3008
 ```
 

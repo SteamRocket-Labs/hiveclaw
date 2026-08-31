@@ -171,7 +171,7 @@ async def test_verify_chain_accepts_identity_aware_canonical_hashes() -> None:
         prev_hash="genesis",
         execution_identity_type="delegated_user",
         execution_identity_id=delegated_user_id,
-        execution_identity_label="Rocky via web",
+        execution_identity_label="Example Owner via web",
     )
     event.event_hash = compute_audit_event_hash(
         event_type=event.event_type,
@@ -221,7 +221,7 @@ async def test_verify_chain_accepts_pre_identity_canonical_hashes_with_identity_
         prev_hash="genesis",
         execution_identity_type="delegated_user",
         execution_identity_id=uuid4(),
-        execution_identity_label="Rocky via web",
+        execution_identity_label="Example Owner via web",
     )
     event.event_hash = compute_audit_event_hash(
         event_type=event.event_type,

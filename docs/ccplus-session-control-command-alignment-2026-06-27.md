@@ -213,8 +213,8 @@ parent_session_id + branch metadata 表示 branch lineage。
 
 源码：
 
-- `/Users/rocky243/vc-saas/free-code-main/src/commands/compact/compact.ts`
-- `/Users/rocky243/vc-saas/free-code-main/src/utils/processUserInput/processSlashCommand.tsx`
+- `/Users/example-owner/vc-saas/free-code-main/src/commands/compact/compact.ts`
+- `/Users/example-owner/vc-saas/free-code-main/src/utils/processUserInput/processSlashCommand.tsx`
 
 结论：
 
@@ -235,8 +235,8 @@ parent_session_id + branch metadata 表示 branch lineage。
 
 源码：
 
-- `/Users/rocky243/vc-saas/free-code-main/src/commands/rewind/rewind.ts`
-- `/Users/rocky243/vc-saas/free-code-main/src/screens/REPL.tsx`
+- `/Users/example-owner/vc-saas/free-code-main/src/commands/rewind/rewind.ts`
+- `/Users/example-owner/vc-saas/free-code-main/src/screens/REPL.tsx`
 
 结论：
 
@@ -269,7 +269,7 @@ parent_session_id + branch metadata 表示 branch lineage。
 
 源码：
 
-- `/Users/rocky243/vc-saas/free-code-main/src/commands/branch/branch.ts`
+- `/Users/example-owner/vc-saas/free-code-main/src/commands/branch/branch.ts`
 
 结论：
 
@@ -288,7 +288,7 @@ parent_session_id + branch metadata 表示 branch lineage。
 
 源码：
 
-- `/Users/rocky243/vc-saas/free-code-main/src/commands/clear/conversation.ts`
+- `/Users/example-owner/vc-saas/free-code-main/src/commands/clear/conversation.ts`
 
 结论：
 
@@ -313,10 +313,10 @@ parent_session_id + branch metadata 表示 branch lineage。
 
 源码：
 
-- `/Users/rocky243/Context Engineering/codex/codex-rs/tui/src/chatwidget/slash_dispatch.rs`
-- `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/session/handlers.rs`
-- `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/compact.rs`
-- `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/session/mod.rs`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/tui/src/chatwidget/slash_dispatch.rs`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/core/src/session/handlers.rs`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/core/src/compact.rs`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/core/src/session/mod.rs`
 
 结论：
 

@@ -16,9 +16,9 @@ const localStorageStub = {
 function makeUser(overrides: Partial<User> = {}): User {
   return {
     id: 'user-1',
-    username: 'rocky243',
-    email: 'rocky@example.com',
-    display_name: 'Rocky',
+    username: 'example-owner',
+    email: 'example-owner@example.com',
+    display_name: 'Example Owner',
     role: 'platform_admin',
     tenant_id: 'home-tenant',
     is_active: true,

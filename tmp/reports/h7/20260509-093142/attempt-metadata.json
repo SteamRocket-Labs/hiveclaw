@@ -1,7 +1,7 @@
 {
   "timestamp": "2026-05-09T09:33:00+08:00",
   "weekday": "Saturday",
-  "snapshot_dir": "/Users/rocky243/vc-saas/hiveclaw-main/tmp/reports/h7/20260509-093142",
+  "snapshot_dir": "/Users/example-owner/vc-saas/hiveclaw-main/tmp/reports/h7/20260509-093142",
   "base_url": "https://backend-production-326d.up.railway.app",
   "base_url_source": "default",
   "stage": "A_preflight_gate",
@@ -47,11 +47,11 @@
       "source": "browser_storage_fallback",
       "paths_scanned": [
         {
-          "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb",
+          "path": "/Users/example-owner/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb",
           "exists": true
         },
         {
-          "path": "/Users/rocky243/Library/Application Support/Codex/Local Storage/leveldb",
+          "path": "/Users/example-owner/Library/Application Support/Codex/Local Storage/leveldb",
           "exists": true
         }
       ],

@@ -45,6 +45,8 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
   const [assignCompany, setAssignCompany] = useState<any | null>(null);
   const [adminEmail, setAdminEmail] = useState('');
   const [assigningAdmin, setAssigningAdmin] = useState(false);
+  const assignRequestActiveRef = useRef(false);
+  const createdDialogRef = useRef<HTMLDivElement>(null);
   const [createdCode, setCreatedCode] = useState('');
   const [createdCompanyName, setCreatedCompanyName] = useState('');
   const [codeCopied, setCodeCopied] = useState(false);
@@ -65,16 +67,29 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
     return () => document.removeEventListener('mousedown', handleClick);
   }, [showStatusDropdown]);
 
+  useEffect(() => {
+    if (!createdCode) return;
+    createdDialogRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setCreatedCode('');
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [createdCode]);
+
   const loadCompanies = async () => {
     setLoading(true);
     try {
       const data = await adminApi.listCompanies();
       setCompanies(data);
       setError('');
+      return true;
     } catch (e: any) {
       setError(e.message);
+      return false;
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   useEffect(() => {
@@ -121,8 +136,8 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
     setCreating(true);
     try {
       const result = await adminApi.createCompany({ name: newName.trim() });
-      setCreatedCompanyName(newName.trim());
-      setCreatedCode(result.admin_invitation_code || '');
+      setCreatedCompanyName(result.company.name);
+      setCreatedCode(result.admin_invitation_code);
       setCodeCopied(false);
       setNewName('');
       setShowCreate(false);
@@ -133,37 +148,51 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
     setCreating(false);
   };
 
-  const handleCopyCode = () => {
-    navigator.clipboard.writeText(createdCode).then(() => {
+  const handleCopyCode = async () => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
+      await navigator.clipboard.writeText(createdCode);
       setCodeCopied(true);
       setTimeout(() => setCodeCopied(false), 2000);
-    });
+    } catch {
+      showToast(t('admin.copyFailed', 'Could not copy the invitation code.'), 'error');
+    }
   };
 
   const handleAssignAdmin = async () => {
     const email = adminEmail.trim();
-    if (!assignCompany || !email) return;
-    const confirmed = await requestAppConfirm({
-      title: t('admin.assignAdminTitle', 'Assign company admin'),
-      message: t(
-        'admin.confirmAssignAdmin',
-        'Assign {{email}} as an administrator of {{company}}? The account must already be registered and not belong to another company.',
-        { email, company: assignCompany.name },
-      ),
-      confirmLabel: t('admin.assignAdmin', 'Assign admin'),
-    });
-    if (!confirmed) return;
+    if (!assignCompany || !email || assignRequestActiveRef.current) return;
+    assignRequestActiveRef.current = true;
     setAssigningAdmin(true);
     try {
-      await adminApi.assignUserToTenant(assignCompany.id, { email, role: 'org_admin' });
-      await loadCompanies();
-      showToast(t('admin.adminAssigned', 'Company administrator assigned. They must sign in again.'));
+      const confirmed = await requestAppConfirm({
+        title: t('admin.assignAdminTitle', 'Assign company admin'),
+        message: t(
+          'admin.confirmAssignAdmin',
+          'Assign {{email}} as an administrator of {{company}}? The account must already be registered and not belong to another company.',
+          { email, company: assignCompany.name },
+        ),
+        confirmLabel: t('admin.assignAdmin', 'Assign admin'),
+      });
+      if (!confirmed) return;
+      const receipt = await adminApi.assignUserToTenant(assignCompany.id, { email, role: 'org_admin' });
+      showToast(receipt.status === 'already_assigned'
+        ? t('admin.adminAlreadyAssigned', "This account already has company administrator access. Refresh the account's signed-in session; clients without token refresh must sign in again.")
+        : t('admin.adminAssigned', "Company administrator assignment committed. Refresh the account's signed-in session; clients without token refresh must sign in again."));
       setAssignCompany(null);
       setAdminEmail('');
+      if (!await loadCompanies()) {
+        showToast(
+          t('admin.adminAssignedRefreshFailed', 'Administrator assignment committed, but the company list could not be refreshed.'),
+          'error',
+        );
+      }
     } catch (e: any) {
       showToast(e.message || t('admin.assignAdminFailed', 'Failed to assign company administrator.'), 'error');
+    } finally {
+      assignRequestActiveRef.current = false;
+      setAssigningAdmin(false);
     }
-    setAssigningAdmin(false);
   };
 
   const handleToggle = async (id: string, currentlyActive: boolean) => {
@@ -171,7 +200,10 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
     if (currentlyActive) {
       const confirmed = await requestAppConfirm({
         title: t('admin.disableCompanyTitle', 'Disable company'),
-        message: t('admin.confirmDisable', 'Disable this company? All users and agents will be paused.'),
+        message: t(
+          'admin.confirmDisable',
+          'Disable this company? Users will lose company access and running employees will be stopped. Re-enabling does not restart them automatically.',
+        ),
         confirmLabel: t('common.confirm', 'Confirm'),
         danger: true,
       });
@@ -209,6 +241,8 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
         <div
           className="admin-companies-toast"
           style={{ background: toast.type === 'success' ? 'var(--success)' : 'var(--error)' }}
+          role={toast.type === 'error' ? 'alert' : 'status'}
+          aria-live={toast.type === 'error' ? 'assertive' : 'polite'}
         >
           {toast.msg}
         </div>
@@ -216,7 +250,15 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
 
       {createdCode && (
         <div className="ui-modal-overlay" onClick={() => setCreatedCode('')}>
-          <div className="card admin-companies-created-modal" onClick={(e) => e.stopPropagation()}>
+          <div
+            ref={createdDialogRef}
+            className="card admin-companies-created-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="admin-company-created-title"
+            tabIndex={-1}
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="admin-companies-modal-head">
               <div className="admin-companies-success-circle">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -224,7 +266,7 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
                   <polyline points="22 4 12 14.01 9 11.01" />
                 </svg>
               </div>
-              <h2 className="admin-companies-modal-title">{t('admin.companyCreated', 'Company Created')}</h2>
+              <h2 id="admin-company-created-title" className="admin-companies-modal-title">{t('admin.companyCreated', 'Company Created')}</h2>
               <p className="admin-companies-modal-sub">
                 <span className="admin-companies-modal-sub-name">{createdCompanyName}</span> {t('admin.companyCreatedDesc', 'has been created successfully.')}
               </p>
@@ -243,12 +285,12 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
               <div className="admin-companies-howto-title">{t('admin.inviteCodeHowTo', 'How to use this code:')}</div>
               {t(
                 'admin.inviteCodeExplain',
-                'Send this code to the person who will manage this company. They should register a new account on the platform, then enter this code to join. The first person to use it will automatically become the Org Admin of this company. This code is single-use.',
+                'Send this code to the person who will manage this company. After registering and signing in, they enter it on Set Up Your Workspace. This code grants company administrator access and is single-use. If they already have an account, close this dialog and use Assign admin with their registered email.',
               )}
             </div>
 
             <div className="admin-companies-modal-actions">
-              <button className="btn btn-primary admin-companies-copy-btn" onClick={handleCopyCode}>
+              <button type="button" className="btn btn-primary admin-companies-copy-btn" onClick={() => void handleCopyCode()}>
                 {codeCopied ? (
                   <>{t('admin.copied', 'Copied')}</>
                 ) : (
@@ -261,7 +303,7 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
                   </>
                 )}
               </button>
-              <button className="btn btn-secondary admin-companies-modal-close-btn" onClick={() => setCreatedCode('')}>
+              <button type="button" className="btn btn-secondary admin-companies-modal-close-btn" onClick={() => setCreatedCode('')}>
                 {t('common.close', 'Close')}
               </button>
             </div>
@@ -270,7 +312,7 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
       )}
 
       <div className="admin-companies-toolbar">
-        <button className="btn btn-primary" onClick={() => { setShowCreate(true); setCreatedCode(''); }}>
+        <button type="button" className="btn btn-primary" onClick={() => { setShowCreate(true); setCreatedCode(''); }}>
           + {t('admin.createCompany', 'Create Company')}
         </button>
       </div>
@@ -284,13 +326,14 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
               placeholder={t('admin.companyNamePlaceholder', 'Company name')}
-              onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
+              aria-label={t('admin.companyNamePlaceholder', 'Company name')}
+              onKeyDown={(e) => e.key === 'Enter' && void handleCreate()}
               autoFocus
             />
-            <button className="btn btn-primary" onClick={handleCreate} disabled={creating || !newName.trim()}>
+            <button type="button" className="btn btn-primary" onClick={() => void handleCreate()} disabled={creating || !newName.trim()}>
               {creating ? '...' : t('common.create', 'Create')}
             </button>
-            <button className="btn btn-secondary" onClick={() => setShowCreate(false)}>
+            <button type="button" className="btn btn-secondary" onClick={() => setShowCreate(false)}>
               {t('common.cancel', 'Cancel')}
             </button>
           </div>
@@ -309,13 +352,14 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
               value={adminEmail}
               onChange={(e) => setAdminEmail(e.target.value)}
               placeholder={t('admin.registeredEmailPlaceholder', 'Registered account email')}
-              onKeyDown={(e) => e.key === 'Enter' && handleAssignAdmin()}
+              aria-label={t('admin.registeredEmailPlaceholder', 'Registered account email')}
+              onKeyDown={(e) => e.key === 'Enter' && void handleAssignAdmin()}
               autoFocus
             />
-            <button className="btn btn-primary" onClick={handleAssignAdmin} disabled={assigningAdmin || !adminEmail.trim()}>
+            <button type="button" className="btn btn-primary" onClick={() => void handleAssignAdmin()} disabled={assigningAdmin || !adminEmail.trim()}>
               {assigningAdmin ? '...' : t('admin.assignAdmin', 'Assign admin')}
             </button>
-            <button className="btn btn-secondary" onClick={() => { setAssignCompany(null); setAdminEmail(''); }}>
+            <button type="button" className="btn btn-secondary" onClick={() => { setAssignCompany(null); setAdminEmail(''); }}>
               {t('common.cancel', 'Cancel')}
             </button>
           </div>
@@ -325,25 +369,38 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
       <div className="card admin-companies-table">
         <div className="admin-companies-thead" style={{ gridTemplateColumns: gridCols }}>
           {columns.map((col) => (
-            <div key={col.key} className="admin-companies-th" onClick={() => handleSort(col.key)}>
+            <button
+              key={col.key}
+              type="button"
+              className="admin-companies-th"
+              aria-pressed={sortKey === col.key}
+              onClick={() => handleSort(col.key)}
+            >
               {col.label}
               <SortArrow col={col.key} />
-            </div>
+            </button>
           ))}
           <div ref={statusDropdownRef} className="admin-companies-status-th">
             {t('admin.status', 'Status')}
             <button
+              type="button"
               onClick={() => setShowStatusDropdown((value) => !value)}
               className={`admin-companies-filter-btn${statusFilter !== 'all' ? ' is-active' : ''}`}
               title={t('admin.filterStatus', 'Filter by status')}
+              aria-label={t('admin.filterStatus', 'Filter by status')}
+              aria-expanded={showStatusDropdown}
+              aria-haspopup="menu"
             >
               <IconFilter size={14} stroke={statusFilter !== 'all' ? 2.5 : 1.8} />
             </button>
             {showStatusDropdown && (
-              <div className="admin-companies-dropdown">
+              <div className="admin-companies-dropdown" role="menu">
                 {(['all', 'active', 'disabled'] as const).map((value) => (
-                  <div
+                  <button
                     key={value}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={statusFilter === value}
                     onClick={() => {
                       setStatusFilter(value);
                       setPage(0);
@@ -352,7 +409,7 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
                     className={`admin-companies-dropdown-item${statusFilter === value ? ' is-active' : ''}`}
                   >
                     {value === 'all' ? t('admin.all', 'All') : value === 'active' ? t('admin.active', 'Active') : t('admin.disabled', 'Disabled')}
-                  </div>
+                  </button>
                 ))}
               </div>
             )}
@@ -365,7 +422,14 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
             <div className="admin-companies-empty">{t('common.loading', 'Loading...')}</div>
           )}
 
-          {error && <div className="admin-companies-error">{error}</div>}
+          {error && (
+            <div className="admin-companies-error" role="alert">
+              <div>{error}</div>
+              <button type="button" className="btn btn-secondary" onClick={() => void loadCompanies()}>
+                {t('common.retry', 'Retry')}
+              </button>
+            </div>
+          )}
 
           {!loading &&
             paged.map((company: any) => (
@@ -391,6 +455,7 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
                 <div className="admin-companies-actions">
                   {company.is_active && (
                     <button
+                      type="button"
                       className="btn btn-ghost admin-companies-toggle-btn"
                       onClick={() => { setAssignCompany(company); setAdminEmail(''); }}
                     >
@@ -398,6 +463,7 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
                     </button>
                   )}
                   <button
+                    type="button"
                     className={`btn btn-ghost admin-companies-toggle-btn${company.slug === 'default' ? ' is-locked' : ''}`}
                     style={{ color: company.slug === 'default' ? 'var(--text-tertiary)' : company.is_active ? 'var(--error)' : 'var(--success)' }}
                     onClick={() => handleToggle(company.id, company.is_active)}
@@ -427,10 +493,10 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
               })}
             </span>
             <div className="admin-companies-page-btns">
-              <button className="btn btn-ghost admin-companies-page-btn" disabled={page === 0} onClick={() => setPage((current) => current - 1)}>
+              <button type="button" className="btn btn-ghost admin-companies-page-btn" disabled={page === 0} onClick={() => setPage((current) => current - 1)}>
                 &lsaquo; {t('admin.prev', 'Prev')}
               </button>
-              <button className="btn btn-ghost admin-companies-page-btn" disabled={page >= totalPages - 1} onClick={() => setPage((current) => current + 1)}>
+              <button type="button" className="btn btn-ghost admin-companies-page-btn" disabled={page >= totalPages - 1} onClick={() => setPage((current) => current + 1)}>
                 {t('admin.next', 'Next')} &rsaquo;
               </button>
             </div>

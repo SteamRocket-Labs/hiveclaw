@@ -2,7 +2,7 @@
 
 > 状态: v2.0 全面重构计划，替代 v1.0 "交互可见性"草案
 > 日期: 2026-05-28
-> 对标: `/Users/rocky243/vc-saas/onyx` 的 chat timeline / packet processor / AgentTimeline / pacing / completed state
+> 对标: `/Users/example-owner/vc-saas/onyx` 的 chat timeline / packet processor / AgentTimeline / pacing / completed state
 > 目标: 不是修一个 Thinking indicator，而是把 Hive Chat 从调试型界面重构成企业用户可放心使用的 agent 工作台
 
 ---
@@ -410,7 +410,7 @@ P0/P1 原则上不改后端。P2 需要补两个低风险 runtime events：
 测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- src/pages/agent-detail/chatRuntime.test.ts
 npm run build
 ```
@@ -483,7 +483,7 @@ stored tool_call/event messages -> 可恢复 snapshot
 测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- src/pages/agent-detail/chatTimeline.test.ts
 npm run test -- src/pages/agent-detail/AgentTimeline.test.tsx
 npm run build
@@ -572,7 +572,7 @@ npm run build
 ### 11.3 验证命令
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- src/pages/agent-detail/chatRuntime.test.ts
 npm run test -- src/pages/agent-detail/chatTimeline.test.ts
 npm run test -- src/pages/agent-detail/AgentTimeline.test.tsx
@@ -582,7 +582,7 @@ npm run build
 后端补事件时追加：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_web_chat_runtime.py tests/api/test_chat_session_runs.py tests/api/test_websocket_call_llm.py -q
 ruff check app/kernel/engine.py app/services/web_chat_runtime.py app/services/chat_message_parts.py

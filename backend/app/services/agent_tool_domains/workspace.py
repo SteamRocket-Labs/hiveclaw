@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import uuid
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from app.config import get_settings
@@ -19,6 +19,7 @@ from app.services.workspace_resource_authority import (
     is_recovery_manifest_storage_path,
 )
 from app.skills import SkillRegistry, WorkspaceSkillLoader
+from app.runtime.ccplus_contracts import permission_profile_snapshot
 from app.tools.result_envelope import ToolContentEnvelope, render_tool_error
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,53 @@ def _is_within_path(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _resolved_workspace_path(ws: Path, rel_path: str, permission_profile: Any | None = None) -> Path | None:
+    """Resolve a workspace path and enforce an exact session root at the final I/O boundary."""
+
+    workspace = ws.resolve()
+    target = (workspace / rel_path).resolve()
+    if not _is_within_path(target, workspace):
+        return None
+    profile = permission_profile_snapshot(permission_profile)
+    snapshot = profile.get("capability_policy_snapshot")
+    if not isinstance(snapshot, dict) or snapshot.get("session_exact_scope") is not True:
+        return target
+    raw_path = str(rel_path or "")
+    scoped_path = PurePosixPath(raw_path)
+    if (
+        not raw_path
+        or "\\" in raw_path
+        or scoped_path.is_absolute()
+        or any(part in {"", ".", ".."} for part in scoped_path.parts)
+        or scoped_path.as_posix() != raw_path
+    ):
+        return None
+    writable_roots = profile.get("writable_roots")
+    if (
+        not isinstance(writable_roots, list)
+        or len(writable_roots) != 1
+        or profile.get("readable_roots") != writable_roots
+    ):
+        return None
+    raw_root = str(writable_roots[0] or "")
+    root = PurePosixPath(raw_root)
+    if (
+        not raw_root
+        or "\\" in raw_root
+        or root.is_absolute()
+        or len(root.parts) < 2
+        or root.parts[0] != "workspace"
+        or any(part in {"", ".", ".."} for part in root.parts)
+        or root.as_posix() != raw_root
+    ):
+        return None
+    logical_root = workspace.joinpath(*root.parts)
+    resolved_root = logical_root.resolve()
+    if resolved_root != logical_root or not _is_within_path(target, resolved_root):
+        return None
+    return target
 
 
 def _append_workspace_provenance_hint(
@@ -200,10 +248,18 @@ def _read_file(
     tenant_id: str | None = None,
     tool_name: str = "read_file",
     authority_scope=None,
+    permission_profile=None,
 ) -> "str | ToolContentEnvelope":
     if not _authority_allows_path(authority_scope, rel_path):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
-    if rel_path and rel_path.startswith("enterprise_info"):
+    profile = permission_profile_snapshot(permission_profile)
+    profile_snapshot = profile.get("capability_policy_snapshot")
+    exact_scope = isinstance(profile_snapshot, dict) and profile_snapshot.get("session_exact_scope") is True
+    if exact_scope:
+        file_path = _resolved_workspace_path(ws, rel_path, permission_profile)
+        if file_path is None:
+            return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
+    elif rel_path and rel_path.startswith("enterprise_info"):
         if not company_context_path_allowed(rel_path):
             return _workspace_error(tool_name, "auth_or_permission", "Only generated company context is available.")
         if tenant_id:
@@ -215,8 +271,8 @@ def _read_file(
         if not _is_within_path(file_path, enterprise_root):
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
     else:
-        file_path = (ws / rel_path).resolve()
-        if not _is_within_path(file_path, ws):
+        file_path = _resolved_workspace_path(ws, rel_path, permission_profile)
+        if file_path is None:
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
 
     if not file_path.exists():
@@ -1016,6 +1072,7 @@ def _write_file(
     content: str,
     tool_name: str = "write_file",
     authority_scope=None,
+    permission_profile=None,
 ) -> str:
     if not rel_path or not rel_path.strip("/"):
         return _workspace_error(
@@ -1073,8 +1130,8 @@ def _write_file(
             actionable_hint="Use save_skill to submit a skill activation candidate; active skills require Platform Skill Gate.",
         )
 
-    file_path = (ws / rel_path).resolve()
-    if not _is_within_path(file_path, ws):
+    file_path = _resolved_workspace_path(ws, rel_path, permission_profile)
+    if file_path is None:
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
     if file_path.exists() and not _authority_allows_path(authority_scope, rel_path):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
@@ -1095,6 +1152,7 @@ def _edit_file(
     replace_all: bool = False,
     tool_name: str = "edit_file",
     authority_scope=None,
+    permission_profile=None,
 ) -> str:
     normalized_path, authority_error = _authorize_workspace_mutation_path(
         ws,
@@ -1137,8 +1195,8 @@ def _edit_file(
             skill_guard_message,
             actionable_hint="Submit a new save_skill candidate or let Skill Distiller patch through Platform Skill Gate.",
         )
-    file_path = (ws / rel_path).resolve()
-    if not _is_within_path(file_path, ws):
+    file_path = _resolved_workspace_path(ws, rel_path, permission_profile)
+    if file_path is None:
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
     if not file_path.exists():
         return _workspace_error(tool_name, "not_found", f"File not found: {rel_path}")
@@ -1175,9 +1233,10 @@ def _glob_search(
     root: str = "",
     tool_name: str = "glob_search",
     authority_scope=None,
+    permission_profile=None,
 ) -> str:
-    search_root = (ws / root).resolve() if root else ws.resolve()
-    if not _is_within_path(search_root, ws):
+    search_root = _resolved_workspace_path(ws, root, permission_profile)
+    if search_root is None:
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
     if not search_root.exists():
         return _workspace_error(tool_name, "not_found", f"Directory not found: {root or '/'}")
@@ -1185,10 +1244,11 @@ def _glob_search(
     matches: list[str] = []
     try:
         for path in sorted(search_root.glob(pattern)):
-            resolved = path.resolve()
-            if not _is_within_path(resolved, ws):
+            relative = path.relative_to(ws.resolve()).as_posix()
+            resolved = _resolved_workspace_path(ws, relative, permission_profile)
+            if resolved is None:
                 continue
-            rel = resolved.relative_to(ws).as_posix()
+            rel = resolved.relative_to(ws.resolve()).as_posix()
             if not _authority_allows_path(authority_scope, rel, directory=resolved.is_dir()):
                 continue
             matches.append(rel)
@@ -1209,9 +1269,10 @@ def _grep_search(
     max_results: int | None = None,
     tool_name: str = "grep_search",
     authority_scope=None,
+    permission_profile=None,
 ) -> str:
-    search_root = (ws / root).resolve() if root else ws.resolve()
-    if not _is_within_path(search_root, ws):
+    search_root = _resolved_workspace_path(ws, root, permission_profile)
+    if search_root is None:
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
     if not search_root.exists():
         return _workspace_error(tool_name, "not_found", f"Directory not found: {root or '/'}")
@@ -1236,10 +1297,15 @@ def _grep_search(
             if proc.stdout.strip():
                 for line in proc.stdout.splitlines():
                     normalized = line.replace(str(ws.resolve()) + os.sep, "")
-                    result_path = normalized.split(":", 1)[0].replace("\\", "/")
-                    if not _authority_allows_path(authority_scope, result_path):
+                    result_path, separator, match = normalized.partition(":")
+                    result_path = result_path.replace("\\", "/")
+                    resolved = _resolved_workspace_path(ws, result_path, permission_profile)
+                    if resolved is None:
                         continue
-                    matches.append(normalized)
+                    safe_path = resolved.relative_to(ws.resolve()).as_posix()
+                    if not _authority_allows_path(authority_scope, safe_path):
+                        continue
+                    matches.append(f"{safe_path}{separator}{match}")
                     if explicit_limit is not None and len(matches) >= explicit_limit:
                         break
             elif proc.returncode not in (0, 1):
@@ -1266,14 +1332,17 @@ def _grep_search(
                     break
                 if not path.is_file():
                     continue
-                rel_path = path.relative_to(ws).as_posix()
+                rel_path = path.relative_to(ws.resolve()).as_posix()
+                resolved = _resolved_workspace_path(ws, rel_path, permission_profile)
+                if resolved is None:
+                    continue
                 if not _authority_allows_path(authority_scope, rel_path):
                     continue
                 try:
-                    with path.open("r", encoding="utf-8", errors="replace") as handle:
+                    with resolved.open("r", encoding="utf-8", errors="replace") as handle:
                         for idx, line in enumerate(handle, start=1):
                             if compiled.search(line):
-                                matches.append(f"{path.relative_to(ws).as_posix()}:{idx}:{line.strip()}")
+                                matches.append(f"{rel_path}:{idx}:{line.strip()}")
                                 if explicit_limit is not None and len(matches) >= explicit_limit:
                                     break
                 except Exception as _read_err:

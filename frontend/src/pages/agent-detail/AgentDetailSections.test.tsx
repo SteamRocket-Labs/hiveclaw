@@ -2049,7 +2049,7 @@ describe('AgentDetail extracted sections', () => {
           tokens_used_total: 98765,
           role_description: 'Handles release coordination.',
           created_at: '2026-03-20T10:00:00Z',
-          creator_username: 'rocky',
+          creator_username: 'example-owner',
           last_active_at: '2026-03-27T09:00:00Z',
           effective_timezone: 'Asia/Shanghai',
           primary_model_id: 'model-1',

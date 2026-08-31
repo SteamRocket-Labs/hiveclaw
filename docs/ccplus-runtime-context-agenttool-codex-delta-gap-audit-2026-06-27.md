@@ -78,7 +78,7 @@ Hive 的目标不是做一个泛泛的 multi-agent 产品。我们的目标一�
 主要本地基线：
 
 ```text
-/Users/rocky243/vc-saas/free-code-main
+/Users/example-owner/vc-saas/free-code-main
 ```
 
 关键证据：
@@ -110,7 +110,7 @@ Hive 的目标不是做一个泛泛的 multi-agent 产品。我们的目标一�
 claude-code-org 交叉校验：
 
 ```text
-/Users/rocky243/Context Engineering/claude-code-org
+/Users/example-owner/Context Engineering/claude-code-org
 ```
 
 该 checkout 的源码和机制说明确认同样语义：
@@ -123,7 +123,7 @@ claude-code-org 交叉校验：
 Python port 交叉校验：
 
 ```text
-/Users/rocky243/Context Engineering/claw-code/src
+/Users/example-owner/Context Engineering/claw-code/src
 ```
 
 当前 Python port 主要保留 TS tool 模块的 reference snapshot，不覆盖 FreeCode 判断。它强化了 FreeCode 是 essential baseline 的结论。
@@ -133,7 +133,7 @@ Python port 交叉校验：
 主要本地基线：
 
 ```text
-/Users/rocky243/Context Engineering/codex/codex-rs
+/Users/example-owner/Context Engineering/codex/codex-rs
 ```
 
 Codex 不替代 CC 语义目标。它值得吸收的是工程面：
@@ -456,7 +456,7 @@ frontend/src/pages/session-workbench/SessionNativeControls.tsx
 证据：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/runtime/test_subagent_listing_section.py \
@@ -495,7 +495,7 @@ pytest \
 证据：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/tools/test_agent_tool_cc_compat.py \
@@ -536,7 +536,7 @@ pytest \
 测试先行：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_subagent_completion_mailbox.py -q
 pytest tests/services/test_subagent_wake_consumer.py -q
@@ -566,7 +566,7 @@ Workstream D 已补齐：
 验证：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/services/test_agent_team_runtime_service.py \
@@ -618,7 +618,7 @@ pytest \
 验证：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/runtime/test_turn_envelope_prompt_manifest.py \
@@ -859,7 +859,7 @@ backend/app/api/hooks.py
 文档交付校验：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 test -f docs/ccplus-runtime-context-agenttool-codex-delta-gap-audit-2026-06-27.md
 rg -n "P0-1|P0-1.5|P0-2|To Session Worker|To Employee|TurnEnvelope|AgentTeamRuntimeService|consume_subagent_signals" docs/ccplus-runtime-context-agenttool-codex-delta-gap-audit-2026-06-27.md
 ```
@@ -867,7 +867,7 @@ rg -n "P0-1|P0-1.5|P0-2|To Session Worker|To Employee|TurnEnvelope|AgentTeamRunt
 未来实现后的目标测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/tools/test_agent_tool_cc_compat.py \
@@ -882,11 +882,11 @@ pytest \
 完整回归目标：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run build
 ```
 

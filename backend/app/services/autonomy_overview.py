@@ -8,7 +8,6 @@ contracts such as trigger.config or RuntimeTask.metadata_json.
 from __future__ import annotations
 
 import json
-import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -505,21 +504,19 @@ def build_artifact_view(payload: dict[str, Any], *, include_diagnostics: bool = 
     return view
 
 
-def _safe_runtime_task_filename(runtime_task_id: str) -> str:
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(runtime_task_id).strip())
-    return (safe[:120] or "trigger-output") + ".json"
-
-
 async def read_agent_trigger_artifact_view(
     *,
     agent_id: uuid.UUID,
     runtime_task_id: str,
     include_diagnostics: bool = False,
 ) -> dict[str, Any] | None:
+    from app.services.trigger_artifacts import trigger_output_artifact_ref
+
+    artifact = trigger_output_artifact_ref(runtime_task_id)
+    if artifact is None:
+        return None
     agent_root = (Path(get_settings().AGENT_DATA_DIR) / str(agent_id)).resolve()
-    artifact_path = (
-        agent_root / "runtime_artifacts" / "triggers" / _safe_runtime_task_filename(runtime_task_id)
-    ).resolve()
+    artifact_path = (agent_root / artifact["path"]).resolve()
     try:
         artifact_path.relative_to(agent_root)
     except ValueError:
@@ -529,6 +526,17 @@ async def read_agent_trigger_artifact_view(
     try:
         payload = json.loads(artifact_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        return None
+    try:
+        canonical_task_id = uuid.UUID(str(runtime_task_id)).hex
+    except (TypeError, ValueError, AttributeError):
+        return None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != "trigger_output_artifact.v1"
+        or str(payload.get("runtime_task_id") or "") != canonical_task_id
+        or str(payload.get("agent_id") or "") != str(agent_id)
+    ):
         return None
     view = build_artifact_view(payload, include_diagnostics=include_diagnostics)
     if include_diagnostics:

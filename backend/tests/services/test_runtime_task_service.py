@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from uuid import uuid4
+from datetime import datetime, timezone
+from types import SimpleNamespace
+from uuid import UUID, uuid4, uuid5
 
 import pytest
+from sqlalchemy import select
 
 
 def _route_runtime_accessors(monkeypatch, fake_session, *, tenant_id=None):
@@ -155,6 +158,16 @@ class _ReconcileSession:
                 task.id = uuid4()
             if not hasattr(task, "tenant_id"):
                 task.tenant_id = self.tenant_id
+            for name, value in {
+                "metadata_json": {},
+                "claim_version": 0,
+                "root_runtime_task_id": None,
+                "parent_session_id": None,
+                "parent_agent_id": None,
+                "terminal_boundary_generation": None,
+            }.items():
+                if not hasattr(task, name):
+                    setattr(task, name, value)
         self.rollback_calls = 0
         self.commit_calls = 0
 
@@ -175,8 +188,33 @@ class _ReconcileSession:
     async def commit(self):
         self.commit_calls += 1
 
+    async def flush(self):
+        return None
+
     async def rollback(self):
         self.rollback_calls += 1
+
+
+def test_runtime_task_projection_includes_claim_owner_and_expiry_for_startup_recovery() -> None:
+    from app.models.runtime_task import RuntimeTask
+    from app.services.runtime_task_service import _task_to_dict
+
+    claim_expires_at = datetime.now(timezone.utc)
+    task = RuntimeTask(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        task_type="delegation",
+        status="running",
+        claimed_by="runtime-worker-a",
+        claim_expires_at=claim_expires_at,
+        claim_version=4,
+        metadata_json={"resumable_delegation": True},
+    )
+
+    projected = _task_to_dict(task)
+
+    assert projected["claimed_by"] == "runtime-worker-a"
+    assert projected["claim_expires_at"] == claim_expires_at.isoformat()
 
 
 @pytest.mark.asyncio
@@ -264,6 +302,16 @@ class _OneTaskResult:
 class _UpdateSession:
     def __init__(self, task):
         self.task = task
+        for name, value in {
+            "id": uuid4(),
+            "claim_version": 0,
+            "root_runtime_task_id": None,
+            "parent_session_id": None,
+            "parent_agent_id": None,
+            "terminal_boundary_generation": None,
+        }.items():
+            if not hasattr(task, name):
+                setattr(task, name, value)
         self.commit_calls = 0
         self.rollback_calls = 0
 
@@ -286,6 +334,9 @@ class _UpdateSession:
 
     async def rollback(self):
         self.rollback_calls += 1
+
+    async def flush(self):
+        return None
 
 
 @pytest.mark.asyncio
@@ -328,10 +379,21 @@ async def test_terminal_runtime_task_enqueues_completion_in_same_transaction(mon
         captured["commit_calls_at_enqueue"] = fake_session.commit_calls
         return uuid4()
 
+    async def fake_terminal_settlement(db, received_task, **kwargs):
+        captured["terminal_db"] = db
+        captured["terminal_task"] = received_task
+        captured["terminal_kwargs"] = kwargs
+        captured["commit_calls_at_terminal_enqueue"] = fake_session.commit_calls
+        return "runtime-task-terminal:test"
+
     monkeypatch.setattr(
         "app.services.runtime_task_service.enqueue_completion_notification",
         fake_enqueue,
         raising=False,
+    )
+    monkeypatch.setattr(
+        "app.services.runtime_terminal_settlement.settle_and_enqueue_runtime_task_terminal",
+        fake_terminal_settlement,
     )
     notification = CompletionNotification(
         tenant_id=tenant_id,
@@ -357,11 +419,29 @@ async def test_terminal_runtime_task_enqueues_completion_in_same_transaction(mon
     assert captured["db"] is fake_session
     assert captured["notification"] is notification
     assert captured["commit_calls_at_enqueue"] == 0
+    assert captured["terminal_db"] is fake_session
+    assert captured["terminal_task"] is task
+    assert captured["terminal_kwargs"]["terminal_source"] == "runtime_task_service.update"
+    assert captured["commit_calls_at_terminal_enqueue"] == 0
     assert fake_session.commit_calls == 1
 
 
 @pytest.mark.asyncio
-async def test_skipped_trigger_is_durably_settled_without_completion_notification(monkeypatch):
+@pytest.mark.parametrize(
+    ("status", "metadata", "expected_disposition"),
+    [
+        ("skipped", {}, "intentional_no_delivery"),
+        ("completed", {"delivery": "workflow"}, "workflow_child_owned"),
+        ("failed", {"delivery": "workflow"}, "workflow_child_owned"),
+        ("needs_reconciliation", {"delivery": "workflow"}, "workflow_child_owned"),
+    ],
+)
+async def test_trigger_without_parent_delivery_is_durably_settled_but_keeps_terminal_boundary(
+    monkeypatch,
+    status,
+    metadata,
+    expected_disposition,
+):
     from app.services.runtime_task_service import update_runtime_task_record
 
     tenant_id = uuid4()
@@ -373,7 +453,7 @@ async def test_skipped_trigger_is_durably_settled_without_completion_notificatio
             "tenant_id": tenant_id,
             "task_type": "trigger",
             "status": "running",
-            "metadata_json": {},
+            "metadata_json": metadata,
             "started_at": None,
             "completed_at": None,
             "trace_id": "trace",
@@ -397,17 +477,236 @@ async def test_skipped_trigger_is_durably_settled_without_completion_notificatio
         "app.services.runtime_task_service.resolve_tenant_for_runtime_task",
         fake_resolve_runtime_task_tenant,
     )
+    terminal_enqueues = []
+
+    async def fake_terminal_settlement(db, received_task, **_kwargs):
+        terminal_enqueues.append((db, received_task, fake_session.commit_calls))
+        return "runtime-task-terminal:test"
+
+    monkeypatch.setattr(
+        "app.services.runtime_terminal_settlement.settle_and_enqueue_runtime_task_terminal",
+        fake_terminal_settlement,
+    )
 
     updated = await update_runtime_task_record(
         task.id.hex,
-        status="skipped",
+        status=status,
         result_summary="Trigger conditions did not require a run.",
     )
 
     assert updated is True
     assert task.completion_outbox_settled_at is not None
     assert task.completion_outbox_last_error is None
+    assert task.metadata_json["completion_delivery_disposition"] == expected_disposition
+    assert terminal_enqueues == [(fake_session, task, 0)]
     assert fake_session.commit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_postgres_trigger_settlement_rolls_back_with_terminal_outbox_and_replays_once(
+    monkeypatch,
+    owner_sessionmaker,
+):
+    from app.database import tenant_scoped_session
+    from app.models.agent import Agent
+    from app.models.audit import AuditLog
+    from app.models.runtime_task import RuntimeTask
+    from app.models.tenant import Tenant
+    from app.models.trigger import AgentTrigger
+    from app.models.user import User
+    from app.services import direct_invocation_terminal_boundary_processor as terminal_processor
+    from app.services import runtime_task_service
+
+    tenant_id, user_id, agent_id, trigger_id, task_id = (uuid4() for _ in range(5))
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        db.add(
+            Tenant(
+                id=tenant_id,
+                name="Atomic trigger settlement",
+                slug=f"atomic-trigger-{tenant_id.hex[:10]}",
+            )
+        )
+        db.add(
+            User(
+                id=user_id,
+                username=f"atomic-{user_id.hex[:10]}",
+                email=f"atomic-{user_id.hex[:10]}@test.local",
+                password_hash="x",
+                display_name="Atomic Trigger Owner",
+                tenant_id=tenant_id,
+            )
+        )
+        await db.flush()
+        db.add(
+            Agent(
+                id=agent_id,
+                tenant_id=tenant_id,
+                name="Atomic trigger agent",
+                creator_id=user_id,
+                owner_user_id=user_id,
+            )
+        )
+        await db.flush()
+        db.add(
+            AgentTrigger(
+                id=trigger_id,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                name="Atomic once",
+                type="once",
+                config={
+                    "at": "2026-08-31T00:00:00+00:00",
+                    "_fire_inflight": {
+                        "event_key": "once:atomic",
+                        "runtime_task_id": str(task_id),
+                        "started_at": "2026-08-31T00:00:00+00:00",
+                    },
+                },
+                reason="Prove atomic settlement",
+                is_enabled=True,
+                fire_count=0,
+                cooldown_seconds=0,
+            )
+        )
+        db.add(
+            RuntimeTask(
+                id=task_id,
+                tenant_id=tenant_id,
+                task_type="trigger",
+                status="running",
+                parent_agent_id=agent_id,
+                metadata_json={
+                    "delivery": "workflow",
+                    "trigger_ids": [str(trigger_id)],
+                    "trigger_names": ["Atomic once"],
+                    "trigger_types": ["once"],
+                },
+            )
+        )
+
+    monkeypatch.setattr(runtime_task_service, "async_session", owner_sessionmaker)
+    original_enqueue = terminal_processor.enqueue_direct_terminal_boundary_for_task
+    expected_audit_id = uuid5(task_id, "trigger-settlement-audit")
+
+    async def fail_after_settlement(*_args, **_kwargs):
+        raise RuntimeError("terminal outbox unavailable")
+
+    monkeypatch.setattr(terminal_processor, "enqueue_direct_terminal_boundary_for_task", fail_after_settlement)
+    with pytest.raises(RuntimeError, match="terminal outbox unavailable"):
+        await runtime_task_service.update_runtime_task_record(
+            task_id.hex,
+            status="completed",
+            result_summary="Workflow launched.",
+        )
+
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        rolled_back_task = await db.get(RuntimeTask, task_id)
+        rolled_back_trigger = await db.get(AgentTrigger, trigger_id)
+        assert rolled_back_task.status == "running"
+        assert "trigger_settlement" not in (rolled_back_task.metadata_json or {})
+        assert rolled_back_trigger.fire_count == 0
+        assert rolled_back_trigger.is_enabled is True
+        assert rolled_back_trigger.config["_fire_inflight"]["runtime_task_id"] == str(task_id)
+        assert await db.get(AuditLog, expected_audit_id) is None
+
+    monkeypatch.setattr(terminal_processor, "enqueue_direct_terminal_boundary_for_task", original_enqueue)
+    assert await runtime_task_service.update_runtime_task_record(
+        task_id.hex,
+        status="completed",
+        result_summary="Workflow launched.",
+    )
+    assert await runtime_task_service.update_runtime_task_record(task_id.hex, status="completed")
+    assert not await runtime_task_service.update_runtime_task_record(
+        task_id.hex,
+        status="completed",
+        result_summary="Late replacement must not cross the terminal seal.",
+    )
+    assert await runtime_task_service.update_runtime_task_record(
+        task_id.hex,
+        budget_admission_status="settled",
+    )
+
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        settled_task = await db.get(RuntimeTask, task_id)
+        settled_trigger = await db.get(AgentTrigger, trigger_id)
+        assert settled_task.status == "completed"
+        assert settled_task.result_summary == "Workflow launched."
+        assert settled_task.budget_admission_status == "settled"
+        assert settled_task.terminal_boundary_enqueued_at is not None
+        assert settled_task.metadata_json["terminal_committed_status"] == "completed"
+        assert settled_task.metadata_json["terminal_commit_source"] == "runtime_task_service.update"
+        assert settled_task.metadata_json["terminal_execution_fence_ref"].startswith("runtime-task-terminal:")
+        assert settled_task.metadata_json["trigger_settlement"]["trigger_outcomes"] == {str(trigger_id): "success"}
+        assert settled_trigger.fire_count == 1
+        assert settled_trigger.is_enabled is False
+        assert "_fire_inflight" not in settled_trigger.config
+        audit_rows = list((await db.execute(select(AuditLog).where(AuditLog.id == expected_audit_id))).scalars())
+        assert len(audit_rows) == 1
+        assert audit_rows[0].id == UUID(settled_task.metadata_json["trigger_settlement"]["audit_log_id"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "expected_outcome"),
+    [("failed", "failure"), ("needs_reconciliation", "hold"), ("skipped", "release")],
+)
+async def test_trigger_terminal_outcomes_preserve_failure_hold_and_release_contract(status, expected_outcome):
+    from datetime import datetime, timedelta, timezone
+
+    from app.services.runtime_task_service import _settle_trigger_runtime_task
+    from app.services.trigger_daemon import _inflight_fire_is_active
+
+    task_id, tenant_id, agent_id, trigger_id = (uuid4() for _ in range(4))
+    trigger = SimpleNamespace(
+        id=trigger_id,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        name="terminal outcome",
+        type="once",
+        config={
+            "_fire_inflight": {
+                "runtime_task_id": str(task_id),
+                "started_at": "2026-01-01T00:00:00+00:00",
+            }
+        },
+        fire_count=0,
+        max_fires=None,
+        is_enabled=True,
+        last_fired_at=None,
+    )
+    task = SimpleNamespace(
+        id=task_id,
+        tenant_id=tenant_id,
+        parent_agent_id=agent_id,
+        metadata_json={
+            "trigger_ids": [str(trigger_id)],
+            "reconciliation_reason": "mutating effect outcome unknown",
+        },
+        result_summary="failed",
+    )
+
+    class Session:
+        async def execute(self, _query):
+            return _ListResult([trigger])
+
+        def add(self, _value):
+            raise AssertionError("non-success settlement must not emit trigger_fired audit")
+
+    receipt = await _settle_trigger_runtime_task(Session(), task, status=status)
+
+    assert receipt["trigger_outcomes"] == {str(trigger_id): expected_outcome}
+    if status == "failed":
+        assert "_fire_inflight" not in trigger.config
+        assert trigger.config["failure_count"] == 1
+    elif status == "needs_reconciliation":
+        assert trigger.config["_fire_inflight"]["hold"] is True
+        assert _inflight_fire_is_active(
+            trigger.config,
+            datetime.now(timezone.utc) + timedelta(days=365),
+        )
+    else:
+        assert "_fire_inflight" not in trigger.config
+        assert trigger.fire_count == 0
 
 
 @pytest.mark.asyncio
@@ -645,6 +944,10 @@ async def test_reconcile_orphaned_runtime_tasks_marks_running_records_failed(mon
     assert running_task.status == "failed"
     assert "worker process restarted" in running_task.result_summary.lower()
     assert running_task.completed_at is not None
+    assert running_task.metadata_json["terminal_committed_status"] == "failed"
+    assert running_task.metadata_json["terminal_commit_source"] == (
+        "runtime_task_service.startup_orphan_reconciliation"
+    )
     assert fake_session.commit_calls == 1
 
 
@@ -742,14 +1045,15 @@ async def test_reconcile_orphaned_runtime_tasks_preserves_cc_session_runtime_tas
 
 
 @pytest.mark.asyncio
-async def test_reconcile_orphaned_runtime_tasks_reconciles_unconfirmed_restart_resumable_records(monkeypatch):
+async def test_reconcile_orphaned_runtime_tasks_preserves_worker_reclaimable_delegation_only(monkeypatch):
     from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
 
+    resumable_delegation_id = uuid4()
     resumable_delegation = type(
         "RuntimeTaskStub",
         (),
         {
-            "id": uuid4(),
+            "id": resumable_delegation_id,
             "task_type": "delegation",
             "status": "running",
             "result_summary": None,
@@ -757,6 +1061,12 @@ async def test_reconcile_orphaned_runtime_tasks_reconciles_unconfirmed_restart_r
             "metadata_json": {
                 "resume_after_restart": True,
                 "resumable_delegation": True,
+                "restart_replay_contract": {
+                    "schema": "runtime_restart_replay_contract.v1",
+                    "idempotency_key": f"delegation:{resumable_delegation_id.hex}:restart",
+                    "task_type": "delegation",
+                    "task_id": resumable_delegation_id.hex,
+                },
             },
         },
     )()
@@ -784,18 +1094,71 @@ async def test_reconcile_orphaned_runtime_tasks_reconciles_unconfirmed_restart_r
             "metadata_json": {},
         },
     )()
-    fake_session = _ReconcileSession([resumable_delegation, durable_web_chat, in_process_delegation])
+    missing_resume_flag = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": uuid4(),
+            "task_type": "delegation",
+            "status": "running",
+            "result_summary": None,
+            "completed_at": None,
+            "metadata_json": {"resumable_delegation": True},
+        },
+    )()
+    cross_type_flag = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": uuid4(),
+            "task_type": "delegation",
+            "status": "running",
+            "result_summary": None,
+            "completed_at": None,
+            "metadata_json": {
+                "resume_after_restart": True,
+                "resumable_subagent": True,
+            },
+        },
+    )()
+    missing_contract = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": uuid4(),
+            "task_type": "delegation",
+            "status": "running",
+            "result_summary": None,
+            "completed_at": None,
+            "metadata_json": {
+                "resume_after_restart": True,
+                "resumable_delegation": True,
+            },
+        },
+    )()
+    fake_session = _ReconcileSession(
+        [
+            resumable_delegation,
+            durable_web_chat,
+            in_process_delegation,
+            missing_resume_flag,
+            cross_type_flag,
+            missing_contract,
+        ]
+    )
     monkeypatch.setattr("app.services.runtime_task_service.async_session", lambda: fake_session)
 
     updated = await reconcile_orphaned_runtime_tasks()
 
-    assert updated == 2
-    assert resumable_delegation.status == "needs_reconciliation"
-    assert resumable_delegation.metadata_json["restart_resume_blocker"] == "restart_resume_not_confirmed"
+    assert updated == 4
+    assert resumable_delegation.status == "running"
     assert durable_web_chat.status == "running"
     assert in_process_delegation.status == "needs_reconciliation"
     assert in_process_delegation.metadata_json["needs_reconciliation"] is True
     assert in_process_delegation.metadata_json["side_effect_risk"] == "mutating"
+    assert missing_resume_flag.status == "needs_reconciliation"
+    assert cross_type_flag.status == "needs_reconciliation"
+    assert missing_contract.status == "needs_reconciliation"
     assert fake_session.commit_calls == 1
 
 
@@ -848,7 +1211,7 @@ async def test_reconcile_orphaned_runtime_tasks_reconciles_unconfirmed_resumable
 
 
 @pytest.mark.asyncio
-async def test_reconcile_orphaned_runtime_tasks_reconciles_unconfirmed_resumable_trigger_and_heartbeat(monkeypatch):
+async def test_reconcile_orphaned_runtime_tasks_preserves_reclaimable_triggers_beyond_startup_limit(monkeypatch):
     from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
 
     trigger_id = uuid4()
@@ -895,14 +1258,39 @@ async def test_reconcile_orphaned_runtime_tasks_reconciles_unconfirmed_resumable
             },
         },
     )()
-    fake_session = _ReconcileSession([resumable_trigger, resumable_heartbeat])
+    resumable_triggers = [resumable_trigger]
+    for _ in range(50):
+        extra_id = uuid4()
+        resumable_triggers.append(
+            type(
+                "RuntimeTaskStub",
+                (),
+                {
+                    "id": extra_id,
+                    "task_type": "trigger",
+                    "status": "running",
+                    "result_summary": None,
+                    "completed_at": None,
+                    "metadata_json": {
+                        "resume_after_restart": True,
+                        "resumable_trigger": True,
+                        "restart_replay_contract": {
+                            "schema": "runtime_restart_replay_contract.v1",
+                            "task_type": "trigger",
+                            "task_id": extra_id.hex,
+                            "idempotency_key": f"trigger:{extra_id.hex}:restart",
+                        },
+                    },
+                },
+            )()
+        )
+    fake_session = _ReconcileSession([*resumable_triggers, resumable_heartbeat])
     monkeypatch.setattr("app.services.runtime_task_service.async_session", lambda: fake_session)
 
     updated = await reconcile_orphaned_runtime_tasks()
 
-    assert updated == 2
-    assert resumable_trigger.status == "needs_reconciliation"
-    assert resumable_trigger.metadata_json["restart_resume_blocker"] == "restart_resume_not_confirmed"
+    assert updated == 1
+    assert all(task.status == "running" for task in resumable_triggers)
     assert resumable_heartbeat.status == "needs_reconciliation"
     assert resumable_heartbeat.metadata_json["restart_resume_blocker"] == "restart_resume_not_confirmed"
     assert fake_session.commit_calls == 1
@@ -955,6 +1343,7 @@ async def test_update_runtime_task_record_marks_skipped_completed(monkeypatch):
         "RuntimeTaskStub",
         (),
         {
+            "task_type": "workflow",
             "status": "running",
             "started_at": None,
             "completed_at": None,
@@ -1002,6 +1391,16 @@ async def test_update_runtime_task_record_marks_needs_reconciliation_completed(m
     )()
     fake_session = _UpdateSession(task)
     monkeypatch.setattr("app.services.runtime_task_service.async_session", lambda: fake_session)
+    terminal_enqueues = []
+
+    async def fake_terminal_settlement(db, received_task, **_kwargs):
+        terminal_enqueues.append((db, received_task, fake_session.commit_calls))
+        return "runtime-task-terminal:test"
+
+    monkeypatch.setattr(
+        "app.services.runtime_terminal_settlement.settle_and_enqueue_runtime_task_terminal",
+        fake_terminal_settlement,
+    )
 
     updated = await update_runtime_task_record(
         uuid4().hex,
@@ -1015,4 +1414,5 @@ async def test_update_runtime_task_record_marks_needs_reconciliation_completed(m
     assert task.completed_at is not None
     assert task.metadata_json["needs_reconciliation"] is True
     assert task.metadata_json["completion_journal"][0]["status"] == "needs_reconciliation"
+    assert terminal_enqueues == [(fake_session, task, 0)]
     assert fake_session.commit_calls == 2  # locator audit + tenant-scoped update

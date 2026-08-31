@@ -67,7 +67,7 @@ async def test_kernel_verifies_frozen_prefix_and_refreshes_dynamic_retrieval():
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=tenant_id, max_tool_rounds=3),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=build_system_prompt,
             resolve_memory_context=lambda *_args, **_kwargs: "SNAPSHOT_BLOCK",
             resolve_retrieval_context=resolve_retrieval_context,
@@ -142,7 +142,7 @@ async def test_kernel_revalidates_rendered_frozen_context_without_external_signa
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=tenant_id, max_tool_rounds=3),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=build_system_prompt,
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [],
@@ -205,7 +205,7 @@ async def test_kernel_never_falls_back_to_stale_prefix_when_context_rebuild_fail
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=tenant_id, max_tool_rounds=3),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=build_system_prompt,
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [],
@@ -251,7 +251,7 @@ async def test_kernel_routes_runtime_metadata_outside_knowledge_section():
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=tenant_id, max_tool_rounds=3),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "FROZEN",
             resolve_memory_context=lambda *_args, **_kwargs: "MEMORY_CONTEXT",
             resolve_runtime_metadata_context=lambda *_args, **_kwargs: "## Runtime Metadata\nACTIVE_TRIGGER",
@@ -310,7 +310,7 @@ async def test_kernel_rebuilds_frozen_prefix_when_prompt_cache_key_changes():
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=tenant_id, max_tool_rounds=3),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=build_system_prompt,
             resolve_memory_context=lambda *_args, **_kwargs: "",
             resolve_retrieval_context=lambda *_args, **_kwargs: "",
@@ -400,7 +400,7 @@ async def test_tool_expansion_rebuild_preserves_dynamic_memory_and_effective_suf
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "FROZEN",
             resolve_memory_context=lambda *_args, **_kwargs: "SNAPSHOT_BLOCK",
             resolve_retrieval_context=lambda *_args, **_kwargs: "RETRIEVAL_BLOCK",
@@ -466,7 +466,7 @@ async def test_coordinator_and_delegation_suffixes_have_independent_budgets(monk
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=tenant_id, max_tool_rounds=3),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "FROZEN",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             resolve_retrieval_context=lambda *_args, **_kwargs: "",
@@ -520,7 +520,7 @@ async def test_prompt_too_long_retry_preserves_dynamic_context_blocks(tmp_path):
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "FROZEN",
             resolve_memory_context=lambda *_args, **_kwargs: "SNAPSHOT_BLOCK",
             resolve_retrieval_context=lambda *_args, **_kwargs: "RETRIEVAL_BLOCK",
@@ -562,7 +562,7 @@ async def test_prompt_too_long_retry_preserves_dynamic_context_blocks(tmp_path):
     assert "RETRIEVAL_BLOCK" not in retry_system
     assert "SNAPSHOT_BLOCK" in retry_dynamic
     assert "RETRIEVAL_BLOCK" in retry_dynamic
-    assert "Rocky" in retry_dynamic
+    assert "Example Owner" in retry_dynamic
 
 
 # ── P1-1a: cache key purity (no user_name / context_window pollution) ──────
@@ -606,7 +606,7 @@ def test_cache_key_is_disabled_without_verified_rendered_prefix():
     cfg = RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=10)
     req = _base_request(user_id=uuid4())
 
-    assert _build_frozen_prompt_cache_key(req, cfg, current_user_name="Rocky") is None
+    assert _build_frozen_prompt_cache_key(req, cfg, current_user_name="Example Owner") is None
 
 
 def test_cache_key_ignores_context_window_tokens():

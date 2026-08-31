@@ -874,7 +874,7 @@ local_only
 实施完成后先运行：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 
 python -m app.scripts.storage_lifecycle inventory --json
@@ -957,7 +957,7 @@ apply contract 分成两个不同风险层：
 实现后执行聚焦回归：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 
 pytest \
@@ -976,7 +976,7 @@ pytest \
 然后执行完整 backend suite：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests -q
 ```

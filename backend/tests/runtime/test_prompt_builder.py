@@ -314,8 +314,8 @@ def test_dynamic_suffix_includes_runtime_metadata_before_environment():
     from app.runtime.prompt_builder import build_dynamic_prompt_suffix
 
     suffix = build_dynamic_prompt_suffix(
-        runtime_metadata_context="## Runtime Metadata\nACTIVE_TRIGGER\nCurrent Conversation: Rocky",
-        user_name="Rocky",
+        runtime_metadata_context="## Runtime Metadata\nACTIVE_TRIGGER\nCurrent Conversation: Example Owner",
+        user_name="Example Owner",
         channel="web",
     )
 

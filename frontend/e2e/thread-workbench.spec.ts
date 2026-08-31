@@ -315,13 +315,17 @@ async function bootstrap(page: Page, options: {
       }
       if (payload?.type === 'session.subscribe') {
         sessionSocketSend = (eventPayload) => socket.send(eventPayload);
+        const lastCommittedSequence = transcript.length;
+        const acceptedAfterSequence = payload.cursor_mode === 'live_tail'
+          ? lastCommittedSequence
+          : Number(payload.after_sequence || 0);
         socket.send(JSON.stringify({
           type: 'session.ready',
           schema_version: 2,
           session_id: SESSION_ID,
           subscription_id: 'e2e-session-subscription',
-          accepted_after_sequence: Number(payload.after_sequence || 0),
-          last_committed_sequence: transcript.length,
+          accepted_after_sequence: acceptedAfterSequence,
+          last_committed_sequence: lastCommittedSequence,
           connection_attempt_id: payload.connection_attempt_id,
         }));
       }
@@ -617,8 +621,11 @@ test('canonical assistant text becomes visible live without a refresh or a Think
       },
     ]);
 
-  await expect(page.getByTestId('run-disclosure-prose')).toContainText(progress);
-  await expect(page.getByTestId('run-disclosure-prose')).not.toContainText('Thinking');
+  const liveDisclosure = page.getByTestId('run-disclosure-block').last();
+  await expect(liveDisclosure).toBeVisible();
+  await liveDisclosure.getByRole('button').click();
+  await expect(liveDisclosure.getByTestId('run-disclosure-prose')).toContainText(progress);
+  await expect(liveDisclosure.getByTestId('run-disclosure-prose')).not.toContainText('Thinking');
   await expect(page.getByTestId('chat-work-ledger-dock')).toHaveAttribute('data-presentation', 'persistent');
 });
 

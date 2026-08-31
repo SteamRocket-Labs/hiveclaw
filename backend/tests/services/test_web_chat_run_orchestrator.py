@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -16,6 +17,10 @@ class _NoopStreamBatcher:
 
     async def flush(self):
         return None
+
+
+async def _noop_terminal_hook(**_kwargs):
+    return None
 
 
 @pytest.mark.asyncio
@@ -196,6 +201,7 @@ async def test_persisted_runtime_event_only_broadcasts_committed_canonical_envel
         actor_user_id=uuid4(),
         actor_external_principal_id=None,
         session_id=str(uuid4()),
+        run_uuid=uuid4(),
         ports=SimpleNamespace(
             events=SimpleNamespace(
                 stream_batcher_type=_NoopStreamBatcher,
@@ -217,7 +223,7 @@ async def test_persisted_runtime_event_only_broadcasts_committed_canonical_envel
             "user_id": state.actor_user_id,
             "external_principal_id": None,
             "session_id": state.session_id,
-            "data": raw_event,
+            "data": {**raw_event, "runtime_task_id": str(state.run_uuid)},
         }
     ]
     assert broadcasts == [committed]
@@ -245,7 +251,10 @@ async def test_completed_tool_runtime_action_only_broadcasts_committed_canonical
         return []
 
     async def persist_runtime_event(**kwargs):
-        assert kwargs["data"] == runtime_action
+        assert kwargs["data"] == {
+            **runtime_action,
+            "runtime_task_id": str(state.run_uuid),
+        }
         return committed
 
     async def broadcast(_agent_id, _session_id, payload):
@@ -446,7 +455,7 @@ async def test_tool_lifecycle_persistence_failure_holds_run_for_reconciliation()
         "lifecycle": "done",
     }
     assert finalized["file_change_paths"] == ["workspace/report.md"]
-    assert hook_calls[0]["status"] == "needs_reconciliation"
+    assert hook_calls == []
     assert broadcasts == [
         {
             "type": "runtime_reconciliation_required",
@@ -594,7 +603,18 @@ async def test_production_invocation_request_wires_session_v2_round_callbacks(mo
         actor_user_id=uuid4(),
         actor_external_principal_id=None,
         actor_authority_bound=False,
-        runtime_session_context=SimpleNamespace(channel="web"),
+        runtime_session_context=SimpleNamespace(
+            channel="web",
+            metadata={
+                "permission_profile": {
+                    "mode": "bypassPermissions",
+                    "allowed_tools": ["read_file", "write_file"],
+                    "writable_roots": ["workspace/p08-j4/attempt/coding"],
+                    "readable_roots": ["workspace/p08-j4/attempt/coding"],
+                    "capability_policy_snapshot": {"session_exact_scope": True},
+                }
+            },
+        ),
         session_id=str(session_id),
         run_uuid=run_id,
         runtime_task=SimpleNamespace(claimed_by="worker-1", claim_version=3, attempt_count=2),
@@ -616,6 +636,7 @@ async def test_production_invocation_request_wires_session_v2_round_callbacks(mo
 
     assert request.initial_round_index == 2
     assert request.initial_turn_tokens_used == 37
+    assert request.allowed_tool_names == ("read_file", "write_file")
     assert await request.round_input_bind(2) == [{"role": "user", "content": "bound evidence"}]
     assert (
         await request.model_request_prepare(
@@ -911,6 +932,34 @@ async def test_model_text_that_looks_like_an_error_remains_typed_success(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_tool_terminal_signal_uses_tool_card_finalizer_without_fabricating_assistant_message(monkeypatch):
+    from app.kernel.contracts import TerminalReason
+    from app.services import web_chat_run_orchestrator as orchestrator
+
+    pauses: list[str] = []
+
+    async def capture_pause(_state, summary):
+        pauses.append(summary)
+
+    async def unexpected_assistant(*_args, **_kwargs):
+        raise AssertionError("tool terminal signal must not create an assistant final")
+
+    monkeypatch.setattr(orchestrator, "_finalize_interactive_pause", capture_pause)
+    monkeypatch.setattr(orchestrator, "_finalize_assistant_response", unexpected_assistant)
+    state = SimpleNamespace(interactive_pause_summary=None)
+    result = SimpleNamespace(
+        content="",
+        terminal_reason=TerminalReason.TURN_STOP,
+        tool_terminal_signal="waiting_for_user",
+    )
+
+    await orchestrator._finalize_invocation_result(state, result)
+
+    assert state.interactive_pause_summary == "waiting_for_user"
+    assert pauses == ["waiting_for_user"]
+
+
+@pytest.mark.asyncio
 async def test_turn_token_budget_terminal_reason_is_persisted_as_failed_without_rewriting_content(monkeypatch):
     from app.kernel.contracts import TerminalReason
     from app.services import web_chat_run_orchestrator as orchestrator
@@ -975,10 +1024,17 @@ async def test_failed_invocation_threads_typed_failure_payload_to_terminal_final
 
     finalize_calls: list[dict] = []
     broadcasts: list[dict] = []
+    terminal_hooks: list[dict] = []
+    order: list[str] = []
 
     async def fake_finalize_without_assistant(**kwargs):
+        order.append("commit")
         finalize_calls.append(kwargs)
         return True
+
+    async def fake_emit_terminal_hook(**kwargs):
+        order.append("turn_abort")
+        terminal_hooks.append(kwargs)
 
     async def fake_broadcast(_agent_id, _session_id, event):
         broadcasts.append(event)
@@ -987,9 +1043,13 @@ async def test_failed_invocation_threads_typed_failure_payload_to_terminal_final
         run_uuid=uuid4(),
         agent=SimpleNamespace(id=uuid4()),
         session_id=str(uuid4()),
-        runtime_session_context=SimpleNamespace(),
+        metadata={"runtime_task_id": "failure-run"},
+        runtime_session_context=SimpleNamespace(source="web"),
         ports=SimpleNamespace(
-            terminal=SimpleNamespace(finalize_without_assistant=fake_finalize_without_assistant),
+            terminal=SimpleNamespace(
+                finalize_without_assistant=fake_finalize_without_assistant,
+                emit_terminal_hook=fake_emit_terminal_hook,
+            ),
             events=SimpleNamespace(broadcast=fake_broadcast),
             artifacts=SimpleNamespace(
                 file_change_paths=lambda _context: [],
@@ -1031,6 +1091,8 @@ async def test_failed_invocation_threads_typed_failure_payload_to_terminal_final
         # Nothing here authorizes automatic replay.
         "retryable": True,
     }
+    assert order == ["commit"]
+    assert terminal_hooks == []
     # The terminal finalizer owns the committed canonical live envelope. The
     # orchestrator must not add an unscoped compatibility failure card beside
     # it; a fake finalizer therefore produces no secondary live frame here.
@@ -1049,9 +1111,13 @@ def _failure_finalize_harness(finalize_calls: list[dict]) -> SimpleNamespace:
         run_uuid=uuid4(),
         agent=SimpleNamespace(id=uuid4()),
         session_id=str(uuid4()),
-        runtime_session_context=SimpleNamespace(),
+        metadata={},
+        runtime_session_context=SimpleNamespace(source="web"),
         ports=SimpleNamespace(
-            terminal=SimpleNamespace(finalize_without_assistant=fake_finalize_without_assistant),
+            terminal=SimpleNamespace(
+                finalize_without_assistant=fake_finalize_without_assistant,
+                emit_terminal_hook=_noop_terminal_hook,
+            ),
             events=SimpleNamespace(broadcast=fake_broadcast),
             artifacts=SimpleNamespace(
                 file_change_paths=lambda _context: [],
@@ -1087,7 +1153,10 @@ async def test_missing_model_pre_invocation_carries_canonical_failure_payload():
         session_id=str(uuid4()),
         runtime_session_context=SimpleNamespace(),
         ports=SimpleNamespace(
-            terminal=SimpleNamespace(finalize_without_assistant=fake_finalize_without_assistant),
+            terminal=SimpleNamespace(
+                finalize_without_assistant=fake_finalize_without_assistant,
+                emit_terminal_hook=_noop_terminal_hook,
+            ),
             events=SimpleNamespace(broadcast=fake_broadcast),
             artifacts=SimpleNamespace(
                 file_change_paths=lambda _context: [],
@@ -1209,9 +1278,13 @@ async def test_killed_terminal_finalize_carries_no_failure_payload():
         run_uuid=uuid4(),
         agent=SimpleNamespace(id=uuid4()),
         session_id=str(uuid4()),
-        runtime_session_context=SimpleNamespace(),
+        metadata={},
+        runtime_session_context=SimpleNamespace(source="web"),
         ports=SimpleNamespace(
-            terminal=SimpleNamespace(finalize_without_assistant=fake_finalize_without_assistant),
+            terminal=SimpleNamespace(
+                finalize_without_assistant=fake_finalize_without_assistant,
+                emit_terminal_hook=_noop_terminal_hook,
+            ),
             events=SimpleNamespace(broadcast=fake_broadcast),
             artifacts=SimpleNamespace(
                 file_change_paths=lambda _context: [],
@@ -1240,6 +1313,275 @@ async def test_killed_terminal_finalize_carries_no_failure_payload():
     assert len(finalize_calls) == 1
     assert finalize_calls[0]["status"] == "killed"
     assert finalize_calls[0].get("failure") is None
+
+
+@pytest.mark.asyncio
+async def test_uncommitted_canonical_outcome_never_reaches_response_complete_learning_sidecars(
+    monkeypatch,
+    tmp_path,
+):
+    from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
+    from app.runtime.hooks import HookEvent
+    from app.runtime.session import SessionContext
+    from app.services import web_chat_run_orchestrator as orchestrator
+    from app.services.evolution_ledger import load_evolution_ledger
+    from app.services.fast_reflection_service import create_fast_reflection_candidate
+    from app.services.session_learning import load_session_learning_projections
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    session_id = uuid4()
+    run_id = uuid4()
+    result_id = uuid4()
+
+    class _FinalClient:
+        async def stream(self, **_kwargs):
+            return SimpleNamespace(
+                content="Use pnpm for this repository next time.",
+                tool_calls=[],
+                reasoning_content="",
+                usage={"total_tokens": 5},
+            )
+
+        async def close(self):
+            return None
+
+    async def emit_response_complete_sidecars(event, **kwargs):
+        if event != HookEvent.RESPONSE_COMPLETE:
+            return None
+        metadata = {
+            **dict(kwargs.get("metadata") or {}),
+            "source": kwargs.get("source") or "web",
+            "source_refs": [str(run_id)],
+            "skill_candidate_loop_enabled": False,
+            "fast_reflection_classification": {
+                "method": "learning_brain_agent",
+                "signal_type": "user_preference_correction",
+                "lesson": "Use pnpm for this repository.",
+                "confidence": 0.99,
+                "learning_brain_decision": {
+                    "schema": "fast_reflection_learning_brain_decision.v1",
+                    "container": "session_learning",
+                    "promotion_intent": "project_only",
+                },
+            },
+        }
+        create_fast_reflection_candidate(
+            data_root=tmp_path,
+            agent_id=agent_id,
+            session_id=str(session_id),
+            messages=list(kwargs.get("messages") or []),
+            metadata=metadata,
+        )
+        return None
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", emit_response_complete_sidecars)
+
+    async def no_deferred_tool_candidates(_agent_id):
+        return []
+
+    monkeypatch.setattr(
+        "app.services.agent_tools.available_deferred_tool_candidates_for_agent",
+        no_deferred_tool_candidates,
+    )
+
+    projection_order: list[str] = []
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda *_args, **_kwargs: RuntimeConfig(
+                tenant_id=tenant_id,
+                max_tool_rounds=5,
+                skill_candidate_loop_enabled=False,
+            ),
+            resolve_current_user_name=lambda *_args, **_kwargs: "Owner",
+            build_system_prompt=lambda *_args, **_kwargs: "SYSTEM",
+            resolve_memory_context=lambda *_args, **_kwargs: "",
+            get_tools=lambda *_args, **_kwargs: [],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: _FinalClient(),
+            execute_tool=lambda *_args, **_kwargs: "",
+            persist_memory=lambda **_kwargs: projection_order.append("summary_projection"),
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda *_args, **_kwargs: 2048,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    async def prepare_model_request(**_payload):
+        return "provider-request-uncommitted-terminal"
+
+    async def commit_model_response(**payload):
+        return {
+            "result_id": str(result_id),
+            "provider_request_id": payload["provider_request_id"],
+        }
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-test", max_input_tokens=100_000),
+            messages=[{"role": "user", "content": "You used yarn. Use pnpm next time."}],
+            agent_name="Agent",
+            role_description="Test agent",
+            agent_id=agent_id,
+            user_id=uuid4(),
+            memory_session_id=str(session_id),
+            session_context=SessionContext(
+                session_id=str(session_id),
+                source="web",
+                channel="web",
+                metadata={"runtime_task_id": run_id.hex},
+            ),
+            model_request_prepare=prepare_model_request,
+            model_response_commit=commit_model_response,
+        )
+    )
+    assert result.model_result_receipt is not None
+
+    commit_attempts: list[tuple[object, object]] = []
+
+    async def hold_terminal_outcome(state, receipt, _response):
+        projection_order.append("canonical_hold")
+        commit_attempts.append((state.run_uuid, receipt.get("result_id")))
+        return False
+
+    monkeypatch.setattr(orchestrator, "_commit_canonical_terminal_outcome", hold_terminal_outcome)
+    state = SimpleNamespace(
+        run_uuid=run_id,
+        agent=SimpleNamespace(id=agent_id),
+        session_id=str(session_id),
+        metadata={"runtime_task_id": run_id.hex},
+        runtime_session_context=SimpleNamespace(source="web"),
+        ports=SimpleNamespace(artifacts=SimpleNamespace()),
+    )
+
+    await orchestrator._finalize_assistant_response(
+        state,
+        result,
+        result.content,
+        None,
+        "completed",
+        {},
+    )
+
+    # RESPONSE_COMPLETE is scheduled with ensure_future by the kernel. Drain
+    # that task after the terminal commit has explicitly declined this run.
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    candidates = [
+        entry.get("candidate_id")
+        for entry in load_evolution_ledger(tmp_path / str(agent_id))
+        if entry.get("event") == "candidate"
+        and entry.get("target_type") == "fast_reflection"
+        and str(run_id) in entry.get("source_attempt_ids", [])
+    ]
+    projections = [
+        entry.get("candidate_id")
+        for entry in load_session_learning_projections(
+            data_root=tmp_path,
+            agent_id=agent_id,
+            session_id=str(session_id),
+        )
+    ]
+
+    assert commit_attempts == [(run_id, str(result_id))]
+    assert projection_order == ["canonical_hold"]
+    assert {
+        "fast_reflection_candidates": candidates,
+        "session_learning_projections": projections,
+    } == {
+        "fast_reflection_candidates": [],
+        "session_learning_projections": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_committed_canonical_outcome_leaves_required_projection_to_durable_outbox(monkeypatch):
+    from app.runtime.hooks import HookEvent
+    from app.services import web_chat_run_orchestrator as orchestrator
+
+    run_id = uuid4()
+    outcome_id = uuid4()
+    result_id = uuid4()
+    terminal_event_id = uuid4()
+    agent_id = uuid4()
+    session_id = uuid4()
+    order: list[str] = []
+    response_hooks: list[dict] = []
+    commit_receipt = {
+        "schema": "hive.response_commit.v1",
+        "committed": True,
+        "commit_kind": "session_v2_terminal_outcome",
+        "idempotency_key": f"session-run-outcome:{outcome_id}",
+        "runtime_task_id": str(run_id),
+        "terminal_outcome_id": str(outcome_id),
+        "terminal_result_id": str(result_id),
+        "terminal_event_id": str(terminal_event_id),
+        "source_refs": [
+            f"session-run-outcome://{outcome_id}",
+            f"session-model-result://{result_id}",
+            f"session-event://{terminal_event_id}",
+            f"runtime-task://{run_id}",
+        ],
+    }
+
+    async def committed(_state, _receipt, _response):
+        order.append("commit")
+        return commit_receipt
+
+    async def terminal_hook(**_kwargs):
+        order.append("turn_stop")
+
+    async def broadcast(*_args, **_kwargs):
+        order.append("delivery")
+
+    async def emit_hook(event, **kwargs):
+        if event == HookEvent.RESPONSE_COMPLETE:
+            order.append("response_complete")
+            response_hooks.append(kwargs)
+
+    monkeypatch.setattr(orchestrator, "_commit_canonical_terminal_outcome", committed)
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", emit_hook)
+    state = SimpleNamespace(
+        run_uuid=run_id,
+        agent=SimpleNamespace(id=agent_id),
+        session_id=str(session_id),
+        metadata={"runtime_task_id": run_id.hex},
+        runtime_session_context=SimpleNamespace(source="web"),
+        ports=SimpleNamespace(
+            terminal=SimpleNamespace(emit_terminal_hook=terminal_hook),
+            events=SimpleNamespace(
+                broadcast=broadcast,
+                build_done=lambda response, **_kwargs: {"type": "done", "response": response},
+            ),
+            artifacts=SimpleNamespace(),
+            runtime=SimpleNamespace(logger=SimpleNamespace(warning=lambda *_args: None)),
+        ),
+    )
+    result = SimpleNamespace(
+        model_result_receipt={"result_id": str(result_id)},
+        response_complete_payload={
+            "agent_id": agent_id,
+            "session_id": str(session_id),
+            "messages": [{"role": "user", "content": "Use pnpm next time."}],
+            "source": "web",
+            "metadata": {"final_response": "Understood."},
+        },
+    )
+
+    await orchestrator._finalize_assistant_response(
+        state,
+        result,
+        "Understood.",
+        None,
+        "completed",
+        {},
+    )
+    await asyncio.sleep(0)
+
+    assert order == ["commit", "delivery"]
+    assert response_hooks == []
 
 
 @pytest.mark.asyncio
@@ -1299,4 +1641,4 @@ async def test_committed_outcome_is_not_rewritten_when_sidecars_fail(monkeypatch
     )
 
     assert legacy_calls == []
-    assert len(warnings) == 2
+    assert len(warnings) == 1

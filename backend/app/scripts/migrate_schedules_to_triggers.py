@@ -24,9 +24,8 @@ async def migrate():
     # visibility, so run under an explicit audited bypass.
     async with (
         async_session() as db,
-        enter_rls_bypass(db, reason="one-time schedule→trigger migration across all agents") as bdb,
+        enter_rls_bypass(db, reason="one-time schedule→trigger migration across all agents"),
     ):
-        db = bdb
         result = await db.execute(
             select(
                 AgentSchedule.id,

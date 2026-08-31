@@ -13,7 +13,7 @@ No production endpoint was called because none of these token sources were avail
 Required setup:
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 export BASE_URL="https://backend-production-326d.up.railway.app"
 export ADMIN_USER="你的平台管理员用户名或邮箱"
 export ADMIN_PASSWORD="你的密码"

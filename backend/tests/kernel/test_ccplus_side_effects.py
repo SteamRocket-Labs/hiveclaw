@@ -31,7 +31,7 @@ def _base_deps(*, fake_client, execute_tool) -> KernelDependencies:
             max_tool_rounds=4,
             quota_message=None,
         ),
-        resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+        resolve_current_user_name=lambda *_args, **_kwargs: "Example Owner",
         build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
         resolve_memory_context=lambda *_args, **_kwargs: "",
         get_tools=lambda *_args, **_kwargs: [
@@ -329,6 +329,7 @@ async def test_tool_terminal_signal_ends_the_turn() -> None:
     # The turn ended on the tool round — exactly one model call was made.
     assert len(fake_client.calls) == 1
     assert result.terminal_reason == TerminalReason.TURN_STOP
+    assert result.tool_terminal_signal == "waiting_for_user"
 
 
 @pytest.mark.asyncio
@@ -446,6 +447,7 @@ def test_side_effect_channel_has_no_production_producer() -> None:
     seeded-but-unwired field silently flip to live without documentation.
     """
     from pathlib import Path
+    import ast
 
     app_root = Path(__file__).resolve().parents[2] / "app"
     assert app_root.is_dir(), app_root
@@ -456,9 +458,16 @@ def test_side_effect_channel_has_no_production_producer() -> None:
     for path in app_root.rglob("*.py"):
         if path.resolve() == definition:
             continue
-        text = path.read_text(encoding="utf-8")
-        if "new_messages=" in text or "terminal_signal=" in text:
-            producers.append(str(path.relative_to(app_root)))
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            constructor = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", None)
+            if constructor == "ToolContentEnvelope" and any(
+                keyword.arg in {"new_messages", "terminal_signal"} for keyword in node.keywords
+            ):
+                producers.append(str(path.relative_to(app_root)))
+                break
 
     assert not producers, (
         "ToolContentEnvelope side-effect channel gained a production producer "

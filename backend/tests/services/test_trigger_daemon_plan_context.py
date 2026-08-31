@@ -169,9 +169,13 @@ async def test_invoke_agent_for_triggers_injects_confirmed_plan_into_first_messa
     from sqlalchemy import select
 
     import app.services.audit_logger as audit_logger
+    import app.services.runtime_task_service as runtime_task_service
     from app.models.audit import ChatMessage
+    from app.models.runtime_task import RuntimeTask
     from app.models.trigger import AgentTrigger
+    from app.services.session_writer_epoch import assign_runtime_task_writer_generation
 
+    runtime_task_uuid = uuid.uuid4()
     async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
         pid = await _add_plan(
             session,
@@ -179,6 +183,15 @@ async def test_invoke_agent_for_triggers_injects_confirmed_plan_into_first_messa
             tenant_id=tenant_id,
             plan_markdown="## Marching orders\nShip the weekly funding digest.",
         )
+        runtime_task = RuntimeTask(
+            id=runtime_task_uuid,
+            task_type="trigger",
+            parent_agent_id=agent_id,
+            tenant_id=tenant_id,
+            status="running",
+        )
+        await assign_runtime_task_writer_generation(session, runtime_task)
+        session.add(runtime_task)
 
     # The daemon uses the trigger objects it is handed (it does not re-query them);
     # an in-memory row with the plan_id is exactly what _tick would pass.
@@ -192,10 +205,15 @@ async def test_invoke_agent_for_triggers_injects_confirmed_plan_into_first_messa
         return fake_model, {}, None
 
     captured: dict = {}
+    runtime_task_id = str(runtime_task_uuid)
 
     async def _fake_call_llm(**kwargs):
         captured.update(kwargs)
-        return "ok"
+        return types.SimpleNamespace(
+            content="ok",
+            terminal_reason="turn_stop",
+            response_complete_payload={"metadata": {"final_response": "ok"}},
+        )
 
     async def _noop(*args, **kwargs):
         return None
@@ -213,12 +231,16 @@ async def test_invoke_agent_for_triggers_injects_confirmed_plan_into_first_messa
     monkeypatch.setattr(trigger_daemon, "async_session", owner_sessionmaker)
     monkeypatch.setattr(trigger_daemon, "tenant_scoped_session", _scoped_to_owner)
     monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", _resolve_to_tenant)
+    monkeypatch.setattr(runtime_task_service, "async_session", owner_sessionmaker)
+    monkeypatch.setattr(runtime_task_service, "tenant_scoped_session", _scoped_to_owner)
     monkeypatch.setattr(trigger_daemon, "select_trigger_model", _fake_select_model)
-    monkeypatch.setattr(trigger_daemon, "_update_trigger_runtime_task", _noop)
     monkeypatch.setattr(audit_logger, "write_audit_log", _noop)
     monkeypatch.setattr("app.api.websocket.call_llm", _fake_call_llm)
+    monkeypatch.setattr("app.services.trigger_artifacts.write_trigger_output_artifact", lambda **_kwargs: None)
+    monkeypatch.setattr("app.services.auto_dream.record_session_end", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("app.services.dream_runtime.enqueue_due_dream", _noop)
 
-    await trigger_daemon._invoke_agent_for_triggers(agent_id, [trig])
+    await trigger_daemon._invoke_agent_for_triggers(agent_id, [trig], runtime_task_id=runtime_task_id)
 
     async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
         user_messages = (

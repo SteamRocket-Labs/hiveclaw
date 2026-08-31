@@ -121,7 +121,7 @@ async def test_record_invocation_span_extracts_truth_evidence_fields():
         request_id=None,
         execution_identity_type="delegated_user",
         execution_identity_id=delegated_user_id,
-        execution_identity_label="Rocky via web",
+        execution_identity_label="Example Owner via web",
         metadata={
             "preflight": {
                 "evidence_refs": "truth://policy/email-confirmation",
@@ -136,7 +136,7 @@ async def test_record_invocation_span_extracts_truth_evidence_fields():
     assert row.truth_evidence_json == [evidence_payload]
     assert row.execution_identity_type == "delegated_user"
     assert row.execution_identity_id == delegated_user_id
-    assert row.execution_identity_label == "Rocky via web"
+    assert row.execution_identity_label == "Example Owner via web"
 
 
 @pytest.mark.asyncio
@@ -155,7 +155,7 @@ async def test_kernel_records_invocation_and_generation_spans(monkeypatch, tmp_p
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "FROZEN",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [],
@@ -219,7 +219,7 @@ async def test_kernel_records_tool_span(monkeypatch, tmp_path):
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "FROZEN",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [
@@ -282,7 +282,7 @@ async def test_kernel_records_code_execution_evidence_from_tool_envelope(monkeyp
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "FROZEN",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [
@@ -354,7 +354,7 @@ async def test_kernel_persists_invocation_spans_with_runtime_join_keys(monkeypat
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=tenant_id, max_tool_rounds=3),
-            resolve_current_user_name=lambda _user_id: "Rocky",
+            resolve_current_user_name=lambda _user_id: "Example Owner",
             build_system_prompt=lambda *_args, **_kwargs: "FROZEN",
             resolve_memory_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [],
@@ -391,7 +391,7 @@ async def test_kernel_persists_invocation_spans_with_runtime_join_keys(monkeypat
             execution_identity=ExecutionIdentityRef(
                 identity_type="delegated_user",
                 identity_id=delegated_user_id,
-                label="Rocky via web",
+                label="Example Owner via web",
             ),
             session_context=session_ctx,
         )
@@ -411,9 +411,9 @@ async def test_kernel_persists_invocation_spans_with_runtime_join_keys(monkeypat
     assert generation["usage"]["total_tokens"] == 11
     assert generation["execution_identity_type"] == "delegated_user"
     assert generation["execution_identity_id"] == delegated_user_id
-    assert generation["execution_identity_label"] == "Rocky via web"
+    assert generation["execution_identity_label"] == "Example Owner via web"
     assert invocation["span_id"] == generation["parent_span_id"]
     assert invocation["runtime_task_id"] == runtime_task_id
     assert invocation["execution_identity_type"] == "delegated_user"
     assert invocation["execution_identity_id"] == delegated_user_id
-    assert invocation["execution_identity_label"] == "Rocky via web"
+    assert invocation["execution_identity_label"] == "Example Owner via web"

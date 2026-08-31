@@ -69,9 +69,9 @@ function AdminOverview({ navigate }) {
           <AEye style={{ marginBottom: 13 }}>审计动态 · Audit</AEye>
           <ACard pad={0}>
             {[
-              ['周岚 Lan', '启用了渠道 · 飞书', '10 分钟前', 'config'],
+              ['示例用户 C', '启用了渠道 · 飞书', '10 分钟前', 'config'],
               ['Ledger', '外发对账报告（已审批）', '32 分钟前', 'action'],
-              ['林见 Jen', '提交候选资产「竞品对标」', '1 小时前', 'asset'],
+              ['示例用户 A', '提交候选资产「竞品对标」', '1 小时前', 'asset'],
               ['管理员', '调整研究组工具范围', '2 小时前', 'config'],
               ['Warden', '工具连接失败', '1 小时前', 'risk'],
             ].map((r, i, arr) => (
@@ -92,11 +92,11 @@ function AdminOverview({ navigate }) {
 function AdminMembers({ navigate }) {
   const [tab, setTab] = auS('members');
   const members = [
-    ['林见 Jen Lin', '产品', '管理员', 'oklch(0.55 0.11 285)', '研究组'],
-    ['陈航 Hang Chen', '运营', '成员', 'oklch(0.6 0.12 145)', '运营组'],
-    ['周岚 Lan Zhou', '财务', '成员', 'oklch(0.6 0.12 25)', '财务组'],
-    ['吴桐 Tong Wu', '研发', '成员', 'oklch(0.58 0.11 240)', '研发组'],
-    ['苏晴 Qing Su', 'HR', '成员', 'oklch(0.6 0.1 320)', '人事组'],
+    ['示例用户 A', '产品', '管理员', 'oklch(0.55 0.11 285)', '研究组'],
+    ['示例用户 B', '运营', '成员', 'oklch(0.6 0.12 145)', '运营组'],
+    ['示例用户 C', '财务', '成员', 'oklch(0.6 0.12 25)', '财务组'],
+    ['示例用户 D', '研发', '成员', 'oklch(0.58 0.11 240)', '研发组'],
+    ['示例用户 E', 'HR', '成员', 'oklch(0.6 0.1 320)', '人事组'],
   ];
   const groups = [['研究组', 8, 'DR · WR'], ['财务组', 5, 'FC'], ['运营组', 12, 'OP'], ['研发组', 24, '—'], ['人事组', 4, 'HR'], ['销售组', 18, '—']];
   return (
@@ -214,9 +214,9 @@ function AdminCapabilities({ navigate }) {
 /* ---------------- APPROVAL CENTER ---------------- */
 function AdminApprovals({ navigate }) {
   const [items, setItems] = auS([
-    { id: 1, who: 'Ledger', abbr: 'FC', color: 'oklch(0.62 0.12 150)', action: '向外部邮箱发送 8 月对账报告', risk: '中', scope: '财务数据外发', from: '周岚 Lan' },
-    { id: 2, who: '周岚 Lan', abbr: 'LZ', color: 'oklch(0.6 0.12 25)', action: '申请开通「邮件发送」渠道', risk: '中', scope: 'Pace 数字员工', from: '财务组' },
-    { id: 3, who: 'Relay', abbr: 'OP', color: 'oklch(0.56 0.11 300)', action: '预算超额 +¥2,000 申请', risk: '低', scope: '运营自动化', from: '陈航 Hang' },
+    { id: 1, who: 'Ledger', abbr: 'FC', color: 'oklch(0.62 0.12 150)', action: '向外部邮箱发送 8 月对账报告', risk: '中', scope: '财务数据外发', from: '示例用户 C' },
+    { id: 2, who: '示例用户 C', abbr: 'UC', color: 'oklch(0.6 0.12 25)', action: '申请开通「邮件发送」渠道', risk: '中', scope: 'Pace 数字员工', from: '财务组' },
+    { id: 3, who: 'Relay', abbr: 'OP', color: 'oklch(0.56 0.11 300)', action: '预算超额 +¥2,000 申请', risk: '低', scope: '运营自动化', from: '示例用户 B' },
     { id: 4, who: 'Warden', abbr: 'SE', color: 'oklch(0.52 0.05 60)', action: '接入外部漏洞库 API', risk: '高', scope: '全公司安全', from: '系统' },
   ]);
   const act = (id) => setItems(its => its.filter(i => i.id !== id));
@@ -259,8 +259,8 @@ function AdminApprovals({ navigate }) {
 function AdminAssets({ navigate }) {
   const [tab, setTab] = auS('candidates');
   const candidates = [
-    ['竞品对标报告 · Q2', '流程', '林见 Jen', '已运行 3 次', 'oklch(0.55 0.11 285)'],
-    ['新人 onboarding 排期', '流程', '苏晴 Qing', '已运行 6 次', 'oklch(0.6 0.1 320)'],
+    ['竞品对标报告 · Q2', '流程', '示例用户 A', '已运行 3 次', 'oklch(0.55 0.11 285)'],
+    ['新人 onboarding 排期', '流程', '示例用户 E', '已运行 6 次', 'oklch(0.6 0.1 320)'],
   ];
   const standard = [
     ['标准调研助理', 'template', '模板', '12 次复用'], ['财务对账', 'template', '模板', '8 次复用'],
@@ -377,10 +377,10 @@ function AdminMemoryGov() {
 }
 function AdminAudit() {
   const logs = [
-    ['周岚 Lan', '启用渠道 · 飞书', 'config', '今天 14:20'], ['Ledger', '外发对账报告', 'action', '今天 13:48', '已审批'],
-    ['林见 Jen', '提交候选资产「竞品对标」', 'asset', '今天 13:10'], ['管理员', '调整研究组工具范围', 'config', '今天 12:30'],
+    ['示例用户 C', '启用渠道 · 飞书', 'config', '今天 14:20'], ['Ledger', '外发对账报告', 'action', '今天 13:48', '已审批'],
+    ['示例用户 A', '提交候选资产「竞品对标」', 'asset', '今天 13:10'], ['管理员', '调整研究组工具范围', 'config', '今天 12:30'],
     ['Warden', '工具连接失败', 'risk', '今天 13:00'], ['Relay', '委派 Warden 安全检查', 'a2a', '今天 11:42'],
-    ['苏晴 Qing', '邀请新成员 ×3', 'config', '昨天 17:20'], ['Atlas', '调用外部检索工具', 'action', '昨天 16:05'],
+    ['示例用户 E', '邀请新成员 ×3', 'config', '昨天 17:20'], ['Atlas', '调用外部检索工具', 'action', '昨天 16:05'],
   ];
   const km = { config: ['idle', '配置'], action: ['info', '动作'], asset: ['purple', '资产'], risk: ['danger', '风险'], a2a: ['purple', 'A2A'] };
   return (

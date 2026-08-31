@@ -2788,7 +2788,7 @@ InvocationSpan 增加：
 后续实现完成时至少执行：
 
 ~~~bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/models/test_living_object.py tests/models/test_living_dataset.py -q
 pytest tests/services/test_living_objects.py tests/services/test_living_datasets.py tests/services/test_living_decks.py -q
@@ -2801,7 +2801,7 @@ pytest tests/api/test_surface_sandbox_api.py -q
 pytest tests/migrations/test_living_object_native_surface_migration.py -q
 pytest tests -q
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm ls @copilotkit/a2ui-renderer @ag-ui/core @ag-ui/client zod
 npm run test -- --run
 npm run build
@@ -3142,16 +3142,16 @@ capability handle 绑定 principal、tenant、surface、resource revision、prof
 
 ### 29.3 Agent Native 本地依据
 
-- /Users/rocky243/vc-saas/agent-native/packages/core/docs/content/agent-surfaces.mdx
-- /Users/rocky243/vc-saas/agent-native/packages/core/docs/content/native-chat-ui.mdx
-- /Users/rocky243/vc-saas/agent-native/packages/core/docs/content/generative-ui.mdx
-- /Users/rocky243/vc-saas/agent-native/packages/core/src/client/chat/tool-render-registry.tsx
-- /Users/rocky243/vc-saas/agent-native/packages/core/src/action-ui.ts
-- /Users/rocky243/vc-saas/agent-native/templates/content/actions/update-content-database-view.ts
-- /Users/rocky243/vc-saas/agent-native/templates/content/app/components/editor/database/
-- /Users/rocky243/vc-saas/agent-native/templates/slides/actions/create-deck.ts
-- /Users/rocky243/vc-saas/agent-native/templates/slides/actions/patch-deck.ts
-- /Users/rocky243/vc-saas/agent-native/templates/slides/app/components/deck/SlideRenderer.tsx
+- /Users/example-owner/vc-saas/agent-native/packages/core/docs/content/agent-surfaces.mdx
+- /Users/example-owner/vc-saas/agent-native/packages/core/docs/content/native-chat-ui.mdx
+- /Users/example-owner/vc-saas/agent-native/packages/core/docs/content/generative-ui.mdx
+- /Users/example-owner/vc-saas/agent-native/packages/core/src/client/chat/tool-render-registry.tsx
+- /Users/example-owner/vc-saas/agent-native/packages/core/src/action-ui.ts
+- /Users/example-owner/vc-saas/agent-native/templates/content/actions/update-content-database-view.ts
+- /Users/example-owner/vc-saas/agent-native/templates/content/app/components/editor/database/
+- /Users/example-owner/vc-saas/agent-native/templates/slides/actions/create-deck.ts
+- /Users/example-owner/vc-saas/agent-native/templates/slides/actions/patch-deck.ts
+- /Users/example-owner/vc-saas/agent-native/templates/slides/app/components/deck/SlideRenderer.tsx
 
 ### 29.4 CopilotKit 当前源码与官方资料
 
@@ -3207,8 +3207,8 @@ capability handle 绑定 principal、tenant、surface、resource revision、prof
 本机核对快照（2026-07-15）：
 
 - `/Applications/ChatGPT.app`，Codex Desktop build `26.707.72221`；
-- `/Users/rocky243/.codex/plugins/cache/openai-bundled/visualize/1.0.11/skills/visualize/SKILL.md`；
-- `/Users/rocky243/.codex/plugins/cache/openai-bundled/visualize/1.0.11/skills/visualize/scripts/render.py`；
+- `/Users/example-owner/.codex/plugins/cache/openai-bundled/visualize/1.0.11/skills/visualize/SKILL.md`；
+- `/Users/example-owner/.codex/plugins/cache/openai-bundled/visualize/1.0.11/skills/visualize/scripts/render.py`；
 - `/Applications/ChatGPT.app/Contents/Resources/app.asar` 中的 inline visualization host、directive parser、Electron webview partition、inner iframe sandbox、CSP、MessageChannel 和 capability/action handling。
 
 本地证据表明，Codex inline visualization 的关键不是“把 HTML 放进 Markdown”，而是：Agent 产出 thread-scoped HTML resource，host 解析结构化 `codex-inline-vis` 引用，在隔离 webview/iframe 中执行，并把 follow-up、download、external link 等能力收敛到窄 bridge；任意 `callTool`/`callMcp` 不是默认开放权限。这个机制适合作为开放表达的产品参考，但它依赖 Electron/webview 与本机进程边界，不能直接复制到 Hive Cloud 浏览器环境。

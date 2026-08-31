@@ -97,14 +97,16 @@ async def test_fresh_bootstrap_installs_hr_blueprint_immutability_guard(migrated
 @pytest.mark.asyncio
 async def test_real_migration_backfills_valid_snapshot_and_quarantines_invalid_authority(pg_container) -> None:
     from app.models.agent import Agent
-    from app.models.chat_session import ChatSession
     from app.models.hr_creation import HrCreationDraft
     from app.models.runtime_task import RuntimeTask
     from app.models.tenant import Tenant
     from app.models.user import User
     from app.services.hr_provisioning_runtime import _runtime_authority_issues
     from tests.integration.conftest import _async_url
-    from tests.migrations.conftest import insert_runtime_task_at_schema_revision
+    from tests.migrations.conftest import (
+        insert_chat_session_at_schema_revision,
+        insert_runtime_task_at_schema_revision,
+    )
 
     database_name = f"hr_runtime_authority_{uuid.uuid4().hex[:10]}"
     code, output = pg_container.exec(["psql", "-U", "test", "-d", "postgres", "-c", f"CREATE DATABASE {database_name}"])
@@ -161,8 +163,13 @@ async def test_real_migration_backfills_valid_snapshot_and_quarantines_invalid_a
                 )
             )
             await session.flush()
-            session.add(ChatSession(id=session_id, agent_id=agent_id, tenant_id=tenant_id, user_id=user_id))
-            await session.flush()
+            await insert_chat_session_at_schema_revision(
+                session,
+                id=session_id,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+            )
             session.add_all(
                 [
                     HrCreationDraft(
@@ -305,7 +312,7 @@ async def test_real_migration_backfills_valid_snapshot_and_quarantines_invalid_a
                 and invalid_draft is not None
             )
             version = (await session.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-            assert version == "a2a_continuation_task_0828"
+            assert version == "invitation_role_binding_0831"
             valid_issues = _runtime_authority_issues(valid_task, valid_draft)
             assert valid_issues == [], {
                 "issues": valid_issues,

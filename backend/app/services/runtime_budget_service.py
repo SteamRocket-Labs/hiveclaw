@@ -16,8 +16,9 @@ import logging
 from typing import Any
 import uuid
 
-from sqlalchemy import Select, select, update
+from sqlalchemy import Select, and_, exists, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import aliased
 
 from app.database import async_session, enter_rls_bypass
 from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetPolicy, RuntimeBudgetRun
@@ -41,6 +42,7 @@ _TERMINAL_RUNTIME_TASK_STATUSES = {
     "completed",
     "failed",
     "killed",
+    "skipped",
     "cancelled",
     "needs_reconciliation",
     "unknown_requires_reconciliation",
@@ -834,20 +836,12 @@ class RuntimeBudgetService:
                     transition="expired",
                     content=budget_transition_copy("expired"),
                 )
-                await db.execute(
-                    update(RuntimeTask)
-                    .where(
-                        RuntimeTask.budget_run_id == run.id,
-                        RuntimeTask.status.in_(("pending", "resumable")),
-                        RuntimeTask.claimed_by.is_(None),
-                    )
-                    .values(
-                        status="killed",
-                        completed_at=current,
-                        budget_admission_status="cancelled",
-                        budget_terminal_reason="budget_run_expired",
-                        result_summary="Runtime budget expired before this work was claimed.",
-                    )
+                await self._cancel_pending_unclaimed_tasks(
+                    db,
+                    run,
+                    terminal_reason="budget_run_expired",
+                    result_summary="Runtime budget expired before this work was claimed.",
+                    completed_at=current,
                 )
             await db.commit()
             return len(runs)
@@ -857,45 +851,85 @@ class RuntimeBudgetService:
 
         reconciled = 0
         async with self._budget_session("reconcile_orphaned_reservations") as db:
-            result = await db.execute(
-                select(RuntimeBudgetEvent)
-                .where(
-                    RuntimeBudgetEvent.event_type == "reservation",
-                    RuntimeBudgetEvent.reservation_key.is_not(None),
-                    RuntimeBudgetEvent.runtime_task_id.is_not(None),
+            reservation_event = aliased(RuntimeBudgetEvent)
+            settlement_event = aliased(RuntimeBudgetEvent)
+            settlement_exists = exists(
+                select(settlement_event.id).where(
+                    settlement_event.budget_run_id == reservation_event.budget_run_id,
+                    settlement_event.reservation_key == reservation_event.reservation_key,
+                    settlement_event.event_type == "settlement",
                 )
-                .order_by(RuntimeBudgetEvent.created_at)
+            )
+            terminal_task = RuntimeTask.status.in_(_TERMINAL_RUNTIME_TASK_STATUSES)
+            result = await db.execute(
+                select(reservation_event)
+                .outerjoin(RuntimeTask, RuntimeTask.id == reservation_event.runtime_task_id)
+                .where(
+                    reservation_event.event_type == "reservation",
+                    reservation_event.reservation_key.is_not(None),
+                    reservation_event.runtime_task_id.is_not(None),
+                    or_(RuntimeTask.id.is_(None), terminal_task),
+                    or_(
+                        ~settlement_exists,
+                        and_(
+                            RuntimeTask.id.is_not(None),
+                            terminal_task,
+                            RuntimeTask.budget_admission_status.is_distinct_from("settled"),
+                        ),
+                    ),
+                )
+                .order_by(reservation_event.created_at)
                 .limit(limit)
             )
             reservation_events = result.scalars().all()
             for event in reservation_events:
-                settlement = await self._existing_event(db, event.budget_run_id, event.reservation_key, "settlement")
-                if settlement is not None:
-                    continue
-                task = (
-                    await db.execute(select(RuntimeTask).where(RuntimeTask.id == event.runtime_task_id))
-                ).scalar_one_or_none()
-                if task is None or str(task.status) not in _TERMINAL_RUNTIME_TASK_STATUSES:
-                    continue
                 run = await self._lock_run(db, event.budget_run_id)
-                self._release_reserved(run, dict(event.amounts_json or {}))
-                db.add(
-                    self._event(
-                        run,
-                        event_type="settlement",
-                        reservation_key=event.reservation_key,
-                        allowed=True,
-                        would_deny=False,
-                        reason="orphaned_reservation_reconciled",
-                        amounts={},
-                        runtime_task_id=event.runtime_task_id,
-                        metadata={
-                            "source_event_id": str(event.id),
-                            "runtime_task_status": str(task.status) if task is not None else "missing",
-                        },
+                settlement = await self._existing_event(db, run.id, event.reservation_key, "settlement")
+                task = (
+                    await db.execute(
+                        select(RuntimeTask).where(RuntimeTask.id == event.runtime_task_id).with_for_update()
                     )
-                )
-                reconciled += 1
+                ).scalar_one_or_none()
+                if task is not None and str(task.status) not in _TERMINAL_RUNTIME_TASK_STATUSES:
+                    continue
+
+                repaired = False
+                if settlement is None:
+                    estimated = dict(event.amounts_json or {})
+                    actual = {"background_tasks": 1} if task is not None and str(task.task_type) == "trigger" else {}
+                    self._release_reserved(run, estimated)
+                    self._increment_used(run, actual)
+                    db.add(
+                        self._event(
+                            run,
+                            event_type="settlement",
+                            reservation_key=event.reservation_key,
+                            allowed=True,
+                            would_deny=False,
+                            reason="orphaned_reservation_reconciled",
+                            amounts=actual,
+                            runtime_task_id=event.runtime_task_id,
+                            metadata={
+                                "source_event_id": str(event.id),
+                                "runtime_task_status": str(task.status) if task is not None else "missing",
+                            },
+                        )
+                    )
+                    tripped = self._breaker_tripped(run)
+                    if tripped:
+                        await self._apply_breaker(
+                            db,
+                            run,
+                            tripped,
+                            actor="settlement",
+                            source="orphaned_reservation_reconciled",
+                        )
+                    repaired = True
+                if task is not None and task.budget_admission_status != "settled":
+                    task.budget_admission_status = "settled"
+                    repaired = True
+                if repaired:
+                    reconciled += 1
             await db.commit()
         return reconciled
 
@@ -1596,20 +1630,12 @@ class RuntimeBudgetService:
                 transition="cancelled",
                 content=budget_transition_copy("cancelled"),
             )
-            await db.execute(
-                update(RuntimeTask)
-                .where(
-                    RuntimeTask.budget_run_id == run.id,
-                    RuntimeTask.status.in_(("pending", "resumable")),
-                    RuntimeTask.claimed_by.is_(None),
-                )
-                .values(
-                    status="killed",
-                    completed_at=current,
-                    budget_admission_status="cancelled",
-                    budget_terminal_reason="budget_run_cancelled",
-                    result_summary="Runtime budget run was cancelled before this work was claimed.",
-                )
+            await self._cancel_pending_unclaimed_tasks(
+                db,
+                run,
+                terminal_reason="budget_run_cancelled",
+                result_summary="Runtime budget run was cancelled before this work was claimed.",
+                completed_at=current,
             )
             await db.commit()
             await db.refresh(run)
@@ -1631,22 +1657,39 @@ class RuntimeBudgetService:
         *,
         terminal_reason: str,
         result_summary: str,
+        completed_at: datetime | None = None,
     ) -> None:
-        await db.execute(
-            update(RuntimeTask)
-            .where(
-                RuntimeTask.budget_run_id == run.id,
-                RuntimeTask.status.in_(("pending", "resumable")),
-                RuntimeTask.claimed_by.is_(None),
-            )
-            .values(
-                status="killed",
-                completed_at=datetime.now(UTC),
-                budget_admission_status="cancelled",
-                budget_terminal_reason=terminal_reason,
-                result_summary=result_summary,
-            )
+        tasks = list(
+            (
+                await db.execute(
+                    select(RuntimeTask)
+                    .where(
+                        RuntimeTask.budget_run_id == run.id,
+                        RuntimeTask.status.in_(("pending", "resumable")),
+                        RuntimeTask.claimed_by.is_(None),
+                    )
+                    .with_for_update()
+                )
+            ).scalars()
         )
+        from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
+
+        terminal_at = completed_at or datetime.now(UTC)
+        for task in tasks:
+            task.status = "killed"
+            task.completed_at = terminal_at
+            task.budget_admission_status = "cancelled"
+            task.budget_terminal_reason = terminal_reason
+            task.result_summary = result_summary
+            task.claim_version = int(task.claim_version or 0) + 1
+            task.claimed_by = None
+            task.claim_expires_at = None
+            await settle_and_enqueue_runtime_task_terminal(
+                db,
+                task,
+                terminal_source="runtime_budget_service:cancel_pending_unclaimed",
+                root_reason_code=terminal_reason,
+            )
 
     def _breaker_tripped(
         self,

@@ -18,9 +18,9 @@
 
 | Source | Role | 本轮确认点 |
 | --- | --- | --- |
-| `/Users/rocky243/vc-saas/free-code-main` | 第一参考源, 判定 CC / FreeCode observable semantics | `src/services/compact/prompt.ts`, `autoCompact.ts`, `compact.ts`; no-tools preamble, base/partial/up_to compact prompts, post-compact messages, threshold/circuit breaker。 |
-| `/Users/rocky243/Context Engineering/claude-code-org` | 与 FreeCode 交叉确认 | compact prompt 与 FreeCode 对齐; query loop 中 microcompact -> autocompact -> post-compact flow。 |
-| `/Users/rocky243/Context Engineering/codex/codex-rs` | Codex delta | `prompts/templates/compact/prompt.md`, `summary_prefix.md`, `core/src/compact.rs`; concise handoff summary, pre/post compact hooks, local/remote compaction, telemetry, initial context reinjection variants。 |
+| `/Users/example-owner/vc-saas/free-code-main` | 第一参考源, 判定 CC / FreeCode observable semantics | `src/services/compact/prompt.ts`, `autoCompact.ts`, `compact.ts`; no-tools preamble, base/partial/up_to compact prompts, post-compact messages, threshold/circuit breaker。 |
+| `/Users/example-owner/Context Engineering/claude-code-org` | 与 FreeCode 交叉确认 | compact prompt 与 FreeCode 对齐; query loop 中 microcompact -> autocompact -> post-compact flow。 |
+| `/Users/example-owner/Context Engineering/codex/codex-rs` | Codex delta | `prompts/templates/compact/prompt.md`, `summary_prefix.md`, `core/src/compact.rs`; concise handoff summary, pre/post compact hooks, local/remote compaction, telemetry, initial context reinjection variants。 |
 | `backend/app/services/conversation_summarizer.py` | Hive 自动压缩 prompt | `_SUMMARIZE_SYSTEM_PROMPT`, `_build_summary_input`, `_SUMMARY_MAX_OUTPUT_TOKENS=20_000`。 |
 | `backend/app/kernel/engine.py` | Hive compact 触发和恢复 | initial compaction, PTL retry compaction, mid-loop 75% compaction, microcompact at 60% pressure, PRE/POST_COMPACTION hooks, post-compact restoration。 |
 

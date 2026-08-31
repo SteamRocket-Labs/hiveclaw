@@ -196,16 +196,15 @@ async def main():
         async_session() as db,
         enter_rls_bypass(db, reason="feishu identity maintenance: backfill+merge users across all tenants") as bdb,
     ):
-        db = bdb
-        configs = await _load_tenant_feishu_configs(db)
+        configs = await _load_tenant_feishu_configs(bdb)
         if not configs:
             logger.warning("No tenant/global Feishu credentials found. Nothing to backfill.")
             return
 
-        user_updates = await _backfill_users(db, configs)
-        member_updates = await _backfill_org_members(db, configs)
-        maintenance_stats = await reconcile_feishu_identity_state(db)
-        await db.commit()
+        user_updates = await _backfill_users(bdb, configs)
+        member_updates = await _backfill_org_members(bdb, configs)
+        maintenance_stats = await reconcile_feishu_identity_state(bdb)
+        await bdb.commit()
 
     logger.info("Backfilled users: %s", user_updates)
     logger.info("Backfilled org members: %s", member_updates)

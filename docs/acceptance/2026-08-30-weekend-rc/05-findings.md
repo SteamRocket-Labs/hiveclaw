@@ -4,8 +4,8 @@ owner: Codex
 status: active
 authority: canonical-active-finding-ledger
 last_reviewed: 2026-08-31
-source_commit: bf94b76a1706510daf2d11c4e98fd5051f23f28f
-verification_status: ui-cmd-003-local-fix-candidate-and-blocker-contract-corrected
+source_commit: b2fb8b28ec00b24eca1235340a1ecc7ee4383fd4
+verification_status: response-learning-fix-candidate-summary-order-reproduced
 ---
 
 # 当前 Findings 与 Blockers
@@ -33,8 +33,41 @@ verification_status: ui-cmd-003-local-fix-candidate-and-blocker-contract-correct
 | PLATFORM-ADMIN-BUSINESS-BODY-001 | Verified | P1 | P29-PADMIN | `/enterprise/info` 对 platform admin 默认显示公司介绍正文、legacy export 与 broadcast controls；raw info 和 `company_intro*` API 也允许该角色读写业务正文 | exact `8f6a7263` 让 backend raw route 在 authenticated role boundary 返回 403，frontend 不请求/挂载 org-admin content，并把页面描述收敛为 role-appropriate actions；tenant identity/timezone/presentation 保留 | 保持 `Verified`；直接 production API 403 receipt 与 employee/company-admin/operator principals、四角色双遍/完整 fault-negative 仍 open，不写 Journey PASS |
 | PLATFORM-ADMIN-WORKSPACE-AUDIENCE-001 | Verified | P1 | P29-PADMIN | exact `8f6a7263` 的 platform admin dashboard/导航展示全部 company-admin surface；直接访问 digital employees、knowledge、users、org、invitations、HR、approvals、guardrails 仍得到业务 DOM 与 200 API | exact `bf94b76a` 以 shared role registry/route guards 和 backend exact-role checks 分离 platform/company workspace；Agent 只保留 ownership 或 exact user scope，不继承 company/department scope | 保持 `Verified`；member/org-admin/operator 三个真实 principal、四角色 screenshot/API matrix、role recovery 与 P29 双遍仍 open，不写 Journey PASS |
 | SYSTEM-SETTING-SECRET-DISCLOSURE-001 | Verified | P1 | P29-PADMIN | `/system-settings/feishu_org_sync` 对 platform admin 为 200；GET/PUT 直接返回包含 `app_secret` consumer field 的完整 stored value，generic route 还允许任意 global key | exact `bf94b76a` 在 DB 前执行 role/key allowlist，并把 Feishu GET/PUT response 投影为 `app_secret_configured`；stored value 不改写 | 保持 `Verified`；当前无 signed-in org-admin 可做 production 200 projection screenshot，四角色矩阵/P29 双遍仍 open；不读取或改写真实 credential |
+| IDENTITY-FIXTURE-BOOTSTRAP-001 | Fix Candidate | P1 | P29-CADMIN / P29-EMPLOYEE / P29-OPERATOR | exact `b2fb8b28` 新 bootstrap path 在 audited RLS bypass 中做全局 email lookup、User membership/quota mutation 与 AuditLog insert，但旧 manifest 不感知 predicate/lock/ORM write/wrapper consumer；receipt/UI 错称必须重新登录，同租户 ID route 可绕开正式 role-change invariant，且响应可早于 dependency commit | local candidate 指纹覆盖 direct bypass 与 wrapper consumer；只接纳 tenantless 或 exact replay，覆盖目标 quota 但保留 employee usage；user+audit 显式 commit 后才回 typed receipt，失败 rollback/503；UI confirmation pending 时 exact-once | 独立 review → 完整 backend → commit/push/三服务部署 → 不读取 token 的 signed-in UI 与真实 RLS production 复验；在此前不执行 synthetic role mutation，也不升级任何 persona Journey |
+| RESPONSE-LEARNING-COMMIT-ORDER-001 | Fix Candidate | P1 | P05-J1 / P06-J2 / P09-MEMORY | Web Session 的 final model result 已产生、但 canonical terminal outcome 明确返回 `False`；event-loop drain 后同一未提交 run 仍产生 fast-reflection candidate 与下一轮 session-learning projection | 本地 candidate 已删除 Kernel/invoker 的低层 terminal hook，把 secret-redacted response payload 交给 canonical commit owner，并让 candidate/projection 按 committed receipt 幂等；独立 review 仍证实 commit→sidecar crash 无 durable pending/ack/recovery | 复用现有 durable outbox/recovery 范式补齐 postcommit crash recovery 与 stable ack；证明 crash replay 不漏、不重、不误封后续 turn，再做完整 cross-domain 回归与 production 验证 |
+| SESSION-SUMMARY-COMMIT-ORDER-001 | Reproduced | P1 | P05-J1 / P06-J2 / P09-MEMORY | canonical terminal outcome 明确 hold 前，Kernel 已调用 production `persist_runtime_memory`；它在独立事务改写 `ChatSession.summary/last_message_at`，未提交 final 可经 Session recall 回流后续 Agent | `persist_memory` 属于低层 model loop dependency，没有 terminal commit receipt；正常、error、cancel、budget 与 checkpoint 均可提前写用户可见/可搜索 projection，现有 response-learning 测试曾以 no-op writer 掩盖此路径 | Kernel 只返回 summary 候选；canonical caller 在 committed outcome/transcript 后刷新，并绑定 terminal event/sequence watermark，证明 hold/abort 零 projection、旧 replay 不覆盖新 summary |
+| OPERATOR-AUTHORITY-001 | Reproduced | P1 | P29-CADMIN / P29-OPERATOR | `PUT /agents/{id}/permissions` 接受裸 dict，delegated `manage` 可 replace-all 并给自己/他人扩权；同一 `manage + reason` 又可读取他人私有 Session，前端自动传硬编码 reason | 根因是把 Agent 配置、权限管理、私有内容审阅三种 authority 合并；须以 owner/org-admin 管理 grant、独立 active `operator.inspect`、targeted revoke、strict audit 和 server capability projection 拆开，不能靠 fixture 或文案修补 | bootstrap 独立部署后建立 failing-first permission/session/UI matrix，复用现有 ResourcePermission/idempotency 范式完成同一 application batch；部署前不授予 synthetic operator |
 | TOOL-ARTIFACT-SETTLEMENT-001 | Verified | P1 | P01-MAIN / PJ-02 / PJ-04 | `write_file` effect 已完成，但 canonical terminal `tool_call`/`tool_result` 与 ChatArtifact 在 `chat_artifacts_message_id_fkey` 处回滚；kernel 仍准备下一 provider round | `c37fefc5` 已原子提交 owner/artifact/V2/outbox 并在持久化失败时 hard-stop；`3482b57a` 对 exact unknown-effect invocation fail closed，唯一 operator acknowledgement 保持 unknown fact、禁止旧轮重放并释放 fresh-turn admission | normal/reload 与 supported recovery/no-replay 已 production PASS；保持 `Verified`，完成 clean P01-MAIN/PJ-02/PJ-04 双遍、authority-negative 与 cleanup 后才可 `Closed` |
 | SESSION-RETRY-INPUT-001 | Verified | P1 | P01-MAIN / P02-STREAM | edit branch 的 canonical `human_input.accepted` 保存完整 retry prompt，但首个 `result_commit.prepared.bound_input_ids=[]`；provider 未调用工具并错误回复“这条消息只有「1」”，产品仍把 run/final 标成 `completed` | exact commit `2cee9f3e` 的 production retry Session `b3962147…` 已把完整输入绑定为唯一 `bound_input_id=1fd5cc5b…` 并进入 GLM/Work Ledger；随后失败属于独立的 tool-artifact settlement 与 provider 429，不回退本 finding | 保持 `Verified`；完整 P01/P02 双遍、recovery、authority-negative 和 cleanup 后才能 `Closed` |
+
+#### IDENTITY-FIXTURE-BOOTSTRAP-001 复现与本地候选
+
+- 已部署 `b2fb8b28` 的 code path 把 tenant、case-insensitive email user locator、row locks、User membership/quota mutation 和 `AuditLog` insert 放在同一 audited bypass transaction；但原 scanner 只收集 `select/insert/update/delete` 的内层参数，改变 predicate、lock、ORM attribute 或 `.add()` target 都不会改变 allowlist signature。failing-first security regression 在新 API 未实现前 collection RED，并用五个 AST variant 机械证明这些变化必须产生不同 fingerprint。
+- source/auth proof：access JWT 保存签发时 role/tid，但 `get_current_user` 对 tenantless token 重新读取 canonical DB User、重新 pin tenant，`require_role` 使用 DB role；因此 `reauthentication_required=true` 与“必须重新登录”不成立。真实 PostgreSQL test 使用 assignment 前签发的 tenantless member token，在 assignment 后直接解析为同 tenant `org_admin`，无需新 token；已打开客户端只需刷新 profile。
+- authority/resource proof：compatibility ID route 只做 tenantless membership bootstrap；同 tenant 同 role 返回 typed `already_assigned`，不同 role 必须走正式 tenant user management，跨 tenant 仍 409。目标 quota 无条件继承 target tenant；daily/month/total/reset 是 employee-level counters，assignment 原样保留，不再用它们猜 membership provenance。
+- transaction proof：user mutation 与 AuditLog 同事务 `flush+commit` 后才构造 success receipt；commit failure 路由回归为 503 且 rollback，无先发 200。真实 PostgreSQL audit FK failure 同样 rollback membership；assignment 前签发的 tenantless token 在 committed assignment 后按 canonical DB row 立即取得新 authority。
+- RLS/UI proof：AST fingerprint 同时覆盖 direct bypass scope 与 statically discoverable contextmanager consumer，predicate/lock/ORM write/add target 或 wrapper caller predicate 变化都会改变 hash。UI 在确认弹窗返回前锁定 intent；取消零请求、连续 Enter 一次请求、失败解锁；typed exact replay 显示 already-assigned 文案。
+- latest local evidence：backend route/security/真实 PostgreSQL **30 passed**；RLS fingerprint 独立复跑 **9 passed**；frontend mounted **4 passed**；Ruff check/format 绿。finding 尚未 production Verified，tenantless synthetic admin 仍未被绑定或提权。
+
+#### OPERATOR-AUTHORITY-001 当前源码复现
+
+- live API root：`get_agent_permissions` 只要求普通 Agent access，却返回全体 grantee identity；`update_agent_permissions(data: dict)` 只要求 delegated `manage`，对非法 access 静默降级、先删除该 Agent 全部 permission rows，再 replace-all；`private/user + empty ids` 还会自动给当前操作者 `manage`。
+- privacy root：`check_agent_access` 把同租户 org-admin 或 delegated grant 投影为同一个 `manage`；`authorize_session_action` 与 Session list/read paths 再把 `manage + 任意非空 reason` 当跨用户私有内容 authority。前端从 `access_level === manage` 推导管理/审阅能力，并多处自动发送 `Agent session administration`，不是操作者真实理由。
+- current decision：保留 `manage` 作为 Agent 配置能力；权限管理只允许 owner/same-tenant org-admin，私有内容读取使用独立、可撤销/过期、deny-aware 的 `operator.inspect`。先写真实 PostgreSQL HTTP 与 mounted RED，再完成严格 schema、targeted grant/revoke、fail-closed audit、缓存清理和 cleanup reverse path；当前只登记 `Reproduced`，未宣称 candidate 或 production failure probe。
+
+#### RESPONSE-LEARNING-COMMIT-ORDER-001 复现与本地候选
+
+- live path：旧 `turn_orchestrator` 在 final response 分支 fire-and-forget `RESPONSE_COMPLETE`；`web_chat_run_orchestrator` 随后才尝试 canonical terminal transaction。RED 让 commit 返回 `False` 后仍实际落盘 fast-reflection candidate 与同 ID session-learning projection，独立复跑为 **1 failed**。
+- 本地 candidate：Kernel 只返回 response payload；invoker 做 exact-secret redaction且不发任何 `RESPONSE_COMPLETE/SESSION_END/TURN_STOP`；Web canonical commit owner 生成 outcome/result/event/runtime refs 后才调度 `RESPONSE_COMPLETE`。consumer 缺 committed receipt 必须 hold；candidate ID 从 response idempotency key 稳定生成，candidate + projection 共用 `AgentAssetTransaction`，replay 不重复触发 Skill flywheel。
+- sibling caller：business Task 只在 atomic Task/RuntimeTask finalizer 首次 transition 后发 terminal hook；Trigger/Delegation 不再在低层 invoker 提前终结。主 Codex 整合回归 **304 passed**，Ruff/format/diff check 绿；独立 reviewer 另跑 **52 passed**，其中真实 PostgreSQL terminal-outcome atomic/idempotent 用例 **1 passed**。
+- Recovery 尚未闭环：Web、business Task、Trigger、Delegation 的 durable commit 与 best-effort hook/learning 之间仍有 crash window；同状态 replay 也不能用普通 bool 返回值证明“首次 transition”。因此 finding 只到 `Fix Candidate`，不写 `Verified/Closed`，更不升级 Journey。
+
+#### SESSION-SUMMARY-COMMIT-ORDER-001 复现
+
+- live path：Web 把真实 `memory_session_id` 交给 Kernel；Kernel 正常 final 返回前调用 production `persist_runtime_memory`，后者生成 summary 并用独立 transaction commit `ChatSession.summary/last_message_at`；Web 之后才尝试 canonical terminal outcome。`TerminalOutcomeIneligible`/reconciliation 不会回滚该 projection。
+- abnormal path：`_persist_before_exit` 在 provider error、cancel、token/tool-round budget 与 mid-loop checkpoint 也调用同一 writer；这些平台错误/候选文本没有 assistant-final authority。
+- Consumption 不是无害缓存：owner API 返回 summary，Session recall fallback 用它匹配/排序并通过 memory tool 回流 Agent；`last_message_at` 还改变会话排序。
+- production-shaped RED 将原 no-op writer 改为 spy；当前精确顺序为 `['summary_projection', 'canonical_hold']`，期望只有 `['canonical_hold']`，定向结果 **1 failed**。这是新的 Evidence → Consumption 最早错误状态，当前记 `Reproduced`。
 
 #### SESSION-AUTHORITY-PRESENTATION-001 复现、修复与生产验证
 
@@ -185,7 +218,7 @@ verification_status: ui-cmd-003-local-fix-candidate-and-blocker-contract-correct
 |---|---|---:|---|---|---|
 | UI-CMD-001 | Observed | P2 candidate | PJ-03 | `/skill` 与 `/agent` 可能返回目标 subview，但 Agent extensions/selector 未消费目标，仍停在默认 catalog | signed-in UI 分别输入命令，记录 URL、selected tab、目标对象和 reload |
 | UI-CMD-002 | Observed | P2 candidate | PJ-03 | `/workflow` 可能只切换 tab，没有打开指定 draft/preview | signed-in fresh draft 逐字段复现，追踪 `ui_action → route → consumer` |
-| UI-CMD-003 | Fix Candidate | P2 | P03-CMD07 / P03-CMD08 / P03-CMD10 | exact `bf94b76a` 的 fresh production Session 中，`/context` 短暂排队后消失；`/usage`、`/permissions` 只显示 generic completed + raw Session ID，hard reload 后三者全部消失 | candidate 已补 typed `ui_action`、novice-readable panel、URL reload 与 RuntimeTask/InvocationSpan usage 去重；目标/架构/build gates 绿，待完整门、commit/deploy 与 production 双遍；见 [production reproduction](evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/UI-CMD-003-production-reproduction.md) |
+| UI-CMD-003 | Fix Candidate | P2 | P03-CMD07 / P03-CMD08 / P03-CMD10 | exact `bf94b76a` 的 fresh production Session 中，`/context` 短暂排队后消失；`/usage`、`/permissions` 只显示 generic completed + raw Session ID，hard reload 后三者全部消失 | fix commit `1b4be5d2` 已补 typed `ui_action`、novice-readable panel、URL reload 与 RuntimeTask/InvocationSpan usage 去重，并已包含在当前 production `b2fb8b28`；production verification pending，仍缺 signed-in employee normal/reload、权限负向和同提交双遍，故 Finding 未 `Verified`、三条 Journey 未计分；见 [production reproduction](evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/UI-CMD-003-production-reproduction.md) |
 | KNOWLEDGE-UI-001 | Observed | P1/P2 candidate | PJ-09/PJ-10/PJ-11 | Agent Knowledge 消费 `entries + pages`，可能把 Agent Memory、Personal KB、Company KB 混成一个不诚实状态 | 从 employee Agent Detail 逐层核对来源、owner、authority 和空/拒绝/不可用状态 |
 
 除 `UI-CMD-003` 已 fresh reproduction 外，其余仍为候选，未复现前不得修改代码或宣称根因。

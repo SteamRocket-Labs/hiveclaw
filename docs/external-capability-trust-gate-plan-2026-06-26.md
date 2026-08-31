@@ -110,7 +110,7 @@ CC semantic baseline
 - 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 
 # 真实覆盖：真 tenant + 注入 session，capture 真跑（不 mock / 不隐式 resolve / 不走 tenant_id=None 跳过）
@@ -146,7 +146,7 @@ ruff check app/services/skill_distiller.py tests/services/test_skill_distiller.p
 - 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_external_capability_materializer.py \
   tests/services/test_external_capability_trust_gate.py::test_stage_external_skill_package_review_records_materialization_report \
@@ -186,7 +186,7 @@ ruff check app/services/external_capabilities/materializer.py \
 - 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_external_marketplace_sources.py -q
 # 4 passed in 0.19s
@@ -195,7 +195,7 @@ ruff check app/services/external_capabilities/marketplace_sources.py \
   tests/services/test_external_marketplace_sources.py
 # All checks passed!
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- src/pages/workspace/WorkspaceExtensionCatalogSection.test.tsx
 # Test Files 1 passed (1); Tests 2 passed (2)
 ```
@@ -211,7 +211,7 @@ npm run test -- src/pages/workspace/WorkspaceExtensionCatalogSection.test.tsx
 最终回归：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/services/test_external_capability_materializer.py \
@@ -246,7 +246,7 @@ ruff check \
   tests/api/test_files_import_idempotency.py
 # All checks passed!
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- \
   src/api/domains/extensions.test.ts \
   src/pages/workspace/WorkspaceExtensionsSection.test.tsx \
@@ -1927,13 +1927,13 @@ CC-compatible discovery / manifest semantics
 
 | CC 源码 | 事实 | 对 Hive 的约束 |
 |---|---|---|
-| `/Users/rocky243/vc-saas/free-code-main/src/types/plugin.ts:48` | `LoadedPlugin` 由 `manifest`、`path`、`source`、`enabled`、`commandsPath(s)`、`agentsPath(s)`、`skillsPath(s)`、`hooksConfig`、`mcpServers`、`settings` 等组成 | Hive adapter 的输入必须以 component container 处理，不允许把 plugin 当成单一 Skill 或单一 MCP |
-| `/Users/rocky243/vc-saas/free-code-main/src/utils/plugins/schemas.ts:884` | `PluginManifestSchema` 合并 metadata、hooks、commands、agents、skills、outputStyles、channels、mcpServers、lspServers、settings、userConfig | Hive normalized manifest 必须覆盖这些字段，并把暂不支持的字段明确放进 `unsupported_components` |
-| `/Users/rocky243/vc-saas/free-code-main/src/utils/plugins/pluginLoader.ts:1348` | `createPluginFromPath` 读取 `.claude-plugin/plugin.json`，并自动探测 `commands/`、`agents/`、`skills/`、`hooks/` 等目录 | Hive `CCPluginAdapter` 也要支持 manifest 声明和目录约定两种 component source |
-| `/Users/rocky243/vc-saas/free-code-main/src/utils/plugins/mcpPluginIntegration.ts:132` | plugin MCP 可以来自 `.mcp.json`、manifest `mcpServers`、JSON path、MCPB path/URL、inline config | Hive 必须把 MCP 作为 plugin-provided MCP component 审核，不是重写 MCP runtime |
-| `/Users/rocky243/vc-saas/free-code-main/src/utils/plugins/installedPluginsManager.ts:800` | `user` / `managed` scope 对当前 project relevant，`project` / `local` 需要 projectPath 命中 | Hive 不能把 enterprise/user availability 解释成所有 agent 自动 runtime 注入 |
-| `/Users/rocky243/vc-saas/free-code-main/src/utils/plugins/refresh.ts:59` | `/reload-plugins` 刷新 commands、agents、hooks、plugin MCP reconnect key、AppState plugins | Hive 的“reload/activation refresh”只能刷新 active component projection，不能创建新 runtime |
-| `/Users/rocky243/vc-saas/free-code-main/src/utils/messages/systemInit.ts:53` | system init 输出 `tools`、`mcp_servers`、`slash_commands`、`agents`、`skills`、`plugins` | Hive context composition 也要分 surface 组装，而不是把 plugin 整包塞进 prompt |
+| `/Users/example-owner/vc-saas/free-code-main/src/types/plugin.ts:48` | `LoadedPlugin` 由 `manifest`、`path`、`source`、`enabled`、`commandsPath(s)`、`agentsPath(s)`、`skillsPath(s)`、`hooksConfig`、`mcpServers`、`settings` 等组成 | Hive adapter 的输入必须以 component container 处理，不允许把 plugin 当成单一 Skill 或单一 MCP |
+| `/Users/example-owner/vc-saas/free-code-main/src/utils/plugins/schemas.ts:884` | `PluginManifestSchema` 合并 metadata、hooks、commands、agents、skills、outputStyles、channels、mcpServers、lspServers、settings、userConfig | Hive normalized manifest 必须覆盖这些字段，并把暂不支持的字段明确放进 `unsupported_components` |
+| `/Users/example-owner/vc-saas/free-code-main/src/utils/plugins/pluginLoader.ts:1348` | `createPluginFromPath` 读取 `.claude-plugin/plugin.json`，并自动探测 `commands/`、`agents/`、`skills/`、`hooks/` 等目录 | Hive `CCPluginAdapter` 也要支持 manifest 声明和目录约定两种 component source |
+| `/Users/example-owner/vc-saas/free-code-main/src/utils/plugins/mcpPluginIntegration.ts:132` | plugin MCP 可以来自 `.mcp.json`、manifest `mcpServers`、JSON path、MCPB path/URL、inline config | Hive 必须把 MCP 作为 plugin-provided MCP component 审核，不是重写 MCP runtime |
+| `/Users/example-owner/vc-saas/free-code-main/src/utils/plugins/installedPluginsManager.ts:800` | `user` / `managed` scope 对当前 project relevant，`project` / `local` 需要 projectPath 命中 | Hive 不能把 enterprise/user availability 解释成所有 agent 自动 runtime 注入 |
+| `/Users/example-owner/vc-saas/free-code-main/src/utils/plugins/refresh.ts:59` | `/reload-plugins` 刷新 commands、agents、hooks、plugin MCP reconnect key、AppState plugins | Hive 的“reload/activation refresh”只能刷新 active component projection，不能创建新 runtime |
+| `/Users/example-owner/vc-saas/free-code-main/src/utils/messages/systemInit.ts:53` | system init 输出 `tools`、`mcp_servers`、`slash_commands`、`agents`、`skills`、`plugins` | Hive context composition 也要分 surface 组装，而不是把 plugin 整包塞进 prompt |
 
 #### Round 1.2：CC -> Hive 字段级映射
 
@@ -2955,7 +2955,7 @@ Round 4 当前状态（2026-07-09 实装）：
 Round 4 实装证据（2026-07-09）：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_external_marketplace_sources.py \
   tests/api/test_external_capability_reviews_api.py::test_marketplace_source_routes_thread_admin_and_tenant -q
@@ -2970,7 +2970,7 @@ ruff check app/models/external_capability.py \
   alembic/versions/external_marketplace_sources_0709.py
 # All checks passed!
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- src/api/domains/extensions.test.ts \
   src/pages/workspace/WorkspaceExtensionsSection.test.tsx \
   src/pages/workspace/WorkspaceExtensionCatalogSection.test.tsx
@@ -2979,7 +2979,7 @@ npm run test -- src/api/domains/extensions.test.ts \
 npm run build
 # tsc && vite build -> built in 2.68s
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_external_capability_trust_gate.py \
   tests/services/test_external_capability_materializer.py \
@@ -2999,7 +2999,7 @@ pytest tests/services/test_external_capability_trust_gate.py \
 alembic heads
 # capability_factor_intake_0709 (head)
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- src/api/domains/extensions.test.ts \
   src/pages/agent-detail/AgentExtensionsSection.test.tsx \
   src/pages/workspace/WorkspaceExtensionsSection.test.tsx
@@ -3079,7 +3079,7 @@ Round 5 当前状态（2026-07-09 实装）：
 Round 5 实装证据（2026-07-09）：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/agents/test_subagent_evolution.py::test_nominate_creates_pending_proposal \
   tests/services/test_skill_distiller.py::test_run_skill_distillation_cycle_promotes_high_confidence_candidate \
@@ -3114,7 +3114,7 @@ ruff check app/models/capability_factor.py \
 alembic heads
 # capability_factor_intake_0709 (head)
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- src/api/domains/extensions.test.ts \
   src/pages/agent-detail/AgentExtensionsSection.test.tsx \
   src/pages/workspace/WorkspaceExtensionsSection.test.tsx
@@ -3292,7 +3292,7 @@ cd backend && source .venv/bin/activate && alembic heads
 当前已实现骨架回归（2026-07-09 复核）：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_external_capability_trust_gate.py \
   tests/services/test_external_capability_materializer.py \
@@ -3308,7 +3308,7 @@ pytest tests/services/test_external_capability_trust_gate.py \
   tests/tools/test_workspace.py::test_load_skill_allows_only_matching_session_extension_overlay -q
 # 44 passed, 4 warnings in 2.55s
 
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- src/api/domains/extensions.test.ts \
   src/pages/agent-detail/AgentExtensionsSection.test.tsx \
   src/pages/workspace/WorkspaceExtensionsSection.test.tsx
@@ -3321,7 +3321,7 @@ npm run build
 完整落地后的后端目标测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_external_capability_trust_gate.py \
   tests/api/test_external_capabilities_api.py \
@@ -3382,7 +3382,7 @@ pytest tests/services/test_external_capability_trust_gate.py \
 完整落地后的前端目标测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- AgentExtensions AgentSkills AgentSubagents WorkspaceSubagents
 ```
 
@@ -3468,13 +3468,13 @@ FreeCode / CC 的 plugin 体系是 component source + enablement layer，不是�
 
 | CC 源码证据 | 观察到的行为 | Hive 对齐结论 |
 |---|---|---|
-| `/Users/rocky243/vc-saas/free-code-main/src/QueryEngine.ts:529` | `QueryEngine.submitMessage` 在 system init 前加载 `getSlashCommandToolSkills(getCwd())` 和 `loadAllPluginsCacheOnly()`，然后把 `tools`、`mcpClients`、`commands`、`agents`、`skills`、`plugins` 一起传给 `buildSystemInitMessage` | Plugin 影响上下文和可见 component，但不替代原有 model loop / tool loop / MCP runtime |
-| `/Users/rocky243/vc-saas/free-code-main/src/commands.ts:353` | `getSkills` 合并 skill dir、plugin skills、bundled skills、builtin plugin skills | Plugin skill 是现有 Skill/Command surface 的来源之一，不是独立 runtime |
-| `/Users/rocky243/vc-saas/free-code-main/src/commands.ts:476` | `getCommands` 在 base commands 中插入 dynamic skills，并保持 command enable/availability 过滤 | Dynamic skill / plugin skill 是 command list 的扩展，不是 runtime 重构 |
-| `/Users/rocky243/vc-saas/free-code-main/src/commands/plugin/ManagePlugins.tsx:194` | plugin component 被展示为 `commands`、`agents`、`skills`、`hooks`、`mcpServers` | Plugin 是一组 component 的包；component 分别挂到已有 surface |
-| `/Users/rocky243/vc-saas/free-code-main/src/commands/plugin/DiscoverPlugins.tsx:228` | marketplace install 写入 scoped install，安装后提示 `/reload-plugins` 激活 | 安装和激活是两步；reload 只是刷新可见 component |
-| `/Users/rocky243/vc-saas/free-code-main/src/utils/plugins/refresh.ts:59` | `refreshActivePlugins` 刷新 commands、agents、hooks、plugin MCP reconnect key，并更新 AppState | reload 是 active component swap；不是重建 runtime |
-| `/Users/rocky243/vc-saas/free-code-main/src/commands/clear/conversation.ts:180` | `/clear` reset MCP state 时保留 `pluginReconnectKey`，该 key 只由 `/reload-plugins` 触发变化 | Plugin MCP 通过既有 MCP reconnect/runtime 进入系统，不是单独 MCP runtime |
+| `/Users/example-owner/vc-saas/free-code-main/src/QueryEngine.ts:529` | `QueryEngine.submitMessage` 在 system init 前加载 `getSlashCommandToolSkills(getCwd())` 和 `loadAllPluginsCacheOnly()`，然后把 `tools`、`mcpClients`、`commands`、`agents`、`skills`、`plugins` 一起传给 `buildSystemInitMessage` | Plugin 影响上下文和可见 component，但不替代原有 model loop / tool loop / MCP runtime |
+| `/Users/example-owner/vc-saas/free-code-main/src/commands.ts:353` | `getSkills` 合并 skill dir、plugin skills、bundled skills、builtin plugin skills | Plugin skill 是现有 Skill/Command surface 的来源之一，不是独立 runtime |
+| `/Users/example-owner/vc-saas/free-code-main/src/commands.ts:476` | `getCommands` 在 base commands 中插入 dynamic skills，并保持 command enable/availability 过滤 | Dynamic skill / plugin skill 是 command list 的扩展，不是 runtime 重构 |
+| `/Users/example-owner/vc-saas/free-code-main/src/commands/plugin/ManagePlugins.tsx:194` | plugin component 被展示为 `commands`、`agents`、`skills`、`hooks`、`mcpServers` | Plugin 是一组 component 的包；component 分别挂到已有 surface |
+| `/Users/example-owner/vc-saas/free-code-main/src/commands/plugin/DiscoverPlugins.tsx:228` | marketplace install 写入 scoped install，安装后提示 `/reload-plugins` 激活 | 安装和激活是两步；reload 只是刷新可见 component |
+| `/Users/example-owner/vc-saas/free-code-main/src/utils/plugins/refresh.ts:59` | `refreshActivePlugins` 刷新 commands、agents、hooks、plugin MCP reconnect key，并更新 AppState | reload 是 active component swap；不是重建 runtime |
+| `/Users/example-owner/vc-saas/free-code-main/src/commands/clear/conversation.ts:180` | `/clear` reset MCP state 时保留 `pluginReconnectKey`，该 key 只由 `/reload-plugins` 触发变化 | Plugin MCP 通过既有 MCP reconnect/runtime 进入系统，不是单独 MCP runtime |
 
 因此 Hive 的目标是：兼容 CC plugin 的 manifest/component 语义，同时把企业场景需要的审核、批准、撤销、catalog、agent-scoped enablement 加在进入 runtime 之前。
 

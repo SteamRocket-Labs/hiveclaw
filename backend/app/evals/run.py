@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-import uuid
 
-from app.evals.bakeoff_runtime import run_runtime_bakeoff
+from app.evals.bakeoff_runtime import J4RuntimeConfig, run_runtime_bakeoff, run_same_envelope_bakeoff
 from app.runtime.prompt_eval import PromptEvalInputs, evaluate_runtime_prompt_contracts
 from app.runtime.recovery_manifest import RecoveryManifest, merge_session_memory_into_manifest
 from app.runtime.task_eval import TaskEvalInputs, evaluate_task_readiness
@@ -22,7 +23,7 @@ from app.services.session_memory import (
 )
 from app.services.skill_lifecycle import record_skill_execution
 
-_VALID_TARGETS = {"clawith", "claude_code", "hermes_agent"}
+_VALID_TARGETS = {"hive", "freecode", "claude_code", "hermes_agent"}
 _VALID_MODES = {"internal", "bakeoff"}
 _VALID_ABLATIONS = {"full", "no_memory", "no_skill", "no_compaction"}
 _VALID_SUITES = {"core_v1", "continuity_v1", "skill_v1"}
@@ -38,6 +39,7 @@ def _resolve_output_dir(
 ) -> Path:
     root = Path(output_root) if output_root is not None else (Path.home() / ".hive" / "evals")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = f"{stamp}-{uuid.uuid4().hex[:12]}"
     path = root / suite / target / f"{mode}-{ablation}" / stamp
     path.mkdir(parents=True, exist_ok=True)
     (path / "scenarios").mkdir(exist_ok=True)
@@ -460,6 +462,16 @@ def _write_report(report: dict[str, Any], output_dir: Path) -> None:
         markdown_lines.append(f"- Auth Status: {report['auth_status']}")
     if report.get("benchmark_complete") is not None:
         markdown_lines.append(f"- Benchmark Complete: {'yes' if report['benchmark_complete'] else 'no'}")
+    comparison = report.get("comparison") if isinstance(report.get("comparison"), dict) else None
+    if comparison is not None:
+        markdown_lines.append(f"- Comparison Status: {comparison.get('status', 'unknown')}")
+        if comparison.get("scores"):
+            markdown_lines.append(
+                f"- Comparison Scores: {json.dumps(comparison['scores'], ensure_ascii=False, sort_keys=True)}"
+            )
+        blockers = comparison.get("blockers") if isinstance(comparison.get("blockers"), list) else []
+        if blockers:
+            markdown_lines.append(f"- Comparison Blockers: {json.dumps(blockers, ensure_ascii=False, sort_keys=True)}")
     incomplete_scenarios = report.get("incomplete_scenarios") or []
     if incomplete_scenarios:
         rendered = ", ".join(
@@ -548,6 +560,9 @@ def run_eval_suite(
     mode: str,
     ablation: str = "full",
     output_root: str | Path | None = None,
+    same_envelope: bool = False,
+    j4_config: J4RuntimeConfig | None = None,
+    external_profile_authorized: bool = False,
 ) -> dict[str, Any]:
     if suite not in _VALID_SUITES:
         raise ValueError(f"Unsupported suite: {suite}")
@@ -557,6 +572,8 @@ def run_eval_suite(
         raise ValueError(f"Unsupported mode: {mode}")
     if ablation not in _VALID_ABLATIONS:
         raise ValueError(f"Unsupported ablation: {ablation}")
+    if same_envelope and (mode != "bakeoff" or target != "hive" or suite != "core_v1"):
+        raise ValueError("--j4-same-envelope requires core_v1 / hive / bakeoff")
 
     output_dir = _resolve_output_dir(
         suite=suite,
@@ -565,7 +582,12 @@ def run_eval_suite(
         ablation=ablation,
         output_root=output_root,
     )
-    if mode == "internal":
+    if same_envelope:
+        scenario_bundle = run_same_envelope_bakeoff(
+            output_dir=output_dir,
+            config=j4_config or J4RuntimeConfig(),
+        )
+    elif mode == "internal":
         if suite == "core_v1":
             scenario_bundle = _internal_scenario_report(ablation)
         elif suite == "continuity_v1":
@@ -575,7 +597,14 @@ def run_eval_suite(
     else:
         if suite != "core_v1":
             raise ValueError(f"Bakeoff mode only supports core_v1, got: {suite}")
-        scenario_bundle = run_runtime_bakeoff(target, output_dir=output_dir)
+        if target == "freecode":
+            scenario_bundle = run_runtime_bakeoff(
+                target,
+                output_dir=output_dir,
+                external_profile_authorized=external_profile_authorized,
+            )
+        else:
+            scenario_bundle = run_runtime_bakeoff(target, output_dir=output_dir)
     report = {
         "suite": suite,
         "target": target,
@@ -587,9 +616,14 @@ def run_eval_suite(
         "runtime": scenario_bundle.get("runtime"),
         "auth_status": scenario_bundle.get("auth_status"),
         "benchmark_complete": scenario_bundle.get("benchmark_complete"),
+        "acceptance_ready": scenario_bundle.get("acceptance_ready"),
         "incomplete_scenarios": scenario_bundle.get("incomplete_scenarios", []),
         "artifact_paths": scenario_bundle.get("artifact_paths", []),
         "route_observations": scenario_bundle.get("route_observations", []),
+        "comparison": scenario_bundle.get("comparison"),
+        "scenario_scores": scenario_bundle.get("scenario_scores", {}),
+        "receipts": scenario_bundle.get("receipts", []),
+        "envelopes": scenario_bundle.get("envelopes", []),
         "scenarios": scenario_bundle["scenarios"],
         "summary": _summarize_scores(scenario_bundle["scenarios"]),
         "analysis": _build_analysis(scenario_bundle["scenarios"]),
@@ -600,20 +634,41 @@ def run_eval_suite(
 
 
 def main(argv: list[str] | None = None, *, output_root: str | Path | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run unified Clawith eval suites.")
+    parser = argparse.ArgumentParser(description="Run unified Hive eval suites.")
     parser.add_argument("--suite", required=True)
     parser.add_argument("--target", required=True)
     parser.add_argument("--mode", required=True)
     parser.add_argument("--ablation", default="full")
+    parser.add_argument("--j4-same-envelope", action="store_true")
+    parser.add_argument("--external-profile-authorized", action="store_true")
+    parser.add_argument("--hive-base-url")
+    parser.add_argument("--hive-agent-id")
+    parser.add_argument("--hive-bearer-env")
+    parser.add_argument("--hive-revision")
+    parser.add_argument("--hive-binary-sha256")
+    parser.add_argument("--require-same-credential-domain", action="store_true")
     parser.add_argument("--fail-under", type=float, default=None, help="E8 G3: exit 1 if pass_rate < this")
     args = parser.parse_args(argv)
 
+    hive_bearer = os.environ.get(args.hive_bearer_env) if args.hive_bearer_env else None
+    j4_config = J4RuntimeConfig(
+        hive_base_url=args.hive_base_url,
+        hive_bearer=hive_bearer,
+        hive_agent_id=args.hive_agent_id,
+        hive_revision=args.hive_revision,
+        hive_binary_sha256=args.hive_binary_sha256,
+        external_profile_authorized=args.external_profile_authorized,
+        require_same_credential_domain=args.require_same_credential_domain,
+    )
     report = run_eval_suite(
         suite=args.suite,
         target=args.target,
         mode=args.mode,
         ablation=args.ablation,
         output_root=output_root,
+        same_envelope=args.j4_same_envelope,
+        j4_config=j4_config,
+        external_profile_authorized=args.external_profile_authorized,
     )
     print(
         f"[eval] suite={report['suite']} target={report['target']} mode={report['mode']} "
@@ -621,6 +676,12 @@ def main(argv: list[str] | None = None, *, output_root: str | Path | None = None
         f"pass_rate={report['summary']['pass_rate']} output_dir={report['output_dir']}"
     )
     pass_rate = float(report["summary"]["pass_rate"])
+    if args.j4_same_envelope and report.get("benchmark_complete") is not True:
+        print("[eval] FAIL: P08-J4 same-envelope hard gates are blocked")
+        return 1
+    if args.j4_same_envelope and report.get("acceptance_ready") is not True:
+        print("[eval] FAIL: P08-J4 acceptance criteria are not ready")
+        return 1
     if args.fail_under is not None and pass_rate < args.fail_under:
         print(f"[eval] FAIL: pass_rate {pass_rate} < fail_under {args.fail_under} (E8 G3 regression gate)")
         return 1

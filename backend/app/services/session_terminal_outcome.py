@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat_artifact import ChatArtifact
@@ -16,6 +16,7 @@ from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import SessionModelResult, SessionRunOutcome
 from app.services.chat_artifact_delivery import artifact_part_from_model
+from app.services.chat_transcript import lock_transcript_session
 from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
 from app.services.session_round_obligation import current_run_fences, unresolved_round_obligations
 from app.services.session_v2_persistence import SessionEventDraft, append_session_events
@@ -222,6 +223,7 @@ async def prepare_and_seal_run_outcome(
 ) -> SessionRunOutcome:
     """Seal one terminal candidate only after every current obligation is terminal."""
 
+    await lock_transcript_session(db, session_id=session_id)
     task = await db.scalar(
         select(RuntimeTask)
         .where(
@@ -234,7 +236,19 @@ async def prepare_and_seal_run_outcome(
     )
     if task is None:
         raise TerminalOutcomeIneligible("runtime task not found")
-    if task.status in {"cancelling", "cancelled", "killed", "needs_reconciliation"}:
+    outcome_uuid = _outcome_id(run_id)
+    outcome = await db.scalar(
+        select(SessionRunOutcome)
+        .where(
+            SessionRunOutcome.id == outcome_uuid,
+            SessionRunOutcome.tenant_id == tenant_id,
+            SessionRunOutcome.session_id == session_id,
+            SessionRunOutcome.run_id == run_id,
+        )
+        .with_for_update()
+    )
+    is_committed_retry = task.status == "completed" and outcome is not None and outcome.state == "terminal_committed"
+    if task.status not in {"running", "starting"} and not is_committed_retry:
         raise TerminalOutcomeIneligible(f"runtime task is not terminal-eligible: {task.status}")
     result = await _lock_terminal_result(
         db,
@@ -275,12 +289,6 @@ async def prepare_and_seal_run_outcome(
         "task_claim_version": int(task.claim_version or 0),
     }
     eligibility_hash = _sha256(eligibility)
-    outcome_uuid = _outcome_id(run_id)
-    outcome = await db.scalar(
-        select(SessionRunOutcome)
-        .where(SessionRunOutcome.id == outcome_uuid, SessionRunOutcome.tenant_id == tenant_id)
-        .with_for_update()
-    )
     if outcome is not None and outcome.state == "terminal_committed":
         return outcome
     prior_candidates: list[dict[str, Any]] = []
@@ -395,6 +403,19 @@ async def commit_terminal_outcome(
 ) -> SessionRunOutcome:
     """Atomically publish final envelope and Run/Turn terminal facts."""
 
+    await lock_transcript_session(db, session_id=session_id)
+    task = await db.scalar(
+        select(RuntimeTask)
+        .where(
+            RuntimeTask.id == run_id,
+            RuntimeTask.tenant_id == tenant_id,
+            RuntimeTask.parent_agent_id == agent_id,
+            RuntimeTask.parent_session_id == str(session_id),
+        )
+        .with_for_update()
+    )
+    if task is None:
+        raise TerminalOutcomeNeedsReconciliation("runtime task missing during terminal commit")
     outcome = await db.scalar(
         select(SessionRunOutcome)
         .where(
@@ -412,18 +433,12 @@ async def commit_terminal_outcome(
         raise TerminalOutcomeIneligible("run outcome is not sealed")
     if not outcome.seal_json:
         raise TerminalOutcomeIneligible("run outcome is not sealed")
-    task = await db.scalar(
-        select(RuntimeTask)
-        .where(
-            RuntimeTask.id == run_id,
-            RuntimeTask.tenant_id == tenant_id,
-            RuntimeTask.parent_agent_id == agent_id,
-            RuntimeTask.parent_session_id == str(session_id),
-        )
-        .with_for_update()
-    )
-    if task is None:
-        raise TerminalOutcomeNeedsReconciliation("runtime task missing during terminal commit")
+    eligibility = dict(outcome.seal_json.get("eligibility") or {})
+    if not already_committed:
+        if task.status not in {"running", "starting"}:
+            raise TerminalOutcomeIneligible(f"runtime task changed before terminal commit: {task.status}")
+        if int(task.claim_version or 0) != int(eligibility.get("task_claim_version") or 0):
+            raise TerminalOutcomeIneligible("runtime task claim changed after outcome seal")
     result = await _lock_terminal_result(
         db,
         tenant_id=tenant_id,
@@ -431,6 +446,15 @@ async def commit_terminal_outcome(
         terminal_result_id=outcome.terminal_result_id,
     )
     if already_committed:
+        from app.services.agent_team_runtime_service import project_agent_team_terminal_state
+
+        await project_agent_team_terminal_state(
+            db=db,
+            task=task,
+            status="completed",
+            result_summary=str(result.seal_json.get("semantic_content") or ""),
+            metadata_json=dict(task.metadata_json or {}),
+        )
         from app.services.channel_delivery_outbox import enqueue_terminal_delivery_for_task
 
         await enqueue_terminal_delivery_for_task(
@@ -441,6 +465,15 @@ async def commit_terminal_outcome(
             artifact_parts=list(outcome.seal_json.get("parts") or []),
             metadata={"source": "session_terminal_outcome_recovery", "outcome_id": str(outcome.id)},
         )
+        from app.services.runtime_terminal_settlement import settle_runtime_task_terminal
+
+        await settle_runtime_task_terminal(
+            db,
+            task,
+            terminal_source="session_terminal_outcome.recovery",
+            root_reason_code="session_v2_terminal_outcome_committed",
+            settle_root=False,
+        )
         await _close_runtime_root_item(
             db,
             run_id=run_id,
@@ -448,10 +481,10 @@ async def commit_terminal_outcome(
             terminal_result_id=outcome.terminal_result_id,
             terminal_event_id=outcome.terminal_event_id,
         )
+        await _enqueue_committed_web_terminal_boundary(db, task=task, outcome=outcome)
         return outcome
     unresolved = await unresolved_round_obligations(db, tenant_id=tenant_id, run_id=run_id)
     current_fences = await current_run_fences(db, tenant_id=tenant_id, run_id=run_id)
-    eligibility = dict(outcome.seal_json.get("eligibility") or {})
     if unresolved or dict(eligibility.get("fences") or {}) != current_fences:
         outcome.state = "failed"
         outcome.reconciliation_owner = "session_terminal_outcome:eligibility_drift"
@@ -556,6 +589,15 @@ async def commit_terminal_outcome(
     }
     task.metadata_json = metadata
     task.claim_version = int(task.claim_version or 0) + 1
+    from app.services.agent_team_runtime_service import project_agent_team_terminal_state
+
+    await project_agent_team_terminal_state(
+        db=db,
+        task=task,
+        status="completed",
+        result_summary=semantic_content,
+        metadata_json=metadata,
+    )
     from app.services.channel_delivery_outbox import enqueue_terminal_delivery_for_task
 
     await enqueue_terminal_delivery_for_task(
@@ -571,6 +613,15 @@ async def commit_terminal_outcome(
             "terminal_result_id": str(result.id),
         },
     )
+    from app.services.runtime_terminal_settlement import settle_runtime_task_terminal
+
+    await settle_runtime_task_terminal(
+        db,
+        task,
+        terminal_source="session_terminal_outcome.commit",
+        root_reason_code="session_v2_terminal_outcome_committed",
+        settle_root=False,
+    )
     await _close_runtime_root_item(
         db,
         run_id=run_id,
@@ -583,7 +634,112 @@ async def commit_terminal_outcome(
     outcome.reconciliation_owner = None
     outcome.reconciliation_lease_expires_at = None
     outcome.version = int(outcome.version) + 1
+    await _enqueue_committed_web_terminal_boundary(db, task=task, outcome=outcome)
     return outcome
+
+
+async def _enqueue_committed_web_terminal_boundary(
+    db: AsyncSession,
+    *,
+    task: RuntimeTask,
+    outcome: SessionRunOutcome,
+) -> None:
+    """Atomically bind required post-commit projections to Session V2 truth."""
+
+    if task.terminal_boundary_generation is None:
+        return
+    if task.parent_agent_id is None or not task.parent_session_id:
+        raise TerminalOutcomeNeedsReconciliation("terminal boundary has no Web session authority")
+
+    from app.services.runtime_terminal_boundary_outbox import enqueue_terminal_boundary
+    from app.services.web_terminal_boundary_processor import build_web_terminal_boundary_binding
+
+    binding = await build_web_terminal_boundary_binding(
+        db,
+        tenant_id=outcome.tenant_id,
+        runtime_task_id=task.id,
+        agent_id=task.parent_agent_id,
+        session_id=outcome.session_id,
+        event_kind="turn_stop",
+        terminal_status="completed",
+        authority_ref="session_run_outcome",
+        authority_id=outcome.id,
+    )
+    await enqueue_terminal_boundary(
+        db,
+        task=task,
+        event_kind="turn_stop",
+        agent_id=task.parent_agent_id,
+        session_id=outcome.session_id,
+        terminal_status="completed",
+        authority_ref="session_run_outcome",
+        authority_id=outcome.id,
+        binding=binding,
+    )
+
+
+async def locate_terminal_outcome_recovery_candidates(
+    db: AsyncSession,
+    *,
+    now: datetime | None = None,
+    limit: int = 50,
+    run_id: uuid.UUID | None = None,
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """Locate sealed outcomes globally without exporting the bypass session."""
+
+    current = now or datetime.now(timezone.utc)
+    statement = (
+        select(SessionRunOutcome.tenant_id, SessionRunOutcome.id)
+        .where(
+            SessionRunOutcome.state.in_(("sealed", "needs_reconciliation")),
+            (
+                SessionRunOutcome.reconciliation_lease_expires_at.is_(None)
+                | (SessionRunOutcome.reconciliation_lease_expires_at <= current)
+            ),
+        )
+        .order_by(SessionRunOutcome.id)
+        .limit(max(1, int(limit)))
+    )
+    if run_id is not None:
+        statement = statement.where(SessionRunOutcome.run_id == run_id)
+    return list((await db.execute(statement)).tuples())
+
+
+async def locate_terminal_result_recovery_candidates(
+    db: AsyncSession,
+    *,
+    limit: int = 50,
+    run_id: uuid.UUID | None = None,
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """Locate at most one latest result per run for tenant-scoped recovery."""
+
+    committed_outcome_exists = (
+        select(SessionRunOutcome.id)
+        .where(
+            SessionRunOutcome.run_id == SessionModelResult.run_id,
+            SessionRunOutcome.tenant_id == SessionModelResult.tenant_id,
+            SessionRunOutcome.state == "terminal_committed",
+        )
+        .exists()
+    )
+    statement = (
+        select(SessionModelResult.tenant_id, SessionModelResult.id, SessionModelResult.run_id)
+        .join(ChatTranscriptEvent, ChatTranscriptEvent.id == SessionModelResult.round_committed_event_id)
+        .where(SessionModelResult.state == "round_committed", ~committed_outcome_exists)
+        .order_by(ChatTranscriptEvent.sequence.desc(), SessionModelResult.id.desc())
+        .limit(max(1, int(limit)) * 4)
+    )
+    if run_id is not None:
+        statement = statement.where(SessionModelResult.run_id == run_id)
+    rows = list((await db.execute(statement)).tuples())
+    selected: list[tuple[uuid.UUID, uuid.UUID]] = []
+    seen_runs: set[uuid.UUID] = set()
+    for tenant_id, result_id, result_run_id in rows:
+        if result_run_id in seen_runs or len(seen_runs) >= max(1, int(limit)):
+            continue
+        seen_runs.add(result_run_id)
+        selected.append((tenant_id, result_id))
+    return selected
 
 
 async def recover_terminal_outcomes_once(
@@ -593,12 +749,27 @@ async def recover_terminal_outcomes_once(
     now: datetime | None = None,
     limit: int = 50,
     run_id: uuid.UUID | None = None,
+    tenant_id: uuid.UUID | None = None,
+    outcome_ids: tuple[uuid.UUID, ...] | None = None,
 ) -> dict[str, int]:
-    """Read-after-write recovery using the same stable outcome identity."""
+    """Read-after-write recovery using one canonical transaction per outcome."""
 
     now = now or datetime.now(timezone.utc)
     candidate_statement = (
-        select(SessionRunOutcome)
+        select(
+            SessionRunOutcome.id,
+            SessionRunOutcome.tenant_id,
+            SessionRunOutcome.session_id,
+            SessionRunOutcome.run_id,
+            RuntimeTask.parent_agent_id,
+        )
+        .outerjoin(
+            RuntimeTask,
+            and_(
+                RuntimeTask.id == SessionRunOutcome.run_id,
+                RuntimeTask.tenant_id == SessionRunOutcome.tenant_id,
+            ),
+        )
         .where(
             SessionRunOutcome.state.in_(("sealed", "needs_reconciliation")),
             (
@@ -608,40 +779,91 @@ async def recover_terminal_outcomes_once(
         )
         .order_by(SessionRunOutcome.id)
         .limit(max(1, int(limit)))
-        .with_for_update(skip_locked=True)
     )
     if run_id is not None:
         candidate_statement = candidate_statement.where(SessionRunOutcome.run_id == run_id)
-    candidates = list((await db.execute(candidate_statement)).scalars())
+    if tenant_id is not None:
+        candidate_statement = candidate_statement.where(SessionRunOutcome.tenant_id == tenant_id)
+    if outcome_ids is not None:
+        candidate_statement = candidate_statement.where(SessionRunOutcome.id.in_(outcome_ids))
+    candidates = list((await db.execute(candidate_statement)).all())
+    await db.rollback()
     completed = failed = 0
-    for outcome in candidates:
-        task = await db.get(RuntimeTask, outcome.run_id)
-        if task is None or task.parent_agent_id is None:
-            outcome.state = "needs_reconciliation"
-            outcome.reconciliation_owner = f"{worker_id}:missing_runtime_task"
-            outcome.reconciliation_lease_expires_at = now + timedelta(minutes=5)
-            outcome.version = int(outcome.version) + 1
+    for outcome_id, tenant_id, session_id, outcome_run_id, parent_agent_id in candidates:
+        if parent_agent_id is None:
+            await _record_terminal_outcome_recovery_hold(
+                db,
+                tenant_id=tenant_id,
+                session_id=session_id,
+                run_id=outcome_run_id,
+                outcome_id=outcome_id,
+                worker_id=worker_id,
+                now=now,
+                reason="missing_runtime_task",
+            )
             failed += 1
             continue
-        outcome.reconciliation_owner = worker_id
-        outcome.reconciliation_lease_expires_at = now + timedelta(minutes=5)
         try:
             await commit_terminal_outcome(
                 db,
-                tenant_id=outcome.tenant_id,
-                agent_id=task.parent_agent_id,
-                session_id=outcome.session_id,
-                run_id=outcome.run_id,
-                outcome_id=outcome.id,
+                tenant_id=tenant_id,
+                agent_id=parent_agent_id,
+                session_id=session_id,
+                run_id=outcome_run_id,
+                outcome_id=outcome_id,
             )
+            await db.commit()
             completed += 1
-        except (TerminalOutcomeIneligible, TerminalOutcomeNeedsReconciliation):
-            outcome.state = "needs_reconciliation"
-            outcome.reconciliation_owner = worker_id
-            outcome.reconciliation_lease_expires_at = now + timedelta(minutes=5)
-            outcome.version = int(outcome.version) + 1
+        except (TerminalOutcomeIneligible, TerminalOutcomeNeedsReconciliation) as exc:
+            await db.rollback()
+            await _record_terminal_outcome_recovery_hold(
+                db,
+                tenant_id=tenant_id,
+                session_id=session_id,
+                run_id=outcome_run_id,
+                outcome_id=outcome_id,
+                worker_id=worker_id,
+                now=now,
+                reason=type(exc).__name__,
+            )
             failed += 1
     return {"terminal_committed": completed, "needs_reconciliation": failed}
+
+
+async def _record_terminal_outcome_recovery_hold(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    session_id: uuid.UUID,
+    run_id: uuid.UUID,
+    outcome_id: uuid.UUID,
+    worker_id: str,
+    now: datetime,
+    reason: str,
+) -> None:
+    """Persist a retry lease without violating advisory -> task -> outcome order."""
+
+    await lock_transcript_session(db, session_id=session_id)
+    await db.scalar(
+        select(RuntimeTask).where(RuntimeTask.id == run_id, RuntimeTask.tenant_id == tenant_id).with_for_update()
+    )
+    outcome = await db.scalar(
+        select(SessionRunOutcome)
+        .where(
+            SessionRunOutcome.id == outcome_id,
+            SessionRunOutcome.tenant_id == tenant_id,
+            SessionRunOutcome.session_id == session_id,
+            SessionRunOutcome.run_id == run_id,
+        )
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    if outcome is not None and outcome.state != "terminal_committed":
+        outcome.state = "needs_reconciliation"
+        outcome.reconciliation_owner = f"{worker_id}:{reason}"[:200]
+        outcome.reconciliation_lease_expires_at = now + timedelta(minutes=5)
+        outcome.version = int(outcome.version) + 1
+    await db.commit()
 
 
 async def recover_terminal_candidates_once(
@@ -650,58 +872,86 @@ async def recover_terminal_candidates_once(
     worker_id: str,
     limit: int = 50,
     run_id: uuid.UUID | None = None,
+    tenant_id: uuid.UUID | None = None,
+    result_ids: tuple[uuid.UUID, ...] | None = None,
 ) -> dict[str, int]:
     """Close latest terminal candidates that crashed before RunOutcome creation."""
 
+    committed_outcome_exists = (
+        select(SessionRunOutcome.id)
+        .where(
+            SessionRunOutcome.run_id == SessionModelResult.run_id,
+            SessionRunOutcome.tenant_id == SessionModelResult.tenant_id,
+            SessionRunOutcome.state == "terminal_committed",
+        )
+        .exists()
+    )
     candidate_statement = (
-        select(SessionModelResult)
+        select(
+            SessionModelResult.id,
+            SessionModelResult.tenant_id,
+            SessionModelResult.session_id,
+            SessionModelResult.run_id,
+            SessionModelResult.turn_id,
+            SessionModelResult.seal_json,
+            RuntimeTask.parent_agent_id,
+        )
         .join(ChatTranscriptEvent, ChatTranscriptEvent.id == SessionModelResult.round_committed_event_id)
-        .where(SessionModelResult.state == "round_committed")
-        .order_by(ChatTranscriptEvent.sequence.desc())
+        .outerjoin(
+            RuntimeTask,
+            and_(
+                RuntimeTask.id == SessionModelResult.run_id,
+                RuntimeTask.tenant_id == SessionModelResult.tenant_id,
+            ),
+        )
+        .where(SessionModelResult.state == "round_committed", ~committed_outcome_exists)
+        .order_by(ChatTranscriptEvent.sequence.desc(), SessionModelResult.id.desc())
         .limit(max(1, int(limit)) * 4)
-        .with_for_update(skip_locked=True)
     )
     if run_id is not None:
         candidate_statement = candidate_statement.where(SessionModelResult.run_id == run_id)
-    results = list((await db.execute(candidate_statement)).scalars())
+    if tenant_id is not None:
+        candidate_statement = candidate_statement.where(SessionModelResult.tenant_id == tenant_id)
+    if result_ids is not None:
+        candidate_statement = candidate_statement.where(SessionModelResult.id.in_(result_ids))
+    results = list((await db.execute(candidate_statement)).all())
+    await db.rollback()
     seen_runs: set[uuid.UUID] = set()
     completed = held = 0
-    for result in results:
-        if result.run_id in seen_runs or len(seen_runs) >= max(1, int(limit)):
+    for result_id, tenant_id, session_id, result_run_id, turn_id, seal_json, parent_agent_id in results:
+        if result_run_id in seen_runs or len(seen_runs) >= max(1, int(limit)):
             continue
-        seen_runs.add(result.run_id)
-        continuation = dict((result.seal_json or {}).get("continuation") or {})
+        seen_runs.add(result_run_id)
+        continuation = dict((seal_json or {}).get("continuation") or {})
         if continuation.get("verdict") != "terminal_candidate" or not bool(
-            (result.seal_json or {}).get("logical_round_complete", True)
+            (seal_json or {}).get("logical_round_complete", True)
         ):
             continue
-        existing = await db.scalar(select(SessionRunOutcome).where(SessionRunOutcome.run_id == result.run_id))
-        if existing is not None and existing.state == "terminal_committed":
-            continue
-        task = await db.get(RuntimeTask, result.run_id)
-        if task is None or task.parent_agent_id is None:
+        if parent_agent_id is None:
             held += 1
             continue
         try:
             outcome = await prepare_and_seal_run_outcome(
                 db,
-                tenant_id=result.tenant_id,
-                agent_id=task.parent_agent_id,
-                session_id=result.session_id,
-                turn_id=result.turn_id,
-                run_id=result.run_id,
-                terminal_result_id=result.id,
+                tenant_id=tenant_id,
+                agent_id=parent_agent_id,
+                session_id=session_id,
+                turn_id=turn_id,
+                run_id=result_run_id,
+                terminal_result_id=result_id,
             )
             await commit_terminal_outcome(
                 db,
-                tenant_id=result.tenant_id,
-                agent_id=task.parent_agent_id,
-                session_id=result.session_id,
-                run_id=result.run_id,
+                tenant_id=tenant_id,
+                agent_id=parent_agent_id,
+                session_id=session_id,
+                run_id=result_run_id,
                 outcome_id=outcome.id,
             )
+            await db.commit()
             completed += 1
         except TerminalOutcomeIneligible:
+            await db.rollback()
             held += 1
     del worker_id  # reserved for structured recovery-owner telemetry
     return {"terminal_committed": completed, "held": held}
@@ -711,6 +961,8 @@ __all__ = [
     "TerminalOutcomeIneligible",
     "TerminalOutcomeNeedsReconciliation",
     "commit_terminal_outcome",
+    "locate_terminal_outcome_recovery_candidates",
+    "locate_terminal_result_recovery_candidates",
     "prepare_and_seal_run_outcome",
     "recover_terminal_candidates_once",
     "recover_terminal_outcomes_once",

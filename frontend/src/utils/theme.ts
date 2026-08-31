@@ -6,10 +6,11 @@
 const STORAGE_KEY = 'hiveclaw-accent-color';
 const LEGACY_KEY = 'clawith-accent-color';
 
-// One-time migration from old brand name
-const _legacy = localStorage.getItem(LEGACY_KEY);
-if (_legacy && !localStorage.getItem(STORAGE_KEY)) {
-    localStorage.setItem(STORAGE_KEY, _legacy);
+const legacyAccent = localStorage.getItem(LEGACY_KEY);
+if (legacyAccent) {
+    if (!localStorage.getItem(STORAGE_KEY)) {
+        localStorage.setItem(STORAGE_KEY, legacyAccent);
+    }
     localStorage.removeItem(LEGACY_KEY);
 }
 

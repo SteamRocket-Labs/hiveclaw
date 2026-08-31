@@ -8,7 +8,7 @@
 
 - 方法：实跑取证（不止读码）。41 agent，pipeline 流水（G1-G15 取证→对抗复核）+ 并行 delta 深挖 + 横切，主理人对承重发现独立抽查。
 - Hive checkout：`82c60ac7`，分支 `main`。
-- 本地对标项目：CC/Claude Code `/Users/rocky243/vc-saas/free-code-main`；Hermes（须达到/超过的 lean benchmark）`/Users/rocky243/vc-saas/hermes-agent`；Codex `/Users/rocky243/Context Engineering/codex`。
+- 本地对标项目：CC/Claude Code `/Users/example-owner/vc-saas/free-code-main`；Hermes（须达到/超过的 lean benchmark）`/Users/example-owner/vc-saas/hermes-agent`；Codex `/Users/example-owner/Context Engineering/codex`。
 - 外部对标：Voyager、Reflexion、DGM、Letta/MemGPT、Graphiti/Zep、LangGraph、Magentic-One/AutoGen、Temporal、Vercel Sandbox、E2B、Glean、SEAL、AlphaEvolve、AZR、MS Entra Agent ID、Purview。
 - 判定口径取自目标文档 §0：`achieved` 必须当前代码路径 + 测试 + 生产可达三者齐全；built-but-never-called（暗臂）即使测试全绿也判 dark；fail-closed 门若在真实生产永远不满足前置 = 暗臂换皮，不算闭环；provisional/0.0 baseline 不算真实分数；做完外部行为 eval 前不宣称整体超越。
 

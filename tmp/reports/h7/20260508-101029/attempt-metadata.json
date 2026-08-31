@@ -1,6 +1,6 @@
 {
   "timestamp": "2026-05-08T10:10:29.340736",
-  "snapshot_dir": "/Users/rocky243/vc-saas/hiveclaw-main/tmp/reports/h7/20260508-101029",
+  "snapshot_dir": "/Users/example-owner/vc-saas/hiveclaw-main/tmp/reports/h7/20260508-101029",
   "base_url": "https://backend-production-326d.up.railway.app",
   "token_source_probe": [
     {

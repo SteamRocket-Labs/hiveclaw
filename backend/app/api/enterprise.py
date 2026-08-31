@@ -9,7 +9,7 @@ import anyio
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1309,8 +1309,10 @@ async def trigger_org_sync(
 
 
 class InvitationCodeCreate(BaseModel):
-    count: int = 1  # how many codes to generate
-    max_uses: int = 1  # max registrations per code
+    count: int = Field(default=1, ge=1, le=100)
+    max_uses: int = Field(default=1, ge=1)
+
+    model_config = {"extra": "forbid"}
 
 
 def _require_tenant_admin(current_user: User) -> None:
@@ -1452,17 +1454,19 @@ async def create_invitation_codes(
     """Batch-create invitation codes for the current user's company."""
     _require_tenant_admin(current_user)
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
-    import random
+    import secrets
     import string
 
     codes_created = []
-    for _ in range(min(data.count, 100)):  # cap at 100 per batch
-        code_str = "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
+    alphabet = string.ascii_uppercase + string.digits
+    for _ in range(data.count):
+        code_str = "".join(secrets.choice(alphabet) for _ in range(8))
         code = InvitationCode(
             code=code_str,
             tenant_id=target_tenant_id,
             max_uses=data.max_uses,
             created_by=current_user.id,
+            granted_role="member",
         )
         db.add(code)
         codes_created.append(code_str)
@@ -1486,9 +1490,12 @@ async def list_invitation_codes(
 
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
 
-    base_filter = InvitationCode.tenant_id == target_tenant_id
-    stmt = select(InvitationCode).where(base_filter)
-    count_stmt = select(sqla_func.count()).select_from(InvitationCode).where(base_filter)
+    base_filter = (
+        InvitationCode.tenant_id == target_tenant_id,
+        InvitationCode.granted_role == "member",
+    )
+    stmt = select(InvitationCode).where(*base_filter)
+    count_stmt = select(sqla_func.count()).select_from(InvitationCode).where(*base_filter)
 
     if search:
         stmt = stmt.where(InvitationCode.code.ilike(f"%{search}%"))
@@ -1533,7 +1540,10 @@ async def export_invitation_codes_csv(
 
     result = await db.execute(
         select(InvitationCode)
-        .where(InvitationCode.tenant_id == target_tenant_id)
+        .where(
+            InvitationCode.tenant_id == target_tenant_id,
+            InvitationCode.granted_role == "member",
+        )
         .order_by(InvitationCode.created_at.asc())
     )
     codes = result.scalars().all()
@@ -1576,6 +1586,7 @@ async def deactivate_invitation_code(
         select(InvitationCode).where(
             InvitationCode.id == _uuid.UUID(code_id),
             InvitationCode.tenant_id == target_tenant_id,
+            InvitationCode.granted_role == "member",
         )
     )
     code = result.scalar_one_or_none()

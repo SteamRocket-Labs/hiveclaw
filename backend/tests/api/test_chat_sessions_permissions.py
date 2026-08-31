@@ -158,6 +158,166 @@ async def test_session_full_access_update_writes_durable_transcript_evidence_for
     assert appended[0]["materialize_chat_message"] is False
 
 
+@pytest.mark.asyncio
+async def test_exact_session_scope_rejects_path_traversal_before_tool_resolution(monkeypatch) -> None:
+    import app.api.chat_sessions as chat_sessions_api
+
+    async def must_not_resolve_tools(*_args, **_kwargs):
+        raise AssertionError("path validation must run before tool resolution")
+
+    monkeypatch.setattr(chat_sessions_api, "get_agent_tools_for_llm", must_not_resolve_tools)
+
+    with pytest.raises(HTTPException) as exc:
+        await chat_sessions_api._validated_exact_session_scope(
+            agent_id=uuid4(),
+            allowed_tools=["read_file"],
+            writable_roots=["workspace/p08-j4/../other"],
+        )
+
+    assert exc.value.status_code == 422
+    assert exc.value.detail["code"] == "invalid_session_permission_scope"
+
+
+@pytest.mark.asyncio
+async def test_exact_session_scope_rejects_tool_widening(monkeypatch) -> None:
+    import app.api.chat_sessions as chat_sessions_api
+
+    async def available_tools(*_args, **_kwargs):
+        return [{"function": {"name": "read_file"}}]
+
+    monkeypatch.setattr(chat_sessions_api, "get_agent_tools_for_llm", available_tools)
+
+    with pytest.raises(HTTPException) as exc:
+        await chat_sessions_api._validated_exact_session_scope(
+            agent_id=uuid4(),
+            allowed_tools=["read_file", "send_channel_message"],
+            writable_roots=["workspace/p08-j4/attempt-1/coding"],
+        )
+
+    assert exc.value.status_code == 422
+    assert "not available" in exc.value.detail["message"]
+
+
+@pytest.mark.asyncio
+async def test_exact_session_profile_update_matches_durable_and_live_runtime_metadata(monkeypatch) -> None:
+    import app.api.chat_sessions as chat_sessions_api
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    tenant_id = uuid4()
+    operator_id = uuid4()
+    remote_root = "workspace/p08-j4/attempt-2/review"
+    allowed_tools = ["read_file", "write_file", "edit_file", "glob_search", "grep_search"]
+    session = SimpleNamespace(id=session_id, tenant_id=tenant_id, transcript_metadata_json={})
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
+    current_user = SimpleNamespace(id=operator_id, role="member")
+    runtime_context = SimpleNamespace(metadata={})
+
+    class DB:
+        async def execute(self, _statement):
+            return _ScalarResult(None)
+
+        async def commit(self):
+            return None
+
+    async def get_session(**_kwargs):
+        return session, agent, "session_owner"
+
+    async def available_tools(*_args, **_kwargs):
+        return [{"function": {"name": name}} for name in allowed_tools]
+
+    async def append_event(**_kwargs):
+        return None
+
+    async def get_runtime_context(*_args):
+        return runtime_context
+
+    async def broadcast(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(chat_sessions_api, "_get_run_session_and_agent", get_session)
+    monkeypatch.setattr(chat_sessions_api, "get_agent_tools_for_llm", available_tools)
+    monkeypatch.setattr(chat_sessions_api, "append_session_event", append_event)
+    monkeypatch.setattr(chat_sessions_api.web_chat_broker, "get_or_create_runtime_session", get_runtime_context)
+    monkeypatch.setattr(chat_sessions_api, "broadcast_web_chat_event", broadcast)
+
+    result = await chat_sessions_api.update_session_permission_profile(
+        agent_id=agent_id,
+        session_id=session_id,
+        body=chat_sessions_api.UpdateSessionPermissionProfileIn(
+            permission_mode="bypassPermissions",
+            allowed_tools=allowed_tools,
+            writable_roots=[remote_root],
+        ),
+        current_user=current_user,
+        db=DB(),
+    )
+
+    assert result == session.transcript_metadata_json
+    assert runtime_context.metadata == result
+    assert result["permission_profile"]["allowed_tools"] == allowed_tools
+    assert result["permission_profile"]["readable_roots"] == [remote_root]
+
+
+@pytest.mark.asyncio
+async def test_active_exact_session_profile_cannot_be_mutated_mid_run(monkeypatch) -> None:
+    import app.api.chat_sessions as chat_sessions_api
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    root = "workspace/p08-j4/attempt-3/coding"
+    exact_profile = {
+        "mode": "bypassPermissions",
+        "allowed_tools": ["read_file"],
+        "writable_roots": [root],
+        "readable_roots": [root],
+        "capability_policy_snapshot": {"session_exact_scope": True},
+    }
+    session = SimpleNamespace(
+        id=session_id,
+        tenant_id=uuid4(),
+        transcript_metadata_json={
+            "permission_mode": "bypassPermissions",
+            "permission_profile": exact_profile,
+        },
+    )
+    agent = SimpleNamespace(id=agent_id, tenant_id=session.tenant_id)
+    active_run = SimpleNamespace(id=uuid4(), metadata_json={"permission_profile": exact_profile})
+
+    class DB:
+        committed = False
+
+        async def execute(self, _statement):
+            return _ScalarResult(active_run)
+
+        async def commit(self):
+            self.committed = True
+
+    async def get_session(**_kwargs):
+        return session, agent, "session_owner"
+
+    async def must_not_append(**_kwargs):
+        raise AssertionError("locked profile must not emit mutation evidence")
+
+    monkeypatch.setattr(chat_sessions_api, "_get_run_session_and_agent", get_session)
+    monkeypatch.setattr(chat_sessions_api, "append_session_event", must_not_append)
+    db = DB()
+
+    with pytest.raises(HTTPException) as exc:
+        await chat_sessions_api.update_session_permission_profile(
+            agent_id=agent_id,
+            session_id=session_id,
+            body=chat_sessions_api.UpdateSessionPermissionProfileIn(permission_mode="default"),
+            current_user=SimpleNamespace(id=uuid4(), role="member"),
+            db=db,
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "exact_session_permission_profile_locked"
+    assert session.transcript_metadata_json["permission_profile"] == exact_profile
+    assert db.committed is False
+
+
 class _ScalarResult:
     def __init__(self, value):
         self._value = value
@@ -389,6 +549,54 @@ async def test_create_session_uses_check_agent_access(monkeypatch):
     assert result.is_current_user_session is True
     assert result.read_only is False
     assert result.permission_mode == "auto"
+
+
+@pytest.mark.asyncio
+async def test_create_session_binds_exact_available_tool_and_workspace_scope(monkeypatch):
+    import app.api.chat_sessions as chat_sessions_api
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, role="member")
+    agent = SimpleNamespace(
+        id=agent_id,
+        tenant_id=tenant_id,
+        creator_id=uuid4(),
+        default_session_permission_mode="auto",
+    )
+    db = _QueryAwareDB(agent=agent)
+    allowed_tools = ["read_file", "write_file", "edit_file", "glob_search", "grep_search"]
+    remote_root = "workspace/p08-j4/attempt-1/coding"
+
+    async def fake_check_agent_access(_db, _user, _agent_id):
+        return agent, "use"
+
+    async def fake_agent_tools(_agent_id, *, core_only=False):
+        assert _agent_id == agent_id
+        assert core_only is False
+        return [{"function": {"name": name}} for name in allowed_tools]
+
+    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+    monkeypatch.setattr(chat_sessions_api, "get_agent_tools_for_llm", fake_agent_tools, raising=False)
+
+    result = await chat_sessions_api.create_session(
+        agent_id=agent_id,
+        body=chat_sessions_api.CreateSessionIn(
+            title="Scoped Session",
+            permission_mode="bypassPermissions",
+            allowed_tools=allowed_tools,
+            writable_roots=[remote_root],
+        ),
+        current_user=current_user,
+        db=db,
+    )
+
+    assert result.permission_mode == "bypassPermissions"
+    assert result.writable_roots == [remote_root]
+    assert result.permission_profile["allowed_tools"] == allowed_tools
+    assert result.permission_profile["writable_roots"] == [remote_root]
+    assert result.permission_profile["readable_roots"] == [remote_root]
+    assert result.permission_profile["capability_policy_snapshot"] == {"session_exact_scope": True}
 
 
 @pytest.mark.asyncio
@@ -636,7 +844,7 @@ async def test_list_sessions_mine_includes_owned_a2a_peer_sessions(monkeypatch):
         sessions=[a2a_session],
         message_counts={session_id: 2},
         user_message_counts={session_id: 1},
-        users={owning_user_id: "rocky"},
+        users={owning_user_id: "example-owner"},
     )
 
     async def fake_check_agent_access(_db, _user, _agent_id):

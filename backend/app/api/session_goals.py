@@ -22,8 +22,7 @@ from app.models.user import User
 from app.services.chat_transcript import append_session_event
 from app.services.goal_continuation_service import continue_session_goal
 from app.services.session_goal_projection import build_session_goal_projection
-from app.services.session_live_input import submit_live_cancel_input
-from app.services.web_chat_runtime import start_web_chat_run
+from app.services.session_live_input import submit_live_cancel_input, submit_live_human_input
 
 router = APIRouter(prefix="/agents/{agent_id}/sessions/{session_id}/goals", tags=["session-goals"])
 
@@ -66,7 +65,7 @@ async def _create_or_load_goal(
         "time_budget_seconds": body.time_budget_seconds,
     }
     if body.request_id is None:
-        goal = AgentSessionGoal(**values)
+        goal = AgentSessionGoal(id=uuid.uuid4(), **values)
         db.add(goal)
         await db.flush()
         return goal, True
@@ -215,6 +214,7 @@ async def start_session_goal(
             action="started",
         )
     run = None
+    input_receipt = None
     if body.start_immediately:
         metadata = dict(goal.metadata_json or {})
         replay_run_id = str(metadata.get("last_goal_run_id") or "").strip()
@@ -257,33 +257,37 @@ async def start_session_goal(
                 "replayed": True,
             }
         elif goal.status == "active":
-            run = await start_web_chat_run(
+            goal_input_id = uuid.uuid5(goal.id, "session-goal-initial-input")
+            receipt = await submit_live_human_input(
                 db=db,
                 agent=agent,
                 user=current_user,
                 session=decision.session,
                 content=(body.content or body.objective).strip(),
+                source="session_goal",
+                input_id=goal_input_id,
+                idempotency_key=f"session-goal:{goal.id}:initial-input",
+                requested_kind="start_turn",
                 display_content=(body.display_content or body.objective).strip(),
                 file_name=body.file_name,
                 attachments=list(body.attachments),
                 parts=list(body.parts),
-                runtime_task_type="web_chat_turn",
-                budget_interactive=False,
-                extra_metadata={
-                    "source": "session_goal",
+                runtime_metadata={
+                    "runtime_task_type": "web_chat_turn",
+                    "budget_interactive": False,
                     "goal_id": str(goal.id),
                     "goal_objective": goal.objective,
                     **(
                         {
                             "goal_request_id": str(body.request_id),
-                            "intent_id": f"goal:{body.request_id}",
                         }
                         if body.request_id
                         else {}
                     ),
                 },
-                run_id=body.request_id,
             )
+            input_receipt = receipt
+            run = dict(receipt.get("run") or {}) or None
             run_id = str((run or {}).get("run_id") or "").strip()
             if run_id:
                 metadata = dict(goal.metadata_json or {})
@@ -297,7 +301,7 @@ async def start_session_goal(
                 # (MissingGreenlet → HTTP 500 after the goal row and run were
                 # already created).
                 await db.refresh(goal)
-    return {**build_session_goal_projection(goal), "run": run}
+    return {**build_session_goal_projection(goal), "run": run, "input": input_receipt}
 
 
 @router.post("/{goal_id}/continue")

@@ -86,7 +86,7 @@ async def test_resolve_runtime_metadata_context_routes_runtime_hints(monkeypatch
         return "RUNTIME_HINTS"
 
     async def fake_resolve_current_user_name(_user_id):
-        return "Rocky"
+        return "Example Owner"
 
     monkeypatch.setattr(invoker, "build_agent_runtime_context", fake_build_agent_runtime_context)
     monkeypatch.setattr(invoker, "_resolve_current_user_name", fake_resolve_current_user_name)
@@ -105,7 +105,7 @@ async def test_resolve_runtime_metadata_context_routes_runtime_hints(monkeypatch
 
     assert "RUNTIME_HINTS" in result
     assert '<context_block kind="agent_runtime_context" source="runtime_context:agent">' in result
-    assert calls == [("runtime", "Rocky")]
+    assert calls == [("runtime", "Example Owner")]
     assert request.session_context.metadata["context_artifacts"][0]["kind"] == "agent_runtime_context"
 
 

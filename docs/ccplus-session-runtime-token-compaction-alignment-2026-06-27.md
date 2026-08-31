@@ -144,9 +144,9 @@ CC / FreeCode context pipeline
 
 本方案按项目约定使用以下 baseline 顺序：
 
-1. FreeCode runnable baseline：`/Users/rocky243/vc-saas/free-code-main`
-2. claude-code-org cross-check：`/Users/rocky243/Context Engineering/claude-code-org`
-3. Codex Rust engineering delta：`/Users/rocky243/Context Engineering/codex/codex-rs`
+1. FreeCode runnable baseline：`/Users/example-owner/vc-saas/free-code-main`
+2. claude-code-org cross-check：`/Users/example-owner/Context Engineering/claude-code-org`
+3. Codex Rust engineering delta：`/Users/example-owner/Context Engineering/codex/codex-rs`
 4. Hive 当前实现：`backend/app/**`
 
 裁决原则：
@@ -565,11 +565,11 @@ rg -n "maybe_compress_messages|compress_threshold|usage_anchor_tokens|_MIDLOOP_C
 
 # CC / FreeCode context pipeline
 rg -n "applyToolResultBudget|snipCompactIfNeeded|microcompact|contextCollapse|autocompact|checkTokenBudget" \
-  /Users/rocky243/vc-saas/free-code-main/src
+  /Users/example-owner/vc-saas/free-code-main/src
 
 # Codex context window / compaction accounting
 rg -n "ContextWindowTokenStatus|run_inline_auto_compact_task|replace_compacted_history|AutoCompactWindow|start_new_context_window" \
-  "/Users/rocky243/Context Engineering/codex/codex-rs/core/src"
+  "/Users/example-owner/Context Engineering/codex/codex-rs/core/src"
 
 # Hive A2A / AgentTeam / Subagent 边界
 rg -n "AgentTeam|delegate_to_agent|spawn_subagent|parent_session_id|peer_agent_id|team_member" \

@@ -146,7 +146,7 @@ async def test_web_chat_turn_api_queues_db_only_before_worker_dispatch_accepted_
     user_id = uuid4()
     session_id = uuid4()
     agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
-    user = SimpleNamespace(id=user_id, username="rocky", display_name="Rocky")
+    user = SimpleNamespace(id=user_id, username="example-owner", display_name="Example Owner")
     session = SimpleNamespace(
         id=session_id,
         agent_id=agent_id,
@@ -213,7 +213,7 @@ async def test_web_chat_worker_materializes_queued_prompt_before_kernel_accepted
     run_id = uuid4()
     message_id = uuid4()
     agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
-    user = SimpleNamespace(id=user_id, username="rocky", display_name="Rocky")
+    user = SimpleNamespace(id=user_id, username="example-owner", display_name="Example Owner")
     session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id)
     runtime_task = SimpleNamespace(
         id=run_id,
@@ -288,7 +288,7 @@ async def test_web_chat_goal_continuation_queues_before_worker_dispatch_accepted
     user_id = uuid4()
     session_id = uuid4()
     agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
-    user = SimpleNamespace(id=user_id, username="rocky", display_name="Rocky")
+    user = SimpleNamespace(id=user_id, username="example-owner", display_name="Example Owner")
     session = SimpleNamespace(
         id=session_id, agent_id=agent_id, user_id=user_id, title="Session 05-21", last_message_at=None
     )
@@ -566,7 +566,7 @@ async def test_goal_continuation_dispatches_through_web_chat_gate_accepted_promp
             return None
 
     agent = SimpleNamespace(id=uuid4(), name="Agent", tenant_id=uuid4())
-    user = SimpleNamespace(id=uuid4(), username="rocky", display_name="Rocky")
+    user = SimpleNamespace(id=uuid4(), username="example-owner", display_name="Example Owner")
     session = SimpleNamespace(id=uuid4(), agent_id=agent.id, user_id=user.id)
     goal = SimpleNamespace(
         id=uuid4(),
@@ -613,7 +613,7 @@ async def test_plan_mode_session_handoff_dispatches_through_web_chat_gate_accept
         return {"runtime_task_id": "run-plan-1", "status": "running", "run_id": "run-plan-1"}
 
     agent = SimpleNamespace(id=uuid4(), name="Agent", tenant_id=uuid4(), expires_at=None)
-    user = SimpleNamespace(id=uuid4(), username="rocky", display_name="Rocky")
+    user = SimpleNamespace(id=uuid4(), username="example-owner", display_name="Example Owner")
     session = SimpleNamespace(id=uuid4(), agent_id=agent.id, user_id=user.id)
 
     async def fake_load_agent(_db, _agent_id):

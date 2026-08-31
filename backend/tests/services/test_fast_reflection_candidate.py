@@ -401,3 +401,63 @@ def test_user_preference_correction_does_not_bridge_to_skill(tmp_path) -> None:
     assert result["signal_type"] == "user_preference_correction"
     assert result["skill_candidate"]["status"] == "skipped"
     assert result["skill_candidate"]["reason"] == "model_did_not_nominate_skill"
+
+
+def test_fast_reflection_replay_of_same_committed_response_is_idempotent(tmp_path) -> None:
+    from app.services.evolution_ledger import load_evolution_ledger
+    from app.services.fast_reflection_service import create_fast_reflection_candidate
+    from app.services.session_learning import load_session_learning_projections
+
+    agent_id = uuid.uuid4()
+    session_id = "session-response-replay"
+    response_commit = {
+        "schema": "hive.response_commit.v1",
+        "committed": True,
+        "commit_kind": "web_chat_terminal_outcome",
+        "idempotency_key": "response-complete:run-1:result-1",
+        "source_refs": ["runtime_task:run-1", "model_result:result-1"],
+    }
+    call = {
+        "data_root": tmp_path,
+        "agent_id": agent_id,
+        "session_id": session_id,
+        "messages": [{"role": "user", "content": "下次这个项目统一使用 pnpm。"}],
+        "metadata": {
+            "source": "web",
+            "source_refs": response_commit["source_refs"],
+            "response_commit": response_commit,
+            "skill_candidate_loop_enabled": False,
+            "fast_reflection_classification": {
+                "method": "learning_brain_agent",
+                "signal_type": "user_preference_correction",
+                "lesson": "Use pnpm for this repository.",
+                "confidence": 0.99,
+            },
+        },
+    }
+
+    first = create_fast_reflection_candidate(**call)
+    replay = create_fast_reflection_candidate(**call)
+
+    ledger_candidates = [
+        entry
+        for entry in load_evolution_ledger(tmp_path / str(agent_id))
+        if entry.get("event") == "candidate" and entry.get("target_type") == "fast_reflection"
+    ]
+    projections = load_session_learning_projections(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        session_id=session_id,
+    )
+
+    assert {
+        "returned_candidate_ids": [first.get("candidate_id"), replay.get("candidate_id")],
+        "ledger_candidate_ids": [entry.get("candidate_id") for entry in ledger_candidates],
+        "projection_candidate_ids": [entry.get("candidate_id") for entry in projections],
+    } == {
+        "returned_candidate_ids": [first["candidate_id"], first["candidate_id"]],
+        "ledger_candidate_ids": [first["candidate_id"]],
+        "projection_candidate_ids": [first["candidate_id"]],
+    }
+    assert first["idempotent_replay"] is False
+    assert replay["idempotent_replay"] is True

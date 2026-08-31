@@ -276,7 +276,7 @@ Public Agent 的临时使用许可，不等于 Workflow Binding 许可。固定�
 
 **设计原则：应区分“有权调用某 Agent”和“有权把该权限继续向下转委托”。**
 
-例如，User Rocky 调用 A，A 临时调用其他 Owner 的 Public Agent B，并不天然意味着 B 可以代表 Rocky 或 A，再自主选择并调用另一个外部 Owner 的 C。
+例如，User Example Owner 调用 A，A 临时调用其他 Owner 的 Public Agent B，并不天然意味着 B 可以代表 Example Owner 或 A，再自主选择并调用另一个外部 Owner 的 C。
 
 - 同 Owner 的 A、B、C：B 可以在原始任务和资源预算范围内自主调用 C；
 - 跨 Owner：新的嵌套调用必须有明确的 delegation scope，不能仅凭上游一次 Public 调用无限扩散；

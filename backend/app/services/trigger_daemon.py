@@ -67,6 +67,7 @@ MIN_POLL_INTERVAL_MINUTES = 5  # align with tenant/agent min_poll_interval_floor
 MAX_FIRES_PER_HOUR = 6  # hard cap: ~10 min minimum interval between fires
 _TRIGGER_FIRE_LEASE_TTL_SECONDS = 600
 _TRIGGER_FIRE_INFLIGHT_STALE_SECONDS = 6 * 60 * 60
+_TRIGGER_CHILD_RUN_NAMESPACE = uuid.UUID("f2e0e19b-eef7-51a4-9b6a-8376893168ab")
 # Statuses that mean a fired trigger reached an end state. Reaching one is the
 # daemon's only real evidence of work; ticking the loop is not.
 _TERMINAL_TRIGGER_STATUSES = frozenset({"completed", "failed", "killed", "skipped", "needs_reconciliation"})
@@ -76,6 +77,35 @@ _last_invoke: dict[uuid.UUID, datetime] = {}
 
 # Track fire timestamps per agent for hourly rate limiting
 _fire_history: dict[uuid.UUID, list[datetime]] = {}
+
+
+def _aggregate_trigger_terminal_status(
+    default_status: str,
+    settlement_overrides: dict[str, str] | None,
+) -> str:
+    """Keep a mixed trigger batch reachable until every fire is settled."""
+
+    outcomes = set((settlement_overrides or {}).values())
+    if default_status == "needs_reconciliation" or "hold" in outcomes:
+        return "needs_reconciliation"
+    if "failure" in outcomes:
+        return "failed"
+    if "success" in outcomes:
+        return "completed"
+    return default_status
+
+
+def _with_trigger_settlement_outcome(
+    settlement_overrides: dict[str, str] | None,
+    triggers: list[AgentTrigger],
+    outcome: str,
+) -> dict[str, str]:
+    merged = dict(settlement_overrides or {})
+    for trigger in triggers:
+        trigger_id = str(getattr(trigger, "id", "")).strip()
+        if trigger_id:
+            merged[trigger_id] = outcome
+    return merged
 
 
 class TriggerRuntimeTaskRef(str):
@@ -98,6 +128,18 @@ def _runtime_task_uuid_or_none(value: str | uuid.UUID | None) -> uuid.UUID | Non
         return None
 
 
+def _trigger_child_run_id(
+    runtime_task_id: str | uuid.UUID | None,
+    *,
+    effect: str,
+    discriminator: str,
+) -> uuid.UUID | None:
+    task_id = _runtime_task_uuid_or_none(runtime_task_id)
+    if task_id is None:
+        return None
+    return uuid.uuid5(_TRIGGER_CHILD_RUN_NAMESPACE, f"{task_id}:{effect}:{discriminator}")
+
+
 def _trigger_completion_notification(
     *,
     runtime_task_id: str | None,
@@ -112,12 +154,13 @@ def _trigger_completion_notification(
     artifacts: list[dict[str, Any]] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> CompletionNotification | None:
-    if not runtime_task_id or tenant_id is None or user_id is None or session_id is None:
+    canonical_runtime_task_id = _runtime_task_uuid_or_none(runtime_task_id)
+    if canonical_runtime_task_id is None or tenant_id is None or user_id is None or session_id is None:
         return None
     return CompletionNotification(
         tenant_id=tenant_id,
         source_kind="trigger",
-        source_run_id=str(runtime_task_id),
+        source_run_id=str(canonical_runtime_task_id),
         parent_session_id=session_id,
         parent_agent_id=agent_id,
         parent_user_id=user_id,
@@ -420,25 +463,38 @@ async def _update_trigger_runtime_task(
     session_id: str | None = None,
     metadata_json: dict | None = None,
     completion_notification: CompletionNotification | None = None,
-) -> None:
+) -> bool:
     if not runtime_task_id:
-        return
+        return False
+    metadata = dict(metadata_json or {})
+    overrides = metadata.get("trigger_settlement_overrides")
+    status = _aggregate_trigger_terminal_status(
+        status,
+        dict(overrides) if isinstance(overrides, dict) else None,
+    )
+    if status == "needs_reconciliation":
+        metadata.setdefault("needs_reconciliation", True)
+        metadata.setdefault("reconciliation_reason", "trigger_effect_evidence_pending")
     fields = {
         "status": status,
         "result_summary": result_summary,
-        "metadata_json": metadata_json or {},
+        "metadata_json": metadata,
     }
     if session_id:
         fields["child_session_id"] = session_id
     if completion_notification is not None:
         fields["completion_notification"] = completion_notification
     try:
-        await update_runtime_task_record(runtime_task_id, **fields)
+        updated = await update_runtime_task_record(runtime_task_id, **fields)
     except Exception as exc:
         logger.warning("[TriggerDaemon] Failed to update trigger RuntimeTask {}: {}", runtime_task_id, exc)
-        return
+        return False
+    if updated is not True:
+        return False
     if status in _TERMINAL_TRIGGER_STATUSES:
+        await _settle_trigger_runtime_budget(runtime_task_id, status=status)
         mark_daemon_outcome("trigger_daemon")
+    return True
 
 
 def _stale_trigger_intent_cutoff(now: datetime | None = None) -> datetime:
@@ -492,15 +548,21 @@ async def _skip_trigger_runtime_task(
     skip_reason: str,
     result_summary: str,
     metadata_json: dict | None = None,
-) -> None:
+    settlement_overrides: dict[str, str] | None = None,
+) -> bool:
     metadata = {"skip_reason": skip_reason}
     metadata.update(metadata_json or {})
-    await _update_trigger_runtime_task(
+    if settlement_overrides:
+        metadata["trigger_settlement_overrides"] = dict(settlement_overrides)
+    updated = await _update_trigger_runtime_task(
         runtime_task_id,
         status="skipped",
         result_summary=result_summary,
         metadata_json=metadata,
     )
+    if runtime_task_id and not updated:
+        raise RuntimeError("trigger skip terminal transaction did not commit")
+    return updated
 
 
 async def _mark_trigger_runtime_task_needs_reconciliation(
@@ -511,8 +573,8 @@ async def _mark_trigger_runtime_task_needs_reconciliation(
     summary: str,
     trace_id: str | None = None,
     session_id: str | None = None,
-) -> None:
-    await update_runtime_task_record(
+) -> bool:
+    updated = await _update_trigger_runtime_task(
         runtime_task_id,
         status="needs_reconciliation",
         result_summary=summary,
@@ -526,7 +588,9 @@ async def _mark_trigger_runtime_task_needs_reconciliation(
             session_id=session_id,
         ),
     )
-    mark_daemon_outcome("trigger_daemon")
+    if not updated:
+        raise RuntimeError("trigger reconciliation terminal transaction did not commit")
+    return True
 
 
 async def _load_triggers_for_resume(agent_id: uuid.UUID, trigger_ids: list[str]) -> list[AgentTrigger]:
@@ -559,7 +623,11 @@ async def resume_persisted_trigger_runs(*, limit: int = 50) -> list[str]:
     """
 
     resumed: list[str] = []
-    records = await list_active_runtime_task_records(limit=limit, statuses=("pending", "running"))
+    records = await list_active_runtime_task_records(
+        limit=limit,
+        statuses=("pending", "running"),
+        task_types=("trigger",),
+    )
     for record in records:
         if record.get("task_type") != "trigger":
             continue
@@ -878,6 +946,8 @@ def _inflight_fire_is_active(config: dict, now: datetime) -> bool:
     inflight = config.get("_fire_inflight")
     if not isinstance(inflight, dict):
         return False
+    if inflight.get("hold") is True:
+        return True
     started_at = inflight.get("started_at")
     if not started_at:
         return True
@@ -1359,40 +1429,6 @@ async def _preflight_trigger_group(
         return False, "preflight_failed", f"Trigger preflight failed: {exc}", {"error": str(exc)}
 
 
-async def _record_trigger_success_state(agent_id: uuid.UUID, trigger_ids: list[uuid.UUID]) -> None:
-    if not trigger_ids:
-        return
-    from app.services.trigger_failure_policy import reset_trigger_failure_policy
-
-    tid = await resolve_tenant_for_agent(agent_id)
-    async with tenant_scoped_session(tid) as db:
-        changed = False
-        for trigger_id in trigger_ids:
-            result = await db.execute(select(AgentTrigger).where(AgentTrigger.id == trigger_id))
-            trigger = result.scalar_one_or_none()
-            if not trigger:
-                continue
-            cfg = dict(trigger.config or {})
-            cfg.pop("_fire_inflight", None)
-            if trigger.type == "webhook":
-                cfg["_webhook_pending"] = False
-                cfg["_webhook_payload"] = None
-            trigger.config = cfg
-            trigger.last_fired_at = datetime.now(timezone.utc)
-            trigger.fire_count = int(trigger.fire_count or 0) + 1
-            if trigger.type == "once":
-                trigger.is_enabled = False
-            if trigger.max_fires is not None and trigger.fire_count >= trigger.max_fires:
-                trigger.is_enabled = False
-            if reset_trigger_failure_policy(trigger):
-                cfg = dict(trigger.config or {})
-                cfg.pop("_fire_inflight", None)
-                trigger.config = cfg
-            changed = True
-        if changed:
-            await db.commit()
-
-
 async def _mark_trigger_fire_started(
     agent_id: uuid.UUID,
     triggers: list[AgentTrigger],
@@ -1400,56 +1436,38 @@ async def _mark_trigger_fire_started(
     now: datetime,
     runtime_task_id: str | uuid.UUID | None,
     event_keys: dict[uuid.UUID, str],
-) -> None:
-    if not triggers:
-        return
+    expected_trigger_ids: list[uuid.UUID] | None = None,
+    require_enabled: bool = True,
+) -> bool:
+    if not triggers and not expected_trigger_ids:
+        return False
+    trigger_ids = list(expected_trigger_ids or [getattr(trigger, "id", None) for trigger in triggers])
+    if any(not isinstance(trigger_id, uuid.UUID) for trigger_id in trigger_ids):
+        return False
+    expected_ids = sorted(trigger_ids, key=str)
+    if len(set(expected_ids)) != len(expected_ids):
+        return False
     tid = await resolve_tenant_for_agent(agent_id)
     async with tenant_scoped_session(tid) as db:
-        changed = False
-        for detached in triggers:
-            trigger_id = getattr(detached, "id", None)
-            if trigger_id is None:
-                continue
-            result = await db.execute(select(AgentTrigger).where(AgentTrigger.id == trigger_id))
-            trigger = result.scalar_one_or_none()
-            if not trigger:
-                continue
+        statement = select(AgentTrigger).where(
+            AgentTrigger.id.in_(expected_ids),
+            AgentTrigger.agent_id == agent_id,
+        )
+        if require_enabled:
+            statement = statement.where(AgentTrigger.is_enabled.is_(True))
+        rows = list((await db.execute(statement.order_by(AgentTrigger.id).with_for_update())).scalars().all())
+        if [trigger.id for trigger in rows] != expected_ids:
+            return False
+        for trigger in rows:
             cfg = dict(trigger.config or {})
             cfg["_fire_inflight"] = {
-                "event_key": event_keys.get(trigger_id) or _default_trigger_event_key(trigger, now),
+                "event_key": event_keys.get(trigger.id) or _default_trigger_event_key(trigger, now),
                 "runtime_task_id": str(runtime_task_id) if runtime_task_id else None,
                 "started_at": now.isoformat(),
             }
             trigger.config = cfg
-            changed = True
-        if changed:
-            await db.commit()
-
-
-async def _record_trigger_failure_state(agent_id: uuid.UUID, triggers: list[AgentTrigger], error: str) -> dict:
-    from app.services.trigger_failure_policy import apply_trigger_failure_policy
-
-    metadata: dict = {"failure_backoff": []}
-    tid = await resolve_tenant_for_agent(agent_id)
-    async with tenant_scoped_session(tid) as db:
-        for detached in triggers:
-            result = await db.execute(select(AgentTrigger).where(AgentTrigger.id == getattr(detached, "id", None)))
-            trigger = result.scalar_one_or_none()
-            if not trigger:
-                continue
-            failure_meta = apply_trigger_failure_policy(trigger, error=error)
-            cfg = dict(trigger.config or {})
-            cfg.pop("_fire_inflight", None)
-            trigger.config = cfg
-            metadata["failure_backoff"].append(
-                {
-                    "trigger_id": str(trigger.id),
-                    "trigger_name": trigger.name,
-                    **failure_meta,
-                }
-            )
         await db.commit()
-    return metadata
+        return True
 
 
 # ── Agent Invocation ────────────────────────────────────────────────
@@ -1658,6 +1676,8 @@ async def _deliver_batch_to_source_session(
     *,
     source_session_id: str,
     runtime_task_id: str | None,
+    settlement_overrides: dict[str, str] | None = None,
+    workflow_results: list[dict[str, Any]] | None = None,
 ) -> bool:
     """Deliver a fired ``same_session`` batch into its source chat session as a
     new turn instead of starting a fresh ``trigger_run`` invocation.
@@ -1669,6 +1689,7 @@ async def _deliver_batch_to_source_session(
     from fastapi import HTTPException
 
     from app.models.chat_session import ChatSession
+    from app.models.session_v2 import SessionTurnInput
     from app.models.user import User
     from app.services.web_chat_runtime import (
         WEB_CHAT_TURN_TASK_TYPE,
@@ -1712,23 +1733,34 @@ async def _deliver_batch_to_source_session(
 
         content, trigger_names = _build_trigger_context(triggers)
         trigger_ids = [str(getattr(t, "id", "")) for t in triggers if getattr(t, "id", None)]
+        child_run_id = _trigger_child_run_id(
+            runtime_task_id,
+            effect="same_session",
+            discriminator=str(source_session_id),
+        )
         try:
-            payload = await start_web_chat_run(
-                db=db,
-                agent=agent,
-                user=user,
-                session=session,
-                content=content,
-                runtime_task_type=WEB_CHAT_TURN_TASK_TYPE,
-                budget_interactive=False,
-                extra_metadata={
-                    "source": "loop_same_session",
-                    "trigger_ids": trigger_ids,
-                    "trigger_names": trigger_names,
-                    "trigger_runtime_task_id": runtime_task_id,
-                },
-            )
-            delivered_run_id = str(payload.get("run_id") or "") or None
+            existing_input = await db.get(SessionTurnInput, child_run_id) if child_run_id is not None else None
+            if existing_input is not None and existing_input.session_id == session.id:
+                queued = True
+                delivered_run_id = str(existing_input.target_run_id or "") or None
+            else:
+                payload = await start_web_chat_run(
+                    db=db,
+                    agent=agent,
+                    user=user,
+                    session=session,
+                    content=content,
+                    runtime_task_type=WEB_CHAT_TURN_TASK_TYPE,
+                    run_id=child_run_id,
+                    budget_interactive=False,
+                    extra_metadata={
+                        "source": "loop_same_session",
+                        "trigger_ids": trigger_ids,
+                        "trigger_names": trigger_names,
+                        "trigger_runtime_task_id": runtime_task_id,
+                    },
+                )
+                delivered_run_id = str(payload.get("run_id") or "") or None
         except ActiveWebChatRunExists as busy:
             # REPL-busy: the loop prompt is queued behind the active run — never
             # started concurrently (CC "only fires when the REPL is idle").
@@ -1742,13 +1774,9 @@ async def _deliver_batch_to_source_session(
             )
             return False
 
-    # The fire is durable now: advance the interval clock / clear the inflight
-    # marker and point the trigger RuntimeTask at the session it delivered into.
-    try:
-        await _record_trigger_success_state(agent_id, [getattr(t, "id") for t in triggers if getattr(t, "id", None)])
-    except Exception as exc:  # noqa: BLE001 - state reset is best-effort.
-        logger.debug("[TriggerDaemon] same_session success-state reset failed (non-fatal): {}", exc)
-    await _update_trigger_runtime_task(
+    # The wrapper commit atomically settles the exact trigger fire intent.
+    effective_overrides = _with_trigger_settlement_outcome(settlement_overrides, triggers, "success")
+    terminal_committed = await _update_trigger_runtime_task(
         runtime_task_id,
         status="completed",
         result_summary=(
@@ -1761,8 +1789,12 @@ async def _deliver_batch_to_source_session(
             "delivered_run_id": delivered_run_id,
             "queued": queued,
             "source_session_id": source_session_id,
+            "trigger_settlement_overrides": effective_overrides,
+            "workflow_trigger_results": list(workflow_results or []),
         },
     )
+    if not terminal_committed:
+        raise RuntimeError("same-session trigger terminal transaction did not commit")
     return True
 
 
@@ -1777,31 +1809,70 @@ async def _invoke_agent_for_triggers(
     Creates a Reflection Session and calls the LLM.
     """
     from app.api.websocket import call_llm
-    from app.kernel.contracts import ExecutionIdentityRef
+    from app.kernel.contracts import ExecutionIdentityRef, TerminalReason
     from app.models.chat_session import ChatSession
     from app.models.participant import Participant
-    from app.services.audit_logger import write_audit_log
     from app.services.chat_transcript import append_session_event
 
     # §9 P8 (§6.2): triggers carrying a workflow_ref take the deterministic
     # engine branch; the rest continue down the existing prose-ReAct path.
     from app.services.workflow_trigger import fire_workflow_for_trigger
 
+    batch_triggers = list(triggers)
+    batch_trigger_ids = [str(getattr(trigger, "id", "")) for trigger in batch_triggers]
+    batch_trigger_names = [str(getattr(trigger, "name", "")) for trigger in batch_triggers]
+    batch_trigger_types = [str(getattr(trigger, "type", "")) for trigger in batch_triggers]
     react_triggers: list[AgentTrigger] = []
-    for trigger in triggers:
+    settlement_overrides: dict[str, str] = {}
+    workflow_results: list[dict[str, Any]] = []
+    for trigger in batch_triggers:
+        trigger_id = str(getattr(trigger, "id", ""))
+        trigger_config = getattr(trigger, "config", None) or {}
+        has_workflow_ref = isinstance(trigger_config.get("workflow_ref"), dict)
         try:
             fire_result = await fire_workflow_for_trigger(
                 agent_id=agent_id,
-                trigger_config=trigger.config or {},
+                trigger_config=trigger_config,
                 trigger_name=trigger.name,
-                webhook_payload=(trigger.config or {}).get("_webhook_payload"),
+                webhook_payload=trigger_config.get("_webhook_payload"),
+                trigger_id=getattr(trigger, "id", None),
+                runtime_task_id=runtime_task_id,
             )
         except Exception as exc:
             logger.error("[TriggerDaemon] workflow_ref fire failed for {}: {}", trigger.name, exc)
             fire_result = None
         if fire_result is None:
-            react_triggers.append(trigger)
+            if has_workflow_ref:
+                settlement_overrides[trigger_id] = "failure"
+                workflow_results.append(
+                    {
+                        "trigger_id": trigger_id,
+                        "trigger_name": trigger.name,
+                        "status": "failed",
+                        "reason": "workflow trigger launch raised before a receipt was returned",
+                    }
+                )
+            else:
+                react_triggers.append(trigger)
         else:
+            settlement_overrides[trigger_id] = (
+                "success"
+                if fire_result.status == "launched"
+                else "hold"
+                if fire_result.status == "needs_reconciliation"
+                else "failure"
+            )
+            workflow_results.append(
+                {
+                    "trigger_id": trigger_id,
+                    "trigger_name": trigger.name,
+                    "status": fire_result.status,
+                    "run_id": str(fire_result.run_id) if fire_result.run_id else None,
+                    "run_status": fire_result.run_status,
+                    "session_id": str(fire_result.session_id) if fire_result.session_id else None,
+                    "reason": fire_result.reason,
+                }
+            )
             logger.info(
                 "[TriggerDaemon] trigger {} → workflow branch: {} (run={})",
                 trigger.name,
@@ -1809,11 +1880,43 @@ async def _invoke_agent_for_triggers(
                 fire_result.run_id,
             )
     if not react_triggers:
-        await _skip_trigger_runtime_task(
+        workflow_reconciliation_required = any(outcome == "hold" for outcome in settlement_overrides.values())
+        workflow_failed = any(outcome == "failure" for outcome in settlement_overrides.values())
+        if workflow_reconciliation_required:
+            terminal_status = "needs_reconciliation"
+        elif workflow_failed:
+            terminal_status = "failed"
+        else:
+            terminal_status = "completed"
+        terminal_committed = await _update_trigger_runtime_task(
             runtime_task_id,
-            skip_reason="workflow_ref_handled",
-            result_summary="All fired triggers were handled by the workflow engine branch.",
+            status=terminal_status,
+            result_summary=(
+                "One or more workflow runs launched, but their asset usage evidence requires reconciliation."
+                if workflow_reconciliation_required
+                else "One or more workflow-backed triggers failed before launch."
+                if workflow_failed
+                else "All fired triggers were durably launched by the workflow engine branch."
+            ),
+            metadata_json={
+                "delivery": "workflow",
+                "terminal_reason": (
+                    "workflow_asset_usage_evidence_pending"
+                    if workflow_reconciliation_required
+                    else "workflow_trigger_failed"
+                    if workflow_failed
+                    else "workflow_launched"
+                ),
+                "needs_reconciliation": workflow_reconciliation_required,
+                "reconciliation_reason": (
+                    "workflow_asset_usage_evidence_pending" if workflow_reconciliation_required else None
+                ),
+                "trigger_settlement_overrides": settlement_overrides,
+                "workflow_trigger_results": workflow_results,
+            },
         )
+        if not terminal_committed:
+            raise RuntimeError("workflow trigger wrapper terminal transaction did not commit")
         return
     triggers = react_triggers
 
@@ -1823,9 +1926,15 @@ async def _invoke_agent_for_triggers(
     # when the source session is gone or the agent is not runnable.
     same_session_target = _resolve_batch_same_session_target(triggers)
     if same_session_target is not None:
-        if await _deliver_batch_to_source_session(
-            agent_id, triggers, source_session_id=same_session_target, runtime_task_id=runtime_task_id
-        ):
+        delivered = await _deliver_batch_to_source_session(
+            agent_id,
+            triggers,
+            source_session_id=same_session_target,
+            runtime_task_id=runtime_task_id,
+            settlement_overrides=settlement_overrides,
+            workflow_results=workflow_results,
+        )
+        if delivered:
             return
 
     admission = await admit_agent_runtime_tenant(
@@ -1838,7 +1947,15 @@ async def _invoke_agent_for_triggers(
             runtime_task_id,
             skip_reason=admission.reason_code,
             result_summary=admission.message,
-            metadata_json=admission.metadata(),
+            metadata_json={
+                **admission.metadata(),
+                "workflow_trigger_results": workflow_results,
+            },
+            settlement_overrides=_with_trigger_settlement_outcome(
+                settlement_overrides,
+                triggers,
+                "release",
+            ),
         )
         return
     tenant_id = admission.tenant_id
@@ -1857,6 +1974,12 @@ async def _invoke_agent_for_triggers(
                     runtime_task_id,
                     skip_reason="agent_not_found",
                     result_summary=f"Skipped trigger invocation because agent {agent_id} was not found.",
+                    metadata_json={"workflow_trigger_results": workflow_results},
+                    settlement_overrides=_with_trigger_settlement_outcome(
+                        settlement_overrides,
+                        triggers,
+                        "release",
+                    ),
                 )
                 return
             if agent.status in ("expired", "stopped", "error", "archived"):
@@ -1864,7 +1987,15 @@ async def _invoke_agent_for_triggers(
                     runtime_task_id,
                     skip_reason="agent_not_runnable",
                     result_summary=f"Skipped trigger invocation because agent status is {agent.status}.",
-                    metadata_json={"agent_status": agent.status},
+                    metadata_json={
+                        "agent_status": agent.status,
+                        "workflow_trigger_results": workflow_results,
+                    },
+                    settlement_overrides=_with_trigger_settlement_outcome(
+                        settlement_overrides,
+                        triggers,
+                        "release",
+                    ),
                 )
                 return
 
@@ -1881,7 +2012,15 @@ async def _invoke_agent_for_triggers(
                     runtime_task_id,
                     skip_reason=model_error,
                     result_summary=f"Skipped trigger invocation because model preflight failed: {model_error}.",
-                    metadata_json=model_metadata,
+                    metadata_json={
+                        **model_metadata,
+                        "workflow_trigger_results": workflow_results,
+                    },
+                    settlement_overrides=_with_trigger_settlement_outcome(
+                        settlement_overrides,
+                        triggers,
+                        "release",
+                    ),
                 )
                 return
             runtime_options = collect_trigger_runtime_options(triggers)
@@ -1974,6 +2113,7 @@ async def _invoke_agent_for_triggers(
                 "request_id": str(run_uuid) if run_uuid else None,
                 "trace_id": f"trigger:{runtime_task_id}" if runtime_task_id else None,
                 "semantic_memory_eligible": True,
+                "turn_id": f"turn-{run_uuid.hex}" if run_uuid else None,
             }
             trigger_wake_candidate = _build_trigger_wake_context_candidate(
                 triggers,
@@ -2062,6 +2202,7 @@ async def _invoke_agent_for_triggers(
                             "duration_ms": data.get("duration_ms"),
                             "visibility": data.get("visibility") or "collapsed",
                             "runtime_task_id": runtime_task_id,
+                            "turn_id": f"turn-{trigger_run_uuid.hex}" if trigger_run_uuid else None,
                         },
                     )
                     await _tc_db.commit()
@@ -2113,7 +2254,7 @@ async def _invoke_agent_for_triggers(
         try:
             from app.runtime.session import SessionContext
 
-            reply = await call_llm(
+            invocation_result = await call_llm(
                 model=model,
                 messages=messages,
                 agent_name=agent.name,
@@ -2146,16 +2287,36 @@ async def _invoke_agent_for_triggers(
                         "runtime_task_id": runtime_task_id,
                         "request_id": str(uuid.UUID(runtime_task_id)) if runtime_task_id else None,
                         "trace_id": f"trigger:{runtime_task_id}" if runtime_task_id else None,
+                        "turn_id": f"turn-{trigger_run_uuid.hex}" if trigger_run_uuid else None,
                     },
                 ),
                 session_source="trigger",
                 session_channel="trigger",
+                return_result=True,
             )
         finally:
             if _delivery_token is not None:
                 channel_delivery_target.reset(_delivery_token)
 
-        final_reply = reply or "".join(collected_content)
+        if isinstance(invocation_result, str):
+            raise RuntimeError("trigger runtime returned no terminal receipt")
+        terminal_reason = getattr(invocation_result, "terminal_reason", TerminalReason.TURN_ABORT)
+        terminal_reason_value = (
+            terminal_reason.value if getattr(terminal_reason, "value", None) else str(terminal_reason or "")
+        )
+        response_complete_payload = (
+            _json.loads(
+                _json.dumps(
+                    getattr(invocation_result, "response_complete_payload", None),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                )
+            )
+            if isinstance(getattr(invocation_result, "response_complete_payload", None), dict)
+            else None
+        )
+        final_reply = str(getattr(invocation_result, "content", "") or "") or "".join(collected_content)
 
         # Save assistant reply to Reflection session
         async with tenant_scoped_session(agent_tenant_id) as db:
@@ -2184,21 +2345,71 @@ async def _invoke_agent_for_triggers(
                     "runtime_task_id": runtime_task_id,
                     "trigger_names": trigger_names,
                     "trigger_types": [str(getattr(t, "type", "")) for t in triggers],
+                    "terminal_reason": terminal_reason_value,
+                    "turn_id": f"turn-{trigger_run_uuid.hex}" if trigger_run_uuid else None,
                 },
             )
 
-            # NOTE: trigger state (last_fired_at, fire_count, auto-disable)
-            # is already updated in _tick() BEFORE this task was launched,
-            # to prevent race-condition duplicate fires.
-
             await db.commit()
+
+        if terminal_reason_value != TerminalReason.TURN_STOP.value:
+            terminal_status = "killed" if terminal_reason_value == TerminalReason.USER_CANCEL.value else "failed"
+            terminal_overrides = _with_trigger_settlement_outcome(
+                settlement_overrides,
+                triggers,
+                "failure",
+            )
+            failure_summary = f"Trigger invocation ended without canonical completion ({terminal_reason_value})."
+            failure_metadata = {
+                "terminal_reason": terminal_reason_value,
+                "failure_code": str(getattr(invocation_result, "failure_code", None) or "") or None,
+                "trigger_ids": batch_trigger_ids,
+                "trigger_names": batch_trigger_names,
+                "trigger_types": batch_trigger_types,
+                "trigger_settlement_overrides": terminal_overrides,
+                "workflow_trigger_results": workflow_results,
+            }
+            terminal_committed = await _update_trigger_runtime_task(
+                runtime_task_id,
+                status=terminal_status,
+                result_summary=failure_summary,
+                metadata_json=failure_metadata,
+                session_id=str(session_id),
+            )
+            if not terminal_committed:
+                raise RuntimeError("trigger failure terminal transaction did not commit")
+            return
+        if response_complete_payload is None:
+            await _mark_trigger_runtime_task_needs_reconciliation(
+                str(runtime_task_id),
+                metadata={
+                    "terminal_reason": terminal_reason_value,
+                    "trigger_ids": batch_trigger_ids,
+                    "trigger_names": batch_trigger_names,
+                    "trigger_types": batch_trigger_types,
+                    "trigger_settlement_overrides": {
+                        **settlement_overrides,
+                        **{
+                            trigger_id: "hold"
+                            for trigger_id in batch_trigger_ids
+                            if trigger_id not in settlement_overrides
+                        },
+                    },
+                    "workflow_trigger_results": workflow_results,
+                },
+                blocker="response_complete_payload_missing",
+                summary="Trigger model turn completed without a durable response projection receipt.",
+                trace_id=f"trigger:{runtime_task_id}",
+                session_id=str(session_id),
+            )
+            return
 
         # Trigger results live in the Reflection Session only.
         # Do NOT push to user's chat WebSocket — it pollutes the conversation.
         # Users can view trigger results in the self-awareness tab.
 
         # Outcome metadata only. Durable learning enters the canonical T0 -> T2
-        # path through the TRIGGER_END hook below.
+        # path through the terminal-boundary outbox after the RuntimeTask commit.
         trigger_outcome = "unknown"
         trigger_score = None
         try:
@@ -2214,72 +2425,61 @@ async def _invoke_agent_for_triggers(
         except Exception as _outcome_err:
             logger.debug("[TriggerDaemon] Trigger outcome parse failed (non-fatal): {}", _outcome_err)
 
-        # Count trigger execution as a session for auto-dream gate
-        try:
-            from app.services.auto_dream import record_session_end
-            from app.services.dream_runtime import enqueue_due_dream
+        from app.services.trigger_artifacts import trigger_output_artifact_ref
 
-            record_session_end(agent_id)
-            if agent.tenant_id:
-                queued = await enqueue_due_dream(
-                    agent_id=agent_id,
-                    tenant_id=agent.tenant_id,
-                    source="trigger_end",
-                )
-                if queued is not None:
-                    logger.info("[TriggerDaemon] Durable {} Dream queued for agent {}", queued.mode, agent_id)
-        except Exception as _dream_err:
-            logger.debug("[TriggerDaemon] Auto-dream check failed: {}", _dream_err)
-
-        # Audit log
-        await write_audit_log(
-            "trigger_fired",
-            {
-                "agent_name": agent.name,
-                "triggers": [{"name": t.name, "type": t.type} for t in triggers],
+        artifact_input = {
+            "triggers": [
+                {
+                    "id": str(getattr(trigger, "id", "")),
+                    "name": str(getattr(trigger, "name", "")),
+                    "type": str(getattr(trigger, "type", "")),
+                    "config": {
+                        "trigger_class": str((getattr(trigger, "config", None) or {}).get("trigger_class") or "")
+                    },
+                }
+                for trigger in triggers
+            ],
+            "final_reply": final_reply or "",
+            "metadata": {
+                **model_metadata,
+                **runtime_options,
+                "outcome": trigger_outcome,
+                "score": trigger_score,
+                "session_id": str(session_id),
+                "workflow_trigger_results": workflow_results,
             },
-            agent_id=agent_id,
-        )
-
-        output_artifact = None
-        try:
-            from app.config import get_settings
-            from app.services.trigger_artifacts import write_trigger_output_artifact
-
-            output_artifact = write_trigger_output_artifact(
-                agent_data_dir=get_settings().AGENT_DATA_DIR,
-                agent_id=agent_id,
-                runtime_task_id=runtime_task_id,
-                triggers=triggers,
-                final_reply=final_reply or "",
-                metadata={
-                    **model_metadata,
-                    **runtime_options,
-                    "outcome": trigger_outcome,
-                    "score": trigger_score,
-                    "session_id": str(session_id),
-                },
-            )
-        except Exception as _artifact_err:
-            logger.debug("[TriggerDaemon] Trigger output artifact failed (non-fatal): {}", _artifact_err)
-
-        try:
-            await _record_trigger_success_state(agent_id, [getattr(trigger, "id") for trigger in triggers])
-        except Exception as _success_state_err:
-            logger.debug("[TriggerDaemon] Trigger success state reset failed (non-fatal): {}", _success_state_err)
+        }
+        output_artifact = trigger_output_artifact_ref(runtime_task_id)
 
         completion_summary = final_reply or "Trigger completed."
-        await _update_trigger_runtime_task(
+        terminal_overrides = _with_trigger_settlement_outcome(
+            settlement_overrides,
+            triggers,
+            "success",
+        )
+        terminal_status = _aggregate_trigger_terminal_status("completed", terminal_overrides)
+        terminal_evidence_metadata = {
+            "outcome": trigger_outcome,
+            "score": trigger_score,
+            "terminal_reason": terminal_reason_value,
+            "trigger_settlement_overrides": terminal_overrides,
+            "workflow_trigger_results": workflow_results,
+        }
+        terminal_committed = await _update_trigger_runtime_task(
             runtime_task_id,
-            status="completed",
+            status=terminal_status,
             result_summary=completion_summary,
             session_id=str(session_id),
             metadata_json={
                 **model_metadata,
                 **runtime_options,
-                "outcome": trigger_outcome,
-                "score": trigger_score,
+                **terminal_evidence_metadata,
                 "output_artifact": output_artifact,
+                "trigger_artifact_input": artifact_input,
+                "response_complete_payload": response_complete_payload,
+                "trigger_ids": batch_trigger_ids,
+                "trigger_names": batch_trigger_names,
+                "trigger_types": batch_trigger_types,
             },
             completion_notification=_trigger_completion_notification(
                 runtime_task_id=runtime_task_id,
@@ -2287,56 +2487,44 @@ async def _invoke_agent_for_triggers(
                 agent_id=agent_id,
                 user_id=agent_creator_id,
                 session_id=session_id,
-                status="completed",
+                status=terminal_status,
                 summary=completion_summary,
-                trigger_names=trigger_names,
-                trigger_types=[str(getattr(trigger, "type", "")) for trigger in triggers],
+                trigger_names=batch_trigger_names,
+                trigger_types=batch_trigger_types,
                 artifacts=[output_artifact] if isinstance(output_artifact, dict) else [],
-                metadata={"outcome": trigger_outcome, "score": trigger_score},
+                metadata=terminal_evidence_metadata,
             ),
         )
-        await _settle_trigger_runtime_budget(runtime_task_id, status="completed")
+        if not terminal_committed:
+            raise RuntimeError("trigger terminal transaction did not commit")
+
+        # Artifact projection and Dream advancement are required terminal
+        # consumers. The durable direct-terminal outbox owns both so neither
+        # can run before T0/RESPONSE_COMPLETE succeeds or escape an ack retry.
 
         logger.info(f"⚡ Triggers fired for {agent.name}: {[t.name for t in triggers]}")
-
-        # Emit TRIGGER_END hook → T0 session ledger + extraction pipeline
-        try:
-            from app.runtime.hooks import HookEvent, emit_hook
-
-            await emit_hook(
-                HookEvent.TRIGGER_END,
-                evidence_mode="independent",
-                agent_id=agent_id,
-                session_id=str(session_id),
-                messages=[],
-                source="trigger",
-                metadata={
-                    "tenant_id": str(agent_tenant_id) if agent_tenant_id else None,
-                    "runtime_task_id": runtime_task_id,
-                    "semantic_memory_eligible": True,
-                    "trigger_name": trigger_names[0] if trigger_names else "unknown",
-                    "trigger_type": triggers[0].type if triggers else "unknown",
-                    "trigger_names": trigger_names,
-                    "trigger_types": [t.type for t in triggers],
-                    "status": "success",
-                    "outcome": trigger_outcome,
-                    "score": trigger_score,
-                },
-            )
-        except Exception as _hook_err:
-            logger.debug("[TriggerDaemon] TRIGGER_END hook failed (non-fatal): {}", _hook_err)
 
     except Exception as e:
         logger.opt(exception=True).error(f"Failed to invoke agent {agent_id} for triggers: {e}")
         failure_summary = f"Trigger invocation failed: {str(e)}"
-        failure_metadata = {"error": str(e)}
-        try:
-            failure_metadata.update(await _record_trigger_failure_state(agent_id, triggers, str(e)))
-        except Exception as _failure_state_err:
-            logger.debug("[TriggerDaemon] Trigger failure state update failed (non-fatal): {}", _failure_state_err)
-        await _update_trigger_runtime_task(
+        terminal_overrides = _with_trigger_settlement_outcome(
+            settlement_overrides,
+            triggers,
+            "failure",
+        )
+        failure_metadata = {
+            "error": str(e),
+            "terminal_reason": "turn_abort",
+            "trigger_ids": batch_trigger_ids,
+            "trigger_names": batch_trigger_names,
+            "trigger_types": batch_trigger_types,
+            "trigger_settlement_overrides": terminal_overrides,
+            "workflow_trigger_results": workflow_results,
+        }
+        terminal_status = _aggregate_trigger_terminal_status("failed", terminal_overrides)
+        terminal_committed = await _update_trigger_runtime_task(
             runtime_task_id,
-            status="failed",
+            status=terminal_status,
             result_summary=failure_summary,
             metadata_json=failure_metadata,
             session_id=str(session_id) if session_id else None,
@@ -2346,14 +2534,15 @@ async def _invoke_agent_for_triggers(
                 agent_id=agent_id,
                 user_id=agent_creator_id,
                 session_id=session_id,
-                status="failed",
+                status=terminal_status,
                 summary=failure_summary,
                 trigger_names=[str(getattr(trigger, "name", "")) for trigger in triggers],
                 trigger_types=[str(getattr(trigger, "type", "")) for trigger in triggers],
                 metadata=failure_metadata,
             ),
         )
-        await _settle_trigger_runtime_budget(runtime_task_id, status="failed")
+        if not terminal_committed:
+            raise RuntimeError("trigger exception terminal transaction did not commit") from e
 
 
 async def _settle_trigger_runtime_budget(runtime_task_id: str | None, *, status: str) -> None:
@@ -2362,6 +2551,8 @@ async def _settle_trigger_runtime_budget(runtime_task_id: str | None, *, status:
     try:
         record = await get_runtime_task_record(str(runtime_task_id))
         if not record:
+            return
+        if str(record.get("budget_admission_status") or "").strip() == "settled":
             return
         budget_run_id = _runtime_task_uuid_or_none(record.get("budget_run_id"))
         reservation_key = str(record.get("budget_reservation_key") or "").strip()
@@ -2423,7 +2614,6 @@ async def execute_claimed_trigger_runtime_task(task_id: uuid.UUID | str) -> bool
             trace_id=str(record.get("trace_id") or metadata.get("trace_id") or ""),
             session_id=session_id,
         )
-        await _settle_trigger_runtime_budget(task_uuid.hex, status="needs_reconciliation")
         return False
 
     stale_after = _stale_trigger_intent_cutoff()
@@ -2438,7 +2628,6 @@ async def execute_claimed_trigger_runtime_task(task_id: uuid.UUID | str) -> bool
             ),
             metadata_json={"intent_created_at": created_at.isoformat()},
         )
-        await _settle_trigger_runtime_budget(task_uuid.hex, status="skipped")
         return False
 
     raw_trigger_ids = list(metadata.get("trigger_ids") or [])
@@ -2446,12 +2635,13 @@ async def execute_claimed_trigger_runtime_task(task_id: uuid.UUID | str) -> bool
     agent_id = _runtime_task_uuid_or_none(record.get("parent_agent_id") or metadata.get("agent_id"))
     tenant_id = _runtime_task_uuid_or_none(record.get("tenant_id"))
     if not trigger_ids or agent_id is None or tenant_id is None:
-        await update_runtime_task_record(
+        updated = await _update_trigger_runtime_task(
             task_uuid.hex,
             status="failed",
             result_summary="Approved trigger intent is missing tenant, agent, or trigger identity.",
         )
-        await _settle_trigger_runtime_budget(task_uuid.hex, status="failed")
+        if not updated:
+            raise RuntimeError("invalid trigger intent terminal transaction did not commit")
         return False
     async with tenant_scoped_session(
         tenant_id,
@@ -2470,26 +2660,27 @@ async def execute_claimed_trigger_runtime_task(task_id: uuid.UUID | str) -> bool
             .scalars()
             .all()
         )
-    if not triggers:
-        await update_runtime_task_record(
-            task_uuid.hex,
-            status="skipped",
-            result_summary="Approved trigger intent no longer has active trigger definitions.",
-        )
-        await _settle_trigger_runtime_budget(task_uuid.hex, status="skipped")
-        return False
     event_keys = {
         trigger_id: str(value)
         for raw_id, value in dict(metadata.get("fire_event_keys") or {}).items()
         if (trigger_id := _runtime_task_uuid_or_none(raw_id)) is not None and value
     }
-    await _mark_trigger_fire_started(
+    marked = await _mark_trigger_fire_started(
         agent_id,
         triggers,
         now=datetime.now(timezone.utc),
         runtime_task_id=task_uuid.hex,
         event_keys=event_keys,
+        expected_trigger_ids=trigger_ids,
     )
+    if marked is False:
+        await _skip_trigger_runtime_task(
+            task_uuid.hex,
+            skip_reason="trigger_definitions_missing",
+            result_summary="Approved trigger intent no longer has the complete trigger definition batch.",
+            settlement_overrides={str(trigger_id): "release" for trigger_id in trigger_ids},
+        )
+        return False
     await _invoke_agent_for_triggers(agent_id, triggers, runtime_task_id=task_uuid.hex)
     return True
 
@@ -2566,13 +2757,26 @@ async def fire_trigger_once_now(
             "runtime_task_id": runtime_task_id,
         }
 
-    await _mark_trigger_fire_started(
+    marked = await _mark_trigger_fire_started(
         agent_id,
         [trigger],
         now=now,
         runtime_task_id=runtime_task_id,
         event_keys={trigger.id: event_key},
+        require_enabled=False,
     )
+    if marked is False:
+        await _skip_trigger_runtime_task(
+            runtime_task_id,
+            skip_reason="trigger_definitions_missing",
+            result_summary="Immediate trigger fire stopped because its definition no longer exists.",
+            settlement_overrides={str(trigger.id): "release"},
+        )
+        return {
+            "fired": False,
+            "reason": "trigger_definitions_missing",
+            "runtime_task_id": runtime_task_id,
+        }
     await _queue_trigger_run_for_worker(runtime_task_id, reason="trigger_fired_immediately")
     return {"fired": True, "runtime_task_id": runtime_task_id}
 
@@ -2675,7 +2879,7 @@ async def _tick():
                 continue
 
             try:
-                await _mark_trigger_fire_started(
+                marked = await _mark_trigger_fire_started(
                     agent_id,
                     agent_triggers,
                     now=now,
@@ -2689,6 +2893,19 @@ async def _tick():
                     status="failed",
                     result_summary=f"Trigger fire could not be marked in-flight: {str(e)}",
                     metadata_json={"error": str(e), "stage": "mark_inflight"},
+                )
+                continue
+
+            if marked is False:
+                await _skip_trigger_runtime_task(
+                    runtime_task_id,
+                    skip_reason="trigger_definitions_missing",
+                    result_summary="Trigger batch stopped because one or more definitions no longer exist.",
+                    settlement_overrides={
+                        str(trigger.id): "release"
+                        for trigger in agent_triggers
+                        if getattr(trigger, "id", None) is not None
+                    },
                 )
                 continue
 

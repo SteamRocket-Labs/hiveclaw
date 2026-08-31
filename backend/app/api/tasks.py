@@ -481,7 +481,7 @@ async def cancel_business_task(
         _stamp_task_authority(detail.task, decision)
         return detail
     try:
-        outcome = apply_business_task_cancellation(
+        outcome = await apply_business_task_cancellation(
             db=db,
             task=task,
             runtime_task=runtime_task,

@@ -63,9 +63,7 @@ def _execution_evidence(trace: dict[str, Any]) -> dict[str, Any]:
         "retryable": frame_status == "failed",
         "tool_decision": dict(decision) if isinstance(decision, dict) else None,
         "effective_arguments": (
-            dict(trace["effective_arguments"])
-            if isinstance(trace.get("effective_arguments"), dict)
-            else None
+            dict(trace["effective_arguments"]) if isinstance(trace.get("effective_arguments"), dict) else None
         ),
         "execution_frame": dict(frame) if isinstance(frame, dict) else None,
         "decision_id": trace.get("decision_id"),
@@ -310,6 +308,14 @@ async def _quarantine_same_run_for_reconciliation(
     metadata = dict(task.metadata_json or {})
     existing = dict(metadata.get("session_permission_reconciliation") or {})
     if task.status == "needs_reconciliation" and str(existing.get("invocation_id") or "") == str(invocation.id):
+        from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
+
+        await settle_and_enqueue_runtime_task_terminal(
+            db,
+            task,
+            terminal_source="session_permission_runtime:tool_effect_settlement",
+            root_reason_code=reason_code,
+        )
         return task
     metadata.update(
         {
@@ -326,6 +332,8 @@ async def _quarantine_same_run_for_reconciliation(
     )
     task.status = "needs_reconciliation"
     task.result_summary = None
+    task.completed_at = datetime.now(timezone.utc)
+    task.claim_version = int(task.claim_version or 0) + 1
     task.claimed_by = None
     task.claim_expires_at = None
     task.metadata_json = metadata
@@ -355,6 +363,14 @@ async def _quarantine_same_run_for_reconciliation(
                 },
             )
         ],
+    )
+    from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
+
+    await settle_and_enqueue_runtime_task_terminal(
+        db,
+        task,
+        terminal_source="session_permission_runtime:tool_effect_settlement",
+        root_reason_code=reason_code,
     )
     return task
 

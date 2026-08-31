@@ -9,10 +9,10 @@ Hive 版本号：`backend/VERSION=1.7.0`，`frontend/VERSION=1.7.0`
 
 | 对照物 | 本地路径 | HEAD | 用途 |
 |---|---|---:|---|
-| FreeCode | `/Users/rocky243/vc-saas/free-code-main` | `7dc15d6c8fb0c40c7fcc02ce9b58204324252632` | CC 语义主基线 |
-| Codex | `/Users/rocky243/Context Engineering/codex` | `be33f80bc65159c094ecd06bf155afa3061ce23d` | 工程化、桌面端交互、沙箱和事件投影基线 |
-| claw-code Python | `/Users/rocky243/Context Engineering/claw-code` | `d229a9b022d4845d28a728677e6a6b7c22ec5a2e` | Python port 边界参考 |
-| claude-code-org | `/Users/rocky243/Context Engineering/claude-code-org` | `a99de1bb3c0c301b83b784abbcdb7a3674b2cd45` | CC 语义交叉校验 |
+| FreeCode | `/Users/example-owner/vc-saas/free-code-main` | `7dc15d6c8fb0c40c7fcc02ce9b58204324252632` | CC 语义主基线 |
+| Codex | `/Users/example-owner/Context Engineering/codex` | `be33f80bc65159c094ecd06bf155afa3061ce23d` | 工程化、桌面端交互、沙箱和事件投影基线 |
+| claw-code Python | `/Users/example-owner/Context Engineering/claw-code` | `d229a9b022d4845d28a728677e6a6b7c22ec5a2e` | Python port 边界参考 |
+| claude-code-org | `/Users/example-owner/Context Engineering/claude-code-org` | `a99de1bb3c0c301b83b784abbcdb7a3674b2cd45` | CC 语义交叉校验 |
 
 ## 0. 结论先行
 
@@ -486,7 +486,7 @@ Team needs shared truth
 文档本身不需要 TDD，但落地实现必须以这些测试为红线。建议新增测试后至少跑：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/services/test_personal_knowledge_service.py \
@@ -499,7 +499,7 @@ pytest \
 新增治理与公司知识库后必须补：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/services/test_permission_decision_kernel.py \
@@ -513,7 +513,7 @@ pytest \
 前端 Workbench V2 必须补：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- \
   src/pages/session-workbench/timelineModel.test.ts \
   src/pages/session-workbench/SessionNativeControls.test.tsx

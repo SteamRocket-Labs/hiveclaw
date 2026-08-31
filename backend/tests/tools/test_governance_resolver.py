@@ -26,7 +26,7 @@ async def test_tool_governance_resolver_builds_context_from_runtime_context():
         execution_identity=ExecutionIdentity(
             identity_type="delegated_user",
             identity_id=user_id,
-            label="Rocky via web",
+            label="Example Owner via web",
         ),
         permission_profile=permission_profile,
     )

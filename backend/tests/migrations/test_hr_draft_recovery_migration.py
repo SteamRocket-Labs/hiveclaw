@@ -44,12 +44,15 @@ def test_hr_draft_recovery_migration_backfills_only_unconfirmed_preview_ttl() ->
 
 
 async def test_hr_draft_recovery_migration_really_backfills_and_preserves_secure_downgrade(pg_container) -> None:
-    from app.models.chat_session import ChatSession
-    from app.models.hr_creation import HrCreationDraft
     from app.models.tenant import Tenant
     from app.models.user import User
     from tests.integration.conftest import _async_url
-    from tests.migrations.conftest import _alembic_upgrade, insert_agent_at_schema_revision
+    from tests.migrations.conftest import (
+        _alembic_upgrade,
+        insert_agent_at_schema_revision,
+        insert_chat_session_at_schema_revision,
+        insert_table_row_at_schema_revision,
+    )
 
     database_name = f"hrdraft_{uuid.uuid4().hex[:10]}"
     code, output = pg_container.exec(["psql", "-U", "test", "-d", "postgres", "-c", f"CREATE DATABASE {database_name}"])
@@ -101,36 +104,37 @@ async def test_hr_draft_recovery_migration_really_backfills_and_preserves_secure
                 status="running",
             )
             for session_id in session_ids:
-                db.add(
-                    ChatSession(
-                        id=session_id,
-                        agent_id=hr_agent_id,
-                        tenant_id=tenant_id,
-                        user_id=user_id,
-                        source_channel="web",
-                    )
+                await insert_chat_session_at_schema_revision(
+                    db,
+                    id=session_id,
+                    agent_id=hr_agent_id,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    source_channel="web",
                 )
-            await db.flush()
             for draft_id, session_id, status in zip(
                 draft_ids,
                 session_ids,
                 ("awaiting_confirmation", "confirmed"),
                 strict=True,
             ):
-                db.add(
-                    HrCreationDraft(
-                        id=draft_id,
-                        tenant_id=tenant_id,
-                        hr_agent_id=hr_agent_id,
-                        session_id=session_id,
-                        requested_by_user_id=user_id,
-                        status=status,
-                        blueprint_version=1,
-                        blueprint_hash="sha256:migration",
-                        blueprint_json={"name": "Researcher"},
-                        preview_json={},
-                        created_at=created_at,
-                    )
+                await insert_table_row_at_schema_revision(
+                    db,
+                    "hr_creation_drafts",
+                    id=draft_id,
+                    tenant_id=tenant_id,
+                    hr_agent_id=hr_agent_id,
+                    session_id=session_id,
+                    requested_by_user_id=user_id,
+                    status=status,
+                    blueprint_version=1,
+                    blueprint_hash="sha256:migration",
+                    blueprint_json={"name": "Researcher"},
+                    preview_json={},
+                    claim_version=0,
+                    attempt_count=0,
+                    provisioning_json={},
+                    created_at=created_at,
                 )
             await db.commit()
     finally:

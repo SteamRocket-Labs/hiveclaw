@@ -90,10 +90,10 @@ def test_load_feishu_contacts_reads_agent_workspace_cache(monkeypatch, tmp_path)
         "ts": 1,
         "users": [
             {
-                "name": "王天怡",
+                "name": "Example User B",
                 "open_id": "ou_app_scoped",
                 "user_id": "u_app_scoped",
-                "email": "ty@example.com",
+                "email": "user-b@example.com",
             }
         ],
     }
@@ -120,7 +120,7 @@ async def test_resolve_feishu_delivery_target_by_name_prefers_existing_session(m
                 [
                     SimpleNamespace(
                         external_conv_id="feishu_p2p_ou_app_scoped",
-                        display_name="王天怡",
+                        display_name="Example User B",
                     )
                 ]
             )
@@ -131,7 +131,7 @@ async def test_resolve_feishu_delivery_target_by_name_prefers_existing_session(m
         db,
         agent_id=uuid4(),
         tenant_id=uuid4(),
-        member_name="王天怡",
+        member_name="Example User B",
     )
 
     assert result == ("ou_app_scoped", "open_id")
@@ -158,8 +158,8 @@ async def test_send_feishu_message_backfills_successful_identity_into_tool_args(
         ]
     )
     tool_args = {
-        "member_name": "王天怡",
-        "message": "你好天怡，周二下午两点有空吗？",
+        "member_name": "Example User B",
+        "message": "Example User B 你好，周二下午两点有空吗？",
     }
 
     # RLS 阶段2b: the bare async_session import was removed from messaging; this
@@ -196,7 +196,7 @@ async def test_send_feishu_message_backfills_successful_identity_into_tool_args(
 
     result = await messaging._send_feishu_message(agent_id, tool_args)
 
-    assert result == "✅ 消息已成功发送给 王天怡"
+    assert result == "✅ 消息已成功发送给 Example User B"
     assert tool_args["open_id"] == "ou_app_scoped"
     assert "user_id" not in tool_args
 
@@ -223,8 +223,8 @@ async def test_send_feishu_message_continues_after_prior_session_identity_http_4
         ]
     )
     tool_args = {
-        "member_name": "王天怡",
-        "message": "你好天怡，周二下午两点有空吗？",
+        "member_name": "Example User B",
+        "message": "Example User B 你好，周二下午两点有空吗？",
     }
 
     # RLS 阶段2b: the bare async_session import was removed from messaging; this
@@ -242,7 +242,7 @@ async def test_send_feishu_message_continues_after_prior_session_identity_http_4
         return session
 
     async def _fake_user_search(*_args, **_kwargs):
-        return "👤 **王天怡**\n• open_id: `ou_realappscoped123`\n"
+        return "👤 **Example User B**\n• open_id: `ou_realappscoped123`\n"
 
     send_attempts: list[tuple[str, str]] = []
 
@@ -271,7 +271,7 @@ async def test_send_feishu_message_continues_after_prior_session_identity_http_4
 
     result = await messaging._send_feishu_message(agent_id, tool_args)
 
-    assert result == "✅ 消息已成功发送给 王天怡"
+    assert result == "✅ 消息已成功发送给 Example User B"
     assert tool_args["open_id"] == "ou_realappscoped123"
     assert send_attempts == [
         ("ou_stale_session_id", "open_id"),
@@ -288,7 +288,7 @@ async def test_send_feishu_message_org_sync_fallback_saves_history_without_argum
     config = SimpleNamespace(app_id="cli_agent_app", app_secret="secret")
     org_setting = SimpleNamespace(value={"app_id": "cli_org_sync", "app_secret": "org_secret"})
     target_member = SimpleNamespace(
-        name="王天怡",
+        name="Example User B",
         external_id=None,
         feishu_user_id=None,
         open_id="ou_cross_app_only",
@@ -311,8 +311,8 @@ async def test_send_feishu_message_org_sync_fallback_saves_history_without_argum
         ]
     )
     tool_args = {
-        "member_name": "王天怡",
-        "message": "你好天怡，周二下午两点有空吗？",
+        "member_name": "Example User B",
+        "message": "Example User B 你好，周二下午两点有空吗？",
     }
 
     # RLS 阶段2b: the bare async_session import was removed from messaging; this
@@ -348,7 +348,7 @@ async def test_send_feishu_message_org_sync_fallback_saves_history_without_argum
 
     result = await messaging._send_feishu_message(agent_id, tool_args)
 
-    assert result == "✅ Successfully sent message to 王天怡"
+    assert result == "✅ Successfully sent message to Example User B"
     assert tool_args["open_id"] == "ou_cross_app_only"
     assert send_attempts == [
         ("cli_agent_app", "ou_cross_app_only", "open_id"),
@@ -364,7 +364,7 @@ async def test_send_feishu_message_open_id_success_still_backfills_stable_user_i
     tenant_id = uuid4()
     config = SimpleNamespace(app_id="cli_agent_app", app_secret="secret")
     target_member = SimpleNamespace(
-        name="王天怡",
+        name="Example User B",
         external_id="u_staff_123",
         feishu_user_id="u_staff_123",
         open_id="ou_app_scoped",
@@ -386,8 +386,8 @@ async def test_send_feishu_message_open_id_success_still_backfills_stable_user_i
         ]
     )
     tool_args = {
-        "member_name": "王天怡",
-        "message": "你好天怡，周二下午两点有空吗？",
+        "member_name": "Example User B",
+        "message": "Example User B 你好，周二下午两点有空吗？",
     }
 
     # RLS 阶段2b: the bare async_session import was removed from messaging; this
@@ -423,7 +423,7 @@ async def test_send_feishu_message_open_id_success_still_backfills_stable_user_i
 
     result = await messaging._send_feishu_message(agent_id, tool_args)
 
-    assert result == "✅ Successfully sent message to 王天怡"
+    assert result == "✅ Successfully sent message to Example User B"
     assert tool_args["user_id"] == "u_staff_123"
     assert tool_args["open_id"] == "ou_app_scoped"
     assert send_attempts == [
@@ -458,7 +458,7 @@ async def test_send_feishu_message_direct_open_id_success_backfills_canonical_us
     )
     tool_args = {
         "open_id": "ou_app_scoped",
-        "message": "你好天怡，周二下午两点有空吗？",
+        "message": "Example User B 你好，周二下午两点有空吗？",
     }
 
     # RLS 阶段2b: the bare async_session import was removed from messaging; this

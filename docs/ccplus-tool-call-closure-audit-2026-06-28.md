@@ -46,8 +46,8 @@ cd frontend && npm run build
 
 | 基线 | 读取重点 |
 | --- | --- |
-| FreeCode / CC baseline | `/Users/rocky243/vc-saas/free-code-main/src/query.ts`, `src/skills/loadSkillsDir.ts`, `src/setup.ts` |
-| Codex Rust baseline | `/Users/rocky243/Context Engineering/codex/codex-rs/mcp-server/src/message_processor.rs`, `mcp-server/src/exec_approval.rs`, `core/src/protocol.rs` |
+| FreeCode / CC baseline | `/Users/example-owner/vc-saas/free-code-main/src/query.ts`, `src/skills/loadSkillsDir.ts`, `src/setup.ts` |
+| Codex Rust baseline | `/Users/example-owner/Context Engineering/codex/codex-rs/mcp-server/src/message_processor.rs`, `mcp-server/src/exec_approval.rs`, `core/src/protocol.rs` |
 | Hive current | `backend/app/kernel/engine.py`, `backend/app/tools/service.py`, `backend/app/tools/governance.py`, `backend/app/services/agent_tools.py`, `backend/app/api/chat_sessions.py`, `backend/app/tools/handlers/*`, `backend/app/runtime/*`, `backend/app/services/session_command_runtime.py` |
 | Hive prior parity docs | `docs/cc-tooling-alignment-and-plugin-system.md`, `docs/ccplus-runtime-context-agenttool-codex-delta-gap-audit-2026-06-27.md`, `docs/ccplus-subagent-team-skill-mcp-hooks-parity-audit-2026-06-27.md`, `docs/ccplus-governance-truth-search-repair-plan-2026-06-28.md` |
 
@@ -314,7 +314,7 @@ Feature-gated built-ins 不作为独立类别。实验或 coding-only 能力应�
 验收测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/runtime/test_skill_frontmatter_hooks.py tests/services/test_prompt_contracts.py -q
 ```
@@ -333,7 +333,7 @@ pytest tests/runtime/test_skill_frontmatter_hooks.py tests/services/test_prompt_
 验收测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/api/test_chat_session_runs.py tests/services/test_permission_profile_v1.py -q
 ```
@@ -352,7 +352,7 @@ pytest tests/api/test_chat_session_runs.py tests/services/test_permission_profil
 验收测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/runtime/test_governed_hook_runner.py tests/runtime/test_hook_wire_standard.py -q
 ```
@@ -367,7 +367,7 @@ pytest tests/runtime/test_governed_hook_runner.py tests/runtime/test_hook_wire_s
 验收测试：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/tools/test_mcp_call_tool.py tests/services/test_mcp_tool_discovery.py -q
 ```

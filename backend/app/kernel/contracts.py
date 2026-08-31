@@ -166,9 +166,18 @@ class InvocationResult:
     parts: list[MessagePart] = field(default_factory=list)
     reasoning_signature: str | None = None
     terminal_reason: TerminalReason = TerminalReason.TURN_STOP
+    # A tool explicitly ended the turn without a model-authored final answer.
+    # Outer runtimes consume this as a tool-card/pause boundary rather than
+    # manufacturing an assistant message from the tool-call round.
+    tool_terminal_signal: str | None = None
     # Durable Session V2 ModelResultSeal selected as the terminal candidate.
     # This is an exact mechanical receipt, never platform-authored semantics.
     model_result_receipt: dict[str, Any] | None = None
+    # Caller-owned RESPONSE_COMPLETE input. The Kernel may assemble the exact
+    # turn payload, but only the outer runtime that durably commits the final
+    # response may emit it. This prevents uncommitted model bytes from entering
+    # session learning or evolution candidates.
+    response_complete_payload: dict[str, Any] | None = None
     # Typed provider-failure facts from the status-first LLMError
     # classification (app.services.llm_error_policy).  They are mechanical
     # facts threaded losslessly to the runtime/web terminal layers; no

@@ -77,7 +77,13 @@ async def test_update_trigger_rejects_invalid_replacement_config(monkeypatch):
         reason="send summary",
     )
     requester = SimpleNamespace(id=requester_id, tenant_id=uuid4(), role="member", is_active=True)
-    db = _QueuedDB([_ScalarResult(existing), _ScalarResult(requester)])
+    db = _QueuedDB(
+        [
+            _ScalarResult(existing),
+            _ScalarResult(requester),
+            _ScalarResult(existing),
+        ]
+    )
     # RLS 阶段2b: _handle_update_trigger now resolves the agent's tenant and
     # opens a tenant-scoped session (the bare async_session binding was removed).
     monkeypatch.setattr(trigger_domain, "tenant_scoped_session", lambda *_a, **_k: _AsyncSessionContext(db))

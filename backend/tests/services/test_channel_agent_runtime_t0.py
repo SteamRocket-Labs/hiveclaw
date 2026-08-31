@@ -67,7 +67,7 @@ async def test_channel_runtime_commits_replayable_transcript_for_t0_projection(m
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     async def fake_call_llm(*_args, **kwargs):
-        assert kwargs["auto_close_session"] is False
+        assert "auto_close_session" not in kwargs
         await kwargs["on_tool_call"](
             {
                 "tool": "web_search",

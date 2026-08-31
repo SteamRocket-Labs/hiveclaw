@@ -18,33 +18,33 @@
   "provenance": [
     {
       "system": "hive",
-      "repo": "/Users/rocky243/vc-saas/hiveclaw-main",
+      "repo": "/Users/example/vc-saas/hiveclaw-main",
       "head": "501db6555dae374e5fcf43a6fdcfe8a3dd89343e",
       "state": "dirty_current_worktree",
       "worktree_status_hash_at_review_start": "86488874d33bac3c52f1a4518f7553f81af027430e6df93bde05a7ea971f9059"
     },
     {
       "system": "freecode",
-      "repo": "/Users/rocky243/vc-saas/free-code-main",
+      "repo": "/Users/example/vc-saas/free-code-main",
       "head": "7dc15d6c8fb0c40c7fcc02ce9b58204324252632",
       "state": "source_checkout"
     },
     {
       "system": "claude_code_snapshot",
-      "repo": "/Users/rocky243/Context Engineering/claude-code-org",
+      "repo": "/Users/example/Context Engineering/claude-code-org",
       "head": "a99de1bb3c0c301b83b784abbcdb7a3674b2cd45",
       "state": "readable_2026_03_31_sourcemap_snapshot",
       "caveat": "README 明示这是 2026-03-31 sourcemap 泄漏快照；本次检查的七个核心文件与 FreeCode 对应文件 byte-identical，但不能据此认证当前 Claude Code 二进制。"
     },
     {
       "system": "claude_code_installed_binary",
-      "path": "/Users/rocky243/.local/share/claude/versions/2.1.209",
+      "path": "/Users/example/.local/share/claude/versions/2.1.209",
       "version": "2.1.209 (Claude Code)",
       "state": "Mach-O arm64 binary; source parity unverified"
     },
     {
       "system": "codex",
-      "repo": "/Users/rocky243/Context Engineering/codex",
+      "repo": "/Users/example/Context Engineering/codex",
       "head": "5c19155cbd93bfa099016e7487259f61669823ff",
       "state": "official_source_checkout"
     }

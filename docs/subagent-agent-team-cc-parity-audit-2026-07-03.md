@@ -24,7 +24,7 @@ But there are still semantic gaps:
 
 ## CC Sub-agent Baseline
 
-Primary source: `/Users/rocky243/vc-saas/free-code-main`.
+Primary source: `/Users/example-owner/vc-saas/free-code-main`.
 
 ### Agent Discovery And Selection
 
@@ -177,7 +177,7 @@ Relevant CC files:
 
 ## Hive Current Sub-agent Implementation
 
-Primary source: `/Users/rocky243/vc-saas/hiveclaw-main`.
+Primary source: `/Users/example-owner/vc-saas/hiveclaw-main`.
 
 ### Tool Entry
 
@@ -423,7 +423,7 @@ This was a source audit only. No runtime logic was changed by this document.
 Commands used:
 
 ```bash
-rg -n "getAgentDefinitionsWithOverrides|parseAgentFromMarkdown|function\\s+AgentTool|TeamCreate|resumeAgentBackground|registerAsyncAgent|SendMessage|TaskOutput|spawnTeammate|runAgent|InProcessTeammateTask|teammateMailbox|startInProcessTeammate" /Users/rocky243/vc-saas/free-code-main/src/tools /Users/rocky243/vc-saas/free-code-main/src/tasks /Users/rocky243/vc-saas/free-code-main/src/utils -S
+rg -n "getAgentDefinitionsWithOverrides|parseAgentFromMarkdown|function\\s+AgentTool|TeamCreate|resumeAgentBackground|registerAsyncAgent|SendMessage|TaskOutput|spawnTeammate|runAgent|InProcessTeammateTask|teammateMailbox|startInProcessTeammate" /Users/example-owner/vc-saas/free-code-main/src/tools /Users/example-owner/vc-saas/free-code-main/src/tasks /Users/example-owner/vc-saas/free-code-main/src/utils -S
 rg -n "build_subagent_listing_section|Session Worker Types|Custom Session Worker Definitions|spawn_subagent|team_create|AgentTeam|resume_persisted_subagent_runs|start_subagent_run|definition_name|subagent_type" backend/app backend/tests -S
 ```
 

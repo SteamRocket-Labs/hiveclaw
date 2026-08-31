@@ -192,7 +192,7 @@
 验收命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run \
   src/pages/layout/LayoutSections.test.tsx \
   src/surfaces/workspace/sections.test.ts \
@@ -347,14 +347,14 @@ npm test -- --run \
 文档-only 改动：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main
+cd /Users/example-owner/vc-saas/hiveclaw-main
 git diff --check -- docs/frontend-claude-design-migration-plan.md
 ```
 
 前端 shell 改动：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run \
   src/pages/layout/LayoutSections.test.tsx \
   src/surfaces/workspace/sections.test.ts
@@ -364,7 +364,7 @@ npm run build
 AgentDetail 改动：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run \
   src/pages/AgentDetail.test.tsx \
   src/pages/AgentDetail.query-gating.test.tsx \
@@ -377,7 +377,7 @@ npm run build
 Workspace/Admin 改动：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run \
   src/pages/Dashboard.test.tsx \
   src/pages/workspace/WorkspaceInfoSection.test.tsx \
@@ -390,7 +390,7 @@ npm run build
 最终前端验收：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- --run
 npm run build
 ```

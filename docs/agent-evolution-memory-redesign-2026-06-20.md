@@ -1489,7 +1489,7 @@ frontend/src/api/domains/evolution.test.ts
 后端 targeted：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/services/test_agent_evolution_view.py \
@@ -1508,7 +1508,7 @@ pytest \
 后端 regression slice：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest \
   tests/services/test_auto_dream.py \
@@ -1525,7 +1525,7 @@ pytest \
 后端 lint：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 ruff check app/ tests/
 ```
@@ -1533,21 +1533,21 @@ ruff check app/ tests/
 前端 targeted：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm test -- AgentDetailSections.test.tsx evolution.test.ts
 ```
 
 前端 build：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run build
 ```
 
 迁移 dry-run：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 python -m app.scripts.repair_memory_evolution_legacy --dry-run
 ```
@@ -1555,7 +1555,7 @@ python -m app.scripts.repair_memory_evolution_legacy --dry-run
 迁移 apply：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 python -m app.scripts.repair_memory_evolution_legacy --apply --confirm
 ```

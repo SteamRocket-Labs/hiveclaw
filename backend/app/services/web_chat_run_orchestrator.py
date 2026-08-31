@@ -88,7 +88,6 @@ class WebChatEventPorts:
 class WebChatTerminalPorts:
     finalize_with_assistant: Callable[..., Any]
     finalize_without_assistant: Callable[..., Any]
-    emit_terminal_hook: Callable[..., Any]
     update_runtime_task: Callable[..., Any]
     phase_for_pause: Callable[..., RuntimePhase]
     phase_for_status: Callable[..., RuntimePhase]
@@ -455,15 +454,6 @@ async def _finalize_pre_invocation_response(
     )
     if not finalized:
         return
-    await state.ports.terminal.emit_terminal_hook(
-        agent_id=state.agent.id,
-        session_id=state.session_id,
-        run_uuid=state.run_uuid,
-        runtime_metadata=state.metadata,
-        status=status,
-        reason=reason,
-        source=state.runtime_session_context.source,
-    )
     await state.ports.events.broadcast(state.agent.id, state.session_id, state.ports.events.build_done(response))
 
 
@@ -525,6 +515,7 @@ class _WebChatCallbacks:
 
     async def runtime_event(self, data: dict[str, Any]) -> None:
         state, events = self.state, self.state.ports.events
+        data = {**data, "runtime_task_id": str(state.run_uuid)}
         if data.get("type") == "stream_retry_tombstone":
             state.streamed_chunks.clear()
             await state.stream_batcher.reset_chunk()
@@ -587,6 +578,7 @@ class _WebChatCallbacks:
         state, events = self.state, self.state.ports.events
         runtime_action = events.runtime_action_from_tool_result(data)
         if runtime_action:
+            runtime_action = {**runtime_action, "runtime_task_id": str(state.run_uuid)}
             committed = await events.persist_runtime_event(
                 agent_id=state.agent.id,
                 user_id=state.actor_user_id,
@@ -656,7 +648,6 @@ class _WebChatCallbacks:
         )
         state.terminal_tool_card_finalized = finalized or state.terminal_tool_card_finalized
         if finalized:
-            await _emit_interactive_terminal_hook(state, summary, metadata, reason="terminal_tool_card")
             await self.flush()
             await state.ports.events.broadcast(state.agent.id, state.session_id, state.ports.events.build_done(""))
         return state.terminal_tool_card_finalized
@@ -910,10 +901,31 @@ def _agent_invocation_request(
         initial_round_index=max(0, int(state.metadata.get("session_resume_round_index") or 0)),
         initial_turn_tokens_used=max(0, int(state.metadata.get("session_resume_tokens_used") or 0)),
         disable_tools=state.disable_tools_for_turn,
+        allowed_tool_names=_exact_session_allowed_tools(state.runtime_session_context),
         excluded_tool_names=state.excluded_tool_names_for_turn,
         model_routing_locked=bool(state.metadata.get("model_routing_locked")),
-        emit_turn_stop=False,
     )
+
+
+def _exact_session_allowed_tools(runtime_session_context: Any) -> tuple[str, ...]:
+    metadata = getattr(runtime_session_context, "metadata", None)
+    if not isinstance(metadata, dict):
+        return ()
+    profile = metadata.get("permission_profile")
+    if not isinstance(profile, dict):
+        return ()
+    snapshot = profile.get("capability_policy_snapshot")
+    if not isinstance(snapshot, dict) or snapshot.get("session_exact_scope") is not True:
+        return ()
+    allowed = profile.get("allowed_tools")
+    if (
+        not isinstance(allowed, list)
+        or not allowed
+        or any(not isinstance(name, str) or not name.strip() for name in allowed)
+        or len(allowed) != len(set(allowed))
+    ):
+        raise RuntimeError("invalid_exact_session_permission_profile")
+    return tuple(allowed)
 
 
 def _session_turn_id(state: _WebChatRunState) -> str:
@@ -1082,6 +1094,11 @@ async def _finalize_invocation_result(state: _WebChatRunState, result: Any) -> N
     if state.interactive_pause_summary:
         await _finalize_interactive_pause(state, state.interactive_pause_summary)
         return
+    tool_terminal_signal = str(getattr(result, "tool_terminal_signal", None) or "").strip()
+    if tool_terminal_signal:
+        state.interactive_pause_summary = tool_terminal_signal
+        await _finalize_interactive_pause(state, tool_terminal_signal)
+        return
     response = result.content
     plan_error = (
         None
@@ -1166,27 +1183,7 @@ async def _finalize_interactive_pause(state: _WebChatRunState, summary: str) -> 
     )
     if not finalized:
         return
-    await _emit_interactive_terminal_hook(state, summary, metadata, reason="interactive_pause")
     await state.ports.events.broadcast(state.agent.id, state.session_id, state.ports.events.build_done(""))
-
-
-async def _emit_interactive_terminal_hook(
-    state: _WebChatRunState,
-    summary: str,
-    metadata: dict[str, Any],
-    *,
-    reason: str,
-) -> None:
-    await state.ports.terminal.emit_terminal_hook(
-        agent_id=state.agent.id,
-        session_id=state.session_id,
-        run_uuid=state.run_uuid,
-        runtime_metadata=state.metadata,
-        status="killed" if state.cancel_event.is_set() else "completed",
-        reason=reason,
-        source=state.runtime_session_context.source,
-        extra_metadata=metadata,
-    )
 
 
 async def _finalize_empty_interactive_response(
@@ -1206,16 +1203,6 @@ async def _finalize_empty_interactive_response(
     )
     if not finalized:
         return
-    await state.ports.terminal.emit_terminal_hook(
-        agent_id=state.agent.id,
-        session_id=state.session_id,
-        run_uuid=state.run_uuid,
-        runtime_metadata=state.metadata,
-        status=status,
-        reason="interactive_pause",
-        source=state.runtime_session_context.source,
-        extra_metadata=metadata,
-    )
     await state.ports.events.broadcast(state.agent.id, state.session_id, state.ports.events.build_done(""))
 
 
@@ -1259,29 +1246,9 @@ async def _finalize_assistant_response(
     artifacts = state.ports.artifacts
     model_receipt = getattr(result, "model_result_receipt", None)
     if status == "completed" and isinstance(model_receipt, dict) and model_receipt.get("result_id"):
-        committed = await _commit_canonical_terminal_outcome(state, model_receipt, response)
-        if not committed:
+        commit_receipt = await _commit_canonical_terminal_outcome(state, model_receipt, response)
+        if not commit_receipt:
             return
-        # Hooks, metrics, ChatMessage projections and transport delivery are
-        # sidecars after the canonical outcome transaction.  Their failure may
-        # be retried but can never rewrite the model-authored outcome.
-        try:
-            await state.ports.terminal.emit_terminal_hook(
-                agent_id=state.agent.id,
-                session_id=state.session_id,
-                run_uuid=state.run_uuid,
-                runtime_metadata=state.metadata,
-                status=status,
-                reason="invoke_complete",
-                source=state.runtime_session_context.source,
-                extra_metadata=metadata,
-            )
-        except Exception as exc:
-            state.ports.runtime.logger.warning(
-                "[WebChatRun] terminal sidecar hook failed after committed outcome run={}: {}",
-                state.run_uuid.hex,
-                exc,
-            )
         try:
             await state.ports.events.broadcast(
                 state.agent.id,
@@ -1296,7 +1263,7 @@ async def _finalize_assistant_response(
             )
         return
     if status != "completed":
-        await state.ports.terminal.finalize_without_assistant(
+        finalized = await state.ports.terminal.finalize_without_assistant(
             run_uuid=state.run_uuid,
             agent_id=state.agent.id,
             session_id=state.session_id,
@@ -1334,16 +1301,6 @@ async def _finalize_assistant_response(
         raise
     if not finalized:
         return
-    await state.ports.terminal.emit_terminal_hook(
-        agent_id=state.agent.id,
-        session_id=state.session_id,
-        run_uuid=state.run_uuid,
-        runtime_metadata=state.metadata,
-        status=status,
-        reason="invoke_complete",
-        source=state.runtime_session_context.source,
-        extra_metadata=metadata,
-    )
     await state.ports.events.broadcast(
         state.agent.id,
         state.session_id,
@@ -1355,7 +1312,7 @@ async def _commit_canonical_terminal_outcome(
     state: _WebChatRunState,
     model_receipt: dict[str, Any],
     response: str,
-) -> bool:
+) -> dict[str, Any] | None:
     from app.services.session_terminal_outcome import (
         TerminalOutcomeIneligible,
         TerminalOutcomeNeedsReconciliation,
@@ -1381,7 +1338,7 @@ async def _commit_canonical_terminal_outcome(
         # A separately durable outcome seal is the recovery fence for the
         # all-or-nothing Run/Turn/final transaction below.
         async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
-            await commit_terminal_outcome(
+            committed_outcome = await commit_terminal_outcome(
                 db,
                 tenant_id=state.agent.tenant_id,
                 agent_id=state.agent.id,
@@ -1390,7 +1347,23 @@ async def _commit_canonical_terminal_outcome(
                 outcome_id=outcome_id,
             )
             await db.commit()
-        return True
+        terminal_event_id = committed_outcome.terminal_event_id
+        return {
+            "schema": "hive.response_commit.v1",
+            "committed": True,
+            "commit_kind": "session_v2_terminal_outcome",
+            "idempotency_key": f"session-run-outcome:{committed_outcome.id}",
+            "runtime_task_id": str(state.run_uuid),
+            "terminal_outcome_id": str(committed_outcome.id),
+            "terminal_result_id": str(committed_outcome.terminal_result_id),
+            "terminal_event_id": str(terminal_event_id) if terminal_event_id else None,
+            "source_refs": [
+                f"session-run-outcome://{committed_outcome.id}",
+                f"session-model-result://{committed_outcome.terminal_result_id}",
+                *([f"session-event://{terminal_event_id}"] if terminal_event_id else []),
+                f"runtime-task://{state.run_uuid}",
+            ],
+        }
     except TerminalOutcomeIneligible as exc:
         state.ports.runtime.logger.info(
             "[WebChatRun] terminal candidate held for continuation run={}: {}",
@@ -1407,7 +1380,7 @@ async def _commit_canonical_terminal_outcome(
                 "reason": "terminal_ineligible",
             },
         )
-        return False
+        return None
     except TerminalOutcomeNeedsReconciliation as exc:
         await state.ports.terminal.update_runtime_task(
             state.run_uuid,
@@ -1421,7 +1394,7 @@ async def _commit_canonical_terminal_outcome(
                 }
             },
         )
-        return False
+        return None
 
 
 async def _record_canonical_terminal_artifact_selection(
@@ -1550,22 +1523,6 @@ async def _handle_tool_lifecycle_persistence_failure(
         await _handle_terminal_persistence_failure(state, exc, terminal_exc)
         return
     try:
-        await state.ports.terminal.emit_terminal_hook(
-            agent_id=state.agent.id,
-            session_id=state.session_id,
-            run_uuid=state.run_uuid,
-            runtime_metadata=state.metadata or None,
-            status="needs_reconciliation",
-            reason="tool_lifecycle_persistence",
-            extra_metadata=metadata,
-        )
-    except Exception as hook_exc:
-        state.ports.runtime.logger.warning(
-            "[WebChatRun] Tool persistence reconciliation hook failed for {}: {}",
-            state.run_uuid.hex,
-            hook_exc,
-        )
-    try:
         await state.ports.events.broadcast(
             state.agent.id,
             state.session_id,
@@ -1637,15 +1594,6 @@ async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> N
             await state.ports.terminal.update_runtime_task(
                 state.run_uuid, status="failed", result_summary=summary, metadata_json=metadata
             )
-        await state.ports.terminal.emit_terminal_hook(
-            agent_id=agent_id,
-            session_id=session_id,
-            run_uuid=state.run_uuid,
-            runtime_metadata=state.metadata or None,
-            status="failed",
-            reason="runtime_exception",
-            extra_metadata=metadata,
-        )
     except Exception as terminal_exc:
         await _handle_terminal_persistence_failure(state, exc, terminal_exc)
 
@@ -1750,15 +1698,6 @@ async def _handle_cancelled_failure(state: _WebChatRunState) -> None:
     )
     if state.agent is None or not state.session_id:
         return
-    await state.ports.terminal.emit_terminal_hook(
-        agent_id=state.agent.id,
-        session_id=state.session_id,
-        run_uuid=state.run_uuid,
-        runtime_metadata=state.metadata or None,
-        status="killed",
-        reason="user_cancelled",
-        extra_metadata={"cancelled_by_user": True, "terminal_reason": TerminalReason.USER_CANCEL.value},
-    )
 
 
 def _failed_file_change_kwargs(state: _WebChatRunState) -> dict[str, Any]:

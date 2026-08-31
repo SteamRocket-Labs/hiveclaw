@@ -59,6 +59,24 @@ async def _verified_plan_authorization(task, **_kwargs):
     return SimpleNamespace(lease_id=task.plan_authorization["lease_id"])
 
 
+def _completed_invocation(request, content: str, *, terminal_reason: str = "turn_stop"):
+    return SimpleNamespace(
+        content=content,
+        terminal_reason=terminal_reason,
+        failure_code=None,
+        response_complete_payload={
+            "agent_id": request.agent_id,
+            "session_id": request.memory_session_id,
+            "messages": request.messages,
+            "source": request.session_context.source,
+            "metadata": {
+                "tenant_id": str(request.tenant_id),
+                "final_response": content,
+            },
+        },
+    )
+
+
 def test_business_task_cancel_event_only_latches_for_a_registered_runtime_run() -> None:
     from app.services import task_executor
 
@@ -81,7 +99,11 @@ def test_business_task_cancel_event_only_latches_for_a_registered_runtime_run() 
 
 
 @pytest.mark.asyncio
-async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
+@pytest.mark.parametrize(
+    ("terminal_reason", "expected_status"),
+    [("turn_stop", "succeeded"), ("provider_error", "failed")],
+)
+async def test_execute_task_delegates_to_runtime_invoker(monkeypatch, terminal_reason, expected_status):
     from app.services.task_executor import execute_task
 
     task_id = uuid4()
@@ -140,10 +162,11 @@ async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
     captured = {}
     activity_calls = []
     verified_authorizations = []
+    premature_t0_seals = []
 
     async def fake_invoke_agent(request):
         captured["request"] = request
-        return SimpleNamespace(content="任务已完成")
+        return _completed_invocation(request, "任务已完成", terminal_reason=terminal_reason)
 
     async def fake_log_activity(*args, **kwargs):
         activity_calls.append((args, kwargs))
@@ -156,6 +179,11 @@ async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
     monkeypatch.setattr("app.services.task_executor.tenant_scoped_session", lambda *a, **k: sessions.pop(0))
     monkeypatch.setattr("app.services.task_executor.TaskLog", lambda **kwargs: SimpleNamespace(**kwargs))
     monkeypatch.setattr("app.services.task_executor.invoke_agent", fake_invoke_agent)
+    monkeypatch.setattr(
+        "app.services.task_executor._seal_task_t0_segment",
+        lambda **kwargs: premature_t0_seals.append(kwargs),
+        raising=False,
+    )
     monkeypatch.setattr(
         "app.services.task_executor.verify_consumed_plan_authorization_lease",
         fake_verify_authorization,
@@ -189,15 +217,22 @@ async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
     assert request.execution_identity.identity_type == "agent_bot"
     assert request.execution_identity.identity_id == agent_id
     assert request.execution_identity.label == "Agent: Ops Agent (task)"
+    assert not hasattr(request, "emit_turn_stop")
 
-    assert outcome.status.value == "succeeded"
-    assert outcome.result == "任务已完成"
+    assert outcome.status.value == expected_status
+    if expected_status == "succeeded":
+        assert outcome.result == "任务已完成"
+        assert activity_calls
+    else:
+        assert outcome.result is None
+        assert outcome.error_code == "provider_error"
+        assert activity_calls == []
     # The executor records evidence but cannot invent a terminal Task status.
     # The Task + RuntimeTask atomic finalizer applies that outcome together.
     assert task.status == "doing"
     assert task.completed_at is None
     assert any(getattr(entry, "content", None) == "任务已完成" for entry in final_session.added)
-    assert activity_calls
+    assert premature_t0_seals == []
     assert len(verified_authorizations) == 1
     assert verified_authorizations[0]["db"] is setup_session
     assert verified_authorizations[0]["plan_id"] == plan_id
@@ -313,7 +348,7 @@ async def test_execute_task_persists_reflection_session_tool_calls_and_t0_ledger
                 "result": long_tool_result,
             }
         )
-        return SimpleNamespace(content="任务已完成，已整理竞品动态。")
+        return _completed_invocation(request, "任务已完成，已整理竞品动态。")
 
     monkeypatch.setattr("app.services.task_executor.resolve_tenant_for_agent", _fake_resolve_tenant)
     monkeypatch.setattr("app.services.task_executor.tenant_scoped_session", lambda *a, **k: sessions.pop(0))

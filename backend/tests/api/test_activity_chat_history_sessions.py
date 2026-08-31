@@ -275,7 +275,7 @@ async def test_list_conversations_uses_feishu_delivery_target_label_when_sender_
         user_id=user_id,
         source_channel="feishu",
         external_conv_id="feishu_p2p_u_123",
-        delivery_target_json={"channel": "feishu", "user_label": "王天怡", "user_id": "u_123"},
+        delivery_target_json={"channel": "feishu", "user_label": "Example User B", "user_id": "u_123"},
         peer_agent_id=None,
         title="Feishu session",
     )
@@ -308,7 +308,7 @@ async def test_list_conversations_uses_feishu_delivery_target_label_when_sender_
             "conv_id": str(session_id),
             "partner_type": "feishu",
             "partner_id": "feishu_p2p_u_123",
-            "partner_name": "📱 王天怡",
+            "partner_name": "📱 Example User B",
             "last_message": "普通消息",
             "message_count": 2,
             "last_at": "2026-04-14T14:30:00+00:00",

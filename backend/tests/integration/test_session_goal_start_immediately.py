@@ -73,12 +73,14 @@ async def test_start_goal_start_immediately_projects_without_lazy_io(owner_sessi
             session=SimpleNamespace(id=session_id),
         )
 
-    async def fake_start_web_chat_run(**kwargs):
-        # Mirror the real payload shape; the run id is the request id hex.
-        return {"run_id": str(kwargs["run_id"]), "status": "pending"}
+    async def fake_submit_live_human_input(**kwargs):
+        assert kwargs["content"] == "J-04 exercise the production journey contract with durable goal."
+        assert kwargs["requested_kind"] == "start_turn"
+        assert kwargs["runtime_metadata"]["goal_id"] == str(request_id)
+        return {"run": {"run_id": str(request_id), "status": "pending"}}
 
     monkeypatch.setattr(goals_api, "authorize_session_action", fake_authorize)
-    monkeypatch.setattr(goals_api, "start_web_chat_run", fake_start_web_chat_run)
+    monkeypatch.setattr(goals_api, "submit_live_human_input", fake_submit_live_human_input)
 
     request_id = uuid.uuid4()
     async with owner_sessionmaker() as db:
@@ -120,13 +122,14 @@ async def test_goal_replay_returns_canonical_terminal_task_status(owner_sessionm
             session=SimpleNamespace(id=kwargs["session_id"]),
         )
 
-    async def fake_start_web_chat_run(**kwargs):
+    async def fake_submit_live_human_input(**kwargs):
         # Write-time snapshot is "pending" even though the canonical task
         # later completes — exactly the stale-metadata defect.
-        return {"run_id": str(kwargs["run_id"]), "status": "pending"}
+        assert kwargs["runtime_metadata"]["goal_id"] == str(request_id)
+        return {"run": {"run_id": str(request_id), "status": "pending"}}
 
     monkeypatch.setattr(goals_api, "authorize_session_action", fake_authorize)
-    monkeypatch.setattr(goals_api, "start_web_chat_run", fake_start_web_chat_run)
+    monkeypatch.setattr(goals_api, "submit_live_human_input", fake_submit_live_human_input)
 
     request_id = uuid.uuid4()
     body = goals_api.StartGoalIn(
@@ -231,3 +234,69 @@ async def test_goal_replay_returns_canonical_terminal_task_status(owner_sessionm
     assert other_replay["run"]["run_id"] == str(request_id)
     assert other_replay["run"]["replayed"] is True
     assert other_replay["run"]["status"] == "pending"
+
+
+async def test_deferred_goal_input_binds_the_runtime_when_dispatch_starts(owner_sessionmaker, monkeypatch) -> None:
+    from sqlalchemy import select
+
+    from app.models.agent_session_goal import AgentSessionGoal
+    from app.services import session_input_dispatch
+
+    agent_id, session_id, tenant_id, user_id = await _seed_principals(owner_sessionmaker)
+    goal_id = uuid.uuid4()
+    input_id = uuid.uuid4()
+    run_id = uuid.uuid5(input_id, "session-v2-runtime-run")
+
+    async def fake_start_web_chat_run(**kwargs):
+        assert kwargs["run_id"] == run_id
+        assert kwargs["extra_metadata"]["session_v2_input_id"] == str(input_id)
+        return {"run_id": run_id.hex, "status": "pending"}
+
+    monkeypatch.setattr("app.services.web_chat_runtime.start_web_chat_run", fake_start_web_chat_run)
+    async with owner_sessionmaker() as db:
+        agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one()
+        session = (await db.execute(select(ChatSession).where(ChatSession.id == session_id))).scalar_one()
+        user = (await db.execute(select(User).where(User.id == user_id))).scalar_one()
+        goal = AgentSessionGoal(
+            id=goal_id,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            chat_session_id=session_id,
+            created_by_user_id=user_id,
+            objective="Deferred goal binding regression.",
+        )
+        db.add(goal)
+        await db.flush()
+
+        payload = await session_input_dispatch._start_input_runtime(
+            db,
+            row=SimpleNamespace(
+                id=input_id,
+                target_turn_id=None,
+                intent="start_turn",
+                content_parts_json=[{"type": "text", "text": "Full deferred goal prompt."}],
+            ),
+            command=SimpleNamespace(
+                id=uuid.uuid4(),
+                target_json={
+                    "runtime_metadata": {
+                        "source": "session_goal",
+                        "goal_id": str(goal_id),
+                        "runtime_task_type": "web_chat_turn",
+                        "budget_interactive": False,
+                    }
+                },
+            ),
+            agent=agent,
+            user=user,
+            session=session,
+            successor=False,
+        )
+        await db.commit()
+
+    assert payload["run_id"] == str(run_id)
+    async with owner_sessionmaker() as db:
+        stored = await db.get(AgentSessionGoal, goal_id)
+        assert stored is not None
+        assert stored.metadata_json["last_goal_run_id"] == str(run_id)
+        assert stored.metadata_json["last_goal_run_status"] == "pending"

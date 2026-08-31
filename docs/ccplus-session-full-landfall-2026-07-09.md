@@ -36,7 +36,7 @@ ProviderPromptLedger
 
 Baseline 顺序继续使用项目约定：
 
-1. FreeCode runnable baseline：`/Users/rocky243/vc-saas/free-code-main`
+1. FreeCode runnable baseline：`/Users/example-owner/vc-saas/free-code-main`
 2. claw-code Python/Rust port：只用于 port / session hygiene 参考
 3. claude-code-org：交叉核对
 4. Codex Rust：工程控制、typed telemetry、approval/sandbox/session ergonomics delta

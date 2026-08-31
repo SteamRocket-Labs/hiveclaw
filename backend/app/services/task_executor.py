@@ -8,9 +8,8 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.kernel.contracts import ExecutionIdentityRef
+from app.kernel.contracts import ExecutionIdentityRef, TerminalReason
 from app.database import tenant_scoped_session
-from app.memory.t0.ledger import seal_t0_session_segment
 from app.models.agent import Agent
 from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
@@ -258,6 +257,7 @@ async def _append_task_session_event(
     message_id: uuid.UUID | None = None,
     metadata: dict | None = None,
     t0_role: str | None = None,
+    runtime_task_id: uuid.UUID | None = None,
 ) -> AppendSessionEventResult:
     return await append_session_event(
         db=db,
@@ -270,36 +270,23 @@ async def _append_task_session_event(
         t0_role=t0_role,
         user_id=actor_id,
         participant_id=participant_id,
+        run_id=runtime_task_id,
         message_id=message_id,
         content=content,
         visibility_scope="agent_owner",
         listed_surface="task_updates",
         source="task",
-        metadata={"task_id": str(task_id), "task_type": task_type, **(metadata or {})},
+        metadata={
+            "task_id": str(task_id),
+            "task_type": task_type,
+            **(
+                {"runtime_task_id": str(runtime_task_id), "turn_id": f"turn-{runtime_task_id.hex}"}
+                if runtime_task_id
+                else {}
+            ),
+            **(metadata or {}),
+        },
     )
-
-
-def _seal_task_t0_segment(
-    *,
-    agent_id: uuid.UUID,
-    session_id: uuid.UUID,
-    task_id: uuid.UUID,
-    task_type: str,
-    tenant_id: uuid.UUID | None = None,
-) -> None:
-    try:
-        seal_t0_session_segment(
-            agent_id=agent_id,
-            session_id=session_id,
-            reason="task_complete",
-            metadata={
-                "task_id": str(task_id),
-                "task_type": task_type,
-                "tenant_id": str(tenant_id) if tenant_id else None,
-            },
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("[TaskExec] T0 seal skipped for task {}: {}", task_id, exc)
 
 
 async def _task_plan_gate_allows(
@@ -344,6 +331,7 @@ async def execute_task(
     *,
     requester_user_id: uuid.UUID | None = None,
     cancel_event: asyncio.Event | None = None,
+    runtime_task_id: uuid.UUID | None = None,
 ) -> TaskExecutionOutcome:
     """Execute a task using the agent's configured LLM with full context.
 
@@ -508,6 +496,7 @@ async def execute_task(
             runtime_source="runtime_task",
             visibility_scope="agent_owner",
             listed_surface="task_updates",
+            runtime_task_id=runtime_task_id,
             title=f"🧾 Task: {task_title}"[:200],
         )
         db.add(reflection_session)
@@ -528,6 +517,7 @@ async def execute_task(
             tenant_id=tenant_id,
             participant_id=agent_participant_id,
             metadata={"title": task_title},
+            runtime_task_id=runtime_task_id,
         )
         await db.commit()
 
@@ -576,6 +566,7 @@ async def execute_task(
                     tenant_id=tenant_id,
                     participant_id=agent_participant_id,
                     metadata={"tool_name": data.get("name"), "status": "done"},
+                    runtime_task_id=runtime_task_id,
                 )
                 await tc_db.commit()
 
@@ -585,6 +576,7 @@ async def execute_task(
                 fallback_model=fallback_model,
                 messages=runtime_messages,
                 memory_messages=runtime_messages,
+                memory_session_id=str(reflection_session_id),
                 agent_name=agent_name,
                 role_description=agent.role_description or "",
                 tenant_id=tenant_id,
@@ -603,6 +595,8 @@ async def execute_task(
                     metadata={
                         "task_id": str(task_id),
                         "task_type": task_type,
+                        "runtime_task_id": str(runtime_task_id) if runtime_task_id else None,
+                        "turn_id": f"turn-{runtime_task_id.hex}" if runtime_task_id else None,
                     },
                 ),
                 on_tool_call=_on_tool_call,
@@ -611,6 +605,23 @@ async def execute_task(
                 cancel_event=cancel_event,
             )
         )
+        terminal_reason = getattr(result, "terminal_reason", TerminalReason.TURN_ABORT)
+        terminal_reason_value = (
+            terminal_reason.value if getattr(terminal_reason, "value", None) else str(terminal_reason or "")
+        )
+        failure_code = str(getattr(result, "failure_code", None) or "").strip() or None
+        response_complete_payload = (
+            json.loads(
+                json.dumps(
+                    getattr(result, "response_complete_payload", None),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                )
+            )
+            if isinstance(getattr(result, "response_complete_payload", None), dict)
+            else None
+        )
         if cancel_event is not None and cancel_event.is_set():
             return TaskExecutionOutcome(
                 status=TaskExecutionStatus.CANCELLED,
@@ -618,6 +629,7 @@ async def execute_task(
                 error_code="cancelled_by_requester",
                 retryable=False,
                 reflection_session_id=str(reflection_session_id),
+                terminal_reason=TerminalReason.USER_CANCEL.value,
             )
         reply = str(result.content or "").strip()
         if not reply:
@@ -668,16 +680,33 @@ async def execute_task(
             tenant_id=tenant_id,
             participant_id=agent_participant_id,
             metadata={"title": task_title},
+            runtime_task_id=runtime_task_id,
         )
         await db.commit()
-        _seal_task_t0_segment(
-            agent_id=agent_id,
-            session_id=reflection_session_id,
-            task_id=task_id,
-            task_type=task_type,
-            tenant_id=tenant_id,
+        logger.info(f"[TaskExec] Task {task_id} persisted assistant evidence for atomic finalization")
+
+    if terminal_reason_value != TerminalReason.TURN_STOP.value:
+        return TaskExecutionOutcome(
+            status=(
+                TaskExecutionStatus.CANCELLED
+                if terminal_reason_value == TerminalReason.USER_CANCEL.value
+                else TaskExecutionStatus.FAILED
+            ),
+            summary=f"Business task ended without a canonical completion ({terminal_reason_value or 'unknown'}).",
+            error_code=str(failure_code or terminal_reason_value or "terminal_abort"),
+            retryable=terminal_reason_value != TerminalReason.USER_CANCEL.value,
+            reflection_session_id=str(reflection_session_id),
+            terminal_reason=terminal_reason_value or None,
         )
-        logger.info(f"[TaskExec] Task {task_id} produced a terminal outcome")
+    if response_complete_payload is None:
+        return TaskExecutionOutcome(
+            status=TaskExecutionStatus.NEEDS_RECONCILIATION,
+            summary="Business task completed its model turn without a durable response projection receipt.",
+            error_code="response_complete_payload_missing",
+            retryable=False,
+            reflection_session_id=str(reflection_session_id),
+            terminal_reason=terminal_reason_value,
+        )
 
     # Log activity
     from app.services.activity_logger import log_activity
@@ -694,6 +723,8 @@ async def execute_task(
         summary=f"Business task {task_title} completed.",
         result=reply,
         reflection_session_id=str(reflection_session_id),
+        terminal_reason=terminal_reason_value,
+        response_complete_payload=response_complete_payload,
     )
 
 

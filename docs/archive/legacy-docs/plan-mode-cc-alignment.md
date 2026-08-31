@@ -39,7 +39,7 @@ Hive 要对齐的是 Claude Code / Codex 的 **Plan Mode 运行语义**，不是
 
 ### 1.1 Claude Code
 
-源码位置：`/Users/rocky243/Context Engineering/claude-code-org`
+源码位置：`/Users/example-owner/Context Engineering/claude-code-org`
 
 | 事实 | 源码锚点 | 结论 |
 |---|---|---|
@@ -53,7 +53,7 @@ Claude Code 的 coding-only 限制不适合照搬到 Hive。Hive 是 co-work/con
 
 ### 1.2 Codex
 
-源码位置：`/Users/rocky243/Context Engineering/codex/codex-rs`
+源码位置：`/Users/example-owner/Context Engineering/codex/codex-rs`
 
 | 事实 | 源码锚点 | 结论 |
 |---|---|---|
@@ -396,7 +396,7 @@ confirm plan
 命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+cd /Users/example-owner/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_plan_mode_session_handoff.py \
   tests/services/test_web_chat_runtime.py \
@@ -426,7 +426,7 @@ pytest tests/services/test_plan_mode_session_handoff.py \
 命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
 npm run test -- AgentChatSection.test.tsx PlanCard.test.tsx plans.test.ts
 npm run build
 ```

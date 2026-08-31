@@ -35,9 +35,9 @@ CC 的价值不在视觉样式，而在 session/runtime 语义：
 
 参考证据：
 
-- `/Users/rocky243/vc-saas/free-code-main/src/commands.ts`
-- `/Users/rocky243/vc-saas/free-code-main/src/components/messages/CompactBoundaryMessage.tsx`
-- `/Users/rocky243/vc-saas/free-code-main/src/components/StatusLine.tsx`
+- `/Users/example-owner/vc-saas/free-code-main/src/commands.ts`
+- `/Users/example-owner/vc-saas/free-code-main/src/components/messages/CompactBoundaryMessage.tsx`
+- `/Users/example-owner/vc-saas/free-code-main/src/components/StatusLine.tsx`
 
 ### 1.1.1 CC checkpoint / rewind / branch 源码核验结论
 
@@ -52,19 +52,19 @@ CC 的价值不在视觉样式，而在 session/runtime 语义：
 
 源码证据：
 
-- `/Users/rocky243/vc-saas/free-code-main/src/commands/branch/branch.ts:61`
-- `/Users/rocky243/vc-saas/free-code-main/src/commands/branch/branch.ts:122`
-- `/Users/rocky243/vc-saas/free-code-main/src/commands/branch/branch.ts:274`
-- `/Users/rocky243/vc-saas/free-code-main/src/components/MessageSelector.tsx:328`
-- `/Users/rocky243/vc-saas/free-code-main/src/screens/REPL.tsx:3659`
-- `/Users/rocky243/vc-saas/free-code-main/src/screens/REPL.tsx:3674`
-- `/Users/rocky243/vc-saas/free-code-main/src/screens/REPL.tsx:3715`
-- `/Users/rocky243/vc-saas/free-code-main/src/cli/print.ts:573`
-- `/Users/rocky243/vc-saas/free-code-main/src/cli/print.ts:736`
-- `/Users/rocky243/vc-saas/free-code-main/src/cli/print.ts:4520`
-- `/Users/rocky243/vc-saas/free-code-main/src/utils/fileHistory.ts:347`
-- `/Users/rocky243/vc-saas/free-code-main/src/main.tsx:991`
-- `/Users/rocky243/vc-saas/free-code-main/src/cli/print.ts:5105`
+- `/Users/example-owner/vc-saas/free-code-main/src/commands/branch/branch.ts:61`
+- `/Users/example-owner/vc-saas/free-code-main/src/commands/branch/branch.ts:122`
+- `/Users/example-owner/vc-saas/free-code-main/src/commands/branch/branch.ts:274`
+- `/Users/example-owner/vc-saas/free-code-main/src/components/MessageSelector.tsx:328`
+- `/Users/example-owner/vc-saas/free-code-main/src/screens/REPL.tsx:3659`
+- `/Users/example-owner/vc-saas/free-code-main/src/screens/REPL.tsx:3674`
+- `/Users/example-owner/vc-saas/free-code-main/src/screens/REPL.tsx:3715`
+- `/Users/example-owner/vc-saas/free-code-main/src/cli/print.ts:573`
+- `/Users/example-owner/vc-saas/free-code-main/src/cli/print.ts:736`
+- `/Users/example-owner/vc-saas/free-code-main/src/cli/print.ts:4520`
+- `/Users/example-owner/vc-saas/free-code-main/src/utils/fileHistory.ts:347`
+- `/Users/example-owner/vc-saas/free-code-main/src/main.tsx:991`
+- `/Users/example-owner/vc-saas/free-code-main/src/cli/print.ts:5105`
 
 ### 1.2 Codex 值得吸收的是 TUI 工程表达
 
@@ -83,13 +83,13 @@ Codex 的 TUI 表达比 CC 更完整，尤其适合 Web 借鉴：
 
 参考证据：
 
-- `/Users/rocky243/Context Engineering/codex/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__command_popup__tests__command_popup_default_items.snap`
-- `/Users/rocky243/Context Engineering/codex/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__approval_overlay__tests__approval_overlay_permissions_prompt.snap`
-- `/Users/rocky243/Context Engineering/codex/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__footer__tests__footer_active_agent_label.snap`
-- `/Users/rocky243/Context Engineering/codex/codex-rs/app-server-protocol/schema/typescript/v2/ThreadForkResponse.ts`
-- `/Users/rocky243/Context Engineering/codex/codex-rs/app-server-protocol/schema/typescript/v2/ThreadRollbackResponse.ts`
-- `/Users/rocky243/Context Engineering/codex/codex-rs/app-server-protocol/schema/typescript/v2/CollabAgentTool.ts`
-- `/Users/rocky243/Context Engineering/codex/codex-rs/app-server-protocol/schema/typescript/v2/PermissionsRequestApprovalParams.ts`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__command_popup__tests__command_popup_default_items.snap`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__approval_overlay__tests__approval_overlay_permissions_prompt.snap`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__footer__tests__footer_active_agent_label.snap`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/app-server-protocol/schema/typescript/v2/ThreadForkResponse.ts`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/app-server-protocol/schema/typescript/v2/ThreadRollbackResponse.ts`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/app-server-protocol/schema/typescript/v2/CollabAgentTool.ts`
+- `/Users/example-owner/Context Engineering/codex/codex-rs/app-server-protocol/schema/typescript/v2/PermissionsRequestApprovalParams.ts`
 
 ### 1.3 Hive 当前前端状态
 

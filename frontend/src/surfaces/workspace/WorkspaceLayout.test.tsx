@@ -31,6 +31,7 @@ describe('WorkspaceLayout audience navigation', () => {
     expect(markup).toContain('data-heading="Company Admin"');
     expect(markup).toContain('href="/enterprise/knowledge"');
     expect(markup).toContain('href="/enterprise/users"');
+    expect(markup).toContain('href="/enterprise/invitations"');
   });
 
   it('renders only platform sections and a truthful platform heading for a platform administrator', () => {

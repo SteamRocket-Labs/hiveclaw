@@ -27,6 +27,8 @@ services:
     build:
       context: ./backend
       args:
+        HIVE_PIP_INDEX_URL: ${HIVE_PIP_INDEX_URL:-}
+        HIVE_PIP_TRUSTED_HOST: ${HIVE_PIP_TRUSTED_HOST:-}
         CLAWITH_PIP_INDEX_URL: ${CLAWITH_PIP_INDEX_URL:-}
         CLAWITH_PIP_TRUSTED_HOST: ${CLAWITH_PIP_TRUSTED_HOST:-}
         OFFICECLI_DOWNLOAD_URL: ${OFFICECLI_DOWNLOAD_URL:-}
@@ -42,9 +44,12 @@ services:
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-jwt-secret}
       SECRETS_MASTER_KEY: ${SECRETS_MASTER_KEY:-}
+      SECRETS_MASTER_KEY_PREVIOUS: ${SECRETS_MASTER_KEY_PREVIOUS:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}  # Set explicit origins in production!
       FEISHU_APP_ID: ${FEISHU_APP_ID:-}
       FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
+      HIVE_CONNECT_SKILL_REPO_URL: ${HIVE_CONNECT_SKILL_REPO_URL:-}
+      HIVE_CONNECT_NPM_PACKAGE: ${HIVE_CONNECT_NPM_PACKAGE:-}
       DOCKER_NETWORK: hive_network
       # GitHub personal access token — fallback for ClawHub/GitHub skill imports
       # when no tenant-level token is configured. Raises API rate limit from 60 to 5,000/hr.

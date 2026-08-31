@@ -474,13 +474,17 @@ def _merge_runtime_permission_metadata(
     session_metadata: dict[str, Any] | None,
 ) -> dict[str, Any]:
     merged = dict(runtime_metadata or {})
+    runtime_permission = _permission_metadata_from_mapping(merged)
+    runtime_profile = runtime_permission.get("permission_profile") if runtime_permission else None
+    runtime_snapshot = runtime_profile.get("capability_policy_snapshot") if isinstance(runtime_profile, dict) else None
+    if isinstance(runtime_snapshot, dict) and runtime_snapshot.get("session_exact_scope") is True:
+        merged.update(runtime_permission)
+        return merged
     session_permission = _permission_metadata_from_mapping(session_metadata)
     if session_permission:
         merged.update(session_permission)
-    else:
-        runtime_permission = _permission_metadata_from_mapping(merged)
-        if runtime_permission:
-            merged.update(runtime_permission)
+    elif runtime_permission:
+        merged.update(runtime_permission)
     return merged
 
 
@@ -1153,6 +1157,7 @@ async def _reconcile_terminal_transcript_ghost(db: AsyncSession, task: RuntimeTa
         metadata_json=metadata,
         terminal_source="terminal_transcript_reconciliation",
     )
+    await _enqueue_web_terminal_boundary(db, task)
     await db.commit()
     logger.warning(
         "[WebChatRun] Reconciled ghost active run {} from terminal transcript event {}",
@@ -2092,6 +2097,7 @@ async def _repair_latest_missing_model_terminal_event(
         status="failed",
         failure=_llm_model_missing_failure_payload(),
     )
+    await _enqueue_web_terminal_boundary(db, task)
     await db.commit()
     logger.warning(
         "[WebChatRun] Repaired missing llm_model_missing terminal event for run {}",
@@ -2297,6 +2303,7 @@ async def start_web_chat_run(
             attachments=attachments,
             parts=parts,
             extra_metadata=extra_metadata,
+            idempotency_key=f"web-chat-run:{run_id}" if run_id is not None else None,
         )
         await broadcast_web_chat_event(agent.id, session.id, {"type": "user_message_queued", **payload})
         raise ActiveWebChatRunExists(payload)
@@ -3393,23 +3400,14 @@ async def _project_agent_team_terminal_state(
     result_summary: str | None,
     metadata_json: dict[str, Any] | None,
 ) -> None:
-    from app.services.agent_team_runtime_service import (
-        project_agent_team_close_completion,
-        project_agent_team_member_completion,
-    )
+    from app.services.agent_team_runtime_service import project_agent_team_terminal_state
 
-    await project_agent_team_member_completion(
+    await project_agent_team_terminal_state(
         db=db,
         task=task,
         status=status,
         result_summary=result_summary,
         metadata_json=metadata_json,
-    )
-    await project_agent_team_close_completion(
-        db=db,
-        task=task,
-        status=status,
-        result_summary=result_summary,
     )
 
 
@@ -3449,6 +3447,16 @@ async def _enqueue_terminal_channel_delivery(
             "final_decision_trace_id": metadata.get("final_decision_trace_id"),
         },
     )
+
+
+async def _enqueue_web_terminal_boundary(db: AsyncSession, task: RuntimeTask) -> None:
+    if task.task_type not in EXECUTABLE_CHAT_TASK_TYPES:
+        raise RuntimeError("Web terminal finalizer received a non-Web RuntimeTask")
+    if getattr(task, "terminal_boundary_generation", None) is None:
+        return
+    from app.services.web_terminal_boundary_processor import enqueue_web_terminal_boundary_for_task
+
+    await enqueue_web_terminal_boundary_for_task(db, task)
 
 
 async def _finalize_web_chat_run_with_assistant(
@@ -3535,6 +3543,7 @@ async def _finalize_web_chat_run_with_assistant(
                 artifact_parts=[],
                 metadata_json=metadata_json,
             )
+            await _enqueue_web_terminal_boundary(db, task)
             await db.commit()
             return False
 
@@ -3703,6 +3712,7 @@ async def _finalize_web_chat_run_with_assistant(
                 artifact_parts=artifact_parts,
                 metadata_json=metadata_json,
             )
+            await _enqueue_web_terminal_boundary(db, task)
             await _maybe_continue_goal_after_terminal_turn(
                 db=db,
                 task=task,
@@ -3823,6 +3833,7 @@ async def _finalize_web_chat_run_with_assistant(
             artifact_parts=artifact_parts,
             metadata_json=metadata_json,
         )
+        await _enqueue_web_terminal_boundary(db, task)
         await _maybe_continue_goal_after_terminal_turn(
             db=db,
             task=task,
@@ -4023,6 +4034,7 @@ async def _finalize_web_chat_run_without_assistant(
                 metadata_json=merged_metadata,
                 delivery_kind="interactive_prompt",
             )
+        await _enqueue_web_terminal_boundary(db, task)
         await _maybe_continue_goal_after_terminal_turn(
             db=db,
             task=task,
@@ -4046,53 +4058,6 @@ async def _finalize_web_chat_run_without_assistant(
                     exc,
                 )
         return True
-
-
-async def _emit_terminal_turn_hook(
-    *,
-    agent_id: uuid.UUID,
-    session_id: str,
-    run_uuid: uuid.UUID,
-    runtime_metadata: dict[str, Any] | None,
-    status: str,
-    reason: str,
-    source: str | None = None,
-    extra_metadata: dict[str, Any] | None = None,
-) -> None:
-    metadata = dict(runtime_metadata or {})
-    metadata.update(extra_metadata or {})
-    turn_id = str(metadata.get("turn_id") or f"turn-{run_uuid.hex}")
-    intent_id = str(metadata.get("intent_id") or metadata.get("request_id") or f"intent-{run_uuid.hex}")
-    terminal_event = "turn_stop" if status == "completed" else "turn_abort"
-    checkpoint_kind = "user_turn_stop" if terminal_event == "turn_stop" else "turn_abort"
-    payload = {
-        **metadata,
-        "reason": reason,
-        "status": status,
-        "source": source or metadata.get("source") or "web",
-        "runtime_task_id": metadata.get("runtime_task_id") or run_uuid.hex,
-        "request_id": metadata.get("request_id") or str(run_uuid),
-        "trace_id": metadata.get("trace_id") or f"web_chat_turn:{run_uuid.hex}",
-        "turn_id": turn_id,
-        "intent_id": intent_id,
-        "checkpoint_kind": checkpoint_kind,
-    }
-    if terminal_event == "turn_abort":
-        payload["semantic_memory_eligible"] = False
-    try:
-        from app.runtime.hooks import HookEvent, emit_hook
-
-        await emit_hook(
-            HookEvent.TURN_STOP if terminal_event == "turn_stop" else HookEvent.TURN_ABORT,
-            evidence_mode="independent",
-            agent_id=agent_id,
-            session_id=session_id,
-            source=str(payload["source"]),
-            messages=[],
-            metadata=payload,
-        )
-    except Exception as exc:
-        logger.debug("[WebChatRun] {} hook failed (non-fatal): {}", terminal_event.upper(), exc)
 
 
 def _tool_settlement_arguments(payload: dict[str, Any]) -> dict[str, Any]:
@@ -4900,6 +4865,7 @@ async def _update_runtime_task(
                 metadata_json=metadata_json,
                 terminal_source="runtime_status_update",
             )
+            await _enqueue_web_terminal_boundary(db, task)
             return
         task.status = status
         if result_summary is not None:
@@ -5218,6 +5184,7 @@ async def _load_runtime_context(
             user=user,
             session=session,
         )
+        metadata = dict(runtime_task.metadata_json or {})
 
         primary_model, fallback_model = await _resolve_runtime_models_for_task(
             db,
@@ -5381,7 +5348,6 @@ def _web_chat_run_ports() -> Any:
         terminal=WebChatTerminalPorts(
             finalize_with_assistant=_finalize_web_chat_run_with_assistant,
             finalize_without_assistant=_finalize_web_chat_run_without_assistant,
-            emit_terminal_hook=_emit_terminal_turn_hook,
             update_runtime_task=_update_runtime_task,
             phase_for_pause=_phase_for_interactive_pause,
             phase_for_status=_phase_for_terminal_status,
@@ -5517,6 +5483,7 @@ async def _quarantine_exhausted_web_chat_recovery(db: AsyncSession, task: Runtim
             "max_execution_attempts": max_attempts,
         },
     )
+    await _enqueue_web_terminal_boundary(db, task)
     await db.commit()
     logger.error(
         "[WebChatRun] Quarantined run {} after {} execution claims (limit={})",

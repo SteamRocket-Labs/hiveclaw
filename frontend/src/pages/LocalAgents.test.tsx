@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
 import LocalAgents, {
+  DEFAULT_HIVE_CONNECT_INSTALL_GUIDE,
   activationCodeFromSearch,
   buildSetupInstruction,
   browserChannelWsUrl,
@@ -38,28 +39,20 @@ vi.mock('../api/domains/localBridge', () => ({
     listAgentConnections: vi.fn().mockResolvedValue({ connections: [] }),
     getInstallGuide: vi.fn().mockResolvedValue({
       product_name: 'Hive Connect',
-      skill_repo_url: 'https://github.com/rocky2431/hive-connect-skill',
+      skill_repo_url: '',
       skill_name: 'hive-connect',
-      npm_package: '@hiveclaw243/hive-connect',
+      npm_package: '',
       binary_name: 'hive-connect',
-      install_skill_command: 'npx skills add https://github.com/rocky2431/hive-connect-skill --skill hive-connect',
-      install_cli_command: 'npm install -g @hiveclaw243/hive-connect',
-      login_command: 'hive-connect login',
-      status_command: 'hive-connect status',
-      run_command: 'hive-connect daemon install --config ~/.hive-connect/config.toml --force',
+      install_skill_command: '',
+      install_cli_command: '',
+      login_command: '',
+      status_command: '',
+      run_command: '',
       user_prompt: '帮我安装 Hive Connect skill，并连接到 Hive。',
       instructions: [
         '帮我安装 Hive Connect skill，并连接到 Hive。',
-        '',
         '请按下面流程自动完成：',
-        '1. 执行 npx skills add https://github.com/rocky2431/hive-connect-skill --skill hive-connect 安装 Hive Connect skill。',
-        '2. 按 skill 执行 npm install -g @hiveclaw243/hive-connect 安装本地 CLI。',
-        '3. 执行 hive-connect login。',
-        '4. 浏览器打开 Hive 后登录；Hive 会自动完成本地 Agent 认证，不需要复制任何一次性码。',
-        '5. 执行 hive-connect daemon install --config ~/.hive-connect/config.toml --force，安装并启动后台常驻服务。',
-        '6. 执行 hive-connect daemon status，确认后台服务正在运行。',
-        '7. 可选：执行 hive-connect status，确认本机仍保留 Hive 登录绑定（这不代表在线）。',
-        '8. 回到 Hive 页面查看本地 Agent 在线标记；如果离线，重新执行第 5-6 步，不要重复 login。',
+        '1. Hive Connect 安装源不可用（unavailable）；请停止并联系 Hive 管理员，配置已批准的 HIVE_CONNECT_SKILL_REPO_URL 与 HIVE_CONNECT_NPM_PACKAGE。不要猜测仓库或 package 名称。',
       ],
     }),
     approvePairing: vi.fn(),
@@ -224,13 +217,10 @@ describe('LocalAgents page', () => {
     expect(markup).toContain('Attach file');
     expect(markup).toContain('Automatic authentication');
     expect(markup).toContain('Hive Connect');
-    expect(markup).toContain('npx skills add https://github.com/rocky2431/hive-connect-skill --skill hive-connect');
-    expect(markup).toContain('npm install -g @hiveclaw243/hive-connect');
-    expect(markup).toContain('hive-connect login');
-    expect(markup).toContain('hive-connect daemon install --config ~/.hive-connect/config.toml --force');
-    expect(markup).toContain('hive-connect daemon status');
-    expect(markup).toContain('hive-connect status，确认本机仍保留 Hive 登录绑定');
-    expect(markup).toContain('回到 Hive 页面查看本地 Agent 在线标记');
+    expect(markup).toContain('Hive Connect 安装源不可用（unavailable）；请停止');
+    expect(markup).not.toContain('npx skills add');
+    expect(markup).not.toContain('hive-connect login');
+    expect(markup).not.toContain('hive-connect daemon install');
     expect(markup).toContain('The local agent is offline. Keep Hive Connect installed; it will reconnect automatically');
     expect(markup).not.toContain('验证 Hive 连接状态');
     expect(markup).not.toContain('执行 hive-connect run，保持本地 Agent 在线');
@@ -270,12 +260,12 @@ describe('LocalAgents page', () => {
   it('builds setup instructions around the background daemon instead of a foreground runner', () => {
     const guide = buildSetupInstruction({
       product_name: 'Hive Connect',
-      skill_repo_url: 'https://github.com/rocky2431/hive-connect-skill',
+      skill_repo_url: 'https://example.com/hive-connect-skill.git',
       skill_name: 'hive-connect',
-      npm_package: '@hiveclaw243/hive-connect',
+      npm_package: '@example/hive-connect',
       binary_name: 'hive-connect',
-      install_skill_command: 'npx skills add https://github.com/rocky2431/hive-connect-skill --skill hive-connect',
-      install_cli_command: 'npm install -g @hiveclaw243/hive-connect',
+      install_skill_command: 'npx skills add https://example.com/hive-connect-skill.git --skill hive-connect',
+      install_cli_command: 'npm install -g @example/hive-connect',
       login_command: 'hive-connect login',
       status_command: 'hive-connect status',
       run_command: 'hive-connect daemon install --config ~/.hive-connect/config.toml --force',
@@ -284,11 +274,25 @@ describe('LocalAgents page', () => {
     } as any);
 
     expect(guide).toContain('hive-connect daemon install --config ~/.hive-connect/config.toml --force，安装并启动后台常驻服务。');
+    expect(guide).toContain('npm install -g @example/hive-connect');
     expect(guide).toContain('可选：执行 hive-connect status，确认本机仍保留 Hive 登录绑定（这不代表在线）。');
     expect(guide).toContain('回到 Hive 页面查看本地 Agent 在线标记');
     expect(guide.indexOf('hive-connect daemon install')).toBeLessThan(guide.indexOf('hive-connect status'));
     expect(guide).not.toContain('验证 Hive 连接状态');
     expect(guide).not.toContain('runner');
     expect(guide).not.toContain('poll fallback');
+  });
+
+  it('blocks setup when either install source is missing', () => {
+    const guide = buildSetupInstruction({
+      ...DEFAULT_HIVE_CONNECT_INSTALL_GUIDE,
+      npm_package: '@example/hive-connect',
+      install_cli_command: 'npm install -g @example/hive-connect',
+      instructions: [],
+    });
+
+    expect(guide).toContain('安装源不可用（unavailable）');
+    expect(guide).not.toContain('npm install -g @example/hive-connect');
+    expect(guide).not.toContain('hive-connect login');
   });
 });

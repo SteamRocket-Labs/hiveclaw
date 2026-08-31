@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from typing import Any
@@ -118,6 +119,11 @@ def build_provider_prompt_ledger(
     runtime_reminders = _extra_surface_text(extra_surfaces, "runtime_reminders")
     vision_payloads = _extra_surface_text(extra_surfaces, "vision_payloads")
     tool_schema_text = _tool_schema_text(tools)
+    tool_names = [
+        str(tool.get("function", {}).get("name") or "")
+        for tool in tools or []
+        if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+    ]
 
     categories = [
         _category(
@@ -166,6 +172,8 @@ def build_provider_prompt_ledger(
         "projected_input_tokens": projected_input_tokens,
         "projected_uncached_input_tokens": projected_uncached_input_tokens,
         "tool_schema_tokens": int(tool_schema_tokens),
+        "tool_names": tool_names,
+        "tool_schema_sha256": hashlib.sha256(tool_schema_text.encode("utf-8")).hexdigest(),
         "cache_hints_applied": bool(cache_hints_applied),
         "categories": categories,
     }

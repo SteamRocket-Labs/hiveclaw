@@ -878,7 +878,9 @@ async def scrub_tenant_channel_secrets(db, tenant_id: uuid.UUID) -> dict[str, in
         select(BudgetTransitionOutbox).where(BudgetTransitionOutbox.tenant_id == tenant_id)
     )
     schedule_result = await db.execute(select(AgentSchedule).where(AgentSchedule.tenant_id == tenant_id))
-    trigger_result = await db.execute(select(AgentTrigger).where(AgentTrigger.tenant_id == tenant_id))
+    trigger_result = await db.execute(
+        select(AgentTrigger).where(AgentTrigger.tenant_id == tenant_id).order_by(AgentTrigger.id).with_for_update()
+    )
     runtime_task_result = await db.execute(select(RuntimeTask).where(RuntimeTask.tenant_id == tenant_id))
     channel_ingress_result = await db.execute(
         select(ChannelIngressEvent).where(ChannelIngressEvent.tenant_id == tenant_id)

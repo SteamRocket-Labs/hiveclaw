@@ -79,8 +79,8 @@ function PermissionsTab({ agent }) {
     ['all', 'globe', '全公司可见', 'workspace 内所有成员'],
   ];
   const members = [
-    ['林见 Jen', '所有者', 'manage', EME_C()], ['陈航 Hang', '可管理', 'manage', 'oklch(0.6 0.12 145)'],
-    ['周岚 Lan', '可使用', 'use', 'oklch(0.6 0.12 25)'], ['研究组 (8 人)', '可使用', 'use', 'group'],
+    ['示例用户 A', '所有者', 'manage', EME_C()], ['示例用户 B', '可管理', 'manage', 'oklch(0.6 0.12 145)'],
+    ['示例用户 C', '可使用', 'use', 'oklch(0.6 0.12 25)'], ['研究组 (8 人)', '可使用', 'use', 'group'],
   ];
   function EME_C() { return WU.ME.color; }
   return (

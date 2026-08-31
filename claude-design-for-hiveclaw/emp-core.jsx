@@ -54,7 +54,7 @@ function HomePage({ navigate }) {
     <div style={{ padding: '34px 40px 60px', maxWidth: 1180, margin: '0 auto' }}>
       <div style={{ marginBottom: 26 }}>
         <div className="mono" style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 8 }}>{EWS.name} · 周五 6 月 7 日</div>
-        <h1 style={{ fontFamily: 'var(--display)', fontWeight: 600, fontSize: 32, margin: 0, letterSpacing: '-.01em' }}>{greet}，林见 👋</h1>
+        <h1 style={{ fontFamily: 'var(--display)', fontWeight: 600, fontSize: 32, margin: 0, letterSpacing: '-.01em' }}>{greet}，示例用户 A 👋</h1>
         <p style={{ fontSize: 14.5, color: 'var(--text-2)', margin: '8px 0 0' }}>你有 <b style={{ color: 'var(--text-1)' }}>2 件事</b>需要确认，<b style={{ color: 'var(--text-1)' }}>{running.length} 个数字员工</b>正在工作。</p>
       </div>
 
@@ -139,7 +139,7 @@ function HomePage({ navigate }) {
               ['Atlas', '完成市场摘要并保存产物', '2 小时前', 'oklch(0.60 0.13 250)', 'DR'],
               ['Ledger', '生成 8 月对账计划', '12 分钟前', 'oklch(0.62 0.12 150)', 'FC'],
               ['Relay', '委派 Warden 执行安全检查', '刚刚', 'oklch(0.56 0.11 300)', 'OP'],
-              ['你', '将「竞品扫描」保存为流程', '昨天', EME.color, 'JL'],
+              ['你', '将「竞品扫描」保存为流程', '昨天', EME.color, 'UA'],
             ].map((r, i, arr) => (
               <div key={i} style={{ display: 'flex', gap: 11, padding: '12px 16px', borderBottom: i < arr.length - 1 ? '1px solid var(--border)' : 0 }}>
                 <EHex size={26} bg={r[3]} fs={10}>{r[4]}</EHex>
@@ -169,7 +169,7 @@ function EmployeesPage({ navigate, params }) {
   let list = EAGENTS;
   if (tab === 'mine') list = EAGENTS.filter(a => a.owner === '我');
   if (tab === 'shared') list = EAGENTS.filter(a => a.perm === 'use');
-  if (tab === 'rec') list = EAGENTS.filter(a => a.owner === '公司标准' || a.owner === '陈航 Hang');
+  if (tab === 'rec') list = EAGENTS.filter(a => a.owner === '公司标准' || a.owner === '示例用户 B');
 
   return (
     <div style={{ padding: '30px 40px 60px', maxWidth: 1180, margin: '0 auto' }}>

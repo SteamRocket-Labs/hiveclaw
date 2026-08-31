@@ -4,8 +4,8 @@ owner: Rocky / Codex
 status: active
 authority: canonical-human-journey-ledger
 last_reviewed: 2026-08-31
-source_commit: c18b181c
-verification_status: frozen-production-denominator-96-no-pass-evidence-yet
+source_commit: bf94b76a1706510daf2d11c4e98fd5051f23f28f
+verification_status: frozen-production-denominator-96-p29-padmin-pass1-only
 ---
 
 # Journey Ledger
@@ -92,13 +92,15 @@ verification_status: frozen-production-denominator-96-no-pass-evidence-yet
 
 ## 最新有效证据索引
 
-分母已冻结，但本轮尚未产生可计入 NPTCR 的 production pass。这里只登记关系，不复制证据正文：
+分母已冻结。`P29-PADMIN` 已产生一次 production clean-path PASS，但单次 pass 不计入 NPTCR；这里只登记关系，不复制证据正文：
 
-最新 finding-level production verification 为 [`PLATFORM-ADMIN-BUSINESS-BODY-001`](evidence/8f6a726375452042cf1252977394c647dd2aba80/PLATFORM-ADMIN-BUSINESS-BODY-001-production-verification.md)：它关闭 P29-PADMIN 的默认公司正文/业务动作披露，但没有完成直接 production API receipt、四角色 signed-in 双遍、完整 fault、negative authority 或 cleanup，因此下表保持空值。
+latest exact `bf94b76a` finding verification 为 [`PLATFORM-ADMIN-WORKSPACE-AUDIENCE-001`](evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/PLATFORM-ADMIN-WORKSPACE-AUDIENCE-001-production-verification.md) 与 [`SYSTEM-SETTING-SECRET-DISCLOSURE-001`](evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/SYSTEM-SETTING-SECRET-DISCLOSURE-001-production-verification.md)。clean pass 1 见 [`P29-PADMIN-pass-1`](evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/P29-PADMIN-pass-1.md)；pass 2 因缺少可安全消耗的 expired-session/role-change principal 而停在 [`BLOCKED_PRECONDITION`](evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/P29-PADMIN-fault-pass-2-role-session-precondition.md)。
 
 | Journey | Pass 1 | Pass 2 | Fault/Recovery | Negative Authority | Final Verdict |
 |---|---|---|---|---|---|
-| P01-MAIN～P35-RELEASE（96 条） | — | — | — | — | 0/96 Closed；NPTCR 0% |
+| P29-PADMIN | PASS | `BLOCKED_PRECONDITION`，canonical pass-2 文件不存在 | denied-route/reload PASS；expired-session/role-change blocked | PASS，9 URL + 14 API | `Partial loop`，未 Closed |
+| 其余 95 条 | — | — | — | — | 未执行或仅有 finding-level evidence |
+| Aggregate | 1 次单遍，不计 Closed | 0 次双遍 | — | — | 0/96 Closed；NPTCR 0% |
 
 ## 状态变化规则
 

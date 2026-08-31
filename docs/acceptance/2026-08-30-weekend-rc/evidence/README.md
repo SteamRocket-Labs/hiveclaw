@@ -4,8 +4,8 @@ owner: Codex
 status: active
 authority: canonical-evidence-format
 last_reviewed: 2026-08-30
-source_commit: c18b181c
-verification_status: frozen-machine-contract-no-production-evidence-created
+source_commit: bf94b76a1706510daf2d11c4e98fd5051f23f28f
+verification_status: frozen-machine-contract-production-evidence-active
 ---
 
 # Evidence 记录合同

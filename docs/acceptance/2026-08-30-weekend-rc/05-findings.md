@@ -4,8 +4,8 @@ owner: Codex
 status: active
 authority: canonical-active-finding-ledger
 last_reviewed: 2026-08-31
-source_commit: 8f6a726375452042cf1252977394c647dd2aba80
-verification_status: platform-admin-business-body-production-verified
+source_commit: bf94b76a1706510daf2d11c4e98fd5051f23f28f
+verification_status: p29-platform-admin-workspace-and-system-setting-secret-production-verified
 ---
 
 # 当前 Findings 与 Blockers
@@ -31,6 +31,8 @@ verification_status: platform-admin-business-body-production-verified
 | LLM-PROBE-AUDIT-001 | Verified | P1 | P29-PADMIN / P33-GLM | `/enterprise/llm` Test 发生真实 provider/token/cost effect，但 backend 不写 canonical audit；audit UI 只读 legacy agent-bound log，platform admin selected tenant 也未固定到 canonical audit query | exact `cc6e7262` 在 provider effect 前 durable commit started event，终态 durable commit completed event；effect 后 terminal audit 失败返回 non-retryable typed result；canonical selected-tenant audit 与 legacy log 在 UI 合并消费 | 保持 `Verified`；MiniMax/GLM/DeepSeek 的 bounded health verdict 已记录，但 P33 frozen compatibility tasks、P29 pass-1/pass-2、role/fault/negative matrix 均仍 open，不写 Journey PASS |
 | AUDIT-DEFAULT-DISCLOSURE-001 | Verified | P1 | P29-PADMIN | admin audit 默认展开 raw details：production DOM 含 `session_id` 110、`job_id/issues` 各 94、`reason` 41、`agent_name` 77、raw provider error 90；search/CSV/API 也可读 raw payload，export/chain 未固定 selected tenant | exact `b23e9421` 以 server summary schema + CSV/search boundary + frontend allowlist 只暴露 control-plane facts；raw canonical evidence 不改写；list/export/chain 共用 selected-tenant RLS scope | 保持 `Verified`；P29 的 employee/company-admin/operator principals、四角色 screenshot/API matrix、双遍与完整 negative/fault 仍 open，不写 Journey PASS |
 | PLATFORM-ADMIN-BUSINESS-BODY-001 | Verified | P1 | P29-PADMIN | `/enterprise/info` 对 platform admin 默认显示公司介绍正文、legacy export 与 broadcast controls；raw info 和 `company_intro*` API 也允许该角色读写业务正文 | exact `8f6a7263` 让 backend raw route 在 authenticated role boundary 返回 403，frontend 不请求/挂载 org-admin content，并把页面描述收敛为 role-appropriate actions；tenant identity/timezone/presentation 保留 | 保持 `Verified`；直接 production API 403 receipt 与 employee/company-admin/operator principals、四角色双遍/完整 fault-negative 仍 open，不写 Journey PASS |
+| PLATFORM-ADMIN-WORKSPACE-AUDIENCE-001 | Verified | P1 | P29-PADMIN | exact `8f6a7263` 的 platform admin dashboard/导航展示全部 company-admin surface；直接访问 digital employees、knowledge、users、org、invitations、HR、approvals、guardrails 仍得到业务 DOM 与 200 API | exact `bf94b76a` 以 shared role registry/route guards 和 backend exact-role checks 分离 platform/company workspace；Agent 只保留 ownership 或 exact user scope，不继承 company/department scope | 保持 `Verified`；member/org-admin/operator 三个真实 principal、四角色 screenshot/API matrix、role recovery 与 P29 双遍仍 open，不写 Journey PASS |
+| SYSTEM-SETTING-SECRET-DISCLOSURE-001 | Verified | P1 | P29-PADMIN | `/system-settings/feishu_org_sync` 对 platform admin 为 200；GET/PUT 直接返回包含 `app_secret` consumer field 的完整 stored value，generic route 还允许任意 global key | exact `bf94b76a` 在 DB 前执行 role/key allowlist，并把 Feishu GET/PUT response 投影为 `app_secret_configured`；stored value 不改写 | 保持 `Verified`；当前无 signed-in org-admin 可做 production 200 projection screenshot，四角色矩阵/P29 双遍仍 open；不读取或改写真实 credential |
 | TOOL-ARTIFACT-SETTLEMENT-001 | Verified | P1 | P01-MAIN / PJ-02 / PJ-04 | `write_file` effect 已完成，但 canonical terminal `tool_call`/`tool_result` 与 ChatArtifact 在 `chat_artifacts_message_id_fkey` 处回滚；kernel 仍准备下一 provider round | `c37fefc5` 已原子提交 owner/artifact/V2/outbox 并在持久化失败时 hard-stop；`3482b57a` 对 exact unknown-effect invocation fail closed，唯一 operator acknowledgement 保持 unknown fact、禁止旧轮重放并释放 fresh-turn admission | normal/reload 与 supported recovery/no-replay 已 production PASS；保持 `Verified`，完成 clean P01-MAIN/PJ-02/PJ-04 双遍、authority-negative 与 cleanup 后才可 `Closed` |
 | SESSION-RETRY-INPUT-001 | Verified | P1 | P01-MAIN / P02-STREAM | edit branch 的 canonical `human_input.accepted` 保存完整 retry prompt，但首个 `result_commit.prepared.bound_input_ids=[]`；provider 未调用工具并错误回复“这条消息只有「1」”，产品仍把 run/final 标成 `completed` | exact commit `2cee9f3e` 的 production retry Session `b3962147…` 已把完整输入绑定为唯一 `bound_input_id=1fd5cc5b…` 并进入 GLM/Work Ledger；随后失败属于独立的 tool-artifact settlement 与 provider 429，不回退本 finding | 保持 `Verified`；完整 P01/P02 双遍、recovery、authority-negative 和 cleanup 后才能 `Closed` |
 
@@ -85,6 +87,24 @@ verification_status: platform-admin-business-body-production-verified
 - exact `8f6a726375452042cf1252977394c647dd2aba80` 已 push；backend `35e6d6e5…`、backend-api `86615c7d…`、frontend `cfa5f254…` 均 `SUCCESS` 并绑定 full SHA；health `ok`、RLS strict、runtime bus no error、frontend HTTP 200。
 - production `/enterprise/info` hard reload 后新说明与 role-boundary 各一，company intro/pre-fix body/legacy export/broadcast/runtime error 均为 0，tenant name/timezone 保留；audit 400-summary 与 denied Session route 同时保持既有安全结果。
 - immutable evidence：`evidence/8f6a726375452042cf1252977394c647dd2aba80/PLATFORM-ADMIN-BUSINESS-BODY-001-production-verification.md`。没有读取浏览器 token/localStorage 来制造直接 production API 403 回执；FastAPI route-entry 与 exact deployment 证明 backend wiring，单一 platform-admin 身份仍不能替代 P29 四角色/双遍/完整 fault-negative evidence。finding 为 `Verified`，NPTCR 保持 `0/96`。
+
+#### PLATFORM-ADMIN-WORKSPACE-AUDIENCE-001 复现、修复与生产验证
+
+- exact deployed `8f6a7263` 的 platform admin dashboard 展示全量 company workspace；九个 direct URL 挂载业务 DOM，company lifecycle API 为 200，Agent authority 还把 platform role 自动升级为 blanket manage。
+- `24f012ba` 在 shared workspace registry/route guard、backend route-entry 与 Agent permission helper 修复同一 authority root；platform admin 只保留八个 platform/config/health tabs，Agent scope 只保留 ownership/exact-user。没有 schema、migration、dependency、feature flag 或 production data change。
+- D1 production hard reload 发现 sidebar 仍显示“公司后台”；`bf94b76a` 复用既有 `nav.superAdmin` 以一行实现和 mounted regression 收敛残余。
+- exact `bf94b76a1706510daf2d11c4e98fd5051f23f28f` 已 push；backend `07059ce5…`、backend-api `c70ff972…`、frontend `308e7789…` 均 `SUCCESS` 且 message 绑定 D2，health `ok` / RLS strict / runtime bus no error，frontend HTTP 200。
+- production dashboard nav 精确 8 项、card 7 项、只显示后台页面指标，无 User/员工/审批指标或 Plaza；九个 company direct URL 全部回到 dashboard，0 row/email/UUID business DOM。authenticated status-only 矩阵的 stats/approval/org/invitation/legacy/User/external/Guard/Knowledge/HR/Plaza API 全部 403，未读取 header、storage 或 response body。
+- `/agents` hard reload 仍为 200，EventPilot owner/manage surface 可见，system HR 为 403；info 与 audit 允许路径保持 200 且无 company body/raw audit disclosure。full gates：backend **8484 passed, 2 skipped, 1 warning**、真实 PG **13 passed**、platform-admin contract **423 passed**、frontend **156 files / 1161 tests**、build/budgets、Weekend **18 passed**、manifest、Ruff 与 diff check 全绿。
+- immutable evidence：`evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/PLATFORM-ADMIN-WORKSPACE-AUDIENCE-001-production-verification.md`。finding 为 `Verified`；P29 四角色/双遍/role recovery 未完成，NPTCR 保持 `0/96`。
+
+#### SYSTEM-SETTING-SECRET-DISCLOSURE-001 复现、修复与生产验证
+
+- exact deployed `8f6a7263` 的 Feishu setting 对 signed-in platform admin 为 200；generic GET/PUT 原样返回 stored value，unknown key 还可落入 global setting。reproduction 未读取任何 production secret 或 response body。
+- exact `bf94b76a` 用 role/key allowlist 在 selected-tenant/DB 访问前 fail closed；Feishu GET/PUT 统一移除 `app_secret`，只返回 `app_secret_configured`，合法 stored value/update effect 保留。
+- production status-only probe 对 `/api/enterprise/system-settings/feishu_org_sync` 为 403；探针只复用既有 request header 并读取 status，未读取/输出 token、storage、header 或 body，未发送 PUT、触发 sync、修改或轮换 credential。
+- synthetic route regressions 覆盖 platform/org role-key negative、missing/GET/PUT response projection 与 stored-value preservation；同一 full gate 和 exact D2 三服务部署证据通过。
+- immutable evidence：`evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/SYSTEM-SETTING-SECRET-DISCLOSURE-001-production-verification.md`。finding 为 `Verified`；当前缺少 signed-in org-admin production 200 projection screenshot，该缺口留在 P29 四角色矩阵，不写 Journey PASS，NPTCR 保持 `0/96`。
 
 #### TOOL-ARTIFACT-SETTLEMENT-001 复现证据
 

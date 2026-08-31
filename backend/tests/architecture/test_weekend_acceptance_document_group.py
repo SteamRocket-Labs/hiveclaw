@@ -133,7 +133,7 @@ def test_journey_ledger_preserves_ci_ids_and_has_one_frozen_denominator() -> Non
     assert ci_ids == [f"J-{index:02d}" for index in range(1, 16)]
     assert candidate_ids == [f"PJ-{index:02d}" for index in range(1, 36)]
     assert PRODUCTION_MANIFEST.is_file()
-    assert "frozen-production-denominator-96-no-pass-evidence-yet" in ledger
+    assert "frozen-production-denominator-96-p29-padmin-pass1-only" in ledger
     assert "共 **96** 条可独立计分的 production journeys" in ledger
     assert "weekend_production_journeys.v1.json" in ledger
     assert "0/96 Closed；NPTCR 0%" in ledger
@@ -145,7 +145,7 @@ def test_structural_checks_do_not_claim_semantic_acceptance() -> None:
     production_gate = PRODUCTION_GATE.read_text(encoding="utf-8")
     assert "结构检查只验证文件、ID、链接、字段" in index
     assert "不判断语义质量" in index
-    assert "frozen-machine-contract-no-production-evidence-created" in evidence_contract
+    assert "frozen-machine-contract-production-evidence-active" in evidence_contract
     assert '"semantic_verdict": "not_computed_by_tool"' in production_gate
 
 

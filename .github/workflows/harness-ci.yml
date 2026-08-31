@@ -85,13 +85,23 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: backend/pyproject.toml
+          cache-dependency-path: |
+            backend/pyproject.toml
+            backend/uv.lock
 
       - name: Install backend dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
-          python scripts/patch_lark_oapi.py
+          python -m pip install "uv==0.9.21"
+          uv sync --frozen --extra dev
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          .venv/bin/python scripts/patch_lark_oapi.py
+
+      - name: Install Linux sandbox
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
+          bwrap --version
 
       - name: Ruff changed Python paths
         run: |
@@ -173,13 +183,17 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: backend/pyproject.toml
+          cache-dependency-path: |
+            backend/pyproject.toml
+            backend/uv.lock
 
       - name: Install backend dependencies
         working-directory: backend
         run: |
-          python -m pip install -e ".[dev]"
-          python scripts/patch_lark_oapi.py
+          python -m pip install "uv==0.9.21"
+          uv sync --frozen --extra dev
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          .venv/bin/python scripts/patch_lark_oapi.py
 
       - name: Set up Node
         uses: actions/setup-node@v4

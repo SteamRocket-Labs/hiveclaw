@@ -725,6 +725,7 @@ async def test_delegate_async_persists_cycle_as_not_admitted_without_side_effect
     from app.core.execution_context import ExecutionPrincipal
 
     created: dict = {}
+    updated: dict = {}
     effects: list[str] = []
 
     class Gateway:
@@ -736,6 +737,9 @@ async def test_delegate_async_persists_cycle_as_not_admitted_without_side_effect
         created.update(kwargs)
         return kwargs["task_id"]
 
+    async def fake_update_runtime_task_record(_task_id, **kwargs):
+        updated.update(kwargs)
+
     async def unexpected_wake(**_kwargs):
         effects.append("worker_wake")
 
@@ -743,6 +747,7 @@ async def test_delegate_async_persists_cycle_as_not_admitted_without_side_effect
         return None
 
     monkeypatch.setattr("app.agents.orchestrator.create_runtime_task_record", fake_create_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
     monkeypatch.setattr("app.agents.orchestrator._persist_delegation_event", fake_persist_delegation_event)
     monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", unexpected_wake)
 
@@ -774,6 +779,9 @@ async def test_delegate_async_persists_cycle_as_not_admitted_without_side_effect
     assert created["root_item_state"] == "not_admitted"
     assert created["root_item_admission_disposition"] == "not_admitted"
     assert created["root_item_reason_code"] == "runtime_root_cycle_detected"
+    assert updated["status"] == "skipped"
+    assert updated["root_item_state"] == "not_admitted"
+    assert updated["root_item_reason_code"] == "runtime_root_cycle_detected"
     assert effects == []
 
 

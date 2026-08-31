@@ -4,6 +4,8 @@ import importlib.util
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[3]
 GATE_PATH = ROOT / "backend" / "scripts" / "weekend_rc_worker_gate.py"
@@ -101,6 +103,8 @@ def test_receipt_terminal_gate_still_defers_semantic_acceptance() -> None:
 
 
 def test_receipt_accepts_equivalent_macos_tmp_paths() -> None:
+    if Path("/tmp").resolve() != Path("/private/tmp").resolve():
+        pytest.skip("/private/tmp and /tmp are equivalent only on macOS")
     result = GATE.validate_receipt(
         {"target": "zcode", "cwd": "/private/tmp/worktree"},
         {

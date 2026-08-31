@@ -33,6 +33,19 @@ def test_harness_ci_lints_only_changed_python_paths() -> None:
     assert '"ruff==0.15.12"' in (workflow.parents[2] / "backend" / "pyproject.toml").read_text(encoding="utf-8")
 
 
+def test_harness_ci_uses_the_locked_backend_environment_and_linux_sandbox() -> None:
+    workflow = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "harness-ci.yml"
+    source = workflow.read_text(encoding="utf-8")
+    backend_job = source.split("  backend-harness:", 1)[1].split("  atomic-user-journeys:", 1)[0]
+    atomic_job = source.split("  atomic-user-journeys:", 1)[1]
+
+    assert "uv sync --frozen --extra dev" in backend_job
+    assert "uv sync --frozen --extra dev" in atomic_job
+    assert "backend/uv.lock" in backend_job
+    assert "backend/uv.lock" in atomic_job
+    assert "sudo apt-get install --yes bubblewrap" in backend_job
+
+
 def test_harness_ci_has_no_nightly_behavior_eval_or_eval_environment_secrets() -> None:
     workflow = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "harness-ci.yml"
     source = workflow.read_text(encoding="utf-8")

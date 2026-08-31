@@ -2097,6 +2097,7 @@ async def test_execute_approved_satisfies_preflight_ask_and_executes_exact_exter
         approval_ticket_consumer=consume_ticket,
         approval_ticket_completer=complete_ticket,
         decision_trace_store=InMemoryDecisionTraceStore(),
+        capability_group_policy_loader=lambda _context: {"feishu_pack": True},
     )
 
     result = await service.execute_approved(
@@ -2265,6 +2266,7 @@ async def test_execute_approved_does_not_override_owner_never_do_policy():
         approval_ticket_consumer=consume_ticket,
         approval_ticket_completer=complete_ticket,
         decision_trace_store=InMemoryDecisionTraceStore(),
+        capability_group_policy_loader=lambda _context: {"feishu_pack": True},
     )
 
     result = await service.execute_approved(
@@ -2697,6 +2699,7 @@ async def test_tool_runtime_service_executes_external_effect_under_owner_full_au
         fallback_executor=lambda *_args, **_kwargs: "fallback",
         direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
         activity_logger=None,
+        capability_group_policy_loader=lambda _context: {"feishu_pack": True},
     )
 
     result = await service.execute(

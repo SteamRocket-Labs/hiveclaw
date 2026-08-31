@@ -5,7 +5,7 @@ status: active
 authority: canonical-working-state
 last_reviewed: 2026-09-01
 source_commit: b2fb8b28ec00b24eca1235340a1ecc7ee4383fd4
-verification_status: local-full-regression-green-release-candidate-review
+verification_status: local-full-regression-green-ci-rerun-pending
 ---
 
 # 当前状态与唯一下一动作
@@ -81,8 +81,9 @@ verification_status: local-full-regression-green-release-candidate-review
 - P08-J4 candidate 已把四个 seam-level P1 收口到共享 authoritative boundary：exact-session 工具/路径在 execution pipeline 与最终文件 I/O 双重校验，active exact profile 在 terminal 前锁定，provider/final/terminal evidence 绑定 exact run，authority/build identity 不完整即 fail closed；J4/Session/tool/health 合并 **169 passed**，尚未升级 Journey verdict。
 - terminal/learning/reconciliation candidate 的合并回归已达 **497 passed**（含真实 PostgreSQL）；Web、Session V2、trigger、business task、delegation、budget、worker、startup/orphan/reconciliation 均复用 required terminal outbox。重跑还发现并修复 delegation parent projection 脱离注入 tenant DB 的旁路，direct real-PG **21 passed**；backend full-suite 已绿，仍须 frontend/build、fresh-chain 与 production crash/replay 证明。
 - 最新源码完整 backend 套件 **8784 passed / 2 skipped / 0 failed**。此前同一套件捕获的 5 个失败来自 terminal recovery 把 BYPASS DB capability 带入动态 HookRegistry；现按既有 locator→tenant-scoped pattern 只在 BYPASS 下定位 `(tenant_id,id)`，实际 sealed/candidate recovery 在 tenant session 执行，RLS scope 回归 **17 passed**、terminal/Team 邻域 **51 passed**。两项 skip 的 exact 原因已登记；该结果只建立 local candidate，不迁移为 production Journey PASS。
-- GitHub Harness CI 的既有全仓 Ruff 步骤会把 5082 条历史债务误算成本次提交失败；现与发布合同对齐为仅检查本次新增/修改/重命名 Python 路径，同时执行 `ruff check` 与 `ruff format --check`，full pytest 保留。工作流结构 **3 passed**、YAML 解析、230 个变更 Python 路径 Ruff/format、prompt/adversarial/internal eval 均绿。
+- GitHub Harness CI 的既有全仓 Ruff 步骤会把 5082 条历史债务误算成本次提交失败；现与发布合同对齐为仅检查本次新增/修改/重命名 Python 路径，同时执行 `ruff check` 与 `ruff format --check`，full pytest 保留。首个 D CI 又暴露 `ruff>=0.8.0` 在 GitHub 漂移到 0.16.5、与本地验证的 0.15.12 规则集不一致；dev/CI 已精确 pin `ruff==0.15.12`。工作流结构 **3 passed**、YAML 解析、b2→candidate 230 个 Python 路径 Ruff/format、prompt/adversarial/internal eval 均绿；须以修正提交重跑 CI，失败 D 未部署。
 - frontend 完整回归已绿：Vitest **161 files / 1193 tests**，Playwright **34/34**，i18n **9/9** 且双语 catalog 均为 4039 keys、全部 gap 为 0，production build 通过。E2E 收口了 server-owned plan hash 不回显、live-tail cursor、offline→online 连接态与完成态 disclosure 合同；4 张旧视觉图逐张核对后仅更新 stale baseline，桌面/窄屏/深色及 Axe 均通过。
+- 首个 D 的 Linux CI 功能 E2E **29 passed**，另 5 个 active-state visual 因只更新了 Darwin 而稳定命中旧 Linux baseline（约 3%）。主 Codex逐张核对 CI expected/actual/diff，actual 与已接受的 Darwin active-state 结构一致，首跑/重试除 25 个抗锯齿像素外稳定；5 张 Linux baseline 已用 CI actual 精确更新，须随 Ruff pin 一起重跑 CI。
 - admin company/invite candidate 已通过 backend API + migration + real non-owner RLS lifecycle **33 passed**、最新 rolling/backfill 聚焦 **19 passed** 与 frontend mounted/UI **20 passed**。production 只读盘点为 113 个历史码、105 个 active unused，105 个目标 tenant 均已有 admin，因此部署回填全部保持 `member`；empty-tenant bootstrap 才授予 `org_admin`。完整 backend 已绿，仍不等于 production PASS。
 - 旧品牌 release hygiene 的 working-tree gate 当前通过（3175 paths），对应结构回归 6 passed；已登记本机路径、个人账号和真实形态测试身份已从 tracked candidate 中性化，历史 KDF salt、旧 env input fallback、一次性 theme-key 迁移与 LICENSE attribution 保留。最终 committed archive `D` 尚未形成，因此 archive gate 仍待跑，不得提前宣布部署安全。
 - task-state resolve 指向本文件；本文件只保存当前目标、事实、证据摘要、唯一下一动作和 Not Done，不再保存旧 Kimi/zCode/ACP/timeout 执行日记。
@@ -103,7 +104,7 @@ verification_status: local-full-regression-green-release-candidate-review
 
 ## 唯一下一动作
 
-本地 application/full-stack/frontend/backend/migration/release/security gates 已绿；下一步主 Codex精确暂存授权范围、对 prospective Git tree 跑 committed-archive legacy/personal gate并 review staged diff，形成 coherent `D` 后 push/CI/三服务部署。随后执行 signed-in 96 journeys 双遍、四角色权限负向、fault/recovery、cleanup 与 evidence-only `E`。D3/P01 supporting probe 不重发；DeepSeek 未获 billing/credential 授权不重试。
+本地 application/full-stack/frontend/backend/migration/release/security gates 已绿；下一步提交 Ruff dependency drift correction，形成新的 coherent `D` 后重跑 archive gate、push/CI，CI 全绿才三服务部署。随后执行 signed-in 96 journeys 双遍、四角色权限负向、fault/recovery、cleanup 与 evidence-only `E`。D3/P01 supporting probe 不重发；DeepSeek 未获 billing/credential 授权不重试。
 
 ## Not Done / Do Not Redo
 

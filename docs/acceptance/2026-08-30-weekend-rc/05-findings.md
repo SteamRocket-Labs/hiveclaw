@@ -5,7 +5,7 @@ status: active
 authority: canonical-active-finding-ledger
 last_reviewed: 2026-08-31
 source_commit: bf94b76a1706510daf2d11c4e98fd5051f23f28f
-verification_status: p29-platform-admin-workspace-and-system-setting-secret-production-verified
+verification_status: ui-cmd-003-local-fix-candidate-and-blocker-contract-corrected
 ---
 
 # 当前 Findings 与 Blockers
@@ -185,20 +185,20 @@ verification_status: p29-platform-admin-workspace-and-system-setting-secret-prod
 |---|---|---:|---|---|---|
 | UI-CMD-001 | Observed | P2 candidate | PJ-03 | `/skill` 与 `/agent` 可能返回目标 subview，但 Agent extensions/selector 未消费目标，仍停在默认 catalog | signed-in UI 分别输入命令，记录 URL、selected tab、目标对象和 reload |
 | UI-CMD-002 | Observed | P2 candidate | PJ-03 | `/workflow` 可能只切换 tab，没有打开指定 draft/preview | signed-in fresh draft 逐字段复现，追踪 `ui_action → route → consumer` |
-| UI-CMD-003 | Observed | P2 candidate | PJ-03 | `/context`、`/usage`、`/permissions` 可能缺少目标 panel，最终只显示 “Command completed” 或内部 ID | 逐命令复现 success/failure/cancel/reload，确认可读 panel 是否存在 |
+| UI-CMD-003 | Fix Candidate | P2 | P03-CMD07 / P03-CMD08 / P03-CMD10 | exact `bf94b76a` 的 fresh production Session 中，`/context` 短暂排队后消失；`/usage`、`/permissions` 只显示 generic completed + raw Session ID，hard reload 后三者全部消失 | candidate 已补 typed `ui_action`、novice-readable panel、URL reload 与 RuntimeTask/InvocationSpan usage 去重；目标/架构/build gates 绿，待完整门、commit/deploy 与 production 双遍；见 [production reproduction](evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/UI-CMD-003-production-reproduction.md) |
 | KNOWLEDGE-UI-001 | Observed | P1/P2 candidate | PJ-09/PJ-10/PJ-11 | Agent Knowledge 消费 `entries + pages`，可能把 Agent Memory、Personal KB、Company KB 混成一个不诚实状态 | 从 employee Agent Detail 逐层核对来源、owner、authority 和空/拒绝/不可用状态 |
 
-以上均为候选，未完成 fresh reproduction 前不得修改代码或宣称根因。
+除 `UI-CMD-003` 已 fresh reproduction 外，其余仍为候选，未复现前不得修改代码或宣称根因。
 
-## 外部前置条件，不归类为产品 finding
+## Setup 与 external readiness（不伪装成产品 finding）
 
 | ID | 状态 | 历史事实 | 允许的当前动作 |
 |---|---|---|---|
-| BLOCKER-J4-RUNTIME-001 | BLOCKED_PRECONDITION | frozen P08-J4 要求 Hive/FreeCode/Hermes 同 task/workspace/model/resource envelope；current manual runner 只有官方 Claude Code/Hermes targets，FreeCode 未构建且 Hive live runner 已退役 | 保持空报告、不造分；见 `evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/P08-J4-blocked-runtime-contract.md`。依赖安装、共享模型认证或 benchmark contract 变更需对应 authority |
-| BLOCKER-MODEL-001 | BLOCKED_PRECONDITION | MiniMax 与 GLM bounded production probe 成功；DeepSeek exact binding 已确认，但唯一 live probe 返回 `HTTP 402 Insufficient Balance` | 保留 typed blocker且不重试；充值、billing 或 credential change 需 action-time 授权，恢复后仍须执行 P33 frozen compatibility task |
-| BLOCKER-BRIDGE-001 | BLOCKED_PRECONDITION | Hive Connect daemon running，但 `hive-connect status` fresh 返回 `401 Invalid bridge token`，UI linked `0` / offline | 保留 blocker；re-login/token replacement 需 action-time 授权 |
+| BLOCKER-J4-RUNTIME-001 | IMPLEMENTATION_QUEUED | frozen P08-J4 要求 Hive/FreeCode/Hermes 同 task/workspace/model/resource envelope；current manual runner 只有官方 Claude Code/Hermes targets，FreeCode 未构建且 Hive live runner 已退役 | 保留历史空报告、不造分；从仓库与 lockfile 构建 FreeCode/Hive adapter，缺预编译 CLI 不再是 blocker |
+| BLOCKER-MODEL-001 | EXTERNAL_UNAVAILABLE | MiniMax 与 GLM bounded production probe 成功；DeepSeek exact binding 已确认，但唯一 live probe 返回 `HTTP 402 Insufficient Balance` | 不充值、不换真实 credential、不重复调用；验证 typed unavailable、audit、角色呈现、恢复指导和无关模型/工具保留，external readiness 单列 |
+| BLOCKER-BRIDGE-001 | RECOVERY_QUEUED | Hive Connect daemon running，但 `hive-connect status` fresh 返回 `401 Invalid bridge token`，UI linked `0` / offline | 通过支持的 lab re-login/pair/session-token/binding 路径恢复并验证 revoke/reconnect；不读取真实组织 secret |
 
-外部 blocker 必须在执行窗重新验证；恢复后回到真实语义路径，不以旧失败永久阻断。
+外部 readiness 在最终交付中单列；setup/adapter 工作由 Codex 完成，任一路径都不以尝试次数永久阻断整个 Goal。
 
 ## 严重度
 

@@ -1,5 +1,90 @@
 import type { TFunction } from 'i18next';
-import type { SessionCommandControlState } from './AgentChatSection';
+import type { AgentPermissions } from '../../api/domains/agents';
+import type { SessionContextUsage } from '../../api/domains/ccParity';
+import type { SessionCommandControlState, SessionPermissionMode } from './AgentChatSection';
+
+export interface ReadOnlySessionCommandPanelProps {
+  contextUsage?: SessionContextUsage | null;
+  agentUsage?: {
+    usedToday?: number | null;
+    limitToday?: number | null;
+    usedMonth?: number | null;
+    limitMonth?: number | null;
+  };
+  agentPermissions?: AgentPermissions | null;
+  sessionPermissionMode?: SessionPermissionMode;
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value != null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function number(value: unknown): number | null {
+  if (value == null || value === '') return null;
+  const numeric = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function tokens(value: number): string {
+  return `${value.toLocaleString('en-US')} tokens`;
+}
+
+export function buildReadOnlySessionCommandDetails(
+  control: SessionCommandControlState,
+  props: ReadOnlySessionCommandPanelProps,
+  permissionModeLabel: string,
+): Array<[string, string]> | null {
+  if (control.type === 'context_panel') {
+    const context = props.contextUsage;
+    if (!context) return [['Status', 'Loading context details…']];
+    const used = number(context.used_tokens);
+    const window = number(context.model_window_tokens);
+    const selected = number(context.counts?.selected_contexts) ?? context.selected_contexts?.length ?? 0;
+    const suppressed = number(context.counts?.suppressed_contexts) ?? context.suppressed_contexts?.length ?? 0;
+    const details: Array<[string, string]> = [];
+    if (used != null && window != null) {
+      details.push(['Context window', `${used.toLocaleString('en-US')} / ${tokens(window)}`]);
+    }
+    details.push(
+      ['Authorized context', `${selected.toLocaleString('en-US')} selected`],
+      ['Unavailable context', `${suppressed.toLocaleString('en-US')} restricted or unavailable`],
+      ['Loaded Skills', `${context.loaded_skills?.length ?? 0}`],
+      ['Available tools', `${(context.active_tool_names?.length ?? 0).toLocaleString('en-US')}`],
+    );
+    return details;
+  }
+  if (control.type === 'usage_panel') {
+    const usage = record(control.payload?.usage);
+    const cost = record(control.payload?.cost);
+    const input = number(usage.input_tokens) ?? 0;
+    const output = number(usage.output_tokens) ?? 0;
+    const total = number(usage.total_tokens) ?? input + output;
+    const details: Array<[string, string]> = [['Session total', tokens(total)]];
+    if (input || output) details.push(['Input / output', `${input.toLocaleString('en-US')} / ${tokens(output)}`]);
+    const costUsd = number(cost.cost_usd);
+    if (costUsd != null) {
+      details.push(['Estimated cost', `$${costUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`]);
+    }
+    const today = number(props.agentUsage?.usedToday);
+    const todayLimit = number(props.agentUsage?.limitToday);
+    const month = number(props.agentUsage?.usedMonth);
+    const monthLimit = number(props.agentUsage?.limitMonth);
+    if (today != null) details.push(['Agent today', todayLimit != null ? `${today.toLocaleString('en-US')} / ${tokens(todayLimit)}` : tokens(today)]);
+    if (month != null) details.push(['Agent this month', monthLimit != null ? `${month.toLocaleString('en-US')} / ${tokens(monthLimit)}` : tokens(month)]);
+    return details;
+  }
+  if (control.type === 'permissions_panel') {
+    const access = String(props.agentPermissions?.access_level || control.payload?.access_level || 'none');
+    return [
+      ['Agent access', access === 'manage' ? 'Manage' : access === 'use' ? 'Use' : access === 'view' ? 'View' : 'No access'],
+      ['Session mode', permissionModeLabel],
+      ['Policy boundary', 'Enterprise policies still apply.'],
+    ];
+  }
+  return null;
+}
 
 type StatusUiAction =
   | 'open_resume_picker'

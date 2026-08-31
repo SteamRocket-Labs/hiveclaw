@@ -65,10 +65,12 @@ import {
   applySessionActiveProjection,
   buildAgentDetailTabNavigation,
   buildSessionWorkbenchNavigation,
+  buildSessionCommandPanelNavigation,
   getAgentDetailHashTab,
   getVisibleAgentDetailTabs,
   isLocalAgentRuntimeType,
   isSessionWorkbenchRoute,
+  readSessionCommandPanel,
 } from '../AgentDetail';
 import type { PlanRequest } from '../../api/domains/plans';
 import { AGENT_WORKBENCH_AREAS } from './agentDetailPolicy';
@@ -1231,6 +1233,13 @@ describe('AgentDetail extracted sections', () => {
       search: '',
       hash: '',
     });
+    expect(buildSessionCommandPanelNavigation('/agents/agent-1/sessions/session-2', '?keep=yes', 'context')).toEqual({
+      pathname: '/agents/agent-1/sessions/session-2',
+      search: '?keep=yes&command_panel=context',
+      hash: '',
+    });
+    expect(readSessionCommandPanel('?command_panel=usage')).toBe('usage');
+    expect(readSessionCommandPanel('?command_panel=unknown')).toBeNull();
     expect(getAgentDetailHashTab('#mind', AGENT_DETAIL_TABS)).toBe('knowledge');
     expect(getAgentDetailHashTab('#tools', AGENT_DETAIL_TABS)).toBe('extensions');
     expect(getAgentDetailHashTab('#skills', AGENT_DETAIL_TABS)).toBe('extensions');
@@ -1902,6 +1911,75 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="session-command-control-panel"');
     expect(markup).toContain('上下文已自动压缩');
     expect(markup).toContain('后续请求将使用压缩后的上下文');
+  });
+
+  it('renders context, usage, and permission commands as novice-readable panels without internal ids', () => {
+    const context = renderToStaticMarkup(
+      <SessionCommandControlPanel
+        control={{
+          type: 'context_panel',
+          title: 'Session context',
+          payload: { session_id: 'session-private-id', agent_id: 'agent-private-id' },
+        }}
+        contextUsage={{
+          schema: 'hive.ccplus.session_context_usage.v1',
+          session_id: 'session-private-id',
+          agent_id: 'agent-private-id',
+          model_window_tokens: 128000,
+          used_tokens: 32000,
+          free_space_tokens: 96000,
+          counts: { selected_contexts: 4, suppressed_contexts: 1 },
+          loaded_skills: ['research'],
+          active_tool_names: ['read_file', 'write_file'],
+        }}
+        onDismiss={vi.fn()}
+        onRunCommand={vi.fn()}
+      />,
+    );
+    expect(context).toContain('32,000 / 128,000 tokens');
+    expect(context).toContain('4 selected');
+    expect(context).toContain('1 restricted or unavailable');
+    expect(context).not.toContain('session-private-id');
+    expect(context).not.toContain('agent-private-id');
+
+    const usage = renderToStaticMarkup(
+      <SessionCommandControlPanel
+        control={{
+          type: 'usage_panel',
+          title: 'Session usage',
+          payload: {
+            session_id: 'session-private-id',
+            usage: { input_tokens: 700, output_tokens: 500, total_tokens: 1200 },
+            cost: { cost_usd: 0.01 },
+          },
+        }}
+        agentUsage={{ usedToday: 4000, limitToday: 10000, usedMonth: 12000, limitMonth: 50000 }}
+        onDismiss={vi.fn()}
+        onRunCommand={vi.fn()}
+      />,
+    );
+    expect(usage).toContain('1,200 tokens');
+    expect(usage).toContain('$0.01');
+    expect(usage).toContain('4,000 / 10,000 tokens');
+    expect(usage).not.toContain('session-private-id');
+
+    const permissions = renderToStaticMarkup(
+      <SessionCommandControlPanel
+        control={{
+          type: 'permissions_panel',
+          title: 'Session permissions',
+          payload: { user_id: 'user-private-id' },
+        }}
+        agentPermissions={{ scope_type: 'user', access_level: 'manage', is_owner: true }}
+        sessionPermissionMode="bypassPermissions"
+        onDismiss={vi.fn()}
+        onRunCommand={vi.fn()}
+      />,
+    );
+    expect(permissions).toContain('Manage');
+    expect(permissions).toContain('Full access');
+    expect(permissions).toContain('Enterprise policies still apply');
+    expect(permissions).not.toContain('user-private-id');
   });
 
   it('renders workspace rewind restore outcomes inside the session control panel', () => {

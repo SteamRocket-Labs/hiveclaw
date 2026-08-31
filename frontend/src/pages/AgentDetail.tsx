@@ -100,7 +100,7 @@ import {
     DEFAULT_SESSION_PERMISSION_MODE,
     applySessionActiveProjection,
     branchDraftContent,
-    buildAgentDetailTabNavigation,
+    buildAgentDetailTabNavigation, buildSessionCommandPanelNavigation,
     buildSessionWorkbenchNavigation,
     checkpointEventIdFromPayload,
     defaultSessionPermissionModeFromAgent,
@@ -120,6 +120,7 @@ import {
     withSessionPermissionMode,
     type AgentDetailTab,
 } from './agent-detail/agentDetailPolicy';
+import { sessionPanelCommandForUiAction, useReloadableSessionCommandPanel } from './agent-detail/useReloadableSessionCommandPanel';
 import './AgentDetail.css';
 
 const AgentApprovalsSection = lazy(() => import('./agent-detail/AgentApprovalsSection'));
@@ -139,13 +140,14 @@ const LocalAgentChatSection = lazy(() => import('./agent-detail/LocalAgentChatSe
 export {
     AGENT_DETAIL_TABS,
     applySessionActiveProjection,
-    buildAgentDetailTabNavigation,
+    buildAgentDetailTabNavigation, buildSessionCommandPanelNavigation,
     buildSessionWorkbenchNavigation,
     defaultSessionPermissionModeFromAgent,
     getAgentDetailHashTab,
     getVisibleAgentDetailTabs,
     isLocalAgentRuntimeType,
     isSessionWorkbenchRoute,
+    readSessionCommandPanel,
     sessionPermissionModeFromSession,
     trimMessagesBeforeTranscriptEvent,
 } from './agent-detail/agentDetailPolicy';
@@ -890,6 +892,15 @@ function AgentDetailInner() {
         const message = typeof uiAction.message === 'string' && uiAction.message.trim()
             ? uiAction.message.trim()
             : formatSlashCommandResult(response);
+        const routedCommand = sessionPanelCommandForUiAction(uiAction.type);
+        if (routedCommand) {
+            queryClient.setQueryData(['session-command-panel', id, currentSessionId, routedCommand], response);
+            const workbench = buildSessionWorkbenchNavigation(location.pathname, location.search, currentSessionId);
+            navigate(buildSessionCommandPanelNavigation(workbench.pathname, workbench.search, routedCommand), { replace: true });
+            setSessionCommandControl(null);
+            showToast(message, uiAction.level === 'error' ? 'error' : 'success');
+            return true;
+        }
 
         if (uiAction.type === 'switch_session') {
             const targetSession = actionResult?.session && typeof actionResult.session === 'object'
@@ -982,18 +993,6 @@ function AgentDetailInner() {
             return true;
         }
 
-        if (uiAction.type === 'open_permissions_menu') {
-            openSessionCommandControl({
-                type: 'permissions_panel',
-                title: message || 'Session permissions',
-                message: 'Use the permission selector in the composer to change this session mode.',
-                command: response.command,
-                payload: actionResult,
-            });
-            showToast(message, 'success');
-            return true;
-        }
-
         if (uiAction.type === 'confirm_workspace_restore') {
             openSessionCommandControl(buildSessionCommandStatusControl(t, uiAction.type, {
                 command: response.command,
@@ -1068,14 +1067,10 @@ function AgentDetailInner() {
             return true;
         }
 
-        if (uiAction.type === 'open_context_panel' || uiAction.type === 'open_usage_panel' || uiAction.type === 'open_side_question') {
+        if (uiAction.type === 'open_side_question') {
             openSessionCommandControl({
-                type: uiAction.type === 'open_context_panel'
-                    ? 'context_panel'
-                    : uiAction.type === 'open_usage_panel'
-                        ? 'usage_panel'
-                        : 'side_question',
-                title: message || (uiAction.type === 'open_context_panel' ? 'Session context' : uiAction.type === 'open_usage_panel' ? 'Session usage' : 'Side question'),
+                type: 'side_question',
+                title: message || 'Side question',
                 message,
                 command: response.command,
                 payload: actionResult,
@@ -2290,6 +2285,10 @@ function AgentDetailInner() {
         queryFn: () => agentApi.getPermissions(id!),
         enabled: canLoadAgentScopedData && activeTab === 'chat',
     });
+    const { routedSessionCommand, control: routedSessionCommandControl } = useReloadableSessionCommandPanel({
+        agentId: id, routeSessionId,
+        activeSessionId: activeSession?.id ? String(activeSession.id) : null, search: location.search,
+    });
     const handleTogglePlanMode = React.useCallback(() => {
         setPlanModeRequested((value) => !value);
         setGoalModeRequested(false);
@@ -2300,7 +2299,9 @@ function AgentDetailInner() {
     }, []);
     const handleDismissSessionCommandControl = React.useCallback(() => {
         setSessionCommandControl(null);
-    }, []);
+        if (!routedSessionCommand) return;
+        navigate(buildSessionCommandPanelNavigation(location.pathname, location.search, null), { replace: true });
+    }, [location.pathname, location.search, navigate, routedSessionCommand]);
     const handleRemoveAttachedFile = React.useCallback((index: number) => {
         setAttachedFiles((prev) => prev.filter((_, i) => i !== index));
     }, []);
@@ -2685,7 +2686,7 @@ function AgentDetailInner() {
                             onToggleGoalMode={handleToggleGoalMode}
                             sessionPermissionMode={sessionPermissionMode}
                             onSetSessionPermissionMode={handleSetSessionPermissionMode}
-                            sessionCommandControl={sessionCommandControl}
+                            sessionCommandControl={routedSessionCommandControl ?? sessionCommandControl}
                             onDismissSessionCommandControl={handleDismissSessionCommandControl}
                             onRunSessionCommand={handleRunSessionCommandFromUi}
                             onResolveSessionPermission={resolveSessionPermission}

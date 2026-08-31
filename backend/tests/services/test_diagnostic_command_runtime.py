@@ -29,9 +29,11 @@ async def test_usage_diagnostic_reads_runtime_tasks_and_invocation_spans():
     from app.services.diagnostic_command_runtime import execute_diagnostic_command
 
     agent_id = uuid4()
+    runtime_task_id = uuid4()
     db = _FakeDB(
         [
             SimpleNamespace(
+                id=runtime_task_id,
                 task_type="web_chat_turn",
                 status="completed",
                 token_usage={"input_tokens": 5, "output_tokens": 7, "total_tokens": 12},
@@ -39,6 +41,7 @@ async def test_usage_diagnostic_reads_runtime_tasks_and_invocation_spans():
         ],
         [
             SimpleNamespace(
+                runtime_task_id=runtime_task_id,
                 span_type="generation",
                 status="ok",
                 duration_ms=20.5,
@@ -58,9 +61,15 @@ async def test_usage_diagnostic_reads_runtime_tasks_and_invocation_spans():
 
     assert result["ok"] is True
     assert result["command"] == "usage"
-    assert result["usage"]["total_tokens"] == 19
-    assert result["usage"]["input_tokens"] == 8
-    assert result["usage"]["output_tokens"] == 11
+    assert result["usage"]["total_tokens"] == 12
+    assert result["usage"]["input_tokens"] == 5
+    assert result["usage"]["output_tokens"] == 7
+    assert result["cost"]["cost_usd"] == 0.01
+    assert result["ui_action"] == {
+        "type": "open_usage_panel",
+        "session_id": "session-1",
+        "message": "Session usage is ready.",
+    }
     assert "runtime_tasks" in result["sources"]
     assert "invocation_spans" in result["sources"]
 
@@ -111,3 +120,8 @@ async def test_context_diagnostic_reports_only_live_context_ladder():
     assert "read_time_projection_collapse" not in result["context_ladder"]
     assert "blocking_limit" not in result["context_ladder"]
     assert "reactive_compact" not in result["context_ladder"]
+    assert result["ui_action"] == {
+        "type": "open_context_panel",
+        "session_id": "session-ctx",
+        "message": "Session context is ready.",
+    }

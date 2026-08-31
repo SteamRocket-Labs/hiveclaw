@@ -1175,6 +1175,11 @@ async def test_commands_api_bridges_skill_workflow_mcp_config_and_permissions(mo
     )
     assert permissions["result"]["command"] == "permissions"
     assert permissions["result"]["access_level"] == "use"
+    assert permissions["result"]["ui_action"] == {
+        "type": "open_permissions_menu",
+        "session_id": "00000000-0000-4000-8000-000000000001",
+        "message": "Session permissions are ready.",
+    }
     assert ("load_skill", {"name": "research"}, "00000000-0000-4000-8000-000000000001") in captured_tools
     assert ("list_mcp_tools", {}, "00000000-0000-4000-8000-000000000001") in captured_tools
 

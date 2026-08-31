@@ -131,6 +131,7 @@ import {
 } from './CanonicalCardAssistantSupplement';
 import { SessionToolEffectRecoveryBanner, sessionToolEffectRecoveryModel } from './SessionToolEffectRecovery';
 import { buildMessageFeedbackInput } from './messageFeedback';
+import { buildReadOnlySessionCommandDetails, type ReadOnlySessionCommandPanelProps } from './sessionCommandPanelPresentation';
 
 type AttachedFile = {
   name: string;
@@ -535,13 +536,14 @@ export function SessionCommandControlPanel({
   onRunCommand,
   onContinueSession,
   rewindUnavailableReason,
+  contextUsage, agentUsage, agentPermissions, sessionPermissionMode = 'auto',
 }: {
   control?: SessionCommandControlState | null;
   onDismiss: () => void;
   onRunCommand: (command: string, args?: Record<string, unknown>) => void | Promise<unknown>;
   onContinueSession?: (content: string) => void | Promise<unknown>;
   rewindUnavailableReason?: string | null;
-}) {
+} & ReadOnlySessionCommandPanelProps) {
   const { t } = useTranslation();
   const checkpoints = control?.checkpoints || [];
   const checkpointIds = checkpoints.map(checkpointId);
@@ -562,7 +564,9 @@ export function SessionCommandControlPanel({
     || control.type === 'projection_status'
     || control.type === 'workspace_restore_confirmation'
     || control.type === 'checkpoint_selector';
-  const details = hideInternalDetails ? [] : payloadSummary(control.payload);
+  const details = buildReadOnlySessionCommandDetails(control, {
+    contextUsage, agentUsage, agentPermissions, sessionPermissionMode,
+  }, getSessionPermissionModeLabel(sessionPermissionMode, t)) ?? (hideInternalDetails ? [] : payloadSummary(control.payload));
   const resumeQuery = control.type === 'resume_picker'
     && control.payload?.interrupted === true
     && typeof control.payload.next_query === 'string'
@@ -2327,6 +2331,9 @@ function AgentChatSection({
                 onRunCommand={onRunSessionCommand || (() => undefined)}
                 onContinueSession={onSendMessage}
                 rewindUnavailableReason={rewindUnavailableReason}
+                contextUsage={sessionContextUsage}
+                agentUsage={{ usedToday: agent?.tokens_used_today, limitToday: agent?.max_tokens_per_day, usedMonth: agent?.tokens_used_month, limitMonth: agent?.max_tokens_per_month }}
+                agentPermissions={agentPermissions} sessionPermissionMode={sessionPermissionMode}
               />
               <SessionComposer
                 value={chatInput}

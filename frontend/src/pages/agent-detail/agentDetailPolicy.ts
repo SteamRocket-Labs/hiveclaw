@@ -292,6 +292,28 @@ export function buildSessionWorkbenchNavigation(
     };
 }
 
+export type SessionCommandPanelRoute = 'context' | 'usage' | 'permissions';
+
+export function readSessionCommandPanel(search: string): SessionCommandPanelRoute | null {
+    const value = new URLSearchParams(search).get('command_panel');
+    return value === 'context' || value === 'usage' || value === 'permissions' ? value : null;
+}
+
+export function buildSessionCommandPanelNavigation(
+    pathname: string,
+    search: string,
+    panel: SessionCommandPanelRoute | null,
+): { pathname: string; search: string; hash: string } {
+    const params = new URLSearchParams(search);
+    if (panel) params.set('command_panel', panel);
+    else params.delete('command_panel');
+    return {
+        pathname,
+        search: params.toString() ? `?${params.toString()}` : '',
+        hash: '',
+    };
+}
+
 /** Visual grouping of tabs for the tab bar — groups are separated by thin dividers */
 export const AGENT_DETAIL_TAB_GROUPS: { tabs: AgentDetailTab[]; }[] = [
     { tabs: ['status', 'chat', 'tasks'] },

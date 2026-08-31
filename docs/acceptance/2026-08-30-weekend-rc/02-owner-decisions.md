@@ -3,9 +3,9 @@ document_id: weekend-rc-2026-08-30-owner-decisions
 owner: Rocky
 status: active
 authority: canonical-owner-decision-ledger
-last_reviewed: 2026-08-30
-source_commit: c18b181c
-verification_status: owner-approved-complete-execution-and-delivery-contract
+last_reviewed: 2026-08-31
+source_commit: bf94b76a1706510daf2d11c4e98fd5051f23f28f
+verification_status: owner-approved-single-codex-fixture-and-external-readiness-contract
 ---
 
 # Owner 决策账本
@@ -31,6 +31,8 @@ verification_status: owner-approved-complete-execution-and-delivery-contract
 | DEC-011 | Codex 保留验收、集成和远程状态权威 | Kimi/zCode 不关闭 Issue、不改 Journey/Finding/Evidence verdict、不 commit/push/deploy、不接触生产或凭据；修正轮次使用引用既有 diff/review 事实的新工作包 |
 | DEC-012 | 当前 `agent-delegation` Skill 是唯一派发协议 | Goal 不复制队列状态，Issue 不复制授权协议，验收文档不另造 ACP supervisor；Skill 管授权继承、无状态调用、chain、timeout 和 receipt。`cwd` 不是 sandbox，只读与实现权限分开，未授权 commit effects 必须停在 worker 外 |
 
+DEC-008、DEC-010～DEC-012 保留为历史记录，已由 PDEC-007 覆盖，不再控制本轮执行。
+
 ## 2026-08-30 已接受执行裁决
 
 | ID | 已接受决定 | 精确边界 |
@@ -41,6 +43,11 @@ verification_status: owner-approved-complete-execution-and-delivery-contract
 | PDEC-004 | 采用 `单 Agent → Growth → HR/Knowledge/Permission → Collaboration/Control Plane` 发布顺序 | 调查和互不重叠的实现可并行，但前一 Gate 未通过时后一层不能升级为 Closed 或用于掩盖基础能力失败 |
 | PDEC-005 | 采用相对执行窗 `T+8:00` RC code freeze 和 final exact-commit 双遍 | 冻结候选记为应用提交 `D`；其后任何 runtime/code/config/schema 变化使 `D` 作废并生成新候选，重跑相关门、三服务部署和完整双遍；docs-only 证据提交 `E` 不使 `D` 作废 |
 | PDEC-006 | 采用真实语义 Runner 与外部前置条件分流合同 | Runner 是 Hive 生产 Agent 经真实 selected model/provider 的执行链，不是 Kimi/zCode；健康 provider 上的 Hive failure 是 Finding，余额/auth/rate-limit/offline 是 `BLOCKED_PRECONDITION`；Hive Connect 只阻塞 Local Agent 旅程；re-login、credential replacement 或充值仍需 action-time owner 授权，恢复后从旅程起点重跑 |
+| PDEC-007 | 本轮改为单 Codex 全栈执行与验收 | 禁用 Kimi Code、zCode、Coze、ACP、agent-delegation、subagent 和并行 Codex 任务；Issue 仅可作审计引用，不拥有执行或 verdict |
+| PDEC-008 | Codex 自行建立可复用的实验 tenant 合成 fixture | 可创建/登录/切换/撤销 employee、company-admin、platform-admin、scoped-operator 身份及其临时 grant、Session、Agent、KB、Workflow、Local Agent binding；缺少预存会话或 fixture 不是 owner gate |
+| PDEC-009 | 产品正确性与外部 readiness 分账 | Hive 缺陷、缺实现或缺接线必须修复；provider 余额/上游/可选外部服务只在 Hive 已 typed 呈现、保留无关功能、给出恢复说明后列为 external readiness，不降低产品 NPTCR |
+| PDEC-010 | 缺少仓库内 runtime/build/adapter 是实现工作 | Codex 可按 lockfile 安装既有依赖并构建 FreeCode 或最小 benchmark adapter；不得因没有预编译 CLI 而写 `BLOCKED_PRECONDITION` |
+| PDEC-011 | 已登记合成资产 cleanup 已授权 | 通过受支持产品路径核对 exact target 后可清理合成身份、grant、Session、文件和 binding；真实数据、不可恢复证据、真实密码/组织 secret、计费与跨 tenant 效果仍是硬停止边界 |
 
 ## 当前动作权限
 
@@ -49,12 +56,13 @@ verification_status: owner-approved-complete-execution-and-delivery-contract
 | 建立、移动、压缩和索引本轮文档 | 已授权 |
 | 增加只校验文档结构事实的测试 | 已授权，不能判断语义质量 |
 | 建立 Goal、RC milestone/labels/Issues 和只读 provider smoke | 已授权；Issue/worker 状态不是验收事实 |
-| 修改业务代码或前端 UI | 已授权于 Codex fresh reproduction 后，以单 finding、隔离 worktree 的 bounded packet 执行；禁止猜测性改写 |
+| 修改业务代码或前端 UI | 已授权于 Codex fresh reproduction 或当前源码证明缺失实现后直接完成共享根因修复；禁止猜测性改写 |
 | 本地测试、独立 review 与原子集成 | 已授权；Codex 必须复核 live wiring、diff 和 production-shaped regression |
 | commit / push | 已授权于验收基线和每个已验证修复；只提交本轮 scope，不夹带用户已有改动 |
 | Railway 部署 | owner 已授权最终冻结应用提交 `D` 同时部署 `backend`、`backend-api`、`frontend`；本授权不覆盖凭据、计费、DDL、不可逆数据效果或非冻结提交 |
 | write-bearing production E2E | 已授权仅在 Rocky 实验账号/tenant 内按冻结 manifest 创建可识别、可登记、可回收的合成资产；必须先登记 cleanup，禁止真实客户数据和未列外部发送 |
-| 登录、充值、替换 credential / bridge token | 未授权，action-time 单独确认 |
-| 生产 DDL、不可逆迁移、删除数据或证据 | 未授权，action-time 单独确认 |
+| 合成登录、角色/grant、lab Session / Local Agent binding | 已授权；必须登记、限定 Rocky 实验 tenant、验证负向边界并 cleanup |
+| 充值、真实 provider credential、真实用户密码、组织 secret | 未授权，action-time 单独确认 |
+| additive/backward-compatible migration | 已授权于完整 migration test、backfill、rollout safety 与 rollback/forward recovery；不可逆生产迁移或真实数据删除仍需确认 |
 
-2026-08-25 的旧 RC “开始”授权只解释历史执行，不自动延续为新的凭据或不可逆生产效果授权；2026-08-30 owner 的“按照你的建议来”正式接受 PDEC-001～PDEC-006 和上述最终部署边界。任何后续范围扩大仍需新的明确裁决。
+2026-08-25 的旧 RC “开始”授权只解释历史执行；2026-08-30 接受 PDEC-001～PDEC-006，2026-08-31 的完整 Goal 进一步接受 PDEC-007～PDEC-011。后者覆盖旧 worker、预存会话、fixture、lab re-login 和本地 runtime action gate，但不授权真实凭据、计费、跨 tenant、真实外部收件人或不可逆真实数据效果。

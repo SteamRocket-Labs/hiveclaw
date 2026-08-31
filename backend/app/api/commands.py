@@ -1100,6 +1100,11 @@ def _metadata_command_payload(
             "access_level": access_level,
             "permission_mode": command.permission_mode,
             "mutation_path": "agent permissions API or approval hooks",
+            "ui_action": {
+                "type": "open_permissions_menu",
+                "session_id": session_id,
+                "message": "Session permissions are ready.",
+            },
         }
     if command_name == "config":
         return {

@@ -15,16 +15,8 @@ from app.services.command_registry import build_default_command_registry
 
 DIAGNOSTIC_COMMAND_NAMES = frozenset({"status", "usage", "cost", "stats", "context", "doctor", "version"})
 _VERSION_PATH = Path(__file__).resolve().parents[2] / "VERSION"
-_TOKEN_KEYS = (
-    "prompt_tokens",
-    "completion_tokens",
-    "input_tokens",
-    "output_tokens",
-    "cached_tokens",
-    "cached_input_tokens",
-    "total_tokens",
-)
-_COST_KEYS = ("cost_usd", "estimated_cost_usd", "total_cost_usd")
+_TOKEN_KEYS = ("input_tokens", "output_tokens", "cached_tokens", "total_tokens")
+_COST_KEYS = ("cost_usd",)
 
 
 def _coerce_uuid(value: Any) -> uuid.UUID | None:
@@ -67,15 +59,38 @@ def _all_rows(result: Any) -> list[Any]:
     return []
 
 
-def _sum_numeric(payload: Any, keys: tuple[str, ...]) -> dict[str, float]:
-    totals = {key: 0.0 for key in keys}
+def _first_numeric(payload: Any, keys: tuple[str, ...]) -> float:
     if not isinstance(payload, dict):
-        return totals
+        return 0.0
     for key in keys:
         value = payload.get(key)
         if isinstance(value, int | float):
-            totals[key] += float(value)
-    return totals
+            return float(value)
+    return 0.0
+
+
+def _canonical_usage(payload: Any) -> dict[str, float]:
+    input_tokens = _first_numeric(payload, ("input_tokens", "prompt_tokens", "promptTokenCount"))
+    output_tokens = _first_numeric(payload, ("output_tokens", "completion_tokens", "candidatesTokenCount"))
+    cached_tokens = _first_numeric(payload, ("cached_tokens", "cached_input_tokens", "cache_read_input_tokens"))
+    total_tokens = _first_numeric(payload, ("total_tokens", "total", "totalTokenCount"))
+    if not total_tokens:
+        total_tokens = input_tokens + output_tokens
+    return {
+        key: value
+        for key, value in {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cached_tokens": cached_tokens,
+            "total_tokens": total_tokens,
+        }.items()
+        if value
+    }
+
+
+def _canonical_cost(payload: Any) -> dict[str, float]:
+    value = _first_numeric(payload, ("cost_usd", "estimated_cost_usd", "total_cost_usd"))
+    return {"cost_usd": value} if value else {}
 
 
 def _merge_totals(target: dict[str, float], increment: dict[str, float]) -> None:
@@ -86,7 +101,7 @@ def _merge_totals(target: dict[str, float], increment: dict[str, float]) -> None
 async def _runtime_rows(db: AsyncSession, *, agent_id: uuid.UUID | None, session_id: str | None) -> list[Any]:
     if not hasattr(db, "execute"):
         return []
-    stmt = select(RuntimeTask.task_type, RuntimeTask.status, RuntimeTask.token_usage).limit(500)
+    stmt = select(RuntimeTask.id, RuntimeTask.task_type, RuntimeTask.status, RuntimeTask.token_usage).limit(500)
     if agent_id is not None:
         stmt = stmt.where(RuntimeTask.parent_agent_id == agent_id)
     if session_id:
@@ -99,7 +114,11 @@ async def _span_rows(db: AsyncSession, *, agent_id: uuid.UUID | None, session_id
     if not hasattr(db, "execute"):
         return []
     stmt = select(
-        InvocationSpan.span_type, InvocationSpan.status, InvocationSpan.duration_ms, InvocationSpan.usage
+        InvocationSpan.runtime_task_id,
+        InvocationSpan.span_type,
+        InvocationSpan.status,
+        InvocationSpan.duration_ms,
+        InvocationSpan.usage,
     ).limit(500)
     if agent_id is not None:
         stmt = stmt.where(InvocationSpan.agent_id == agent_id)
@@ -116,29 +135,42 @@ def _build_snapshot(*, runtime_rows: list[Any], span_rows: list[Any]) -> dict[st
     span_by_type: dict[str, int] = {}
     usage = {key: 0.0 for key in _TOKEN_KEYS}
     costs = {key: 0.0 for key in _COST_KEYS}
+    task_usage_keys: dict[Any, set[str]] = {}
+    task_cost_keys: dict[Any, set[str]] = {}
     duration_ms = 0.0
 
     for row in runtime_rows:
-        task_type = str(_field(row, "task_type", 0, "unknown") or "unknown")
-        status = str(_field(row, "status", 1, "unknown") or "unknown")
-        token_usage = _field(row, "token_usage", 2, {})
+        task_id = _field(row, "id", 0)
+        task_type = str(_field(row, "task_type", 1, "unknown") or "unknown")
+        status = str(_field(row, "status", 2, "unknown") or "unknown")
+        token_usage = _field(row, "token_usage", 3, {})
+        task_usage = _canonical_usage(token_usage)
+        task_cost = _canonical_cost(token_usage)
         runtime_by_type[task_type] = runtime_by_type.get(task_type, 0) + 1
         runtime_by_status[status] = runtime_by_status.get(status, 0) + 1
-        _merge_totals(usage, _sum_numeric(token_usage, _TOKEN_KEYS))
-        _merge_totals(costs, _sum_numeric(token_usage, _COST_KEYS))
+        _merge_totals(usage, task_usage)
+        _merge_totals(costs, task_cost)
+        if task_id is not None:
+            task_usage_keys[task_id] = set(task_usage)
+            task_cost_keys[task_id] = set(task_cost)
 
     for row in span_rows:
-        span_type = str(_field(row, "span_type", 0, "unknown") or "unknown")
-        status = str(_field(row, "status", 1, "unknown") or "unknown")
-        duration_ms += float(_field(row, "duration_ms", 2, 0.0) or 0.0)
-        span_usage = _field(row, "usage", 3, {})
+        runtime_task_id = _field(row, "runtime_task_id", 0)
+        span_type = str(_field(row, "span_type", 1, "unknown") or "unknown")
+        status = str(_field(row, "status", 2, "unknown") or "unknown")
+        duration_ms += float(_field(row, "duration_ms", 3, 0.0) or 0.0)
+        span_usage = _field(row, "usage", 4, {})
+        covered_usage = task_usage_keys.get(runtime_task_id, set())
+        covered_cost = task_cost_keys.get(runtime_task_id, set())
         span_by_type[span_type] = span_by_type.get(span_type, 0) + 1
         span_by_status[status] = span_by_status.get(status, 0) + 1
-        _merge_totals(usage, _sum_numeric(span_usage, _TOKEN_KEYS))
-        _merge_totals(costs, _sum_numeric(span_usage, _COST_KEYS))
+        _merge_totals(
+            usage, {key: value for key, value in _canonical_usage(span_usage).items() if key not in covered_usage}
+        )
+        _merge_totals(
+            costs, {key: value for key, value in _canonical_cost(span_usage).items() if key not in covered_cost}
+        )
 
-    usage["input_tokens"] = usage.get("input_tokens", 0.0) + usage.get("prompt_tokens", 0.0)
-    usage["output_tokens"] = usage.get("output_tokens", 0.0) + usage.get("completion_tokens", 0.0)
     return {
         "runtime_tasks": {
             "count": len(runtime_rows),
@@ -202,7 +234,16 @@ async def execute_diagnostic_command(
     if name == "version":
         return {**base, "version": _read_version()}
     if name == "usage":
-        return {**base, "usage": snapshot["usage"]}
+        return {
+            **base,
+            "usage": snapshot["usage"],
+            "cost": snapshot["cost"],
+            "ui_action": {
+                "type": "open_usage_panel",
+                "session_id": session_id,
+                "message": "Session usage is ready.",
+            },
+        }
     if name == "cost":
         return {**base, "cost": snapshot["cost"], "currency": "USD"}
     if name == "stats":
@@ -224,6 +265,11 @@ async def execute_diagnostic_command(
                 "autocompact",
                 "reactive_prompt_too_long_retry",
             ],
+            "ui_action": {
+                "type": "open_context_panel",
+                "session_id": session_id,
+                "message": "Session context is ready.",
+            },
         }
     if name == "doctor":
         return {

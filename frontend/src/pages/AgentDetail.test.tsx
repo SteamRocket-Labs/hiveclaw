@@ -275,6 +275,16 @@ describe('AgentDetail realtime refresh contract', () => {
     expect(sectionSource).toContain("t('sessionWorkbench.commandPanel.resumeContinuePrompt', resumeQuery)");
   });
 
+  it('keeps read-only command panels on the canonical Session URL so reload can refetch them', async () => {
+    const source = await readSource('./AgentDetail.tsx');
+    const hookSource = await readSource('./agent-detail/useReloadableSessionCommandPanel.ts');
+
+    expect(hookSource).toContain("queryKey: ['session-command-panel', agentId, activeSessionId, routedSessionCommand]");
+    expect(source).toContain('buildSessionCommandPanelNavigation(');
+    expect(source).toContain('queryClient.setQueryData(');
+    expect(hookSource).toContain('readSessionCommandPanel(search)');
+  });
+
   it('keeps polling an absent authoritative run until the local grace state is actually cleared', async () => {
     const source = await readSource('./AgentDetail.tsx');
 

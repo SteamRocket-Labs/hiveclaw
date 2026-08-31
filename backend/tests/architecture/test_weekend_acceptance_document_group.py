@@ -11,7 +11,6 @@ ISSUE_TEMPLATE_GROUP = ROOT / ".github" / "ISSUE_TEMPLATE"
 WEEKEND_WORK_PACKET = ISSUE_TEMPLATE_GROUP / "weekend_rc_work_packet.yml"
 PRODUCTION_MANIFEST = ROOT / "acceptance" / "weekend_production_journeys.v1.json"
 PRODUCTION_GATE = ROOT / "backend" / "scripts" / "weekend_rc_gate.py"
-WORKER_GATE = ROOT / "backend" / "scripts" / "weekend_rc_worker_gate.py"
 
 REQUIRED_FILES = (
     "README.md",
@@ -157,23 +156,18 @@ def test_execution_control_contract_is_explicit_and_non_semantic() -> None:
     assert "Kimi Code 负责前端，zCode 负责后端" in decisions
     assert "Codex 是唯一验收总控" in decisions
     assert "当前 `agent-delegation` Skill 是唯一派发协议" in decisions
-    assert "取消 zCode/Kimi 分工" not in decisions
+    assert "保留为历史记录，已由 PDEC-007 覆盖" in decisions
+    assert "本轮改为单 Codex 全栈执行与验收" in decisions
+    assert "缺少预存会话或 fixture 不是 owner gate" in decisions
     assert "GitHub Issue 只是" in index
     assert "都不是 Journey/Finding verdict" in index
-    assert "agent-delegate" in runbook
-    assert "初次派发跨 Issue 无状态" in runbook
-    assert "同一 Issue correction 必须携带已经核验的诊断" in runbook
-    assert "隔离 worktree" in runbook
-    assert "`cwd` 只是上下文，不是 OS sandbox" in runbook
-    assert "approve-all" in runbook
-    assert "--authorization-note" in runbook
-    assert "`exit=0` 只表示 transport 返回" in runbook
-    assert "任何单字段都不能自动升级为成功" in runbook
-    assert "weekend_rc_worker_gate.py preflight" in runbook
-    assert "stop_reason 只做分类" in runbook
-    assert "semantic_verdict=not_computed_by_tool" in runbook
-    assert WORKER_GATE.is_file()
-    for decision_id in ("PDEC-001", "PDEC-002", "PDEC-003", "PDEC-004", "PDEC-005", "PDEC-006"):
+    assert "Kimi Code、zCode、Coze、ACP、agent-delegation、subagent 和并行 Codex 任务均禁用" in runbook
+    assert "缺少预存身份、fixture、Session 或仓库内 runtime/build/adapter" in runbook
+    assert "不是停止条件" in runbook
+    assert "超时、尝试次数或缺 fixture 不参与产品语义判断" in runbook
+    assert "每个 worker 调用必须满足" not in runbook
+    assert "不拥有 Journey、Finding、产品质量或最终语义 verdict" in runbook
+    for decision_id in tuple(f"PDEC-{index:03d}" for index in range(1, 12)):
         assert decision_id in decisions
     assert "一个可独立回滚的共享根因对应一个 Codex integration commit" in runbook
     assert "新增纯 evidence/docs commit `E`" in runbook

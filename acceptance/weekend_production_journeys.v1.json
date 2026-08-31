@@ -8,9 +8,18 @@
   "frozen_denominator": 96,
   "purpose": "The independently scoreable signed-in production denominator for Weekend RC 2026-08-30. It is separate from the deterministic CI manifest and permits no external fakes.",
   "external_fakes_allowed": false,
+  "contract_amended_on": "2026-08-31",
+  "execution_contract": {
+    "executor": "single Codex only; no delegated or parallel coding workers",
+    "fixture_policy": "Codex creates, authenticates, reuses, revokes and cleans registered synthetic identities and objects in the Rocky experimental tenant; missing pre-existing sessions or fixtures are not blockers.",
+    "local_runtime_policy": "Missing in-repository builds, CLIs or benchmark adapters are implementation work and must be built from the repository and installed toolchain.",
+    "external_readiness_policy": "A third-party unavailable condition is scored separately after Hive truthfully types it, audits it, preserves unrelated capability and presents recovery guidance; it is not converted into provider success.",
+    "hard_stop_policy": "Only real non-synthetic or cross-tenant data, real external recipients, billing, real credentials or secrets, irreversible production data effects without recovery, unresolved product-semantics changes, or safety/legal violations require owner input."
+  },
   "scoring": {
     "nptcr_formula": "closed_in_scope_journeys / all_in_scope_journeys",
     "blocked_precondition_counts_as_failure": true,
+    "blocked_precondition_scope": "Only an unresolved product-controlled requirement may use BLOCKED_PRECONDITION. Missing reusable sessions, synthetic fixtures or local runtimes do not qualify; verified external unavailability uses the external-readiness contract.",
     "excluded_requires_owner_reason": true,
     "required_nptcr_percent": 100,
     "required_evidence_coverage_percent": 95,
@@ -38,7 +47,7 @@
     ]
   },
   "runtime_bindings": {
-    "fixture_catalog": "Gate 0 records exact synthetic object IDs, source hashes, selected model IDs and role bindings in redacted release evidence; credentials never enter this manifest.",
+    "fixture_catalog": "Gate 0 records exact synthetic object IDs, source hashes, selected model IDs and role bindings in redacted release evidence. Codex may create or recover the required lab identities and fixtures; credentials never enter this manifest.",
     "configured_model_labels": ["minimax", "glm", "deepseek"],
     "advertised_knowledge_formats": ["pdf", "docx", "markdown", "txt"],
     "advertised_artifact_formats": ["pdf", "docx", "markdown", "txt"]

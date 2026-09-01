@@ -5,7 +5,7 @@ status: active
 authority: canonical-working-state
 last_reviewed: 2026-09-01
 source_commit: 6d46459e3a3dcf50dd32043583f4ab57667b0701
-verification_status: candidate-d2-i18n-revalidation
+verification_status: candidate-d3-linux-visual-revalidation
 ---
 
 # 当前状态与唯一下一动作
@@ -37,7 +37,7 @@ verification_status: candidate-d2-i18n-revalidation
 | Legacy-brand release residue | `Deployment gate / PROD_SUPPORTING_VERIFIED` | `6d46459e` committed archive gate 3375 paths 通过，production hard reload/导航无已退役品牌残留；只保留兼容合同允许项；新候选提交仍须重跑 exact archive gate |
 | operator inspection authority | `Breakpoint / LOCAL_REVALIDATION_GREEN` | production 已复现 generic `manage` 可任意理由跨用户读、权限主体泄露与静默 scope 改写；本地 candidate 已分离 `operator.inspect`、reason+同事务审计、只读、deny-wins/revoke/expiry、严格 permission schema、最小 list/detail shell 与 UI grant/revoke；当前完整本地门已绿，仍须新 D production 正负复验 |
 | backend local validation | `LOCAL_REVALIDATION_GREEN` | 当前树第二次完整 suite **8864 passed / 2 skipped / 0 failed（14:49）**；首跑 4 个红点已收敛为 RLS allowlist 重构元数据与两个过时 workflow 测试断言，主流程隔离复验 **4/4 passed**；Ruff/format/diff check 全绿 |
-| GitHub Harness CI | `D1_FRONTEND_I18N_FAILED / D2_PENDING` | `ee4be6a0` run `33526446421` 的 i18n inventory 捕获 7 个新增 operator UI key 未进入双语 catalog；该提交不得部署。当前 candidate 已补齐 exact 7 keys，须相称本地复验、形成 D2 并等待全 CI 绿 |
+| GitHub Harness CI | `D1_FRONTEND_I18N_FAILED / D2_LINUX_VISUAL_FAILED / D3_PENDING` | `ee4be6a0` run `33526446421` 的 i18n inventory 捕获 7 个新增 operator UI key 未进入双语 catalog；`177f1bfd` run `33527085379` 已通过 i18n/build 与 atomic 15/15，但 operator 两张 Linux visual 仍是旧基线（desktop 稳定 2% diff、narrow 756→757px），两提交均不得部署。当前 candidate 只同步 CI 两次一致且已人工核对的 Linux actual，不放宽阈值，须重跑完整 CI |
 | frontend local validation | `LOCAL_REVALIDATION_GREEN` | 当前树 i18n audit **9/9**、双语 catalog 均 **4071 keys**、全部 gap 为 0；D2 相称重验 Vitest **163 files / 1216 tests**、production build/bundle gate、Playwright **34/34** 全部通过。operator 浏览器 fixture 真实执行 reason→Apply；本地结果不迁移为 production Journey PASS |
 | atomic full-stack journeys | `LOCAL_REVALIDATION_GREEN` | 当前树在全新数据库、空 Redis、固定顺序下 **15/15 passed（2.1m）**；J-09/J-11/J-13/J-15 使用正式 scoped grant 与 operator reason→Apply，普通功能旅程仍不依赖 operator 身份；本地结果不改变 production 96 条分母或 NPTCR |
 | response learning | `Breakpoint / LOCAL_RECOVERY_GREEN` | required post-commit terminal outbox 已把 canonical binding、claim/validate/process/ack、retry/dead-letter/reconciliation 与 input admission hold 接入共享 terminal settlement；backend full-suite 已绿，仍须 frontend/build、fresh-chain、部署与 production crash/replay 证明 |
@@ -105,14 +105,14 @@ verification_status: candidate-d2-i18n-revalidation
 | `P01-MAIN-CLEAN-P1-3482B-LARCH-927` | 历史无效入口 probe；run 成功但不是 frozen fresh Session | 不修改其他路径或外部系统 | `invalid-entry-evidence-retained`；永不计 PASS，待 final cleanup |
 | `P01-MAIN-PASS1-3482B-MAPLE-581` | 历史功能 probe；实际 principal 为 platform_admin | 不外发、不读 credential、不外推 employee persona | `invalid-persona-evidence-retained`；永不计 PASS，待 final cleanup |
 | `UI-CMD-003-PROBE` | read-only `/context`、`/usage`、`/permissions` probe | 不调用 provider/tool、不改权限 | `failure-evidence-retained`；待 final cleanup |
-| `WEEKEND-RC-ROLE-FIXTURE-1B4BE5D2` | 通过公开 register/assignment/join 与正式 role/permission API 建立 synthetic company-admin、employee、scoped-operator | 不复用真实邮箱/密码、不跨 tenant、不外发、不读取/修改 provider credential；禁止 forged token、直接 DB role mutation 或 RLS weakening | `tenantless-admin-registered`；user `c51b38e8…` 尚未变更 tenant/role，密码/token 未落盘 |
+| `WEEKEND-RC-ROLE-FIXTURE-1B4BE5D2` | 通过公开 register/assignment/join 与正式 role/permission API 建立 synthetic company-admin、employee、scoped-operator | 不复用真实邮箱/密码、不跨 tenant、不外发、不读取/修改 provider credential；禁止 forged token、直接 DB role mutation 或 RLS weakening | `supported-path-created`；production 已记录双 org-admin、双 member 与 operator candidate，但 tracked artifacts 不保存登录材料或 exact principal/grant 清单；须复用安全登录态或 action-time supported login，final cleanup pending |
 | `P01-STAGE1-FRESH-FALCON-682` | EventPilot fresh production Session 的当前提交功能 truth test；3-step plan、Work Ledger、一次 write/read、硬判据 deliverable | 不外发、不调其他 Agent/外网/workflow/trigger/delegation、不读 credential；仅允许目标 `workspace/` 文件 | `completed-supporting-evidence-retained`；Session `65b98e1a…` 与唯一 artifact 已登记 final cleanup；platform-admin evidence 永不冒充 employee PASS |
 
 共享合成 fixture 保留到所有依赖旅程完成；lane-local transient effect 在 reconciliation 后清理；final `D` 双遍结束后清理全部 Goal-created synthetic assets。owner Example Owner 基础账号、immutable evidence 和无关数据永不作为 cleanup target。
 
 ## 唯一下一动作
 
-将 operator authority 完整修复形成新 application `D`：只提交授权范围，重跑 exact archive gate，push 并等待全 CI 绿，再从同一 frozen SHA 部署 backend/backend-api/frontend。随后在 production 证明无 grant 403、allow+reason 200、mutation 403、deny/revoke/expiry 403、delegated permission redaction 与 company-manage 422；再继续 signed-in 96 journeys 双遍、fault/recovery、rollback、cleanup 与 evidence-only `E`。D3/P01 supporting probe 不重发；DeepSeek 未获 billing/credential 授权不重试。
+补齐并复验 operator 新状态的两张 Linux visual baseline，形成新 application `D3`：只提交授权范围，重跑 exact archive gate，push 并等待全 CI 绿，再从同一 frozen SHA 依次部署 backend migrator、backend-api、frontend。随后在 production 证明无 grant 403、allow+reason 200、mutation 403、deny/revoke/expiry 403、delegated permission redaction 与 company-manage 422；再继续 signed-in 96 journeys 双遍、fault/recovery、rollback、cleanup 与 evidence-only `E`。既有 D3/P01 supporting probe 不重发；DeepSeek 未获 billing/credential 授权不重试。
 
 ## Not Done / Do Not Redo
 

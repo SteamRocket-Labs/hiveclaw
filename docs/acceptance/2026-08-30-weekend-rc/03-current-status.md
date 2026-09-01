@@ -5,7 +5,7 @@ status: active
 authority: canonical-working-state
 last_reviewed: 2026-09-01
 source_commit: 6d46459e3a3dcf50dd32043583f4ab57667b0701
-verification_status: local-candidate-green-precommit
+verification_status: candidate-d2-i18n-revalidation
 ---
 
 # 当前状态与唯一下一动作
@@ -37,8 +37,8 @@ verification_status: local-candidate-green-precommit
 | Legacy-brand release residue | `Deployment gate / PROD_SUPPORTING_VERIFIED` | `6d46459e` committed archive gate 3375 paths 通过，production hard reload/导航无已退役品牌残留；只保留兼容合同允许项；新候选提交仍须重跑 exact archive gate |
 | operator inspection authority | `Breakpoint / LOCAL_REVALIDATION_GREEN` | production 已复现 generic `manage` 可任意理由跨用户读、权限主体泄露与静默 scope 改写；本地 candidate 已分离 `operator.inspect`、reason+同事务审计、只读、deny-wins/revoke/expiry、严格 permission schema、最小 list/detail shell 与 UI grant/revoke；当前完整本地门已绿，仍须新 D production 正负复验 |
 | backend local validation | `LOCAL_REVALIDATION_GREEN` | 当前树第二次完整 suite **8864 passed / 2 skipped / 0 failed（14:49）**；首跑 4 个红点已收敛为 RLS allowlist 重构元数据与两个过时 workflow 测试断言，主流程隔离复验 **4/4 passed**；Ruff/format/diff check 全绿 |
-| GitHub Harness CI | `BASELINE_GREEN / NEW_D_PENDING` | exact `6d46459e` run `33453594851` 全部成功：backend full hermetic + 三组 eval + Ruff/format + legacy gate、frontend **34/34**、atomic **15/15** 与真实 bwrap launch；当前 operator fix 尚未形成新提交/CI |
-| frontend local validation | `LOCAL_REVALIDATION_GREEN` | 当前树 Vitest **163 files / 1216 tests**、production build/bundle gate、Playwright **34/34** 均通过；operator 浏览器 fixture 真实执行 reason→Apply，管理员/邀请/Back to App/legacy 前端专项 **34/34**。本地结果不迁移为 production Journey PASS |
+| GitHub Harness CI | `D1_FRONTEND_I18N_FAILED / D2_PENDING` | `ee4be6a0` run `33526446421` 的 i18n inventory 捕获 7 个新增 operator UI key 未进入双语 catalog；该提交不得部署。当前 candidate 已补齐 exact 7 keys，须相称本地复验、形成 D2 并等待全 CI 绿 |
+| frontend local validation | `LOCAL_REVALIDATION_GREEN` | 当前树 i18n audit **9/9**、双语 catalog 均 **4071 keys**、全部 gap 为 0；D2 相称重验 Vitest **163 files / 1216 tests**、production build/bundle gate、Playwright **34/34** 全部通过。operator 浏览器 fixture 真实执行 reason→Apply；本地结果不迁移为 production Journey PASS |
 | atomic full-stack journeys | `LOCAL_REVALIDATION_GREEN` | 当前树在全新数据库、空 Redis、固定顺序下 **15/15 passed（2.1m）**；J-09/J-11/J-13/J-15 使用正式 scoped grant 与 operator reason→Apply，普通功能旅程仍不依赖 operator 身份；本地结果不改变 production 96 条分母或 NPTCR |
 | response learning | `Breakpoint / LOCAL_RECOVERY_GREEN` | required post-commit terminal outbox 已把 canonical binding、claim/validate/process/ack、retry/dead-letter/reconciliation 与 input admission hold 接入共享 terminal settlement；backend full-suite 已绿，仍须 frontend/build、fresh-chain、部署与 production crash/replay 证明 |
 | session summary | `Breakpoint / LOCAL_RECOVERY_GREEN` | Kernel 不再提前持久化 summary；Web terminal processor 只从 committed transcript/result 生成 summary，未知 provider outcome 进入 durable reconciliation，旧 sequence 不覆盖新 summary；仍须 coherent D production hold/abort/replay 证明 |
@@ -91,6 +91,7 @@ verification_status: local-candidate-green-precommit
 - coherent baseline `6d46459e` 的 CI run `33453594851` 已全部成功，且 exact frozen archive 的 backend `637818b5…`、backend-api `0bce9b71…`、frontend `5dccd5b8…` 均为 production `SUCCESS`；public health/frontend 绿。它是当前 supporting baseline，不是含 operator 修复的最终 D。
 - production `WEEKEND-RC-ROLE-FIXTURE-1B4BE5D2` 已通过支持路径形成 tenant、双 org-admin、双 member 与 operator candidate；公司创建、管理员/成员邀请、join/token refresh、Back to App→Home、管理员码不可见/不可复用与 member 负向均取得 supporting evidence。普通 Agent 功能探针不要求先切换这些角色。
 - `OPERATOR-AUTHORITY-001` 已在 production 复现：generic `manage` 能以任意 reason 跨用户读 Session，delegated permission GET 泄露主体，非法 company/root mutation 被静默改写。本地 candidate 将 operator inspect 变成独立 governed grant，跨 owner 只读且 reason 必填/审计，mutation 永拒，active deny 优先于 allow，revoked/expired fail closed，并把 operator-only Agent list/detail 降为最小身份壳；当前 backend/frontend/Playwright/atomic 已统一重验全绿，但尚未形成或部署新 D。
+- 首个 application candidate `ee4be6a0` 的 CI run `33526446421` 在 frontend i18n inventory 首门失败：7 个新增 operator UI key 依赖源码 fallback、未进入 en/zh catalog。当前树已补齐 exact 7 keys，local i18n audit **9/9**、en/zh **4071/4071**、所有 gap 为 0，且 Vitest **1216/1216**、build/bundle、Playwright **34/34** 相称重验全绿；`ee4be6a0` 永不部署，须以新提交重跑完整 CI。
 - admin company/invite candidate 已通过 backend API + migration + real non-owner RLS lifecycle **33 passed**、最新 rolling/backfill 聚焦 **19 passed** 与 frontend mounted/UI **20 passed**。production 只读盘点为 113 个历史码、105 个 active unused，105 个目标 tenant 均已有 admin，因此部署回填全部保持 `member`；empty-tenant bootstrap 才授予 `org_admin`。完整 backend 已绿，仍不等于 production PASS。
 - 旧品牌 release hygiene 的 working-tree gate 当前通过（3184 paths），对应结构回归 6 passed；`6d46459e` committed archive gate 同样通过（3375 paths）。已登记本机路径、个人账号和真实形态测试身份已从 tracked candidate 中性化，历史 KDF salt、旧 env input fallback、一次性 theme-key 迁移与 LICENSE attribution 保留。该结果只证明候选 archive 兼容门，不替代三服务部署与生产复验。
 - task-state resolve 指向本文件；本文件只保存当前目标、事实、证据摘要、唯一下一动作和 Not Done，不再保存旧 Kimi/zCode/ACP/timeout 执行日记。

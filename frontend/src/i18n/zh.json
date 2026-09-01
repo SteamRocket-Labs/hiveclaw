@@ -526,6 +526,7 @@
     },
     "actions": {
       "chat": "对话",
+      "inspect": "检查",
       "memory": "记忆",
       "workflows": "工作流",
       "team": "Team",
@@ -1107,11 +1108,17 @@
     "operator": {
       "reason": "操作员检查原因",
       "reasonPlaceholder": "检查其他用户的数据前，请填写事故或审查原因",
+      "applyReason": "应用检查原因",
+      "beginInspection": "开始检查",
+      "endInspection": "结束检查",
+      "reasonRequired": "查看私有活动前，请填写并应用检查原因。",
       "readOnly": "操作员检查只读且全程审计。",
       "enterView": "进入操作员视图",
       "exitView": "退出操作员视图",
       "viewTitle": "操作员视图",
-      "workspaceReadOnly": "跨所有者读取会被审计；编辑、上传、恢复和删除均已禁用。"
+      "workspaceReadOnly": "跨所有者读取会被审计；编辑、上传、恢复和删除均已禁用。",
+      "workspaceReasonRequired": "查看私有工作区文件前，请填写并应用检查原因。",
+      "workspaceUnavailable": "操作员工作区检查不可用。"
     },
     "runtimeStatus": {
       "ready": "就绪",

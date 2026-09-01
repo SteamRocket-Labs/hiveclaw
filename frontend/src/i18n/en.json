@@ -551,6 +551,7 @@
     },
     "actions": {
       "chat": "Chat",
+      "inspect": "Inspect",
       "memory": "Memory",
       "workflows": "Workflows",
       "team": "Team",
@@ -1107,11 +1108,17 @@
     "operator": {
       "reason": "Operator inspection reason",
       "reasonPlaceholder": "Enter the incident or review reason before inspecting another user’s data",
+      "applyReason": "Apply inspection reason",
+      "beginInspection": "Begin inspection",
+      "endInspection": "End inspection",
+      "reasonRequired": "Enter and apply an inspection reason before viewing private activity.",
       "readOnly": "Operator inspection is audited and read-only.",
       "enterView": "Enter operator view",
       "exitView": "Exit operator view",
       "viewTitle": "Operator view",
-      "workspaceReadOnly": "Cross-owner reads are audited. Editing, upload, restore, and deletion are disabled."
+      "workspaceReadOnly": "Cross-owner reads are audited. Editing, upload, restore, and deletion are disabled.",
+      "workspaceReasonRequired": "Enter and apply an inspection reason before viewing private workspace files.",
+      "workspaceUnavailable": "Operator workspace inspection is unavailable."
     },
     "runtimeStatus": {
       "ready": "Ready",

@@ -4,8 +4,8 @@ owner: Codex
 status: active
 authority: canonical-working-state
 last_reviewed: 2026-09-01
-source_commit: e695720543e41f09f98a7c70349385080ccd4f93
-verification_status: ci-environment-root-fix-local-full-green-rerun-pending
+source_commit: d528251764df97603bb99c9968b999f185d28914
+verification_status: ci-ubuntu-24-bwrap-profile-fix-validation-pending
 ---
 
 # 当前状态与唯一下一动作
@@ -36,6 +36,7 @@ verification_status: ci-environment-root-fix-local-full-green-rerun-pending
 | admin company / invite | `Breakpoint / LOCAL_FULL_GREEN` | RLS-safe company create、显式 org-admin/member invite role、join/token refresh、后台返回 App 与 rolling migration/backfill 已通过真实 non-owner PostgreSQL、完整 backend 与前端 mounted 回归；仍须 coherent D production 复验 |
 | Legacy-brand release residue | `Deployment gate / CANDIDATE_ARCHIVE_GREEN` | working-tree 3175 paths 与结构测试 6 项通过；`e6957205` committed archive 3375 paths 通过，只保留旧 KDF salt、旧 env input fallback、一次性 theme-key 迁移及 LICENSE attribution；新候选提交仍须重跑 exact archive gate |
 | backend local validation | `LOCAL_GREEN` | CI 同型 fail-fast no-DB 环境下最新完整套件 **8786 passed / 2 skipped / 0 failed**（14:19）；OfficeCLI 本机二进制缺失留给 Railway 同一 verifier，DingTalk Skill 为 MCP-dynamic/纯指南无静态 tools；变更路径 Ruff check/format 全绿 |
+| GitHub Harness CI | `D3_PARTIAL / D4_PENDING` | `d5282517` run `33451025118` 的 frontend **34/34**、atomic **15/15** 全绿；backend 在 Ubuntu 24.04 跑到 89% 后命中 30 分钟 job timeout，且 51% 有 1 个真实 Linux sandbox failure。已定位为只验证 `bwrap` 二进制、未加载 Ubuntu scoped AppArmor userns profile；D4 candidate 复用产品真实启动 probe 并把完整 backend job budget 调整为 60 分钟，仍须新 CI 证明 |
 | frontend local validation | `LOCAL_GREEN` | Vitest **161 files / 1193 tests**、串行 Playwright **34/34**、i18n **9/9**（en/zh 各 4039 keys、全部 gap 0）、build/bundle budgets 与 npm audit 0 全绿 |
 | atomic full-stack journeys | `LOCAL_GREEN 15/15` | 从 fresh schema 固定顺序跑完整真实 frontend→API→worker→PostgreSQL/Redis 套件，**15 passed / 0 failed / 3.0m**；覆盖 J-01～J-15，但只属 local application slice，不改变 production 96 条分母或 NPTCR |
 | response learning | `Breakpoint / LOCAL_RECOVERY_GREEN` | required post-commit terminal outbox 已把 canonical binding、claim/validate/process/ack、retry/dead-letter/reconciliation 与 input admission hold 接入共享 terminal settlement；backend full-suite 已绿，仍须 frontend/build、fresh-chain、部署与 production crash/replay 证明 |
@@ -85,6 +86,7 @@ verification_status: ci-environment-root-fix-local-full-green-rerun-pending
 - frontend 完整回归已绿：Vitest **161 files / 1193 tests**，Playwright **34/34**，i18n **9/9** 且双语 catalog 均为 4039 keys、全部 gap 为 0，production build 通过。E2E 收口了 server-owned plan hash 不回显、live-tail cursor、offline→online 连接态与完成态 disclosure 合同；4 张旧视觉图逐张核对后仅更新 stale baseline，桌面/窄屏/深色及 Axe 均通过。
 - 首个 D 的 Linux CI 功能 E2E **29 passed**，另 5 个 active-state visual 因只更新了 Darwin 而稳定命中旧 Linux baseline（约 3%）。主 Codex逐张核对 CI expected/actual/diff，actual 与已接受的 Darwin active-state 结构一致，首跑/重试除 25 个抗锯齿像素外稳定；5 张 Linux baseline 已用 CI actual 精确更新，须随 Ruff pin 一起重跑 CI。
 - 修正提交 `e6957205` 的 CI run `33448515330` 已确认 frontend **34/34** 与 atomic full-stack **15/15（2.9m）** 全绿；backend 干净 runner 的最早根因是工作流忽略既有 `uv.lock`，拉取 Testcontainers 4.15 后将旧 import 的弃用警告放大为 812 个真实 PG setup error，同时 runner 缺少产品要求的 Linux `bubblewrap`。余下 4 个 unit failure 是新 DB/extension-policy seam 未显式注入，1 个 `/private/tmp` 断言错误地在 Linux 执行。candidate 现统一使用 frozen `uv.lock`、安装并验证 `bubblewrap`、补齐 unit seam 与 OS-specific gate；CI 同型定向 **15 passed**、完整 backend **8786 passed**，仍须新提交重跑三条 CI 后才部署。
+- `d5282517` 的 CI run `33451025118` 已把 frontend **34/34** 与 atomic full-stack **15/15（2.9m）** 跑绿；backend 在 Ubuntu 24.04.4 干净 runner 跑到 89% 后被 30 分钟 job timeout 取消，且 collection 顺序把 51% 唯一 `F` 精确映射为真实 `_run_command` Linux sandbox 执行测试。根因是 `bwrap --version` 只证明二进制存在，而 Ubuntu 24.04 默认以 AppArmor 限制无特权 user namespace。D4 candidate 安装官方 `apparmor-profiles`、只加载 scoped `bwrap-userns-restrict`，并调用仓库既有 `probe_os_sandbox_capability()` 证明真实 launch；不关闭全局 AppArmor、不启用 unsandboxed bypass、不跳过测试。完整 backend 本机实际需 14:19，job budget 从 30 调为 60 分钟；仍须新 CI 全绿才部署。
 - admin company/invite candidate 已通过 backend API + migration + real non-owner RLS lifecycle **33 passed**、最新 rolling/backfill 聚焦 **19 passed** 与 frontend mounted/UI **20 passed**。production 只读盘点为 113 个历史码、105 个 active unused，105 个目标 tenant 均已有 admin，因此部署回填全部保持 `member`；empty-tenant bootstrap 才授予 `org_admin`。完整 backend 已绿，仍不等于 production PASS。
 - 旧品牌 release hygiene 的 working-tree gate 当前通过（3175 paths），对应结构回归 6 passed；已登记本机路径、个人账号和真实形态测试身份已从 tracked candidate 中性化，历史 KDF salt、旧 env input fallback、一次性 theme-key 迁移与 LICENSE attribution 保留。最终 committed archive `D` 尚未形成，因此 archive gate 仍待跑，不得提前宣布部署安全。
 - task-state resolve 指向本文件；本文件只保存当前目标、事实、证据摘要、唯一下一动作和 Not Done，不再保存旧 Kimi/zCode/ACP/timeout 执行日记。
@@ -105,7 +107,7 @@ verification_status: ci-environment-root-fix-local-full-green-rerun-pending
 
 ## 唯一下一动作
 
-本地 application/full-stack/frontend/backend/migration/release/security gates 已绿；下一步提交 CI frozen-lock/Linux-sandbox/no-DB seam correction，形成新的 coherent `D` 后重跑 exact archive gate、push/CI，三条 CI 全绿才三服务部署。随后执行 signed-in 96 journeys 双遍、四角色权限负向、fault/recovery、cleanup 与 evidence-only `E`。D3/P01 supporting probe 不重发；DeepSeek 未获 billing/credential 授权不重试。
+本地 application/full-stack/frontend/backend/migration/release/security gates 已绿；下一步验证并提交 Ubuntu 24.04 scoped AppArmor/bwrap launch-probe 与 60 分钟完整 backend budget correction，形成新的 coherent `D` 后重跑 exact archive gate、push/CI，三条 CI 全绿才三服务部署。随后执行 signed-in 96 journeys 双遍、四角色权限负向、fault/recovery、cleanup 与 evidence-only `E`。D3/P01 supporting probe 不重发；DeepSeek 未获 billing/credential 授权不重试。
 
 ## Not Done / Do Not Redo
 

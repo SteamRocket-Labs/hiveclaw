@@ -62,7 +62,7 @@ jobs:
   backend-harness:
     name: Backend harness gates
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: backend
@@ -100,8 +100,13 @@ jobs:
       - name: Install Linux sandbox
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap
+          sudo apt-get install --yes apparmor-profiles bubblewrap
+          sudo install -m 0644 \
+            /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
+            /etc/apparmor.d/bwrap-userns-restrict
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
           bwrap --version
+          .venv/bin/python -c 'from app.services.subprocess_sandbox import probe_os_sandbox_capability; probe = probe_os_sandbox_capability(); assert probe.available, probe.reason; print(f"{probe.provider}: {probe.reason}")'
 
       - name: Ruff changed Python paths
         run: |

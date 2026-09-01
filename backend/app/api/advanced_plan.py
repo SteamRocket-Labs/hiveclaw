@@ -10,15 +10,13 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import check_agent_access
+from app.core.permissions import authorize_session_action
 from app.core.security import get_current_user
 from app.database import get_db
-from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.services.web_chat_runtime import start_web_chat_run
 
@@ -38,16 +36,14 @@ async def start_advanced_plan(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    agent, _access_level = await check_agent_access(db, current_user, agent_id)
-    session_result = await db.execute(
-        select(ChatSession).where(
-            ChatSession.id == session_id,
-            ChatSession.agent_id == agent_id,
-        )
+    decision = await authorize_session_action(
+        db,
+        current_user,
+        agent_id=agent_id,
+        session_id=session_id,
+        action="advanced_plan:start",
+        require_writable=True,
     )
-    session = session_result.scalar_one_or_none()
-    if session is None:
-        raise HTTPException(status_code=404, detail="Chat session not found")
 
     prompt = (
         "Run an advanced planning pass for the current session.\n\n"
@@ -57,9 +53,9 @@ async def start_advanced_plan(
     )
     return await start_web_chat_run(
         db=db,
-        agent=agent,
+        agent=decision.agent,
         user=current_user,
-        session=session,
+        session=decision.session,
         content=prompt,
         display_content="",
         file_name="",

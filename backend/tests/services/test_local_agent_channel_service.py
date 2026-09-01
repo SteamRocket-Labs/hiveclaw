@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 from app.services import local_agent_channel_service as service
 
@@ -463,6 +464,90 @@ async def test_resolve_agent_channel_session_accepts_chat_session_id() -> None:
     assert payload["id"] == channel_session_id
     assert payload["chat_session_id"] == chat_session_id
     assert payload["title"] == "Local debug session"
+
+
+@pytest.mark.asyncio
+async def test_agent_channel_workspace_download_allows_only_exact_session_message_refs() -> None:
+    tenant_id = uuid4()
+    owner_user_id = uuid4()
+    source_agent_id = uuid4()
+    session_id = uuid4()
+    message = SimpleNamespace(
+        attachments_json=[
+            {"path": "workspace/shared_uploads/input.md"},
+            {"source_workspace_path": "workspace/private-source.md"},
+        ],
+        metadata_json={
+            "report": {
+                "artifacts": [
+                    {"workspace_path": "workspace/local-bridge/result.md"},
+                ]
+            }
+        },
+    )
+    rows = _RowsResult([message])
+    db = _FakeDB([rows, rows, rows])
+
+    attachment_path = await service.authorize_agent_channel_workspace_download(
+        db,
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+        source_agent_id=source_agent_id,
+        session_id=session_id,
+        path="workspace/shared_uploads/input.md",
+    )
+    artifact_path = await service.authorize_agent_channel_workspace_download(
+        db,
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+        source_agent_id=source_agent_id,
+        session_id=session_id,
+        path="workspace/local-bridge/result.md",
+    )
+    with pytest.raises(HTTPException) as unrelated:
+        await service.authorize_agent_channel_workspace_download(
+            db,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            source_agent_id=source_agent_id,
+            session_id=session_id,
+            path="workspace/private-source.md",
+        )
+
+    assert attachment_path == "workspace/shared_uploads/input.md"
+    assert artifact_path == "workspace/local-bridge/result.md"
+    assert unrelated.value.status_code == 403
+    query_params = set(db.executed[0].compile().params.values())
+    assert {tenant_id, owner_user_id, source_agent_id, session_id} <= query_params
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/workspace/result.md",
+        "workspace/result.md ",
+        "workspace//result.md",
+        "workspace/output/../result.md",
+        "workspace\\result.md",
+        "workspace",
+    ],
+)
+async def test_agent_channel_workspace_download_rejects_noncanonical_paths_before_query(path: str) -> None:
+    db = _FakeDB()
+
+    with pytest.raises(HTTPException) as denied:
+        await service.authorize_agent_channel_workspace_download(
+            db,
+            tenant_id=uuid4(),
+            owner_user_id=uuid4(),
+            source_agent_id=uuid4(),
+            session_id=uuid4(),
+            path=path,
+        )
+
+    assert denied.value.status_code == 403
+    assert db.executed == []
 
 
 @pytest.mark.asyncio

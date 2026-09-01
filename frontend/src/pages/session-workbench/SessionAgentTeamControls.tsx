@@ -51,6 +51,7 @@ export function SessionAgentTeamMemberControls({
   member,
   onEnter,
   onChanged,
+  readOnly = false,
 }: {
   agentId: string;
   teamId: string;
@@ -58,6 +59,7 @@ export function SessionAgentTeamMemberControls({
   member: RuntimeSectionItemModel;
   onEnter?: () => void | Promise<unknown>;
   onChanged?: () => void | Promise<unknown>;
+  readOnly?: boolean;
 }) {
   const { t } = useTranslation();
   const actions = teamMemberActionState(teamStatus, member);
@@ -120,24 +122,28 @@ export function SessionAgentTeamMemberControls({
         >
           {t('sessionWorkbench.rightPanel.memberEnter', 'Enter')}
         </button>
-        <button
-          type="button"
-          className="session-runtime-action-button"
-          disabled={!actions.canSend || Boolean(pending)}
-          onClick={() => setShowMessage((value) => !value)}
-        >
-          {pending === 'send' ? t('sessionWorkbench.team.sending', 'Sending…') : t('sessionWorkbench.rightPanel.memberSend', 'Send')}
-        </button>
-        <button
-          type="button"
-          className="session-runtime-action-button"
-          disabled={!actions.canResume || Boolean(pending)}
-          onClick={() => void resume()}
-        >
-          {pending === 'resume' ? t('sessionWorkbench.team.resuming', 'Resuming…') : t('sessionWorkbench.rightPanel.memberResume', 'Resume')}
-        </button>
+        {!readOnly && (
+          <>
+            <button
+              type="button"
+              className="session-runtime-action-button"
+              disabled={!actions.canSend || Boolean(pending)}
+              onClick={() => setShowMessage((value) => !value)}
+            >
+              {pending === 'send' ? t('sessionWorkbench.team.sending', 'Sending…') : t('sessionWorkbench.rightPanel.memberSend', 'Send')}
+            </button>
+            <button
+              type="button"
+              className="session-runtime-action-button"
+              disabled={!actions.canResume || Boolean(pending)}
+              onClick={() => void resume()}
+            >
+              {pending === 'resume' ? t('sessionWorkbench.team.resuming', 'Resuming…') : t('sessionWorkbench.rightPanel.memberResume', 'Resume')}
+            </button>
+          </>
+        )}
       </span>
-      {showMessage && actions.canSend && (
+      {!readOnly && showMessage && actions.canSend && (
         <form className="session-agent-team-message-form" onSubmit={send}>
           <label>
             <span className="sr-only">{t('sessionWorkbench.team.messageLabel', 'Work for team member')}</span>

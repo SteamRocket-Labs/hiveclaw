@@ -3885,7 +3885,11 @@ async def delegate_async(
         }
     )
     reservation_service = budget_service or (RuntimeBudgetService() if budget_uuid is not None else None)
-    budget_admission_status = "reserved" if budget_uuid is not None else None
+    if path_decision.cycle_detected:
+        budget_reservation_key = None
+        budget_admission_status = "not_admitted"
+    else:
+        budget_admission_status = "reserved" if budget_uuid is not None else None
     if not path_decision.cycle_detected and budget_uuid is not None and reservation_service is not None:
         estimated_tokens = estimate_reservation_tokens(
             default_tokens=_DEFAULT_DELEGATION_START_TOKEN_RESERVATION,
@@ -3983,25 +3987,6 @@ async def delegate_async(
             ),
         )
     except Exception:
-        if (
-            budget_uuid is not None
-            and budget_reservation_key
-            and reservation_service is not None
-            and budget_admission_status == "reserved"
-        ):
-            try:
-                await reservation_service.settle(
-                    RuntimeBudgetSettlement(
-                        budget_run_id=budget_uuid,
-                        reservation_key=budget_reservation_key,
-                        reason="delegation_enqueue_failed",
-                        runtime_task_id=uuid.UUID(task_id),
-                    )
-                )
-            except Exception:
-                logger.debug(
-                    "[Orchestrator] Failed to release delegation budget reservation %s", task_id, exc_info=True
-                )
         raise
 
     try:
@@ -4032,6 +4017,8 @@ async def delegate_async(
                 RuntimeBudgetSettlement(
                     budget_run_id=budget_uuid,
                     reservation_key=budget_reservation_key,
+                    actual_delegations=1,
+                    actual_background_tasks=1,
                     reason="delegation_session_admission_failed",
                     runtime_task_id=uuid.UUID(task_id),
                 )
@@ -4159,6 +4146,8 @@ async def delegate_async(
                 RuntimeBudgetSettlement(
                     budget_run_id=budget_uuid,
                     reservation_key=budget_reservation_key,
+                    actual_delegations=1,
+                    actual_background_tasks=1,
                     reason="delegation_coordination_publish_failed",
                     runtime_task_id=uuid.UUID(task_id),
                 )
@@ -4189,6 +4178,8 @@ async def delegate_async(
                 RuntimeBudgetSettlement(
                     budget_run_id=budget_uuid,
                     reservation_key=budget_reservation_key,
+                    actual_delegations=1,
+                    actual_background_tasks=1,
                     reason="delegation_blocked_by_lease",
                     runtime_task_id=uuid.UUID(task_id),
                 )

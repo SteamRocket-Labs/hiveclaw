@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
@@ -15,6 +16,9 @@ class _ScalarListResult:
 
     def scalars(self):
         return SimpleNamespace(all=lambda: self._values)
+
+    def all(self):
+        return self._values
 
 
 class _ScalarOneResult:
@@ -34,6 +38,8 @@ class _FakeDB:
 
     async def execute(self, stmt):
         self.statements.append(stmt)
+        if len(self.statements) == 1:
+            return _ScalarListResult([(task.id, task.budget_run_id) for task in self.tasks])
         return _ScalarListResult(self.tasks)
 
     async def commit(self):
@@ -51,6 +57,8 @@ class _BusinessTaskDB(_FakeDB):
     async def execute(self, stmt):
         self.statements.append(stmt)
         if len(self.statements) == 1:
+            return _ScalarListResult([(task.id, task.budget_run_id) for task in self.tasks])
+        if len(self.statements) == 2:
             return _ScalarListResult(self.tasks)
         return _ScalarOneResult(self.business_task)
 
@@ -120,6 +128,125 @@ def test_runtime_task_claim_statement_excludes_stopped_budget_runs():
     assert "runtime_tasks.budget_run_id IS NULL" in compiled
     assert "runtime_budget_runs.status = " in compiled
     assert "EXISTS" in compiled
+
+
+@pytest.mark.asyncio
+async def test_inactive_budget_candidates_lock_runs_in_uuid_order_then_release_transaction():
+    from app.services.runtime_task_claim_service import RuntimeTaskClaimService
+
+    run_ids = [uuid4(), uuid4()]
+    task_ids = [uuid4(), uuid4()]
+
+    class _BudgetRunLockDB:
+        def __init__(self):
+            self.statements = []
+            self.rollbacks = 0
+
+        async def execute(self, statement):
+            self.statements.append(statement)
+            if len(self.statements) == 1:
+                return _ScalarListResult(list(zip(task_ids, reversed(run_ids), strict=True)))
+            return _ScalarListResult(
+                [SimpleNamespace(id=run_id, status="hard_stopped") for run_id in sorted(run_ids, key=str)]
+            )
+
+        async def rollback(self):
+            self.rollbacks += 1
+
+    db = _BudgetRunLockDB()
+    claimed = await RuntimeTaskClaimService(
+        db=db,
+        worker_id="inactive-budget-worker",
+        task_types=("subagent",),
+    ).claim_available(batch_size=2)
+
+    lock_sql = str(db.statements[1].compile(dialect=postgresql.dialect()))
+    assert claimed == []
+    assert "ORDER BY runtime_budget_runs.id" in lock_sql
+    assert "FOR UPDATE" in lock_sql
+    assert db.rollbacks == 1
+    assert len(db.statements) == 2
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_budget_bound_claim_waits_for_breaker_run_lock_and_rechecks_active(owner_sessionmaker, monkeypatch):
+    from app.models.runtime_budget import RuntimeBudgetRun
+    from app.models.runtime_task import RuntimeTask
+    from app.models.tenant import Tenant
+    from app.services.runtime_budget_service import RuntimeBudgetService
+    from app.services.runtime_task_claim_service import RuntimeTaskClaimService
+
+    tenant_id, run_id, task_id = (uuid4() for _ in range(3))
+    async with owner_sessionmaker() as db:
+        db.add(Tenant(id=tenant_id, name="Claim lock order", slug=f"claim-lock-{tenant_id.hex[:8]}"))
+        await db.flush()
+        db.add(
+            RuntimeBudgetRun(
+                id=run_id,
+                tenant_id=tenant_id,
+                root_run_kind="harness_canary",
+                root_run_key=f"harness_canary:{task_id}",
+                status="active",
+                max_parent_invocations=1,
+            )
+        )
+        await db.flush()
+        db.add(
+            RuntimeTask(
+                id=task_id,
+                tenant_id=tenant_id,
+                task_type="harness_canary",
+                status="pending",
+                budget_run_id=run_id,
+                budget_reservation_key=f"harness_canary:{task_id}:start",
+                budget_admission_status="reserved",
+            )
+        )
+        await db.commit()
+
+    budget_service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+    breaker_holds_run = asyncio.Event()
+    release_breaker = asyncio.Event()
+    cancel_pending = budget_service._cancel_pending_unclaimed_tasks
+
+    async def blocked_cancel_pending(db, run, **kwargs):
+        breaker_holds_run.set()
+        await release_breaker.wait()
+        return await cancel_pending(db, run, **kwargs)
+
+    monkeypatch.setattr(budget_service, "_cancel_pending_unclaimed_tasks", blocked_cancel_pending)
+    breaker = asyncio.create_task(
+        budget_service.evaluate_wake_breaker(
+            tenant_id=tenant_id,
+            budget_run_id=run_id,
+        )
+    )
+    await asyncio.wait_for(breaker_holds_run.wait(), timeout=2)
+
+    async def claim_once():
+        async with owner_sessionmaker() as claim_db:
+            return await RuntimeTaskClaimService(
+                db=claim_db,
+                worker_id="claim-lock-worker",
+                task_types=("harness_canary",),
+                lease_seconds=60,
+            ).claim_available(batch_size=1)
+
+    claim = asyncio.create_task(claim_once())
+    await asyncio.sleep(0.05)
+    assert not claim.done()
+    release_breaker.set()
+    breaker_reason = await asyncio.wait_for(breaker, timeout=2)
+    assert breaker_reason is not None and "parent_invocations" in breaker_reason
+    assert await asyncio.wait_for(claim, timeout=2) == []
+
+    async with owner_sessionmaker() as db:
+        stored_run = await db.get(RuntimeBudgetRun, run_id)
+        stored_task = await db.get(RuntimeTask, task_id)
+    assert stored_run is not None and stored_run.status == "hard_stopped"
+    assert stored_task is not None and stored_task.status == "killed"
+    assert stored_task.claimed_by is None
+    assert stored_task.claim_version == 1
 
 
 @pytest.mark.asyncio

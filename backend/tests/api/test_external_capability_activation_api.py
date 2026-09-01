@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from uuid import uuid4
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 import app.api.external_capabilities as external_mod
@@ -87,13 +87,24 @@ def test_try_external_extension_route_scopes_activation_to_chat_session(monkeypa
     agent_id = uuid4()
     snapshot_id = uuid4()
     session_id = uuid4()
-    fake_db.session = SimpleNamespace(id=session_id, agent_id=agent_id, tenant_id=current_user.tenant_id)
+    agent = SimpleNamespace(id=agent_id, tenant_id=current_user.tenant_id)
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        tenant_id=current_user.tenant_id,
+        user_id=current_user.id,
+    )
 
-    async def fake_check(db_session, user, target_agent_id):
+    async def fake_authorize(db_session, user, **kwargs):
         assert db_session is fake_db
         assert user is current_user
-        assert target_agent_id == agent_id
-        return SimpleNamespace(id=agent_id, tenant_id=current_user.tenant_id), "manage"
+        assert kwargs == {
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "action": "external_extension:try",
+            "require_writable": True,
+        }
+        return SimpleNamespace(agent=agent, session=session)
 
     async def fake_try(
         db_session,
@@ -110,6 +121,8 @@ def test_try_external_extension_route_scopes_activation_to_chat_session(monkeypa
     ):
         assert db_session is fake_db
         assert tenant_id == current_user.tenant_id
+        assert agent_id == agent.id
+        assert session_id == session.id
         assert activated_by_user_id == current_user.id
         assert str(workspace).endswith(str(agent_id))
         assert component_qualified_names == ["docs-pack:skill:audit"]
@@ -117,7 +130,7 @@ def test_try_external_extension_route_scopes_activation_to_chat_session(monkeypa
         assert expires_in_minutes == 30
         return {"status": "active", "activation_scope": "session", "session_id": str(session_id)}
 
-    monkeypatch.setattr(external_mod, "check_agent_access", fake_check)
+    monkeypatch.setattr(external_mod, "authorize_session_action", fake_authorize)
     monkeypatch.setattr(external_mod, "try_external_extension_in_chat", fake_try)
 
     resp = client.post(
@@ -132,3 +145,38 @@ def test_try_external_extension_route_scopes_activation_to_chat_session(monkeypa
 
     assert resp.status_code == 200
     assert resp.json() == {"status": "active", "activation_scope": "session", "session_id": str(session_id)}
+
+
+def test_try_external_extension_route_rejects_cross_user_session_before_service(monkeypatch):
+    client, fake_db, current_user = _build_client()
+    agent_id = uuid4()
+    snapshot_id = uuid4()
+    session_id = uuid4()
+    service_calls = 0
+
+    async def fake_authorize(db_session, user, **kwargs):
+        assert db_session is fake_db
+        assert user is current_user
+        assert kwargs == {
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "action": "external_extension:try",
+            "require_writable": True,
+        }
+        raise HTTPException(status_code=403, detail="This session belongs to a different user")
+
+    async def fake_try(*_args, **_kwargs):
+        nonlocal service_calls
+        service_calls += 1
+
+    monkeypatch.setattr(external_mod, "authorize_session_action", fake_authorize)
+    monkeypatch.setattr(external_mod, "try_external_extension_in_chat", fake_try)
+
+    resp = client.post(
+        f"/agents/{agent_id}/external-extensions/{snapshot_id}/try",
+        json={"session_id": str(session_id)},
+    )
+
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "This session belongs to a different user"
+    assert service_calls == 0

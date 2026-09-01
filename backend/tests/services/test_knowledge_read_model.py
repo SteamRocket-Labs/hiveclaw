@@ -15,6 +15,8 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from app.services.knowledge_read_model import (
     attach_dream_runtime_status,
     build_knowledge_overview,
@@ -57,6 +59,70 @@ def test_dream_runtime_status_overrides_file_freshness_with_live_execution_truth
     assert enriched["distillers"]["dream"]["coverage_reviewed"] == 0
     assert enriched["distillers"]["dream"]["coverage_complete"] is False
     assert enriched["distillers"]["dream"]["coverage_state"] == "incomplete"
+
+
+@pytest.mark.asyncio
+async def test_overview_dream_runtime_overlay_is_scoped_to_current_user(monkeypatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    import app.api.agent_knowledge as agent_knowledge_api
+    import app.services.knowledge_read_model as knowledge_read_model
+
+    owner_user_id = uuid.uuid4()
+    shared_user_id = uuid.uuid4()
+    task = SimpleNamespace(
+        id=uuid.uuid4(),
+        status="running",
+        created_at=datetime.now(UTC),
+        started_at=datetime.now(UTC),
+        completed_at=None,
+        result_summary=None,
+        metadata_json={"phase": "dreaming"},
+    )
+
+    class _Result:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one_or_none(self):
+            return self.value
+
+    class _Db:
+        def __init__(self):
+            self.statements = []
+
+        async def execute(self, statement):
+            self.statements.append(statement)
+            params = set(statement.compile().params.values())
+            return _Result(task if owner_user_id in params else None)
+
+    async def allow_agent_access(db, user, agent_id):
+        return SimpleNamespace(id=agent_id), "use"
+
+    db = _Db()
+    monkeypatch.setattr(agent_knowledge_api, "check_agent_access", allow_agent_access)
+    monkeypatch.setattr(agent_knowledge_api, "_data_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        knowledge_read_model,
+        "build_knowledge_overview",
+        lambda data_root, agent_id: {"distillers": {"dream": {}}},
+    )
+
+    owner_overview = await agent_knowledge_api.get_overview(
+        agent_id=AGENT,
+        db=db,
+        current_user=SimpleNamespace(id=owner_user_id),
+    )
+    shared_overview = await agent_knowledge_api.get_overview(
+        agent_id=AGENT,
+        db=db,
+        current_user=SimpleNamespace(id=shared_user_id),
+    )
+
+    assert owner_overview["distillers"]["dream"]["runtime_task_id"] == str(task.id)
+    assert "runtime_task_id" not in shared_overview["distillers"]["dream"]
+    assert owner_user_id in set(db.statements[0].compile().params.values())
+    assert shared_user_id in set(db.statements[1].compile().params.values())
 
 
 def _seed_workspace(tmp_path: Path) -> Path:

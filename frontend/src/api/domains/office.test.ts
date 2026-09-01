@@ -34,4 +34,12 @@ describe('office API adapter', () => {
     );
     expect(String(vi.mocked(getBlob).mock.calls)).not.toContain('token=');
   });
+
+  it('refuses operator previews without an exact audit reason', async () => {
+    const { officeApi } = await import('./office');
+
+    expect(() => officeApi.getWorkspacePreview('agent-1', 'workspace/demo.docx', {
+      operatorView: true,
+    })).toThrow('Operator View requires an audit reason');
+  });
 });

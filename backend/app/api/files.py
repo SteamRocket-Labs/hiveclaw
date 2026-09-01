@@ -13,7 +13,11 @@ from pydantic import BaseModel, Field, model_validator
 from starlette.background import BackgroundTask
 
 from app.config import get_settings
-from app.core.permissions import check_agent_access, require_agent_manage_access
+from app.core.permissions import (
+    check_agent_access,
+    check_agent_operator_reachability,
+    require_agent_manage_access,
+)
 from app.core.resource_authority import authorize_resource_action
 from app.core.security import get_current_user
 from app.database import get_db, pin_rls_tenant_context
@@ -317,7 +321,7 @@ def _raise_raw_system_read_guard(path: str, *, access_level: str) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Runtime artifacts and logs are available only through their governed read models.",
         )
-    if access_level != "use" or _is_user_workspace_path(normalized):
+    if access_level not in {"use", "operator"} or _is_user_workspace_path(normalized):
         return
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
@@ -340,7 +344,11 @@ async def _authorized_workspace_version_sessions(
     for_update: bool = False,
 ):
     normalized = _require_workspace_file_path(path)
-    agent_access = await check_agent_access(db, current_user, agent_id)
+    agent_access = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if operator_view and action == "read"
+        else check_agent_access(db, current_user, agent_id)
+    )
     target = _safe_path(agent_id, normalized)
     from app.services.workspace_resource_authority import authorize_workspace_path
 
@@ -412,16 +420,15 @@ async def list_files(
     db: AsyncSession = Depends(get_db),
 ):
     """List files and directories in an agent's file system."""
-    _agent, access_level = await check_agent_access(db, current_user, agent_id)
+    _agent, access_level = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if operator_view
+        else check_agent_access(db, current_user, agent_id)
+    )
     _raise_raw_system_read_guard(path, access_level=access_level)
-    if access_level == "use" and _is_governed_memory_path(path):
+    if access_level in {"use", "operator"} and _is_governed_memory_path(path):
         _raise_raw_memory_read_guard()
     target = _safe_path(agent_id, path)
-
-    if not target.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Path not found")
-    if not target.is_dir():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Path is not a directory")
 
     scope = None
     if _is_user_workspace_path(path):
@@ -439,12 +446,17 @@ async def list_files(
         except Exception as exc:
             raise _workspace_authority_http_error(exc) from exc
 
+    if not target.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Path not found")
+    if not target.is_dir():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Path is not a directory")
+
     items = []
     base_abs = _agent_base_dir(agent_id).resolve()
     for entry in sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name)):
         if entry.name == ".gitkeep" or _is_hidden_browser_entry(entry):
             continue
-        if access_level == "use" and not _normalized_rel_path(path) and entry.name != "workspace":
+        if access_level in {"use", "operator"} and not _normalized_rel_path(path) and entry.name != "workspace":
             continue
         if scope is not None and not scope.visible_child(path, entry.name, is_dir=entry.is_dir()):
             continue
@@ -474,9 +486,13 @@ async def read_file(
     db: AsyncSession = Depends(get_db),
 ):
     """Read the content of a file."""
-    _agent, access_level = await check_agent_access(db, current_user, agent_id)
+    _agent, access_level = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if operator_view
+        else check_agent_access(db, current_user, agent_id)
+    )
     _raise_raw_system_read_guard(path, access_level=access_level)
-    if access_level == "use" and _is_governed_memory_path(path):
+    if access_level in {"use", "operator"} and _is_governed_memory_path(path):
         _raise_raw_memory_read_guard()
     target = _safe_path(agent_id, path)
     resource_decision = None
@@ -741,6 +757,7 @@ async def restore_file_version(
 ):
     """Restore one file from a checkpoint with exact-current-state protection."""
     normalized = _require_workspace_file_path(path)
+    mutation_agent_access = await check_agent_access(db, current_user, agent_id)
     from app.services.session_workspace_snapshot import (
         async_agent_workspace_lock,
         finalize_workspace_restore_locked,
@@ -767,7 +784,7 @@ async def restore_file_version(
             db=db,
             for_update=True,
         )
-        agent = agent_access[0]
+        agent = mutation_agent_access[0]
         try:
             version = await asyncio.to_thread(
                 resolve_workspace_file_version,
@@ -810,7 +827,7 @@ async def restore_file_version(
                 allow_manager_override=operator_view,
                 manager_override_reason=operator_reason,
                 for_update=True,
-                agent_access=agent_access,
+                agent_access=mutation_agent_access,
             )
         except Exception as exc:
             raise _workspace_authority_http_error(exc) from exc
@@ -965,7 +982,11 @@ async def read_artifact_content(
     db: AsyncSession = Depends(get_db),
 ):
     """Read the delivery-time snapshot for a chat artifact."""
-    agent_access = await check_agent_access(db, current_user, agent_id)
+    agent_access = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if operator_view
+        else check_agent_access(db, current_user, agent_id)
+    )
     artifact = await _load_chat_artifact_or_404(db=db, agent_id=agent_id, artifact_id=artifact_id)
     decision = await authorize_resource_action(
         db,
@@ -1051,9 +1072,13 @@ async def download_file(
 
     user = await _load_download_user_from_jwt(db=db, jwt_token=jwt_token)
 
-    _agent, access_level = await check_agent_access(db, user, agent_id)
+    _agent, access_level = await (
+        check_agent_operator_reachability(db, user, agent_id)
+        if operator_view
+        else check_agent_access(db, user, agent_id)
+    )
     _raise_raw_system_read_guard(path, access_level=access_level)
-    if access_level == "use" and _is_governed_memory_path(path):
+    if access_level in {"use", "operator"} and _is_governed_memory_path(path):
         _raise_raw_memory_read_guard()
     target = _safe_path(agent_id, path)
     if _is_user_workspace_path(path):
@@ -1094,7 +1119,11 @@ async def download_artifact(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
     user = await _load_download_user_from_jwt(db=db, jwt_token=jwt_token)
 
-    agent_access = await check_agent_access(db, user, agent_id)
+    agent_access = await (
+        check_agent_operator_reachability(db, user, agent_id)
+        if operator_view
+        else check_agent_access(db, user, agent_id)
+    )
     artifact = await _load_chat_artifact_or_404(db=db, agent_id=agent_id, artifact_id=artifact_id)
     await authorize_resource_action(
         db,

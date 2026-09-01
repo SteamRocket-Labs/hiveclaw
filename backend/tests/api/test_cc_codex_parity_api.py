@@ -80,6 +80,24 @@ class _FilteringExecuteDB(_FakeDB):
         return _ScalarResult(None)
 
 
+class _SessionBoundTeamDB(_FakeDB):
+    def __init__(self, team, members=()) -> None:
+        super().__init__()
+        self.team = team
+        self.members = list(members)
+
+    async def execute(self, stmt):
+        self.executes = getattr(self, "executes", 0) + 1
+        sql = str(stmt)
+        if "FROM agent_teams" in sql:
+            assert "agent_teams.parent_session_id" in sql
+            params = stmt.compile().params.values()
+            return _ScalarResult(self.team if self.team.parent_session_id in params else None)
+        if "FROM agent_team_members" in sql:
+            return _ScalarResult(self.members)
+        return _ScalarResult(None)
+
+
 @pytest.fixture(autouse=True)
 def _allow_api_session_authority(monkeypatch):
     import app.api.agent_teams as teams_api
@@ -1097,7 +1115,7 @@ async def test_commands_api_team_create_creates_container_only_and_delete_is_dur
         name="research",
     )
     existing_member = AgentTeamMember(id=uuid4(), team_id=team_id, member_name="critic", chat_session_id=uuid4())
-    delete_db = _FilteringExecuteDB({"AgentTeam": existing_team, "AgentTeamMember": [existing_member]})
+    delete_db = _SessionBoundTeamDB(existing_team, [existing_member])
     deleted = await commands_api.execute_agent_command(
         agent_id=agent_id,
         command_name="team_delete",
@@ -1113,6 +1131,66 @@ async def test_commands_api_team_create_creates_container_only_and_delete_is_dur
     assert any(isinstance(item, AgentTeamEvent) and item.event_type == "team_closed" for item in delete_db.added)
     assert recorded_events[-1]["event_type"] == "team_member"
     assert recorded_events[-1]["metadata"]["status"] == "closed"
+
+
+@pytest.mark.asyncio
+async def test_commands_api_team_delete_requires_matching_session(monkeypatch):
+    import app.api.commands as commands_api
+    from fastapi import HTTPException
+
+    from app.models.agent_team import AgentTeam
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    owning_session_id = uuid4()
+    other_session_id = uuid4()
+    team = AgentTeam(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        lead_agent_id=agent_id,
+        parent_session_id=owning_session_id,
+        name="private-team",
+        status="active",
+    )
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
+
+    async def fake_access(_db, _user, requested_agent_id):
+        assert requested_agent_id == agent_id
+        return agent, "manage"
+
+    monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
+
+    missing_session_db = _SessionBoundTeamDB(team)
+    with pytest.raises(HTTPException) as missing_exc:
+        await commands_api.execute_agent_command(
+            agent_id=agent_id,
+            command_name="team_delete",
+            body=commands_api.ExecuteCommandIn(arguments={"team_id": str(team.id)}, origin="agent"),
+            current_user=current_user,
+            db=missing_session_db,
+        )
+    assert missing_exc.value.status_code == 400
+    assert missing_exc.value.detail == "session_id is required"
+
+    mismatched_session_db = _SessionBoundTeamDB(team)
+    with pytest.raises(HTTPException) as mismatch_exc:
+        await commands_api.execute_agent_command(
+            agent_id=agent_id,
+            command_name="team_delete",
+            body=commands_api.ExecuteCommandIn(
+                arguments={"team_id": str(team.id)},
+                session_id=str(other_session_id),
+                origin="agent",
+            ),
+            current_user=current_user,
+            db=mismatched_session_db,
+        )
+    assert mismatch_exc.value.status_code == 404
+    assert mismatch_exc.value.detail == "Team not found"
+    assert team.status == "active"
+    assert team.closed_at is None
+    assert mismatched_session_db.added == []
 
 
 @pytest.mark.asyncio

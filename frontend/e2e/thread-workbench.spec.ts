@@ -4,6 +4,7 @@ import { expect, test, type Page } from '@playwright/test';
 const AGENT_ID = '7e57a9e7-0000-4000-8000-000000000010';
 const SESSION_ID = '8e57a9e7-0000-4000-8000-000000000020';
 const RUN_ID = '9e57a9e7-0000-4000-8000-000000000030';
+const OPERATOR_REASON = 'Release evidence review';
 
 type Audience = 'user' | 'operator';
 type Scenario = 'idle' | 'active';
@@ -348,13 +349,37 @@ async function bootstrap(page: Page, options: {
           name: 'Release Steward',
           status: scenario === 'active' ? 'working' : 'idle',
           agent_type: 'native',
-          access_level: 'manage',
+          access_level: audience === 'operator' ? 'use' : 'manage',
+          action_capabilities: {
+            can_use: true,
+            can_manage: audience === 'user',
+            can_manage_schedule: audience === 'user',
+            can_manage_channel: audience === 'user',
+            can_manage_permissions: audience === 'user',
+            can_operator_inspect: audience === 'operator',
+            can_transfer_ownership: audience === 'user',
+          },
           primary_model_id: 'gpt-test',
           role_description: 'Release governance and evidence review',
         },
       });
     }
-    if (path.endsWith(`/agents/${AGENT_ID}/sessions`) && method === 'GET') return route.fulfill({ json: [session] });
+    if (path.endsWith(`/agents/${AGENT_ID}/sessions`) && method === 'GET') {
+      if (audience === 'operator' && url.searchParams.get('scope') !== 'all') {
+        return route.fulfill({ json: [] });
+      }
+      if (audience === 'operator' && url.searchParams.get('operator_reason') !== OPERATOR_REASON) {
+        return route.fulfill({ status: 422, json: { detail: 'Operator inspection reason is required' } });
+      }
+      return route.fulfill({ json: [session] });
+    }
+    if (
+      audience === 'operator'
+      && (path.includes(`/sessions/${SESSION_ID}`) || path.includes(`/chat/sessions/${SESSION_ID}`))
+      && (url.searchParams.get('operator_view') !== 'true' || url.searchParams.get('operator_reason') !== OPERATOR_REASON)
+    ) {
+      return route.fulfill({ status: 403, json: { detail: 'Operator inspection authority is required' } });
+    }
     if (path.includes(`/sessions/${SESSION_ID}/transcript`)) {
       if (transcriptDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, transcriptDelayMs));
       return route.fulfill({ json: transcript });
@@ -432,7 +457,15 @@ async function bootstrap(page: Page, options: {
     ? `?manage=true&session_id=${SESSION_ID}`
     : `?session_id=${SESSION_ID}`;
   await page.goto(`/agents/${AGENT_ID}${query}#chat`);
+  if (audience === 'operator') {
+    await page.getByLabel('Operator inspection reason').fill(OPERATOR_REASON);
+    await expect(page.getByLabel('Operator inspection reason')).toHaveValue(OPERATOR_REASON);
+    await page.getByTestId('agent-operator-reason').getByRole('button', { name: 'Begin inspection' }).click();
+  }
   await expect(page.getByTestId('session-workbench')).toBeVisible();
+  if (audience === 'operator') {
+    await expect(page.getByTestId('session-operator-view')).toBeVisible();
+  }
   await expect(page.locator('.vite-error-overlay')).toHaveCount(0);
   if ((page.viewportSize()?.width || 0) < 900 && await page.getByTestId('session-runtime-deliverables').count() === 0) {
     await page.getByTestId('session-runtime-collapse-toggle').click();
@@ -441,7 +474,11 @@ async function bootstrap(page: Page, options: {
     await expect(page.getByTestId('session-runtime-deliverables')).toContainText('release-report.md');
     await expect(page.getByTestId('session-runtime-run-status')).toBeVisible();
     await expect(page.locator('[data-thread-item-type="approval_request"]')).toBeVisible();
-    await expect(page.getByTestId('thread-item-retry-turn')).toBeVisible();
+    if (audience === 'operator') {
+      await expect(page.getByTestId('thread-item-retry-turn')).toHaveCount(0);
+    } else {
+      await expect(page.getByTestId('thread-item-retry-turn')).toBeVisible();
+    }
   } else {
     await expect(page.getByTestId('session-runtime-deliverables')).toContainText('No delivered artifacts');
   }
@@ -530,6 +567,16 @@ for (const viewport of [
     await expect(page.getByTestId('thread-item-inspector')).toContainText('permission-1');
     await expect(page.locator('[data-thread-item-type="workflow_activity"]')).toBeVisible();
     await expect(page.getByTestId('chat-work-ledger-dock')).toHaveCount(0);
+    await expect(page.getByTestId('message-action-like')).toHaveCount(0);
+    await expect(page.getByTestId('message-action-dislike')).toHaveCount(0);
+    await expect(page.getByTestId('message-action-branch')).toHaveCount(0);
+    await expect(page.getByTestId('message-action-rewind')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Allow once' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Allow for this session' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Deny' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Send', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Resume', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Close team', exact: true })).toHaveCount(0);
     await expectVisual(page, `workbench-operator-active-${viewport.name}.png`);
     expect(consoleErrors).toEqual([]);
   });

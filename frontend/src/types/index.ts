@@ -25,7 +25,7 @@ export interface Agent {
     status: 'creating' | 'running' | 'idle' | 'stopped' | 'error';
     creator_id: string;
     owner_user_id?: string;
-    access_level?: 'use' | 'manage';
+    access_level?: 'use' | 'manage' | 'operator';
     is_owner?: boolean;
     action_capabilities?: {
         can_use: boolean;
@@ -33,6 +33,7 @@ export interface Agent {
         can_manage_schedule: boolean;
         can_manage_channel: boolean;
         can_manage_permissions: boolean;
+        can_operator_inspect?: boolean;
         can_transfer_ownership: boolean;
     };
     primary_model_id?: string;

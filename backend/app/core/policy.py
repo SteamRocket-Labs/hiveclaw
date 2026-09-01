@@ -6,12 +6,14 @@ Evaluates resource_permissions table with optional ABAC conditions.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import StrEnum
+import ipaddress
 import logging
 import uuid
 
 from fastapi import HTTPException, status
-from sqlalchemy import select, text
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.security_audit import ResourcePermission
@@ -136,37 +138,77 @@ async def check_permission(
     resource_id: uuid.UUID,
     action: str,
     context: dict | None = None,
+    additional_principals: list[tuple[str, uuid.UUID]] | None = None,
 ) -> bool:
     """Check if a principal has permission to perform an action on a resource.
 
-    Evaluates: matching grant exists AND ABAC conditions pass.
+    Evaluates live matching allow/deny rows; any applicable deny wins.
     Returns True if allowed, False if denied.
     """
-    result = await db.execute(
-        select(ResourcePermission).where(
-            ResourcePermission.principal_type == principal_type,
-            ResourcePermission.principal_id == principal_id,
-            ResourcePermission.resource_type == resource_type,
-            ResourcePermission.resource_id == resource_id,
-        )
+    principals = [(principal_type, principal_id), *(additional_principals or [])]
+    statement = select(ResourcePermission).where(
+        or_(
+            *(
+                and_(
+                    ResourcePermission.principal_type == candidate_type,
+                    ResourcePermission.principal_id == candidate_id,
+                )
+                for candidate_type, candidate_id in principals
+            )
+        ),
+        ResourcePermission.resource_type == resource_type,
+        ResourcePermission.resource_id == resource_id,
     )
+    tenant_id = (context or {}).get("tenant_id")
+    if tenant_id:
+        try:
+            statement = statement.where(ResourcePermission.tenant_id == uuid.UUID(str(tenant_id)))
+        except (TypeError, ValueError):
+            return False
+    result = await db.execute(statement)
     permissions = result.scalars().all()
 
-    for perm in permissions:
-        if permission_allows(perm, action=action, context=context):
-            return True
+    applicable = [
+        permission
+        for permission in permissions
+        if permission_effect_applies(permission, action=action, context=context)
+    ]
+    if any(str(getattr(permission, "effect", "allow") or "allow") == "deny" for permission in applicable):
+        return False
+    return any(str(getattr(permission, "effect", "allow") or "allow") == "allow" for permission in applicable)
 
-    return False
+
+def permission_effect_applies(
+    permission: ResourcePermission,
+    *,
+    action: str,
+    context: dict | None = None,
+    now: datetime | None = None,
+) -> bool:
+    """Return whether one allow/deny row is live and matches the request."""
+
+    if action not in (getattr(permission, "actions", None) or []):
+        return False
+    if getattr(permission, "revoked_at", None) is not None:
+        return False
+    expires_at = getattr(permission, "expires_at", None)
+    if expires_at is not None:
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at <= (now or datetime.now(timezone.utc)):
+            return False
+    conditions = getattr(permission, "conditions", None)
+    if conditions is None:
+        conditions = {}
+    return isinstance(conditions, dict) and (not conditions or _evaluate_conditions(conditions, context or {}))
 
 
 def permission_allows(permission: ResourcePermission, *, action: str, context: dict | None = None) -> bool:
     """Evaluate one already-loaded grant without another database round trip."""
 
-    if action not in (permission.actions or []):
-        return False
-    if permission.conditions and context and not _evaluate_conditions(permission.conditions, context):
-        return False
-    return True
+    return str(getattr(permission, "effect", "allow") or "allow") == "allow" and permission_effect_applies(
+        permission, action=action, context=context
+    )
 
 
 def _evaluate_conditions(conditions: dict, context: dict) -> bool:
@@ -182,15 +224,29 @@ def _evaluate_conditions(conditions: dict, context: dict) -> bool:
             if context.get("environment") != value:
                 return False
         elif key == "time_range":
-            from datetime import datetime, timezone
-
-            now = datetime.now(timezone.utc)
-            hour_str = now.strftime("%H:%M")
-            start = value.get("start", "00:00")
-            end = value.get("end", "23:59")
-            if not (start <= hour_str <= end):
+            if not isinstance(value, dict):
                 return False
-        # Additional conditions can be added here
+            try:
+                current = datetime.now(timezone.utc).time().replace(second=0, microsecond=0)
+                start = datetime.strptime(str(value.get("start", "00:00")), "%H:%M").time()
+                end = datetime.strptime(str(value.get("end", "23:59")), "%H:%M").time()
+            except (TypeError, ValueError):
+                return False
+            inside = start <= current <= end if start <= end else current >= start or current <= end
+            if not inside:
+                return False
+        elif key == "ip_ranges":
+            if not isinstance(value, (list, tuple)):
+                return False
+            try:
+                request_ip = ipaddress.ip_address(str(context.get("ip_address") or ""))
+                networks = [ipaddress.ip_network(str(item), strict=False) for item in value]
+            except (TypeError, ValueError):
+                return False
+            if not any(request_ip in network for network in networks):
+                return False
+        else:
+            return False
     return True
 
 

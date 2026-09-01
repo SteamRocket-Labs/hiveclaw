@@ -165,6 +165,18 @@ class RuntimeBudgetRun(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    @property
+    def approval_episode_id(self) -> uuid.UUID | None:
+        """Immutable event id for the current/latest overrun approval episode."""
+
+        raw = (self.metadata_json or {}).get("approval_episode_id")
+        if raw is None:
+            raw = getattr(self, "_resolved_approval_episode_id", None)
+        try:
+            return uuid.UUID(str(raw)) if raw else None
+        except (TypeError, ValueError, AttributeError):
+            return None
+
 
 class RuntimeBudgetEvent(Base):
     """Append-only runtime budget event stream."""

@@ -964,8 +964,15 @@ async def _execute_team_command(
         return {"ok": True, "command": command_name, **payload}
 
     if command_name == "team_delete":
+        command_session_id = _parse_uuid(session_id, field="session_id")
         team_id = _parse_uuid(arguments.get("team_id"), field="team_id")
-        result = await db.execute(select(AgentTeam).where(AgentTeam.id == team_id, AgentTeam.lead_agent_id == agent.id))
+        result = await db.execute(
+            select(AgentTeam).where(
+                AgentTeam.id == team_id,
+                AgentTeam.lead_agent_id == agent.id,
+                AgentTeam.parent_session_id == command_session_id,
+            )
+        )
         team = result.scalar_one_or_none()
         if team is None:
             raise HTTPException(status_code=404, detail="Team not found")

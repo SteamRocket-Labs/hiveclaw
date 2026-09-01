@@ -77,10 +77,10 @@ async def test_ops_inspect_export_cancel_and_force_suspend(owner_sessionmaker, t
     assert exported["leaf_calls"] == [], "plain agent_step runs have step journal rows, not fanout leaf rows"
 
     cancelled = await ops.cancel_run(handle.run_id, tenant_id=tenant_id, reason="operator requested")
-    assert cancelled["status"] == "killed"
+    assert cancelled["status"] == "completed"
 
     suspended = await ops.force_suspend_run(handle.run_id, tenant_id=tenant_id, reason="manual audit")
-    assert suspended["status"] == "suspended"
+    assert suspended["status"] == "completed"
     assert suspended["reason"] == "manual audit"
 
 

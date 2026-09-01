@@ -495,13 +495,7 @@ async def test_fire_trigger_once_now_preflight_block_skips_without_invoking(monk
         terminal_updates.append({"runtime_task_id": runtime_task_id, **fields})
         return True
 
-    settlements = []
-
-    async def fake_settle(runtime_task_id, *, status):
-        settlements.append((runtime_task_id, status))
-
     monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task_record)
-    monkeypatch.setattr(trigger_daemon, "_settle_trigger_runtime_budget", fake_settle)
 
     def fail_create_task(*_a, **_k):
         raise AssertionError("preflight-blocked immediate fire must not spawn an invocation")
@@ -514,7 +508,7 @@ async def test_fire_trigger_once_now_preflight_block_skips_without_invoking(monk
     assert result["runtime_task_id"] == "immediate-rt-2"
     assert terminal_updates[0]["status"] == "skipped"
     assert terminal_updates[0]["metadata_json"]["skip_reason"] == "agent_paused"
-    assert settlements == [("immediate-rt-2", "skipped")]
+    assert terminal_updates[0]["metadata_json"]["runtime_budget_actuals"] == {"background_tasks": 1}
 
 
 @pytest.mark.asyncio
@@ -605,17 +599,13 @@ async def test_invoke_agent_for_triggers_returns_after_same_session_delivery(mon
 
     monkeypatch.setattr(trigger_daemon, "_deliver_batch_to_source_session", fake_deliver)
 
-    async def fake_update_runtime_task_record(_runtime_task_id, **_fields):
+    terminal_updates = []
+
+    async def fake_update_runtime_task_record(_runtime_task_id, **fields):
+        terminal_updates.append(fields)
         return True
 
     monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task_record)
-
-    budget_settlements = []
-
-    async def fake_settle_budget(runtime_task_id, *, status):
-        budget_settlements.append((runtime_task_id, status))
-
-    monkeypatch.setattr(trigger_daemon, "_settle_trigger_runtime_budget", fake_settle_budget)
 
     async def fail_resolve_tenant(*_a, **_k):
         raise AssertionError("same_session delivery must return before loading a fresh trigger session")
@@ -626,7 +616,7 @@ async def test_invoke_agent_for_triggers_returns_after_same_session_delivery(mon
 
     assert result is None
     assert delivered_calls == [str(session_id)]
-    assert budget_settlements == [("rt-x", "completed")]
+    assert terminal_updates[0]["metadata_json"]["runtime_budget_actuals"] == {"background_tasks": 1}
 
 
 @pytest.mark.asyncio
@@ -688,15 +678,9 @@ async def test_mixed_workflow_hold_keeps_same_session_wrapper_reconcilable(monke
         updates.append(fields)
         return True
 
-    settlements = []
-
-    async def fake_settle_budget(runtime_task_id, *, status):
-        settlements.append((runtime_task_id, status))
-
     monkeypatch.setattr(workflow_trigger, "fire_workflow_for_trigger", fake_fire_workflow)
     monkeypatch.setattr(trigger_daemon, "_deliver_batch_to_source_session", fake_deliver)
     monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task_record)
-    monkeypatch.setattr(trigger_daemon, "_settle_trigger_runtime_budget", fake_settle_budget)
 
     await trigger_daemon._invoke_agent_for_triggers(
         agent_id,
@@ -711,7 +695,7 @@ async def test_mixed_workflow_hold_keeps_same_session_wrapper_reconcilable(monke
         str(loop_trigger.id): "success",
     }
     assert updates[0]["metadata_json"]["workflow_trigger_results"][0]["status"] == "needs_reconciliation"
-    assert settlements == [("rt-mixed-hold", "needs_reconciliation")]
+    assert updates[0]["metadata_json"]["runtime_budget_actuals"] == {"background_tasks": 1}
 
 
 @pytest.mark.asyncio
@@ -760,13 +744,9 @@ async def test_mixed_workflow_success_outweighs_released_react_delivery(monkeypa
         updates.append(fields)
         return True
 
-    async def no_budget_settlement(*_args, **_kwargs):
-        return None
-
     monkeypatch.setattr(workflow_trigger, "fire_workflow_for_trigger", fake_fire_workflow)
     monkeypatch.setattr(trigger_daemon, "admit_agent_runtime_tenant", denied_admission)
     monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task_record)
-    monkeypatch.setattr(trigger_daemon, "_settle_trigger_runtime_budget", no_budget_settlement)
 
     await trigger_daemon._invoke_agent_for_triggers(
         agent_id,
@@ -779,10 +759,11 @@ async def test_mixed_workflow_success_outweighs_released_react_delivery(monkeypa
         str(workflow_trigger_row.id): "success",
         str(react_trigger.id): "release",
     }
+    assert updates[0]["metadata_json"]["runtime_budget_actuals"] == {"background_tasks": 1}
 
 
 @pytest.mark.asyncio
-async def test_invoke_agent_for_triggers_defers_same_session_budget_until_exception_replay_commits(monkeypatch):
+async def test_invoke_agent_for_triggers_defers_terminal_budget_intent_until_exception_replay_commits(monkeypatch):
     import app.services.trigger_daemon as trigger_daemon
     import app.services.workflow_trigger as workflow_trigger
 
@@ -808,16 +789,13 @@ async def test_invoke_agent_for_triggers_defers_same_session_budget_until_except
         assert committed is True
         return True
 
-    settlements = []
-
-    async def fake_settle_budget(runtime_task_id, *, status):
-        settlements.append((runtime_task_id, status))
-
     monkeypatch.setattr(workflow_trigger, "fire_workflow_for_trigger", fake_fire_workflow)
     monkeypatch.setattr(trigger_daemon, "_deliver_batch_to_source_session", flaky_delivery)
-    monkeypatch.setattr(trigger_daemon, "_settle_trigger_runtime_budget", fake_settle_budget)
 
-    async def fake_update_runtime_task_record(_runtime_task_id, **_fields):
+    terminal_updates = []
+
+    async def fake_update_runtime_task_record(_runtime_task_id, **fields):
+        terminal_updates.append(fields)
         return True
 
     monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task_record)
@@ -829,7 +807,7 @@ async def test_invoke_agent_for_triggers_defers_same_session_budget_until_except
             runtime_task_id="rt-same-session-failed",
         )
 
-    assert settlements == []
+    assert terminal_updates == []
 
     await trigger_daemon._invoke_agent_for_triggers(
         agent_id,
@@ -838,80 +816,4 @@ async def test_invoke_agent_for_triggers_defers_same_session_budget_until_except
     )
 
     assert delivery_attempts == 2
-    assert settlements == [("rt-same-session-failed", "completed")]
-
-
-@pytest.mark.asyncio
-async def test_settle_trigger_runtime_budget_short_circuits_completed_replay(monkeypatch):
-    import app.services.trigger_daemon as trigger_daemon
-
-    runtime_task_id = uuid4()
-    budget_run_id = uuid4()
-    record = {
-        "budget_run_id": str(budget_run_id),
-        "budget_reservation_key": f"trigger:{runtime_task_id}",
-        "budget_admission_status": "admitted",
-    }
-    settle_calls = []
-
-    async def fake_get_runtime_task_record(_task_id):
-        return dict(record)
-
-    async def fake_update_runtime_task_record(_task_id, **fields):
-        record.update(fields)
-        return True
-
-    class FakeExecutionAdmission:
-        async def settle(self, decision, **kwargs):
-            settle_calls.append((decision.reservation.reservation_key, kwargs["reason"]))
-
-    monkeypatch.setattr(trigger_daemon, "get_runtime_task_record", fake_get_runtime_task_record)
-    monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task_record)
-    monkeypatch.setattr(trigger_daemon, "ExecutionAdmission", FakeExecutionAdmission)
-
-    await trigger_daemon._settle_trigger_runtime_budget(str(runtime_task_id), status="completed")
-    await trigger_daemon._settle_trigger_runtime_budget(str(runtime_task_id), status="completed")
-
-    assert settle_calls == [(f"trigger:{runtime_task_id}", "trigger_completed")]
-    assert record["budget_admission_status"] == "settled"
-
-
-@pytest.mark.asyncio
-async def test_settle_trigger_runtime_budget_retries_after_transient_settlement_error(monkeypatch):
-    import app.services.trigger_daemon as trigger_daemon
-
-    runtime_task_id = uuid4()
-    budget_run_id = uuid4()
-    record = {
-        "budget_run_id": str(budget_run_id),
-        "budget_reservation_key": f"trigger:{runtime_task_id}",
-        "budget_admission_status": "admitted",
-    }
-    attempts = 0
-
-    async def fake_get_runtime_task_record(_task_id):
-        return dict(record)
-
-    async def fake_update_runtime_task_record(_task_id, **fields):
-        record.update(fields)
-        return True
-
-    class FlakyExecutionAdmission:
-        async def settle(self, decision, **_kwargs):
-            nonlocal attempts
-            attempts += 1
-            assert decision.reservation.reservation_key == f"trigger:{runtime_task_id}"
-            if attempts == 1:
-                raise RuntimeError("budget database unavailable")
-
-    monkeypatch.setattr(trigger_daemon, "get_runtime_task_record", fake_get_runtime_task_record)
-    monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task_record)
-    monkeypatch.setattr(trigger_daemon, "ExecutionAdmission", FlakyExecutionAdmission)
-
-    await trigger_daemon._settle_trigger_runtime_budget(str(runtime_task_id), status="failed")
-    assert record["budget_admission_status"] == "admitted"
-
-    await trigger_daemon._settle_trigger_runtime_budget(str(runtime_task_id), status="failed")
-
-    assert attempts == 2
-    assert record["budget_admission_status"] == "settled"
+    assert terminal_updates[0]["metadata_json"]["runtime_budget_actuals"] == {"background_tasks": 1}

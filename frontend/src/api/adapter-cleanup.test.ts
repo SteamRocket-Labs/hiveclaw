@@ -499,6 +499,49 @@ describe('request cleanup adapters', () => {
     });
   });
 
+  it('routes audited operator inspection grant lifecycle through agentApi', async () => {
+    vi.doMock('./core/request', async () => {
+      const actual = await vi.importActual<typeof import('./core/request')>('./core/request');
+      return {
+        ...actual,
+        get: vi.fn(),
+        post: vi.fn(),
+      };
+    });
+    const { agentApi } = await import('./domains/agents');
+    const { get, post } = await import('./core/request');
+    vi.mocked(get).mockResolvedValue([]);
+    vi.mocked(post).mockResolvedValue({});
+
+    await agentApi.listOperatorCandidates('agent-1');
+    await agentApi.listOperatorGrants('agent-1');
+    await agentApi.createOperatorGrant('agent-1', {
+      request_id: 'grant-request-1',
+      principal_id: 'user-2',
+      effect: 'allow',
+      expires_at: '2026-09-02T10:00:00Z',
+      reason: 'Investigate a reported session issue',
+    });
+    await agentApi.revokeOperatorGrant('agent-1', 'grant-1', {
+      request_id: 'revoke-request-1',
+      reason: 'Investigation complete',
+    });
+
+    expect(get).toHaveBeenCalledWith('/agents/agent-1/operator-candidates');
+    expect(get).toHaveBeenCalledWith('/agents/agent-1/operator-grants');
+    expect(post).toHaveBeenCalledWith('/agents/agent-1/operator-grants', {
+      request_id: 'grant-request-1',
+      principal_id: 'user-2',
+      effect: 'allow',
+      expires_at: '2026-09-02T10:00:00Z',
+      reason: 'Investigate a reported session issue',
+    });
+    expect(post).toHaveBeenCalledWith('/agents/agent-1/operator-grants/grant-1/revoke', {
+      request_id: 'revoke-request-1',
+      reason: 'Investigation complete',
+    });
+  });
+
   it('routes agent timezone updates through agentApi patch()', async () => {
     vi.doMock('./core/request', async () => {
       const actual = await vi.importActual<typeof import('./core/request')>('./core/request');

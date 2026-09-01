@@ -53,3 +53,10 @@ def test_seeded_relationships_use_governed_a2a_projection_language():
     assert "Digital Employee Colleagues" not in source
     assert "我的数字员工团队" in source
     assert "同 owner，可直接通过 A2A 会话协作" in source
+
+
+def test_seeded_company_permissions_are_use_only():
+    source = _read_seeder_source()
+
+    assert "Permissions (company-wide use)" in source
+    assert 'access_level="manage"' not in source

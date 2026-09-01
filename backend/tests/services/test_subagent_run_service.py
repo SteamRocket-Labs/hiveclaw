@@ -894,6 +894,228 @@ async def test_run_completer_maps_failure_to_failed(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_completer_persists_budget_actuals_in_terminal_task_commit(monkeypatch):
+    run_id = uuid.uuid4().hex
+    budget_run_id = uuid.uuid4()
+    captured_update: dict = {}
+
+    async def _fake_get(_run_id):
+        assert _run_id == run_id
+        return {
+            "task_id": run_id,
+            "budget_run_id": str(budget_run_id),
+            "budget_reservation_key": f"subagent:{run_id}:start",
+            "metadata": {},
+        }
+
+    async def _fake_update(_run_id, **fields):
+        assert _run_id == run_id
+        captured_update.update(fields)
+        return True
+
+    monkeypatch.setattr(svc, "get_runtime_task_record", _fake_get)
+    monkeypatch.setattr(svc, "update_runtime_task_record", _fake_update)
+    monkeypatch.setattr(svc, "_subagent_completion_notification_from_record", lambda *_args, **_kwargs: None)
+
+    await svc.make_run_completer(run_id)(
+        SubagentResult(name="scout", type="explorer", status="completed", content="done", tokens_used=42)
+    )
+
+    assert captured_update["status"] == "completed"
+    assert "budget_admission_status" not in captured_update
+    assert captured_update["metadata_json"]["runtime_budget_actuals"] == {
+        "subagents": 1,
+        "background_tasks": 1,
+    }
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+@pytest.mark.asyncio
+async def test_claimed_subagent_commits_actuals_then_reconciles_exact_budget(owner_sessionmaker, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.agent import Agent
+    from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
+    from app.models.tenant import Tenant
+    from app.models.user import User
+    from app.services.runtime_budget_service import (
+        RuntimeBudgetReservation,
+        RuntimeBudgetRunCreate,
+        RuntimeBudgetService,
+        RuntimeBudgetSettlement,
+    )
+    from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
+    import app.services.runtime_task_service as runtime_task_service
+
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    task_id = uuid.uuid4()
+    worker_id = "subagent-worker"
+    reservation_key = f"subagent:{task_id.hex}:start"
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        session.add(Tenant(id=tenant_id, name="subagent-budget", slug=f"sab-{tenant_id.hex[:10]}"))
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        session.add(
+            User(
+                id=user_id,
+                username=f"sab-{user_id.hex[:10]}",
+                email=f"{user_id.hex[:10]}@subagent-budget.test",
+                password_hash="x",
+                display_name="Subagent Budget Owner",
+                tenant_id=tenant_id,
+            )
+        )
+        await session.flush()
+        session.add(
+            Agent(
+                id=agent_id,
+                tenant_id=tenant_id,
+                name="subagent-budget-agent",
+                role_description="budget fence",
+                creator_id=user_id,
+                sponsor_user_id=user_id,
+            )
+        )
+
+    budget_service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+    budget_run = await budget_service.create_run(
+        RuntimeBudgetRunCreate(
+            tenant_id=tenant_id,
+            root_run_kind="subagent_test",
+            root_run_key=f"subagent-test:{task_id}",
+            source="subagent",
+            profile="interactive",
+            max_tokens=100_000,
+            max_cache_miss_tokens=100_000,
+            max_subagents=2,
+            max_background_tasks=2,
+            enforcement_mode="enforce",
+        )
+    )
+    await budget_service.reserve(
+        RuntimeBudgetReservation(
+            budget_run_id=budget_run.id,
+            reservation_key=reservation_key,
+            tokens=50_000,
+            cache_miss_tokens=50_000,
+            subagents=1,
+            background_tasks=1,
+            runtime_task_id=task_id,
+        )
+    )
+    provider_reservation_key = f"provider_call:{task_id.hex}:1"
+    await budget_service.reserve(
+        RuntimeBudgetReservation(
+            budget_run_id=budget_run.id,
+            reservation_key=provider_reservation_key,
+            tokens=50_000,
+            provider_calls=1,
+            runtime_task_id=task_id,
+        )
+    )
+    await budget_service.settle(
+        RuntimeBudgetSettlement(
+            budget_run_id=budget_run.id,
+            reservation_key=provider_reservation_key,
+            actual_tokens=42,
+            actual_provider_calls=1,
+            runtime_task_id=task_id,
+        )
+    )
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        session.add(
+            RuntimeTask(
+                id=task_id,
+                tenant_id=tenant_id,
+                task_type="subagent",
+                status="running",
+                parent_agent_id=agent_id,
+                root_user_id=user_id,
+                budget_run_id=budget_run.id,
+                budget_reservation_key=reservation_key,
+                budget_admission_status="reserved",
+                claimed_by=worker_id,
+                claim_version=1,
+                claim_expires_at=datetime.now(timezone.utc) + timedelta(minutes=1),
+                metadata_json={"subagent_name": "scout", "subagent_type": "explorer"},
+            )
+        )
+
+    monkeypatch.setattr(runtime_task_service, "async_session", owner_sessionmaker)
+    monkeypatch.setattr(svc, "_subagent_completion_notification_from_record", lambda *_args, **_kwargs: None)
+    token = set_runtime_task_fence(task_id=task_id, claim_version=1, worker_id=worker_id)
+    try:
+        await svc.make_run_completer(task_id.hex)(
+            SubagentResult(name="scout", type="explorer", status="completed", content="done", tokens_used=42)
+        )
+    finally:
+        reset_runtime_task_fence(token)
+
+    async with owner_sessionmaker() as session:
+        task = await session.get(RuntimeTask, task_id)
+        stored_budget = await session.get(RuntimeBudgetRun, budget_run.id)
+        settlements = (
+            (
+                await session.execute(
+                    select(RuntimeBudgetEvent).where(
+                        RuntimeBudgetEvent.budget_run_id == budget_run.id,
+                        RuntimeBudgetEvent.reservation_key == reservation_key,
+                        RuntimeBudgetEvent.event_type == "settlement",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert task is not None and stored_budget is not None
+    assert task.status == "completed"
+    assert task.budget_admission_status == "reserved"
+    assert task.metadata_json["runtime_budget_actuals"] == {
+        "subagents": 1,
+        "background_tasks": 1,
+    }
+    assert stored_budget.reserved_tokens == 50_000
+    assert stored_budget.used_tokens == 42
+    assert settlements == []
+
+    assert await budget_service.reconcile_orphaned_reservations() >= 1
+    async with owner_sessionmaker() as session:
+        task = await session.get(RuntimeTask, task_id)
+        stored_budget = await session.get(RuntimeBudgetRun, budget_run.id)
+        settlements = (
+            (
+                await session.execute(
+                    select(RuntimeBudgetEvent).where(
+                        RuntimeBudgetEvent.budget_run_id == budget_run.id,
+                        RuntimeBudgetEvent.reservation_key == reservation_key,
+                        RuntimeBudgetEvent.event_type == "settlement",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert task is not None and stored_budget is not None
+    assert task.status == "completed"
+    assert task.budget_admission_status == "settled"
+    assert stored_budget.reserved_tokens == 0
+    assert stored_budget.reserved_cache_miss_tokens == 0
+    assert stored_budget.reserved_subagents == 0
+    assert stored_budget.reserved_background_tasks == 0
+    assert stored_budget.used_tokens == 42
+    assert stored_budget.used_cache_miss_tokens == 0
+    assert stored_budget.used_subagents == 1
+    assert stored_budget.used_background_tasks == 1
+    assert len(settlements) == 1
+    assert settlements[0].amounts_json == {
+        "subagents": 1,
+        "background_tasks": 1,
+    }
+
+
+@pytest.mark.asyncio
 async def test_subagent_completion_projects_child_session_event_to_parent(monkeypatch):
     child_session_id = uuid.uuid4()
     parent_session_id = uuid.uuid4()
@@ -2877,6 +3099,7 @@ async def test_subagent_cancel_received_before_dispatch_registration_is_applied(
 @pytest.mark.asyncio
 async def test_dispatch_persisted_subagent_run_honors_cancel_arriving_during_hydration(monkeypatch):
     run_id = uuid.uuid4().hex
+    budget_run_id = uuid.uuid4()
     parent = uuid.uuid4()
     updates: list[tuple[str, dict]] = []
 
@@ -2891,6 +3114,8 @@ async def test_dispatch_persisted_subagent_run_honors_cancel_arriving_during_hyd
             "prompt": "read x",
             "trace_id": "trace-subagent",
             "parent_session_id": "parent-session",
+            "budget_run_id": str(budget_run_id),
+            "budget_reservation_key": f"subagent:{run_id}:start",
             **_runtime_requester_fields(requester_user_id=uuid.uuid4()),
             "metadata": {
                 "subagent_type": "explorer",
@@ -2921,15 +3146,18 @@ async def test_dispatch_persisted_subagent_run_honors_cancel_arriving_during_hyd
     async def fake_spawn_subagent(runtime, spec, *_args, **_kwargs):
         assert runtime.cancel_event.is_set() is True
         return SimpleNamespace(
-            result=SubagentResult(name=spec.name, type=spec.type, status="completed", content="ignored")
+            result=SubagentResult(
+                name=spec.name,
+                type=spec.type,
+                status="completed",
+                content="ignored",
+                tokens_used=17,
+            )
         )
 
     async def fake_update_runtime_task_record(task_id, **kwargs):
         updates.append((task_id, kwargs))
         return True
-
-    async def fake_update_child_session_state_for_run(**_kwargs):
-        return None
 
     monkeypatch.setattr(svc, "get_runtime_task_record", fake_get_runtime_task_record)
     monkeypatch.setattr(svc, "_load_subagent_resume_messages", fake_load_resume_messages)
@@ -2937,7 +3165,6 @@ async def test_dispatch_persisted_subagent_run_honors_cancel_arriving_during_hyd
     monkeypatch.setattr(svc, "_hydrate_worker_runtime_context", fake_hydrate_worker_runtime_context)
     monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
     monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
-    monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", fake_update_child_session_state_for_run)
     monkeypatch.setattr(svc, "_subagent_completion_notification_from_record", lambda *_args, **_kwargs: None)
 
     dispatched = await svc.dispatch_persisted_subagent_run(run_id)
@@ -2946,3 +3173,9 @@ async def test_dispatch_persisted_subagent_run_honors_cancel_arriving_during_hyd
     assert updates[-1][0] == run_id
     assert updates[-1][1]["status"] == "killed"
     assert updates[-1][1]["metadata_json"]["cancelled"] is True
+    assert updates[-1][1]["token_usage"] == {"total_tokens": 17}
+    assert "budget_admission_status" not in updates[-1][1]
+    assert updates[-1][1]["metadata_json"]["runtime_budget_actuals"] == {
+        "subagents": 1,
+        "background_tasks": 1,
+    }

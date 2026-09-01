@@ -733,7 +733,13 @@ async def spawn_agent_team_member_runtime(
     result_status = str((run_payload.get("results") or [{}])[0].get("status") or "")
     return {
         "ok": bool(run_payload.get("ok")),
-        "status": "waiting_budget_approval" if result_status == "waiting_budget_approval" else "teammate_spawned",
+        "status": (
+            "waiting_budget_approval"
+            if result_status == "waiting_budget_approval"
+            else "deferred"
+            if result_status == "deferred"
+            else "teammate_spawned"
+        ),
         "team_id": str(team.id),
         "team_name": team.name,
         "member": _team_member_payload(member),
@@ -1423,6 +1429,15 @@ async def message_agent_team_members_runtime(
                 continue
 
         waiting = bool(admission_decision is not None and admission_decision.waiting)
+        member_budget_actuals = (
+            {
+                "team_sessions": 1 if reserve_new_team_sessions else 0,
+                "background_tasks": 1,
+                "continuation_wakes": 1,
+            }
+            if admission_decision is not None and admission_decision.admitted and not waiting
+            else None
+        )
         root_intent = RuntimeRootIntentSpec(
             intent_key=item["intent_key"],
             work_type="team_member",
@@ -1459,6 +1474,7 @@ async def message_agent_team_members_runtime(
                     "root_runtime_task_id": str(root_id),
                     "team_operation_id": operation,
                     "team_root_item_intent_key": item["intent_key"],
+                    **({"runtime_budget_actuals": member_budget_actuals} if member_budget_actuals is not None else {}),
                     **(
                         {
                             "runtime_model_id": str(member.model_id),
@@ -1495,12 +1511,6 @@ async def message_agent_team_members_runtime(
                 root_item.recovery_claimed_by = None
                 root_item.recovery_claim_expires_at = None
                 root_item.next_recovery_at = datetime.now(timezone.utc)
-            if admission is not None and admission_decision is not None:
-                await admission.settle(
-                    admission_decision,
-                    reason="agent_team_member_admission_interrupted",
-                    runtime_task_id=item["run_id"],
-                )
             results.append(
                 {
                     "member_id": str(member.id),
@@ -1546,22 +1556,6 @@ async def message_agent_team_members_runtime(
                 result_refs=((f"session-input://{input_id}",) if input_id else ()),
             )
 
-        if admission is not None and admission_decision is not None:
-            run_started = status in {"queued", "started", "running"}
-            await admission.settle(
-                admission_decision,
-                actual_team_sessions=1 if reserve_new_team_sessions else 0,
-                actual_background_tasks=1 if run_started else 0,
-                actual_continuation_wakes=1 if run_started else 0,
-                reason="agent_team_member_admitted" if run_started else "agent_team_member_waiting",
-                runtime_task_id=item["run_id"],
-                metadata={
-                    "root_runtime_task_id": str(root_id),
-                    "root_item_intent_key": item["intent_key"],
-                    "team_id": str(team.id),
-                    "member_id": str(member.id),
-                },
-            )
         db.add(
             AgentTeamEvent(
                 id=uuid.uuid4(),
@@ -1830,6 +1824,9 @@ async def send_agent_team_message_from_tool_request(request: Any) -> dict[str, A
         raise ValueError("member_name/to is required; use '*' to broadcast")
     if not message:
         raise ValueError("message is required")
+    session_id = _uuid_or_none(getattr(request.context, "session_id", None))
+    if session_id is None:
+        raise ValueError("send_agent_session_message requires the current session_id for Agent Team routing")
 
     tenant_id = _uuid_or_none(getattr(request.context, "tenant_id", None)) or await resolve_tenant_for_agent(
         request.context.agent_id
@@ -1837,14 +1834,14 @@ async def send_agent_team_message_from_tool_request(request: Any) -> dict[str, A
     async with tenant_scoped_session(tenant_id) as db:
         agent = (await db.execute(select(Agent).where(Agent.id == request.context.agent_id))).scalar_one_or_none()
         user = (await db.execute(select(User).where(User.id == request.context.user_id))).scalar_one_or_none()
-        team_stmt = select(AgentTeam).where(AgentTeam.lead_agent_id == request.context.agent_id)
+        team_stmt = select(AgentTeam).where(
+            AgentTeam.lead_agent_id == request.context.agent_id,
+            AgentTeam.parent_session_id == session_id,
+        )
         if team_id is not None:
             team_stmt = team_stmt.where(AgentTeam.id == team_id)
         else:
-            session_id = _uuid_or_none(getattr(request.context, "session_id", None))
             team_stmt = team_stmt.where(AgentTeam.status == "active")
-            if session_id is not None:
-                team_stmt = team_stmt.where(AgentTeam.parent_session_id == session_id)
             if team_name:
                 team_stmt = team_stmt.where(AgentTeam.name == team_name)
             team_stmt = team_stmt.order_by(AgentTeam.created_at.desc()).limit(1)

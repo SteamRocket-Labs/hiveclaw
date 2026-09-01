@@ -17,6 +17,7 @@ import AgentChatSection, {
   isClarificationCardAnsweredByLaterUserMessage,
   isInlineToolCardMessage,
   permissionOnceOnlyMessageKey,
+  sessionAuthorizedInlineImageUrl,
   sessionPermissionModeOptions,
 } from './AgentChatSection';
 import { buildMessageFeedbackInput } from './messageFeedback';
@@ -40,6 +41,7 @@ import {
 import {
   ActiveTailStatusLine,
   runtimeStatusLabel,
+  SessionRuntimePanel,
   subagentWorkerRecoveryModel,
   userFacingRuntimeStatus,
   WorkflowRunFocusPanel,
@@ -177,6 +179,110 @@ describe('SessionDecisionHistory', () => {
   });
 });
 
+describe('SessionRuntimePanel read-only controls', () => {
+  it('keeps operator evidence visible without goal, decision, team, or retry mutations', () => {
+    const markup = renderToStaticMarkup(
+      <SessionRuntimePanel
+        messages={[]}
+        sessionWorkbench={{
+          schema: 'session_workbench.v1',
+          agent_id: 'agent-1',
+          session: { id: 'session-operator', title: 'Operator evidence' },
+          goals: [{
+            id: 'goal-1',
+            objective: 'Preserve the evidence trail',
+            status: 'active',
+            controls: { can_pause: true, can_resume: true, can_stop: true },
+          }],
+          runtime_sections: {
+            agent_teams: [{
+              id: 'team-1',
+              runtime_kind: 'agent_team',
+              label: 'Review Team',
+              status: 'active',
+              members: [{
+                id: 'member-1',
+                runtime_kind: 'team_member',
+                label: 'Policy reviewer',
+                status: 'failed',
+                child_session_id: 'member-session-1',
+                enterable: true,
+              }],
+            }],
+            subagents: [{
+              id: 'worker-1',
+              runtime_kind: 'subagent',
+              label: 'Evidence critic',
+              status: 'failed',
+              child_session_id: 'worker-session-1',
+              enterable: true,
+            }],
+          },
+        } as any}
+        activeSession={{ id: 'session-operator', title: 'Operator evidence' }}
+        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        agentId="agent-1"
+        sessionId="session-operator"
+        readOnly
+        onSelectSession={vi.fn()}
+        onGoalChanged={vi.fn()}
+        onTeamChanged={vi.fn()}
+        onRetrySubagent={vi.fn()}
+        sessionDecisions={[{
+          id: 'decision-1',
+          action: 'send_email',
+          tool_name: 'send_email',
+          outcome: 'ask',
+          reason_codes: ['charter_confirm_first'],
+          created_at: '2026-08-31T00:00:00Z',
+          feedback_count: 0,
+        }]}
+        onDecisionFeedback={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('Preserve the evidence trail');
+    expect(markup).not.toContain('session-goal-actions');
+    expect(markup).toContain('Policy reviewer');
+    expect(markup).toContain('>Enter<');
+    expect(markup).not.toContain('>Send<');
+    expect(markup).not.toContain('>Resume<');
+    expect(markup).not.toContain('>Close team<');
+    expect(markup).toContain('Send an email');
+    expect(markup).not.toContain('Helpful');
+    expect(markup).not.toContain('Misleading');
+
+    const workerMarkup = renderToStaticMarkup(
+      <SessionRuntimePanel
+        messages={[]}
+        sessionWorkbench={{
+          schema: 'session_workbench.v1',
+          agent_id: 'agent-1',
+          session: { id: 'session-operator', title: 'Operator evidence' },
+          runtime_sections: {
+            subagents: [{
+              id: 'worker-1',
+              runtime_kind: 'subagent',
+              label: 'Evidence critic',
+              status: 'failed',
+              child_session_id: 'worker-session-1',
+              enterable: true,
+            }],
+          },
+        } as any}
+        activeSession={{ id: 'session-operator', title: 'Operator evidence' }}
+        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        readOnly
+        onSelectSession={vi.fn()}
+        onRetrySubagent={vi.fn()}
+      />,
+    );
+    expect(workerMarkup).toContain('Evidence critic');
+    expect(workerMarkup).toContain('data-runtime-action="subagent-worker-inspect"');
+    expect(workerMarkup).not.toContain('data-runtime-action="subagent-worker-retry"');
+  });
+});
+
 describe('buildMessageFeedbackInput', () => {
   it('links only durable UUID messages and never invents a decision reference', () => {
     expect(buildMessageFeedbackInput('assistant-stream-42', 'useful')).toEqual({
@@ -267,6 +373,7 @@ describe('canonical card assistant supplements', () => {
 });
 
 const queryKeyCalls = vi.hoisted(() => [] as unknown[][]);
+const queryOptionCalls = vi.hoisted(() => [] as Array<{ queryKey: unknown[]; enabled?: boolean }>);
 
 function findElementByTestId(node: React.ReactNode, testId: string): React.ReactElement<Record<string, any>> {
   if (!React.isValidElement(node)) {
@@ -320,6 +427,7 @@ vi.stubGlobal('localStorage', {
 vi.mock('@tanstack/react-query', () => ({
   useQuery: ({ queryKey, enabled }: { queryKey: unknown[]; enabled?: boolean }) => {
     queryKeyCalls.push(queryKey);
+    queryOptionCalls.push({ queryKey, enabled });
     if (enabled === false) {
       return { data: undefined, isLoading: false, isError: false, error: null };
     }
@@ -1091,6 +1199,16 @@ vi.mock('react-router-dom', () => ({
 }));
 
 describe('AgentDetail extracted sections', () => {
+  it('adds the normalized operator authority to inline image requests and leaves owner URLs unchanged', () => {
+    const ownerUrl = '/api/agents/agent-1/files/download?path=workspace/uploads/evidence.png';
+
+    expect(sessionAuthorizedInlineImageUrl(ownerUrl, false, 'ignored')).toBe(ownerUrl);
+    expect(sessionAuthorizedInlineImageUrl(ownerUrl, true, '  Incident evidence review  ')).toBe(
+      '/api/agents/agent-1/files/download?path=workspace%2Fuploads%2Fevidence.png&operator_view=true&operator_reason=Incident+evidence+review',
+    );
+    expect(sessionAuthorizedInlineImageUrl(ownerUrl, true, '   ')).toBeUndefined();
+  });
+
   it('hides the previous Session transcript and composer while a new conversation takes authority', () => {
     const oldMarker = 'OLD-SESSION-MARKER-MUST-NOT-LEAK';
     const oldModel = 'OLD-RUNTIME-MODEL-MUST-NOT-LEAK';
@@ -1294,12 +1412,14 @@ describe('AgentDetail extracted sections', () => {
     expect(result.checkpointEventId).toBe('evt-user-2');
   });
 
-  it('keeps only the All Users conversation audit browser inside Agent Detail', () => {
-    const markup = renderToStaticMarkup(
+  it('keeps operator inspection reason-scoped and removes every writable session control', () => {
+    const renderOperatorAudit = (reason: string) => renderToStaticMarkup(
       <AgentChatSection
+        agentId="agent-1"
         agent={{ id: 'agent-1', name: 'Release Bot' }}
         currentUser={{ id: 'user-1' }}
         isAdmin
+        operatorReason={reason}
         chatScope="all"
         onSetChatScope={vi.fn()}
         onLoadAllSessions={vi.fn()}
@@ -1314,18 +1434,29 @@ describe('AgentDetail extracted sections', () => {
           },
         ]}
         activeSession={{
-          id: 'session-2',
+          id: 'runtime-panel-session',
           user_id: 'user-2',
           title: 'Customer IM thread',
           source_channel: 'feishu',
           username: 'Customer',
           operator_view: true,
+          root_session_id: 'operator-root-session',
           created_at: '2026-03-27T10:00:00Z',
         }}
+        branchLineage={[
+          { id: 'operator-root-session', parent_session_id: null, title: 'Audit root', branch: {} },
+          {
+            id: 'runtime-panel-session',
+            parent_session_id: 'operator-root-session',
+            root_session_id: 'operator-root-session',
+            title: 'Customer IM thread',
+            branch: { root_session_id: 'operator-root-session' },
+          },
+        ]}
         wsConnected={false}
         allSessions={[
           {
-            id: 'session-2',
+            id: 'runtime-panel-session',
             user_id: 'user-2',
             title: 'Customer IM thread',
             source_channel: 'feishu',
@@ -1341,8 +1472,50 @@ describe('AgentDetail extracted sections', () => {
         onDeleteSession={vi.fn()}
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
-        historyMsgs={[]}
-        historyMessagesSessionId="session-2"
+        historyMsgs={[
+          {
+            id: 'operator-user-message',
+            transcriptEventId: 'operator-user-event',
+            role: 'user',
+            content: 'Review the incident evidence.',
+          },
+          {
+            id: 'operator-assistant-message',
+            transcriptEventId: 'operator-assistant-event',
+            role: 'assistant',
+            content: 'Evidence ready. plan_id=a7cdfa75-cec5-4062-8bda-b18b2d2821a3',
+          },
+          {
+            id: 'operator-permission-event',
+            role: 'event',
+            content: "Tool 'send_email' requires session permission",
+            eventType: 'permission',
+            eventStatus: 'session_permission_required',
+            sessionPermissionRequest: {
+              permission_request_id: '11111111-1111-4111-8111-111111111111',
+              session_id: 'runtime-panel-session',
+              tool_name: 'send_email',
+              arguments: { to: 'a@example.com' },
+              permission_mode: 'default',
+            },
+          },
+          {
+            id: 'operator-retryable-event',
+            role: 'event',
+            content: 'The service was temporarily unavailable.',
+            eventType: 'runtime_error',
+            eventStatus: 'failed',
+            threadItem: {
+              id: 'operator-retryable-thread-item',
+              item_type: 'error',
+              item_status: 'failed',
+              item_data: { retryable: true },
+              audience: 'operator',
+              user_summary: 'This turn can be retried safely.',
+            } as any,
+          },
+        ]}
+        historyMessagesSessionId="runtime-panel-session"
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
         chatContainerRef={React.createRef<HTMLDivElement>()}
@@ -1368,10 +1541,19 @@ describe('AgentDetail extracted sections', () => {
         onSetChatInput={vi.fn()}
         onHandlePaste={vi.fn()}
         onSendChatMsg={vi.fn()}
+        onBranchMessage={vi.fn()}
+        onSendMessage={vi.fn()}
+        onEnterPlanMode={vi.fn()}
+        onRunSessionCommand={vi.fn()}
+        onResolveSessionPermission={vi.fn()}
         isStreaming={false}
         onAbortGeneration={vi.fn()}
-      />,
+      />
     );
+
+    queryKeyCalls.length = 0;
+    queryOptionCalls.length = 0;
+    const markup = renderOperatorAudit('  Incident evidence review  ');
 
     expect(markup).toContain('data-testid="detail-session-browser"');
     expect(markup).toContain('All Users');
@@ -1384,6 +1566,48 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Operator View');
     expect(markup).not.toContain('aria-label="Delete session Customer IM thread"');
     expect(markup).not.toContain('session-only');
+    expect(markup).not.toContain('data-testid="session-tui-composer"');
+    expect(markup).not.toContain('data-testid="message-action-like"');
+    expect(markup).not.toContain('data-testid="message-action-dislike"');
+    expect(markup).not.toContain('data-testid="message-action-branch"');
+    expect(markup).not.toContain('data-testid="message-action-rewind"');
+    expect(markup).not.toContain('data-testid="thread-item-retry-turn"');
+    expect(markup).not.toContain('chat-inline-plan-card');
+    expect(markup).not.toContain('Allow once');
+    expect(markup).not.toContain('Allow for this session');
+    expect(markup).not.toContain('>Deny<');
+    expect(markup).toContain('Validate runtime panel');
+    expect(markup).not.toContain('session-goal-actions');
+    expect(markup).not.toContain('>Send<');
+    expect(markup).not.toContain('>Resume<');
+    expect(markup).not.toContain('>Close team<');
+    expect(markup).not.toContain('data-runtime-action="subagent-worker-retry"');
+
+    expect(queryKeyCalls).toContainEqual([
+      'chat-session-index', 'agent-1', 'runtime-panel-session', 'operator', 'Incident evidence review',
+    ]);
+    expect(queryKeyCalls).toContainEqual([
+      'chat-session-decisions', 'agent-1', 'runtime-panel-session', 'operator', 'Incident evidence review',
+    ]);
+    expect(queryKeyCalls).toContainEqual([
+      'chat-session-context-usage', 'agent-1', 'runtime-panel-session', 'operator', 'Incident evidence review',
+    ]);
+    expect(queryKeyCalls).toContainEqual([
+      'chat-session-index', 'agent-1', 'operator-root-session', 'gitline-axis', 'operator', 'Incident evidence review',
+    ]);
+    expect(queryKeyCalls).toContainEqual([
+      'chat-session-workbench', 'agent-1', 'operator-root-session', 'gitline-axis', 'operator', 'Incident evidence review',
+    ]);
+
+    queryOptionCalls.length = 0;
+    renderOperatorAudit('   ');
+    const disabledOperatorReads = queryOptionCalls.filter(({ queryKey }) => (
+      ['chat-session-workbench', 'chat-session-index', 'chat-session-decisions', 'chat-session-context-usage'].includes(String(queryKey[0]))
+      && queryKey.includes('operator')
+    ));
+    expect(disabledOperatorReads).toHaveLength(6);
+    expect(disabledOperatorReads.every(({ enabled }) => enabled === false)).toBe(true);
+    expect(disabledOperatorReads.every(({ queryKey }) => queryKey.at(-1) === '')).toBe(true);
   });
 
   it('renders the Session TUI shell without the legacy hard-coded chat height or composer gap', () => {
@@ -2453,7 +2677,9 @@ describe('AgentDetail extracted sections', () => {
   });
 
   it('keeps managers in owner view until they explicitly enter operator view', () => {
-    const markup = renderToStaticMarkup(<AgentWorkspaceSection agentId="agent-1" canUseOperatorView />);
+    const markup = renderToStaticMarkup(
+      <AgentWorkspaceSection agentId="agent-1" canUseOperatorView operatorReason="Incident review" />,
+    );
 
     expect(markup).toContain('Enter operator view');
     expect(markup).not.toContain('tenant-wide workspace resources');
@@ -3015,6 +3241,11 @@ describe('AgentDetail extracted sections', () => {
     expect(isLocalAgentRuntimeType({ agent_type: 'local_agent' })).toBe(true);
     expect(isLocalAgentRuntimeType({ agent_type: 'native' })).toBe(false);
     expect(getVisibleAgentDetailTabs({ agent_type: 'local_agent' })).toEqual(['chat', 'workspace', 'settings']);
+    expect(getVisibleAgentDetailTabs({ access_level: 'operator', agent_type: 'native' })).toEqual([
+      'chat',
+      'workspace',
+      'activityLog',
+    ]);
     expect(Array.from(AGENT_DETAIL_TABS)).toEqual(expect.arrayContaining(['chat', 'workspace', 'settings']));
   });
 
@@ -3107,7 +3338,56 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Access Permissions');
     expect(markup).toContain('Default Access Level');
     expect(markup).toMatch(/name="perm_scope"/);
+    expect(markup).not.toContain('data-testid="agent-operator-grants"');
     expect(markup).not.toContain('Delete Agent');
+  });
+
+  it('shows operator inspection grants only with server-derived permission authority', () => {
+    const markup = renderToStaticMarkup(
+      <AgentSettingsSection
+        agentId="agent-1"
+        agent={{
+          id: 'agent-1',
+          agent_type: 'native',
+          primary_model_id: 'model-1',
+          execution_mode: 'standard',
+          max_triggers: 10,
+          min_poll_interval_min: 5,
+          webhook_rate_limit: 5,
+          security_zone: 'standard',
+        }}
+        llmModels={[]}
+        canManage
+        canManagePermissions
+        settingsForm={{
+          primary_model_id: 'model-1',
+          fallback_model_id: '',
+          max_triggers: 10,
+          min_poll_interval_min: 5,
+          webhook_rate_limit: 5,
+          default_session_permission_mode: 'default',
+          smart_model_routing_enabled: false,
+          execution_mode: 'standard',
+          security_zone: 'standard',
+        }}
+        onSettingsFormChange={vi.fn()}
+        settingsSaving={false}
+        settingsSaved={false}
+        settingsError=""
+        onSetSettingsSaving={vi.fn()}
+        onSetSettingsSaved={vi.fn()}
+        onSetSettingsError={vi.fn()}
+        onResetSettingsInit={vi.fn()}
+        wmDraft=""
+        wmSaved={false}
+        onSetWmDraft={vi.fn()}
+        onSetWmSaved={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="agent-operator-grants"');
+    expect(markup).toContain('Operator inspection access');
+    expect(markup).toContain('This never permits mutations.');
   });
 
   it('renders AgentChatSection as a standalone chat module', () => {
@@ -5307,7 +5587,7 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(queryKeyCalls).toContainEqual(['chat-session-index', 'agent-1', 'runtime-panel-session', 'gitline-axis']);
+    expect(queryKeyCalls).toContainEqual(['chat-session-index', 'agent-1', 'runtime-panel-session', 'gitline-axis', 'owner']);
     expect(markup).toContain('data-axis-session-id="runtime-panel-session"');
     expect(markup).toContain('data-active-session-id="branch-session-1"');
     expect(markup).toContain('data-session-action="navigate-root-session"');

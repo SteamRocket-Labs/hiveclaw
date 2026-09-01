@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import check_agent_access
+from app.core.permissions import check_agent_access, check_agent_operator_reachability
 from app.core.resource_authority import (
     OWNED_AUTHORITY_STATE,
     QUARANTINED_AUTHORITY_STATE,
@@ -41,14 +41,11 @@ def _is_workspace_path(path: str) -> bool:
 
 def is_recovery_manifest_storage_path(path: str) -> bool:
     normalized = str(path or "").replace("\\", "/").strip().strip("/")
-    return (
-        normalized in {
-            "runtime_artifacts/recovery_manifest.json",
-            "workspace/recovery_manifest.json",
-            "runtime_artifacts/recovery_manifests",
-        }
-        or normalized.startswith("runtime_artifacts/recovery_manifests/")
-    )
+    return normalized in {
+        "runtime_artifacts/recovery_manifest.json",
+        "workspace/recovery_manifest.json",
+        "runtime_artifacts/recovery_manifests",
+    } or normalized.startswith("runtime_artifacts/recovery_manifests/")
 
 
 @dataclass(frozen=True)
@@ -219,7 +216,11 @@ async def authorize_workspace_path(
             "workspace_resource_path_required",
             "User-owned files must be stored below workspace/.",
         )
-    agent, access_level = agent_access or await check_agent_access(db, user, agent_id)
+    agent, access_level = agent_access or await (
+        check_agent_operator_reachability(db, user, agent_id)
+        if allow_manager_override and action == "read"
+        else check_agent_access(db, user, agent_id)
+    )
     if agent.tenant_id is None:
         raise WorkspaceAuthorityError("workspace_tenant_required", "The Agent has no tenant authority.")
     manifest = await _load_manifest(db, agent_id=agent_id, path=normalized, for_update=for_update)
@@ -403,7 +404,11 @@ async def load_workspace_authority_scope(
     operator_reason: str | None = None,
     agent_access: tuple[object, str] | None = None,
 ) -> WorkspaceAuthorityScope:
-    resolved_agent_access = agent_access or await check_agent_access(db, user, agent_id)
+    resolved_agent_access = agent_access or await (
+        check_agent_operator_reachability(db, user, agent_id)
+        if operator_view
+        else check_agent_access(db, user, agent_id)
+    )
     canonical_root = await _canonical_root_session(
         db,
         agent_id=agent_id,

@@ -10,7 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate, stamp_plan_gate_decision
-from app.core.permissions import check_agent_access, require_agent_manage_access
+from app.core.permissions import (
+    check_agent_access,
+    check_agent_operator_reachability,
+    require_agent_manage_access,
+)
 from app.core.resource_authority import authorize_resource_action, filter_authorized_resources
 from app.core.security import get_current_user
 from app.database import get_db
@@ -255,7 +259,11 @@ async def list_schedules(
     db: AsyncSession = Depends(get_db),
 ):
     """List cron wake policies through the legacy schedules surface."""
-    agent_access = await check_agent_access(db, current_user, agent_id)
+    agent_access = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if operator_view
+        else check_agent_access(db, current_user, agent_id)
+    )
     result = await db.execute(
         select(AgentTrigger)
         .where(AgentTrigger.agent_id == agent_id, AgentTrigger.type == "cron")
@@ -650,7 +658,11 @@ async def get_schedule_history(
     db: AsyncSession = Depends(get_db),
 ):
     """Get execution history for a legacy schedule id from activity logs."""
-    agent_access = await check_agent_access(db, current_user, agent_id)
+    agent_access = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if operator_view
+        else check_agent_access(db, current_user, agent_id)
+    )
     trigger = await _load_schedule_trigger(db, agent_id, schedule_id)
     decision = await _authorize_schedule(
         db,

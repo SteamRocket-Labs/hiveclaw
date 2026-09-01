@@ -39,6 +39,54 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _runtime_task_claim_conditions(*, claim_now: datetime):
+    return (
+        or_(
+            RuntimeTask.status.in_(CLAIMABLE_RUNTIME_TASK_STATUSES),
+            and_(
+                RuntimeTask.status == "running",
+                RuntimeTask.task_type.in_(LEASE_RECLAIMABLE_RUNTIME_TASK_TYPES),
+                or_(RuntimeTask.claim_expires_at.is_(None), RuntimeTask.claim_expires_at <= claim_now),
+            ),
+        ),
+        or_(RuntimeTask.scheduled_at.is_(None), RuntimeTask.scheduled_at <= claim_now),
+        or_(
+            RuntimeTask.budget_run_id.is_(None),
+            exists(
+                select(RuntimeBudgetRun.id).where(
+                    RuntimeBudgetRun.id == RuntimeTask.budget_run_id,
+                    RuntimeBudgetRun.status == "active",
+                )
+            ),
+        ),
+    )
+
+
+def build_runtime_task_claim_candidate_statement(
+    *,
+    task_types: tuple[str, ...] | None = None,
+    now: datetime | None = None,
+    batch_size: int = 10,
+):
+    """Discover claim candidates without taking a RuntimeTask lock.
+
+    Budget-bound candidates are linearized later by locking every referenced
+    RuntimeBudgetRun before any RuntimeTask row. The final claim query repeats
+    all predicates while those run locks are held.
+    """
+
+    claim_now = now or _utcnow()
+    stmt = (
+        select(RuntimeTask.id, RuntimeTask.budget_run_id)
+        .where(*_runtime_task_claim_conditions(claim_now=claim_now))
+        .order_by(desc(RuntimeTask.priority), RuntimeTask.created_at.asc())
+        .limit(batch_size)
+    )
+    if task_types:
+        stmt = stmt.where(RuntimeTask.task_type.in_(task_types))
+    return stmt
+
+
 def build_runtime_task_claim_statement(
     *,
     task_types: tuple[str, ...] | None = None,
@@ -49,26 +97,7 @@ def build_runtime_task_claim_statement(
     claim_now = now or _utcnow()
     stmt = (
         select(RuntimeTask)
-        .where(
-            or_(
-                RuntimeTask.status.in_(CLAIMABLE_RUNTIME_TASK_STATUSES),
-                and_(
-                    RuntimeTask.status == "running",
-                    RuntimeTask.task_type.in_(LEASE_RECLAIMABLE_RUNTIME_TASK_TYPES),
-                    or_(RuntimeTask.claim_expires_at.is_(None), RuntimeTask.claim_expires_at <= claim_now),
-                ),
-            ),
-            or_(RuntimeTask.scheduled_at.is_(None), RuntimeTask.scheduled_at <= claim_now),
-            or_(
-                RuntimeTask.budget_run_id.is_(None),
-                exists(
-                    select(RuntimeBudgetRun.id).where(
-                        RuntimeBudgetRun.id == RuntimeTask.budget_run_id,
-                        RuntimeBudgetRun.status == "active",
-                    )
-                ),
-            ),
-        )
+        .where(*_runtime_task_claim_conditions(claim_now=claim_now))
         .order_by(desc(RuntimeTask.priority), RuntimeTask.created_at.asc())
         .limit(batch_size)
         .with_for_update(skip_locked=True)
@@ -169,15 +198,53 @@ class RuntimeTaskClaimService:
 
     async def claim_available(self, *, batch_size: int = 10) -> list[RuntimeTask]:
         now = _utcnow()
-        result = await self.db.execute(
-            build_runtime_task_claim_statement(
+        candidate_result = await self.db.execute(
+            build_runtime_task_claim_candidate_statement(
                 task_types=self.task_types,
                 now=now,
                 batch_size=batch_size,
             )
         )
+        candidate_rows = list(candidate_result.all())
+        if not candidate_rows:
+            return []
+
+        budget_run_ids = sorted({row[1] for row in candidate_rows if row[1] is not None}, key=str)
+        active_budget_run_ids: set[UUID] = set()
+        if budget_run_ids:
+            locked_runs = list(
+                (
+                    await self.db.execute(
+                        select(RuntimeBudgetRun)
+                        .where(RuntimeBudgetRun.id.in_(budget_run_ids))
+                        .order_by(RuntimeBudgetRun.id)
+                        .with_for_update()
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            active_budget_run_ids = {run.id for run in locked_runs if str(run.status) == "active"}
+
+        eligible_candidate_ids = [
+            task_id
+            for task_id, budget_run_id in candidate_rows
+            if budget_run_id is None or budget_run_id in active_budget_run_ids
+        ]
+        if not eligible_candidate_ids:
+            await self.db.rollback()
+            return []
+
+        result = await self.db.execute(
+            build_runtime_task_claim_statement(
+                task_types=self.task_types,
+                now=now,
+                batch_size=batch_size,
+            ).where(RuntimeTask.id.in_(eligible_candidate_ids))
+        )
         tasks = list(result.scalars().all())
         if not tasks:
+            await self.db.rollback()
             return []
 
         claim_expires_at = now + timedelta(seconds=self.lease_seconds)

@@ -43,11 +43,13 @@ export function SessionGoalPanel({
   sessionId,
   goals,
   onChanged,
+  readOnly = false,
 }: {
   agentId: string;
   sessionId: string;
   goals: SessionGoal[];
   onChanged?: (goal: SessionGoal) => void | Promise<unknown>;
+  readOnly?: boolean;
 }) {
   const { t } = useTranslation();
   const [localGoals, setLocalGoals] = React.useState(goals);
@@ -97,7 +99,7 @@ export function SessionGoalPanel({
             )}
             {goal.blocked_reason && <p className="session-goal-reason">{goal.blocked_reason}</p>}
             {goal.completion_summary && <p className="session-goal-summary">{goal.completion_summary}</p>}
-            {(controls.can_pause || controls.can_resume || controls.can_stop) && (
+            {!readOnly && (controls.can_pause || controls.can_resume || controls.can_stop) && (
               <div className="session-goal-actions">
                 {controls.can_pause && (
                   <button type="button" disabled={Boolean(pending)} onClick={() => transition(goal, 'pause')}>

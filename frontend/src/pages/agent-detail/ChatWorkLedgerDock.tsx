@@ -10,6 +10,7 @@ interface ChatWorkLedgerDockProps {
   sessionId?: string | null;
   live?: boolean;
   operatorView?: boolean;
+  operatorReason?: string;
 }
 
 type CanonicalTaskStatus = 'pending' | 'in_progress' | 'completed';
@@ -81,16 +82,17 @@ export default function ChatWorkLedgerDock({
   sessionId,
   live = false,
   operatorView = false,
+  operatorReason,
 }: ChatWorkLedgerDockProps) {
   const { t } = useTranslation();
   const sessionQuery = useQuery({
-    queryKey: ['chat-session-work-ledger', agentId, sessionId, operatorView ? 'operator' : 'owner'],
+    queryKey: ['chat-session-work-ledger', agentId, sessionId, operatorView ? operatorReason : 'owner'],
     queryFn: () => autonomyApi.getSessionWorkLedger(
       agentId,
       sessionId as string,
-      operatorView ? { operatorView: true, reason: 'Agent session administration' } : undefined,
+      operatorView ? { operatorView: true, reason: operatorReason } : undefined,
     ),
-    enabled: Boolean(agentId && sessionId),
+    enabled: Boolean(agentId && sessionId && (!operatorView || String(operatorReason || '').trim())),
     refetchInterval: live ? 5000 : false,
     refetchOnMount: 'always',
     refetchOnWindowFocus: live,
@@ -104,14 +106,17 @@ export default function ChatWorkLedgerDock({
   const sessionMatchesRuntime = !runtimeTaskKey || sessionRuntimeTaskKey === runtimeTaskKey;
   const preferRuntimeLedger = Boolean(runtimeTaskKey && sessionData && !sessionMatchesRuntime && !sessionScopedLedger);
   const runtimeQueryEnabled = Boolean(
-    agentId && runtimeTaskKey && (!sessionId || sessionQuery.isError || preferRuntimeLedger),
+    agentId
+      && runtimeTaskKey
+      && (!operatorView || String(operatorReason || '').trim())
+      && (!sessionId || sessionQuery.isError || preferRuntimeLedger),
   );
   const runtimeQuery = useQuery({
-    queryKey: ['chat-work-ledger', agentId, runtimeTaskId, operatorView ? 'operator' : 'owner'],
+    queryKey: ['chat-work-ledger', agentId, runtimeTaskId, operatorView ? operatorReason : 'owner'],
     queryFn: () => autonomyApi.getRuntimeWorkLedger(
       agentId,
       runtimeTaskId as string,
-      operatorView ? { operatorView: true, reason: 'Agent session administration' } : undefined,
+      operatorView ? { operatorView: true, reason: operatorReason } : undefined,
     ),
     enabled: runtimeQueryEnabled,
     refetchInterval: live ? 5000 : false,

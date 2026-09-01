@@ -80,23 +80,26 @@ async def test_authorize_session_action_rejects_other_users_session(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_authorize_session_action_manager_override_requires_reason_and_is_audited(monkeypatch):
+async def test_authorize_session_action_operator_inspection_requires_grant_and_reason(monkeypatch):
     import app.core.permissions as permissions_module
 
     agent_id = uuid4()
     session = SimpleNamespace(id=uuid4(), agent_id=agent_id, user_id=uuid4())
     agent = SimpleNamespace(id=agent_id, tenant_id=uuid4())
     user = SimpleNamespace(id=uuid4(), role="org_admin")
-    audit_calls = []
+    inspection_calls = []
 
     async def fake_agent_access(_db, _user, _agent_id):
         return agent, "manage"
 
-    async def fake_audit(action, details=None, agent_id=None, user_id=None):
-        audit_calls.append((action, details, agent_id, user_id))
+    async def fake_operator_inspection(_db, **kwargs):
+        inspection_calls.append(kwargs)
+        if not str(kwargs.get("reason") or "").strip():
+            raise HTTPException(status_code=403, detail="Operator View requires an audit reason")
+        return "operator_inspect_grant"
 
     monkeypatch.setattr(permissions_module, "check_agent_access", fake_agent_access)
-    monkeypatch.setattr("app.services.audit_logger.write_audit_log", fake_audit)
+    monkeypatch.setattr(permissions_module, "authorize_agent_operator_inspection", fake_operator_inspection)
 
     with pytest.raises(HTTPException) as exc:
         await permissions_module.authorize_session_action(
@@ -104,7 +107,7 @@ async def test_authorize_session_action_manager_override_requires_reason_and_is_
             user,
             agent_id=agent_id,
             session_id=session.id,
-            action="team:close",
+            action="team:read",
             allow_manager_override=True,
         )
     assert exc.value.status_code == 403
@@ -114,23 +117,47 @@ async def test_authorize_session_action_manager_override_requires_reason_and_is_
         user,
         agent_id=agent_id,
         session_id=session.id,
-        action="team:close",
+        action="team:read",
         allow_manager_override=True,
         manager_override_reason="Incident response requested by the session owner",
     )
 
-    assert decision.authority_source == "manager_override"
-    assert audit_calls == [
-        (
-            "session_authority_override",
-            {
-                "session_id": str(session.id),
-                "session_user_id": str(session.user_id),
-                "action": "team:close",
-                "reason": "Incident response requested by the session owner",
-                "authority_source": "manager_override",
-            },
-            agent_id,
-            user.id,
+    assert decision.authority_source == "operator_inspect_grant"
+    assert inspection_calls[-1]["action"] == "team:read"
+    assert inspection_calls[-1]["resource_id"] == session.id
+
+
+@pytest.mark.asyncio
+async def test_authorize_session_action_never_allows_cross_user_mutation(monkeypatch):
+    import app.core.permissions as permissions_module
+
+    agent_id = uuid4()
+    session = SimpleNamespace(id=uuid4(), agent_id=agent_id, user_id=uuid4(), session_kind="web")
+    agent = SimpleNamespace(id=agent_id, tenant_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+
+    async def fake_agent_access(_db, _user, _agent_id):
+        return agent, "manage"
+
+    async def unexpected_operator_inspection(*_args, **_kwargs):
+        raise AssertionError("cross-user mutations must not enter the inspection grant path")
+
+    monkeypatch.setattr(permissions_module, "check_agent_access", fake_agent_access)
+    monkeypatch.setattr(
+        permissions_module,
+        "authorize_agent_operator_inspection",
+        unexpected_operator_inspection,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await permissions_module.authorize_session_action(
+            _DB(session),
+            user,
+            agent_id=agent_id,
+            session_id=session.id,
+            action="team:close",
+            allow_manager_override=True,
+            manager_override_reason="Incident response",
+            require_writable=True,
         )
-    ]
+    assert exc.value.status_code == 403

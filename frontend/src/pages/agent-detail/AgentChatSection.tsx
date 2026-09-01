@@ -64,7 +64,6 @@ import {
   type SessionDecisionTrace,
 } from '../../api/domains/chat';
 import { ccParityApi, type SessionContextUsage, type SessionWorkbench } from '../../api/domains/ccParity';
-import { fileApi } from '../../api/domains/files';
 import { planApi } from '../../api/domains/plans';
 import {
   cancelWorkflowRun,
@@ -77,6 +76,7 @@ import {
 } from '../../api/domains/workflows';
 import { showAppToast } from '../../components/AppDialogs';
 import { composerShortcutText } from './sessionComposerShortcuts';
+import { operatorSessionRequestOptions } from './useOperatorAuthorityLifecycle';
 import type { ToolCallMeta, WorkflowPreviewToolMeta } from './toolResultEnvelope';
 import {
   buildComposerRuntimePresentation,
@@ -101,14 +101,9 @@ import {
 import {
   ArtifactCards,
   ArtifactPreviewPanel,
-  artifactWorkspaceAgentId,
-  downloadChatArtifact,
-  getArtifactOpenMode,
-  getEffectiveArtifactPreviewKind,
   isUserFacingDeliveryArtifact,
-  loadOfficeArtifactPreview,
-  type ArtifactPreviewState,
 } from './ArtifactSurface';
+import { useArtifactPreview } from './useArtifactPreview';
 import {
   ActiveTailStatusLine,
   isRuntimeRecord,
@@ -143,6 +138,11 @@ type AttachedFile = {
 type ComposerActionKey = 'upload' | 'plan' | 'goal' | 'schedule';
 export type SessionPermissionMode = 'auto' | 'default' | 'bypassPermissions';
 const EMPTY_CHAT_MESSAGES: AgentChatMessage[] = [];
+
+function isForbiddenOperatorResponse(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  return Number((error as { status?: unknown }).status) === 403;
+}
 
 const SESSION_PERMISSION_MODE_OPTIONS: Array<{
   value: SessionPermissionMode;
@@ -320,6 +320,8 @@ interface AgentChatSectionProps {
   agent: any;
   currentUser: any;
   isAdmin: boolean;
+  operatorReason?: string;
+  onOperatorAuthorityDenied?: (error: unknown) => void;
   chatScope: 'mine' | 'all';
   onSetChatScope: (scope: 'mine' | 'all') => void;
   onLoadAllSessions: () => void;
@@ -781,6 +783,7 @@ function MessageBranchActions({
   const { t } = useTranslation();
   if (!message.id) return null;
   if (message.role !== 'assistant') return null;
+  if (!onBranchMessage && !onFeedbackMessage && !onRewindMessage) return null;
   const checkpointReady = Boolean(checkpointMessage?.transcriptEventId);
 
   const actions: Array<{
@@ -930,8 +933,24 @@ interface ChatMessageItemProps {
   onFeedbackMessage?: (message: AgentChatMessage, label: RecordSessionFeedbackInput['label']) => void | Promise<unknown>;
   onRewindMessage?: (message: AgentChatMessage) => void | Promise<unknown>;
   t: Translate;
-  operatorView?: boolean;
+  operatorView?: boolean; operatorReason?: string;
   collapseAssistantContent?: boolean;
+}
+
+export function sessionAuthorizedInlineImageUrl(
+  src: string | undefined,
+  operatorView: boolean,
+  operatorReason?: string,
+): string | undefined {
+  if (!src || !operatorView) return src;
+  const normalizedReason = operatorReason?.trim() ?? '';
+  if (!normalizedReason) return undefined;
+  const parsed = new URL(src, 'http://hiveclaw.invalid');
+  parsed.searchParams.set('operator_view', 'true');
+  parsed.searchParams.set('operator_reason', normalizedReason);
+  return /^[a-z][a-z\d+.-]*:/i.test(src)
+    ? parsed.toString()
+    : `${parsed.pathname}${parsed.search}${parsed.hash}`;
 }
 
 const ChatMessageItem = React.memo(function ChatMessageItem({
@@ -946,6 +965,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
   onRewindMessage,
   t,
   operatorView = false,
+  operatorReason,
   collapseAssistantContent = false,
 }: ChatMessageItemProps) {
   const extension = msg.fileName?.split('.').pop()?.toLowerCase() ?? '';
@@ -957,7 +977,8 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
         : extension === 'docx' || extension === 'doc'
           ? '📝'
           : '📎';
-  const isImage = !!msg.imageUrl && ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(extension);
+  const authorizedImageUrl = sessionAuthorizedInlineImageUrl(msg.imageUrl, operatorView, operatorReason);
+  const isImage = !!authorizedImageUrl && ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(extension);
   const inlinePlanId = isLeft && msg.role === 'assistant' ? extractPlanIdFromPlanModeMessage(msg.content) : null;
 
   const timestampHtml = (() => {
@@ -1010,7 +1031,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
         {isImage ? (
           <div style={{ marginBottom: '4px' }}>
             <AuthenticatedImage
-              src={msg.imageUrl}
+              src={authorizedImageUrl}
               alt={msg.fileName}
               style={{ maxWidth: '200px', maxHeight: '150px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}
               loading="lazy"
@@ -1057,9 +1078,9 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
           artifacts={msg.artifacts}
           onOpenArtifact={onOpenArtifact}
           context="assistant"
-          operatorView={operatorView}
+          operatorView={operatorView} operatorReason={operatorReason}
         />
-        {inlinePlanId && effectiveAgentId && (
+        {inlinePlanId && effectiveAgentId && !operatorView && (
           <div style={{ marginTop: '10px', minWidth: 'min(520px, 100%)' }} data-testid="chat-inline-plan-card">
             <InlinePlanCard agentId={effectiveAgentId} planId={inlinePlanId} />
           </div>
@@ -1075,6 +1096,8 @@ function AgentChatSection({
   agent,
   currentUser,
   isAdmin,
+  operatorReason = '',
+  onOperatorAuthorityDenied,
   chatScope,
   onSetChatScope,
   onLoadAllSessions,
@@ -1158,31 +1181,43 @@ function AgentChatSection({
   const isStreaming = sessionTransitionPending ? false : selectedIsStreaming;
   const effectiveAgentId = agentId ? String(agentId) : (agent?.id ? String(agent.id) : null);
 
-  const isReadOnlySession =
-    !!activeSession &&
-    !shouldUseWritableSessionSurface(activeSession as any, currentUser?.id);
+  const isReadOnlySession = !!activeSession && !shouldUseWritableSessionSurface(activeSession as any, currentUser?.id);
   const isDraftSession = isDraftHumanChatSession(activeSession as any);
-  const baseCanUseComposer = Boolean(activeSession) && !isReadOnlySession && !agentExpired;
+  const canMutateSession = Boolean(activeSession) && !isReadOnlySession;
+  const baseCanUseComposer = canMutateSession && !agentExpired;
   const activeSessionId = activeSession?.id ? String(activeSession.id) : null;
-  const sessionAuthorityMode = activeSession?.operator_view ? 'operator' : 'owner';
-  const sessionOperatorOptions = activeSession?.operator_view
-    ? { operatorView: true, operatorReason: 'Agent session administration' }
-    : undefined;
+  const operatorView = activeSession?.operator_view === true;
+  const normalizedOperatorReason = operatorReason.trim();
+  const operatorReadEnabled = !operatorView || Boolean(isAdmin && normalizedOperatorReason);
+  const sessionAuthorityMode = operatorView ? 'operator' : 'owner';
+  const operatorReasonQueryKey = operatorView ? [normalizedOperatorReason] : [];
+  const sessionOperatorOptions = operatorSessionRequestOptions(operatorView, normalizedOperatorReason);
+  const guardOperatorRead = React.useCallback(async <T,>(request: Promise<T>): Promise<T> => {
+    try {
+      return await request;
+    } catch (error) {
+      if (operatorView && isForbiddenOperatorResponse(error)) onOperatorAuthorityDenied?.(error);
+      throw error;
+    }
+  }, [onOperatorAuthorityDenied, operatorView]);
   const { data: sessionWorkbenchData, refetch: refetchSessionWorkbench } = useQuery({
-    queryKey: ['chat-session-workbench', effectiveAgentId, activeSessionId, sessionAuthorityMode],
-    queryFn: () => ccParityApi.getSessionWorkbench(effectiveAgentId!, activeSessionId!, sessionOperatorOptions),
-    enabled: Boolean(effectiveAgentId && activeSessionId),
+    queryKey: ['chat-session-workbench', effectiveAgentId, activeSessionId, sessionAuthorityMode, ...operatorReasonQueryKey],
+    queryFn: () => guardOperatorRead(
+      ccParityApi.getSessionWorkbench(effectiveAgentId!, activeSessionId!, sessionOperatorOptions),
+    ),
+    enabled: Boolean(effectiveAgentId && activeSessionId && operatorReadEnabled),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
-  const sessionWorkbenchBase = sessionWorkbenchData && !Array.isArray(sessionWorkbenchData) ? sessionWorkbenchData : null;
+  const sessionWorkbenchBase = operatorReadEnabled && sessionWorkbenchData && !Array.isArray(sessionWorkbenchData) ? sessionWorkbenchData : null;
   const toolEffectRecovery = sessionToolEffectRecoveryModel(sessionWorkbenchBase);
   const canUseComposer = baseCanUseComposer && !toolEffectRecovery.blocked;
-  const resourceOperatorOptions = activeSession?.operator_view
-    ? { operatorView: true, reason: 'Agent session administration' }
-    : undefined;
-  const visibleHistoryMsgs = historyMessagesSessionId === activeSessionId ? historyMsgs : EMPTY_CHAT_MESSAGES;
-  const visibleChatMessages = chatMessagesSessionId === activeSessionId ? chatMessages : EMPTY_CHAT_MESSAGES;
+  const resourceOperatorOptions = React.useMemo(
+    () => (operatorView ? { operatorView: true, reason: normalizedOperatorReason } : undefined),
+    [normalizedOperatorReason, operatorView],
+  );
+  const visibleHistoryMsgs = operatorReadEnabled && historyMessagesSessionId === activeSessionId ? historyMsgs : EMPTY_CHAT_MESSAGES;
+  const visibleChatMessages = operatorReadEnabled && chatMessagesSessionId === activeSessionId ? chatMessages : EMPTY_CHAT_MESSAGES;
   const visibleTimeline = isReadOnlySession ? visibleHistoryMsgs : visibleChatMessages;
   const normalizedActiveRunStatus = String(activeRunStatus || '').trim().toLowerCase();
   const rewindUnavailableReason = isStreaming
@@ -1200,17 +1235,33 @@ function AgentChatSection({
     clearSelection: clearThreadItemSelection,
   } = useThreadItemRuntimeController(activeSessionId, visibleTimeline);
 
-  const [artifactPreview, setArtifactPreview] = React.useState<ArtifactPreviewState | null>(null);
-  React.useEffect(() => {
-    const url = artifactPreview?.url;
-    return () => {
-      if (url?.startsWith('blob:')) URL.revokeObjectURL(url);
-    };
-  }, [artifactPreview?.url]);
   const [runtimePanelCollapsed, setRuntimePanelCollapsed] = useResponsiveRuntimePanel();
   const [focusedWorkflow, setFocusedWorkflow] = React.useState<RuntimeSectionItemModel | null>(null);
   const [focusedGitCheckpointId, setFocusedGitCheckpointId] = React.useState<string | null>(null);
   const gitScrollFrameRef = React.useRef<number | null>(null);
+  const childAuthorityIdentity = operatorView
+    ? (operatorReadEnabled
+        ? `operator:${effectiveAgentId ?? ''}:${activeSessionId ?? ''}:${normalizedOperatorReason}`
+        : 'operator:unavailable')
+    : `owner:${effectiveAgentId ?? ''}:${activeSessionId ?? ''}`;
+  const { artifactPreview, closeArtifactPreview, downloadArtifactFile, openArtifact } = useArtifactPreview({
+    authorityIdentity: childAuthorityIdentity,
+    effectiveAgentId,
+    guardOperatorRead,
+    operatorView,
+    resourceOperatorOptions,
+  });
+  const previousChildAuthorityIdentityRef = React.useRef(childAuthorityIdentity);
+  const checkpointAutoFocusBlockedIdentityRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (previousChildAuthorityIdentityRef.current !== childAuthorityIdentity) {
+      checkpointAutoFocusBlockedIdentityRef.current = childAuthorityIdentity;
+    }
+    previousChildAuthorityIdentityRef.current = childAuthorityIdentity;
+    setFocusedWorkflow(null);
+    setFocusedGitCheckpointId(null);
+    clearThreadItemSelection();
+  }, [childAuthorityIdentity, clearThreadItemSelection]);
 
   const composerRuntime = buildComposerRuntimePresentation(runtimeSummary);
   const runtimeUsageLabel = composerRuntime.contextUsedPercent !== null && composerRuntime.contextUsedPercent >= 75
@@ -1307,77 +1358,6 @@ function AgentChatSection({
 	    [onRunSessionCommand, rewindUnavailableReason],
 	  );
 
-  const downloadArtifactFile = React.useCallback((artifact: ChatArtifactPart) => {
-    const artifactAgentId = artifactWorkspaceAgentId(artifact, effectiveAgentId);
-    return artifactAgentId ? downloadChatArtifact(artifact, artifactAgentId, resourceOperatorOptions, t) : Promise.resolve();
-  }, [effectiveAgentId, resourceOperatorOptions, t]);
-  const openArtifact = React.useCallback(async (artifact: ChatArtifactPart) => {
-    const artifactAgentId = artifactWorkspaceAgentId(artifact, effectiveAgentId);
-    if (!artifactAgentId) return;
-    const fetchArtifactBlob = () => artifact.id
-      ? fileApi.downloadArtifact(artifactAgentId, artifact.id, resourceOperatorOptions)
-      : fileApi.download(artifactAgentId, artifact.path, resourceOperatorOptions);
-    if (getArtifactOpenMode(artifact) === 'download') {
-      await downloadArtifactFile(artifact);
-      return;
-    }
-
-    const previewKind = getEffectiveArtifactPreviewKind(artifact);
-    if (previewKind === 'office') {
-      setArtifactPreview({ artifact, loading: true });
-      try {
-        setArtifactPreview(await loadOfficeArtifactPreview(artifact, artifactAgentId, resourceOperatorOptions));
-      } catch (error) {
-        setArtifactPreview({
-          artifact,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-      return;
-    }
-    if (previewKind === 'markdown' || previewKind === 'text' || !previewKind) {
-      setArtifactPreview({ artifact, loading: true });
-      try {
-        const response = artifact.id
-          ? await fileApi.readArtifact(artifactAgentId, artifact.id, resourceOperatorOptions)
-          : await fileApi.read(artifactAgentId, artifact.path, resourceOperatorOptions);
-        setArtifactPreview({
-          artifact,
-          content: response.content || '',
-          usingSnapshot: Boolean(response.uses_snapshot || artifact.snapshotHash),
-          workspaceChanged: Boolean(response.workspace_changed),
-          legacyCurrentFileFallback: Boolean(response.legacy_current_file_fallback),
-        });
-      } catch (error) {
-        if (typeof artifact.previewSnapshotContent === 'string') {
-          setArtifactPreview({
-            artifact,
-            content: artifact.previewSnapshotContent,
-            usingSnapshot: true,
-          });
-          return;
-        }
-        setArtifactPreview({
-          artifact,
-          error: error instanceof Error && !String(error.message || '').includes('File not found')
-            ? error.message
-            : t('agent.chat.artifacts.missingNoSnapshot', 'This file is no longer available in the workspace.'),
-        });
-      }
-      return;
-    }
-
-    try {
-      const blob = await fetchArtifactBlob();
-      setArtifactPreview({ artifact, url: URL.createObjectURL(blob) });
-    } catch (error) {
-      setArtifactPreview({
-        artifact,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }, [downloadArtifactFile, effectiveAgentId, resourceOperatorOptions, t]);
-
   const requestSubagentRetry = React.useCallback(
     async (worker: RuntimeSectionItemModel) => {
       if (!onSendMessage || !subagentWorkerRecoveryModel(worker).canRequestNewWorker) return;
@@ -1415,7 +1395,7 @@ function AgentChatSection({
       });
       if (!item) return null;
       if (!shouldRenderThreadItemInConversation(item, Boolean(activeSession?.operator_view))) return null;
-      const permissionActions = permissionRequest && msg.eventStatus === 'session_permission_required' ? (
+      const permissionActions = canMutateSession && permissionRequest && msg.eventStatus === 'session_permission_required' ? (
         <SessionPermissionActions
           permissionRequest={permissionRequest}
           onResolveSessionPermission={onResolveSessionPermission}
@@ -1426,7 +1406,7 @@ function AgentChatSection({
         && (item.item_type === 'warning' || item.item_type === 'error') && item.item_data.retryable
         ? findRetryAnchorMessage(visibleTimeline, index)
         : null;
-      const recoveryActions = retryAnchor && onBranchMessage ? (
+      const recoveryActions = canMutateSession && retryAnchor && onBranchMessage ? (
         <button
           type="button"
           className="btn btn-secondary"
@@ -1456,7 +1436,7 @@ function AgentChatSection({
         </div>
       );
     },
-    [activeSession?.operator_view, onBranchMessage, onResolveSessionPermission, selectThreadItem, selectedThreadItemId, t, toolEffectRecovery.blocked, visibleTimeline],
+    [activeSession?.operator_view, canMutateSession, onBranchMessage, onResolveSessionPermission, selectThreadItem, selectedThreadItemId, t, toolEffectRecovery.blocked, visibleTimeline],
   );
 
   const renderInlinePlanToolCall = (msg: AgentChatMessage, index: number) => (
@@ -1471,13 +1451,13 @@ function AgentChatSection({
         toolMeta={msg.toolMeta}
         toolResult={msg.toolResult}
         toolRawResult={msg.toolRawResult}
-        agentId={effectiveAgentId ?? undefined}
+        agentId={canMutateSession ? effectiveAgentId ?? undefined : undefined}
         agentName={agent?.name}
         submitted={isClarificationCardAnsweredByLaterUserMessage(visibleTimeline, index)}
-        onSendMessage={onSendMessage}
-        onEnterPlanMode={onEnterPlanMode}
+        onSendMessage={canMutateSession ? onSendMessage : undefined}
+        onEnterPlanMode={canMutateSession ? onEnterPlanMode : undefined}
       />
-      {msg.sessionPermissionRequest && (
+      {canMutateSession && msg.sessionPermissionRequest && (
         <SessionPermissionActions
           permissionRequest={msg.sessionPermissionRequest}
           onResolveSessionPermission={onResolveSessionPermission}
@@ -1489,7 +1469,7 @@ function AgentChatSection({
         artifacts={msg.artifacts}
         onOpenArtifact={openArtifact}
         context="tool"
-        operatorView={Boolean(activeSession?.operator_view)}
+        operatorView={operatorView} operatorReason={normalizedOperatorReason}
       />
     </div>
   );
@@ -1518,11 +1498,11 @@ function AgentChatSection({
 	        checkpointMessage={message.role === 'assistant' ? checkpointByIndex.get(index) || null : null}
           effectiveAgentId={effectiveAgentId}
           onOpenArtifact={openArtifact}
-          onBranchMessage={startBranchAction}
-          onFeedbackMessage={submitMessageFeedback}
-          onRewindMessage={rewindUnavailableReason ? undefined : rewindFromMessage}
+          onBranchMessage={canMutateSession ? startBranchAction : undefined}
+          onFeedbackMessage={canMutateSession ? submitMessageFeedback : undefined}
+          onRewindMessage={canMutateSession && !rewindUnavailableReason ? rewindFromMessage : undefined}
           t={t}
-          operatorView={Boolean(activeSession?.operator_view)}
+          operatorView={operatorView} operatorReason={normalizedOperatorReason}
           collapseAssistantContent={shouldCollapseAssistantSupplement(visibleTimeline, index)}
 	      />
 	    );
@@ -1602,8 +1582,8 @@ function AgentChatSection({
     isReadOnlySession ? historyMessagesSessionId !== activeSessionId : chatMessagesSessionId !== activeSessionId
   );
   const branchLineageRowsForGitLine = React.useMemo(
-    () => (branchLineage.length > 1 ? buildBranchLineageRows(branchLineage) : []),
-    [branchLineage],
+    () => (operatorReadEnabled && branchLineage.length > 1 ? buildBranchLineageRows(branchLineage) : []),
+    [branchLineage, operatorReadEnabled],
   );
   const gitLineAxisSessionId = React.useMemo(() => {
     const activeLineageItem = branchLineage.find((item) => String(item.id) === String(activeSessionId || ''));
@@ -1620,24 +1600,25 @@ function AgentChatSection({
       && activeSessionId
       && String(gitLineAxisSessionId) !== String(activeSessionId),
   );
-  // Workbench/index reads are refreshed by explicit invalidations (session
-  // commands, WS run boundaries); a long staleTime plus no focus-refetch keeps
-  // tab switching from re-pulling the payloads (plan D3).
   const { data: sessionIndexData } = useQuery({
-    queryKey: ['chat-session-index', effectiveAgentId, activeSessionId, sessionAuthorityMode],
-    queryFn: () => chatApi.getSessionIndex(effectiveAgentId!, activeSessionId!, sessionOperatorOptions),
-    enabled: Boolean(effectiveAgentId && activeSessionId),
+    queryKey: ['chat-session-index', effectiveAgentId, activeSessionId, sessionAuthorityMode, ...operatorReasonQueryKey],
+    queryFn: () => guardOperatorRead(
+      chatApi.getSessionIndex(effectiveAgentId!, activeSessionId!, sessionOperatorOptions),
+    ),
+    enabled: Boolean(effectiveAgentId && activeSessionId && operatorReadEnabled),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
   const { data: sessionDecisionData, refetch: refetchSessionDecisions } = useQuery({
-    queryKey: ['chat-session-decisions', effectiveAgentId, activeSessionId, sessionAuthorityMode],
-    queryFn: () => chatApi.listSessionDecisions(effectiveAgentId!, activeSessionId!, sessionOperatorOptions),
-    enabled: Boolean(effectiveAgentId && activeSessionId && !isDraftSession),
+    queryKey: ['chat-session-decisions', effectiveAgentId, activeSessionId, sessionAuthorityMode, ...operatorReasonQueryKey],
+    queryFn: () => guardOperatorRead(
+      chatApi.listSessionDecisions(effectiveAgentId!, activeSessionId!, sessionOperatorOptions),
+    ),
+    enabled: Boolean(effectiveAgentId && activeSessionId && !isDraftSession && operatorReadEnabled),
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
-  const sessionDecisions = Array.isArray(sessionDecisionData)
+  const sessionDecisions = operatorReadEnabled && Array.isArray(sessionDecisionData)
     ? sessionDecisionData as SessionDecisionTrace[]
     : [];
   const submitDecisionFeedback = React.useCallback(
@@ -1694,16 +1675,20 @@ function AgentChatSection({
     [effectiveAgentId, refetchSessionWorkbench, t],
   );
   const { data: sessionContextUsageData } = useQuery({
-    queryKey: ['chat-session-context-usage', effectiveAgentId, activeSessionId, sessionAuthorityMode],
-    queryFn: () => ccParityApi.getSessionContextUsage(effectiveAgentId!, activeSessionId!, sessionOperatorOptions),
-    enabled: Boolean(effectiveAgentId && activeSessionId),
+    queryKey: ['chat-session-context-usage', effectiveAgentId, activeSessionId, sessionAuthorityMode, ...operatorReasonQueryKey],
+    queryFn: () => guardOperatorRead(
+      ccParityApi.getSessionContextUsage(effectiveAgentId!, activeSessionId!, sessionOperatorOptions),
+    ),
+    enabled: Boolean(effectiveAgentId && activeSessionId && operatorReadEnabled),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
   const { data: gitLineAxisSessionIndexData, isLoading: gitLineAxisSessionIndexLoading } = useQuery({
-    queryKey: ['chat-session-index', effectiveAgentId, gitLineAxisSessionId, 'gitline-axis'],
-    queryFn: () => chatApi.getSessionIndex(effectiveAgentId!, gitLineAxisSessionId!, sessionOperatorOptions),
-    enabled: Boolean(effectiveAgentId && gitLineAxisSessionId && shouldUseGitLineAxisSession),
+    queryKey: ['chat-session-index', effectiveAgentId, gitLineAxisSessionId, 'gitline-axis', sessionAuthorityMode, ...operatorReasonQueryKey],
+    queryFn: () => guardOperatorRead(
+      chatApi.getSessionIndex(effectiveAgentId!, gitLineAxisSessionId!, sessionOperatorOptions),
+    ),
+    enabled: Boolean(effectiveAgentId && gitLineAxisSessionId && shouldUseGitLineAxisSession && operatorReadEnabled),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
@@ -1717,20 +1702,16 @@ function AgentChatSection({
       ),
   );
   const { data: gitLineAxisSessionWorkbenchData, isLoading: gitLineAxisSessionWorkbenchLoading } = useQuery({
-    queryKey: ['chat-session-workbench', effectiveAgentId, gitLineAxisSessionId, 'gitline-axis'],
-    queryFn: () => ccParityApi.getSessionWorkbench(
-      effectiveAgentId!,
-      gitLineAxisSessionId!,
-      sessionOperatorOptions,
+    queryKey: ['chat-session-workbench', effectiveAgentId, gitLineAxisSessionId, 'gitline-axis', sessionAuthorityMode, ...operatorReasonQueryKey],
+    queryFn: () => guardOperatorRead(
+      ccParityApi.getSessionWorkbench(effectiveAgentId!, gitLineAxisSessionId!, sessionOperatorOptions),
     ),
-    enabled: Boolean(
-      effectiveAgentId && gitLineAxisSessionId && shouldUseGitLineAxisSession && gitLineAxisIndexMissingCheckpoints,
-    ),
+    enabled: Boolean(effectiveAgentId && gitLineAxisSessionId && shouldUseGitLineAxisSession && gitLineAxisIndexMissingCheckpoints && operatorReadEnabled),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
-  const sessionIndex = sessionIndexData && !Array.isArray(sessionIndexData) ? sessionIndexData : null;
-  const sessionContextUsage = sessionContextUsageData && !Array.isArray(sessionContextUsageData)
+  const sessionIndex = operatorReadEnabled && sessionIndexData && !Array.isArray(sessionIndexData) ? sessionIndexData : null;
+  const sessionContextUsage = operatorReadEnabled && sessionContextUsageData && !Array.isArray(sessionContextUsageData)
     ? sessionContextUsageData as SessionContextUsage
     : null;
   const sessionWorkbench = React.useMemo<SessionWorkbench | null>(() => {
@@ -1741,10 +1722,10 @@ function AgentChatSection({
       context_usage: sessionContextUsage,
     };
   }, [sessionContextUsage, sessionWorkbenchBase]);
-  const gitLineAxisSessionIndex = gitLineAxisSessionIndexData && !Array.isArray(gitLineAxisSessionIndexData)
+  const gitLineAxisSessionIndex = operatorReadEnabled && gitLineAxisSessionIndexData && !Array.isArray(gitLineAxisSessionIndexData)
     ? gitLineAxisSessionIndexData
     : null;
-  const gitLineAxisSessionWorkbench = gitLineAxisSessionWorkbenchData && !Array.isArray(gitLineAxisSessionWorkbenchData)
+  const gitLineAxisSessionWorkbench = operatorReadEnabled && gitLineAxisSessionWorkbenchData && !Array.isArray(gitLineAxisSessionWorkbenchData)
     ? gitLineAxisSessionWorkbenchData
     : null;
   const getCheckpointsFromSessionSurfaces = React.useCallback((
@@ -1868,9 +1849,11 @@ function AgentChatSection({
       setFocusedGitCheckpointId(null);
       return;
     }
+    if (checkpointAutoFocusBlockedIdentityRef.current === childAuthorityIdentity) return;
     trackGitCheckpointFromScroll();
-  }, [activeSessionId, checkpointIdSignature, trackGitCheckpointFromScroll, visibleTimeline.length]);
+  }, [activeSessionId, checkpointIdSignature, childAuthorityIdentity, trackGitCheckpointFromScroll, visibleTimeline.length]);
   const navigateGitCheckpoint = React.useCallback((checkpoint: Record<string, unknown>, index: number) => {
+    checkpointAutoFocusBlockedIdentityRef.current = null;
     const id = sessionCheckpointId(checkpoint);
     if (id) setFocusedGitCheckpointId(id);
     const scrollRoot = (isReadOnlySession ? historyContainerRef.current : chatContainerRef.current);
@@ -1879,10 +1862,12 @@ function AgentChatSection({
   }, [chatContainerRef, findCheckpointMessageElement, historyContainerRef, isReadOnlySession]);
   const handleHistoryScroll = React.useCallback(() => {
     onHistoryScroll();
+    checkpointAutoFocusBlockedIdentityRef.current = null;
     trackGitCheckpointFromScroll();
   }, [onHistoryScroll, trackGitCheckpointFromScroll]);
   const handleChatScroll = React.useCallback(() => {
     onChatScroll();
+    checkpointAutoFocusBlockedIdentityRef.current = null;
     trackGitCheckpointFromScroll();
   }, [onChatScroll, trackGitCheckpointFromScroll]);
   const threadTimelineCacheRef = React.useRef(createThreadTimelineCache());
@@ -1923,7 +1908,7 @@ function AgentChatSection({
         activeSessionId={activeSessionId}
         axisSessionId={gitLineAxisSessionId || activeSessionId}
         checkpoints={sessionGitCheckpoints}
-        focusedCheckpointId={focusedGitCheckpointId}
+        focusedCheckpointId={operatorReadEnabled ? focusedGitCheckpointId : null}
         lineage={branchLineage}
         loading={sessionGitLineLoading}
         rewindAnchorCheckpointId={
@@ -2079,8 +2064,8 @@ function AgentChatSection({
         </aside>
       )}
       <div className="session-tui-center">
-        <SessionWorkbenchHeader model={threadTimelineModel.header} />
-        {activeSession?.operator_view && (
+        {operatorReadEnabled && <SessionWorkbenchHeader model={threadTimelineModel.header} />}
+        {activeSession?.operator_view && operatorReadEnabled && (
           <div className="session-operator-view" data-testid="session-operator-view" role="status">
             <strong>{t('agent.chat.operatorView', 'Operator View')}</strong>
             <span>{t('agent.chat.operatorViewDesc', 'Audited, read-only access to another user’s session.')}</span>
@@ -2088,7 +2073,7 @@ function AgentChatSection({
         )}
         {sessionTransitionPending ? (
           <SessionHydratingState label={t('agent.chat.startingNewSession', 'Starting a new conversation…')} />
-        ) : !activeSession ? (
+        ) : !activeSession || !operatorReadEnabled ? (
           <div
             style={{
               flex: 1,
@@ -2104,9 +2089,11 @@ function AgentChatSection({
             <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', textAlign: 'center', lineHeight: 1.5 }}>
               {t('agent.chat.startConversation', { name: agentDisplayName })}
             </div>
-            <button className="btn btn-primary" onClick={onCreateNewSession} style={{ fontSize: '13px' }}>
-              {t('agent.chat.newSession')}
-            </button>
+            {agent?.access_level !== 'operator' && (
+              <button className="btn btn-primary" onClick={onCreateNewSession} style={{ fontSize: '13px' }}>
+                {t('agent.chat.newSession')}
+              </button>
+            )}
             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
               {t('agent.chat.fileSupport')}
             </div>
@@ -2130,7 +2117,7 @@ function AgentChatSection({
                   >
                     {isA2ASession(activeSession as any) ? `🤖 Agent Conversation · ${activeSession.username || 'Agents'}` : `Read-only · ${activeSession.username || 'User'}`}
                   </div>
-                  {focusedWorkflow ? (
+                  {operatorReadEnabled && focusedWorkflow ? (
                     <WorkflowRunFocusPanel
                       workflow={focusedWorkflow}
                       onClose={() => setFocusedWorkflow(null)}
@@ -2150,6 +2137,15 @@ function AgentChatSection({
                 </>,
               )}
             </div>
+            {operatorReadEnabled && artifactPreview && (
+              <ArtifactPreviewPanel
+                preview={artifactPreview}
+                onClose={closeArtifactPreview}
+                onRetry={() => void openArtifact(artifactPreview.artifact)}
+                onDownload={() => void downloadArtifactFile(artifactPreview.artifact)}
+                t={t}
+              />
+            )}
             {showHistoryScrollBtn && (
               <button
                 onClick={onScrollHistoryToBottom}
@@ -2183,7 +2179,7 @@ function AgentChatSection({
               {renderHistoryFrame(
                 <>
                   {renderTeamMemberWindowHeader()}
-                  {focusedWorkflow ? (
+                  {operatorReadEnabled && focusedWorkflow ? (
                     <WorkflowRunFocusPanel
                       workflow={focusedWorkflow}
                       onClose={() => setFocusedWorkflow(null)}
@@ -2199,7 +2195,7 @@ function AgentChatSection({
                       <div style={{ fontSize: '11px', marginTop: '4px', opacity: 0.7 }}>{t('agent.chat.fileSupport')}</div>
                     </div>
                   )}
-                  {!focusedWorkflow && renderConversationMessages(visibleChatMessages, (message) => message.role === 'assistant', threadTimelineModel)}
+                  {(!focusedWorkflow || !operatorReadEnabled) && renderConversationMessages(visibleChatMessages, (message) => message.role === 'assistant', threadTimelineModel)}
                   <div ref={chatEndRef} />
                 </>,
               )}
@@ -2295,19 +2291,19 @@ function AgentChatSection({
                   </span>
                 </div>
               )}
-              {effectiveAgentId && activeSession?.id && !isDraftSession && (
+              {operatorReadEnabled && effectiveAgentId && activeSession?.id && !isDraftSession && (
                 <ChatWorkLedgerDock
                   agentId={effectiveAgentId}
                   sessionId={String(activeSession.id)}
                   runtimeTaskId={activeRuntimeTaskId || undefined}
                   live={sessionWorkLedgerLive}
-                  operatorView={Boolean(activeSession.operator_view)}
+                  operatorView={Boolean(activeSession.operator_view)} operatorReason={operatorReason}
                 />
               )}
-              {artifactPreview && (
+              {operatorReadEnabled && artifactPreview && (
                 <ArtifactPreviewPanel
                   preview={artifactPreview}
-                  onClose={() => setArtifactPreview(null)}
+                  onClose={closeArtifactPreview}
                   onRetry={() => void openArtifact(artifactPreview.artifact)}
                   onDownload={() => void downloadArtifactFile(artifactPreview.artifact)}
                   t={t}
@@ -2368,7 +2364,7 @@ function AgentChatSection({
           </>
         )}
       </div>
-      {activeSession ? (
+      {activeSession && operatorReadEnabled ? (
         <SessionRuntimePanel
           messages={visibleTimeline}
           sessionWorkbench={sessionWorkbench}
@@ -2381,15 +2377,16 @@ function AgentChatSection({
           onOpenDocument={openArtifact}
           onSelectSession={onSelectBranchSession}
           onSelectWorkflowRun={setFocusedWorkflow}
-          selectedThreadItem={selectedThreadItem}
+          selectedThreadItem={operatorReadEnabled ? selectedThreadItem : null}
           onClearSelectedThreadItem={clearThreadItemSelection}
           agentId={effectiveAgentId || undefined}
           sessionId={activeSessionId || undefined}
-          onGoalChanged={() => void refetchSessionWorkbench()}
-          onTeamChanged={() => void refetchSessionWorkbench()}
-          onRetrySubagent={requestSubagentRetry}
+          readOnly={!canMutateSession}
+          onGoalChanged={canMutateSession ? () => void refetchSessionWorkbench() : undefined}
+          onTeamChanged={canMutateSession ? () => void refetchSessionWorkbench() : undefined}
+          onRetrySubagent={canMutateSession ? requestSubagentRetry : undefined}
           sessionDecisions={sessionDecisions}
-          onDecisionFeedback={submitDecisionFeedback}
+          onDecisionFeedback={canMutateSession ? submitDecisionFeedback : undefined}
         />
       ) : null}
     </div>

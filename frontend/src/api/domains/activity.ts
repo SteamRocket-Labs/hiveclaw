@@ -7,9 +7,11 @@ export interface ActivityAuthorityOptions {
 
 function authorityQuery(authority?: ActivityAuthorityOptions): string {
   if (!authority?.operatorView) return '';
+  const reason = String(authority.reason || '').trim();
+  if (!reason) throw new Error('Operator View requires an audit reason');
   const params = new URLSearchParams({
     operator_view: 'true',
-    operator_reason: authority.reason || 'Agent activity administration',
+    operator_reason: reason,
   });
   return `&${params.toString()}`;
 }

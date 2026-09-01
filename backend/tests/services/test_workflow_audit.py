@@ -9,8 +9,10 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from sqlalchemy import select
 
 from app.database import tenant_scoped_session
+from app.models.audit import AuditLog
 from app.runtime.workflow_engine import LeafOutcome, LeafRequest
 from app.services.workflow_definitions import WorkflowDefinitionService
 from app.services.workflow_runtime_service import WorkflowRuntimeService
@@ -39,16 +41,13 @@ async def tenant_id(owner_sessionmaker) -> uuid.UUID:
 
 
 async def test_run_lifecycle_writes_audit_with_required_fields(tenant_id, owner_sessionmaker, monkeypatch):
-    # write_audit_log opens its own session against the app engine — point it
-    # at the test container by redirecting its session factory.
+    # The started event uses the fail-soft operational writer while terminal
+    # audit is committed atomically with the RuntimeTask terminal transition.
+    # Point the operational writer at the test container, then assert both
+    # production persistence paths from the database.
     import app.services.audit_logger as audit_logger_module
 
-    captured: list[tuple[str, dict]] = []
-
-    async def capturing_audit(action, details=None, agent_id=None, user_id=None):
-        captured.append((action, details or {}))
-
-    monkeypatch.setattr(audit_logger_module, "write_audit_log", capturing_audit)
+    monkeypatch.setattr(audit_logger_module, "async_session", owner_sessionmaker)
 
     service = WorkflowRuntimeService(session_factory=owner_sessionmaker)
 
@@ -58,13 +57,31 @@ async def test_run_lifecycle_writes_audit_with_required_fields(tenant_id, owner_
     handle = await service.start_run(tenant_id=tenant_id, definition_data=_definition(), args={}, leaf_executor=leaf)
     assert handle.outcome.status == "completed"
 
-    actions = [action for action, _ in captured]
-    assert "workflow_run_started" in actions
-    assert "workflow_run_completed" in actions
-    for action, details in captured:
-        assert details["tenant_id"] == str(tenant_id)
-        assert details["run_id"] == str(handle.run_id)
-        assert "definition_hash" in details
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.action.in_(("workflow_run_started", "workflow_run_completed")),
+                        AuditLog.details["run_id"].as_string() == str(handle.run_id),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    by_action = {row.action: row for row in rows}
+    assert set(by_action) == {"workflow_run_started", "workflow_run_completed"}
+    assert by_action["workflow_run_completed"].id == uuid.uuid5(
+        handle.run_id,
+        "workflow-run:completed:audit",
+    )
+    assert by_action["workflow_run_completed"].tenant_id == tenant_id
+    for row in rows:
+        assert row.details["tenant_id"] == str(tenant_id)
+        assert row.details["run_id"] == str(handle.run_id)
+        assert row.details["definition_hash"]
 
 
 async def test_fork_audit_carries_provenance(tenant_id, owner_sessionmaker, workflow_principals, monkeypatch):

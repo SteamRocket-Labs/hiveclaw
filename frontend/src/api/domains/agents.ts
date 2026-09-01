@@ -36,6 +36,28 @@ export interface AgentPermissions {
   scope_names?: Array<{ id: string; name: string }>;
   access_level: string;
   is_owner?: boolean;
+  can_manage_permissions?: boolean;
+}
+
+export interface AgentOperatorGrant {
+  id: string;
+  principal_id: string;
+  principal_name?: string | null;
+  effect: 'allow' | 'deny';
+  actions: string[];
+  expires_at?: string | null;
+  revoked_at?: string | null;
+  created_at?: string | null;
+  created_by_user_id?: string | null;
+  revoked_by_user_id?: string | null;
+}
+
+export interface AgentOperatorGrantRequest {
+  request_id: string;
+  principal_id: string;
+  effect: 'allow' | 'deny';
+  expires_at?: string | null;
+  reason: string;
 }
 
 export interface AgentMetrics {
@@ -144,6 +166,13 @@ export const agentApi = {
     post<AgentOwnerTransferReceipt>(`/agents/${id}/handover`, data),
   updatePermissions: (id: string, data: { scope_type: string; scope_ids?: string[]; access_level: string }) =>
     put<void>(`/agents/${id}/permissions`, data),
+  listOperatorGrants: (id: string) => get<AgentOperatorGrant[]>(`/agents/${id}/operator-grants`),
+  listOperatorCandidates: (id: string) =>
+    get<AgentOwnerCandidate[]>(`/agents/${id}/operator-candidates`),
+  createOperatorGrant: (id: string, data: AgentOperatorGrantRequest) =>
+    post<AgentOperatorGrant>(`/agents/${id}/operator-grants`, data),
+  revokeOperatorGrant: (id: string, grantId: string, data: { request_id: string; reason: string }) =>
+    post<AgentOperatorGrant>(`/agents/${id}/operator-grants/${grantId}/revoke`, data),
   getApprovals: (id: string) => get<unknown[]>(`/agents/${id}/approvals`),
   resolveApproval: (agentId: string, approvalId: string, data: { action: string }) =>
     post<unknown>(`/agents/${agentId}/approvals/${approvalId}/resolve`, data),

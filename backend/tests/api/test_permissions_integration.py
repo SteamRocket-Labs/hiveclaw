@@ -83,7 +83,8 @@ async def test_check_agent_access_falls_back_to_resource_permission_execute(monk
 
     async def fake_check_permission(_db_arg, **kwargs):
         calls.append(kwargs)
-        return kwargs["principal_type"] == "department" and kwargs["action"] == "execute"
+        principals = [(kwargs["principal_type"], kwargs["principal_id"]), *kwargs["additional_principals"]]
+        return ("department", department_id) in principals and kwargs["action"] == "execute"
 
     monkeypatch.setattr(permissions_module, "check_permission", fake_check_permission, raising=False)
 
@@ -91,7 +92,7 @@ async def test_check_agent_access_falls_back_to_resource_permission_execute(monk
 
     assert resolved_agent is agent
     assert access_level == "use"
-    assert any(call["principal_type"] == "department" for call in calls)
+    assert any(("department", department_id) in call["additional_principals"] for call in calls)
 
 
 @pytest.mark.asyncio
@@ -281,11 +282,28 @@ async def test_platform_admin_does_not_inherit_company_or_department_agent_scope
     assert exc_info.value.status_code == 403
 
 
-def test_platform_admin_role_does_not_upgrade_agent_use_to_session_manage():
+@pytest.mark.asyncio
+async def test_legacy_company_manage_row_is_neutralized_to_use(monkeypatch):
     import app.core.permissions as permissions_module
 
-    assert permissions_module.can_manage_agent_sessions("use") is False
-    assert permissions_module.can_manage_agent_sessions("manage") is True
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), role="member", tenant_id=tenant_id, department_id=None)
+    agent = SimpleNamespace(id=agent_id, creator_id=uuid4(), tenant_id=tenant_id)
+    db = _PermissionsDB(
+        agent=agent,
+        permissions=[SimpleNamespace(scope_type="company", scope_id=None, access_level="manage")],
+    )
+
+    async def deny_resource_permission(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(permissions_module, "check_permission", deny_resource_permission)
+
+    resolved_agent, access_level = await permissions_module.check_agent_access(db, user, agent_id)
+
+    assert resolved_agent is agent
+    assert access_level == "use"
 
 
 @pytest.mark.asyncio

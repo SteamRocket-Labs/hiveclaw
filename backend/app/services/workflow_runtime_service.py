@@ -22,15 +22,22 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.agents.coordination_repository import CoordinationRepository
 from app.agents.coordination_wiring import gateway_scope
 from app.config import get_settings
 from app.database import tenant_scoped_session
+from app.models.agent import Agent
+from app.models.audit import AuditLog
 from app.models.chat_session import ChatSession
+from app.models.runtime_budget import RuntimeBudgetRun
 from app.models.runtime_task import RuntimeTask
 from app.models.workflow import WorkflowQuota, WorkflowStep
 from app.runtime.dynamic_workflow import (
@@ -38,18 +45,21 @@ from app.runtime.dynamic_workflow import (
     build_dynamic_workflow_repair_plan,
     summarize_dynamic_workflow_outcome,
 )
+from app.services.channel_delivery_outbox import ChannelDeliveryIntent, enqueue_channel_delivery
 from app.services.channel_delivery_service import ChannelDeliveryService
 from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
-from app.services.execution_admission import ExecutionAdmission, ExecutionAdmissionDecision
+from app.services.execution_admission import ExecutionAdmission
 from app.services.runtime_budget_service import (
     RuntimeBudgetPolicyLookup,
     RuntimeBudgetReservation,
     RuntimeBudgetRunCreate,
     RuntimeBudgetService,
+    assert_runtime_task_budget_reservation_open,
 )
 from app.services.runtime_task_service import list_active_runtime_task_records
 from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
+from app.services.runtime_task_fence import finish_current_runtime_task_claim
 from app.runtime.workflow_admission import (
     AdmissionLimits,
     WorkflowAdmissionError,
@@ -898,62 +908,99 @@ class WorkflowRuntimeService:
         }
         if run_metadata:
             metadata_json.update(run_metadata)
-        async with self._session(tenant_id) as session:
-            task = RuntimeTask(
-                id=run_id,
-                task_type="workflow",
-                tenant_id=tenant_id,
-                status="pending" if enqueue_only or admission_decision.waiting else "running",
-                parent_agent_id=agent_id,
-                parent_session_id=parent_session_value,
-                child_session_id=parent_session_value,
-                root_user_id=user_id,
-                root_session_id=root_session_value,
-                root_runtime_task_id=run_id,
-                delegation_chain_json=[f"agent:{agent_id}", f"workflow:{run_id}"],
-                budget_run_id=budget_uuid,
-                budget_reservation_key=budget_reservation_key,
-                budget_admission_status=budget_admission_status,
-                budget_terminal_reason=("runtime_budget_approval_required" if admission_decision.waiting else None),
-                metadata_json=metadata_json,
-            )
-            from app.services.session_writer_epoch import assign_runtime_task_writer_generation
-
-            await assign_runtime_task_writer_generation(session, task)
-            session.add(task)
-            from app.services.runtime_root_ledger import (
-                RuntimeRootIntentSpec,
-                register_runtime_task_root_item,
-            )
-
-            await register_runtime_task_root_item(
-                session,
-                task=task,
-                intent=RuntimeRootIntentSpec(
-                    intent_key=f"workflow:{run_id}",
-                    work_type="workflow",
-                    target_ref=f"workflow:{run_id}",
-                    path=((f"agent:{agent_id}",) if agent_id is not None else ()),
-                    state=(
-                        "waiting_approval" if admission_decision.waiting else "queued" if enqueue_only else "running"
-                    ),
-                    admission_disposition=("deferred" if admission_decision.waiting else "admitted"),
-                    reason_code=("runtime_budget_approval_required" if admission_decision.waiting else None),
-                    approval_ref=(
-                        f"runtime-budget://{budget_uuid}/reservation/{budget_reservation_key}"
-                        if admission_decision.waiting
-                        else None
-                    ),
-                    budget_reservation_key=budget_reservation_key,
-                ),
-            )
-            session.add(
-                WorkflowQuota(
+        try:
+            async with self._session(tenant_id) as session:
+                if budget_admission_status == "reserved":
+                    existing_task = await assert_runtime_task_budget_reservation_open(
+                        session,
+                        budget_run_id=budget_uuid,
+                        reservation_key=budget_reservation_key,
+                        runtime_task_id=run_id,
+                    )
+                    if existing_task is not None:
+                        existing_metadata = dict(existing_task.metadata_json or {})
+                        if (
+                            existing_task.tenant_id != tenant_id
+                            or existing_task.task_type != "workflow"
+                            or existing_task.parent_agent_id != agent_id
+                            or existing_task.budget_run_id != budget_uuid
+                            or str(existing_task.budget_reservation_key or "") != budget_reservation_key
+                            or str(existing_metadata.get("definition_hash") or "") != compiled.definition_hash
+                            or str(existing_metadata.get("args_hash") or "") != args_hash
+                        ):
+                            raise WorkflowAdmissionError("workflow run id is already bound to another execution")
+                        return WorkflowRunHandle(
+                            run_id=run_id,
+                            outcome=WorkflowRunOutcome(
+                                status=str(existing_task.status or "pending"),
+                                reason="idempotent_replay",
+                            ),
+                        )
+                task = RuntimeTask(
+                    id=run_id,
+                    task_type="workflow",
                     tenant_id=tenant_id,
-                    run_id=run_id,
-                    allocated_tokens=admission.budget_tokens,
+                    status="pending" if enqueue_only or admission_decision.waiting else "running",
+                    started_at=(None if enqueue_only or admission_decision.waiting else datetime.now(UTC)),
+                    parent_agent_id=agent_id,
+                    parent_session_id=parent_session_value,
+                    child_session_id=parent_session_value,
+                    root_user_id=user_id,
+                    root_session_id=root_session_value,
+                    root_runtime_task_id=run_id,
+                    delegation_chain_json=[f"agent:{agent_id}", f"workflow:{run_id}"],
+                    budget_run_id=budget_uuid,
+                    budget_reservation_key=budget_reservation_key,
+                    budget_admission_status=budget_admission_status,
+                    budget_terminal_reason=("runtime_budget_approval_required" if admission_decision.waiting else None),
+                    metadata_json=metadata_json,
                 )
-            )
+                from app.services.session_writer_epoch import assign_runtime_task_writer_generation
+
+                await assign_runtime_task_writer_generation(session, task)
+                session.add(task)
+                from app.services.runtime_root_ledger import (
+                    RuntimeRootIntentSpec,
+                    register_runtime_task_root_item,
+                )
+
+                await register_runtime_task_root_item(
+                    session,
+                    task=task,
+                    intent=RuntimeRootIntentSpec(
+                        intent_key=f"workflow:{run_id}",
+                        work_type="workflow",
+                        target_ref=f"workflow:{run_id}",
+                        path=((f"agent:{agent_id}",) if agent_id is not None else ()),
+                        state=(
+                            "waiting_approval"
+                            if admission_decision.waiting
+                            else "queued"
+                            if enqueue_only
+                            else "running"
+                        ),
+                        admission_disposition=("deferred" if admission_decision.waiting else "admitted"),
+                        reason_code=("runtime_budget_approval_required" if admission_decision.waiting else None),
+                        approval_ref=(
+                            f"runtime-budget://{budget_uuid}/reservation/{budget_reservation_key}"
+                            if admission_decision.waiting
+                            else None
+                        ),
+                        budget_reservation_key=budget_reservation_key,
+                    ),
+                )
+                session.add(
+                    WorkflowQuota(
+                        tenant_id=tenant_id,
+                        run_id=run_id,
+                        allocated_tokens=admission.budget_tokens,
+                    )
+                )
+        except Exception:
+            # A failed creator cannot distinguish rollback from a concurrent
+            # idempotent winner. The orphan reconciler makes that decision
+            # after the durable-task grace window.
+            raise
 
         # §A-6: a run with no parent session (standalone / scheduled / admin /
         # heartbeat) gets a freshly bound ChatSession so it is session-visible
@@ -1036,15 +1083,35 @@ class WorkflowRuntimeService:
         the existing "has parent session" path is preserved untouched, and a run
         with no agent to attach to stays unbound (returns the inputs)."""
         resolved_user = str(user_id) if user_id else None
-        if parent_session_id or agent_id is None:
-            return (
-                str(parent_session_id) if parent_session_id else None,
-                str(root_session_id or parent_session_id) if (root_session_id or parent_session_id) else None,
-                resolved_user,
-            )
-
         from app.models.agent import Agent
         from app.models.chat_session import ChatSession
+
+        if parent_session_id:
+            if resolved_user is None and agent_id is not None:
+                parent_uuid = uuid.UUID(str(parent_session_id))
+                async with self._session(tenant_id) as session:
+                    parent = await session.scalar(
+                        select(ChatSession).where(
+                            ChatSession.id == parent_uuid,
+                            ChatSession.tenant_id == uuid.UUID(str(tenant_id)),
+                            ChatSession.agent_id == agent_id,
+                        )
+                    )
+                    if parent is not None and parent.user_id is not None:
+                        resolved_user = str(parent.user_id)
+                        task = await session.scalar(select(RuntimeTask).where(RuntimeTask.id == run_id))
+                        if task is not None:
+                            metadata = dict(task.metadata_json or {})
+                            metadata["user_id"] = resolved_user
+                            task.metadata_json = metadata
+                            task.root_user_id = parent.user_id
+            return (
+                str(parent_session_id),
+                str(root_session_id or parent_session_id),
+                resolved_user,
+            )
+        if agent_id is None:
+            return (None, None, resolved_user)
 
         new_session_id = uuid.uuid4()
         try:
@@ -1116,6 +1183,7 @@ class WorkflowRuntimeService:
         definition_hash: str | None = None,
         reason: str | None = None,
         outputs: dict[str, Any] | None = None,
+        db: AsyncSession | None = None,
     ) -> None:
         if not parent_session_id or agent_id is None:
             return
@@ -1149,28 +1217,35 @@ class WorkflowRuntimeService:
             reason=reason,
         )
         payloads = (payload, runtime_payload) if status == "running" else (runtime_payload, payload)
+
+        async def _append(session: AsyncSession) -> None:
+            for event_payload in payloads:
+                event = build_session_native_event(event_payload)
+                await append_session_event(
+                    db=session,
+                    agent_id=agent_id,
+                    tenant_id=tenant_id,
+                    session_id=session_id,
+                    actor_type="system",
+                    event_type=str(event_payload["type"]),
+                    role="system",
+                    user_id=user_id,
+                    run_id=run_id,
+                    runtime_task_id=run_id,
+                    root_session_id=root_session_id or parent_session_id,
+                    parent_session_id=parent_session_id,
+                    content=json.dumps(event_payload, ensure_ascii=False, sort_keys=True),
+                    source="workflow_runtime",
+                    parts=[event["part"]] if isinstance(event.get("part"), dict) else None,
+                    metadata={"source": "workflow_runtime", **event_payload},
+                )
+
+        if db is not None:
+            await _append(db)
+            return
         try:
             async with self._session(tenant_id) as session:
-                for event_payload in payloads:
-                    event = build_session_native_event(event_payload)
-                    await append_session_event(
-                        db=session,
-                        agent_id=agent_id,
-                        tenant_id=tenant_id,
-                        session_id=session_id,
-                        actor_type="system",
-                        event_type=str(event_payload["type"]),
-                        role="system",
-                        user_id=user_id,
-                        run_id=run_id,
-                        runtime_task_id=run_id,
-                        root_session_id=root_session_id or parent_session_id,
-                        parent_session_id=parent_session_id,
-                        content=json.dumps(event_payload, ensure_ascii=False, sort_keys=True),
-                        source="workflow_runtime",
-                        parts=[event["part"]] if isinstance(event.get("part"), dict) else None,
-                        metadata={"source": "workflow_runtime", **event_payload},
-                    )
+                await _append(session)
                 await session.commit()
         except Exception as exc:
             logger.warning("[Workflow] session event projection for run %s failed (non-fatal): %s", run_id, exc)
@@ -1181,6 +1256,7 @@ class WorkflowRuntimeService:
         *,
         tenant_id: uuid.UUID,
         leaf_executor: LeafExecutor,
+        automatic: bool = False,
     ) -> WorkflowRunOutcome:
         from app.services.workflow_metrics import record_workflow_resume_attempt, record_workflow_resume_finished
 
@@ -1193,7 +1269,12 @@ class WorkflowRuntimeService:
             record_workflow_resume_finished(outcome.status)
             return outcome
         try:
-            outcome = await self._resume_run_locked(run_id, tenant_id=tenant_id, leaf_executor=leaf_executor)
+            outcome = await self._resume_run_locked(
+                run_id,
+                tenant_id=tenant_id,
+                leaf_executor=leaf_executor,
+                automatic=automatic,
+            )
             record_workflow_resume_finished(outcome.status)
             return outcome
         finally:
@@ -1205,50 +1286,134 @@ class WorkflowRuntimeService:
         *,
         tenant_id: uuid.UUID,
         leaf_executor: LeafExecutor,
+        automatic: bool,
     ) -> WorkflowRunOutcome:
         loaded = await self.load_run(run_id, tenant_id=tenant_id)
         if loaded is None:
             raise WorkflowRunNotFound(str(run_id))
-        metadata = loaded.task.metadata_json or {}
-        # NB: an EXPLICIT resume may revive a killed run (kill→resume is the
-        # CC pattern); only the automatic startup scan excludes killed runs.
+        in_flight_external_ids: list[str] = []
+        async with self._session(tenant_id) as session:
+            budget_run = None
+            if loaded.task.budget_run_id is not None:
+                budget_run = await session.scalar(
+                    select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == loaded.task.budget_run_id).with_for_update()
+                )
+            task = (
+                await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id).with_for_update())
+            ).scalar_one_or_none()
+            if task is None or task.task_type != "workflow":
+                raise WorkflowRunNotFound(str(run_id))
 
-        definition_data = metadata.get("definition_json")
-        args = metadata.get("args") or {}
-        if not definition_data:
-            raise WorkflowRunNotFound(f"run {run_id} has no archived definition")
-        compiled = compile_workflow(definition_data)
-        archived_hash = metadata.get("definition_hash")
-        if archived_hash and compiled.definition_hash != archived_hash:
-            # Archive integrity check — the archived definition must hash to
-            # the recorded value, else the journal cannot be trusted.
-            from app.services.workflow_metrics import record_workflow_hash_mismatch
+            metadata = dict(task.metadata_json or {})
+            definition_data = metadata.get("definition_json")
+            args = metadata.get("args") or {}
+            if not definition_data:
+                raise WorkflowRunNotFound(f"run {run_id} has no archived definition")
+            compiled = compile_workflow(definition_data)
+            archived_hash = metadata.get("definition_hash")
+            if archived_hash and compiled.definition_hash != archived_hash:
+                from app.services.workflow_metrics import record_workflow_hash_mismatch
 
-            record_workflow_hash_mismatch()
-            raise WorkflowRunNotFound(
-                f"run {run_id}: archived definition hash mismatch ({compiled.definition_hash} != {archived_hash})"
+                record_workflow_hash_mismatch()
+                raise WorkflowRunNotFound(
+                    f"run {run_id}: archived definition hash mismatch ({compiled.definition_hash} != {archived_hash})"
+                )
+            external_step_ids = {
+                step.id for step in compiled.definition.steps if step.effects in ("external", "irreversible")
+            }
+            in_flight_external = (
+                list(
+                    (
+                        await session.execute(
+                            select(WorkflowStep).where(
+                                WorkflowStep.run_id == run_id,
+                                WorkflowStep.step_id.in_(external_step_ids),
+                                WorkflowStep.status == "running",
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                if external_step_ids
+                else []
             )
+            if task.budget_run_id is not None and (budget_run is None or budget_run.status != "active"):
+                budget_status = str(getattr(budget_run, "status", "missing"))
+                reason = f"workflow cannot resume because runtime budget is {budget_status}"
+                task.claimed_by = None
+                task.claim_expires_at = None
+                if in_flight_external:
+                    in_flight_external_ids = [row.step_id for row in in_flight_external]
+                    for row in in_flight_external:
+                        row.status = "unknown_requires_reconciliation"
+                    metadata["needs_reconciliation"] = in_flight_external_ids
+                    task.metadata_json = metadata
+                    task.status = "needs_reconciliation"
+                    task.completed_at = task.completed_at or datetime.now(UTC)
+                    task.budget_terminal_reason = "workflow_external_step_reconciliation_required"
+                    task.result_summary = (
+                        "Workflow stopped with an external step in flight; its effect requires reconciliation."
+                    )
+                    from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
 
-        # §9 P10 drain policy: an external/irreversible step left RUNNING by a
-        # hard kill might or might not have produced its side effect — it must
-        # NEVER be replayed automatically. Mark it for human reconciliation
-        # and keep the run suspended.
-        external_step_ids = {
-            step.id for step in compiled.definition.steps if step.effects in ("external", "irreversible")
-        }
-        in_flight_external = [
-            step for step in loaded.steps if step.step_id in external_step_ids and step.status == "running"
-        ]
-        if in_flight_external:
-            async with self._session(tenant_id) as session:
-                from app.models.workflow import WorkflowStep as _WS
+                    await settle_and_enqueue_runtime_task_terminal(
+                        session,
+                        task,
+                        terminal_source="workflow_runtime.budget_resume_guard",
+                        root_reason_code=task.budget_terminal_reason,
+                    )
+                    outcome_status = "needs_reconciliation"
+                    reason = task.result_summary
+                elif budget_status == "waiting_budget_approval":
+                    task.status = "resumable"
+                    task.completed_at = None
+                    task.budget_admission_status = "waiting_budget_approval"
+                    task.budget_terminal_reason = str(getattr(budget_run, "terminal_reason", None) or reason)
+                    from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
 
+                    await transition_runtime_root_item_by_task(
+                        session,
+                        runtime_task_id=run_id,
+                        requested_state="waiting_approval",
+                        reason_code=task.budget_terminal_reason,
+                    )
+                    outcome_status = "suspended"
+                else:
+                    task.status = "needs_reconciliation" if budget_run is None else "killed"
+                    task.completed_at = task.completed_at or datetime.now(UTC)
+                    task.budget_terminal_reason = str(getattr(budget_run, "terminal_reason", None) or reason)
+                    task.result_summary = reason
+                    from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
+
+                    await settle_and_enqueue_runtime_task_terminal(
+                        session,
+                        task,
+                        terminal_source="workflow_runtime.budget_resume_guard",
+                        root_reason_code=task.budget_terminal_reason,
+                    )
+                    outcome_status = str(task.status)
+                finish_current_runtime_task_claim(task_id=run_id)
+                return WorkflowRunOutcome(
+                    status=outcome_status,
+                    reason=reason,
+                )
+            if automatic and task.status not in _RESUMABLE_STATUSES:
+                return WorkflowRunOutcome(
+                    status=str(task.status),
+                    reason=f"automatic resume skipped after run became {task.status}",
+                )
+
+            # An explicit resume may revive a killed run (kill→resume is the
+            # CC pattern). Automatic workers may only transition a state that
+            # remains resumable while this authoritative row lock is held.
+            # §9 P10 drain policy: an external/irreversible step left RUNNING
+            # might or might not have produced its side effect. Read and mark
+            # the step journal under the same run lock as the status transition.
+            if in_flight_external:
+                in_flight_external_ids = [row.step_id for row in in_flight_external]
                 for row in in_flight_external:
-                    db_row = (
-                        await session.execute(select(_WS).where(_WS.run_id == run_id, _WS.step_id == row.step_id))
-                    ).scalar_one()
-                    db_row.status = "unknown_requires_reconciliation"
-                task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
+                    row.status = "unknown_requires_reconciliation"
                 task.status = "suspended"
                 from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
 
@@ -1258,12 +1423,26 @@ class WorkflowRuntimeService:
                     requested_state="suspended",
                     reason_code="workflow_external_step_reconciliation_required",
                 )
-                meta = dict(task.metadata_json or {})
-                meta["needs_reconciliation"] = [row.step_id for row in in_flight_external]
-                task.metadata_json = meta
+                metadata["needs_reconciliation"] = in_flight_external_ids
+                task.metadata_json = metadata
+                task.claimed_by = None
+                task.claim_expires_at = None
+                finish_current_runtime_task_claim(task_id=run_id)
+            else:
+                task.status = "running"
+                task.completed_at = None
+                from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
+
+                await transition_runtime_root_item_by_task(
+                    session,
+                    runtime_task_id=run_id,
+                    requested_state="running",
+                )
+
+        if in_flight_external_ids:
             reason = (
                 "external step(s) were in flight during a hard stop: "
-                f"{[row.step_id for row in in_flight_external]} → unknown_requires_reconciliation; "
+                f"{in_flight_external_ids} → unknown_requires_reconciliation; "
                 "human reconciliation required before resume"
             )
             await self._audit(
@@ -1271,39 +1450,111 @@ class WorkflowRuntimeService:
                 tenant_id=tenant_id,
                 run_id=run_id,
                 definition_hash=archived_hash,
-                extra={"steps": [row.step_id for row in in_flight_external]},
+                extra={"steps": in_flight_external_ids},
             )
             return WorkflowRunOutcome(status="suspended", reason=reason)
 
-        async with self._session(tenant_id) as session:
-            task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
-            task.status = "running"
-            from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
-
-            await transition_runtime_root_item_by_task(
-                session,
-                runtime_task_id=run_id,
-                requested_state="running",
-            )
-
         return await self._execute(compiled, run_id=run_id, tenant_id=tenant_id, args=args, leaf_executor=leaf_executor)
 
-    async def kill_run(self, run_id: uuid.UUID | str, *, tenant_id: uuid.UUID | str | None = None) -> None:
+    async def kill_run(self, run_id: uuid.UUID | str, *, tenant_id: uuid.UUID | str | None = None) -> str:
         async with self._session(tenant_id) as session:
             task = (
-                await session.execute(select(RuntimeTask).where(RuntimeTask.id == uuid.UUID(str(run_id))))
+                await session.execute(
+                    select(RuntimeTask).where(RuntimeTask.id == uuid.UUID(str(run_id))).with_for_update()
+                )
             ).scalar_one_or_none()
             if task is None:
                 raise WorkflowRunNotFound(str(run_id))
-            task.status = "killed"
-            from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
+            metadata = dict(task.metadata_json or {})
+            if (
+                task.status == "killed"
+                and metadata.get("terminal_committed_status") == "killed"
+                and metadata.get("terminal_commit_source") == "workflow_runtime.kill"
+            ):
+                return "killed"
+            if task.status not in {"pending", "running", "resumable", "suspended"}:
+                return str(task.status)
 
-            await transition_runtime_root_item_by_task(
-                session,
-                runtime_task_id=task.id,
-                requested_state="killed",
-                reason_code="workflow_killed",
+            reason = "workflow killed by operator"
+            actuals = {"background_tasks": 1}
+            existing_actuals = metadata.get("runtime_budget_actuals")
+            if existing_actuals is not None and existing_actuals != actuals:
+                from app.services.runtime_budget_service import RuntimeBudgetSettlementConflict
+
+                raise RuntimeBudgetSettlementConflict(
+                    f"runtime budget actuals conflict for workflow RuntimeTask {task.id}"
+                )
+            task.status = "killed"
+            task.completed_at = task.completed_at or datetime.now(UTC)
+            metadata["last_outcome_reason"] = reason
+            metadata["runtime_budget_actuals"] = actuals
+            task.metadata_json = metadata
+
+            completion_summary = self._completion_task_summary(
+                run_id=task.id,
+                status="killed",
+                reason=reason,
+                outputs=None,
             )
+            _claimed, metadata = await self._claim_parent_task_notification_side_effect(
+                session=session,
+                task=task,
+                run_id=task.id,
+                tenant_id=uuid.UUID(str(task.tenant_id)),
+                status="killed",
+                agent_id=task.parent_agent_id,
+                parent_session_id=metadata.get("parent_session_id") or task.parent_session_id,
+                summary=completion_summary,
+            )
+            task.metadata_json = metadata
+            await self._append_run_session_event(
+                tenant_id=task.tenant_id,
+                agent_id=task.parent_agent_id,
+                user_id=metadata.get("user_id") or task.root_user_id,
+                run_id=task.id,
+                parent_session_id=metadata.get("parent_session_id") or task.parent_session_id,
+                root_session_id=metadata.get("root_session_id") or task.root_session_id or task.parent_session_id,
+                status="killed",
+                definition_source=metadata.get("definition_source"),
+                definition_hash=metadata.get("definition_hash"),
+                reason=reason,
+                db=session,
+            )
+            audit_agent_id = None
+            if task.parent_agent_id is not None:
+                audit_agent_id = await session.scalar(
+                    select(Agent.id).where(
+                        Agent.id == task.parent_agent_id,
+                        Agent.tenant_id == task.tenant_id,
+                    )
+                )
+            await session.execute(
+                insert(AuditLog)
+                .values(
+                    id=uuid.uuid5(task.id, "workflow-run:killed:audit"),
+                    action="workflow_run_killed",
+                    details={
+                        "tenant_id": str(task.tenant_id),
+                        "run_id": str(task.id),
+                        "definition_hash": metadata.get("definition_hash"),
+                        "agent_id": str(task.parent_agent_id) if task.parent_agent_id else None,
+                        "reason": reason,
+                    },
+                    agent_id=audit_agent_id,
+                    tenant_id=task.tenant_id,
+                )
+                .on_conflict_do_nothing(index_elements=[AuditLog.id])
+            )
+            from app.services.runtime_terminal_settlement import settle_runtime_task_terminal
+
+            await settle_runtime_task_terminal(
+                session,
+                task,
+                terminal_source="workflow_runtime.kill",
+                root_reason_code="workflow_killed",
+            )
+            finish_current_runtime_task_claim(task_id=task.id)
+            return "killed"
 
     async def record_dynamic_repair_attempt(
         self, run_id: uuid.UUID | str, *, tenant_id: uuid.UUID | str | None = None
@@ -1468,7 +1719,12 @@ class WorkflowRuntimeService:
                 if resume_at > datetime.now(UTC):
                     continue
             try:
-                outcome = await self.resume_run(run_id, tenant_id=uuid.UUID(tenant_value), leaf_executor=leaf_executor)
+                outcome = await self.resume_run(
+                    run_id,
+                    tenant_id=uuid.UUID(tenant_value),
+                    leaf_executor=leaf_executor,
+                    automatic=True,
+                )
                 resumed.append(ResumedRun(run_id=run_id, outcome=outcome))
             except Exception as exc:
                 logger.error("[Workflow] auto-resume of run %s failed: %s", run_id, exc, exc_info=True)
@@ -1508,12 +1764,23 @@ class WorkflowRuntimeService:
         status: str,
         *,
         tenant_id: uuid.UUID,
+        session: AsyncSession | None = None,
     ) -> None:
         """``workflow_completed`` Signal — NOTIFICATION ONLY (§3.3): read-once
         consumption, never a wait_signal resume promise (that is P11)."""
         if agent_id is None:
             return
         try:
+            if session is not None:
+                gateway = CoordinationRepository(session, tenant_id=tenant_id)
+                await gateway.send_signal(
+                    from_agent_id=f"workflow:{run_id}",
+                    to_agent_id=str(agent_id),
+                    content=f"workflow run {run_id} finished: {status}",
+                    signal_type="workflow_completed",
+                    thread_id=str(run_id),
+                )
+                return
             async with gateway_scope(tenant_id=tenant_id) as gateway:
                 await gateway.send_signal(
                     from_agent_id=f"workflow:{run_id}",
@@ -1533,8 +1800,30 @@ class WorkflowRuntimeService:
         status: str,
         tenant_id: uuid.UUID,
         metadata: dict[str, Any],
+        session: AsyncSession | None = None,
+        task: RuntimeTask | None = None,
     ) -> None:
         if agent_id is None:
+            return
+        if session is not None and task is not None:
+            target = metadata.get("delivery_target_json")
+            parent_session_id = _uuid_or_none(task.parent_session_id or metadata.get("parent_session_id"))
+            if not isinstance(target, dict) or not target or parent_session_id is None:
+                return
+            await enqueue_channel_delivery(
+                session,
+                ChannelDeliveryIntent(
+                    tenant_id=tenant_id,
+                    runtime_task_id=run_id,
+                    agent_id=agent_id,
+                    session_id=parent_session_id,
+                    user_id=task.root_user_id or _uuid_or_none(metadata.get("user_id")),
+                    delivery_target=target,
+                    text=f"Workflow run {run_id} finished: {status}.",
+                    terminal_status=status,
+                    metadata={"source": "workflow_runtime"},
+                ),
+            )
             return
         reply_target = (
             metadata.get("delivery_target_json") or metadata.get("reply_target") or metadata.get("delivery_target")
@@ -1574,6 +1863,8 @@ class WorkflowRuntimeService:
     async def _claim_parent_task_notification_side_effect(
         self,
         *,
+        session: AsyncSession,
+        task: RuntimeTask,
         run_id: uuid.UUID,
         tenant_id: uuid.UUID,
         status: str,
@@ -1583,59 +1874,54 @@ class WorkflowRuntimeService:
     ) -> tuple[bool, dict[str, Any]]:
         """Persist the parent-loop delivery intent with the terminal task."""
 
-        async with self._session(tenant_id) as session:
-            task = (
-                await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id).with_for_update())
-            ).scalar_one()
-            metadata = dict(task.metadata_json or {})
-            if agent_id is None or not parent_session_id:
-                return False, metadata
-            parent_session_uuid = uuid.UUID(str(parent_session_id))
-            parent_session = (
-                await session.execute(
-                    select(ChatSession).where(
-                        ChatSession.id == parent_session_uuid,
-                        ChatSession.agent_id == agent_id,
-                        ChatSession.tenant_id == tenant_id,
-                    )
+        metadata = dict(task.metadata_json or {})
+        if agent_id is None or not parent_session_id:
+            return False, metadata
+        parent_session_uuid = uuid.UUID(str(parent_session_id))
+        parent_session = (
+            await session.execute(
+                select(ChatSession).where(
+                    ChatSession.id == parent_session_uuid,
+                    ChatSession.agent_id == agent_id,
+                    ChatSession.tenant_id == tenant_id,
                 )
-            ).scalar_one_or_none()
-            owner_id = _uuid_or_none(metadata.get("user_id")) or getattr(parent_session, "user_id", None)
-            if parent_session is None or owner_id is None:
-                return False, metadata
-            outbox_id = await enqueue_completion_notification(
-                session,
-                CompletionNotification(
-                    tenant_id=tenant_id,
-                    source_kind="workflow",
-                    source_run_id=str(run_id),
-                    parent_session_id=parent_session_uuid,
-                    parent_agent_id=agent_id,
-                    parent_user_id=owner_id,
-                    terminal_status=status,
-                    task_type="workflow",
-                    summary=summary,
-                    delivery_mode="parent_continuation",
-                    artifacts=list(metadata.get("artifacts") or []),
-                    metadata={
-                        "workflow_run_id": str(run_id),
-                        "parent_agent_id": str(agent_id),
-                        "parent_session_id": str(parent_session_uuid),
-                        "workflow_session_state": status,
-                        **({"budget_run_id": str(metadata["budget_run_id"])} if metadata.get("budget_run_id") else {}),
-                    },
-                ),
             )
-            metadata["completion_outbox_id"] = str(outbox_id)
-            task.metadata_json = metadata
-            await session.flush()
-            return True, metadata
+        ).scalar_one_or_none()
+        owner_id = _uuid_or_none(metadata.get("user_id")) or getattr(parent_session, "user_id", None)
+        if parent_session is None or owner_id is None:
+            return False, metadata
+        outbox_id = await enqueue_completion_notification(
+            session,
+            CompletionNotification(
+                tenant_id=tenant_id,
+                source_kind="workflow",
+                source_run_id=str(run_id),
+                parent_session_id=parent_session_uuid,
+                parent_agent_id=agent_id,
+                parent_user_id=owner_id,
+                terminal_status=status,
+                task_type="workflow",
+                summary=summary,
+                delivery_mode="parent_continuation",
+                artifacts=list(metadata.get("artifacts") or []),
+                metadata={
+                    "workflow_run_id": str(run_id),
+                    "parent_agent_id": str(agent_id),
+                    "parent_session_id": str(parent_session_uuid),
+                    "workflow_session_state": status,
+                    **({"budget_run_id": str(metadata["budget_run_id"])} if metadata.get("budget_run_id") else {}),
+                },
+            ),
+        )
+        metadata["completion_outbox_id"] = str(outbox_id)
+        task.metadata_json = metadata
+        return True, metadata
 
     async def _claim_completion_side_effects(
         self,
         *,
+        task: RuntimeTask,
         run_id: uuid.UUID,
-        tenant_id: uuid.UUID,
         status: str,
     ) -> tuple[bool, dict[str, Any]]:
         """Atomically claim run-level completion side effects.
@@ -1647,23 +1933,18 @@ class WorkflowRuntimeService:
         from datetime import UTC, datetime
 
         idempotency_key = f"workflow_completed:{run_id}:{status}"
-        async with self._session(tenant_id) as session:
-            task = (
-                await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id).with_for_update())
-            ).scalar_one()
-            metadata = dict(task.metadata_json or {})
-            existing = metadata.get("completion_side_effects")
-            if isinstance(existing, dict) and existing.get("idempotency_key") == idempotency_key:
-                return False, metadata
-            metadata["completion_side_effects"] = {
-                "idempotency_key": idempotency_key,
-                "status": status,
-                "claimed_at": datetime.now(UTC).isoformat(),
-                "signal_type": "workflow_completed",
-            }
-            task.metadata_json = metadata
-            await session.flush()
-            return True, metadata
+        metadata = dict(task.metadata_json or {})
+        existing = metadata.get("completion_side_effects")
+        if isinstance(existing, dict) and existing.get("idempotency_key") == idempotency_key:
+            return False, metadata
+        metadata["completion_side_effects"] = {
+            "idempotency_key": idempotency_key,
+            "status": status,
+            "claimed_at": datetime.now(UTC).isoformat(),
+            "signal_type": "workflow_completed",
+        }
+        task.metadata_json = metadata
+        return True, metadata
 
     # ── internals ────────────────────────────────────────────────
 
@@ -1798,39 +2079,73 @@ class WorkflowRuntimeService:
         agent_for_signal: uuid.UUID | None = None
         definition_hash: str | None = None
         task_metadata: dict[str, Any] = {}
+        completion_side_effects_claimed = False
         async with self._session(tenant_id) as session:
             from app.models.workflow import WorkflowLeafCall
+            from app.services.runtime_task_fence import assert_runtime_task_fence
 
-            task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
+            task = (
+                await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id).with_for_update())
+            ).scalar_one()
+            assert_runtime_task_fence(task)
+            task_metadata = dict(task.metadata_json or {})
+            if (
+                task.status == "killed"
+                and task_metadata.get("terminal_committed_status") == "killed"
+                and task_metadata.get("terminal_commit_source") == "workflow_runtime.kill"
+            ):
+                outcome = WorkflowRunOutcome(
+                    status="killed",
+                    reason="workflow was killed by operator before terminal commit",
+                    outputs=outcome.outputs,
+                )
+                from app.services.workflow_metrics import record_workflow_run_finished
+
+                record_workflow_run_finished(outcome.status)
+                return outcome
             if outcome.status == "killed" and task.status == "suspended":
-                # The stop flag the engine saw was an admin force-suspend, not a
-                # kill: report it truthfully and keep the operator's state.
                 outcome = WorkflowRunOutcome(
                     status="suspended",
                     reason="force-suspended by operator; stopped at step boundary",
                     outputs=outcome.outputs,
                 )
-            if task.status != "killed":
-                task.status = {
-                    "completed": "completed",
-                    "failed": "failed",
-                    "suspended": "suspended",
-                    "killed": "killed",
-                }[outcome.status]
-            from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
-
-            await transition_runtime_root_item_by_task(
-                session,
-                runtime_task_id=run_id,
-                requested_state=str(task.status),
-                reason_code=str(outcome.reason or "").strip() or None,
-                result_refs=[f"runtime-task://{run_id}"],
-            )
+            elif task.status == "killed" and outcome.status != "killed":
+                outcome = WorkflowRunOutcome(
+                    status="killed",
+                    reason="workflow was killed by operator before terminal commit",
+                    outputs=outcome.outputs,
+                )
+            agent_for_signal = task.parent_agent_id
+            task_metadata = dict(task.metadata_json or {})
+            if outcome.status in {"completed", "failed", "killed"}:
+                completion_summary = self._completion_task_summary(
+                    run_id=run_id,
+                    status=outcome.status,
+                    reason=outcome.reason,
+                    outputs=outcome.outputs,
+                )
+                notification_claimed, notification_metadata = await self._claim_parent_task_notification_side_effect(
+                    session=session,
+                    task=task,
+                    run_id=run_id,
+                    tenant_id=tenant_id,
+                    status=outcome.status,
+                    agent_id=agent_for_signal,
+                    parent_session_id=task_metadata.get("parent_session_id"),
+                    summary=completion_summary,
+                )
+                if notification_claimed:
+                    task_metadata = notification_metadata
+            if outcome.status == "completed":
+                completion_side_effects_claimed, task_metadata = await self._claim_completion_side_effects(
+                    task=task,
+                    run_id=run_id,
+                    status=outcome.status,
+                )
             if outcome.reason:
                 metadata = dict(task.metadata_json or {})
                 metadata["last_outcome_reason"] = outcome.reason
                 task.metadata_json = metadata
-            agent_for_signal = task.parent_agent_id
             task_metadata = dict(task.metadata_json or {})
             if task_metadata.get("dynamic_workflow"):
                 steps = (
@@ -1842,8 +2157,7 @@ class WorkflowRuntimeService:
                     .all()
                 )
                 dynamic = dict(task_metadata.get("dynamic_workflow") or {})
-                task_for_summary = task
-                task_for_summary.metadata_json = task_metadata
+                task_for_summary = SimpleNamespace(status=outcome.status, metadata_json=task_metadata)
                 outcome_evidence = summarize_dynamic_workflow_outcome(
                     task=task_for_summary,
                     steps=list(steps),
@@ -1863,87 +2177,98 @@ class WorkflowRuntimeService:
                 task_metadata["dynamic_workflow"] = dynamic
                 task.metadata_json = task_metadata
             definition_hash = task_metadata.get("definition_hash")
+            if outcome.status in {"completed", "failed", "killed"}:
+                task_metadata["runtime_budget_actuals"] = {"background_tasks": 1}
+                task.metadata_json = task_metadata
 
-        await self._audit(
-            f"workflow_run_{outcome.status}",
-            tenant_id=tenant_id,
-            run_id=run_id,
-            agent_id=agent_for_signal,
-            definition_hash=definition_hash,
-            extra={"reason": outcome.reason} if outcome.reason else None,
-        )
-        from app.services.workflow_metrics import record_workflow_run_finished
-
-        record_workflow_run_finished(outcome.status)
-        await self._append_run_session_event(
-            tenant_id=tenant_id,
-            agent_id=agent_for_signal,
-            user_id=task_metadata.get("user_id"),
-            run_id=run_id,
-            parent_session_id=task_metadata.get("parent_session_id"),
-            root_session_id=task_metadata.get("root_session_id") or task_metadata.get("parent_session_id"),
-            status=outcome.status,
-            definition_source=task_metadata.get("definition_source"),
-            definition_hash=definition_hash,
-            reason=outcome.reason,
-            outputs=outcome.outputs,
-        )
-        if outcome.status in {"completed", "failed", "killed"}:
-            completion_summary = self._completion_task_summary(
+            await self._append_run_session_event(
+                tenant_id=tenant_id,
+                agent_id=task.parent_agent_id,
+                user_id=task_metadata.get("user_id"),
                 run_id=run_id,
+                parent_session_id=task_metadata.get("parent_session_id"),
+                root_session_id=task_metadata.get("root_session_id") or task_metadata.get("parent_session_id"),
                 status=outcome.status,
+                definition_source=task_metadata.get("definition_source"),
+                definition_hash=definition_hash,
                 reason=outcome.reason,
                 outputs=outcome.outputs,
+                db=session,
             )
-            notification_claimed, notification_metadata = await self._claim_parent_task_notification_side_effect(
-                run_id=run_id,
-                tenant_id=tenant_id,
-                status=outcome.status,
-                agent_id=agent_for_signal,
-                parent_session_id=task_metadata.get("parent_session_id"),
-                summary=completion_summary,
+            audit_agent_id = None
+            if task.parent_agent_id is not None:
+                audit_agent_id = await session.scalar(
+                    select(Agent.id).where(Agent.id == task.parent_agent_id, Agent.tenant_id == tenant_id)
+                )
+            await session.execute(
+                insert(AuditLog)
+                .values(
+                    id=uuid.uuid5(run_id, f"workflow-run:{outcome.status}:audit"),
+                    action=f"workflow_run_{outcome.status}",
+                    details={
+                        "tenant_id": str(tenant_id),
+                        "run_id": str(run_id),
+                        "definition_hash": definition_hash,
+                        "agent_id": str(task.parent_agent_id) if task.parent_agent_id else None,
+                        **({"reason": outcome.reason} if outcome.reason else {}),
+                    },
+                    agent_id=audit_agent_id,
+                    tenant_id=tenant_id,
+                )
+                .on_conflict_do_nothing(index_elements=[AuditLog.id])
             )
-            if notification_claimed:
-                task_metadata = notification_metadata
-        if outcome.status == "completed":
-            claimed, task_metadata = await self._claim_completion_side_effects(
-                run_id=run_id,
-                tenant_id=tenant_id,
-                status=outcome.status,
-            )
-            if claimed:
-                await self._emit_completion_signal(run_id, agent_for_signal, outcome.status, tenant_id=tenant_id)
+            if completion_side_effects_claimed:
+                await self._emit_completion_signal(
+                    run_id,
+                    task.parent_agent_id,
+                    outcome.status,
+                    tenant_id=tenant_id,
+                    session=session,
+                )
                 await self._deliver_completion_notification(
                     run_id=run_id,
-                    agent_id=agent_for_signal,
+                    agent_id=task.parent_agent_id,
                     status=outcome.status,
                     tenant_id=tenant_id,
                     metadata=task_metadata,
+                    session=session,
+                    task=task,
                 )
-        if outcome.status in {"completed", "failed", "killed"}:
-            budget_uuid = _uuid_or_none(task_metadata.get("budget_run_id"))
-            reservation_key = str(task_metadata.get("budget_reservation_key") or "").strip()
-            if budget_uuid is not None and reservation_key:
-                reservation = RuntimeBudgetReservation(
-                    budget_run_id=budget_uuid,
-                    reservation_key=reservation_key,
-                    background_tasks=1,
+
+            task.status = {
+                "completed": "completed",
+                "failed": "failed",
+                "suspended": "suspended",
+                "killed": "killed",
+            }[outcome.status]
+            if task.status == "suspended":
+                task.claimed_by = None
+                task.claim_expires_at = None
+            if task.status in {"completed", "failed", "killed"}:
+                task.completed_at = task.completed_at or datetime.now(UTC)
+                from app.services.runtime_terminal_settlement import settle_runtime_task_terminal
+
+                await settle_runtime_task_terminal(
+                    session,
+                    task,
+                    terminal_source=f"workflow_runtime.{task.status}",
+                    root_reason_code=str(outcome.reason or "").strip() or None,
+                )
+            else:
+                from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
+
+                await transition_runtime_root_item_by_task(
+                    session,
                     runtime_task_id=run_id,
-                    metadata={"work_type": "workflow", "workflow_run_id": str(run_id)},
+                    requested_state=str(task.status),
+                    reason_code=str(outcome.reason or "").strip() or None,
+                    result_refs=[f"runtime-task://{run_id}"],
                 )
-                await ExecutionAdmission(RuntimeBudgetService(session_factory=self._session_factory)).settle(
-                    ExecutionAdmissionDecision(
-                        status="admitted",
-                        reservation=reservation,
-                        budget_run_id=budget_uuid,
-                    ),
-                    actual_background_tasks=1,
-                    reason=f"workflow_{outcome.status}",
-                    runtime_task_id=run_id,
-                )
-                async with self._session(tenant_id) as session:
-                    settled_task = (
-                        await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))
-                    ).scalar_one()
-                    settled_task.budget_admission_status = "settled"
+            agent_for_signal = task.parent_agent_id
+            task_metadata = dict(task.metadata_json or {})
+            finish_current_runtime_task_claim(task_id=run_id)
+
+        from app.services.workflow_metrics import record_workflow_run_finished
+
+        record_workflow_run_finished(outcome.status)
         return outcome

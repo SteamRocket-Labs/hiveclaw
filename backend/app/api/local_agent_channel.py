@@ -883,7 +883,7 @@ async def download_agent_local_agent_channel_workspace_file(
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
     host_owner_user_id = _local_agent_host_user_id(agent)
     tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
-    await channel_service.resolve_agent_channel_session(
+    session = await channel_service.resolve_agent_channel_session(
         db,
         tenant_id=tenant_id,
         owner_user_id=host_owner_user_id,
@@ -891,7 +891,15 @@ async def download_agent_local_agent_channel_workspace_file(
         source_agent_id=agent.id,
         session_id=session_id,
     )
-    _base, target = _safe_local_agent_workspace_path_for(tenant_id, host_owner_user_id, path)
+    authorized_path = await channel_service.authorize_agent_channel_workspace_download(
+        db,
+        tenant_id=tenant_id,
+        owner_user_id=host_owner_user_id,
+        source_agent_id=agent.id,
+        session_id=_coerce_uuid(session["id"]),
+        path=path,
+    )
+    _base, target = _safe_local_agent_workspace_path_for(tenant_id, host_owner_user_id, authorized_path)
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return FileResponse(path=str(target), filename=target.name)

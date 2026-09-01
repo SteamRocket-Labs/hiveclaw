@@ -173,12 +173,15 @@ describe('AgentDetail realtime refresh contract', () => {
 
   it('clears the previous Agent session surface before consuming a cross-Agent new-conversation request', async () => {
     const source = await readSource('./AgentDetail.tsx');
-    const agentResetEffect = source.indexOf('// Reset visible state whenever the viewed agent changes.');
+    const lifecycle = await readSource('./agent-detail/useOperatorAuthorityLifecycle.ts');
+    const agentResetHook = source.indexOf('useOperatorAuthorityCacheLifecycle({');
     const draftRequestEffect = source.indexOf('if (!newSessionDraftRequest || !id) return;');
 
-    expect(agentResetEffect).toBeGreaterThanOrEqual(0);
+    expect(agentResetHook).toBeGreaterThanOrEqual(0);
     expect(draftRequestEffect).toBeGreaterThanOrEqual(0);
-    expect(agentResetEffect).toBeLessThan(draftRequestEffect);
+    expect(agentResetHook).toBeLessThan(draftRequestEffect);
+    expect(lifecycle).toContain('setters.setSessions([]);');
+    expect(lifecycle).toContain('}, [agentId]);');
   });
 
   it('seals terminal websocket events onto the visible live process without rebuilding gapped history', async () => {
@@ -263,6 +266,11 @@ describe('AgentDetail realtime refresh contract', () => {
 
     expect(selector).toContain('ensureSessionWorkbenchRoute(sessionId)');
     expect(selector.indexOf('ensureSessionWorkbenchRoute(sessionId)')).toBeGreaterThan(selector.indexOf('await selectSession('));
+    expect(selector).toContain('const operatorBranchView = activeSession?.operator_view === true;');
+    expect(selector).toContain('read_only: true');
+    expect(selector).toContain('is_current_user_session: false');
+    expect(selector).toContain('operator_view: true');
+    expect(selector).toContain("? (activeSession?.user_id != null ? String(activeSession.user_id) : undefined)");
   });
 
   it('removes non-running slash command prompts after their in-session control surface opens', async () => {

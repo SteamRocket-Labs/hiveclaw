@@ -1162,11 +1162,14 @@ async def test_parent_continuation_waits_for_budget_approval_then_resumes(owner_
     assert waiting["deferred"] == 1
     assert pending.status == "pending"
     assert pending.last_error == "runtime_budget_approval_required"
+    waiting_run = await budget_service.get_run(tenant_id=tenant_id, budget_run_id=budget_run.id)
+    assert waiting_run is not None and waiting_run.approval_episode_id is not None
 
     await budget_service.approve_overrun(
         tenant_id=tenant_id,
         budget_run_id=budget_run.id,
         reason="owner approved completion synthesis",
+        approval_episode_id=waiting_run.approval_episode_id,
         actor_user_id=user_id,
         max_continuation_wakes=1,
     )

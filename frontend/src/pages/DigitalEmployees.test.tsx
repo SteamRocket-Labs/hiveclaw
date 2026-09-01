@@ -71,6 +71,29 @@ vi.mock('@tanstack/react-query', () => ({
         execution_mode: 'standard',
         agent_type: 'local_agent',
       },
+      {
+        id: 'agent-3',
+        name: 'Audited Finance Agent',
+        role_description: 'Operator inspection only',
+        status: 'running',
+        creator_id: 'user-9',
+        owner_user_id: 'user-9',
+        is_owner: false,
+        access_level: 'operator',
+        action_capabilities: {
+          can_use: false,
+          can_manage: false,
+          can_manage_permissions: false,
+          can_manage_schedule: false,
+          can_manage_channel: false,
+          can_operator_inspect: true,
+          can_transfer_ownership: false,
+        },
+        created_at: '2026-06-20T00:00:00Z',
+        last_active_at: '2026-06-23T06:00:00Z',
+        execution_mode: 'standard',
+        agent_type: 'native',
+      },
       ],
       isLoading: false,
     };
@@ -117,6 +140,13 @@ describe('DigitalEmployees page', () => {
     expect(markup).toContain('href="/agents/agent-1#workflows"');
     expect(markup).toContain('href="/agents/agent-1#a2a"');
     expect(markup).toContain('href="/agents/agent-2#workspace"');
+    expect(markup).toContain('Audited Finance Agent');
+    expect(markup).toContain('href="/agents/agent-3?manage=true#chat"');
+    expect(markup).toContain('Inspect');
+    expect(markup).not.toContain('href="/agents/agent-3#chat"');
+    expect(markup).not.toContain('href="/agents/agent-3#knowledge"');
+    expect(markup).not.toContain('href="/agents/agent-3#workflows"');
+    expect(markup).not.toContain('href="/agents/agent-3#a2a"');
     expect(markup).not.toContain('href="/local-agents"');
     expect(markup).toContain('Interrupted creations');
     expect(markup).toContain('Interrupted Analyst');

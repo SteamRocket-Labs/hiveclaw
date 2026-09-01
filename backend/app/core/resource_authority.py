@@ -17,8 +17,12 @@ from fastapi import HTTPException, status
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import check_agent_access
-from app.core.policy import check_permission, permission_allows
+from app.core.permissions import (
+    authorize_agent_operator_inspection,
+    check_agent_access,
+    check_agent_operator_reachability,
+)
+from app.core.policy import check_permission, permission_effect_applies
 from app.models.agent import Agent
 from app.models.chat_session import ChatSession
 from app.models.security_audit import ResourcePermission
@@ -93,18 +97,17 @@ async def _has_explicit_resource_grant(
     if getattr(user, "role", None) != "platform_admin" and getattr(user, "department_id", None):
         principals.append(("department", user.department_id))
     context = {"tenant_id": str(user.tenant_id) if getattr(user, "tenant_id", None) else None}
-    for principal_type, principal_id in principals:
-        if await check_permission(
-            db,
-            principal_type=principal_type,
-            principal_id=principal_id,
-            resource_type=resource_kind,
-            resource_id=resource_id,
-            action=action,
-            context=context,
-        ):
-            return True
-    return False
+    primary_principal, *additional_principals = principals
+    return await check_permission(
+        db,
+        principal_type=primary_principal[0],
+        principal_id=primary_principal[1],
+        additional_principals=additional_principals,
+        resource_type=resource_kind,
+        resource_id=resource_id,
+        action=action,
+        context=context,
+    )
 
 
 async def load_explicit_resource_grant_ids(
@@ -139,10 +142,21 @@ async def load_explicit_resource_grant_ids(
         statement = statement.where(ResourcePermission.tenant_id == tenant_id)
     permissions = (await db.execute(statement)).scalars().all()
     context = {"tenant_id": str(tenant_id) if tenant_id else None}
+    effects_by_resource: dict[uuid.UUID, set[str]] = {}
+    for permission in permissions:
+        if permission.resource_id is None or not permission_effect_applies(
+            permission,
+            action=action,
+            context=context,
+        ):
+            continue
+        effects_by_resource.setdefault(permission.resource_id, set()).add(
+            str(getattr(permission, "effect", "allow") or "allow")
+        )
     return {
-        permission.resource_id
-        for permission in permissions
-        if permission_allows(permission, action=action, context=context)
+        resource_id
+        for resource_id, effects in effects_by_resource.items()
+        if "allow" in effects and "deny" not in effects
     }
 
 
@@ -164,11 +178,15 @@ async def authorize_resource_action(
     """Authorize a resource without widening generic Agent access.
 
     Unknown legacy rows are quarantined before owner/session/grant evaluation.
-    A manager can cross either an ownership or quarantine boundary only when a
-    caller deliberately enables operator mode and supplies a reason.
+    Cross-owner inspection is read-only and requires an independent live
+    ``operator.inspect`` grant plus a reason.
     """
 
-    agent, access_level = agent_access or await check_agent_access(db, user, agent_id)
+    agent, access_level = agent_access or await (
+        check_agent_operator_reachability(db, user, agent_id)
+        if allow_manager_override and action == "read"
+        else check_agent_access(db, user, agent_id)
+    )
     if str(agent.id) != str(agent_id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent authority context mismatch")
     state = str(authority_state or QUARANTINED_AUTHORITY_STATE).strip().lower()
@@ -213,24 +231,20 @@ async def authorize_resource_action(
                 authority_source="resource_grant",
             )
 
-    reason = str(manager_override_reason or "").strip()
-    if access_level == "manage" and allow_manager_override and reason:
-        from app.services.audit_logger import write_audit_log
-
-        await write_audit_log(
-            "resource_authority_override",
+    if allow_manager_override and action == "read":
+        authority_source = await authorize_agent_operator_inspection(
+            db,
+            user=user,
+            agent=agent,
+            reason=manager_override_reason,
+            action=f"{resource_kind}:read",
+            resource_type=resource_kind,
+            resource_id=resource_id,
             details={
-                "resource_kind": resource_kind,
-                "resource_id": str(resource_id),
                 "owner_user_id": str(owner_user_id) if owner_user_id else None,
                 "root_session_id": str(root_session_id) if root_session_id else None,
                 "authority_state": state,
-                "action": action,
-                "reason": reason,
-                "authority_source": "manager_override",
             },
-            agent_id=agent_id,
-            user_id=user.id,
         )
         return ResourceAuthorityDecision(
             agent=agent,
@@ -238,7 +252,7 @@ async def authorize_resource_action(
             resource_kind=resource_kind,
             resource_id=resource_id,
             action=action,
-            authority_source="manager_override",
+            authority_source=authority_source,
             operator_view=True,
         )
 
@@ -271,7 +285,11 @@ async def filter_authorized_resources(
     """Apply the same row authority contract to list/aggregate surfaces."""
 
     rows = list(resources)
-    resolved_agent_access = agent_access or await check_agent_access(db, user, agent_id)
+    resolved_agent_access = agent_access or await (
+        check_agent_operator_reachability(db, user, agent_id)
+        if operator_view and action == "read"
+        else check_agent_access(db, user, agent_id)
+    )
     if operator_view:
         collection_id = uuid.uuid5(
             _WORKSPACE_RESOURCE_NAMESPACE,

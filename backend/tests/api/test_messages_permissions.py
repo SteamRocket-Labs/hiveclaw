@@ -140,6 +140,9 @@ async def test_get_inbox_uses_accessible_agent_helper(monkeypatch):
     result = await messages_api.get_inbox(limit=10, current_user=current_user, db=db)
 
     assert called["args"] == (db, current_user)
+    session_statement = next(statement for statement in db.statement_objects if "FROM chat_sessions" in str(statement))
+    session_sql = str(session_statement.compile(compile_kwargs={"literal_binds": True}))
+    assert f"chat_sessions.user_id = '{current_user.id.hex}'" in session_sql
     assert result == [
         {
             "id": str(db.messages[0].id),

@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate, stamp_plan_gate_decision
-from app.core.permissions import check_agent_access
+from app.core.permissions import check_agent_access, check_agent_operator_reachability
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.trigger import AgentTrigger
@@ -178,7 +178,11 @@ async def list_agent_triggers(
     include_diagnostics = diagnostics is True
     use_operator_view = operator_view is True
     normalized_operator_reason = operator_reason if isinstance(operator_reason, str) else None
-    agent_access = await check_agent_access(db, current_user, agent_id)
+    agent_access = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if use_operator_view
+        else check_agent_access(db, current_user, agent_id)
+    )
     result = await db.execute(
         select(AgentTrigger).where(AgentTrigger.agent_id == agent_id).order_by(AgentTrigger.created_at.desc())
     )

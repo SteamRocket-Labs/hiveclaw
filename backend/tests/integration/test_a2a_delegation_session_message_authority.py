@@ -340,8 +340,8 @@ async def test_parent_agent_message_to_active_delegation_child_is_admitted(owner
 
 
 @pytest.mark.asyncio
-async def test_owner_and_manager_mutation_of_delegation_run_still_409(owner_sessionmaker) -> None:
-    """The product read-only boundary is NOT weakened for user-facing writes."""
+async def test_owner_read_only_409_and_manager_cross_user_mutation_403(owner_sessionmaker) -> None:
+    """Read-only owners get lifecycle detail; foreign managers get no session-kind oracle."""
 
     from app.services.session_live_input import submit_live_human_input
     from app.services.session_v2_persistence import resolve_session_mutation_authority
@@ -378,8 +378,8 @@ async def test_owner_and_manager_mutation_of_delegation_run_still_409(owner_sess
                 allow_manager_override=True,
                 manager_override_reason="incident inspection",
             )
-        assert manager_exc.value.status_code == 409
-        assert manager_exc.value.detail["code"] == "session_read_only"
+        assert manager_exc.value.status_code == 403
+        assert manager_exc.value.detail == "This session belongs to a different user"
         await db.rollback()
 
 

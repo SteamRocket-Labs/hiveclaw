@@ -442,15 +442,6 @@ async def _create_trigger_runtime_task(
         )
         return TriggerRuntimeTaskRef(persisted_task_id, admission_status=admission_status)
     except Exception as exc:
-        if admission_decision is not None and admission_decision.status == "admitted":
-            try:
-                await ExecutionAdmission(reservation_service).settle(
-                    admission_decision,
-                    reason="trigger_ledger_create_failed",
-                    runtime_task_id=uuid.UUID(task_id),
-                )
-            except Exception:
-                logger.exception("[TriggerDaemon] Failed to release trigger reservation after ledger failure")
         logger.error("[TriggerDaemon] Refusing trigger without RuntimeTask ledger for {}: {}", agent_id, exc)
         return None
 
@@ -475,6 +466,8 @@ async def _update_trigger_runtime_task(
     if status == "needs_reconciliation":
         metadata.setdefault("needs_reconciliation", True)
         metadata.setdefault("reconciliation_reason", "trigger_effect_evidence_pending")
+    if status in _TERMINAL_TRIGGER_STATUSES:
+        metadata["runtime_budget_actuals"] = {"background_tasks": 1}
     fields = {
         "status": status,
         "result_summary": result_summary,
@@ -492,7 +485,6 @@ async def _update_trigger_runtime_task(
     if updated is not True:
         return False
     if status in _TERMINAL_TRIGGER_STATUSES:
-        await _settle_trigger_runtime_budget(runtime_task_id, status=status)
         mark_daemon_outcome("trigger_daemon")
     return True
 
@@ -2543,41 +2535,6 @@ async def _invoke_agent_for_triggers(
         )
         if not terminal_committed:
             raise RuntimeError("trigger exception terminal transaction did not commit") from e
-
-
-async def _settle_trigger_runtime_budget(runtime_task_id: str | None, *, status: str) -> None:
-    if not runtime_task_id:
-        return
-    try:
-        record = await get_runtime_task_record(str(runtime_task_id))
-        if not record:
-            return
-        if str(record.get("budget_admission_status") or "").strip() == "settled":
-            return
-        budget_run_id = _runtime_task_uuid_or_none(record.get("budget_run_id"))
-        reservation_key = str(record.get("budget_reservation_key") or "").strip()
-        if budget_run_id is None or not reservation_key:
-            return
-        reservation = RuntimeBudgetReservation(
-            budget_run_id=budget_run_id,
-            reservation_key=reservation_key,
-            background_tasks=1,
-            runtime_task_id=uuid.UUID(str(runtime_task_id)),
-            metadata={"work_type": "trigger", "status": status},
-        )
-        await ExecutionAdmission().settle(
-            ExecutionAdmissionDecision(
-                status="admitted",
-                reservation=reservation,
-                budget_run_id=budget_run_id,
-            ),
-            actual_background_tasks=1,
-            reason=f"trigger_{status}",
-            runtime_task_id=uuid.UUID(str(runtime_task_id)),
-        )
-        await update_runtime_task_record(str(runtime_task_id), budget_admission_status="settled")
-    except Exception:
-        logger.exception("[TriggerDaemon] Failed to settle trigger budget for {}", runtime_task_id)
 
 
 async def execute_claimed_trigger_runtime_task(task_id: uuid.UUID | str) -> bool:

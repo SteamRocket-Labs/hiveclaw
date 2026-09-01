@@ -492,6 +492,8 @@ export type AgentOwnedSession = {
   readOnly?: unknown;
   is_current_user_session?: unknown;
   isCurrentUserSession?: unknown;
+  operator_view?: unknown;
+  operatorView?: unknown;
   is_pending_session_lookup?: unknown;
   isPendingSessionLookup?: unknown;
   is_draft?: unknown;
@@ -556,6 +558,7 @@ export function isReadOnlySessionForCurrentUser(
   currentUserId: string | number | null | undefined,
 ): boolean {
   if (!session) return false;
+  if (session.operator_view === true || session.operatorView === true) return true;
   if (isDraftHumanChatSession(session)) return false;
   if (session.read_only === true || session.readOnly === true) return true;
   if (session.is_pending_session_lookup === true || session.isPendingSessionLookup === true) return true;

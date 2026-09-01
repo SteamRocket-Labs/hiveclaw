@@ -883,7 +883,11 @@ async def get_overview(
     latest_dream = (
         await db.execute(
             select(RuntimeTask)
-            .where(RuntimeTask.parent_agent_id == agent_id, RuntimeTask.task_type == "dream")
+            .where(
+                RuntimeTask.parent_agent_id == agent_id,
+                RuntimeTask.task_type == "dream",
+                RuntimeTask.root_user_id == current_user.id,
+            )
             .order_by(RuntimeTask.created_at.desc())
             .limit(1)
         )

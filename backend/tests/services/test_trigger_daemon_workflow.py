@@ -419,14 +419,8 @@ async def test_workflow_asset_evidence_recovery_holds_trigger_and_wrapper(monkey
         terminal_updates.append({"runtime_task_id": runtime_task_id, **fields})
         return True
 
-    budget_settlements = []
-
-    async def fake_settle_budget(runtime_task_id, *, status):
-        budget_settlements.append((runtime_task_id, status))
-
     monkeypatch.setattr(workflow_trigger, "fire_workflow_for_trigger", fake_fire_workflow)
     monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task)
-    monkeypatch.setattr(trigger_daemon, "_settle_trigger_runtime_budget", fake_settle_budget)
 
     await trigger_daemon._invoke_agent_for_triggers(
         agent_id,
@@ -439,7 +433,7 @@ async def test_workflow_asset_evidence_recovery_holds_trigger_and_wrapper(monkey
     assert metadata["trigger_settlement_overrides"] == {str(trigger_id): "hold"}
     assert metadata["workflow_trigger_results"][0]["run_id"] == str(child_run_id)
     assert metadata["workflow_trigger_results"][0]["status"] == "needs_reconciliation"
-    assert budget_settlements == [("workflow-wrapper", "needs_reconciliation")]
+    assert metadata["runtime_budget_actuals"] == {"background_tasks": 1}
 
 
 async def test_workflow_asset_usage_error_replay_recovers_without_second_child_effect(
@@ -549,14 +543,8 @@ async def test_workflow_wrapper_terminal_commit_crash_replays_receipt_without_fa
         terminal_updates.append({"runtime_task_id": runtime_task_id, **fields})
         return next(terminal_outcomes)
 
-    budget_settlements = []
-
-    async def fake_settle_budget(runtime_task_id, *, status):
-        budget_settlements.append((runtime_task_id, status))
-
     monkeypatch.setattr(workflow_trigger, "fire_workflow_for_trigger", fake_fire_workflow)
     monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task)
-    monkeypatch.setattr(trigger_daemon, "_settle_trigger_runtime_budget", fake_settle_budget)
 
     with pytest.raises(RuntimeError, match="wrapper terminal transaction did not commit"):
         await trigger_daemon._invoke_agent_for_triggers(
@@ -576,4 +564,6 @@ async def test_workflow_wrapper_terminal_commit_crash_replays_receipt_without_fa
         update["metadata_json"]["workflow_trigger_results"][0]["run_id"] == str(child_run_id)
         for update in terminal_updates
     )
-    assert budget_settlements == [("workflow-wrapper-replay", "needs_reconciliation")]
+    assert all(
+        update["metadata_json"]["runtime_budget_actuals"] == {"background_tasks": 1} for update in terminal_updates
+    )

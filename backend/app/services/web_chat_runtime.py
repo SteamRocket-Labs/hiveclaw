@@ -2272,6 +2272,38 @@ async def start_web_chat_run(
         protected_extra_metadata["exact_secret_ingress_redaction"] = redaction_receipt
     extra_metadata = protected_extra_metadata
 
+    approved_budget_uuid = _uuid_or_none(extra_metadata.get("budget_run_id"))
+    approved_reservation_key = (
+        str(root_item_intent.budget_reservation_key or "").strip() if root_item_intent is not None else ""
+    )
+    if (
+        budget_admission_status_override == "approved"
+        and approved_budget_uuid is not None
+        and approved_reservation_key
+        and run_id is not None
+    ):
+        from app.services.runtime_budget_service import assert_runtime_task_budget_reservation_open
+
+        existing_budget_task = await assert_runtime_task_budget_reservation_open(
+            db,
+            budget_run_id=approved_budget_uuid,
+            reservation_key=approved_reservation_key,
+            runtime_task_id=run_id,
+        )
+        if existing_budget_task is not None:
+            if (
+                existing_budget_task.parent_agent_id != agent.id
+                or str(existing_budget_task.parent_session_id or "") != str(session.id)
+                or existing_budget_task.task_type != runtime_task_type
+                or existing_budget_task.budget_run_id != approved_budget_uuid
+                or str(existing_budget_task.budget_reservation_key or "") != approved_reservation_key
+            ):
+                raise HTTPException(status_code=409, detail="Run request id is already bound to another execution")
+            await db.commit()
+            payload = _runtime_task_to_run(existing_budget_task)
+            payload["replayed"] = True
+            return payload
+
     await _lock_session_runtime_mutation(db, session_id=session.id)
 
     if run_id is not None:

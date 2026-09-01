@@ -58,6 +58,7 @@ export interface RuntimeBudgetRun {
   source: string | null;
   profile: string | null;
   status: string;
+  approval_episode_id: string | null;
   enforcement_mode: string;
   terminal_reason: string | null;
   user_status: string;
@@ -121,6 +122,7 @@ export const runtimeBudgetApi = {
   approveOverrun: (
     runId: string,
     payload: {
+      approval_episode_id: string;
       reason: string;
       enforcement_mode?: 'observe' | 'enforce' | string;
       max_subagents?: number | null;
@@ -129,8 +131,8 @@ export const runtimeBudgetApi = {
       max_tokens?: number | null;
     },
   ) => post<RuntimeBudgetRun>(`/runtime-budgets/runs/${runId}/approve-overrun`, payload),
-  rejectOverrun: (runId: string, reason: string) =>
-    post<RuntimeBudgetRun>(`/runtime-budgets/runs/${runId}/reject-overrun`, { reason }),
+  rejectOverrun: (runId: string, payload: { approval_episode_id: string; reason: string }) =>
+    post<RuntimeBudgetRun>(`/runtime-budgets/runs/${runId}/reject-overrun`, payload),
   listTransitionDeliveries: (params: { runId?: string; status?: string; limit?: number } = {}) => {
     const query = new URLSearchParams();
     if (params.runId) query.set('budget_run_id', params.runId);

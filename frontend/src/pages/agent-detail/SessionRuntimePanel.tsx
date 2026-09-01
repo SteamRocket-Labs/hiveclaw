@@ -310,6 +310,7 @@ export function SessionRuntimePanel({
   onClearSelectedThreadItem,
   agentId,
   sessionId,
+  readOnly = false,
   onGoalChanged,
   onTeamChanged,
   onRetrySubagent,
@@ -331,6 +332,7 @@ export function SessionRuntimePanel({
   onClearSelectedThreadItem?: () => void;
   agentId?: string;
   sessionId?: string;
+  readOnly?: boolean;
   onGoalChanged?: () => void | Promise<unknown>;
   onTeamChanged?: () => void | Promise<unknown>;
   onRetrySubagent?: (worker: RuntimeSectionItemModel) => void | Promise<unknown>;
@@ -540,7 +542,8 @@ export function SessionRuntimePanel({
             teamStatus={team.status}
             member={member}
             onEnter={sessionId && onSelectSession ? () => onSelectSession(sessionId) : undefined}
-            onChanged={onTeamChanged}
+            onChanged={readOnly ? undefined : onTeamChanged}
+            readOnly={readOnly}
           />
         ) : null}
       </div>
@@ -591,16 +594,16 @@ export function SessionRuntimePanel({
               : t('sessionWorkbench.rightPanel.workerInspectDisabled', 'No worker session is available'),
             canInspect && sessionId ? () => onSelectSession?.(sessionId) : undefined,
           )}
-          {recovery.canRequestNewWorker
+          {!readOnly && recovery.canRequestNewWorker && onRetrySubagent
             ? workerAction(
                 'retry',
                 t('sessionWorkbench.rightPanel.workerRetry', 'Retry with new worker'),
-                !onRetrySubagent,
+                false,
                 t(
                   'sessionWorkbench.rightPanel.workerRetryTitle',
                   'Ask the main Agent to inspect the failure and create a new one-shot worker if safe',
                 ),
-                onRetrySubagent ? () => void onRetrySubagent(worker) : undefined,
+                () => void onRetrySubagent(worker),
               )
             : null}
         </span>
@@ -635,7 +638,7 @@ export function SessionRuntimePanel({
               <span>{runtimeItemDisplayLabel(team, t('sessionWorkbench.rightPanel.agentTeam', 'Agent Team'))}</span>
               <span className="session-agent-team-close-control">
                 <small>{runtimeItemDisplayStatus(team, t)}</small>
-                {agentId ? (
+                {agentId && !readOnly ? (
                   <SessionAgentTeamCloseControl agentId={agentId} team={team} onChanged={onTeamChanged} />
                 ) : null}
               </span>
@@ -879,11 +882,12 @@ export function SessionRuntimePanel({
             agentId={agentId}
             sessionId={sessionId}
             goals={sessionWorkbench.goals}
-            onChanged={onGoalChanged}
+            onChanged={readOnly ? undefined : onGoalChanged}
+            readOnly={readOnly}
           />
         ) : null}
 
-        <SessionDecisionHistory decisions={sessionDecisions} onFeedback={onDecisionFeedback} />
+        <SessionDecisionHistory decisions={sessionDecisions} onFeedback={readOnly ? undefined : onDecisionFeedback} />
 
         <div data-testid="session-runtime-console" className="session-runtime-console">
           <div

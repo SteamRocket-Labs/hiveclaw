@@ -1104,6 +1104,15 @@
     "toolFailuresSampled": "latest bounded sample"
   },
   "agent": {
+    "operator": {
+      "reason": "Operator inspection reason",
+      "reasonPlaceholder": "Enter the incident or review reason before inspecting another user’s data",
+      "readOnly": "Operator inspection is audited and read-only.",
+      "enterView": "Enter operator view",
+      "exitView": "Exit operator view",
+      "viewTitle": "Operator view",
+      "workspaceReadOnly": "Cross-owner reads are audited. Editing, upload, restore, and deletion are disabled."
+    },
     "runtimeStatus": {
       "ready": "Ready",
       "queued": "Queued",
@@ -2434,6 +2443,25 @@
         "saving": "Saving access...",
         "saved": "Access saved",
         "saveError": "Failed to save access permissions"
+      },
+      "operatorGrant": {
+        "title": "Operator inspection access",
+        "description": "Grant audited, read-only access to other users’ Agent sessions and resources. This never permits mutations.",
+        "user": "User",
+        "chooseUser": "Choose a user",
+        "effect": "Effect",
+        "allow": "Allow",
+        "deny": "Deny",
+        "revoked": "Revoked",
+        "expired": "Expired",
+        "expires": "Expires (optional)",
+        "reason": "Audit reason",
+        "reasonPlaceholder": "Why is this inspection access needed?",
+        "create": "Save inspection grant",
+        "required": "Choose a user and enter an audit reason.",
+        "saveError": "Failed to save operator inspection access.",
+        "revokeReason": "Enter an audit reason before revoking access.",
+        "revokeError": "Failed to revoke operator inspection access."
       },
       "autonomy": {
         "title": "Autonomy Policy",
@@ -3858,6 +3886,7 @@
     "confirm": "Confirm",
     "confirming": "Confirming…",
     "reject": "Reject",
+    "revoke": "Revoke",
     "delete": "Delete",
     "search": "Search",
     "loading": "Loading...",

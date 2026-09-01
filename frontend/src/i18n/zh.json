@@ -1104,6 +1104,15 @@
     "toolFailuresSampled": "最新有限样本"
   },
   "agent": {
+    "operator": {
+      "reason": "操作员检查原因",
+      "reasonPlaceholder": "检查其他用户的数据前，请填写事故或审查原因",
+      "readOnly": "操作员检查只读且全程审计。",
+      "enterView": "进入操作员视图",
+      "exitView": "退出操作员视图",
+      "viewTitle": "操作员视图",
+      "workspaceReadOnly": "跨所有者读取会被审计；编辑、上传、恢复和删除均已禁用。"
+    },
     "runtimeStatus": {
       "ready": "就绪",
       "queued": "排队中",
@@ -2437,6 +2446,25 @@
         "saving": "正在保存权限...",
         "saved": "权限已保存",
         "saveError": "保存访问权限失败"
+      },
+      "operatorGrant": {
+        "title": "操作员检查权限",
+        "description": "授予对其他用户 Agent 会话和资源的受审计只读访问；此权限绝不允许修改。",
+        "user": "用户",
+        "chooseUser": "选择用户",
+        "effect": "效果",
+        "allow": "允许",
+        "deny": "拒绝",
+        "revoked": "已撤销",
+        "expired": "已过期",
+        "expires": "到期时间（可选）",
+        "reason": "审计原因",
+        "reasonPlaceholder": "为什么需要这项检查权限？",
+        "create": "保存检查授权",
+        "required": "请选择用户并填写审计原因。",
+        "saveError": "保存操作员检查权限失败。",
+        "revokeReason": "撤销权限前请填写审计原因。",
+        "revokeError": "撤销操作员检查权限失败。"
       },
       "autonomy": {
         "title": "自主权限",
@@ -3858,6 +3886,7 @@
     "confirm": "确认",
     "confirming": "确认中…",
     "reject": "拒绝",
+    "revoke": "撤销",
     "delete": "删除",
     "search": "搜索",
     "loading": "加载中...",

@@ -73,11 +73,11 @@ async def test_signal_resume_enumerates_waiting_runs_under_nonowner_rls(
     from app.services.workflow_signal_consumer import drain_signal_resumes
 
     run_id, _agent_id, signal_id = await _seed_waiting_run(owner_sessionmaker, tenant_id)
-    resumed: list[tuple[uuid.UUID, uuid.UUID]] = []
+    resumed: list[tuple[uuid.UUID, uuid.UUID, bool]] = []
 
     class _FakeWorkflowRuntimeService:
-        async def resume_run(self, run_id_arg, *, tenant_id, leaf_executor):
-            resumed.append((run_id_arg, tenant_id))
+        async def resume_run(self, run_id_arg, *, tenant_id, leaf_executor, automatic=False):
+            resumed.append((run_id_arg, tenant_id, automatic))
             return WorkflowRunOutcome(status="completed")
 
     async def leaf_executor(_request):
@@ -90,7 +90,7 @@ async def test_signal_resume_enumerates_waiting_runs_under_nonowner_rls(
     )
 
     assert [(item.run_id, item.signal_id) for item in result] == [(run_id, signal_id)]
-    assert resumed == [(run_id, tenant_id)]
+    assert resumed == [(run_id, tenant_id, True)]
     async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
         step = (await session.execute(select(WorkflowStep).where(WorkflowStep.run_id == run_id))).scalar_one()
         task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()

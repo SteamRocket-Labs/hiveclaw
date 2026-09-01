@@ -66,6 +66,9 @@ async def test_expired_readonly_delegation_reclaims_new_fence_and_completes_afte
         def __init__(self, task):
             self.task = task
 
+        def all(self):
+            return [(self.task.id, self.task.budget_run_id)]
+
         def scalars(self):
             return SimpleNamespace(all=lambda: [self.task])
 

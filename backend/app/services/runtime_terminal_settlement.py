@@ -56,6 +56,14 @@ async def settle_runtime_task_terminal(
     if str(task.status or "") not in TERMINAL_SETTLEMENT_STATUSES:
         raise ValueError("terminal_runtime_task_status_required")
 
+    from app.services.runtime_budget_service import (
+        runtime_task_outer_budget_actuals,
+        stamp_runtime_task_budget_actuals,
+    )
+
+    outer_actuals = runtime_task_outer_budget_actuals(task)
+    if outer_actuals:
+        stamp_runtime_task_budget_actuals(task, outer_actuals)
     metadata = dict(task.metadata_json or {})
     existing_fence = str(metadata.get("terminal_execution_fence_ref") or "")
     existing_committed_status = str(metadata.get("terminal_committed_status") or "")
@@ -101,6 +109,11 @@ async def settle_runtime_task_terminal(
             execution_fence_ref=terminal_fence,
             terminal_source=str(terminal_source),
         )
+    # Callers still own commit, but no lease renewal may race the prepared
+    # terminal transaction after every shared mechanical write has succeeded.
+    from app.services.runtime_task_fence import finish_current_runtime_task_claim
+
+    finish_current_runtime_task_claim(task_id=task.id)
     return terminal_fence
 
 
@@ -111,6 +124,7 @@ async def settle_and_enqueue_runtime_task_terminal(
     terminal_source: str,
     root_reason_code: str | None = None,
     root_state: str | None = None,
+    settle_root: bool = True,
 ) -> str:
     """Commit the mechanical terminal evidence and required outbox atomically."""
 
@@ -120,6 +134,7 @@ async def settle_and_enqueue_runtime_task_terminal(
         terminal_source=terminal_source,
         root_reason_code=root_reason_code,
         root_state=root_state,
+        settle_root=settle_root,
     )
     if task.terminal_boundary_generation is None:
         return terminal_fence

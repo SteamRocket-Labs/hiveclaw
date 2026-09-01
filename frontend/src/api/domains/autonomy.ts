@@ -129,12 +129,12 @@ const withParams = (path: string, params: Record<string, string | number | boole
   return query ? `${path}?${query}` : path;
 };
 
-const authorityParams = (authority?: RuntimeAuthorityOptions) => ({
-  operator_override: authority?.operatorView || undefined,
-  operator_reason: authority?.operatorView
-    ? (authority.reason || 'Agent runtime administration')
-    : undefined,
-});
+const authorityParams = (authority?: RuntimeAuthorityOptions) => {
+  if (!authority?.operatorView) return {};
+  const reason = String(authority.reason || '').trim();
+  if (!reason) throw new Error('Operator View requires an audit reason');
+  return { operator_override: true, operator_reason: reason };
+};
 
 export const autonomyApi = {
   getOverview: (agentId: string, query: AutonomyQuery = {}) =>

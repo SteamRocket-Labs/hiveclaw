@@ -427,6 +427,171 @@ async def test_terminal_runtime_task_enqueues_completion_in_same_transaction(mon
 
 
 @pytest.mark.asyncio
+async def test_terminal_runtime_task_disarms_claim_renewer_before_commit(monkeypatch):
+    from datetime import timedelta
+
+    from app.services import runtime_task_fence as fence_service
+    from app.services.runtime_task_service import update_runtime_task_record
+
+    tenant_id = uuid4()
+    worker_id = "terminal-worker"
+    task = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": uuid4(),
+            "tenant_id": tenant_id,
+            "task_type": "subagent",
+            "status": "running",
+            "metadata_json": {},
+            "started_at": datetime.now(timezone.utc),
+            "completed_at": None,
+            "trace_id": "trace",
+            "result_summary": None,
+            "claim_version": 1,
+            "claimed_by": worker_id,
+            "claim_expires_at": datetime.now(timezone.utc) + timedelta(minutes=1),
+        },
+    )()
+
+    class CommitCheckingSession(_UpdateSession):
+        async def commit(self):
+            fence = fence_service.current_runtime_task_fence()
+            assert fence is not None and fence.claim_finished.is_set()
+            await super().commit()
+
+    fake_session = CommitCheckingSession(task)
+    _route_runtime_accessors(monkeypatch, fake_session, tenant_id=tenant_id)
+
+    async def fake_resolve_runtime_task_tenant(*_args, **_kwargs):
+        return tenant_id
+
+    async def fake_terminal_settlement(*_args, **_kwargs):
+        return "runtime-task-terminal:test"
+
+    monkeypatch.setattr(
+        "app.services.runtime_task_service.resolve_tenant_for_runtime_task",
+        fake_resolve_runtime_task_tenant,
+    )
+    monkeypatch.setattr(
+        "app.services.runtime_terminal_settlement.settle_and_enqueue_runtime_task_terminal",
+        fake_terminal_settlement,
+    )
+    token = fence_service.set_runtime_task_fence(
+        task_id=task.id,
+        claim_version=1,
+        worker_id=worker_id,
+    )
+    try:
+        assert await update_runtime_task_record(task.id.hex, status="completed", result_summary="done")
+    finally:
+        fence_service.reset_runtime_task_fence(token)
+
+    assert fake_session.commit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_terminal_runtime_task_rejects_conflicting_budget_actuals_replay(monkeypatch):
+    from app.services.runtime_budget_service import RuntimeBudgetSettlementConflict
+    from app.services.runtime_task_service import update_runtime_task_record
+
+    tenant_id = uuid4()
+    task = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": uuid4(),
+            "tenant_id": tenant_id,
+            "task_type": "subagent",
+            "status": "completed",
+            "metadata_json": {
+                "runtime_budget_actuals": {"subagents": 1, "background_tasks": 1},
+            },
+            "started_at": datetime.now(timezone.utc),
+            "completed_at": datetime.now(timezone.utc),
+            "trace_id": "trace",
+            "result_summary": "done",
+            "claim_version": 1,
+            "budget_run_id": uuid4(),
+            "budget_reservation_key": "subagent:one:start",
+        },
+    )()
+    fake_session = _UpdateSession(task)
+    _route_runtime_accessors(monkeypatch, fake_session, tenant_id=tenant_id)
+
+    async def fake_resolve_runtime_task_tenant(*_args, **_kwargs):
+        return tenant_id
+
+    monkeypatch.setattr(
+        "app.services.runtime_task_service.resolve_tenant_for_runtime_task",
+        fake_resolve_runtime_task_tenant,
+    )
+
+    with pytest.raises(RuntimeBudgetSettlementConflict, match="runtime budget actuals conflict"):
+        await update_runtime_task_record(
+            task.id.hex,
+            status="completed",
+            metadata_json={"runtime_budget_actuals": {"subagents": 2, "background_tasks": 1}},
+        )
+
+    assert task.metadata_json["runtime_budget_actuals"] == {"subagents": 1, "background_tasks": 1}
+    assert fake_session.commit_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_terminal_runtime_task_persists_exact_outer_enqueue_actuals(monkeypatch):
+    from app.services.runtime_task_service import update_runtime_task_record
+
+    tenant_id = uuid4()
+    task = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": uuid4(),
+            "tenant_id": tenant_id,
+            "task_type": "subagent",
+            "status": "running",
+            "metadata_json": {},
+            "started_at": datetime.now(timezone.utc),
+            "completed_at": None,
+            "trace_id": "trace",
+            "result_summary": None,
+            "claim_version": 0,
+            "budget_run_id": uuid4(),
+            "budget_reservation_key": "subagent:one:start",
+            "budget_admission_status": "reserved",
+        },
+    )()
+    fake_session = _UpdateSession(task)
+    _route_runtime_accessors(monkeypatch, fake_session, tenant_id=tenant_id)
+
+    async def fake_resolve_runtime_task_tenant(*_args, **_kwargs):
+        return tenant_id
+
+    async def fake_terminal_settlement(*_args, **_kwargs):
+        return "runtime-task-terminal:test"
+
+    monkeypatch.setattr(
+        "app.services.runtime_task_service.resolve_tenant_for_runtime_task",
+        fake_resolve_runtime_task_tenant,
+    )
+    monkeypatch.setattr(
+        "app.services.runtime_terminal_settlement.settle_and_enqueue_runtime_task_terminal",
+        fake_terminal_settlement,
+    )
+
+    assert await update_runtime_task_record(
+        task.id.hex,
+        status="failed",
+        metadata_json={"worker_dispatch_failed": True},
+    )
+    assert task.metadata_json["runtime_budget_actuals"] == {
+        "subagents": 1,
+        "background_tasks": 1,
+    }
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("status", "metadata", "expected_disposition"),
     [
@@ -824,6 +989,14 @@ async def test_create_runtime_task_record_persists_runtime_budget_metadata(monke
 
     fake_session = _CreateSession()
     _route_runtime_accessors(monkeypatch, fake_session, tenant_id=uuid4())
+
+    async def fake_assert_reservation_open(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.services.runtime_budget_service.assert_runtime_task_budget_reservation_open",
+        fake_assert_reservation_open,
+    )
     budget_run_id = uuid4()
     root_user_id = uuid4()
     root_session_id = str(uuid4())
@@ -852,6 +1025,137 @@ async def test_create_runtime_task_record_persists_runtime_budget_metadata(monke
     assert task.root_session_id == root_session_id
     assert task.root_runtime_task_id == root_runtime_task_id
     assert task.delegation_chain_json == [f"agent:{parent_agent_id}", "subagent:scout"]
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_reserved_runtime_task_creator_exact_replay_returns_durable_row_without_zero_settlement(
+    monkeypatch,
+    owner_sessionmaker,
+):
+    from sqlalchemy import func
+
+    from app.database import tenant_scoped_session as real_tenant_scoped_session
+    from app.models.agent import Agent
+    from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
+    from app.models.runtime_task import RuntimeTask
+    from app.models.tenant import Tenant
+    from app.models.user import User
+    from app.services import runtime_task_service
+    from app.services.runtime_budget_service import (
+        RuntimeBudgetReservation,
+        RuntimeBudgetRunCreate,
+        RuntimeBudgetService,
+    )
+
+    tenant_id, user_id, agent_id, task_id = (uuid4() for _ in range(4))
+    async with real_tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        db.add(Tenant(id=tenant_id, name="Reserved creator replay", slug=f"reserved-replay-{tenant_id.hex[:8]}"))
+        db.add(
+            User(
+                id=user_id,
+                username=f"reserved-replay-{user_id.hex[:8]}",
+                email=f"reserved-replay-{user_id.hex[:8]}@test.local",
+                password_hash="x",
+                display_name="Reserved Replay Owner",
+                tenant_id=tenant_id,
+            )
+        )
+        await db.flush()
+        db.add(
+            Agent(
+                id=agent_id,
+                tenant_id=tenant_id,
+                name="Reserved replay Agent",
+                creator_id=user_id,
+                owner_user_id=user_id,
+            )
+        )
+
+    budget_service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+    run = await budget_service.create_run(
+        RuntimeBudgetRunCreate(
+            tenant_id=tenant_id,
+            root_run_kind="runtime_task_replay",
+            root_run_key=f"runtime-task:{task_id}",
+            max_background_tasks=2,
+        )
+    )
+    reservation_key = f"trigger:{task_id}:start"
+    await budget_service.reserve(
+        RuntimeBudgetReservation(
+            budget_run_id=run.id,
+            reservation_key=reservation_key,
+            background_tasks=1,
+            runtime_task_id=task_id,
+        )
+    )
+
+    async def fake_resolve_tenant_for_agent(_agent_id, **_kwargs):
+        assert _agent_id == agent_id
+        return tenant_id
+
+    @asynccontextmanager
+    async def owner_tenant_scoped_session(requested_tenant_id, **kwargs):
+        assert requested_tenant_id == tenant_id
+        async with real_tenant_scoped_session(
+            requested_tenant_id,
+            session_factory=owner_sessionmaker,
+            require_tenant=kwargs.get("require_tenant", False),
+            source=kwargs.get("source", "test_reserved_runtime_task_replay"),
+        ) as db:
+            yield db
+
+    async def fake_assign_runtime_task_writer_generation(_db, task):
+        task.writer_generation = 1
+        return SimpleNamespace(new_run_generation=1)
+
+    monkeypatch.setattr(runtime_task_service, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(runtime_task_service, "tenant_scoped_session", owner_tenant_scoped_session)
+    monkeypatch.setattr(
+        "app.services.session_writer_epoch.assign_runtime_task_writer_generation",
+        fake_assign_runtime_task_writer_generation,
+    )
+    create_args = {
+        "task_id": task_id.hex,
+        "task_type": "trigger",
+        "parent_agent_id": agent_id,
+        "prompt": "exact durable enqueue",
+        "budget_run_id": run.id,
+        "budget_reservation_key": reservation_key,
+        "budget_admission_status": "reserved",
+    }
+    first = await runtime_task_service.create_runtime_task_record(**create_args)
+    second = await runtime_task_service.create_runtime_task_record(**create_args)
+
+    async with owner_sessionmaker() as db:
+        task_count = await db.scalar(select(func.count()).select_from(RuntimeTask).where(RuntimeTask.id == task_id))
+        stored_run = await db.get(RuntimeBudgetRun, run.id)
+        reservation_count = await db.scalar(
+            select(func.count())
+            .select_from(RuntimeBudgetEvent)
+            .where(
+                RuntimeBudgetEvent.budget_run_id == run.id,
+                RuntimeBudgetEvent.reservation_key == reservation_key,
+                RuntimeBudgetEvent.event_type == "reservation",
+            )
+        )
+        settlement_count = await db.scalar(
+            select(func.count())
+            .select_from(RuntimeBudgetEvent)
+            .where(
+                RuntimeBudgetEvent.budget_run_id == run.id,
+                RuntimeBudgetEvent.reservation_key == reservation_key,
+                RuntimeBudgetEvent.event_type == "settlement",
+            )
+        )
+    assert first == task_id.hex
+    assert second == task_id.hex
+    assert task_count == 1
+    assert stored_run is not None
+    assert stored_run.reserved_background_tasks == 1
+    assert stored_run.used_background_tasks == 0
+    assert reservation_count == 1
+    assert settlement_count == 0
 
 
 @pytest.mark.asyncio
@@ -1175,6 +1479,8 @@ async def test_reconcile_orphaned_runtime_tasks_reconciles_unconfirmed_resumable
             "status": "running",
             "result_summary": None,
             "completed_at": None,
+            "budget_reservation_key": "subagent:resumable:start",
+            "budget_admission_status": "reserved",
             "metadata_json": {
                 "resume_after_restart": True,
                 "resumable_subagent": True,
@@ -1190,6 +1496,8 @@ async def test_reconcile_orphaned_runtime_tasks_reconciles_unconfirmed_resumable
             "status": "running",
             "result_summary": None,
             "completed_at": None,
+            "budget_reservation_key": "subagent:unsafe:start",
+            "budget_admission_status": "reserved",
             "metadata_json": {
                 "resume_after_restart": False,
                 "resumable_subagent": False,
@@ -1204,9 +1512,17 @@ async def test_reconcile_orphaned_runtime_tasks_reconciles_unconfirmed_resumable
     assert updated == 2
     assert resumable_subagent.status == "needs_reconciliation"
     assert resumable_subagent.metadata_json["restart_resume_blocker"] == "restart_resume_not_confirmed"
+    assert resumable_subagent.metadata_json["runtime_budget_actuals"] == {
+        "subagents": 1,
+        "background_tasks": 1,
+    }
     assert unsafe_subagent.status == "needs_reconciliation"
     assert unsafe_subagent.metadata_json["needs_reconciliation"] is True
     assert unsafe_subagent.metadata_json["side_effect_risk"] == "mutating"
+    assert unsafe_subagent.metadata_json["runtime_budget_actuals"] == {
+        "subagents": 1,
+        "background_tasks": 1,
+    }
     assert fake_session.commit_calls == 1
 
 

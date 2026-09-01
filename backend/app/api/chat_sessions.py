@@ -14,7 +14,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import can_manage_agent_sessions, check_agent_access
+from app.core.permissions import (
+    authorize_agent_operator_inspection,
+    check_agent_access,
+    check_agent_operator_reachability,
+)
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.audit import ChatMessage
@@ -992,8 +996,13 @@ async def _get_run_session_and_agent(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if operator_view and not require_writable
+        else check_agent_access(db, current_user, agent_id)
+    )
     authority_source = await _authorize_loaded_session(
+        db=db,
         session=session,
         agent=agent,
         access_level=access_level,
@@ -1008,6 +1017,7 @@ async def _get_run_session_and_agent(
 
 async def _authorize_loaded_session(
     *,
+    db: AsyncSession,
     session: ChatSession,
     agent: Agent,
     access_level: str,
@@ -1017,34 +1027,23 @@ async def _authorize_loaded_session(
     operator_reason: str | None = None,
     require_writable: bool = False,
 ) -> str:
-    reason = operator_reason if isinstance(operator_reason, str) else None
-    reason = str(reason or "").strip()
-    if access_level == "manage" and operator_view is True and reason:
-        if require_writable:
-            from app.core.permissions import require_writable_session
-
-            require_writable_session(session, action=action)
-        from app.services.audit_logger import write_audit_log
-
-        await write_audit_log(
-            "session_authority_override",
-            details={
-                "session_id": str(session.id),
-                "session_user_id": str(session.user_id),
-                "action": action,
-                "reason": reason,
-                "authority_source": "manager_override",
-            },
-            agent_id=agent.id,
-            user_id=current_user.id,
-        )
-        return "manager_override"
     if str(session.user_id) == str(current_user.id):
         if require_writable:
             from app.core.permissions import require_writable_session
 
             require_writable_session(session, action=action)
         return "session_owner"
+    if operator_view is True and not require_writable:
+        return await authorize_agent_operator_inspection(
+            db,
+            user=current_user,
+            agent=agent,
+            reason=operator_reason,
+            action=action,
+            resource_type="chat_session",
+            resource_id=session.id,
+            details={"session_user_id": str(session.user_id)},
+        )
     raise HTTPException(status_code=403, detail="This session belongs to a different user")
 
 
@@ -1057,27 +1056,21 @@ async def list_sessions(
     db: AsyncSession = Depends(get_db),
 ):
     """List chat sessions for an agent. 'all' requires admin or creator role."""
-    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    agent, _access_level = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if scope == "all"
+        else check_agent_access(db, current_user, agent_id)
+    )
 
     if scope == "all":
-        if not can_manage_agent_sessions(access_level):
-            raise HTTPException(status_code=403, detail="Not authorized to view all sessions")
-        reason = operator_reason if isinstance(operator_reason, str) else None
-        reason = str(reason or "").strip()
-        if not reason:
-            raise HTTPException(status_code=403, detail="Operator View requires an audit reason")
-        from app.services.audit_logger import write_audit_log
-
-        await write_audit_log(
-            "session_collection_authority_override",
-            details={
-                "resource_kind": "chat_session_collection",
-                "action": "read",
-                "reason": reason,
-                "authority_source": "manager_override",
-            },
-            agent_id=agent_id,
-            user_id=current_user.id,
+        authority_source = await authorize_agent_operator_inspection(
+            db,
+            user=current_user,
+            agent=agent,
+            reason=operator_reason,
+            action="chat_session_collection:read",
+            resource_type="chat_session_collection",
+            resource_id=uuid.uuid5(agent_id, "chat-session-collection"),
         )
 
         # Fetch all sessions (including agent-to-agent where this agent is peer)
@@ -1133,7 +1126,7 @@ async def list_sessions(
                     peer_agent_id=peer_agent_id,
                     peer_agent_name=peer_agent_name,
                     participant_type=participant_type,
-                    authority_source="manager_override",
+                    authority_source=authority_source,
                     operator_view=True,
                     **_session_contract_fields(session),
                 )
@@ -1268,6 +1261,7 @@ async def rename_session(
 
     agent, access_level = await check_agent_access(db, current_user, agent_id)
     await _authorize_loaded_session(
+        db=db,
         session=session,
         agent=agent,
         access_level=access_level,
@@ -1877,7 +1871,7 @@ async def get_session_workbench(
         operator_reason=operator_reason,
     )
     include_sections = {part.strip() for part in include.split(",") if part.strip()}
-    audience = "operator" if authority_source == "manager_override" else "user"
+    audience = "operator" if authority_source == "operator_inspect_grant" else "user"
     payload = await build_session_workbench(
         db,
         agent=agent,
@@ -1912,7 +1906,7 @@ async def export_session_json(
         db,
         agent=agent,
         session=session,
-        audience="operator" if authority_source == "manager_override" else "user",
+        audience="operator" if authority_source == "operator_inspect_grant" else "user",
     )
     await db.commit()
     return payload
@@ -2296,7 +2290,7 @@ async def read_thread(
         db,
         agent=agent,
         session=session,
-        audience="operator" if authority_source == "manager_override" else "user",
+        audience="operator" if authority_source == "operator_inspect_grant" else "user",
     )
     await db.commit()
     return payload
@@ -2338,8 +2332,13 @@ async def get_session_transcript(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if operator_view is True
+        else check_agent_access(db, current_user, agent_id)
+    )
     authority_source = await _authorize_loaded_session(
+        db=db,
         session=session,
         agent=agent,
         access_level=access_level,
@@ -2349,7 +2348,7 @@ async def get_session_transcript(
         operator_reason=operator_reason,
     )
 
-    audience = "operator" if authority_source == "manager_override" else "user"
+    audience = "operator" if authority_source == "operator_inspect_grant" else "user"
     limit = max(1, min(limit, 1000))
     if schema_version not in {None, 2}:
         raise HTTPException(status_code=400, detail="schema_version must be 2 when specified")
@@ -2516,6 +2515,7 @@ async def delete_session(
 
     agent, access_level = await check_agent_access(db, current_user, agent_id)
     await _authorize_loaded_session(
+        db=db,
         session=session,
         agent=agent,
         access_level=access_level,
@@ -2582,8 +2582,13 @@ async def get_session_messages(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if operator_view is True
+        else check_agent_access(db, current_user, agent_id)
+    )
     await _authorize_loaded_session(
+        db=db,
         session=session,
         agent=agent,
         access_level=access_level,

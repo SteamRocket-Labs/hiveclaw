@@ -28,12 +28,13 @@ describe('Office artifact preview surface', () => {
     };
     const chatSource = readFileSync(new URL('./AgentChatSection.tsx', import.meta.url), 'utf8');
     const artifactSource = readFileSync(new URL('./ArtifactSurface.tsx', import.meta.url), 'utf8');
+    const previewSource = readFileSync(new URL('./useArtifactPreview.ts', import.meta.url), 'utf8');
 
     expect(artifactSource).toContain('officeApi.getArtifactPreview');
     expect(artifactSource).toContain('officeApi.getWorkspacePreview');
     expect(artifactSource).toContain('artifact.id');
     expect(chatSource).toContain('onOpenDocument={openArtifact}');
-    expect(chatSource).toContain('URL.revokeObjectURL(url)');
+    expect(previewSource).toContain('URL.revokeObjectURL(url)');
   });
 
   it('renders Office HTML in a credential-isolated iframe', () => {

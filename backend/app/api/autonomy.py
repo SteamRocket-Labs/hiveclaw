@@ -9,7 +9,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import can_manage_agent_sessions, check_agent_access
+from app.core.permissions import (
+    authorize_agent_operator_inspection,
+    check_agent_access,
+    check_agent_operator_reachability,
+)
 from app.core.execution_context import ExecutionPrincipal
 from app.core.security import get_current_user
 from app.database import get_db
@@ -91,8 +95,17 @@ async def _authorize_runtime_task_read(
     if task is None:
         raise HTTPException(status_code=404, detail="Runtime task not found")
     reason = str(operator_reason or "").strip()
-    if operator_override and access_level != "manage":
-        raise HTTPException(status_code=403, detail="RuntimeTask operator override requires manage access")
+    operator_authorized = operator_override and str(task.root_user_id or "") != str(current_user.id)
+    if operator_authorized:
+        await authorize_agent_operator_inspection(
+            db,
+            user=current_user,
+            agent=agent,
+            reason=reason,
+            action="runtime_task:read",
+            resource_type="runtime_task",
+            resource_id=task.id,
+        )
     decision = authorize_runtime_task_record(
         _runtime_task_authority_record(task),
         principal=ExecutionPrincipal(
@@ -102,9 +115,9 @@ async def _authorize_runtime_task_read(
             origin="rest",
         ),
         action="api_read_resource",
-        allow_operator_override=operator_override,
-        operator_user_id=current_user.id if operator_override else None,
-        operator_reason=reason if operator_override else None,
+        allow_operator_override=operator_authorized,
+        operator_user_id=current_user.id if operator_authorized else None,
+        operator_reason=reason if operator_authorized else None,
         require_root_session=False,
     )
     if not decision.allowed:
@@ -112,21 +125,6 @@ async def _authorize_runtime_task_read(
             status_code=403,
             detail={"code": "runtime_task_resource_forbidden", "reason": decision.reason},
         )
-    if decision.authority_source == "operator_override":
-        db.add(
-            AuditLog(
-                user_id=current_user.id,
-                agent_id=agent.id,
-                tenant_id=agent.tenant_id,
-                action="runtime_task:operator_resource_override",
-                details={
-                    "runtime_task_id": str(task.id),
-                    "operator_reason": reason,
-                    "authority_evidence": decision.evidence,
-                },
-            )
-        )
-        await db.flush()
     return task, decision
 
 
@@ -152,26 +150,25 @@ async def _get_accessible_session_for_work_ledger(
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if operator_override
+        else check_agent_access(db, current_user, agent_id)
+    )
     if str(session.user_id) == str(current_user.id):
         return session, "session_owner"
-    reason = str(operator_reason or "").strip()
-    if can_manage_agent_sessions(access_level) and operator_override and reason:
-        from app.services.audit_logger import write_audit_log
-
-        await write_audit_log(
-            "session_authority_override",
-            details={
-                "session_id": str(session.id),
-                "session_user_id": str(session.user_id),
-                "action": "read_work_ledger",
-                "reason": reason,
-                "authority_source": "manager_override",
-            },
-            agent_id=agent_id,
-            user_id=current_user.id,
+    if operator_override:
+        authority_source = await authorize_agent_operator_inspection(
+            db,
+            user=current_user,
+            agent=agent,
+            reason=operator_reason,
+            action="work_ledger:read",
+            resource_type="chat_session",
+            resource_id=session.id,
+            details={"session_user_id": str(session.user_id)},
         )
-        return session, "manager_override"
+        return session, authority_source
     raise HTTPException(status_code=403, detail="Not authorized to view this session work ledger")
 
 
@@ -369,26 +366,23 @@ async def list_agent_runtime_tasks(
     db: AsyncSession = Depends(get_db),
 ):
     """List display-safe RuntimeTask attempts for one accessible agent."""
-    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    agent, _access_level = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if operator_override
+        else check_agent_access(db, current_user, agent_id)
+    )
     reason = str(operator_reason or "").strip()
     if operator_override:
-        if access_level != "manage":
-            raise HTTPException(status_code=403, detail="RuntimeTask operator override requires manage access")
-        if not reason:
-            raise HTTPException(status_code=422, detail="operator_reason is required for RuntimeTask override")
-        db.add(
-            AuditLog(
-                user_id=current_user.id,
-                agent_id=agent_id,
-                tenant_id=agent.tenant_id,
-                action="runtime_task:operator_list_override",
-                details={
-                    "operator_reason": reason,
-                    "root_session_filter": str(root_session_id) if root_session_id else None,
-                },
-            )
+        await authorize_agent_operator_inspection(
+            db,
+            user=current_user,
+            agent=agent,
+            reason=reason,
+            action="runtime_task_collection:read",
+            resource_type="runtime_task_collection",
+            resource_id=uuid.uuid5(agent_id, "runtime-task-collection"),
+            details={"root_session_filter": str(root_session_id) if root_session_id else None},
         )
-        await db.flush()
     principal = ExecutionPrincipal(
         tenant_id=agent.tenant_id,
         source_agent_id=agent.id,
@@ -422,7 +416,11 @@ async def get_agent_runtime_artifact(
     db: AsyncSession = Depends(get_db),
 ):
     """Read a display-safe trigger output artifact for one accessible agent."""
-    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if operator_override
+        else check_agent_access(db, current_user, agent_id)
+    )
     task, decision = await _authorize_runtime_task_read(
         db=db,
         agent=agent,
@@ -463,7 +461,11 @@ async def get_agent_runtime_work_ledger(
     db: AsyncSession = Depends(get_db),
 ):
     """Read the chat-safe Work Ledger view for a running RuntimeTask."""
-    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if operator_override
+        else check_agent_access(db, current_user, agent_id)
+    )
     _task, decision = await _authorize_runtime_task_read(
         db=db,
         agent=agent,
@@ -510,9 +512,9 @@ async def get_agent_session_work_ledger(
             "todo_items": [],
             "counts": {"todos_total": 0, "todos_complete": 0, "todos_open": 0},
         }
-        if authority_source == "manager_override":
+        if authority_source == "operator_inspect_grant":
             empty.update(authority_source=authority_source, operator_view=True)
         return empty
-    if authority_source == "manager_override":
+    if authority_source == "operator_inspect_grant":
         ledger.update(authority_source=authority_source, operator_view=True)
     return ledger

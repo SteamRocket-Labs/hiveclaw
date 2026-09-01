@@ -359,6 +359,7 @@ async def test_session_owner_cannot_self_elevate_to_operator_projection_with_que
     monkeypatch.setattr("app.services.audit_logger.write_audit_log", fake_audit)
 
     authority_source = await chat_sessions_api._authorize_loaded_session(
+        db=object(),
         session=session,
         agent=agent,
         access_level="use",
@@ -381,15 +382,19 @@ async def test_manager_operator_projection_requires_reason_and_writes_audit(monk
     session = SimpleNamespace(id=uuid4(), user_id=owner_id)
     agent = SimpleNamespace(id=uuid4())
     current_user = SimpleNamespace(id=manager_id)
-    audited = []
+    inspection_calls = []
 
-    async def fake_audit(*args, **kwargs):
-        audited.append((args, kwargs))
+    async def fake_operator_inspection(_db, **kwargs):
+        inspection_calls.append(kwargs)
+        if not str(kwargs.get("reason") or "").strip():
+            raise HTTPException(status_code=403, detail="Operator View requires an audit reason")
+        return "operator_inspect_grant"
 
-    monkeypatch.setattr("app.services.audit_logger.write_audit_log", fake_audit)
+    monkeypatch.setattr(chat_sessions_api, "authorize_agent_operator_inspection", fake_operator_inspection)
 
     with pytest.raises(HTTPException) as exc:
         await chat_sessions_api._authorize_loaded_session(
+            db=object(),
             session=session,
             agent=agent,
             access_level="manage",
@@ -400,6 +405,7 @@ async def test_manager_operator_projection_requires_reason_and_writes_audit(monk
     assert exc.value.status_code == 403
 
     authority_source = await chat_sessions_api._authorize_loaded_session(
+        db=object(),
         session=session,
         agent=agent,
         access_level="manage",
@@ -409,9 +415,8 @@ async def test_manager_operator_projection_requires_reason_and_writes_audit(monk
         operator_reason="Investigating a delivery incident",
     )
 
-    assert authority_source == "manager_override"
-    assert audited[0][1]["details"]["authority_source"] == "manager_override"
-    assert audited[0][1]["details"]["reason"] == "Investigating a delivery incident"
+    assert authority_source == "operator_inspect_grant"
+    assert inspection_calls[-1]["reason"] == "Investigating a delivery incident"
 
 
 class _QueryAwareDB:
@@ -679,6 +684,12 @@ async def test_list_sessions_all_scope_requires_explicit_audited_operator_view(m
         return agent, "manage"
 
     monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+    monkeypatch.setattr(
+        chat_sessions_api,
+        "check_agent_operator_reachability",
+        fake_check_agent_access,
+        raising=False,
+    )
 
     with pytest.raises(HTTPException) as exc:
         await chat_sessions_api.list_sessions(
@@ -689,12 +700,13 @@ async def test_list_sessions_all_scope_requires_explicit_audited_operator_view(m
         )
     assert exc.value.status_code == 403
 
-    audited = []
+    inspection_calls = []
 
-    async def fake_audit(*args, **kwargs):
-        audited.append((args, kwargs))
+    async def fake_operator_inspection(_db, **kwargs):
+        inspection_calls.append(kwargs)
+        return "operator_inspect_grant"
 
-    monkeypatch.setattr("app.services.audit_logger.write_audit_log", fake_audit)
+    monkeypatch.setattr(chat_sessions_api, "authorize_agent_operator_inspection", fake_operator_inspection)
 
     result = await chat_sessions_api.list_sessions(
         agent_id=agent_id,
@@ -707,8 +719,8 @@ async def test_list_sessions_all_scope_requires_explicit_audited_operator_view(m
     assert len(result) == 1
     assert result[0].id == str(session_id)
     assert result[0].operator_view is True
-    assert result[0].authority_source == "manager_override"
-    assert audited[0][1]["details"]["reason"] == "Investigating an Agent delivery incident"
+    assert result[0].authority_source == "operator_inspect_grant"
+    assert inspection_calls[0]["reason"] == "Investigating an Agent delivery incident"
 
 
 @pytest.mark.asyncio
@@ -968,6 +980,12 @@ async def test_get_session_messages_requires_explicit_operator_view_for_non_owne
         return agent, "manage"
 
     monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+    monkeypatch.setattr(
+        chat_sessions_api,
+        "check_agent_operator_reachability",
+        fake_check_agent_access,
+        raising=False,
+    )
 
     with pytest.raises(HTTPException) as exc:
         await chat_sessions_api.get_session_messages(
@@ -978,12 +996,13 @@ async def test_get_session_messages_requires_explicit_operator_view_for_non_owne
         )
     assert exc.value.status_code == 403
 
-    audited = []
+    inspection_calls = []
 
-    async def fake_audit(*args, **kwargs):
-        audited.append((args, kwargs))
+    async def fake_operator_inspection(_db, **kwargs):
+        inspection_calls.append(kwargs)
+        return "operator_inspect_grant"
 
-    monkeypatch.setattr("app.services.audit_logger.write_audit_log", fake_audit)
+    monkeypatch.setattr(chat_sessions_api, "authorize_agent_operator_inspection", fake_operator_inspection)
 
     result = await chat_sessions_api.get_session_messages(
         agent_id=agent_id,
@@ -997,7 +1016,7 @@ async def test_get_session_messages_requires_explicit_operator_view_for_non_owne
     assert len(result) == 1
     assert result[0]["role"] == "assistant"
     assert result[0]["content"] == "done"
-    assert audited[0][1]["details"]["action"] == "read_messages"
+    assert inspection_calls[0]["action"] == "read_messages"
 
 
 @pytest.mark.asyncio

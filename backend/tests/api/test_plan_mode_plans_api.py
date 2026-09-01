@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 import app.api.plans as plans_api
@@ -398,6 +398,53 @@ def test_get_plan_404_when_belongs_to_other_agent(monkeypatch):
     client, *_ = _client(monkeypatch, service=_Service())
     resp = client.get(f"/agents/{agent_id}/plans/{uuid4()}")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_sessionless_operator_plan_read_is_exact_and_mutations_stay_denied(monkeypatch):
+    agent_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, tenant_id=uuid4())
+    current_user = SimpleNamespace(id=uuid4(), role="member", tenant_id=agent.tenant_id)
+    plan = _plan_namespace(agent_id=agent_id)
+    plan.session_id = None
+    inspection_calls = []
+
+    async def allow_reachability(*_args, **_kwargs):
+        return agent, "operator"
+
+    async def allow_inspection(_db, **kwargs):
+        inspection_calls.append(kwargs)
+        return "operator_inspect_grant"
+
+    monkeypatch.setattr(plans_api, "check_agent_operator_reachability", allow_reachability)
+    monkeypatch.setattr(plans_api, "authorize_agent_operator_inspection", allow_inspection)
+
+    authority_source = await plans_api._authorize_plan_action(
+        object(),
+        current_user=current_user,
+        agent_id=agent_id,
+        plan=plan,
+        action="plan:read",
+        manager_override_reason="Investigating a failed plan run",
+        require_writable=False,
+    )
+
+    assert authority_source == "operator_inspect_grant"
+    assert inspection_calls[0]["resource_type"] == "agent_plan"
+    assert inspection_calls[0]["resource_id"] == plan.id
+
+    with pytest.raises(HTTPException) as exc:
+        await plans_api._authorize_plan_action(
+            object(),
+            current_user=current_user,
+            agent_id=agent_id,
+            plan=plan,
+            action="plan:confirm",
+            manager_override_reason="This must not authorize a mutation",
+            require_writable=True,
+        )
+    assert exc.value.status_code == 403
+    assert len(inspection_calls) == 1
 
 
 # ---------------------------------------------------------------------------

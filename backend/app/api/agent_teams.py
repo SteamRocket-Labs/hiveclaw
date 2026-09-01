@@ -12,7 +12,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import authorize_session_action, check_agent_access
+from app.core.permissions import (
+    authorize_agent_operator_inspection,
+    authorize_session_action,
+    check_agent_access,
+    check_agent_operator_reachability,
+)
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent_team import AgentTeam, AgentTeamEvent, AgentTeamMember
@@ -371,7 +376,10 @@ async def list_agent_team_events(
     db: AsyncSession = Depends(get_db),
     admin_override_reason: AdminOverrideReason = None,
 ) -> list[dict]:
-    await check_agent_access(db, current_user, agent_id)
+    if str(admin_override_reason or "").strip():
+        await check_agent_operator_reachability(db, current_user, agent_id)
+    else:
+        await check_agent_access(db, current_user, agent_id)
     team = await _load_team_or_404(db, agent_id=agent_id, team_id=team_id)
     await _authorize_team_action(
         db,
@@ -460,7 +468,11 @@ async def list_agent_teams(
     db: AsyncSession = Depends(get_db),
     admin_override_reason: AdminOverrideReason = None,
 ) -> list[dict]:
-    _agent, access_level = await check_agent_access(db, current_user, agent_id)
+    agent, _access_level = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if str(admin_override_reason or "").strip()
+        else check_agent_access(db, current_user, agent_id)
+    )
     stmt = select(AgentTeam).where(AgentTeam.lead_agent_id == agent_id).order_by(AgentTeam.created_at.desc())
     if parent_session_id is not None:
         await authorize_session_action(
@@ -473,14 +485,15 @@ async def list_agent_teams(
             manager_override_reason=admin_override_reason,
         )
         stmt = stmt.where(AgentTeam.parent_session_id == parent_session_id)
-    elif access_level == "manage" and str(admin_override_reason or "").strip():
-        from app.services.audit_logger import write_audit_log
-
-        await write_audit_log(
-            "team_list_authority_override",
-            details={"reason": str(admin_override_reason).strip(), "action": "team:list"},
-            agent_id=agent_id,
-            user_id=current_user.id,
+    elif str(admin_override_reason or "").strip():
+        await authorize_agent_operator_inspection(
+            db,
+            user=current_user,
+            agent=agent,
+            reason=admin_override_reason,
+            action="team_collection:read",
+            resource_type="agent_team_collection",
+            resource_id=uuid.uuid5(agent_id, "agent-team-collection"),
         )
     else:
         stmt = stmt.join(ChatSession, ChatSession.id == AgentTeam.parent_session_id).where(
@@ -503,7 +516,10 @@ async def get_agent_team(
     db: AsyncSession = Depends(get_db),
     admin_override_reason: AdminOverrideReason = None,
 ) -> dict:
-    await check_agent_access(db, current_user, agent_id)
+    if str(admin_override_reason or "").strip():
+        await check_agent_operator_reachability(db, current_user, agent_id)
+    else:
+        await check_agent_access(db, current_user, agent_id)
     team = await _load_team_or_404(db, agent_id=agent_id, team_id=team_id)
     await _authorize_team_action(
         db,
@@ -525,7 +541,10 @@ async def get_agent_team_workbench(
     db: AsyncSession = Depends(get_db),
     admin_override_reason: AdminOverrideReason = None,
 ) -> dict:
-    await check_agent_access(db, current_user, agent_id)
+    if str(admin_override_reason or "").strip():
+        await check_agent_operator_reachability(db, current_user, agent_id)
+    else:
+        await check_agent_access(db, current_user, agent_id)
     team = await _load_team_or_404(db, agent_id=agent_id, team_id=team_id)
     await _authorize_team_action(
         db,
@@ -549,7 +568,10 @@ async def enter_agent_team_member(
     db: AsyncSession = Depends(get_db),
     admin_override_reason: AdminOverrideReason = None,
 ) -> dict:
-    await check_agent_access(db, current_user, agent_id)
+    if str(admin_override_reason or "").strip():
+        await check_agent_operator_reachability(db, current_user, agent_id)
+    else:
+        await check_agent_access(db, current_user, agent_id)
     team = await _load_team_or_404(db, agent_id=agent_id, team_id=team_id)
     await _authorize_team_action(
         db,

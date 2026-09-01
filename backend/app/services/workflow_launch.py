@@ -305,7 +305,12 @@ async def execute_claimed_workflow_run(
     if task is None or task.task_type != "workflow":
         raise LookupError(f"workflow run {run_id} not found")
     executor = build_resumable_workflow_leaf_executor(session_factory=session_factory, spawn=spawn)
-    return await service.resume_run(run_uuid, tenant_id=uuid.UUID(str(tenant_value)), leaf_executor=executor)
+    return await service.resume_run(
+        run_uuid,
+        tenant_id=uuid.UUID(str(tenant_value)),
+        leaf_executor=executor,
+        automatic=True,
+    )
 
 
 def build_resumable_workflow_leaf_executor(

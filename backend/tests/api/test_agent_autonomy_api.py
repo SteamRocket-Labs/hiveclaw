@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 import pytest
 
@@ -93,6 +93,7 @@ def _client(monkeypatch, db=None, *, user=None, access_level="manage", agent=Non
     app.dependency_overrides[get_current_user] = override_user
     app.dependency_overrides[get_db] = override_db
     monkeypatch.setattr(autonomy_api, "check_agent_access", allow_access)
+    monkeypatch.setattr(autonomy_api, "check_agent_operator_reachability", allow_access)
     return TestClient(app), user
 
 
@@ -412,13 +413,18 @@ def test_agent_runtime_tasks_endpoint_passes_filters(monkeypatch):
     assert captured["allow_operator_override"] is False
 
 
-def test_runtime_task_operator_override_requires_manage_reason_and_audit(monkeypatch):
+def test_runtime_task_operator_override_requires_independent_inspection_grant(monkeypatch):
     agent_id = uuid4()
 
     async def fake_runtime_tasks(**_kwargs):
         return []
 
     monkeypatch.setattr(autonomy_api, "list_agent_runtime_task_views", fake_runtime_tasks)
+
+    async def deny_operator_inspection(*_args, **_kwargs):
+        raise HTTPException(status_code=403, detail="Active operator.inspect permission is required")
+
+    monkeypatch.setattr(autonomy_api, "authorize_agent_operator_inspection", deny_operator_inspection)
 
     member_client, _ = _client(monkeypatch, access_level="use")
     denied = member_client.get(
@@ -428,25 +434,34 @@ def test_runtime_task_operator_override_requires_manage_reason_and_audit(monkeyp
     assert denied.status_code == 403
 
     manager_client, _ = _client(monkeypatch, access_level="manage")
+    still_denied = manager_client.get(
+        f"/agents/{agent_id}/runtime-tasks",
+        params={"operator_override": "true", "operator_reason": "incident"},
+    )
+    assert still_denied.status_code == 403
+
+    inspection_calls = []
+
+    async def allow_operator_inspection(_db, **kwargs):
+        inspection_calls.append(kwargs)
+        if not str(kwargs.get("reason") or "").strip():
+            raise HTTPException(status_code=403, detail="Operator View requires an audit reason")
+        return "operator_inspect_grant"
+
+    monkeypatch.setattr(autonomy_api, "authorize_agent_operator_inspection", allow_operator_inspection)
+    manager_client, _manager = _client(monkeypatch, access_level="use")
     missing_reason = manager_client.get(
         f"/agents/{agent_id}/runtime-tasks",
         params={"operator_override": "true"},
     )
-    assert missing_reason.status_code == 422
-
-    audit_db = _AuditDB()
-    manager_client, manager = _client(monkeypatch, db=audit_db, access_level="manage")
+    assert missing_reason.status_code == 403
     allowed = manager_client.get(
         f"/agents/{agent_id}/runtime-tasks",
         params={"operator_override": "true", "operator_reason": "incident investigation INC-42"},
     )
     assert allowed.status_code == 200
-    assert audit_db.flushed is True
-    assert len(audit_db.added) == 1
-    audit = audit_db.added[0]
-    assert audit.user_id == manager.id
-    assert audit.action == "runtime_task:operator_list_override"
-    assert audit.details["operator_reason"] == "incident investigation INC-42"
+    assert inspection_calls[-1]["action"] == "runtime_task_collection:read"
+    assert inspection_calls[-1]["reason"] == "incident investigation INC-42"
 
 
 def test_agent_runtime_artifact_endpoint_returns_display_payload(monkeypatch):
@@ -722,12 +737,13 @@ def test_agent_session_work_ledger_endpoint_requires_explicit_manager_override(m
 
     assert response.status_code == 403
 
-    audited = []
+    inspection_calls = []
 
-    async def fake_audit(*args, **kwargs):
-        audited.append((args, kwargs))
+    async def fake_operator_inspection(_db, **kwargs):
+        inspection_calls.append(kwargs)
+        return "operator_inspect_grant"
 
-    monkeypatch.setattr("app.services.audit_logger.write_audit_log", fake_audit)
+    monkeypatch.setattr(autonomy_api, "authorize_agent_operator_inspection", fake_operator_inspection)
     response = client.get(
         f"/agents/{agent_id}/sessions/{session_id}/work-ledger",
         params={
@@ -739,4 +755,4 @@ def test_agent_session_work_ledger_endpoint_requires_explicit_manager_override(m
     assert response.status_code == 200
     assert response.json()["todo_items"][0]["title"] == "Manager visible todo"
     assert response.json()["operator_view"] is True
-    assert audited[0][1]["details"]["action"] == "read_work_ledger"
+    assert inspection_calls[0]["action"] == "work_ledger:read"

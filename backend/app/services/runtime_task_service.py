@@ -17,6 +17,7 @@ from app.models.trigger import AgentTrigger
 from app.runtime.tenant_admission import RuntimeTenantPreconditionError, raise_runtime_tenant_precondition
 from app.services.runtime_tenant_admission import admit_agent_runtime_tenant
 from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
+from app.services.runtime_budget_service import runtime_task_outer_budget_actuals
 from app.services.tenant_resolver import resolve_tenant_for_agent, resolve_tenant_for_runtime_task
 
 
@@ -35,6 +36,16 @@ _RESTART_RESUMABLE_TASK_TYPES = (
     "dream",
 )
 _TERMINAL_STATUSES = {"completed", "failed", "killed", "skipped", "needs_reconciliation"}
+_RUNTIME_BUDGET_DIMENSIONS = (
+    "tokens",
+    "cache_miss_tokens",
+    "subagents",
+    "team_sessions",
+    "delegations",
+    "background_tasks",
+    "continuation_wakes",
+    "provider_calls",
+)
 _RUNTIME_TASK_ROOT_STATE = {
     "pending": "queued",
     "queued": "queued",
@@ -73,6 +84,12 @@ def _runtime_task_root_state(status: str, *, override: str | None = None) -> str
     if root_state is None:
         raise ValueError(f"Unsupported RuntimeTask status for root ledger: {normalized!r}")
     return root_state
+
+
+def _normalized_runtime_budget_actuals(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        raise TypeError("runtime_budget_actuals must be an object")
+    return {dimension: max(0, int(value.get(dimension) or 0)) for dimension in _RUNTIME_BUDGET_DIMENSIONS}
 
 
 def _task_to_dict(task: RuntimeTask) -> dict[str, Any]:
@@ -722,6 +739,46 @@ async def create_runtime_task_record(
                 if str(root_item_intent_key or "").strip()
                 else None
             )
+            if (
+                budget_run_id is not None
+                and str(budget_reservation_key or "").strip()
+                and budget_admission_status == "reserved"
+            ):
+                from app.services.runtime_budget_service import (
+                    RuntimeBudgetSettlementConflict,
+                    assert_runtime_task_budget_reservation_open,
+                )
+
+                existing_task = await assert_runtime_task_budget_reservation_open(
+                    db,
+                    budget_run_id=budget_run_id,
+                    reservation_key=str(budget_reservation_key),
+                    runtime_task_id=runtime_task_id,
+                )
+                if existing_task is not None:
+                    expected_binding = (
+                        tenant_id,
+                        task_type,
+                        parent_agent_id,
+                        child_agent_id,
+                        budget_run_id,
+                        str(budget_reservation_key),
+                        effective_root_runtime_task_id,
+                    )
+                    durable_binding = (
+                        existing_task.tenant_id,
+                        existing_task.task_type,
+                        existing_task.parent_agent_id,
+                        existing_task.child_agent_id,
+                        existing_task.budget_run_id,
+                        str(existing_task.budget_reservation_key or ""),
+                        existing_task.root_runtime_task_id,
+                    )
+                    if durable_binding != expected_binding:
+                        raise RuntimeBudgetSettlementConflict(
+                            f"RuntimeTask {runtime_task_id} is already bound to another execution"
+                        )
+                    return existing_task.id.hex
             task = RuntimeTask(
                 id=runtime_task_id,
                 task_type=task_type,
@@ -822,6 +879,48 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
             requested_status = str(fields.get("status") or "").strip()
             current_status = str(getattr(task, "status", "") or "").strip()
             sealed_terminal_statuses = {"completed", "failed", "killed", "skipped"}
+            incoming_metadata = fields.get("metadata_json")
+            if requested_status in _TERMINAL_STATUSES:
+                terminal_metadata = dict(incoming_metadata) if isinstance(incoming_metadata, dict) else {}
+                existing_metadata = dict(getattr(task, "metadata_json", None) or {})
+                if (
+                    "runtime_budget_actuals" not in terminal_metadata
+                    and "runtime_budget_actuals" not in existing_metadata
+                ):
+                    outer_actuals = runtime_task_outer_budget_actuals(task)
+                    if outer_actuals:
+                        terminal_metadata["runtime_budget_actuals"] = outer_actuals
+                        fields["metadata_json"] = terminal_metadata
+                        incoming_metadata = terminal_metadata
+            if isinstance(incoming_metadata, dict) and "runtime_budget_actuals" in incoming_metadata:
+                from app.services.runtime_budget_service import RuntimeBudgetSettlementConflict
+
+                existing_actuals = dict(getattr(task, "metadata_json", None) or {}).get("runtime_budget_actuals")
+                try:
+                    incoming_actuals = _normalized_runtime_budget_actuals(incoming_metadata["runtime_budget_actuals"])
+                    existing_normalized = (
+                        _normalized_runtime_budget_actuals(existing_actuals) if existing_actuals is not None else None
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeBudgetSettlementConflict(
+                        f"invalid runtime budget actuals for RuntimeTask {runtime_task_id}"
+                    ) from exc
+                if existing_normalized is not None and incoming_actuals != existing_normalized:
+                    raise RuntimeBudgetSettlementConflict(
+                        f"runtime budget actuals conflict for RuntimeTask {runtime_task_id}"
+                    )
+            if current_status in sealed_terminal_statuses and requested_status == current_status:
+                from app.services.runtime_budget_service import RuntimeBudgetSettlementConflict
+
+                for field_name in ("budget_run_id", "budget_reservation_key"):
+                    if field_name not in fields:
+                        continue
+                    persisted_value = getattr(task, field_name, None)
+                    incoming_value = fields[field_name]
+                    if persisted_value is not None and str(incoming_value) != str(persisted_value):
+                        raise RuntimeBudgetSettlementConflict(
+                            f"{field_name} conflict for terminal RuntimeTask {runtime_task_id}"
+                        )
             if current_status in sealed_terminal_statuses and requested_status and requested_status != current_status:
                 metadata = dict(getattr(task, "metadata_json", None) or {})
                 metadata["late_terminal_attempt"] = {
@@ -971,6 +1070,10 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
                     result_refs=[f"runtime-task://{runtime_task_id}"],
                 )
 
+            if status in _TERMINAL_STATUSES:
+                from app.services.runtime_task_fence import finish_current_runtime_task_claim
+
+                finish_current_runtime_task_claim(task_id=runtime_task_id)
             await db.commit()
         except Exception:
             await db.rollback()
@@ -1172,7 +1275,7 @@ async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None 
                             "Task was interrupted by a worker restart and may have performed external side effects; "
                             "it requires reconciliation before retrying or marking complete."
                         )
-                    task.metadata_json = build_restart_reconciliation_metadata(
+                    reconciliation_metadata = build_restart_reconciliation_metadata(
                         metadata,
                         task_type=task_type,
                         task_id=getattr(task, "id", None).hex
@@ -1183,6 +1286,10 @@ async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None 
                         trace_id=getattr(task, "trace_id", None),
                         session_id=getattr(task, "child_session_id", None) or getattr(task, "parent_session_id", None),
                     )
+                    outer_actuals = runtime_task_outer_budget_actuals(task)
+                    if outer_actuals:
+                        reconciliation_metadata["runtime_budget_actuals"] = outer_actuals
+                    task.metadata_json = reconciliation_metadata
                     if task_type == "business_task":
                         try:
                             business_task_id = uuid.UUID(str(metadata.get("business_task_id")))
@@ -1221,6 +1328,9 @@ async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None 
                 if not task.result_summary:
                     task.result_summary = "Task failed because the worker process restarted before completion."
                 metadata["orphaned_by_restart"] = True
+                outer_actuals = runtime_task_outer_budget_actuals(task)
+                if outer_actuals:
+                    metadata["runtime_budget_actuals"] = outer_actuals
                 task.metadata_json = metadata
                 from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
 

@@ -30,6 +30,10 @@ function isOwnedAgent(agent: Agent): boolean {
   return agent.is_owner === true;
 }
 
+function isOperatorOnlyAgent(agent: Agent): boolean {
+  return agent.access_level === 'operator';
+}
+
 export default function DigitalEmployees() {
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
@@ -159,33 +163,43 @@ export default function DigitalEmployees() {
                 </div>
               </div>
               <div className="employee-card-actions">
-                <Link to={`/agents/${agent.id}#chat`}>
-                  <IconMessageCircle size={15} stroke={1.7} />
-                  {t('employees.actions.chat', 'Chat')}
-                </Link>
-                <Link to={`/agents/${agent.id}#knowledge`}>
-                  <IconBrain size={15} stroke={1.7} />
-                  {t('employees.actions.memory', 'Memory')}
-                </Link>
-                <Link to={`/agents/${agent.id}#workflows`}>
-                  <IconRefresh size={15} stroke={1.7} />
-                  {t('employees.actions.workflows', 'Workflows')}
-                </Link>
-                <Link to={`/agents/${agent.id}#a2a`}>
-                  <IconRoute size={15} stroke={1.7} />
-                  {t('employees.actions.team', 'Team')}
-                </Link>
-                {isLocalAgentRuntime(agent) && (
-                  <Link to={`/agents/${agent.id}#workspace`}>
-                    <IconDeviceDesktop size={15} stroke={1.7} />
-                    {t('employees.actions.local', 'Local')}
+                {isOperatorOnlyAgent(agent) ? (
+                  <Link to={`/agents/${agent.id}?manage=true#chat`}>
+                    <IconUserCircle size={15} stroke={1.7} />
+                    {t('employees.actions.inspect', 'Inspect')}
+                    <IconArrowRight size={13} stroke={1.7} />
                   </Link>
+                ) : (
+                  <>
+                    <Link to={`/agents/${agent.id}#chat`}>
+                      <IconMessageCircle size={15} stroke={1.7} />
+                      {t('employees.actions.chat', 'Chat')}
+                    </Link>
+                    <Link to={`/agents/${agent.id}#knowledge`}>
+                      <IconBrain size={15} stroke={1.7} />
+                      {t('employees.actions.memory', 'Memory')}
+                    </Link>
+                    <Link to={`/agents/${agent.id}#workflows`}>
+                      <IconRefresh size={15} stroke={1.7} />
+                      {t('employees.actions.workflows', 'Workflows')}
+                    </Link>
+                    <Link to={`/agents/${agent.id}#a2a`}>
+                      <IconRoute size={15} stroke={1.7} />
+                      {t('employees.actions.team', 'Team')}
+                    </Link>
+                    {isLocalAgentRuntime(agent) && (
+                      <Link to={`/agents/${agent.id}#workspace`}>
+                        <IconDeviceDesktop size={15} stroke={1.7} />
+                        {t('employees.actions.local', 'Local')}
+                      </Link>
+                    )}
+                    <Link to={`/agents/${agent.id}`}>
+                      <IconUserCircle size={15} stroke={1.7} />
+                      {t('employees.actions.detail', 'Detail')}
+                      <IconArrowRight size={13} stroke={1.7} />
+                    </Link>
+                  </>
                 )}
-                <Link to={`/agents/${agent.id}`}>
-                  <IconUserCircle size={15} stroke={1.7} />
-                  {t('employees.actions.detail', 'Detail')}
-                  <IconArrowRight size={13} stroke={1.7} />
-                </Link>
               </div>
             </article>
           ))}

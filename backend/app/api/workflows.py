@@ -935,10 +935,10 @@ async def cancel_workflow_run(
     )
     service = WorkflowRuntimeService()
     try:
-        await service.kill_run(run_id, tenant_id=agent.tenant_id)
+        resulting_status = await service.kill_run(run_id, tenant_id=agent.tenant_id)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    return {"run_id": str(run_id), "status": "killed"}
+    return {"run_id": str(run_id), "status": resulting_status}
 
 
 @router.post("/{agent_id}/workflows/runs/{run_id}/repair")

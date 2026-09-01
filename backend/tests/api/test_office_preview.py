@@ -65,6 +65,7 @@ async def test_workspace_office_preview_returns_isolated_html_headers(tmp_path, 
         spans.append(kwargs)
 
     monkeypatch.setattr(office_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(office_api, "check_agent_operator_reachability", fake_access)
     monkeypatch.setattr(office_api, "authorize_workspace_path", fake_authorize)
     monkeypatch.setattr(office_api, "persist_invocation_span", fake_persist_span, raising=False)
     monkeypatch.setattr(office_api.OfficeDocumentService, "render_preview", lambda *_args, **_kwargs: _preview_result())

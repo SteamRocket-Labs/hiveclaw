@@ -167,13 +167,13 @@ async def seed_default_agents():
             rls_bypass_actor_id=str(admin.id),
         )
 
-        # ── Permissions (company-wide, manage) ──
+        # ── Permissions (company-wide use) ──
         db.add(
             AgentPermission(
                 agent_id=morty.id,
                 tenant_id=morty.tenant_id,
                 scope_type="company",
-                access_level="manage",
+                access_level="use",
             )
         )
         db.add(
@@ -181,7 +181,7 @@ async def seed_default_agents():
                 agent_id=meeseeks.id,
                 tenant_id=meeseeks.tenant_id,
                 scope_type="company",
-                access_level="manage",
+                access_level="use",
             )
         )
 

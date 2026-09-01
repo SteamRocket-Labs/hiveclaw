@@ -3,9 +3,9 @@ import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import ConfirmModal from '../components/ConfirmModal';
-import AgentChatSection, {
-    type SessionCommandControlState,
-    type SessionPermissionMode,
+import type {
+    SessionCommandControlState,
+    SessionPermissionMode,
 } from './agent-detail/AgentChatSection';
 import type { BranchLineageItem } from './agent-detail/SessionLineageSurface';
 import AgentStatusSection from './agent-detail/AgentStatusSection';
@@ -57,7 +57,6 @@ import {
 import { normalizeToolCallResult } from './agent-detail/toolResultEnvelope';
 import { sessionRunStateFromPayload } from './agent-detail/runtimeBudgetState';
 import { agentApi, type AgentCapabilityInstall, type AgentChannelCapability } from '../api/domains/agents';
-import { activityApi } from '../api/domains/activity';
 import { enterpriseApi } from '../api/domains/enterprise';
 import { triggerApi } from '../api/domains/triggers';
 import { autonomyApi } from '../api/domains/autonomy';
@@ -107,8 +106,6 @@ import {
     draftContentFromCheckpointPayload,
     getAgentDetailHashTab,
     getVisibleAgentDetailTabs,
-    isAgentDetailTabVisible,
-    isLocalAgentRuntimeType,
     isSessionWorkbenchRoute,
     normalizeSessionCommandCheckpoints,
     objectValue,
@@ -121,9 +118,18 @@ import {
     type AgentDetailTab,
 } from './agent-detail/agentDetailPolicy';
 import { sessionPanelCommandForUiAction, useReloadableSessionCommandPanel } from './agent-detail/useReloadableSessionCommandPanel';
+import {
+    operatorSessionRequestOptions,
+    useOperatorAuthorityCacheLifecycle,
+    useOperatorAuthorityLifecycle,
+    useOperatorInspectionData,
+} from './agent-detail/useOperatorAuthorityLifecycle';
+import AgentOperatorReason from './agent-detail/AgentOperatorReason';
+import AgentDetailHeader, { AgentDetailSectionFallback, agentStatusKey } from './agent-detail/AgentDetailHeader';
 import './AgentDetail.css';
 
 const AgentApprovalsSection = lazy(() => import('./agent-detail/AgentApprovalsSection'));
+const AgentChatSection = lazy(() => import('./agent-detail/AgentChatSection'));
 const AgentWorkflowsSection = lazy(() => import('./agent-detail/AgentWorkflowsSection'));
 const AgentActivityLogSection = lazy(() => import('./agent-detail/AgentActivityLogSection'));
 const AgentAwareSection = lazy(() => import('./agent-detail/AgentAwareSection'));
@@ -151,15 +157,6 @@ export {
     sessionPermissionModeFromSession,
     trimMessagesBeforeTranscriptEvent,
 } from './agent-detail/agentDetailPolicy';
-
-function AgentDetailSectionFallback() {
-    return (
-        <div className="agent-detail-section-fallback" role="status" aria-live="polite">
-            <span className="agent-detail-section-fallback-dot" aria-hidden="true" />
-            Loading workspace…
-        </div>
-    );
-}
 
 function AgentDetailInner() {
     const { t, i18n } = useTranslation();
@@ -202,16 +199,24 @@ function AgentDetailInner() {
     const token = useAuthStore((s) => s.token);
     const currentUser = useAuthStore((s) => s.user);
 
-    const { data: agent, isLoading, error: agentError } = useQuery({
-        queryKey: ['agent', id],
-        queryFn: () => agentApi.getById(id!),
-        enabled: !!id,
-        retry: false,
-        refetchOnWindowFocus: true, // page stays mounted across tabs; global focus-refetch is off, this query opts in
-    });
-    const canLoadAgentScopedData = !!id && !!agent;
-    const canManage = !!agent && (agent as any).access_level === 'manage';
-
+    const {
+        agent,
+        agentError,
+        canLoadAgentScopedData,
+        canManage,
+        canManagePermissions,
+        canOperatorInspect,
+        denyOperatorAuthority,
+        effectiveAgentAuthorityLost,
+        isLoading,
+        isOperatorOnly,
+        isOperatorOnlyRef,
+        normalizedOperatorReason,
+        operatorAuthorityScope,
+        operatorAuthorityScopeRef,
+        operatorReason,
+        setOperatorReason,
+    } = useOperatorAuthorityLifecycle({ agentId: id, queryClient });
     // ── Aware tab data: triggers ──
     const { data: awareTriggers = [], refetch: refetchTriggers } = useQuery({
         queryKey: ['triggers', id],
@@ -227,38 +232,32 @@ function AgentDetailInner() {
         refetchInterval: activeTab === 'aware' ? 5000 : false,
     });
 
-    // ── Aware tab data: reflection sessions (trigger monologues) ──
-    const { data: reflectionSessions = [] } = useQuery({
-        queryKey: ['reflection-sessions', id],
-        queryFn: async () => {
-            const all = await chatApi.listSessions(id!, 'all', {
-                operatorView: true,
-                operatorReason: 'Agent reflection monitoring',
-            }).catch(() => [] as any[]);
-            return all.filter((s: any) => s.source_channel === 'trigger');
-        },
-        enabled: canLoadAgentScopedData && canManage && activeTab === 'aware',
-        refetchInterval: activeTab === 'aware' ? 10000 : false,
-    });
-
-    // ── Aware tab state ──
-    const [expandedReflection, setExpandedReflection] = useState<string | null>(null);
-    const [reflectionMessages, setReflectionMessages] = useState<Record<string, any[]>>({});
-    const [showAllTriggers, setShowAllTriggers] = useState(false);
-    const [reflectionPage, setReflectionPage] = useState(0);
-
-    const [activityOperatorView, setActivityOperatorView] = useState(false);
-    useEffect(() => setActivityOperatorView(false), [id]);
-
-    const { data: activityLogs = [] } = useQuery({
-        queryKey: ['activity', id, activityOperatorView ? 'operator' : 'owner'],
-        queryFn: () => activityApi.list(
-            id!,
-            100,
-            activityOperatorView ? { operatorView: true, reason: 'Agent activity administration' } : undefined,
-        ),
-        enabled: canLoadAgentScopedData && (activeTab === 'activityLog' || activeTab === 'status'),
-        refetchInterval: activeTab === 'activityLog' ? 10000 : false,
+    const {
+        activityLogs,
+        activityOperatorView,
+        effectiveActivityOperatorView,
+        expandedReflection,
+        loadReflectionMessages,
+        reflectionMessages,
+        reflectionPage,
+        reflectionSessions,
+        setActivityOperatorView,
+        setExpandedReflection,
+        setReflectionMessages,
+        setReflectionPage,
+        setShowAllTriggers,
+        showAllTriggers,
+        toolFailureSummary,
+    } = useOperatorInspectionData({
+        activeTab,
+        agentId: id,
+        canLoadAgentScopedData,
+        canOperatorInspect,
+        denyOperatorAuthority,
+        isOperatorOnly,
+        normalizedOperatorReason,
+        operatorAuthorityScope,
+        operatorAuthorityScopeRef,
     });
 
     const { data: capabilityInstalls = [] } = useQuery<AgentCapabilityInstall[]>({
@@ -273,18 +272,6 @@ function AgentDetailInner() {
         queryFn: () => agentApi.getChannelCapabilities(id!),
         enabled: canLoadAgentScopedData && activeTab === 'status',
         staleTime: 30_000,
-    });
-
-    const { data: toolFailureSummary } = useQuery({
-        queryKey: ['activity', 'tool-failures', id, activityOperatorView ? 'operator' : 'owner'],
-        queryFn: () => activityApi.getToolFailureSummary(
-            id!,
-            24,
-            200,
-            activityOperatorView ? { operatorView: true, reason: 'Agent activity administration' } : undefined,
-        ),
-        enabled: canLoadAgentScopedData && activeTab === 'activityLog',
-        refetchInterval: activeTab === 'activityLog' ? 10000 : false,
     });
 
     // Chat history
@@ -323,6 +310,9 @@ function AgentDetailInner() {
     const pendingUserMessagesRef = useRef<Record<SessionRuntimeKey, PendingUserMessage[]>>({});
     const runtimeActivityAtRef = useRef<Record<SessionRuntimeKey, number>>({});
     const activeSessionIdRef = useRef<string | null>(null);
+    const activeOperatorAuthorityScopeRef = useRef<string | null>(null);
+    const allSessionsAuthorityScopeRef = useRef<string | null>(null);
+    const operatorRuntimeKeysRef = useRef<Set<SessionRuntimeKey>>(new Set());
     const currentAgentIdRef = useRef<string | undefined>(id);
     const sessionMsgAbortRef = useRef<AbortController | null>(null);
     const sessionLoadSeqRef = useRef(0);
@@ -336,6 +326,17 @@ function AgentDetailInner() {
         onDisconnected: () => undefined,
         onMessage: () => undefined,
     });
+    const activeOperatorSessionAuthorized = activeSession?.operator_view !== true || Boolean(
+        operatorAuthorityScope
+        && activeOperatorAuthorityScopeRef.current === operatorAuthorityScope,
+    );
+    const operatorSessionBrowserMode = isManageMode || isOperatorOnly;
+    const visibleActiveSession = activeOperatorSessionAuthorized ? activeSession : null;
+    const visibleAllSessions = operatorAuthorityScope
+        && allSessionsAuthorityScopeRef.current === operatorAuthorityScope
+        ? allSessions
+        : [];
+    const visibleBranchLineage = activeOperatorSessionAuthorized ? branchLineage : [];
     const {
         wsConnected,
         transportPhase,
@@ -347,6 +348,7 @@ function AgentDetailInner() {
         syncActiveSocketState,
     } = useSessionTransportController({
         enabled: canLoadAgentScopedData && activeTab === 'chat' && Boolean(id && activeSession?.id)
+            && activeOperatorSessionAuthorized
             && activeSession?.is_pending_session_lookup !== true && !sessionAccessError,
         agentId: id,
         token,
@@ -500,6 +502,17 @@ function AgentDetailInner() {
         const sessionId = String(sess?.id || '');
         if (!sessionId) return;
         const key = buildSessionRuntimeKey(agentId, sessionId);
+        const operatorScopeAtRequest = sess?.operator_view ? operatorAuthorityScopeRef.current : null;
+        if (sess?.operator_view && (
+            !operatorScopeAtRequest
+            || activeOperatorAuthorityScopeRef.current !== operatorScopeAtRequest
+        )) return;
+        if (sess?.operator_view) operatorRuntimeKeysRef.current.add(key);
+        const authorityIsCurrent = () => !sess?.operator_view || Boolean(
+            operatorScopeAtRequest
+            && operatorAuthorityScopeRef.current === operatorScopeAtRequest
+            && activeOperatorAuthorityScopeRef.current === operatorScopeAtRequest,
+        );
         if (!transcriptReplayStateRef.current[key]) return;
         const inFlight = transcriptBackfillInFlightRef.current[key];
         if (inFlight) return liveSubscriptionWatermark(sessionEventStoresRef.current[key]) ?? inFlight;
@@ -519,10 +532,9 @@ function AgentDetailInner() {
                     afterSequence,
                     limit: 1000,
                     schemaVersion: 2,
-                    ...(sess?.operator_view
-                        ? { operatorView: true, operatorReason: 'Agent session administration' }
-                        : undefined),
+                    ...operatorSessionRequestOptions(Boolean(sess?.operator_view), normalizedOperatorReason),
                 }) as ChatTranscriptEventPayload[];
+                if (!authorityIsCurrent()) return;
                 pageSize = events.length;
                 if (pageSize === 0) break;
                 const isActiveRuntime = currentAgentIdRef.current === agentId
@@ -532,9 +544,10 @@ function AgentDetailInner() {
                 if (nextSequence <= afterSequence) break;
                 afterSequence = nextSequence;
             } while (pageSize === 1000);
-            invalidateSessionRuntimeQueries(agentId, sessionId);
+            if (authorityIsCurrent()) invalidateSessionRuntimeQueries(agentId, sessionId);
             return sessionEventStoresRef.current[key]?.highestContiguousSequence ?? afterSequence;
         })().catch((error) => {
+            if (sess?.operator_view) denyOperatorAuthority(error);
             console.warn(`[WS] Durable transcript backfill failed for ${key}:`, error);
             throw error;
         }).finally(() => {
@@ -552,9 +565,14 @@ function AgentDetailInner() {
 
     const fetchMySessions = async (silent = false, agentId: string | undefined = id) => {
         if (!agentId) return [];
+        if (isOperatorOnlyRef.current && currentAgentIdRef.current === agentId) {
+            setSessions([]);
+            return [];
+        }
         if (!silent && currentAgentIdRef.current === agentId) setSessionsLoading(true);
         try {
             const data = filterSessionsForAgent(await chatApi.listSessions(agentId, 'mine'), agentId);
+            if (isOperatorOnlyRef.current && currentAgentIdRef.current === agentId) return [];
             if (currentAgentIdRef.current === agentId) {
                 setSessions((prev: any[]) => {
                     const drafts = prev.filter((session: any) => isDraftHumanChatSession(session));
@@ -569,7 +587,9 @@ function AgentDetailInner() {
     };
 
     const fetchAllSessions = async () => {
-        if (!id || !canManage) {
+        const authorityScope = operatorAuthorityScopeRef.current;
+        if (!id || !authorityScope) {
+            allSessionsAuthorityScopeRef.current = null;
             if (currentAgentIdRef.current === id) setAllSessions([]);
             return;
         }
@@ -577,28 +597,37 @@ function AgentDetailInner() {
         try {
             const all = filterSessionsForAgent(await chatApi.listSessions(id, 'all', {
                 operatorView: true,
-                operatorReason: 'Agent session administration',
+                operatorReason: normalizedOperatorReason,
             }), id);
-            if (currentAgentIdRef.current === id) {
+            if (currentAgentIdRef.current === id && operatorAuthorityScopeRef.current === authorityScope) {
+                allSessionsAuthorityScopeRef.current = authorityScope;
                 setAllSessions(all.filter((s: any) => s.source_channel !== 'trigger'));
             }
-        } catch { }
-        setAllSessionsLoading(false);
+        } catch (error) {
+            denyOperatorAuthority(error);
+        }
+        if (operatorAuthorityScopeRef.current === authorityScope) setAllSessionsLoading(false);
     };
 
     const selectSession = async (sess: any) => {
         const targetAgentId = id;
         if (!targetAgentId) return;
         if (!sessionBelongsToAgent(sess, targetAgentId)) return;
+        const operatorScopeAtRequest = sess?.operator_view ? operatorAuthorityScopeRef.current : null;
+        if (sess?.operator_view && !operatorScopeAtRequest) return;
         const sessionId = String(sess.id);
         const runtimeKey = buildSessionRuntimeKey(targetAgentId, sessionId);
+        if (sess?.operator_view) operatorRuntimeKeysRef.current.add(runtimeKey);
         const runtimeState = sessionUiStateRef.current[runtimeKey] || uiForPhase('idle');
         const activeRunState = activeRunStateRef.current[runtimeKey];
         const writableSession = isWritableSession(sess);
         const draftSession = isDraftHumanChatSession(sess);
-        const operatorOptions = sess?.operator_view
-            ? { operatorView: true, operatorReason: 'Agent session administration' }
-            : undefined;
+        const operatorOptions = operatorSessionRequestOptions(Boolean(sess?.operator_view), normalizedOperatorReason);
+        const authorityIsCurrent = () => !sess?.operator_view || Boolean(
+            operatorScopeAtRequest
+            && operatorAuthorityScopeRef.current === operatorScopeAtRequest
+            && activeOperatorAuthorityScopeRef.current === operatorScopeAtRequest,
+        );
         const transcriptSurface = writableSession ? 'chat' : 'history';
         const nextTranscriptLoad: SessionTranscriptLoadDescriptor = {
             key: runtimeKey,
@@ -606,6 +635,7 @@ function AgentDetailInner() {
         };
         setSessionAccessError(null);
         activeSessionIdRef.current = sessionId;
+        activeOperatorAuthorityScopeRef.current = operatorScopeAtRequest;
         setCreatedAgentId(null);
         if (writableSession) {
             setHistoryMessagesSessionId(null);
@@ -658,6 +688,7 @@ function AgentDetailInner() {
                 if (controller.signal.aborted || loadSeq !== sessionLoadSeqRef.current) return;
                 if (currentAgentIdRef.current !== targetAgentId) return;
                 if (activeSessionIdRef.current !== sessionId) return;
+                if (!authorityIsCurrent()) return;
                 const projected = projectCanonicalTranscriptSnapshot({
                     existing: transcriptEventsRef.current[runtimeKey] || [],
                     snapshot,
@@ -703,12 +734,14 @@ function AgentDetailInner() {
             if (controller.signal.aborted || loadSeq !== sessionLoadSeqRef.current) return;
             if (currentAgentIdRef.current !== targetAgentId) return;
             if (activeSessionIdRef.current !== sessionId) return;
+            if (!authorityIsCurrent()) return;
             if (transcriptEvents.length === 0) {
                 const msgs = await retrySessionRead(() => chatApi.getSessionMessages(targetAgentId, sessionId, {
                     signal: controller.signal,
                     ...operatorOptions,
                 }), { signal: controller.signal });
                 if (controller.signal.aborted || loadSeq !== sessionLoadSeqRef.current) return;
+                if (!authorityIsCurrent()) return;
                 const storedParsed = msgs.map((m: any) => parseChatMsg(normalizeStoredChatMessage(m)));
                 let preParsed = storedParsed;
                 transcriptReplayStateRef.current[runtimeKey] = {
@@ -756,6 +789,8 @@ function AgentDetailInner() {
             if (loadSeq !== sessionLoadSeqRef.current) return;
             if (currentAgentIdRef.current !== targetAgentId) return;
             if (activeSessionIdRef.current !== sessionId) return;
+            if (!authorityIsCurrent()) return;
+            if (sess?.operator_view && denyOperatorAuthority(err)) return;
             if (err instanceof ApiError && (err.status === 403 || err.status === 404)) {
                 setSessionAccessError({ sessionId, status: err.status });
                 setTransportNotice(null);
@@ -822,15 +857,24 @@ function AgentDetailInner() {
             setBranchLineage([]);
             return;
         }
+        const operatorView = activeSession?.operator_view === true;
+        const operatorScopeAtRequest = operatorView ? operatorAuthorityScopeRef.current : null;
+        if (operatorView && (
+            !operatorScopeAtRequest
+            || activeOperatorAuthorityScopeRef.current !== operatorScopeAtRequest
+        )) {
+            setBranchLineage([]);
+            return;
+        }
         setBranchLineageLoading(true);
         try {
             const lineage = await chatApi.getSessionLineage(
                 agentId,
                 sessionId,
-                activeSession?.operator_view
-                    ? { operatorView: true, operatorReason: 'Agent session administration' }
-                    : undefined,
+                operatorSessionRequestOptions(operatorView, normalizedOperatorReason),
             );
+            if (currentAgentIdRef.current !== agentId || activeSessionIdRef.current !== sessionId) return;
+            if (operatorView && operatorAuthorityScopeRef.current !== operatorScopeAtRequest) return;
             setBranchLineage((lineage || []).map((item: any) => ({
                 id: String(item.id),
                 parent_session_id: item.parent_session_id ?? null,
@@ -840,10 +884,13 @@ function AgentDetailInner() {
                 created_at: item.created_at ?? null,
             })));
         } catch (err) {
+            if (operatorView && denyOperatorAuthority(err)) return;
             console.warn('Failed to load branch lineage:', err);
             setBranchLineage([]);
         } finally {
-            setBranchLineageLoading(false);
+            if (!operatorView || operatorAuthorityScopeRef.current === operatorScopeAtRequest) {
+                setBranchLineageLoading(false);
+            }
         }
     };
 
@@ -855,10 +902,12 @@ function AgentDetailInner() {
             return;
         }
         const branch = branchLineage.find((item) => String(item.id) === String(sessionId));
+        const operatorBranchView = activeSession?.operator_view === true;
+        if (operatorBranchView && !activeOperatorSessionAuthorized) return;
         await selectSession({
             id: sessionId,
             agent_id: id,
-            user_id: currentUser?.id ? String(currentUser.id) : undefined,
+            user_id: operatorBranchView ? (activeSession?.user_id != null ? String(activeSession.user_id) : undefined) : (currentUser?.id ? String(currentUser.id) : undefined),
             title: branch?.title || 'Branch',
             created_at: branch?.created_at,
             parent_session_id: branch?.parent_session_id ?? null,
@@ -866,6 +915,9 @@ function AgentDetailInner() {
             transcript_metadata_json: branch?.branch ?? null,
             source_channel: 'web',
             listed_surface: 'chat',
+            ...(operatorBranchView
+                ? { read_only: true, is_current_user_session: false, authority_source: activeSession?.authority_source, operator_view: true }
+                : undefined),
         });
         ensureSessionWorkbenchRoute(sessionId);
     };
@@ -1506,34 +1558,59 @@ function AgentDetailInner() {
     };
 
 
-    useEffect(() => {
-        currentAgentIdRef.current = id;
-    }, [id]);
-
-    // Reset visible state whenever the viewed agent changes.
-    // Existing background sockets keep running and will be cleaned up on unmount.
-    useEffect(() => {
-        sessionMsgAbortRef.current?.abort();
-        sessionTranscriptLoadRef.current = null;
-        activeSessionIdRef.current = null;
-        setActiveSession(null);
-        setChatMessagesAfterQueued(() => []);
-        setChatMessagesSessionId(null);
-        updateHistoryMsgs([]);
-        setHistoryMessagesSessionId(null);
-        setTransportNotice(null);
-        setIsStreaming(false);
-        setIsWaiting(false);
-        resetActiveTransportState();
-        activeRunStateRef.current = {};
-        pendingUserMessagesRef.current = {};
-        runtimeActivityAtRef.current = {};
-        setActiveRunStateBySession({});
-        setChatScope('mine');
-        setAgentExpired(false);
-        setSessionAccessError(null);
-        settingsInitRef.current = false;
-    }, [id]);
+    useOperatorAuthorityCacheLifecycle({
+        activeSession,
+        agentId: id,
+        normalizedOperatorReason,
+        operatorAuthorityScope,
+        queryClient,
+        closeSessionSocket,
+        resetActiveTransportState,
+        sessionMessageStore,
+        clearChatMessages: () => setChatMessagesAfterQueued(() => []),
+        clearHistoryMessages: () => updateHistoryMsgs([]),
+        refs: {
+            activeOperatorAuthorityScope: activeOperatorAuthorityScopeRef,
+            activeRunState: activeRunStateRef,
+            activeSessionId: activeSessionIdRef,
+            allSessionsAuthorityScope: allSessionsAuthorityScopeRef,
+            currentAgentId: currentAgentIdRef,
+            locallyTerminalSessionKeys: locallyTerminalSessionKeysRef,
+            operatorRuntimeKeys: operatorRuntimeKeysRef,
+            pendingUserMessages: pendingUserMessagesRef,
+            runtimeActivityAt: runtimeActivityAtRef,
+            sessionCompatibilityTimelines: sessionCompatibilityTimelinesRef,
+            sessionEventFullHydrationKeys: sessionEventFullHydrationKeysRef,
+            sessionEventStores: sessionEventStoresRef,
+            sessionLoadSeq: sessionLoadSeqRef,
+            sessionMsgAbort: sessionMsgAbortRef,
+            sessionTranscriptLoad: sessionTranscriptLoadRef,
+            sessionUiState: sessionUiStateRef,
+            sessionVisibilityBoundaries: sessionVisibilityBoundariesRef,
+            settingsInit: settingsInitRef,
+            toolCallInvalidateAt: toolCallInvalidateAtRef,
+            transcriptBackfillInFlight: transcriptBackfillInFlightRef,
+            transcriptEvents: transcriptEventsRef,
+            transcriptReplayState: transcriptReplayStateRef,
+        },
+        setters: {
+            setActiveRunStateBySession,
+            setActiveSession,
+            setAgentExpired,
+            setAllSessions,
+            setAllSessionsLoading,
+            setBranchLineage,
+            setBranchLineageLoading,
+            setChatMessagesSessionId,
+            setChatScope,
+            setHistoryMessagesSessionId,
+            setIsStreaming,
+            setIsWaiting,
+            setSessionAccessError,
+            setSessions,
+            setTransportNotice,
+        },
+    });
 
     useEffect(() => {
         if (!newSessionDraftRequest || !id) return;
@@ -1549,6 +1626,10 @@ function AgentDetailInner() {
 
     useEffect(() => {
         if (!canLoadAgentScopedData || !token || activeTab !== 'chat') return;
+        if (isOperatorOnly) {
+            setSessions([]);
+            return;
+        }
         if (newSessionDraftTransitionPending || isDraftHumanChatSession(activeSession)) return;
         fetchMySessions(false, id).then((data: any) => {
             if (currentAgentIdRef.current !== id) return;
@@ -1562,6 +1643,7 @@ function AgentDetailInner() {
                 if (activeSessionIdRef.current && String(activeSessionIdRef.current) === String(requestedSessionId)) {
                     return;
                 }
+                if (operatorSessionBrowserMode) return;
                 selectSession({
                     id: requestedSessionId,
                     agent_id: id,
@@ -1575,21 +1657,19 @@ function AgentDetailInner() {
             }
             if (data && data.length > 0) selectSession(data[0]);
         });
-    }, [canLoadAgentScopedData, id, token, activeTab, requestedSessionId]);
+    }, [canLoadAgentScopedData, id, token, activeTab, requestedSessionId, operatorSessionBrowserMode, isOperatorOnly]);
 
     useEffect(() => {
-        if (!canLoadAgentScopedData || activeTab !== 'chat' || !isManageMode || !canManage) return;
+        if (!canLoadAgentScopedData || activeTab !== 'chat' || !operatorSessionBrowserMode || !operatorAuthorityScope) return;
         fetchAllSessions();
-    }, [canLoadAgentScopedData, activeTab, isManageMode, canManage, id]);
+    }, [canLoadAgentScopedData, activeTab, operatorSessionBrowserMode, operatorAuthorityScope, id]);
 
     useEffect(() => {
         if (!canLoadAgentScopedData || activeTab !== 'chat' || !requestedSessionId || !id) return;
-        if (shouldPreserveActiveSessionForRequestedId(activeSession, requestedSessionId)) return;
-        const known = [...sessions, ...allSessions].find((session: any) => String(session.id) === String(requestedSessionId));
-        if (known) {
-            selectSession(known);
-            return;
-        }
+        const known = [...sessions, ...visibleAllSessions].find((session: any) => String(session.id) === String(requestedSessionId));
+        if (operatorSessionBrowserMode && (!known || activeSession === known)) return;
+        if (!operatorSessionBrowserMode && shouldPreserveActiveSessionForRequestedId(activeSession, requestedSessionId)) return;
+        if (known) { selectSession(known); return; }
         if (activeSessionIdRef.current && String(activeSessionIdRef.current) === String(requestedSessionId)) return;
         selectSession({
             id: requestedSessionId,
@@ -1600,21 +1680,33 @@ function AgentDetailInner() {
             read_only: true,
             is_pending_session_lookup: true,
         });
-    }, [canLoadAgentScopedData, activeTab, requestedSessionId, id, activeSession, sessions, allSessions]);
+    }, [canLoadAgentScopedData, activeTab, requestedSessionId, id, activeSession, sessions, allSessions, operatorAuthorityScope, operatorSessionBrowserMode]);
 
     transportCallbacksRef.current = {
         onBackfill: backfillSessionTranscript,
         onLiveTailReady: ({ key, sessionId, acceptedAfterSequence }) => {
+            if (activeOperatorAuthorityScopeRef.current
+                && activeOperatorAuthorityScopeRef.current !== operatorAuthorityScopeRef.current) return;
             sessionEventStoresRef.current[key] ??= createSessionEventStore(acceptedAfterSequence);
             transcriptReplayStateRef.current[key] ??= createEmptyTranscriptReplayState();
             if (activeSessionIdRef.current !== sessionId) return;
             setTransportNotice((current) => nextSessionBackfillNotice(current, t('agent.chat.sessionBackfillIncomplete', 'Latest activity is visible, but older session evidence is still recovering.'), Boolean(transcriptBackfillInFlightRef.current[key]) || sessionEventFullHydrationKeysRef.current.has(key)));
         },
         onDisconnected: ({ key, phase, isActiveRuntime }) => {
+            if (activeOperatorAuthorityScopeRef.current
+                && activeOperatorAuthorityScopeRef.current !== operatorAuthorityScopeRef.current) return;
             setSessionPhase(key, phase);
             if (isActiveRuntime) syncActivePhase(phase);
         },
-        onMessage: (context) => projectSessionSocketEvent(context, {
+        onMessage: (context) => {
+            if (context.session?.operator_view && (
+                !operatorAuthorityScopeRef.current
+                || activeOperatorAuthorityScopeRef.current !== operatorAuthorityScopeRef.current
+            )) {
+                context.closeSessionSocket(context.key, true);
+                return;
+            }
+            projectSessionSocketEvent(context, {
             applyTranscriptToSession,
             selectSession,
             fetchMySessions,
@@ -1647,22 +1739,17 @@ function AgentDetailInner() {
             invalidateQuery: (queryKey) => {
                 void queryClient.invalidateQueries({ queryKey });
             },
-        }),
+            });
+        },
     };
 
     useEffect(() => {
-        if (!canLoadAgentScopedData || activeTab !== 'chat' || !id || !activeSession?.id || activeSession?.is_pending_session_lookup === true || sessionAccessError || isDraftHumanChatSession(activeSession)) {
+        if (!canLoadAgentScopedData || activeTab !== 'chat' || !id || !activeSession?.id || !activeOperatorSessionAuthorized || activeSession?.is_pending_session_lookup === true || sessionAccessError || isDraftHumanChatSession(activeSession)) {
             setBranchLineage([]);
             return;
         }
         fetchBranchLineage(id, String(activeSession.id));
-    }, [canLoadAgentScopedData, activeTab, id, activeSession?.id, activeSession?.is_pending_session_lookup, sessionAccessError]);
-
-    useEffect(() => {
-        return () => {
-            sessionMsgAbortRef.current?.abort();
-        };
-    }, []);
+    }, [canLoadAgentScopedData, activeTab, id, activeSession?.id, activeSession?.operator_view, activeOperatorSessionAuthorized, activeSession?.is_pending_session_lookup, sessionAccessError, operatorAuthorityScope]);
 
     // Smart scroll: only auto-scroll if user is at the bottom
     const isNearBottom = useRef(true);
@@ -2187,26 +2274,23 @@ function AgentDetailInner() {
         enabled: activeTab === 'settings' || activeTab === 'status' || activeTab === 'chat',
     });
 
-    const { data: persistedRuntimeSummary } = useQuery({
-        queryKey: ['chat-runtime-summary', id, activeSession?.id],
-        queryFn: () => chatApi.getRuntimeSummary(
-            String(activeSession!.id),
-            activeSession?.operator_view
-                ? { operatorView: true, operatorReason: 'Agent session administration' }
-                : undefined,
-        ),
-        enabled: canLoadAgentScopedData && activeTab === 'chat' && !!activeSession?.id && activeSession?.is_pending_session_lookup !== true && !sessionAccessError && !isDraftHumanChatSession(activeSession),
+    const { data: persistedRuntimeSummary, error: persistedRuntimeSummaryError } = useQuery({
+        queryKey: ['chat-runtime-summary', id, activeSession?.id, activeSession?.operator_view ? normalizedOperatorReason : 'owner'],
+        queryFn: () => chatApi.getRuntimeSummary(String(activeSession!.id), operatorSessionRequestOptions(Boolean(activeSession?.operator_view), normalizedOperatorReason)),
+        enabled: canLoadAgentScopedData && activeTab === 'chat' && !!activeSession?.id && activeOperatorSessionAuthorized && (!activeSession?.operator_view || Boolean(canOperatorInspect && normalizedOperatorReason)) && activeSession?.is_pending_session_lookup !== true && !sessionAccessError && !isDraftHumanChatSession(activeSession),
         refetchInterval: activeTab === 'chat' && activeSession?.id && activeSession?.is_pending_session_lookup !== true && !sessionAccessError && !isDraftHumanChatSession(activeSession) ? 10000 : false,
     });
+    useEffect(() => {
+        if (activeSession?.operator_view !== true) return;
+        denyOperatorAuthority(persistedRuntimeSummaryError);
+    }, [activeSession?.operator_view, denyOperatorAuthority, persistedRuntimeSummaryError]);
 
     const { data: activeSessionRun, dataUpdatedAt: activeSessionRunObservedAt } = useQuery({
-        queryKey: ['chat-active-run', id, activeSession?.id],
+        queryKey: ['chat-active-run', id, activeSession?.id, activeSession?.operator_view ? normalizedOperatorReason : 'owner'],
         queryFn: () => chatApi.getActiveSessionRun(
             id!,
             String(activeSession!.id),
-            activeSession?.operator_view
-                ? { operatorView: true, operatorReason: 'Agent session administration' }
-                : undefined,
+            operatorSessionRequestOptions(Boolean(activeSession?.operator_view), normalizedOperatorReason),
         ),
         enabled: canLoadAgentScopedData && activeTab === 'chat' && !!activeSession?.id && !!activeSession && isWritableSession(activeSession) && !isDraftHumanChatSession(activeSession),
         refetchInterval: (query) => activeRunPollInterval(
@@ -2283,7 +2367,7 @@ function AgentDetailInner() {
     const { data: permData } = useQuery({
         queryKey: ['agent-permissions', id],
         queryFn: () => agentApi.getPermissions(id!),
-        enabled: canLoadAgentScopedData && activeTab === 'chat',
+        enabled: canLoadAgentScopedData && activeTab === 'chat' && !isOperatorOnly,
     });
     const { routedSessionCommand, control: routedSessionCommandControl } = useReloadableSessionCommandPanel({
         agentId: id, routeSessionId,
@@ -2326,10 +2410,6 @@ function AgentDetailInner() {
 
     const [deleteSessionConfirm, setDeleteSessionConfirm] = useState<{ sessionId: string; title: string } | null>(null);
     const [uploadToast, setUploadToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
-    const [editingRole, setEditingRole] = useState(false);
-    const [roleInput, setRoleInput] = useState('');
-    const [editingName, setEditingName] = useState(false);
-    const [nameInput, setNameInput] = useState('');
     const showToast = (message: string, type: 'success' | 'error' = 'success') => {
         setUploadToast({ message, type });
         setTimeout(() => setUploadToast(null), 3000);
@@ -2348,6 +2428,14 @@ function AgentDetailInner() {
         return <div className="agent-detail-placeholder">{t('common.loading')}</div>;
     }
 
+    if (effectiveAgentAuthorityLost) {
+        return (
+            <div className="agent-detail-placeholder" role="alert">
+                {t('agent.detail.accessDenied', 'You do not have access to this employee.')}
+            </div>
+        );
+    }
+
     if (!agent) {
         const status = (agentError as { status?: number } | null | undefined)?.status;
         const message = status === 403
@@ -2356,25 +2444,20 @@ function AgentDetailInner() {
         return <div className="agent-detail-placeholder">{message}</div>;
     }
 
-    // Compute display status
-    const computeStatusKey = () => {
-        if (agent.status === 'error') return 'error';
-        if (agent.status === 'creating') return 'creating';
-        if (agent.status === 'stopped') return 'stopped';
-        return agent.status === 'running' ? 'running' : 'idle';
-    };
-    const statusKey = computeStatusKey();
+    const statusKey = agentStatusKey(agent);
     const isSystemHrRaw = (agent as any).agent_class === 'internal_system';
     const isSystemHr = isSystemHrRaw && !isManageMode;
     const sessionWorkbenchMode = Boolean(routeSessionId) || isSessionWorkbenchRoute(activeTab, location.search);
-    const pendingSessionLookup = activeSession?.is_pending_session_lookup === true;
+    const pendingSessionLookup = visibleActiveSession?.is_pending_session_lookup === true;
 
     // HR system agent: force chat-only mode
     if (isSystemHr && activeTab !== 'chat') {
         setActiveTab('chat');
     }
 
-    const visibleAgentTabs = getVisibleAgentDetailTabs(agent);
+    const visibleAgentTabs: AgentDetailTab[] = isOperatorOnly
+        ? ['chat', 'workspace', 'activityLog']
+        : getVisibleAgentDetailTabs(agent);
     if (!isSystemHr && visibleAgentTabs.length > 0 && !visibleAgentTabs.includes(activeTab as AgentDetailTab)) {
         setActiveTab(visibleAgentTabs[0]);
     }
@@ -2382,7 +2465,7 @@ function AgentDetailInner() {
     const visibleWorkbenchAreas = AGENT_WORKBENCH_AREAS
         .map((area) => ({
             ...area,
-            tabs: area.tabs.filter((tab) => isAgentDetailTabVisible(agent, tab)),
+            tabs: area.tabs.filter((tab) => visibleAgentTabs.includes(tab)),
         }))
         .filter((area) => area.tabs.length > 0);
     const activeWorkbenchArea =
@@ -2392,115 +2475,18 @@ function AgentDetailInner() {
     return (
         <>
             <div className={sessionWorkbenchMode ? 'agent-detail-session-only' : undefined}>
-                {/* Header */}
-                {!sessionWorkbenchMode && (isSystemHr ? (
-                    <div className="page-header">
-                        <div className="agent-detail-hr-header">
-                            <div className="agent-detail-hr-avatar">&#x1F464;</div>
-                            <div>
-                                <h1 className="page-title agent-detail-title-flush">{t('nav.newAgent', 'Create Digital Employee')}</h1>
-                                <p className="page-subtitle agent-detail-subtitle-tight">{t('hrChat.subtitle', 'Tell the HR agent what kind of digital employee you need')}</p>
-                            </div>
-                        </div>
-                    </div>
-                ) : (
-                <div className="page-header">
-                    <div className="agent-detail-header-main">
-                        <div className="agent-detail-avatar">{(Array.from(agent.name || 'A')[0] as string || 'A').toUpperCase()}</div>
-                        <div className="agent-detail-header-text">
-                            {canManage && editingName ? (
-                                <input
-                                    className="page-title agent-detail-name-input"
-                                    autoFocus
-                                    value={nameInput}
-                                    onChange={e => setNameInput(e.target.value)}
-                                    onBlur={async () => {
-                                        setEditingName(false);
-                                        if (nameInput.trim() && nameInput !== agent.name) {
-                                            await agentApi.update(id!, { name: nameInput.trim() } as any);
-                                            queryClient.invalidateQueries({ queryKey: ['agent', id] });
-                                        } else {
-                                            setNameInput(agent.name);
-                                        }
-                                    }}
-                                    onKeyDown={async e => {
-                                        if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-                                        if (e.key === 'Escape') { setEditingName(false); setNameInput(agent.name); }
-                                    }}
-                                />
-                            ) : (
-                                <h1 className={`page-title agent-detail-name${canManage ? ' is-editable' : ''}`}
-                                    title={canManage ? "Click to edit name" : undefined}
-                                    onClick={() => { if (canManage) { setNameInput(agent.name); setEditingName(true); } }}
-                                >
-                                    {agent.name}
-                                </h1>
-                            )}
-                            <p className="page-subtitle agent-detail-status-line">
-                                <span className={`status-dot ${statusKey}`} />
-                                {t(`agent.status.${statusKey}`)}
-                                {canManage && editingRole ? (
-                                    <textarea
-                                        autoFocus
-                                        value={roleInput}
-                                        onChange={e => setRoleInput(e.target.value)}
-                                        onBlur={async () => {
-                                            setEditingRole(false);
-                                            if (roleInput !== agent.role_description) {
-                                                await agentApi.update(id!, { role_description: roleInput } as any);
-                                                queryClient.invalidateQueries({ queryKey: ['agent', id] });
-                                            }
-                                        }}
-                                        onKeyDown={async e => {
-                                            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); (e.target as HTMLTextAreaElement).blur(); }
-                                            if (e.key === 'Escape') { setEditingRole(false); setRoleInput(agent.role_description || ''); }
-                                        }}
-                                        rows={2}
-                                        className="agent-detail-role-input"
-                                    />
-                                ) : (
-                                    <span
-                                        title={canManage ? (agent.role_description || 'Click to edit') : (agent.role_description || '')}
-                                        onClick={() => { if (canManage) { setRoleInput(agent.role_description || ''); setEditingRole(true); } }}
-                                        className={`agent-detail-role${canManage ? ' is-editable' : ''}`}
-                                    >
-                                        {agent.role_description ? `· ${agent.role_description}` : (canManage ? <span className="agent-detail-role-placeholder">· {t('agent.fields.role', 'Click to add a description...')}</span> : null)}
-                                    </span>
-                                )}
-                                {(agent as any).is_expired && (
-                                    <span className="agent-detail-expired-badge">{t('agent.settings.expiry.expired', 'Expired')}</span>
-                                )}
-                                {(agent as any).agent_type === 'local_agent' && (
-                                    <span className="agent-detail-local-badge">{t('nav.localBadge', 'Local')}</span>
-                                )}
-                                {!(agent as any).is_expired && (agent as any).expires_at && (
-                                    <span className="agent-detail-expires-text">
-                                        {t('agent.settings.expiry.expiresAt', 'Expires: {{time}}', { time: new Date((agent as any).expires_at).toLocaleString() })}
-                                    </span>
-                                )}                                {canManage && (
-                                    <button
-                                        onClick={openExpiryModal}
-                                        title={t('agent.settings.expiry.editTitle', 'Edit expiry time')}
-                                        className="agent-detail-expiry-edit"
-                                    >✏️ {t((agent as any).expires_at || (agent as any).is_expired ? 'agent.settings.expiry.renew' : 'agent.settings.expiry.setExpiry')}</button>
-                                )}
-                            </p>
-                        </div>
-                    </div>
-                    <div className="agent-detail-header-actions">
-                        <button className="btn btn-primary" onClick={() => selectDetailTab('chat')}>{t('agent.actions.chat')}</button>
-                        {!isLocalAgentRuntimeType(agent) && (
-                            <>
-                                {agent.status === 'stopped' ? (
-                                    <button className="btn btn-secondary" onClick={async () => { await agentApi.start(id!); queryClient.invalidateQueries({ queryKey: ['agent', id] }); }}>{t('agent.actions.start')}</button>
-                                ) : agent.status === 'running' ? (
-                                    <button className="btn btn-secondary" onClick={async () => { await agentApi.stop(id!); queryClient.invalidateQueries({ queryKey: ['agent', id] }); }}>{t('agent.actions.stop')}</button>
-                                ) : null}
-                            </>
-                        )}
-	                    </div>
-	                </div>
-	                ))}
+                {!sessionWorkbenchMode && (
+                    <AgentDetailHeader
+                        agent={agent}
+                        agentId={id!}
+                        canManage={canManage}
+                        isOperatorOnly={isOperatorOnly}
+                        isSystemHr={isSystemHr}
+                        onOpenExpiry={openExpiryModal}
+                        onSelectChat={() => selectDetailTab('chat')}
+                        statusKey={statusKey}
+                    />
+                )}
 
                 {/* Workbench navigation — hidden for HR system agent */}
                 {!isSystemHr && !sessionWorkbenchMode && (
@@ -2534,6 +2520,8 @@ function AgentDetailInner() {
                     </div>
                 )}
 
+                {canOperatorInspect && <AgentOperatorReason value={operatorReason} onChange={setOperatorReason} />}
+
                 <Suspense fallback={<AgentDetailSectionFallback />}>
                 {/* ── Enhanced Status Tab ── */}
                 {activeTab === 'status' && (
@@ -2554,8 +2542,8 @@ function AgentDetailInner() {
                     <AgentAwareSection
                         agentId={id!}
                         awareTriggers={awareTriggers}
-                        reflectionSessions={reflectionSessions}
-                        reflectionMessages={reflectionMessages}
+                        reflectionSessions={operatorAuthorityScope ? reflectionSessions : []}
+                        reflectionMessages={operatorAuthorityScope ? reflectionMessages : {}}
                         expandedReflection={expandedReflection}
                         showAllTriggers={showAllTriggers}
                         reflectionPage={reflectionPage}
@@ -2566,14 +2554,7 @@ function AgentDetailInner() {
                         onRefetchTriggers={refetchTriggers}
                         autonomyOverview={autonomyOverview}
                         onRefetchAutonomy={refetchAutonomy}
-                        onLoadReflectionMessages={(sessionId) => chatApi.getSessionMessages(
-                            id!,
-                            sessionId,
-                            {
-                                operatorView: true,
-                                operatorReason: 'Agent reflection monitoring',
-                            },
-                        )}
+                        onLoadReflectionMessages={loadReflectionMessages}
                     />
                 )}
 
@@ -2582,7 +2563,7 @@ function AgentDetailInner() {
                 {activeTab === 'knowledge' && (
                     <AgentKnowledgeSection
                         agentId={id!}
-                        canEdit={(agent as any)?.access_level !== 'use'}
+                        canEdit={canManage}
                         onNavigateTab={selectDetailTab}
                     />
                 )}
@@ -2596,7 +2577,7 @@ function AgentDetailInner() {
                     />
                 )}
                 {activeTab === 'workflows' && (
-                    <AgentWorkflowsSection agentId={id!} canManage={(agent as any)?.access_level !== 'use'} />
+                    <AgentWorkflowsSection agentId={id!} canManage={canManage} />
                 )}
 
                 {/* ── Extensions Tab: MCP/plugins, Skills, and Sub-agents ── */}
@@ -2612,10 +2593,16 @@ function AgentDetailInner() {
                 {/* ── Workspace Tab ── */}
                 {
                     activeTab === 'workspace' && (
-                        (agent as any)?.agent_type === 'local_agent' ? (
+                        (agent as any)?.agent_type === 'local_agent' && !isOperatorOnly ? (
                             <LocalAgents key="workspace" agentId={id!} agentName={agent.name} embedded initialTab="workspace" />
                         ) : (
-                            <AgentWorkspaceSection agentId={id!} canUseOperatorView={canManage} />
+                            <AgentWorkspaceSection
+                                agentId={id!}
+                                canUseOperatorView={canOperatorInspect}
+                                operatorOnly={isOperatorOnly}
+                                operatorReason={normalizedOperatorReason}
+                                onOperatorAuthorityDenied={denyOperatorAuthority}
+                            />
                         )
                     )
                 }
@@ -2626,9 +2613,9 @@ function AgentDetailInner() {
 
                 {
                     activeTab === 'chat' && (
-                        (agent as any)?.agent_type === 'local_agent' ? (
+                        (agent as any)?.agent_type === 'local_agent' && !isOperatorOnly ? (
                             <LocalAgentChatSection key="chat" agentId={id!} agent={agent} agentPermissions={permData ?? null} />
-                        ) : sessionAccessError?.sessionId === String(activeSession?.id) ? (
+                        ) : sessionAccessError?.sessionId === String(visibleActiveSession?.id) ? (
                             <SessionAccessErrorSurface status={sessionAccessError.status} onBack={() => {
                                 sessionMsgAbortRef.current?.abort(); setActiveSession(null); setSessionAccessError(null);
                                 navigate('/agents', { replace: true });
@@ -2640,23 +2627,25 @@ function AgentDetailInner() {
                             agentId={id}
                             agent={agent}
                             currentUser={currentUser}
-                            isAdmin={isSystemHr ? false : canManage}
+                            isAdmin={isSystemHr ? false : canOperatorInspect && !!normalizedOperatorReason}
+                            operatorReason={normalizedOperatorReason}
+                            onOperatorAuthorityDenied={denyOperatorAuthority}
                             chatScope={chatScope}
                             onSetChatScope={setChatScope}
                             onLoadAllSessions={fetchAllSessions}
                             onCreateNewSession={createNewSession}
                             sessionsLoading={sessionsLoading}
                             sessions={sessions}
-                            activeSession={activeSession}
+                            activeSession={visibleActiveSession}
                             sessionTransitionPending={newSessionDraftTransitionPending}
-                            branchLineage={branchLineage}
+                            branchLineage={visibleBranchLineage}
                             branchLineageLoading={branchLineageLoading}
                             onSelectBranchSession={selectBranchSession}
-                            wsConnected={wsConnected}
+                            wsConnected={activeOperatorSessionAuthorized ? wsConnected : false}
                             transportPhase={transportPhase}
                             transportReconnectAttempt={transportReconnectAttempt}
                             onReconnectTransport={reconnectActiveTransport}
-                            allSessions={allSessions}
+                            allSessions={visibleAllSessions}
                             allSessionsLoading={allSessionsLoading}
                             allUserFilter={allUserFilter}
                             onSetAllUserFilter={setAllUserFilter}
@@ -2664,15 +2653,15 @@ function AgentDetailInner() {
                             onDeleteSession={deleteSession}
                             historyContainerRef={historyContainerRef}
                             onHistoryScroll={handleHistoryScroll}
-                            historyMsgs={historyMsgs}
-                            historyMessagesSessionId={historyMessagesSessionId}
+                            historyMsgs={activeOperatorSessionAuthorized ? historyMsgs : []}
+                            historyMessagesSessionId={activeOperatorSessionAuthorized ? historyMessagesSessionId : null}
                             showHistoryScrollBtn={showHistoryScrollBtn}
                             onScrollHistoryToBottom={scrollHistoryToBottom}
                             chatContainerRef={chatContainerRef}
                             onChatScroll={handleChatScroll}
-                            chatMessages={chatMessages}
-                            chatMessagesSessionId={chatMessagesSessionId}
-                            runtimeSummary={runtimeSummary}
+                            chatMessages={activeOperatorSessionAuthorized ? chatMessages : []}
+                            chatMessagesSessionId={activeOperatorSessionAuthorized ? chatMessagesSessionId : null}
+                            runtimeSummary={activeOperatorSessionAuthorized ? runtimeSummary : null}
                             agentPermissions={permData ?? null}
                             transportNotice={transportNotice}
                             isWaiting={isWaiting}
@@ -2735,17 +2724,26 @@ function AgentDetailInner() {
 
                 {
                     activeTab === 'activityLog' && (
-                        <AgentActivityLogSection
-                            activityLogs={activityLogs}
-                            toolFailureSummary={toolFailureSummary}
-                            logFilter={logFilter}
-                            expandedLogId={expandedLogId}
-                            onFilterChange={setLogFilter}
-                            onToggleExpandedLog={setExpandedLogId}
-                            canUseOperatorView={canManage}
-                            operatorView={activityOperatorView}
-                            onOperatorViewChange={setActivityOperatorView}
-                        />
+                        isOperatorOnly && !operatorAuthorityScope ? (
+                            <div className="agent-detail-placeholder" role="status">
+                                {t(
+                                    'agent.operator.reasonRequired',
+                                    'Enter and apply an inspection reason before viewing private activity.',
+                                )}
+                            </div>
+                        ) : (
+                            <AgentActivityLogSection
+                                activityLogs={activityLogs}
+                                toolFailureSummary={toolFailureSummary}
+                                logFilter={logFilter}
+                                expandedLogId={expandedLogId}
+                                onFilterChange={setLogFilter}
+                                onToggleExpandedLog={setExpandedLogId}
+                                canUseOperatorView={!isOperatorOnly && canOperatorInspect && !!normalizedOperatorReason}
+                                operatorView={effectiveActivityOperatorView}
+                                onOperatorViewChange={setActivityOperatorView}
+                            />
+                        )
                     )
                 }
 
@@ -2763,6 +2761,7 @@ function AgentDetailInner() {
                             agent={agent}
                             llmModels={llmModels}
                             canManage={canManage}
+                            canManagePermissions={canManagePermissions}
                             onReviewPatrolPlan={async (request) => {
                                 const handoff = buildAssignmentHandoff(request, 'plan');
                                 const session = await chatApi.createSession(id!, buildAssignmentSessionTitle(handoff.content));

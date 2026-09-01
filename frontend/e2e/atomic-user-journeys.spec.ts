@@ -43,6 +43,7 @@ type JourneyEvidence = {
   // External channel sessions only load through the manage-mode operator
   // surface (the product's All-sessions path), never the owner chat shell.
   browserManageMode?: boolean;
+  browserOperatorReason?: string;
   browserToken?: string;
   browserUser?: Record<string, unknown>;
   expectedText?: string;
@@ -109,6 +110,28 @@ async function login(publicApi: APIRequestContext, username: string): Promise<Au
     }),
     `refresh login ${username}`,
   );
+}
+
+
+async function ensureOperatorInspectionGrant(
+  context: JourneyContext,
+  principalId: string,
+  requestId: string,
+): Promise<void> {
+  const grant = await responseJson<Record<string, unknown>>(
+    await context.ownerApi.post(`/api/agents/${context.agentId}/operator-grants`, {
+      data: {
+        request_id: requestId,
+        principal_id: principalId,
+        effect: 'allow',
+        reason: 'Atomic scoped operator evidence',
+      },
+    }),
+    'ensure scoped operator inspection grant',
+  );
+  expect(String(grant.id || '')).toBe(requestId);
+  expect(String(grant.principal_id || '')).toBe(principalId);
+  expect(String(grant.effect || '')).toBe('allow');
 }
 
 
@@ -194,7 +217,7 @@ async function bootstrap(playwright: PlaywrightWorkerArgs['playwright']): Promis
           role_description: 'Exercises all production user-journey contracts against controlled external providers.',
           primary_model_id: model.id,
           permission_scope_type: 'company',
-          permission_access_level: 'manage',
+          permission_access_level: 'use',
         },
       }),
       'create journey agent',
@@ -766,18 +789,13 @@ async function exerciseDomain(
         expect(UUID_PATTERN.test(String(inputReceipt.input_id || ''))).toBe(true);
         expect(String(inputReceipt.admission_state || '')).toBe('admitted');
         await expect.poll(async () => {
-          const workbenchNow = await responseJson<Record<string, unknown>>(
-            await context.ownerApi.get(
-              `/api/agents/${context.agentId}/sessions/${sessionId}/workbench?operator_view=true&operator_reason=J-04%20goal%20dispatch`,
-            ),
-            'poll deferred goal run binding',
+          const replay = await responseJson<Record<string, unknown>>(
+            await context.ownerApi.post(`/api/agents/${context.agentId}/sessions/${sessionId}/goals`, { data: body }),
+            'replay deferred goal start',
           );
-          const tasks = (workbenchNow.runtime_tasks as Array<Record<string, unknown>> | undefined) || [];
-          const matched = tasks.filter(
-            (task) => String(((task.metadata as Record<string, unknown> | undefined) || {}).goal_id || '') === requestId,
-          );
-          if (matched.length === 1) goalRunId = String(matched[0].id || '');
-          return isRunIdToken(goalRunId);
+          const replayRun = (replay.run as Record<string, unknown> | undefined) || {};
+          goalRunId = String(replayRun.run_id || '');
+          return String(replay.id || '') === requestId && isRunIdToken(goalRunId);
         }, { timeout: 90_000, intervals: [500, 1000] }).toBe(true);
       }
       // The goal run terminates canonically with the exact J-04 receipt.
@@ -810,7 +828,7 @@ async function exerciseDomain(
       const goalProjection = async (): Promise<Record<string, unknown>> => {
         const workbenchNow = await responseJson<Record<string, unknown>>(
           await context.ownerApi.get(
-            `/api/agents/${context.agentId}/sessions/${sessionId}/workbench?operator_view=true&operator_reason=J-04%20goal%20terminal%20proof`,
+            `/api/agents/${context.agentId}/sessions/${sessionId}/workbench`,
           ),
           'read goal workbench projection',
         );
@@ -834,17 +852,18 @@ async function exerciseDomain(
       expect(snapshot.token_budget).toBe(4000);
       expect(snapshot.max_continuation_turns).toBe(2);
       expect(snapshot.time_budget_seconds).toBe(120);
-      // Exactly ONE goal-bound runtime task — the start_immediately run.
+      // The Goal API-bound run appears exactly once in the public workbench
+      // projection; internal RuntimeTask metadata is deliberately not exposed.
       const goalTasks = (
         (await responseJson<Record<string, unknown>>(
           await context.ownerApi.get(
-            `/api/agents/${context.agentId}/sessions/${sessionId}/workbench?operator_view=true&operator_reason=J-04%20goal%20run%20binding`,
+            `/api/agents/${context.agentId}/sessions/${sessionId}/workbench`,
           ),
           'read goal run workbench',
         )).runtime_tasks as Array<Record<string, unknown>> | undefined) || [];
       expect(
         goalTasks.filter(
-          (task) => String(((task.metadata as Record<string, unknown> | undefined) || {}).goal_id || '') === requestId,
+          (task) => normalizeRunId(String(task.id || '')) === normalizeRunId(goalRunId),
         ),
       ).toHaveLength(1);
       // Idempotent replay: same body -> same goal id, same run, replayed flag,
@@ -1329,10 +1348,15 @@ async function exerciseDomain(
       // completed; exactly one completed continuation turn bound to the page
       // and base run with the exact J-09 receipt. String-only workbench checks
       // cannot satisfy this.
+      await ensureOperatorInspectionGrant(
+        context,
+        String(context.member.user.id),
+        '00000000-0000-4000-8000-000000000091',
+      );
       const baseRunId = String(base.run.run.run_id);
       const operatorReason = 'J-09%20subagent%20aggregate%20proof';
       const workbench = await responseJson<Record<string, unknown>>(
-        await context.ownerApi.get(
+        await context.memberApi.get(
           `/api/agents/${context.agentId}/sessions/${sessionId}/workbench?operator_view=true&operator_reason=${operatorReason}`,
         ),
         'read subagent workbench',
@@ -1343,7 +1367,7 @@ async function exerciseDomain(
       let childSessionId = '';
       await expect.poll(async () => {
         const workbenchNow = await responseJson<Record<string, unknown>>(
-          await context.ownerApi.get(
+          await context.memberApi.get(
             `/api/agents/${context.agentId}/sessions/${sessionId}/workbench?operator_view=true&operator_reason=${operatorReason}`,
           ),
           'poll subagent task completion',
@@ -1374,7 +1398,7 @@ async function exerciseDomain(
       const j09Receipt = 'J-09 terminal receipt from the controlled provider.';
       await expect.poll(async () => {
         const childCanonical = await responseJson<Array<Record<string, unknown>>>(
-          await context.ownerApi.get(
+          await context.memberApi.get(
             `/api/agents/${context.agentId}/sessions/${childSessionId}/transcript`
               + `?schema_version=2&operator_view=true&operator_reason=${operatorReason}`,
           ),
@@ -1438,7 +1462,7 @@ async function exerciseDomain(
       let continuationTaskId = '';
       await expect.poll(async () => {
         const workbenchNow = await responseJson<Record<string, unknown>>(
-          await context.ownerApi.get(
+          await context.memberApi.get(
             `/api/agents/${context.agentId}/sessions/${sessionId}/workbench?operator_view=true&operator_reason=${operatorReason}`,
           ),
           'poll subagent continuation task',
@@ -1530,6 +1554,11 @@ async function exerciseDomain(
       break;
     }
     case 'J-11': {
+      await ensureOperatorInspectionGrant(
+        context,
+        String(context.member.user.id),
+        '00000000-0000-4000-8000-000000000091',
+      );
       const preview = await responseJson<Record<string, unknown>>(
         await context.ownerApi.post(`/api/agents/${context.agentId}/workflows/preview`, {
           data: {
@@ -1649,7 +1678,7 @@ async function exerciseDomain(
       let continuationTaskId = '';
       await expect.poll(async () => {
         const workbenchNow = await responseJson<Record<string, unknown>>(
-          await context.ownerApi.get(
+          await context.memberApi.get(
             `/api/agents/${context.agentId}/sessions/${sessionId}/workbench`
               + '?operator_view=true&operator_reason=J-11%20workflow%20result%20binding',
           ),
@@ -1775,6 +1804,11 @@ async function exerciseDomain(
       };
     }
     case 'J-13': {
+      await ensureOperatorInspectionGrant(
+        context,
+        String(context.member.user.id),
+        '00000000-0000-4000-8000-000000000091',
+      );
       const signingSecret = 'atomic-signing-secret';
       const config = await responseJson<Record<string, unknown>>(
         await context.ownerApi.post(`/api/agents/${context.agentId}/slack-channel`, {
@@ -1861,7 +1895,7 @@ async function exerciseDomain(
       // and — per the unbound external principal authority contract — ZERO
       // run-bound tool_call/tool_result rows for that task.
       const externalCanonical = await responseJson<Array<Record<string, unknown>>>(
-        await context.ownerApi.get(
+        await context.memberApi.get(
           `/api/agents/${context.agentId}/sessions/${externalSessionId}/transcript`
             + '?schema_version=2&operator_view=true&operator_reason=J-13%20external%20terminal%20proof',
         ),
@@ -1888,6 +1922,9 @@ async function exerciseDomain(
         domain,
         browserSessionId: externalSessionId,
         browserManageMode: true,
+        browserOperatorReason: 'J-13 external terminal proof',
+        browserToken: context.member.access_token,
+        browserUser: context.member.user,
         expectedText: 'J-13 terminal receipt from the controlled provider.',
       };
     }
@@ -2186,6 +2223,11 @@ async function exerciseDomain(
       };
     }
     case 'J-15': {
+      await ensureOperatorInspectionGrant(
+        context,
+        String(context.owner.user.id),
+        '00000000-0000-4000-8000-000000000015',
+      );
       const memberRun = await startAndAwaitChat(context.memberApi, context.agentId, 'J-15', { title: 'J-15 audience split' });
       const userProjection = await responseJson<Array<Record<string, unknown>>>(
         await context.memberApi.get(`/api/agents/${context.agentId}/sessions/${memberRun.run.session.id}/transcript`),
@@ -2248,6 +2290,11 @@ test.describe.serial('real full-stack atomic user journeys', () => {
         `/agents/${browserAgent}?session_id=${browserSession}${evidence.browserManageMode ? '&manage' : ''}#chat`,
         { waitUntil: 'domcontentloaded' },
       );
+      if (evidence.browserOperatorReason) {
+        await page.getByLabel('Operator inspection reason').fill(evidence.browserOperatorReason);
+        await page.getByTestId('agent-operator-reason').getByRole('button', { name: 'Begin inspection' }).click();
+        await expect(page.getByTestId('session-operator-view')).toBeVisible();
+      }
       await expect(page.getByText(evidence.expectedText || `${journey.id} terminal receipt from the controlled provider.`, { exact: false }).first()).toBeVisible();
     });
   }

@@ -49,6 +49,7 @@ const exhaustedRun = {
   source: 'scheduled',
   profile: 'scheduled',
   status: 'exhausted',
+  approval_episode_id: null,
   enforcement_mode: 'enforce',
   terminal_reason: 'runtime_budget_exhausted:subagents',
   user_status: 'Paused',
@@ -106,7 +107,7 @@ describe('WorkspaceRuntimeBudgetsSection', () => {
     expect(html).toContain('Enforce protection');
     expect(html).toContain('Scheduled guard');
     expect(html).toContain('Run limit reached');
-    expect(html).toContain('Approve');
+    expect(html).not.toContain('Approve');
   });
 
   it('labels active fallback rows as recent runtime activity', () => {
@@ -168,6 +169,7 @@ describe('WorkspaceRuntimeBudgetsSection', () => {
       {
         ...exhaustedRun,
         status: 'waiting_budget_approval',
+        approval_episode_id: 'episode-1',
         user_status: 'Waiting for approval',
         user_reason: 'Run limit reached and approval is required',
         user_next_action: 'Approve to resume the exact queued task',
@@ -180,6 +182,21 @@ describe('WorkspaceRuntimeBudgetsSection', () => {
     expect(html).toContain('Approve to resume the exact queued task');
     expect(html).toContain('Approve');
     expect(html).toContain('Reject');
+  });
+
+  it('does not expose an unbound decision when a waiting run lacks its episode id', () => {
+    runData = [
+      {
+        ...exhaustedRun,
+        status: 'waiting_budget_approval',
+        user_status: 'Waiting for approval',
+      },
+    ];
+
+    const html = renderToStaticMarkup(<WorkspaceRuntimeBudgetsSection />);
+
+    expect(html).not.toContain('>Approve<');
+    expect(html).not.toContain('>Reject<');
   });
 
   it('keeps ambiguous delivery recovery in the company control plane', () => {

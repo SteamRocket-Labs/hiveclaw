@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 
 def test_runtime_task_fence_accepts_matching_claim_and_rejects_stale_claim() -> None:
@@ -191,6 +191,83 @@ async def test_runtime_task_lease_renewal_is_fenced_by_claim_version(owner_sessi
         reset_runtime_task_fence(token)
 
 
+@pytest.mark.usefixtures("migrated_pg_url")
+@pytest.mark.asyncio
+async def test_shared_terminal_boundary_disarms_blocked_lease_renewer_before_session_commit(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    import app.database as database
+    from app.models.runtime_task import RuntimeTask
+    from app.models.tenant import Tenant
+    from app.services import runtime_task_fence as fence_service
+    from app.services.runtime_terminal_settlement import settle_runtime_task_terminal
+
+    tenant_id = uuid4()
+    task_id = uuid4()
+    worker_id = "session-terminal-worker"
+    async with owner_sessionmaker() as db:
+        db.add(Tenant(id=tenant_id, name="Terminal Fence Tenant", slug=f"terminal-fence-{tenant_id.hex[:8]}"))
+        await db.commit()
+    async with owner_sessionmaker() as db:
+        db.add(
+            RuntimeTask(
+                id=task_id,
+                tenant_id=tenant_id,
+                task_type="web_chat_turn",
+                status="running",
+                claim_version=1,
+                claimed_by=worker_id,
+                claim_expires_at=datetime.now(timezone.utc) + timedelta(minutes=1),
+            )
+        )
+        await db.commit()
+
+    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
+    renewal_started = asyncio.Event()
+    real_renew = fence_service.renew_current_runtime_task_lease
+
+    async def observed_renew(*, lease_seconds):
+        renewal_started.set()
+        return await real_renew(lease_seconds=lease_seconds)
+
+    monkeypatch.setattr(fence_service, "renew_current_runtime_task_lease", observed_renew)
+
+    async def commit_direct_session_terminal() -> str:
+        async with owner_sessionmaker() as db:
+            task = (
+                await db.execute(select(RuntimeTask).where(RuntimeTask.id == task_id).with_for_update())
+            ).scalar_one()
+            await asyncio.wait_for(renewal_started.wait(), timeout=5)
+            task.status = "completed"
+            task.completed_at = datetime.now(timezone.utc)
+            await settle_runtime_task_terminal(
+                db,
+                task,
+                terminal_source="session_terminal_outcome.commit",
+            )
+            fence = fence_service.current_runtime_task_fence()
+            assert fence is not None and fence.claim_finished.is_set()
+            await db.commit()
+        # Let the renewal UPDATE blocked behind the terminal row lock observe
+        # the committed terminal row before the claimed work returns.
+        await asyncio.sleep(0.03)
+        return "committed"
+
+    result = await fence_service.run_claimed_runtime_task(
+        commit_direct_session_terminal(),
+        task_id=task_id,
+        claim_version=1,
+        worker_id=worker_id,
+        lease_seconds=0.03,
+    )
+
+    assert result == "committed"
+    async with owner_sessionmaker() as db:
+        stored = await db.get(RuntimeTask, task_id)
+    assert stored is not None and stored.status == "completed"
+
+
 @pytest.mark.asyncio
 async def test_runtime_task_lease_renewal_predicate_cannot_revive_expired_claim(monkeypatch) -> None:
     import app.database as database
@@ -270,3 +347,60 @@ async def test_claimed_runtime_wrapper_keeps_fence_and_renews_until_completion(m
     assert result == "done"
     assert renewals
     assert all(item == (str(task_id), 3, "worker-a") for item in renewals)
+
+
+@pytest.mark.asyncio
+async def test_claimed_runtime_wrapper_allows_cleanup_after_committed_claim_transition(monkeypatch) -> None:
+    from app.services import runtime_task_fence as fence_service
+
+    task_id = uuid4()
+    renewals = 0
+
+    async def fake_renew(*, lease_seconds):
+        nonlocal renewals
+        renewals += 1
+        return datetime.now(timezone.utc)
+
+    async def work():
+        assert fence_service.finish_current_runtime_task_claim(task_id=task_id) is True
+        await asyncio.sleep(0.04)
+        return "cleaned"
+
+    monkeypatch.setattr(fence_service, "renew_current_runtime_task_lease", fake_renew)
+    result = await fence_service.run_claimed_runtime_task(
+        work(),
+        task_id=task_id,
+        claim_version=4,
+        worker_id="worker-a",
+        lease_seconds=0.03,
+    )
+
+    assert result == "cleaned"
+    assert renewals == 0
+
+
+def test_finished_claim_does_not_relax_terminal_runtime_task_fence() -> None:
+    from app.services.runtime_task_fence import (
+        StaleRuntimeTaskFenceError,
+        assert_runtime_task_fence,
+        finish_current_runtime_task_claim,
+        reset_runtime_task_fence,
+        set_runtime_task_fence,
+    )
+
+    task_id = uuid4()
+    token = set_runtime_task_fence(task_id=task_id, claim_version=5, worker_id="worker-a")
+    try:
+        assert finish_current_runtime_task_claim(task_id=task_id) is True
+        with pytest.raises(StaleRuntimeTaskFenceError, match="status=completed"):
+            assert_runtime_task_fence(
+                SimpleNamespace(
+                    id=task_id,
+                    claim_version=5,
+                    claimed_by="worker-a",
+                    status="completed",
+                    claim_expires_at=datetime.now(timezone.utc) + timedelta(minutes=1),
+                )
+            )
+    finally:
+        reset_runtime_task_fence(token)

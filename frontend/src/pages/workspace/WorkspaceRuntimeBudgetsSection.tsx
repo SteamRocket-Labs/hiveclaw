@@ -283,16 +283,24 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
     onSuccess: invalidate,
   });
   const approveRun = useMutation({
-    mutationFn: (run: RuntimeBudgetRun) =>
-      runtimeBudgetApi.approveOverrun(run.id, {
+    mutationFn: (run: RuntimeBudgetRun) => {
+      if (!run.approval_episode_id) throw new Error('runtime budget approval episode is unavailable');
+      return runtimeBudgetApi.approveOverrun(run.id, {
+        approval_episode_id: run.approval_episode_id,
         reason: 'operator approved continued run after review',
         enforcement_mode: 'enforce',
-      }),
+      });
+    },
     onSuccess: invalidate,
   });
   const rejectRun = useMutation({
-    mutationFn: (run: RuntimeBudgetRun) =>
-      runtimeBudgetApi.rejectOverrun(run.id, 'operator rejected continued run after review'),
+    mutationFn: (run: RuntimeBudgetRun) => {
+      if (!run.approval_episode_id) throw new Error('runtime budget approval episode is unavailable');
+      return runtimeBudgetApi.rejectOverrun(run.id, {
+        approval_episode_id: run.approval_episode_id,
+        reason: 'operator rejected continued run after review',
+      });
+    },
     onSuccess: invalidate,
   });
   const resolveDelivery = useMutation({
@@ -468,15 +476,15 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
                   <div className="workspace-runtime-run-meta">{formatDate(run.created_at)} · {run.source || run.root_run_kind}</div>
                 </div>
                 <div className="workspace-runtime-run-actions">
-                  {['waiting_budget_approval', 'exhausted', 'hard_stopped'].includes(run.status) && (
-                    <button className="btn btn-secondary" onClick={() => approveRun.mutate(run)} disabled={approveRun.isPending}>
-                      {t('runtimeBudgets.approveContinue', 'Approve')}
-                    </button>
-                  )}
-                  {run.status === 'waiting_budget_approval' && (
-                    <button className="btn btn-secondary" onClick={() => rejectRun.mutate(run)} disabled={rejectRun.isPending}>
-                      {t('runtimeBudgets.rejectContinue', 'Reject')}
-                    </button>
+                  {run.status === 'waiting_budget_approval' && run.approval_episode_id && (
+                    <>
+                      <button className="btn btn-secondary" onClick={() => approveRun.mutate(run)} disabled={approveRun.isPending}>
+                        {t('runtimeBudgets.approveContinue', 'Approve')}
+                      </button>
+                      <button className="btn btn-secondary" onClick={() => rejectRun.mutate(run)} disabled={rejectRun.isPending}>
+                        {t('runtimeBudgets.rejectContinue', 'Reject')}
+                      </button>
+                    </>
                   )}
                   {run.status === 'active' && (
                     <button className="btn btn-secondary" onClick={() => cancelRun.mutate(run)} disabled={cancelRun.isPending}>

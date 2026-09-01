@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.core.permissions import check_agent_access
+from app.core.permissions import check_agent_access, check_agent_operator_reachability
 from app.core.resource_authority import authorize_resource_action, normalize_workspace_resource_path
 from app.core.security import get_current_user
 from app.database import get_db
@@ -87,7 +87,11 @@ async def _authorize_office_request_path(
 ):
     normalized = _require_office_workspace_path(path)
     target = OfficeDocumentService(_agent_workspace(agent_id)).resolve_document_path(normalized)
-    resolved_agent_access = agent_access or await check_agent_access(db, current_user, agent_id)
+    resolved_agent_access = agent_access or await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if allow_manager_override and action == "read"
+        else check_agent_access(db, current_user, agent_id)
+    )
     try:
         decision = await authorize_workspace_path(
             db,
@@ -360,7 +364,11 @@ async def preview_office_document(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    agent_access = await check_agent_access(db, current_user, agent_id)
+    agent_access = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if operator_view
+        else check_agent_access(db, current_user, agent_id)
+    )
     _access, decision, target, normalized = await _authorize_office_request_path(
         db,
         current_user,
@@ -396,7 +404,11 @@ async def preview_office_artifact(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    agent_access = await check_agent_access(db, current_user, agent_id)
+    agent_access = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if operator_view
+        else check_agent_access(db, current_user, agent_id)
+    )
     artifact = (
         await db.execute(
             select(ChatArtifact).where(ChatArtifact.id == artifact_id, ChatArtifact.agent_id == agent_id).limit(1)

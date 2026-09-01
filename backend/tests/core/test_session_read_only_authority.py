@@ -146,8 +146,8 @@ async def test_manager_override_cannot_turn_peer_a2a_session_into_a_writable_ses
             require_writable=True,
         )
 
-    assert exc_info.value.status_code == 409
-    assert exc_info.value.detail["code"] == "session_read_only"
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "This session belongs to a different user"
 
 
 @pytest.mark.asyncio

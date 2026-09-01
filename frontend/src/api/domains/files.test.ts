@@ -48,4 +48,16 @@ describe('fileApi artifact snapshot adapter', () => {
     const { getBlob } = await import('../core');
     expect(vi.mocked(getBlob).mock.calls.at(-1)?.[0]).toContain('operator_view=true');
   });
+
+  it('refuses operator view without an exact audit reason', async () => {
+    const { fileApi } = await import('./files');
+
+    expect(() => fileApi.list('agent-1', 'workspace', { operatorView: true })).toThrow(
+      'Operator View requires an audit reason',
+    );
+    expect(() => fileApi.read('agent-1', 'workspace/report.md', {
+      operatorView: true,
+      reason: '   ',
+    })).toThrow('Operator View requires an audit reason');
+  });
 });

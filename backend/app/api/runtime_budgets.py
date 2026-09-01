@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from app.core.security import get_current_admin
 from app.models.user import User
 from app.services.budget_transition_outbox import BudgetTransitionOutboxService
-from app.services.runtime_budget_service import RuntimeBudgetService
+from app.services.runtime_budget_service import RuntimeBudgetService, RuntimeBudgetStateConflict
 
 router = APIRouter(prefix="/runtime-budgets", tags=["runtime-budgets"])
 
@@ -101,6 +101,7 @@ class RuntimeBudgetRunOut(BaseModel):
     source: str | None = None
     profile: str | None = None
     status: str
+    approval_episode_id: uuid.UUID | None = None
     enforcement_mode: str
     terminal_reason: str | None = None
     user_status: str
@@ -142,6 +143,7 @@ class RuntimeBudgetCancelOut(BaseModel):
 
 
 class RuntimeBudgetApproveOverrunRequest(BaseModel):
+    approval_episode_id: uuid.UUID
     reason: str = Field(default="admin approved runtime overrun", min_length=1, max_length=1000)
     enforcement_mode: str = "enforce"
     max_tokens: int | None = Field(default=None, ge=0)
@@ -155,6 +157,7 @@ class RuntimeBudgetApproveOverrunRequest(BaseModel):
 
 
 class RuntimeBudgetRejectOverrunRequest(BaseModel):
+    approval_episode_id: uuid.UUID
     reason: str = Field(default="admin rejected runtime overrun", min_length=1, max_length=1000)
 
 
@@ -260,6 +263,7 @@ def _run_out(run) -> RuntimeBudgetRunOut:
     return RuntimeBudgetRunOut.model_validate(
         {
             **run.__dict__,
+            "approval_episode_id": getattr(run, "approval_episode_id", None),
             "user_status": _user_status(status_value),
             "user_reason": _user_reason(status_value, getattr(run, "terminal_reason", None)),
             "user_next_action": _user_next_action(status_value),
@@ -438,21 +442,25 @@ async def approve_runtime_budget_overrun(
     service: RuntimeBudgetService = Depends(get_runtime_budget_service),
 ):
     tenant_id = _require_tenant(current_user)
-    run = await service.approve_overrun(
-        tenant_id=tenant_id,
-        budget_run_id=budget_run_id,
-        reason=body.reason,
-        actor_user_id=current_user.id,
-        enforcement_mode=body.enforcement_mode,
-        max_tokens=body.max_tokens,
-        max_cache_miss_tokens=body.max_cache_miss_tokens,
-        max_subagents=body.max_subagents,
-        max_team_sessions=body.max_team_sessions,
-        max_delegations=body.max_delegations,
-        max_background_tasks=body.max_background_tasks,
-        max_continuation_wakes=body.max_continuation_wakes,
-        max_provider_calls=body.max_provider_calls,
-    )
+    try:
+        run = await service.approve_overrun(
+            tenant_id=tenant_id,
+            budget_run_id=budget_run_id,
+            reason=body.reason,
+            approval_episode_id=body.approval_episode_id,
+            actor_user_id=current_user.id,
+            enforcement_mode=body.enforcement_mode,
+            max_tokens=body.max_tokens,
+            max_cache_miss_tokens=body.max_cache_miss_tokens,
+            max_subagents=body.max_subagents,
+            max_team_sessions=body.max_team_sessions,
+            max_delegations=body.max_delegations,
+            max_background_tasks=body.max_background_tasks,
+            max_continuation_wakes=body.max_continuation_wakes,
+            max_provider_calls=body.max_provider_calls,
+        )
+    except RuntimeBudgetStateConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="runtime budget run not found")
     return _run_out(run)
@@ -466,12 +474,16 @@ async def reject_runtime_budget_overrun(
     service: RuntimeBudgetService = Depends(get_runtime_budget_service),
 ):
     tenant_id = _require_tenant(current_user)
-    run = await service.reject_overrun(
-        tenant_id=tenant_id,
-        budget_run_id=budget_run_id,
-        reason=body.reason,
-        actor_user_id=current_user.id,
-    )
+    try:
+        run = await service.reject_overrun(
+            tenant_id=tenant_id,
+            budget_run_id=budget_run_id,
+            reason=body.reason,
+            approval_episode_id=body.approval_episode_id,
+            actor_user_id=current_user.id,
+        )
+    except RuntimeBudgetStateConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="runtime budget run not found")
     return _run_out(run)

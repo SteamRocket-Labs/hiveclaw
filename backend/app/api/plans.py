@@ -33,7 +33,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import authorize_session_action, check_agent_access
+from app.core.permissions import (
+    authorize_agent_operator_inspection,
+    authorize_session_action,
+    check_agent_access,
+    check_agent_operator_reachability,
+)
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.plan_recommendation import AgentPlanRecommendation
@@ -319,6 +324,7 @@ async def _authorize_plan_action(
     plan: AgentPlanRequest,
     action: str,
     manager_override_reason: str | None = None,
+    require_writable: bool = True,
 ) -> str:
     session_id = _session_uuid(plan.session_id)
     if session_id is not None:
@@ -330,12 +336,25 @@ async def _authorize_plan_action(
             action=action,
             allow_manager_override=True,
             manager_override_reason=manager_override_reason,
-            require_writable=True,
+            require_writable=require_writable,
         )
         return decision.authority_source
 
     if str(plan.requested_by_user_id or "") == str(current_user.id):
         return "requester"
+    reason = str(manager_override_reason or "").strip()
+    if not require_writable and reason:
+        agent, _access_level = await check_agent_operator_reachability(db, current_user, agent_id)
+        return await authorize_agent_operator_inspection(
+            db,
+            user=current_user,
+            agent=agent,
+            reason=reason,
+            action=action,
+            resource_type="agent_plan",
+            resource_id=plan.id,
+            details={"requested_by_user_id": str(plan.requested_by_user_id or "") or None},
+        )
     raise HTTPException(status_code=403, detail="This plan belongs to a different user session")
 
 
@@ -348,6 +367,7 @@ async def _load_authorized_plan(
     plan_id: uuid.UUID,
     action: str,
     manager_override_reason: str | None = None,
+    require_writable: bool = True,
 ) -> tuple[AgentPlanRequest, str]:
     plan = await _load_plan_for_agent(service, agent_id=agent_id, plan_id=plan_id)
     authority_source = await _authorize_plan_action(
@@ -357,6 +377,7 @@ async def _load_authorized_plan(
         plan=plan,
         action=action,
         manager_override_reason=manager_override_reason,
+        require_writable=require_writable,
     )
     return plan, authority_source
 
@@ -474,20 +495,25 @@ async def list_plans(
     admin_override_reason: AdminOverrideReason = None,
 ):
     """List an agent's plan requests, newest first."""
-    _agent, access_level = await check_agent_access(db, current_user, agent_id)
-    service = get_plan_mode_service()
-    plans = await service.list_plans_for_agent(agent_id, limit=limit)
     reason = str(admin_override_reason or "").strip()
-    if access_level == "manage" and reason:
-        from app.services.audit_logger import write_audit_log
-
-        await write_audit_log(
-            "plan_list_authority_override",
-            details={"reason": reason, "action": "plan:list", "agent_id": str(agent_id)},
-            agent_id=agent_id,
-            user_id=current_user.id,
+    agent, _access_level = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if reason
+        else check_agent_access(db, current_user, agent_id)
+    )
+    service = get_plan_mode_service()
+    if reason:
+        await authorize_agent_operator_inspection(
+            db,
+            user=current_user,
+            agent=agent,
+            reason=reason,
+            action="plan_collection:read",
+            resource_type="agent_plan_collection",
+            resource_id=uuid.uuid5(agent_id, "agent-plan-collection"),
         )
-    else:
+    plans = await service.list_plans_for_agent(agent_id, limit=limit)
+    if not reason:
         plans = [plan for plan in plans if str(plan.requested_by_user_id or "") == str(current_user.id)]
     return [_plan_out(plan) for plan in plans]
 
@@ -501,7 +527,10 @@ async def get_plan(
     admin_override_reason: AdminOverrideReason = None,
 ):
     """Fetch a single plan request."""
-    await check_agent_access(db, current_user, agent_id)
+    if str(admin_override_reason or "").strip():
+        await check_agent_operator_reachability(db, current_user, agent_id)
+    else:
+        await check_agent_access(db, current_user, agent_id)
     service = get_plan_mode_service()
     plan, _authority = await _load_authorized_plan(
         service,
@@ -511,6 +540,7 @@ async def get_plan(
         plan_id=plan_id,
         action="plan:read",
         manager_override_reason=admin_override_reason,
+        require_writable=False,
     )
     return _plan_out(plan)
 

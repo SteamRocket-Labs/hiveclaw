@@ -720,7 +720,7 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 
 # Reviewed normalized AST of direct bypass scopes and statically discoverable
 # contextmanager consumers. Predicates, locks, ORM writes, and add() targets are included.
-RLS_BYPASS_SCOPES_SHA256 = "e3e1d891bf97684e45cf0265c10adbd68d0b4b2e4291a56c3d6b3d4b06056070"
+RLS_BYPASS_SCOPES_SHA256 = "8938a5e3d99e1e40eb0ad5e05c58c95532198995d3242f7b175509ceebacfe70"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:
@@ -927,7 +927,7 @@ RLS_BYPASS_ALLOWLIST = (
     _grant(
         *(
             "app/core/permissions.py",
-            "check_agent_access",
+            "_load_agent_for_user",
             "f'platform-admin agent access lookup for {agent_id}'",
             ("select:Agent",),
         )

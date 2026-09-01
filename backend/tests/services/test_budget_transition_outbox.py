@@ -102,12 +102,35 @@ async def _seed_addressed_budget(owner_sessionmaker, *, source_channel: str = "w
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         )
     )
+    approval_episode_id = uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        stored_run = await db.get(RuntimeBudgetRun, run.id)
+        assert stored_run is not None
+        stored_run.status = "waiting_budget_approval"
+        stored_run.terminal_reason = "runtime_budget_approval_required:subagents"
+        stored_run.metadata_json = {"approval_episode_id": str(approval_episode_id)}
+        db.add(
+            RuntimeBudgetEvent(
+                id=approval_episode_id,
+                tenant_id=tenant_id,
+                budget_run_id=run.id,
+                event_type="denial",
+                reservation_key="outbox-decision",
+                allowed=False,
+                would_deny=True,
+                reason="runtime budget approval required",
+                amounts_json={"subagents": 1},
+                metadata_json={"approval_episode_fixture": True},
+            )
+        )
+        await db.commit()
     return {
         "tenant_id": tenant_id,
         "user_id": user_id,
         "agent_id": agent_id,
         "session_id": session_id,
         "run_id": run.id,
+        "approval_episode_id": approval_episode_id,
         "service": service,
     }
 
@@ -119,6 +142,7 @@ async def test_budget_decision_and_delivery_intent_commit_atomically(owner_sessi
         tenant_id=seed["tenant_id"],
         budget_run_id=seed["run_id"],
         reason="approved by owner",
+        approval_episode_id=seed["approval_episode_id"],
         actor_user_id=seed["user_id"],
     )
 
@@ -155,6 +179,7 @@ async def test_transcript_projection_is_exactly_once_and_replayable(owner_sessio
         tenant_id=seed["tenant_id"],
         budget_run_id=seed["run_id"],
         reason="declined",
+        approval_episode_id=seed["approval_episode_id"],
         actor_user_id=seed["user_id"],
     )
     service = BudgetTransitionOutboxService(session_factory=owner_sessionmaker, retry_base_seconds=0)
@@ -342,6 +367,7 @@ async def test_unconnected_but_configured_external_transition_delivers_exactly_o
         tenant_id=seed["tenant_id"],
         budget_run_id=seed["run_id"],
         reason="declined",
+        approval_episode_id=seed["approval_episode_id"],
         actor_user_id=seed["user_id"],
     )
     calls: list[str] = []
@@ -405,6 +431,7 @@ async def test_unconfigured_external_transition_is_permanent_dead_letter_without
         tenant_id=seed["tenant_id"],
         budget_run_id=seed["run_id"],
         reason="declined",
+        approval_episode_id=seed["approval_episode_id"],
         actor_user_id=seed["user_id"],
     )
     calls = 0

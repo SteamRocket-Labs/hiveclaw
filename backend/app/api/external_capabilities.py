@@ -6,14 +6,12 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.core.permissions import check_agent_access
+from app.core.permissions import authorize_session_action, check_agent_access
 from app.core.security import get_current_admin, get_current_user
 from app.database import get_db
-from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.services.external_capabilities.activation import (
     activate_external_extension_for_agent,
@@ -307,28 +305,27 @@ async def try_external_extension_in_chat_route(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    decision = await authorize_session_action(
+        db,
+        current_user,
+        agent_id=agent_id,
+        session_id=data.session_id,
+        action="external_extension:try",
+        require_writable=True,
+    )
+    agent = decision.agent
+    session = decision.session
     tenant_id = getattr(agent, "tenant_id", None) or current_user.tenant_id
     if not tenant_id:
         raise HTTPException(status_code=400, detail="No tenant assigned")
-    session_result = await db.execute(
-        select(ChatSession).where(
-            ChatSession.id == data.session_id,
-            ChatSession.agent_id == agent_id,
-            ChatSession.tenant_id == tenant_id,
-        )
-    )
-    session = session_result.scalar_one_or_none()
-    if session is None:
-        raise HTTPException(status_code=404, detail="Chat session not found for this agent")
-    workspace = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+    workspace = Path(get_settings().AGENT_DATA_DIR) / str(agent.id)
     try:
         return await try_external_extension_in_chat(
             db,
             tenant_id=tenant_id,
-            agent_id=agent_id,
+            agent_id=agent.id,
             snapshot_id=snapshot_id,
-            session_id=data.session_id,
+            session_id=session.id,
             workspace=workspace,
             activated_by_user_id=current_user.id,
             component_qualified_names=data.component_qualified_names,

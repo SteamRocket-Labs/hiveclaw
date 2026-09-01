@@ -84,8 +84,10 @@ export interface ResourceAuthorityOptions {
 function authorityParams(authority?: ResourceAuthorityOptions): URLSearchParams {
   const params = new URLSearchParams();
   if (authority?.operatorView) {
+    const reason = String(authority.reason || '').trim();
+    if (!reason) throw new Error('Operator View requires an audit reason');
     params.set('operator_view', 'true');
-    params.set('operator_reason', authority.reason || 'Agent workspace administration');
+    params.set('operator_reason', reason);
   }
   return params;
 }

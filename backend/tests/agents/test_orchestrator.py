@@ -779,6 +779,8 @@ async def test_delegate_async_persists_cycle_as_not_admitted_without_side_effect
     assert created["root_item_state"] == "not_admitted"
     assert created["root_item_admission_disposition"] == "not_admitted"
     assert created["root_item_reason_code"] == "runtime_root_cycle_detected"
+    assert created["budget_reservation_key"] is None
+    assert created["budget_admission_status"] == "not_admitted"
     assert updated["status"] == "skipped"
     assert updated["root_item_state"] == "not_admitted"
     assert updated["root_item_reason_code"] == "runtime_root_cycle_detected"
@@ -3623,14 +3625,17 @@ async def test_delegate_async_persists_runtime_task_lifecycle(monkeypatch):
     async def fake_persist_span(**kwargs):
         spans.append(kwargs)
 
+    async def noop_hook(*_args, **_kwargs):
+        return []
+
     monkeypatch.setattr("app.agents.orchestrator.get_runtime_task_record", fake_get_runtime_task_record)
     monkeypatch.setattr("app.agents.orchestrator._resolve_resumable_target_runtime", fake_resolve_target_runtime)
     monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke)
     monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_task)
     monkeypatch.setattr("app.agents.orchestrator.persist_invocation_span", fake_persist_span)
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", noop_hook)
 
-    assert await dispatch_persisted_async_delegation(task_id) is True
-    await asyncio.sleep(0.05)
+    assert await dispatch_persisted_async_delegation(task_id, wait_for_completion=True) is True
 
     assert any(task_id_arg == task_id and payload.get("status") == "running" for task_id_arg, payload in updates)
     assert any(task_id_arg == task_id and payload.get("status") == "completed" for task_id_arg, payload in updates)

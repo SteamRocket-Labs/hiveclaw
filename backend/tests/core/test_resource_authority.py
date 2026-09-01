@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -49,6 +50,7 @@ async def test_resource_authority_accepts_owner_session_and_explicit_grant(monke
         return kwargs["principal_id"] == grantee_id and kwargs["action"] == "read"
 
     monkeypatch.setattr(authority, "check_agent_access", fake_agent_access)
+    monkeypatch.setattr(authority, "check_agent_operator_reachability", fake_agent_access)
     monkeypatch.setattr(authority, "check_permission", fake_permission)
 
     owner = SimpleNamespace(id=owner_id, role="member", tenant_id=agent.tenant_id, department_id=None)
@@ -98,7 +100,7 @@ async def test_resource_authority_quarantines_unknown_legacy_and_audits_explicit
     resource_id = uuid4()
     agent = SimpleNamespace(id=agent_id, tenant_id=uuid4())
     manager = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=agent.tenant_id, department_id=None)
-    audit_calls: list[tuple] = []
+    inspection_calls: list[dict] = []
 
     async def fake_agent_access(_db, _user, _agent_id):
         return agent, "manage"
@@ -106,12 +108,9 @@ async def test_resource_authority_quarantines_unknown_legacy_and_audits_explicit
     async def fake_permission(*_args, **_kwargs):
         return False
 
-    async def fake_audit(action, details=None, agent_id=None, user_id=None):
-        audit_calls.append((action, details, agent_id, user_id))
-
     monkeypatch.setattr(authority, "check_agent_access", fake_agent_access)
+    monkeypatch.setattr(authority, "check_agent_operator_reachability", fake_agent_access)
     monkeypatch.setattr(authority, "check_permission", fake_permission)
-    monkeypatch.setattr("app.services.audit_logger.write_audit_log", fake_audit)
 
     for kwargs in (
         {},
@@ -132,6 +131,12 @@ async def test_resource_authority_quarantines_unknown_legacy_and_audits_explicit
             )
         assert exc.value.status_code == 403
 
+    async def fake_operator_inspection(_db, **kwargs):
+        inspection_calls.append(kwargs)
+        return "operator_inspect_grant"
+
+    monkeypatch.setattr(authority, "authorize_agent_operator_inspection", fake_operator_inspection)
+
     decision = await authority.authorize_resource_action(
         _DB(),
         manager,
@@ -144,11 +149,10 @@ async def test_resource_authority_quarantines_unknown_legacy_and_audits_explicit
         manager_override_reason="Incident export approved by the tenant owner",
     )
 
-    assert decision.authority_source == "manager_override"
+    assert decision.authority_source == "operator_inspect_grant"
     assert decision.operator_view is True
-    assert audit_calls[0][0] == "resource_authority_override"
-    assert audit_calls[0][1]["resource_kind"] == "workspace_file"
-    assert audit_calls[0][1]["authority_state"] == "quarantined"
+    assert inspection_calls[0]["resource_type"] == "workspace_file"
+    assert inspection_calls[0]["details"]["authority_state"] == "quarantined"
 
 
 def test_workspace_resource_id_is_stable_and_path_normalized():
@@ -167,10 +171,42 @@ async def test_explicit_resource_grants_are_loaded_once_with_canonical_condition
     tenant_id = uuid4()
     user = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, department_id=uuid4())
     readable_id = uuid4()
+    denied_id = uuid4()
     environment_blocked_id = uuid4()
     wrong_action_id = uuid4()
     permissions = [
-        SimpleNamespace(resource_id=readable_id, actions=["read"], conditions={}),
+        SimpleNamespace(
+            resource_id=readable_id,
+            actions=["read"],
+            conditions={},
+            effect="allow",
+            revoked_at=None,
+            expires_at=None,
+        ),
+        SimpleNamespace(
+            resource_id=readable_id,
+            actions=["read"],
+            conditions={},
+            effect="deny",
+            revoked_at=None,
+            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        ),
+        SimpleNamespace(
+            resource_id=denied_id,
+            actions=["read"],
+            conditions={},
+            effect="allow",
+            revoked_at=None,
+            expires_at=None,
+        ),
+        SimpleNamespace(
+            resource_id=denied_id,
+            actions=["read"],
+            conditions={},
+            effect="deny",
+            revoked_at=None,
+            expires_at=None,
+        ),
         SimpleNamespace(
             resource_id=environment_blocked_id,
             actions=["read"],
@@ -269,12 +305,13 @@ async def test_filter_authorized_resources_hides_foreign_rows_and_operator_view_
     assert visible[0][1].authority_source == "resource_owner"
 
     manager = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=agent.tenant_id, department_id=None)
-    audit_calls = []
+    inspection_calls = []
 
-    async def fake_audit(*args, **kwargs):
-        audit_calls.append((args, kwargs))
+    async def fake_operator_inspection(_db, **kwargs):
+        inspection_calls.append(kwargs)
+        return "operator_inspect_grant"
 
-    monkeypatch.setattr("app.services.audit_logger.write_audit_log", fake_audit)
+    monkeypatch.setattr(authority, "authorize_agent_operator_inspection", fake_operator_inspection)
     operator_rows = await authority.filter_authorized_resources(
         _DB(),
         manager,
@@ -288,4 +325,4 @@ async def test_filter_authorized_resources_hides_foreign_rows_and_operator_view_
     )
     assert [row.id for row, _decision in operator_rows] == [row.id for row in rows]
     assert all(decision.operator_view for _row, decision in operator_rows)
-    assert len(audit_calls) == 1
+    assert len(inspection_calls) == 1

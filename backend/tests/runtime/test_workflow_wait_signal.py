@@ -77,10 +77,11 @@ def _leaf():
 
 
 async def _send_pg_signal(owner_sessionmaker, *, tenant_id, to_agent, thread_id, signal_type, content="payload"):
+    signal_id = uuid.uuid4()
     async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
         session.add(
             CoordinationSignal(
-                id=uuid.uuid4(),
+                id=signal_id,
                 tenant_id=tenant_id,
                 from_agent_id="vendor-system",
                 to_agent_id=str(to_agent),
@@ -89,6 +90,7 @@ async def _send_pg_signal(owner_sessionmaker, *, tenant_id, to_agent, thread_id,
                 thread_id=str(thread_id),
             )
         )
+    return signal_id
 
 
 async def test_wait_signal_step_suspends_and_registers(tenant_id, agent_id, owner_sessionmaker):
@@ -141,7 +143,7 @@ async def test_same_signal_resumes_only_once(tenant_id, agent_id, owner_sessionm
     handle = await service.start_run(
         tenant_id=tenant_id, definition_data=_definition(), args={}, agent_id=agent_id, leaf_executor=leaf
     )
-    await _send_pg_signal(
+    signal_id = await _send_pg_signal(
         owner_sessionmaker,
         tenant_id=tenant_id,
         to_agent=agent_id,
@@ -150,22 +152,14 @@ async def test_same_signal_resumes_only_once(tenant_id, agent_id, owner_sessionm
     )
 
     first = await drain_signal_resumes(leaf_executor=_leaf()[0], session_factory=owner_sessionmaker)
-    assert any(r.run_id == handle.run_id for r in first)
+    assert any(r.run_id == handle.run_id and r.signal_id == signal_id for r in first)
 
     second = await drain_signal_resumes(leaf_executor=_leaf()[0], session_factory=owner_sessionmaker)
     assert all(r.run_id != handle.run_id for r in second), "a consumed signal must never resume twice"
 
     async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
-        remaining = (
-            (
-                await session.execute(
-                    select(CoordinationSignal).where(CoordinationSignal.thread_id == str(handle.run_id))
-                )
-            )
-            .scalars()
-            .all()
-        )
-    assert remaining == [], "consumption deletes the PG row (consume-once)"
+        remaining = await session.scalar(select(CoordinationSignal.id).where(CoordinationSignal.id == signal_id))
+    assert remaining is None, "consumption deletes the matched PG row (consume-once)"
 
 
 async def test_mismatched_thread_or_type_does_not_resume(tenant_id, agent_id, owner_sessionmaker):

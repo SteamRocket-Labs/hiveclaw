@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -484,8 +485,12 @@ async def test_agenttool_teammate_spawn_persists_exact_intent_before_budget_and_
     assert captured["reservation"].team_sessions == 1
     assert captured["reservation"].background_tasks == 1
     assert captured["continuation"]["extra_metadata"]["budget_run_id"] == str(budget_run_id)
-    assert captured["settlement"].actual_team_sessions == 1
-    assert captured["settlement"].actual_background_tasks == 1
+    assert captured["continuation"]["extra_metadata"]["runtime_budget_actuals"] == {
+        "team_sessions": 1,
+        "background_tasks": 1,
+        "continuation_wakes": 1,
+    }
+    assert "settlement" not in captured
 
 
 @pytest.mark.asyncio
@@ -644,6 +649,56 @@ async def test_agenttool_teammate_spawn_does_not_reserve_when_exact_record_flush
 
 
 @pytest.mark.asyncio
+async def test_team_member_enqueue_failure_leaves_reserved_handoff_for_orphan_reconciliation(monkeypatch):
+    from app.services.agent_team_runtime_service import TeamMemberCreateSpec, spawn_agent_team_member_runtime
+    from app.services.runtime_budget_service import RuntimeBudgetReservationResult
+
+    db = _DB()
+    budget_run_id = uuid4()
+    parent_session = SimpleNamespace(id=uuid4(), root_session_id=None)
+    team = SimpleNamespace(id=uuid4(), name="Budget Team", parent_session_id=parent_session.id)
+    captured = {"settlements": []}
+
+    class BudgetService:
+        async def reserve(self, reservation):
+            captured["reservation"] = reservation
+            return RuntimeBudgetReservationResult(
+                allowed=True,
+                would_deny=False,
+                idempotent=False,
+                budget_run_id=reservation.budget_run_id,
+            )
+
+        async def settle(self, settlement):
+            captured["settlements"].append(settlement)
+
+    async def fail_continuation(**_kwargs):
+        raise RuntimeError("enqueue interrupted")
+
+    monkeypatch.setattr(
+        "app.services.agent_team_runtime_service.continue_agent_session_from_mailbox",
+        fail_continuation,
+    )
+
+    payload = await spawn_agent_team_member_runtime(
+        db=db,
+        agent=SimpleNamespace(id=uuid4(), tenant_id=uuid4()),
+        user=SimpleNamespace(id=uuid4()),
+        parent_session=parent_session,
+        team=team,
+        spec=TeamMemberCreateSpec(name="critic", role="Review"),
+        prompt="Review the work.",
+        source="unit_test",
+        budget_run_id=budget_run_id,
+        budget_service=BudgetService(),
+    )
+
+    assert payload["status"] == "deferred"
+    assert captured["reservation"].budget_run_id == budget_run_id
+    assert captured["settlements"] == []
+
+
+@pytest.mark.asyncio
 async def test_team_create_runtime_rejects_inline_member_specs(monkeypatch):
     from app.services.agent_team_runtime_service import (
         TeamMemberCreateSpec,
@@ -762,6 +817,100 @@ async def test_message_agent_team_members_runtime_broadcasts_to_member_sessions(
 
 
 @pytest.mark.asyncio
+async def test_team_message_tool_requires_current_session(monkeypatch):
+    import app.services.agent_team_runtime_service as runtime
+
+    def fail_tenant_session(*_args, **_kwargs):
+        raise AssertionError("missing session authority must fail before opening a tenant DB session")
+
+    monkeypatch.setattr(runtime, "tenant_scoped_session", fail_tenant_session)
+    request = SimpleNamespace(
+        arguments={"team_id": str(uuid4()), "member_name": "*", "message": "review"},
+        context=SimpleNamespace(
+            tenant_id=uuid4(),
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            session_id=None,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="requires the current session_id"):
+        await runtime.send_agent_team_message_from_tool_request(request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selector", ["team_id", "team_name"])
+async def test_team_message_tool_does_not_route_to_team_from_other_session(monkeypatch, selector):
+    import app.services.agent_team_runtime_service as runtime
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    user_id = uuid4()
+    current_session_id = uuid4()
+    foreign_team = SimpleNamespace(
+        id=uuid4(),
+        lead_agent_id=agent_id,
+        parent_session_id=uuid4(),
+        name="foreign-team",
+        status="active",
+    )
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
+    user = SimpleNamespace(id=user_id)
+
+    class TeamLookupDB(_DB):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        async def execute(self, stmt):
+            self.calls += 1
+            if self.calls == 1:
+                return _ScalarOne(agent)
+            if self.calls == 2:
+                return _ScalarOne(user)
+            if self.calls == 3:
+                sql = str(stmt)
+                has_session_binding = "agent_teams.parent_session_id" in sql
+                params = stmt.compile().params.values()
+                if has_session_binding and current_session_id in params:
+                    return _ScalarOne(None)
+                return _ScalarOne(foreign_team)
+            raise AssertionError("a foreign Team must be rejected before member sessions are loaded")
+
+    db = TeamLookupDB()
+
+    @asynccontextmanager
+    async def fake_tenant_scoped_session(requested_tenant_id, **_kwargs):
+        assert requested_tenant_id == tenant_id
+        yield db
+
+    async def fail_fanout(**_kwargs):
+        raise AssertionError("a foreign Team must not broadcast or continue member sessions")
+
+    monkeypatch.setattr(runtime, "tenant_scoped_session", fake_tenant_scoped_session)
+    monkeypatch.setattr(runtime, "message_agent_team_members_runtime", fail_fanout)
+    arguments = {"member_name": "*", "message": "review"}
+    if selector == "team_id":
+        arguments["team_id"] = str(foreign_team.id)
+    else:
+        arguments["team_name"] = foreign_team.name
+        arguments["to"] = "*"
+    request = SimpleNamespace(
+        arguments=arguments,
+        context=SimpleNamespace(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            user_id=user_id,
+            session_id=str(current_session_id),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Agent Team not found for this agent"):
+        await runtime.send_agent_team_message_from_tool_request(request)
+    assert db.calls == 3
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("size", [1, 10, 25, 50, 100])
 async def test_team_fanout_capacity_curve_commits_requested_set_before_mixed_admission(monkeypatch, size):
     from app.services.agent_team_runtime_service import message_agent_team_members_runtime
@@ -788,6 +937,7 @@ async def test_team_fanout_capacity_curve_commits_requested_set_before_mixed_adm
     ]
     sessions = [SimpleNamespace(id=member.chat_session_id) for member in members]
     continued_run_ids = []
+    settlements = []
 
     class MixedBudgetService:
         async def reserve(self, reservation):
@@ -812,8 +962,8 @@ async def test_team_fanout_capacity_curve_commits_requested_set_before_mixed_adm
                 budget_run_id=reservation.budget_run_id,
             )
 
-        async def settle(self, _settlement):
-            return None
+        async def settle(self, settlement):
+            settlements.append(settlement)
 
     async def fake_continue_agent_session_from_mailbox(**kwargs):
         intent = kwargs["root_item_intent"]
@@ -822,6 +972,14 @@ async def test_team_fanout_capacity_curve_commits_requested_set_before_mixed_adm
         row["disposition"] = intent.admission_disposition
         continued_run_ids.append(kwargs["run_id"])
         waiting = kwargs["budget_admission_status_override"] == "waiting_budget_approval"
+        if waiting:
+            assert "runtime_budget_actuals" not in kwargs["extra_metadata"]
+        else:
+            assert kwargs["extra_metadata"]["runtime_budget_actuals"] == {
+                "team_sessions": 0,
+                "background_tasks": 1,
+                "continuation_wakes": 1,
+            }
         return {
             "ok": True,
             "status": "waiting_budget_approval" if waiting else "queued",
@@ -858,6 +1016,9 @@ async def test_team_fanout_capacity_curve_commits_requested_set_before_mixed_adm
     assert payload["coverage"]["conserved"] is True
     assert len(continued_run_ids) == admitted + deferred
     assert len(set(continued_run_ids)) == admitted + deferred
+    # The durable RuntimeTask owns this outer reservation. Settling at enqueue
+    # would trip exact-cap breakers before the worker can claim the task.
+    assert settlements == []
 
 
 @pytest.mark.asyncio

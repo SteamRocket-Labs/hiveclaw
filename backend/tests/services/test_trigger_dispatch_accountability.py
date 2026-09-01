@@ -446,12 +446,8 @@ async def test_stale_trigger_intent_is_dropped_instead_of_replayed(monkeypatch):
     async def fake_invoke(*_a, **_k):
         invoked.append(True)
 
-    async def _noop(*_a, **_k):
-        return None
-
     monkeypatch.setattr(trigger_daemon, "get_runtime_task_record", fake_get_record)
     monkeypatch.setattr(trigger_daemon, "_skip_trigger_runtime_task", fake_skip)
-    monkeypatch.setattr(trigger_daemon, "_settle_trigger_runtime_budget", _noop)
     monkeypatch.setattr(trigger_daemon, "_invoke_agent_for_triggers", fake_invoke)
 
     result = await trigger_daemon.execute_claimed_trigger_runtime_task(task_id)

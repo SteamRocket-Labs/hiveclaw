@@ -9,13 +9,28 @@ import uuid
 from datetime import datetime, timezone
 import inspect
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import func, select, union_all
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy import delete as sql_delete
+from sqlalchemy import func, or_, select, text, union_all
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.core.permissions import check_agent_access, effective_agent_owner_id, require_agent_manage_access
+from app.core.permissions import (
+    AGENT_OPERATOR_INSPECT_ACTION,
+    AGENT_OPERATOR_INSPECTION_SCHEMA,
+    check_agent_access,
+    check_agent_operator_reachability,
+    effective_agent_owner_id,
+    has_agent_operator_inspect,
+    is_agent_operator_inspection_grant,
+    load_agent_operator_inspection_ids,
+    require_agent_manage_access,
+    require_agent_owner_or_admin,
+)
 from app.core.security import get_current_user
 from app.core.tenant_scope import resolve_and_pin_tenant_scope
 from app.database import get_db
@@ -23,6 +38,7 @@ from app.domain.agent_lifecycle import InvalidTransitionError, TransitionContext
 from app.models.agent import Agent, AgentPermission
 from app.models.activity_log import AgentActivityLog
 from app.models.chat_session import ChatSession
+from app.models.security_audit import ResourcePermission
 from app.models.user import User
 from app.schemas.schemas import AgentCreate, AgentOut, AgentUpdate
 from app.services.agent_identity_lifecycle import (
@@ -184,14 +200,21 @@ def _agent_list_summary_stmt():
     )
 
 
-def _agent_action_capabilities(access_level: str, *, is_owner: bool) -> dict[str, bool]:
+def _agent_action_capabilities(
+    access_level: str,
+    *,
+    is_owner: bool,
+    can_manage_permissions: bool,
+    can_operator_inspect: bool,
+) -> dict[str, bool]:
     can_manage = access_level == "manage"
     return {
         "can_use": access_level in {"use", "manage"},
         "can_manage": can_manage,
         "can_manage_schedule": can_manage,
         "can_manage_channel": can_manage,
-        "can_manage_permissions": can_manage,
+        "can_manage_permissions": can_manage_permissions,
+        "can_operator_inspect": can_operator_inspect,
         "can_transfer_ownership": can_manage and is_owner,
     }
 
@@ -201,6 +224,8 @@ def _agent_list_out_from_mapping(
     *,
     access_level: str,
     current_user_id: uuid.UUID,
+    can_manage_permissions: bool = False,
+    can_operator_inspect: bool = False,
 ) -> AgentOut:
     role_description = str(row.get("role_description") or "")
     if len(role_description) > AGENT_LIST_ROLE_DESCRIPTION_CHARS:
@@ -216,11 +241,75 @@ def _agent_list_out_from_mapping(
     is_owner = str(effective_owner) == str(current_user_id)
     data["access_level"] = access_level
     data["is_owner"] = is_owner
-    data["action_capabilities"] = _agent_action_capabilities(access_level, is_owner=is_owner)
+    data["action_capabilities"] = _agent_action_capabilities(
+        access_level,
+        is_owner=is_owner,
+        can_manage_permissions=can_manage_permissions,
+        can_operator_inspect=can_operator_inspect,
+    )
     return AgentOut.model_validate(normalize_agent_heartbeat_output(data))
 
 
-@router.get("/", response_model=list[AgentOut])
+def _operator_agent_shell(agent: Agent) -> dict:
+    """Return only the identity needed to enter an audited read-only view."""
+
+    return {
+        "id": agent.id,
+        "name": agent.name,
+        "avatar_url": agent.avatar_url,
+        "role_description": "",
+        "status": agent.status,
+        "access_level": "operator",
+        "is_owner": False,
+        "action_capabilities": _agent_action_capabilities(
+            "operator",
+            is_owner=False,
+            can_manage_permissions=False,
+            can_operator_inspect=True,
+        ),
+        "agent_type": agent.agent_type,
+        "agent_class": agent.agent_class,
+        "operator_shell": True,
+        "operator_reason_required": True,
+    }
+
+
+class AgentOperatorListShellOut(BaseModel):
+    """Minimal identity projection for an operator-only Agent list row."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: uuid.UUID
+    name: str
+    avatar_url: str | None = None
+    status: str
+    access_level: Literal["operator"] = "operator"
+    is_owner: Literal[False] = False
+    action_capabilities: dict[str, bool]
+    agent_type: str = "native"
+    agent_class: str = "internal_tenant"
+    operator_shell: Literal[True] = True
+    operator_reason_required: Literal[True] = True
+
+
+def _operator_agent_list_shell_from_mapping(row: Mapping[str, object]) -> AgentOperatorListShellOut:
+    return AgentOperatorListShellOut(
+        id=row["id"],
+        name=str(row["name"]),
+        avatar_url=row.get("avatar_url"),
+        status=str(row["status"]),
+        action_capabilities=_agent_action_capabilities(
+            "operator",
+            is_owner=False,
+            can_manage_permissions=False,
+            can_operator_inspect=True,
+        ),
+        agent_type=str(row.get("agent_type") or "native"),
+        agent_class=str(row.get("agent_class") or "internal_tenant"),
+    )
+
+
+@router.get("/", response_model=list[AgentOut | AgentOperatorListShellOut])
 async def list_agents(
     tenant_id: uuid.UUID | None = None,
     current_user: User = Depends(get_current_user),
@@ -236,9 +325,21 @@ async def list_agents(
             agent_lifecycle_active_clause(),
         )
         result = await db.execute(stmt.order_by(Agent.created_at.desc()))
+        rows = result.mappings().all()
+        operator_agent_ids = await load_agent_operator_inspection_ids(
+            db,
+            user=current_user,
+            agent_ids=[row["id"] for row in rows],
+        )
         return [
-            _agent_list_out_from_mapping(row, access_level="manage", current_user_id=current_user.id)
-            for row in result.mappings().all()
+            _agent_list_out_from_mapping(
+                row,
+                access_level="manage",
+                current_user_id=current_user.id,
+                can_manage_permissions=True,
+                can_operator_inspect=row["id"] in operator_agent_ids,
+            )
+            for row in rows
         ]
 
     # All users see their currently owned agents + permitted agents. Creator is
@@ -268,11 +369,19 @@ async def list_agents(
         )
     permitted_ids = select(AgentPermission.agent_id).where(permission_scope)
     # Union
+    operator_agent_ids = await load_agent_operator_inspection_ids(
+        db,
+        user=current_user,
+        agent_ids=None,
+    )
     combined = union_all(owned_ids, permitted_ids).subquery()
     result = await db.execute(
         _agent_list_summary_stmt()
         .where(
-            Agent.id.in_(select(combined.c.id)),
+            or_(
+                Agent.id.in_(select(combined.c.id)),
+                Agent.id.in_(operator_agent_ids),
+            ),
             Agent.tenant_id == user_tenant,
             Agent.agent_class != "internal_system",
             agent_lifecycle_active_clause(),
@@ -285,27 +394,35 @@ async def list_agents(
     if agent_ids:
         permission_result = await db.execute(select(AgentPermission).where(AgentPermission.agent_id.in_(agent_ids)))
         for permission in permission_result.scalars().all():
-            applies = (
-                permission.scope_type == "company"
-                or (permission.scope_type == "user" and permission.scope_id == current_user.id)
-                or (
-                    permission.scope_type == "department"
-                    and current_user.department_id
-                    and permission.scope_id == current_user.department_id
+            applies = permission.scope_type == "user" and permission.scope_id == current_user.id
+            if current_user.role != "platform_admin":
+                applies = (
+                    applies
+                    or permission.scope_type == "company"
+                    or (
+                        permission.scope_type == "department"
+                        and current_user.department_id
+                        and permission.scope_id == current_user.department_id
+                    )
                 )
-            )
-            if applies and (permission_map.get(permission.agent_id) != "manage" or permission.access_level == "manage"):
-                permission_map[permission.agent_id] = permission.access_level or "use"
+            normalized_access = "use" if permission.scope_type == "company" else permission.access_level or "use"
+            if applies and (permission_map.get(permission.agent_id) != "manage" or normalized_access == "manage"):
+                permission_map[permission.agent_id] = normalized_access
 
     output = []
     for row in rows:
         effective_owner = row["owner_user_id"] or row["creator_id"]
-        access_level = "manage" if effective_owner == current_user.id else permission_map.get(row["id"], "use")
+        access_level = "manage" if effective_owner == current_user.id else permission_map.get(row["id"], "operator")
+        if access_level == "operator":
+            output.append(_operator_agent_list_shell_from_mapping(row))
+            continue
         output.append(
             _agent_list_out_from_mapping(
                 row,
                 access_level=access_level,
                 current_user_id=current_user.id,
+                can_manage_permissions=effective_owner == current_user.id,
+                can_operator_inspect=row["id"] in operator_agent_ids,
             )
         )
     return output
@@ -590,6 +707,31 @@ async def _validate_model_refs(
             )
 
 
+async def _validate_active_tenant_users(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    user_ids: list[uuid.UUID],
+) -> list[uuid.UUID]:
+    unique_ids = list(dict.fromkeys(user_ids))
+    if not unique_ids:
+        return []
+    result = await db.execute(
+        select(User.id).where(
+            User.id.in_(unique_ids),
+            User.tenant_id == tenant_id,
+            User.is_active.is_(True),
+        )
+    )
+    found = set(result.scalars().all())
+    if found != set(unique_ids):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Every permission principal must be an active user in the Agent tenant",
+        )
+    return unique_ids
+
+
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_agent(
     data: AgentCreate,
@@ -604,6 +746,15 @@ async def create_agent(
         )
 
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, data.tenant_id)
+    permission_scope_ids = (
+        await _validate_active_tenant_users(
+            db,
+            tenant_id=target_tenant_id,
+            user_ids=data.permission_scope_ids,
+        )
+        if data.permission_scope_type == "user" and data.permission_scope_ids
+        else []
+    )
 
     # Get default limits from target tenant
     default_max_triggers = 20
@@ -664,7 +815,7 @@ async def create_agent(
         raise HTTPException(status_code=400, detail=str(e))
 
     # Set permissions
-    access_level = data.permission_access_level if data.permission_access_level in ("use", "manage") else "use"
+    access_level = data.permission_access_level
     if data.permission_scope_type == "company":
         db.add(
             AgentPermission(
@@ -672,8 +823,8 @@ async def create_agent(
             )
         )
     elif data.permission_scope_type == "user":
-        if data.permission_scope_ids:
-            for scope_id in data.permission_scope_ids:
+        if permission_scope_ids:
+            for scope_id in permission_scope_ids:
                 db.add(
                     AgentPermission(
                         agent_id=agent.id,
@@ -824,7 +975,9 @@ async def get_agent(
     db: AsyncSession = Depends(get_db),
 ):
     """Get agent details."""
-    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await check_agent_operator_reachability(db, current_user, agent_id)
+    if access_level == "operator":
+        return _operator_agent_shell(agent)
     # Lazy reset token counters
     if await _lazy_reset_token_counters(agent, db):
         await db.commit()
@@ -833,7 +986,16 @@ async def get_agent(
     out["access_level"] = access_level
     is_owner = str(getattr(agent, "owner_user_id", None) or agent.creator_id) == str(current_user.id)
     out["is_owner"] = is_owner
-    out["action_capabilities"] = _agent_action_capabilities(access_level, is_owner=is_owner)
+    out["action_capabilities"] = _agent_action_capabilities(
+        access_level,
+        is_owner=is_owner,
+        can_manage_permissions=is_owner or current_user.role == "org_admin",
+        can_operator_inspect=await has_agent_operator_inspect(
+            db,
+            user=current_user,
+            agent_id=agent.id,
+        ),
+    )
 
     # Resolve creator + owner usernames (one extra query each, only on detail page)
     if agent.creator_id:
@@ -1013,6 +1175,52 @@ async def get_agent_capability_installs(
     return await list_capability_installs(agent_id=agent_id)
 
 
+class AgentPermissionUpdateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scope_type: Literal["company", "user"]
+    scope_ids: list[uuid.UUID] = Field(default_factory=list)
+    access_level: Literal["use", "manage"]
+
+    @model_validator(mode="after")
+    def validate_scope_contract(self):
+        if self.scope_type == "company" and self.scope_ids:
+            raise ValueError("Company-wide Agent permissions do not accept user scope IDs")
+        return self
+
+
+class AgentOperatorGrantIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: uuid.UUID
+    principal_id: uuid.UUID
+    effect: Literal["allow", "deny"] = "allow"
+    expires_at: datetime | None = None
+    reason: str = Field(min_length=3, max_length=1000)
+
+
+class AgentOperatorGrantRevokeIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: uuid.UUID
+    reason: str = Field(min_length=3, max_length=1000)
+
+
+def _operator_grant_payload(permission: ResourcePermission, *, principal_name: str | None = None) -> dict:
+    return {
+        "id": str(permission.id),
+        "principal_id": str(permission.principal_id),
+        "principal_name": principal_name,
+        "effect": permission.effect,
+        "actions": list(permission.actions or []),
+        "expires_at": permission.expires_at.isoformat() if permission.expires_at else None,
+        "revoked_at": permission.revoked_at.isoformat() if permission.revoked_at else None,
+        "created_at": permission.created_at.isoformat() if permission.created_at else None,
+        "created_by_user_id": str(permission.created_by_user_id) if permission.created_by_user_id else None,
+        "revoked_by_user_id": str(permission.revoked_by_user_id) if permission.revoked_by_user_id else None,
+    }
+
+
 @router.get("/{agent_id}/permissions")
 async def get_agent_permissions(
     agent_id: uuid.UUID,
@@ -1021,6 +1229,18 @@ async def get_agent_permissions(
 ):
     """Get agent permission scope."""
     agent, access_level = await check_agent_access(db, current_user, agent_id)
+    is_owner = effective_agent_owner_id(agent) == current_user.id
+    can_manage_permissions = is_owner or current_user.role == "org_admin"
+    if not can_manage_permissions:
+        return {
+            "scope_type": "effective",
+            "scope_ids": [],
+            "scope_names": [],
+            "access_level": access_level,
+            "is_owner": False,
+            "can_manage_permissions": False,
+        }
+
     result = await db.execute(select(AgentPermission).where(AgentPermission.agent_id == agent_id))
     perms = result.scalars().all()
 
@@ -1029,12 +1249,13 @@ async def get_agent_permissions(
             "scope_type": "user",
             "scope_ids": [],
             "access_level": access_level,
-            "is_owner": effective_agent_owner_id(agent) == current_user.id,
+            "is_owner": is_owner,
+            "can_manage_permissions": True,
         }
 
     scope_type = perms[0].scope_type
     scope_ids = [str(p.scope_id) for p in perms if p.scope_id]
-    perm_access_level = perms[0].access_level or "use"
+    perm_access_level = "use" if scope_type == "company" else perms[0].access_level or "use"
 
     # Resolve names for display
     scope_names = []
@@ -1050,39 +1271,40 @@ async def get_agent_permissions(
         "scope_ids": scope_ids,
         "scope_names": scope_names,
         "access_level": perm_access_level,
-        "is_owner": effective_agent_owner_id(agent) == current_user.id,
+        "is_owner": is_owner,
+        "can_manage_permissions": True,
     }
 
 
 @router.put("/{agent_id}/permissions")
 async def update_agent_permissions(
     agent_id: uuid.UUID,
-    data: dict,
+    data: AgentPermissionUpdateIn,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Update agent permission scope (owner or admin only)."""
-    agent = await require_agent_manage_access(db, current_user, agent_id)
-
-    scope_type = data.get("scope_type", "company")
-    scope_ids = data.get("scope_ids", [])
-    access_level = data.get("access_level", "use")
-    if access_level not in ("use", "manage"):
-        access_level = "use"
+    if isinstance(data, dict):
+        data = AgentPermissionUpdateIn.model_validate(data)
+    agent = await require_agent_owner_or_admin(db, current_user, agent_id, lock=True)
+    if data.scope_type == "company" and data.access_level != "use":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Company-wide Agent permissions may grant use access only",
+        )
+    scope_ids = await _validate_active_tenant_users(
+        db,
+        tenant_id=agent.tenant_id,
+        user_ids=data.scope_ids,
+    )
 
     # Delete existing permissions
-    from sqlalchemy import delete as sql_delete
-
     await db.execute(sql_delete(AgentPermission).where(AgentPermission.agent_id == agent_id))
 
     # Insert new permissions
-    if scope_type == "company":
-        db.add(
-            AgentPermission(
-                agent_id=agent_id, tenant_id=agent.tenant_id, scope_type="company", access_level=access_level
-            )
-        )
-    elif scope_type == "user":
+    if data.scope_type == "company":
+        db.add(AgentPermission(agent_id=agent_id, tenant_id=agent.tenant_id, scope_type="company", access_level="use"))
+    elif data.scope_type == "user":
         if scope_ids:
             for sid in scope_ids:
                 db.add(
@@ -1090,24 +1312,331 @@ async def update_agent_permissions(
                         agent_id=agent_id,
                         tenant_id=agent.tenant_id,
                         scope_type="user",
-                        scope_id=uuid.UUID(sid),
-                        access_level=access_level,
+                        scope_id=sid,
+                        access_level=data.access_level,
                     )
                 )
         else:
-            # "仅自己"
+            owner_id = effective_agent_owner_id(agent)
+            if owner_id is None:
+                raise HTTPException(status_code=409, detail="Agent has no effective owner")
             db.add(
                 AgentPermission(
                     agent_id=agent_id,
                     tenant_id=agent.tenant_id,
                     scope_type="user",
-                    scope_id=current_user.id,
+                    scope_id=owner_id,
                     access_level="manage",
                 )
             )
 
+    from app.core.policy import write_audit_event
+
+    await write_audit_event(
+        db,
+        event_type="agent.permissions_updated",
+        severity="info",
+        actor_type="user",
+        actor_id=current_user.id,
+        tenant_id=agent.tenant_id,
+        action="update_agent_permissions",
+        resource_type="agent",
+        resource_id=agent.id,
+        details={
+            "scope_type": data.scope_type,
+            "scope_count": len(scope_ids),
+            "access_level": "use" if data.scope_type == "company" else data.access_level,
+        },
+    )
     await db.commit()
     return {"status": "ok"}
+
+
+@router.get("/{agent_id}/operator-grants")
+async def list_agent_operator_grants(
+    agent_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    agent = await require_agent_owner_or_admin(db, current_user, agent_id)
+    permissions = (
+        (
+            await db.execute(
+                select(ResourcePermission)
+                .where(
+                    ResourcePermission.tenant_id == agent.tenant_id,
+                    ResourcePermission.resource_type == "agent",
+                    ResourcePermission.resource_id == agent.id,
+                    ResourcePermission.principal_type == "user",
+                )
+                .order_by(ResourcePermission.created_at.desc(), ResourcePermission.id.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    permissions = [p for p in permissions if is_agent_operator_inspection_grant(p)]
+    principal_ids = [p.principal_id for p in permissions if p.principal_id]
+    names: dict[uuid.UUID, str] = {}
+    if principal_ids:
+        users = (
+            (
+                await db.execute(
+                    select(User).where(
+                        User.id.in_(principal_ids),
+                        User.tenant_id == agent.tenant_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        names = {user.id: user.display_name or user.username for user in users}
+    return [_operator_grant_payload(p, principal_name=names.get(p.principal_id)) for p in permissions]
+
+
+@router.get("/{agent_id}/operator-candidates")
+async def list_agent_operator_candidates(
+    agent_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List active same-tenant users eligible for an inspection grant."""
+    agent = await require_agent_owner_or_admin(db, current_user, agent_id)
+    users = (
+        (
+            await db.execute(
+                select(User)
+                .where(
+                    User.tenant_id == agent.tenant_id,
+                    User.is_active.is_(True),
+                )
+                .order_by(User.display_name.asc(), User.username.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": str(user.id),
+            "display_name": user.display_name,
+            "email": user.email,
+            "role": user.role,
+        }
+        for user in users
+    ]
+
+
+@router.post("/{agent_id}/operator-grants", status_code=status.HTTP_201_CREATED)
+async def create_agent_operator_grant(
+    agent_id: uuid.UUID,
+    data: AgentOperatorGrantIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    agent = await require_agent_owner_or_admin(db, current_user, agent_id, lock=True)
+    reason = data.reason.strip()
+    if len(reason) < 3:
+        raise HTTPException(status_code=422, detail="reason must contain at least 3 non-whitespace characters")
+    expires_at = data.expires_at
+    if expires_at is not None:
+        if expires_at.tzinfo is None:
+            raise HTTPException(status_code=422, detail="expires_at must include a timezone")
+        expires_at = expires_at.astimezone(timezone.utc)
+    target_user_id = data.principal_id
+    request_payload = {
+        "agent_id": str(agent.id),
+        "principal_id": str(target_user_id),
+        "effect": data.effect,
+        "expires_at": expires_at.isoformat() if expires_at else None,
+        "reason": reason,
+    }
+    request_hash = hashlib.sha256(
+        json.dumps(request_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+        {"lock_key": f"agent-operator-grant-create:{data.request_id}"},
+    )
+    existing = (
+        await db.execute(select(ResourcePermission).where(ResourcePermission.id == data.request_id).with_for_update())
+    ).scalar_one_or_none()
+    if existing is not None:
+        metadata = dict(existing.conditions or {}).get("operator_inspection", {})
+        if metadata.get("request_hash") != request_hash:
+            raise HTTPException(status_code=409, detail="operator grant request_id conflicts with another request")
+        target = (await db.execute(select(User).where(User.id == target_user_id))).scalar_one_or_none()
+        await db.commit()
+        return _operator_grant_payload(
+            existing, principal_name=target.display_name or target.username if target else None
+        )
+
+    if expires_at is not None and expires_at <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=422, detail="expires_at must be in the future")
+    target_user_id = (
+        await _validate_active_tenant_users(
+            db,
+            tenant_id=agent.tenant_id,
+            user_ids=[target_user_id],
+        )
+    )[0]
+
+    permission = ResourcePermission(
+        id=data.request_id,
+        tenant_id=agent.tenant_id,
+        principal_type="user",
+        principal_id=target_user_id,
+        resource_type="agent",
+        resource_id=agent.id,
+        actions=[AGENT_OPERATOR_INSPECT_ACTION],
+        conditions={
+            "operator_inspection": {
+                "schema": AGENT_OPERATOR_INSPECTION_SCHEMA,
+                "request_id": str(data.request_id),
+                "request_hash": request_hash,
+                "reason": reason,
+            }
+        },
+        effect=data.effect,
+        sensitivity_ceiling="PL3_sensitive",
+        purposes=["operator_inspection"],
+        expires_at=expires_at,
+        created_by_user_id=current_user.id,
+    )
+    db.add(permission)
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="operator grant request_id conflicts with another request") from exc
+
+    from app.core.policy import write_audit_event
+
+    await write_audit_event(
+        db,
+        event_type="agent.operator_grant_created",
+        severity="warn",
+        actor_type="user",
+        actor_id=current_user.id,
+        tenant_id=agent.tenant_id,
+        action="create_operator_inspection_grant",
+        resource_type="agent",
+        resource_id=agent.id,
+        request_id=data.request_id,
+        details={
+            "grant_id": str(permission.id),
+            "principal_id": str(target_user_id),
+            "effect": data.effect,
+            "expires_at": expires_at.isoformat() if expires_at else None,
+            "reason": reason,
+        },
+    )
+    await db.commit()
+    target = (await db.execute(select(User).where(User.id == target_user_id))).scalar_one_or_none()
+    return _operator_grant_payload(
+        permission, principal_name=target.display_name or target.username if target else None
+    )
+
+
+@router.post("/{agent_id}/operator-grants/{grant_id}/revoke")
+async def revoke_agent_operator_grant(
+    agent_id: uuid.UUID,
+    grant_id: uuid.UUID,
+    data: AgentOperatorGrantRevokeIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    agent = await require_agent_owner_or_admin(db, current_user, agent_id, lock=True)
+    reason = data.reason.strip()
+    if len(reason) < 3:
+        raise HTTPException(status_code=422, detail="reason must contain at least 3 non-whitespace characters")
+    request_payload = {
+        "agent_id": str(agent.id),
+        "grant_id": str(grant_id),
+        "reason": reason,
+    }
+    request_hash = hashlib.sha256(
+        json.dumps(request_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+        {"lock_key": f"agent-operator-grant-revoke:{agent.tenant_id}:{data.request_id}"},
+    )
+    replay = (
+        await db.execute(
+            select(ResourcePermission).where(
+                ResourcePermission.tenant_id == agent.tenant_id,
+                ResourcePermission.conditions.contains(
+                    {"operator_inspection": {"revocation_request_id": str(data.request_id)}}
+                ),
+            )
+        )
+    ).scalar_one_or_none()
+    if replay is not None:
+        replay_metadata = dict(replay.conditions or {}).get("operator_inspection", {})
+        if (
+            replay.id != grant_id
+            or replay_metadata.get("revocation_request_hash") != request_hash
+            or not is_agent_operator_inspection_grant(replay)
+        ):
+            raise HTTPException(status_code=409, detail="operator grant revocation request_id conflict")
+        await db.commit()
+        return _operator_grant_payload(replay)
+
+    permission = (
+        await db.execute(
+            select(ResourcePermission)
+            .where(
+                ResourcePermission.id == grant_id,
+                ResourcePermission.tenant_id == agent.tenant_id,
+                ResourcePermission.principal_type == "user",
+                ResourcePermission.resource_type == "agent",
+                ResourcePermission.resource_id == agent.id,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if permission is None or not is_agent_operator_inspection_grant(permission):
+        raise HTTPException(status_code=404, detail="Operator inspection grant not found")
+    if permission.revoked_at is not None:
+        raise HTTPException(status_code=409, detail="Operator inspection grant was revoked by another request")
+
+    permission.revoked_at = datetime.now(timezone.utc)
+    permission.revoked_by_user_id = current_user.id
+    conditions = dict(permission.conditions or {})
+    metadata = dict(conditions.get("operator_inspection") or {})
+    metadata.update(
+        {
+            "revocation_request_id": str(data.request_id),
+            "revocation_request_hash": request_hash,
+            "revocation_reason": reason,
+        }
+    )
+    conditions["operator_inspection"] = metadata
+    permission.conditions = conditions
+
+    from app.core.policy import write_audit_event
+
+    await write_audit_event(
+        db,
+        event_type="agent.operator_grant_revoked",
+        severity="warn",
+        actor_type="user",
+        actor_id=current_user.id,
+        tenant_id=agent.tenant_id,
+        action="revoke_operator_inspection_grant",
+        resource_type="agent",
+        resource_id=agent.id,
+        request_id=data.request_id,
+        details={
+            "grant_id": str(permission.id),
+            "principal_id": str(permission.principal_id),
+            "reason": reason,
+        },
+    )
+    await db.commit()
+    return _operator_grant_payload(permission)
 
 
 @router.patch("/{agent_id}", response_model=AgentOut)

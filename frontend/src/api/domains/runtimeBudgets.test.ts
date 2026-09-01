@@ -32,8 +32,15 @@ describe('runtime budget API adapter', () => {
     await runtimeBudgetApi.listRuns({ status: 'exhausted', agentId: 'agent-1', limit: 10 });
     await runtimeBudgetApi.listEvents('run-1', 25);
     await runtimeBudgetApi.cancelRun('run-1', 'stop');
-    await runtimeBudgetApi.approveOverrun('run-1', { reason: 'reviewed', enforcement_mode: 'observe' });
-    await runtimeBudgetApi.rejectOverrun('run-1', 'not safe');
+    await runtimeBudgetApi.approveOverrun('run-1', {
+      approval_episode_id: 'episode-1',
+      reason: 'reviewed',
+      enforcement_mode: 'observe',
+    });
+    await runtimeBudgetApi.rejectOverrun('run-1', {
+      approval_episode_id: 'episode-1',
+      reason: 'not safe',
+    });
     await runtimeBudgetApi.setTenantEnforcementMode({ enforcement_mode: 'observe', reason: 'emergency' });
 
     expect(get).toHaveBeenNthCalledWith(1, '/runtime-budgets/policies');
@@ -43,10 +50,12 @@ describe('runtime budget API adapter', () => {
     expect(get).toHaveBeenNthCalledWith(3, '/runtime-budgets/runs/run-1/events?limit=25');
     expect(post).toHaveBeenNthCalledWith(2, '/runtime-budgets/runs/run-1/cancel', { reason: 'stop' });
     expect(post).toHaveBeenNthCalledWith(3, '/runtime-budgets/runs/run-1/approve-overrun', {
+      approval_episode_id: 'episode-1',
       reason: 'reviewed',
       enforcement_mode: 'observe',
     });
     expect(post).toHaveBeenNthCalledWith(4, '/runtime-budgets/runs/run-1/reject-overrun', {
+      approval_episode_id: 'episode-1',
       reason: 'not safe',
     });
     expect(post).toHaveBeenNthCalledWith(5, '/runtime-budgets/tenant/enforcement-mode', {

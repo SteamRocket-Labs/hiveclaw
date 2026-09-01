@@ -6,6 +6,7 @@ the fake/injected leaf executor is only for isolating control flow.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import uuid
 
 import pytest
@@ -162,7 +163,7 @@ async def test_start_run_replay_with_same_run_id_returns_existing_run(service, t
     assert len(steps) == 2
 
 
-async def test_workflow_root_reserves_and_settles_background_execution(
+async def test_workflow_root_commits_actuals_then_reconciles_background_execution(
     service,
     tenant_id,
     owner_sessionmaker,
@@ -198,10 +199,421 @@ async def test_workflow_root_reserves_and_settles_background_execution(
             await session.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == budget_run.id))
         ).scalar_one()
     assert handle.outcome.status == "completed"
-    assert task.budget_admission_status == "settled"
+    assert task.budget_admission_status == "reserved"
     assert task.budget_reservation_key == f"workflow:{handle.run_id}:start"
+    assert task.metadata_json["runtime_budget_actuals"] == {"background_tasks": 1}
+    assert stored_budget.reserved_background_tasks == 1
+    assert stored_budget.used_background_tasks == 0
+
+    assert await budget_service.reconcile_orphaned_reservations() >= 1
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == handle.run_id))).scalar_one()
+        stored_budget = (
+            await session.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == budget_run.id))
+        ).scalar_one()
+    assert task.budget_admission_status == "settled"
     assert stored_budget.reserved_background_tasks == 0
     assert stored_budget.used_background_tasks == 1
+
+
+async def test_claimed_workflow_commits_actuals_before_budget_reconciliation(
+    service,
+    tenant_id,
+    owner_sessionmaker,
+    monkeypatch,
+):
+    from app import database as database_module
+    from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
+    from app.services.runtime_budget_service import RuntimeBudgetRunCreate, RuntimeBudgetService
+    from app.services.runtime_task_fence import run_claimed_runtime_task
+
+    monkeypatch.setattr(database_module, "async_session", owner_sessionmaker)
+
+    budget_service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+    budget_run = await budget_service.create_run(
+        RuntimeBudgetRunCreate(
+            tenant_id=tenant_id,
+            root_run_kind="workflow_test",
+            root_run_key=f"workflow-test:{uuid.uuid4()}",
+            source="workflow",
+            profile="workflow",
+            max_background_tasks=2,
+            enforcement_mode="enforce",
+        )
+    )
+    handle = await service.start_run(
+        tenant_id=tenant_id,
+        definition_data=_definition(),
+        args={"target": "acme"},
+        leaf_executor=_ok_leaf(),
+        budget_run_id=budget_run.id,
+        budget_service=budget_service,
+        enqueue_only=True,
+    )
+    worker_id = "workflow-worker"
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == handle.run_id))).scalar_one()
+        task.status = "running"
+        task.claim_version = 1
+        task.claimed_by = worker_id
+        task.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=1)
+
+    outcome = await run_claimed_runtime_task(
+        service.resume_run(
+            handle.run_id,
+            tenant_id=tenant_id,
+            leaf_executor=_ok_leaf(),
+        ),
+        task_id=handle.run_id,
+        claim_version=1,
+        worker_id=worker_id,
+        lease_seconds=3,
+    )
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == handle.run_id))).scalar_one()
+        stored_budget = (
+            await session.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == budget_run.id))
+        ).scalar_one()
+        settlements = (
+            (
+                await session.execute(
+                    select(RuntimeBudgetEvent).where(
+                        RuntimeBudgetEvent.budget_run_id == budget_run.id,
+                        RuntimeBudgetEvent.reservation_key == f"workflow:{handle.run_id}:start",
+                        RuntimeBudgetEvent.event_type == "settlement",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert outcome.status == "completed"
+    assert task.status == "completed"
+    assert task.budget_admission_status == "reserved"
+    assert task.metadata_json["runtime_budget_actuals"] == {"background_tasks": 1}
+    assert stored_budget.reserved_background_tasks == 1
+    assert stored_budget.used_background_tasks == 0
+    assert settlements == []
+
+    assert await budget_service.reconcile_orphaned_reservations() >= 1
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == handle.run_id))).scalar_one()
+        stored_budget = (
+            await session.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == budget_run.id))
+        ).scalar_one()
+        settlements = (
+            (
+                await session.execute(
+                    select(RuntimeBudgetEvent).where(
+                        RuntimeBudgetEvent.budget_run_id == budget_run.id,
+                        RuntimeBudgetEvent.reservation_key == f"workflow:{handle.run_id}:start",
+                        RuntimeBudgetEvent.event_type == "settlement",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert task.budget_admission_status == "settled"
+    assert stored_budget.reserved_background_tasks == 0
+    assert stored_budget.used_background_tasks == 1
+    assert len(settlements) == 1
+
+
+async def test_direct_workflow_preserves_operator_kill_before_terminal_commit(
+    service,
+    tenant_id,
+    agent_in_db,
+    owner_sessionmaker,
+    monkeypatch,
+):
+    import asyncio
+
+    from app.models.agent import Agent
+    from app.models.channel_delivery_outbox import ChannelDeliveryOutbox
+    from app.models.chat_session import ChatSession
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.coordination import CoordinationSignal
+    from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+
+    parent_session_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        agent = (await session.execute(select(Agent).where(Agent.id == agent_in_db))).scalar_one()
+        session.add(
+            ChatSession(
+                id=parent_session_id,
+                agent_id=agent_in_db,
+                tenant_id=tenant_id,
+                user_id=agent.creator_id,
+                title="Concurrent kill parent",
+            )
+        )
+
+    execution_finished = asyncio.Event()
+    release_terminal = asyncio.Event()
+    real_execute = workflow_runtime.execute_workflow
+
+    async def gated_execute(*args, **kwargs):
+        outcome = await real_execute(*args, **kwargs)
+        execution_finished.set()
+        await release_terminal.wait()
+        return outcome
+
+    monkeypatch.setattr(workflow_runtime, "execute_workflow", gated_execute)
+    running = asyncio.create_task(
+        service.start_run(
+            tenant_id=tenant_id,
+            definition_data=_definition(),
+            args={"target": "acme"},
+            leaf_executor=_ok_leaf(),
+            agent_id=agent_in_db,
+            user_id=agent.creator_id,
+            parent_session_id=parent_session_id,
+            delivery_target={"channel": "web", "username": "owner"},
+            run_id=run_id,
+        )
+    )
+    await asyncio.wait_for(execution_finished.wait(), timeout=10)
+    await service.kill_run(run_id, tenant_id=tenant_id)
+    release_terminal.set()
+    handle = await running
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
+        root_item = (
+            await session.execute(select(RuntimeRootItem).where(RuntimeRootItem.runtime_task_id == run_id))
+        ).scalar_one()
+        notifications = (
+            (
+                await session.execute(
+                    select(RuntimeNotificationOutbox).where(RuntimeNotificationOutbox.source_run_id == str(run_id))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        signals = (
+            (await session.execute(select(CoordinationSignal).where(CoordinationSignal.thread_id == str(run_id))))
+            .scalars()
+            .all()
+        )
+        deliveries = (
+            (
+                await session.execute(
+                    select(ChannelDeliveryOutbox).where(ChannelDeliveryOutbox.runtime_task_id == run_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        run_events = list(
+            (
+                await session.execute(
+                    select(ChatTranscriptEvent).where(
+                        ChatTranscriptEvent.run_id == run_id,
+                        ChatTranscriptEvent.event_type.in_(("runtime_action_failed", "workflow_run")),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        terminal_events = [event for event in run_events if (event.metadata_json or {}).get("status") == "killed"]
+
+    assert handle.outcome.status == "killed"
+    assert task.status == "killed"
+    assert task.started_at is not None
+    assert task.completed_at is not None
+    assert root_item.state == "killed"
+    assert task.metadata_json["runtime_budget_actuals"] == {"background_tasks": 1}
+    assert task.metadata_json["terminal_committed_status"] == "killed"
+    assert task.metadata_json["terminal_commit_source"] == "workflow_runtime.kill"
+    assert len(notifications) == 1
+    assert notifications[0].terminal_status == "killed"
+    assert signals == []
+    assert deliveries == []
+    assert len(terminal_events) == 2
+
+
+async def test_claimed_workflow_operator_kill_commits_terminal_before_stale_worker_returns(
+    service,
+    tenant_id,
+    agent_in_db,
+    owner_sessionmaker,
+    monkeypatch,
+):
+    import asyncio
+
+    from app.models.agent import Agent
+    from app.models.audit import AuditLog
+    from app.models.channel_delivery_outbox import ChannelDeliveryOutbox
+    from app.models.chat_session import ChatSession
+    from app.models.coordination import CoordinationSignal
+    from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+    from app.services.runtime_task_fence import StaleRuntimeTaskFenceError, run_claimed_runtime_task
+
+    parent_session_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        agent = (await session.execute(select(Agent).where(Agent.id == agent_in_db))).scalar_one()
+        session.add(
+            ChatSession(
+                id=parent_session_id,
+                agent_id=agent_in_db,
+                tenant_id=tenant_id,
+                user_id=agent.creator_id,
+                title="Claimed kill parent",
+            )
+        )
+
+    await service.start_run(
+        tenant_id=tenant_id,
+        definition_data=_definition(),
+        args={"target": "acme"},
+        leaf_executor=_ok_leaf(),
+        agent_id=agent_in_db,
+        user_id=agent.creator_id,
+        parent_session_id=parent_session_id,
+        delivery_target={"channel": "web", "username": "owner"},
+        run_id=run_id,
+        enqueue_only=True,
+    )
+    worker_id = "workflow-kill-worker"
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
+        task.status = "running"
+        task.started_at = datetime.now(timezone.utc)
+        task.claim_version = 1
+        task.claimed_by = worker_id
+        task.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=1)
+
+    execution_finished = asyncio.Event()
+    release_terminal = asyncio.Event()
+    real_execute = workflow_runtime.execute_workflow
+
+    async def gated_execute(*args, **kwargs):
+        outcome = await real_execute(*args, **kwargs)
+        execution_finished.set()
+        await release_terminal.wait()
+        return outcome
+
+    monkeypatch.setattr(workflow_runtime, "execute_workflow", gated_execute)
+    running = asyncio.create_task(
+        run_claimed_runtime_task(
+            service.resume_run(run_id, tenant_id=tenant_id, leaf_executor=_ok_leaf()),
+            task_id=run_id,
+            claim_version=1,
+            worker_id=worker_id,
+            lease_seconds=30,
+        )
+    )
+    await asyncio.wait_for(execution_finished.wait(), timeout=10)
+    assert await service.kill_run(run_id, tenant_id=tenant_id) == "killed"
+    release_terminal.set()
+    with pytest.raises(StaleRuntimeTaskFenceError):
+        await running
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
+        root_item = (
+            await session.execute(select(RuntimeRootItem).where(RuntimeRootItem.runtime_task_id == run_id))
+        ).scalar_one()
+        notifications = list(
+            (
+                await session.execute(
+                    select(RuntimeNotificationOutbox).where(RuntimeNotificationOutbox.source_run_id == str(run_id))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        audits = list(
+            (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.tenant_id == tenant_id,
+                        AuditLog.action == "workflow_run_killed",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        signals = list(
+            (await session.execute(select(CoordinationSignal).where(CoordinationSignal.thread_id == str(run_id))))
+            .scalars()
+            .all()
+        )
+        deliveries = list(
+            (
+                await session.execute(
+                    select(ChannelDeliveryOutbox).where(ChannelDeliveryOutbox.runtime_task_id == run_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert task.status == "killed"
+    assert task.completed_at is not None
+    assert task.metadata_json["terminal_commit_source"] == "workflow_runtime.kill"
+    assert task.metadata_json["runtime_budget_actuals"] == {"background_tasks": 1}
+    assert root_item.state == "killed"
+    assert len(notifications) == len(audits) == 1
+    assert signals == deliveries == []
+
+
+async def test_workflow_final_row_lock_wins_over_waiting_kill(
+    service,
+    tenant_id,
+    owner_sessionmaker,
+    monkeypatch,
+):
+    import asyncio
+    import app.services.runtime_terminal_settlement as terminal_settlement
+
+    terminal_locked = asyncio.Event()
+    release_terminal = asyncio.Event()
+    real_settle = terminal_settlement.settle_runtime_task_terminal
+
+    async def gated_settle(*args, **kwargs):
+        terminal_locked.set()
+        await release_terminal.wait()
+        return await real_settle(*args, **kwargs)
+
+    monkeypatch.setattr(terminal_settlement, "settle_runtime_task_terminal", gated_settle)
+    run_id = uuid.uuid4()
+    running = asyncio.create_task(
+        service.start_run(
+            tenant_id=tenant_id,
+            definition_data=_definition(),
+            args={"target": "acme"},
+            leaf_executor=_ok_leaf(),
+            run_id=run_id,
+        )
+    )
+    await asyncio.wait_for(terminal_locked.wait(), timeout=10)
+    waiting_kill = asyncio.create_task(service.kill_run(run_id, tenant_id=tenant_id))
+    await asyncio.sleep(0.05)
+    assert not waiting_kill.done()
+    release_terminal.set()
+
+    handle = await running
+    assert await waiting_kill == "completed"
+    assert await service.kill_run(run_id, tenant_id=tenant_id) == "completed"
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
+        root_item = (
+            await session.execute(select(RuntimeRootItem).where(RuntimeRootItem.runtime_task_id == run_id))
+        ).scalar_one()
+    assert handle.outcome.status == "completed"
+    assert task.status == "completed"
+    assert task.completed_at is not None
+    assert task.metadata_json["terminal_committed_status"] == "completed"
+    assert root_item.state == "completed"
 
 
 async def test_workflow_over_budget_persists_exact_frozen_task_for_approval(
@@ -246,11 +658,13 @@ async def test_workflow_over_budget_persists_exact_frozen_task_for_approval(
     assert task.status == "pending"
     assert task.budget_admission_status == "waiting_budget_approval"
     assert frozen_budget.status == "waiting_budget_approval"
+    assert frozen_budget.approval_episode_id is not None
 
     await budget_service.approve_overrun(
         tenant_id=tenant_id,
         budget_run_id=budget_run.id,
         reason="approve workflow",
+        approval_episode_id=frozen_budget.approval_episode_id,
         actor_user_id=uuid.uuid4(),
     )
     async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
@@ -409,6 +823,57 @@ async def test_killed_run_not_picked_by_startup_resume(service, tenant_id, owner
 
     resumed = await service.resume_pending_runs(leaf_executor=_ok_leaf())
     assert handle.run_id not in [r.run_id for r in resumed], "killed runs must never be auto-resumed"
+
+
+async def test_startup_resume_rechecks_status_after_scan_before_transition(
+    service,
+    tenant_id,
+    owner_sessionmaker,
+    monkeypatch,
+):
+    import asyncio
+
+    run_id = uuid.uuid4()
+    await service.start_run(
+        tenant_id=tenant_id,
+        definition_data=_definition(),
+        args={"target": "x"},
+        leaf_executor=_ok_leaf(),
+        run_id=run_id,
+        enqueue_only=True,
+    )
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
+        task.status = "running"
+
+    resume_called = asyncio.Event()
+    release_resume = asyncio.Event()
+    real_resume = service.resume_run
+
+    async def gated_resume(*args, **kwargs):
+        resume_called.set()
+        await release_resume.wait()
+        return await real_resume(*args, **kwargs)
+
+    monkeypatch.setattr(service, "resume_run", gated_resume)
+    leaf_calls: list[LeafRequest] = []
+    resuming = asyncio.create_task(service.resume_pending_runs(leaf_executor=_ok_leaf(leaf_calls)))
+    await asyncio.wait_for(resume_called.wait(), timeout=10)
+    assert await service.kill_run(run_id, tenant_id=tenant_id) == "killed"
+    release_resume.set()
+
+    resumed = await resuming
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
+        root_item = (
+            await session.execute(select(RuntimeRootItem).where(RuntimeRootItem.runtime_task_id == run_id))
+        ).scalar_one()
+
+    assert [(item.run_id, item.outcome.status) for item in resumed] == [(run_id, "killed")]
+    assert leaf_calls == []
+    assert task.status == "killed"
+    assert task.metadata_json["terminal_commit_source"] == "workflow_runtime.kill"
+    assert root_item.state == "killed"
 
 
 async def test_startup_resume_picks_up_running_run(service, tenant_id, owner_sessionmaker):
@@ -803,6 +1268,299 @@ async def test_completed_workflow_wakes_parent_session_with_task_notification(
     assert "model_context" not in notification.metadata_json
 
 
+async def test_workflow_terminal_intent_reconciles_budget_from_exact_actuals(
+    service, tenant_id, agent_in_db, owner_sessionmaker
+):
+    from app.models.agent import Agent
+    from app.models.audit import AuditLog
+    from app.models.chat_session import ChatSession
+    from app.models.coordination import CoordinationSignal
+    from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
+    from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+    from app.services.runtime_budget_service import RuntimeBudgetRunCreate, RuntimeBudgetService
+
+    parent_session_id = uuid.uuid4()
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        agent = (await session.execute(select(Agent).where(Agent.id == agent_in_db))).scalar_one()
+        session.add(
+            ChatSession(
+                id=parent_session_id,
+                agent_id=agent_in_db,
+                tenant_id=tenant_id,
+                user_id=agent.creator_id,
+                title="Budget recovery parent",
+            )
+        )
+
+    budget_service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+    budget_run = await budget_service.create_run(
+        RuntimeBudgetRunCreate(
+            tenant_id=tenant_id,
+            root_run_kind="workflow_test",
+            root_run_key=f"workflow-test:{uuid.uuid4()}",
+            source="workflow",
+            profile="workflow",
+            max_background_tasks=2,
+            enforcement_mode="enforce",
+        )
+    )
+    handle = await service.start_run(
+        tenant_id=tenant_id,
+        definition_data=_definition(),
+        args={"target": "acme"},
+        leaf_executor=_ok_leaf(),
+        agent_id=agent_in_db,
+        user_id=agent.creator_id,
+        parent_session_id=parent_session_id,
+        budget_run_id=budget_run.id,
+        budget_service=budget_service,
+        enqueue_only=True,
+    )
+
+    outcome = await service.resume_run(handle.run_id, tenant_id=tenant_id, leaf_executor=_ok_leaf())
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == handle.run_id))).scalar_one()
+        stored_budget = (
+            await session.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == budget_run.id))
+        ).scalar_one()
+        settlements = (
+            (
+                await session.execute(
+                    select(RuntimeBudgetEvent).where(
+                        RuntimeBudgetEvent.budget_run_id == budget_run.id,
+                        RuntimeBudgetEvent.event_type == "settlement",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        notifications = (
+            (
+                await session.execute(
+                    select(RuntimeNotificationOutbox).where(
+                        RuntimeNotificationOutbox.source_run_id == str(handle.run_id)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        audits = (
+            (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "workflow_run_completed",
+                        AuditLog.tenant_id == tenant_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        signals = (
+            (
+                await session.execute(
+                    select(CoordinationSignal).where(CoordinationSignal.thread_id == str(handle.run_id))
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert outcome.status == "completed"
+    assert task.status == "completed"
+    assert task.budget_admission_status == "reserved"
+    assert task.metadata_json["runtime_budget_actuals"] == {"background_tasks": 1}
+    assert stored_budget.reserved_background_tasks == 1
+    assert stored_budget.used_background_tasks == 0
+    assert settlements == []
+    assert len(notifications) == len(audits) == len(signals) == 1
+
+    assert await budget_service.reconcile_orphaned_reservations() >= 1
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == handle.run_id))).scalar_one()
+        stored_budget = (
+            await session.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == budget_run.id))
+        ).scalar_one()
+        settlement = (
+            await session.execute(
+                select(RuntimeBudgetEvent).where(
+                    RuntimeBudgetEvent.budget_run_id == budget_run.id,
+                    RuntimeBudgetEvent.event_type == "settlement",
+                )
+            )
+        ).scalar_one()
+    assert task.budget_admission_status == "settled"
+    assert stored_budget.reserved_background_tasks == 0
+    assert stored_budget.used_background_tasks == 1
+    assert settlement.amounts_json == {"background_tasks": 1}
+    assert settlement.metadata_json["actual_source"] == "runtime_task_declared_actuals"
+
+
+async def test_workflow_terminal_projection_failure_rolls_back_and_replays_once(
+    service, tenant_id, agent_in_db, owner_sessionmaker, monkeypatch
+):
+    from app.models.agent import Agent
+    from app.models.audit import AuditLog
+    from app.models.channel_delivery_outbox import ChannelDeliveryOutbox
+    from app.models.chat_session import ChatSession
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.coordination import CoordinationSignal
+    from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+
+    parent_session_id = uuid.uuid4()
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        agent = (await session.execute(select(Agent).where(Agent.id == agent_in_db))).scalar_one()
+        session.add(
+            ChatSession(
+                id=parent_session_id,
+                agent_id=agent_in_db,
+                tenant_id=tenant_id,
+                user_id=agent.creator_id,
+                title="Terminal rollback parent",
+            )
+        )
+
+    handle = await service.start_run(
+        tenant_id=tenant_id,
+        definition_data=_definition(),
+        args={"target": "acme"},
+        leaf_executor=_ok_leaf(),
+        agent_id=agent_in_db,
+        user_id=agent.creator_id,
+        parent_session_id=parent_session_id,
+        delivery_target={"channel": "web", "username": "owner"},
+        enqueue_only=True,
+    )
+    real_append = workflow_runtime.append_session_event
+
+    async def fail_terminal_projection(**kwargs):
+        metadata = kwargs.get("metadata") or {}
+        if metadata.get("type") == "runtime_action_completed" and metadata.get("status") == "completed":
+            raise RuntimeError("terminal transcript unavailable")
+        return await real_append(**kwargs)
+
+    monkeypatch.setattr(workflow_runtime, "append_session_event", fail_terminal_projection)
+    with pytest.raises(RuntimeError, match="terminal transcript unavailable"):
+        await service.resume_run(handle.run_id, tenant_id=tenant_id, leaf_executor=_ok_leaf())
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == handle.run_id))).scalar_one()
+        root_item = (
+            await session.execute(select(RuntimeRootItem).where(RuntimeRootItem.runtime_task_id == handle.run_id))
+        ).scalar_one()
+        notifications = (
+            (
+                await session.execute(
+                    select(RuntimeNotificationOutbox).where(
+                        RuntimeNotificationOutbox.source_run_id == str(handle.run_id)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        audits = (
+            (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "workflow_run_completed",
+                        AuditLog.tenant_id == tenant_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        signals = (
+            (
+                await session.execute(
+                    select(CoordinationSignal).where(CoordinationSignal.thread_id == str(handle.run_id))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        deliveries = (
+            (
+                await session.execute(
+                    select(ChannelDeliveryOutbox).where(ChannelDeliveryOutbox.runtime_task_id == handle.run_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        transcript = (
+            (await session.execute(select(ChatTranscriptEvent).where(ChatTranscriptEvent.run_id == handle.run_id)))
+            .scalars()
+            .all()
+        )
+
+    assert task.status == "running"
+    assert root_item.state == "running"
+    assert notifications == audits == signals == deliveries == []
+    assert not any((event.metadata_json or {}).get("status") == "completed" for event in transcript)
+
+    monkeypatch.setattr(workflow_runtime, "append_session_event", real_append)
+    replay = await service.resume_run(handle.run_id, tenant_id=tenant_id, leaf_executor=_ok_leaf())
+    assert replay.status == "completed"
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == handle.run_id))).scalar_one()
+        notifications = (
+            (
+                await session.execute(
+                    select(RuntimeNotificationOutbox).where(
+                        RuntimeNotificationOutbox.source_run_id == str(handle.run_id)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        audits = (
+            (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "workflow_run_completed",
+                        AuditLog.tenant_id == tenant_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        signals = (
+            (
+                await session.execute(
+                    select(CoordinationSignal).where(CoordinationSignal.thread_id == str(handle.run_id))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        deliveries = (
+            (
+                await session.execute(
+                    select(ChannelDeliveryOutbox).where(ChannelDeliveryOutbox.runtime_task_id == handle.run_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        transcript = (
+            (await session.execute(select(ChatTranscriptEvent).where(ChatTranscriptEvent.run_id == handle.run_id)))
+            .scalars()
+            .all()
+        )
+    terminal_events = [event for event in transcript if (event.metadata_json or {}).get("status") == "completed"]
+    assert task.status == "completed"
+    assert len(notifications) == len(audits) == len(signals) == len(deliveries) == 1
+    assert len(terminal_events) == 2
+
+
 # ── §A-6: a headless run (no parent session) becomes session-visible ──────
 
 
@@ -851,9 +1609,21 @@ async def test_run_with_parent_session_does_not_create_a_new_session(
 ):
     """The existing 'has a parent session' path is preserved: a run started WITH
     a parent session must NOT fabricate a second bound session."""
+    from app.models.agent import Agent
     from app.models.chat_session import ChatSession
 
     parent_session_id = uuid.uuid4()
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        agent = (await session.execute(select(Agent).where(Agent.id == agent_in_db))).scalar_one()
+        session.add(
+            ChatSession(
+                id=parent_session_id,
+                agent_id=agent_in_db,
+                tenant_id=tenant_id,
+                user_id=agent.creator_id,
+                title="Existing parent",
+            )
+        )
     handle = await service.start_run(
         tenant_id=tenant_id,
         definition_data=_definition(),

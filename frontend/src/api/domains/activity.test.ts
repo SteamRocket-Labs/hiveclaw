@@ -17,4 +17,12 @@ describe('activityApi resource authority', () => {
     expect(vi.mocked(get).mock.calls[0][0]).toContain('operator_reason=Agent+activity+administration');
     expect(vi.mocked(get).mock.calls[1][0]).toContain('operator_view=true');
   });
+
+  it('refuses operator view without an exact audit reason', async () => {
+    const { activityApi } = await import('./activity');
+
+    expect(() => activityApi.list('agent-1', 100, { operatorView: true })).toThrow(
+      'Operator View requires an audit reason',
+    );
+  });
 });

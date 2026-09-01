@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate, stamp_plan_gate_decision
-from app.core.permissions import check_agent_access
+from app.core.permissions import check_agent_access, check_agent_operator_reachability
 from app.core.resource_authority import authorize_resource_action, filter_authorized_resources
 from app.core.security import get_current_user
 from app.database import get_db
@@ -232,7 +232,11 @@ async def _load_authorized_task(
     operator_reason: str | None,
     for_update: bool = False,
 ) -> tuple[Task, object]:
-    agent_access = await check_agent_access(db, current_user, agent_id)
+    agent_access = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if operator_view and action == "read" and not for_update
+        else check_agent_access(db, current_user, agent_id)
+    )
     statement = select(Task).where(Task.id == task_id, Task.agent_id == agent_id)
     if for_update:
         statement = statement.with_for_update()
@@ -263,7 +267,11 @@ async def list_tasks(
     db: AsyncSession = Depends(get_db),
 ):
     """List tasks for an agent."""
-    agent_access = await check_agent_access(db, current_user, agent_id)
+    agent_access = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if operator_view
+        else check_agent_access(db, current_user, agent_id)
+    )
     query = select(Task).where(Task.agent_id == agent_id)
     if status_filter:
         query = query.where(Task.status == status_filter)
@@ -625,7 +633,11 @@ async def get_task_logs(
     db: AsyncSession = Depends(get_db),
 ):
     """Get progress logs for a task."""
-    agent_access = await check_agent_access(db, current_user, agent_id)
+    agent_access = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if operator_view
+        else check_agent_access(db, current_user, agent_id)
+    )
     task = (await db.execute(select(Task).where(Task.id == task_id, Task.agent_id == agent_id))).scalar_one_or_none()
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")

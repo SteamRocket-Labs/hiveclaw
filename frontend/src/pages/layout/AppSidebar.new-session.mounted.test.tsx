@@ -8,6 +8,7 @@ const harness = vi.hoisted(() => ({
   navigate: vi.fn(),
   createSession: vi.fn(() => new Promise(() => undefined)),
   createLocalSession: vi.fn(),
+  listSessions: vi.fn().mockResolvedValue([]),
   getHrAgent: vi.fn(),
   location: {
     pathname: '/agents/agent-1/sessions/session-old',
@@ -36,7 +37,7 @@ vi.mock('react-router-dom', () => ({
 vi.mock('../../api/domains/chat', () => ({
   chatApi: {
     createSession: harness.createSession,
-    listSessions: vi.fn().mockResolvedValue([]),
+    listSessions: harness.listSessions,
     deleteSession: vi.fn().mockResolvedValue(undefined),
   },
 }));
@@ -59,9 +60,13 @@ import AppSidebar from './AppSidebar';
 
 describe('AppSidebar new conversation authority', () => {
   beforeEach(() => {
+    harness.location.pathname = '/agents/agent-1/sessions/session-old';
+    harness.location.search = '';
+    harness.location.hash = '';
     harness.navigate.mockReset();
     harness.createSession.mockClear();
     harness.createLocalSession.mockReset();
+    harness.listSessions.mockClear();
     harness.getHrAgent.mockReset();
   });
 
@@ -189,5 +194,51 @@ describe('AppSidebar new conversation authority', () => {
         '/agents/local-agent-1?session_id=local-chat-session-1#chat',
       );
     });
+  });
+
+  it('keeps operator-only rows out of mine-session and new-conversation surfaces', () => {
+    harness.location.pathname = '/agents/operator-agent';
+    render(
+      <AppSidebar
+        user={{ id: 'operator-user', role: 'member' }}
+        theme="light"
+        isSidebarCollapsed={false}
+        onToggleSidebar={vi.fn()}
+        tenants={[{ id: 'tenant-1', name: 'Company A' }]}
+        currentTenant="tenant-1"
+        onSwitchTenant={vi.fn()}
+        agents={[{
+          id: 'operator-agent',
+          name: 'Audited Agent',
+          status: 'running',
+          agent_type: 'native',
+          access_level: 'operator',
+        }]}
+        hrAgent={null}
+        agentSessionsByAgentId={{
+          'operator-agent': [{ id: 'private-session', title: 'Must not expand' } as any],
+        }}
+        isChinese={false}
+        onToggleTheme={vi.fn()}
+        onOpenNotifications={vi.fn()}
+        unreadCount={0}
+        accountMenuRef={React.createRef<HTMLDivElement>()}
+        showAccountMenu={false}
+        onToggleAccountMenu={vi.fn()}
+        onToggleLang={vi.fn()}
+        onOpenAccountSettings={vi.fn()}
+        onLogout={vi.fn()}
+        versionDisplay={null}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'New conversation with Audited Agent' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Expand sessions' })).toBeNull();
+    expect(screen.queryByTestId('sidebar-agent-sessions-operator-agent')).toBeNull();
+    expect(screen.queryByText('Must not expand')).toBeNull();
+    expect(screen.getAllByRole('link', { name: /Audited Agent/ }).every((link) => (
+      link.getAttribute('href') === '/agents/operator-agent?manage=true#chat'
+    ))).toBe(true);
+    expect(harness.listSessions).not.toHaveBeenCalled();
   });
 });

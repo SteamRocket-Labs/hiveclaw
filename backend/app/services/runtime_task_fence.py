@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, TypeVar
 
@@ -25,6 +25,7 @@ class RuntimeTaskFence:
     task_id: uuid.UUID
     claim_version: int
     worker_id: str
+    claim_finished: asyncio.Event = field(default_factory=asyncio.Event, compare=False, repr=False)
 
 
 class StaleRuntimeTaskFenceError(RuntimeError):
@@ -58,6 +59,24 @@ def set_runtime_task_fence(
 
 def reset_runtime_task_fence(token: Token[RuntimeTaskFence | None]) -> None:
     _CURRENT_RUNTIME_TASK_FENCE.reset(token)
+
+
+def finish_current_runtime_task_claim(*, task_id: uuid.UUID | str | None = None) -> bool:
+    """Stop lease renewal after this claim's durable state transition committed.
+
+    This does not relax the fence: RuntimeTask reads and writes remain forbidden
+    once the row is no longer ``running``.  It only lets non-task cleanup (for
+    example releasing a workflow advisory lock) finish without a renewer racing
+    the already-committed transition.
+    """
+
+    fence = current_runtime_task_fence()
+    if fence is None:
+        return False
+    if task_id is not None and uuid.UUID(str(task_id)) != fence.task_id:
+        return False
+    fence.claim_finished.set()
+    return True
 
 
 def assert_runtime_task_fence(task: Any) -> None:
@@ -152,12 +171,17 @@ async def run_claimed_runtime_task(
     )
     work_task: asyncio.Task[_ResultT] | None = None
     renewer: asyncio.Task[None] | None = None
+    fence = current_runtime_task_fence()
+    if fence is None:  # pragma: no cover - set above; defensive against future refactors.
+        raise RuntimeError("RuntimeTask fence was not installed")
 
     async def renew_loop() -> None:
         interval = max(0.01, float(lease_seconds) / 3.0)
-        while True:
-            await asyncio.sleep(interval)
-            await renew_current_runtime_task_lease(lease_seconds=lease_seconds)
+        while not fence.claim_finished.is_set():
+            try:
+                await asyncio.wait_for(fence.claim_finished.wait(), timeout=interval)
+            except TimeoutError:
+                await renew_current_runtime_task_lease(lease_seconds=lease_seconds)
 
     try:
         work_task = asyncio.ensure_future(work)
@@ -165,6 +189,8 @@ async def run_claimed_runtime_task(
         done, _pending = await asyncio.wait({work_task, renewer}, return_when=asyncio.FIRST_COMPLETED)
         if renewer in done:
             renewal_error = renewer.exception()
+            if fence.claim_finished.is_set():
+                return await work_task
             if renewal_error is None:
                 renewal_error = RuntimeError(f"RuntimeTask lease renewer stopped unexpectedly for {task_id}")
             work_task.cancel()

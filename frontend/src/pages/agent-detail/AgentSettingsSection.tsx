@@ -131,6 +131,7 @@ interface AgentSettingsSectionProps {
   agent: any;
   llmModels: any[];
   canManage: boolean;
+  canManagePermissions?: boolean;
   settingsForm: AgentSettingsForm;
   onSettingsFormChange: React.Dispatch<React.SetStateAction<AgentSettingsForm>>;
   settingsSaving: boolean;
@@ -159,6 +160,7 @@ export default function AgentSettingsSection({
   agent,
   llmModels,
   canManage,
+  canManagePermissions = false,
   settingsForm,
   onSettingsFormChange,
   settingsSaving,
@@ -193,12 +195,28 @@ export default function AgentSettingsSection({
   const [permissionSaved, setPermissionSaved] = React.useState(false);
   const [permissionError, setPermissionError] = React.useState('');
   const [fullAccessSavePending, setFullAccessSavePending] = React.useState(false);
+  const [operatorPrincipalId, setOperatorPrincipalId] = React.useState('');
+  const [operatorEffect, setOperatorEffect] = React.useState<'allow' | 'deny'>('allow');
+  const [operatorExpiresAt, setOperatorExpiresAt] = React.useState('');
+  const [operatorGrantReason, setOperatorGrantReason] = React.useState('');
+  const [operatorGrantSaving, setOperatorGrantSaving] = React.useState(false);
+  const [operatorGrantError, setOperatorGrantError] = React.useState('');
   const { data: permissionData, isLoading: permissionsLoading } = useQuery({
     queryKey: ['agent-permissions', agentId],
     queryFn: () => agentApi.getPermissions(agentId),
     enabled: !!agentId,
   });
   const accessVisibility = agentAccessVisibilityFromPermissions(permissionData as AgentPermissions | undefined);
+  const { data: operatorCandidates = [] } = useQuery({
+    queryKey: ['agent-operator-candidates', agentId],
+    queryFn: () => agentApi.listOperatorCandidates(agentId),
+    enabled: !!agentId && canManagePermissions,
+  });
+  const { data: operatorGrants = [] } = useQuery({
+    queryKey: ['agent-operator-grants', agentId],
+    queryFn: () => agentApi.listOperatorGrants(agentId),
+    enabled: !!agentId && canManagePermissions,
+  });
 
   React.useEffect(() => {
     setPatrolForm(persistedPatrolForm);
@@ -276,7 +294,7 @@ export default function AgentSettingsSection({
   };
 
   const handleSaveAccessVisibility = async (visibility: AgentAccessVisibility) => {
-    if (!canManage || permissionSaving || visibility === accessVisibility) return;
+    if (!canManagePermissions || permissionSaving || visibility === accessVisibility) return;
     setPermissionSaving(true);
     setPermissionSaved(false);
     setPermissionError('');
@@ -299,6 +317,63 @@ export default function AgentSettingsSection({
       setPermissionError(e?.message || t('agent.settings.access.saveError', 'Failed to save access permissions'));
     } finally {
       setPermissionSaving(false);
+    }
+  };
+
+  const handleCreateOperatorGrant = async () => {
+    const reason = operatorGrantReason.trim();
+    if (!canManagePermissions || !operatorPrincipalId || reason.length < 3 || operatorGrantSaving) {
+      setOperatorGrantError(t('agent.settings.operatorGrant.required', 'Choose a user and enter an audit reason.'));
+      return;
+    }
+    setOperatorGrantSaving(true);
+    setOperatorGrantError('');
+    try {
+      await agentApi.createOperatorGrant(agentId, {
+        request_id: crypto.randomUUID(),
+        principal_id: operatorPrincipalId,
+        effect: operatorEffect,
+        expires_at: operatorExpiresAt ? new Date(operatorExpiresAt).toISOString() : null,
+        reason,
+      });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['agent-operator-grants', agentId] }),
+        queryClient.invalidateQueries({ queryKey: ['agent', agentId] }),
+        queryClient.invalidateQueries({ queryKey: ['agents'] }),
+      ]);
+      setOperatorPrincipalId('');
+      setOperatorExpiresAt('');
+      setOperatorGrantReason('');
+    } catch (error: any) {
+      setOperatorGrantError(error?.message || t('agent.settings.operatorGrant.saveError', 'Failed to save operator inspection access.'));
+    } finally {
+      setOperatorGrantSaving(false);
+    }
+  };
+
+  const handleRevokeOperatorGrant = async (grantId: string) => {
+    const reason = operatorGrantReason.trim();
+    if (!canManagePermissions || reason.length < 3 || operatorGrantSaving) {
+      setOperatorGrantError(t('agent.settings.operatorGrant.revokeReason', 'Enter an audit reason before revoking access.'));
+      return;
+    }
+    setOperatorGrantSaving(true);
+    setOperatorGrantError('');
+    try {
+      await agentApi.revokeOperatorGrant(agentId, grantId, {
+        request_id: crypto.randomUUID(),
+        reason,
+      });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['agent-operator-grants', agentId] }),
+        queryClient.invalidateQueries({ queryKey: ['agent', agentId] }),
+        queryClient.invalidateQueries({ queryKey: ['agents'] }),
+      ]);
+      setOperatorGrantReason('');
+    } catch (error: any) {
+      setOperatorGrantError(error?.message || t('agent.settings.operatorGrant.revokeError', 'Failed to revoke operator inspection access.'));
+    } finally {
+      setOperatorGrantSaving(false);
     }
   };
 
@@ -467,13 +542,13 @@ export default function AgentSettingsSection({
           </div>
         </div>
         <div className="agent-settings-access-options" role="radiogroup" aria-label={t('agent.settings.access.title', 'Access Permissions')}>
-          <label className={`agent-settings-access-option${accessVisibility === 'private' ? ' is-selected' : ''}${!canManage ? ' is-disabled' : ''}`}>
+          <label className={`agent-settings-access-option${accessVisibility === 'private' ? ' is-selected' : ''}${!canManagePermissions ? ' is-disabled' : ''}`}>
             <input
               type="radio"
               name="perm_scope"
               value="private"
               checked={accessVisibility === 'private'}
-              disabled={!canManage || permissionsLoading || permissionSaving}
+              disabled={!canManagePermissions || permissionsLoading || permissionSaving}
               onChange={() => handleSaveAccessVisibility('private')}
             />
             <span>
@@ -481,13 +556,13 @@ export default function AgentSettingsSection({
               <small>{t('agent.settings.access.privateDesc', 'Only you and admins can manage this employee.')}</small>
             </span>
           </label>
-          <label className={`agent-settings-access-option${accessVisibility === 'company' ? ' is-selected' : ''}${!canManage ? ' is-disabled' : ''}`}>
+          <label className={`agent-settings-access-option${accessVisibility === 'company' ? ' is-selected' : ''}${!canManagePermissions ? ' is-disabled' : ''}`}>
             <input
               type="radio"
               name="perm_scope"
               value="company"
               checked={accessVisibility === 'company'}
-              disabled={!canManage || permissionsLoading || permissionSaving}
+              disabled={!canManagePermissions || permissionsLoading || permissionSaving}
               onChange={() => handleSaveAccessVisibility('company')}
             />
             <span>
@@ -504,6 +579,111 @@ export default function AgentSettingsSection({
         </div>
         {permissionError && <div className="agent-settings-hint agent-settings-hint-error">{permissionError}</div>}
       </div>
+
+      {canManagePermissions && (
+        <div className="card agent-settings-card" data-testid="agent-operator-grants">
+          <h4 className="agent-settings-card-title">
+            {t('agent.settings.operatorGrant.title', 'Operator inspection access')}
+          </h4>
+          <p className="agent-settings-card-desc">
+            {t(
+              'agent.settings.operatorGrant.description',
+              'Grant audited, read-only access to other users’ Agent sessions and resources. This never permits mutations.',
+            )}
+          </p>
+          <div className="agent-settings-grid">
+            <label className="agent-settings-label">
+              {t('agent.settings.operatorGrant.user', 'User')}
+              <select
+                className="input agent-settings-input-full"
+                value={operatorPrincipalId}
+                onChange={(event) => setOperatorPrincipalId(event.target.value)}
+                disabled={operatorGrantSaving}
+              >
+                <option value="">{t('agent.settings.operatorGrant.chooseUser', 'Choose a user')}</option>
+                {operatorCandidates.map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>
+                    {candidate.display_name} · {candidate.role}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="agent-settings-label">
+              {t('agent.settings.operatorGrant.effect', 'Effect')}
+              <select
+                className="input agent-settings-input-full"
+                value={operatorEffect}
+                onChange={(event) => setOperatorEffect(event.target.value as 'allow' | 'deny')}
+                disabled={operatorGrantSaving}
+              >
+                <option value="allow">{t('agent.settings.operatorGrant.allow', 'Allow')}</option>
+                <option value="deny">{t('agent.settings.operatorGrant.deny', 'Deny')}</option>
+              </select>
+            </label>
+            <label className="agent-settings-label">
+              {t('agent.settings.operatorGrant.expires', 'Expires (optional)')}
+              <input
+                className="input agent-settings-input-full"
+                type="datetime-local"
+                value={operatorExpiresAt}
+                onChange={(event) => setOperatorExpiresAt(event.target.value)}
+                disabled={operatorGrantSaving}
+              />
+            </label>
+          </div>
+          <label className="agent-settings-label">
+            {t('agent.settings.operatorGrant.reason', 'Audit reason')}
+            <input
+              className="input agent-settings-input-full"
+              value={operatorGrantReason}
+              onChange={(event) => setOperatorGrantReason(event.target.value)}
+              placeholder={t('agent.settings.operatorGrant.reasonPlaceholder', 'Why is this inspection access needed?')}
+              disabled={operatorGrantSaving}
+            />
+          </label>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => void handleCreateOperatorGrant()}
+            disabled={operatorGrantSaving || !operatorPrincipalId || operatorGrantReason.trim().length < 3}
+          >
+            {operatorGrantSaving
+              ? t('common.saving', 'Saving...')
+              : t('agent.settings.operatorGrant.create', 'Save inspection grant')}
+          </button>
+          {operatorGrantError && <div className="agent-settings-hint agent-settings-hint-error">{operatorGrantError}</div>}
+          <div className="agent-settings-list">
+            {operatorGrants.map((grant) => {
+              const expired = Boolean(grant.expires_at && new Date(grant.expires_at).getTime() <= Date.now());
+              const inactive = Boolean(grant.revoked_at) || expired;
+              return (
+                <div key={grant.id} className="agent-settings-list-row">
+                  <span>
+                    <strong>{grant.principal_name || grant.principal_id}</strong>
+                    {' · '}{grant.effect === 'allow'
+                      ? t('agent.settings.operatorGrant.allow', 'Allow')
+                      : t('agent.settings.operatorGrant.deny', 'Deny')}
+                    {grant.expires_at ? ` · ${new Date(grant.expires_at).toLocaleString()}` : ''}
+                    {inactive ? ` · ${grant.revoked_at
+                      ? t('agent.settings.operatorGrant.revoked', 'Revoked')
+                      : t('agent.settings.operatorGrant.expired', 'Expired')}` : ''}
+                  </span>
+                  {!grant.revoked_at && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => void handleRevokeOperatorGrant(grant.id)}
+                      disabled={operatorGrantSaving || operatorGrantReason.trim().length < 3}
+                    >
+                      {t('common.revoke', 'Revoke')}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="card agent-settings-card">
         <h4 className="agent-settings-card-title">

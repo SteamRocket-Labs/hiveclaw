@@ -83,4 +83,12 @@ describe('autonomy API adapters', () => {
       reason: 'Restore approved policy',
     });
   });
+
+  it('refuses operator work-ledger reads without an exact audit reason', async () => {
+    const { autonomyApi } = await import('./autonomy');
+
+    expect(() => autonomyApi.getRuntimeWorkLedger('agent-1', 'task-1', {
+      operatorView: true,
+    })).toThrow('Operator View requires an audit reason');
+  });
 });

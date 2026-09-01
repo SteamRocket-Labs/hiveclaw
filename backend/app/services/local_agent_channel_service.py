@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.execution_context import ExecutionPrincipal
+from app.core.resource_authority import normalize_workspace_resource_path
 from app.database import enter_rls_bypass, pin_rls_tenant_context
 from app.models.agent import Agent
 from app.models.audit import ApprovalRequest, ChatMessage
@@ -485,6 +486,76 @@ def _tenant_filter(column, tenant_id: uuid.UUID | None):
     if tenant_id is None:
         return column.is_(None)
     return column == tenant_id
+
+
+def _canonical_reported_workspace_file_path(value: Any) -> str | None:
+    """Accept only canonical POSIX file refs below ``workspace/``."""
+
+    raw = str(value or "")
+    if raw != raw.strip() or not raw or raw.startswith("/") or "\\" in raw:
+        return None
+    try:
+        normalized = normalize_workspace_resource_path(raw)
+    except ValueError:
+        return None
+    if normalized != raw or not normalized.startswith("workspace/"):
+        return None
+    return normalized
+
+
+def _message_workspace_delivery_paths(message: LocalAgentChannelMessage) -> set[str]:
+    paths: set[str] = set()
+    attachments = message.attachments_json if isinstance(message.attachments_json, list) else []
+    metadata = message.metadata_json if isinstance(message.metadata_json, dict) else {}
+    report = metadata.get("report") if isinstance(metadata.get("report"), dict) else {}
+    artifacts = report.get("artifacts") if isinstance(report.get("artifacts"), list) else []
+    for item in [*attachments, *artifacts]:
+        if not isinstance(item, dict):
+            continue
+        for key in ("path", "workspace_path"):
+            path = _canonical_reported_workspace_file_path(item.get(key))
+            if path is not None:
+                paths.add(path)
+    return paths
+
+
+async def authorize_agent_channel_workspace_download(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID | None,
+    owner_user_id: uuid.UUID,
+    source_agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    path: str,
+) -> str:
+    """Allow only exact files attached to or reported by one channel session."""
+
+    normalized = _canonical_reported_workspace_file_path(path)
+    if normalized is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="File is not available for this local agent session",
+        )
+    messages = (
+        (
+            await db.execute(
+                select(LocalAgentChannelMessage).where(
+                    _tenant_filter(LocalAgentChannelMessage.tenant_id, tenant_id),
+                    LocalAgentChannelMessage.owner_user_id == owner_user_id,
+                    LocalAgentChannelMessage.source_agent_id == source_agent_id,
+                    LocalAgentChannelMessage.session_id == session_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not any(normalized in _message_workspace_delivery_paths(message) for message in messages):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="File is not available for this local agent session",
+        )
+    return normalized
 
 
 async def list_agent_channel_sessions(

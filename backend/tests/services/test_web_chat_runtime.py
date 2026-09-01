@@ -4442,6 +4442,88 @@ async def test_start_web_chat_run_inherits_existing_budget_run_without_creating_
 
 
 @pytest.mark.asyncio
+async def test_start_team_member_run_locks_open_budget_reservation_before_insert(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+    from app.models.runtime_task import RuntimeTask
+    from app.services.runtime_root_ledger import RuntimeRootIntentSpec
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    run_id = uuid4()
+    budget_run_id = uuid4()
+    reservation_key = f"team-member:{run_id}:start"
+    agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
+    user = SimpleNamespace(id=user_id, username="example-owner", display_name="Example Owner")
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        title="Team member",
+        last_message_at=None,
+    )
+    db = _FakeDB(active_run=None)
+    captured = {}
+
+    async def fake_assert_open(db_arg, **kwargs):
+        assert db_arg is db
+        assert db.added == []
+        captured.update(kwargs)
+        return None
+
+    async def fail_create_budget_root(**_kwargs):
+        raise AssertionError("approved Team work must use its inherited budget")
+
+    monkeypatch.setattr(
+        "app.services.runtime_budget_service.assert_runtime_task_budget_reservation_open",
+        fake_assert_open,
+    )
+    monkeypatch.setattr(runtime, "_create_runtime_budget_root_run_for_chat", fail_create_budget_root)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", _noop_async)
+
+    await runtime.start_web_chat_run(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        content="Review the work.",
+        append_user_message=False,
+        runtime_task_type="team_member",
+        run_id=run_id,
+        extra_metadata={
+            "budget_run_id": str(budget_run_id),
+            "runtime_budget_actuals": {
+                "team_sessions": 1,
+                "background_tasks": 1,
+                "continuation_wakes": 1,
+            },
+        },
+        root_item_intent=RuntimeRootIntentSpec(
+            intent_key=f"team:{run_id}",
+            work_type="team_member",
+            target_ref=f"session:{session_id}",
+            budget_reservation_key=reservation_key,
+        ),
+        budget_admission_status_override="approved",
+    )
+
+    task = next(item for item in db.added if isinstance(item, RuntimeTask))
+    assert captured == {
+        "budget_run_id": budget_run_id,
+        "reservation_key": reservation_key,
+        "runtime_task_id": run_id,
+    }
+    assert task.budget_run_id == budget_run_id
+    assert task.budget_reservation_key == reservation_key
+    assert task.budget_admission_status == "approved"
+    assert task.metadata_json["runtime_budget_actuals"] == {
+        "team_sessions": 1,
+        "background_tasks": 1,
+        "continuation_wakes": 1,
+    }
+
+
+@pytest.mark.asyncio
 async def test_start_web_chat_run_does_not_append_t0_or_dispatch_from_api(monkeypatch):
     import app.services.web_chat_runtime as runtime
     from app.models.runtime_task import RuntimeTask

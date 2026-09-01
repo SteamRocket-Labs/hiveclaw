@@ -97,9 +97,9 @@ class AgentCreate(BaseModel):
     primary_model_id: uuid.UUID | None = None
     fallback_model_id: uuid.UUID | None = None
     # Permissions
-    permission_scope_type: str = "company"  # company | user
-    permission_scope_ids: list[uuid.UUID] = []
-    permission_access_level: str = "use"  # use | manage
+    permission_scope_type: Literal["company", "user"] = "company"
+    permission_scope_ids: list[uuid.UUID] = Field(default_factory=list)
+    permission_access_level: Literal["use", "manage"] = "use"
     # Target tenant (admin-only override; otherwise ignored)
     tenant_id: uuid.UUID | None = None
     # Classification
@@ -109,6 +109,14 @@ class AgentCreate(BaseModel):
     smart_model_routing: SmartModelRoutingConfig | None = None
     # Skills to copy into agent workspace
     skill_ids: list[uuid.UUID] = []
+
+    @model_validator(mode="after")
+    def validate_permission_boundary(self):
+        if self.permission_scope_type == "company" and self.permission_access_level == "manage":
+            raise ValueError("Company-wide Agent permissions may grant use access only")
+        if self.permission_scope_type == "company" and self.permission_scope_ids:
+            raise ValueError("Company-wide Agent permissions do not accept user scope IDs")
+        return self
 
 
 class AgentOut(BaseModel):

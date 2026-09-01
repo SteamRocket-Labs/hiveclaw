@@ -53,7 +53,6 @@ from app.services.runtime_task_service import (
 from app.services.runtime_budget_service import (
     RuntimeBudgetReservation,
     RuntimeBudgetService,
-    RuntimeBudgetSettlement,
     estimate_reservation_tokens,
 )
 from app.services.runtime_task_authority import (
@@ -67,6 +66,7 @@ SUBAGENT_RUN_TASK_TYPE = "subagent"
 SUBAGENT_RESTART_REPLAY_SAFE_TYPES = frozenset({SUBAGENT_TYPE_EXPLORER, SUBAGENT_TYPE_CRITIC})
 _CHILD_TOOL_TERMINAL_STATUSES = frozenset({"done", "completed", "failed", "error", "cancelled", "timed_out"})
 _DEFAULT_SUBAGENT_START_TOKEN_RESERVATION = 50_000
+_SUBAGENT_OUTER_BUDGET_ACTUALS = {"subagents": 1, "background_tasks": 1}
 _SUBAGENT_CANCEL_EVENTS: dict[str, asyncio.Event] = {}
 _PENDING_SUBAGENT_CANCELS: set[str] = set()
 logger = logging.getLogger(__name__)
@@ -446,20 +446,8 @@ async def start_subagent_run(
             ),
         )
     except Exception:
-        if (
-            budget_uuid is not None
-            and budget_reservation_key
-            and reservation_service is not None
-            and admission_status == "admitted"
-        ):
-            await reservation_service.settle(
-                RuntimeBudgetSettlement(
-                    budget_run_id=budget_uuid,
-                    reservation_key=budget_reservation_key,
-                    reason="subagent_enqueue_failed",
-                    runtime_task_id=uuid.UUID(run_id),
-                )
-            )
+        # The orphan reconciler releases a reservation only after proving that
+        # no matching durable task won the enqueue race.
         raise
     try:
         child_session_id = await create_subagent_child_session(
@@ -485,22 +473,11 @@ async def start_subagent_run(
                 "child_session_projection_failed": True,
                 "child_session_id": child_session_id,
                 "recovery_action": "rebuild_child_session_projection",
+                "runtime_budget_actuals": (
+                    dict(_SUBAGENT_OUTER_BUDGET_ACTUALS) if admission_status == "admitted" else {}
+                ),
             },
         )
-        if (
-            budget_uuid is not None
-            and budget_reservation_key
-            and reservation_service is not None
-            and admission_status == "admitted"
-        ):
-            await reservation_service.settle(
-                RuntimeBudgetSettlement(
-                    budget_run_id=budget_uuid,
-                    reservation_key=budget_reservation_key,
-                    reason="subagent_child_session_projection_failed",
-                    runtime_task_id=uuid.UUID(run_id),
-                )
-            )
         raise
     if admission_status != "waiting_budget_approval":
         try:
@@ -516,12 +493,17 @@ async def start_subagent_run(
     )
 
 
-def make_run_completer(run_id: str):
+def make_run_completer(
+    run_id: str,
+    *,
+    terminal_status: str | None = None,
+    summary_override: str | None = None,
+):
     """Return an ``on_complete(result)`` callback that writes the terminal status."""
 
     async def _complete(result: SubagentResult) -> None:
-        status = "completed" if result.ok else "failed"
-        summary = result.content or result.error or ""
+        status = terminal_status or ("completed" if result.ok else "failed")
+        summary = summary_override if summary_override is not None else result.content or result.error or ""
         record = await get_runtime_task_record(run_id)
         record_metadata = dict((record or {}).get("metadata") or {})
         decision_entry = build_subagent_decision_entry(
@@ -544,13 +526,16 @@ def make_run_completer(run_id: str):
             summary=summary,
             decision_entry=decision_entry,
         )
+        tokens = max(0, int(getattr(result, "tokens_used", 0) or 0))
         updated = await update_runtime_task_record(
             run_id,
             status=status,
             result_summary=summary,
-            token_usage={"total_tokens": result.tokens_used},
+            token_usage={"total_tokens": tokens},
             metadata_json={
                 "subagent_decision_entry": decision_entry,
+                "runtime_budget_actuals": dict(_SUBAGENT_OUTER_BUDGET_ACTUALS),
+                **({"cancelled": True, "cancel_reason": summary} if status == "killed" else {}),
                 **(
                     {"knowledge_provenance": result.knowledge_provenance}
                     if result.knowledge_provenance is not None
@@ -572,43 +557,8 @@ def make_run_completer(run_id: str):
         )
         if not updated:
             raise RuntimeError(f"subagent terminal transaction did not commit for run {run_id}")
-        await _settle_subagent_budget(run_id=run_id, result=result)
 
     return _complete
-
-
-async def _settle_subagent_budget(*, run_id: str, result: SubagentResult) -> None:
-    try:
-        record = await get_runtime_task_record(run_id)
-        if record is None:
-            return
-        metadata = dict(record.get("metadata") or {})
-        budget_run_id = _uuid_or_none(record.get("budget_run_id") or metadata.get("budget_run_id"))
-        reservation_key = str(
-            record.get("budget_reservation_key") or metadata.get("budget_reservation_key") or ""
-        ).strip()
-        if budget_run_id is None or not reservation_key:
-            return
-        tokens = max(0, int(getattr(result, "tokens_used", 0) or 0))
-        await RuntimeBudgetService().settle(
-            RuntimeBudgetSettlement(
-                budget_run_id=budget_run_id,
-                reservation_key=reservation_key,
-                actual_tokens=tokens,
-                actual_cache_miss_tokens=tokens,
-                actual_subagents=1,
-                actual_background_tasks=1,
-                reason="subagent_completed" if result.ok else "subagent_failed",
-                runtime_task_id=uuid.UUID(run_id),
-                metadata={
-                    "subagent_name": result.name,
-                    "subagent_type": result.type,
-                    "status": result.status,
-                },
-            )
-        )
-    except Exception:
-        logger.debug("[Subagent] budget settlement failed for run %s", run_id, exc_info=True)
 
 
 async def update_subagent_child_session_state_for_run(
@@ -1425,6 +1375,7 @@ async def _mark_subagent_run_needs_reconciliation(
         summary=summary,
     )
     reconciliation_metadata["subagent_decision_entry"] = decision_entry
+    reconciliation_metadata["runtime_budget_actuals"] = dict(_SUBAGENT_OUTER_BUDGET_ACTUALS)
     await update_runtime_task_record(
         run_id,
         status="needs_reconciliation",
@@ -1481,6 +1432,7 @@ async def _hold_subagent_requester_identity(
             "worker_dispatch_failed": normalized_phase == "worker_dispatch",
             "requester_identity_hold": True,
             "subagent_decision_entry": decision_entry,
+            "runtime_budget_actuals": dict(_SUBAGENT_OUTER_BUDGET_ACTUALS),
         },
     )
     logger.warning(
@@ -1488,23 +1440,6 @@ async def _hold_subagent_requester_identity(
         run_id,
         normalized_reason,
     )
-
-
-async def _mark_subagent_run_killed(*, run_id: str, summary: str) -> None:
-    await update_runtime_task_record(
-        run_id,
-        status="killed",
-        result_summary=summary,
-        metadata_json={"cancelled": True, "cancel_reason": summary},
-    )
-    try:
-        await update_subagent_child_session_state_for_run(
-            run_id=run_id,
-            status="killed",
-            summary=summary,
-        )
-    except Exception:
-        logger.debug("[Subagent] child session killed projection failed for run %s", run_id, exc_info=True)
 
 
 async def record_subagent_child_tool_frame(
@@ -1586,7 +1521,11 @@ async def dispatch_persisted_subagent_run(task_id: str) -> bool:
             run_id,
             status="failed",
             result_summary="Subagent RuntimeTask is missing restart-resumable metadata.",
-            metadata_json={"resume_failed": True, "worker_dispatch_failed": True},
+            metadata_json={
+                "resume_failed": True,
+                "worker_dispatch_failed": True,
+                "runtime_budget_actuals": dict(_SUBAGENT_OUTER_BUDGET_ACTUALS),
+            },
         )
         return True
     try:
@@ -1677,7 +1616,11 @@ async def dispatch_persisted_subagent_run(task_id: str) -> bool:
             run_id,
             status="failed",
             result_summary="Subagent could not be dispatched because parent runtime is unavailable.",
-            metadata_json={"resume_failed": True, "worker_dispatch_failed": True},
+            metadata_json={
+                "resume_failed": True,
+                "worker_dispatch_failed": True,
+                "runtime_budget_actuals": dict(_SUBAGENT_OUTER_BUDGET_ACTUALS),
+            },
         )
         return True
     runtime.trace_id = trace_id or runtime.trace_id or ""
@@ -1770,7 +1713,11 @@ async def dispatch_persisted_subagent_run(task_id: str) -> bool:
                 error="Subagent dispatch completed without a result.",
             )
         if cancel_event.is_set():
-            await _mark_subagent_run_killed(run_id=run_id, summary="Subagent run cancelled by user.")
+            await make_run_completer(
+                run_id,
+                terminal_status="killed",
+                summary_override="Subagent run cancelled by user.",
+            )(result)
             return True
     except Exception as exc:  # noqa: BLE001 - persist terminal status; worker loop keeps going.
         logger.exception("[Subagent] persisted subagent run %s failed during worker dispatch", run_id)

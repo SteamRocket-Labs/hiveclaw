@@ -1,9 +1,11 @@
+import inspect
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
+from app.api.agents import _operator_agent_list_shell_from_mapping
 from app.api.agents import _agent_list_out_from_mapping
 from app.api.agents import _agent_list_summary_stmt
+from app.api.agents import list_agents
 
 
 def test_agent_list_summary_omits_detail_heavy_fields_and_truncates_description():
@@ -55,12 +57,45 @@ def test_agent_list_summary_omits_detail_heavy_fields_and_truncates_description(
 
 
 def test_agent_list_route_uses_summary_projection_not_full_agent_rows():
-    project_root = Path(__file__).resolve().parents[3]
-    source = (project_root / "backend/app/api/agents.py").read_text(encoding="utf-8")
-    list_source = source.split('@router.get("/", response_model=list[AgentOut])', 1)[1].split("HR_AGENT_NAME", 1)[0]
+    list_source = inspect.getsource(list_agents)
 
     assert "_agent_list_summary_stmt" in list_source
     assert "select(Agent)" not in list_source
+
+
+def test_operator_only_list_shell_excludes_private_agent_fields():
+    row = {
+        "id": uuid.uuid4(),
+        "name": "Private Agent",
+        "avatar_url": None,
+        "status": "running",
+        "creator_id": uuid.uuid4(),
+        "sponsor_user_id": uuid.uuid4(),
+        "participant_id": uuid.uuid4(),
+        "owner_user_id": uuid.uuid4(),
+        "tenant_id": uuid.uuid4(),
+        "primary_model_id": uuid.uuid4(),
+        "tokens_used_today": 99,
+        "security_zone": "restricted",
+        "agent_type": "native",
+        "agent_class": "internal_tenant",
+    }
+
+    payload = _operator_agent_list_shell_from_mapping(row).model_dump()
+
+    assert payload["access_level"] == "operator"
+    assert payload["operator_shell"] is True
+    assert payload["action_capabilities"]["can_operator_inspect"] is True
+    assert {
+        "creator_id",
+        "sponsor_user_id",
+        "participant_id",
+        "owner_user_id",
+        "tenant_id",
+        "primary_model_id",
+        "tokens_used_today",
+        "security_zone",
+    }.isdisjoint(payload)
 
 
 def test_agent_list_summary_includes_the_persisted_session_permission_default():

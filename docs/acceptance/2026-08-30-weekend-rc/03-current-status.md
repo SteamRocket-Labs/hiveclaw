@@ -4,8 +4,8 @@ owner: Codex
 status: active
 authority: canonical-working-state
 last_reviewed: 2026-09-01
-source_commit: d528251764df97603bb99c9968b999f185d28914
-verification_status: ci-ubuntu-24-bwrap-profile-fix-validation-pending
+source_commit: 6d46459e3a3dcf50dd32043583f4ab57667b0701
+verification_status: local-candidate-green-precommit
 ---
 
 # 当前状态与唯一下一动作
@@ -27,18 +27,19 @@ verification_status: ci-ubuntu-24-bwrap-profile-fix-validation-pending
 | 事实 | 当前值 | 证据边界 |
 |---|---|---|
 | execution roles | 主 Codex 全责；原生 Codex subagent 只做 bounded repo 工作 | subagent 结果是 candidate，不拥有 verdict、生产 effect、部署或交付权威 |
-| 当前 production | `b2fb8b28ec00b24eca1235340a1ecc7ee4383fd4` | backend `c93dafab…`、backend-api `f4750d4b…`、frontend `8110c8be…` 均 `SUCCESS`；health 绿不等于 RC 完成 |
+| 当前 production | 三服务同为 `6d46459e3a3dcf50dd32043583f4ab57667b0701` | backend `637818b5…`、backend-api `0bce9b71…`、frontend `5dccd5b8…` 均 `SUCCESS`；public health/frontend 绿，只是当前 supporting baseline，不是最终 D |
 | production manifest | 35 组 / 96 条，external fake 禁止 | `valid=true`，hash `7994b502361de0eafbea17b0fa5fd33eaa47d8a1381dc151126a463e2416d93a`；只改 execution metadata/proof order，旅程 ID、分母和语义未改 |
 | NPTCR | 0/96 Closed | current manifest pass 1/pass 2 均未运行；机械 scorer 固定 `semantic_verdict=not_computed_by_tool` |
 | P29-PADMIN | 旧 manifest hash 有 historical pass-1 supporting evidence；六个 audience/secret 根因 production `Verified` | current manifest pass 1/pass 2、expired-session/role-change 与四角色矩阵均未运行；历史 evidence 不迁移为当前 PASS |
-| role fixture | tenantless synthetic admin `c51b38e8…` 已公开注册，尚未改变 tenant/role | `IDENTITY-FIXTURE-BOOTSTRAP-001` 本地 candidate 已停在无生产 effect 状态；final persona acceptance 前再恢复，不阻断 Stage 1 功能探针 |
+| role fixture | production synthetic tenant `0430e023…` 已有 2 org_admin、2 member 与 1 scoped-operator candidate | 全部经 register/company invitation/join/正式 permission API 建立；没有 forged token、直接 role/tenant DB mutation 或 RLS weakening；身份只约束角色旅程，不阻断普通功能探针 |
 | P08-J4 | `Breakpoint / LOCAL_SEAM_GREEN` | exact-session tool + resolved-path boundary、active-run profile lock、run-scoped provider/terminal evidence、完整 authority attestation 与 server-derived build identity 已形成 local candidate；169 项 J4/Session/tool/health seam 回归通过，仍须完整 profile、部署和 same-envelope production bakeoff |
-| admin company / invite | `Breakpoint / LOCAL_FULL_GREEN` | RLS-safe company create、显式 org-admin/member invite role、join/token refresh、后台返回 App 与 rolling migration/backfill 已通过真实 non-owner PostgreSQL、完整 backend 与前端 mounted 回归；仍须 coherent D production 复验 |
-| Legacy-brand release residue | `Deployment gate / CANDIDATE_ARCHIVE_GREEN` | working-tree 3175 paths 与结构测试 6 项通过；`e6957205` committed archive 3375 paths 通过，只保留旧 KDF salt、旧 env input fallback、一次性 theme-key 迁移及 LICENSE attribution；新候选提交仍须重跑 exact archive gate |
-| backend local validation | `LOCAL_GREEN` | CI 同型 fail-fast no-DB 环境下最新完整套件 **8786 passed / 2 skipped / 0 failed**（14:19）；OfficeCLI 本机二进制缺失留给 Railway 同一 verifier，DingTalk Skill 为 MCP-dynamic/纯指南无静态 tools；变更路径 Ruff check/format 全绿 |
-| GitHub Harness CI | `D3_PARTIAL / D4_PENDING` | `d5282517` run `33451025118` 的 frontend **34/34**、atomic **15/15** 全绿；backend 在 Ubuntu 24.04 跑到 89% 后命中 30 分钟 job timeout，且 51% 有 1 个真实 Linux sandbox failure。已定位为只验证 `bwrap` 二进制、未加载 Ubuntu scoped AppArmor userns profile；D4 candidate 复用产品真实启动 probe 并把完整 backend job budget 调整为 60 分钟，仍须新 CI 证明 |
-| frontend local validation | `LOCAL_GREEN` | Vitest **161 files / 1193 tests**、串行 Playwright **34/34**、i18n **9/9**（en/zh 各 4039 keys、全部 gap 0）、build/bundle budgets 与 npm audit 0 全绿 |
-| atomic full-stack journeys | `LOCAL_GREEN 15/15` | 从 fresh schema 固定顺序跑完整真实 frontend→API→worker→PostgreSQL/Redis 套件，**15 passed / 0 failed / 3.0m**；覆盖 J-01～J-15，但只属 local application slice，不改变 production 96 条分母或 NPTCR |
+| admin company / invite | `Partial loop / PROD_SUPPORTING_VERIFIED` | production 已完成 platform-admin 建公司、两名 org-admin、两名 member、member 禁止创建管理员码、管理员码 tenantless replay 拒绝、member join 与后台 Back to App→Home；current manifest 双遍仍未运行 |
+| Legacy-brand release residue | `Deployment gate / PROD_SUPPORTING_VERIFIED` | `6d46459e` committed archive gate 3375 paths 通过，production hard reload/导航无已退役品牌残留；只保留兼容合同允许项；新候选提交仍须重跑 exact archive gate |
+| operator inspection authority | `Breakpoint / LOCAL_REVALIDATION_GREEN` | production 已复现 generic `manage` 可任意理由跨用户读、权限主体泄露与静默 scope 改写；本地 candidate 已分离 `operator.inspect`、reason+同事务审计、只读、deny-wins/revoke/expiry、严格 permission schema、最小 list/detail shell 与 UI grant/revoke；当前完整本地门已绿，仍须新 D production 正负复验 |
+| backend local validation | `LOCAL_REVALIDATION_GREEN` | 当前树第二次完整 suite **8864 passed / 2 skipped / 0 failed（14:49）**；首跑 4 个红点已收敛为 RLS allowlist 重构元数据与两个过时 workflow 测试断言，主流程隔离复验 **4/4 passed**；Ruff/format/diff check 全绿 |
+| GitHub Harness CI | `BASELINE_GREEN / NEW_D_PENDING` | exact `6d46459e` run `33453594851` 全部成功：backend full hermetic + 三组 eval + Ruff/format + legacy gate、frontend **34/34**、atomic **15/15** 与真实 bwrap launch；当前 operator fix 尚未形成新提交/CI |
+| frontend local validation | `LOCAL_REVALIDATION_GREEN` | 当前树 Vitest **163 files / 1216 tests**、production build/bundle gate、Playwright **34/34** 均通过；operator 浏览器 fixture 真实执行 reason→Apply，管理员/邀请/Back to App/legacy 前端专项 **34/34**。本地结果不迁移为 production Journey PASS |
+| atomic full-stack journeys | `LOCAL_REVALIDATION_GREEN` | 当前树在全新数据库、空 Redis、固定顺序下 **15/15 passed（2.1m）**；J-09/J-11/J-13/J-15 使用正式 scoped grant 与 operator reason→Apply，普通功能旅程仍不依赖 operator 身份；本地结果不改变 production 96 条分母或 NPTCR |
 | response learning | `Breakpoint / LOCAL_RECOVERY_GREEN` | required post-commit terminal outbox 已把 canonical binding、claim/validate/process/ack、retry/dead-letter/reconciliation 与 input admission hold 接入共享 terminal settlement；backend full-suite 已绿，仍须 frontend/build、fresh-chain、部署与 production crash/replay 证明 |
 | session summary | `Breakpoint / LOCAL_RECOVERY_GREEN` | Kernel 不再提前持久化 summary；Web terminal processor 只从 committed transcript/result 生成 summary，未知 provider outcome 进入 durable reconciliation，旧 sequence 不覆盖新 summary；仍须 coherent D production hold/abort/replay 证明 |
 | Local Agent | daemon running；API `401 Invalid bridge token`；UI linked 0/offline | `Breakpoint / RECOVERY_QUEUED`；PDEC-008 授权 lab login/pair/revoke，不授权读取或轮换真实 secret |
@@ -80,15 +81,18 @@ verification_status: ci-ubuntu-24-bwrap-profile-fix-validation-pending
 - owner action-time 确认后，`P01-STAGE1-FRESH-FALCON-682` 只发送一次。production GLM-5.3 完成公开 3 步计划、3/3 Work Ledger todos、一次 `write_file`、一次 `read_file`、七项硬判据 final 与一个 artifact；主 Codex通过 artifact preview 独立核对标题、marker、3 行议程、`TOTAL_MINUTES=90`、2 行风险、`RISK_ROWS=2`、四项现场清单。hard reload 后 final/todos/artifact/0 running/0 waiting 全部恢复。该 principal 为 `platform_admin`，只证明功能 supporting evidence，NPTCR 不变。
 - 本轮合同修订后 production manifest 为 `valid=true`、denominator 96、hash `7994b502361de0eafbea17b0fa5fd33eaa47d8a1381dc151126a463e2416d93a`，且 `semantic_verdict=not_computed_by_tool`；96 个 variant ID 与 HEAD 基线逐项相同，未新增、删除或重排旅程。
 - P08-J4 candidate 已把四个 seam-level P1 收口到共享 authoritative boundary：exact-session 工具/路径在 execution pipeline 与最终文件 I/O 双重校验，active exact profile 在 terminal 前锁定，provider/final/terminal evidence 绑定 exact run，authority/build identity 不完整即 fail closed；J4/Session/tool/health 合并 **169 passed**，尚未升级 Journey verdict。
-- terminal/learning/reconciliation candidate 的合并回归已达 **497 passed**（含真实 PostgreSQL）；Web、Session V2、trigger、business task、delegation、budget、worker、startup/orphan/reconciliation 均复用 required terminal outbox。重跑还发现并修复 delegation parent projection 脱离注入 tenant DB 的旁路，direct real-PG **21 passed**；backend full-suite 已绿，仍须 frontend/build、fresh-chain 与 production crash/replay 证明。
+- terminal/learning/reconciliation candidate 的历史合并回归达 **497 passed**（含真实 PostgreSQL）；Web、Session V2、trigger、business task、delegation、budget、worker、startup/orphan/reconciliation 均复用 required terminal outbox。重跑还发现并修复 delegation parent projection 脱离注入 tenant DB 的旁路，direct real-PG **21 passed**；这些结果早于当前 Budget/operator 修复，最新 working tree 仍须 full backend、frontend/build、fresh-chain 与 production crash/replay 证明。
 - 最新源码在 CI 同型 `DATABASE_URL=127.0.0.1:1` fail-fast 环境下完整 backend 套件 **8786 passed / 2 skipped / 0 failed**（14:19）。此前同一套件捕获的 5 个失败来自 terminal recovery 把 BYPASS DB capability 带入动态 HookRegistry；现按既有 locator→tenant-scoped pattern 只在 BYPASS 下定位 `(tenant_id,id)`，实际 sealed/candidate recovery 在 tenant session 执行，RLS scope 回归 **17 passed**、terminal/Team 邻域 **51 passed**。两项 skip 的 exact 原因已登记；该结果只建立 local candidate，不迁移为 production Journey PASS。
 - GitHub Harness CI 的既有全仓 Ruff 步骤会把 5082 条历史债务误算成本次提交失败；现与发布合同对齐为仅检查本次新增/修改/重命名 Python 路径，同时执行 `ruff check` 与 `ruff format --check`，full pytest 保留。首个 D CI 又暴露 `ruff>=0.8.0` 在 GitHub 漂移到 0.16.5、与本地验证的 0.15.12 规则集不一致；dev/CI 已精确 pin `ruff==0.15.12`。工作流结构 **3 passed**、YAML 解析、b2→candidate 230 个 Python 路径 Ruff/format、prompt/adversarial/internal eval 均绿；须以修正提交重跑 CI，失败 D 未部署。
 - frontend 完整回归已绿：Vitest **161 files / 1193 tests**，Playwright **34/34**，i18n **9/9** 且双语 catalog 均为 4039 keys、全部 gap 为 0，production build 通过。E2E 收口了 server-owned plan hash 不回显、live-tail cursor、offline→online 连接态与完成态 disclosure 合同；4 张旧视觉图逐张核对后仅更新 stale baseline，桌面/窄屏/深色及 Axe 均通过。
 - 首个 D 的 Linux CI 功能 E2E **29 passed**，另 5 个 active-state visual 因只更新了 Darwin 而稳定命中旧 Linux baseline（约 3%）。主 Codex逐张核对 CI expected/actual/diff，actual 与已接受的 Darwin active-state 结构一致，首跑/重试除 25 个抗锯齿像素外稳定；5 张 Linux baseline 已用 CI actual 精确更新，须随 Ruff pin 一起重跑 CI。
 - 修正提交 `e6957205` 的 CI run `33448515330` 已确认 frontend **34/34** 与 atomic full-stack **15/15（2.9m）** 全绿；backend 干净 runner 的最早根因是工作流忽略既有 `uv.lock`，拉取 Testcontainers 4.15 后将旧 import 的弃用警告放大为 812 个真实 PG setup error，同时 runner 缺少产品要求的 Linux `bubblewrap`。余下 4 个 unit failure 是新 DB/extension-policy seam 未显式注入，1 个 `/private/tmp` 断言错误地在 Linux 执行。candidate 现统一使用 frozen `uv.lock`、安装并验证 `bubblewrap`、补齐 unit seam 与 OS-specific gate；CI 同型定向 **15 passed**、完整 backend **8786 passed**，仍须新提交重跑三条 CI 后才部署。
 - `d5282517` 的 CI run `33451025118` 已把 frontend **34/34** 与 atomic full-stack **15/15（2.9m）** 跑绿；backend 在 Ubuntu 24.04.4 干净 runner 跑到 89% 后被 30 分钟 job timeout 取消，且 collection 顺序把 51% 唯一 `F` 精确映射为真实 `_run_command` Linux sandbox 执行测试。根因是 `bwrap --version` 只证明二进制存在，而 Ubuntu 24.04 默认以 AppArmor 限制无特权 user namespace。D4 candidate 安装官方 `apparmor-profiles`、只加载 scoped `bwrap-userns-restrict`，并调用仓库既有 `probe_os_sandbox_capability()` 证明真实 launch；不关闭全局 AppArmor、不启用 unsandboxed bypass、不跳过测试。完整 backend 本机实际需 14:19，job budget 从 30 调为 60 分钟；仍须新 CI 全绿才部署。
+- coherent baseline `6d46459e` 的 CI run `33453594851` 已全部成功，且 exact frozen archive 的 backend `637818b5…`、backend-api `0bce9b71…`、frontend `5dccd5b8…` 均为 production `SUCCESS`；public health/frontend 绿。它是当前 supporting baseline，不是含 operator 修复的最终 D。
+- production `WEEKEND-RC-ROLE-FIXTURE-1B4BE5D2` 已通过支持路径形成 tenant、双 org-admin、双 member 与 operator candidate；公司创建、管理员/成员邀请、join/token refresh、Back to App→Home、管理员码不可见/不可复用与 member 负向均取得 supporting evidence。普通 Agent 功能探针不要求先切换这些角色。
+- `OPERATOR-AUTHORITY-001` 已在 production 复现：generic `manage` 能以任意 reason 跨用户读 Session，delegated permission GET 泄露主体，非法 company/root mutation 被静默改写。本地 candidate 将 operator inspect 变成独立 governed grant，跨 owner 只读且 reason 必填/审计，mutation 永拒，active deny 优先于 allow，revoked/expired fail closed，并把 operator-only Agent list/detail 降为最小身份壳；当前 backend/frontend/Playwright/atomic 已统一重验全绿，但尚未形成或部署新 D。
 - admin company/invite candidate 已通过 backend API + migration + real non-owner RLS lifecycle **33 passed**、最新 rolling/backfill 聚焦 **19 passed** 与 frontend mounted/UI **20 passed**。production 只读盘点为 113 个历史码、105 个 active unused，105 个目标 tenant 均已有 admin，因此部署回填全部保持 `member`；empty-tenant bootstrap 才授予 `org_admin`。完整 backend 已绿，仍不等于 production PASS。
-- 旧品牌 release hygiene 的 working-tree gate 当前通过（3175 paths），对应结构回归 6 passed；已登记本机路径、个人账号和真实形态测试身份已从 tracked candidate 中性化，历史 KDF salt、旧 env input fallback、一次性 theme-key 迁移与 LICENSE attribution 保留。最终 committed archive `D` 尚未形成，因此 archive gate 仍待跑，不得提前宣布部署安全。
+- 旧品牌 release hygiene 的 working-tree gate 当前通过（3184 paths），对应结构回归 6 passed；`6d46459e` committed archive gate 同样通过（3375 paths）。已登记本机路径、个人账号和真实形态测试身份已从 tracked candidate 中性化，历史 KDF salt、旧 env input fallback、一次性 theme-key 迁移与 LICENSE attribution 保留。该结果只证明候选 archive 兼容门，不替代三服务部署与生产复验。
 - task-state resolve 指向本文件；本文件只保存当前目标、事实、证据摘要、唯一下一动作和 Not Done，不再保存旧 Kimi/zCode/ACP/timeout 执行日记。
 - `backend/scripts/weekend_rc_worker_gate.py` 与对应 zCode/`agent-delegate` 测试仍是未被 active RC gate 调用的 legacy compatibility artifact；本 Goal 不调用它们，也不把其结果当作当前工作流或验收证据。
 
@@ -107,14 +111,15 @@ verification_status: ci-ubuntu-24-bwrap-profile-fix-validation-pending
 
 ## 唯一下一动作
 
-本地 application/full-stack/frontend/backend/migration/release/security gates 已绿；下一步验证并提交 Ubuntu 24.04 scoped AppArmor/bwrap launch-probe 与 60 分钟完整 backend budget correction，形成新的 coherent `D` 后重跑 exact archive gate、push/CI，三条 CI 全绿才三服务部署。随后执行 signed-in 96 journeys 双遍、四角色权限负向、fault/recovery、cleanup 与 evidence-only `E`。D3/P01 supporting probe 不重发；DeepSeek 未获 billing/credential 授权不重试。
+将 operator authority 完整修复形成新 application `D`：只提交授权范围，重跑 exact archive gate，push 并等待全 CI 绿，再从同一 frozen SHA 部署 backend/backend-api/frontend。随后在 production 证明无 grant 403、allow+reason 200、mutation 403、deny/revoke/expiry 403、delegated permission redaction 与 company-manage 422；再继续 signed-in 96 journeys 双遍、fault/recovery、rollback、cleanup 与 evidence-only `E`。D3/P01 supporting probe 不重发；DeepSeek 未获 billing/credential 授权不重试。
 
 ## Not Done / Do Not Redo
 
 - 96 条 production journeys 未完成双遍；NPTCR=0/96，Evidence Coverage 尚未成立。
 - MiniMax/GLM 只完成 bounded probe，不是 P33 compatibility PASS；DeepSeek 为 `EXTERNAL_UNAVAILABLE`，不得在未获 billing/credential 授权时盲重试。
 - P08-J4 adapter、四角色 fixture、Local Agent recovery、完整权限负向、全产品 E2E/A2A、final `D/E`、rollback 与 cleanup 均未完成。
-- 平台管理员创建公司 RLS 500、管理员/成员邀请链路、后台返回 App 与旧品牌分类/兼容 release gate 均已纳入本 Goal，尚未完成，不得在 coherent D 部署时遗漏。
+- 平台管理员创建公司、管理员/成员邀请、后台返回 App 与旧品牌兼容门已完成 `6d46459e` production supporting 复验；新 coherent D 必须保持这些结果，且 current manifest 双遍仍未完成，不得提前升级 Closed。
+- `OPERATOR-AUTHORITY-001` 尚未部署；production 仍处于已复现漏洞的旧行为，部署前不得把本地绿测试表述为生产修复。
 - Goal/Issue/subagent/CI/Railway/health 的机械状态不得升级 Journey verdict，也不得因失败/timeout 停止所有无关工作。
 - 不把 archive、旧 manifest hash、历史 PASS、无效 persona/entry probe 或 finding-level `Verified` 自动迁移成当前 aggregate `Closed loop`。
 - 不触碰或提交 owner 既有无关 dirty/untracked 路径。

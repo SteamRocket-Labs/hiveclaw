@@ -314,14 +314,6 @@ export function buildSessionCommandPanelNavigation(
     };
 }
 
-/** Visual grouping of tabs for the tab bar — groups are separated by thin dividers */
-export const AGENT_DETAIL_TAB_GROUPS: { tabs: AgentDetailTab[]; }[] = [
-    { tabs: ['status', 'chat', 'tasks'] },
-    { tabs: ['aware', 'knowledge', 'evolution', 'extensions'] },
-    { tabs: ['workspace', 'workflows', 'a2a', 'activityLog', 'approvals'] },
-    { tabs: ['settings'] },
-];
-
 export const AGENT_TAB_LABELS: Record<AgentDetailTab, string> = {
     status: 'Status',
     aware: 'Awareness',
@@ -397,6 +389,7 @@ export const AGENT_WORKBENCH_AREAS: Array<{
 ];
 
 export function isAgentDetailTabVisible(agent: any, tab: AgentDetailTab): boolean {
+    if (agent?.access_level === 'operator') return ['chat', 'workspace', 'activityLog'].includes(tab);
     if (agent?.access_level === 'use' && (tab === 'settings' || tab === 'approvals')) return false;
     if (agent?.agent_type === 'local_agent') {
         return ['chat', 'workspace', 'settings'].includes(tab);
@@ -410,6 +403,9 @@ export function isLocalAgentRuntimeType(agent: any): boolean {
 }
 
 export function getVisibleAgentDetailTabs(agent: any): AgentDetailTab[] {
+    if (agent?.access_level === 'operator') {
+        return ['chat', 'workspace', 'activityLog'];
+    }
     if (agent?.agent_type === 'local_agent') {
         return ['chat', 'workspace', 'settings'];
     }

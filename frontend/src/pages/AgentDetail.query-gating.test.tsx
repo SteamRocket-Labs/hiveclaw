@@ -3,9 +3,15 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockState = vi.hoisted(() => ({
-  queryCalls: [] as Array<{ key: unknown[]; enabled: unknown; refetchInterval?: unknown }>,
+  queryCalls: [] as Array<{
+    key: unknown[];
+    enabled: unknown;
+    refetchInterval?: unknown;
+    refetchOnWindowFocus?: unknown;
+  }>,
   hash: '#aware',
   accessLevel: 'use',
+  operatorCap: false,
   userRole: 'member',
   locationState: null as null | Record<string, unknown>,
 }));
@@ -18,16 +24,26 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@tanstack/react-query', () => ({
-  useQuery: (options: { queryKey: unknown[]; enabled?: unknown; refetchInterval?: unknown }) => {
+  useQuery: (options: {
+    queryKey: unknown[];
+    enabled?: unknown;
+    refetchInterval?: unknown;
+    refetchOnWindowFocus?: unknown;
+  }) => {
     mockState.queryCalls.push({
       key: options.queryKey,
       enabled: options.enabled,
       refetchInterval: options.refetchInterval,
+      refetchOnWindowFocus: options.refetchOnWindowFocus,
     });
     const key = String(options.queryKey[0]);
     if (key === 'agent') {
       return {
-        data: { id: 'agent-aware', access_level: mockState.accessLevel },
+        data: {
+          id: 'agent-aware',
+          access_level: mockState.accessLevel,
+          action_capabilities: { can_operator_inspect: mockState.operatorCap },
+        },
         isLoading: false,
         isError: false,
         error: null,
@@ -92,6 +108,7 @@ describe('AgentDetail aware reflection session gating', () => {
     mockState.queryCalls.length = 0;
     mockState.hash = '#aware';
     mockState.accessLevel = 'use';
+    mockState.operatorCap = false;
     mockState.userRole = 'member';
     mockState.locationState = null;
   });
@@ -100,22 +117,62 @@ describe('AgentDetail aware reflection session gating', () => {
     renderToStaticMarkup(<AgentDetail />);
 
     const reflectionQuery = mockState.queryCalls.find(
-      (entry) => JSON.stringify(entry.key) === JSON.stringify(['reflection-sessions', 'agent-aware']),
+      (entry) => entry.key[0] === 'reflection-sessions',
     );
 
     expect(reflectionQuery?.enabled).toBe(false);
   });
 
-  it('keeps reflection sessions query enabled for managers on the aware tab', () => {
+  it('does not treat generic manage access as operator inspection authority', () => {
     mockState.accessLevel = 'manage';
 
     renderToStaticMarkup(<AgentDetail />);
 
     const reflectionQuery = mockState.queryCalls.find(
-      (entry) => JSON.stringify(entry.key) === JSON.stringify(['reflection-sessions', 'agent-aware']),
+      (entry) => entry.key[0] === 'reflection-sessions',
     );
 
-    expect(reflectionQuery?.enabled).toBe(true);
+    expect(reflectionQuery?.enabled).toBe(false);
+  });
+
+  it('surfaces the operator reason control only for server-authorized inspectors', () => {
+    mockState.operatorCap = true;
+
+    const html = renderToStaticMarkup(<AgentDetail />);
+
+    expect(html).toContain('data-testid="agent-operator-reason"');
+  });
+
+  it('renders an operator-only read shell without owner or mutation tabs and header actions', () => {
+    mockState.accessLevel = 'operator';
+    mockState.operatorCap = true;
+    mockState.hash = '#chat';
+
+    const html = renderToStaticMarkup(<AgentDetail />);
+
+    expect(html).toContain('>Chat<');
+    expect(html).toContain('Overview');
+    expect(html).toContain('Conversation &amp; Tasks');
+    expect(html).toContain('Documents &amp; Workspace');
+    expect(html).not.toContain('>Status<');
+    expect(html).not.toContain('>Memory<');
+    expect(html).not.toContain('>Workflows<');
+    expect(html).not.toContain('>Settings<');
+    expect(html).not.toContain('agent-detail-header-actions');
+
+    const permissionQuery = mockState.queryCalls.find(
+      (entry) => JSON.stringify(entry.key) === JSON.stringify(['agent-permissions', 'agent-aware']),
+    );
+    expect(permissionQuery?.enabled).toBe(false);
+
+    const agentQuery = mockState.queryCalls.find((entry) => entry.key[0] === 'agent');
+    expect(agentQuery?.refetchOnWindowFocus).toBe(true);
+    expect(typeof agentQuery?.refetchInterval).toBe('function');
+    const refetchInterval = agentQuery?.refetchInterval as (
+      query: { state: { data: { access_level?: string } } },
+    ) => number | false;
+    expect(refetchInterval({ state: { data: { access_level: 'operator' } } })).toBe(30_000);
+    expect(refetchInterval({ state: { data: { access_level: 'use' } } })).toBe(false);
   });
 
   it('loads agent permissions on the chat tab for the composer permission badge', () => {

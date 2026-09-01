@@ -182,7 +182,7 @@ class WorkflowOpsService:
     async def cancel_run(
         self, run_id: uuid.UUID | str, *, tenant_id: uuid.UUID | str, reason: str = "cancelled by admin"
     ) -> dict[str, Any]:
-        await self._runtime.kill_run(run_id, tenant_id=tenant_id)
+        resulting_status = await self._runtime.kill_run(run_id, tenant_id=tenant_id)
         async with self._session(tenant_id) as session:
             task = (
                 await session.execute(select(RuntimeTask).where(RuntimeTask.id == uuid.UUID(str(run_id))))
@@ -191,22 +191,50 @@ class WorkflowOpsService:
             metadata["admin_cancel_reason"] = reason
             task.metadata_json = metadata
         await self._audit("workflow_admin_cancelled", tenant_id=tenant_id, run_id=run_id, reason=reason)
-        return {"run_id": str(run_id), "tenant_id": str(tenant_id), "status": "killed", "reason": reason}
+        return {
+            "run_id": str(run_id),
+            "tenant_id": str(tenant_id),
+            "status": resulting_status,
+            "reason": reason,
+        }
 
     async def force_suspend_run(
         self, run_id: uuid.UUID | str, *, tenant_id: uuid.UUID | str, reason: str = "force suspended by admin"
     ) -> dict[str, Any]:
-        await self._load_task(run_id, tenant_id=tenant_id)
         async with self._session(tenant_id) as session:
             task = (
-                await session.execute(select(RuntimeTask).where(RuntimeTask.id == uuid.UUID(str(run_id))))
-            ).scalar_one()
-            task.status = "suspended"
-            metadata = dict(task.metadata_json or {})
-            metadata["admin_force_suspend_reason"] = reason
-            task.metadata_json = metadata
+                await session.execute(
+                    select(RuntimeTask).where(RuntimeTask.id == uuid.UUID(str(run_id))).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if task is None or task.task_type != "workflow":
+                raise WorkflowRunNotFound(str(run_id))
+            resulting_status = str(task.status)
+            if task.status in {"pending", "running", "resumable"}:
+                task.status = "suspended"
+                task.completed_at = None
+                task.claim_version = int(task.claim_version or 0) + 1
+                task.claimed_by = None
+                task.claim_expires_at = None
+                metadata = dict(task.metadata_json or {})
+                metadata["admin_force_suspend_reason"] = reason
+                task.metadata_json = metadata
+                from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
+
+                await transition_runtime_root_item_by_task(
+                    session,
+                    runtime_task_id=task.id,
+                    requested_state="suspended",
+                    reason_code=reason,
+                )
+                resulting_status = "suspended"
         await self._audit("workflow_admin_force_suspended", tenant_id=tenant_id, run_id=run_id, reason=reason)
-        return {"run_id": str(run_id), "tenant_id": str(tenant_id), "status": "suspended", "reason": reason}
+        return {
+            "run_id": str(run_id),
+            "tenant_id": str(tenant_id),
+            "status": resulting_status,
+            "reason": reason,
+        }
 
     async def replay_from_step(
         self,

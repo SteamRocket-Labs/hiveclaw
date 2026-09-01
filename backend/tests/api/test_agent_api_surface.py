@@ -51,6 +51,24 @@ def test_agent_create_schema_rejects_legacy_agent_class_value():
     assert payload.agent_class == "internal_tenant"
 
 
+def test_agent_create_schema_rejects_company_wide_manage_permission():
+    from app.schemas.schemas import AgentCreate
+
+    with pytest.raises(ValidationError):
+        AgentCreate(
+            name="Company manager",
+            permission_scope_type="company",
+            permission_access_level="manage",
+        )
+
+    with pytest.raises(ValidationError):
+        AgentCreate(
+            name="Company scope with ignored user IDs",
+            permission_scope_type="company",
+            permission_scope_ids=["00000000-0000-0000-0000-000000000001"],
+        )
+
+
 def test_agent_schema_accepts_explicit_strict_coordinator_mode():
     from app.schemas.schemas import AgentCreate, AgentUpdate
 

@@ -7,7 +7,7 @@ from sqlalchemy import and_, exists, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.channel_message_contracts import extract_sender_label_from_message, strip_sender_label_prefix
-from app.core.permissions import check_agent_access
+from app.core.permissions import check_agent_access, check_agent_operator_reachability
 from app.core.resource_authority import (
     OWNED_AUTHORITY_STATE,
     ResourceAuthorityDecision,
@@ -161,7 +161,11 @@ async def get_agent_activity(
     db: AsyncSession = Depends(get_db),
 ):
     """Get recent activity logs for an agent."""
-    agent_access = await check_agent_access(db, current_user, agent_id)
+    agent_access = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if operator_view
+        else check_agent_access(db, current_user, agent_id)
+    )
 
     query = (
         select(AgentActivityLog)
@@ -205,7 +209,11 @@ async def get_agent_tool_failure_summary(
     db: AsyncSession = Depends(get_db),
 ):
     """Get aggregated tool failure telemetry for an agent."""
-    agent_access = await check_agent_access(db, current_user, agent_id)
+    agent_access = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if operator_view
+        else check_agent_access(db, current_user, agent_id)
+    )
     from datetime import UTC, datetime, timedelta
 
     query = (
@@ -425,7 +433,11 @@ async def list_conversations(
     db: AsyncSession = Depends(get_db),
 ):
     """List all conversation partners for this agent using ChatSession as the canonical entrypoint."""
-    agent_access = await check_agent_access(db, current_user, agent_id)
+    agent_access = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if operator_view
+        else check_agent_access(db, current_user, agent_id)
+    )
 
     conversations = []
 
@@ -591,7 +603,11 @@ async def get_conversation_messages(
     db: AsyncSession = Depends(get_db),
 ):
     """Get messages for a canonical ChatSession or a legacy channel conversation id."""
-    agent_access = await check_agent_access(db, current_user, agent_id)
+    agent_access = await (
+        check_agent_operator_reachability(db, current_user, agent_id)
+        if operator_view
+        else check_agent_access(db, current_user, agent_id)
+    )
     limit_value = _coerce_limit(limit)
 
     session = await _load_accessible_session(db, agent_id=agent_id, conv_id=conv_id)

@@ -211,19 +211,29 @@ async def test_platform_admin_keeps_exact_platform_setting_keys(key: str) -> Non
 
 
 class _MappingsResult:
+    def __init__(self, *, mappings=(), scalars=()):
+        self._mappings = list(mappings)
+        self._scalars = list(scalars)
+
     def mappings(self):
-        return SimpleNamespace(all=lambda: [])
+        return SimpleNamespace(all=lambda: self._mappings)
+
+    def scalars(self):
+        return SimpleNamespace(all=lambda: self._scalars)
 
 
 class _AgentListDB:
-    def __init__(self):
+    def __init__(self, results=()):
         self.statements = []
+        self.results = list(results)
         self.sync_session = SimpleNamespace(info={})
 
     async def execute(self, statement):
         self.statements.append(statement)
         if str(statement).lstrip().upper().startswith("SET LOCAL"):
             return _ScalarResult(None)
+        if self.results:
+            return self.results.pop(0)
         return _MappingsResult()
 
 
@@ -247,9 +257,71 @@ async def test_platform_admin_agent_inventory_uses_only_explicit_user_scope() ->
     )
 
     assert result == []
-    statement = next(stmt for stmt in db.statements if not str(stmt).lstrip().upper().startswith("SET LOCAL"))
+    statement = next(stmt for stmt in db.statements if "agent_permissions.scope_type" in str(stmt))
     sql = str(statement.compile(compile_kwargs={"literal_binds": True}))
     assert "agent_permissions.scope_type = 'user'" in sql
     assert user_id.hex in sql
     assert "agent_permissions.scope_type = 'company'" not in sql
     assert "agent_permissions.scope_type = 'department'" not in sql
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_company_permission_does_not_widen_operator_list_shell() -> None:
+    import app.api.agents as agents_api
+
+    tenant_id = uuid4()
+    user_id = uuid4()
+    agent_id = uuid4()
+    operator_grant = SimpleNamespace(
+        resource_id=agent_id,
+        actions=[agents_api.AGENT_OPERATOR_INSPECT_ACTION],
+        conditions={
+            "operator_inspection": {
+                "schema": agents_api.AGENT_OPERATOR_INSPECTION_SCHEMA,
+            }
+        },
+        effect="allow",
+        revoked_at=None,
+        expires_at=None,
+    )
+    agent_row = {
+        "id": agent_id,
+        "name": "Audited agent",
+        "avatar_url": None,
+        "status": "idle",
+        "creator_id": uuid4(),
+        "owner_user_id": uuid4(),
+        "agent_type": "native",
+        "agent_class": "internal_tenant",
+    }
+    company_permission = SimpleNamespace(
+        agent_id=agent_id,
+        scope_type="company",
+        scope_id=None,
+        access_level="manage",
+    )
+    db = _AgentListDB(
+        [
+            _MappingsResult(scalars=[operator_grant]),
+            _MappingsResult(mappings=[agent_row]),
+            _MappingsResult(scalars=[company_permission]),
+        ]
+    )
+
+    result = await agents_api.list_agents(
+        tenant_id=tenant_id,
+        current_user=SimpleNamespace(
+            id=user_id,
+            role="platform_admin",
+            tenant_id=tenant_id,
+            department_id=uuid4(),
+        ),
+        db=db,
+    )
+
+    assert len(result) == 1
+    payload = result[0].model_dump()
+    assert payload["access_level"] == "operator"
+    assert payload["operator_shell"] is True
+    assert "tenant_id" not in payload
+    assert "primary_model_id" not in payload

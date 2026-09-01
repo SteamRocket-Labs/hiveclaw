@@ -73,6 +73,40 @@ def _snapshot_session(*, agent_id, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_operator_only_cannot_restore_even_an_owned_workspace_manifest(monkeypatch):
+    import app.api.files as files_api
+
+    agent_id = uuid4()
+    user_id = uuid4()
+
+    async def deny_generic_agent_access(*_args, **_kwargs):
+        raise HTTPException(status_code=403, detail="No access to this agent")
+
+    async def unexpected_version_read(*_args, **_kwargs):
+        raise AssertionError("version evidence must not be read before mutation authority")
+
+    monkeypatch.setattr(files_api, "check_agent_access", deny_generic_agent_access)
+    monkeypatch.setattr(files_api, "_authorized_workspace_version_sessions", unexpected_version_read)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files_api.restore_file_version(
+            agent_id=agent_id,
+            version_id="owned-manifest-version",
+            path="workspace/report.md",
+            data=files_api.FileVersionRestoreRequest(
+                expected_current_exists=True,
+                expected_current_hash="0" * 64,
+            ),
+            operator_view=True,
+            operator_reason="Incident inspection",
+            current_user=SimpleNamespace(id=user_id, tenant_id=uuid4()),
+            db=_FakeDB([]),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_file_versions_api_lists_opaque_authorized_checkpoint_versions(tmp_path, monkeypatch):
     import app.api.files as files_api
     import app.services.workspace_resource_authority as authority

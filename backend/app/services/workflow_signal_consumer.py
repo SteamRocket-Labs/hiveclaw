@@ -20,7 +20,9 @@ from dataclasses import dataclass
 from sqlalchemy import select, text
 
 from app.database import tenant_scoped_session
+from app.models.runtime_budget import RuntimeBudgetRun
 from app.models.runtime_task import RuntimeTask
+from app.models.workflow import WorkflowStep
 from app.runtime.workflow_engine import LeafExecutor, WorkflowRunOutcome
 from app.services.workflow_runtime_service import WorkflowRuntimeService
 from app.services.runtime_task_service import list_active_runtime_task_records
@@ -62,13 +64,14 @@ async def drain_signal_resumes(
             (record.get("metadata") or {}).get("tenant_id") or record.get("tenant_id"),
             record.get("parent_agent_id"),
             (record.get("metadata") or {}).get("waiting_for_signal"),
+            record.get("budget_run_id"),
         )
         for record in records
         if (record.get("metadata") or {}).get("waiting_for_signal")
     ]
 
     resumed: list[SignalResumedRun] = []
-    for run_id, tenant_value, agent_value, registration in waiting:
+    for run_id, tenant_value, agent_value, registration, budget_run_value in waiting:
         if not tenant_value or not agent_value or not isinstance(registration, dict):
             continue
         signal_type = registration.get("signal_type")
@@ -76,9 +79,24 @@ async def drain_signal_resumes(
         if not signal_type or not step_id:
             continue
 
-        # Atomic consume: DELETE ... RETURNING — exactly one drainer wins the
-        # row; tenant + recipient + thread(=run) + type all must match.
+        # Lock budget→task before consuming the signal. This is the same order
+        # as budget cancel/reap and prevents a stopped run from losing a signal
+        # or being revived after the startup scan.
         async with tenant_scoped_session(tenant_value, session_factory=session_factory) as session:
+            budget_run = None
+            if budget_run_value is not None:
+                budget_run = await session.scalar(
+                    select(RuntimeBudgetRun)
+                    .where(RuntimeBudgetRun.id == uuid.UUID(str(budget_run_value)))
+                    .with_for_update()
+                )
+                if budget_run is None or budget_run.status != "active":
+                    continue
+            task = await session.scalar(select(RuntimeTask).where(RuntimeTask.id == run_id).with_for_update())
+            if task is None or task.status != "suspended":
+                continue
+            if task.budget_run_id is not None and (budget_run is None or task.budget_run_id != budget_run.id):
+                continue
             consumed = (
                 await session.execute(
                     text(
@@ -98,15 +116,12 @@ async def drain_signal_resumes(
                     },
                 )
             ).first()
-        if consumed is None:
-            continue  # no matching signal yet — keep waiting
+            if consumed is None:
+                continue  # no matching signal yet — keep waiting
 
-        signal_id, signal_content = consumed
-        # Mark the waiting step done with the signal payload as its output,
-        # then clear the registration — the engine replays it on resume.
-        async with tenant_scoped_session(tenant_value, session_factory=session_factory) as session:
-            from app.models.workflow import WorkflowStep
-
+            signal_id, signal_content = consumed
+            # Persist the consumed payload in the journal in this same
+            # transaction so a later cancel or crash never loses the signal.
             step_row = (
                 await session.execute(
                     select(WorkflowStep).where(WorkflowStep.run_id == run_id, WorkflowStep.step_id == step_id)
@@ -117,13 +132,17 @@ async def drain_signal_resumes(
                 step_row.result_ref = json.dumps(
                     {"signal": signal_content, "signal_type": signal_type}, ensure_ascii=False
                 )
-            task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
             metadata = dict(task.metadata_json or {})
             metadata.pop("waiting_for_signal", None)
             task.metadata_json = metadata
 
         try:
-            outcome = await runtime.resume_run(run_id, tenant_id=uuid.UUID(tenant_value), leaf_executor=leaf_executor)
+            outcome = await runtime.resume_run(
+                run_id,
+                tenant_id=uuid.UUID(tenant_value),
+                leaf_executor=leaf_executor,
+                automatic=True,
+            )
             resumed.append(SignalResumedRun(run_id=run_id, signal_id=signal_id, outcome=outcome))
         except Exception as exc:
             logger.error("[WorkflowSignal] resume of run %s after signal failed: %s", run_id, exc, exc_info=True)

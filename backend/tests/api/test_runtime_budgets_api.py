@@ -14,6 +14,7 @@ class _FakeRuntimeBudgetService:
     def __init__(self):
         self.tenant_id = uuid4()
         self.run_id = uuid4()
+        self.approval_episode_id = uuid4()
         self.policy_id = uuid4()
         self.cancelled: dict | None = None
         self.created_policy: dict | None = None
@@ -79,6 +80,7 @@ class _FakeRuntimeBudgetService:
                 source="scheduled",
                 profile="scheduled",
                 status=status or "hard_stopped",
+                approval_episode_id=self.approval_episode_id,
                 enforcement_mode="enforce",
                 terminal_reason="runtime_budget_exhausted:subagents",
                 created_at=datetime.now(UTC),
@@ -128,6 +130,7 @@ class _FakeRuntimeBudgetService:
         tenant_id,
         budget_run_id,
         reason,
+        approval_episode_id,
         actor_user_id,
         enforcement_mode,
         max_tokens=None,
@@ -143,6 +146,7 @@ class _FakeRuntimeBudgetService:
             "tenant_id": tenant_id,
             "budget_run_id": budget_run_id,
             "reason": reason,
+            "approval_episode_id": approval_episode_id,
             "actor_user_id": actor_user_id,
             "enforcement_mode": enforcement_mode,
             "max_subagents": max_subagents,
@@ -156,6 +160,7 @@ class _FakeRuntimeBudgetService:
             source="scheduled",
             profile="scheduled",
             status="active",
+            approval_episode_id=approval_episode_id,
             enforcement_mode=enforcement_mode,
             terminal_reason=None,
             created_at=datetime.now(UTC),
@@ -163,11 +168,12 @@ class _FakeRuntimeBudgetService:
             completed_at=None,
         )
 
-    async def reject_overrun(self, *, tenant_id, budget_run_id, reason, actor_user_id):
+    async def reject_overrun(self, *, tenant_id, budget_run_id, reason, approval_episode_id, actor_user_id):
         self.rejected_overrun = {
             "tenant_id": tenant_id,
             "budget_run_id": budget_run_id,
             "reason": reason,
+            "approval_episode_id": approval_episode_id,
             "actor_user_id": actor_user_id,
         }
         return SimpleNamespace(
@@ -178,6 +184,7 @@ class _FakeRuntimeBudgetService:
             source="scheduled",
             profile="scheduled",
             status="stopped",
+            approval_episode_id=approval_episode_id,
             enforcement_mode="enforce",
             terminal_reason="runtime_budget_approval_rejected",
             created_at=datetime.now(UTC),
@@ -265,6 +272,7 @@ def test_runtime_budget_api_lists_policies_and_user_facing_runs():
     assert runs.status_code == 200
     assert runs.json()[0]["user_status"] == "已停止"
     assert runs.json()[0]["user_reason"] == "运行额度已达上限"
+    assert runs.json()[0]["approval_episode_id"] == str(fake_service.approval_episode_id)
     assert "budget_run_id" not in runs.json()[0]
 
 
@@ -327,7 +335,13 @@ def test_runtime_budget_api_approves_overrun_and_switches_tenant_mode():
 
     approved = client.post(
         f"/runtime-budgets/runs/{fake_service.run_id}/approve-overrun",
-        json={"reason": "human reviewed", "enforcement_mode": "observe", "max_subagents": 48, "max_team_sessions": 4},
+        json={
+            "approval_episode_id": str(fake_service.approval_episode_id),
+            "reason": "human reviewed",
+            "enforcement_mode": "observe",
+            "max_subagents": 48,
+            "max_team_sessions": 4,
+        },
     )
     switched = client.post(
         "/runtime-budgets/tenant/enforcement-mode",
@@ -340,6 +354,7 @@ def test_runtime_budget_api_approves_overrun_and_switches_tenant_mode():
         "tenant_id": fake_service.tenant_id,
         "budget_run_id": fake_service.run_id,
         "reason": "human reviewed",
+        "approval_episode_id": fake_service.approval_episode_id,
         "actor_user_id": user.id,
         "enforcement_mode": "observe",
         "max_subagents": 48,
@@ -355,13 +370,32 @@ def test_runtime_budget_api_approves_overrun_and_switches_tenant_mode():
     }
 
 
+def test_runtime_budget_api_reports_stale_overrun_approval_as_conflict():
+    from app.services.runtime_budget_service import RuntimeBudgetStateConflict
+
+    class _ConflictService(_FakeRuntimeBudgetService):
+        async def approve_overrun(self, **_kwargs):
+            raise RuntimeBudgetStateConflict("runtime budget run is cancelled")
+
+    fake_service = _ConflictService()
+    client, _user, _outbox = _client(fake_service)
+
+    response = client.post(
+        f"/runtime-budgets/runs/{fake_service.run_id}/approve-overrun",
+        json={"approval_episode_id": str(fake_service.approval_episode_id), "reason": "stale approval"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "runtime budget run is cancelled"
+
+
 def test_runtime_budget_api_rejects_waiting_work_with_actor_and_reason():
     fake_service = _FakeRuntimeBudgetService()
     client, user, _outbox = _client(fake_service)
 
     response = client.post(
         f"/runtime-budgets/runs/{fake_service.run_id}/reject-overrun",
-        json={"reason": "unsafe to continue"},
+        json={"approval_episode_id": str(fake_service.approval_episode_id), "reason": "unsafe to continue"},
     )
 
     assert response.status_code == 200
@@ -371,8 +405,47 @@ def test_runtime_budget_api_rejects_waiting_work_with_actor_and_reason():
         "tenant_id": fake_service.tenant_id,
         "budget_run_id": fake_service.run_id,
         "reason": "unsafe to continue",
+        "approval_episode_id": fake_service.approval_episode_id,
         "actor_user_id": user.id,
     }
+
+
+def test_runtime_budget_api_reports_stale_overrun_rejection_as_conflict():
+    from app.services.runtime_budget_service import RuntimeBudgetStateConflict
+
+    class _ConflictService(_FakeRuntimeBudgetService):
+        async def reject_overrun(self, **_kwargs):
+            raise RuntimeBudgetStateConflict("runtime budget run is active")
+
+    fake_service = _ConflictService()
+    client, _user, _outbox = _client(fake_service)
+
+    response = client.post(
+        f"/runtime-budgets/runs/{fake_service.run_id}/reject-overrun",
+        json={"approval_episode_id": str(fake_service.approval_episode_id), "reason": "stale rejection"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "runtime budget run is active"
+
+
+def test_runtime_budget_decisions_require_approval_episode_id():
+    fake_service = _FakeRuntimeBudgetService()
+    client, _user, _outbox = _client(fake_service)
+
+    approve = client.post(
+        f"/runtime-budgets/runs/{fake_service.run_id}/approve-overrun",
+        json={"reason": "missing episode"},
+    )
+    reject = client.post(
+        f"/runtime-budgets/runs/{fake_service.run_id}/reject-overrun",
+        json={"reason": "missing episode"},
+    )
+
+    assert approve.status_code == 422
+    assert reject.status_code == 422
+    assert fake_service.approved_overrun is None
+    assert fake_service.rejected_overrun is None
 
 
 def test_runtime_budget_waiting_status_has_user_semantics():

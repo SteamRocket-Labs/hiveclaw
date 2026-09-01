@@ -58,6 +58,7 @@ const workspaceNavItems: SidebarNavItem[] = [
 
 const isLocalAgentRuntimeType = (agent: any): boolean => agent?.agent_type === 'local_agent';
 const isLocalAgentType = (agent: any): boolean => agent?.agent_type === 'local_agent';
+const isOperatorOnlyAgent = (agent: any): boolean => agent?.access_level === 'operator';
 
 const getAgentBadgeStatus = (agent: any): string | null => {
   if (agent.status === 'error') return 'error';
@@ -296,7 +297,10 @@ export default function AppSidebar({
   const [resolvedHrAgent, setResolvedHrAgent] = useState<HrAgentInfo | null>(providedHrAgent ?? null);
   const createAgentId = resolvedHrAgent?.id ? String(resolvedHrAgent.id) : null;
   const isCreateAgentActive = isCreateAgentRoute || (!!createAgentId && activeAgentId === createAgentId);
-  const [expandedAgentIds, setExpandedAgentIds] = useState<Set<string>>(() => new Set(activeAgentId ? [activeAgentId] : []));
+  const [expandedAgentIds, setExpandedAgentIds] = useState<Set<string>>(() => {
+    const activeAgent = agents.find((agent) => String(agent.id) === String(activeAgentId || ''));
+    return new Set(activeAgentId && !isOperatorOnlyAgent(activeAgent) ? [activeAgentId] : []);
+  });
   const [sessionsByAgentId, setSessionsByAgentId] = useState<Record<string, ChatSession[]>>(agentSessionsByAgentId || {});
   const [sessionLoadingByAgentId, setSessionLoadingByAgentId] = useState<Record<string, boolean>>({});
   const locale = i18n.language?.startsWith('zh') ? 'zh-CN' : 'en-US';
@@ -342,6 +346,15 @@ export default function AppSidebar({
 
   useEffect(() => {
     if (!activeAgentId) return;
+    if (isOperatorOnlyAgent(getSidebarAgentById(activeAgentId))) {
+      setExpandedAgentIds((prev) => {
+        if (!prev.has(activeAgentId)) return prev;
+        const next = new Set(prev);
+        next.delete(activeAgentId);
+        return next;
+      });
+      return;
+    }
     setExpandedAgentIds((prev) => {
       if (prev.has(activeAgentId)) return prev;
       const next = new Set(prev);
@@ -351,6 +364,7 @@ export default function AppSidebar({
   }, [activeAgentId]);
 
   const loadAgentSessions = async (agentId: string, force = false) => {
+    if (isOperatorOnlyAgent(getSidebarAgentById(agentId))) return;
     if (!force && (agentSessionsByAgentId?.[agentId] || sessionsByAgentId[agentId])) return;
     if (sessionLoadingByAgentId[agentId]) return;
     setSessionLoadingByAgentId((prev) => ({ ...prev, [agentId]: true }));
@@ -384,6 +398,7 @@ export default function AppSidebar({
   };
 
   const toggleAgentSessions = (agentId: string) => {
+    if (isOperatorOnlyAgent(getSidebarAgentById(agentId))) return;
     setExpandedAgentIds((prev) => {
       const next = new Set(prev);
       if (next.has(agentId)) next.delete(agentId);
@@ -628,10 +643,11 @@ export default function AppSidebar({
             const agentSessions = effectiveSessionsByAgentId[String(agent.id)] || [];
             const sessionsLoading = sessionLoadingByAgentId[String(agent.id)];
             const isAgentRowActive = String(activeAgentId || '') === String(agent.id) && !activeSessionId;
+            const operatorOnly = isOperatorOnlyAgent(agent);
             return (
               <div key={agent.id} className="sidebar-agent-item">
                 <div className="sidebar-agent-row">
-                  <button
+                  {!operatorOnly && <button
                     type="button"
                     className="sidebar-agent-disclosure"
                     aria-label={isExpanded ? t('nav.collapseAgentSessions', 'Collapse sessions') : t('nav.expandAgentSessions', 'Expand sessions')}
@@ -643,9 +659,9 @@ export default function AppSidebar({
                     }}
                   >
                     {isExpanded ? <IconChevronDown size={13} stroke={1.7} /> : <IconChevronRight size={13} stroke={1.7} />}
-                  </button>
+                  </button>}
                   <NavLink
-                    to={`/agents/${agent.id}`}
+                    to={operatorOnly ? `/agents/${agent.id}?manage=true#chat` : `/agents/${agent.id}`}
                     className={() => `sidebar-item sidebar-agent-link ${isAgentRowActive ? 'active' : ''}`}
                     title={agent.name}
                     aria-label={`Open ${agent.name}`}
@@ -664,7 +680,7 @@ export default function AppSidebar({
                   </NavLink>
                   {!isSidebarCollapsed && (
                     <span className="sidebar-agent-actions" aria-hidden={false}>
-                      <button
+                      {!operatorOnly && <button
                         type="button"
                         className="sidebar-agent-action"
                         aria-label={`New conversation with ${agent.name}`}
@@ -676,9 +692,9 @@ export default function AppSidebar({
                         }}
                       >
                         <IconPlus size={13} stroke={1.8} />
-                      </button>
+                      </button>}
                       <NavLink
-                        to={`/agents/${agent.id}?manage=true#status`}
+                        to={operatorOnly ? `/agents/${agent.id}?manage=true#chat` : `/agents/${agent.id}?manage=true#status`}
                         className={() => 'sidebar-agent-action'}
                         aria-label={`Open ${agent.name} details`}
                         title={t('agent.details', 'Details')}
@@ -688,7 +704,7 @@ export default function AppSidebar({
                     </span>
                   )}
                 </div>
-                {isExpanded && !isSidebarCollapsed && (
+                {!operatorOnly && isExpanded && !isSidebarCollapsed && (
                   <div className="sidebar-agent-sessions" data-testid={`sidebar-agent-sessions-${agent.id}`}>
                     {sessionsLoading ? (
                       <div className="sidebar-session-muted">{t('common.loading', 'Loading')}</div>

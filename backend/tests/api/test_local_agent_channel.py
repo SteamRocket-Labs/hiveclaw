@@ -595,6 +595,8 @@ def test_shared_local_agent_channel_uses_host_owner_for_delivery_and_caller_for_
     host_owner_id = uuid4()
     agent_id = uuid4()
     session_id = uuid4()
+    canonical_session_id = session_id
+    chat_session_id = uuid4()
     message_id = uuid4()
     db = _FakeDB()
     current_user = SimpleNamespace(id=caller_user_id, tenant_id=tenant_id, role="member")
@@ -699,8 +701,8 @@ def test_shared_local_agent_channel_uses_host_owner_for_delivery_and_caller_for_
             "session_id": session_id,
         }
         return {
-            "id": session_id,
-            "chat_session_id": uuid4(),
+            "id": canonical_session_id,
+            "chat_session_id": chat_session_id,
             "agent_id": source_agent_id,
             "title": "Teammate Mac",
             "source": "web",
@@ -712,6 +714,31 @@ def test_shared_local_agent_channel_uses_host_owner_for_delivery_and_caller_for_
             "last_message_at": None,
         }
 
+    reported_result_paths = {"workspace/local-bridge/result.md"}
+
+    async def fake_authorize_agent_channel_workspace_download(
+        db_arg,
+        *,
+        tenant_id,
+        owner_user_id,
+        source_agent_id,
+        session_id,
+        path,
+    ):
+        captured.setdefault("download_authorizations", []).append(
+            {
+                "db": db_arg,
+                "tenant_id": tenant_id,
+                "owner_user_id": owner_user_id,
+                "source_agent_id": source_agent_id,
+                "session_id": session_id,
+                "path": path,
+            }
+        )
+        if path not in reported_result_paths:
+            raise HTTPException(status_code=403, detail="File is not available for this local agent session")
+        return path
+
     monkeypatch.setattr(
         local_agent_channel_api.channel_service,
         "get_or_create_default_channel_session",
@@ -721,6 +748,11 @@ def test_shared_local_agent_channel_uses_host_owner_for_delivery_and_caller_for_
         local_agent_channel_api.channel_service,
         "resolve_agent_channel_session",
         fake_resolve_agent_channel_session,
+    )
+    monkeypatch.setattr(
+        local_agent_channel_api.channel_service,
+        "authorize_agent_channel_workspace_download",
+        fake_authorize_agent_channel_workspace_download,
     )
     monkeypatch.setattr(
         local_agent_channel_api.channel_service, "enqueue_channel_message", fake_enqueue_channel_message
@@ -767,7 +799,7 @@ def test_shared_local_agent_channel_uses_host_owner_for_delivery_and_caller_for_
     )
     assert host_copy.read_text(encoding="utf-8") == "shared local agent proof"
 
-    host_result = (
+    reported_result = (
         tmp_path
         / "local_agents"
         / str(tenant_id)
@@ -777,16 +809,41 @@ def test_shared_local_agent_channel_uses_host_owner_for_delivery_and_caller_for_
         / "local-bridge"
         / "result.md"
     )
-    host_result.parent.mkdir(parents=True)
-    host_result.write_text("shared caller can download host result", encoding="utf-8")
+    reported_result.parent.mkdir(parents=True)
+    reported_result.write_text("shared caller can download reported result", encoding="utf-8")
+    unrelated_host_file = reported_result.with_name("unrelated.md")
+    unrelated_host_file.write_text("host-only workspace data", encoding="utf-8")
 
     download_response = client.get(
-        f"/agents/{agent_id}/local-agent/sessions/{session_id}/workspace/download",
+        f"/agents/{agent_id}/local-agent/sessions/{chat_session_id}/workspace/download",
         params={"path": "workspace/local-bridge/result.md"},
+    )
+    unrelated_response = client.get(
+        f"/agents/{agent_id}/local-agent/sessions/{chat_session_id}/workspace/download",
+        params={"path": "workspace/local-bridge/unrelated.md"},
     )
 
     assert download_response.status_code == 200
-    assert download_response.text == "shared caller can download host result"
+    assert download_response.text == "shared caller can download reported result"
+    assert unrelated_response.status_code == 403
+    assert captured["download_authorizations"] == [
+        {
+            "db": db,
+            "tenant_id": tenant_id,
+            "owner_user_id": host_owner_id,
+            "source_agent_id": agent_id,
+            "session_id": session_id,
+            "path": "workspace/local-bridge/result.md",
+        },
+        {
+            "db": db,
+            "tenant_id": tenant_id,
+            "owner_user_id": host_owner_id,
+            "source_agent_id": agent_id,
+            "session_id": session_id,
+            "path": "workspace/local-bridge/unrelated.md",
+        },
+    ]
 
 
 def test_web_user_creates_browser_session_ws_ticket(monkeypatch) -> None:

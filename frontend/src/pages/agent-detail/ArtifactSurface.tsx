@@ -352,12 +352,14 @@ export function ArtifactCards({
   onOpenArtifact,
   context = 'assistant',
   operatorView = false,
+  operatorReason,
 }: {
   agentId?: string | null;
   artifacts?: ChatArtifactPart[];
   onOpenArtifact?: (artifact: ChatArtifactPart) => void;
   context?: ArtifactDeliveryContext;
   operatorView?: boolean;
+  operatorReason?: string;
 }) {
   const { t } = useTranslation();
   const visibleArtifacts = (artifacts || []).filter((artifact) => (
@@ -375,7 +377,7 @@ export function ArtifactCards({
       {visibleArtifacts.map((artifact) => {
         const downloadAgentId = artifactWorkspaceAgentId(artifact, agentId);
         const authority = operatorView
-          ? { operatorView: true, reason: 'Agent session administration' }
+          ? { operatorView: true, reason: operatorReason }
           : undefined;
         const size = formatArtifactSize(artifact.size);
         const openArtifact = () => onOpenArtifact?.(artifact);

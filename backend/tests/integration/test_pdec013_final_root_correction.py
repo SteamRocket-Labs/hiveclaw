@@ -396,7 +396,9 @@ async def test_personal_kb_platform_admin_scope_requires_company_equality(
 
 
 @pytest.fixture()
-async def asgi(app_user_sessionmaker):
+async def asgi(app_user_sessionmaker, owner_sessionmaker, monkeypatch):
+    from app.services import audit_logger
+
     from app.database import get_db
     from app.main import app
 
@@ -412,6 +414,17 @@ async def asgi(app_user_sessionmaker):
                 raise
 
     app.dependency_overrides[get_db] = _override_get_db
+    # The fail-closed tenant-impersonation audit deliberately commits through
+    # an independent session (``audit_logger.async_session``) so the operator
+    # receipt never depends on the uncommitted request transaction. Under the
+    # CI hermetic DATABASE_URL that module-global engine is unroutable, so the
+    # real production writer would fail-closed 503 before the route runs. Point
+    # the factory at the same Testcontainers PostgreSQL (owner role, matching
+    # the operator-plane BYPASS insert) so the full chain — advisory lock →
+    # cutover/head load → envelope seal → insert → independent commit — stays
+    # the real code path under test. The 503-on-audit-failure contract itself
+    # is covered by tests/core/test_security.py against the real writer.
+    monkeypatch.setattr(audit_logger, "async_session", owner_sessionmaker)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://fr.test") as client:
         yield client

@@ -2223,10 +2223,17 @@ async function exerciseDomain(
       };
     }
     case 'J-15': {
+      // PDEC-013: a scoped business administrator resolves as the real
+      // administrator BEFORE the technical inspector branch, so admin business
+      // access can never demonstrate the operator lane. The explicit
+      // operator.inspect grant must be exercised by an ordinary member reading
+      // another principal's Session; their own memberRun Session stays the
+      // ordinary user audience (a member's non-operator read of someone else's
+      // Session is a 403, not a user projection).
       await ensureOperatorInspectionGrant(
         context,
-        String(context.owner.user.id),
-        '00000000-0000-4000-8000-000000000015',
+        String(context.member.user.id),
+        '00000000-0000-4000-8000-000000000091',
       );
       const memberRun = await startAndAwaitChat(context.memberApi, context.agentId, 'J-15', { title: 'J-15 audience split' });
       const userProjection = await responseJson<Array<Record<string, unknown>>>(
@@ -2234,8 +2241,8 @@ async function exerciseDomain(
         'ordinary audience transcript',
       );
       const operatorProjection = await responseJson<Array<Record<string, unknown>>>(
-        await context.ownerApi.get(
-          `/api/agents/${context.agentId}/sessions/${memberRun.run.session.id}/transcript?operator_view=true&operator_reason=Atomic%20acceptance`,
+        await context.memberApi.get(
+          `/api/agents/${context.agentId}/sessions/${sessionId}/transcript?operator_view=true&operator_reason=Atomic%20acceptance`,
         ),
         'operator audience transcript',
       );

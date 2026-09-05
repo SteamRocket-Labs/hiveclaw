@@ -4,8 +4,8 @@ owner: Codex
 status: active
 authority: canonical-working-state
 last_reviewed: 2026-09-06
-source_commit: 0ce51f049e03c689a440075a5de8a7a9d99c609c
-verification_status: release-candidate-local-gates-green-awaiting-commit
+source_commit: 70cefcc1de418cac068cb280a813c8051b57a027
+verification_status: d2-local-major-review-closed-awaiting-commit-push-ci
 ---
 
 # 当前状态与唯一下一动作
@@ -14,7 +14,7 @@ verification_status: release-candidate-local-gates-green-awaiting-commit
 
 > owner 已接受 PDEC-012/PDEC-014：zCode 负责后端及功能实现，Kimi 负责前端 UI；优先由未参与该候选实现的 zCode/Kimi 或可用 CC 做只读交叉 review，主 Codex 随后独立加严检查完整代码、调用链、逆向红例与真实证据。CC 不可用时不等待。只有重大节点额外挑战方案、反例并对账证据，收敛结论后推进。主 Codex 保留 Goal、集成、生产验收/部署与交付；旧外部代理禁令被替代。96 条 production journeys 与 D/E 合同不变；当前 manifest 下 pass 1/pass 2 均未运行，NPTCR 为 0/96。
 
-> 2026-09-05 owner 新接受 **PDEC-013**：平台管理员/公司管理员可管理范围内全部业务，包括员工 Agent 私有会话、文件和知识；凭据不明文展示。员工仅自己的/公开 Agent，不能删除 Agent或自授管理员。管理员业务访问不再需要额外 operator grant，operator 不是第四种产品身份；公司后台补直接返回 App。旧管理员 privacy-deny/observer-only 断言被替代，96 条 ID/数量与发布门槛保留。新合同、后端及角色 UI 候选已完成作者实现、非作者复核与 Codex 独立加严检查，PDEC-013 **本地跨层重大节点闭合**；尚未提交、部署或执行 current manifest 双遍，不能冒充新权限已经上线。
+> 2026-09-05 owner 新接受 **PDEC-013**：平台管理员/公司管理员可管理范围内全部业务，包括员工 Agent 私有会话、文件和知识；凭据不明文展示。员工仅自己的/公开 Agent，不能删除 Agent或自授管理员。管理员业务访问不再需要额外 operator grant，operator 不是第四种产品身份；公司后台补直接返回 App。旧管理员 privacy-deny/observer-only 断言被替代，96 条 ID/数量与发布门槛保留。新合同、后端及角色 UI 已进入 exact application commit `70cefcc1` 并推至 `origin/main`；PDEC-013 **本地跨层重大节点闭合**，但该提交 CI 尚未全绿、未部署或执行 current manifest 双遍，不能冒充新权限已经上线。
 
 ## 当前目标与可观察 Done
 
@@ -31,9 +31,9 @@ verification_status: release-candidate-local-gates-green-awaiting-commit
 | 事实 | 当前值 | 证据边界 |
 |---|---|---|
 | PDEC-013 review | **本地跨层重大节点闭合；Release / production 未开始** | 后端zCode修正、CC接受与Codex独立复核保持有效，当前定向真实PG/HTTP/RLS **70/70**。Kimi角色UI首稿经CC及Codex阻断后完成主修与两项微修；Kimi最终报告`d2dacc32…dbb7`，zCode非作者复核`04df7b8d…579a0`接受。Codex独立新鲜端口恢复反例 **5/5**、角色E2E **12/12**、单测 **21/21**、tsc零错误；inactive/无效/跨tab公司选择、HR错误归因、真实过期登录及后台返回App均有维护回归。跨层对账后端70/70与前端证据一致。浏览器证据仍mock API；当前未提交、未部署、不计Journey PASS |
-| release authorization | **2026-09-06 owner 已明确授权 commit + Railway production 三服务部署** | exact staged candidate 为189路径：backend 99、frontend 77、docs 11、manifest 1、work-packet 1；明确排除`.ultra`运行态、Yuxi审计未暂存增补、`bp-kingdee`、PDF/生成报告、根目录临时package及其他owner文件。前后端全量gate、CC独立review与Codex加严复核已绿；尚未commit/push/deploy，push仍按独立外部效果处理 |
+| release authorization | **2026-09-06 owner 已明确授权 commit、push 与 Railway production 三服务部署** | 189路径候选已形成并推送 exact `D=70cefcc1de418cac068cb280a813c8051b57a027`；仍明确排除`.ultra`运行态、Yuxi审计未暂存增补、`bp-kingdee`、PDF/生成报告、根目录临时package及其他owner文件。因 exact D CI 三个job分别暴露frontend snapshot、atomic J-15及backend hermetic审计接线三类blocker，D保持禁止部署；D2本地重大节点已闭合，须等待其exact CI全绿后再从同一SHA部署三服务 |
 | execution roles | zCode 功能实现；Kimi UI；非作者交叉review或可用CC；Codex独立加严复核；重大节点额外对抗/对账 | M0重大节点CC挑战后zCode修正`5c26b016a7ac452697ae9dc878c16a8a`已返回。Kimi非作者review`cd9a3e5c81bc498f88082e14fd5f2a59`已返回并独立真实PG证明bodyless停用后的pending business task仍可被claim且executor gate通过。Codex另有管理、权限提交和Runtime三条红例；CC窄对账`57971`已撤回先前放行并改判`BLOCKED_FOR_ZCODE_CORRECTION`。F1/F2保持闭合，当前只继续F3及同根因route残余。worker无production effect/最终验收权威 |
-| Goal activation | `get_goal` 当前机械状态为 **`blocked`**；owner 本轮已明确“继续、搞完”，当前工作已恢复，不重建 | 保存的完整目标仍在同一 thread；PDEC-013 是 owner 随后明确 steering，经 canonical 文档恢复。Goal 状态不能覆盖最新用户裁决或充当产品完成证据；现有工具没有由Codex把blocked改为active的授权接口，因此继续执行当前请求并如实保留该机械差异 |
+| Goal activation | **`active`** | 2026-09-06 已按 owner 最新要求重建 Goal：纳入 PDEC-013、后台返回 App、前一品牌遗留内容与邀请/admin-500 遗留项，以及 zCode/Kimi 实现、CC 后 Codex 独立复审、仅重大节点对抗性对账的分工；不沿用旧提示词中的委派禁令 |
 | 当前 production | 三服务同为 `6d46459e3a3dcf50dd32043583f4ab57667b0701` | backend `637818b5…`、backend-api `0bce9b71…`、frontend `5dccd5b8…` 均 `SUCCESS`；public health/frontend 绿，只是当前 supporting baseline，不是最终 D |
 | production manifest | 35 组 / 96 条，external fake 禁止；**PDEC-013 候选语义与本地代码重大节点已对齐** | 当前候选 hash `73de9799eaf5b94970ad3b64b48fd8a19b9a24106ccee26212302f7c6a4c7e37`；P15-ADMIN、P29-CADMIN/PADMIN 已改为管理员选定公司内业务访问、真实actor审计与凭据不明文，operator仍是技术能力。全部 ID/数量/顺序/评分保留，旧 evidence 不迁移；未部署、未执行 current manifest 双遍前不得以本地代码冒充production完成 |
 | NPTCR | 0/96 Closed | current manifest pass 1/pass 2 均未运行；机械 scorer 固定 `semantic_verdict=not_computed_by_tool` |
@@ -46,9 +46,9 @@ verification_status: release-candidate-local-gates-green-awaiting-commit
 | renewal document release hygiene | `EARLIER_REVIEW_CLOSED / RECOVERY_DELTA_REVIEWED` | 初始准备由CC`4ea7301c…`与Codex核对九文件diff`bbd7c996…`、architecture254/旧gate3188通过；profile冻结缺口已纳入M0。新历史归档保留原文且当前状态只替换该块；CC`91849`独立核实历史17732字符无丢失并重跑10passed/0.31s。Codex补明迁移后“本文件/上表”指代后，结构10passed/0.36s、working-tree gate3196通过；不改变原历史块 |
 | administrator / operator authority | `Fix Candidate / PDEC_013_LOCAL_MAJOR_NODE_CLOSED` | 三角色、选定公司作用域、管理员员工私有业务访问、员工自己/公开Agent边界、管理员授予公司管理员、HR、Local Agent及凭据不明文已在本地实现与回归中对齐。operator仍是技术能力，不是第四产品身份；generic delegated manage不得扩权。尚需final D production三角色/inspector双遍、offboarding/reload/RLS no-leak和真实消费证据 |
 | backend local validation | `RELEASE_CANDIDATE_FULL_GREEN / M0_LOCAL_MAJOR_NODE_CLOSED` | exact staged candidate 全量 **9070 passed / 2 skipped / 1 warning**；release修正后invoker **65/65**、RLS allowlist **17/17**，live scanner与registry均109条、fingerprint一致。CC增量review `a7186273…` 判定`ACCEPTED_FOR_FULL_BACKEND_GATE`，Codex独立复核一致。既有M0 claim后liveness/defer-order与PDEC-013定向真实PG证据保持；尚未部署、未计Journey PASS |
-| GitHub Harness CI | `D3_SUCCESS / NEW_CANDIDATE_PENDING` | exact `0ce51f04` run `33528559298` 已全部成功：frontend 34/34、atomic 15/15、backend 8863 passed/3 skipped、prompt/reward-hack/internal eval 与 legacy gate 全绿。D3 因随后发现 tenant retirement/Local Bridge 与 J4 本地前置断点而未部署；它只作为可靠绿基线，新 coherent D 必须包含这些修复并重跑 exact CI |
+| GitHub Harness CI | `EXACT_D_BLOCKED / D2_LOCAL_REVIEWED` | exact `70cefcc1` run `33981574254`三job均失败：frontend unit/i18n/build全绿后Playwright **74 passed / 3 failed**，均为缺少`chromium-linux` Personal Knowledge新手首屏基线；CI actual已逐图确认无裁切/回归并由Kimi接纳为三张x64 Linux基线。atomic J-01..J-14通过，J-15因旧测试把`org_admin`强制当inspector而失败，zCode已改为普通员工显式grant检查另一人Session。backend为 **9064 passed / 5 failed / 3 skipped**，五条PDEC-013 HTTP测试均因CI hermetic `DATABASE_URL`指向不可达端口、强制审计writer未使用测试注入session而fail-closed 503；zCode已完成Testcontainers owner-session最小接线，不改生产writer或断言。CC已独立接受六路径候选；Codex独立复核PDEC-013与security **40/40**、J-15真实全栈 **1/1**、三张Linux图像及tsc，未见新增blocker。D仍不得部署，D2须等exact CI全绿 |
 | frontend local validation | `ENTRY_TARGETS_REVIEWED / MANAGED_USABILITY_LOCAL_REVIEW_COMPLETE` | Kimi`89115`终态CSS/spec/modal/Darwin snapshot为`89b00fea…`/`8f584f54…`/`89fe736f…`/`324229e6…`。CC`72849`无blocker：独立覆盖740/860/960×920及740×720/640的完整行、168→248真实拖动、rail/overflow、快速及延迟第二Enter零DELETE、timer/reopen与非danger焦点；聚焦3、cold/warm25、tsc、Vitest362、i18n/build均绿。Codex随后读码/图并串行独立跑聚焦**3 passed / 6.0s**、完整spec **25 passed / 20.5s**及tsc绿，接受本地候选。Linux twin仍旧，必须由x64 CI再生成；CSS注释对最大拖动后的“majority”表述不精确但不影响行为，不为注释重开代码轮。未部署、未计Journey PASS；HR/新角色/Knowledge仍open |
-| atomic full-stack journeys | `HISTORICAL_LOCAL_GREEN` | fresh-schema CI 基线 **15/15 passed** 使用声明过的 external fakes；只能证明确定性底线，不证明当前 dirty candidate，也不改变 production 96 条分母或 NPTCR |
+| atomic full-stack journeys | `EXACT_D_J15_FAILED / D2_LOCAL_J15_GREEN` | run `33981574254` J-01..J-14通过，J-15在两次attempt均因`operatorProjection`无`operator_details`失败；production授权代码按PDEC-013正确把公司管理员识别为`scoped_business_admin`，失配点为旅程角色构造。D2改为普通员工获显式`operator.inspect`后读取另一人的Session，并保留其本人Session普通投影；zCode与Codex分别用真实前后端、PostgreSQL RLS、Chromium独立复跑 **1/1**。该15条使用声明过的external fakes；本地修正绿仍只证明确定性底线，不改变production 96条分母或NPTCR |
 | response learning | `Breakpoint / LOCAL_RECOVERY_GREEN` | required post-commit terminal outbox 已把 canonical binding、claim/validate/process/ack、retry/dead-letter/reconciliation 与 input admission hold 接入共享 terminal settlement；backend full-suite 已绿，仍须 frontend/build、fresh-chain、部署与 production crash/replay 证明 |
 | session summary | `Breakpoint / LOCAL_RECOVERY_GREEN` | Kernel 不再提前持久化 summary；Web terminal processor 只从 committed transcript/result 生成 summary，未知 provider outcome 进入 durable reconciliation，旧 sequence 不覆盖新 summary；仍须 coherent D production hold/abort/replay 证明 |
 | Local Agent | `hive-connect status` 当前为 connected/online，Agent `b8f6fc83…`、runtime `codex` | `Partial loop / RECOVERED_SUPPORTING`；PDEC-008 授权 lab login/pair/revoke，不授权读取或轮换真实 secret；final D 仍须 message/progress/final、disconnect/reconnect/revoke 双遍 |
@@ -158,7 +158,7 @@ verification_status: release-candidate-local-gates-green-awaiting-commit
 
 ## 唯一下一动作
 
-在已完成本地release gates与CC→Codex对账的189路径候选上创建唯一 coherent `D` commit，并对该SHA运行committed archive gate；随后取得该exact `D` 的push授权并等待x64 GitHub Harness CI全绿，再按runbook将backend/backend-api/frontend从同一提交部署到Railway production。部署终态与公共health成立后进入96条current manifest双遍、三角色/inspector负向、故障恢复、rollback与cleanup；不操作未纳入候选的owner文件，也不把部署成功冒充Journey PASS。
+把已完成CC独立review与Codex独立复核的六路径D2候选精确提交并推送，等待该exact SHA的GitHub Harness三job全绿；随后按既有授权从同一SHA部署backend/backend-api/frontend。部署后进入96条current manifest双遍、三角色/inspector负向、故障恢复、rollback与cleanup；不部署已知CI红的D，不操作未纳入候选的owner文件，也不把部署成功冒充Journey PASS。
 
 ## Not Done / Do Not Redo
 

@@ -241,6 +241,77 @@ async def _prior_unprojected_transcript_event_id(
     return result.scalar_one_or_none()
 
 
+# Deterministic prefix for the mechanical seal of a terminal owner that has no
+# canonical terminal-boundary lane (plain subagent). The full key is
+# ``{prefix}:{runtime_task_id}``, so replays reuse the original boundary
+# receipt instead of sealing a second time.
+TERMINAL_OWNER_SEGMENT_RECOVERY_IDEMPOTENCY_KEY = "t0-terminal-owner-recovery"
+
+
+async def _seal_terminal_boundary_pending_owner(
+    db: AsyncSession,
+    *,
+    transcript_event: Any,
+    boundary_error: Any,
+) -> bool:
+    """Mechanically seal a stale open segment whose terminal owner cannot.
+
+    Plain ``subagent`` terminal tasks emit T0-bridged transcript events but are
+    not in ``TERMINAL_BOUNDARY_REQUIRED_TASK_TYPES``, so no canonical terminal
+    boundary outbox will ever seal the segment they opened and every later
+    task's events fail on the owner mismatch. This shared mismatch boundary
+    proves the exact owner is terminal, completed, tenant/agent/session-scoped
+    to this transcript event, and carries no canonical boundary generation,
+    then seals only that owner's segment. It is content-free mechanical
+    recovery: the RuntimeTask row is never mutated and no semantic success is
+    invented. Any unproven fact returns False so the caller fails closed.
+    """
+
+    from app.memory.t0.ledger import seal_t0_session_segment
+    from app.models.runtime_task import TERMINAL_BOUNDARY_TERMINAL_STATUSES, RuntimeTask
+
+    owner_uuid = _uuid_or_none(getattr(boundary_error, "active_runtime_task_id", None))
+    if owner_uuid is None:
+        return False
+    owner_task = (
+        await db.execute(select(RuntimeTask).where(RuntimeTask.id == owner_uuid).with_for_update())
+    ).scalar_one_or_none()
+    if owner_task is None:
+        return False
+    owner_agent_ids = {owner_task.parent_agent_id, owner_task.child_agent_id}
+    owner_session_ids = {
+        _uuid_or_none(owner_task.parent_session_id),
+        _uuid_or_none(owner_task.child_session_id),
+    }
+    if (
+        owner_task.tenant_id != transcript_event.tenant_id
+        or transcript_event.agent_id not in owner_agent_ids
+        or transcript_event.session_id not in owner_session_ids
+        or owner_task.status not in TERMINAL_BOUNDARY_TERMINAL_STATUSES
+        or owner_task.completed_at is None
+        or owner_task.terminal_boundary_generation is not None
+        or owner_task.terminal_boundary_enqueued_at is not None
+    ):
+        return False
+    seal_t0_session_segment(
+        agent_id=transcript_event.agent_id,
+        session_id=transcript_event.session_id,
+        reason="terminal_owner_segment_recovery",
+        metadata={
+            "recovery": "terminal_nonboundary_owner",
+            "owner_task_type": owner_task.task_type,
+            "owner_status": owner_task.status,
+            "owner_completed_at": owner_task.completed_at.isoformat(),
+            "recovered_for_transcript_event": str(transcript_event.id),
+            "incoming_runtime_task_id": getattr(boundary_error, "incoming_runtime_task_id", None),
+            "active_segment_id": getattr(boundary_error, "active_segment_id", None),
+        },
+        idempotency_key=f"{TERMINAL_OWNER_SEGMENT_RECOVERY_IDEMPOTENCY_KEY}:{owner_uuid}",
+        expected_runtime_task_id=owner_uuid,
+    )
+    return True
+
+
 async def bridge_transcript_event_to_t0(
     *,
     transcript_event_id: str | Any,
@@ -253,7 +324,7 @@ async def bridge_transcript_event_to_t0(
         return False
 
     from app.database import async_session, tenant_scoped_session
-    from app.memory.t0.ledger import append_t0_session_event, replay_t0_session_events
+    from app.memory.t0.ledger import T0SegmentBoundaryPending, append_t0_session_event, replay_t0_session_events
     from app.models.audit import ChatMessage
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.services.tenant_resolver import resolve_tenant_for_transcript_event
@@ -319,22 +390,40 @@ async def bridge_transcript_event_to_t0(
                             ),
                             None,
                         )
+
+                        def _append_t0_event() -> Any:
+                            return append_t0_session_event(
+                                agent_id=transcript_event.agent_id,
+                                session_id=transcript_event.session_id,
+                                event_type=transcript_event.event_type,
+                                role=str(role) if role else None,
+                                content=transcript_event.content or "",
+                                message_id=transcript_event.message_id,
+                                actor_id=actor_id,
+                                tenant_id=transcript_event.tenant_id,
+                                runtime_task_id=transcript_event.run_id,
+                                source=source,
+                                metadata=metadata,
+                                created_at=transcript_event.created_at,
+                            )
+
                         try:
                             if existing_t0_event is None:
-                                t0_result = append_t0_session_event(
-                                    agent_id=transcript_event.agent_id,
-                                    session_id=transcript_event.session_id,
-                                    event_type=transcript_event.event_type,
-                                    role=str(role) if role else None,
-                                    content=transcript_event.content or "",
-                                    message_id=transcript_event.message_id,
-                                    actor_id=actor_id,
-                                    tenant_id=transcript_event.tenant_id,
-                                    runtime_task_id=transcript_event.run_id,
-                                    source=source,
-                                    metadata=metadata,
-                                    created_at=transcript_event.created_at,
-                                )
+                                try:
+                                    t0_result = _append_t0_event()
+                                except T0SegmentBoundaryPending as boundary_error:
+                                    # Only a proven terminal owner without a
+                                    # canonical boundary lane is sealed; any
+                                    # unproven fact re-raises and fails closed
+                                    # exactly as before. The retried append is
+                                    # the single recovery attempt.
+                                    if not await _seal_terminal_boundary_pending_owner(
+                                        db,
+                                        transcript_event=transcript_event,
+                                        boundary_error=boundary_error,
+                                    ):
+                                        raise
+                                    t0_result = _append_t0_event()
                                 segment_id = t0_result.segment_id
                                 t0_event_id = t0_result.event_id
                                 t0_sequence = t0_result.sequence

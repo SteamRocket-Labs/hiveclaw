@@ -720,7 +720,7 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 
 # Reviewed normalized AST of direct bypass scopes and statically discoverable
 # contextmanager consumers. Predicates, locks, ORM writes, and add() targets are included.
-RLS_BYPASS_SCOPES_SHA256 = "94a1911434053a1f0f505722cba4ec5c94a94cb2e66d32bcb5dd189bef31ac47"
+RLS_BYPASS_SCOPES_SHA256 = "d34d10872a97c74d6cc0aa5391f84dacd514fb50fcfbccacc096ec464c1b6120"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

@@ -23,6 +23,8 @@ describe('PersonalKnowledgeQueryState', () => {
     expect(html).toContain('data-personal-knowledge-state="forbidden"');
     expect(html).toContain('Personal Knowledge access denied');
     expect(html).toContain('This is not an empty knowledge base');
+    expect(html).toContain('does not have permission to open this personal library');
+    expect(html).not.toContain('Owner scope');
     expect(html).not.toContain('Personal KB is empty');
   });
 

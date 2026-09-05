@@ -45,7 +45,7 @@ export default function PersonalKnowledgeQueryState({
         description={forbidden
           ? t(
             'personalKnowledge.accessDeniedBody',
-            'This is not an empty knowledge base. Your account or this Agent does not have access to the Owner scope; ask the Owner or an administrator to review the grant.',
+            'This is not an empty knowledge base. Your account or this Agent does not have permission to open this personal library; ask the owner or an administrator to grant access.',
           )
           : t(
             'personalKnowledge.unavailableBody',

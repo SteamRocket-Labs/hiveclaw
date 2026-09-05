@@ -19,6 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.channel_ingress_event import ChannelIngressEvent
+from app.models.tenant import Tenant
+from app.runtime.tenant_admission import RuntimeTenantPreconditionError
 from app.services.channel_secret_storage import (
     CHANNEL_INGRESS_PROVIDER_FIELD,
     CHANNEL_INGRESS_SECRET_PATHS,
@@ -511,7 +513,14 @@ class ChannelIngressInboxService:
                                     ChannelIngressEvent.status == "processing",
                                     ChannelIngressEvent.locked_at <= expired_lock,
                                 ),
-                            )
+                            ),
+                            # Provider ingress is authenticated only by the
+                            # channel identity; tenant liveness is re-checked
+                            # at claim time so a company deactivated by the
+                            # admin toggle or tenant deletion cannot dispatch
+                            # queued channel events into its Agent runtime.
+                            # Events stay durable and resume on reactivation.
+                            ChannelIngressEvent.tenant_id.in_(select(Tenant.id).where(Tenant.is_active.is_(True))),
                         )
                         .order_by(ChannelIngressEvent.available_at, ChannelIngressEvent.received_at)
                         .limit(max(1, int(limit)))
@@ -606,6 +615,36 @@ class ChannelIngressInboxService:
             await db.commit()
             return outcome
 
+    async def _release_for_inactive_tenant(
+        self,
+        *,
+        item: ClaimedChannelIngressEvent,
+        worker_id: str,
+    ) -> bool:
+        """Release a claim whose tenant was deactivated after the claim.
+
+        A company deactivation is not a failure of the event: the row returns
+        to ``received`` with its pre-claim attempt budget restored, so
+        reactivation can process it. The deferral never marks the row
+        processed, consumes its finite failure attempts, or dead-letters it.
+        The row keeps the ``available_at`` it was already eligible under at
+        claim time: rewriting it would let events that arrived after this one
+        overtake it once the company is reactivated.
+        """
+
+        async with self._worker_session("defer") as db:
+            row = (
+                await db.execute(select(ChannelIngressEvent).where(ChannelIngressEvent.id == item.id).with_for_update())
+            ).scalar_one_or_none()
+            if row is None or row.status != "processing" or row.locked_by != worker_id:
+                return False
+            row.status = "received"
+            row.attempt_count = max(0, int(row.attempt_count or 0) - 1)
+            row.locked_by = None
+            row.locked_at = None
+            await db.commit()
+            return True
+
     async def drain_once(
         self,
         *,
@@ -617,7 +656,7 @@ class ChannelIngressInboxService:
             from app.services.channel_ingress_dispatcher import dispatch_channel_ingress_event
 
             dispatch = dispatch_channel_ingress_event
-        stats = {"claimed": 0, "processed": 0, "retried": 0, "dead_lettered": 0}
+        stats = {"claimed": 0, "processed": 0, "retried": 0, "dead_lettered": 0, "deferred": 0}
         items = await self.claim_batch(worker_id=worker_id, limit=limit)
         stats["claimed"] = len(items)
         for item in items:
@@ -626,6 +665,12 @@ class ChannelIngressInboxService:
                 if await self._mark_processed(item=item, worker_id=worker_id, receipt=receipt):
                     stats["processed"] += 1
             except Exception as exc:
+                if isinstance(exc, RuntimeTenantPreconditionError) and exc.reason_code == "tenant_inactive":
+                    # The tenant was deactivated after this claim was committed;
+                    # defer the durable row instead of counting a failure.
+                    if await self._release_for_inactive_tenant(item=item, worker_id=worker_id):
+                        stats["deferred"] += 1
+                    continue
                 outcome = await self._mark_failed(item=item, worker_id=worker_id, error=exc)
                 if outcome == "retry":
                     stats["retried"] += 1

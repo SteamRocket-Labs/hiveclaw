@@ -20,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.core.permissions import check_agent_access
+from app.core.permissions import check_agent_access, is_scoped_business_admin
 from app.core.security import get_current_user
 from app.database import get_db, tenant_scoped_session
 from app.models.agent import Agent
@@ -229,7 +229,16 @@ def _schedule_personal_import_worker(
 
 def _principal_stack_for_read(agent: Agent, current_user: User) -> PrincipalStack:
     owner_id = getattr(agent, "owner_user_id", None) or getattr(agent, "creator_id", None)
-    current_role = PrincipalRole.COMPANY_ADMIN if current_user.role == "org_admin" else PrincipalRole.CURRENT_USER
+    # PDEC-013: both scoped administrator roles hold the company-admin
+    # business visibility inside the exact company the Agent lookup resolved
+    # to — a platform administrator in the selected company reads PL3 company
+    # business knowledge like an organization administrator. PL4 credentials
+    # stay denied/reference-only for every browser principal.
+    current_role = (
+        PrincipalRole.COMPANY_ADMIN
+        if is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None))
+        else PrincipalRole.CURRENT_USER
+    )
     current = Principal(
         role=current_role,
         id=str(current_user.id),
@@ -261,6 +270,99 @@ def _principal_stack_for_read(agent: Agent, current_user: User) -> PrincipalStac
     )
 
 
+async def _audit_scoped_business_admin_personal_kb_access(
+    db: AsyncSession,
+    *,
+    current_user: User,
+    agent: Agent,
+    owner_user_id: uuid.UUID,
+    action: str,
+    document_id: uuid.UUID | None = None,
+) -> None:
+    """Record one cross-owner administrator read of managed Personal KB content.
+
+    Follows the ``session.scoped_business_admin_access`` pattern: the audit row
+    is written through the request transaction, so a failure denies the access
+    instead of silently releasing another user's knowledge content. An owner
+    reading their own scope produces no event.
+    """
+
+    if str(current_user.id) == str(owner_user_id):
+        return
+    if not is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None)):
+        return
+
+    from app.core.policy import write_audit_event
+
+    await write_audit_event(
+        db,
+        event_type="personal_knowledge.scoped_business_admin_access",
+        severity="info",
+        actor_type="user",
+        actor_id=current_user.id,
+        tenant_id=getattr(agent, "tenant_id", None),
+        action=action,
+        resource_type="knowledge_document",
+        resource_id=document_id,
+        details={
+            "agent_id": str(agent.id),
+            "owner_user_id": str(owner_user_id),
+            "actor_role": str(getattr(current_user, "role", "") or ""),
+            "authority_source": "scoped_business_admin",
+            "outcome": "allowed",
+        },
+    )
+
+
+async def _audit_scoped_business_admin_agent_knowledge_access(
+    db: AsyncSession,
+    *,
+    current_user: User,
+    agent: Agent,
+    action: str,
+    page_id: str | None = None,
+) -> None:
+    """Record one cross-owner administrator read of managed Agent Knowledge.
+
+    Covers the live Agent-Knowledge read surfaces (overview, observability,
+    pages, page detail, entries, events, candidates) at the consumption
+    boundary. Follows the ``session.scoped_business_admin_access`` pattern: the
+    row is written through the request transaction before protected content is
+    returned, so an audit failure denies the read. The Agent owner reading
+    their own Agent produces no event; detail reads name the exact page.
+    """
+
+    owner_user_id = getattr(agent, "owner_user_id", None) or getattr(agent, "creator_id", None)
+    if owner_user_id is None or str(current_user.id) == str(owner_user_id):
+        return
+    if not is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None)):
+        return
+
+    from app.core.policy import write_audit_event
+
+    details: dict[str, Any] = {
+        "agent_id": str(agent.id),
+        "owner_user_id": str(owner_user_id),
+        "actor_role": str(getattr(current_user, "role", "") or ""),
+        "authority_source": "scoped_business_admin",
+        "outcome": "allowed",
+    }
+    if page_id is not None:
+        details["page_id"] = page_id
+    await write_audit_event(
+        db,
+        event_type="agent_knowledge.scoped_business_admin_access",
+        severity="info",
+        actor_type="user",
+        actor_id=current_user.id,
+        tenant_id=getattr(agent, "tenant_id", None),
+        action=action,
+        resource_type="agent_knowledge",
+        resource_id=agent.id,
+        details=details,
+    )
+
+
 @personal_router.get("/documents")
 async def list_current_user_personal_documents(
     limit: int = Query(50, ge=1, le=100),
@@ -272,7 +374,11 @@ async def list_current_user_personal_documents(
         db,
         tenant_id=_tenant_id_for_user(current_user),
         owner_user_id=uuid.UUID(str(current_user.id)),
-        principal=HumanBrowserPrincipal(user_id=uuid.UUID(str(current_user.id))),
+        principal=HumanBrowserPrincipal(
+            user_id=uuid.UUID(str(current_user.id)),
+            role=str(getattr(current_user, "role", "") or "") or None,
+            home_tenant_id=uuid.UUID(str(current_user.tenant_id)) if getattr(current_user, "tenant_id", None) else None,
+        ),
         limit=limit,
     )
     return {"documents": [_dataclass_payload(document) for document in documents]}
@@ -539,7 +645,11 @@ async def search_current_user_personal_documents(
         tenant_id=_tenant_id_for_user(current_user),
         owner_user_id=uuid.UUID(str(current_user.id)),
         query=q,
-        principal=HumanBrowserPrincipal(user_id=uuid.UUID(str(current_user.id))),
+        principal=HumanBrowserPrincipal(
+            user_id=uuid.UUID(str(current_user.id)),
+            role=str(getattr(current_user, "role", "") or "") or None,
+            home_tenant_id=uuid.UUID(str(current_user.tenant_id)) if getattr(current_user, "tenant_id", None) else None,
+        ),
         limit=limit,
     )
     return {"results": [_dataclass_payload(result) for result in results]}
@@ -662,7 +772,11 @@ async def get_current_user_personal_document(
         tenant_id=_tenant_id_for_user(current_user),
         owner_user_id=uuid.UUID(str(current_user.id)),
         document_id=document_id,
-        principal=HumanBrowserPrincipal(user_id=uuid.UUID(str(current_user.id))),
+        principal=HumanBrowserPrincipal(
+            user_id=uuid.UUID(str(current_user.id)),
+            role=str(getattr(current_user, "role", "") or "") or None,
+            home_tenant_id=uuid.UUID(str(current_user.tenant_id)) if getattr(current_user, "tenant_id", None) else None,
+        ),
     )
     if document is None:
         raise HTTPException(status_code=404, detail="Personal knowledge document not found")
@@ -681,7 +795,11 @@ async def get_current_user_personal_document_source_preview(
         tenant_id=_tenant_id_for_user(current_user),
         owner_user_id=uuid.UUID(str(current_user.id)),
         document_id=document_id,
-        principal=HumanBrowserPrincipal(user_id=uuid.UUID(str(current_user.id))),
+        principal=HumanBrowserPrincipal(
+            user_id=uuid.UUID(str(current_user.id)),
+            role=str(getattr(current_user, "role", "") or "") or None,
+            home_tenant_id=uuid.UUID(str(current_user.tenant_id)) if getattr(current_user, "tenant_id", None) else None,
+        ),
     )
     if preview is None:
         raise HTTPException(status_code=404, detail="Personal knowledge source preview not found")
@@ -765,12 +883,20 @@ async def list_personal_documents(
 ):
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
     service = PersonalKnowledgeService()
+    owner_user_id = _owner_user_id_for_personal_kb(agent)
     documents = await service.list_personal_documents(
         db,
         tenant_id=_tenant_id_for_agent(agent, current_user),
-        owner_user_id=_owner_user_id_for_personal_kb(agent),
-        principal=HumanBrowserPrincipal(user_id=uuid.UUID(str(current_user.id))),
+        owner_user_id=owner_user_id,
+        principal=HumanBrowserPrincipal(
+            user_id=uuid.UUID(str(current_user.id)),
+            role=str(getattr(current_user, "role", "") or "") or None,
+            home_tenant_id=uuid.UUID(str(current_user.tenant_id)) if getattr(current_user, "tenant_id", None) else None,
+        ),
         limit=limit,
+    )
+    await _audit_scoped_business_admin_personal_kb_access(
+        db, current_user=current_user, agent=agent, owner_user_id=owner_user_id, action="personal_kb_list"
     )
     return {"documents": [_dataclass_payload(document) for document in documents]}
 
@@ -817,13 +943,21 @@ async def search_personal_documents(
 ):
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
     service = PersonalKnowledgeService()
+    owner_user_id = _owner_user_id_for_personal_kb(agent)
     results = await service.search_personal(
         db,
         tenant_id=_tenant_id_for_agent(agent, current_user),
-        owner_user_id=_owner_user_id_for_personal_kb(agent),
+        owner_user_id=owner_user_id,
         query=q,
-        principal=HumanBrowserPrincipal(user_id=uuid.UUID(str(current_user.id))),
+        principal=HumanBrowserPrincipal(
+            user_id=uuid.UUID(str(current_user.id)),
+            role=str(getattr(current_user, "role", "") or "") or None,
+            home_tenant_id=uuid.UUID(str(current_user.tenant_id)) if getattr(current_user, "tenant_id", None) else None,
+        ),
         limit=limit,
+    )
+    await _audit_scoped_business_admin_personal_kb_access(
+        db, current_user=current_user, agent=agent, owner_user_id=owner_user_id, action="personal_kb_search"
     )
     return {"results": [_dataclass_payload(result) for result in results]}
 
@@ -837,15 +971,28 @@ async def get_personal_document(
 ):
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
     service = PersonalKnowledgeService()
+    owner_user_id = _owner_user_id_for_personal_kb(agent)
     document = await service.get_personal_document(
         db,
         tenant_id=_tenant_id_for_agent(agent, current_user),
-        owner_user_id=_owner_user_id_for_personal_kb(agent),
+        owner_user_id=owner_user_id,
         document_id=document_id,
-        principal=HumanBrowserPrincipal(user_id=uuid.UUID(str(current_user.id))),
+        principal=HumanBrowserPrincipal(
+            user_id=uuid.UUID(str(current_user.id)),
+            role=str(getattr(current_user, "role", "") or "") or None,
+            home_tenant_id=uuid.UUID(str(current_user.tenant_id)) if getattr(current_user, "tenant_id", None) else None,
+        ),
     )
     if document is None:
         raise HTTPException(status_code=404, detail="Personal knowledge document not found")
+    await _audit_scoped_business_admin_personal_kb_access(
+        db,
+        current_user=current_user,
+        agent=agent,
+        owner_user_id=owner_user_id,
+        action="personal_kb_detail",
+        document_id=document_id,
+    )
     return _dataclass_payload(document)
 
 
@@ -858,15 +1005,28 @@ async def get_personal_document_source_preview(
 ):
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
     service = PersonalKnowledgeService()
+    owner_user_id = _owner_user_id_for_personal_kb(agent)
     preview = await service.get_personal_document_source_preview(
         db,
         tenant_id=_tenant_id_for_agent(agent, current_user),
-        owner_user_id=_owner_user_id_for_personal_kb(agent),
+        owner_user_id=owner_user_id,
         document_id=document_id,
-        principal=HumanBrowserPrincipal(user_id=uuid.UUID(str(current_user.id))),
+        principal=HumanBrowserPrincipal(
+            user_id=uuid.UUID(str(current_user.id)),
+            role=str(getattr(current_user, "role", "") or "") or None,
+            home_tenant_id=uuid.UUID(str(current_user.tenant_id)) if getattr(current_user, "tenant_id", None) else None,
+        ),
     )
     if preview is None:
         raise HTTPException(status_code=404, detail="Personal knowledge source preview not found")
+    await _audit_scoped_business_admin_personal_kb_access(
+        db,
+        current_user=current_user,
+        agent=agent,
+        owner_user_id=owner_user_id,
+        action="personal_kb_source_preview",
+        document_id=document_id,
+    )
     return _source_preview_response(preview)
 
 
@@ -876,7 +1036,7 @@ async def get_overview(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    await check_agent_access(db, current_user, agent_id)
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
     from app.models.runtime_task import RuntimeTask
     from app.services.knowledge_read_model import attach_dream_runtime_status, build_knowledge_overview
 
@@ -892,7 +1052,11 @@ async def get_overview(
             .limit(1)
         )
     ).scalar_one_or_none()
-    return attach_dream_runtime_status(build_knowledge_overview(_data_root(), agent_id), latest_dream)
+    overview = attach_dream_runtime_status(build_knowledge_overview(_data_root(), agent_id), latest_dream)
+    await _audit_scoped_business_admin_agent_knowledge_access(
+        db, current_user=current_user, agent=agent, action="agent_knowledge_overview"
+    )
+    return overview
 
 
 @router.get("/observability")
@@ -903,10 +1067,14 @@ async def get_observability(
 ):
     """C8 memory-pipeline observability: consolidation-debt state + trajectory
     and per-axis T2 label aggregates from the derived index tables."""
-    await check_agent_access(db, current_user, agent_id)
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
     from app.services.knowledge_read_model import build_memory_observability
 
-    return build_memory_observability(_data_root(), agent_id)
+    observability = build_memory_observability(_data_root(), agent_id)
+    await _audit_scoped_business_admin_agent_knowledge_access(
+        db, current_user=current_user, agent=agent, action="agent_knowledge_observability"
+    )
+    return observability
 
 
 @router.get("/pages")
@@ -918,11 +1086,15 @@ async def get_pages(
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
     from app.services.knowledge_read_model import list_knowledge_pages
 
-    return {
+    pages = {
         "pages": list_knowledge_pages(
             _data_root(), agent_id, principal_stack=_principal_stack_for_read(agent, current_user)
         )
     }
+    await _audit_scoped_business_admin_agent_knowledge_access(
+        db, current_user=current_user, agent=agent, action="agent_knowledge_pages"
+    )
+    return pages
 
 
 @router.get("/pages/{page_id:path}")
@@ -940,6 +1112,9 @@ async def get_page(
     )
     if page is None:
         raise HTTPException(status_code=404, detail="Knowledge page not found")
+    await _audit_scoped_business_admin_agent_knowledge_access(
+        db, current_user=current_user, agent=agent, action="agent_knowledge_page_detail", page_id=page_id
+    )
     return page
 
 
@@ -952,11 +1127,15 @@ async def get_entries(
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
     from app.services.knowledge_read_model import list_knowledge_entries
 
-    return {
+    payload = {
         "entries": list_knowledge_entries(
             _data_root(), agent_id, principal_stack=_principal_stack_for_read(agent, current_user)
         )
     }
+    await _audit_scoped_business_admin_agent_knowledge_access(
+        db, current_user=current_user, agent=agent, action="agent_knowledge_entries"
+    )
+    return payload
 
 
 @router.get("/events")
@@ -965,10 +1144,14 @@ async def get_events(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    await check_agent_access(db, current_user, agent_id)
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
     from app.services.knowledge_read_model import list_knowledge_events
 
-    return {"events": list_knowledge_events(_data_root(), agent_id)}
+    payload = {"events": list_knowledge_events(_data_root(), agent_id)}
+    await _audit_scoped_business_admin_agent_knowledge_access(
+        db, current_user=current_user, agent=agent, action="agent_knowledge_events"
+    )
+    return payload
 
 
 @router.get("/candidates")
@@ -977,7 +1160,11 @@ async def get_candidates(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    await check_agent_access(db, current_user, agent_id)
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
     from app.services.knowledge_read_model import list_knowledge_candidates
 
-    return list_knowledge_candidates(_data_root(), agent_id)
+    candidates = list_knowledge_candidates(_data_root(), agent_id)
+    await _audit_scoped_business_admin_agent_knowledge_access(
+        db, current_user=current_user, agent=agent, action="agent_knowledge_candidates"
+    )
+    return candidates

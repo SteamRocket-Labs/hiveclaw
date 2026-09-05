@@ -33,11 +33,11 @@ from app.services.company_knowledge_service import (
 )
 
 
-def _principal(*, tenant_id: uuid.UUID, user_id: uuid.UUID) -> CompanyKnowledgePrincipal:
+def _principal(*, tenant_id: uuid.UUID, user_id: uuid.UUID, role: str = "org_admin") -> CompanyKnowledgePrincipal:
     return CompanyKnowledgePrincipal(
         tenant_id=tenant_id,
         accountable_user_id=user_id,
-        accountable_role="org_admin",
+        accountable_role=role,
         actor_type="user",
         actor_id=user_id,
         purpose="interactive_session",
@@ -145,7 +145,9 @@ async def test_personal_and_legacy_promotion_use_recoverable_evidence_to_review_
         company_service=company_service,
     )
     principal = _principal(tenant_id=tenant_id, user_id=admin_id)
-    denied_principal = _principal(tenant_id=tenant_id, user_id=denied_id)
+    # PDEC-013: the grant-boundary negative is an unprivileged member; a
+    # company administrator now holds role-sourced business access.
+    denied_principal = _principal(tenant_id=tenant_id, user_id=denied_id, role="member")
 
     personal_request = PersonalPromotionIntakeRequest(
         document_id=personal_document_id,

@@ -132,8 +132,20 @@ describe('WorkspaceDigitalEmployeesSection', () => {
     expect(markup).not.toContain('Delete __system_hr__');
   });
 
-  it('does not mount company employee data for a platform administrator', () => {
+  it('mounts the same selected-company employee management for a platform administrator (PDEC-013)', () => {
     auth.role = 'platform_admin';
+
+    const markup = renderToStaticMarkup(<WorkspaceDigitalEmployeesSection selectedTenantId="tenant-1" />);
+
+    expect(markup).not.toContain('Only company administrators can manage digital employees here.');
+    expect(markup).toContain('AI Product Manager');
+    expect(markup).toContain('Delete employee');
+    expect(markup).toContain('Change owner');
+    expect(markup).toContain('System protected');
+  });
+
+  it('keeps plain members out of the company employee management surface', () => {
+    auth.role = 'member';
 
     const markup = renderToStaticMarkup(<WorkspaceDigitalEmployeesSection selectedTenantId="tenant-1" />);
 

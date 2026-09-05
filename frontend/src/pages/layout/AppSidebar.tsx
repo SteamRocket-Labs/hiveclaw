@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode, type RefObject } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -28,7 +28,9 @@ import {
 } from '@tabler/icons-react';
 import { chatApi, type ChatSession } from '../../api/domains/chat';
 import { agentApi, type HrAgentInfo } from '../../api/domains/agents';
+import { isActiveCompany } from '../../api/domains/admin';
 import { localBridgeApi, type LocalAgentChannelSession } from '../../api/domains/localBridge';
+import { isAdministratorRole, isManagedEmployeeAgent, isScopedBusinessAdminForAgent } from '../../roles';
 import { isA2ASession } from '../agent-detail/chatRuntime';
 import { buildNewSessionDraftNavigation } from '../agent-detail/newSessionNavigation';
 import { sessionBranchMode, sessionTitleForUser } from '../session-workbench/sessionTitlePresentation';
@@ -66,9 +68,14 @@ const getAgentBadgeStatus = (agent: any): string | null => {
   return null;
 };
 
-const getAgentSourceBadge = (agent: any, t: any): string | null => {
+const getAgentSourceBadge = (agent: any, t: any, user?: any): string | null => {
   if (isLocalAgentRuntimeType(agent)) return t('nav.localBadge', 'Local');
-  if (agent.is_owner === false) return t('nav.publicBadge', 'Public');
+  if (agent.is_owner === false) {
+    // PDEC-013: inside an administrator's company inventory a non-owned Agent
+    // is a managed employee Agent, not automatically a public one.
+    if (isManagedEmployeeAgent(user, agent)) return t('nav.managedBadge', 'Managed');
+    return t('nav.publicBadge', 'Public');
+  }
   if (agent.visibility_scope === 'public' || agent.is_public) return t('nav.publicBadge', 'Public');
   return null;
 };
@@ -100,7 +107,8 @@ interface AppSidebarProps {
   isSidebarCollapsed: boolean;
   onToggleSidebar: () => void;
   agents: any[];
-  tenants: { id: string; name: string }[];
+  tenants: { id: string; name: string; is_active?: boolean }[];
+  companiesLoaded?: boolean;
   currentTenant: string;
   onSwitchTenant: (tenantId: string) => void;
   isChinese: boolean;
@@ -110,6 +118,7 @@ interface AppSidebarProps {
   accountMenuRef: RefObject<HTMLDivElement | null>;
   showAccountMenu: boolean;
   onToggleAccountMenu: () => void;
+  onCloseAccountMenu?: () => void;
   onToggleLang: () => void;
   onOpenAccountSettings: () => void;
   onLogout: () => void;
@@ -272,6 +281,7 @@ export default function AppSidebar({
   onToggleSidebar,
   agents,
   tenants,
+  companiesLoaded,
   currentTenant,
   onSwitchTenant,
   isChinese,
@@ -281,6 +291,7 @@ export default function AppSidebar({
   accountMenuRef,
   showAccountMenu,
   onToggleAccountMenu,
+  onCloseAccountMenu,
   onToggleLang,
   onOpenAccountSettings,
   onLogout,
@@ -316,18 +327,65 @@ export default function AppSidebar({
     || (createAgentId && String(createAgentId) === String(agentId) ? resolvedHrAgent : null);
 
   const canSeeControlPlane = user && ['platform_admin', 'org_admin'].includes(user.role);
-  const activeTenantName = tenants.find((tenant) => tenant.id === currentTenant)?.name || t('layout.myCompany', 'My Company');
+  // Only active companies may ever be selected or shown as the current
+  // workspace; a disabled selected company is simply not a valid selection.
+  const activeTenants = tenants.filter((tenant) => isActiveCompany(tenant));
+  const hasSelectedCompany = Boolean(currentTenant) && activeTenants.some((tenant) => tenant.id === currentTenant);
+  const activeTenantName = activeTenants.find((tenant) => tenant.id === currentTenant)?.name
+    || (user?.role === 'platform_admin' && !currentTenant
+      ? t('layout.noCompanySelected', 'No company selected')
+      : t('layout.myCompany', 'My Company'));
   const effectiveSessionsByAgentId = useMemo(
     () => ({ ...sessionsByAgentId, ...(agentSessionsByAgentId || {}) }),
     [agentSessionsByAgentId, sessionsByAgentId],
   );
+
+  const settingsTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const onCloseAccountMenuRef = useRef(onCloseAccountMenu);
+  useEffect(() => {
+    onCloseAccountMenuRef.current = onCloseAccountMenu;
+  });
+  const accountMenuLocationRef = useRef<string | null>(null);
+  const accountMenuLocationKey = `${location.pathname}${location.search}${location.hash}`;
+
+  // Opening the Settings menu moves focus to its first action so keyboard users
+  // Tab straight through it; Escape closes and returns focus to the trigger.
+  useEffect(() => {
+    if (!showAccountMenu || !onCloseAccountMenuRef.current) return;
+    const firstItem = accountMenuRef.current?.querySelector<HTMLElement>('.account-dropdown-item');
+    firstItem?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      onCloseAccountMenuRef.current?.();
+      settingsTriggerRef.current?.focus();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [showAccountMenu, accountMenuRef]);
+
+  // A route change (including browser history navigation, which carries no
+  // outside mousedown) closes the menu instead of leaving it over a new page.
+  useEffect(() => {
+    if (accountMenuLocationRef.current === null) {
+      accountMenuLocationRef.current = accountMenuLocationKey;
+      return;
+    }
+    if (accountMenuLocationRef.current === accountMenuLocationKey) return;
+    accountMenuLocationRef.current = accountMenuLocationKey;
+    if (showAccountMenu) onCloseAccountMenuRef.current?.();
+  }, [accountMenuLocationKey, showAccountMenu]);
 
   useEffect(() => {
     if (providedHrAgent !== undefined) {
       setResolvedHrAgent(providedHrAgent);
       return;
     }
-    if (!user || user.role === 'platform_admin') {
+    // PDEC-013: both administrator roles use the canonical HR flow. The only
+    // prerequisite is a valid company context — for a platform administrator
+    // that is the authenticated selected company; without one the server
+    // answers with a typed selection error and no HR Agent is resolved here.
+    if (!user || (user.role === 'platform_admin' && !currentTenant)) {
       setResolvedHrAgent(null);
       return;
     }
@@ -367,6 +425,10 @@ export default function AppSidebar({
     if (isOperatorOnlyAgent(getSidebarAgentById(agentId))) return;
     if (!force && (agentSessionsByAgentId?.[agentId] || sessionsByAgentId[agentId])) return;
     if (sessionLoadingByAgentId[agentId]) return;
+    // The roster decides the truthful session scope (managed vs own). While it
+    // is still loading the row is unknown, so defer without caching instead of
+    // freezing the tree on the wrong scope.
+    if (!getSidebarAgentById(agentId) && agents.length === 0) return;
     setSessionLoadingByAgentId((prev) => ({ ...prev, [agentId]: true }));
     try {
       const agent = getSidebarAgentById(agentId);
@@ -378,7 +440,12 @@ export default function AppSidebar({
         }));
         return;
       }
-      const rows = await chatApi.listSessions(agentId, 'mine');
+      // Scoped administrators load the selected company's managed Session
+      // inventory as themselves (server-audited, no operator reason);
+      // employees remain on their own sessions.
+      const rows = isScopedBusinessAdminForAgent(user, agent)
+        ? await chatApi.listSessions(agentId, 'all')
+        : await chatApi.listSessions(agentId, 'mine');
       setSessionsByAgentId((prev) => ({
         ...prev,
         [agentId]: rows.filter((session: any) => session.source_channel !== 'heartbeat'),
@@ -464,7 +531,7 @@ export default function AppSidebar({
     void loadAgentSessions(activeAgentId, Boolean(activeSessionId));
     // Manual expansion calls the same loader without forcing a refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeAgentId, activeSessionId]);
+  }, [activeAgentId, activeSessionId, agents]);
 
   const [expandedSessionFamilyIds, setExpandedSessionFamilyIds] = useState<Set<string>>(() => new Set());
 
@@ -554,19 +621,21 @@ export default function AppSidebar({
             {children.length}
           </span>
         )}
-        <button
-          type="button"
-          className="sidebar-session-action"
-          aria-label={`Delete session ${title}`}
-          title={t('common.delete', 'Delete')}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            void handleDeleteSession(agentId, session);
-          }}
-        >
-          <IconTrash size={12} stroke={1.8} />
-        </button>
+        {(!session.user_id || String(session.user_id) === String(user?.id || '')) && (
+          <button
+            type="button"
+            className="sidebar-session-action"
+            aria-label={`Delete session ${title}`}
+            title={t('common.delete', 'Delete')}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              void handleDeleteSession(agentId, session);
+            }}
+          >
+            <IconTrash size={12} stroke={1.8} />
+          </button>
+        )}
       </div>
     );
   };
@@ -605,14 +674,23 @@ export default function AppSidebar({
         {!isSidebarCollapsed && (
           <div className="sidebar-workspace-card">
             <span className="sidebar-workspace-eyebrow">{t('nav.currentWorkspace', 'Workspace')}</span>
-            {user?.role === 'platform_admin' && tenants.length > 1 ? (
+            {user?.role === 'platform_admin' && activeTenants.length === 0 && (tenants.length > 0 || companiesLoaded) ? (
+              // The inventory answered and nothing is active — zero companies
+              // returned, or every known company disabled: say so plainly. The
+              // Settings menu's Platform Settings entry stays reachable for
+              // reactivation.
+              <span className="sidebar-workspace-name">{t('layout.noActiveCompany', 'No active company available')}</span>
+            ) : user?.role === 'platform_admin' && (activeTenants.length > 1 || !hasSelectedCompany) && activeTenants.length > 0 ? (
               <select
-                value={currentTenant}
+                value={hasSelectedCompany ? currentTenant : ''}
                 onChange={e => onSwitchTenant(e.target.value)}
                 aria-label={t('layout.switchTenant', 'Switch company')}
                 className="sidebar-workspace-select"
               >
-                {tenants.map(tn => (
+                {!hasSelectedCompany && (
+                  <option value="" disabled>{t('layout.selectCompanyPlaceholder', 'Select a company…')}</option>
+                )}
+                {activeTenants.map(tn => (
                   <option key={tn.id} value={tn.id}>{tn.name}</option>
                 ))}
               </select>
@@ -625,7 +703,7 @@ export default function AppSidebar({
 
       <div className="sidebar-scrollable">
         <div className="sidebar-section sidebar-nav-section sidebar-top-actions">
-          {workspaceNavItems.filter((item) => user?.role !== 'platform_admin' || item.to !== '/plaza').map((item) => (
+          {workspaceNavItems.map((item) => (
             <SidebarNavLink key={item.to} item={item} />
           ))}
         </div>
@@ -637,7 +715,7 @@ export default function AppSidebar({
           </NavLink>
           {sortedAgents.map((agent) => {
             const badge = getAgentBadgeStatus(agent);
-            const sourceBadge = getAgentSourceBadge(agent, t);
+            const sourceBadge = getAgentSourceBadge(agent, t, user);
             const avatarChar = ((Array.from(agent.name || '?')[0] as string) || '?').toUpperCase();
             const isExpanded = expandedAgentIds.has(String(agent.id));
             const agentSessions = effectiveSessionsByAgentId[String(agent.id)] || [];
@@ -803,6 +881,7 @@ export default function AppSidebar({
               className="sidebar-settings-row"
               onClick={onToggleAccountMenu}
               type="button"
+              ref={settingsTriggerRef}
               aria-expanded={showAccountMenu}
               title={t('nav.settings', 'Settings')}
             >

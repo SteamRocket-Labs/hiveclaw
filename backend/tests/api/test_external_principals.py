@@ -197,7 +197,11 @@ def test_admin_unlink_stops_a_personal_wechat_transport_after_commit(monkeypatch
         principal.linked_at = None
         principal.binding_method = None
         principal.binding_verified_at = None
-        return SimpleNamespace(principal=principal, actor=SimpleNamespace(authority_bound=False))
+        return SimpleNamespace(
+            principal=principal,
+            actor=SimpleNamespace(authority_bound=False),
+            channel_identity_invalidated=True,
+        )
 
     async def fake_stop(agent_id):
         assert db.commits == 1
@@ -236,7 +240,11 @@ def test_admin_unlink_stops_feishu_transport_after_commit(monkeypatch):
         principal.linked_at = None
         principal.binding_method = None
         principal.binding_verified_at = None
-        return SimpleNamespace(principal=principal, actor=SimpleNamespace(authority_bound=False))
+        return SimpleNamespace(
+            principal=principal,
+            actor=SimpleNamespace(authority_bound=False),
+            channel_identity_invalidated=True,
+        )
 
     async def fake_stop(agent_id):
         assert db.commits == 1
@@ -253,3 +261,90 @@ def test_admin_unlink_stops_feishu_transport_after_commit(monkeypatch):
 
     assert response.status_code == 200
     assert stopped == [config.agent_id]
+
+
+def test_unbound_unlink_does_not_stop_a_healthy_channel_transport(monkeypatch):
+    """F1 route residual: a never-bound principal's unlink leaves the channel
+    configured (service contract) and must not stop its live transport client."""
+    client, db, user, api = _client()
+    principal = _principal(tenant_id=user.tenant_id, linked_user_id=None)
+    principal.provider = "wechat_personal"
+    config = SimpleNamespace(id=principal.channel_config_id, agent_id=uuid4())
+    db.get_result = config
+    stopped: list[object] = []
+
+    async def fake_pin(_db, _current_user, _requested):
+        return user.tenant_id
+
+    async def fake_unlink(_db, **_kwargs):
+        return SimpleNamespace(
+            principal=principal,
+            actor=SimpleNamespace(authority_bound=False),
+            channel_identity_invalidated=False,
+        )
+
+    async def fake_stop(agent_id):
+        stopped.append(agent_id)
+
+    monkeypatch.setattr(api, "resolve_and_pin_tenant_scope", fake_pin)
+    monkeypatch.setattr(api, "unlink_external_principal", fake_unlink)
+    monkeypatch.setattr(
+        "app.services.wechat_personal_stream.wechat_personal_stream_manager.stop_client",
+        fake_stop,
+    )
+
+    response = client.post(
+        f"/enterprise/external-principals/{principal.id}/unlink",
+        json={"reason": "remove guest principal"},
+    )
+
+    assert response.status_code == 200
+    assert stopped == []
+
+
+def test_repeated_unbind_after_bound_unlink_does_not_stop_transport_again(monkeypatch):
+    """The second unlink of an already-unbound principal no longer invalidates
+    the channel self identity, so the healthy channel's live client stays up."""
+    client, db, user, api = _client()
+    principal = _principal(tenant_id=user.tenant_id, linked_user_id=uuid4())
+    principal.provider = "feishu"
+    principal.binding_method = "feishu_qr"
+    config = SimpleNamespace(id=principal.channel_config_id, agent_id=uuid4())
+    db.get_result = config
+    stopped: list[object] = []
+
+    async def fake_pin(_db, _current_user, _requested):
+        return user.tenant_id
+
+    async def fake_unlink(_db, **_kwargs):
+        principal.linked_user_id = None
+        principal.linked_at = None
+        principal.binding_method = None
+        principal.binding_verified_at = None
+        # The binding already cleared by the first unlink; this repeated call
+        # invalidates nothing.
+        return SimpleNamespace(
+            principal=principal,
+            actor=SimpleNamespace(authority_bound=False),
+            channel_identity_invalidated=False,
+        )
+
+    async def fake_stop(agent_id):
+        stopped.append(agent_id)
+
+    monkeypatch.setattr(api, "resolve_and_pin_tenant_scope", fake_pin)
+    monkeypatch.setattr(api, "unlink_external_principal", fake_unlink)
+    monkeypatch.setattr("app.services.feishu_ws.feishu_ws_manager.stop_client", fake_stop)
+
+    first = client.post(
+        f"/enterprise/external-principals/{principal.id}/unlink",
+        json={"reason": "revoke compromised Feishu binding"},
+    )
+    second = client.post(
+        f"/enterprise/external-principals/{principal.id}/unlink",
+        json={"reason": "repeat the same revocation"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert stopped == []

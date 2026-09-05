@@ -229,8 +229,14 @@ async def resolve_session_mutation_authority(
     action: str,
     allow_manager_override: bool = False,
     manager_override_reason: str | None = None,
+    audit: bool = True,
 ) -> AuthenticatedSessionAuthority:
-    """Resolve through the existing Agent grant + Session owner authority path."""
+    """Resolve through the existing Agent grant + Session owner authority path.
+
+    ``audit=False`` is reserved for the durable recovery/dispatch re-resolution
+    of a command that was already accepted and audited at request time; it
+    never relaxes any authority check.
+    """
 
     from app.core.permissions import authorize_session_action
 
@@ -253,6 +259,7 @@ async def resolve_session_mutation_authority(
         allow_manager_override=allow_manager_override,
         manager_override_reason=manager_override_reason,
         require_writable=True,
+        audit=audit,
     )
     tenant_id = decision.session.tenant_id
     if tenant_id is None or decision.agent.tenant_id != tenant_id:
@@ -726,7 +733,26 @@ async def resolve_session_command_authority(
     principal_type = str(getattr(command, "principal_type", "user") or "user")
     if principal_type == "user":
         actor = await db.get(User, command.principal_id)
-        if actor is None or actor.tenant_id != command.tenant_id:
+        if actor is None:
+            # A platform administrator's canonical User row lives in their home
+            # tenant, so it is invisible under the command-tenant RLS scope.
+            # Re-read the live canonical identity under an audited bypass —
+            # exactly like the request-time identity lookup — instead of
+            # treating the cross-company administrator as a broken chain.
+            from app.database import enter_rls_bypass
+
+            async with enter_rls_bypass(
+                db,
+                reason="session command platform-admin actor recovery lookup",
+                actor_id=str(command.principal_id),
+            ) as bypass_db:
+                actor = await bypass_db.get(User, command.principal_id)
+        if actor is None or not bool(getattr(actor, "is_active", False)):
+            raise RuntimeError("session_command_user_authority_mismatch")
+        if actor.tenant_id != command.tenant_id and str(getattr(actor, "role", "") or "") != "platform_admin":
+            # Only a live canonical platform-administrator role may act across
+            # the home/company boundary; every other principal (including a
+            # demoted administrator) must still match the command tenant.
             raise RuntimeError("session_command_user_authority_mismatch")
     elif principal_type == "external_principal":
         from app.services.external_principal_service import load_external_runtime_actor
@@ -746,6 +772,7 @@ async def resolve_session_command_authority(
         agent_id=agent.id,
         session_id=session.id,
         action=action,
+        audit=False,
     )
     if authority.principal_type != principal_type or authority.principal_id != command.principal_id:
         raise RuntimeError("session_command_principal_authority_mismatch")

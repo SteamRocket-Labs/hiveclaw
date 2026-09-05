@@ -27,6 +27,7 @@ from app.core.permissions import (
     effective_agent_owner_id,
     has_agent_operator_inspect,
     is_agent_operator_inspection_grant,
+    is_scoped_business_admin,
     load_agent_operator_inspection_ids,
     require_agent_manage_access,
     require_agent_owner_or_admin,
@@ -316,8 +317,10 @@ async def list_agents(
     db: AsyncSession = Depends(get_db),
 ):
     """List all agents the current user has access to."""
-    # Organization administrators manage the complete employee inventory.
-    if current_user.role == "org_admin":
+    # Scoped administrators manage the complete employee inventory of their
+    # company (PDEC-013): organization administrators their own tenant,
+    # platform administrators the tenant their explicit selection resolved to.
+    if current_user.role in ("org_admin", "platform_admin"):
         target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
         stmt = _agent_list_summary_stmt().where(
             Agent.tenant_id == target_tenant_id,
@@ -535,18 +538,17 @@ def _sync_hr_agent_workspace(agent_dir: Path, *, force_identity_files: bool) -> 
 
 @router.get("/system/hr")
 async def get_or_create_hr_agent(
+    tenant_id: uuid.UUID | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get the HR onboarding agent for the current tenant. Creates one if it doesn't exist."""
-    if getattr(current_user, "role", None) == "platform_admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="HR Agent requires organization membership",
-        )
-    tenant_id = current_user.tenant_id
-    if not tenant_id:
-        raise HTTPException(status_code=400, detail="User has no tenant")
+    """Get the HR onboarding agent for the current tenant. Creates one if it doesn't exist.
+
+    PDEC-013: platform administrators enter the same HR flow inside a valid
+    company context (selected company or current company). A missing company
+    yields a truthful, reachable next action instead of a role refusal.
+    """
+    tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
 
     # Look up existing HR agent with a row lock to prevent duplicate creation.
     # If legacy duplicates exist, choose the oldest row deterministically rather
@@ -739,10 +741,10 @@ async def create_agent(
     db: AsyncSession = Depends(get_db),
 ):
     """Administrative creation endpoint; standard users create through System HR."""
-    if current_user.role != "org_admin":
+    if current_user.role not in ("org_admin", "platform_admin"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="请通过 HR Agent 创建数字员工；直接创建接口仅供组织管理员使用。",
+            detail="请通过 HR Agent 创建数字员工；直接创建接口仅供管理员使用。",
         )
 
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, data.tenant_id)
@@ -989,7 +991,8 @@ async def get_agent(
     out["action_capabilities"] = _agent_action_capabilities(
         access_level,
         is_owner=is_owner,
-        can_manage_permissions=is_owner or current_user.role == "org_admin",
+        can_manage_permissions=is_owner
+        or is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None)),
         can_operator_inspect=await has_agent_operator_inspect(
             db,
             user=current_user,
@@ -1230,7 +1233,9 @@ async def get_agent_permissions(
     """Get agent permission scope."""
     agent, access_level = await check_agent_access(db, current_user, agent_id)
     is_owner = effective_agent_owner_id(agent) == current_user.id
-    can_manage_permissions = is_owner or current_user.role == "org_admin"
+    can_manage_permissions = is_owner or is_scoped_business_admin(
+        current_user, resource_tenant_id=getattr(agent, "tenant_id", None)
+    )
     if not can_manage_permissions:
         return {
             "scope_type": "effective",
@@ -1764,8 +1769,13 @@ async def delete_agent(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a digital employee (admin only)."""
-    if current_user.role != "org_admin":
+    """Delete a digital employee (scoped administrators only, PDEC-013).
+
+    Employees cannot delete Agents even as owners; deletion is an
+    administrator-only lifecycle action for organization and scoped platform
+    administrators.
+    """
+    if current_user.role not in ("org_admin", "platform_admin"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Agent is an enterprise asset; only an admin can delete it.",
@@ -1807,7 +1817,7 @@ async def delete_agent(
             severity="warn",
             actor_type="user",
             actor_id=current_user.id,
-            tenant_id=current_user.tenant_id,
+            tenant_id=agent.tenant_id,
             action="delete_agent",
             resource_type="agent",
             resource_id=agent.id,

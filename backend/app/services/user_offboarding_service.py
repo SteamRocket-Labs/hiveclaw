@@ -200,7 +200,7 @@ async def _lock_owned_agents(
     return list(result.scalars().all())
 
 
-async def _revoke_user_authority(
+async def revoke_user_authority(
     db: AsyncSession,
     *,
     target_user: User,
@@ -555,7 +555,7 @@ async def offboard_loaded_user(
             transferred_agent_ids.append(agent.id)
 
     now = datetime.now(timezone.utc)
-    revocations = await _revoke_user_authority(
+    revocations = await revoke_user_authority(
         db,
         target_user=target_user,
         actor_user=actor,
@@ -725,8 +725,12 @@ async def build_user_offboarding_preview(
     )
 
 
-async def publish_user_offboarding_runtime_cancellations(receipt: UserOffboardingReceipt) -> None:
-    """Best-effort wakeups after the revocation transaction is committed.
+async def publish_user_authority_runtime_cancellations(
+    *,
+    user_id: uuid.UUID,
+    revocations: AuthorityRevocationReceipt,
+) -> None:
+    """Best-effort wakeups after a User authority revocation is committed.
 
     The DB status and claim-version fence are authoritative. Redis signals only
     shorten the stop latency for work already executing in another process.
@@ -754,7 +758,7 @@ async def publish_user_offboarding_runtime_cancellations(receipt: UserOffboardin
                         run_id=signal.task_id,
                         agent_id=signal.parent_agent_id,
                         session_id=signal.parent_session_id,
-                        user_id=receipt.user_id,
+                        user_id=user_id,
                     )
                 elif signal.task_type == "business_task" and signal.business_task_id is not None:
                     await publish_business_task_cancel(
@@ -778,4 +782,11 @@ async def publish_user_offboarding_runtime_cancellations(receipt: UserOffboardin
                     exc,
                 )
 
-    await asyncio.gather(*(publish_one(signal) for signal in receipt.revocations.runtime_task_signals))
+    await asyncio.gather(*(publish_one(signal) for signal in revocations.runtime_task_signals))
+
+
+async def publish_user_offboarding_runtime_cancellations(receipt: UserOffboardingReceipt) -> None:
+    await publish_user_authority_runtime_cancellations(
+        user_id=receipt.user_id,
+        revocations=receipt.revocations,
+    )

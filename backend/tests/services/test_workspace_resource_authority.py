@@ -105,3 +105,116 @@ def test_workspace_manifest_upsert_never_reassigns_a_live_path_without_authorize
 
     assert "ON CONFLICT" in compiled
     assert "owner_user_id" not in compiled.split("DO UPDATE SET", 1)[-1]
+
+
+@pytest.mark.asyncio
+async def test_scoped_admin_binds_employee_session_root_without_reassigning_owner(monkeypatch):
+    """PDEC-013: an administrator writes through an employee's exact session
+    while the manifest keeps its original owner/root provenance."""
+
+    import app.services.workspace_resource_authority as workspace_authority
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    employee_id = uuid4()
+    admin_id = uuid4()
+    session_id = uuid4()
+    root_session_id = uuid4()
+    admin = SimpleNamespace(id=admin_id, tenant_id=tenant_id, role="org_admin", department_id=None)
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
+    employee_session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=employee_id, root_session_id=None)
+    manifest = SimpleNamespace(
+        agent_id=agent_id,
+        path="workspace/report.md",
+        owner_user_id=employee_id,
+        root_session_id=root_session_id,
+        authority_state="owned",
+        deleted_at=None,
+    )
+
+    async def fake_access(_db, _user, _agent_id):
+        return agent, "manage"
+
+    resource_decisions = []
+
+    async def fake_resource_action(_db, user, **kwargs):
+        resource_decisions.append(kwargs)
+        return SimpleNamespace(authority_source="scoped_business_admin", operator_view=False)
+
+    monkeypatch.setattr(workspace_authority, "check_agent_access", fake_access)
+    monkeypatch.setattr(workspace_authority, "authorize_resource_action", fake_resource_action)
+
+    class _Result:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one_or_none(self):
+            return self.value
+
+    class _DB:
+        def __init__(self, results):
+            self.results = list(results)
+
+        async def execute(self, _statement):
+            return _Result(self.results.pop(0))
+
+    decision = await workspace_authority.authorize_workspace_path(
+        _DB([manifest, employee_session]),
+        admin,
+        agent_id=agent_id,
+        path="workspace/report.md",
+        action="write",
+        path_exists=True,
+        session_id=session_id,
+    )
+
+    # The exact session authority resolved through the employee's session and
+    # the manifest owner/root provenance stayed with the employee.
+    assert decision.authority_source == "scoped_business_admin"
+    assert decision.owner_user_id == employee_id
+    assert decision.root_session_id == root_session_id
+    assert decision.operator_view is False
+    assert resource_decisions[0]["owner_user_id"] == employee_id
+    assert resource_decisions[0]["root_session_id"] == root_session_id
+
+
+@pytest.mark.asyncio
+async def test_member_write_through_someone_elses_session_still_fails(monkeypatch):
+    import app.services.workspace_resource_authority as workspace_authority
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    employee_id = uuid4()
+    member_id = uuid4()
+    session_id = uuid4()
+    member = SimpleNamespace(id=member_id, tenant_id=tenant_id, role="member", department_id=None)
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
+    employee_session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=employee_id, root_session_id=None)
+
+    async def fake_access(_db, _user, _agent_id):
+        return agent, "manage"
+
+    monkeypatch.setattr(workspace_authority, "check_agent_access", fake_access)
+
+    class _Result:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one_or_none(self):
+            return self.value
+
+    class _DB:
+        async def execute(self, _statement):
+            return _Result(employee_session)
+
+    with pytest.raises(workspace_authority.WorkspaceAuthorityError) as exc:
+        await workspace_authority.authorize_workspace_path(
+            _DB(),
+            member,
+            agent_id=agent_id,
+            path="workspace/report.md",
+            action="write",
+            path_exists=True,
+            session_id=session_id,
+        )
+    assert exc.value.code == "workspace_session_authority_mismatch"

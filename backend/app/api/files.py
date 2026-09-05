@@ -6,7 +6,16 @@ from pathlib import Path
 from urllib.parse import quote
 
 import aiofiles
-from fastapi import APIRouter, Depends, File as FastFile, HTTPException, Query, UploadFile as UploadFileType, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File as FastFile,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile as UploadFileType,
+    status,
+)
 from fastapi.responses import FileResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, model_validator
@@ -20,7 +29,7 @@ from app.core.permissions import (
 )
 from app.core.resource_authority import authorize_resource_action
 from app.core.security import get_current_user
-from app.database import get_db, pin_rls_tenant_context
+from app.database import _current_tenant_id, get_db, pin_rls_tenant_context
 from app.models.audit import AuditLog
 from app.models.chat_artifact import ChatArtifact
 from app.models.chat_session import ChatSession
@@ -941,35 +950,32 @@ async def _load_chat_artifact_or_404(
     return artifact
 
 
-async def _load_download_user_from_jwt(*, db: AsyncSession, jwt_token: str) -> User:
-    """Authenticate browser-friendly download URLs before tenant-scoped file reads.
+async def _load_download_user_from_jwt(*, db: AsyncSession, jwt_token: str, request: Request) -> User:
+    """Authenticate browser-friendly download URLs through the canonical path.
 
-    TenantMiddleware only sees Authorization headers. Direct browser downloads
-    carry JWTs in the query string, so the endpoint must pin RLS from the token
-    before loading the user row.
+    Bearer-header requests already carry the middleware tenant context, but
+    query-string JWTs never pass through TenantMiddleware, so the token's own
+    tenant is pinned first — exactly what the middleware does for a Bearer
+    header. Authentication itself is the canonical
+    ``authenticate_request_user``: the validated ``X-Tenant-Id`` semantics
+    (existence, liveness, fail-closed impersonation audit) apply to Bearer
+    and query JWT downloads alike, so a download URL can never become a
+    second, weaker tenant selector than the ordinary API surface.
     """
-    from app.core.security import decode_access_token
 
-    payload = decode_access_token(jwt_token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-    token_tenant_id = payload.get("tid")
-    if token_tenant_id:
-        try:
-            await pin_rls_tenant_context(db, token_tenant_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
-    try:
-        user_uuid = uuid.UUID(str(user_id))
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
+    from app.core.security import authenticate_request_user, decode_access_token
 
-    result = await db.execute(select(User).where(User.id == user_uuid))
-    user = result.scalar_one_or_none()
-    if not user or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
-    return user
+    if _current_tenant_id.get() is None:
+        token_tenant = decode_access_token(jwt_token).get("tid")
+        if token_tenant:
+            await pin_rls_tenant_context(db, token_tenant)
+
+    return await authenticate_request_user(
+        db,
+        jwt_token=jwt_token,
+        requested_tenant=request.headers.get("x-tenant-id"),
+        request=request,
+    )
 
 
 @router.get("/artifacts/{artifact_id}/content", response_model=FileContent)
@@ -1015,6 +1021,7 @@ async def download_file(
     token: str = "",
     operator_view: bool = False,
     operator_reason: str | None = None,
+    request: Request = None,  # type: ignore[assignment]
     credentials: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1070,7 +1077,7 @@ async def download_file(
     if not jwt_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
 
-    user = await _load_download_user_from_jwt(db=db, jwt_token=jwt_token)
+    user = await _load_download_user_from_jwt(db=db, jwt_token=jwt_token, request=request)
 
     _agent, access_level = await (
         check_agent_operator_reachability(db, user, agent_id)
@@ -1110,6 +1117,7 @@ async def download_artifact(
     token: str = "",
     operator_view: bool = False,
     operator_reason: str | None = None,
+    request: Request = None,  # type: ignore[assignment]
     credentials: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1117,7 +1125,7 @@ async def download_artifact(
     jwt_token = credentials.credentials if credentials else token
     if not jwt_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
-    user = await _load_download_user_from_jwt(db=db, jwt_token=jwt_token)
+    user = await _load_download_user_from_jwt(db=db, jwt_token=jwt_token, request=request)
 
     agent_access = await (
         check_agent_operator_reachability(db, user, agent_id)

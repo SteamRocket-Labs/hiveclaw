@@ -51,7 +51,7 @@ async def test_list_capability_policies_uses_selected_tenant_scope_for_platform_
     import app.api.capabilities as capabilities_api
 
     selected_tenant_id = uuid4()
-    current_user = SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=uuid4())
+    current_user = SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=selected_tenant_id)
     policy = SimpleNamespace(
         id=uuid4(),
         capability="external.web.search",
@@ -76,7 +76,7 @@ async def test_upsert_capability_policy_writes_selected_tenant_scope_for_platfor
     import app.api.capabilities as capabilities_api
 
     selected_tenant_id = uuid4()
-    current_user = SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=uuid4())
+    current_user = SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=selected_tenant_id)
     policy = SimpleNamespace(
         id=uuid4(),
         tenant_id=selected_tenant_id,
@@ -157,7 +157,7 @@ async def test_capability_promotion_api_threads_admin_decision(monkeypatch) -> N
 
     selected_tenant_id = uuid4()
     proposal_id = uuid4()
-    current_user = SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=uuid4())
+    current_user = SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=selected_tenant_id)
     db = _FakeDB([])
     decisions = []
 

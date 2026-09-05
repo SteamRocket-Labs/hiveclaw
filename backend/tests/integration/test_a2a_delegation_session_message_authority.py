@@ -366,7 +366,41 @@ async def test_owner_read_only_409_and_manager_cross_user_mutation_403(owner_ses
         assert owner_exc.value.detail["code"] == "session_read_only"
         await db.rollback()
 
-        manager_id = await _mk_user(db, seeded["tenant_id"], role="org_admin")
+        # PDEC-013: a scoped business administrator reaches the exact
+        # session-kind contract — the read-only delegation kind stays
+        # read-only for administrators too.
+        admin_id = await _mk_user(db, seeded["tenant_id"], role="org_admin")
+        admin = await db.get(User, admin_id)
+        with pytest.raises(HTTPException) as admin_exc:
+            await resolve_session_mutation_authority(
+                db,
+                user=admin,
+                agent_id=seeded["child_agent_id"],
+                session_id=seeded["child_session_id"],
+                action="mutate_session_input",
+                allow_manager_override=True,
+                manager_override_reason="incident inspection",
+            )
+        assert admin_exc.value.status_code == 409
+        assert admin_exc.value.detail["code"] == "session_read_only"
+        await db.rollback()
+
+        # A non-administrator manager keeps the opaque denial with no
+        # session-kind oracle (an explicit user-scope grant proves the denial
+        # is the session boundary, not Agent access).
+        from app.models.agent import AgentPermission
+
+        manager_id = await _mk_user(db, seeded["tenant_id"], role="member")
+        db.add(
+            AgentPermission(
+                agent_id=seeded["child_agent_id"],
+                tenant_id=seeded["tenant_id"],
+                scope_type="user",
+                scope_id=manager_id,
+                access_level="manage",
+            )
+        )
+        await db.flush()
         manager = await db.get(User, manager_id)
         with pytest.raises(HTTPException) as manager_exc:
             await resolve_session_mutation_authority(

@@ -186,7 +186,9 @@ describe('Layout extracted sections', () => {
     expect(markup).toContain('title="Home"');
     expect(markup).toContain('Digital Employees');
     expect(markup).toContain('Automation');
-    expect(markup).not.toContain('Agent Circle');
+    // PDEC-013: a platform administrator inside the selected company keeps the
+    // company business entries, including Plaza (Agent Circle).
+    expect(markup).toContain('Agent Circle');
     expect(markup).toContain('title="Knowledge"');
     expect(markup).not.toContain('Conversations &amp; Tasks');
     expect(markup).not.toContain('Plan Review');
@@ -217,6 +219,140 @@ describe('Layout extracted sections', () => {
     expect(markup).not.toContain('sidebar-account-row-static');
     expect(markup).not.toContain('platformAdmin');
     expect(markup).toContain('Version Mock');
+  });
+
+  it('never offers a disabled company in the workspace selector or as the current workspace', () => {
+    const markup = renderToStaticMarkup(
+      <AppSidebar
+        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Example Owner' }}
+        theme="light"
+        isSidebarCollapsed={false}
+        onToggleSidebar={vi.fn()}
+        tenants={[
+          { id: 'tenant-1', name: 'Company A' },
+          { id: 'tenant-2', name: 'Disabled Holdings', is_active: false },
+        ]}
+        currentTenant="tenant-2"
+        onSwitchTenant={vi.fn()}
+        agents={[]}
+        isChinese={false}
+        onToggleTheme={vi.fn()}
+        onOpenNotifications={vi.fn()}
+        unreadCount={0}
+        accountMenuRef={React.createRef<HTMLDivElement>()}
+        showAccountMenu={false}
+        onToggleAccountMenu={vi.fn()}
+        onToggleLang={vi.fn()}
+        onOpenAccountSettings={vi.fn()}
+        onLogout={vi.fn()}
+        versionDisplay={null}
+      />,
+    );
+
+    // The previously selected company is disabled: it is not a valid selection,
+    // so the selector opens on the placeholder and never lists it.
+    expect(markup).toContain('sidebar-workspace-select');
+    expect(markup).toContain('Company A');
+    expect(markup).not.toContain('Disabled Holdings');
+    expect(markup).toContain('Select a company…');
+  });
+
+  it('says plainly when no active company remains instead of showing a disabled workspace', () => {
+    const markup = renderToStaticMarkup(
+      <AppSidebar
+        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Example Owner' }}
+        theme="light"
+        isSidebarCollapsed={false}
+        onToggleSidebar={vi.fn()}
+        tenants={[{ id: 'tenant-2', name: 'Disabled Holdings', is_active: false }]}
+        currentTenant="tenant-2"
+        onSwitchTenant={vi.fn()}
+        agents={[]}
+        isChinese={false}
+        onToggleTheme={vi.fn()}
+        onOpenNotifications={vi.fn()}
+        unreadCount={0}
+        accountMenuRef={React.createRef<HTMLDivElement>()}
+        showAccountMenu={true}
+        onToggleAccountMenu={vi.fn()}
+        onToggleLang={vi.fn()}
+        onOpenAccountSettings={vi.fn()}
+        onLogout={vi.fn()}
+        versionDisplay={null}
+      />,
+    );
+
+    expect(markup).toContain('No active company available');
+    expect(markup).not.toContain('Disabled Holdings');
+    expect(markup).not.toContain('sidebar-workspace-select');
+    // The platform-control path (Settings → Platform Settings) stays reachable.
+    expect(markup).toContain('Platform Settings');
+  });
+
+  it('says no active company after a successful empty company inventory, not a selection placeholder', () => {
+    const markup = renderToStaticMarkup(
+      <AppSidebar
+        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Example Owner' }}
+        theme="light"
+        isSidebarCollapsed={false}
+        onToggleSidebar={vi.fn()}
+        tenants={[]}
+        companiesLoaded={true}
+        currentTenant=""
+        onSwitchTenant={vi.fn()}
+        agents={[]}
+        isChinese={false}
+        onToggleTheme={vi.fn()}
+        onOpenNotifications={vi.fn()}
+        unreadCount={0}
+        accountMenuRef={React.createRef<HTMLDivElement>()}
+        showAccountMenu={true}
+        onToggleAccountMenu={vi.fn()}
+        onToggleLang={vi.fn()}
+        onOpenAccountSettings={vi.fn()}
+        onLogout={vi.fn()}
+        versionDisplay={null}
+      />,
+    );
+
+    // The inventory answered successfully with zero companies: a truthful
+    // empty state, not a pending-selection prompt and no dead selector.
+    expect(markup).toContain('No active company available');
+    expect(markup).not.toContain('No company selected');
+    expect(markup).not.toContain('sidebar-workspace-select');
+    // The platform-control path (Settings → Platform Settings) stays reachable.
+    expect(markup).toContain('Platform Settings');
+  });
+
+  it('does not claim no active company before the company inventory answer arrives', () => {
+    const markup = renderToStaticMarkup(
+      <AppSidebar
+        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Example Owner' }}
+        theme="light"
+        isSidebarCollapsed={false}
+        onToggleSidebar={vi.fn()}
+        tenants={[]}
+        currentTenant=""
+        onSwitchTenant={vi.fn()}
+        agents={[]}
+        isChinese={false}
+        onToggleTheme={vi.fn()}
+        onOpenNotifications={vi.fn()}
+        unreadCount={0}
+        accountMenuRef={React.createRef<HTMLDivElement>()}
+        showAccountMenu={false}
+        onToggleAccountMenu={vi.fn()}
+        onToggleLang={vi.fn()}
+        onOpenAccountSettings={vi.fn()}
+        onLogout={vi.fn()}
+        versionDisplay={null}
+      />,
+    );
+
+    // No answer yet (or a failed request): the selection placeholder stays;
+    // the empty-inventory sentence must not appear on speculation.
+    expect(markup).toContain('No company selected');
+    expect(markup).not.toContain('No active company available');
   });
 
   it('labels the language action with its destination when the current locale is Chinese', () => {
@@ -631,5 +767,26 @@ describe('Layout extracted sections', () => {
     expect(markup).toContain('Deploy notice');
     expect(markup).toContain('Release finished successfully.');
     expect(markup).toContain('markAllRead'); // t('notifications.markAllRead')
+  });
+
+  it('keeps the collapsed Settings menu visible as a fixed flyout beside the rail', async () => {
+    const fsModuleId = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsModuleId)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const css = readFileSync(new URL('../../index.css', import.meta.url), 'utf8');
+
+    // No collapsed display:none rule may swallow the Settings dropdown.
+    const collapsedHideRules = css.match(/\.sidebar\.collapsed[^{]*\{[^}]*display:\s*none[^}]*\}/g) || [];
+    expect(collapsedHideRules.length).toBeGreaterThan(0);
+    for (const rule of collapsedHideRules) {
+      expect(rule).not.toContain('account-dropdown');
+    }
+    // The collapsed flyout pins the menu beside the 68px rail so the sidebar's
+    // overflow clip cannot hide it.
+    const flyout = cssBlock(css, '.sidebar.collapsed .sidebar-settings-dropdown');
+    expect(flyout).toContain('position: fixed;');
+    expect(flyout).toContain('left: calc(var(--sidebar-width-collapsed)');
+    expect(flyout).toContain('width: 232px;');
   });
 });

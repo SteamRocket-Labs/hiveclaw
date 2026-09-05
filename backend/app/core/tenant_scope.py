@@ -17,8 +17,15 @@ TENANT_SCOPE_QUARANTINE_SLUG = "__hive_scope_quarantine__"
 def resolve_tenant_scope(current_user, requested_tenant_id: uuid.UUID | str | None = None) -> uuid.UUID:
     """Resolve the effective tenant for a request.
 
-    Platform admins may target any tenant by explicit `tenant_id`.
-    Other users are limited to their own tenant.
+    Company selection has exactly one validated channel: the authenticated
+    selected tenant already proven live (and, for a cross-company platform
+    administrator, impersonation-audited fail-closed) by ``get_current_user``.
+    An explicit ``tenant_id`` query/body parameter is therefore only a
+    consistency echo: for a platform administrator it must equal the
+    authenticated ``current_user.tenant_id`` selection, otherwise the caller
+    gets a truthful recovery error pointing at company selection instead of a
+    second, unvalidated cross-company switch. Other users remain limited to
+    their own tenant.
     """
     if requested_tenant_id:
         try:
@@ -27,6 +34,15 @@ def resolve_tenant_scope(current_user, requested_tenant_id: uuid.UUID | str | No
             raise HTTPException(status_code=400, detail="Invalid tenant_id") from exc
 
         if current_user.role == "platform_admin":
+            selected_tenant_id = getattr(current_user, "tenant_id", None)
+            if selected_tenant_id is None or str(selected_tenant_id) != str(target_tenant_id):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Select the company first: the tenant_id parameter must match the "
+                        "authenticated selected company (X-Tenant-Id)"
+                    ),
+                )
             return target_tenant_id
         if str(current_user.tenant_id) != str(target_tenant_id):
             raise HTTPException(status_code=403, detail="Access denied")

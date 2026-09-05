@@ -150,8 +150,10 @@ async def test_company_ontology_install_curate_review_publish_query_recover_and_
         session_id="company-ontology-integration",
     )
     reviewer = _principal(tenant_id=tenant_id, user_id=reviewer_id)
-    partial = _principal(tenant_id=tenant_id, user_id=partial_id)
-    denied = _principal(tenant_id=tenant_id, user_id=denied_id)
+    # PDEC-013: partial visibility is a grant-boundary property of a member;
+    # administrators see the managed namespace by role.
+    partial = _principal(tenant_id=tenant_id, user_id=partial_id, role="member")
+    denied = _principal(tenant_id=tenant_id, user_id=denied_id, role="member")
     knowledge = CompanyKnowledgeService(data_root=tmp_path)
     engine = _RecoveringOntologyEngine()
     ontology = CompanyOntologyService(knowledge_service=knowledge, engine=engine)
@@ -290,7 +292,13 @@ async def test_company_ontology_install_curate_review_publish_query_recover_and_
                 typed_payload=None,
                 external_artifact_ref=None,
                 schema_ref="schema://policy-document/v1",
-                source_acl_snapshot={"role_names": ["org_admin"]},
+                # PDEC-013: partial visibility is proven for a granted member, so the
+                # source ACL admits that member explicitly (administrators
+                # hold role-sourced access and are covered separately).
+                source_acl_snapshot={
+                    "role_names": ["org_admin"],
+                    "user_ids": [str(partial_id)],
+                },
                 proposed_namespace="policy",
                 proposed_sensitivity="PL2_pii",
                 occurred_at=None,

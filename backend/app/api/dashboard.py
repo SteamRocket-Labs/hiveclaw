@@ -42,7 +42,8 @@ async def _load_accessible_agent_ids(
     current_user: User,
     tenant_id: uuid.UUID | None,
 ) -> list[uuid.UUID]:
-    if current_user.role == "org_admin":
+    if current_user.role in ("org_admin", "platform_admin"):
+        # Scoped administrators (PDEC-013) see the managed company inventory.
         target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
         statement = select(Agent.id).where(
             Agent.tenant_id == target_tenant_id,

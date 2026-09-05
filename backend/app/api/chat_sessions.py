@@ -15,9 +15,12 @@ from sqlalchemy import or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import (
+    SCOPED_BUSINESS_ADMIN_AUTHORITY_SOURCE,
     authorize_agent_operator_inspection,
+    authorize_loaded_session_access,
     check_agent_access,
     check_agent_operator_reachability,
+    is_scoped_business_admin,
 )
 from app.core.security import get_current_user
 from app.database import get_db
@@ -1015,6 +1018,50 @@ async def _get_run_session_and_agent(
     return session, agent, authority_source
 
 
+async def _audit_scoped_admin_session_collection(
+    db: AsyncSession,
+    *,
+    current_user: User,
+    agent: Agent,
+    sessions: list[ChatSession],
+) -> None:
+    """Audit one administrator business listing of a managed session inventory.
+
+    One row per request naming the deduplicated real user/owner target set of
+    the sessions actually exposed by ``scope=all`` — schema-consistent with
+    the per-session writer and the other collection writers, including the
+    explicit ``outcome``. Written through the request transaction before the
+    payload returns: an audit failure denies the listing instead of silently
+    releasing the business inventory.
+    """
+
+    from app.core.policy import write_audit_event
+
+    target_user_ids = sorted(
+        {str(session.user_id) for session in sessions if getattr(session, "user_id", None) is not None}
+    )
+    await write_audit_event(
+        db,
+        event_type="session.scoped_business_admin_access",
+        severity="info",
+        actor_type="user",
+        actor_id=current_user.id,
+        tenant_id=agent.tenant_id,
+        action="chat_session_collection:read",
+        resource_type="chat_session_collection",
+        resource_id=uuid.uuid5(agent.id, "chat-session-collection"),
+        details={
+            "agent_id": str(agent.id),
+            "actor_role": str(getattr(current_user, "role", "") or ""),
+            "authority_source": SCOPED_BUSINESS_ADMIN_AUTHORITY_SOURCE,
+            "outcome": "allowed",
+            "session_user_id": target_user_ids[0] if len(target_user_ids) == 1 else None,
+            "target_user_ids": target_user_ids[:50],
+            "target_count": len(target_user_ids),
+        },
+    )
+
+
 async def _authorize_loaded_session(
     *,
     db: AsyncSession,
@@ -1027,24 +1074,21 @@ async def _authorize_loaded_session(
     operator_reason: str | None = None,
     require_writable: bool = False,
 ) -> str:
-    if str(session.user_id) == str(current_user.id):
-        if require_writable:
-            from app.core.permissions import require_writable_session
-
-            require_writable_session(session, action=action)
-        return "session_owner"
-    if operator_view is True and not require_writable:
-        return await authorize_agent_operator_inspection(
-            db,
-            user=current_user,
-            agent=agent,
-            reason=operator_reason,
-            action=action,
-            resource_type="chat_session",
-            resource_id=session.id,
-            details={"session_user_id": str(session.user_id)},
-        )
-    raise HTTPException(status_code=403, detail="This session belongs to a different user")
+    # Single shared decision (PDEC-013): session owner, scoped business
+    # administrator acting as themselves, or the audited operator inspection
+    # lane. Delegating here keeps the HTTP layer and the durable command
+    # resolver in exact agreement.
+    return await authorize_loaded_session_access(
+        db,
+        current_user,
+        agent=agent,
+        session=session,
+        access_level=access_level,
+        action=action,
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+        require_writable=require_writable,
+    )
 
 
 @router.get("/{agent_id}/sessions")
@@ -1055,7 +1099,9 @@ async def list_sessions(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List chat sessions for an agent. 'all' requires admin or creator role."""
+    """List chat sessions for an agent. 'all' shows every session to a scoped
+    business administrator (PDEC-013) and otherwise requires the audited
+    operator inspection lane."""
     agent, _access_level = await (
         check_agent_operator_reachability(db, current_user, agent_id)
         if scope == "all"
@@ -1063,15 +1109,23 @@ async def list_sessions(
     )
 
     if scope == "all":
-        authority_source = await authorize_agent_operator_inspection(
-            db,
-            user=current_user,
-            agent=agent,
-            reason=operator_reason,
-            action="chat_session_collection:read",
-            resource_type="chat_session_collection",
-            resource_id=uuid.uuid5(agent_id, "chat-session-collection"),
-        )
+        if is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None)):
+            # Administrators list the managed business inventory as themselves:
+            # no manual operator reason, no operator.inspect grant, one
+            # audited collection decision recording the real actor and scope.
+            # The event is written once the actually-exposed target set is
+            # known, before the payload returns.
+            authority_source = SCOPED_BUSINESS_ADMIN_AUTHORITY_SOURCE
+        else:
+            authority_source = await authorize_agent_operator_inspection(
+                db,
+                user=current_user,
+                agent=agent,
+                reason=operator_reason,
+                action="chat_session_collection:read",
+                resource_type="chat_session_collection",
+                resource_id=uuid.uuid5(agent_id, "chat-session-collection"),
+            )
 
         # Fetch all sessions (including agent-to-agent where this agent is peer)
         result = await db.execute(
@@ -1089,10 +1143,12 @@ async def list_sessions(
         user_names = await _load_user_display_names(db, sessions)
         agent_names = await _load_agent_names(db, sessions)
         out = []
+        exposed_sessions: list[ChatSession] = []
         for session in sessions:
             count = message_counts.get(_session_id_text(session), 0)
             if count == 0:
                 continue  # hide empty sessions
+            exposed_sessions.append(session)
 
             # Determine display name based on session type
             display = None
@@ -1127,9 +1183,16 @@ async def list_sessions(
                     peer_agent_name=peer_agent_name,
                     participant_type=participant_type,
                     authority_source=authority_source,
-                    operator_view=True,
+                    # Truthful projection: a scoped business administrator
+                    # listing (PDEC-013) is a normal business view, not the
+                    # audited operator inspection projection.
+                    operator_view=authority_source != SCOPED_BUSINESS_ADMIN_AUTHORITY_SOURCE,
                     **_session_contract_fields(session),
                 )
+            )
+        if authority_source == SCOPED_BUSINESS_ADMIN_AUTHORITY_SOURCE:
+            await _audit_scoped_admin_session_collection(
+                db, current_user=current_user, agent=agent, sessions=exposed_sessions
             )
         return out
 

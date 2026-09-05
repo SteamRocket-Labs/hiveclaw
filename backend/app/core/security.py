@@ -20,6 +20,7 @@ from app.database import enter_rls_bypass, get_db, pin_rls_tenant_context
 
 if TYPE_CHECKING:
     from app.models.refresh_token import RefreshToken
+    from app.models.user import User
 
 settings = get_settings()
 
@@ -139,27 +140,34 @@ async def _audit_platform_admin_tenant_impersonation(
         request_state.tenant_impersonation_audit_event_id = str(event_id)
 
 
-async def get_current_user(
+async def authenticate_request_user(
+    db: AsyncSession,
+    *,
+    jwt_token: str,
+    requested_tenant: str | None,
     request: Request,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: AsyncSession = Depends(get_db),
-):
-    """Dependency to get the current authenticated user.
+) -> "User":
+    """Canonical live-user authentication with the validated tenant selection.
 
-    Supports X-Tenant-Id header for tenant context switching:
-    - platform_admin: can operate as any active tenant
-    - org_admin / member: can only use their own tenant (header ignored if mismatched)
+    This is the single implementation behind ``get_current_user``: decode the
+    access token, load the canonical live ``User`` row (bypass lookup only
+    for the identity-recovery shapes ``get_current_user`` itself uses), and
+    apply the one validated ``X-Tenant-Id`` channel — existence, liveness,
+    in-memory selected-tenant override, session repin, and the fail-closed
+    impersonation audit for cross-company platform administrators. Browser
+    download lanes reuse it so a Bearer/query JWT can never become a second,
+    weaker selector policy.
     """
+
     from app.models.tenant import Tenant
 
-    payload = decode_access_token(credentials.credentials)
+    payload = decode_access_token(jwt_token)
     user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
     user_uuid = uuid.UUID(user_id)
     token_role = payload.get("role", "")
     token_tenant = payload.get("tid")
-    requested_tenant = request.headers.get("x-tenant-id")
 
     # Single query: load user + tenant is_active via LEFT JOIN (no extra round-trip).
     # For platform admins using X-Tenant-Id, TenantMiddleware has already scoped
@@ -234,6 +242,14 @@ async def get_current_user(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail="Security audit unavailable; tenant impersonation was not established",
                 ) from exc
+    elif token_role == "platform_admin" and user.role != "platform_admin":
+        # A stale platform token: TenantMiddleware pinned the request tenant
+        # from the token's platform_admin claim (the X-Tenant-Id override when
+        # present, otherwise the stale tid), but the live canonical user is no
+        # longer a platform administrator. That optimistic pin has no
+        # authority — restore the live user's actual tenant scope, including
+        # None for a tenantless identity, before any route query runs.
+        await _set_session_tenant(db, user.tenant_id)
     elif requested_tenant and user.tenant_id and str(user.tenant_id) != requested_tenant:
         # A stale token may still claim platform_admin after the DB role was
         # downgraded. Ignore the selected tenant and restore the user's own
@@ -246,6 +262,25 @@ async def get_current_user(
         await _set_session_tenant(db, user.tenant_id)
 
     return user
+
+
+async def get_current_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: AsyncSession = Depends(get_db),
+):
+    """Dependency to get the current authenticated user.
+
+    Supports X-Tenant-Id header for tenant context switching:
+    - platform_admin: can operate as any active tenant
+    - org_admin / member: can only use their own tenant (header ignored if mismatched)
+    """
+    return await authenticate_request_user(
+        db,
+        jwt_token=credentials.credentials,
+        requested_tenant=request.headers.get("x-tenant-id"),
+        request=request,
+    )
 
 
 async def get_current_admin(current_user=Depends(get_current_user)):

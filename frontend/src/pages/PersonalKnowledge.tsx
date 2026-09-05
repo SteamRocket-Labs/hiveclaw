@@ -118,9 +118,9 @@ function jobErrorLabel(errorCode: string | null, t: TFunction): string | null {
     case 'source_missing':
       return t('personalKnowledge.jobError.sourceMissing', 'The uploaded source is no longer available.');
     case 'unsupported_file_type':
-      return t('personalKnowledge.jobError.unsupportedFileType', 'This file type is not supported.');
+      return t('personalKnowledge.jobError.unsupportedFileType', 'This file type is not supported. Use PDF, Word, Markdown, or plain text.');
     case 'unsupported_or_unconfigured':
-      return t('personalKnowledge.jobError.unsupportedOrUnconfigured', 'This media type is not supported here.');
+      return t('personalKnowledge.jobError.unsupportedOrUnconfigured', 'This media file could not be processed. An administrator may need to enable media processing first, or you can import a PDF, Word, Markdown, or plain-text version instead.');
     case 'media_transcription_empty':
       return t('personalKnowledge.jobError.mediaTranscriptionEmpty', 'No readable content was produced.');
     case 'document_missing':
@@ -153,6 +153,116 @@ function documentStatusLabel(status: string, t: TFunction): string {
       return t('personalKnowledge.documentStatus.archived', 'Archived');
     default:
       return t('personalKnowledge.documentStatus.unknown', 'Status unavailable');
+  }
+}
+
+// Plain-language display labels for grant/sensitivity enums. The exact enum
+// values stay in option values, requests, and data rows; unknown values fall
+// back to the raw string rather than an invented gloss.
+function granteeTypeLabel(value: string, t: TFunction): string {
+  switch (value) {
+    case 'agent':
+      return t('personalKnowledge.granteeType.agent', 'Agent');
+    case 'user':
+      return t('personalKnowledge.granteeType.user', 'Person');
+    default:
+      return value;
+  }
+}
+
+function grantPermissionLabel(value: string, t: TFunction): string {
+  switch (value) {
+    case 'search':
+      return t('personalKnowledge.grantPermission.search', 'Search');
+    case 'read':
+      return t('personalKnowledge.grantPermission.read', 'Read');
+    case 'manage':
+      return t('personalKnowledge.grantPermission.manage', 'Manage');
+    default:
+      return value;
+  }
+}
+
+function grantPurposeLabel(value: string, t: TFunction): string {
+  switch (value) {
+    case 'autonomous_agent':
+      return t('personalKnowledge.grantPurposeLabel.autonomous_agent', 'Runs on its own');
+    case 'interactive_session':
+      return t('personalKnowledge.grantPurposeLabel.interactive_session', 'In a session with you');
+    case 'a2a_delegation':
+      return t('personalKnowledge.grantPurposeLabel.a2a_delegation', 'Delegated to another Agent');
+    case 'subagent_delegation':
+      return t('personalKnowledge.grantPurposeLabel.subagent_delegation', 'Delegated to a sub-Agent');
+    default:
+      return value;
+  }
+}
+
+function sensitivityLabel(value: string, t: TFunction): string {
+  switch (value) {
+    case 'public':
+      return t('personalKnowledge.sensitivityLabel.public', 'Public');
+    case 'internal':
+      return t('personalKnowledge.sensitivityLabel.internal', 'Internal');
+    case 'private':
+      return t('personalKnowledge.sensitivityLabel.private', 'Private');
+    case 'confidential':
+      return t('personalKnowledge.sensitivityLabel.confidential', 'Confidential');
+    case 'PL1_public':
+      return t('personalKnowledge.sensitivityLabel.PL1_public', 'Public');
+    case 'PL2_pii':
+      return t('personalKnowledge.sensitivityLabel.PL2_pii', 'Personal details');
+    case 'PL3_sensitive':
+      return t('personalKnowledge.sensitivityLabel.PL3_sensitive', 'Sensitive');
+    case 'PL4_credential':
+      return t('personalKnowledge.sensitivityLabel.PL4_credential', 'Credentials (reference only)');
+    default:
+      return value;
+  }
+}
+
+function resourceTypeLabel(value: string, t: TFunction): string {
+  switch (value) {
+    case 'scope':
+      return t('personalKnowledge.resourceType.scope', 'Whole library');
+    case 'document':
+      return t('personalKnowledge.resourceType.document', 'One document');
+    default:
+      return value;
+  }
+}
+
+// Proposal review state and ruling follow the same plain-language pattern.
+// Both contracts are finite (CHECK constraints: status in
+// pending/approved/rejected/committed/failed, policy_outcome in
+// approve/ask/reject); unknown values fall back to the raw string.
+function proposalStatusLabel(value: string, t: TFunction): string {
+  switch (value) {
+    case 'pending':
+      return t('personalKnowledge.proposalStatus.pending', 'Waiting for your review');
+    case 'approved':
+      return t('personalKnowledge.proposalStatus.approved', 'Approved');
+    case 'rejected':
+      return t('personalKnowledge.proposalStatus.rejected', 'Rejected');
+    case 'committed':
+      return t('personalKnowledge.proposalStatus.committed', 'Saved to your library');
+    case 'failed':
+      return t('personalKnowledge.proposalStatus.failed', 'Failed');
+    default:
+      return value;
+  }
+}
+
+function policyOutcomeLabel(value: string, t: TFunction): string {
+  switch (value) {
+    case 'approve':
+      return t('personalKnowledge.policyOutcome.approve', 'Approved');
+    case 'ask':
+      return t('personalKnowledge.policyOutcome.ask', 'Needs your review');
+    case 'reject':
+      return t('personalKnowledge.policyOutcome.reject', 'Rejected');
+    default:
+      return value;
   }
 }
 
@@ -507,7 +617,7 @@ function LibraryPanel({
             <span className="personal-kb-doc-meta">
               {formatDate(document.created_at)}
               {formatDate(document.created_at) ? ' · ' : ''}
-              {document.segment_count} {t('personalKnowledge.segmentUnit')} · {document.sensitivity}
+              {document.segment_count} {t('personalKnowledge.segmentUnit', { count: document.segment_count })} · {sensitivityLabel(document.sensitivity, t)}
             </span>
             <code>{document.source_ref}</code>
           </button>
@@ -517,7 +627,7 @@ function LibraryPanel({
   );
 }
 
-function GraphPanel({ graph }: { graph?: PersonalKnowledgeGraphSummary }) {
+export function GraphPanel({ graph }: { graph?: PersonalKnowledgeGraphSummary }) {
   const { t } = useTranslation();
   const entities = graph?.entities ?? [];
   const links = graph?.links ?? [];
@@ -532,9 +642,9 @@ function GraphPanel({ graph }: { graph?: PersonalKnowledgeGraphSummary }) {
         <IconSitemap size={18} stroke={1.7} />
       </div>
       <div className="personal-kb-mini-grid">
-        <span>{entities.length} entities</span>
-        <span>{links.length} links</span>
-        <span>{assertions.length} assertions</span>
+        <span>{entities.length} {t('personalKnowledge.graphEntityUnit', 'people & topics')}</span>
+        <span>{links.length} {t('personalKnowledge.graphLinkUnit', 'connections')}</span>
+        <span>{assertions.length} {t('personalKnowledge.graphAssertionUnit', 'statements')}</span>
       </div>
       {entities.length === 0 ? (
         <EmptyBlock>{t('personalKnowledge.graphEmpty')}</EmptyBlock>
@@ -543,7 +653,7 @@ function GraphPanel({ graph }: { graph?: PersonalKnowledgeGraphSummary }) {
           {entities.map((entity) => (
             <div key={entity.entity_id} className="personal-kb-graph-entity">
               <strong>{entity.canonical_name}</strong>
-              <span>{entity.entity_type} · confidence {entity.confidence.toFixed(2)}</span>
+              <span>{t('personalKnowledge.entityTypeLabel', 'Type')}: {entity.entity_type} · {t('personalKnowledge.entityConfidenceLabel', 'Confidence')}: {Math.round(entity.confidence * 100)}%</span>
               {entity.description && <p>{entity.description}</p>}
               {entity.aliases.length > 0 && <code>{entity.aliases.join(', ')}</code>}
             </div>
@@ -631,24 +741,28 @@ export function GrantsPanel({
       </div>
       <form className="personal-kb-grant-form" onSubmit={onCreate}>
         <select value={granteeType} onChange={(event) => onGranteeTypeChange(event.target.value as 'user' | 'agent')}>
-          <option value="agent">agent</option>
-          <option value="user">user</option>
+          <option value="agent">{granteeTypeLabel('agent', t)}</option>
+          <option value="user">{granteeTypeLabel('user', t)}</option>
         </select>
-        <input value={granteeId} onChange={(event) => onGranteeIdChange(event.target.value)} placeholder="grantee UUID" />
+        <input
+          value={granteeId}
+          onChange={(event) => onGranteeIdChange(event.target.value)}
+          placeholder={t('personalKnowledge.granteeIdPlaceholder', 'Agent or user ID')}
+        />
         <select value={permission} onChange={(event) => onPermissionChange(event.target.value as 'read' | 'search' | 'manage')}>
-          <option value="search">search</option>
-          <option value="read">read</option>
-          <option value="manage">manage</option>
+          <option value="search">{grantPermissionLabel('search', t)}</option>
+          <option value="read">{grantPermissionLabel('read', t)}</option>
+          <option value="manage">{grantPermissionLabel('manage', t)}</option>
         </select>
         <select
           value={sensitivityCeiling}
           aria-label={t('personalKnowledge.sensitivityCeiling')}
           onChange={(event) => onSensitivityCeilingChange(event.target.value as PersonalKnowledgeSensitivityCeiling)}
         >
-          <option value="PL1_public">PL1_public</option>
-          <option value="PL2_pii">PL2_pii</option>
-          <option value="PL3_sensitive">PL3_sensitive</option>
-          <option value="PL4_credential">PL4_credential · reference only</option>
+          <option value="PL1_public">{sensitivityLabel('PL1_public', t)}</option>
+          <option value="PL2_pii">{sensitivityLabel('PL2_pii', t)}</option>
+          <option value="PL3_sensitive">{sensitivityLabel('PL3_sensitive', t)}</option>
+          <option value="PL4_credential">{sensitivityLabel('PL4_credential', t)}</option>
         </select>
         {granteeType === 'agent' && (
           <>
@@ -657,22 +771,22 @@ export function GrantsPanel({
               aria-label={t('personalKnowledge.grantPurpose')}
               onChange={(event) => onPurposeChange(event.target.value as PersonalKnowledgeGrantPurpose)}
             >
-              <option value="autonomous_agent">autonomous_agent</option>
-              <option value="interactive_session">interactive_session</option>
-              <option value="a2a_delegation">a2a_delegation</option>
-              <option value="subagent_delegation">subagent_delegation</option>
+              <option value="autonomous_agent">{grantPurposeLabel('autonomous_agent', t)}</option>
+              <option value="interactive_session">{grantPurposeLabel('interactive_session', t)}</option>
+              <option value="a2a_delegation">{grantPurposeLabel('a2a_delegation', t)}</option>
+              <option value="subagent_delegation">{grantPurposeLabel('subagent_delegation', t)}</option>
             </select>
             {requiresSession && (
               <>
                 <input
                   value={requesterUserId}
                   onChange={(event) => onRequesterUserIdChange(event.target.value)}
-                  placeholder="requester user UUID"
+                  placeholder={t('personalKnowledge.requesterUserIdPlaceholder', 'Requesting user ID')}
                 />
                 <input
                   value={sessionId}
                   onChange={(event) => onSessionIdChange(event.target.value)}
-                  placeholder="bound session ID"
+                  placeholder={t('personalKnowledge.sessionIdPlaceholder', 'Bound session ID')}
                 />
               </>
             )}
@@ -680,7 +794,7 @@ export function GrantsPanel({
               <input
                 value={delegationId}
                 onChange={(event) => onDelegationIdChange(event.target.value)}
-                placeholder="delegation ID"
+                placeholder={t('personalKnowledge.delegationIdPlaceholder', 'Delegation ID')}
               />
             )}
             <label>
@@ -702,15 +816,15 @@ export function GrantsPanel({
         {grants.map((grant) => (
           <div key={grant.grant_id} className="personal-kb-grant-row">
             <div>
-              <strong>{grant.grantee_type}:{grant.grantee_id}</strong>
+              <strong>{granteeTypeLabel(grant.grantee_type, t)}: {grant.grantee_id}</strong>
               <span>
-                {grant.permission} · {grant.resource_type} · {grant.sensitivity_ceiling}
-                {grant.purpose ? ` · ${grant.purpose}` : ''}
+                {grantPermissionLabel(grant.permission, t)} · {resourceTypeLabel(grant.resource_type, t)} · {sensitivityLabel(grant.sensitivity_ceiling, t)}
+                {grant.purpose ? ` · ${grantPurposeLabel(grant.purpose, t)}` : ''}
                 {grant.active ? '' : ` · ${t('personalKnowledge.revokedOrExpired')}`}
               </span>
-              {grant.requester_user_id && <code>requester:{grant.requester_user_id}</code>}
-              {grant.session_id && <code>session:{grant.session_id}</code>}
-              {grant.delegation_id && <code>delegation:{grant.delegation_id}</code>}
+              {grant.requester_user_id && <code>{t('personalKnowledge.grantMeta.requester', 'Requested by user')}: {grant.requester_user_id}</code>}
+              {grant.session_id && <code>{t('personalKnowledge.grantMeta.session', 'Session')}: {grant.session_id}</code>}
+              {grant.delegation_id && <code>{t('personalKnowledge.grantMeta.delegation', 'Delegation')}: {grant.delegation_id}</code>}
               {grant.expires_at && <code>{grant.expires_at}</code>}
             </div>
             <button
@@ -755,9 +869,9 @@ export function ProposalReviewPanel({
             <div className="personal-kb-proposal-head">
               <div>
                 <strong>{proposal.title}</strong>
-                <span>{proposal.target_collection} · {proposal.sensitivity} · {proposal.status}</span>
+                <span>{t('personalKnowledge.proposalSaveTo', 'Save to')}: {proposal.target_collection} · {sensitivityLabel(proposal.sensitivity, t)} · {proposalStatusLabel(proposal.status, t)}</span>
               </div>
-              <span className="ui-chip">{proposal.policy_outcome}</span>
+              <span className="ui-chip">{policyOutcomeLabel(proposal.policy_outcome, t)}</span>
             </div>
             <p>{proposal.purpose}</p>
             <div className="personal-kb-preview-title">{t('personalKnowledge.proposalDiff')}</div>
@@ -902,6 +1016,10 @@ export function DocumentDetail({
     );
   }
 
+  // A 200 detail body missing the required segments array is a backend
+  // contract violation; degrade the preview instead of crashing the page.
+  const segments = Array.isArray(document.segments) ? document.segments : [];
+
   return (
     <aside className="personal-kb-detail">
       <div className="personal-kb-detail-head">
@@ -931,7 +1049,7 @@ export function DocumentDetail({
       )}
       <div className="personal-kb-preview">
         <div className="personal-kb-preview-title">{t('personalKnowledge.mdPreview')}</div>
-        {document.segments.slice(0, 4).map((segment) => (
+        {segments.slice(0, 4).map((segment) => (
           <div key={segment.segment_id} className="personal-kb-segment">
             <span>
               #{segment.position + 1} {segment.heading_path.join(' / ')} · {segment.token_count} tok
@@ -1300,9 +1418,9 @@ export default function PersonalKnowledge() {
   const lanes: Array<{ key: PersonalKnowledgeLane; label: string; helper: string }> = [
     { key: 'inbox', label: t('personalKnowledge.inbox'), helper: t('personalKnowledge.inboxHelper') },
     { key: 'proposals', label: t('personalKnowledge.proposals'), helper: t('personalKnowledge.proposalsHelper') },
-    { key: 'library', label: t('personalKnowledge.library'), helper: t('personalKnowledge.libraryHelper', 'canonical MD') },
+    { key: 'library', label: t('personalKnowledge.library'), helper: t('personalKnowledge.libraryHelper', 'your documents') },
     { key: 'graph', label: t('personalKnowledge.graph'), helper: t('personalKnowledge.graphHelper') },
-    { key: 'profile', label: t('personalKnowledge.profile'), helper: t('personalKnowledge.profileHelper', 'taste / profile') },
+    { key: 'profile', label: t('personalKnowledge.profile'), helper: t('personalKnowledge.profileHelper', 'preferences') },
     { key: 'grants', label: t('personalKnowledge.grants'), helper: t('personalKnowledge.grantsHelper') },
   ];
 
@@ -1395,8 +1513,8 @@ export default function PersonalKnowledge() {
       </section>
 
       <div className="personal-kb-stats" aria-label={t('personalKnowledge.stats', 'Personal knowledge stats')}>
-        <span>{stats.documents} {t('personalKnowledge.docUnit')}</span>
-        <span>{stats.segments} {t('personalKnowledge.segmentUnit')}</span>
+        <span>{stats.documents} {t('personalKnowledge.docUnit', { count: stats.documents })}</span>
+        <span>{stats.segments} {t('personalKnowledge.segmentUnit', { count: stats.segments })}</span>
         <span>{stats.searchable} {t('personalKnowledge.searchableUnit')}</span>
       </div>
 

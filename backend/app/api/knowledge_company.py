@@ -532,7 +532,7 @@ class OntologyActionSimulationBody(BaseModel):
 
 
 def _require_legacy_promotion_admin(current_user: User) -> None:
-    if str(current_user.role) != "org_admin":
+    if str(current_user.role) not in ("org_admin", "platform_admin"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="legacy_company_promotion_requires_tenant_admin",
@@ -545,7 +545,7 @@ def _require_company_knowledge_admin(current_user: User) -> None:
     A frontend route guard is not backend authority: every direct-import
     endpoint enforces the tenant-admin role at the API.
     """
-    if str(current_user.role) != "org_admin":
+    if str(current_user.role) not in ("org_admin", "platform_admin"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"code": "company_knowledge_admin_required"},

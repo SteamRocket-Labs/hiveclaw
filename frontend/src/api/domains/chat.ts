@@ -10,6 +10,7 @@ import type { ThreadItem } from './threadItems.generated';
 export interface ChatSession {
   id: string;
   agent_id: string;
+  user_id?: string | null;
   title: string;
   created_at: string;
   updated_at: string;
@@ -274,9 +275,12 @@ export const chatApi = {
   /** Session management */
   listSessions: (agentId: string, scope: 'mine' | 'all' = 'mine', options?: SessionOperatorOptions) => {
     const params = new URLSearchParams({ scope });
-    if (scope === 'all') {
-      const reason = String(options?.operatorReason || '').trim();
-      if (!reason) throw new Error('Listing all sessions requires an Operator View audit reason');
+    // PDEC-013: a scoped business administrator lists `scope=all` as a normal
+    // audited business actor — no operator reason is fabricated. Only a true
+    // operator inspection stays reason-gated.
+    if (options?.operatorView) {
+      const reason = String(options.operatorReason || '').trim();
+      if (!reason) throw new Error('Listing all sessions in Operator View requires an audit reason');
       params.set('operator_reason', reason);
     }
     return get<ChatSession[]>(`/agents/${agentId}/sessions?${params.toString()}`);

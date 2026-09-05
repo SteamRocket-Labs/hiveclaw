@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.runtime_budget import RuntimeBudgetRun
 from app.models.runtime_task import RuntimeTask
 from app.models.task import Task
+from app.models.tenant import Tenant
 
 
 CLAIMABLE_RUNTIME_TASK_STATUSES = ("pending", "resumable")
@@ -50,6 +51,12 @@ def _runtime_task_claim_conditions(*, claim_now: datetime):
             ),
         ),
         or_(RuntimeTask.scheduled_at.is_(None), RuntimeTask.scheduled_at <= claim_now),
+        # Tenant liveness is evaluated at claim time in the worker's bypass
+        # scope, so a company deactivated by the no-body tenant DELETE or the
+        # admin toggle leaves its pending/resumable tasks unclaimable in every
+        # worker without process-local cache coordination. The rows stay
+        # intact and become claimable again if the company is reactivated.
+        RuntimeTask.tenant_id.in_(select(Tenant.id).where(Tenant.is_active.is_(True))),
         or_(
             RuntimeTask.budget_run_id.is_(None),
             exists(

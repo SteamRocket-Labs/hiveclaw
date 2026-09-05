@@ -8,7 +8,7 @@ import contextlib
 import re
 import secrets
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -21,8 +21,13 @@ from app.core.tenant_scope import TENANT_SCOPE_QUARANTINE_ID
 from app.database import enter_rls_bypass, get_db, pin_rls_tenant_context
 from app.models.agent import Agent
 from app.models.audit import AuditLog
+from app.models.local_bridge import LocalAgentBridgePairingSession
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.services.user_offboarding_service import (
+    publish_user_authority_runtime_cancellations,
+    revoke_user_authority,
+)
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
 
@@ -53,9 +58,27 @@ class TenantUpdate(BaseModel):
     is_active: bool | None = None
 
 
+class TenantRetiredUserOut(BaseModel):
+    user_id: uuid.UUID
+    status: Literal["deactivated", "already_inactive"]
+    is_active: Literal[False] = False
+    revocations: dict[str, int]
+
+
+class TenantRetirementRequest(BaseModel):
+    expected_user_ids: list[uuid.UUID]
+    reason: str = Field(min_length=3, max_length=500)
+    request_id: str = Field(min_length=1, max_length=200)
+
+    model_config = {"extra": "forbid"}
+
+
 class TenantDeleteOut(BaseModel):
     fallback_tenant_id: uuid.UUID | None = None
     needs_company_setup: bool = False
+    retirement_status: Literal["not_requested", "retired", "already_retired"] = "not_requested"
+    retirement_request_id: str | None = None
+    retired_users: list[TenantRetiredUserOut] = Field(default_factory=list)
 
 
 class TenantUserAssignment(BaseModel):
@@ -414,29 +437,69 @@ async def update_tenant(
 @router.delete("/{tenant_id}", response_model=TenantDeleteOut)
 async def delete_tenant(
     tenant_id: uuid.UUID,
+    retirement: TenantRetirementRequest | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Deactivate a tenant and detach its users.
+    """Deactivate a tenant, with optional platform-owned identity retirement.
 
     This is intentionally a soft-delete flow. The codebase still has many
     tenant-linked records without uniform cascade rules, so hard deletion would
-    be unsafe. Instead we:
-    - mark the tenant inactive,
-    - stop running agents in that tenant,
-    - detach users from the tenant and departments,
-    - optionally move platform admins to another active tenant for continuity.
+    be unsafe. Without a retirement payload, users remain active accounts and
+    are detached from the company. A platform administrator may instead supply
+    the exact complete non-platform User set; after every target-tenant Agent is
+    already soft-deleted (regardless of owner), those Users are revoked and
+    deactivated in the same transaction.
+    Platform administrators are only moved or detached, never deactivated.
     """
     if current_user.role not in ("platform_admin", "org_admin"):
         raise HTTPException(status_code=403, detail="Admin access required")
     if current_user.role == "org_admin" and str(current_user.tenant_id) != str(tenant_id):
         raise HTTPException(status_code=403, detail="Access denied")
+    if retirement is not None and current_user.role != "platform_admin":
+        raise HTTPException(status_code=403, detail="Platform administrator access required for identity retirement")
+
+    retirement_reason = str(retirement.reason or "").strip() if retirement is not None else ""
+    retirement_request_id = str(retirement.request_id or "").strip() if retirement is not None else ""
+    requested_user_ids = list(retirement.expected_user_ids) if retirement is not None else []
+    if retirement is not None:
+        if not retirement_reason:
+            raise HTTPException(status_code=400, detail="Tenant retirement reason is required")
+        if not retirement_request_id:
+            raise HTTPException(status_code=400, detail="Tenant retirement request_id is required")
+        if len(requested_user_ids) != len(set(requested_user_ids)):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "tenant_retirement_user_set_stale"},
+            )
+
+    runtime_revocations = []
+    response: TenantDeleteOut | None = None
 
     async with _platform_admin_bypass_scope(
         db,
         current_user,
         reason="platform-admin delete tenant",
     ) as scoped_db:
+        # Pairing lifecycle ordering: an in-flight device-code exchange holds
+        # its pairing row FOR UPDATE and then takes implicit FK KEY SHARE
+        # locks on Tenant/User/Agent rows when it inserts the connection.
+        # Locking this tenant's claimable pairings FIRST — before any
+        # identity row lock — keeps the global order pairing→identity, so
+        # retirement can never hold Tenant/User/Agent locks while an
+        # exchange waits on them (the previous identity-first order produced
+        # a real ABBA cycle, PostgreSQL SQLSTATE 40P01). The plain no-body
+        # DELETE never touches pairing rows and keeps its old lock set.
+        if retirement is not None:
+            await scoped_db.execute(
+                select(LocalAgentBridgePairingSession)
+                .where(
+                    LocalAgentBridgePairingSession.tenant_id == tenant_id,
+                    LocalAgentBridgePairingSession.status.in_(("pending", "approved")),
+                )
+                .order_by(LocalAgentBridgePairingSession.id)
+                .with_for_update()
+            )
         # ponytail: tenant deletion globally locks active tenant rows; replace
         # with ordered lifecycle advisory locks only if delete throughput matters.
         result = await scoped_db.execute(
@@ -467,19 +530,137 @@ async def delete_tenant(
             )
             fallback_tenant_id = fallback_tenant.id if fallback_tenant else None
 
-        running_agents = await scoped_db.execute(
-            select(Agent).where(
-                Agent.tenant_id == tenant_id,
-                Agent.status == "running",
+        if retirement is not None:
+            replay_result = await scoped_db.execute(
+                select(AuditLog)
+                .where(
+                    AuditLog.tenant_id == tenant_id,
+                    AuditLog.action == "tenant:retired",
+                    AuditLog.details["request_id"].as_string() == retirement_request_id,
+                )
+                .order_by(AuditLog.created_at.desc())
+                .limit(1)
             )
-        )
-        for agent in running_agents.scalars().all():
-            agent.status = "stopped"
+            replay = replay_result.scalar_one_or_none()
+            if replay is not None:
+                replay_details = dict(replay.details or {})
+                same_input = str(replay_details.get("reason") or "").strip() == retirement_reason and {
+                    str(value) for value in replay_details.get("expected_user_ids", [])
+                } == {str(value) for value in requested_user_ids}
+                if not same_input:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "code": "tenant_retirement_idempotency_conflict",
+                            "request_id": retirement_request_id,
+                            "tenant_id": str(tenant_id),
+                        },
+                    )
+                replay_fallback = replay_details.get("fallback_tenant_id")
+                return TenantDeleteOut(
+                    fallback_tenant_id=uuid.UUID(str(replay_fallback)) if replay_fallback else None,
+                    needs_company_setup=not bool(replay_fallback),
+                    retirement_status="already_retired",
+                    retirement_request_id=retirement_request_id,
+                    retired_users=[
+                        TenantRetiredUserOut.model_validate(value) for value in replay_details.get("retired_users", [])
+                    ],
+                )
+            if not tenant.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={"code": "tenant_retirement_tenant_inactive", "tenant_id": str(tenant_id)},
+                )
 
-        tenant_users = await scoped_db.execute(
+        tenant_users_result = await scoped_db.execute(
             select(User).where(User.tenant_id == tenant_id).order_by(User.id).with_for_update()
         )
-        for user in tenant_users.scalars().all():
+        tenant_users = list(tenant_users_result.scalars().all())
+
+        retired_users: list[TenantRetiredUserOut] = []
+        if retirement is not None:
+            retirable_users = [user for user in tenant_users if user.role != "platform_admin"]
+            current_user_ids = {user.id for user in retirable_users}
+            requested_user_id_set = set(requested_user_ids)
+            protected_user_ids = sorted(
+                str(user.id)
+                for user in tenant_users
+                if user.role == "platform_admin" and user.id in requested_user_id_set
+            )
+            if requested_user_id_set != current_user_ids or protected_user_ids:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "tenant_retirement_user_set_stale",
+                        "expected_user_ids": sorted(str(value) for value in requested_user_ids),
+                        "current_user_ids": sorted(str(value) for value in current_user_ids),
+                        "protected_user_ids": protected_user_ids,
+                    },
+                )
+
+            tenant_agents_result = await scoped_db.execute(
+                select(Agent).where(Agent.tenant_id == tenant_id).order_by(Agent.id).with_for_update()
+            )
+            tenant_agents = list(tenant_agents_result.scalars().all())
+            # Any non-deleted target-tenant Agent blocks retirement, not only
+            # ones owned by a retiring non-platform user: a platform-admin
+            # owner is rehomed and stays active, and would otherwise keep
+            # manage authority over a retired company's Agent.
+            blocking_agent_ids = sorted(str(agent.id) for agent in tenant_agents if agent.deleted_at is None)
+            if blocking_agent_ids:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "tenant_retirement_owned_agents_active",
+                        "agent_ids": blocking_agent_ids,
+                    },
+                )
+
+            now = datetime.now(timezone.utc)
+            for user in retirable_users:
+                was_active = bool(user.is_active)
+                revocations = await revoke_user_authority(
+                    scoped_db,
+                    target_user=user,
+                    actor_user=current_user,
+                    now=now,
+                )
+                user.is_active = False
+                user.department_id = None
+                retired_user = TenantRetiredUserOut(
+                    user_id=user.id,
+                    status="deactivated" if was_active else "already_inactive",
+                    is_active=False,
+                    revocations={
+                        "agent_permissions": revocations.agent_permissions,
+                        "resource_permissions": revocations.resource_permissions,
+                        "knowledge_grants": revocations.knowledge_grants,
+                        "refresh_tokens": revocations.refresh_tokens,
+                        "external_principals": revocations.external_principals,
+                        "local_bridge_connections": revocations.local_bridge_connections,
+                        "runtime_tasks": revocations.runtime_tasks,
+                        "pending_approvals": revocations.pending_approvals,
+                    },
+                )
+                retired_users.append(retired_user)
+                runtime_revocations.append((user.id, revocations))
+
+            for agent in tenant_agents:
+                if agent.status == "running":
+                    agent.status = "stopped"
+        else:
+            running_agents = await scoped_db.execute(
+                select(Agent).where(
+                    Agent.tenant_id == tenant_id,
+                    Agent.status == "running",
+                )
+            )
+            for agent in running_agents.scalars().all():
+                agent.status = "stopped"
+
+        for user in tenant_users:
+            if retirement is not None and user.role != "platform_admin":
+                continue
             user.department_id = None
             if user.role == "platform_admin" and fallback_tenant is not None:
                 _apply_new_tenant_membership(user, fallback_tenant, role="platform_admin")
@@ -497,12 +678,41 @@ async def delete_tenant(
         await scrub_tenant_channel_secrets(scoped_db, tenant_id)
 
         tenant.is_active = False
+        if retirement is not None:
+            scoped_db.add(
+                AuditLog(
+                    user_id=current_user.id,
+                    tenant_id=tenant_id,
+                    action="tenant:retired",
+                    details={
+                        "schema": "hive.tenant_retirement.v1",
+                        "request_id": retirement_request_id,
+                        "reason": retirement_reason,
+                        "expected_user_ids": sorted(str(value) for value in requested_user_ids),
+                        "fallback_tenant_id": str(fallback_tenant_id) if fallback_tenant_id else None,
+                        "retired_users": [value.model_dump(mode="json") for value in retired_users],
+                    },
+                )
+            )
         await scoped_db.flush()
-
-        return TenantDeleteOut(
+        response = TenantDeleteOut(
             fallback_tenant_id=fallback_tenant_id,
             needs_company_setup=fallback_tenant_id is None,
+            retirement_status="retired" if retirement is not None else "not_requested",
+            retirement_request_id=retirement_request_id or None,
+            retired_users=retired_users,
         )
+
+    if retirement is not None:
+        await db.commit()
+        for user_id, revocations in runtime_revocations:
+            await publish_user_authority_runtime_cancellations(
+                user_id=user_id,
+                revocations=revocations,
+            )
+    if response is None:
+        raise RuntimeError("Tenant deletion completed without a receipt")
+    return response
 
 
 async def _assign_user_to_tenant(

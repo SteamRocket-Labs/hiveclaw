@@ -984,6 +984,12 @@
   align-items: center;
 }
 
+/* The absolute collapse toggle owns the panel's top strip; expanded content
+ * starts below it so section headers never sit under the toggle. */
+.session-runtime-panel:not(.is-collapsed) {
+  padding-top: 42px;
+}
+
 .session-technical-drawer {
   position: absolute;
   inset: 40px 8px 8px;
@@ -1022,6 +1028,12 @@
   color: var(--text-primary);
 }
 
+/* The first in-flow badge starts below the toggle's strip (toggle bottom 33px
+ * + the rail's 8px spacing rhythm) so the two actions never overlap. */
+.session-runtime-collapse-toggle + .session-runtime-collapsed-badge {
+  margin-top: 41px;
+}
+
 .session-runtime-collapsed-label {
   margin-top: 42px;
   writing-mode: vertical-rl;
@@ -1030,6 +1042,56 @@
   font-weight: 700;
   letter-spacing: 0;
   text-transform: uppercase;
+}
+
+.session-runtime-collapsed-badge {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 30px;
+  margin-top: 8px;
+  padding: 5px 0 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: var(--text-tiny);
+  font-weight: 700;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+
+.session-runtime-collapsed-badge:hover {
+  border-color: var(--border-default);
+  color: var(--text-primary);
+}
+
+.session-runtime-collapsed-badge:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.session-runtime-collapsed-badge:active {
+  background: var(--bg-secondary);
+}
+
+.session-runtime-collapsed-badge.is-attention {
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--border-subtle));
+  color: var(--warning);
+}
+
+.session-runtime-collapsed-badge.is-attention:hover {
+  border-color: var(--warning);
+}
+
+.session-runtime-collapsed-badge.is-running {
+  color: var(--text-secondary);
+}
+
+.session-runtime-collapsed-badge ~ .session-runtime-collapsed-label {
+  margin-top: 12px;
 }
 
 .session-runtime-section {
@@ -3433,11 +3495,21 @@
 }
 
 .sidebar.collapsed .sidebar-footer-user-info,
-.sidebar.collapsed .account-dropdown,
 .sidebar.collapsed .sidebar-account-row > svg,
 .sidebar.collapsed .sidebar-settings-row span,
 .sidebar.collapsed .sidebar-settings-row > svg:last-child {
   display: none;
+}
+
+/* Collapsed rail: the Settings menu becomes a fixed flyout beside the trigger
+ * so the sidebar's overflow clip can never hide it. Anchored just above the
+ * footer trigger, mirroring the expanded menu's upward opening. */
+.sidebar.collapsed .sidebar-settings-dropdown {
+  position: fixed;
+  left: calc(var(--sidebar-width-collapsed) + var(--space-2));
+  right: auto;
+  bottom: calc(var(--space-4) + 40px);
+  width: 232px;
 }
 
 .sidebar.collapsed .sidebar-settings-row {

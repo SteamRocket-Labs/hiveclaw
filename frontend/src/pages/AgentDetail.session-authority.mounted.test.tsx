@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   agentType: 'cloud',
   operatorCap: false,
   agentError: null as unknown,
+  userRole: 'platform_admin' as string,
 }));
 
 vi.mock('react-i18next', () => ({
@@ -91,7 +92,7 @@ vi.mock('react-router-dom', () => ({
 vi.mock('../stores', () => {
   const state = {
     token: 'signed-in-token',
-    user: { id: 'platform-admin-1', role: 'platform_admin' },
+    get user() { return { id: 'platform-admin-1', role: mocks.userRole }; },
   };
   const useAuthStore = ((selector: (input: typeof state) => unknown) => selector(state)) as unknown as typeof import('../stores').useAuthStore;
   Object.assign(useAuthStore, { getState: () => state });
@@ -182,6 +183,7 @@ beforeEach(() => {
   mocks.agentType = 'cloud';
   mocks.operatorCap = false;
   mocks.agentError = null;
+  mocks.userRole = 'platform_admin';
   mocks.executedActivityQueries.clear();
   mocks.activityList.mockResolvedValue([]);
   mocks.toolFailures.mockResolvedValue(undefined);
@@ -438,5 +440,65 @@ describe('AgentDetail direct-session authority presentation', () => {
     expect(screen.queryByTestId('fabricated-session-shell')).toBeNull();
     expect(screen.queryByTestId('agent-operator-reason')).toBeNull();
     expect(screen.queryByTestId('agent-workbench-nav')).toBeNull();
+  });
+
+  it('opens a managed employee session for a scoped administrator without an operator reason', async () => {
+    // PDEC-013: platform_admin + server manage projection = normal audited
+    // business lane (authority_source=scoped_business_admin, operator_view=false).
+    // The requested Session id arrives by direct URL / reload.
+    mocks.sessionId = 'foreign-session';
+    mocks.hash = '#chat';
+    const managedSession = {
+      id: 'foreign-session',
+      agent_id: 'agent-1',
+      user_id: 'employee-9',
+      title: 'Employee private thread',
+      source_channel: 'web',
+      read_only: true,
+      is_current_user_session: false,
+      authority_source: 'scoped_business_admin',
+      operator_view: false,
+    };
+    mocks.listSessions.mockImplementation((_agentId, scope) => (
+      scope === 'all' ? Promise.resolve([managedSession]) : Promise.resolve([])
+    ));
+    mocks.getSessionTranscript.mockResolvedValue([]);
+    mocks.getSessionMessages.mockResolvedValue([
+      { id: 'employee-message', role: 'user', content: 'EMPLOYEE-AUTHORED-TEXT' },
+    ]);
+
+    render(<AgentDetail />);
+
+    // The managed inventory loads through the scoped business lane with no
+    // fabricated operator authority or reason on any call.
+    await waitFor(() => {
+      expect(mocks.listSessions.mock.calls.filter((call) => call[1] === 'all').length).toBeGreaterThan(0);
+    });
+    const allScopeCalls = mocks.listSessions.mock.calls.filter((call) => call[1] === 'all');
+    expect(allScopeCalls.every((call) => call[2] === undefined)).toBe(true);
+    expect(screen.queryByTestId('agent-operator-reason')).toBeNull();
+
+    // The employee session opens as a truthful read-only business view: no
+    // operator params on any read, no Operator View banner, the real sender's
+    // content is shown.
+    expect(await screen.findByText('EMPLOYEE-AUTHORED-TEXT')).toBeTruthy();
+    expect(screen.getByText('Read-only · User')).toBeTruthy();
+    expect(screen.queryByText('Operator View')).toBeNull();
+    const transcriptCalls = mocks.getSessionTranscript.mock.calls;
+    expect(transcriptCalls.length).toBeGreaterThan(0);
+    expect(transcriptCalls.every((call) => !call[2]?.operatorView && !call[2]?.operatorReason)).toBe(true);
+    expect(mocks.getSessionMessages.mock.calls.every((call) => !call[2]?.operatorView && !call[2]?.operatorReason)).toBe(true);
+  });
+
+  it('keeps a member-owner off the all-users inventory lane entirely', async () => {
+    mocks.sessionId = undefined;
+    mocks.hash = '#chat';
+    mocks.userRole = 'member';
+
+    render(<AgentDetail />);
+
+    await waitFor(() => expect(mocks.listSessions).toHaveBeenCalledWith('agent-1', 'mine'));
+    expect(mocks.listSessions.mock.calls.filter((call) => call[1] === 'all')).toHaveLength(0);
+    expect(screen.queryByTestId('agent-operator-reason')).toBeNull();
   });
 });

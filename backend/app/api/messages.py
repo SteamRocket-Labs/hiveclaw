@@ -24,7 +24,8 @@ router = APIRouter(tags=["messages"])
 
 
 async def _list_accessible_agent_ids(db: AsyncSession, current_user: User) -> list[uuid.UUID]:
-    if current_user.role == "org_admin" and current_user.tenant_id:
+    if current_user.role in ("org_admin", "platform_admin") and current_user.tenant_id:
+        # Scoped administrators (PDEC-013) manage the company inventory.
         result = await db.execute(select(Agent.id).where(Agent.tenant_id == current_user.tenant_id))
         return [row[0] for row in result.fetchall()]
 

@@ -9,7 +9,7 @@
 // a zero-hit success is never rendered as unavailable (and vice versa).
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -92,7 +92,7 @@ function renderPage() {
 }
 
 function searchInput(): HTMLInputElement {
-  return screen.getByPlaceholderText('Search everything you have handled...') as HTMLInputElement;
+  return screen.getByPlaceholderText('Search your documents and notes...') as HTMLInputElement;
 }
 
 function searchButton(): HTMLButtonElement {
@@ -218,5 +218,172 @@ describe('PersonalKnowledge search submission (mounted)', () => {
     expect(document.querySelector('[data-personal-knowledge-state="unavailable"]')).not.toBeNull();
     expect(screen.queryByText(/No results for/)).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Search results' })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Media import failure: the novice explanation must name the real
+// prerequisites (administrator-enabled processing capability, or a supported
+// text/document format) while retryability stays a pure backend fact.
+// ---------------------------------------------------------------------------
+
+type MediaJobOverrides = Record<string, unknown>;
+
+function mediaJob(overrides: MediaJobOverrides = {}) {
+  return {
+    job_id: 'job-media-1',
+    document_id: 'doc-media-1',
+    stage: 'transcribing',
+    status: 'failed',
+    artifact_hash: 'b'.repeat(64),
+    error_message: 'unsupported_or_unconfigured:media_transcription_provider',
+    attempt_count: 1,
+    metadata: { source_filename: 'voice-memo.mp3', media_kind: 'audio', source_mime_type: 'audio/mpeg' },
+    created_at: '2026-09-01T00:00:00Z',
+    updated_at: '2026-09-01T00:01:00Z',
+    terminal: true,
+    retryable: true,
+    cancellable: false,
+    error_code: 'unsupported_or_unconfigured',
+    max_attempts: 5,
+    lifecycle_status: 'failed',
+    result_status: 'failed',
+    cancelled_at: null,
+    ...overrides,
+  };
+}
+
+describe('PersonalKnowledge media import failure recovery (mounted)', () => {
+  it('explains the prerequisites and sends exactly one retry request for a retryable media failure', async () => {
+    api.myPersonalImportJobs.mockResolvedValue({ jobs: [mediaJob()] });
+    api.myPersonalDocument.mockResolvedValue({
+      document_id: 'doc-media-1',
+      title: 'voice-memo.mp3',
+      source_kind: 'upload',
+      source_uri: null,
+      source_sha256: 'b'.repeat(64),
+      source_ref: 'kb://person/user-1/documents/doc-media-1',
+      canonical_md_path: 'persons/user-1/kb/doc-media-1.md',
+      status: 'failed',
+      sensitivity: 'internal',
+      agent_searchable: true,
+      segment_count: 0,
+      created_at: '2026-09-01T00:00:00Z',
+      updated_at: null,
+      metadata: { media_kind: 'audio', source_filename: 'voice-memo.mp3' },
+      segments: [],
+    });
+    api.myPersonalDocumentRevisions.mockResolvedValue({ revisions: [] });
+    const pending = deferred<Record<string, unknown>>();
+    api.myPersonalRetryImportJob.mockReturnValue(pending.promise as never);
+    renderPage();
+    await screen.findByText('voice-memo.mp3');
+
+    // The explanation, not the raw machine code, reaches the DOM.
+    expect(screen.getByText(/administrator may need to enable media processing/i)).toBeTruthy();
+    expect(screen.getByText(/plain-text version instead/i)).toBeTruthy();
+    expect(document.body.innerHTML).not.toContain('unsupported_or_unconfigured');
+    expect(document.body.innerHTML).not.toContain('media_transcription_provider');
+
+    const retryButton = screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement;
+    fireEvent.click(retryButton);
+    await waitFor(() => expect(api.myPersonalRetryImportJob).toHaveBeenCalledTimes(1));
+    expect(api.myPersonalRetryImportJob).toHaveBeenCalledWith('job-media-1');
+
+    // The in-flight job action is disabled while the request is pending;
+    // a second click cannot fire.
+    const busyButton = screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement;
+    expect(busyButton.disabled).toBe(true);
+    fireEvent.click(busyButton);
+    expect(api.myPersonalRetryImportJob).toHaveBeenCalledTimes(1);
+
+    pending.resolve({ ...mediaJob(), lifecycle_status: 'queued', status: 'queued', retryable: false, error_code: null, error_message: null });
+    await waitFor(() => {
+      expect((screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement).disabled).toBe(false);
+    });
+    expect(api.myPersonalRetryImportJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers no retry action for a non-retryable media failure and never promises one', async () => {
+    api.myPersonalImportJobs.mockResolvedValue({ jobs: [mediaJob({ retryable: false, attempt_count: 5 })] });
+    renderPage();
+    await screen.findByText('voice-memo.mp3');
+
+    expect(screen.getByText(/administrator may need to enable media processing/i)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+    expect(api.myPersonalRetryImportJob).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Robustness: a malformed 200 detail body (missing the required segments
+// array) is a backend contract violation, but it must degrade the detail
+// panel instead of crashing the entire app behind the root error boundary.
+// ---------------------------------------------------------------------------
+
+const libraryDocument = {
+  document_id: 'doc-1',
+  title: 'Quartz research notes',
+  source_kind: 'paste',
+  source_uri: 'browser://knowledge/personal',
+  source_sha256: 'a'.repeat(64),
+  source_ref: 'kb://person/user-1/documents/doc-1',
+  canonical_md_path: 'persons/user-1/kb/doc-1.md',
+  status: 'ready',
+  sensitivity: 'internal',
+  agent_searchable: true,
+  segment_count: 1,
+  created_at: '2026-07-12T00:00:00Z',
+  updated_at: null,
+  metadata: {},
+};
+
+const libraryDocumentDetail = {
+  ...libraryDocument,
+  segments: [{
+    segment_id: 'seg-1',
+    position: 0,
+    heading_path: ['Field notes'],
+    content: `Marker ${MARKER} anchors the quartz segment.`,
+    token_count: 9,
+  }],
+};
+
+describe('PersonalKnowledge document detail robustness (mounted)', () => {
+  it('degrades a detail body missing its segments array instead of crashing the page', async () => {
+    api.myPersonalDocuments.mockResolvedValue({ documents: [libraryDocument] });
+    // Contract violation: a 200 detail body without the required segments array.
+    api.myPersonalDocument.mockResolvedValue({ document_id: 'doc-1', title: 'Quartz research notes' } as never);
+    api.myPersonalDocumentRevisions.mockResolvedValue({ revisions: [] });
+    renderPage();
+
+    await screen.findByText('Content preview');
+    expect(screen.getAllByText('Quartz research notes').length).toBeGreaterThan(0);
+    expect(screen.getByText('Status unavailable')).toBeTruthy();
+  });
+
+  it('renders library metadata with plain-language sensitivity instead of the raw enum', async () => {
+    api.myPersonalDocuments.mockResolvedValue({ documents: [libraryDocument] });
+    api.myPersonalDocument.mockResolvedValue(libraryDocumentDetail);
+    api.myPersonalDocumentRevisions.mockResolvedValue({ revisions: [] });
+    renderPage();
+    await screen.findByText('No import jobs yet.');
+
+    fireEvent.click(screen.getByRole('tab', { name: /^Library/ }));
+
+    await waitFor(() => {
+      const meta = document.querySelector('.personal-kb-doc-meta');
+      expect(meta?.textContent).toContain('Internal');
+      expect(meta?.textContent).not.toContain('· internal');
+      // The indexed-piece count uses the plain unit, never the schema noun,
+      // and a single piece takes the English singular ("1 part", never "1 parts").
+      expect(meta?.textContent).toContain('1 part ·');
+      expect(meta?.textContent).not.toContain('segment');
+      const stats = document.querySelector('.personal-kb-stats');
+      expect(stats?.textContent).toContain('1 part');
+      expect(stats?.textContent).not.toContain('1 parts');
+      expect(stats?.textContent).toContain('1 document');
+      expect(stats?.textContent).not.toContain('1 documents');
+    });
   });
 });

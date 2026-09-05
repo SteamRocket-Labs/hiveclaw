@@ -314,7 +314,9 @@ def test_admin_can_delete_same_tenant_sub_agent_owned_by_another_user():
     soft_delete.assert_awaited_once_with(fake_db, sub, actor_id=_USER_ID, reason="desktop_delete_sub_agent")
 
 
-def test_platform_admin_cannot_delete_company_sub_agent_by_role_alone():
+def test_platform_admin_can_delete_company_sub_agent_in_scope():
+    """PDEC-013: a scoped platform administrator deletes company sub-agent
+    assets inside the managed company, attributed to the real administrator."""
     sub = SimpleNamespace(
         id=_SUB_AGENT_ID,
         name="公司 Sub-Agent",
@@ -329,12 +331,15 @@ def test_platform_admin_cannot_delete_company_sub_agent_by_role_alone():
         agents_by_id={_SUB_AGENT_ID: sub},
         user=_FAKE_PLATFORM_ADMIN_USER,
     )
-    with patch.object(agents_mod, "soft_delete_agent", new_callable=AsyncMock) as soft_delete:
+    with (
+        patch.object(agents_mod, "bump_sync_version", new_callable=AsyncMock, return_value=4),
+        patch.object(agents_mod, "soft_delete_agent", new_callable=AsyncMock) as soft_delete,
+    ):
         resp = client.delete(f"/desktop/agents/{_SUB_AGENT_ID}")
 
-    assert resp.status_code == 403
+    assert resp.status_code == 204
     assert fake_db.deleted == []
-    soft_delete.assert_not_awaited()
+    soft_delete.assert_awaited_once_with(fake_db, sub, actor_id=_USER_ID, reason="desktop_delete_sub_agent")
 
 
 def test_org_admin_cannot_delete_cross_tenant_sub_agent_even_when_owner_matches():

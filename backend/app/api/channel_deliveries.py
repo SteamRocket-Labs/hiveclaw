@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_user
-from app.database import get_current_tenant_id, get_db, pin_rls_tenant_context
+from app.database import get_db
 from app.models.channel_delivery_outbox import ChannelDeliveryOutbox
 from app.models.user import User
 from app.services.channel_delivery_outbox import ChannelDeliveryOutboxService
@@ -91,26 +91,20 @@ async def _operator_tenant_id(
     user: User,
     requested_tenant_id: uuid.UUID | None,
 ) -> uuid.UUID:
+    """Resolve the delivery-console tenant scope through the one shared policy.
+
+    An explicit ``tenant_id`` query parameter is only a consistency echo of
+    the authenticated selected company (``resolve_and_pin_tenant_scope``); a
+    platform administrator passing a foreign or retired company id gets the
+    truthful company-selection recovery error instead of a second,
+    unvalidated cross-company switch. Organization administrators stay
+    bounded to their own company.
+    """
+
+    from app.core.tenant_scope import resolve_and_pin_tenant_scope
+
     _require_delivery_operator(user)
-    own_tenant = getattr(user, "tenant_id", None)
-    if getattr(user, "role", None) == "org_admin":
-        if own_tenant is None:
-            raise HTTPException(status_code=403, detail="Company administrator has no tenant")
-        if requested_tenant_id is not None and requested_tenant_id != own_tenant:
-            raise HTTPException(status_code=403, detail="Cross-company delivery access is denied")
-        tenant_id = own_tenant
-    else:
-        context_tenant = get_current_tenant_id()
-        try:
-            context_uuid = uuid.UUID(context_tenant) if context_tenant else None
-        except ValueError:
-            context_uuid = None
-        candidate = requested_tenant_id or context_uuid or own_tenant
-        if candidate is None:
-            raise HTTPException(status_code=400, detail="tenant_id is required")
-        tenant_id = candidate
-    await pin_rls_tenant_context(db, tenant_id)
-    return tenant_id
+    return await resolve_and_pin_tenant_scope(db, user, requested_tenant_id)
 
 
 def _serialize_delivery(row: ChannelDeliveryOutbox) -> ChannelDeliveryItem:

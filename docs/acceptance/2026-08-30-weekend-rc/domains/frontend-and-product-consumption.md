@@ -3,8 +3,8 @@ document_id: weekend-rc-domain-frontend-product-consumption
 owner: Example Owner / Codex
 status: active
 authority: canonical-domain-acceptance
-last_reviewed: 2026-08-30
-source_commit: 45340a3a
+last_reviewed: 2026-09-05
+source_commit: 0ce51f049e03c689a440075a5de8a7a9d99c609c
 verification_status: acceptance-spec-not-execution-result
 ---
 
@@ -55,6 +55,7 @@ Agent rail（头像/状态，可折叠）
 - [ ] accepted feedback、single process card、streaming Markdown、terminal final、failure/recovery 均遵守 [Single Agent](single-agent-and-session.md) 合同。
 - [ ] live frame、REST replay、WebSocket backfill 和 hard reload 结构同构。
 - [ ] canonical user/assistant/tool identity 去重；同一 run 的 compact/hyphen UUID 表示共享 owner。
+- [ ] 管理员以本人身份介入员工 Session 时，live/replay/reload 都可辨认真实发送者，不能渲染成员工本人发言；复用既有 canonical actor 与 sender 字段，不新增第二套消息身份存储。
 - [ ] terminal final 后 stale active observation 不生成第二 process row。
 - [ ] historical blocker/runtime activity 不覆盖 current turn header。
 - [ ] long Session 使用真实 virtualization/stable-tail，不吞历史或跳 scroll position。
@@ -77,10 +78,12 @@ Agent rail（头像/状态，可折叠）
 
 ## 角色 surface
 
-- employee：任务、Agent、Session、Personal KB、获准 Company Library、deliverable、必要 approval。
-- company admin：members、Agent lifecycle、Company Knowledge、permissions、budget/audit summary、offboarding。
-- platform admin：tenant/runtime/provider/config/compliance health，不默认读取业务正文。
-- operator inspector：带 reason/scope 的 raw span/event/repair；默认折叠且全程 audit。
+- employee：自己的及公司内公开 Agent、自己的 Session/Personal KB、获准 Company Library、deliverable、必要 approval；无 Agent 删除或管理员授予入口。
+- company admin：本公司全部业务，包括员工私有 Session、文件和知识，以及 members、Agent lifecycle、permissions、budget/audit、offboarding；可任命公司管理员。
+- platform admin：平台管理及明确目标公司的完整业务入口，可任命公司管理员；不再沿用只看 health、不读业务正文的旧规则。
+- operator inspector：技术证据视图而非第四种产品身份；按当前角色和 exact scope 校验、审计，不能成为管理员普通业务访问的额外授权门，也不能给员工扩权。
+
+PDEC-013 适用于页面、直达 URL、API、缓存和导出；明文密码/密钥/token 均不展示。公司后台为两类管理员提供可键盘操作的“返回 App”，返回后保留登录与合法公司上下文。旧的管理员业务拒绝截图不作为新合同 PASS。
 
 前端隐藏不是权限；相同 URL/API 在不同角色下必须由后端返回相同 authority verdict。
 

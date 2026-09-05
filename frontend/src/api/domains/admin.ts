@@ -16,6 +16,14 @@ export interface Company {
   [key: string]: any;
 }
 
+/**
+ * The one active-company rule shared by every company-selection surface
+ * (sidebar workspace selector, platform-admin company picker): a company is
+ * selectable only while the server reports it active. Disabled companies are
+ * never offered as a selection or shown as the current workspace.
+ */
+export const isActiveCompany = (company: { is_active?: boolean }): boolean => company.is_active !== false;
+
 export interface CompanyCreateReceipt {
   company: Company;
   admin_invitation_code: string;

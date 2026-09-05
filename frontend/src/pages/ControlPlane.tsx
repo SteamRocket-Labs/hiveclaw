@@ -17,6 +17,7 @@ import {
 } from '@tabler/icons-react';
 
 import { enterpriseApi } from '../api/domains/enterprise';
+import { isAdministratorRole } from '../roles';
 import { useAuthStore } from '../stores';
 import {
   canRoleAccessWorkspaceSection,
@@ -191,10 +192,11 @@ export default function ControlPlane({ tab }: ControlPlaneProps) {
   const role = useAuthStore((state) => state.user?.role);
   const selectedTenantId = readCurrentTenantId();
   const section = cardForTab(tab);
+  const isScopedAdmin = isAdministratorRole(role);
   const { data: stats } = useQuery({
     queryKey: ['enterprise-stats', selectedTenantId],
     queryFn: () => enterpriseApi.getStats(selectedTenantId || undefined),
-    enabled: role === 'org_admin',
+    enabled: isScopedAdmin,
   });
 
   if (tab && !canRoleAccessWorkspaceSection(role, tab)) {
@@ -223,7 +225,7 @@ export default function ControlPlane({ tab }: ControlPlaneProps) {
 
   const allowedPaths = new Set(workspaceSectionsForRole(role).map((item) => item.path));
   const visibleCards = CONTROL_PLANE_CARDS.filter((card) =>
-    card.to === '/local-agents' ? role === 'org_admin' : allowedPaths.has(card.to),
+    card.to === '/local-agents' ? isScopedAdmin : allowedPaths.has(card.to),
   );
   const workspaceSections = WORKSPACE_SETTINGS_SECTIONS.filter((item) =>
     canRoleAccessWorkspaceSection(role, item.tab),
@@ -248,7 +250,7 @@ export default function ControlPlane({ tab }: ControlPlaneProps) {
       </div>
 
       <div className="workbench-metrics">
-        {role === 'org_admin' && (
+        {isScopedAdmin && (
           <>
             <div className="workbench-metric">
               <span>{t('controlPlane.metrics.users', 'Users')}</span>

@@ -88,12 +88,18 @@ async def _merge_participants(db: AsyncSession, primary_user: User, duplicate_us
     if primary_participant:
         await db.execute(
             update(ChatMessage)
-            .where(ChatMessage.participant_id == duplicate_participant.id)
+            .where(
+                ChatMessage.participant_id == duplicate_participant.id,
+                ChatMessage.tenant_id == primary_user.tenant_id,
+            )
             .values(participant_id=primary_participant.id)
         )
         await db.execute(
             update(ChatSession)
-            .where(ChatSession.participant_id == duplicate_participant.id)
+            .where(
+                ChatSession.participant_id == duplicate_participant.id,
+                ChatSession.tenant_id == primary_user.tenant_id,
+            )
             .values(participant_id=primary_participant.id)
         )
         await db.delete(duplicate_participant)
@@ -112,8 +118,8 @@ def _copy_missing_user_fields(primary_user: User, duplicate_user: User) -> None:
         primary_user.display_name = duplicate_user.display_name
     if duplicate_user.avatar_url and not primary_user.avatar_url:
         primary_user.avatar_url = duplicate_user.avatar_url
-    if duplicate_user.feishu_open_id and not primary_user.feishu_open_id:
-        primary_user.feishu_open_id = duplicate_user.feishu_open_id
+    # feishu_open_id is transferred in _merge_user_record: its global unique
+    # index requires the duplicate's release to reach PostgreSQL first.
     if duplicate_user.feishu_union_id and not primary_user.feishu_union_id:
         primary_user.feishu_union_id = duplicate_user.feishu_union_id
     if duplicate_user.feishu_user_id and not primary_user.feishu_user_id:
@@ -121,33 +127,69 @@ def _copy_missing_user_fields(primary_user: User, duplicate_user: User) -> None:
 
 
 async def _merge_user_record(db: AsyncSession, primary_user: User, duplicate_user: User) -> None:
+    # Provider user ids are not globally unique in this schema, and User tenancy is
+    # a hard boundary — refuse a cross-tenant (or tenantless) pair before any mutation.
+    if (
+        primary_user.tenant_id is None
+        or duplicate_user.tenant_id is None
+        or primary_user.tenant_id != duplicate_user.tenant_id
+    ):
+        raise ValueError(
+            "refusing to merge Feishu users across tenants: "
+            f"primary tenant {primary_user.tenant_id!r}, duplicate tenant {duplicate_user.tenant_id!r}"
+        )
+
     await db.execute(
-        update(ChatMessage).where(ChatMessage.user_id == duplicate_user.id).values(user_id=primary_user.id)
+        update(ChatMessage)
+        .where(
+            ChatMessage.user_id == duplicate_user.id,
+            ChatMessage.tenant_id == primary_user.tenant_id,
+        )
+        .values(user_id=primary_user.id)
     )
     await db.execute(
-        update(ChatSession).where(ChatSession.user_id == duplicate_user.id).values(user_id=primary_user.id)
+        update(ChatSession)
+        .where(
+            ChatSession.user_id == duplicate_user.id,
+            ChatSession.tenant_id == primary_user.tenant_id,
+        )
+        .values(user_id=primary_user.id)
     )
     await db.execute(
         update(ExternalIdentity).where(ExternalIdentity.user_id == duplicate_user.id).values(user_id=primary_user.id)
     )
     await _merge_participants(db, primary_user, duplicate_user)
+    # ix_users_feishu_open_id is globally unique: flush the duplicate's NULL
+    # release before the canonical row claims the value, or PostgreSQL rejects
+    # the swap while the duplicate row still owns it.
+    duplicate_open_id = duplicate_user.feishu_open_id
+    if duplicate_open_id and not primary_user.feishu_open_id:
+        duplicate_user.feishu_open_id = None
+        await db.flush()
+        primary_user.feishu_open_id = duplicate_open_id
     _copy_missing_user_fields(primary_user, duplicate_user)
     await db.delete(duplicate_user)
 
 
 async def merge_duplicate_feishu_users(db: AsyncSession) -> int:
-    """Merge duplicate user rows that share the same stable Feishu user_id."""
+    """Merge duplicate user rows that share one tenant and the same stable Feishu user_id."""
     duplicate_groups = await db.execute(
-        select(User.feishu_user_id)
-        .where(User.feishu_user_id.is_not(None), User.feishu_user_id != "")
-        .group_by(User.feishu_user_id)
+        select(User.tenant_id, User.feishu_user_id)
+        .where(
+            User.tenant_id.is_not(None),
+            User.feishu_user_id.is_not(None),
+            User.feishu_user_id != "",
+        )
+        .group_by(User.tenant_id, User.feishu_user_id)
         .having(func.count(User.id) > 1)
     )
 
     merged = 0
-    for (feishu_user_id,) in duplicate_groups.all():
+    for tenant_id, feishu_user_id in duplicate_groups.all():
         users_result = await db.execute(
-            select(User).where(User.feishu_user_id == feishu_user_id).order_by(User.created_at.asc())
+            select(User)
+            .where(User.tenant_id == tenant_id, User.feishu_user_id == feishu_user_id)
+            .order_by(User.created_at.asc())
         )
         users = list(users_result.scalars().all())
         if len(users) < 2:
@@ -174,6 +216,8 @@ async def normalize_feishu_chat_sessions(db: AsyncSession) -> int:
             ChatSession.external_conv_id.like("feishu_p2p_%"),
             User.feishu_user_id.is_not(None),
             User.feishu_user_id != "",
+            # user_id is a global FK; only a same-tenant User may re-key the session.
+            User.tenant_id == ChatSession.tenant_id,
         )
     )
 
@@ -184,6 +228,9 @@ async def normalize_feishu_chat_sessions(db: AsyncSession) -> int:
             continue
 
         existing_result = await db.execute(
+            # Follow the database's real unique key (agent_id, external_conv_id):
+            # a tenant-predicated lookup can miss a row the constraint still
+            # sees, so the collision target must be resolved unfiltered first.
             select(ChatSession).where(
                 ChatSession.agent_id == session.agent_id,
                 ChatSession.external_conv_id == canonical_conv_id,
@@ -192,9 +239,23 @@ async def normalize_feishu_chat_sessions(db: AsyncSession) -> int:
         canonical_session = existing_result.scalar_one_or_none()
 
         if canonical_session and canonical_session.id != session.id:
+            # user_id is a global FK: before any message is re-keyed onto the
+            # canonical target, both the target session and the User it
+            # references must belong to the legacy session's tenant; otherwise
+            # leave this pair untouched instead of propagating a foreign User
+            # or renaming into the unique collision.
+            canonical_user_tenant_id = await db.scalar(
+                select(User.tenant_id).where(User.id == canonical_session.user_id)
+            )
+            if canonical_session.tenant_id != session.tenant_id or canonical_user_tenant_id != session.tenant_id:
+                continue
+
             await db.execute(
                 update(ChatMessage)
-                .where(ChatMessage.conversation_id == str(session.id))
+                .where(
+                    ChatMessage.conversation_id == str(session.id),
+                    ChatMessage.tenant_id == session.tenant_id,
+                )
                 .values(conversation_id=str(canonical_session.id), user_id=canonical_session.user_id)
             )
             if session.last_message_at and (

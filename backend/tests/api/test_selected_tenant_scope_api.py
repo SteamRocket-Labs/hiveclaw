@@ -75,8 +75,56 @@ def _first_business_statement(db: _FakeDB):
     raise AssertionError("No business statement executed")
 
 
+def _tenant_member(**overrides):
+    values = dict(
+        id=uuid4(),
+        username="member@example.com",
+        email="member@example.com",
+        display_name="Member",
+        role="member",
+        is_active=True,
+        quota_tokens_per_day=None,
+        quota_tokens_per_month=None,
+        tokens_used_today=0,
+        tokens_used_month=0,
+        tokens_used_total=0,
+        feishu_open_id=None,
+        created_at=datetime.now(timezone.utc),
+    )
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
 @pytest.mark.asyncio
-async def test_platform_admin_cannot_list_selected_tenant_users():
+async def test_platform_admin_lists_selected_tenant_users():
+    """PDEC-013: a platform administrator manages company users inside the
+    explicitly selected company; the query targets that company only."""
+
+    import app.api.users as users_api
+
+    # After the validated X-Tenant-Id selection the actor's ``tenant_id`` IS
+    # the authenticated selected company; ``home_tenant_id`` records the
+    # administrator's real home company, which must never leak into the
+    # pinned business statement.
+    home_tenant_id = uuid4()
+    target_tenant_id = uuid4()
+    member = _tenant_member(tenant_id=target_tenant_id)
+    db = _FakeDB([_ListResult([member]), _ScalarResult(0)])
+
+    result = await users_api.list_users(
+        tenant_id=str(target_tenant_id),
+        current_user=SimpleNamespace(role="platform_admin", tenant_id=target_tenant_id, home_tenant_id=home_tenant_id),
+        db=db,
+    )
+
+    assert [user.id for user in result] == [member.id]
+    params = _first_business_statement(db).compile().params
+    assert target_tenant_id in params.values()
+    assert home_tenant_id not in params.values()
+
+
+@pytest.mark.asyncio
+async def test_member_cannot_list_another_tenant_users():
     import app.api.users as users_api
 
     own_tenant_id = uuid4()
@@ -86,7 +134,7 @@ async def test_platform_admin_cannot_list_selected_tenant_users():
     with pytest.raises(HTTPException) as exc_info:
         await users_api.list_users(
             tenant_id=str(target_tenant_id),
-            current_user=SimpleNamespace(role="platform_admin", tenant_id=own_tenant_id),
+            current_user=SimpleNamespace(role="member", tenant_id=own_tenant_id),
             db=db,
         )
 
@@ -98,7 +146,6 @@ async def test_platform_admin_cannot_list_selected_tenant_users():
 async def test_platform_admin_can_update_selected_tenant_quotas():
     import app.api.enterprise as enterprise_api
 
-    own_tenant_id = uuid4()
     target_tenant_id = uuid4()
     target_tenant = SimpleNamespace(
         id=target_tenant_id,
@@ -114,7 +161,7 @@ async def test_platform_admin_can_update_selected_tenant_quotas():
     result = await enterprise_api.update_tenant_quotas(
         data=enterprise_api.TenantQuotaUpdate(default_tokens_per_day=100000),
         tenant_id=str(target_tenant_id),
-        current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=own_tenant_id),
+        current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=target_tenant_id),
         db=db,
     )
 
@@ -124,17 +171,39 @@ async def test_platform_admin_can_update_selected_tenant_quotas():
 
 
 @pytest.mark.asyncio
-async def test_platform_admin_cannot_update_other_tenant_user_quota():
+async def test_platform_admin_updates_selected_tenant_user_quota():
     import app.api.users as users_api
 
-    own_tenant_id = uuid4()
+    target_tenant_id = uuid4()
+    target_user = _tenant_member(tenant_id=target_tenant_id)
+    db = _FakeDB([_ScalarResult(target_user), _ScalarResult(0)])
+
+    # The platform administrator operates with the selected company as the
+    # in-memory tenant scope, exactly as get_current_user establishes it.
+    result = await users_api.update_user_quota(
+        user_id=target_user.id,
+        data=users_api.UserQuotaUpdate(quota_tokens_per_day=50000),
+        current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=target_tenant_id),
+        db=db,
+    )
+
+    assert result.quota_tokens_per_day == 50000
+    assert target_user.quota_tokens_per_day == 50000
+    assert db.committed is True
+
+
+@pytest.mark.asyncio
+async def test_member_cannot_update_other_tenant_user_quota():
+    import app.api.users as users_api
+
     db = _FakeDB([])
+    own_tenant_id = uuid4()
 
     with pytest.raises(HTTPException) as exc_info:
         await users_api.update_user_quota(
             user_id=uuid4(),
             data=users_api.UserQuotaUpdate(quota_tokens_per_day=50000),
-            current_user=SimpleNamespace(role="platform_admin", tenant_id=own_tenant_id),
+            current_user=SimpleNamespace(role="member", tenant_id=own_tenant_id),
             db=db,
         )
 
@@ -146,7 +215,6 @@ async def test_platform_admin_cannot_update_other_tenant_user_quota():
 async def test_get_selected_tenant_memory_config_defaults_models_to_default_model():
     import app.api.memory as memory_api
 
-    own_tenant_id = uuid4()
     target_tenant_id = uuid4()
     default_model_id = uuid4()
     db = _FakeDB(
@@ -159,7 +227,7 @@ async def test_get_selected_tenant_memory_config_defaults_models_to_default_mode
 
     result = await memory_api.get_memory_config(
         tenant_id=str(target_tenant_id),
-        current_user=SimpleNamespace(role="platform_admin", tenant_id=own_tenant_id),
+        current_user=SimpleNamespace(role="platform_admin", tenant_id=target_tenant_id),
         db=db,
     )
 
@@ -173,7 +241,6 @@ async def test_get_selected_tenant_memory_config_defaults_models_to_default_mode
 async def test_platform_admin_can_update_selected_tenant_memory_config():
     import app.api.memory as memory_api
 
-    own_tenant_id = uuid4()
     target_tenant_id = uuid4()
     # Two DB calls: 1) lookup existing TenantSetting, 2) validate summary_model_id
     db = _FakeDB([_ScalarResult(None), _ScalarResult(uuid4())])
@@ -181,7 +248,7 @@ async def test_platform_admin_can_update_selected_tenant_memory_config():
     result = await memory_api.update_memory_config(
         data=memory_api.MemoryConfigUpdate(summary_model_id="model-1", keep_recent=20),
         tenant_id=str(target_tenant_id),
-        current_user=SimpleNamespace(role="platform_admin", tenant_id=own_tenant_id),
+        current_user=SimpleNamespace(role="platform_admin", tenant_id=target_tenant_id),
         db=db,
     )
 
@@ -195,7 +262,6 @@ async def test_platform_admin_can_update_selected_tenant_memory_config():
 async def test_platform_admin_can_update_selected_tenant_memory_config_with_rerank_model():
     import app.api.memory as memory_api
 
-    own_tenant_id = uuid4()
     target_tenant_id = uuid4()
     # Three DB calls: 1) lookup existing TenantSetting, 2) validate summary_model_id, 3) validate rerank_model_id
     db = _FakeDB([_ScalarResult(None), _ScalarResult(uuid4()), _ScalarResult(uuid4())])
@@ -207,7 +273,7 @@ async def test_platform_admin_can_update_selected_tenant_memory_config_with_rera
             keep_recent=20,
         ),
         tenant_id=str(target_tenant_id),
-        current_user=SimpleNamespace(role="platform_admin", tenant_id=own_tenant_id),
+        current_user=SimpleNamespace(role="platform_admin", tenant_id=target_tenant_id),
         db=db,
     )
 
@@ -222,7 +288,6 @@ async def test_platform_admin_can_update_selected_tenant_memory_config_with_rera
 async def test_platform_admin_can_get_selected_tenant_oidc_config():
     import app.api.enterprise as enterprise_api
 
-    own_tenant_id = uuid4()
     target_tenant_id = uuid4()
     setting = SimpleNamespace(
         value={
@@ -238,7 +303,7 @@ async def test_platform_admin_can_get_selected_tenant_oidc_config():
 
     result = await enterprise_api.get_oidc_config(
         tenant_id=str(target_tenant_id),
-        current_user=SimpleNamespace(role="platform_admin", tenant_id=own_tenant_id),
+        current_user=SimpleNamespace(role="platform_admin", tenant_id=target_tenant_id),
         db=db,
     )
 
@@ -247,18 +312,37 @@ async def test_platform_admin_can_get_selected_tenant_oidc_config():
 
 
 @pytest.mark.asyncio
-async def test_platform_admin_cannot_create_invitation_codes_for_selected_tenant():
+async def test_platform_admin_creates_invitation_codes_for_selected_tenant():
     import app.api.enterprise as enterprise_api
 
-    own_tenant_id = uuid4()
     target_tenant_id = uuid4()
+    actor_id = uuid4()
+    db = _FakeDB([])
+
+    result = await enterprise_api.create_invitation_codes(
+        data=enterprise_api.InvitationCodeCreate(count=2, max_uses=3),
+        tenant_id=str(target_tenant_id),
+        current_user=SimpleNamespace(id=actor_id, role="platform_admin", tenant_id=target_tenant_id),
+        db=db,
+    )
+
+    assert result["created"] == 2
+    assert len(db.added) == 2
+    assert all(code.tenant_id == target_tenant_id for code in db.added)
+    assert all(code.created_by == actor_id for code in db.added)
+    assert db.committed is True
+
+
+@pytest.mark.asyncio
+async def test_member_cannot_create_invitation_codes():
+    import app.api.enterprise as enterprise_api
+
     db = _FakeDB([])
 
     with pytest.raises(HTTPException) as exc_info:
         await enterprise_api.create_invitation_codes(
             data=enterprise_api.InvitationCodeCreate(count=2, max_uses=3),
-            tenant_id=str(target_tenant_id),
-            current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=own_tenant_id),
+            current_user=SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4()),
             db=db,
         )
 
@@ -268,18 +352,16 @@ async def test_platform_admin_cannot_create_invitation_codes_for_selected_tenant
 
 
 @pytest.mark.asyncio
-async def test_platform_admin_cannot_create_agent_for_selected_tenant():
+async def test_member_cannot_create_agent_directly():
     import app.api.agents as agents_api
     from app.schemas.schemas import AgentCreate
 
-    own_tenant_id = uuid4()
-    target_tenant_id = uuid4()
     db = _FakeDB([])
 
     with pytest.raises(HTTPException) as exc_info:
         await agents_api.create_agent(
-            data=AgentCreate(name="投研助手", tenant_id=target_tenant_id),
-            current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=own_tenant_id),
+            data=AgentCreate(name="投研助手"),
+            current_user=SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4()),
             db=db,
         )
 
@@ -288,10 +370,33 @@ async def test_platform_admin_cannot_create_agent_for_selected_tenant():
 
 
 @pytest.mark.asyncio
+async def test_platform_admin_without_company_context_gets_truthful_next_action():
+    """PDEC-013: the administrator role itself is no longer the refusal; a
+    missing company context returns the truthful reachable next action."""
+
+    import app.api.agents as agents_api
+    from app.schemas.schemas import AgentCreate
+
+    db = _FakeDB([])
+
+    with pytest.raises(HTTPException) as exc_info:
+        await agents_api.create_agent(
+            data=AgentCreate(name="投研助手"),
+            current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=None),
+            db=db,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert db.added == []
+
+
+@pytest.mark.asyncio
 async def test_platform_admin_can_test_selected_tenant_llm_model(monkeypatch):
     import app.api.enterprise as enterprise_api
 
-    own_tenant_id = uuid4()
+    # ``home_tenant_id`` is the actor's real home company (a fresh fact, not a
+    # phantom): the pinned statement must target the selected company only.
+    home_tenant_id = uuid4()
     target_tenant_id = uuid4()
     target_model_id = uuid4()
     db = _FakeDB([_ScalarResult(SimpleNamespace(api_key="target-secret"))])
@@ -335,13 +440,15 @@ async def test_platform_admin_can_test_selected_tenant_llm_model(monkeypatch):
             model_id=str(target_model_id),
         ),
         tenant_id=str(target_tenant_id),
-        current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=own_tenant_id),
+        current_user=SimpleNamespace(
+            id=uuid4(), role="platform_admin", tenant_id=target_tenant_id, home_tenant_id=home_tenant_id
+        ),
         db=db,
     )
 
     params = _first_business_statement(db).compile().params
     assert target_tenant_id in params.values()
-    assert own_tenant_id not in params.values()
+    assert home_tenant_id not in params.values()
     assert result["success"] is True
     assert result["reply"] == "ok"
     assert timeline == [
@@ -472,7 +579,6 @@ async def test_llm_probe_reports_terminal_audit_failure_without_inviting_retry(m
 async def test_platform_admin_queries_selected_tenant_security_audit(monkeypatch):
     import app.api.enterprise as enterprise_api
 
-    own_tenant_id = uuid4()
     target_tenant_id = uuid4()
     captured = {}
 
@@ -495,7 +601,7 @@ async def test_platform_admin_queries_selected_tenant_security_audit(monkeypatch
         date_to=None,
         page=1,
         page_size=200,
-        current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=own_tenant_id),
+        current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=target_tenant_id),
         db=_FakeDB([]),
     )
 
@@ -580,7 +686,6 @@ def test_admin_audit_schemas_expose_only_control_plane_summary_fields():
 async def test_platform_admin_exports_selected_tenant_audit_summary(monkeypatch):
     import app.api.enterprise as enterprise_api
 
-    own_tenant_id = uuid4()
     target_tenant_id = uuid4()
     captured = {}
 
@@ -600,7 +705,7 @@ async def test_platform_admin_exports_selected_tenant_audit_summary(monkeypatch)
         search=None,
         date_from=None,
         date_to=None,
-        current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=own_tenant_id),
+        current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=target_tenant_id),
         db=_FakeDB([]),
     )
 
@@ -611,7 +716,6 @@ async def test_platform_admin_exports_selected_tenant_audit_summary(monkeypatch)
 async def test_platform_admin_verifies_selected_tenant_audit_chain(monkeypatch):
     import app.api.enterprise as enterprise_api
 
-    own_tenant_id = uuid4()
     target_tenant_id = uuid4()
     event_id = uuid4()
     captured = {}
@@ -625,7 +729,7 @@ async def test_platform_admin_verifies_selected_tenant_audit_chain(monkeypatch):
     result = await enterprise_api.verify_audit_chain(
         event_id=event_id,
         tenant_id=str(target_tenant_id),
-        current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=own_tenant_id),
+        current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=target_tenant_id),
         db=_FakeDB([]),
     )
 
@@ -724,7 +828,7 @@ def test_llm_model_create_rejects_openai_gpt55_pro_alias():
 async def test_platform_admin_can_update_selected_tenant_llm_model(monkeypatch):
     import app.api.enterprise as enterprise_api
 
-    own_tenant_id = uuid4()
+    home_tenant_id = uuid4()
     target_tenant_id = uuid4()
     model_id = uuid4()
     model = SimpleNamespace(
@@ -752,13 +856,15 @@ async def test_platform_admin_can_update_selected_tenant_llm_model(monkeypatch):
         model_id=model_id,
         tenant_id=str(target_tenant_id),
         data=enterprise_api.LLMModelUpdate(label="Updated target model"),
-        current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=own_tenant_id),
+        current_user=SimpleNamespace(
+            id=uuid4(), role="platform_admin", tenant_id=target_tenant_id, home_tenant_id=home_tenant_id
+        ),
         db=db,
     )
 
     params = _first_business_statement(db).compile().params
     assert target_tenant_id in params.values()
-    assert own_tenant_id not in params.values()
+    assert home_tenant_id not in params.values()
     assert model.label == "Updated target model"
     assert result.label == "Updated target model"
     assert db.committed is True
@@ -813,7 +919,7 @@ class _RowsResult:
 async def test_platform_admin_can_delete_selected_tenant_llm_model(monkeypatch):
     import app.api.enterprise as enterprise_api
 
-    own_tenant_id = uuid4()
+    home_tenant_id = uuid4()
     target_tenant_id = uuid4()
     model_id = uuid4()
     model = SimpleNamespace(
@@ -831,12 +937,14 @@ async def test_platform_admin_can_delete_selected_tenant_llm_model(monkeypatch):
     await enterprise_api.remove_llm_model(
         model_id=model_id,
         tenant_id=str(target_tenant_id),
-        current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=own_tenant_id),
+        current_user=SimpleNamespace(
+            id=uuid4(), role="platform_admin", tenant_id=target_tenant_id, home_tenant_id=home_tenant_id
+        ),
         db=db,
     )
 
     params = _first_business_statement(db).compile().params
     assert target_tenant_id in params.values()
-    assert own_tenant_id not in params.values()
+    assert home_tenant_id not in params.values()
     assert db.deleted == [model]
     assert db.committed is True

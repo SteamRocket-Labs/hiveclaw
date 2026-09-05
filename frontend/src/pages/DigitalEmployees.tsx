@@ -14,6 +14,8 @@ import {
   IconUserCircle,
 } from '@tabler/icons-react';
 import { agentApi } from '../api/domains/agents';
+import { isAdministratorRole, isManagedEmployeeAgent } from '../roles';
+import { useAuthStore } from '../stores';
 import type { Agent } from '../types';
 import HrCreationRecoveryPanel from './employee-directory/HrCreationRecoveryPanel';
 
@@ -36,6 +38,8 @@ function isOperatorOnlyAgent(agent: Agent): boolean {
 
 export default function DigitalEmployees() {
   const { t } = useTranslation();
+  const currentUser = useAuthStore((s) => s.user);
+  const adminViewer = isAdministratorRole(currentUser?.role);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | 'mine' | 'shared' | 'recommended' | 'running' | 'needs_attention' | 'local'>('all');
   const { data: agents = [], isLoading } = useQuery({
@@ -67,6 +71,12 @@ export default function DigitalEmployees() {
   const mineCount = agents.filter((agent: Agent) => isOwnedAgent(agent)).length;
   const sharedCount = agents.filter((agent: Agent) => !isOwnedAgent(agent)).length;
   const localCount = agents.filter((agent: Agent) => isLocalAgentRuntime(agent)).length;
+  // PDEC-013: for an administrator the non-owned rows are managed employee
+  // Agents, not automatically company-shared/public ones.
+  const nonOwnedLabel = (kind: 'metrics' | 'filters') =>
+    adminViewer
+      ? t(`employees.${kind}.managed`, 'Managed')
+      : t(`employees.${kind}.shared`, 'Company shared');
 
   return (
     <div className="workbench-page">
@@ -94,7 +104,7 @@ export default function DigitalEmployees() {
           <strong>{mineCount}</strong>
         </div>
         <div className="workbench-metric">
-          <span>{t('employees.metrics.shared', 'Company shared')}</span>
+          <span>{nonOwnedLabel('metrics')}</span>
           <strong>{sharedCount}</strong>
         </div>
         <div className="workbench-metric">
@@ -123,7 +133,7 @@ export default function DigitalEmployees() {
             {[
               ['all', t('employees.filters.all', 'All')],
               ['mine', t('employees.filters.mine', 'Owned by me')],
-              ['shared', t('employees.filters.shared', 'Company shared')],
+              ['shared', nonOwnedLabel('filters')],
               ['recommended', t('employees.filters.recommended', 'Recommended')],
               ['running', t('employees.filters.running', 'Running')],
               ['needs_attention', t('employees.filters.attention', 'Needs attention')],
@@ -155,7 +165,13 @@ export default function DigitalEmployees() {
                     </div>
                     <p>{agent.role_description || t('employees.noRole', 'No role description yet')}</p>
                     <div className="employee-chip-row">
-                      <span>{isOwnedAgent(agent) ? t('employees.chips.mine', 'Owned by me') : t('employees.chips.shared', 'Company shared')}</span>
+                      <span>
+                        {isOwnedAgent(agent)
+                          ? t('employees.chips.mine', 'Owned by me')
+                          : isManagedEmployeeAgent(currentUser, agent)
+                            ? t('employees.chips.managed', 'Managed')
+                            : t('employees.chips.shared', 'Company shared')}
+                      </span>
                       {agent.status === 'running' && agent.last_active_at && <span>{t('employees.chips.recommended', 'Recommended')}</span>}
                       {isLocalAgentRuntime(agent) && <span>{t('employees.chips.local', 'Local runtime')}</span>}
                     </div>

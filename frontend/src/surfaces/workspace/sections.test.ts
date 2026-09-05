@@ -43,17 +43,11 @@ describe('workspace section routing', () => {
     ]);
   });
 
-  it('gives platform administrators only platform health and configuration sections', () => {
-    expect(workspaceSectionsForRole('platform_admin').map((section) => section.tab)).toEqual([
-      'dashboard',
-      'info',
-      'llm',
-      'memory',
-      'extensions',
-      'runtime_budgets',
-      'quotas',
-      'audit',
-    ]);
+  it('gives platform administrators the same selected-company workspace sections as organization administrators', () => {
+    // PDEC-013: inside the authenticated selected company a platform
+    // administrator holds the complete business workspace; the server answers
+    // with typed selection errors when no valid company is selected.
+    expect(workspaceSectionsForRole('platform_admin')).toEqual(WORKSPACE_SECTIONS);
   });
 
   it('keeps every company workspace section for organization administrators', () => {

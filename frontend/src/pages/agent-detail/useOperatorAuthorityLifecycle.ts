@@ -5,6 +5,9 @@ import { ApiError } from '../../api/core';
 import { activityApi } from '../../api/domains/activity';
 import { agentApi } from '../../api/domains/agents';
 import { chatApi } from '../../api/domains/chat';
+import { filterSessionsForAgent } from './chatRuntime';
+import { isScopedBusinessAdminForAgent } from '../../roles';
+import { useAuthStore } from '../../stores';
 
 interface UseOperatorAuthorityOptions {
   agentId?: string;
@@ -63,6 +66,25 @@ export function useOperatorAuthorityLifecycle({ agentId, queryClient }: UseOpera
   const isOperatorOnlyRef = React.useRef(isOperatorOnly);
   isOperatorOnlyRef.current = isOperatorOnly;
 
+  // PDEC-013 scoped business-administrator session lane: a real administrator
+  // role plus the server's own per-Agent management projection, via the shared
+  // roles.ts predicate (the sidebar badge and the directory labels derive the
+  // same answer from the same rule). Distinct from the audited operator lane —
+  // rows arrive with operator_view=false and no operator reason is required or
+  // sent. A member-owner and a legacy `manage` grant holder are both excluded.
+  const currentUser = useAuthStore((s) => s.user);
+  const scopedAdminSessionAccess = Boolean(
+    canLoadAgentScopedData
+    && !isOperatorOnly
+    && isScopedBusinessAdminForAgent(currentUser, agent)
+  );
+  // The agent identity travels in the owning page's agent-change reset and in
+  // the loader's currentAgentIdRef guard, so the key only distinguishes lanes.
+  const scopedAdminSessionListKey = scopedAdminSessionAccess ? 'scoped-admin' : null;
+  const sessionListAuthorityKey = operatorAuthorityScope || scopedAdminSessionListKey;
+  const sessionListAuthorityKeyRef = React.useRef<string | null>(sessionListAuthorityKey);
+  sessionListAuthorityKeyRef.current = sessionListAuthorityKey;
+
   const denyOperatorAuthority = React.useCallback((error: unknown): boolean => {
     if (!isOperatorAuthorityLoss(error)) return false;
     operatorAuthorityDeniedAtRef.current = agentDataUpdatedAt;
@@ -87,6 +109,9 @@ export function useOperatorAuthorityLifecycle({ agentId, queryClient }: UseOpera
     operatorAuthorityScope,
     operatorAuthorityScopeRef,
     operatorReason,
+    scopedAdminSessionAccess,
+    sessionListAuthorityKey,
+    sessionListAuthorityKeyRef,
     setOperatorReason,
   };
 }
@@ -404,4 +429,62 @@ function isAgentShellAuthorityLoss(error: unknown): boolean {
 
 function isOperatorAuthorityLoss(error: unknown): boolean {
   return apiErrorStatus(error) === 403;
+}
+
+interface SessionInventoryLoaderDeps {
+  agentId?: string;
+  normalizedOperatorReason: string;
+  denyOperatorAuthority: (error: unknown) => boolean;
+  operatorAuthorityScopeRef: React.MutableRefObject<string | null>;
+  sessionListAuthorityKeyRef: React.MutableRefObject<string | null>;
+  allSessionsAuthorityScopeRef: React.MutableRefObject<string | null>;
+  currentAgentIdRef: React.MutableRefObject<string | undefined>;
+  setAllSessions: (sessions: any[]) => void;
+  setAllSessionsLoading: (loading: boolean) => void;
+}
+
+/**
+ * Loads the full Session inventory of an Agent through whichever authority
+ * lane is active: the reason-gated operator inspection lane, or the PDEC-013
+ * scoped business-administrator lane (a normal audited business read as the
+ * administrator — no operator authority or reason is fabricated for it).
+ */
+export function createSessionInventoryLoader(deps: SessionInventoryLoaderDeps) {
+  const {
+    agentId,
+    normalizedOperatorReason,
+    denyOperatorAuthority,
+    operatorAuthorityScopeRef,
+    sessionListAuthorityKeyRef,
+    allSessionsAuthorityScopeRef,
+    currentAgentIdRef,
+    setAllSessions,
+    setAllSessionsLoading,
+  } = deps;
+  return async () => {
+    const authorityKey = sessionListAuthorityKeyRef.current;
+    if (!agentId || !authorityKey) {
+      allSessionsAuthorityScopeRef.current = null;
+      if (currentAgentIdRef.current === agentId) setAllSessions([]);
+      return;
+    }
+    setAllSessionsLoading(true);
+    try {
+      const all = filterSessionsForAgent(await chatApi.listSessions(
+        agentId,
+        'all',
+        operatorAuthorityScopeRef.current
+          ? { operatorView: true, operatorReason: normalizedOperatorReason }
+          : undefined,
+      ), agentId);
+      if (currentAgentIdRef.current === agentId && sessionListAuthorityKeyRef.current === authorityKey) {
+        allSessionsAuthorityScopeRef.current = authorityKey;
+        setAllSessions(all.filter((session: any) => session.source_channel !== 'trigger'));
+      }
+    } catch (error) {
+      if (operatorAuthorityScopeRef.current) denyOperatorAuthority(error);
+      else console.error('Failed to load managed session inventory:', error);
+    }
+    if (sessionListAuthorityKeyRef.current === authorityKey) setAllSessionsLoading(false);
+  };
 }

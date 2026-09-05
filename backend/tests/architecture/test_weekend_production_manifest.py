@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
 from pathlib import Path
 from types import ModuleType
 
@@ -8,6 +10,26 @@ from types import ModuleType
 ROOT = Path(__file__).resolve().parents[3]
 MANIFEST = ROOT / "acceptance" / "weekend_production_journeys.v1.json"
 GATE_PATH = ROOT / "backend" / "scripts" / "weekend_rc_gate.py"
+
+# Digest of exactly the frozen subset {journey_families, scoring, profiles}
+# (profiles pins each role's allowed_effects and cleanup boundaries). This
+# pinned value is the digest of the PDEC-013-amended content (2026-09-05):
+# that owner-approved amendment deliberately updated the frozen role-contract
+# content — P15-ADMIN/P15-OPERATOR/P29-CADMIN/P29-PADMIN/P29-OPER inputs and
+# acceptance plus the cross_role profile principal — to the owner's three-role
+# contract (scoped administrator business authority; operator is a technical
+# inspector view, not a fourth product identity) while preserving all 96 IDs,
+# order, count and scoring. For provenance, the same-caliber digest of the
+# pre-amendment base commit 0ce51f049e03c689a440075a5de8a7a9d99c609c is
+# b9fc6e3b6638f3ff49f679ac0a3d70dd671fa7d4e0b4ce470f651c97362e80bd, and the
+# PDEC-012 amendment before it was metadata-only. Everything outside that
+# subset — contract_amended_on, execution_contract, defaults and all of
+# runtime_bindings included — is deliberately not covered by this digest;
+# those fields are guarded by the weekend_rc_gate constants and the tests
+# below instead. Any further owner-approved amendment to frozen journey,
+# scoring or profile content must update this pinned digest with review; it
+# must not be refreshed automatically from the current file.
+FROZEN_CONTRACT_SHA256 = "81d22fb0d6212b11d715c681260260e002fc51dbe43d7754fc9a48df69318cab"
 
 
 def _load_gate() -> ModuleType:
@@ -37,8 +59,21 @@ def test_production_manifest_is_frozen_complete_and_secret_free() -> None:
     assert [journey["id"] for journey in journeys if journey["candidate_id"] == "PJ-03"] == (GATE.EXPECTED_COMMAND_IDS)
 
     contract = manifest["execution_contract"]
+    assert manifest["contract_amended_on"] == "2026-09-05"
+    assert "PDEC-012 supersedes the previous single-Codex and external-agent prohibition" in contract["executor"]
+    assert "zCode implements backend and functional code" in contract["executor"]
+    assert "Kimi Code implements frontend UI" in contract["executor"]
+    assert "Claude Code reviews first, then primary Codex independently inspects" in contract["executor"]
+    assert (
+        "Only at major milestones, Codex and Claude Code additionally perform "
+        "reciprocal adversarial review of the plan and evidence" in contract["executor"]
+    )
+    assert "reconcile findings and reach an evidence-backed conclusion before advancing" in contract["executor"]
+    assert "this extra exchange is not required for every small change" in contract["executor"]
+    assert "workers and reviewers cannot commit, push, deploy or perform production effects" in contract["executor"]
     assert "selected runtime LLM owns task reasoning" in contract["model_agency_policy"]
     assert "primary Codex owns acceptance decomposition" in contract["model_agency_policy"]
+    assert "they cannot grant authority or final production acceptance" in contract["model_agency_policy"]
     assert "First prove Agent intelligence and self-evolution" in contract["proof_order_policy"]
     assert (
         "then perform the exhaustive role-permission, RLS and adversarial-security pass"
@@ -78,8 +113,43 @@ def test_production_manifest_is_frozen_complete_and_secret_free() -> None:
     assert "Owner instruction cannot convert unauthorized access" in contract["hard_stop_policy"]
     assert "stop that lane immediately" in contract["hard_stop_policy"]
     assert "not a Journey completion state" in manifest["scoring"]["blocked_precondition_scope"]
+    assert (
+        "zCode, Kimi Code and Claude Code do not perform production fixture effects"
+        in (manifest["runtime_bindings"]["fixture_catalog"])
+    )
     for profile in manifest["profiles"].values():
         assert "Goal-created" in " ".join(profile["cleanup"])
+
+
+def _frozen_contract_digest(manifest: dict) -> str:
+    frozen_subset = {
+        "journey_families": manifest["journey_families"],
+        "scoring": manifest["scoring"],
+        "profiles": manifest["profiles"],
+    }
+    canonical = json.dumps(frozen_subset, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def test_frozen_journey_and_scoring_content_matches_pinned_digest() -> None:
+    manifest = GATE.load_manifest(MANIFEST)
+
+    assert _frozen_contract_digest(manifest) == FROZEN_CONTRACT_SHA256, (
+        "frozen journey_families/scoring/profiles content changed while IDs and counts "
+        "stayed intact; an owner-approved amendment updates FROZEN_CONTRACT_SHA256 "
+        "with review instead of refreshing it from the current file"
+    )
+
+
+def test_frozen_digest_rejects_widened_profile_allowed_effects() -> None:
+    manifest = GATE.load_manifest(MANIFEST)
+    widened = json.loads(json.dumps(manifest))
+    widened["profiles"]["employee_session"]["allowed_effects"].append("send arbitrary external email")
+
+    assert _frozen_contract_digest(widened) != FROZEN_CONTRACT_SHA256, (
+        "profiles.employee_session.allowed_effects widened while the pinned digest "
+        "stayed intact; widening requires an owner-approved digest amendment"
+    )
 
 
 def test_production_manifest_freezes_formats_models_and_non_semantic_gate() -> None:

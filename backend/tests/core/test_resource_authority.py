@@ -23,9 +23,16 @@ class _ScalarResult:
 class _DB:
     def __init__(self, session=None):
         self.session = session
+        self.added: list = []
 
     async def execute(self, _statement):
         return _ScalarResult(self.session)
+
+    def add(self, value):
+        self.added.append(value)
+
+    async def flush(self):
+        return None
 
 
 @pytest.mark.asyncio
@@ -112,6 +119,22 @@ async def test_resource_authority_quarantines_unknown_legacy_and_audits_explicit
     monkeypatch.setattr(authority, "check_agent_operator_reachability", fake_agent_access)
     monkeypatch.setattr(authority, "check_permission", fake_permission)
 
+    # PDEC-013: a scoped business administrator resolves quarantined business
+    # resources by role; an ordinary member stays fail-closed and needs the
+    # audited operator lane.
+    member = SimpleNamespace(id=uuid4(), role="member", tenant_id=agent.tenant_id, department_id=None)
+    scoped_decision = await authority.authorize_resource_action(
+        _DB(),
+        manager,
+        agent_id=agent_id,
+        resource_kind="workspace_file",
+        resource_id=resource_id,
+        action="read",
+        owner_user_id=None,
+        authority_state="quarantined",
+    )
+    assert scoped_decision.authority_source == "scoped_business_admin"
+
     for kwargs in (
         {},
         {"allow_manager_override": True},
@@ -120,7 +143,7 @@ async def test_resource_authority_quarantines_unknown_legacy_and_audits_explicit
         with pytest.raises(HTTPException) as exc:
             await authority.authorize_resource_action(
                 _DB(),
-                manager,
+                member,
                 agent_id=agent_id,
                 resource_kind="workspace_file",
                 resource_id=resource_id,
@@ -137,9 +160,29 @@ async def test_resource_authority_quarantines_unknown_legacy_and_audits_explicit
 
     monkeypatch.setattr(authority, "authorize_agent_operator_inspection", fake_operator_inspection)
 
-    decision = await authority.authorize_resource_action(
+    # Administrator authority takes precedence over the optional operator
+    # projection (CC R1 / Codex item 3): an administrator who passes
+    # operator-view inputs keeps scoped business authority — no 403, no grant
+    # requirement — and the audit records the ignored operator request.
+    admin_decision = await authority.authorize_resource_action(
         _DB(),
         manager,
+        agent_id=agent_id,
+        resource_kind="workspace_file",
+        resource_id=resource_id,
+        action="read",
+        authority_state="quarantined",
+        allow_manager_override=True,
+        manager_override_reason="Incident export approved by the tenant owner",
+    )
+    assert admin_decision.authority_source == "scoped_business_admin"
+    assert admin_decision.operator_view is False
+
+    # The audited operator lane itself stays the ordinary-member inspection
+    # path for cross-owner reads.
+    decision = await authority.authorize_resource_action(
+        _DB(),
+        member,
         agent_id=agent_id,
         resource_kind="workspace_file",
         resource_id=resource_id,
@@ -312,8 +355,14 @@ async def test_filter_authorized_resources_hides_foreign_rows_and_operator_view_
         return "operator_inspect_grant"
 
     monkeypatch.setattr(authority, "authorize_agent_operator_inspection", fake_operator_inspection)
+
+    # Administrator precedence (CC R1 / Codex item 3): an administrator's
+    # explicit operator-view request still exposes the managed inventory, but
+    # every decision carries the real scoped administrator authority and the
+    # access is audited once per collection, not per row.
+    admin_operator_db = _DB()
     operator_rows = await authority.filter_authorized_resources(
-        _DB(),
+        admin_operator_db,
         manager,
         agent_id=agent_id,
         resource_kind="task",
@@ -324,5 +373,23 @@ async def test_filter_authorized_resources_hides_foreign_rows_and_operator_view_
         agent_access=(agent, "manage"),
     )
     assert [row.id for row, _decision in operator_rows] == [row.id for row in rows]
-    assert all(decision.operator_view for _row, decision in operator_rows)
+    assert all(decision.authority_source == "scoped_business_admin" for _row, decision in operator_rows)
+    assert all(decision.operator_view is False for _row, decision in operator_rows)
+    assert len(admin_operator_db.added) == 1
+    assert len(inspection_calls) == 0
+
+    # The operator projection itself stays the ordinary-member inspection lane.
+    member_operator_rows = await authority.filter_authorized_resources(
+        _DB(),
+        user,
+        agent_id=agent_id,
+        resource_kind="task",
+        action="read",
+        resources=rows,
+        operator_view=True,
+        operator_reason="Tenant task administration",
+        agent_access=(agent, "use"),
+    )
+    assert [row.id for row, _decision in member_operator_rows] == [row.id for row in rows]
+    assert all(decision.operator_view for _row, decision in member_operator_rows)
     assert len(inspection_calls) == 1

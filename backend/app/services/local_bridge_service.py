@@ -22,6 +22,7 @@ from app.models.capability_policy import CapabilityPolicy
 from app.models.local_agent_channel import LocalAgentChannel
 from app.models.local_bridge import LocalAgentBridgeConnection, LocalAgentBridgePairingSession
 from app.models.tenant import Tenant
+from app.models.user import User
 
 BRIDGE_TOKEN_PREFIX = "hb_"
 DEFAULT_PAIRING_EXPIRES_SECONDS = 15 * 60
@@ -408,6 +409,36 @@ def _ensure_pairing_not_expired(pairing: LocalAgentBridgePairingSession) -> None
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="Pairing request expired")
 
 
+async def _pairing_identity_is_live(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+) -> bool:
+    """Revalidate the live tenant/user membership a pairing would bind to.
+
+    An approved pairing records a past owner decision, not live authority:
+    the exact active-user / active-tenant / membership join is re-read as a
+    fresh READ COMMITTED statement under the audited bypass (before any
+    tenant GUC is pinned, so a quarantine-held pairing can be checked too).
+    The freshness guarantee is caller-specific — see the ordering notes at
+    the approve-time binding gate and the exchange pre-effect fence.
+    """
+    async with enter_rls_bypass(db, reason="local bridge pairing live identity check"):
+        identity = await db.execute(
+            select(User.id)
+            .join(Tenant, Tenant.id == User.tenant_id)
+            .where(
+                User.id == user_id,
+                User.is_active.is_(True),
+                User.tenant_id == tenant_id,
+                Tenant.id == tenant_id,
+                Tenant.is_active.is_(True),
+            )
+        )
+    return identity.scalar_one_or_none() is not None
+
+
 def _local_agent_name_from_pairing(pairing: LocalAgentBridgePairingSession) -> str:
     raw_name = str(pairing.device_name or "").strip()
     return (raw_name or "Local Agent")[:100]
@@ -599,6 +630,22 @@ async def approve_pairing_session(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={"code": "pairing_already_bound", "status": "approved"},
             )
+        # Binding gate, after the rebind UPDATE and before the commit. The
+        # UPDATE's FK checks hold FOR KEY SHARE locks on the bound User and
+        # Tenant rows until this transaction commits, so a concurrent
+        # offboarding/retirement is in exactly one of two states: it already
+        # committed (this fresh READ COMMITTED read sees the inactive truth),
+        # or it is blocked on those row locks and cannot change liveness
+        # until after this commit. The rollback disposes of the pairing
+        # rebind plus every Agent/Participant/asset/policy row flushed by
+        # ensure_default_local_agent_for_pairing earlier in this request —
+        # that whole chain only flushes, so nothing survives as an orphan.
+        if not await _pairing_identity_is_live(bypass_db, user_id=user_id, tenant_id=tenant_id):
+            await bypass_db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "pairing_identity_inactive", "status": "pending"},
+            )
         await bypass_db.commit()
     return {
         "status": "approved",
@@ -689,6 +736,19 @@ async def exchange_pairing_session(db: AsyncSession, *, device_code: str) -> dic
     if pairing.status != "approved" or not pairing.tenant_id or not pairing.user_id:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Pairing is {pairing.status}")
 
+    # Pre-effect fence: an approved pairing records a past owner decision,
+    # not live authority, so revalidate the active user/tenant membership
+    # before any token or connection mutation. Unlike the approve-time gate
+    # this read races a concurrent lifecycle by design — the authoritative
+    # serialization here is the pairing row FOR UPDATE loader above plus the
+    # connection INSERT's FK locks, and offboarding's revoke UPDATE rejects
+    # or revokes whatever commits first.
+    if not await _pairing_identity_is_live(db, user_id=pairing.user_id, tenant_id=pairing.tenant_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "pairing_identity_inactive", "status": "approved"},
+        )
+
     await pin_rls_tenant_context(db, pairing.tenant_id)
     raw_token = generate_bridge_token()
     token_ttl_days = min(
@@ -765,9 +825,15 @@ async def resolve_bridge_auth_context(
     token = _parse_bearer_token(authorization)
     async with enter_rls_bypass(db, reason="local bridge bearer token lookup"):
         result = await db.execute(
-            select(LocalAgentBridgeConnection).where(
+            select(LocalAgentBridgeConnection)
+            .join(User, User.id == LocalAgentBridgeConnection.user_id)
+            .join(Tenant, Tenant.id == LocalAgentBridgeConnection.tenant_id)
+            .where(
                 LocalAgentBridgeConnection.token_hash == hash_secret(token),
                 LocalAgentBridgeConnection.status == "active",
+                User.is_active.is_(True),
+                User.tenant_id == LocalAgentBridgeConnection.tenant_id,
+                Tenant.is_active.is_(True),
             )
         )
     connection = result.scalar_one_or_none()

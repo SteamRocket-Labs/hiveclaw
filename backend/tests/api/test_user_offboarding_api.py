@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -89,9 +90,18 @@ async def test_offboarding_route_passes_preview_snapshot_to_atomic_service(monke
     actor = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, role="org_admin")
     agent_ids = [uuid4(), uuid4()]
     calls = []
+    order = []
+
+    async def fake_pin(_db, _current_user, requested_tenant_id=None):
+        return uuid.UUID(str(requested_tenant_id)) if requested_tenant_id else tenant_id
 
     async def fake_load(*_args, **_kwargs):
+        order.append("load_target")
         return target
+
+    async def fake_prelock(_db, **kwargs):
+        order.append("prelock_pairings")
+        calls.append(kwargs)
 
     async def fake_offboard(db, **kwargs):
         calls.append((db, kwargs))
@@ -107,7 +117,9 @@ async def test_offboarding_route_passes_preview_snapshot_to_atomic_service(monke
     async def fake_replay(*_args, **_kwargs):
         return None
 
+    monkeypatch.setattr(users_api, "resolve_and_pin_tenant_scope", fake_pin)
     monkeypatch.setattr(users_api, "_load_target_user", fake_load)
+    monkeypatch.setattr(users_api, "_lock_target_user_claimable_pairings", fake_prelock)
     monkeypatch.setattr(users_api, "find_user_offboarding_replay", fake_replay)
     monkeypatch.setattr(users_api, "offboard_loaded_user", fake_offboard)
     db = _FakeDB([successor])
@@ -125,8 +137,14 @@ async def test_offboarding_route_passes_preview_snapshot_to_atomic_service(monke
         db=db,
     )
 
-    assert calls[0][1]["expected_agent_ids"] == agent_ids
-    assert calls[0][1]["successor"] is successor
+    # The claimable-pairing prelock must precede the target identity lock:
+    # pairing→identity is the global lock order shared with device-code
+    # exchange (see the real-PostgreSQL proof in
+    # tests/integration/test_user_offboarding.py).
+    assert order[:2] == ["prelock_pairings", "load_target"]
+    assert calls[0] == {"tenant_id": tenant_id, "user_id": target.id}
+    assert calls[1][1]["expected_agent_ids"] == agent_ids
+    assert calls[1][1]["successor"] is successor
     assert result["status"] == "deactivated"
     assert result["transferred_agent_count"] == 2
     assert result["revocations"]["refresh_tokens"] == 2
@@ -144,8 +162,14 @@ async def test_offboarding_route_returns_committed_idempotent_replay(monkeypatch
     actor = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, role="org_admin")
     agent_id = uuid4()
 
+    async def fake_pin(_db, _current_user, requested_tenant_id=None):
+        return uuid.UUID(str(requested_tenant_id)) if requested_tenant_id else tenant_id
+
     async def fake_load(*_args, **_kwargs):
         return target
+
+    async def fake_prelock(*_args, **_kwargs):
+        return None
 
     async def fake_replay(*_args, **_kwargs):
         return UserOffboardingReceipt(
@@ -160,7 +184,9 @@ async def test_offboarding_route_returns_committed_idempotent_replay(monkeypatch
     async def unexpected_offboard(*_args, **_kwargs):
         raise AssertionError("idempotent replay must not execute effects again")
 
+    monkeypatch.setattr(users_api, "resolve_and_pin_tenant_scope", fake_pin)
     monkeypatch.setattr(users_api, "_load_target_user", fake_load)
+    monkeypatch.setattr(users_api, "_lock_target_user_claimable_pairings", fake_prelock)
     monkeypatch.setattr(users_api, "find_user_offboarding_replay", fake_replay)
     monkeypatch.setattr(users_api, "offboard_loaded_user", unexpected_offboard)
 
@@ -191,10 +217,18 @@ async def test_offboarding_route_rejects_self_offboarding_before_any_effect(monk
     tenant_id = uuid4()
     actor = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, role="org_admin")
 
+    async def fake_pin(_db, _current_user, requested_tenant_id=None):
+        return uuid.UUID(str(requested_tenant_id)) if requested_tenant_id else tenant_id
+
     async def fake_load(*_args, **_kwargs):
         return actor
 
+    async def fake_prelock(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(users_api, "resolve_and_pin_tenant_scope", fake_pin)
     monkeypatch.setattr(users_api, "_load_target_user", fake_load)
+    monkeypatch.setattr(users_api, "_lock_target_user_claimable_pairings", fake_prelock)
     db = _FakeDB()
     with pytest.raises(HTTPException) as exc:
         await users_api.offboard_user(

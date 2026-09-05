@@ -7,6 +7,7 @@ import { enterpriseApi } from '../api/domains/enterprise';
 import { notificationsApi } from '../api/domains/notifications';
 import { systemApi } from '../api/domains/system';
 import { requestAppConfirm, showAppToast } from '../components/AppDialogs';
+import { isAdministratorRole } from '../roles';
 import { useAuthStore } from '../stores';
 import { saveAccentColor, getSavedAccentColor, resetAccentColor, PRESET_COLORS } from '../utils/theme';
 import WorkspaceApprovalsSection from './workspace/WorkspaceApprovalsSection';
@@ -332,7 +333,7 @@ function BroadcastSection() {
 export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome = 'full' }: EnterpriseSettingsProps) {
     const { t } = useTranslation();
     const navigate = useNavigate();
-    const canManageCompanyContent = useAuthStore((s) => s.user?.role === 'org_admin');
+    const canManageCompanyContent = useAuthStore((s) => isAdministratorRole(s.user?.role));
     const setUser = useAuthStore((s) => s.setUser);
     const qc = useQueryClient();
     // Use forcedTab directly as the source of truth — no intermediate state.

@@ -28,7 +28,10 @@ router = APIRouter(tags=["external-principals"])
 
 
 def _require_org_admin(current_user: User) -> None:
-    if current_user.role != "org_admin":
+    """Company administrator gate (PDEC-013): org admins and scoped platform
+    administrators both manage company external identities; tenant binding is
+    enforced per-route by ``resolve_and_pin_tenant_scope``."""
+    if current_user.role not in ("org_admin", "platform_admin"):
         raise HTTPException(status_code=403, detail="Organization administrator access required")
 
 
@@ -110,8 +113,16 @@ async def unlink_external_principal_route(
         )
     except (LookupError, ExternalPrincipalRevokedError, ExternalPrincipalAuthorityError) as exc:
         raise _service_error(exc) from exc
+    # Stop the live transport only when this unlink actually invalidated the
+    # channel self identity — the service's typed signal, not a route-side
+    # reconstruction of that decision. A repeated or never-bound unlink keeps
+    # a healthy channel configured and its live client running.
     transport_agent_id = None
-    if resolution.principal.provider in {"wechat_personal", "feishu"} and resolution.principal.channel_config_id:
+    if (
+        resolution.principal.provider in {"wechat_personal", "feishu"}
+        and resolution.principal.channel_config_id
+        and resolution.channel_identity_invalidated
+    ):
         config = await db.get(ChannelConfig, resolution.principal.channel_config_id)
         transport_agent_id = config.agent_id if config is not None else None
     await db.commit()

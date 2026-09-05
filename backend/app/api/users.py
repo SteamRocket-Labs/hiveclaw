@@ -13,6 +13,7 @@ from app.core.permissions import agent_owned_by_clause
 from app.database import get_db
 from app.models.agent import Agent
 from app.models.audit import AuditLog
+from app.models.local_bridge import LocalAgentBridgePairingSession
 from app.models.user import User
 from app.services.external_principal_service import platform_member_user_predicate
 from app.services.user_offboarding_service import (
@@ -26,7 +27,14 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 
 def _require_org_admin(current_user: User) -> None:
-    if current_user.role != "org_admin":
+    """Company administrator surface (PDEC-013).
+
+    Organization administrators and scoped platform administrators (operating
+    inside their selected company) both manage company users; ordinary
+    members are denied. The tenant binding itself is enforced downstream by
+    ``resolve_and_pin_tenant_scope``/``_load_target_user``.
+    """
+    if current_user.role not in ("org_admin", "platform_admin"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Organization administrator access required")
 
 
@@ -138,6 +146,32 @@ async def _load_target_user(
     if target_user is None:
         raise HTTPException(status_code=404, detail="User not found")
     return target_user
+
+
+async def _lock_target_user_claimable_pairings(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> None:
+    """Lock the member's claimable pairing rows before any identity lock.
+
+    The claimable set (pending/approved for exactly this tenant+member)
+    matches the authority-revocation UPDATE executed later in the same
+    transaction, so a device-code exchange for this member either waits
+    here — and re-reads a rejected pairing after offboarding commits — or
+    commits first and its fresh connection is revoked by that UPDATE.
+    """
+    await db.execute(
+        select(LocalAgentBridgePairingSession)
+        .where(
+            LocalAgentBridgePairingSession.tenant_id == tenant_id,
+            LocalAgentBridgePairingSession.user_id == user_id,
+            LocalAgentBridgePairingSession.status.in_(("pending", "approved")),
+        )
+        .order_by(LocalAgentBridgePairingSession.id)
+        .with_for_update()
+    )
 
 
 @router.get("/", response_model=list[UserOut])
@@ -266,6 +300,18 @@ async def offboard_user(
 ):
     """Atomically transfer Agent ownership, revoke authority, and deactivate a User."""
     _require_org_admin(current_user)
+    # Pairing lifecycle ordering: an in-flight device-code exchange holds
+    # its pairing row FOR UPDATE and then takes implicit FK KEY SHARE
+    # locks on User/Agent rows when it inserts the connection. Locking
+    # this member's claimable pairings FIRST — before any identity row
+    # lock — keeps the global order pairing→identity, so offboarding can
+    # never hold User/Agent locks while an exchange waits behind them
+    # (the previous identity-first order produced the single-user sibling
+    # of the tenant retirement ABBA cycle, PostgreSQL SQLSTATE 40P01).
+    # The plain preview and role routes never touch pairing rows and keep
+    # their old lock set.
+    pinned_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    await _lock_target_user_claimable_pairings(db, tenant_id=pinned_tenant_id, user_id=user_id)
     target = await _load_target_user(
         db,
         current_user=current_user,

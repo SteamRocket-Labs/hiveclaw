@@ -96,7 +96,7 @@ describe('ControlPlane', () => {
     expect(markup).toContain('Enterprise section runtime_budgets chrome=embedded');
   });
 
-  it('keeps only platform health and configuration cards for platform administrators', () => {
+  it('shows the full selected-company business console to platform administrators', () => {
     auth.role = 'platform_admin';
 
     const markup = renderToStaticMarkup(<ControlPlane />);
@@ -105,21 +105,32 @@ describe('ControlPlane', () => {
     expect(markup).toContain('Extension Catalog');
     expect(markup).toContain('Memory Governance');
     expect(markup).toContain('Audit Log');
-    expect(markup).not.toContain('Users</span>');
-    expect(markup).not.toContain('Employees</span>');
-    expect(markup).not.toContain('Pending approvals</span>');
-    expect(markup).not.toContain('Digital Employees');
-    expect(markup).not.toContain('Company Knowledge');
-    expect(markup).not.toContain('Members &amp; Roles');
-    expect(markup).not.toContain('Organization Structure');
-    expect(markup).not.toContain('Approval Center');
-    expect(markup).not.toContain('Action Guardrails');
-    expect(markup).not.toContain('Invitation Codes');
-    expect(markup).not.toContain('Local Agent Channel');
+    // PDEC-013: inside the selected company the platform administrator holds
+    // the same business sections as a company administrator.
+    expect(markup).toContain('Users</span>');
+    expect(markup).toContain('Employees</span>');
+    expect(markup).toContain('Pending approvals</span>');
+    expect(markup).toContain('Digital Employees');
+    expect(markup).toContain('Company Knowledge');
+    expect(markup).toContain('Members &amp; Roles');
+    expect(markup).toContain('Organization Structure');
+    expect(markup).toContain('Approval Center');
+    expect(markup).toContain('Action Guardrails');
+    expect(markup).toContain('Invitation Codes');
+    expect(markup).toContain('Local Agent Channel');
   });
 
-  it('redirects a direct platform-admin company section URL without mounting its consumer', () => {
+  it('mounts a direct platform-admin company section URL inside the selected company', () => {
     auth.role = 'platform_admin';
+
+    const markup = renderToStaticMarkup(<ControlPlane tab="users" />);
+
+    expect(markup).not.toContain('data-navigate="/enterprise/dashboard"');
+    expect(markup).toContain('Enterprise section users');
+  });
+
+  it('redirects members away from workspace sections', () => {
+    auth.role = 'member';
 
     const markup = renderToStaticMarkup(<ControlPlane tab="users" />);
 

@@ -164,10 +164,28 @@ def test_execution_control_contract_is_explicit_and_non_semantic() -> None:
     assert "保留为历史记录，已分别由 PDEC-005/PDEC-007 覆盖" in decisions
     assert "允许 Codex 原生 Multi-Agent 与 subagent" in decisions
     assert "缺少预存会话或 fixture 不是 owner gate" in decisions
+    assert "执行分工与外部 Harness 禁令已由 2026-09-04 PDEC-012 替代，不再生效" in decisions
+    assert "CC（Claude Code）先独立审查" in decisions
+    assert "核对结论并补充遗漏" in decisions
+    assert "只有重大节点额外进行 Codex 与 CC 双向对抗性审查" in decisions
+    assert "挑战方案、对账证据，解决阻塞发现并收敛结论后推进" in decisions
+    assert "不把对抗流程套到每次小改动，不增加第二 controller" in decisions
+    assert "此决定明确替代 PDEC-007 与旧 Goal 中 single-Codex/禁止外部代理的分工条款" in decisions
+    assert "worker 不 commit/push/deploy、不自验收" in decisions
     assert "GitHub Issue 只是" in index
     assert "都不是 Journey/Finding verdict" in index
-    assert "允许使用 Codex 原生 Multi-Agent 与 subagent" in runbook
-    assert "外部 Harness 仍禁用" in runbook
+    assert "PDEC-012 替代旧执行分工" in index
+    assert "worker/reviewer 的独立判断是审查意见，不直接改写 Journey verdict" in index
+    assert "本轮执行 PDEC-012/PDEC-014" in runbook
+    assert "zCode 负责后端及功能实现，Kimi Code 负责前端 UI" in runbook
+    assert "CC 不可用、限额或等待不再阻断进度" in runbook
+    assert "作者自审不能占据交叉审查席位" in runbook
+    assert "只有重大节点额外启动对抗性证据对账" in runbook
+    assert "PDEC-014" in decisions
+    assert "CC 不再是进度前置门" in decisions
+    assert "实现者不能把自审算作独立 review" in decisions
+    assert "旧 single-Codex 与禁用外部代理的分工已被替代" in runbook
+    assert "zCode/Kimi/CC 不 commit/push/deploy、不持有生产凭据、不做生产 effects 或最终验收" in runbook
     assert "产品 turn 的 selected runtime LLM 负责任务语义" in runbook
     assert "主 Codex负责验收语义" in runbook
     assert "不得决定 semantic truth、quality、failure、`blocked`、priority" in runbook
@@ -211,10 +229,26 @@ def test_execution_control_contract_is_explicit_and_non_semantic() -> None:
     assert "fix commit `1b4be5d2`" in findings
     assert "余额/auth/rate-limit/offline 是 `BLOCKED_PRECONDITION`" not in decisions
     assert "不降低产品 NPTCR" not in decisions
-    for decision_id in tuple(f"PDEC-{index:03d}" for index in range(1, 12)):
+    for decision_id in tuple(f"PDEC-{index:03d}" for index in range(1, 13)):
         assert decision_id in decisions
     assert "一个可独立回滚的共享根因对应一个 Codex integration commit" in runbook
     assert "新增纯 evidence/docs commit `E`" in runbook
+
+
+def test_active_runbook_and_index_do_not_restore_external_agent_prohibition() -> None:
+    # PDEC-012 replaced the external-agent prohibition with the two-level review
+    # contract. These exact operative prohibition formulations must not return to
+    # the active runbook or index; superseded-decision mentions elsewhere (for
+    # example 02-owner-decisions.md and the runbook's "已被替代" sentence) stay
+    # allowed, so the ban is scoped to these two active routing documents only.
+    # Ceiling: this check catches only these two exact literals — reworded
+    # prohibition language is not detected here, and no semantic wording scanner
+    # is added; PDEC-012 wording review owns that judgment.
+    prohibited = ("外部 Harness 仍禁用", "external agent harnesses are prohibited")
+    for relative in ("06-runbook-and-release-gates.md", "README.md"):
+        text = (GROUP / relative).read_text(encoding="utf-8")
+        for phrase in prohibited:
+            assert phrase not in text, f"{relative} restores the superseded external-agent prohibition: {phrase!r}"
 
 
 def test_weekend_work_packet_template_matches_current_repository_and_boundaries() -> None:
@@ -237,11 +271,15 @@ def test_weekend_work_packet_template_matches_current_repository_and_boundaries(
     ):
         assert re.search(rf"^    id: {field_id}$", packet, flags=re.MULTILINE)
 
-    assert "Native Codex subagent" in packet
-    assert "primary Codex integrates and independently verifies" in packet
-    assert "No external agent harness or second semantic controller" in packet
-    assert "Kimi Code" not in packet
-    assert "zCode" not in packet
+    assert "zCode — backend and functional implementation" in packet
+    assert "Kimi Code — frontend UI and interaction" in packet
+    assert "Claude Code — first independent review" in packet
+    assert "Primary Codex — subsequent independent review and integration" in packet
+    assert (
+        "Worker results remain candidates; Claude Code reviews first, then primary Codex "
+        "independently checks code, evidence, conclusions and missed issues before integration."
+    ) in packet
+    assert "Use the PDEC-012 agent-delegation roles without a second semantic controller" in packet
     assert "grants no production, credential, billing, destructive" in packet
 
 

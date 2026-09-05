@@ -18,13 +18,13 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
+const authState = vi.hoisted(() => ({
+  user: { id: 'platform-admin-1', role: 'platform_admin' as string },
+}));
+
 vi.mock('../stores', () => {
-  const state = {
-    user: { id: 'platform-admin-1', role: 'platform_admin' },
-    setUser: vi.fn(),
-  };
-  const useAuthStore = ((selector: (input: typeof state) => unknown) => selector(state)) as unknown as typeof import('../stores').useAuthStore;
-  Object.assign(useAuthStore, { getState: () => state });
+  const useAuthStore = ((selector: (input: typeof authState) => unknown) => selector(authState)) as unknown as typeof import('../stores').useAuthStore;
+  Object.assign(useAuthStore, { getState: () => authState });
   return { useAuthStore };
 });
 
@@ -62,6 +62,7 @@ function renderSettings() {
 
 beforeEach(() => {
   localStorage.setItem('current_tenant_id', 'tenant-1');
+  authState.user = { id: 'platform-admin-1', role: 'platform_admin' };
   mocks.getSetting.mockResolvedValue({ key: 'company_intro_tenant-1', value: { content: 'PRIVATE-COMPANY-BODY' } });
   mocks.getLegacyCompanyFilesStatus.mockResolvedValue({
     available: true,
@@ -84,8 +85,20 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('EnterpriseSettings platform-admin company-content boundary', () => {
-  it('does not request or mount company business content on the default info route', async () => {
+describe('EnterpriseSettings scoped-administrator company content', () => {
+  it('loads the selected company business content for a platform administrator (PDEC-013)', async () => {
+    renderSettings();
+
+    await waitFor(() => expect(mocks.getTenant).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.getSetting).toHaveBeenCalledWith('company_intro_tenant-1'));
+    await waitFor(() => expect(mocks.getLegacyCompanyFilesStatus).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.getStats).toHaveBeenCalledWith('tenant-1'));
+    expect(await screen.findByDisplayValue('PRIVATE-COMPANY-BODY')).toBeTruthy();
+    expect(screen.queryByText('Tenant configuration only')).toBeNull();
+  });
+
+  it('keeps company content away from a plain member projection', async () => {
+    authState.user = { id: 'member-1', role: 'member' };
     renderSettings();
 
     await waitFor(() => expect(mocks.getTenant).toHaveBeenCalled());
@@ -93,7 +106,6 @@ describe('EnterpriseSettings platform-admin company-content boundary', () => {
     expect(mocks.getLegacyCompanyFilesStatus).not.toHaveBeenCalled();
     expect(mocks.getStats).not.toHaveBeenCalled();
     expect(screen.getByText('Tenant configuration only')).toBeTruthy();
-    expect(screen.queryByText('PRIVATE-COMPANY-BODY')).toBeNull();
-    expect(screen.queryByText('Broadcast Notification')).toBeNull();
+    expect(screen.queryByDisplayValue('PRIVATE-COMPANY-BODY')).toBeNull();
   });
 });

@@ -8,10 +8,10 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from './stores';
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { authApi } from './api/domains/auth';
-import { get } from './api/core';
-import { ProtectedRoute, WorkspaceGuard, OrgAdminGuard, CompanyMemberGuard, AdminGuard } from './guards';
+import { get, ApiError } from './api/core';
+import { ProtectedRoute, WorkspaceGuard, ScopedAdminGuard, CompanyBusinessGuard, AdminGuard } from './guards';
 import { WORKSPACE_SETTINGS_SECTIONS } from './surfaces/workspace/sections';
 import AppDialogs from './components/AppDialogs';
 
@@ -91,17 +91,56 @@ function NotificationBar() {
 
 export default function App() {
     const { t } = useTranslation();
-    const { token, setAuth, user } = useAuthStore();
+    const { token, setUser, user } = useAuthStore();
     const [loading, setLoading] = useState(true);
+    const revalidationInFlightRef = useRef(false);
 
     useEffect(() => {
         const savedTheme = localStorage.getItem('theme') || 'light';
         document.documentElement.setAttribute('data-theme', savedTheme);
 
+        // Cold-start revalidation pins the member/org-admin home tenant exactly
+        // like setAuth does, but never writes a company for a platform
+        // administrator: a valid explicit selection survives reload, an
+        // explicitly invalid one is cleared below without silently falling
+        // back to the admin's home tenant.
+        const applyRevalidatedUser = (u: Parameters<typeof setUser>[0]) => {
+            if (u.tenant_id && u.role !== 'platform_admin') {
+                localStorage.setItem('current_tenant_id', u.tenant_id);
+            }
+            setUser(u);
+        };
+
         if (token && !user) {
+            // StrictMode dev double-mount fires this effect twice; the first
+            // chain owns the outcome and the duplicate must not race its
+            // clear-and-retry recovery into a false logout.
+            if (revalidationInFlightRef.current) return;
+            revalidationInFlightRef.current = true;
             authApi.getMe()
-                .then((u) => setAuth(u, token))
-                .catch(() => useAuthStore.getState().logout())
+                .then((u) => applyRevalidatedUser(u))
+                .catch(async (firstError) => {
+                    // A stored company selection the server now rejects (stale,
+                    // deleted, or disabled — the typed 400/403/404 X-Tenant-Id
+                    // responses) is not an expired login: clear only the
+                    // selection and re-validate the bearer without it, so the
+                    // authenticated user lands on the company selector. A
+                    // genuine 401, or any failure with no selection attached,
+                    // still logs out.
+                    const hadSelection = Boolean(localStorage.getItem('current_tenant_id'));
+                    const status = firstError instanceof ApiError ? firstError.status : null;
+                    if (hadSelection && (status === 400 || status === 403 || status === 404)) {
+                        localStorage.removeItem('current_tenant_id');
+                        try {
+                            applyRevalidatedUser(await authApi.getMe());
+                            return;
+                        } catch {
+                            // The bearer itself is rejected even without a
+                            // selection — fall through to the real logout.
+                        }
+                    }
+                    useAuthStore.getState().logout();
+                })
                 .finally(() => setLoading(false));
         } else {
             setLoading(false);
@@ -149,7 +188,7 @@ export default function App() {
                         <Route path="documents" element={<WorkspaceFeatureHub kind="documents" />} />
                         <Route path="approvals" element={<WorkspaceFeatureHub kind="approvals" />} />
                         <Route path="team" element={<WorkspaceFeatureHub kind="team" />} />
-                        <Route path="plaza" element={<CompanyMemberGuard><Plaza /></CompanyMemberGuard>} />
+                        <Route path="plaza" element={<CompanyBusinessGuard><Plaza /></CompanyBusinessGuard>} />
                         <Route path="local-agents" element={<LocalAgents />} />
                         <Route path="local-bridge/activate" element={<LocalAgents />} />
                         <Route path="agents/new" element={<AgentCreate />} />
@@ -165,7 +204,7 @@ export default function App() {
                     <Route path="/enterprise" element={<ProtectedRoute><WorkspaceGuard><WorkspaceLayout /></WorkspaceGuard></ProtectedRoute>}>
                         <Route index element={<Navigate to="dashboard" replace />} />
                         <Route path="dashboard" element={<ControlPlane />} />
-                        <Route path="knowledge" element={<OrgAdminGuard><CompanyKnowledgeControlPlane /></OrgAdminGuard>} />
+                        <Route path="knowledge" element={<ScopedAdminGuard><CompanyKnowledgeControlPlane /></ScopedAdminGuard>} />
                         {WORKSPACE_SETTINGS_SECTIONS.map((section) => (
                             <Route
                                 key={section.tab}

@@ -235,15 +235,17 @@ async def test_check_agent_access_fail_closes_for_tenantless_agent_even_for_plat
 
 
 @pytest.mark.asyncio
-async def test_platform_admin_requires_explicit_user_scoped_agent_permission(monkeypatch):
+async def test_platform_admin_gets_scoped_manage_without_explicit_permission(monkeypatch):
+    """PDEC-013: a platform administrator resolves canonical business authority
+    for an exact live-tenant Agent with no AgentPermission row at all."""
+
     import app.core.permissions as permissions_module
 
     tenant_id = uuid4()
     agent_id = uuid4()
     user = SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=tenant_id, department_id=uuid4())
     agent = SimpleNamespace(id=agent_id, creator_id=uuid4(), tenant_id=tenant_id)
-    permission = SimpleNamespace(scope_type="user", scope_id=user.id, access_level="manage")
-    db = _PermissionsDB(agent=agent, permissions=[permission])
+    db = _PermissionsDB(agent=agent, permissions=[])
 
     async def deny_resource_permission(*_args, **_kwargs):
         return False
@@ -254,11 +256,14 @@ async def test_platform_admin_requires_explicit_user_scoped_agent_permission(mon
 
     assert resolved_agent is agent
     assert access_level == "manage"
-    assert any("FROM agent_permissions" in statement for statement in db.statements)
 
 
 @pytest.mark.asyncio
-async def test_platform_admin_does_not_inherit_company_or_department_agent_scope(monkeypatch):
+async def test_platform_admin_authority_is_role_scoped_not_grant_scoped(monkeypatch):
+    """The platform administrator branch is keyed on the canonical live role;
+    company/department grants neither grant nor withhold it, and a member with
+    the very same company+department rows still gets nothing."""
+
     import app.core.permissions as permissions_module
 
     tenant_id = uuid4()
@@ -276,9 +281,19 @@ async def test_platform_admin_does_not_inherit_company_or_department_agent_scope
 
     monkeypatch.setattr(permissions_module, "check_permission", deny_resource_permission)
 
-    with pytest.raises(HTTPException) as exc_info:
-        await permissions_module.check_agent_access(db, user, agent_id)
+    resolved_agent, access_level = await permissions_module.check_agent_access(db, user, agent_id)
+    assert resolved_agent is agent
+    assert access_level == "manage"
 
+    member = SimpleNamespace(id=uuid4(), role="member", tenant_id=tenant_id, department_id=uuid4())
+    non_matching_rows = [
+        # A department row scoped to a different department; no company row,
+        # because a company grant is legitimately a member execution surface.
+        SimpleNamespace(scope_type="department", scope_id=uuid4(), access_level="manage"),
+    ]
+    member_db = _PermissionsDB(agent=agent, permissions=non_matching_rows)
+    with pytest.raises(HTTPException) as exc_info:
+        await permissions_module.check_agent_access(member_db, member, agent_id)
     assert exc_info.value.status_code == 403
 
 

@@ -238,6 +238,37 @@ class _ResolveApprovalDb:
 
 
 @pytest.mark.asyncio
+async def test_resolve_approval_fails_closed_when_the_agent_row_is_missing() -> None:
+    """A missing Agent row must not skip the only authority check (F-3)."""
+
+    from app.services.approval_service import ApprovalService
+
+    tenant_id = uuid4()
+    approval = SimpleNamespace(
+        id=uuid4(),
+        agent_id=uuid4(),
+        tenant_id=tenant_id,
+        action_type="external.web.search",
+        status="pending",
+        created_at=None,
+        resolved_at=None,
+        resolved_by=None,
+        details={},
+    )
+    # Even an organization administrator of the approval's own company cannot
+    # resolve an approval whose Agent anchor no longer resolves: the authority
+    # decision fails closed instead of skipping the check.
+    user = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, role="org_admin")
+    db = _ResolveApprovalDb(approval, None, [])
+
+    with pytest.raises(ValueError, match="owner or tenant organization admin"):
+        await ApprovalService().resolve_approval(db, approval.id, user, "approve")  # type: ignore[arg-type]
+
+    assert approval.status == "pending"
+    assert approval.resolved_at is None
+
+
+@pytest.mark.asyncio
 async def test_session_tool_approval_cannot_be_resolved_through_enterprise_service() -> None:
     from app.services.approval_service import ApprovalService
 
@@ -361,14 +392,28 @@ def test_org_admin_cannot_resolve_other_tenant_agent_approval() -> None:
     assert _can_resolve_agent_approval(agent, user) is False
 
 
-def test_platform_admin_role_does_not_resolve_another_users_agent_approval() -> None:
+def test_platform_admin_resolves_approvals_inside_the_selected_company() -> None:
+    """PDEC-013 item 8: both scoped administrator roles resolve approvals for
+    Agents in their selected/company tenant; a member never does."""
+
     from app.services.approval_service import _can_resolve_agent_approval
 
     tenant_id = uuid4()
     agent = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, creator_id=uuid4())
-    user = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, role="platform_admin")
+    # A platform administrator whose request resolved the agent's company
+    # (the selected company mirrors get_current_user's tenant override).
+    platform_admin = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, role="platform_admin")
+    assert _can_resolve_agent_approval(agent, platform_admin) is True
 
-    assert _can_resolve_agent_approval(agent, user) is False
+    org_admin = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, role="org_admin")
+    assert _can_resolve_agent_approval(agent, org_admin) is True
+
+    member = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, role="member")
+    assert _can_resolve_agent_approval(agent, member) is False
+
+    # An organization administrator of a different company is out of scope.
+    foreign_org_admin = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), role="org_admin")
+    assert _can_resolve_agent_approval(agent, foreign_org_admin) is False
 
 
 def test_only_current_owner_not_creator_or_sponsor_can_resolve_approval() -> None:

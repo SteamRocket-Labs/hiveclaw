@@ -23,6 +23,7 @@ from app.models.agent import Agent
 from app.models.participant import Participant
 from app.models.runtime_task import RuntimeTask
 from app.models.schedule import AgentSchedule
+from app.models.tenant import Tenant
 from app.models.trigger import AgentTrigger
 from app.models.user import User
 
@@ -83,6 +84,9 @@ def agent_lifecycle_active_clause():
     return and_(
         Agent.deleted_at.is_(None),
         Agent.deactivated_at.is_(None),
+        # An Agent whose company is retired/missing is not shown or executed,
+        # even when its own lifecycle fields look active.
+        Agent.tenant_id.in_(select(Tenant.id).where(Tenant.is_active.is_(True))),
         or_(
             Agent.owner_user_id.in_(select(User.id).where(User.is_active.is_(True))),
             and_(

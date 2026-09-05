@@ -1,4 +1,4 @@
-import { IconBook, IconBrain, IconChecklist, IconFileText, IconLayoutDashboard, IconRobot, IconShieldCheck, IconSitemap, IconUserStar, IconUsers } from '@tabler/icons-react';
+import { IconArrowLeft, IconBook, IconBrain, IconChecklist, IconFileText, IconLayoutDashboard, IconRobot, IconShieldCheck, IconSitemap, IconUserStar, IconUsers } from '@tabler/icons-react';
 
 import SurfaceLayout from '../shared/SurfaceLayout';
 import { useAuthStore } from '../../stores';
@@ -29,12 +29,23 @@ export default function WorkspaceLayout() {
     <SurfaceLayout
       headingKey={role === 'platform_admin' ? 'nav.superAdmin' : 'nav.enterprise'}
       headingFallback={role === 'platform_admin' ? 'Platform Admin' : 'Company Admin'}
-      navItems={workspaceSectionsForRole(role).map((section) => ({
-        to: section.path,
-        labelKey: section.labelKey,
-        fallbackLabel: section.fallbackLabel,
-        icon: ICONS[section.tab],
-      }))}
+      navItems={[
+        ...workspaceSectionsForRole(role).map((section) => ({
+          to: section.path,
+          labelKey: section.labelKey,
+          fallbackLabel: section.fallbackLabel,
+          icon: ICONS[section.tab],
+        })),
+        // Both administrator roles keep a direct return to the product app;
+        // the footer logout is not a return path.
+        {
+          to: '/home',
+          labelKey: 'nav.backToApp',
+          fallbackLabel: 'Back to App',
+          icon: <IconArrowLeft size={16} stroke={1.5} />,
+          end: true,
+        },
+      ]}
     />
   );
 }

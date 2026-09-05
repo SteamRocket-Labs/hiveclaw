@@ -3,9 +3,9 @@ document_id: weekend-rc-2026-08-30-north-star
 owner: Example Owner
 status: active
 authority: canonical-release-charter
-last_reviewed: 2026-08-31
-source_commit: c18b181c
-verification_status: owner-approved-model-agency-rls-and-release-boundaries
+last_reviewed: 2026-09-05
+source_commit: 0ce51f049e03c689a440075a5de8a7a9d99c609c
+verification_status: owner-approved-usability-simplicity-and-full-scope-renewal
 ---
 
 # North Star、指标与边界
@@ -30,6 +30,22 @@ verification_status: owner-approved-model-agency-rls-and-release-boundaries
 ```
 
 任一项为零，整体不得宣称符合 North Star。
+
+### 2026-09-04 再确认的长期目标
+
+1. **功能畅通，尤其 Agent 真正好用。** 从发现入口、创建数字员工、完成开放任务，到工具、产物、记忆和恢复均走真实链路；不能把配置齐全、测试绿或单次演示当成全量完成。
+2. **架构简单，治理有度。** 复用现有权威层和平台能力；控制只保护明确的身份、数据、效果或恢复边界，不以堆 gate、编排或测试脚手架代替功能交付。简化前说明受保护性质、真实误伤、替代边界和恢复方式，不能删掉必要安全能力。
+3. **所有页面对小白友好。** 以 Codex Desktop 的 Session 交互、信息层级与渐进披露作参照；默认突出任务、进展、所需决定和交付物，隐藏无意义零值和工程细节，但不隐藏失败、授权请求或可恢复下一步。覆盖全部用户可见页面，不只美化聊天页。
+
+上述要求细化既有范围，不减少冻结的 96 条旅程。旧品牌兼容/部署门、后台建公司、管理员与成员邀请、Back to App 修复继续纳入最终候选与复验。分工和顺序见 PDEC-012 与 Runbook；历史对照产品是比较证据，不是必须复制的厂商细节。
+
+### 2026-09-05 产品角色更新（PDEC-013）
+
+- 平台管理员管理平台及目标公司的全部业务；公司管理员管理本公司的全部业务，两者都能分配其管理范围内的公司管理员。
+- 管理权限包括员工 Agent 的私有会话、文件和知识正文；不展示明文凭据。普通业务访问不以额外 operator grant/手填理由为前置，仍使用真实身份、精确公司/资源范围和审计。
+- 员工只看到自己的和公司内公开的 Agent，可管理自己的 Agent但不能删除 Agent或自授管理员权限；公开 Agent 不等于公开其他用户的私有内容。
+- `operator` 是技术能力/验收标签，不是第四种产品身份。旧的 admin/private-content 否定断言由本次裁决替代，96 条 ID/数量及发布门槛不变，旧证据不迁移为新 PASS。详见 [角色合同](domains/hr-identity-and-permissions.md)。
+- 公司后台提供直接返回 App 的入口，保留登录和合法公司上下文。
 
 ## 主指标
 
@@ -67,7 +83,7 @@ Evidence Coverage Score 只衡量发布证据覆盖，不是统计置信度：�
 
 ## Model Agency 与 RLS 尺度
 
-Hive 产品 turn 内，selected runtime LLM 在已认证权限框架中拥有任务推理、语义判断、综合与回答表达；RC 验收循环内，主 Codex 拥有验收分解、证据解释、优先级、Journey/Finding verdict 和最终交付表达；owner 拥有产品语义与风险授权裁决。subagent、NPTCR、Evidence Coverage、CI、测试、receipt、timeout、attempt count、deployment/health 与 `mechanical_ready` 都不拥有这些语义权威，只能校验 exact facts 或聚合已被主 Codex 基于真实证据接受的 verdict；它们不能决定语义 truth、quality、failure、`blocked`、priority 或 final language，不能改写/压制模型输出，也不能删除无关能力。exact invariant 缺失时，机械门只 hold 对应 read/effect/release，并返回可恢复的 typed observation。
+Hive 产品 turn 内，selected runtime LLM 在已认证权限框架中拥有任务推理、语义判断、综合与回答表达；RC 验收循环内，主 Codex 拥有验收分解、证据解释、优先级、Journey/Finding verdict 和最终交付表达；owner 拥有产品语义与风险授权裁决。zCode、Kimi 与 CC 可以独立分析、提出异议、发现遗漏和给出审查结论，但不能自授生产效果或最终验收权威。NPTCR、Evidence Coverage、CI、测试、receipt、timeout、attempt count、deployment/health 与 `mechanical_ready` 只校验 exact facts 或聚合已接受 verdict，不能机械裁决语义、改写/压制模型输出或删除无关能力。exact invariant 缺失时，机械门只 hold 对应 read/effect/release，并返回可恢复的 typed observation。
 
 RLS/ACL 在 server-derived tenant、principal、Agent、Session、resource、delegation、action 与 approval 的 data-ingress/read/write/effect 边界 fail closed；未授权字节不得进入模型 context、API response 或 UI。已登记的 read-only cross-tenant existence/deny probe 仍在验收范围内，但只能得到不泄漏存在性的 `deny/not-found`，不得读取 protected row 或产生效果；若 probe 意外返回 protected bytes，立即停止该 lane，不继续读取、传播或把 raw bytes 写入 evidence，只保留最小脱敏 P0 事故证据。一个 denial 只阻断该次 read/effect，不能裁剪已授权证据、中断无关推理或移除获准工具。platform/operator 路径必须先有应用层 authority，再使用 exact tenant/reason/scope、审计和恢复明确的窄 bypass；数据库 bypass 不能创造业务授权，owner 指令也不能把未授权访问变成授权。
 
@@ -75,7 +91,7 @@ RLS/ACL 在 server-derived tenant、principal、Agent、Session、resource、del
 
 1. 先证明 Agent 智能：单 Agent 在真实 Session 中完成开放任务，语义质量与自进化不弱于 FreeCode/Hermes 基准；机械规则不得替代、改写或压低模型智能。
 2. 再完成全部前后端功能主路径与功能性恢复：Session/20 commands、Memory/Growth、Personal/Company KB、Agent/HR 创建、Subagent、Team、Workflow、A2A、Automation、Hook/Skill/MCP/Local Agent、Artifact 与所有普通员工/后台 UI 消费。功能不存在、未接线、前后端不一致或小白不可用，先修到真实可用。
-3. 所有功能性路径成立后，再集中验收并修复 employee/company-admin/platform-admin/operator 权限、RLS/ACL、active revocation、secret/PII、prompt injection、replay、approval 与 delegation escalation。
+3. 所有功能性路径成立后，再集中验收并修复 employee/company-admin/platform-admin 三种角色及技术 inspector 权限、RLS/ACL、active revocation、secret/PII、prompt injection、replay、approval 与 delegation escalation；权限断言以 PDEC-013 为准。
 4. 最后冻结 coherent `D`，完成三服务 exact deploy、同提交双遍、故障/权限负向、evidence 与 cleanup。
 
 “功能优先、安全后验收”是排查与修复顺序，不是关闭现有安全控制：未授权数据/效果始终 fail closed，真实泄漏立即停该 lane；但不得用权限加固、额外 RLS 拒绝或安全评分提前阻断无关功能补全，也不得用“更安全”掩盖产品不能用。复杂控制面或更严格权限围绕一个更弱、不可用的 Agent，都不计产品成功。
@@ -92,7 +108,7 @@ RLS/ACL 在 server-derived tenant、principal、Agent、Session、resource、del
 - owner/sponsor/manager/participant、转移、停用/offboarding、进行中权威撤销和数据保留边界。
 - Session 流式、呈现、回退、分叉、恢复、权限和约定的 20 条斜杠命令。
 - Artifact preview/download/version/citation/ACL/archive/reopen；UI 宣传格式逐一验证。
-- 员工、公司管理员、平台管理员、operator 的前后端权限和信息边界。
+- 员工、公司管理员、平台管理员及技术 inspector 的前后端权限和信息边界；inspector 不增加第四种产品角色。
 - 所有用户可见 surface 的空、加载、成功、失败、需决定、恢复、双主题、窄屏、键盘和小白表达审计。
 - selected-model fidelity、provider typed states、token/cost/cache/latency、人工介入和安全对抗验收。
 - 与上述旅程直接相关的 migration/backfill、tests、i18n、observability、cleanup 和 rollback。

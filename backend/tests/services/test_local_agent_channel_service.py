@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from datetime import timedelta
 from types import SimpleNamespace
 from uuid import uuid4
@@ -29,6 +30,14 @@ class _RowsResult:
         return self.rows
 
 
+class _TupleResult:
+    def __init__(self, value):
+        self.value = value
+
+    def one_or_none(self):
+        return self.value
+
+
 class _FakeDB:
     def __init__(self, execute_values=None):
         self.execute_values = list(execute_values or [])
@@ -55,6 +64,144 @@ class _FakeDB:
 
     async def commit(self):
         self.committed = True
+
+
+class _WsTicketAuthDB(_FakeDB):
+    def __init__(self, *, ticket, connection, user, tenant):
+        super().__init__([ticket])
+        self.ticket = ticket
+        self.connection = connection
+        self.user = user
+        self.tenant = tenant
+
+    async def execute(self, stmt):
+        self.executed.append(stmt)
+        live_user = (
+            self.user
+            if self.user.id == self.ticket.user_id
+            and self.user.tenant_id == self.ticket.tenant_id
+            and self.user.is_active
+            else None
+        )
+        live_tenant = self.tenant if self.tenant.id == self.ticket.tenant_id and self.tenant.is_active else None
+        return _TupleResult((self.ticket, self.connection, live_user, live_tenant))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_state", ["inactive_user", "wrong_tenant", "inactive_tenant"])
+async def test_ws_ticket_requires_live_user_tenant_binding(monkeypatch, invalid_state: str) -> None:
+    tenant_id = uuid4()
+    user_id = uuid4()
+    connection_id = uuid4()
+    ticket = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        user_id=user_id,
+        connection_id=connection_id,
+        scopes=["local_agent:connect"],
+        expires_at=service.utcnow() + timedelta(minutes=1),
+        consumed_at=None,
+        metadata_json={"client_kind": "hive-connect", "device_name": "Fixture Mac"},
+    )
+    connection = SimpleNamespace(
+        id=connection_id,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        agent_id=uuid4(),
+        status="active",
+        expires_at=service.utcnow() + timedelta(minutes=5),
+    )
+    user = SimpleNamespace(id=user_id, tenant_id=tenant_id, is_active=True)
+    tenant = SimpleNamespace(id=tenant_id, is_active=True)
+    if invalid_state == "inactive_user":
+        user.is_active = False
+    elif invalid_state == "wrong_tenant":
+        user.tenant_id = uuid4()
+    else:
+        tenant.is_active = False
+    db = _WsTicketAuthDB(ticket=ticket, connection=connection, user=user, tenant=tenant)
+    pinned_tenants = []
+
+    @contextlib.asynccontextmanager
+    async def fake_enter_rls_bypass(session, *, reason: str, actor_id: str | None = None):
+        assert session is db
+        assert reason == "local agent channel ws ticket lookup"
+        assert actor_id is None
+        yield session
+
+    async def fake_pin_rls_tenant_context(_session, pinned_tenant_id):
+        pinned_tenants.append(pinned_tenant_id)
+
+    monkeypatch.setattr(service, "enter_rls_bypass", fake_enter_rls_bypass)
+    monkeypatch.setattr(service, "pin_rls_tenant_context", fake_pin_rls_tenant_context)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.resolve_ws_ticket(db, ticket="hbt_fixture")
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "Local agent identity is inactive"
+    assert ticket.consumed_at is None
+    assert db.committed is False
+    assert pinned_tenants == []
+
+
+@pytest.mark.asyncio
+async def test_ws_ticket_consumes_ticket_for_live_exact_identity(monkeypatch) -> None:
+    tenant_id = uuid4()
+    user_id = uuid4()
+    connection_id = uuid4()
+    agent_id = uuid4()
+    ticket = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        user_id=user_id,
+        connection_id=connection_id,
+        scopes=["local_agent:connect"],
+        expires_at=service.utcnow() + timedelta(minutes=1),
+        consumed_at=None,
+        metadata_json={"client_kind": "hive-connect", "device_name": "Fixture Mac"},
+    )
+    connection = SimpleNamespace(
+        id=connection_id,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        status="active",
+        expires_at=service.utcnow() + timedelta(minutes=5),
+    )
+    user = SimpleNamespace(id=user_id, tenant_id=tenant_id, is_active=True)
+    tenant = SimpleNamespace(id=tenant_id, is_active=True)
+    db = _WsTicketAuthDB(ticket=ticket, connection=connection, user=user, tenant=tenant)
+    pinned_tenants = []
+
+    @contextlib.asynccontextmanager
+    async def fake_enter_rls_bypass(session, *, reason: str, actor_id: str | None = None):
+        assert session is db
+        assert reason == "local agent channel ws ticket lookup"
+        assert actor_id is None
+        yield session
+
+    async def fake_pin_rls_tenant_context(_session, pinned_tenant_id):
+        pinned_tenants.append(pinned_tenant_id)
+
+    monkeypatch.setattr(service, "enter_rls_bypass", fake_enter_rls_bypass)
+    monkeypatch.setattr(service, "pin_rls_tenant_context", fake_pin_rls_tenant_context)
+
+    context = await service.resolve_ws_ticket(
+        db,
+        ticket="hbt_fixture",
+        last_seen_ip="127.0.0.1",
+        user_agent="pytest",
+    )
+
+    assert context.connection_id == connection_id
+    assert context.tenant_id == tenant_id
+    assert context.user_id == user_id
+    assert context.agent_id == agent_id
+    assert ticket.consumed_at is not None
+    assert ticket.metadata_json["last_seen_ip"] == "127.0.0.1"
+    assert db.committed is True
+    assert pinned_tenants == [tenant_id]
 
 
 def test_reported_capability_names_adapts_canonical_hive_connect_vocabulary() -> None:

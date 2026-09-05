@@ -549,6 +549,58 @@ async def test_racing_approvals_produce_exactly_one_immutable_winner(
     assert claimed["status"] == "active"
 
 
+async def test_nested_pairing_bypass_exit_restores_outer_bypass_on_real_postgresql(
+    app_user_sessionmaker,
+) -> None:
+    """RLS-BYPASS-NESTED-RESTORE-001 regression on real PostgreSQL.
+
+    ``approve_pairing_session`` holds an outer audited bypass while
+    ``_pairing_identity_is_live`` enters a nested one on the same session.
+    The inner exit must restore the persisted outer BYPASS — the live
+    ``current_setting`` GUC and the session-info scope must agree — instead
+    of restoring the request ContextVar (``None`` → ``''``), which silently
+    un-bypassed the rest of the outer audited scope.
+    """
+    from sqlalchemy import text
+
+    from app.database import _RLS_TENANT_INFO_KEY, enter_rls_bypass, reset_current_tenant, set_current_tenant
+
+    async def current_tenant_guc(db) -> str | None:
+        return (await db.execute(text("SELECT current_setting('app.current_tenant_id', true)"))).scalar_one()
+
+    # Phase 1: anonymous request context (ContextVar None), the exact approve
+    # path shape — no persisted scope exists before the outer bypass.
+    token = set_current_tenant(None)
+    try:
+        async with app_user_sessionmaker() as db:
+            async with enter_rls_bypass(db, reason="regression outer pairing approval rebind") as outer_db:
+                async with enter_rls_bypass(outer_db, reason="regression nested pairing live identity check"):
+                    pass
+                assert await current_tenant_guc(outer_db) == "BYPASS"
+                assert outer_db.sync_session.info[_RLS_TENANT_INFO_KEY] == "BYPASS"
+            assert await current_tenant_guc(db) == ""
+            assert _RLS_TENANT_INFO_KEY not in db.sync_session.info
+            await db.rollback()
+    finally:
+        reset_current_tenant(token)
+
+    # Phase 2: authenticated request context — a pinned tenant scope exists
+    # before the outer bypass; both exits must restore it exactly.
+    tenant_id = uuid.uuid4()
+    async with app_user_sessionmaker() as db:
+        from app.database import pin_rls_tenant_context
+
+        await pin_rls_tenant_context(db, tenant_id)
+        async with enter_rls_bypass(db, reason="regression outer bypass over pinned tenant") as outer_db:
+            async with enter_rls_bypass(outer_db, reason="regression nested bypass over pinned tenant"):
+                pass
+            assert await current_tenant_guc(outer_db) == "BYPASS"
+            assert outer_db.sync_session.info[_RLS_TENANT_INFO_KEY] == "BYPASS"
+        assert await current_tenant_guc(db) == str(tenant_id)
+        assert db.sync_session.info[_RLS_TENANT_INFO_KEY] == str(tenant_id)
+        await db.rollback()
+
+
 async def test_racing_exchanges_produce_exactly_one_active_token(
     owner_sessionmaker,
     app_user_sessionmaker,

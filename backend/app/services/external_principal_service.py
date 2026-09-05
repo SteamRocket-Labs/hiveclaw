@@ -61,6 +61,11 @@ class ChannelRuntimeActor:
 class ExternalPrincipalResolution:
     principal: ExternalPrincipal
     actor: ChannelRuntimeActor
+    # True only when THIS operation invalidated a channel self identity (the
+    # config was bound to the principal's non-null previous binding). Routes
+    # use it to decide whether live transport clients must stop; repeated or
+    # never-bound unlinks leave it False so a healthy channel keeps running.
+    channel_identity_invalidated: bool = False
 
 
 def _uuid(value: Any, *, field: str) -> uuid.UUID:
@@ -281,7 +286,10 @@ async def _synchronize_external_principal_session_users(
         session.actor_type = "external_principal"
     await db.execute(
         update(ChatMessage)
-        .where(ChatMessage.external_principal_id == principal.id)
+        .where(
+            ChatMessage.tenant_id == principal.tenant_id,
+            ChatMessage.external_principal_id == principal.id,
+        )
         .values(user_id=target_user_id)
     )
 
@@ -300,7 +308,10 @@ async def _link_verified_external_principal(
 
     This helper is intentionally private: there is no admin/API assignment
     path. The authenticated actor must be the target user and the proof method
-    must match the concrete provider installation.
+    must match the concrete provider installation. Administrators configure a
+    managed Agent's channel through the same provider-authenticated connect
+    flow using their own identity (PDEC-013); an employee identity is never
+    impersonated here.
     """
 
     tenant_uuid = _uuid(tenant_id, field="tenant_id")
@@ -386,6 +397,13 @@ async def unlink_external_principal(
     if principal is None:
         raise LookupError("external principal not found")
     previous = principal.linked_user_id
+    config = None
+    if principal.channel_config_id is not None:
+        from app.models.channel_config import ChannelConfig
+
+        config = await db.get(ChannelConfig, principal.channel_config_id)
+        if config is not None and config.tenant_id != tenant_uuid:
+            raise ExternalPrincipalAuthorityError("external principal channel configuration tenant mismatch")
     if previous is not None:
         principal.linked_user_id = None
         principal.linked_at = None
@@ -402,24 +420,31 @@ async def unlink_external_principal(
                 reason=str(reason or "explicit unlink"),
             )
         )
-    if principal.channel_config_id is not None:
-        from app.models.channel_config import ChannelConfig
-
-        config = await db.get(ChannelConfig, principal.channel_config_id)
-        if config is not None and config.self_identity_user_id == previous:
-            config.self_identity_user_id = None
-            config.self_identity_verified_at = None
-            if principal.provider in {"wechat_personal", "feishu"}:
-                config.is_connected = False
-            if principal.provider == "feishu":
-                config.is_configured = False
-                config.extra_config = {
-                    **dict(config.extra_config or {}),
-                    "connection_status": "identity_rebind_required",
-                    "identity_status": "rebind_required",
-                }
+    # Only a principal that actually held a non-null binding can invalidate a
+    # channel self identity, and only when the config was bound to that same
+    # user. A never-bound guest and a manually configured channel both carry
+    # ``None``; reading that as a match would deconfigure an unrelated
+    # healthy channel.
+    channel_identity_invalidated = False
+    if config is not None and previous is not None and config.self_identity_user_id == previous:
+        config.self_identity_user_id = None
+        config.self_identity_verified_at = None
+        if principal.provider in {"wechat_personal", "feishu"}:
+            config.is_connected = False
+        if principal.provider == "feishu":
+            config.is_configured = False
+            config.extra_config = {
+                **dict(config.extra_config or {}),
+                "connection_status": "identity_rebind_required",
+                "identity_status": "rebind_required",
+            }
+        channel_identity_invalidated = True
     await _synchronize_external_principal_session_users(db, principal=principal, user=None)
-    return ExternalPrincipalResolution(principal=principal, actor=await _runtime_actor(db, principal))
+    return ExternalPrincipalResolution(
+        principal=principal,
+        actor=await _runtime_actor(db, principal),
+        channel_identity_invalidated=channel_identity_invalidated,
+    )
 
 
 async def bind_authenticated_self_channel_principal(
@@ -461,6 +486,11 @@ async def bind_authenticated_self_channel_principal(
     if getattr(config, "tenant_id", None) != tenant_uuid:
         raise ExternalPrincipalAuthorityError("self channel configuration tenant mismatch")
     if target_user_id != actor_uuid:
+        # The only live configuration lane is the provider-authenticated QR
+        # connect callback of the user themselves. An administrator configures
+        # a managed Agent's channel through the same flow with the
+        # administrator's own provider-authenticated identity; binding an
+        # employee's identity on their behalf stays a typed refusal.
         raise ExternalPrincipalAuthorityError("self channel must bind the authenticated installer")
 
     user = await db.scalar(

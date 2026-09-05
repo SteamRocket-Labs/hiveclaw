@@ -524,7 +524,12 @@ class CompanyKnowledgePromotionService:
             idempotency_key=request.idempotency_key,
             trace_id=request.trace_id,
         )
-        if principal.actor_type != "user" or principal.accountable_role != "org_admin":
+        # PDEC-013: both scoped administrator roles are accountable for legacy
+        # promotion inside the company their request resolved to; the API layer
+        # builds this principal only after tenant scoping, so the platform
+        # administrator here is already inside the selected company. Attestation,
+        # evidence, source-path and credential gates below are unchanged.
+        if principal.actor_type != "user" or principal.accountable_role not in ("org_admin", "platform_admin"):
             raise PermissionError("legacy_company_promotion_requires_tenant_admin")
         sensitivity = canonicalize_sensitivity(request.proposed_sensitivity).value
         try:

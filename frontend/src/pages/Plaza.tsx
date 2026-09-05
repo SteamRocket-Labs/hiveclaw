@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
+import { isAdministratorRole } from '../roles';
 import { agentApi } from '../api/domains/agents';
 import { plazaApi } from '../api/domains/plaza';
 import ConfirmModal from '../components/ConfirmModal';
@@ -475,7 +476,7 @@ export default function Plaza() {
         },
     });
 
-    const isAdmin = user?.role === 'org_admin';
+    const isAdmin = isAdministratorRole(user?.role);
 
     const timeAgo = (dateStr: string) => {
         const diff = Date.now() - new Date(dateStr).getTime();

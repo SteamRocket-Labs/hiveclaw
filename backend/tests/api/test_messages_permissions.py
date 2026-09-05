@@ -80,7 +80,10 @@ async def test_list_accessible_agent_ids_includes_permission_scopes():
 
 
 @pytest.mark.asyncio
-async def test_platform_admin_message_agents_use_only_owner_and_exact_user_scope():
+async def test_platform_admin_inbox_covers_managed_company_inventory():
+    """PDEC-013: the platform administrator inbox covers the selected
+    company's whole inventory without consulting permission grants."""
+
     import app.api.messages as messages_api
 
     current_user = SimpleNamespace(
@@ -92,13 +95,30 @@ async def test_platform_admin_message_agents_use_only_owner_and_exact_user_scope
     db = _MessagesDB()
 
     assert await messages_api._list_accessible_agent_ids(db, current_user) == []
+    inventory_sql = str(db.statement_objects[0].compile(compile_kwargs={"literal_binds": True}))
+    assert "FROM agents" in inventory_sql
+    assert "agent_permissions" not in inventory_sql
+
+
+@pytest.mark.asyncio
+async def test_member_inbox_uses_only_owned_and_exact_user_scope():
+    import app.api.messages as messages_api
+
+    current_user = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        department_id=None,
+        role="member",
+    )
+    db = _MessagesDB()
+
+    assert await messages_api._list_accessible_agent_ids(db, current_user) == []
     permission_statement = next(
         statement for statement in db.statement_objects if "FROM agent_permissions" in str(statement)
     )
     permission_sql = str(permission_statement.compile(compile_kwargs={"literal_binds": True}))
     assert "agent_permissions.scope_type = 'user'" in permission_sql
-    assert "agent_permissions.scope_type = 'company'" not in permission_sql
-    assert "agent_permissions.scope_type = 'department'" not in permission_sql
+    assert "agent_permissions.scope_type = 'company'" in permission_sql
 
 
 @pytest.mark.asyncio

@@ -386,9 +386,9 @@ async def test_received_event_survives_ack_crash_and_retries_to_processed(owner_
             await db.execute(select(ChannelIngressEvent).where(ChannelIngressEvent.id == receipt.event_id))
         ).scalar_one()
 
-    assert first == {"claimed": 1, "processed": 0, "retried": 1, "dead_lettered": 0}
-    assert second == {"claimed": 1, "processed": 1, "retried": 0, "dead_lettered": 0}
-    assert third == {"claimed": 0, "processed": 0, "retried": 0, "dead_lettered": 0}
+    assert first == {"claimed": 1, "processed": 0, "retried": 1, "dead_lettered": 0, "deferred": 0}
+    assert second == {"claimed": 1, "processed": 1, "retried": 0, "dead_lettered": 0, "deferred": 0}
+    assert third == {"claimed": 0, "processed": 0, "retried": 0, "dead_lettered": 0, "deferred": 0}
     assert attempts == [receipt.event_id, receipt.event_id]
     assert stored.status == "processed"
     assert stored.attempt_count == 2

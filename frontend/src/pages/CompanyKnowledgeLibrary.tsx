@@ -19,6 +19,7 @@ import {
   type CompanyLibrarySearchHit,
 } from '../api/domains/companyKnowledge';
 import MarkdownRenderer from '../components/MarkdownRenderer';
+import { isAdministratorRole } from '../roles';
 import { useAuthStore } from '../stores';
 import './CompanyKnowledgeLibrary.css';
 
@@ -319,7 +320,7 @@ export default function CompanyKnowledgeLibrary() {
         void activeListQuery.refetch();
         if (selected) void readQuery.refetch();
       }}
-      canManage={user?.role === 'org_admin'}
+      canManage={isAdministratorRole(user?.role)}
     />
   );
 }

@@ -70,7 +70,7 @@ async def test_offboard_user_atomically_transfers_agents_then_deactivates(monkey
         )
 
     monkeypatch.setattr(service, "_lock_owned_agents", fake_lock_owned_agents)
-    monkeypatch.setattr(service, "_revoke_user_authority", fake_revoke)
+    monkeypatch.setattr(service, "revoke_user_authority", fake_revoke)
 
     async def fake_register_agent_asset(*_args, **_kwargs):
         return None

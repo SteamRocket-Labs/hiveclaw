@@ -2130,9 +2130,10 @@ async def test_resolve_runtime_config_defaults_skill_candidate_loop_to_true_when
 
     class _FakeSession:
         def __init__(self) -> None:
+            # Live query order: Agent row, Tenant.is_active, two FeatureFlag lookups.
             self._results = [
                 _FakeScalarResult(fake_agent),
-                _FakeScalarResult(None),
+                _FakeScalarResult(True),
                 _FakeScalarResult(None),
                 _FakeScalarResult(None),
             ]
@@ -3328,14 +3329,20 @@ class _FakeAsyncSessionCM:
 
 
 class _FakeDB:
-    def __init__(self, agent_value, raise_on_execute: Exception | None = None) -> None:
-        self._agent_value = agent_value
+    """Scalar results in live query order: Agent, Tenant.is_active, flags."""
+
+    def __init__(self, *scalar_values, raise_on_execute: Exception | None = None) -> None:
+        self._values = list(scalar_values)
         self._raise = raise_on_execute
 
-    async def execute(self, _stmt):
+    async def execute(self, stmt):
         if self._raise is not None:
             raise self._raise
-        return _FakeScalarResult(self._agent_value)
+        # enter_rls_bypass / pin_rls_tenant_context issue SET LOCAL GUC
+        # statements; those must not consume a business result.
+        if "app.current_tenant_id" in str(stmt):
+            return _FakeScalarResult(None)
+        return _FakeScalarResult(self._values.pop(0))
 
 
 @pytest.mark.real_runtime_config
@@ -3356,7 +3363,7 @@ async def test_resolve_runtime_config_agent_not_found_sets_tenant_error(monkeypa
     from app.runtime import invoker
 
     missing_id = uuid4()
-    monkeypatch.setattr(invoker, "async_session", lambda: _FakeAsyncSessionCM(_FakeDB(agent_value=None)))
+    monkeypatch.setattr(invoker, "async_session", lambda: _FakeAsyncSessionCM(_FakeDB(None)))
 
     cfg = await invoker._resolve_runtime_config(missing_id)
 
@@ -3375,7 +3382,7 @@ async def test_resolve_runtime_config_db_exception_sets_tenant_error(monkeypatch
     monkeypatch.setattr(
         invoker,
         "async_session",
-        lambda: _FakeAsyncSessionCM(_FakeDB(agent_value=None, raise_on_execute=RuntimeError("DB down"))),
+        lambda: _FakeAsyncSessionCM(_FakeDB(raise_on_execute=RuntimeError("DB down"))),
     )
 
     cfg = await invoker._resolve_runtime_config(failing_id)
@@ -3408,7 +3415,8 @@ async def test_resolve_runtime_config_success_does_not_set_tenant_error(monkeypa
     monkeypatch.setattr(
         invoker,
         "tenant_scoped_session",
-        lambda *a, **k: _FakeAsyncSessionCM(_FakeDB(agent_value=fake_agent)),
+        # Live query order: Agent row, Tenant.is_active, two FeatureFlag lookups.
+        lambda *a, **k: _FakeAsyncSessionCM(_FakeDB(fake_agent, True, None, None)),
     )
     monkeypatch.setattr(invoker, "is_feature_enabled", _fake_flag)
 
@@ -3434,7 +3442,7 @@ async def test_invoke_agent_aborts_when_tenant_resolution_fails(monkeypatch):
     monkeypatch.setattr(
         invoker_mod,
         "async_session",
-        lambda: _FakeAsyncSessionCM(_FakeDB(agent_value=None)),
+        lambda: _FakeAsyncSessionCM(_FakeDB(None)),
     )
 
     # If kernel ever reaches LLM client creation, fail loudly — we expect early abort.

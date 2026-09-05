@@ -21,7 +21,10 @@ class _CaptureDB:
 
 
 @pytest.mark.asyncio
-async def test_platform_admin_dashboard_agent_scope_requires_exact_user_grant(monkeypatch):
+async def test_platform_admin_dashboard_lists_managed_company_inventory(monkeypatch):
+    """PDEC-013: the platform administrator dashboard covers the selected
+    company's whole inventory without consulting permission grants."""
+
     import app.api.dashboard as dashboard_api
 
     tenant_id = uuid4()
@@ -40,9 +43,27 @@ async def test_platform_admin_dashboard_agent_scope_requires_exact_user_grant(mo
 
     assert await dashboard_api._load_accessible_agent_ids(db, user, tenant_id) == []
     sql = str(db.statement.compile(compile_kwargs={"literal_binds": True}))
+    assert "agent_permissions" not in sql
+    assert tenant_id.hex in sql
+
+
+@pytest.mark.asyncio
+async def test_member_dashboard_scope_requires_owned_or_permitted_agents(monkeypatch):
+    import app.api.dashboard as dashboard_api
+
+    tenant_id = uuid4()
+    user = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        department_id=None,
+        role="member",
+    )
+    db = _CaptureDB()
+
+    assert await dashboard_api._load_accessible_agent_ids(db, user, None) == []
+    sql = str(db.statement.compile(compile_kwargs={"literal_binds": True}))
     assert "agent_permissions.scope_type = 'user'" in sql
-    assert "agent_permissions.scope_type = 'company'" not in sql
-    assert "agent_permissions.scope_type = 'department'" not in sql
+    assert "agent_permissions.scope_type = 'company'" in sql
 
 
 @pytest.mark.asyncio

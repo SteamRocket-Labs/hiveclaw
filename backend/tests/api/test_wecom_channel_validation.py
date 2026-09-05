@@ -16,6 +16,9 @@ class _ScalarResult:
 
 
 class _FakeDB:
+    """Minimal DB double returning a fixed scalar, plus an exact Tenant
+    liveness scalar for the production ``select(Tenant.is_active)`` probe."""
+
     def __init__(self, value=None):
         self._value = value
         self.sync_session = SimpleNamespace(info={})
@@ -23,6 +26,10 @@ class _FakeDB:
 
     async def execute(self, stmt):
         self.statements.append(str(stmt))
+        if "tenants.is_active" in str(stmt):
+            # Retired-company negatives are proven by the real-PostgreSQL
+            # inactive-tenant gates; the fake always reports a live company.
+            return _ScalarResult(True)
         return _ScalarResult(self._value)
 
 

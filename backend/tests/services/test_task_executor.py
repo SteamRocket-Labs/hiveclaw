@@ -32,6 +32,10 @@ class _FakeSession:
         # the business query — it must not consume a prepared result.
         if "app.current_tenant_id" in str(_query):
             return _FakeScalarResult(None)
+        # The pre-execution boundary re-reads the owning Tenant's liveness;
+        # these unit fixtures always describe a live company.
+        if "tenants.is_active" in str(_query):
+            return _FakeScalarResult(True)
         if not self._execute_values:
             raise AssertionError("No fake execute result prepared")
         return _FakeScalarResult(self._execute_values.pop(0))

@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import check_agent_access, check_agent_operator_reachability
+from app.core.permissions import check_agent_access, check_agent_operator_reachability, is_scoped_business_admin
 from app.core.resource_authority import (
     OWNED_AUTHORITY_STATE,
     QUARANTINED_AUTHORITY_STATE,
@@ -174,9 +174,17 @@ async def _canonical_root_session(
     db: AsyncSession,
     *,
     agent_id: uuid.UUID,
-    user_id: uuid.UUID,
+    user: User,
+    resource_tenant_id: uuid.UUID | None,
     session_id: uuid.UUID | None,
 ) -> uuid.UUID | None:
+    """Resolve the canonical root session binding one workspace operation.
+
+    The session owner always binds directly. A scoped business administrator
+    (PDEC-013) may bind through an employee's exact session without owning it;
+    the resulting manifest keeps its original owner/root provenance, so this
+    never reassigns the employee's resource ownership.
+    """
     if session_id is None:
         return None
     session = (
@@ -184,11 +192,13 @@ async def _canonical_root_session(
             select(ChatSession).where(
                 ChatSession.id == session_id,
                 ChatSession.agent_id == agent_id,
-                ChatSession.user_id == user_id,
             )
         )
     ).scalar_one_or_none()
-    if session is None:
+    if session is None or (
+        str(session.user_id) != str(user.id)
+        and not is_scoped_business_admin(user, resource_tenant_id=resource_tenant_id)
+    ):
         raise WorkspaceAuthorityError(
             "workspace_session_authority_mismatch",
             "The workspace operation is not bound to a session owned by the requester.",
@@ -227,7 +237,8 @@ async def authorize_workspace_path(
     root_session_id = await _canonical_root_session(
         db,
         agent_id=agent_id,
-        user_id=user.id,
+        user=user,
+        resource_tenant_id=agent.tenant_id,
         session_id=session_id,
     )
 
@@ -256,7 +267,7 @@ async def authorize_workspace_path(
                 owner_user_id=None,
                 root_session_id=None,
                 authority_source=decision.authority_source,
-                operator_view=True,
+                operator_view=decision.operator_view,
                 is_new=False,
             )
         if action not in {"write", "create", "upload"}:
@@ -412,7 +423,8 @@ async def load_workspace_authority_scope(
     canonical_root = await _canonical_root_session(
         db,
         agent_id=agent_id,
-        user_id=user.id,
+        user=user,
+        resource_tenant_id=resolved_agent_access[0].tenant_id,
         session_id=session_id,
     )
     manifests = (

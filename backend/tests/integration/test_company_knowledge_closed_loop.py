@@ -51,11 +51,11 @@ from app.services.company_knowledge_service import (
 from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 
 
-def _principal(*, tenant_id: uuid.UUID, user_id: uuid.UUID) -> CompanyKnowledgePrincipal:
+def _principal(*, tenant_id: uuid.UUID, user_id: uuid.UUID, role: str = "org_admin") -> CompanyKnowledgePrincipal:
     return CompanyKnowledgePrincipal(
         tenant_id=tenant_id,
         accountable_user_id=user_id,
-        accountable_role="org_admin",
+        accountable_role=role,
         actor_type="user",
         actor_id=user_id,
         purpose="interactive_session",
@@ -125,7 +125,9 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
                 email=f"{denied_user_id.hex[:10]}@company-kb.test",
                 password_hash="x",
                 display_name="Company Knowledge Unprivileged User",
-                role="org_admin",
+                # PDEC-013: the negative boundary is an unprivileged member;
+                # company administrators now hold role-sourced business access.
+                role="member",
                 tenant_id=tenant_id,
             )
         )
@@ -405,7 +407,7 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
         assert queued["materialization_required"] is True
         denied_queue = await permission_service.list_review_queue(
             db,
-            principal=_principal(tenant_id=tenant_id, user_id=denied_user_id),
+            principal=_principal(tenant_id=tenant_id, user_id=denied_user_id, role="member"),
             status="submitted",
         )
         assert all(item["proposal_id"] != str(agent_proposal.id) for item in denied_queue)
@@ -418,7 +420,7 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
         with pytest.raises(PermissionError, match="explicit_resource_permission_required"):
             await service.get_proposal_for_review(
                 db,
-                principal=_principal(tenant_id=tenant_id, user_id=denied_user_id),
+                principal=_principal(tenant_id=tenant_id, user_id=denied_user_id, role="member"),
                 proposal_id=agent_proposal.id,
             )
         first_materialization_request = CompanyKnowledgeMaterializationRequest(
@@ -622,7 +624,7 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
     assert summary.failed == 0
 
     gateway = CompanyKnowledgeGateway()
-    denied_principal = _principal(tenant_id=tenant_id, user_id=denied_user_id)
+    denied_principal = _principal(tenant_id=tenant_id, user_id=denied_user_id, role="member")
     async with owner_sessionmaker() as db:
         document = await db.get(KnowledgeDocument, publication.document_id)
         segments = (
@@ -834,11 +836,53 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
                 )
             )
         ).scalar_one()
+        # PDEC-013: an administrator's business access is role-sourced, so
+        # revoking the ordinary grant does not remove it; the same revocation
+        # still takes effect immediately for a granted member.
         permission.revoked_at = datetime.now(timezone.utc)
         await db.flush()
-        revoked_read = await gateway.read(
+        admin_revoked_read = await gateway.read(
             db,
             principal=principal,
+            request=CompanyKnowledgeReadRequest(
+                document_id=publication.document_id,
+                publication_id=publication.id,
+                segment_ids=(),
+                max_chars=1000,
+                trace_id="trace-revoked-admin-read",
+            ),
+        )
+        assert admin_revoked_read.status == "ok"
+
+        member_permission = ResourcePermission(
+            tenant_id=permission.tenant_id,
+            principal_type="user",
+            principal_id=denied_user_id,
+            resource_type=permission.resource_type,
+            resource_id=permission.resource_id,
+            actions=list(permission.actions),
+            effect="allow",
+            sensitivity_ceiling=permission.sensitivity_ceiling,
+        )
+        db.add(member_permission)
+        await db.flush()
+        member_read = await gateway.read(
+            db,
+            principal=denied_principal,
+            request=CompanyKnowledgeReadRequest(
+                document_id=publication.document_id,
+                publication_id=publication.id,
+                segment_ids=(),
+                max_chars=1000,
+                trace_id="trace-member-read",
+            ),
+        )
+        assert member_read.status == "ok"
+        member_permission.revoked_at = datetime.now(timezone.utc)
+        await db.flush()
+        revoked_member_read = await gateway.read(
+            db,
+            principal=denied_principal,
             request=CompanyKnowledgeReadRequest(
                 document_id=publication.document_id,
                 publication_id=publication.id,
@@ -847,7 +891,8 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
                 trace_id="trace-revoked-read",
             ),
         )
-        assert revoked_read.status == "not_found_or_denied"
+        assert revoked_member_read.status == "not_found_or_denied"
+        member_permission.revoked_at = None
         permission.revoked_at = None
         await db.flush()
 

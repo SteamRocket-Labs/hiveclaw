@@ -127,6 +127,19 @@ describe('session experience information policy', () => {
     expect(zh.sessionWorkbench.rightPanel.resultDelivered).toBe('结果已交付');
   });
 
+  it('keeps the collapsed rail and empty console copy semantic in both locales', () => {
+    expect(en.sessionWorkbench.rightPanel.noRuntimeActivity).toBe(
+      'No background agents, teams, or workflows in this session.',
+    );
+    expect(zh.sessionWorkbench.rightPanel.noRuntimeActivity).toBe('此会话没有后台任务、团队或工作流。');
+    expect(en.sessionWorkbench.rightPanel.showDeliverables).toBe('Show deliverables ({{count}})');
+    expect(zh.sessionWorkbench.rightPanel.showDeliverables).toBe('查看 {{count}} 个交付物');
+    expect(en.sessionWorkbench.rightPanel.showAttentionItems).toBe('Show items waiting for you ({{count}})');
+    expect(zh.sessionWorkbench.rightPanel.showAttentionItems).toBe('查看 {{count}} 个待你处理的事项');
+    expect(en.sessionWorkbench.rightPanel.showRunningItems).toBe('Show running items ({{count}})');
+    expect(zh.sessionWorkbench.rightPanel.showRunningItems).toBe('查看 {{count}} 个正在运行的任务');
+  });
+
   it('shows a failed Team close as recoverable semantic state', () => {
     const item = {
       id: 'team-1',

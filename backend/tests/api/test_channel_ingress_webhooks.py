@@ -18,11 +18,20 @@ class _ScalarResult:
 
 
 class _DB:
+    """Answers the public channel lookup by statement shape: the ChannelConfig
+    row, the owning Tenant's liveness (active), and benign results for the
+    bypass scope's own SET LOCAL statements."""
+
     def __init__(self, config):
         self.config = config
         self.sync_session = SimpleNamespace(info={})
 
-    async def execute(self, _stmt):
+    async def execute(self, stmt):
+        sql = str(stmt)
+        if sql.startswith("SET LOCAL"):
+            return _ScalarResult(None)
+        if "tenants.is_active" in sql:
+            return _ScalarResult(True)
         return _ScalarResult(self.config)
 
     async def commit(self):
@@ -163,10 +172,15 @@ async def test_legacy_channel_config_inherits_resolved_agent_tenant(monkeypatch)
 
     class LookupDB:
         def __init__(self):
-            self.results = iter((_ScalarResult(config), _ScalarResult(tenant_id)))
+            pass
 
-        async def execute(self, _stmt):
-            return next(self.results)
+        async def execute(self, stmt):
+            sql = str(stmt)
+            if "tenants.is_active" in sql:
+                return _ScalarResult(True)
+            if "agents.tenant_id" in sql:
+                return _ScalarResult(tenant_id)
+            return _ScalarResult(config)
 
     @asynccontextmanager
     async def bypass(db, *, reason):

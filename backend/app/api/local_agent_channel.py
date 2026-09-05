@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.local_bridge import get_bridge_auth_context
 from app.config import get_settings
-from app.core.permissions import check_agent_access
+from app.core.permissions import check_agent_access, is_scoped_business_admin
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.user import User
@@ -478,10 +478,16 @@ async def create_current_user_local_agent_channel_message(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    # Recover the exact host/scope from the session row (PDEC-013): an
+    # administrator writing into a managed employee session stays attributed
+    # as the sender while delivery keeps the real host-owner routing.
+    _session, host_owner_user_id = await channel_service.get_channel_session_for_actor(
+        db, session_id=session_id, actor_user_id=current_user.id, access_user=current_user, action="message"
+    )
     payload = await channel_service.enqueue_channel_message(
         db,
         session_id=session_id,
-        owner_user_id=current_user.id,
+        owner_user_id=host_owner_user_id,
         sender_user_id=current_user.id,
         sender_agent_id=None,
         content=body.content,
@@ -491,10 +497,10 @@ async def create_current_user_local_agent_channel_message(
     )
     if _runner_dispatch_allowed(payload):
         await channel_ws_manager.send_to_user(
-            current_user.id, {"type": "message", "message": _runner_message_payload(payload)}
+            host_owner_user_id, {"type": "message", "message": _runner_message_payload(payload)}
         )
     await _broadcast_browser_channel_event(
-        owner_user_id=current_user.id,
+        owner_user_id=host_owner_user_id,
         session_id=session_id,
         event=payload.get("event"),
     )
@@ -510,7 +516,7 @@ async def get_current_user_local_agent_channel_timeline(
     db: AsyncSession = Depends(get_db),
 ):
     session, owner_user_id = await channel_service.get_channel_session_for_actor(
-        db, session_id=session_id, actor_user_id=current_user.id
+        db, session_id=session_id, actor_user_id=current_user.id, access_user=current_user, action="timeline"
     )
     events = await channel_service.list_channel_events(
         db,
@@ -538,6 +544,7 @@ async def create_current_user_local_agent_channel_browser_ws_ticket(
         actor_user_id=current_user.id,
         session_id=session_id,
         ttl_seconds=channel_service.DEFAULT_BROWSER_WS_TICKET_SECONDS,
+        access_user=current_user,
     )
 
 
@@ -550,7 +557,7 @@ async def list_current_user_local_agent_channel_events(
     db: AsyncSession = Depends(get_db),
 ):
     _session, owner_user_id = await channel_service.get_channel_session_for_actor(
-        db, session_id=session_id, actor_user_id=current_user.id
+        db, session_id=session_id, actor_user_id=current_user.id, access_user=current_user, action="events"
     )
     events = await channel_service.list_channel_events(
         db,
@@ -702,13 +709,18 @@ async def list_agent_local_agent_channel_sessions(
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
     host_owner_user_id = _local_agent_host_user_id(agent)
     tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
+    # A scoped business administrator (PDEC-013) reads the managed business
+    # inventory instead of only their own mirrored sessions; an ordinary
+    # caller keeps the per-actor separation.
+    admin_business_view = is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None))
     rows = await channel_service.list_agent_channel_sessions(
         db,
         tenant_id=tenant_id,
         owner_user_id=host_owner_user_id,
-        actor_user_id=current_user.id,
+        actor_user_id=None if admin_business_view else current_user.id,
         source_agent_id=agent.id,
         limit=limit,
+        access_user=current_user,
     )
     return [_serialize_session(row) for row in rows]
 
@@ -752,13 +764,16 @@ async def resolve_local_agent_channel_session(
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
     host_owner_user_id = _local_agent_host_user_id(agent)
     tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
+    admin_business_view = is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None))
     payload = await channel_service.resolve_agent_channel_session(
         db,
         tenant_id=tenant_id,
         owner_user_id=host_owner_user_id,
-        actor_user_id=current_user.id,
+        actor_user_id=None if admin_business_view else current_user.id,
         source_agent_id=agent.id,
         session_id=session_id,
+        access_user=current_user,
+        audit_action="read",
     )
     return _serialize_session(payload)
 
@@ -776,13 +791,15 @@ async def delete_local_agent_channel_session(
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
     host_owner_user_id = _local_agent_host_user_id(agent)
     tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
+    admin_business_view = is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None))
     await channel_service.archive_agent_channel_session(
         db,
         tenant_id=tenant_id,
         owner_user_id=host_owner_user_id,
-        actor_user_id=current_user.id,
+        actor_user_id=None if admin_business_view else current_user.id,
         source_agent_id=agent.id,
         session_id=session_id,
+        access_user=current_user,
     )
     return None
 
@@ -802,13 +819,19 @@ async def create_local_agent_channel_message(
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
     host_owner_user_id = _local_agent_host_user_id(agent)
     tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
+    # A scoped business administrator (PDEC-013) may write into a managed
+    # employee-owned session: the sender stays the real administrator while
+    # delivery keeps the host-owner routing.
+    admin_business_view = is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None))
     await channel_service.resolve_agent_channel_session(
         db,
         tenant_id=tenant_id,
         owner_user_id=host_owner_user_id,
-        actor_user_id=current_user.id,
+        actor_user_id=None if admin_business_view else current_user.id,
         source_agent_id=agent.id,
         session_id=session_id,
+        access_user=current_user,
+        audit_action="message",
     )
     attachments = _materialize_local_agent_attachments_for_host(
         tenant_id=tenant_id,
@@ -851,13 +874,16 @@ async def list_local_agent_channel_events(
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
     host_owner_user_id = _local_agent_host_user_id(agent)
     tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
+    admin_business_view = is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None))
     await channel_service.resolve_agent_channel_session(
         db,
         tenant_id=tenant_id,
         owner_user_id=host_owner_user_id,
-        actor_user_id=current_user.id,
+        actor_user_id=None if admin_business_view else current_user.id,
         source_agent_id=agent.id,
         session_id=session_id,
+        access_user=current_user,
+        audit_action="events",
     )
     events = await channel_service.list_channel_events(
         db,
@@ -883,13 +909,16 @@ async def download_agent_local_agent_channel_workspace_file(
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
     host_owner_user_id = _local_agent_host_user_id(agent)
     tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
+    admin_business_view = is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None))
     session = await channel_service.resolve_agent_channel_session(
         db,
         tenant_id=tenant_id,
         owner_user_id=host_owner_user_id,
-        actor_user_id=current_user.id,
+        actor_user_id=None if admin_business_view else current_user.id,
         source_agent_id=agent.id,
         session_id=session_id,
+        access_user=current_user,
+        audit_action="download",
     )
     authorized_path = await channel_service.authorize_agent_channel_workspace_download(
         db,

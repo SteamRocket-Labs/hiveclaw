@@ -4,6 +4,7 @@ import { expect, test, type Page } from '@playwright/test';
 const AGENT_ID = '7e57a9e7-0000-4000-8000-000000000010';
 const SESSION_ID = '8e57a9e7-0000-4000-8000-000000000020';
 const RUN_ID = '9e57a9e7-0000-4000-8000-000000000030';
+const OWN_BROWSER_SESSION_ID = '8e57a9e7-0000-4000-8000-000000000022';
 const OPERATOR_REASON = 'Release evidence review';
 
 type Audience = 'user' | 'operator';
@@ -275,9 +276,26 @@ async function bootstrap(page: Page, options: {
   scenario: Scenario;
   theme?: Theme;
   transcriptDelayMs?: number;
+  browserOwnSession?: boolean;
 }) {
-  const { audience, scenario, theme = 'light', transcriptDelayMs = 0 } = options;
+  const { audience, scenario, theme = 'light', transcriptDelayMs = 0, browserOwnSession = false } = options;
   const session = sessionFor(audience);
+  // A managed browser lists every user session in scope; the operator's OWN
+  // session stays a writable non-operator row with its real delete control.
+  const browserSessions = browserOwnSession
+    ? [session, {
+      ...session,
+      id: OWN_BROWSER_SESSION_ID,
+      user_id: 'u-1',
+      is_current_user_session: true,
+      read_only: false,
+      authority_source: 'session_owner',
+      operator_view: false,
+      title: 'Owned release checklist draft',
+      created_at: '2026-07-11T12:02:00Z',
+      updated_at: '2026-07-11T12:12:00Z',
+    }]
+    : [session];
   const transcript = transcriptFor(audience, scenario);
   const lineage = lineageFor(session, scenario);
   const consoleErrors: string[] = [];
@@ -371,7 +389,7 @@ async function bootstrap(page: Page, options: {
       if (audience === 'operator' && url.searchParams.get('operator_reason') !== OPERATOR_REASON) {
         return route.fulfill({ status: 422, json: { detail: 'Operator inspection reason is required' } });
       }
-      return route.fulfill({ json: [session] });
+      return route.fulfill({ json: browserSessions });
     }
     if (
       audience === 'operator'
@@ -467,12 +485,10 @@ async function bootstrap(page: Page, options: {
     await expect(page.getByTestId('session-operator-view')).toBeVisible();
   }
   await expect(page.locator('.vite-error-overlay')).toHaveCount(0);
-  if ((page.viewportSize()?.width || 0) < 900 && await page.getByTestId('session-runtime-deliverables').count() === 0) {
-    await page.getByTestId('session-runtime-collapse-toggle').click();
-  }
+  // Readiness is asserted on the primary reading flow only. The runtime rail is
+  // never force-opened here: each test verifies the real first-render state and
+  // then opens the panel explicitly when it exercises the expanded view.
   if (scenario === 'active') {
-    await expect(page.getByTestId('session-runtime-deliverables')).toContainText('release-report.md');
-    await expect(page.getByTestId('session-runtime-run-status')).toBeVisible();
     await expect(page.locator('[data-thread-item-type="approval_request"]')).toBeVisible();
     if (audience === 'operator') {
       await expect(page.getByTestId('thread-item-retry-turn')).toHaveCount(0);
@@ -480,7 +496,7 @@ async function bootstrap(page: Page, options: {
       await expect(page.getByTestId('thread-item-retry-turn')).toBeVisible();
     }
   } else {
-    await expect(page.getByTestId('session-runtime-deliverables')).toContainText('No delivered artifacts');
+    await expect(page.getByText('Everything is ready. Start a new request whenever you need me.')).toBeVisible();
   }
   return {
     consoleErrors,
@@ -501,14 +517,37 @@ async function scrollTimelineToBottom(page: Page) {
   ))).toBe(true);
 }
 
-async function expectVisual(page: Page, name: string) {
+async function expectVisual(page: Page, name: string, options: {
+  maxDiffPixelRatio?: number;
+  capture?: 'element' | 'viewport';
+} = {}) {
   await scrollTimelineToBottom(page);
-  await expect(page.getByTestId('session-workbench')).toHaveScreenshot(name, {
-    animations: 'disabled',
-    caret: 'hide',
-    maxDiffPixelRatio: 0.01,
+  const screenshotOptions = {
+    animations: 'disabled' as const,
+    caret: 'hide' as const,
+    maxDiffPixelRatio: options.maxDiffPixelRatio ?? 0.01,
     threshold: 0.2,
-  });
+  };
+  if (options.capture === 'viewport') {
+    // The narrow expanded panel is an overlay that extends past the workbench
+    // element's left edge; only a viewport capture records what the user sees.
+    await expect(page).toHaveScreenshot(name, screenshotOptions);
+    return;
+  }
+  await expect(page.getByTestId('session-workbench')).toHaveScreenshot(name, screenshotOptions);
+}
+
+// Nearly-empty idle scenes tolerate almost no drift: the old engineering
+// dashboard differs from the task-first idle render by less than 1% of pixels,
+// which slipped through the default 0.01 gate and let a stale baseline pass.
+const IDLE_MAX_DIFF_PIXEL_RATIO = 0.002;
+
+type BoxEdges = { left: number; right: number; top: number; bottom: number };
+
+function intersectionArea(a: BoxEdges, b: BoxEdges): number {
+  const width = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+  const height = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+  return width * height;
 }
 
 async function expectNoSeriousAccessibilityViolations(page: Page) {
@@ -533,37 +572,78 @@ for (const viewport of [
   test(`ordinary user active states ${viewport.name} visual contract`, async ({ page }) => {
     await page.setViewportSize(viewport);
     const { consoleErrors } = await bootstrap(page, { audience: 'user', scenario: 'active' });
+    // First render is task-first: task, answer, approval, and recovery stay in the
+    // reading flow while the runtime rail starts collapsed with honest live counts.
+    await expect(page.getByTestId('session-runtime-panel')).toHaveClass(/is-collapsed/);
+    await expect(page.getByTestId('session-runtime-console')).toHaveCount(0);
     await expect(page.getByTestId('thread-item-inspector')).toHaveCount(0);
     await expect(page.locator('[data-thread-item-type="workflow_activity"]')).toHaveCount(0);
-    await expect(page.getByTestId('session-runtime-segment-team')).toContainText('1');
-    await expect(page.getByTestId('session-runtime-segment-workers')).toContainText('1');
-    await expect(page.getByTestId('session-runtime-segment-workflow')).toContainText('1');
+    await expect(page.getByTestId('session-runtime-collapsed-deliverables')).toContainText('1');
+    await expect(page.getByTestId('session-runtime-collapsed-running')).toContainText('5');
+    await expect(page.getByTestId('session-runtime-collapsed-attention')).toHaveCount(0);
     await expect(page.getByTestId('chat-work-ledger-dock')).toHaveAttribute('data-presentation', 'persistent');
     await expect(page.getByTestId('chat-work-ledger-panel')).toBeVisible();
     await expect(page.getByTestId('agent-task-list')).toContainText('Publish final report');
     await expectVisual(page, `workbench-user-active-${viewport.name}.png`);
+    // An explicit open reveals the expanded view with real counts and states.
+    await page.getByTestId('session-runtime-collapse-toggle').click();
+    await expect(page.getByTestId('session-runtime-deliverables')).toContainText('release-report.md');
+    await expect(page.getByTestId('session-runtime-run-status')).toBeVisible();
+    await expect(page.getByTestId('session-runtime-summary-strip')).toHaveAttribute('data-runtime-state', 'running');
+    await expect(page.getByTestId('session-runtime-segment-team')).toContainText('1');
+    await expect(page.getByTestId('session-runtime-segment-workers')).toContainText('1');
+    await expect(page.getByTestId('session-runtime-segment-workflow')).toContainText('1');
+    await expect(page.getByTestId('session-runtime-console-empty')).toHaveCount(0);
+    await expectVisual(page, `workbench-user-active-expanded-${viewport.name}.png`, {
+      capture: viewport.name === 'narrow' ? 'viewport' : 'element',
+    });
     expect(consoleErrors).toEqual([]);
   });
 
   test(`ordinary user idle ${viewport.name} visual contract`, async ({ page }) => {
     await page.setViewportSize(viewport);
     const { consoleErrors } = await bootstrap(page, { audience: 'user', scenario: 'idle' });
-    await expect(page.getByTestId('session-runtime-summary-strip')).toHaveAttribute('data-runtime-state', 'idle');
-    await expectVisual(page, `workbench-user-idle-${viewport.name}.png`);
+    // Idle first render: no engineering dashboard, no zero-count badges.
+    await expect(page.getByTestId('session-runtime-panel')).toHaveClass(/is-collapsed/);
+    await expect(page.getByTestId('session-runtime-collapse-toggle')).toHaveAttribute('aria-label', 'Expand runtime panel');
+    await expect(page.getByTestId('session-runtime-console')).toHaveCount(0);
+    await expect(page.getByTestId('session-runtime-collapsed-deliverables')).toHaveCount(0);
+    await expect(page.getByTestId('session-runtime-collapsed-attention')).toHaveCount(0);
+    await expect(page.getByTestId('session-runtime-collapsed-running')).toHaveCount(0);
+    await expectVisual(page, `workbench-user-idle-${viewport.name}.png`, {
+      maxDiffPixelRatio: IDLE_MAX_DIFF_PIXEL_RATIO,
+    });
+    // An explicit open shows one quiet honest empty state instead of zero tabs.
+    await page.getByTestId('session-runtime-collapse-toggle').click();
+    await expect(page.getByTestId('session-runtime-deliverables')).toContainText('No delivered artifacts');
+    await expect(page.getByTestId('session-runtime-run-status')).toBeVisible();
+    await expect(page.getByTestId('session-runtime-console-empty')).toContainText(
+      'No background agents, teams, or workflows in this session.',
+    );
+    await expect(page.getByTestId('session-runtime-summary-strip')).toHaveCount(0);
+    await expect(page.getByTestId('session-runtime-segment-team')).toHaveCount(0);
     expect(consoleErrors).toEqual([]);
   });
 
   test(`operator evidence ${viewport.name} visual contract`, async ({ page }) => {
     await page.setViewportSize(viewport);
     const { consoleErrors } = await bootstrap(page, { audience: 'operator', scenario: 'active' });
-    if (viewport.width < 900) {
+    if (viewport.width > 960) {
+      // Operators explicitly came for evidence: the rail starts expanded on wide
+      // workbenches. Collapsing it must not bury the inspector.
+      await expect(page.getByTestId('session-runtime-panel')).not.toHaveClass(/is-collapsed/);
+      await expect(page.getByTestId('session-runtime-summary-strip')).toBeVisible();
       await page.getByTestId('session-runtime-collapse-toggle').click();
+      await expect(page.getByTestId('session-runtime-panel')).toHaveClass(/is-collapsed/);
+    } else {
+      await expect(page.getByTestId('session-runtime-panel')).toHaveClass(/is-collapsed/);
     }
+    await expect(page.getByTestId('thread-item-inspector')).toHaveCount(0);
+    // An explicit technical-details click always reveals its inspector, even with
+    // the rail collapsed.
     const approval = page.locator('[data-thread-item-type="approval_request"]');
     await approval.getByTestId('thread-item-technical-details').click();
-    if (viewport.width < 900) {
-      await page.getByTestId('session-runtime-collapse-toggle').click();
-    }
+    await expect(page.getByTestId('session-runtime-panel')).not.toHaveClass(/is-collapsed/);
     await expect(page.getByTestId('thread-item-inspector')).toContainText('permission-1');
     await expect(page.locator('[data-thread-item-type="workflow_activity"]')).toBeVisible();
     await expect(page.getByTestId('chat-work-ledger-dock')).toHaveCount(0);
@@ -577,7 +657,371 @@ for (const viewport of [
     await expect(page.getByRole('button', { name: 'Send', exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Resume', exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Close team', exact: true })).toHaveCount(0);
-    await expectVisual(page, `workbench-operator-active-${viewport.name}.png`);
+    if (viewport.width <= 960) {
+      // The narrow inspector overlay anchors to the shell's lower edge, which
+      // extends below the fold under tall agent chrome. The close/return
+      // controls must stay inside the viewport, and ordinary page scrolling
+      // must reveal the drawer's below-fold content.
+      const geometry = await page.evaluate(() => {
+        const rectOf = (selector: string) => {
+          const element = document.querySelector(selector);
+          if (!element) return null;
+          const rect = element.getBoundingClientRect();
+          return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+        };
+        return {
+          viewportHeight: window.innerHeight,
+          toggle: rectOf('[data-testid="session-runtime-collapse-toggle"]'),
+          inspectorClose: rectOf('.session-technical-drawer [aria-label="Close"]'),
+          drawer: rectOf('.session-technical-drawer'),
+        };
+      });
+      expect(geometry.toggle).toBeTruthy();
+      expect(geometry.inspectorClose).toBeTruthy();
+      expect(geometry.toggle!.top).toBeGreaterThanOrEqual(0);
+      expect(geometry.toggle!.bottom).toBeLessThanOrEqual(geometry.viewportHeight);
+      expect(geometry.inspectorClose!.top).toBeGreaterThanOrEqual(0);
+      expect(geometry.inspectorClose!.bottom).toBeLessThanOrEqual(geometry.viewportHeight);
+      if (geometry.drawer && geometry.drawer.bottom > geometry.viewportHeight) {
+        await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+        const drawerBottom = await page.evaluate(() => {
+          const drawer = document.querySelector('.session-technical-drawer');
+          return drawer ? drawer.getBoundingClientRect().bottom : null;
+        });
+        expect(drawerBottom).not.toBeNull();
+        expect(drawerBottom!).toBeLessThanOrEqual(geometry.viewportHeight);
+        await page.evaluate(() => window.scrollTo(0, 0));
+      }
+    }
+    // Honest evidence at narrow: a viewport capture records exactly what the
+    // operator sees; an element capture would stitch in below-fold content.
+    await expectVisual(page, `workbench-operator-active-${viewport.name}.png`, {
+      capture: viewport.name === 'narrow' ? 'viewport' : 'element',
+    });
+    if (viewport.width <= 960) {
+      // The return path: inspector Close clears the selection, the collapse
+      // toggle folds the overlay, and the reading flow is visible again.
+      await page.locator('.session-technical-drawer [aria-label="Close"]').click();
+      await expect(page.getByTestId('thread-item-inspector')).toHaveCount(0);
+      await page.getByTestId('session-runtime-collapse-toggle').click();
+      await expect(page.getByTestId('session-runtime-panel')).toHaveClass(/is-collapsed/);
+      await expect(approval).toBeVisible();
+    }
+    expect(consoleErrors).toEqual([]);
+  });
+}
+
+test('operator same-item technical-detail selection reopens a collapsed rail', async ({ page }) => {
+  await page.setViewportSize({ width: 740, height: 920 });
+  const { consoleErrors } = await bootstrap(page, { audience: 'operator', scenario: 'active' });
+  const details = page.locator('[data-thread-item-type="approval_request"]').getByTestId('thread-item-technical-details');
+  // The first explicit selection reveals the inspector even from the narrow
+  // collapsed default.
+  await details.click();
+  await expect(page.getByTestId('session-runtime-panel')).not.toHaveClass(/is-collapsed/);
+  await expect(page.getByTestId('thread-item-inspector')).toContainText('permission-1');
+  // After the user collapses the rail to read, re-selecting the SAME item is a
+  // new explicit action and must reveal the inspector again.
+  await page.getByTestId('session-runtime-collapse-toggle').click();
+  await expect(page.getByTestId('session-runtime-panel')).toHaveClass(/is-collapsed/);
+  await details.click();
+  await expect(page.getByTestId('session-runtime-panel')).not.toHaveClass(/is-collapsed/);
+  await expect(page.getByTestId('thread-item-inspector')).toContainText('permission-1');
+  expect(consoleErrors).toEqual([]);
+});
+
+for (const viewport of [
+  { name: 'desktop', width: 1440, height: 980 },
+  { name: 'narrow', width: 740, height: 920 },
+]) {
+  test(`runtime rail controls keep clear separate space ${viewport.name}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    const { consoleErrors } = await bootstrap(page, { audience: 'user', scenario: 'active' });
+    // Collapsed: the expand toggle and the count badges are distinct actions
+    // and must never paint over each other.
+    const collapsed = await page.evaluate(() => {
+      const rectOf = (selector: string) => {
+        const element = document.querySelector(selector);
+        if (!element) return null;
+        const rect = element.getBoundingClientRect();
+        return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+      };
+      return {
+        toggle: rectOf('[data-testid="session-runtime-collapse-toggle"]'),
+        deliverables: rectOf('[data-testid="session-runtime-collapsed-deliverables"]'),
+        running: rectOf('[data-testid="session-runtime-collapsed-running"]'),
+      };
+    });
+    expect(collapsed.toggle).toBeTruthy();
+    expect(collapsed.deliverables).toBeTruthy();
+    expect(collapsed.running).toBeTruthy();
+    expect(intersectionArea(collapsed.toggle!, collapsed.deliverables!)).toBe(0);
+    expect(intersectionArea(collapsed.toggle!, collapsed.running!)).toBe(0);
+    // Expanded: the toggle owns the panel's top strip and never covers the
+    // first section header. Expand via keyboard: a count badge is a real
+    // button, Enter activates it, and focus survives on the expanded panel's
+    // collapse toggle.
+    const deliverablesBadge = page.getByTestId('session-runtime-collapsed-deliverables');
+    await deliverablesBadge.focus();
+    await expect(deliverablesBadge).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page.getByTestId('session-runtime-panel')).not.toHaveClass(/is-collapsed/);
+    await expect(page.getByTestId('session-runtime-collapse-toggle')).toBeFocused();
+    const expanded = await page.evaluate(() => {
+      const toggle = document.querySelector('[data-testid="session-runtime-collapse-toggle"]');
+      const header = document.querySelector('[data-testid="session-runtime-deliverables"] .session-runtime-section-header');
+      if (!toggle || !header) return null;
+      const toggleRect = toggle.getBoundingClientRect();
+      const headerRect = header.getBoundingClientRect();
+      return { toggleBottom: toggleRect.bottom, headerTop: headerRect.top };
+    });
+    expect(expanded).toBeTruthy();
+    expect(expanded!.toggleBottom).toBeLessThanOrEqual(expanded!.headerTop);
+    expect(consoleErrors).toEqual([]);
+  });
+}
+
+// At and below the 960px narrow boundary the collapsed rail is an overlay; the
+// reading flow must keep its own clear space so message text, approval status,
+// and composer controls never render under the rail.
+for (const viewport of [
+  { name: 'narrow', width: 740, height: 920 },
+  { name: 'intermediate', width: 860, height: 920 },
+  { name: 'narrow-boundary', width: 960, height: 920 },
+]) {
+  for (const scenario of ['idle', 'active'] as const) {
+    test(`collapsed rail never obscures reading text ${scenario} ${viewport.name}`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      const { consoleErrors } = await bootstrap(page, { audience: 'user', scenario });
+      await expect(page.getByTestId('session-runtime-panel')).toHaveClass(/is-collapsed/);
+      await scrollTimelineToBottom(page);
+      const overlaps = await page.evaluate(() => {
+        const center = document.querySelector('[data-testid="session-workbench"] .session-tui-center');
+        const rail = document.querySelector('[data-testid="session-runtime-panel"]');
+        if (!center || !rail) return [{ text: 'session workbench did not render', area: -1 }];
+        const railRect = rail.getBoundingClientRect();
+        const overlapArea = (rect: { left: number; right: number; top: number; bottom: number }) => {
+          const width = Math.max(0, Math.min(rect.right, railRect.right) - Math.max(rect.left, railRect.left));
+          const height = Math.max(0, Math.min(rect.bottom, railRect.bottom) - Math.max(rect.top, railRect.top));
+          return width * height;
+        };
+        const hits: Array<{ text: string; area: number }> = [];
+        const walker = document.createTreeWalker(center, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          const value = (node.textContent || '').trim();
+          if (!value) continue;
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          for (const rect of Array.from(range.getClientRects())) {
+            const area = overlapArea(rect);
+            if (area > 0) hits.push({ text: value, area });
+          }
+          range.detach();
+        }
+        return hits;
+      });
+      expect(overlaps).toEqual([]);
+      expect(consoleErrors).toEqual([]);
+    });
+  }
+}
+
+// In managed mode at and below 960px the session browser stacks above the
+// reading column while the collapsed rail pins to the shell's top-right over
+// the browser. The browser's filter, rows, and row actions must reserve the
+// same rail strip as the reading flow, so an own non-operator session's delete
+// control stays visible on hover, hit-testable, and clickable.
+for (const viewport of [
+  { name: 'narrow', width: 740, height: 920 },
+  { name: 'intermediate', width: 860, height: 920 },
+  { name: 'narrow-boundary', width: 960, height: 920 },
+]) {
+  test(`collapsed rail never obscures managed session browser controls ${viewport.name}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    const deleteRequests: string[] = [];
+    page.on('request', (request) => {
+      if (request.method() === 'DELETE') deleteRequests.push(request.url());
+    });
+    const { consoleErrors } = await bootstrap(page, {
+      audience: 'operator',
+      scenario: 'active',
+      browserOwnSession: true,
+    });
+    await expect(page.getByTestId('session-workbench')).toHaveClass(/session-tui-shell-managed/);
+    await expect(page.getByTestId('session-runtime-panel')).toHaveClass(/is-collapsed/);
+    const browser = page.getByTestId('detail-session-browser');
+    await expect(browser).toBeVisible();
+    const header = browser.locator('.detail-session-browser-header');
+    const filter = browser.locator('.detail-session-filter');
+    const ownRow = browser.locator('.detail-session-row', { hasText: 'Owned release checklist draft' });
+    const rowMain = ownRow.locator('.detail-session-row-main');
+    const action = ownRow.getByRole('button', { name: 'Delete session Owned release checklist draft' });
+    await expect(header).toBeVisible();
+    await expect(filter).toBeVisible();
+    await expect(rowMain).toBeVisible();
+    // First render must already present one complete session row inside the
+    // list clip — no scrolling premise — so an ordinary user immediately sees
+    // a whole session entry at every narrow width.
+    const firstRow = browser.locator('.detail-session-row').first();
+    await expect(firstRow).toBeVisible();
+    const firstRender = await page.evaluate(() => {
+      const rectOf = (element: Element | null | undefined) => {
+        if (!element) return null;
+        const rect = element.getBoundingClientRect();
+        return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+      };
+      const browserElement = document.querySelector('[data-testid="detail-session-browser"]');
+      const list = browserElement?.querySelector('.detail-session-list');
+      const row = list?.querySelector('.detail-session-row');
+      return {
+        listClientHeight: list?.clientHeight ?? null,
+        listBottom: rectOf(list)?.bottom ?? null,
+        row: rectOf(row),
+        rowHeight: row?.getBoundingClientRect().height ?? null,
+        rowMarginBottom: row ? Number.parseFloat(getComputedStyle(row).marginBottom) || 0 : 0,
+      };
+    });
+    expect(firstRender.listClientHeight).toBeTruthy();
+    expect(firstRender.rowHeight).toBeTruthy();
+    expect(firstRender.row).toBeTruthy();
+    expect(firstRender.listBottom).toBeTruthy();
+    expect(firstRender.listClientHeight!).toBeGreaterThanOrEqual(firstRender.rowHeight! + firstRender.rowMarginBottom);
+    expect(firstRender.row!.bottom + firstRender.rowMarginBottom).toBeLessThanOrEqual(firstRender.listBottom! + 0.5);
+    // A real downward drag from the native bottom-right resize corner must
+    // materially enlarge the browser; frozen max-height caps pinned the box at
+    // its default and made this exact drag a no-op.
+    const preDragBox = await browser.boundingBox();
+    expect(preDragBox).toBeTruthy();
+    const cornerX = preDragBox!.x + preDragBox!.width - 3;
+    const cornerY = preDragBox!.y + preDragBox!.height - 3;
+    await page.mouse.move(cornerX, cornerY);
+    await page.mouse.down();
+    await page.mouse.move(cornerX, cornerY + 80, { steps: 8 });
+    await page.mouse.up();
+    const postDragBox = await browser.boundingBox();
+    expect(postDragBox).toBeTruthy();
+    expect(postDragBox!.height - preDragBox!.height).toBeGreaterThanOrEqual(64);
+    // After the resize the rail-clearance contract still holds for the browser
+    // chrome and the own session row, and no horizontal overflow appears.
+    const postDrag = await page.evaluate(() => {
+      const rectOf = (element: Element | null | undefined) => {
+        if (!element) return null;
+        const rect = element.getBoundingClientRect();
+        return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+      };
+      const browserElement = document.querySelector('[data-testid="detail-session-browser"]');
+      const rows = Array.from(browserElement?.querySelectorAll('.detail-session-row') ?? []);
+      const ownRowElement = rows.find((row) => row.textContent?.includes('Owned release checklist draft'));
+      return {
+        viewportWidth: window.innerWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+        rail: rectOf(document.querySelector('[data-testid="session-runtime-panel"]')),
+        browser: rectOf(browserElement),
+        header: rectOf(browserElement?.querySelector('.detail-session-browser-header')),
+        filter: rectOf(browserElement?.querySelector('.detail-session-filter')),
+        ownRow: rectOf(ownRowElement),
+        action: rectOf(ownRowElement?.querySelector('.detail-session-row-action')),
+      };
+    });
+    expect(postDrag.rail).toBeTruthy();
+    expect(postDrag.browser).toBeTruthy();
+    expect(postDrag.header).toBeTruthy();
+    expect(postDrag.filter).toBeTruthy();
+    expect(postDrag.ownRow).toBeTruthy();
+    expect(postDrag.action).toBeTruthy();
+    expect(intersectionArea(postDrag.browser!, postDrag.rail!)).toBe(0);
+    expect(intersectionArea(postDrag.header!, postDrag.rail!)).toBe(0);
+    expect(intersectionArea(postDrag.filter!, postDrag.rail!)).toBe(0);
+    expect(intersectionArea(postDrag.ownRow!, postDrag.rail!)).toBe(0);
+    expect(intersectionArea(postDrag.action!, postDrag.rail!)).toBe(0);
+    expect(postDrag.browser!.right).toBeLessThanOrEqual(postDrag.viewportWidth);
+    expect(postDrag.scrollWidth).toBeLessThanOrEqual(postDrag.clientWidth);
+    // The narrow browser caps the session list to a short scroll viewport, so a
+    // real user scrolls a lower row's control into the clip and hovers it: the
+    // delete control reveals on hover/focus, as in the product.
+    await action.evaluate((element) => {
+      element.scrollIntoView({ block: 'center', inline: 'nearest' });
+    });
+    const revealedBox = await action.boundingBox();
+    expect(revealedBox).toBeTruthy();
+    await page.mouse.move(
+      revealedBox!.x + revealedBox!.width / 2,
+      revealedBox!.y + revealedBox!.height / 2,
+    );
+    await expect(action).toBeVisible();
+    const railBox = await page.getByTestId('session-runtime-panel').boundingBox();
+    const browserBox = await browser.boundingBox();
+    const headerBox = await header.boundingBox();
+    const filterBox = await filter.boundingBox();
+    const rowBox = await ownRow.boundingBox();
+    const actionBox = await action.boundingBox();
+    expect(railBox).toBeTruthy();
+    expect(browserBox).toBeTruthy();
+    expect(headerBox).toBeTruthy();
+    expect(filterBox).toBeTruthy();
+    expect(rowBox).toBeTruthy();
+    expect(actionBox).toBeTruthy();
+    const edges = (box: { x: number; y: number; width: number; height: number }) => ({
+      left: box.x,
+      right: box.x + box.width,
+      top: box.y,
+      bottom: box.y + box.height,
+    });
+    const rail = edges(railBox!);
+    expect(intersectionArea(edges(headerBox!), rail)).toBe(0);
+    expect(intersectionArea(edges(filterBox!), rail)).toBe(0);
+    expect(intersectionArea(edges(rowBox!), rail)).toBe(0);
+    expect(intersectionArea(edges(actionBox!), rail)).toBe(0);
+    // The control itself is the hit target at its own center, not the rail.
+    await expect.poll(async () => action.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return hit === element || element.contains(hit);
+    })).toBe(true);
+    // The stacked browser keeps its native vertical-resize affordance, and the
+    // bottom-right corner that hosts the widget is hit-testable as the browser
+    // rather than intercepted by the collapsed rail above it.
+    await expect(browser).toHaveCSS('resize', 'vertical');
+    await expect.poll(async () => browser.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.right - 3, rect.bottom - 3);
+      if (!hit || hit.closest('[data-testid="session-runtime-panel"]')) return false;
+      return hit === element || element.contains(hit);
+    })).toBe(true);
+    // The browser box itself must clear the rail: its native resize widget
+    // lives at the border-box corner, outside any inner content reservation.
+    expect(intersectionArea(edges(browserBox!), rail)).toBe(0);
+    // A trial click proves actionability; a real safe click reaches the control
+    // and opens the delete confirmation, dismissed here without any destructive
+    // request.
+    await action.click({ trial: true });
+    await action.click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText('Owned release checklist draft');
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(rowMain).toBeVisible();
+    // Keyboard parity: from the row body, Tab reaches the delete control, focus
+    // reveals it, and Enter runs the same safe open/cancel flow.
+    await rowMain.focus();
+    await expect(rowMain).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(action).toBeFocused();
+    await expect(action).toHaveCSS('opacity', '1');
+    await page.keyboard.press('Enter');
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText('Owned release checklist draft');
+    // The destructive confirm must never own the delayed initial focus: a
+    // danger dialog parks focus on Cancel, so a reflexive second Enter cancels
+    // instead of deleting.
+    const cancelButton = dialog.getByRole('button', { name: 'Cancel' });
+    await expect(cancelButton).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(dialog).toHaveCount(0);
+    await expect(rowMain).toBeVisible();
+    expect(deleteRequests).toEqual([]);
     expect(consoleErrors).toEqual([]);
   });
 }
@@ -593,6 +1037,8 @@ for (const audience of ['user', 'operator'] as const) {
 test('ordinary user active dark desktop visual and accessibility contract', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 980 });
   const { consoleErrors } = await bootstrap(page, { audience: 'user', scenario: 'active', theme: 'dark' });
+  await expect(page.getByTestId('session-runtime-panel')).toHaveClass(/is-collapsed/);
+  await expect(page.getByTestId('session-runtime-collapsed-deliverables')).toContainText('1');
   await expect(page.getByTestId('chat-work-ledger-dock')).toHaveAttribute('data-presentation', 'persistent');
   await expect(page.getByTestId('chat-work-ledger-panel')).toBeVisible();
   await expectVisual(page, 'workbench-user-active-dark-desktop.png');
@@ -674,6 +1120,8 @@ test('canonical assistant text becomes visible live without a refresh or a Think
   await expect(liveDisclosure.getByTestId('run-disclosure-prose')).toContainText(progress);
   await expect(liveDisclosure.getByTestId('run-disclosure-prose')).not.toContainText('Thinking');
   await expect(page.getByTestId('chat-work-ledger-dock')).toHaveAttribute('data-presentation', 'persistent');
+  // Unrelated background activity must not force the rail open or steal focus.
+  await expect(page.getByTestId('session-runtime-panel')).toHaveClass(/is-collapsed/);
 });
 
 test('slow transcript and offline reconnect preserve the durable session projection', async ({ page }) => {

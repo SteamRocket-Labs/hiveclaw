@@ -349,9 +349,44 @@ def test_j4_cli_reads_only_the_explicitly_named_bearer_env(monkeypatch, tmp_path
                 "--j4-same-envelope",
                 "--hive-bearer-env",
                 "EXPLICIT_J4_TOKEN",
+                "--freecode-build-manifest",
+                "/frozen/freecode/build-manifest.json",
+                "--freecode-build-manifest-sha256",
+                "d" * 64,
+                "--hermes-python",
+                "/frozen/hermes/python",
+                "--hermes-python-sha256",
+                "a" * 64,
+                "--hermes-python-environment-sha256",
+                "c" * 64,
+                "--hermes-source-root",
+                "/frozen/hermes/source",
+                "--hermes-source-revision",
+                "frozen-revision",
+                "--hermes-source-sha256",
+                "b" * 64,
+                "--hermes-freeze-root",
+                "/frozen/hermes/runtime-copies",
+                "--hermes-auth-store",
+                "/frozen/hermes/auth-store.json",
+                "--hermes-auth-store-sha256",
+                "e" * 64,
             ],
             output_root=tmp_path,
         )
         == 0
     )
     assert captured[-1]["j4_config"].hive_bearer == "explicit-secret"
+    assert captured[-1]["j4_config"].freecode_build_manifest == "/frozen/freecode/build-manifest.json"
+    assert captured[-1]["j4_config"].freecode_build_manifest_sha256 == "d" * 64
+    assert captured[-1]["j4_config"].hermes_python == "/frozen/hermes/python"
+    assert captured[-1]["j4_config"].hermes_python_sha256 == "a" * 64
+    assert captured[-1]["j4_config"].hermes_python_environment_sha256 == "c" * 64
+    assert captured[-1]["j4_config"].hermes_source_root == "/frozen/hermes/source"
+    assert captured[-1]["j4_config"].hermes_source_revision == "frozen-revision"
+    assert captured[-1]["j4_config"].hermes_source_sha256 == "b" * 64
+    assert captured[-1]["j4_config"].hermes_freeze_root == "/frozen/hermes/runtime-copies"
+    # Synthetic paths only: the credential-store flags must reach the J4 config
+    # without this test ever reading an actual credential file.
+    assert captured[-1]["j4_config"].hermes_auth_store == "/frozen/hermes/auth-store.json"
+    assert captured[-1]["j4_config"].hermes_auth_store_sha256 == "e" * 64

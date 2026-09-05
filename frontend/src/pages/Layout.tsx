@@ -273,10 +273,17 @@ export default function Layout() {
 
     // Tenant switching (platform_admin)
     const isPlatformAdmin = user?.role === 'platform_admin';
+    // A platform administrator's company context comes only from the canonical
+    // stored selection — never a silent default to the admin's home tenant.
     const [currentTenant, setCurrentTenant] = useState(() =>
-        localStorage.getItem('current_tenant_id') || user?.tenant_id || ''
+        localStorage.getItem('current_tenant_id')
+        || (isPlatformAdmin ? '' : user?.tenant_id || '')
     );
-    const [tenants, setTenants] = useState<{ id: string; name: string }[]>([]);
+    const [tenants, setTenants] = useState<{ id: string; name: string; is_active?: boolean }[]>([]);
+    // True only after the company inventory answered successfully; an
+    // unanswered or failed request must not be presented as "no active
+    // company" by the sidebar.
+    const [companiesLoaded, setCompaniesLoaded] = useState(false);
 
     useEffect(() => {
         if (!isPlatformAdmin) {
@@ -285,11 +292,12 @@ export default function Layout() {
             if (tid) localStorage.setItem('current_tenant_id', tid);
             return;
         }
-        adminApi.listCompanies().then((companies: any[]) => {
-            setTenants(companies.map((c: any) => ({ id: c.id, name: c.name })));
-            if (!localStorage.getItem('current_tenant_id') && user?.tenant_id) {
-                localStorage.setItem('current_tenant_id', user.tenant_id);
-            }
+        adminApi.listCompanies().then((companies) => {
+            setTenants(companies.map((c) => ({ id: c.id, name: c.name, is_active: c.is_active })));
+            setCompaniesLoaded(true);
+            // No silent home-tenant write here either: without a stored
+            // selection the sidebar selector / company picker is the explicit
+            // recovery path, and the server validates every choice.
         }).catch(() => {});
     }, [isPlatformAdmin, user?.tenant_id]);
 
@@ -299,6 +307,23 @@ export default function Layout() {
         window.dispatchEvent(new StorageEvent('storage', { key: 'current_tenant_id', newValue: tenantId }));
         queryClient.invalidateQueries({ queryKey: ['agents'] });
     };
+
+    // Same-window company selections (e.g. the platform-admin company picker
+    // recovery) publish this exact event; follow it so the shell selector, the
+    // agents query key, and the X-Tenant-Id channel never disagree. A cleared
+    // selection (newValue=null, e.g. removed in another tab) clears the shell
+    // the same way the initializer does — a platform admin's home tenant is
+    // never revived here.
+    useEffect(() => {
+        if (!isPlatformAdmin) return;
+        const handler = (event: StorageEvent) => {
+            if (event.key !== 'current_tenant_id') return;
+            const next = event.newValue || (isPlatformAdmin ? '' : user?.tenant_id || '');
+            setCurrentTenant((current) => (current === next ? current : next));
+        };
+        window.addEventListener('storage', handler);
+        return () => window.removeEventListener('storage', handler);
+    }, [isPlatformAdmin, user?.tenant_id]);
 
     const { data: agents = [] } = useQuery({
         queryKey: ['agents', currentTenant],
@@ -335,6 +360,7 @@ export default function Layout() {
                 onToggleSidebar={toggleSidebar}
                 agents={agents}
                 tenants={tenants}
+                companiesLoaded={companiesLoaded}
                 currentTenant={currentTenant}
                 onSwitchTenant={switchTenant}
                 isChinese={!!isChinese}
@@ -347,6 +373,7 @@ export default function Layout() {
                 accountMenuRef={accountMenuRef}
                 showAccountMenu={showAccountMenu}
                 onToggleAccountMenu={() => setShowAccountMenu(v => !v)}
+                onCloseAccountMenu={() => setShowAccountMenu(false)}
                 onToggleLang={() => {
                     toggleLang();
                     setShowAccountMenu(false);

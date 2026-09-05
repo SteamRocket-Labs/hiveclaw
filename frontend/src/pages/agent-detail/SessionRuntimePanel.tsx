@@ -1,6 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { IconChevronLeft, IconChevronRight, IconFileText, IconX } from '@tabler/icons-react';
+import { IconAlertTriangle, IconChevronLeft, IconChevronRight, IconFileText, IconLoader, IconX } from '@tabler/icons-react';
 
 import { SessionGoalPanel } from '../session-workbench/SessionGoalPanel';
 import {
@@ -397,6 +397,7 @@ export function SessionRuntimePanel({
   const runStatusCount = runtimeConsole.summary.runningCount > 0
     ? t('sessionWorkbench.rightPanel.runningCount', '{{count}} running', { count: runtimeConsole.summary.runningCount })
     : t('sessionWorkbench.rightPanel.totalCount', '{{count}} total', { count: runtimeConsole.summary.totalCount });
+  const consoleIsEmpty = runtimeConsole.summary.totalCount === 0 && runtimeConsole.waiters.length === 0;
   const runtimeWaiterTestId = (waiter: RuntimeConsoleWaiterModel): string => (
     `session-runtime-waiter-${waiter.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
   );
@@ -796,6 +797,8 @@ export function SessionRuntimePanel({
   const sessionWindow = rightPanel.sessionWindow;
 
   if (collapsed) {
+    const attentionCount = runtimeConsole.summary.waitingCount + runtimeConsole.summary.blockedCount;
+    const runningCount = runtimeConsole.summary.runningCount;
     return (
       <aside data-testid="session-runtime-panel" className="session-runtime-panel is-collapsed">
         <button
@@ -808,6 +811,45 @@ export function SessionRuntimePanel({
         >
           <IconChevronLeft size={15} stroke={1.8} />
         </button>
+        {currentSessionDocumentCount > 0 ? (
+          <button
+            type="button"
+            data-testid="session-runtime-collapsed-deliverables"
+            className="session-runtime-collapsed-badge"
+            aria-label={t('sessionWorkbench.rightPanel.showDeliverables', 'Show deliverables ({{count}})', { count: currentSessionDocumentCount })}
+            title={t('sessionWorkbench.rightPanel.showDeliverables', 'Show deliverables ({{count}})', { count: currentSessionDocumentCount })}
+            onClick={onToggleCollapsed}
+          >
+            <IconFileText size={13} aria-hidden="true" />
+            <span>{currentSessionDocumentCount}</span>
+          </button>
+        ) : null}
+        {attentionCount > 0 ? (
+          <button
+            type="button"
+            data-testid="session-runtime-collapsed-attention"
+            className="session-runtime-collapsed-badge is-attention"
+            aria-label={t('sessionWorkbench.rightPanel.showAttentionItems', 'Show items waiting for you ({{count}})', { count: attentionCount })}
+            title={t('sessionWorkbench.rightPanel.showAttentionItems', 'Show items waiting for you ({{count}})', { count: attentionCount })}
+            onClick={onToggleCollapsed}
+          >
+            <IconAlertTriangle size={13} aria-hidden="true" />
+            <span>{attentionCount}</span>
+          </button>
+        ) : null}
+        {runningCount > 0 ? (
+          <button
+            type="button"
+            data-testid="session-runtime-collapsed-running"
+            className="session-runtime-collapsed-badge is-running"
+            aria-label={t('sessionWorkbench.rightPanel.showRunningItems', 'Show running items ({{count}})', { count: runningCount })}
+            title={t('sessionWorkbench.rightPanel.showRunningItems', 'Show running items ({{count}})', { count: runningCount })}
+            onClick={onToggleCollapsed}
+          >
+            <IconLoader size={13} aria-hidden="true" />
+            <span>{runningCount}</span>
+          </button>
+        ) : null}
         <div className="session-runtime-collapsed-label">
           {t('sessionWorkbench.rightPanel.workspace', 'Workspace')}
         </div>
@@ -874,7 +916,7 @@ export function SessionRuntimePanel({
             <div className="session-tui-kicker">{t('sessionWorkbench.rightPanel.session', 'Session')}</div>
             <h3>{t('sessionWorkbench.rightPanel.runStatus', 'Run status')}</h3>
           </div>
-          <span>{runStatusCount}</span>
+          {consoleIsEmpty ? null : <span>{runStatusCount}</span>}
         </div>
 
         {agentId && sessionId && sessionWorkbench?.goals?.length ? (
@@ -890,67 +932,75 @@ export function SessionRuntimePanel({
         <SessionDecisionHistory decisions={sessionDecisions} onFeedback={readOnly ? undefined : onDecisionFeedback} />
 
         <div data-testid="session-runtime-console" className="session-runtime-console">
-          <div
-            data-testid="session-runtime-summary-strip"
-            className="session-runtime-summary-strip"
-            data-runtime-state={runtimeConsole.summary.state}
-          >
-            <div className="session-runtime-summary-main">
-              <span className="session-runtime-summary-dot" aria-hidden="true" />
-              <span>
-                <strong>
-                  {t(
-                    `sessionWorkbench.rightPanel.runtimeStates.${runtimeConsole.summary.state}`,
-                    userFacingRuntimeStatus(runtimeConsole.summary.state),
-                  )}
-                </strong>
-                <small>
-                  {sessionWindow
-                    ? [sessionWindow.label, runtimeStatusLabel(sessionWindow.status, t)].filter(Boolean).join(' · ')
-                    : t('sessionWorkbench.rightPanel.noMainSession', 'No selected session')}
-                </small>
-              </span>
+          {consoleIsEmpty ? (
+            <div data-testid="session-runtime-console-empty" className="session-runtime-empty">
+              {t('sessionWorkbench.rightPanel.noRuntimeActivity', 'No background agents, teams, or workflows in this session.')}
             </div>
-            <div className="session-runtime-summary-metrics">
-              <span>{t('sessionWorkbench.rightPanel.runningCount', '{{count}} running', { count: runtimeConsole.summary.runningCount })}</span>
-              <span>{t('sessionWorkbench.rightPanel.waitingCount', '{{count}} waiting', { count: runtimeConsole.summary.waitingCount })}</span>
-              <span>{runtimeConsole.summary.elapsedLabel || '-'}</span>
-              <span>{runtimeConsole.summary.tokenLabel || '-'}</span>
-              <span>{runtimeConsole.summary.toolUseLabel || '-'}</span>
-            </div>
-          </div>
+          ) : (
+            <>
+              <div
+                data-testid="session-runtime-summary-strip"
+                className="session-runtime-summary-strip"
+                data-runtime-state={runtimeConsole.summary.state}
+              >
+                <div className="session-runtime-summary-main">
+                  <span className="session-runtime-summary-dot" aria-hidden="true" />
+                  <span>
+                    <strong>
+                      {t(
+                        `sessionWorkbench.rightPanel.runtimeStates.${runtimeConsole.summary.state}`,
+                        userFacingRuntimeStatus(runtimeConsole.summary.state),
+                      )}
+                    </strong>
+                    <small>
+                      {sessionWindow
+                        ? [sessionWindow.label, runtimeStatusLabel(sessionWindow.status, t)].filter(Boolean).join(' · ')
+                        : t('sessionWorkbench.rightPanel.noMainSession', 'No selected session')}
+                    </small>
+                  </span>
+                </div>
+                <div className="session-runtime-summary-metrics">
+                  <span>{t('sessionWorkbench.rightPanel.runningCount', '{{count}} running', { count: runtimeConsole.summary.runningCount })}</span>
+                  <span>{t('sessionWorkbench.rightPanel.waitingCount', '{{count}} waiting', { count: runtimeConsole.summary.waitingCount })}</span>
+                  <span>{runtimeConsole.summary.elapsedLabel || '-'}</span>
+                  <span>{runtimeConsole.summary.tokenLabel || '-'}</span>
+                  <span>{runtimeConsole.summary.toolUseLabel || '-'}</span>
+                </div>
+              </div>
 
-          {runtimeConsole.waiters.length > 0 && (
-            <div
-              data-testid="session-runtime-waiters"
-              className="session-runtime-waiters"
-              aria-label={t('sessionWorkbench.rightPanel.waiters', 'Waiting items')}
-            >
-              {runtimeConsole.waiters.map(renderRuntimeWaiter)}
-            </div>
-          )}
-
-          <div className="session-runtime-segmented" role="tablist" aria-label={t('sessionWorkbench.rightPanel.runtimeConsole', 'Runtime Console')}>
-            {runtimeConsole.segments.map((segment) => {
-              const selected = selectedRuntimeSegment === segment.key;
-              return (
-                <button
-                  key={segment.key}
-                  type="button"
-                  role="tab"
-                  aria-selected={selected}
-                  data-testid={`session-runtime-segment-${segment.key}`}
-                  className={`session-runtime-segment${selected ? ' is-active' : ''}`}
-                  onClick={() => setRuntimeSegmentOverride(segment.key)}
+              {runtimeConsole.waiters.length > 0 && (
+                <div
+                  data-testid="session-runtime-waiters"
+                  className="session-runtime-waiters"
+                  aria-label={t('sessionWorkbench.rightPanel.waiters', 'Waiting items')}
                 >
-                  <span>{t(`sessionWorkbench.rightPanel.runtimeSegments.${segment.key}`, segment.label)}</span>
-                  <strong>{segment.count}</strong>
-                </button>
-              );
-            })}
-          </div>
+                  {runtimeConsole.waiters.map(renderRuntimeWaiter)}
+                </div>
+              )}
 
-          {renderRuntimeConsoleBody()}
+              <div className="session-runtime-segmented" role="tablist" aria-label={t('sessionWorkbench.rightPanel.runtimeConsole', 'Runtime Console')}>
+                {runtimeConsole.segments.map((segment) => {
+                  const selected = selectedRuntimeSegment === segment.key;
+                  return (
+                    <button
+                      key={segment.key}
+                      type="button"
+                      role="tab"
+                      aria-selected={selected}
+                      data-testid={`session-runtime-segment-${segment.key}`}
+                      className={`session-runtime-segment${selected ? ' is-active' : ''}`}
+                      onClick={() => setRuntimeSegmentOverride(segment.key)}
+                    >
+                      <span>{t(`sessionWorkbench.rightPanel.runtimeSegments.${segment.key}`, segment.label)}</span>
+                      <strong>{segment.count}</strong>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {renderRuntimeConsoleBody()}
+            </>
+          )}
         </div>
       </section>
       {selectedThreadItem?.audience === 'operator' && selectedThreadItem.operator_details ? (

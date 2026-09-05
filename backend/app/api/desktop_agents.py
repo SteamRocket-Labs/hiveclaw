@@ -195,8 +195,8 @@ async def delete_sub_agent(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a Sub-Agent asset (admin only)."""
-    if current_user.role != "org_admin":
+    """Delete a Sub-Agent asset (scoped administrators only, PDEC-013)."""
+    if current_user.role not in ("org_admin", "platform_admin"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Sub-agent is an enterprise asset; only an admin can delete it.",

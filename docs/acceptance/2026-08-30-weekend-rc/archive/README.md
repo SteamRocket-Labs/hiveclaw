@@ -3,7 +3,7 @@ document_id: weekend-rc-2026-08-30-archive-index
 owner: Codex
 status: archive
 authority: historical-only
-last_reviewed: 2026-08-30
+last_reviewed: 2026-09-05
 source_commit: 45340a3a
 verification_status: historical-not-current
 ---
@@ -23,3 +23,5 @@ verification_status: historical-not-current
 当前 checkout、代码、机器 manifest、[03-current-status.md](../03-current-status.md) 和新 Evidence 文件优先于历史描述。历史 `PASS` 只在其精确范围内有效，不能自动外推或迁移成当前 `Closed loop`。
 
 `legacy-ledger-2026-08-25.md` 保留原 5,685 行总账及 Git 历史；不要再向其中追加新状态或证据。
+
+[Renewal 历史 supporting evidence](renewal-supporting-history-2026-09-05.md) 保留新一轮开始至 2026-09-05 的已结束执行过程，原文从当前状态文档迁移，不再追加新状态。

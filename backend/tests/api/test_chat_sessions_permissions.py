@@ -391,6 +391,9 @@ async def test_manager_operator_projection_requires_reason_and_writes_audit(monk
         return "operator_inspect_grant"
 
     monkeypatch.setattr(chat_sessions_api, "authorize_agent_operator_inspection", fake_operator_inspection)
+    import app.core.permissions as permissions_module
+
+    monkeypatch.setattr(permissions_module, "authorize_agent_operator_inspection", fake_operator_inspection)
 
     with pytest.raises(HTTPException) as exc:
         await chat_sessions_api._authorize_loaded_session(
@@ -707,6 +710,9 @@ async def test_list_sessions_all_scope_requires_explicit_audited_operator_view(m
         return "operator_inspect_grant"
 
     monkeypatch.setattr(chat_sessions_api, "authorize_agent_operator_inspection", fake_operator_inspection)
+    import app.core.permissions as permissions_module
+
+    monkeypatch.setattr(permissions_module, "authorize_agent_operator_inspection", fake_operator_inspection)
 
     result = await chat_sessions_api.list_sessions(
         agent_id=agent_id,
@@ -1003,6 +1009,9 @@ async def test_get_session_messages_requires_explicit_operator_view_for_non_owne
         return "operator_inspect_grant"
 
     monkeypatch.setattr(chat_sessions_api, "authorize_agent_operator_inspection", fake_operator_inspection)
+    import app.core.permissions as permissions_module
+
+    monkeypatch.setattr(permissions_module, "authorize_agent_operator_inspection", fake_operator_inspection)
 
     result = await chat_sessions_api.get_session_messages(
         agent_id=agent_id,

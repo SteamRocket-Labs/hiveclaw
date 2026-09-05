@@ -217,9 +217,27 @@ def test_web_user_creates_local_agent_channel_session_and_message(monkeypatch) -
             "created_at": None,
         }
 
+    async def fake_get_channel_session_for_actor(db_arg, *, session_id, actor_user_id, access_user=None, action="read"):
+        captured["resolve"] = {"session_id": session_id, "actor_user_id": actor_user_id}
+        return (
+            {
+                "id": session_id,
+                "chat_session_id": None,
+                "status": "active",
+                "source": "web",
+                "created_at": None,
+            },
+            actor_user_id,
+        )
+
     monkeypatch.setattr(local_agent_channel_api.channel_service, "create_channel_session", fake_create_channel_session)
     monkeypatch.setattr(
         local_agent_channel_api.channel_service, "enqueue_channel_message", fake_enqueue_channel_message
+    )
+    monkeypatch.setattr(
+        local_agent_channel_api.channel_service,
+        "get_channel_session_for_actor",
+        fake_get_channel_session_for_actor,
     )
     client = _client(monkeypatch, db=db, current_user=current_user, context=context)
 
@@ -308,7 +326,7 @@ def test_web_user_restores_default_local_agent_channel_session_and_timeline(monk
             }
         ]
 
-    async def fake_get_channel_session_for_actor(db_arg, *, session_id, actor_user_id):
+    async def fake_get_channel_session_for_actor(db_arg, *, session_id, actor_user_id, access_user=None, action="read"):
         captured["timeline_session"] = {
             "db": db_arg,
             "session_id": session_id,
@@ -448,6 +466,7 @@ def test_agent_scoped_local_agent_channel_lists_and_resolves_sessions(monkeypatc
         actor_user_id=None,
         source_agent_id,
         limit,
+        access_user=None,
     ):
         captured["list"] = {
             "db": db_arg,
@@ -481,6 +500,8 @@ def test_agent_scoped_local_agent_channel_lists_and_resolves_sessions(monkeypatc
         actor_user_id=None,
         source_agent_id,
         session_id,
+        access_user=None,
+        audit_action="read",
     ):
         captured["resolve"] = {
             "db": db_arg,
@@ -556,6 +577,7 @@ def test_agent_scoped_local_agent_channel_delete_archives_session(monkeypatch) -
         actor_user_id=None,
         source_agent_id,
         session_id,
+        access_user=None,
     ):
         captured.update(
             {
@@ -691,6 +713,8 @@ def test_shared_local_agent_channel_uses_host_owner_for_delivery_and_caller_for_
         actor_user_id=None,
         source_agent_id,
         session_id,
+        access_user=None,
+        audit_action="read",
     ):
         captured["resolve"] = {
             "db": db_arg,
@@ -862,6 +886,7 @@ def test_web_user_creates_browser_session_ws_ticket(monkeypatch) -> None:
         actor_user_id,
         session_id,
         ttl_seconds,
+        access_user=None,
     ):
         captured.update(
             {

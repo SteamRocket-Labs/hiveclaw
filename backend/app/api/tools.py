@@ -456,16 +456,18 @@ async def _resolve_tenant_scope(
     current_user: User,
     tenant_id: str | None,
 ) -> uuid.UUID | None:
-    from app.database import pin_rls_tenant_context
+    """Resolve and pin the request tenant scope through the one shared policy.
 
-    if tenant_id:
-        parsed = uuid.UUID(tenant_id)
-        if current_user.role != "platform_admin" and current_user.tenant_id != parsed:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant access denied")
-        await pin_rls_tenant_context(db, parsed)
-        return parsed
-    await pin_rls_tenant_context(db, current_user.tenant_id)
-    return current_user.tenant_id
+    An explicit ``tenant_id`` is only a consistency echo of the authenticated
+    selected company (``resolve_and_pin_tenant_scope``); a platform
+    administrator passing a foreign or retired company id gets the truthful
+    company-selection recovery error instead of a second, unvalidated
+    cross-company switch.
+    """
+
+    from app.core.tenant_scope import resolve_and_pin_tenant_scope
+
+    return await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
 
 
 async def _require_manage_access(db: AsyncSession, current_user: User, agent_id: uuid.UUID) -> Agent:

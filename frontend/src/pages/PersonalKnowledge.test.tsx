@@ -282,6 +282,7 @@ vi.mock('../api/domains/knowledge', () => ({
 
 import PersonalKnowledge, {
   DocumentDetail,
+  GraphPanel,
   GrantsPanel,
   ImportJobs,
   InboxPanel,
@@ -309,8 +310,16 @@ describe('PersonalKnowledge', () => {
     expect(html).toContain('Agent 提案');
     expect(html).not.toContain('企业库（只读）');
     expect(html).not.toContain('/enterprise/memory');
-    expect(html).toContain('+ 投喂');
+    expect(html).toContain('+ 添加');
     expect(html).toContain('拖拽或选择文件');
+    // Novice-facing copy: no pipeline/owner-level/canonical jargon on the
+    // first screen or in lane helpers.
+    expect(html).toContain('个人资料库');
+    expect(html).not.toContain('Owner 级别的一份真相');
+    expect(html).not.toContain('canonical MD');
+    expect(html).not.toContain('taste / profile');
+    expect(html).not.toContain('投喂与管线');
+    expect(html).not.toContain('摄取管线');
     expect(html).toContain('PDF');
     expect(html).toContain('Word / DOCX');
     expect(html).toContain('md · txt');
@@ -409,9 +418,53 @@ describe('PersonalKnowledge', () => {
     expect(proposalHtml).toContain('artifact://incident-42');
     expect(proposalHtml).toContain('批准并写入');
     expect(proposalHtml).toContain('拒绝');
+    // The proposal's sensitivity renders as plain language, not the raw enum.
+    expect(proposalHtml).toContain('公开');
+    expect(proposalHtml).not.toContain('PL1_public');
+    // Destination keeps the exact collection slug behind a plain label;
+    // review state and ruling are localized, raw enum jargon is gone.
+    expect(proposalHtml).toContain('保存到: operations');
+    expect(proposalHtml).toContain('等待你审阅');
+    expect(proposalHtml).toContain('需要你审阅');
+    expect(proposalHtml).not.toContain('>ask<');
+    expect(proposalHtml).not.toContain('>pending<');
     expect(revisionHtml).toContain('版本 1');
     expect(revisionHtml).toContain('Owner approved proposal');
     expect(revisionHtml).toContain('回滚到此版本');
+  });
+
+  it('renders graph counters and entity details in plain language with exact values kept', () => {
+    const html = renderToStaticMarkup(
+      <GraphPanel
+        graph={{
+          entities: [
+            {
+              entity_id: 'entity-1',
+              canonical_name: 'Crypto x AI',
+              entity_type: 'topic',
+              aliases: ['CryptoAI'],
+              description: 'Intersection of crypto and AI.',
+              confidence: 0.92,
+              source_refs: [{ document_id: 'doc-1', segment_id: 'seg-1' }],
+            },
+          ],
+          links: [],
+          assertions: [],
+        }}
+      />,
+    );
+
+    // Counters use the page's own plain glosses, not schema nouns.
+    expect(html).toContain('1 个人与主题');
+    expect(html).toContain('0 个关联');
+    expect(html).toContain('0 条陈述');
+    // The free-form entity type value stays exact behind a plain label;
+    // extraction confidence reads as a percentage.
+    expect(html).toContain('类型: topic');
+    expect(html).toContain('可信度: 92%');
+    expect(html).not.toContain('entities');
+    expect(html).not.toContain('assertions');
+    expect(html).not.toContain('0.92');
   });
 
   it('renders every authority binding required for an autonomous or cross-principal grant', () => {
@@ -443,14 +496,130 @@ describe('PersonalKnowledge', () => {
       />,
     );
 
-    expect(html).toContain('autonomous_agent');
-    expect(html).toContain('interactive_session');
-    expect(html).toContain('a2a_delegation');
-    expect(html).toContain('PL3_sensitive');
-    expect(html).toContain('PL4_credential');
+    // Exact enum values stay on the wire as option values…
+    expect(html).toContain('value="autonomous_agent"');
+    expect(html).toContain('value="interactive_session"');
+    expect(html).toContain('value="a2a_delegation"');
+    expect(html).toContain('value="PL3_sensitive"');
+    expect(html).toContain('value="PL4_credential"');
     expect(html).toContain('datetime-local');
     expect(html).toContain('到期时间');
     expect(html).not.toContain('value="session"');
+    // …while the visible option text is plain language.
+    expect(html).toContain('>自主运行<');
+    expect(html).toContain('>会话中协作<');
+    expect(html).toContain('>转派给其他 Agent<');
+    expect(html).toContain('>转派给子 Agent<');
+    expect(html).toContain('>公开<');
+    expect(html).toContain('>个人信息<');
+    expect(html).toContain('>敏感<');
+    expect(html).toContain('>凭据（仅引用）<');
+    expect(html).toContain('>检索<');
+    expect(html).toContain('>阅读<');
+    expect(html).toContain('>管理<');
+    expect(html).toContain('>其他人<');
+    expect(html).not.toContain('>PL1_public<');
+    expect(html).not.toContain('>PL2_pii<');
+    expect(html).not.toContain('>PL3_sensitive<');
+    expect(html).not.toContain('>PL4_credential<');
+    expect(html).not.toContain('>autonomous_agent<');
+    expect(html).not.toContain('>interactive_session<');
+    expect(html).toContain('Agent 或用户 ID');
+  });
+
+  it('renders existing grants with plain-language labels while keeping exact identifiers visible', () => {
+    const html = renderToStaticMarkup(
+      <GrantsPanel
+        grants={[
+          {
+            grant_id: 'grant-1',
+            resource_type: 'scope',
+            resource_id: 'user-1',
+            document_id: null,
+            grantee_type: 'agent',
+            grantee_id: 'agent-1',
+            permission: 'search',
+            requester_user_id: 'user-9',
+            session_id: 'session-42',
+            purpose: 'interactive_session',
+            delegation_id: 'delegation-7',
+            sensitivity_ceiling: 'PL4_credential',
+            binding_key: 'pkb:test',
+            expires_at: '2099-01-01T00:00:00Z',
+            revoked_at: null,
+            revoked_by_user_id: null,
+            active: true,
+            metadata: {},
+            created_at: '2026-07-01T00:00:00Z',
+          },
+          {
+            grant_id: 'grant-2',
+            resource_type: 'document',
+            resource_id: 'doc-9',
+            document_id: 'doc-9',
+            grantee_type: 'user',
+            grantee_id: 'user-2',
+            permission: 'read',
+            requester_user_id: null,
+            session_id: null,
+            purpose: null,
+            delegation_id: null,
+            sensitivity_ceiling: 'PL2_pii',
+            binding_key: 'pkb:test2',
+            expires_at: null,
+            revoked_at: null,
+            revoked_by_user_id: null,
+            active: true,
+            metadata: {},
+            created_at: '2026-07-02T00:00:00Z',
+          },
+        ]}
+        granteeType="agent"
+        granteeId=""
+        permission="search"
+        requesterUserId=""
+        sessionId=""
+        purpose="autonomous_agent"
+        delegationId=""
+        sensitivityCeiling="PL3_sensitive"
+        expiresAt="2099-01-01T00:00"
+        onGranteeTypeChange={vi.fn()}
+        onGranteeIdChange={vi.fn()}
+        onPermissionChange={vi.fn()}
+        onRequesterUserIdChange={vi.fn()}
+        onSessionIdChange={vi.fn()}
+        onPurposeChange={vi.fn()}
+        onDelegationIdChange={vi.fn()}
+        onSensitivityCeilingChange={vi.fn()}
+        onExpiresAtChange={vi.fn()}
+        onCreate={vi.fn()}
+        onDelete={vi.fn()}
+        createPending={false}
+        deletingGrantId={null}
+      />,
+    );
+
+    // Plain-language row labels…
+    expect(html).toContain('Agent: agent-1');
+    expect(html).toContain('其他人: user-2');
+    expect(html).toContain('检索 · 整个资料库 · 凭据（仅引用） · 会话中协作');
+    expect(html).toContain('阅读 · 单个文档 · 个人信息');
+    expect(html).toContain('发起用户: user-9');
+    expect(html).toContain('会话: session-42');
+    expect(html).toContain('委派: delegation-7');
+    // …with the exact identifiers retained, but no raw enum or snake_case label.
+    expect(html).not.toContain('agent:agent-1');
+    expect(html).not.toContain('user:user-2');
+    expect(html).not.toContain('· scope ·');
+    expect(html).not.toContain('· document ·');
+    expect(html).not.toContain('PL4_credential · ');
+    expect(html).not.toContain('>PL2_pii<');
+    expect(html).not.toContain('requester:');
+    expect(html).not.toContain('session:');
+    expect(html).not.toContain('delegation:');
+    // Grant sharing stays truthful: Agent grants expire, person grants do not
+    // promise one.
+    expect(html).toContain('给 Agent 的授权一定会到期；给人的授权在你撤销前一直有效');
   });
 
   it('renders a 403 as access denied and never as zero assets or an empty Personal KB', () => {
@@ -460,6 +629,8 @@ describe('PersonalKnowledge', () => {
 
     expect(html).toContain('data-personal-knowledge-state="forbidden"');
     expect(html).toContain('这不是空知识库');
+    expect(html).toContain('请让库主或管理员为你授权');
+    expect(html).not.toContain('Owner scope');
     expect(html).not.toContain('0 文档');
     expect(html).not.toContain('个人知识库为空');
   });
@@ -620,8 +791,68 @@ describe('PersonalKnowledge ImportJobs lifecycle surface', () => {
     );
     expect(html).toContain('失败');
     expect(html).toContain('不支持此文件类型。');
+    // The novice guidance names the supported formats to switch to.
+    expect(html).toContain('PDF');
+    expect(html).toContain('纯文本');
     expect(html).not.toContain('>重试<');
     expect(html).not.toContain('unsupported_file_type');
+  });
+
+  it('explains media-failure prerequisites and keeps the retry action while the job stays retryable', () => {
+    const html = renderToStaticMarkup(
+      <ImportJobs
+        jobs={[jobFixture({
+          job_id: 'job-media',
+          status: 'failed',
+          lifecycle_status: 'failed',
+          result_status: 'failed',
+          terminal: true,
+          retryable: true,
+          cancellable: false,
+          attempt_count: 1,
+          error_code: 'unsupported_or_unconfigured',
+          error_message: 'unsupported_or_unconfigured:media_transcription_provider',
+          metadata: { source_filename: 'voice-memo.mp3', media_kind: 'audio' },
+        })]}
+        onRetry={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(html).toContain('voice-memo.mp3');
+    // The explanation names both prerequisites: a possibly missing
+    // administrator-enabled capability and the supported-format alternative.
+    expect(html).toContain('管理员');
+    expect(html).toContain('纯文本');
+    // Retryability still comes from the backend fact alone.
+    expect(html).toContain('>重试<');
+    expect(html).not.toContain('unsupported_or_unconfigured');
+    expect(html).not.toContain('media_transcription_provider');
+  });
+
+  it('keeps a non-retryable media failure truthful: no retry action and no retry promise in the copy', () => {
+    const html = renderToStaticMarkup(
+      <ImportJobs
+        jobs={[jobFixture({
+          job_id: 'job-media-limit',
+          status: 'failed',
+          lifecycle_status: 'failed',
+          result_status: 'failed',
+          terminal: true,
+          retryable: false,
+          cancellable: false,
+          attempt_count: 5,
+          error_code: 'unsupported_or_unconfigured',
+          metadata: { source_filename: 'voice-memo.mp3', media_kind: 'audio' },
+        })]}
+        onRetry={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(html).toContain('voice-memo.mp3');
+    expect(html).toContain('管理员');
+    // No retry is offered (backend fact) and the explanation itself must not
+    // promise one: the word 重试 never appears inside this row.
+    expect(html).not.toContain('重试');
   });
 
   it('disables the in-flight job action while another job stays actionable', () => {

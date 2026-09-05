@@ -226,3 +226,58 @@ async def test_bypass_scope_restores_previous_session_info_after_exit():
         assert session.sync_session.info[database._RLS_TENANT_INFO_KEY] == "BYPASS"
 
     assert session.sync_session.info[database._RLS_TENANT_INFO_KEY] == previous_tenant
+
+
+@pytest.mark.asyncio
+async def test_nested_bypass_exit_restores_outer_bypass_database_scope():
+    """RLS-BYPASS-NESTED-RESTORE-001: the inner audited scope must restore the
+    persisted outer BYPASS (both the GUC statement and session info), not the
+    request ContextVar, when it exits on the same session."""
+    from app import database
+
+    token = database.set_current_tenant(None)
+    try:
+        session = _FakeAsyncSession()
+
+        async with database.enter_rls_bypass(session, reason="unit-test outer bypass scope"):
+            async with database.enter_rls_bypass(session, reason="unit-test nested bypass scope"):
+                pass
+            assert session.sync_session.info[database._RLS_TENANT_INFO_KEY] == "BYPASS"
+
+        assert session.statements == [
+            "SET LOCAL app.current_tenant_id = 'BYPASS'",
+            "SET LOCAL app.current_tenant_id = 'BYPASS'",
+            "SET LOCAL app.current_tenant_id = 'BYPASS'",
+            "SET LOCAL app.current_tenant_id = ''",
+        ]
+        assert database._RLS_TENANT_INFO_KEY not in session.sync_session.info
+    finally:
+        database.reset_current_tenant(token)
+
+
+@pytest.mark.asyncio
+async def test_nested_bypass_exit_restores_outer_pinned_tenant_database_scope():
+    """A pinned tenant scope that existed before the outer bypass must be the
+    restore target of both exits; the ContextVar is only a fallback when no
+    session scope existed."""
+    from app import database
+
+    tenant_id = str(uuid4())
+    session = _FakeAsyncSession()
+    session.sync_session.info[database._RLS_TENANT_INFO_KEY] = tenant_id
+    token = database.set_current_tenant(tenant_id)
+    try:
+        async with database.enter_rls_bypass(session, reason="unit-test outer bypass over pinned tenant"):
+            async with database.enter_rls_bypass(session, reason="unit-test nested bypass over pinned tenant"):
+                pass
+            assert session.sync_session.info[database._RLS_TENANT_INFO_KEY] == "BYPASS"
+
+        assert session.statements == [
+            "SET LOCAL app.current_tenant_id = 'BYPASS'",
+            "SET LOCAL app.current_tenant_id = 'BYPASS'",
+            "SET LOCAL app.current_tenant_id = 'BYPASS'",
+            f"SET LOCAL app.current_tenant_id = '{tenant_id}'",
+        ]
+        assert session.sync_session.info[database._RLS_TENANT_INFO_KEY] == tenant_id
+    finally:
+        database.reset_current_tenant(token)

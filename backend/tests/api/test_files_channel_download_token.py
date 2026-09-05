@@ -191,6 +191,16 @@ class _ScalarResult:
         return self._value
 
 
+class _RowResult:
+    """Row-shaped result for the canonical user+tenant liveness lookup."""
+
+    def __init__(self, row):
+        self._row = row
+
+    def first(self):
+        return self._row
+
+
 class _RlsScopedUserDb:
     def __init__(self, *, tenant_id, user):
         self.tenant_id = tenant_id
@@ -198,7 +208,9 @@ class _RlsScopedUserDb:
         self.pinned_tenants = []
 
     async def execute(self, _statement):
-        return _ScalarResult(self.user if self.pinned_tenants and self.pinned_tenants[-1] == self.tenant_id else None)
+        if self.pinned_tenants and self.pinned_tenants[-1] == self.tenant_id:
+            return _RowResult((self.user, True))
+        return _RowResult(None)
 
 
 async def _pin_fake_download_tenant(db, tenant_id):
@@ -249,10 +261,15 @@ async def test_workspace_download_query_jwt_pins_token_tenant_before_user_lookup
 
     monkeypatch.setattr(workspace_resource_authority, "authorize_workspace_path", fake_authorize_workspace_path)
 
+    # The canonical download lane authenticates through
+    # ``authenticate_request_user``; a query-JWT request carries no
+    # X-Tenant-Id selection, so the token's own tenant is pinned first —
+    # exactly what TenantMiddleware does for a Bearer header.
     response = await files_api.download_file(
         agent_id=agent_id,
         path="workspace/report.md",
         token="browser-query-jwt",
+        request=SimpleNamespace(headers={}),
         credentials=None,
         db=db,
     )
@@ -311,10 +328,13 @@ async def test_artifact_download_query_jwt_pins_token_tenant_before_user_lookup(
 
     monkeypatch.setattr(files_api, "authorize_resource_action", fake_authorize_resource_action)
 
+    # Same canonical lane as the workspace download: no X-Tenant-Id on a
+    # query-JWT request, so the token's own tenant is pinned first.
     response = await files_api.download_artifact(
         agent_id=agent_id,
         artifact_id=artifact_id,
         token="browser-query-jwt",
+        request=SimpleNamespace(headers={}),
         credentials=None,
         db=db,
     )

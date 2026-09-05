@@ -256,6 +256,39 @@ describe('request cleanup adapters', () => {
     );
   });
 
+  it('lists the full session inventory for a scoped administrator without fabricating an operator reason', async () => {
+    vi.doMock('./core/request', async () => {
+      const actual = await vi.importActual<typeof import('./core/request')>('./core/request');
+      return {
+        ...actual,
+        get: vi.fn(),
+      };
+    });
+    const { chatApi } = await import('./domains/chat');
+    const { get } = await import('./core/request');
+    vi.mocked(get).mockResolvedValue([]);
+
+    await chatApi.listSessions('agent-1', 'all');
+
+    expect(get).toHaveBeenCalledWith('/agents/agent-1/sessions?scope=all');
+  });
+
+  it('keeps the operator inspection lane reason-gated', async () => {
+    vi.doMock('./core/request', async () => {
+      const actual = await vi.importActual<typeof import('./core/request')>('./core/request');
+      return {
+        ...actual,
+        get: vi.fn(),
+      };
+    });
+    const { chatApi } = await import('./domains/chat');
+
+    expect(() => chatApi.listSessions('agent-1', 'all', { operatorView: true })).toThrow(
+      'Operator View requires an audit reason',
+    );
+    expect(() => chatApi.listSessions('agent-1', 'all', { operatorView: true, operatorReason: '   ' })).toThrow();
+  });
+
   it('routes agent lists through the summary projection by default', async () => {
     vi.doMock('./core/request', async () => {
       const actual = await vi.importActual<typeof import('./core/request')>('./core/request');

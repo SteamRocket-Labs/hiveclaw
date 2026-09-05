@@ -76,7 +76,13 @@
     width: 100%;
     min-width: 0;
     max-width: none;
-    max-height: 154px;
+    /* Default to the browser chrome plus one complete session row so the first
+     * render already shows a whole entry; the native vertical resize may then
+     * grow the box up to half the viewport height, so a real downward drag
+     * materially enlarges the list while the reading column keeps the
+     * majority of the shell. */
+    height: 168px;
+    max-height: 50dvh;
     resize: vertical;
     border-right: 0;
     border-bottom: 1px solid var(--border-subtle);
@@ -100,6 +106,24 @@
     inset-block-start: 0;
     inset-inline-end: 0;
   }
+
+  /* The collapsed rail overlays the reading column's right strip; reserve that
+   * strip so message text, approval status, and composer controls never render
+   * under it. The expanded overlay is an explicit user action and keeps its
+   * own full overlay. */
+  .session-tui-shell:has(> .session-runtime-panel.is-collapsed) > .session-tui-center {
+    padding-right: 50px;
+  }
+
+  /* In the managed shell the session browser stacks above the reading column,
+   * so the same collapsed rail pinned to the shell's top-right overlays the
+   * browser's right strip. Narrow the browser box itself out of that strip —
+   * an inner reservation (padding) would keep the filter, session rows, and
+   * row actions clear but leave the browser's border-box bottom-right corner,
+   * where the native vertical-resize widget lives, under the rail. */
+  .session-tui-shell:has(> .session-runtime-panel.is-collapsed) > .detail-session-browser {
+    width: calc(100% - 50px);
+  }
 }
 
 @media (max-width: 760px) {
@@ -107,10 +131,6 @@
     height: calc(100dvh - var(--session-shell-top-offset, 164px));
     min-height: 420px;
     max-height: calc(100dvh - var(--session-shell-top-offset, 164px));
-  }
-
-  .session-tui-shell-managed .detail-session-browser {
-    max-height: 118px;
   }
 
   .session-runtime-panel:not(.is-collapsed) {

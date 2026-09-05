@@ -35,14 +35,18 @@ def _same_uuid(left: object, right: object) -> bool:
 
 
 def _can_resolve_agent_approval(agent: Agent, user: User) -> bool:
-    """Return whether user can resolve approvals for this agent."""
+    """Return whether user can resolve approvals for this agent.
+
+    The current Agent owner and scoped business administrators (PDEC-013) hold
+    resolution authority; a delegated capability is never enough.
+    """
+    from app.core.permissions import is_scoped_business_admin
+
     user_id = getattr(user, "id", None)
     owner_user_id = getattr(agent, "owner_user_id", None) or getattr(agent, "creator_id", None)
     if _same_uuid(owner_user_id, user_id):
         return True
-    if getattr(user, "role", None) == "org_admin":
-        return _same_uuid(getattr(agent, "tenant_id", None), getattr(user, "tenant_id", None))
-    return False
+    return is_scoped_business_admin(user, resource_tenant_id=getattr(agent, "tenant_id", None))
 
 
 class ApprovalService:
@@ -164,7 +168,9 @@ class ApprovalService:
         agent = agent_result.scalar_one_or_none()
         if agent and getattr(approval, "tenant_id", None) is None:
             approval.tenant_id = agent.tenant_id
-        if agent and not _can_resolve_agent_approval(agent, user):
+        # The Agent reference is the only authority anchor for this decision:
+        # a missing Agent row must fail closed instead of skipping the check.
+        if not agent or not _can_resolve_agent_approval(agent, user):
             raise ValueError("Only the current Agent owner or tenant organization admin can resolve approvals")
 
         local_agent_resolution = None

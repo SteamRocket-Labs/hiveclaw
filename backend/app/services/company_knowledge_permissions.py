@@ -16,7 +16,7 @@ from typing import Any, Literal, TypeAlias
 from sqlalchemy import or_, select
 
 from app.models.security_audit import ResourcePermission
-from app.services.privacy_layer import canonicalize_sensitivity, sensitivity_rank
+from app.services.privacy_layer import SensitivityLevel, canonicalize_sensitivity, sensitivity_rank
 
 
 CompanyKnowledgeAction: TypeAlias = Literal[
@@ -89,6 +89,7 @@ _TENANT_ADMIN_METADATA_ACTIONS = frozenset(
     }
 )
 _ADMIN_ROLES = frozenset({"org_admin"})
+_SCOPED_BUSINESS_ADMIN_ROLES = frozenset({"org_admin", "platform_admin"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,7 +145,14 @@ class CompanyKnowledgeResource:
 
 @dataclass(frozen=True, slots=True)
 class CompanyKnowledgePermissionDecision:
-    """Typed, audit-ready result shared by API, tools, UI, and workers."""
+    """Typed, audit-ready result shared by API, tools, UI, and workers.
+
+    ``redaction_policy`` and ``audit_payload`` are evidence fields only: no
+    consumer enforces them. The executable authority for PL4 credentials is
+    the gateway's hard stop (``company_knowledge_gateway`` reference-only
+    projection), and persisted scoped-administrator audit rows are written by
+    the API boundary — not by this decision object.
+    """
 
     allowed: bool
     requested_action: CompanyKnowledgeAction
@@ -352,6 +360,42 @@ async def resolve_company_knowledge_permission(
             action=action,
             reason="source_acl_unavailable",
             retryable=True,
+        )
+
+    # PDEC-013 human administrator business access. This fast path is keyed on
+    # the HUMAN actor (browser/API), never on ``accountable_role`` alone: an
+    # Agent runtime principal carrying an administrator's role must not widen
+    # worker scope. Organization administrators hold this authority inside
+    # their own company (the tenant match above already failed closed
+    # otherwise); platform administrators hold it inside the company the
+    # request resolved to. No redundant ordinary ResourcePermission is
+    # required; provenance stays intact — the source ACL snapshot must exist
+    # (checked above), the evidence bundle must be complete, and PL4
+    # credentials remain reference-only.
+    if (
+        principal.actor_type != "agent"
+        and principal.accountable_role in _SCOPED_BUSINESS_ADMIN_ROLES
+        and action in _CONTENT_ACTIONS | _TENANT_ADMIN_METADATA_ACTIONS
+    ):
+        if action in _CONTENT_ACTIONS and not resource.evidence_access_complete:
+            return _denied(
+                principal=principal,
+                resource=resource,
+                action=action,
+                reason="complete_evidence_bundle_required",
+                authority_sources=("tenant_membership", "scoped_business_admin"),
+            )
+        return CompanyKnowledgePermissionDecision(
+            allowed=True,
+            requested_action=action,
+            allowed_actions=tuple(sorted(_CONTENT_ACTIONS | _TENANT_ADMIN_METADATA_ACTIONS)),
+            authority_sources=("tenant_membership", "scoped_business_admin"),
+            sensitivity_ceiling=SensitivityLevel.PL4_CREDENTIAL.value if action in _CONTENT_ACTIONS else "PL1_public",
+            source_acl_snapshot_hash=resource.source_acl_snapshot_hash,
+            redaction_policy="credential_reference_only"
+            if resource.sensitivity == "PL4_credential"
+            else ("metadata_only" if action not in _CONTENT_ACTIONS else "none"),
+            audit_payload=_audit_payload(principal=principal, resource=resource, action=action),
         )
 
     if principal.accountable_role in _ADMIN_ROLES and action in _TENANT_ADMIN_METADATA_ACTIONS:

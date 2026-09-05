@@ -7,6 +7,7 @@ import { agentApi, type AgentOwnerCandidate } from '../../api/domains/agents';
 import { usersApi } from '../../api/domains/users';
 import { requestAppConfirm, showAppToast } from '../../components/AppDialogs';
 import { Modal } from '../../components/ui';
+import { isAdministratorRole } from '../../roles';
 import { useAuthStore } from '../../stores';
 import type { Agent } from '../../types';
 
@@ -20,7 +21,7 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
     const { t } = useTranslation();
     const queryClient = useQueryClient();
     const currentUser = useAuthStore((state) => state.user);
-    const canManageEmployees = currentUser?.role === 'org_admin';
+    const canManageEmployees = isAdministratorRole(currentUser?.role);
     const [ownershipAgent, setOwnershipAgent] = useState<Agent | null>(null);
     const [ownerCandidates, setOwnerCandidates] = useState<AgentOwnerCandidate[]>([]);
     const [newOwnerId, setNewOwnerId] = useState('');

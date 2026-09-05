@@ -14,7 +14,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_admin, get_current_user
-from app.core.permissions import agent_owned_by_clause
+from app.core.permissions import agent_owned_by_clause, is_scoped_business_admin
 from app.core.tenant_scope import resolve_and_pin_tenant_scope
 from app.config import get_settings
 from app.database import get_db
@@ -50,16 +50,14 @@ TENANT_SYSTEM_SETTING_KEYS = {"agent_permission_default", "feishu_org_sync"}
 PLATFORM_SYSTEM_SETTING_KEYS = {"notification_bar", "platform"}
 
 
-def _deny_platform_admin_default_business_body(current_user: User) -> None:
-    if current_user.role == "platform_admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Company business content requires organization administrator access",
-        )
-
-
 def _require_org_admin(current_user: User) -> None:
-    if current_user.role != "org_admin":
+    """Company administrator gate (PDEC-013).
+
+    Organization administrators and scoped platform administrators both
+    manage company business inside the tenant their request resolved to;
+    the tenant pinning happens per-route via ``resolve_and_pin_tenant_scope``.
+    """
+    if current_user.role not in ("org_admin", "platform_admin"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Organization administrator access required",
@@ -595,7 +593,6 @@ async def list_enterprise_info(
     db: AsyncSession = Depends(get_db),
 ):
     """List all enterprise information entries."""
-    _deny_platform_admin_default_business_body(current_user)
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     result = await db.execute(
         select(EnterpriseInfo).where(EnterpriseInfo.tenant_id == target_tenant_id).order_by(EnterpriseInfo.info_type)
@@ -613,7 +610,6 @@ async def update_enterprise_info(
     db: AsyncSession = Depends(get_db),
 ):
     """Create or update enterprise information. Triggers sync to agents."""
-    _deny_platform_admin_default_business_body(current_user)
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     info = await enterprise_sync_service.update_enterprise_info(
         db, target_tenant_id, info_type, data.content, data.visible_roles, current_user.id
@@ -644,15 +640,16 @@ async def list_approvals(
     db: AsyncSession = Depends(get_db),
 ):
     """List approval requests scoped to a tenant."""
-    _deny_platform_admin_default_business_body(current_user)
     query = select(ApprovalRequest)
     # Scope by tenant: only show approvals for agents belonging to this tenant
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     tenant_agent_ids = select(Agent.id).where(Agent.tenant_id == target_tenant_id)
     query = query.where(ApprovalRequest.agent_id.in_(tenant_agent_ids))
     query = query.where(enterprise_visible_approval_filter(ApprovalRequest))
-    # Non-admins further restricted to their own agents
-    if current_user.role != "platform_admin":
+    # Scoped business administrators (PDEC-013) list every pending approval of
+    # Agents in their selected/company tenant; everyone else is further
+    # restricted to their own agents.
+    if not is_scoped_business_admin(current_user, resource_tenant_id=target_tenant_id):
         query = query.where(
             ApprovalRequest.agent_id.in_(select(Agent.id).where(agent_owned_by_clause(current_user.id)))
         )
@@ -686,7 +683,6 @@ async def resolve_approval(
     db: AsyncSession = Depends(get_db),
 ):
     """Approve or reject a pending approval request."""
-    _deny_platform_admin_default_business_body(current_user)
     try:
         approval = await approval_service.resolve_approval(db, approval_id, current_user, data.action)
         return ApprovalRequestOut.model_validate(approval)
@@ -874,7 +870,6 @@ async def get_enterprise_stats(
     db: AsyncSession = Depends(get_db),
 ):
     """Get enterprise dashboard statistics, optionally scoped to a tenant."""
-    _deny_platform_admin_default_business_body(current_user)
     # Determine which tenant to filter by
     tid = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
 
@@ -1227,7 +1222,6 @@ async def list_org_departments(
     db: AsyncSession = Depends(get_db),
 ):
     """List all departments, optionally filtered by tenant."""
-    _deny_platform_admin_default_business_body(current_user)
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     query = select(OrgDepartment).where(OrgDepartment.tenant_id == target_tenant_id)
     result = await db.execute(query.order_by(OrgDepartment.name))
@@ -1254,7 +1248,6 @@ async def list_org_members(
     db: AsyncSession = Depends(get_db),
 ):
     """List org members, optionally filtered by department, search, or tenant."""
-    _deny_platform_admin_default_business_body(current_user)
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     query = select(OrgMember).where(
         OrgMember.status == "active",

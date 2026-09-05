@@ -32,9 +32,28 @@ class HumanBrowserPrincipal:
 
     user_id: uuid.UUID
     principal_type: Literal["human_browser"] = "human_browser"
+    # Canonical live-role facts for the PDEC-013 scoped business administrator
+    # branch. Absent (default) preserves the legacy owner/grant-only contract.
+    role: str | None = None
+    home_tenant_id: uuid.UUID | None = None
 
-    def evidence(self) -> dict[str, str]:
-        return {"principal_type": self.principal_type, "user_id": str(self.user_id)}
+    def evidence(self) -> dict[str, str | None]:
+        return {
+            "principal_type": self.principal_type,
+            "user_id": str(self.user_id),
+            "role": self.role,
+            "home_tenant_id": str(self.home_tenant_id) if self.home_tenant_id else None,
+        }
+
+    def scoped_business_admin_for(self, tenant_id: uuid.UUID) -> bool:
+        """PDEC-013 business scope: company administrators inside their own
+        company, platform administrators inside the authenticated selected
+        company (``home_tenant_id`` carries that selection for browser
+        principals). Never granted to Agent runtime principals, and never for
+        a company other than the authenticated one."""
+        if self.role not in ("org_admin", "platform_admin"):
+            return False
+        return self.home_tenant_id is not None and str(self.home_tenant_id) == str(tenant_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +215,12 @@ def personal_knowledge_access_predicate(
     if current_user_id is None:
         return false()
 
+    if isinstance(principal, HumanBrowserPrincipal) and principal.scoped_business_admin_for(tenant_id):
+        # PDEC-013: a scoped business administrator reads the managed
+        # company's personal knowledge for business purposes. The service
+        # layer still applies PL4 credential reference-only projection.
+        return true()
+
     if isinstance(principal, HumanBrowserPrincipal):
         grantee_predicate = and_(
             KnowledgeGrant.grantee_type == "user",
@@ -323,6 +348,32 @@ async def resolve_personal_knowledge_permission(
             action=action,
             owner_user_id=owner_user_id,
             authority_source="human_owner_direct",
+            sensitivity_ceiling=SensitivityLevel.PL4_CREDENTIAL.value,
+            document_id=document_id,
+            document_sensitivity=document_sensitivity,
+            credential_reference_only=credential_only,
+            principal=principal.evidence(),
+        )
+
+    if isinstance(principal, HumanBrowserPrincipal) and principal.scoped_business_admin_for(tenant_id):
+        credential_only = False
+        if document_sensitivity is not None:
+            try:
+                credential_only = canonicalize_sensitivity(document_sensitivity) == SensitivityLevel.PL4_CREDENTIAL
+            except ValueError:
+                return _denied_decision(
+                    action=action,
+                    owner_user_id=owner_user_id,
+                    principal=principal,
+                    reason_code="document_sensitivity_invalid",
+                    document_id=document_id,
+                    document_sensitivity=document_sensitivity,
+                )
+        return PersonalKnowledgePermissionDecision(
+            allowed=True,
+            action=action,
+            owner_user_id=owner_user_id,
+            authority_source="scoped_business_admin",
             sensitivity_ceiling=SensitivityLevel.PL4_CREDENTIAL.value,
             document_id=document_id,
             document_sensitivity=document_sensitivity,

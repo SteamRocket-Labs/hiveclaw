@@ -119,6 +119,7 @@ import {
 } from './agent-detail/agentDetailPolicy';
 import { sessionPanelCommandForUiAction, useReloadableSessionCommandPanel } from './agent-detail/useReloadableSessionCommandPanel';
 import {
+    createSessionInventoryLoader,
     operatorSessionRequestOptions,
     useOperatorAuthorityCacheLifecycle,
     useOperatorAuthorityLifecycle,
@@ -215,6 +216,9 @@ function AgentDetailInner() {
         operatorAuthorityScope,
         operatorAuthorityScopeRef,
         operatorReason,
+        scopedAdminSessionAccess,
+        sessionListAuthorityKey,
+        sessionListAuthorityKeyRef,
         setOperatorReason,
     } = useOperatorAuthorityLifecycle({ agentId: id, queryClient });
     // ── Aware tab data: triggers ──
@@ -332,8 +336,8 @@ function AgentDetailInner() {
     );
     const operatorSessionBrowserMode = isManageMode || isOperatorOnly;
     const visibleActiveSession = activeOperatorSessionAuthorized ? activeSession : null;
-    const visibleAllSessions = operatorAuthorityScope
-        && allSessionsAuthorityScopeRef.current === operatorAuthorityScope
+    const visibleAllSessions = sessionListAuthorityKey
+        && allSessionsAuthorityScopeRef.current === sessionListAuthorityKey
         ? allSessions
         : [];
     const visibleBranchLineage = activeOperatorSessionAuthorized ? branchLineage : [];
@@ -586,28 +590,17 @@ function AgentDetailInner() {
         return [];
     };
 
-    const fetchAllSessions = async () => {
-        const authorityScope = operatorAuthorityScopeRef.current;
-        if (!id || !authorityScope) {
-            allSessionsAuthorityScopeRef.current = null;
-            if (currentAgentIdRef.current === id) setAllSessions([]);
-            return;
-        }
-        setAllSessionsLoading(true);
-        try {
-            const all = filterSessionsForAgent(await chatApi.listSessions(id, 'all', {
-                operatorView: true,
-                operatorReason: normalizedOperatorReason,
-            }), id);
-            if (currentAgentIdRef.current === id && operatorAuthorityScopeRef.current === authorityScope) {
-                allSessionsAuthorityScopeRef.current = authorityScope;
-                setAllSessions(all.filter((s: any) => s.source_channel !== 'trigger'));
-            }
-        } catch (error) {
-            denyOperatorAuthority(error);
-        }
-        if (operatorAuthorityScopeRef.current === authorityScope) setAllSessionsLoading(false);
-    };
+    const fetchAllSessions = createSessionInventoryLoader({
+        agentId: id,
+        normalizedOperatorReason,
+        denyOperatorAuthority,
+        operatorAuthorityScopeRef,
+        sessionListAuthorityKeyRef,
+        allSessionsAuthorityScopeRef,
+        currentAgentIdRef,
+        setAllSessions,
+        setAllSessionsLoading,
+    });
 
     const selectSession = async (sess: any) => {
         const targetAgentId = id;
@@ -1660,16 +1653,20 @@ function AgentDetailInner() {
     }, [canLoadAgentScopedData, id, token, activeTab, requestedSessionId, operatorSessionBrowserMode, isOperatorOnly]);
 
     useEffect(() => {
-        if (!canLoadAgentScopedData || activeTab !== 'chat' || !operatorSessionBrowserMode || !operatorAuthorityScope) return;
+        if (!canLoadAgentScopedData || activeTab !== 'chat' || (!operatorSessionBrowserMode && !scopedAdminSessionAccess) || !sessionListAuthorityKey) return;
         fetchAllSessions();
-    }, [canLoadAgentScopedData, activeTab, operatorSessionBrowserMode, operatorAuthorityScope, id]);
+    }, [canLoadAgentScopedData, activeTab, operatorSessionBrowserMode, scopedAdminSessionAccess, sessionListAuthorityKey, id]);
 
     useEffect(() => {
         if (!canLoadAgentScopedData || activeTab !== 'chat' || !requestedSessionId || !id) return;
         const known = [...sessions, ...visibleAllSessions].find((session: any) => String(session.id) === String(requestedSessionId));
         if (operatorSessionBrowserMode && (!known || activeSession === known)) return;
-        if (!operatorSessionBrowserMode && shouldPreserveActiveSessionForRequestedId(activeSession, requestedSessionId)) return;
-        if (known) { selectSession(known); return; }
+        // In the scoped-admin lane a resolved placeholder must yield to the
+        // verified inventory row once it arrives, so the real owner/actor
+        // fields replace the provisional lookup shell.
+        if (!operatorSessionBrowserMode && !scopedAdminSessionAccess && shouldPreserveActiveSessionForRequestedId(activeSession, requestedSessionId)) return;
+        if (known && activeSession !== known) { selectSession(known); return; }
+        if (known) return;
         if (activeSessionIdRef.current && String(activeSessionIdRef.current) === String(requestedSessionId)) return;
         selectSession({
             id: requestedSessionId,
@@ -1680,7 +1677,7 @@ function AgentDetailInner() {
             read_only: true,
             is_pending_session_lookup: true,
         });
-    }, [canLoadAgentScopedData, activeTab, requestedSessionId, id, activeSession, sessions, allSessions, operatorAuthorityScope, operatorSessionBrowserMode]);
+    }, [canLoadAgentScopedData, activeTab, requestedSessionId, id, activeSession, sessions, allSessions, operatorAuthorityScope, operatorSessionBrowserMode, scopedAdminSessionAccess]);
 
     transportCallbacksRef.current = {
         onBackfill: backfillSessionTranscript,
@@ -2627,7 +2624,7 @@ function AgentDetailInner() {
                             agentId={id}
                             agent={agent}
                             currentUser={currentUser}
-                            isAdmin={isSystemHr ? false : canOperatorInspect && !!normalizedOperatorReason}
+                            isAdmin={isSystemHr ? false : Boolean((canOperatorInspect && normalizedOperatorReason) || scopedAdminSessionAccess)}
                             operatorReason={normalizedOperatorReason}
                             onOperatorAuthorityDenied={denyOperatorAuthority}
                             chatScope={chatScope}

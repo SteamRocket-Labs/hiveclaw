@@ -720,7 +720,7 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 
 # Reviewed normalized AST of direct bypass scopes and statically discoverable
 # contextmanager consumers. Predicates, locks, ORM writes, and add() targets are included.
-RLS_BYPASS_SCOPES_SHA256 = "8938a5e3d99e1e40eb0ad5e05c58c95532198995d3242f7b175509ceebacfe70"
+RLS_BYPASS_SCOPES_SHA256 = "94a1911434053a1f0f505722cba4ec5c94a94cb2e66d32bcb5dd189bef31ac47"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:
@@ -878,7 +878,7 @@ RLS_BYPASS_ALLOWLIST = (
             "app/api/channel_rls.py",
             "load_public_agent_channel_config",
             "f'public {channel_type} webhook channel lookup for agent {agent_id}'",
-            ("select:ChannelConfig", "select:Agent.tenant_id"),
+            ("select:ChannelConfig", "select:Agent.tenant_id", "select:Tenant.is_active"),
         )
     ),
     _grant(
@@ -959,7 +959,7 @@ RLS_BYPASS_ALLOWLIST = (
     _grant(
         *(
             "app/core/security.py",
-            "get_current_user",
+            "authenticate_request_user",
             "'platform-admin identity lookup before selected-tenant override'",
             ("session-state-only",),
         )
@@ -967,7 +967,7 @@ RLS_BYPASS_ALLOWLIST = (
     _grant(
         *(
             "app/core/security.py",
-            "get_current_user",
+            "authenticate_request_user",
             "'tenantless authenticated identity lookup before company bootstrap'",
             ("session-state-only",),
         )
@@ -1196,7 +1196,23 @@ RLS_BYPASS_ALLOWLIST = (
             "app/services/local_agent_channel_service.py",
             "resolve_ws_ticket",
             "'local agent channel ws ticket lookup'",
-            ("select:LocalAgentChannelWsTicket",),
+            ("select:LocalAgentChannelWsTicket,LocalAgentBridgeConnection,User,Tenant",),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/local_agent_channel_service.py",
+            "resolve_browser_session_ws_ticket",
+            "'local agent browser ws ticket actor lookup'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/local_bridge_service.py",
+            "_pairing_identity_is_live",
+            "'local bridge pairing live identity check'",
+            ("select:User.id",),
         )
     ),
     _grant(
@@ -1432,6 +1448,14 @@ RLS_BYPASS_ALLOWLIST = (
             "app/services/session_event_outbox.py",
             "_worker_session",
             "f'session_event_outbox.{operation}'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/session_v2_persistence.py",
+            "resolve_session_command_authority",
+            "'session command platform-admin actor recovery lookup'",
             ("session-state-only",),
         )
     ),

@@ -15,6 +15,7 @@ from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
 from app.models.participant import Participant
 from app.models.task import Task, TaskLog
+from app.models.tenant import Tenant
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
 from app.services.agent_identity_lifecycle import get_agent_lifecycle_block_reason
@@ -371,6 +372,22 @@ async def execute_task(
                 task_requester_id = uuid.UUID(str(task.plan_authorization.get("requester_user_id")))
             except (TypeError, ValueError):
                 task_requester_id = None
+
+        # Shared pre-execution boundary: tenant liveness is re-read from the
+        # DB here (not from the possibly cached agent→tenant resolution) so a
+        # company deactivated by the no-body DELETE or the admin toggle is
+        # blocked before any mutation, model invocation, or tool execution.
+        # The state is recoverable: reactivating the company makes the task
+        # executable again without data loss.
+        tenant_active = (await db.execute(select(Tenant.is_active).where(Tenant.id == tenant_id))).scalar_one_or_none()
+        if tenant_active is not True:
+            await db.rollback()
+            return TaskExecutionOutcome(
+                status=TaskExecutionStatus.BLOCKED,
+                summary="Company is disabled; task execution is suspended until the company is reactivated.",
+                error_code="tenant_inactive",
+                retryable=True,
+            )
 
         plan_allowed, plan_reason = await _task_plan_gate_allows(
             db,

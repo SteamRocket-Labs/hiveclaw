@@ -635,6 +635,13 @@ def test_company_retrieval_routes_share_gateway_and_never_accept_actor_identity(
 
     client, db, user = _client(monkeypatch, SimpleNamespace())
     monkeypatch.setattr(company_api, "_gateway", lambda: _Gateway())
+    # Company Knowledge is company-owned, not an employee-owned cross-owner
+    # resource: the per-read scoped-administrator audit was removed to keep
+    # ordinary company browsing free of audit noise (PDEC-013 correction).
+    # Mutations keep their governance/audit trails; real cross-owner reads
+    # (Personal KB, Agent Knowledge, sessions, resources) are audited at their
+    # own consumption boundaries and proven against real PostgreSQL there.
+    assert not hasattr(company_api, "_audit_scoped_business_admin_company_kb_access")
     forged_user_id = uuid.uuid4()
     forged_tenant_id = uuid.uuid4()
 
@@ -1307,10 +1314,20 @@ def test_source_contract_list_and_detail_return_summary_allowlist_only(monkeypat
     assert summary["default_sensitivity"] == "PL2_pii"
     # Internal/secret fields never serialize.
     forbidden = [
-        "connection_ref", "schema_ref", "cursor_policy_json", "cursor_kind",
-        "source_acl_mapping_policy_json", "export_policy_json", "retention_policy_json",
-        "legal_hold_policy_json", "contract_hash", "created_by_user_id", "owner_principal_ref",
-        "accountable_steward_ref", "idempotency_policy_json", "reviewed_by_json",
+        "connection_ref",
+        "schema_ref",
+        "cursor_policy_json",
+        "cursor_kind",
+        "source_acl_mapping_policy_json",
+        "export_policy_json",
+        "retention_policy_json",
+        "legal_hold_policy_json",
+        "contract_hash",
+        "created_by_user_id",
+        "owner_principal_ref",
+        "accountable_steward_ref",
+        "idempotency_policy_json",
+        "reviewed_by_json",
     ]
     for field in forbidden:
         assert field not in listed.text, field

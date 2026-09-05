@@ -43,6 +43,7 @@ from app.kernel.contracts import (
 )
 from app.models.agent import Agent
 from app.models.feature_flag import FeatureFlag
+from app.models.tenant import Tenant
 from app.models.user import User
 from app.runtime.context_budget import (
     ContextBudget,
@@ -567,6 +568,22 @@ async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
                     tenant_id=None,
                     max_tool_rounds=200,
                     tenant_resolution_error=f"Agent {agent_id} not found",
+                )
+            # Tenant liveness is re-read here — the last trustworthy DB load
+            # before model/tool work — so a company deactivated by the no-body
+            # DELETE or the admin toggle cannot reach runtime even when the
+            # agent→tenant mapping was resolved from a cached value in an
+            # earlier worker. The in-memory lifecycle helper below cannot see
+            # Tenant state.
+            tenant_active = (
+                await db.execute(select(Tenant.is_active).where(Tenant.id == tenant_id))
+            ).scalar_one_or_none()
+            if tenant_active is not True:
+                logger.warning("[Invoker] Agent %s tenant %s is inactive — fail-closed", agent_id, tenant_id)
+                return RuntimeConfig(
+                    tenant_id=agent.tenant_id,
+                    max_tool_rounds=200,
+                    tenant_resolution_error=f"Agent {agent_id} is not executable: tenant is inactive",
                 )
             lifecycle_reason = get_agent_lifecycle_block_reason(agent)
             if lifecycle_reason:

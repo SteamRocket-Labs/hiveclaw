@@ -40,6 +40,7 @@ import {
   SessionAgentTeamMemberControls,
 } from '../session-workbench/SessionAgentTeamControls';
 import {
+  useOperatorInspectorReveal,
   useResponsiveRuntimePanel,
   useThreadItemRuntimeController,
 } from '../session-workbench/threadItemRuntimeController';
@@ -1233,9 +1234,11 @@ function AgentChatSection({
     selectedItem: selectedThreadItem,
     selectItem: selectThreadItem,
     clearSelection: clearThreadItemSelection,
+    inspectorRevealRequest: threadItemRevealRequest,
   } = useThreadItemRuntimeController(activeSessionId, visibleTimeline);
 
-  const [runtimePanelCollapsed, setRuntimePanelCollapsed] = useResponsiveRuntimePanel();
+  const [runtimePanelCollapsed, setRuntimePanelCollapsed] = useResponsiveRuntimePanel(operatorView ? 'operator' : 'user');
+  useOperatorInspectorReveal(threadItemRevealRequest, setRuntimePanelCollapsed);
   const [focusedWorkflow, setFocusedWorkflow] = React.useState<RuntimeSectionItemModel | null>(null);
   const [focusedGitCheckpointId, setFocusedGitCheckpointId] = React.useState<string | null>(null);
   const gitScrollFrameRef = React.useRef<number | null>(null);

@@ -8,10 +8,10 @@
   "frozen_denominator": 96,
   "purpose": "The independently scoreable signed-in production denominator for Weekend RC 2026-08-30. It is separate from the deterministic CI manifest and permits no external fakes.",
   "external_fakes_allowed": false,
-  "contract_amended_on": "2026-08-31",
+  "contract_amended_on": "2026-09-05",
   "execution_contract": {
-    "executor": "one primary Codex owns the Goal, integration, production E2E and A2A, verdicts, deployment, evidence and delivery; native Codex multi-agent and subagents may perform bounded investigation, implementation, testing and review; external agent harnesses are prohibited",
-    "model_agency_policy": "Inside a Hive product turn, the selected runtime LLM owns task reasoning, semantic judgment, synthesis and answer language within the authenticated frame. In the RC loop, the primary Codex owns acceptance decomposition, evidence interpretation, priority, Journey or Finding verdicts and final handoff; the owner owns product-semantic and risk-authorization decisions. Subagents and mechanical checks own none of those semantics; checks may verify exact authority, manifest, commit, deployment, evidence, arithmetic, resource, recovery and machine-contract facts, but may not create, reject, upgrade, rewrite or prioritize a semantic verdict.",
+    "executor": "PDEC-012 supersedes the previous single-Codex and external-agent prohibition: zCode implements backend and functional code; Kimi Code implements frontend UI. For routine changes, Claude Code reviews first, then primary Codex independently inspects the code and evidence, checks the review conclusions and adds missed findings. Only at major milestones, Codex and Claude Code additionally perform reciprocal adversarial review of the plan and evidence, reconcile findings and reach an evidence-backed conclusion before advancing; this extra exchange is not required for every small change. One primary Codex owns the Goal, dispatch, integration, production E2E and A2A, final verdicts, deployment, evidence and delivery. Delegation uses the existing agent-delegation contract; workers and reviewers cannot commit, push, deploy or perform production effects.",
+    "model_agency_policy": "Inside a Hive product turn, the selected runtime LLM owns task reasoning, semantic judgment, synthesis and answer language within the authenticated frame. In the RC loop, the primary Codex owns acceptance decomposition, evidence interpretation, priority, Journey or Finding verdicts and final handoff; the owner owns product-semantic and risk-authorization decisions. Workers and Claude Code may independently reason, challenge assumptions and propose review findings; they cannot grant authority or final production acceptance. Mechanical checks may verify exact authority, manifest, commit, deployment, evidence, arithmetic, resource, recovery and machine-contract facts, but may not create, reject, upgrade, rewrite or prioritize a semantic verdict.",
     "proof_order_policy": "First prove Agent intelligence and self-evolution, then complete every frontend and backend functional path and functional recovery, then perform the exhaustive role-permission, RLS and adversarial-security pass, and only then freeze the release. Existing authorization, secret and external-effect boundaries remain enforced throughout, but permission hardening or stricter denial may not preempt or hide unrelated functional completion.",
     "fixture_policy": "The primary Codex creates, authenticates, reuses, revokes and cleans registered synthetic identities and objects in the Example Owner experimental tenant only through supported authenticated product or control-plane paths. Missing pre-existing sessions or fixtures are not blockers; forged claims or tokens, direct tenant or role database mutation, RLS weakening and broad bypass as business authority are prohibited.",
     "local_runtime_policy": "Missing in-repository builds, CLIs or benchmark adapters are implementation work and must be built from the repository and installed toolchain.",
@@ -51,7 +51,7 @@
     ]
   },
   "runtime_bindings": {
-    "fixture_catalog": "Gate 0 records exact synthetic object IDs, source hashes, selected model IDs and role bindings in redacted release evidence. The primary Codex may create or recover required lab identities and fixtures through supported authenticated paths; subagents do not perform production fixture effects, and credentials never enter this manifest.",
+    "fixture_catalog": "Gate 0 records exact synthetic object IDs, source hashes, selected model IDs and role bindings in redacted release evidence. The primary Codex may create or recover required lab identities and fixtures through supported authenticated paths; zCode, Kimi Code and Claude Code do not perform production fixture effects, and credentials never enter this manifest.",
     "configured_model_labels": ["minimax", "glm", "deepseek"],
     "advertised_knowledge_formats": ["pdf", "docx", "markdown", "txt"],
     "advertised_artifact_formats": ["pdf", "docx", "markdown", "txt"]
@@ -80,7 +80,7 @@
       "cleanup": ["retire or remove all Goal-created and registered synthetic company assets through governed lifecycle", "verify employee search no longer returns retired fixtures"]
     },
     "cross_role": {
-      "principal": "separately authenticated lab employee, company admin and scoped operator principals",
+      "principal": "separately authenticated lab employee, company admin, platform admin inside a valid selected company, and scoped technical operator principals",
       "allowed_effects": ["create and revoke synthetic grants", "perform read-only denied/not-found probes", "cancel synthetic active work after revocation"],
       "cleanup": ["revoke exact Goal-created and registered temporary grants and operator reasons", "remove Goal-created and registered synthetic role-test assets"]
     },
@@ -364,8 +364,8 @@
       },
       "variants": [
         {"id": "P15-EMP", "name": "employee_authority", "input": "Exercise employee-owned Agent, Session, Personal KB and allowed Company KB plus denied admin actions.", "acceptance_additions": ["employee sees only task-facing data and cannot inspect another employee"]},
-        {"id": "P15-ADMIN", "name": "company_admin_authority", "input": "Exercise member, Agent lifecycle, Company KB and permission governance plus denied personal-content reads.", "acceptance_additions": ["admin governance does not expose Personal KB or private Session content"]},
-        {"id": "P15-OPERATOR", "name": "platform_operator_authority", "input": "Open scoped operator evidence with a reason and attempt the same surface without scope.", "acceptance_additions": ["operator access is reason/scope/audit bound and not an employee default"]},
+        {"id": "P15-ADMIN", "name": "company_admin_authority", "input": "Exercise company business management including scoped employee private Sessions, files and knowledge; appoint another company administrator; credentials stay reference-only.", "acceptance_additions": ["scoped business reads and actions are attributed to the real administrator with audit and never expose plaintext credentials"]},
+        {"id": "P15-OPERATOR", "name": "platform_operator_authority", "input": "Open scoped operator evidence with a reason and attempt the same surface without scope.", "acceptance_additions": ["operator access is reason/scope/audit bound, is a technical inspection capability rather than a fourth product role, and is not required for scoped administrator business access"]},
         {"id": "P15-REVOKE", "name": "active_authority_revocation", "input": "Revoke one temporary grant while a synthetic Session/run and second tab are active.", "acceptance_additions": ["new effects stop promptly while unrelated authorized reasoning remains available"]}
       ]
     },
@@ -607,9 +607,9 @@
       },
       "variants": [
         {"id": "P29-EMP", "name": "employee_surface", "input": "Complete a normal task using only employee navigation and default disclosures.", "acceptance_additions": ["task, progress, decisions and deliverables dominate the reading flow"]},
-        {"id": "P29-CADMIN", "name": "company_admin_surface", "input": "Manage company Agent/knowledge/permission lifecycle without reading private employee content.", "acceptance_additions": ["company control plane is complete but privacy-bounded"]},
-        {"id": "P29-PADMIN", "name": "platform_admin_surface", "input": "Inspect tenant/provider/runtime/compliance health without default business-body access.", "acceptance_additions": ["platform controls remain tenant-scoped and auditable"]},
-        {"id": "P29-OPER", "name": "operator_surface", "input": "Open one reason-bound inspector for a failed synthetic run and perform an allowed repair.", "acceptance_additions": ["operator data stays out of employee DOM and operator has no semantic verdict authority"]}
+        {"id": "P29-CADMIN", "name": "company_admin_surface", "input": "Manage company Agent/knowledge/permission lifecycle, including scoped private employee content where the task requires it.", "acceptance_additions": ["company control plane is complete; scoped private reads stay attributed and audited; the company admin cannot cross companies or expose plaintext credentials"]},
+        {"id": "P29-PADMIN", "name": "platform_admin_surface", "input": "Inside a valid selected company, exercise business management plus tenant/provider/runtime/compliance inspection.", "acceptance_additions": ["platform controls remain tenant-scoped and auditable; business authority applies only inside the explicit target company and never impersonates an employee"]},
+        {"id": "P29-OPER", "name": "operator_surface", "input": "Open one reason-bound inspector for a failed synthetic run and perform an allowed repair.", "acceptance_additions": ["operator data stays out of employee DOM, operator has no semantic verdict authority, and operator is a technical inspector view rather than a fourth product identity"]}
       ]
     },
     {

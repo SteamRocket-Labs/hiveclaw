@@ -202,9 +202,12 @@ def test_redrive_threads_explicit_web_summary_retry_disposition(monkeypatch) -> 
     ],
 )
 def test_redrive_maps_wrong_tenant_and_non_dead_letter(error: Exception, expected_status: int, monkeypatch) -> None:
+    # The explicit tenant_id is only a consistency echo of the authenticated
+    # selected company: the actor's selection must match it (PDEC-013 / the
+    # one shared tenant-selection policy).
     tenant_id = uuid.uuid4()
     outbox_id = uuid.uuid4()
-    client, _db, _user = _client(role="platform_admin", tenant_id=uuid.uuid4())
+    client, _db, _user = _client(role="platform_admin", tenant_id=tenant_id)
 
     class _Service:
         async def redrive_dead_letter(self, **kwargs):
@@ -220,3 +223,14 @@ def test_redrive_maps_wrong_tenant_and_non_dead_letter(error: Exception, expecte
     )
 
     assert response.status_code == expected_status
+
+    # A query tenant outside the authenticated selection is not a second
+    # selector: the caller gets the truthful company-selection recovery error.
+    foreign_client, _foreign_db, _foreign_user = _client(role="platform_admin", tenant_id=uuid.uuid4())
+    foreign_response = foreign_client.post(
+        f"/runtime-terminal-boundaries/{outbox_id}/redrive",
+        params={"tenant_id": str(tenant_id)},
+        json={"reason": "Reviewed by the platform operator."},
+    )
+    assert foreign_response.status_code == 400
+    assert "Select the company first" in foreign_response.json()["detail"]

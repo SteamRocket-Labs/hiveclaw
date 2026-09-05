@@ -17,7 +17,7 @@ from typing import Any
 
 from fastapi import HTTPException, status
 from jose import JWTError, jwt
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -39,6 +39,8 @@ from app.models.local_agent_channel import (
 )
 from app.models.local_bridge import LocalAgentBridgeConnection
 from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+from app.models.tenant import Tenant
+from app.models.user import User
 from app.services.chat_artifact_delivery import create_or_bind_chat_session
 from app.services.local_agent_protocol import (
     build_execution_receipt,
@@ -385,15 +387,36 @@ async def resolve_ws_ticket(
     raw_ticket = _parse_ws_ticket(ticket)
     async with enter_rls_bypass(db, reason="local agent channel ws ticket lookup"):
         result = await db.execute(
-            select(LocalAgentChannelWsTicket).where(
+            select(LocalAgentChannelWsTicket, LocalAgentBridgeConnection, User, Tenant)
+            .outerjoin(
+                LocalAgentBridgeConnection,
+                LocalAgentBridgeConnection.id == LocalAgentChannelWsTicket.connection_id,
+            )
+            .outerjoin(
+                User,
+                and_(
+                    User.id == LocalAgentChannelWsTicket.user_id,
+                    User.tenant_id == LocalAgentChannelWsTicket.tenant_id,
+                    User.is_active.is_(True),
+                ),
+            )
+            .outerjoin(
+                Tenant,
+                and_(
+                    Tenant.id == LocalAgentChannelWsTicket.tenant_id,
+                    Tenant.is_active.is_(True),
+                ),
+            )
+            .where(
                 LocalAgentChannelWsTicket.ticket_hash == hash_secret(raw_ticket),
                 LocalAgentChannelWsTicket.consumed_at.is_(None),
             )
+            .execution_options(populate_existing=True)
         )
-        row = result.scalar_one_or_none()
-        connection = await db.get(LocalAgentBridgeConnection, row.connection_id) if row is not None else None
-    if row is None:
+        resolved = result.one_or_none()
+    if resolved is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid local agent channel ticket")
+    row, connection, user, tenant = resolved
     if (
         connection is None
         or connection.status != "active"
@@ -403,6 +426,8 @@ async def resolve_ws_ticket(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Local agent bridge connection is inactive"
         )
+    if user is None or not user.is_active or user.tenant_id != row.tenant_id or tenant is None or not tenant.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Local agent identity is inactive")
     if connection.expires_at is None or connection.expires_at <= utcnow():
         if connection.expires_at is not None:
             connection.status = "expired"
@@ -450,16 +475,96 @@ async def get_channel_session(
     return _session_payload(session)
 
 
+def _channel_session_business_user_id(
+    session: LocalAgentChannelSession, chat_session: ChatSession | None
+) -> uuid.UUID | None:
+    """The private human session target of a channel row.
+
+    ``LocalAgentChannelSession.owner_user_id`` is the host/Agent owner whose
+    runner consumes work; the mirrored ``ChatSession.user_id`` is the human
+    whose private business session this is. Cross-owner detection and audit
+    targets use the business user; the host owner stays a separate recorded
+    fact (PDEC-013).
+    """
+
+    business_user_id = getattr(chat_session, "user_id", None)
+    if business_user_id is not None:
+        return business_user_id
+    return getattr(session, "owner_user_id", None)
+
+
+async def audit_scoped_business_admin_channel_access(
+    db: AsyncSession,
+    *,
+    access_user: Any,
+    session: LocalAgentChannelSession,
+    action: str,
+    business_user_id: uuid.UUID | None = None,
+    target_user_ids: list[uuid.UUID] | None = None,
+    target_count: int | None = None,
+) -> None:
+    """Record one administrator business access to a managed local-agent session.
+
+    The cross-owner target is the business session user (the mirrored
+    ``ChatSession.user_id``), never the host owner alone: an administrator may
+    be the host of an Agent that mirrors an employee's private session. The row
+    carries both facts. Written through the request transaction exactly like
+    the ChatSession lane (``session.scoped_business_admin_access``): an audit
+    failure denies the access instead of silently releasing protected business
+    data. Collections pass the whole cross-owner target set once instead of
+    one row per session.
+    """
+
+    from app.core.permissions import SCOPED_BUSINESS_ADMIN_AUTHORITY_SOURCE
+    from app.core.policy import write_audit_event
+
+    resolved_business_user_id = business_user_id or getattr(session, "owner_user_id", None)
+    details: dict[str, Any] = {
+        "agent_id": str(getattr(session, "source_agent_id", "") or "") or None,
+        "session_owner_user_id": str(getattr(session, "owner_user_id", "")),
+        "actor_role": str(getattr(access_user, "role", "") or ""),
+        "authority_source": SCOPED_BUSINESS_ADMIN_AUTHORITY_SOURCE,
+        "outcome": "allowed",
+    }
+    if target_user_ids is not None:
+        details["session_user_id"] = str(resolved_business_user_id) if len(target_user_ids) == 1 else None
+        details["target_user_ids"] = [str(user_id) for user_id in target_user_ids[:50]]
+        details["target_count"] = int(target_count if target_count is not None else len(target_user_ids))
+    else:
+        details["session_user_id"] = str(resolved_business_user_id) if resolved_business_user_id else None
+    await write_audit_event(
+        db,
+        event_type="local_agent_channel.scoped_business_admin_access",
+        severity="info",
+        actor_type="user",
+        actor_id=access_user.id,
+        tenant_id=getattr(session, "tenant_id", None),
+        action=action,
+        resource_type="local_agent_channel_session",
+        resource_id=session.id,
+        details=details,
+    )
+
+
 async def get_channel_session_for_actor(
     db: AsyncSession,
     *,
     session_id: uuid.UUID,
     actor_user_id: uuid.UUID,
+    access_user: Any | None = None,
+    action: str = "read",
 ) -> tuple[dict[str, Any], uuid.UUID]:
     """Resolve a channel session visible to a browser actor.
 
     The channel row remains owned by the host user whose runner consumes work.
     A shared caller sees the session through its mirrored ChatSession.user_id.
+    A scoped business administrator (PDEC-013) recovers the same session from
+    the row's own tenant/scope without owning or mirroring it; the returned
+    host owner and the real initiating actor both stay unchanged. Cross-owner
+    detection uses the business session user, so an administrator who hosts an
+    Agent mirroring an employee's private session is still audited against
+    that employee; the audit is written through the request transaction and a
+    failure denies the access.
     """
 
     result = await db.execute(
@@ -476,9 +581,41 @@ async def get_channel_session_for_actor(
         .limit(1)
     )
     rows = result.all()
+    if not rows and access_user is not None:
+        from app.core.permissions import is_scoped_business_admin
+
+        admin_rows = (
+            await db.execute(
+                select(LocalAgentChannelSession, ChatSession)
+                .outerjoin(ChatSession, ChatSession.id == LocalAgentChannelSession.chat_session_id)
+                .where(
+                    LocalAgentChannelSession.id == session_id,
+                    LocalAgentChannelSession.status == "active",
+                )
+                .limit(1)
+            )
+        ).all()
+        if admin_rows and is_scoped_business_admin(access_user, resource_tenant_id=admin_rows[0][0].tenant_id):
+            rows = admin_rows
     if not rows:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Local agent channel session not found")
     session, chat_session = rows[0]
+    if access_user is not None:
+        from app.core.permissions import is_scoped_business_admin
+
+        business_user_id = _channel_session_business_user_id(session, chat_session)
+        if (
+            business_user_id is not None
+            and str(business_user_id) != str(access_user.id)
+            and is_scoped_business_admin(access_user, resource_tenant_id=session.tenant_id)
+        ):
+            await audit_scoped_business_admin_channel_access(
+                db,
+                access_user=access_user,
+                session=session,
+                action=action,
+                business_user_id=business_user_id,
+            )
     return _session_payload(session, chat_session), session.owner_user_id
 
 
@@ -566,8 +703,14 @@ async def list_agent_channel_sessions(
     actor_user_id: uuid.UUID | None = None,
     source_agent_id: uuid.UUID,
     limit: int = 50,
+    access_user: Any | None = None,
 ) -> list[dict[str, Any]]:
-    """List active local-channel sessions for one local Agent row."""
+    """List active local-channel sessions for one local Agent row.
+
+    When ``actor_user_id`` is None because a scoped business administrator
+    (PDEC-013) requested the managed inventory, one collection-level audit
+    event records the cross-owner administrator access.
+    """
 
     stmt = (
         select(LocalAgentChannelSession, ChatSession)
@@ -588,7 +731,40 @@ async def list_agent_channel_sessions(
     if actor_user_id is not None:
         stmt = stmt.where(ChatSession.user_id == actor_user_id)
     result = await db.execute(stmt)
-    return [_session_payload(session, chat_session) for session, chat_session in result.all()]
+    rows = result.all()
+    if access_user is not None and actor_user_id is None and rows:
+        from app.core.permissions import is_scoped_business_admin
+
+        # Cross-owner detection uses each row's business session user, not the
+        # shared host owner: a mixed collection is decided by the whole target
+        # set, and one collection-level audit names it without per-row noise.
+        cross_owner_rows = [
+            row
+            for row in rows
+            if (business := _channel_session_business_user_id(row[0], row[1])) is not None
+            and str(business) != str(access_user.id)
+        ]
+        if cross_owner_rows and is_scoped_business_admin(
+            access_user, resource_tenant_id=cross_owner_rows[0][0].tenant_id
+        ):
+            target_user_ids = sorted(
+                {
+                    business
+                    for row in cross_owner_rows
+                    if (business := _channel_session_business_user_id(row[0], row[1])) is not None
+                },
+                key=str,
+            )
+            await audit_scoped_business_admin_channel_access(
+                db,
+                access_user=access_user,
+                session=cross_owner_rows[0][0],
+                action="list",
+                business_user_id=target_user_ids[0] if len(target_user_ids) == 1 else None,
+                target_user_ids=target_user_ids,
+                target_count=len(cross_owner_rows),
+            )
+    return [_session_payload(session, chat_session) for session, chat_session in rows]
 
 
 async def resolve_agent_channel_session(
@@ -599,6 +775,8 @@ async def resolve_agent_channel_session(
     actor_user_id: uuid.UUID | None = None,
     source_agent_id: uuid.UUID,
     session_id: uuid.UUID,
+    access_user: Any | None = None,
+    audit_action: str = "read",
 ) -> dict[str, Any]:
     """Resolve either a LocalAgentChannelSession id or its mirrored ChatSession id."""
 
@@ -609,6 +787,9 @@ async def resolve_agent_channel_session(
         actor_user_id=actor_user_id,
         source_agent_id=source_agent_id,
         session_id=session_id,
+    )
+    await _audit_cross_owner_channel_access_if_admin(
+        db, access_user=access_user, session=session, chat_session=chat_session, action=audit_action
     )
     return _session_payload(session, chat_session)
 
@@ -646,6 +827,42 @@ async def _resolve_agent_channel_session_row(
     return rows[0]
 
 
+async def _audit_cross_owner_channel_access_if_admin(
+    db: AsyncSession,
+    *,
+    access_user: Any | None,
+    session: LocalAgentChannelSession,
+    chat_session: ChatSession | None,
+    action: str,
+) -> None:
+    """Audit one scoped-administrator access to another user's business session.
+
+    The cross-owner test compares the business session user (the mirrored
+    ``ChatSession.user_id``) with the accessing administrator — the host owner
+    alone never decides this, so an administrator hosting an Agent that mirrors
+    an employee's private session is audited against that employee. The
+    administrator's own sessions stay quiet and the audit goes through the
+    request transaction, so a write failure denies the access.
+    """
+
+    if access_user is None:
+        return
+    from app.core.permissions import is_scoped_business_admin
+
+    business_user_id = _channel_session_business_user_id(session, chat_session)
+    if business_user_id is None or str(business_user_id) == str(access_user.id):
+        return
+    if not is_scoped_business_admin(access_user, resource_tenant_id=session.tenant_id):
+        return
+    await audit_scoped_business_admin_channel_access(
+        db,
+        access_user=access_user,
+        session=session,
+        action=action,
+        business_user_id=business_user_id,
+    )
+
+
 async def archive_agent_channel_session(
     db: AsyncSession,
     *,
@@ -654,6 +871,7 @@ async def archive_agent_channel_session(
     actor_user_id: uuid.UUID | None = None,
     source_agent_id: uuid.UUID,
     session_id: uuid.UUID,
+    access_user: Any | None = None,
 ) -> dict[str, Any]:
     """Archive one local-channel session without deleting its replayable event history."""
 
@@ -664,6 +882,9 @@ async def archive_agent_channel_session(
         actor_user_id=actor_user_id,
         source_agent_id=source_agent_id,
         session_id=session_id,
+    )
+    await _audit_cross_owner_channel_access_if_admin(
+        db, access_user=access_user, session=session, chat_session=chat_session, action="delete"
     )
     session.status = "archived"
     if chat_session is not None:
@@ -771,11 +992,12 @@ async def create_browser_session_ws_ticket(
     actor_user_id: uuid.UUID,
     session_id: uuid.UUID,
     ttl_seconds: int = DEFAULT_BROWSER_WS_TICKET_SECONDS,
+    access_user: Any | None = None,
 ) -> dict[str, Any]:
     """Create a short-lived browser ticket for subscribing to one local-agent session."""
 
     _session, owner_user_id = await get_channel_session_for_actor(
-        db, session_id=session_id, actor_user_id=actor_user_id
+        db, session_id=session_id, actor_user_id=actor_user_id, access_user=access_user, action="ws_ticket"
     )
     expires_at = utcnow() + timedelta(seconds=ttl_seconds)
     token = jwt.encode(
@@ -799,7 +1021,20 @@ async def resolve_browser_session_ws_ticket(
     ticket: str,
     session_id: uuid.UUID,
 ) -> dict[str, uuid.UUID | None]:
-    """Validate a browser session ticket and return the user/session binding."""
+    """Validate a browser session ticket and return the user/session binding.
+
+    The ticket carries both the host owner (``sub``) and the real caller
+    (``actor``). Subscription consumes this resolver, so the caller's live
+    authority is re-verified here: the actor must still be active and still
+    hold the session (host owner, mirrored session user, or scoped business
+    administrator for the ticket tenant). A demoted or offboarded actor is
+    rejected even inside the ticket's short lifetime; host routing is never
+    widened to borrow the host owner's own human authority.
+    """
+
+    from app.core.permissions import is_scoped_business_admin
+    from app.database import enter_rls_bypass
+    from app.models.user import User
 
     raw_token = _parse_browser_ws_ticket(ticket)
     try:
@@ -812,7 +1047,62 @@ async def resolve_browser_session_ws_ticket(
     tenant_id = uuid.UUID(str(payload["tid"])) if payload.get("tid") else None
     if tenant_id is not None:
         await pin_rls_tenant_context(db, tenant_id)
-    await get_channel_session(db, session_id=session_id, owner_user_id=owner_user_id)
+    channel_rows = (
+        await db.execute(
+            select(LocalAgentChannelSession, ChatSession)
+            .outerjoin(ChatSession, ChatSession.id == LocalAgentChannelSession.chat_session_id)
+            .where(
+                LocalAgentChannelSession.id == session_id,
+                LocalAgentChannelSession.owner_user_id == owner_user_id,
+            )
+            .limit(1)
+        )
+    ).all()
+    if not channel_rows:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Local agent channel session not found")
+    _channel_session, chat_session = channel_rows[0]
+
+    actor_claim = payload.get("actor")
+    if not actor_claim:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Local agent browser ticket actor missing")
+    try:
+        actor_user_id = uuid.UUID(str(actor_claim))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Local agent browser ticket actor invalid"
+        ) from exc
+
+    actor: User | None = await db.get(User, actor_user_id)
+    if actor is None:
+        # A platform administrator's canonical row lives in their home tenant
+        # and is invisible under the ticket tenant scope; re-read the live
+        # identity under an audited bypass before deciding.
+        async with enter_rls_bypass(
+            db,
+            reason="local agent browser ws ticket actor lookup",
+            actor_id=str(actor_user_id),
+        ) as bypass_db:
+            actor = await bypass_db.get(User, actor_user_id)
+    if actor is None or not bool(getattr(actor, "is_active", False)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Local agent browser ticket actor inactive")
+
+    actor_is_host = actor_user_id == owner_user_id
+    actor_is_mirrored_user = chat_session is not None and str(getattr(chat_session, "user_id", "")) == str(
+        actor_user_id
+    )
+    actor_is_scoped_admin = is_scoped_business_admin(actor, resource_tenant_id=tenant_id)
+    if not (actor_is_host or actor_is_mirrored_user or actor_is_scoped_admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Local agent browser ticket actor no longer has access to this session",
+        )
+    # The scoped-administrator branch authorized this subscription whenever the
+    # business session user is someone other than the actor — including an
+    # actor who merely hosts the Agent. Record that cross-owner access with
+    # the real actor and the real business target.
+    await _audit_cross_owner_channel_access_if_admin(
+        db, access_user=actor, session=_channel_session, chat_session=chat_session, action="ws_subscribe"
+    )
     return {"tenant_id": tenant_id, "owner_user_id": owner_user_id, "session_id": session_id}
 
 

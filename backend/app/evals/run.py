@@ -646,6 +646,17 @@ def main(argv: list[str] | None = None, *, output_root: str | Path | None = None
     parser.add_argument("--hive-bearer-env")
     parser.add_argument("--hive-revision")
     parser.add_argument("--hive-binary-sha256")
+    parser.add_argument("--freecode-build-manifest")
+    parser.add_argument("--freecode-build-manifest-sha256")
+    parser.add_argument("--hermes-python")
+    parser.add_argument("--hermes-python-sha256")
+    parser.add_argument("--hermes-python-environment-sha256")
+    parser.add_argument("--hermes-source-root")
+    parser.add_argument("--hermes-source-revision")
+    parser.add_argument("--hermes-source-sha256")
+    parser.add_argument("--hermes-freeze-root")
+    parser.add_argument("--hermes-auth-store")
+    parser.add_argument("--hermes-auth-store-sha256")
     parser.add_argument("--require-same-credential-domain", action="store_true")
     parser.add_argument("--fail-under", type=float, default=None, help="E8 G3: exit 1 if pass_rate < this")
     args = parser.parse_args(argv)
@@ -657,6 +668,17 @@ def main(argv: list[str] | None = None, *, output_root: str | Path | None = None
         hive_agent_id=args.hive_agent_id,
         hive_revision=args.hive_revision,
         hive_binary_sha256=args.hive_binary_sha256,
+        freecode_build_manifest=args.freecode_build_manifest,
+        freecode_build_manifest_sha256=args.freecode_build_manifest_sha256,
+        hermes_python=args.hermes_python,
+        hermes_python_sha256=args.hermes_python_sha256,
+        hermes_python_environment_sha256=args.hermes_python_environment_sha256,
+        hermes_source_root=args.hermes_source_root,
+        hermes_source_revision=args.hermes_source_revision,
+        hermes_source_sha256=args.hermes_source_sha256,
+        hermes_freeze_root=args.hermes_freeze_root,
+        hermes_auth_store=args.hermes_auth_store,
+        hermes_auth_store_sha256=args.hermes_auth_store_sha256,
         external_profile_authorized=args.external_profile_authorized,
         require_same_credential_domain=args.require_same_credential_domain,
     )

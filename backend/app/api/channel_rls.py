@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import enter_rls_bypass, pin_rls_tenant_context
 from app.models.agent import Agent
 from app.models.channel_config import ChannelConfig
+from app.models.tenant import Tenant
 
 
 async def load_public_agent_channel_config(
@@ -25,6 +26,12 @@ async def load_public_agent_channel_config(
     We use a narrow audited bypass only to resolve the channel record and owning
     tenant from the untrusted URL agent id, then immediately return to normal
     tenant-scoped RLS before provider validation and message ingestion continue.
+
+    A channel row whose company is retired or missing resolves like a missing
+    row: a previously valid signed/configured channel must not carry provider
+    ingress into a deactivated company's Agent runtime. Channel credentials are
+    only scrubbed on tenant deletion — the admin toggle deactivates without
+    scrubbing, so this liveness read is the boundary that holds there.
     """
     async with enter_rls_bypass(
         db,
@@ -50,6 +57,13 @@ async def load_public_agent_channel_config(
                 # expose that same trusted tenant to the downstream durable
                 # inbox instead of leaving a fail-open/None identity gap.
                 config.tenant_id = tenant_id
+
+        if tenant_id is not None:
+            tenant_active = (
+                await bypass_db.execute(select(Tenant.is_active).where(Tenant.id == tenant_id))
+            ).scalar_one_or_none()
+            if tenant_active is not True:
+                return None
 
     if tenant_id is not None:
         await pin_rls_tenant_context(db, tenant_id)

@@ -14,7 +14,9 @@ from app.database import tenant_scoped_session
 from app.models.agent import Agent
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
+from app.models.tenant import Tenant
 from app.models.user import User
+from app.runtime.tenant_admission import RuntimeTenantPreconditionError
 from app.services.channel_ingress_context import use_channel_ingress_context
 from app.services.channel_ingress_inbox import ClaimedChannelIngressEvent
 
@@ -246,6 +248,28 @@ async def dispatch_channel_ingress_event(item: ClaimedChannelIngressEvent) -> di
             require_tenant=True,
             source="channel_ingress_dispatch",
         ) as db:
+            # The claim-time liveness join cannot be trusted through dispatch:
+            # the company can be deactivated between the inbox claim commit and
+            # this boundary. Re-read the Tenant row inside the transaction that
+            # is about to admit materialized-message recovery, payload handlers
+            # (whose call_agent_llm path applies permission-mode, tool-permission,
+            # and plan-confirmation effects before RuntimeTask staging), so a
+            # disabled company's channel turn stops here with the typed tenant
+            # precondition instead of producing those direct effects.
+            tenant_is_active = (
+                await db.execute(select(Tenant.is_active).where(Tenant.id == item.tenant_id))
+            ).scalar_one_or_none()
+            if tenant_is_active is not True:
+                raise RuntimeTenantPreconditionError(
+                    reason_code="tenant_inactive",
+                    message=(
+                        "channel ingress dispatch is blocked because the tenant "
+                        f"{item.tenant_id} is inactive or missing."
+                    ),
+                    source="channel_ingress_dispatch",
+                    tenant_id=item.tenant_id,
+                    agent_id=item.agent_id,
+                )
             recovered = await _resume_materialized_user_message(db, item)
             result = recovered or await _dispatch_verified_payload(db, item)
 

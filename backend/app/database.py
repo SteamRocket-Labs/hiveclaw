@@ -651,12 +651,28 @@ async def enter_rls_bypass(
                     reason,
                 )
             else:
-                tenant_value = _current_tenant_id.get()
-                try:
-                    restored = _normalize_rls_tenant_value(tenant_value)
-                except ValueError:
-                    logger.error("[RLS] Invalid tenant id %r after BYPASS; failing closed to ''", tenant_value)
-                    restored = ""
+                # Restore the scope that actually existed before entry. When
+                # this scope was nested on a session that already persisted a
+                # scope (an outer BYPASS or a pinned tenant), that persisted
+                # scope is the restore target so the GUC and session info
+                # agree for the rest of the outer scope. The ContextVar is a
+                # fallback only for sessions that entered with no scope.
+                if had_previous_session_info:
+                    try:
+                        restored = _normalize_rls_transaction_scope_value(previous_session_info)
+                    except ValueError:
+                        logger.error(
+                            "[RLS] Invalid persisted scope %r after BYPASS; failing closed to ''",
+                            previous_session_info,
+                        )
+                        restored = ""
+                else:
+                    tenant_value = _current_tenant_id.get()
+                    try:
+                        restored = _normalize_rls_tenant_value(tenant_value)
+                    except ValueError:
+                        logger.error("[RLS] Invalid tenant id %r after BYPASS; failing closed to ''", tenant_value)
+                        restored = ""
                 restore_session_info()
                 await session.execute(text(_rls_tenant_statement(restored)))
         except Exception as exc:  # noqa: BLE001 - never mask the body's exception from finally

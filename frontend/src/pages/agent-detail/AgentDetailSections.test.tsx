@@ -3892,7 +3892,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('Edit document');
     expect(markup).not.toContain('proposal.docx');
     expect(markup).not.toContain('{&quot;ok&quot;: true}');
-    expect(markup).toContain('No delivered artifacts in this session yet.');
+    expect(markup).toContain('session-runtime-panel is-collapsed');
+    expect(markup).not.toContain('data-testid="session-runtime-collapsed-deliverables"');
     expect(markup).not.toContain('data-testid="session-workspace-documents-unattributed"');
     expect(markup).not.toContain('data-testid="session-workspace-documents-current"');
     expect(markup).not.toContain('data-testid="chat-artifact-row-open"');
@@ -4196,7 +4197,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Deny');
   });
 
-  it('renders child session runtime events with continuation metadata', () => {
+  it('keeps child session runtime evidence behind the collapsed ordinary-user rail', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
         agent={{ id: 'agent-1', name: 'Release Bot' }}
@@ -4269,8 +4270,9 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(markup).toContain('Child Session');
-    expect(markup).toContain('Research worker completed.');
+    expect(markup).toContain('data-testid="run-disclosure-block"');
+    expect(markup).toContain('session-runtime-panel is-collapsed');
+    expect(markup).not.toContain('data-testid="session-runtime-console"');
     expect(markup).not.toContain('session:child-session-1');
     expect(markup).not.toContain('run:run-1');
   });
@@ -4801,7 +4803,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="chat-work-ledger-panel"');
   });
 
-  it('renders grouped workspace documents and the segmented runtime console in the right panel', () => {
+  it('keeps the ordinary-user runtime rail collapsed with glanceable live counts on first render', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
         agent={{ id: 'agent-1', name: 'Runtime Bot' }}
@@ -4933,7 +4935,15 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('data-testid="session-runtime-panel"');
+    expect(markup).toContain('session-runtime-panel is-collapsed');
     expect(markup).toContain('data-testid="session-runtime-collapse-toggle"');
+    expect(markup).toContain('Expand runtime panel');
+    expect(markup).toContain('data-testid="session-runtime-collapsed-deliverables"');
+    expect(markup).toContain('Show deliverables (1)');
+    expect(markup).toContain('data-testid="session-runtime-collapsed-attention"');
+    expect(markup).toContain('Show items waiting for you (4)');
+    expect(markup).toContain('data-testid="session-runtime-collapsed-running"');
+    expect(markup).toContain('Show running items (3)');
     expect(markup).toContain('data-testid="session-gitline"');
     expect(markup).toContain('data-testid="session-gitline-checkpoint"');
     expect(markup).toContain('data-testid="session-gitline-branch"');
@@ -4946,46 +4956,15 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="chat-work-ledger-summary"');
     expect(markup).toContain('data-testid="chat-work-ledger-panel"');
     expect(markup).toContain('Task 1-2 of 2');
-    expect(markup).toContain('Deliverables');
-    expect(markup).toContain('data-testid="session-workspace-documents-current"');
-    expect(markup).toContain('Current session');
     expect(markup).toContain('runtime-report.md');
-    expect(markup).toContain('By Reviewer Bot');
-    expect(markup).not.toContain('data-testid="session-workspace-documents-historical"');
-    expect(markup).not.toContain('Historical');
-    expect(markup).not.toContain('data-testid="session-workspace-documents-unattributed"');
-    expect(markup).not.toContain('Unattributed');
-    expect(markup).toContain('data-testid="session-runtime-divider"');
-    expect(markup).toContain('data-testid="session-runtime-run-status"');
-    expect(markup).toContain('Run status');
-    expect(markup.indexOf('Deliverables')).toBeLessThan(markup.indexOf('Run status'));
-    expect(markup).toContain('data-testid="session-runtime-console"');
-    expect(markup).toContain('data-testid="session-runtime-summary-strip"');
-    expect(markup).toContain('data-runtime-state="blocked"');
-    expect(markup).toContain('Runtime panel session');
-    expect(markup).toContain('3 running');
-    expect(markup).toContain('3 waiting');
-    expect(markup).toContain('data-testid="session-runtime-waiters"');
-    expect(markup).toContain('data-testid="session-runtime-waiter-member-1"');
-    expect(markup).toContain('data-testid="session-runtime-waiter-subagent-1"');
-    expect(markup).toContain('data-testid="session-runtime-waiter-workflow-step-1"');
-    expect(markup).toContain('Reviewer');
-    expect(markup).toContain('One-shot critic');
-    expect(markup).toContain('Review plan');
-    expect(markup).toContain('2m 5s');
-    expect(markup).toContain('8.7K');
-    expect(markup).toContain('8');
-    expect(markup).toContain('data-testid="session-runtime-segment-team"');
-    expect(markup).toContain('data-testid="session-runtime-segment-a2a"');
-    expect(markup).toContain('data-testid="session-runtime-segment-workers"');
-    expect(markup).toContain('data-testid="session-runtime-segment-workflow"');
-    expect(markup).toContain('data-testid="session-runtime-segment-activity"');
-    expect(markup).toContain('data-testid="session-runtime-segment-body-a2a"');
-    expect(markup).toContain('Finance digital employee');
-    expect(markup).toContain('The target model provider rejected the request.');
-    expect(markup).not.toContain('workflow-run-1');
-    expect(markup).not.toContain('ccplus-closure-audit');
-    expect(markup).toContain('Review plan');
+    expect(markup).not.toContain('data-testid="session-runtime-console"');
+    expect(markup).not.toContain('data-testid="session-runtime-summary-strip"');
+    expect(markup).not.toContain('data-testid="session-runtime-waiters"');
+    expect(markup).not.toContain('data-testid="session-runtime-segment-team"');
+    expect(markup).not.toContain('data-testid="session-runtime-segment-workers"');
+    expect(markup).not.toContain('data-testid="session-runtime-segment-workflow"');
+    expect(markup).not.toContain('data-testid="session-runtime-segment-activity"');
+    expect(markup).not.toContain('Run status');
     expect(markup).not.toContain('data-testid="session-runtime-main-row"');
     expect(markup).not.toContain('data-testid="session-runtime-metrics"');
     expect(markup).not.toContain('data-testid="session-runtime-agent-teams"');
@@ -5009,7 +4988,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('data-testid="session-native-controls"');
   });
 
-  it('omits repeated artifact counts and keeps the runtime console shell', () => {
+  it('omits repeated artifact counts and keeps the ordinary-user rail collapsed by default', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
         agent={{ id: 'agent-1', name: 'Runtime Bot' }}
@@ -5102,11 +5081,14 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('repeat-report.md');
     expect(markup).not.toContain('×2');
     expect(markup).not.toContain('2 deliveries');
-    expect(markup).toContain('data-testid="session-runtime-console"');
-    expect(markup).toContain('data-testid="session-runtime-segment-team"');
-    expect(markup).toContain('data-testid="session-runtime-segment-workers"');
-    expect(markup).toContain('data-testid="session-runtime-segment-workflow"');
-    expect(markup).toContain('data-testid="session-runtime-segment-activity"');
+    expect(markup).toContain('session-runtime-panel is-collapsed');
+    expect(markup).toContain('data-testid="session-runtime-collapse-toggle"');
+    expect(markup).toContain('data-testid="session-runtime-collapsed-deliverables"');
+    expect(markup).not.toContain('data-testid="session-runtime-console"');
+    expect(markup).not.toContain('data-testid="session-runtime-segment-team"');
+    expect(markup).not.toContain('data-testid="session-runtime-segment-workers"');
+    expect(markup).not.toContain('data-testid="session-runtime-segment-workflow"');
+    expect(markup).not.toContain('data-testid="session-runtime-segment-activity"');
     expect(markup).not.toContain('data-testid="session-runtime-background"');
     expect(markup).not.toContain('data-testid="session-runtime-notifications"');
     expect(markup).not.toContain('data-testid="session-runtime-runs"');
@@ -5114,7 +5096,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('No active collaboration surfaces');
   });
 
-  it('renders one-shot Sub-agent workers with Inspect only, not a follow-up conversation action', () => {
+  it('keeps one-shot Sub-agent worker detail behind the collapsed ordinary-user rail', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
         agent={{ id: 'agent-1', name: 'Runtime Bot' }}
@@ -5175,10 +5157,10 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(markup).toContain('data-testid="session-runtime-segment-body-workers"');
-    expect(markup).toContain('One-shot critic');
-    expect(markup).toContain('data-runtime-action="subagent-worker-inspect"');
-    expect(markup).not.toContain('data-runtime-action="subagent-worker-retry"');
+    expect(markup).toContain('session-runtime-panel is-collapsed');
+    expect(markup).toContain('data-testid="session-runtime-collapse-toggle"');
+    expect(markup).not.toContain('data-testid="session-runtime-console"');
+    expect(markup).not.toContain('data-testid="session-runtime-segment-body-workers"');
   });
 
   it('offers a new-worker request for ordinary Sub-agent failure but not reconciliation replay', () => {

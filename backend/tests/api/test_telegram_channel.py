@@ -23,7 +23,8 @@ class _ScalarResult:
 
 
 class _FakeDB:
-    """Minimal DB double that returns a fixed scalar for every query."""
+    """Minimal DB double returning a fixed scalar, plus an exact Tenant
+    liveness scalar for the production ``select(Tenant.is_active)`` probe."""
 
     def __init__(self, config=None):
         self._config = config
@@ -32,6 +33,10 @@ class _FakeDB:
         self.committed = False
 
     async def execute(self, _stmt):
+        if "tenants.is_active" in str(_stmt):
+            # Retired-company negatives are proven by the real-PostgreSQL
+            # inactive-tenant gates; the fake always reports a live company.
+            return _ScalarResult(True)
         return _ScalarResult(self._config)
 
     def add(self, obj):
@@ -68,6 +73,9 @@ class _SequenceDB:
     async def execute(self, _stmt):
         if "SET LOCAL" in str(_stmt):
             return _ScalarResult(None)
+        if "tenants.is_active" in str(_stmt):
+            # Production inactive-tenant gate: the test company is live.
+            return _ScalarResult(True)
         if not self._results:
             raise AssertionError("Unexpected execute() call")
         return self._results.pop(0)

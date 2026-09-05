@@ -3,9 +3,9 @@ document_id: weekend-rc-2026-08-30-index
 owner: Example Owner / Codex
 status: active
 authority: canonical-index
-last_reviewed: 2026-08-31
-source_commit: c18b181c
-verification_status: model-agency-rls-and-external-readiness-aligned
+last_reviewed: 2026-09-04
+source_commit: 0ce51f049e03c689a440075a5de8a7a9d99c609c
+verification_status: owner-approved-renewal-pdec-012
 ---
 
 # Weekend RC 2026-08-30 验收文档组
@@ -47,6 +47,8 @@ verification_status: model-agency-rls-and-external-readiness-aligned
 - [Automation、Hook 与外部能力](domains/automation-hooks-and-capabilities.md)
 - [前端与产品消费](domains/frontend-and-product-consumption.md)
 
+相关审计：[CC+ 产品目标、系统差距与代码精简审计（2026-09-05）](../../ccplus-product-and-code-audit-2026-09-05.md)。该文是评估快照与建议，不替代本组目标、状态、Findings 或发布 verdict。
+
 ## 机器清单边界
 
 现有 [`acceptance/atomic_user_journeys.v1.json`](../../../acceptance/atomic_user_journeys.v1.json) 是被后端架构测试和 Playwright 消费的 15 条确定性 CI 旅程，允许声明过的受控外部 fake。它是 CI 行为底线，不是本轮生产 NPTCR 分母。
@@ -62,8 +64,9 @@ python3 backend/scripts/weekend_rc_gate.py score --deployed-commit <40-char-appl
 
 - Codex Goal 只保存最终目标和停止条件；本目录与冻结 manifest 记录 owner 接受的验收合同。Hive 产品 turn 的 selected runtime LLM 负责任务语义，RC 循环的主 Codex负责解释真实证据并形成验收 verdict，owner 负责产品/风险裁决；文档和机器清单都不能机械地产生语义结论。
 - GitHub Issue 只是从 fresh finding 投影出的 bounded work packet；label、comment、assignee、open/closed 都不是 Journey/Finding verdict。
-- 主 Codex 独占 Goal、最终验收和交付权威；允许使用 Codex 原生 Multi-Agent 与 subagent 处理有边界的调查、实现、测试和 review。Kimi、zCode、Coze、ACP、`agent-delegation` 等外部 Harness 仍禁用；原生 worker 结果也不拥有 verdict。
-- 代码事实由 Git diff、live wiring 和测试证明；生产事实只能进入不可变 evidence。Codex 独立复核前，不得因 worker、Issue、PR 或 CI 显示成功而升级状态。
+- 2026-09-04 的 PDEC-012 替代旧执行分工：zCode 负责后端及功能实现，Kimi Code 负责前端 UI；主 Codex 随后独立检查代码和证据、核对结论并补充遗漏。2026-09-05 PDEC-014 进一步规定 CC 不可用时不得等待：优先由未参与该候选实现的 zCode/Kimi 交叉只读 review，Codex 加严源码、调用链、逆向红例与真实运行证据复核；重大节点仍做方案/反例/证据对账，但不绑定 CC 品牌。
+- 主 Codex 保留 Goal、派单、集成、生产 E2E/A2A、部署、最终验收和交付权威；通过现有 `agent-delegation` 派发有边界的任务，不新增 controller 或账本。worker/reviewer 的独立判断是审查意见，不直接改写 Journey verdict。
+- 代码事实由 Git diff、live wiring 和测试证明；生产事实只能进入不可变 evidence。非作者交叉审查与 Codex 严格复核前，不得因 worker、Issue、PR 或 CI 显示成功而升级状态；作者自审不算独立意见。
 - 每个已复现根因使用一个可独立回滚的 Codex integration commit；不为每个 checklist/test/receipt 建 commit，也不在每次 push 后自动部署。
 - 最终应用提交 `D` 同时部署三个 Railway 服务；随后纯证据提交 `E` 记录在 `D` 上完成的生产双遍。`E` 不重新部署，避免证据提交产生新的未验应用身份。
 
@@ -99,4 +102,4 @@ python3 backend/scripts/weekend_rc_gate.py score --deployed-commit <40-char-appl
 
 ## 上位权威
 
-本目录服从仓库 `AGENTS.md`、`docs/hive-sota-master-goal.md`、`docs/ccplus-north-star-contract-2026-06-24.md` 和当前 frontend design authority。若产品语义冲突，按 `AGENTS.md` 的 North Star Decision Order 裁决；本目录只负责本轮 Release Candidate 的范围、执行与证明。
+本目录服从仓库 `AGENTS.md`、`docs/hive-sota-master-goal.md`、`docs/ccplus-north-star-contract-2026-06-24.md` 和当前 frontend design authority。若产品语义冲突，以当前 owner 裁决和 `AGENTS.md` 的产品目标及 hard invariants 核对；不能自行裁决的范围或风险变化回到 owner。本目录只负责本轮 Release Candidate 的范围、执行与证明。

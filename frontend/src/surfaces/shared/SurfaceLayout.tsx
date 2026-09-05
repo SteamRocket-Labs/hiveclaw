@@ -65,17 +65,15 @@ export default function SurfaceLayout({
         </div>
 
         <div className="sidebar-bottom">
-          {user?.role !== 'platform_admin' && (
-            <div className="sidebar-section" style={{ borderBottom: '1px solid var(--border-subtle)', paddingBottom: '8px', marginBottom: 0 }}>
-              <NavLink
-                to="/plaza"
-                className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}
-                title={t('nav.plaza', 'Agent Circle')}
-              >
-                <span className="sidebar-item-text">{t('nav.plaza', 'Agent Circle')}</span>
-              </NavLink>
-            </div>
-          )}
+          <div className="sidebar-section" style={{ borderBottom: '1px solid var(--border-subtle)', paddingBottom: '8px', marginBottom: 0 }}>
+            <NavLink
+              to="/plaza"
+              className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}
+              title={t('nav.plaza', 'Agent Circle')}
+            >
+              <span className="sidebar-item-text">{t('nav.plaza', 'Agent Circle')}</span>
+            </NavLink>
+          </div>
 
           <div className="sidebar-footer">
             <div

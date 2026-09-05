@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, Up
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import check_agent_access
+from app.core.permissions import check_agent_access, effective_agent_owner_id, is_scoped_business_admin
 from app.core.security import get_current_user
 from app.database import get_db
 from app.api.upload import WORKSPACE_ROOT, save_upload_for_agent
@@ -306,13 +306,29 @@ async def approve_agent_bridge_pairing(
     tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
     if tenant_id is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Agent has no tenant")
+    # PDEC-013 separates the human approval actor from the host/runtime owner.
+    # A scoped administrator approving an employee Agent binds the device
+    # connection to that Agent's host owner (whose runner and workspace
+    # consume it) and is recorded as the audited approval actor. The
+    # rebinding is role-scoped on purpose: a legacy ``manage`` grantee is not
+    # administrator identity and can never mint an owner-bound daemon
+    # credential for someone else's Agent (it keeps binding to itself).
+    binding_user_id = current_user.id
+    approval_metadata: dict = {"approval_surface": "local_agent_link_card"}
+    if is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None)):
+        host_owner_user_id = effective_agent_owner_id(agent)
+        if host_owner_user_id is not None and str(host_owner_user_id) != str(current_user.id):
+            binding_user_id = host_owner_user_id
+            approval_metadata["approval_actor_user_id"] = str(current_user.id)
+            approval_metadata["approval_actor_role"] = str(getattr(current_user, "role", "") or "")
+            approval_metadata["binding_user_id"] = str(binding_user_id)
     return await bridge_service.approve_pairing_session(
         db,
         user_code=user_code,
-        user_id=current_user.id,
+        user_id=binding_user_id,
         tenant_id=tenant_id,
         agent_id=agent.id,
-        metadata={"approval_surface": "local_agent_link_card"},
+        metadata=approval_metadata,
     )
 
 

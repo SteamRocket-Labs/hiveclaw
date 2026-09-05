@@ -50,22 +50,13 @@ export const WORKSPACE_SETTINGS_SECTIONS = WORKSPACE_SECTIONS.filter(
     section.tab !== 'dashboard' && section.tab !== 'knowledge',
 );
 
-const PLATFORM_ADMIN_WORKSPACE_TABS = new Set<WorkspaceSectionTab>([
-  'dashboard',
-  'info',
-  'llm',
-  'memory',
-  'extensions',
-  'runtime_budgets',
-  'quotas',
-  'audit',
-]);
-
 export function workspaceSectionsForRole(role: string | undefined): WorkspaceSection[] {
-  if (role === 'org_admin') return WORKSPACE_SECTIONS;
-  if (role === 'platform_admin') {
-    return WORKSPACE_SECTIONS.filter((section) => PLATFORM_ADMIN_WORKSPACE_TABS.has(section.tab));
-  }
+  // PDEC-013: both administrator roles operate the complete selected company's
+  // workspace. A platform administrator's company context is the authenticated
+  // selected company (X-Tenant-Id); the server stays authoritative and answers
+  // with a typed selection/not-found response when no valid company is
+  // selected, so no client-side tab subset is a second authority boundary.
+  if (role === 'org_admin' || role === 'platform_admin') return WORKSPACE_SECTIONS;
   return [];
 }
 

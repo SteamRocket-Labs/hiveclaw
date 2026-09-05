@@ -27,7 +27,9 @@ router = APIRouter(tags=["guard-policies"])
 
 
 def _require_org_admin(current_user: User) -> None:
-    if current_user.role != "org_admin":
+    """Company administrator gate (PDEC-013): org admins and scoped platform
+    administrators; the per-route tenant pin enforces the company binding."""
+    if current_user.role not in ("org_admin", "platform_admin"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Organization administrator access required",

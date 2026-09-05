@@ -18,11 +18,18 @@ export default function ConfirmModal({ open, title, message, confirmLabel, cance
     const { t } = useTranslation();
     const resolvedConfirmLabel = confirmLabel ?? t('common.confirm');
     const resolvedCancelLabel = cancelLabel ?? t('common.cancel');
-    const btnRef = useRef<HTMLButtonElement>(null);
+    const confirmRef = useRef<HTMLButtonElement>(null);
+    const cancelRef = useRef<HTMLButtonElement>(null);
 
     useEffect(() => {
-        if (open) setTimeout(() => btnRef.current?.focus(), 100);
-    }, [open]);
+        if (!open) return;
+        // A danger dialog parks the delayed initial focus on Cancel so a
+        // reflexive Enter cannot confirm the destructive action; other dialogs
+        // keep the confirm focus. Cleanup prevents focusing stale content
+        // after close or unmount.
+        const timer = setTimeout(() => (danger ? cancelRef : confirmRef).current?.focus(), 100);
+        return () => clearTimeout(timer);
+    }, [open, danger]);
 
     return (
         <Modal
@@ -32,8 +39,8 @@ export default function ConfirmModal({ open, title, message, confirmLabel, cance
             width={380}
             footer={
                 <>
-                    <Button variant="secondary" onClick={onCancel}>{resolvedCancelLabel}</Button>
-                    <Button ref={btnRef} variant={danger ? 'danger' : 'primary'} onClick={onConfirm}>{resolvedConfirmLabel}</Button>
+                    <Button ref={cancelRef} variant="secondary" onClick={onCancel}>{resolvedCancelLabel}</Button>
+                    <Button ref={confirmRef} variant={danger ? 'danger' : 'primary'} onClick={onConfirm}>{resolvedConfirmLabel}</Button>
                 </>
             }
         >

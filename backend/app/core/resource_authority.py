@@ -18,9 +18,11 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import (
+    SCOPED_BUSINESS_ADMIN_AUTHORITY_SOURCE,
     authorize_agent_operator_inspection,
     check_agent_access,
     check_agent_operator_reachability,
+    is_scoped_business_admin,
 )
 from app.core.policy import check_permission, permission_effect_applies
 from app.models.agent import Agent
@@ -160,6 +162,46 @@ async def load_explicit_resource_grant_ids(
     }
 
 
+async def _audit_scoped_business_admin_resource_access(
+    db: AsyncSession,
+    *,
+    user: User,
+    agent: Agent,
+    decision_resource_kind: str,
+    decision_resource_id: uuid.UUID,
+    action: str,
+    owner_user_id: uuid.UUID | None,
+    root_session_id: uuid.UUID | None,
+    operator_view_requested: bool,
+    details_extra: dict | None = None,
+) -> None:
+    """Record one administrator business access to another principal's resource."""
+
+    from app.core.policy import write_audit_event
+
+    await write_audit_event(
+        db,
+        event_type="resource.scoped_business_admin_access",
+        severity="info",
+        actor_type="user",
+        actor_id=user.id,
+        tenant_id=getattr(agent, "tenant_id", None),
+        action=action,
+        resource_type=decision_resource_kind,
+        resource_id=decision_resource_id,
+        details={
+            "agent_id": str(agent.id),
+            "owner_user_id": str(owner_user_id) if owner_user_id else None,
+            "root_session_id": str(root_session_id) if root_session_id else None,
+            "actor_role": str(getattr(user, "role", "") or ""),
+            "authority_source": SCOPED_BUSINESS_ADMIN_AUTHORITY_SOURCE,
+            "operator_view_requested": operator_view_requested,
+            "outcome": "allowed",
+            **(details_extra or {}),
+        },
+    )
+
+
 async def authorize_resource_action(
     db: AsyncSession,
     user: User,
@@ -174,11 +216,18 @@ async def authorize_resource_action(
     allow_manager_override: bool = False,
     manager_override_reason: str | None = None,
     agent_access: tuple[Agent, str] | None = None,
+    audit: bool = True,
 ) -> ResourceAuthorityDecision:
     """Authorize a resource without widening generic Agent access.
 
     Unknown legacy rows are quarantined before owner/session/grant evaluation.
-    Cross-owner inspection is read-only and requires an independent live
+    Scoped business administrators (PDEC-013) hold business authority over the
+    managed company's resources by role, before — and regardless of — any
+    optional operator-view projection, mirroring the session lane: an
+    administrator who passes operator-view inputs keeps business access with
+    the actual scoped administrator authority identified in evidence, never an
+    unexplained 403 or a grant requirement. For everyone else, cross-owner
+    inspection is read-only and requires an independent live
     ``operator.inspect`` grant plus a reason.
     """
 
@@ -215,21 +264,54 @@ async def authorize_resource_action(
                 action=action,
                 authority_source="root_session_owner",
             )
-        if await _has_explicit_resource_grant(
-            db,
-            user=user,
+
+    # Scoped business administrators (PDEC-013) manage every business resource
+    # of their company by role, before — and regardless of — any ordinary
+    # per-resource grant: a cross-owner administrator who also holds a legacy
+    # grant is still attributed and audited exactly once as the scoped
+    # administrator. The decision stays attributed to the real administrator;
+    # callers keep the original manifest owner/root provenance unchanged.
+    # Administrator authority takes precedence over the optional operator
+    # projection (the same order as the session lane), so an explicitly
+    # requested operator view is recorded as ignored evidence instead of
+    # turning business access into a 403 or a grant requirement.
+    if is_scoped_business_admin(user, resource_tenant_id=getattr(agent, "tenant_id", None)):
+        if audit:
+            await _audit_scoped_business_admin_resource_access(
+                db,
+                user=user,
+                agent=agent,
+                decision_resource_kind=resource_kind,
+                decision_resource_id=resource_id,
+                action=action,
+                owner_user_id=owner_user_id,
+                root_session_id=root_session_id,
+                operator_view_requested=bool(allow_manager_override),
+            )
+        return ResourceAuthorityDecision(
+            agent=agent,
+            access_level=access_level,
             resource_kind=resource_kind,
             resource_id=resource_id,
             action=action,
-        ):
-            return ResourceAuthorityDecision(
-                agent=agent,
-                access_level=access_level,
-                resource_kind=resource_kind,
-                resource_id=resource_id,
-                action=action,
-                authority_source="resource_grant",
-            )
+            authority_source=SCOPED_BUSINESS_ADMIN_AUTHORITY_SOURCE,
+        )
+
+    if state == OWNED_AUTHORITY_STATE and await _has_explicit_resource_grant(
+        db,
+        user=user,
+        resource_kind=resource_kind,
+        resource_id=resource_id,
+        action=action,
+    ):
+        return ResourceAuthorityDecision(
+            agent=agent,
+            access_level=access_level,
+            resource_kind=resource_kind,
+            resource_id=resource_id,
+            action=action,
+            authority_source="resource_grant",
+        )
 
     if allow_manager_override and action == "read":
         authority_source = await authorize_agent_operator_inspection(
@@ -323,8 +405,48 @@ async def filter_authorized_resources(
                 root_session_id=root_session_id_of(row),
                 authority_state=authority_state_of(row),
                 agent_access=resolved_agent_access,
+                # One audit per collection access, not one per visible row.
+                audit=False,
             )
         except HTTPException:
             continue
         visible.append((row, decision))
+
+    admin_visible = [
+        (row, decision)
+        for row, decision in visible
+        if decision.authority_source == SCOPED_BUSINESS_ADMIN_AUTHORITY_SOURCE
+    ]
+    if admin_visible:
+        agent, _access_level = resolved_agent_access
+        collection_id = uuid.uuid5(
+            _WORKSPACE_RESOURCE_NAMESPACE,
+            f"{agent_id}:{resource_kind}:collection",
+        )
+        # The collection audit names the whole cross-owner target set instead
+        # of borrowing provenance from an arbitrary first row.
+        distinct_owners = sorted(
+            {
+                str(owner_id)
+                for owner_id in (owner_user_id_of(row) for row, _decision in admin_visible)
+                if owner_id is not None
+            }
+        )
+        single_owner = uuid.UUID(distinct_owners[0]) if len(distinct_owners) == 1 else None
+        await _audit_scoped_business_admin_resource_access(
+            db,
+            user=user,
+            agent=agent,
+            decision_resource_kind=f"{resource_kind}_collection",
+            decision_resource_id=collection_id,
+            action=action,
+            owner_user_id=single_owner,
+            root_session_id=None,
+            operator_view_requested=False,
+            details_extra={
+                "target_owner_user_ids": distinct_owners[:50],
+                "target_owner_count": len(distinct_owners),
+                "target_resource_count": len(admin_visible),
+            },
+        )
     return visible

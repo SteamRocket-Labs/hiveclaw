@@ -26,8 +26,10 @@ body:
     attributes:
       label: Execution owner
       options:
-        - Primary Codex
-        - Native Codex subagent — primary Codex remains accountable
+        - zCode — backend and functional implementation
+        - Kimi Code — frontend UI and interaction
+        - Claude Code — first independent review
+        - Primary Codex — subsequent independent review and integration
     validations:
       required: true
 
@@ -80,9 +82,9 @@ body:
           required: true
         - label: This Issue is an optional audit reference and does not assign execution or own a verdict.
           required: true
-        - label: Native subagent results remain candidates until the primary Codex integrates and independently verifies them.
+        - label: Worker results remain candidates; Claude Code reviews first, then primary Codex independently checks code, evidence, conclusions and missed issues before integration.
           required: true
-        - label: No external agent harness or second semantic controller is used.
+        - label: Use the PDEC-012 agent-delegation roles without a second semantic controller; only major milestones add reciprocal adversarial review and plan/evidence reconciliation by Codex and Claude Code.
           required: true
         - label: This packet grants no production, credential, billing, destructive, or irreversible effect.
           required: true

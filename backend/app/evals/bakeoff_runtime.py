@@ -4,24 +4,34 @@ from __future__ import annotations
 
 import json
 import ast
+import base64
 import hashlib
 import ipaddress
+import marshal
 import os
+import platform
 import re
+import shlex
 import shutil
+import signal
 import stat
 import subprocess
+import sys
+import tempfile
+import tarfile
+import tomllib
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from pathlib import PurePosixPath
 from shutil import which as _which
-from time import monotonic, sleep
+from time import monotonic, sleep, time
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import httpx
 
+from app.services.exact_secret_boundary import ExactSecretBoundary
 from app.services.subprocess_env import build_agent_subprocess_env
 
 
@@ -68,8 +78,25 @@ J4_STATUSES = {
     "invalid_output",
     "attestation_failed",
 }
+FREECODE_BUILD_MANIFEST_SCHEMA = "hive.j4.freecode_build_manifest.v2"
 FREECODE_BINARY_ENV = "HIVE_J4_FREECODE_BINARY"
-HERMES_BINARY = Path.home() / ".local" / "bin" / "hermes"
+FREECODE_CODEX_PROVIDER_CONTRACT = "freecode.codex-fetch-adapter.CLAUDE_CODE_USE_OPENAI.v1"
+FREECODE_J4_HOOK = Path(__file__).with_name("freecode_j4_hook.py")
+HERMES_J4_LAUNCHER = Path(__file__).with_name("hermes_j4_launcher.py")
+HERMES_J4_SOURCE_ROOT_ENV = "HIVE_J4_HERMES_SOURCE_ROOT"
+HERMES_J4_STATE_DB_ENV = "HIVE_J4_HERMES_STATE_DB"
+HERMES_J4_SITE_PACKAGES_ENV = "HIVE_J4_HERMES_SITE_PACKAGES"
+HERMES_J4_WORKSPACE_ROOT_ENV = "HIVE_J4_WORKSPACE_ROOT"
+HERMES_J4_SOURCE_SCOPE = "all_worktree_bytes_except_git_and_validated_runtime_roots"
+_HERMES_J4_AMBIENT_ENV_DENYLIST = (
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS",
+    "NPM_CONFIG_REGISTRY",
+    "PIP_INDEX_URL",
+    "PIP_EXTRA_INDEX_URL",
+)
 _J4_RUNTIME_ORDER = ("hive", "freecode", "hermes")
 _J4_ALLOWED_TOOLS = {
     "hive": ("read_file", "write_file", "edit_file", "glob_search", "grep_search"),
@@ -107,6 +134,17 @@ class J4RuntimeConfig:
     hive_agent_id: str | None = None
     hive_revision: str | None = None
     hive_binary_sha256: str | None = None
+    freecode_build_manifest: str | None = None
+    freecode_build_manifest_sha256: str | None = None
+    hermes_python: str | None = None
+    hermes_python_sha256: str | None = None
+    hermes_python_environment_sha256: str | None = None
+    hermes_source_root: str | None = None
+    hermes_source_revision: str | None = None
+    hermes_source_sha256: str | None = None
+    hermes_freeze_root: str | None = None
+    hermes_auth_store: str | None = None
+    hermes_auth_store_sha256: str | None = None
     external_profile_authorized: bool = False
     require_same_credential_domain: bool = False
     max_tool_rounds: int = 6
@@ -116,6 +154,38 @@ class J4RuntimeConfig:
     max_files: int = 64
     max_bytes: int = 1_000_000
     http_client: Any | None = field(default=None, repr=False, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedJ4Runtimes:
+    """Frozen, locally attested runtime inputs shared by every J4 scenario."""
+
+    freecode_manifest: dict[str, Any]
+    freecode_input_manifest: dict[str, Any]
+    freecode_manifest_sha256: str
+    freecode_build_receipt: dict[str, Any]
+    freecode_build_receipt_sha256: str
+    freecode_hook: Path
+    freecode_hook_sha256: str
+    freecode_hook_python: Path
+    freecode_hook_python_sha256: str
+    freecode_hook_python_environment_sha256: str
+    hermes_binary: dict[str, Any]
+    hermes_python: Path
+    hermes_venv_python: Path
+    hermes_base_python_root: Path
+    hermes_launcher: Path
+    hermes_source_root: Path
+    hermes_source_paths: frozenset[str] = field(repr=False, compare=False)
+    hermes_site_packages: Path
+    hermes_auth_projection: dict[str, Any] = field(repr=False, compare=False)
+    hermes_auth_profile: dict[str, Any] = field(repr=False, compare=False)
+    hermes_auth_source: Path = field(repr=False, compare=False)
+    hermes_auth_source_sha256: str = field(repr=False, compare=False)
+    hermes_auth_projection_sha256: str = field(repr=False, compare=False)
+    hermes_auth_run_nonce: bytes = field(repr=False, compare=False)
+    cleanup_root: Path | None = field(default=None, repr=False, compare=False)
+    cleanup_handle: Any | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(slots=True)
@@ -130,6 +200,8 @@ class ProcessRunResult:
 
 
 def _freecode_binary() -> Path | None:
+    """Resolve the legacy standalone bakeoff CLI; formal J4 never uses this path."""
+
     configured = str(os.environ.get(FREECODE_BINARY_ENV) or "").strip()
     discovered = configured or _which("freecode")
     return Path(discovered).expanduser().resolve() if discovered else None
@@ -168,6 +240,411 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _safe_sha256_file(path: Path) -> str:
+    try:
+        return _sha256_file(path)
+    except OSError:
+        return ""
+
+
+def _tree_identity(
+    root: Path,
+    *,
+    allowed_external_python_root: Path | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Hash every filesystem entry below ``root`` without following symlinks."""
+
+    resolved = root.expanduser().resolve()
+    identity: dict[str, Any] = {
+        "root": str(resolved),
+        "sha256": "",
+        "entry_count": 0,
+        "total_bytes": 0,
+    }
+    if not resolved.is_dir():
+        return identity, ["tree_unavailable"]
+    entries: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for current_root, directory_names, file_names in os.walk(resolved, followlinks=False):
+        current = Path(current_root)
+        symlink_directories = sorted(name for name in directory_names if (current / name).is_symlink())
+        directory_names[:] = sorted(name for name in directory_names if name not in symlink_directories)
+        relative_root = current.relative_to(resolved)
+        for name in [*directory_names, *symlink_directories, *sorted(file_names)]:
+            path = current / name
+            relative = (relative_root / name).as_posix() if relative_root != Path(".") else name
+            try:
+                details = path.lstat()
+                mode = f"{stat.S_IMODE(details.st_mode):04o}"
+                resolved_target_sha256: str | None = None
+                if stat.S_ISDIR(details.st_mode):
+                    entries.append({"path": relative, "kind": "directory", "mode": mode})
+                    continue
+                if stat.S_ISLNK(details.st_mode):
+                    target = os.readlink(path)
+                    try:
+                        path.resolve(strict=True).relative_to(resolved)
+                    except (OSError, ValueError):
+                        allowed_root = (
+                            allowed_external_python_root.resolve(strict=True)
+                            if allowed_external_python_root is not None
+                            else None
+                        )
+                        python_entry = bool(
+                            re.fullmatch(
+                                r"(?:bin|Scripts)/python(?:\d+(?:\.\d+)*)?(?:\.exe)?",
+                                relative,
+                                flags=re.IGNORECASE,
+                            )
+                        )
+                        try:
+                            resolved_target = path.resolve(strict=True)
+                            if allowed_root is None or not python_entry:
+                                raise ValueError
+                            resolved_target.relative_to(allowed_root)
+                            if not resolved_target.is_file():
+                                raise ValueError
+                            resolved_target_sha256 = _sha256_file(resolved_target)
+                        except (OSError, ValueError):
+                            errors.append(f"tree_external_symlink:{relative}")
+                    payload = target.encode("utf-8")
+                    kind = "symlink"
+                    size = len(payload)
+                    digest = _sha256_bytes(payload)
+                elif stat.S_ISREG(details.st_mode):
+                    kind = "file"
+                    size = details.st_size
+                    digest = _sha256_file(path)
+                else:
+                    errors.append(f"tree_unsupported_entry:{relative}")
+                    continue
+            except OSError:
+                errors.append(f"tree_unreadable:{relative}")
+                continue
+            entry = {
+                "path": relative,
+                "kind": kind,
+                "mode": mode,
+                "size": size,
+                "sha256": digest,
+            }
+            if resolved_target_sha256 is not None:
+                entry["resolved_target_sha256"] = resolved_target_sha256
+            entries.append(entry)
+    identity["entry_count"] = len(entries)
+    identity["total_bytes"] = sum(int(entry.get("size") or 0) for entry in entries)
+    errors = sorted(set(errors))
+    if not errors:
+        identity["sha256"] = _sha256_json(entries)
+    return identity, errors
+
+
+def _trusted_command(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str] | None:
+    try:
+        return subprocess.run(  # noqa: S603
+            command,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=20,
+            env=build_agent_subprocess_env(home=Path.home()),
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _load_freecode_build_manifest(config: J4RuntimeConfig) -> tuple[dict[str, Any], list[str]]:
+    """Validate owner-pinned FreeCode provenance without executing the artifact."""
+
+    configured_path = str(config.freecode_build_manifest or "").strip()
+    expected_manifest_sha = str(config.freecode_build_manifest_sha256 or "").strip().lower()
+    if not configured_path or not re.fullmatch(r"[0-9a-f]{64}", expected_manifest_sha):
+        return {}, ["freecode_build_manifest_attestation_required"]
+    path = Path(configured_path).expanduser()
+    try:
+        path_stat = path.lstat()
+        if not stat.S_ISREG(path_stat.st_mode) or path.is_symlink():
+            return {}, ["freecode_build_manifest_unsupported_entry"]
+        raw = path.read_bytes()
+    except OSError:
+        return {}, ["freecode_build_manifest_unavailable"]
+    if _sha256_bytes(raw) != expected_manifest_sha:
+        return {}, ["freecode_build_manifest_sha256_mismatch"]
+    try:
+        manifest = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {}, ["freecode_build_manifest_invalid"]
+    if not isinstance(manifest, dict) or manifest.get("schema") != FREECODE_BUILD_MANIFEST_SCHEMA:
+        return {}, ["freecode_build_manifest_invalid"]
+
+    source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
+    build = manifest.get("build") if isinstance(manifest.get("build"), dict) else {}
+    errors: list[str] = []
+    source_root = Path(str(source.get("root") or "")).expanduser()
+    revision = str(source.get("revision") or "").strip().lower()
+    tree = str(source.get("tree") or "").strip().lower()
+    if not source_root.is_absolute() or not source_root.is_dir():
+        errors.append("freecode_source_unavailable")
+    else:
+        head = _trusted_command(["git", "-C", str(source_root), "rev-parse", "HEAD"], cwd=source_root)
+        observed_tree = _trusted_command(["git", "-C", str(source_root), "rev-parse", "HEAD^{tree}"], cwd=source_root)
+        status_result = _trusted_command(
+            ["git", "-C", str(source_root), "status", "--porcelain=v1", "-z", "--untracked-files=no"],
+            cwd=source_root,
+        )
+        if head is None or head.returncode != 0 or head.stdout.strip().lower() != revision:
+            errors.append("freecode_source_revision_mismatch")
+        if observed_tree is None or observed_tree.returncode != 0 or observed_tree.stdout.strip().lower() != tree:
+            errors.append("freecode_source_tree_mismatch")
+        if status_result is None or status_result.returncode != 0 or status_result.stdout:
+            errors.append("freecode_source_dirty")
+        observed_source_sha = _sha256_json({"revision": revision, "tree": tree})
+        if observed_source_sha != str(source.get("sha256") or "").strip().lower():
+            errors.append("freecode_source_sha256_mismatch")
+        for relative, field_name in (
+            ("bun.lock", "lock_sha256"),
+            ("package.json", "package_sha256"),
+            ("scripts/build.ts", "build_script_sha256"),
+        ):
+            candidate = source_root / relative
+            if not candidate.is_file() or _safe_sha256_file(candidate) != str(source.get(field_name) or "").lower():
+                errors.append(f"freecode_source_{field_name}_mismatch")
+        try:
+            package = json.loads((source_root / "package.json").read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            package = {}
+        if not isinstance(package, dict) or not str(package.get("version") or "").strip():
+            errors.append("freecode_source_version_unavailable")
+        tracked_result = _trusted_command(
+            ["git", "-C", str(source_root), "ls-files", "-z"],
+            cwd=source_root,
+        )
+        tracked = (
+            {value for value in tracked_result.stdout.split("\0") if value}
+            if tracked_result is not None and tracked_result.returncode == 0
+            else set()
+        )
+        content_sha256, content_errors = _source_manifest_digest(source_root, tracked)
+        if not tracked or content_errors or content_sha256 != str(source.get("content_sha256") or "").strip().lower():
+            errors.append("freecode_source_content_sha256_mismatch")
+
+    bun_path = Path(str(build.get("bun_path") or "")).expanduser()
+    try:
+        bun_stat = bun_path.lstat()
+    except OSError:
+        bun_stat = None
+    bun_identity_valid = not (
+        not bun_path.is_absolute()
+        or bun_stat is None
+        or not stat.S_ISREG(bun_stat.st_mode)
+        or bun_path.is_symlink()
+        or _safe_sha256_file(bun_path) != str(build.get("bun_sha256") or "").lower()
+    )
+    if not bun_identity_valid:
+        errors.append("freecode_build_bun_identity_mismatch")
+    argv = build.get("argv")
+    expected_argv = [str(bun_path), "run", "./scripts/build.ts"]
+    if argv != expected_argv:
+        errors.append("freecode_build_argv_invalid")
+    if not str(build.get("bun_version") or "").strip():
+        errors.append("freecode_build_bun_version_required")
+    elif bun_identity_valid:
+        observed_bun = _trusted_command([str(bun_path), "--version"], cwd=source_root)
+        if (
+            observed_bun is None
+            or observed_bun.returncode != 0
+            or observed_bun.stdout.strip() != str(build["bun_version"]).strip()
+        ):
+            errors.append("freecode_build_bun_version_mismatch")
+    if str(build.get("os") or "").strip().lower() != platform.system().lower():
+        errors.append("freecode_build_os_mismatch")
+    if str(build.get("arch") or "").strip().lower() != platform.machine().lower():
+        errors.append("freecode_build_arch_mismatch")
+    if build.get("attestation") != "harness-fresh-build-request":
+        errors.append("freecode_build_request_attestation_required")
+    dependencies_root = Path(str(build.get("dependencies_root") or "")).expanduser()
+    if not dependencies_root.is_absolute() or dependencies_root != source_root / "node_modules":
+        errors.append("freecode_build_dependencies_root_invalid")
+    else:
+        dependencies_identity, dependencies_errors = _tree_identity(dependencies_root)
+        if dependencies_errors:
+            errors.append("freecode_build_dependencies_unavailable")
+        elif (
+            dependencies_identity.get("sha256") != str(build.get("dependencies_sha256") or "").strip().lower()
+            or dependencies_identity.get("entry_count") != build.get("dependencies_entry_count")
+            or dependencies_identity.get("total_bytes") != build.get("dependencies_total_bytes")
+        ):
+            errors.append("freecode_build_dependencies_identity_mismatch")
+    return manifest, sorted(set(errors))
+
+
+def _jwt_expiry(value: str) -> int | None:
+    parts = value.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)).decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    expires_at = payload.get("exp") if isinstance(payload, dict) else None
+    return expires_at if isinstance(expires_at, int) and not isinstance(expires_at, bool) else None
+
+
+def _hermes_auth_projection(pool_entry: dict[str, Any]) -> dict[str, Any]:
+    """Expose one non-refreshable Codex credential and no unrelated profile material."""
+
+    selected = {
+        "id": "p08-j4-selected",
+        "auth_type": "oauth",
+        "priority": 0,
+        "source": "manual:p08-j4",
+        "access_token": pool_entry["access_token"],
+    }
+    return {
+        "version": 1,
+        "providers": {},
+        "credential_pool": {"openai-codex": [selected]},
+        "active_provider": "openai-codex",
+    }
+
+
+def _hermes_auth_secret_boundary(projection: dict[str, Any]) -> ExactSecretBoundary:
+    pool = projection.get("credential_pool")
+    entries = pool.get("openai-codex") if isinstance(pool, dict) else None
+    entry = entries[0] if isinstance(entries, list) and len(entries) == 1 else {}
+    return ExactSecretBoundary.from_pairs(
+        (f"hermes_auth.{name}", str(entry.get(name) or "")) for name in ("access_token", "refresh_token")
+    )
+
+
+def _read_private_regular_file(path: Path) -> bytes | None:
+    """Read a bounded current-user private regular file without following its leaf."""
+
+    descriptor: int | None = None
+    try:
+        if path.resolve(strict=True) != path:
+            return None
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        details = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(details.st_mode)
+            or (hasattr(os, "getuid") and details.st_uid != os.getuid())
+            or stat.S_IMODE(details.st_mode) & (stat.S_IRWXG | stat.S_IRWXO)
+        ):
+            return None
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > 16 * 1024 * 1024:
+                return None
+            chunks.append(chunk)
+        return b"".join(chunks)
+    except OSError:
+        return None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _private_regular_file_sha256(path: Path) -> str | None:
+    payload = _read_private_regular_file(path)
+    return _sha256_bytes(payload) if payload is not None else None
+
+
+def _load_hermes_auth_profile(
+    config: J4RuntimeConfig,
+) -> tuple[dict[str, Any], dict[str, Any], Path | None, list[str]]:
+    configured = str(config.hermes_auth_store or "").strip()
+    expected_sha256 = str(config.hermes_auth_store_sha256 or "").strip().lower()
+    if not configured or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        return {}, {}, None, ["hermes_auth_store_attestation_required"]
+    path = Path(os.path.abspath(Path(configured).expanduser()))
+    descriptor: int | None = None
+    try:
+        resolved = path.resolve(strict=True)
+        if resolved != path:
+            return {}, {}, None, ["hermes_auth_store_symlink_boundary"]
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        details = os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode):
+            return {}, {}, None, ["hermes_auth_store_unsupported_entry"]
+        if hasattr(os, "getuid") and details.st_uid != os.getuid():
+            return {}, {}, None, ["hermes_auth_store_owner_mismatch"]
+        if stat.S_IMODE(details.st_mode) & (stat.S_IRWXG | stat.S_IRWXO):
+            return {}, {}, None, ["hermes_auth_store_permissions_too_broad"]
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > 16 * 1024 * 1024:
+                return {}, {}, None, ["hermes_auth_store_too_large"]
+            chunks.append(chunk)
+        raw = b"".join(chunks)
+    except OSError:
+        return {}, {}, None, ["hermes_auth_store_unavailable"]
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    if _sha256_bytes(raw) != expected_sha256:
+        return {}, {}, None, ["hermes_auth_store_sha256_mismatch"]
+    try:
+        auth_store = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {}, {}, None, ["hermes_auth_store_invalid"]
+    providers = auth_store.get("providers") if isinstance(auth_store, dict) else None
+    provider = providers.get("openai-codex") if isinstance(providers, dict) else None
+    credential_pool = auth_store.get("credential_pool") if isinstance(auth_store, dict) else None
+    pool = credential_pool.get("openai-codex") if isinstance(credential_pool, dict) else None
+    selection_exact = isinstance(pool, list) and len(pool) == 1 and isinstance(pool[0], dict)
+    selected = pool[0] if selection_exact else {}
+    access_token = selected.get("access_token")
+    expires_at = _jwt_expiry(access_token) if isinstance(access_token, str) else None
+    required_lifetime = config.wall_clock_seconds * len(_SCENARIOS) * len(_J4_RUNTIME_ORDER) + 300
+    errors: list[str] = []
+    if not isinstance(auth_store, dict) or auth_store.get("active_provider") != "openai-codex":
+        errors.append("hermes_auth_store_active_provider_mismatch")
+    if not isinstance(access_token, str) or not access_token.strip() or expires_at is None:
+        errors.append("hermes_codex_access_token_unavailable")
+    elif expires_at <= int(time()) + required_lifetime:
+        errors.append("hermes_codex_access_token_window_insufficient")
+    if not selection_exact:
+        errors.append("hermes_codex_credential_selection_ambiguous")
+    endpoint_values = [provider.get("base_url") if isinstance(provider, dict) else None, selected.get("base_url")]
+    if any(
+        str(value).rstrip("/") != "https://chatgpt.com/backend-api/codex"
+        for value in endpoint_values
+        if value not in (None, "")
+    ):
+        errors.append("hermes_codex_endpoint_mismatch")
+    if selected.get("last_status") not in (None, "", "ok"):
+        errors.append("hermes_codex_credential_not_usable")
+    if selected.get("auth_type") != "oauth":
+        errors.append("hermes_codex_auth_type_mismatch")
+    if errors:
+        return {}, {}, None, sorted(set(errors))
+    projection = _hermes_auth_projection(selected)
+    return (
+        {
+            "provider": "openai-codex",
+            "source_attested": True,
+            "expires_at": expires_at,
+            "refresh_capable": False,
+            "credential_count": 1,
+        },
+        projection,
+        path,
+        [],
+    )
 
 
 def _safe_relative_path(value: str) -> str:
@@ -224,29 +701,346 @@ def _workspace_diff(before: list[dict[str, Any]], after: list[dict[str, Any]]) -
     return changes
 
 
-def _clone_seed(seed_root: Path, workspace_root: Path) -> tuple[list[dict[str, Any]], list[str]]:
+def _clone_seed(
+    seed_root: Path,
+    workspace_root: Path,
+) -> tuple[list[dict[str, Any]], list[str], tuple[int, int] | None]:
+    """Clone the seed and return the identity of the workspace actually created.
+
+    The (st_dev, st_ino) identity lets every later evidence or scoring
+    consumer prove it is reading the directory this clone created, not a
+    same-path replacement; None means the identity could not be observed.
+    """
+
     workspace_root.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(seed_root, workspace_root, copy_function=shutil.copy2)
-    return _manifest(workspace_root)
+    try:
+        details = workspace_root.lstat()
+    except OSError:
+        return _manifest(workspace_root) + (None,)
+    return (*_manifest(workspace_root), (details.st_dev, details.st_ino))
 
 
 def _scorer_source_sha256() -> str:
     return _sha256_file(Path(__file__).resolve())
 
 
+def _scorer_runtime_identity() -> dict[str, Any]:
+    """Bind the loaded scorer implementation to the source frozen for this run."""
+
+    loaded_functions = {
+        name: _sha256_bytes(marshal.dumps(function.__code__))
+        for name, function in (
+            ("_safe_read", _safe_read),
+            ("_eval_integer_expression", _eval_integer_expression),
+            ("_external_score", _external_score),
+        )
+    }
+    return {
+        "source_sha256": _scorer_source_sha256(),
+        "loaded_code_sha256": _sha256_json(loaded_functions),
+        "loaded_functions": loaded_functions,
+    }
+
+
+def _freeze_scorer_source(
+    output_dir: Path,
+    identity: dict[str, Any],
+) -> tuple[Path | None, list[str]]:
+    source = Path(__file__).resolve()
+    destination = output_dir / "j4_scoring" / "scorer" / "bakeoff_runtime.py"
+    claim_error = _claim_owned_output_subtree(output_dir, ("j4_scoring", "scorer"))
+    if claim_error == "unsupported":
+        return None, ["scorer_boundary_unsupported"]
+    if claim_error is not None:
+        return None, ["scorer_boundary_unavailable"]
+    try:
+        if destination.exists():
+            if destination.is_symlink() or not destination.is_file():
+                return None, ["scorer_snapshot_unsupported_entry"]
+        else:
+            shutil.copy2(source, destination)
+    except (OSError, shutil.Error):
+        return None, ["scorer_snapshot_failed"]
+    if _safe_sha256_file(destination) != identity.get("source_sha256"):
+        return None, ["scorer_snapshot_mismatch"]
+    return destination, []
+
+
+def _scorer_runtime_stable(identity: dict[str, Any], frozen_source: Path) -> bool:
+    return (
+        _scorer_runtime_identity() == identity
+        and not frozen_source.is_symlink()
+        and _safe_sha256_file(frozen_source) == identity.get("source_sha256")
+    )
+
+
 def _runtime_workspace_path(output_dir: Path, runtime: str, envelope_id: str) -> Path:
     return output_dir / "j4_runtime" / runtime / envelope_id / "workspace"
+
+
+def _claim_owned_output_subtree(output_dir: Path, levels: tuple[str, ...]) -> str | None:
+    """Claim every level of an output subtree below the trusted output root.
+
+    Each pre-existing level must be a real directory (lstat; a symlink or any
+    non-directory entry is refused) and missing levels are created with
+    mode 0o700. Returns None when the whole chain is owned, "unsupported"
+    when a level is a symlink or non-directory, and "unavailable" when a
+    filesystem error blocks the claim.
+    """
+
+    parent = output_dir
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return "unavailable"
+    for name in levels:
+        candidate = parent / name
+        try:
+            candidate.mkdir(mode=0o700)
+        except FileExistsError:
+            try:
+                details = candidate.lstat()
+            except OSError:
+                return "unavailable"
+            if candidate.is_symlink() or not stat.S_ISDIR(details.st_mode):
+                return "unsupported"
+        except OSError:
+            return "unavailable"
+        parent = candidate
+    return None
+
+
+def _claim_j4_attempt_root(
+    output_dir: Path,
+    runtime: str,
+    envelope_id: str,
+) -> tuple[Path, tuple[int, int] | None, str | None]:
+    """Claim an exclusive attempt root beneath the owner-controlled output_dir.
+
+    Boundary contract, stated honestly: the lstat checks are conflict
+    detection against an owner mistake or a stale prior run inside the
+    trusted owner-controlled output root, not a sandbox against a hostile
+    same-UID writer — such a writer can swap a level between these checks
+    and the mkdir/lstat below, and closing that window would require
+    fd-relative mkdir/O_NOFOLLOW traversal that is deliberately not built.
+    Cleanup identity-checks only the roots this attempt directly created
+    (the attempt root and its runtime/state children); any other content
+    found beneath an owned root is removed recursively by path with the
+    standard-library symlink-safe rmtree, and a pre-existing or replaced
+    root is preserved and reported as a typed reconciliation instead of
+    being deleted or trusted.
+    """
+
+    fallback_root = output_dir / "j4_runtime" / runtime / envelope_id
+    parent_error = _claim_owned_output_subtree(output_dir, ("j4_runtime", runtime))
+    if parent_error == "unsupported":
+        return fallback_root, None, "attempt_parent_unsupported"
+    if parent_error is not None:
+        return fallback_root, None, "attempt_parent_unavailable"
+    attempt_root = output_dir / "j4_runtime" / runtime / envelope_id
+    try:
+        attempt_root.mkdir(mode=0o700)
+        details = attempt_root.lstat()
+    except FileExistsError:
+        return attempt_root, None, "attempt_root_conflict"
+    except OSError:
+        return attempt_root, None, "attempt_root_unavailable"
+    if attempt_root.is_symlink() or not stat.S_ISDIR(details.st_mode):
+        return attempt_root, None, "attempt_root_unsupported"
+    return attempt_root, (details.st_dev, details.st_ino), None
+
+
+def _j4_attempt_root_owned(attempt_root: Path, identity: tuple[int, int]) -> bool:
+    try:
+        details = attempt_root.lstat()
+    except OSError:
+        return False
+    return (
+        not attempt_root.is_symlink() and stat.S_ISDIR(details.st_mode) and (details.st_dev, details.st_ino) == identity
+    )
+
+
+def _remove_owned_j4_root(root: Path, identity: tuple[int, int]) -> str:
+    """Delete an attempt child root only while it is still exactly the directory
+    this attempt created. A replaced or unidentifiable path is preserved and
+    reported as "ambiguous"; an owned path that survives rmtree is "failed"."""
+
+    if not _j4_attempt_root_owned(root, identity):
+        return "ambiguous"
+    shutil.rmtree(root, ignore_errors=True)
+    if root.exists() or root.is_symlink():
+        return "failed"
+    return "removed"
+
+
+def _hermes_state_root(workspace_root: Path, envelope_id: str) -> Path:
+    """Return the state root owned only by this envelope's Hermes attempt."""
+
+    attempt_root = workspace_root.parent
+    if attempt_root.name != envelope_id:
+        raise ValueError("Hermes state root must be anchored to the exact envelope attempt")
+    return attempt_root / "state"
+
+
+def _initialize_hermes_attempt_home(
+    state_root: Path,
+    prepared: PreparedJ4Runtimes,
+) -> tuple[dict[str, str], list[str]]:
+    directories = {
+        "HERMES_HOME": state_root / "hermes-home",
+        "HOME": state_root / "os-home",
+        "CODEX_HOME": state_root / "codex-home",
+        "HERMES_MANAGED_DIR": state_root / "managed",
+        "TMPDIR": state_root / "tmp",
+    }
+    try:
+        for directory in directories.values():
+            directory.mkdir(mode=0o700)
+        projection = prepared.hermes_auth_projection
+        encoded = (_canonical_json(projection) + "\n").encode("utf-8")
+        auth_path = directories["HERMES_HOME"] / "auth.json"
+        descriptor = os.open(
+            auth_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            with os.fdopen(descriptor, "wb", closefd=False) as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
+            os.close(descriptor)
+    except OSError:
+        return {}, ["hermes_attempt_home_initialization_failed"]
+    if _sha256_json(projection) != prepared.hermes_auth_projection_sha256:
+        return {}, ["hermes_attempt_auth_projection_mismatch"]
+    temporary = str(directories["TMPDIR"].resolve())
+    return (
+        {
+            **{name: str(path.resolve()) for name, path in directories.items()},
+            "TMP": temporary,
+            "TEMP": temporary,
+            "HERMES_SAFE_MODE": "1",
+            "HERMES_IGNORE_USER_CONFIG": "1",
+            "HERMES_IGNORE_RULES": "1",
+            "HERMES_BUNDLED_SKILLS": str((state_root / "nonexistent-bundled-skills").resolve()),
+            "PYTHONNOUSERSITE": "1",
+        },
+        [],
+    )
+
+
+def _hermes_auth_credential_invariant(payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    if set(payload) != {"version", "providers", "credential_pool", "active_provider"}:
+        return None
+    providers = payload.get("providers")
+    pool = payload.get("credential_pool")
+    if not isinstance(pool, dict) or set(pool) != {"openai-codex"}:
+        return None
+    entries = pool.get("openai-codex") if isinstance(pool, dict) else None
+    if not isinstance(providers, dict) or providers or not isinstance(entries, list) or len(entries) != 1:
+        return None
+    entry = entries[0]
+    if not isinstance(entry, dict):
+        return None
+    invariant_fields = {
+        "id",
+        "auth_type",
+        "priority",
+        "source",
+        "access_token",
+        "base_url",
+        "expires_at",
+        "expires_at_ms",
+    }
+    mutable_fields = {
+        "label",
+        "last_status",
+        "last_status_at",
+        "last_error_code",
+        "last_error_reason",
+        "last_error_message",
+        "last_error_reset_at",
+        "request_count",
+        "failure_reason",
+    }
+    if set(entry) - invariant_fields - mutable_fields or "refresh_token" in entry:
+        return None
+    if entry.get("label") not in (None, "manual:p08-j4"):
+        return None
+    return {
+        "version": payload.get("version"),
+        "active_provider": payload.get("active_provider"),
+        "providers": providers,
+        "credential": {name: entry.get(name) for name in sorted(invariant_fields)},
+    }
+
+
+def _hermes_attempt_state_attestation(
+    state_root: Path,
+    prepared: PreparedJ4Runtimes,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Validate attempt-local credential invariants and return a secret-safe manifest."""
+
+    errors: list[str] = []
+    auth_path = state_root / "hermes-home" / "auth.json"
+    raw = _read_private_regular_file(auth_path)
+    try:
+        observed_auth = json.loads(raw) if raw is not None else None
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        observed_auth = None
+    if _hermes_auth_credential_invariant(observed_auth) != _hermes_auth_credential_invariant(
+        prepared.hermes_auth_projection
+    ):
+        errors.append("hermes_attempt_auth_credential_drift")
+
+    manifest, manifest_errors = _manifest(state_root)
+    errors.extend(f"state_manifest:{error}" for error in manifest_errors)
+    allowed_directories = {"hermes-home", "os-home", "codex-home", "managed", "tmp"}
+    for path in sorted(state_root.rglob("*")):
+        if path.is_symlink() or not path.is_dir():
+            continue
+        relative = path.relative_to(state_root).as_posix()
+        if (
+            relative not in allowed_directories
+            and relative != "hermes-home/logs"
+            and not relative.startswith("hermes-home/logs/")
+        ):
+            errors.append(f"hermes_attempt_state_unexpected_directory:{relative}")
+    allowed_exact = {"state.db", "hermes-home/auth.json", "hermes-home/auth.lock"}
+    for entry in manifest:
+        relative = str(entry["path"])
+        if relative not in allowed_exact and not relative.startswith("hermes-home/logs/"):
+            errors.append(f"hermes_attempt_state_unexpected_path:{relative}")
+        if relative == "hermes-home/auth.json":
+            entry["sha256"] = prepared.hermes_auth_profile["projection_run_sha256"]
+            entry["secret_redacted"] = True
+    return manifest, sorted(set(errors))
+
+
+def _cleanup_hermes_attempt_state(state_root: Path) -> list[str]:
+    shutil.rmtree(state_root, ignore_errors=True)
+    # lstat-based remainder check: a replacement dangling symlink makes
+    # Path.exists() False while the attempt path is still occupied.
+    remains = state_root.exists() or state_root.is_symlink()
+    return ["hermes_attempt_state_cleanup_failed"] if remains else []
 
 
 def _build_same_envelope(
     scenario: ScenarioWorkspace,
     *,
     config: J4RuntimeConfig,
+    scorer_identity: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
     base_manifest, errors = _manifest(scenario.workspace_dir)
     if errors:
         raise ValueError(f"Invalid seed workspace: {', '.join(errors)}")
-    scorer_sha256 = _scorer_source_sha256()
+    scorer = scorer_identity or _scorer_runtime_identity()
+    scorer_sha256 = str(scorer["source_sha256"])
     identity_seed = {
         "schema": J4_ENVELOPE_SCHEMA,
         "scenario": scenario.name,
@@ -302,6 +1096,7 @@ def _build_same_envelope(
             "runtime_extra_guards": {"freecode": {"max_budget_usd": config.max_budget_usd}},
         },
         "authority": {
+            "readable_scope": "evaluation_workspace_only",
             "writable_scope": "evaluation_workspace_only",
             "allowed_tools": {runtime: list(_J4_ALLOWED_TOOLS[runtime]) for runtime in _J4_RUNTIME_ORDER},
             "network_tools_allowed": False,
@@ -311,6 +1106,7 @@ def _build_same_envelope(
             "id": "hive.p08-j4.external",
             "version": "1",
             "source_sha256": scorer_sha256,
+            "loaded_code_sha256": scorer["loaded_code_sha256"],
             "criteria_ids": list(_J4_CRITERIA[scenario.name]),
         },
     }
@@ -428,7 +1224,10 @@ def _run_process(
     timeout_seconds: int,
     *,
     env_overrides: dict[str, str] | None = None,
+    env_remove: tuple[str, ...] = (),
     require_workspace_sandbox: bool = False,
+    additional_writable_roots: tuple[Path, ...] = (),
+    network_access: bool = True,
 ) -> ProcessRunResult:
     started = monotonic()
     env = build_agent_subprocess_env(home=Path.home())
@@ -438,11 +1237,29 @@ def _run_process(
         env.pop("CLAUDE_CODE_SIMPLE", None)
     if env_overrides:
         env.update(env_overrides)
+    for name in env_remove:
+        env.pop(name, None)
     sandbox: dict[str, Any] | None = None
     cleanup_paths: list[Path] = []
     actual_command = command
     if require_workspace_sandbox:
-        actual_command, cleanup_paths, sandbox = _build_workspace_sandbox_command(command, cwd, env)
+        if additional_writable_roots:
+            actual_command, cleanup_paths, sandbox = _build_workspace_sandbox_command(
+                command,
+                cwd,
+                env,
+                additional_writable_roots=additional_writable_roots,
+                network_access=network_access,
+            )
+        elif not network_access:
+            actual_command, cleanup_paths, sandbox = _build_workspace_sandbox_command(
+                command,
+                cwd,
+                env,
+                network_access=network_access,
+            )
+        else:
+            actual_command, cleanup_paths, sandbox = _build_workspace_sandbox_command(command, cwd, env)
         if actual_command is None:
             return ProcessRunResult(
                 command=command,
@@ -453,22 +1270,46 @@ def _run_process(
                 duration_ms=int((monotonic() - started) * 1000),
                 sandbox=sandbox,
             )
+    process: subprocess.Popen[str] | None = None
     try:
-        completed = subprocess.run(  # noqa: S603
+        process = subprocess.Popen(  # noqa: S603
             actual_command,
             cwd=str(cwd),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout_seconds,
             env=env,
+            start_new_session=os.name == "posix",
         )
-        returncode = completed.returncode
-        stdout = completed.stdout
-        stderr = completed.stderr
-    except subprocess.TimeoutExpired as exc:
-        returncode = 124
-        stdout = _ensure_text(exc.stdout)
-        stderr = _ensure_text(exc.stderr) + f"\nTimed out after {timeout_seconds} seconds."
+        try:
+            stdout, stderr = process.communicate(timeout=timeout_seconds)
+            returncode = process.returncode
+        except subprocess.TimeoutExpired as exc:
+            partial_stdout = _ensure_text(exc.stdout)
+            partial_stderr = _ensure_text(exc.stderr)
+            try:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGTERM)
+                else:
+                    process.terminate()
+            except (OSError, ProcessLookupError):
+                pass
+            try:
+                stdout, stderr = process.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                try:
+                    if os.name == "posix":
+                        os.killpg(process.pid, signal.SIGKILL)
+                    else:
+                        process.kill()
+                except (OSError, ProcessLookupError):
+                    pass
+                stdout, stderr = process.communicate()
+            stdout = _ensure_text(stdout) or partial_stdout
+            stderr = (_ensure_text(stderr) or partial_stderr) + (
+                f"\nTimed out after {timeout_seconds} seconds; process group terminated."
+            )
+            returncode = 124
     except OSError as exc:
         returncode = 127
         stdout = ""
@@ -491,6 +1332,9 @@ def _build_workspace_sandbox_command(
     command: list[str],
     cwd: Path,
     env: dict[str, str],
+    *,
+    additional_writable_roots: tuple[Path, ...] = (),
+    network_access: bool = True,
 ) -> tuple[list[str] | None, list[Path], dict[str, Any]]:
     """Build a real workspace-write OS sandbox or fail closed.
 
@@ -508,14 +1352,43 @@ def _build_workspace_sandbox_command(
     probe = probe_os_sandbox_capability()
     if not probe.available:
         return None, [], {"status": "unavailable", "provider": probe.provider, "reason": probe.reason}
+    work_dir = cwd.resolve()
+    attempt_root = work_dir.parent
+    resolved_additional: list[Path] = []
+    for root in additional_writable_roots:
+        resolved = root.expanduser().resolve()
+        try:
+            resolved.relative_to(attempt_root)
+        except ValueError:
+            return (
+                None,
+                [],
+                {
+                    "status": "unavailable",
+                    "provider": probe.provider,
+                    "reason": "Additional writable root escapes the J4 attempt directory",
+                },
+            )
+        if resolved == attempt_root or not resolved.is_dir():
+            return (
+                None,
+                [],
+                {
+                    "status": "unavailable",
+                    "provider": probe.provider,
+                    "reason": "Additional writable root must be an existing attempt subdirectory",
+                },
+            )
+        resolved_additional.append(resolved)
+    writable_roots = tuple(str(path) for path in (work_dir, *resolved_additional)) if resolved_additional else ()
     built = build_sandboxed_agent_command(
         command,
-        work_dir=cwd,
+        work_dir=work_dir,
         env=env,
         spec=SandboxBuildSpec(
             profile=SandboxProfile.WORKSPACE_WRITE,
-            network_access=True,
-            writable_roots=(),
+            network_access=network_access,
+            writable_roots=writable_roots,
         ),
     )
     if built.command is None or built.command == command:
@@ -535,6 +1408,7 @@ def _build_workspace_sandbox_command(
             "status": "enforced",
             "provider": probe.provider,
             "reason": probe.reason,
+            "writable_roots": [str(work_dir), *[str(path) for path in resolved_additional]],
         },
     )
 
@@ -548,7 +1422,7 @@ def _write_files(workspace_dir: Path, files: dict[str, str]) -> None:
 
 def _scenario_workspace(base_dir: Path, scenario_name: str) -> ScenarioWorkspace:
     workspace_dir = base_dir / scenario_name
-    workspace_dir.mkdir(parents=True, exist_ok=True)
+    workspace_dir.mkdir(parents=True, exist_ok=False)
 
     common_prompt = (
         "You are running inside a temporary evaluation workspace.\n"
@@ -1048,13 +1922,34 @@ def _write_j4_artifacts(
     stdout: str,
     stderr: str,
     transcript: str = "",
-) -> dict[str, dict[str, Any]]:
-    root = output_dir / "j4_artifacts" / runtime / envelope_id
-    return {
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """Write attempt artifacts only into a claimed, owned output subtree.
+
+    A pre-planted symlink or non-directory anywhere in the j4_artifacts
+    chain is refused with a typed error and no write, so artifacts can
+    never be redirected into a foreign tree or publish foreign paths.
+    """
+
+    root = output_dir / "j4_artifacts" / runtime / str(envelope_id)
+    claim_error = _claim_owned_output_subtree(output_dir, ("j4_artifacts", runtime))
+    if claim_error == "unsupported":
+        return {}, ["j4_artifacts_boundary_unsupported"]
+    if claim_error is not None:
+        return {}, ["j4_artifacts_boundary_unavailable"]
+    try:
+        root.mkdir(mode=0o700)
+    except FileExistsError:
+        # The per-envelope artifact leaf is exclusive: a pre-existing entry
+        # is a conflict to reconcile, never a destination to merge into.
+        return {}, ["j4_artifacts_boundary_conflict"]
+    except OSError:
+        return {}, ["j4_artifacts_boundary_unavailable"]
+    artifacts = {
         "stdout": _artifact(root / "stdout.txt", stdout),
         "stderr": _artifact(root / "stderr.txt", stderr),
         "transcript": _artifact(root / "transcript.txt", transcript),
     }
+    return artifacts, []
 
 
 def _command_output(command: list[str], *, cwd: Path) -> str:
@@ -1081,18 +1976,1243 @@ def _binary_identity(runtime: str, binary: Path | None) -> dict[str, Any]:
     if runtime == "freecode" and resolved.is_file():
         source = resolved.parent
         revision = _command_output(["git", "-C", str(source), "rev-parse", "HEAD"], cwd=source)
-    elif runtime == "hermes":
-        match = re.search(
-            r"(?mi)^Hermes Agent v[^\n]*?upstream ([0-9a-f]+)\s*.*?\blocal ([0-9a-f]+)",
-            version,
-        )
-        if match:
-            revision = f"upstream:{match.group(1)};local:{match.group(2)}"
     return {
         "path": str(resolved),
         "version": version,
         "sha256": _sha256_file(resolved) if resolved.is_file() else "",
         "revision": revision,
+    }
+
+
+def _copy_attested_executable(source: Path, destination: Path, expected_sha256: str, expected_size: int) -> list[str]:
+    """Copy one executable from an O_NOFOLLOW fd so path replacement cannot change executed bytes."""
+
+    errors: list[str] = []
+    source_fd: int | None = None
+    destination_fd: int | None = None
+    digest = hashlib.sha256()
+    copied = 0
+    try:
+        source_fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        source_stat = os.fstat(source_fd)
+        if not stat.S_ISREG(source_stat.st_mode) or not source_stat.st_mode & stat.S_IXUSR:
+            return ["freecode_artifact_unsupported_entry"]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination_fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o500)
+        while True:
+            chunk = os.read(source_fd, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            copied += len(chunk)
+            view = memoryview(chunk)
+            while view:
+                written = os.write(destination_fd, view)
+                view = view[written:]
+        os.fsync(destination_fd)
+    except OSError:
+        errors.append("freecode_artifact_freeze_failed")
+    finally:
+        if source_fd is not None:
+            os.close(source_fd)
+        if destination_fd is not None:
+            os.close(destination_fd)
+    if copied != expected_size:
+        errors.append("freecode_artifact_size_mismatch")
+    if digest.hexdigest() != expected_sha256:
+        errors.append("freecode_artifact_sha256_mismatch")
+    if errors:
+        destination.unlink(missing_ok=True)
+    return sorted(set(errors))
+
+
+def _fresh_build_freecode(
+    manifest: dict[str, Any],
+    *,
+    cleanup_root: Path,
+) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    """Build the only executable J4 will use from a pinned Git tree and frozen dependencies."""
+
+    source = manifest["source"]
+    build = manifest["build"]
+    source_root = Path(source["root"])
+    dependencies_root = Path(build["dependencies_root"])
+    bun_path = Path(build["bun_path"])
+    frozen_source = cleanup_root / "freecode-source"
+    frozen_dependencies = frozen_source / "node_modules"
+    toolchain_root = cleanup_root / "freecode-toolchain"
+    frozen_bun = toolchain_root / "bun"
+    build_state = cleanup_root / "freecode-build-state"
+    archive_path = cleanup_root / "freecode-source.tar"
+    errors: list[str] = []
+
+    git_path = Path(_which("git") or "")
+    tracked_result = _trusted_command(
+        ["git", "-C", str(source_root), "ls-tree", "-r", "--name-only", "-z", source["revision"]],
+        cwd=source_root,
+    )
+    tracked = (
+        {value for value in tracked_result.stdout.split("\0") if value}
+        if tracked_result is not None and tracked_result.returncode == 0
+        else set()
+    )
+    if not git_path.is_absolute() or not git_path.is_file() or not tracked:
+        return {}, {}, ["freecode_fresh_build_source_inventory_unavailable"]
+    archive_result = _run_process(
+        [
+            str(git_path),
+            "-C",
+            str(source_root),
+            "archive",
+            "--format=tar",
+            f"--output={archive_path}",
+            source["revision"],
+        ],
+        source_root,
+        timeout_seconds=30,
+        require_workspace_sandbox=True,
+        additional_writable_roots=(cleanup_root,),
+        network_access=False,
+    )
+    if archive_result.returncode != 0 or not archive_path.is_file():
+        return {}, {}, ["freecode_fresh_build_source_snapshot_failed"]
+    try:
+        frozen_source.mkdir(mode=0o700)
+        with tarfile.open(archive_path, "r") as archive:
+            archive.extractall(frozen_source, filter="data")
+        archive_path.unlink()
+        shutil.copytree(
+            dependencies_root,
+            frozen_dependencies,
+            symlinks=True,
+            copy_function=shutil.copy2,
+        )
+        toolchain_root.mkdir(mode=0o700)
+        shutil.copy2(bun_path, frozen_bun, follow_symlinks=False)
+        frozen_bun.chmod(0o500)
+        build_state.mkdir(mode=0o700)
+        for name in ("home", "tmp"):
+            (build_state / name).mkdir(mode=0o700)
+    except (OSError, shutil.Error, tarfile.TarError):
+        return {}, {}, ["freecode_fresh_build_input_freeze_failed"]
+
+    source_pre_sha, source_pre_errors = _source_manifest_digest(frozen_source, tracked)
+    dependencies_pre, dependencies_pre_errors = _tree_identity(frozen_dependencies)
+    try:
+        package = json.loads((frozen_source / "package.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        package = {}
+    expected_version = str(package.get("version") or "").strip() if isinstance(package, dict) else ""
+    if (
+        source_pre_errors
+        or source_pre_sha != source["content_sha256"]
+        or dependencies_pre_errors
+        or dependencies_pre.get("sha256") != build["dependencies_sha256"]
+        or _safe_sha256_file(frozen_bun) != build["bun_sha256"]
+        or not expected_version
+    ):
+        return {}, {}, ["freecode_fresh_build_frozen_input_mismatch"]
+
+    output_path = frozen_source / "cli"
+    if output_path.exists():
+        return {}, {}, ["freecode_fresh_build_output_not_fresh"]
+    build_env = {
+        "HOME": str(build_state / "home"),
+        "TMPDIR": str(build_state / "tmp"),
+        "TMP": str(build_state / "tmp"),
+        "TEMP": str(build_state / "tmp"),
+        "PATH": f"{toolchain_root}:/usr/bin:/bin",
+    }
+    command = [str(frozen_bun), "run", "./scripts/build.ts"]
+    result = _run_process(
+        command,
+        frozen_source,
+        timeout_seconds=600,
+        env_overrides=build_env,
+        env_remove=_HERMES_J4_AMBIENT_ENV_DENYLIST,
+        require_workspace_sandbox=True,
+        additional_writable_roots=(build_state,),
+        network_access=False,
+    )
+    source_post_sha, source_post_errors = _source_manifest_digest(frozen_source, tracked)
+    dependencies_post, dependencies_post_errors = _tree_identity(frozen_dependencies)
+    try:
+        output_details = output_path.lstat()
+    except OSError:
+        output_details = None
+    if (
+        result.returncode != 0
+        or not isinstance(result.sandbox, dict)
+        or result.sandbox.get("status") != "enforced"
+        or output_details is None
+        or not stat.S_ISREG(output_details.st_mode)
+        or output_path.is_symlink()
+        or not output_details.st_mode & stat.S_IXUSR
+        or source_post_errors
+        or source_post_sha != source_pre_sha
+        or dependencies_post_errors
+        or dependencies_post != dependencies_pre
+        or _safe_sha256_file(frozen_bun) != build["bun_sha256"]
+    ):
+        return {}, {}, ["freecode_fresh_build_failed_or_inputs_drifted"]
+
+    version_result = _run_process(
+        [str(output_path), "--version"],
+        frozen_source,
+        timeout_seconds=20,
+        env_overrides=build_env,
+        env_remove=_HERMES_J4_AMBIENT_ENV_DENYLIST,
+        require_workspace_sandbox=True,
+        additional_writable_roots=(build_state,),
+        network_access=False,
+    )
+    version = (version_result.stdout or version_result.stderr or "").strip()
+    if (
+        version_result.returncode != 0
+        or not isinstance(version_result.sandbox, dict)
+        or version_result.sandbox.get("status") != "enforced"
+        or version != expected_version
+    ):
+        return {}, {}, ["freecode_fresh_build_version_mismatch"]
+
+    effective_artifact = {
+        "path": str(output_path),
+        "version": version,
+        "size": output_details.st_size,
+        "sha256": _sha256_file(output_path),
+    }
+    receipt = {
+        "schema": "hive.j4.freecode_fresh_build_receipt.v1",
+        "source_revision": source["revision"],
+        "source_tree": source["tree"],
+        "source_content_sha256": source_pre_sha,
+        "source_package_version": expected_version,
+        "dependencies_sha256": dependencies_pre["sha256"],
+        "dependencies_entry_count": dependencies_pre["entry_count"],
+        "bun_sha256": build["bun_sha256"],
+        "bun_version": build["bun_version"],
+        "git_sha256": _sha256_file(git_path),
+        "argv": command,
+        "network_access": False,
+        "sandbox": dict(result.sandbox),
+        "artifact": dict(effective_artifact),
+        "inputs_stable": True,
+    }
+    effective_manifest = {
+        **manifest,
+        "artifact": effective_artifact,
+        "build": {**build, "fresh_receipt_sha256": _sha256_json(receipt)},
+    }
+    return effective_manifest, receipt, errors
+
+
+def _freecode_runtime_sha256(prepared: PreparedJ4Runtimes) -> str:
+    artifact = prepared.freecode_manifest["artifact"]
+    source = prepared.freecode_manifest["source"]
+    return _sha256_json(
+        {
+            "schema": "hive.j4.freecode_frozen_runtime_identity.v1",
+            "build_manifest_sha256": prepared.freecode_manifest_sha256,
+            "fresh_build_receipt_sha256": prepared.freecode_build_receipt_sha256,
+            "artifact_sha256": artifact["sha256"],
+            "artifact_version": artifact["version"],
+            "source_revision": source["revision"],
+            "source_sha256": source["sha256"],
+            "hook_sha256": prepared.freecode_hook_sha256,
+            "hook_python_sha256": prepared.freecode_hook_python_sha256,
+            "hook_python_environment_sha256": prepared.freecode_hook_python_environment_sha256,
+        }
+    )
+
+
+def _freeze_freecode_runtime(
+    prepared: PreparedJ4Runtimes,
+    *,
+    workspace_root: Path,
+) -> tuple[dict[str, Any], Path, Path, list[str]]:
+    artifact = prepared.freecode_manifest["artifact"]
+    source = prepared.freecode_manifest["source"]
+    attempt_root = workspace_root.parent
+    runtime_root = attempt_root / "runtime"
+    state_root = attempt_root / "state"
+    frozen_binary = runtime_root / "freecode"
+    frozen_hook = runtime_root / "freecode_j4_hook.py"
+    errors = _copy_attested_executable(
+        Path(artifact["path"]),
+        frozen_binary,
+        str(artifact["sha256"]).lower(),
+        int(artifact["size"]),
+    )
+    try:
+        shutil.copy2(prepared.freecode_hook, frozen_hook)
+        frozen_hook.chmod(0o400)
+    except OSError:
+        errors.append("freecode_authority_guard_freeze_failed")
+    hook_sha = _sha256_file(frozen_hook) if frozen_hook.is_file() else ""
+    if hook_sha != prepared.freecode_hook_sha256:
+        errors.append("freecode_authority_guard_sha256_mismatch")
+    version = ""
+    if not errors:
+        home = state_root / "home"
+        temporary = state_root / "tmp"
+        home.mkdir(mode=0o700)
+        temporary.mkdir(mode=0o700)
+        version_result = _run_process(
+            [str(frozen_binary), "--version"],
+            workspace_root,
+            timeout_seconds=20,
+            env_overrides={"HOME": str(home), "TMPDIR": str(temporary), "TMP": str(temporary), "TEMP": str(temporary)},
+            require_workspace_sandbox=True,
+            additional_writable_roots=(state_root,),
+            network_access=False,
+        )
+        version = (version_result.stdout or version_result.stderr or "").strip()
+        if version_result.returncode != 0 or version != str(artifact["version"]).strip():
+            errors.append("freecode_artifact_version_mismatch")
+        if not isinstance(version_result.sandbox, dict) or version_result.sandbox.get("status") != "enforced":
+            errors.append("freecode_version_sandbox_unavailable")
+    runtime_sha = _freecode_runtime_sha256(prepared)
+    identity = {
+        "path": str(frozen_binary),
+        "version": version,
+        "sha256": str(artifact["sha256"]).lower(),
+        "revision": source["revision"],
+        "runtime_sha256": runtime_sha,
+        "components": {
+            "build_manifest": {
+                "sha256": prepared.freecode_manifest_sha256,
+                "schema": prepared.freecode_manifest["schema"],
+            },
+            "fresh_build_receipt": dict(prepared.freecode_build_receipt),
+            "source": dict(source),
+            "authority_guard": {
+                "path": str(frozen_hook),
+                "sha256": hook_sha,
+                "python_path": str(prepared.freecode_hook_python),
+                "python_sha256": prepared.freecode_hook_python_sha256,
+                "python_environment_sha256": prepared.freecode_hook_python_environment_sha256,
+            },
+        },
+    }
+    return identity, frozen_binary, frozen_hook, sorted(set(errors))
+
+
+def _git_source_identity(
+    source_root: Path,
+    *,
+    excluded_runtime_roots: tuple[Path, ...] = (),
+) -> tuple[dict[str, Any], list[str]]:
+    """Attest every source-worktree byte except Git metadata and a validated runtime root."""
+
+    resolved = source_root.expanduser().resolve()
+    identity: dict[str, Any] = {
+        "root": str(resolved),
+        "sha256": "",
+        "revision": "",
+        "clean": False,
+        "lock_sha256": "",
+        "excluded_runtime_roots": [],
+        "scope": HERMES_J4_SOURCE_SCOPE,
+    }
+    if not resolved.is_dir():
+        return identity, ["hermes_source_unavailable"]
+
+    revision = _command_output(["git", "-C", str(resolved), "rev-parse", "HEAD"], cwd=resolved)
+    top_level = _command_output(["git", "-C", str(resolved), "rev-parse", "--show-toplevel"], cwd=resolved)
+    tracked_output = _command_output(["git", "-C", str(resolved), "ls-files", "-z"], cwd=resolved)
+    changed_output = _command_output(
+        ["git", "-C", str(resolved), "diff", "--name-only", "-z", "HEAD"],
+        cwd=resolved,
+    )
+    untracked_output = _command_output(
+        ["git", "-C", str(resolved), "ls-files", "--others", "--exclude-standard", "-z"],
+        cwd=resolved,
+    )
+    identity["revision"] = revision
+    errors: list[str] = []
+    if not revision or not top_level or Path(top_level).resolve() != resolved:
+        errors.append("hermes_source_git_root")
+    tracked_all = {value for value in tracked_output.split("\0") if value}
+    excluded: list[Path] = []
+    for root in excluded_runtime_roots:
+        candidate = root.expanduser().resolve()
+        try:
+            candidate.relative_to(resolved)
+        except ValueError:
+            continue
+        excluded.append(candidate)
+    identity["excluded_runtime_roots"] = [str(path) for path in sorted(excluded)]
+    excluded_relative = [root.relative_to(resolved).as_posix() for root in excluded]
+
+    def in_scope(relative: str) -> bool:
+        return not any(relative == root or relative.startswith(f"{root}/") for root in excluded_relative)
+
+    tracked = {path for path in tracked_all if in_scope(path)}
+    changed = {path for path in changed_output.split("\0") if path and in_scope(path)}
+    untracked = {path for path in untracked_output.split("\0") if path and in_scope(path)}
+    if changed or untracked:
+        errors.append("hermes_source_dirty")
+    for root in excluded:
+        relative_root = root.relative_to(resolved).as_posix()
+        if any(path == relative_root or path.startswith(f"{relative_root}/") for path in tracked_all):
+            errors.append("hermes_runtime_root_overlaps_tracked_source")
+        ignored = _command_output(
+            ["git", "-C", str(resolved), "check-ignore", "--no-index", "--", relative_root],
+            cwd=resolved,
+        )
+        if not root.is_dir() or relative_root not in {line.rstrip("/") for line in ignored.splitlines()}:
+            errors.append("hermes_runtime_root_not_ignored")
+    present: set[str] = set()
+    for current_root, directory_names, file_names in os.walk(resolved, followlinks=False):
+        current = Path(current_root)
+        relative_root = current.relative_to(resolved)
+        if relative_root == Path("."):
+            directory_names[:] = [name for name in directory_names if name != ".git"]
+            file_names = [name for name in file_names if name != ".git"]
+        symlink_directories = [name for name in directory_names if (current / name).is_symlink()]
+        directory_names[:] = [
+            name
+            for name in directory_names
+            if name not in symlink_directories and (current / name).resolve() not in excluded
+        ]
+        for name in [*file_names, *symlink_directories]:
+            relative = (relative_root / name).as_posix() if relative_root != Path(".") else name
+            if in_scope(relative):
+                present.add(relative)
+    if present != tracked:
+        errors.append("hermes_source_untracked_bytes")
+
+    manifest: list[dict[str, Any]] = []
+    for relative in sorted(tracked):
+        path = resolved / relative
+        try:
+            file_stat = path.lstat()
+            if stat.S_ISLNK(file_stat.st_mode):
+                payload = os.readlink(path).encode("utf-8")
+                kind = "symlink"
+                errors.append("hermes_source_symlink")
+            elif stat.S_ISREG(file_stat.st_mode):
+                payload = path.read_bytes()
+                kind = "file"
+            else:
+                errors.append("hermes_source_unsupported_entry")
+                continue
+        except OSError:
+            errors.append("hermes_source_unreadable")
+            continue
+        manifest.append(
+            {
+                "path": relative,
+                "kind": kind,
+                "executable": bool(file_stat.st_mode & stat.S_IXUSR),
+                "bytes": len(payload),
+                "sha256": _sha256_bytes(payload),
+            }
+        )
+    if not tracked:
+        errors.append("hermes_source_empty")
+    lock_path = resolved / "uv.lock"
+    if "uv.lock" not in tracked or not lock_path.is_file():
+        errors.append("hermes_source_lock_unavailable")
+    else:
+        identity["lock_sha256"] = _sha256_file(lock_path)
+    errors = sorted(set(errors))
+    if not errors:
+        identity["sha256"] = _sha256_json(manifest)
+        identity["clean"] = True
+    return identity, errors
+
+
+def _hermes_source_version(source_root: Path) -> str:
+    try:
+        payload = tomllib.loads((source_root / "pyproject.toml").read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return ""
+    project = payload.get("project") if isinstance(payload, dict) else None
+    return str(project.get("version") or "").strip() if isinstance(project, dict) else ""
+
+
+def _empty_hermes_runtime_identity() -> dict[str, Any]:
+    return {
+        "path": "",
+        "version": "",
+        "sha256": "",
+        "revision": "",
+        "runtime_sha256": "",
+        "components": {},
+    }
+
+
+def _python_environment_identity(
+    python: Path,
+    *,
+    base_root_override: Path | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Attest the complete venv and the base CPython tree used by ``-I -S``."""
+
+    configured = python.expanduser()
+    configured = Path(os.path.abspath(configured))
+    identity: dict[str, Any] = {
+        "path": str(configured),
+        "kind": "",
+        "entry_sha256": "",
+        "link_target": None,
+        "resolved_path": "",
+        "resolved_sha256": "",
+        "venv_root": "",
+        "pyvenv_sha256": "",
+        "tree_sha256": "",
+        "tree_entry_count": 0,
+        "tree_total_bytes": 0,
+        "base_root": "",
+        "base_python_path": "",
+        "base_python_sha256": "",
+        "base_tree_sha256": "",
+        "base_tree_entry_count": 0,
+        "base_tree_total_bytes": 0,
+        "sha256": "",
+    }
+    errors: list[str] = []
+    try:
+        entry_stat = configured.lstat()
+    except OSError:
+        return identity, ["hermes_python_unavailable"]
+    if stat.S_ISLNK(entry_stat.st_mode):
+        link_target = os.readlink(configured)
+        identity["kind"] = "symlink"
+        identity["link_target"] = link_target
+        identity["entry_sha256"] = _sha256_bytes(link_target.encode("utf-8"))
+    elif stat.S_ISREG(entry_stat.st_mode):
+        identity["kind"] = "file"
+        identity["entry_sha256"] = _sha256_file(configured)
+    else:
+        errors.append("hermes_python_unsupported_entry")
+
+    try:
+        resolved = configured.resolve(strict=True)
+    except OSError:
+        resolved = configured
+        errors.append("hermes_python_unavailable")
+    resolved_sha256 = _sha256_file(resolved) if resolved.is_file() else ""
+    identity["resolved_path"] = str(resolved)
+    identity["resolved_sha256"] = resolved_sha256
+    if not resolved_sha256 or not os.access(configured, os.X_OK):
+        errors.append("hermes_python_unavailable")
+
+    if configured.parent.name.lower() not in {"bin", "scripts"}:
+        errors.append("hermes_python_not_venv")
+        venv_root = configured.parent
+    else:
+        venv_root = configured.parent.parent
+    pyvenv = venv_root / "pyvenv.cfg"
+    identity["venv_root"] = str(venv_root)
+    if not pyvenv.is_file():
+        errors.append("hermes_pyvenv_unavailable")
+    else:
+        identity["pyvenv_sha256"] = _safe_sha256_file(pyvenv)
+        if not identity["pyvenv_sha256"]:
+            errors.append("hermes_pyvenv_unavailable")
+
+    base_home: Path | None = None
+    if pyvenv.is_file():
+        try:
+            for line in pyvenv.read_text(encoding="utf-8").splitlines():
+                key, separator, value = line.partition("=")
+                if separator and key.strip().lower() == "home":
+                    configured_home = Path(value.strip()).expanduser()
+                    if configured_home.is_absolute():
+                        base_home = configured_home.resolve(strict=True)
+                    break
+        except (OSError, UnicodeDecodeError):
+            base_home = None
+    origin_base_root = (
+        base_home.parent if base_home is not None and base_home.name.lower() in {"bin", "scripts"} else base_home
+    )
+    tree, tree_errors = _tree_identity(
+        venv_root,
+        allowed_external_python_root=origin_base_root,
+    )
+    errors.extend(f"hermes_python_environment_{error}" for error in tree_errors)
+    identity["tree_sha256"] = tree.get("sha256") or ""
+    identity["tree_entry_count"] = tree.get("entry_count") or 0
+    identity["tree_total_bytes"] = tree.get("total_bytes") or 0
+
+    if base_home is None or origin_base_root is None or not base_home.is_dir():
+        errors.append("hermes_python_base_home_unavailable")
+    else:
+        try:
+            base_python_relative = resolved.relative_to(origin_base_root)
+        except ValueError:
+            origin_base_python = base_home / configured.name
+            try:
+                base_python_relative = origin_base_python.relative_to(origin_base_root)
+            except ValueError:
+                errors.append("hermes_python_base_executable_unavailable")
+                base_python_relative = Path("bin") / configured.name
+        try:
+            base_root = (
+                base_root_override.expanduser().resolve(strict=True)
+                if base_root_override is not None
+                else origin_base_root.resolve(strict=True)
+            )
+        except OSError:
+            errors.append("hermes_python_base_root_unavailable")
+            base_root = origin_base_root
+        base_python = base_root / base_python_relative
+        base_tree, base_tree_errors = _tree_identity(base_root)
+        errors.extend(f"hermes_python_base_{error}" for error in base_tree_errors)
+        identity["base_root"] = str(base_root)
+        identity["base_python_path"] = str(base_python)
+        identity["base_python_sha256"] = _safe_sha256_file(base_python)
+        identity["base_tree_sha256"] = base_tree.get("sha256") or ""
+        identity["base_tree_entry_count"] = base_tree.get("entry_count") or 0
+        identity["base_tree_total_bytes"] = base_tree.get("total_bytes") or 0
+        if not identity["base_python_sha256"] or not os.access(base_python, os.X_OK):
+            errors.append("hermes_python_base_executable_unavailable")
+
+    errors = sorted(set(errors))
+    if errors:
+        return identity, errors
+    identity["sha256"] = _sha256_json(
+        {
+            "schema": "hive.j4.hermes_python_environment.v1",
+            "kind": identity["kind"],
+            "entry_sha256": identity["entry_sha256"],
+            "link_target": identity["link_target"],
+            "resolved_sha256": identity["resolved_sha256"],
+            "pyvenv_sha256": identity["pyvenv_sha256"],
+            "tree_sha256": identity["tree_sha256"],
+            "tree_entry_count": identity["tree_entry_count"],
+            "tree_total_bytes": identity["tree_total_bytes"],
+            "base_python_sha256": identity["base_python_sha256"],
+            "base_tree_sha256": identity["base_tree_sha256"],
+            "base_tree_entry_count": identity["base_tree_entry_count"],
+            "base_tree_total_bytes": identity["base_tree_total_bytes"],
+        }
+    )
+    return identity, []
+
+
+def _hermes_runtime_identity(
+    config: J4RuntimeConfig,
+    *,
+    launcher_path: Path = HERMES_J4_LAUNCHER,
+) -> tuple[dict[str, Any], list[str]]:
+    """Bind the executed interpreter, in-repo launcher, and clean Hermes source."""
+
+    required = (
+        config.hermes_python,
+        config.hermes_python_sha256,
+        config.hermes_python_environment_sha256,
+        config.hermes_source_root,
+        config.hermes_source_revision,
+        config.hermes_source_sha256,
+    )
+    if not all(str(value or "").strip() for value in required):
+        return _empty_hermes_runtime_identity(), ["hermes_runtime_attestation_required"]
+
+    configured_python = Path(str(config.hermes_python)).expanduser()
+    python, python_errors = _python_environment_identity(configured_python)
+    errors: list[str] = list(python_errors)
+    python_path = Path(str(python.get("path") or configured_python))
+    source_root = Path(str(config.hermes_source_root)).expanduser().resolve()
+    launcher = launcher_path.expanduser().resolve()
+    identity = _empty_hermes_runtime_identity()
+    python_sha256 = str(python.get("resolved_sha256") or "")
+    if python_sha256 != str(config.hermes_python_sha256).strip().lower():
+        errors.append("hermes_python_sha256_mismatch")
+    if python.get("sha256") != str(config.hermes_python_environment_sha256).strip().lower():
+        errors.append("hermes_python_environment_sha256_mismatch")
+
+    venv_root = Path(str(python.get("venv_root") or python_path.parent.parent))
+    source, source_errors = _git_source_identity(source_root, excluded_runtime_roots=(venv_root,))
+    errors.extend(source_errors)
+    if source.get("revision") != str(config.hermes_source_revision).strip():
+        errors.append("hermes_source_revision_mismatch")
+    if source.get("sha256") != str(config.hermes_source_sha256).strip().lower():
+        errors.append("hermes_source_sha256_mismatch")
+
+    launcher_sha256 = _safe_sha256_file(launcher) if launcher.is_file() else ""
+    if not launcher_sha256:
+        errors.append("hermes_launcher_unavailable")
+    version = _hermes_source_version(source_root)
+    if not version:
+        errors.append("hermes_version_unavailable")
+
+    components = {
+        "python": python,
+        "launcher": {"path": str(launcher), "sha256": launcher_sha256},
+        "source": source,
+    }
+    identity.update(
+        {
+            "path": str(python_path),
+            "version": f"Hermes Agent v{version}" if version else "",
+            "revision": str(source.get("revision") or ""),
+            "components": components,
+        }
+    )
+    errors = sorted(set(errors))
+    if errors:
+        return identity, errors
+    runtime_sha256 = _sha256_json(
+        {
+            "schema": "hive.j4.hermes_runtime_identity.v1",
+            "python_environment_sha256": python["sha256"],
+            "launcher_sha256": launcher_sha256,
+            "source_revision": source["revision"],
+            "source_sha256": source["sha256"],
+            "source_lock_sha256": source["lock_sha256"],
+        }
+    )
+    identity["sha256"] = runtime_sha256
+    identity["runtime_sha256"] = runtime_sha256
+    return identity, []
+
+
+def _source_manifest_digest(root: Path, paths: set[str]) -> tuple[str, list[str]]:
+    manifest: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for relative in sorted(paths):
+        path = root / relative
+        try:
+            details = path.lstat()
+            if not stat.S_ISREG(details.st_mode):
+                errors.append(f"source_unsupported_entry:{relative}")
+                continue
+            manifest.append(
+                {
+                    "path": relative,
+                    "kind": "file",
+                    "executable": bool(details.st_mode & stat.S_IXUSR),
+                    "bytes": details.st_size,
+                    "sha256": _sha256_file(path),
+                }
+            )
+        except OSError:
+            errors.append(f"source_unreadable:{relative}")
+    return (_sha256_json(manifest) if not errors else ""), sorted(set(errors))
+
+
+def _case_sensitive_directory(root: Path) -> bool:
+    probe = root / f".hive-j4-case-{uuid.uuid4().hex}a"
+    alternate = probe.with_name(probe.name[:-1] + "A")
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        return not alternate.exists()
+    except OSError:
+        return False
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        probe.unlink(missing_ok=True)
+
+
+def _hermes_freeze_root(
+    config: J4RuntimeConfig,
+    *,
+    source_root: Path,
+    venv_root: Path,
+    base_python_root: Path,
+    required_bytes: int,
+) -> tuple[Path | None, list[str]]:
+    configured = str(config.hermes_freeze_root or "").strip()
+    if not configured:
+        return None, ["hermes_freeze_root_required"]
+    root = Path(configured).expanduser()
+    try:
+        details = root.lstat()
+        resolved = root.resolve(strict=True)
+    except OSError:
+        return None, ["hermes_freeze_root_unavailable"]
+    if not root.is_absolute() or root.is_symlink() or not stat.S_ISDIR(details.st_mode):
+        return None, ["hermes_freeze_root_unavailable"]
+    for runtime_root in (source_root.resolve(), venv_root.resolve(), base_python_root.resolve()):
+        try:
+            resolved.relative_to(runtime_root)
+        except ValueError:
+            pass
+        else:
+            return None, ["hermes_freeze_root_overlaps_runtime"]
+    if not _case_sensitive_directory(resolved):
+        return None, ["hermes_freeze_root_not_case_sensitive"]
+    try:
+        available = shutil.disk_usage(resolved).free
+    except OSError:
+        return None, ["hermes_freeze_root_capacity_unavailable"]
+    if available < required_bytes:
+        return None, ["hermes_freeze_root_capacity_insufficient"]
+    return resolved, []
+
+
+def _prepare_j4_runtimes(
+    config: J4RuntimeConfig,
+) -> tuple[PreparedJ4Runtimes | None, list[dict[str, Any]]]:
+    """Validate owner inputs, then freeze Hermes source and venv before any model call."""
+
+    freecode_manifest, freecode_errors = _load_freecode_build_manifest(config)
+    if freecode_errors:
+        return None, [
+            {
+                "code": "runtime_identity_attestation_failed",
+                "runtime": "freecode",
+                "detail": ",".join(freecode_errors),
+            }
+        ]
+    hook = FREECODE_J4_HOOK.resolve()
+    hook_sha256 = _safe_sha256_file(hook)
+    if not hook_sha256:
+        return None, [
+            {
+                "code": "runtime_identity_attestation_failed",
+                "runtime": "freecode",
+                "detail": "freecode_authority_guard_unavailable",
+            }
+        ]
+
+    hermes_origin, hermes_errors = _hermes_runtime_identity(config)
+    if hermes_errors:
+        code = (
+            "cli_unavailable" if "hermes_python_unavailable" in hermes_errors else "runtime_identity_attestation_failed"
+        )
+        return None, [{"code": code, "runtime": "hermes", "detail": ",".join(hermes_errors)}]
+    (
+        hermes_auth_profile,
+        hermes_auth_projection,
+        hermes_auth_source,
+        hermes_auth_errors,
+    ) = _load_hermes_auth_profile(config)
+    if hermes_auth_errors:
+        return None, [
+            {
+                "code": "runtime_identity_attestation_failed",
+                "runtime": "hermes",
+                "detail": ",".join(hermes_auth_errors),
+            }
+        ]
+    assert hermes_auth_source is not None
+    hermes_auth_projection_sha256 = _sha256_json(hermes_auth_projection)
+    hermes_auth_run_nonce = os.urandom(32)
+    hermes_auth_profile = {
+        **hermes_auth_profile,
+        "projection_run_sha256": _sha256_bytes(
+            hermes_auth_run_nonce + _canonical_json(hermes_auth_projection).encode("utf-8")
+        ),
+    }
+    components = hermes_origin["components"]
+    source_origin = components["source"]
+    python_origin = components["python"]
+    source_root = Path(source_origin["root"])
+    venv_root = Path(python_origin["venv_root"])
+    base_python_root = Path(python_origin["base_root"])
+    try:
+        python_relative = Path(python_origin["path"]).relative_to(venv_root)
+        base_python_relative = Path(python_origin["base_python_path"]).relative_to(base_python_root)
+    except ValueError:
+        return None, [
+            {
+                "code": "runtime_identity_attestation_failed",
+                "runtime": "hermes",
+                "detail": "hermes_python_escapes_attested_runtime",
+            }
+        ]
+    tracked_result = _trusted_command(["git", "-C", str(source_root), "ls-files", "-z"], cwd=source_root)
+    if tracked_result is None or tracked_result.returncode != 0:
+        return None, [
+            {
+                "code": "runtime_identity_attestation_failed",
+                "runtime": "hermes",
+                "detail": "hermes_source_inventory_unavailable",
+            }
+        ]
+    tracked = {value for value in tracked_result.stdout.split("\0") if value}
+    excluded_roots = [Path(value) for value in source_origin.get("excluded_runtime_roots", [])]
+    excluded_relative: list[str] = []
+    for excluded in excluded_roots:
+        try:
+            excluded_relative.append(excluded.relative_to(source_root).as_posix())
+        except ValueError:
+            continue
+    tracked = {
+        relative
+        for relative in tracked
+        if not any(relative == root or relative.startswith(f"{root}/") for root in excluded_relative)
+    }
+    if ".env" in tracked:
+        return None, [
+            {
+                "code": "runtime_identity_attestation_failed",
+                "runtime": "hermes",
+                "detail": "hermes_source_project_env_forbidden",
+            }
+        ]
+    observed_source_sha, source_manifest_errors = _source_manifest_digest(source_root, tracked)
+    if source_manifest_errors or observed_source_sha != source_origin.get("sha256"):
+        return None, [
+            {
+                "code": "runtime_identity_attestation_failed",
+                "runtime": "hermes",
+                "detail": "hermes_source_manifest_mismatch",
+            }
+        ]
+
+    try:
+        source_bytes = sum((source_root / relative).lstat().st_size for relative in tracked)
+    except OSError:
+        return None, [
+            {
+                "code": "runtime_identity_attestation_failed",
+                "runtime": "hermes",
+                "detail": "hermes_source_capacity_inventory_unavailable",
+            }
+        ]
+    payload_bytes = (
+        source_bytes
+        + int(python_origin.get("tree_total_bytes") or 0)
+        + int(python_origin.get("base_tree_total_bytes") or 0)
+        + int(freecode_manifest["build"].get("dependencies_total_bytes") or 0)
+        + 512 * 1024 * 1024
+    )
+    required_bytes = int(payload_bytes * 1.25) + 128 * 1024 * 1024
+    freeze_root, freeze_root_errors = _hermes_freeze_root(
+        config,
+        source_root=source_root,
+        venv_root=venv_root,
+        base_python_root=base_python_root,
+        required_bytes=required_bytes,
+    )
+    if freeze_root_errors:
+        return None, [
+            {
+                "code": "resource_unavailable",
+                "runtime": "hermes",
+                "detail": ",".join(freeze_root_errors),
+                "required_bytes": required_bytes,
+            }
+        ]
+    assert freeze_root is not None
+
+    cleanup_root: Path | None = None
+    cleanup_handle: Any | None = None
+    try:
+        cleanup_handle = tempfile.TemporaryDirectory(prefix=".hive-j4-frozen-", dir=freeze_root)
+        cleanup_root = Path(cleanup_handle.name)
+        frozen_source = cleanup_root / "source"
+        frozen_venv = cleanup_root / "venv"
+        frozen_base_python = cleanup_root / "base-python"
+        frozen_launcher = cleanup_root / "hermes_j4_launcher.py"
+        frozen_source.mkdir()
+        for relative in sorted(tracked):
+            source = source_root / relative
+            destination = frozen_source / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination, follow_symlinks=False)
+        shutil.copytree(venv_root, frozen_venv, symlinks=True, copy_function=shutil.copy2)
+        shutil.copytree(base_python_root, frozen_base_python, symlinks=True, copy_function=shutil.copy2)
+        shutil.copy2(HERMES_J4_LAUNCHER, frozen_launcher)
+
+        freecode_input_manifest = freecode_manifest
+        freecode_manifest, freecode_build_receipt, freecode_build_errors = _fresh_build_freecode(
+            freecode_input_manifest,
+            cleanup_root=cleanup_root,
+        )
+        if freecode_build_errors:
+            raise ValueError(",".join(freecode_build_errors))
+        freecode_build_receipt_sha256 = _sha256_json(freecode_build_receipt)
+
+        frozen_source_sha, frozen_source_errors = _source_manifest_digest(frozen_source, tracked)
+        frozen_venv_python = frozen_venv / python_relative
+        frozen_python_identity, frozen_python_errors = _python_environment_identity(
+            frozen_venv_python,
+            base_root_override=frozen_base_python,
+        )
+        frozen_python = frozen_base_python / base_python_relative
+        site_packages = sorted(path for path in (frozen_venv / "lib").glob("python*/site-packages") if path.is_dir())
+        if frozen_source_errors or frozen_source_sha != source_origin.get("sha256"):
+            hermes_errors.append("hermes_frozen_source_mismatch")
+        if frozen_python_errors or frozen_python_identity.get("sha256") != python_origin.get("sha256"):
+            hermes_errors.append("hermes_frozen_python_environment_mismatch")
+        if len(site_packages) != 1:
+            hermes_errors.append("hermes_frozen_site_packages_unavailable")
+        launcher_sha = _sha256_file(frozen_launcher)
+        if launcher_sha != components["launcher"]["sha256"]:
+            hermes_errors.append("hermes_frozen_launcher_mismatch")
+        if hermes_errors:
+            raise ValueError(",".join(sorted(set(hermes_errors))))
+
+        frozen_source_identity = {
+            **source_origin,
+            "root": str(frozen_source),
+            "excluded_runtime_roots": [],
+            "origin_root": str(source_root),
+            "frozen": True,
+        }
+        frozen_components = {
+            "python": frozen_python_identity,
+            "launcher": {"path": str(frozen_launcher), "sha256": launcher_sha},
+            "source": frozen_source_identity,
+            "auth_profile": hermes_auth_profile,
+            "origin_runtime_sha256": hermes_origin["runtime_sha256"],
+        }
+        runtime_sha = _sha256_json(
+            {
+                "schema": "hive.j4.hermes_frozen_runtime_identity.v1",
+                "python_environment_sha256": frozen_python_identity["sha256"],
+                "launcher_sha256": launcher_sha,
+                "source_revision": frozen_source_identity["revision"],
+                "source_sha256": frozen_source_identity["sha256"],
+                "source_lock_sha256": frozen_source_identity["lock_sha256"],
+                "auth_profile_sha256": hermes_auth_profile["projection_run_sha256"],
+            }
+        )
+        hermes_binary = {
+            "path": str(frozen_python),
+            "version": hermes_origin["version"],
+            "sha256": runtime_sha,
+            "revision": hermes_origin["revision"],
+            "runtime_sha256": runtime_sha,
+            "components": frozen_components,
+        }
+        prepared = PreparedJ4Runtimes(
+            freecode_manifest=freecode_manifest,
+            freecode_input_manifest=freecode_input_manifest,
+            freecode_manifest_sha256=str(config.freecode_build_manifest_sha256).strip().lower(),
+            freecode_build_receipt=freecode_build_receipt,
+            freecode_build_receipt_sha256=freecode_build_receipt_sha256,
+            freecode_hook=hook,
+            freecode_hook_sha256=hook_sha256,
+            freecode_hook_python=frozen_python,
+            freecode_hook_python_sha256=_safe_sha256_file(frozen_python),
+            freecode_hook_python_environment_sha256=str(frozen_python_identity["base_tree_sha256"]),
+            hermes_binary=hermes_binary,
+            hermes_python=frozen_python,
+            hermes_venv_python=frozen_venv_python,
+            hermes_base_python_root=frozen_base_python,
+            hermes_launcher=frozen_launcher,
+            hermes_source_root=frozen_source,
+            hermes_source_paths=frozenset(tracked),
+            hermes_site_packages=site_packages[0],
+            hermes_auth_projection=hermes_auth_projection,
+            hermes_auth_profile=hermes_auth_profile,
+            hermes_auth_source=hermes_auth_source,
+            hermes_auth_source_sha256=str(config.hermes_auth_store_sha256).strip().lower(),
+            hermes_auth_projection_sha256=hermes_auth_projection_sha256,
+            hermes_auth_run_nonce=hermes_auth_run_nonce,
+            cleanup_root=cleanup_root,
+            cleanup_handle=cleanup_handle,
+        )
+    except (OSError, shutil.Error, ValueError) as exc:
+        if cleanup_handle is not None:
+            cleanup_handle.cleanup()
+        elif cleanup_root is not None:
+            shutil.rmtree(cleanup_root, ignore_errors=True)
+        detail = str(exc)
+        return None, [
+            {
+                "code": "runtime_freeze_failed",
+                "runtime": "freecode" if "freecode_" in detail else "hermes",
+                "detail": detail,
+            }
+        ]
+
+    smoke_errors = _hermes_launcher_smoke(prepared.hermes_binary, site_packages=prepared.hermes_site_packages)
+    if not smoke_errors and not _hermes_frozen_runtime_stable(prepared):
+        smoke_errors.append("hermes_runtime_drift_after_smoke")
+    if smoke_errors:
+        _cleanup_prepared(prepared)
+        return None, [{"code": "runtime_smoke_failed", "runtime": "hermes", "detail": ",".join(smoke_errors)}]
+    return prepared, []
+
+
+def _cleanup_prepared(prepared: PreparedJ4Runtimes) -> None:
+    cleanup = getattr(prepared.cleanup_handle, "cleanup", None)
+    if callable(cleanup):
+        cleanup()
+    elif prepared.cleanup_root is not None:
+        shutil.rmtree(prepared.cleanup_root, ignore_errors=True)
+
+
+def _prepared_runtime_blockers(
+    prepared: PreparedJ4Runtimes,
+    config: J4RuntimeConfig,
+) -> list[dict[str, Any]]:
+    """Re-hash mutable runtime inputs immediately around every adapter invocation."""
+
+    blockers: list[dict[str, Any]] = []
+    if not _freecode_prepared_runtime_stable(prepared, config):
+        blockers.append({"code": "runtime_identity_drift", "runtime": "freecode"})
+    if not _hermes_frozen_runtime_stable(prepared):
+        blockers.append({"code": "runtime_identity_drift", "runtime": "hermes"})
+    return blockers
+
+
+def _freecode_prepared_runtime_stable(prepared: PreparedJ4Runtimes, config: J4RuntimeConfig) -> bool:
+    del config
+    artifact = prepared.freecode_manifest["artifact"]
+    artifact_path = Path(artifact["path"])
+    try:
+        artifact_details = artifact_path.lstat()
+    except OSError:
+        artifact_details = None
+    hook_python_environment, hook_python_environment_errors = _tree_identity(prepared.hermes_base_python_root)
+    return bool(
+        artifact_details is not None
+        and stat.S_ISREG(artifact_details.st_mode)
+        and not artifact_path.is_symlink()
+        and artifact_details.st_size == artifact["size"]
+        and _safe_sha256_file(artifact_path) == artifact["sha256"]
+        and _sha256_json(prepared.freecode_build_receipt) == prepared.freecode_build_receipt_sha256
+        and _safe_sha256_file(prepared.freecode_hook) == prepared.freecode_hook_sha256
+        and _safe_sha256_file(prepared.freecode_hook_python) == prepared.freecode_hook_python_sha256
+        and not hook_python_environment_errors
+        and hook_python_environment.get("sha256") == prepared.freecode_hook_python_environment_sha256
+    )
+
+
+def _hermes_frozen_runtime_stable(prepared: PreparedJ4Runtimes) -> bool:
+    source = prepared.hermes_binary["components"]["source"]
+    source_sha, source_errors = _source_manifest_digest(
+        prepared.hermes_source_root,
+        set(prepared.hermes_source_paths),
+    )
+    python_identity, python_errors = _python_environment_identity(
+        prepared.hermes_venv_python,
+        base_root_override=prepared.hermes_base_python_root,
+    )
+    auth_profile = prepared.hermes_binary["components"].get("auth_profile", {})
+    observed_auth_projection_sha = _sha256_json(prepared.hermes_auth_projection)
+    observed_auth_run_sha = _sha256_bytes(
+        prepared.hermes_auth_run_nonce + _canonical_json(prepared.hermes_auth_projection).encode("utf-8")
+    )
+    return not (
+        source_errors
+        or source_sha != source.get("sha256")
+        or python_errors
+        or python_identity.get("sha256") != prepared.hermes_binary["components"]["python"].get("sha256")
+        or _safe_sha256_file(prepared.hermes_launcher) != prepared.hermes_binary["components"]["launcher"].get("sha256")
+        or auth_profile != prepared.hermes_auth_profile
+        or observed_auth_projection_sha != prepared.hermes_auth_projection_sha256
+        or observed_auth_run_sha != auth_profile.get("projection_run_sha256")
+        or _private_regular_file_sha256(prepared.hermes_auth_source) != prepared.hermes_auth_source_sha256
+    )
+
+
+def _hermes_launcher_smoke(
+    identity: dict[str, Any],
+    *,
+    site_packages: Path | None = None,
+) -> list[str]:
+    """Prove the attested launcher can load Hermes without a provider-capable command."""
+
+    components = identity.get("components") if isinstance(identity.get("components"), dict) else {}
+    launcher = components.get("launcher") if isinstance(components.get("launcher"), dict) else {}
+    source = components.get("source") if isinstance(components.get("source"), dict) else {}
+    python_path = str(identity.get("path") or "")
+    launcher_path = str(launcher.get("path") or "")
+    source_root = str(source.get("root") or "")
+    expected_version = str(identity.get("version") or "")
+    if not all((python_path, launcher_path, source_root, expected_version)):
+        return ["hermes_launcher_identity_incomplete"]
+    if site_packages is None:
+        python_component = components.get("python") if isinstance(components.get("python"), dict) else {}
+        venv_root = Path(str(python_component.get("venv_root") or ""))
+        candidates = sorted(path for path in (venv_root / "lib").glob("python*/site-packages") if path.is_dir())
+        if len(candidates) != 1:
+            return ["hermes_launcher_site_packages_unavailable"]
+        site_packages = candidates[0]
+
+    with tempfile.TemporaryDirectory(prefix="hive-j4-hermes-preflight-") as temporary:
+        attempt_root = Path(temporary) / "attempt"
+        workspace_root = attempt_root / "workspace"
+        state_root = attempt_root / "state"
+        isolated_directories = {
+            "HERMES_HOME": state_root / "hermes-home",
+            "HOME": state_root / "os-home",
+            "CODEX_HOME": state_root / "codex-home",
+            "HERMES_MANAGED_DIR": state_root / "managed",
+            "TMPDIR": state_root / "tmp",
+        }
+        for directory in (workspace_root, state_root, *isolated_directories.values()):
+            directory.mkdir(parents=True, exist_ok=True)
+        source_version = expected_version.removeprefix("Hermes Agent v")
+        result = _run_process(
+            [
+                python_path,
+                "-I",
+                "-S",
+                launcher_path,
+                "attest-runtime",
+                "--expected-version",
+                source_version,
+            ],
+            workspace_root,
+            timeout_seconds=20,
+            env_overrides={
+                HERMES_J4_SOURCE_ROOT_ENV: source_root,
+                HERMES_J4_STATE_DB_ENV: str(state_root / "state.db"),
+                HERMES_J4_SITE_PACKAGES_ENV: str(site_packages),
+                HERMES_J4_WORKSPACE_ROOT_ENV: str(workspace_root),
+                "HERMES_WRITE_SAFE_ROOT": str(workspace_root),
+                "PYTHONDONTWRITEBYTECODE": "1",
+                **{name: str(path) for name, path in isolated_directories.items()},
+                "TMP": str(isolated_directories["TMPDIR"]),
+                "TEMP": str(isolated_directories["TMPDIR"]),
+                "HERMES_SAFE_MODE": "1",
+                "HERMES_IGNORE_USER_CONFIG": "1",
+                "HERMES_IGNORE_RULES": "1",
+                "HERMES_BUNDLED_SKILLS": str(state_root / "nonexistent-bundled-skills"),
+                "PYTHONNOUSERSITE": "1",
+            },
+            env_remove=_HERMES_J4_AMBIENT_ENV_DENYLIST,
+            require_workspace_sandbox=True,
+            additional_writable_roots=(state_root,),
+            network_access=False,
+        )
+    if result.sandbox.get("status") != "enforced":
+        return ["hermes_launcher_sandbox_unavailable"]
+    if result.returncode != 0:
+        return ["hermes_launcher_runtime_attestation_failed"]
+    try:
+        attestation = _load_json_object(_ensure_text(result.stdout))
+    except ValueError:
+        return ["hermes_launcher_runtime_attestation_invalid"]
+    if (
+        attestation.get("ok") is not True
+        or attestation.get("executable_match") is not True
+        or attestation.get("prefix_match") is not True
+        or attestation.get("stdlib_origins_match") is not True
+        or attestation.get("hermes_origins_match") is not True
+        or attestation.get("unexpected_loaded_origin_count") != 0
+        or attestation.get("source_version") != source_version
+        or attestation.get("errors") != []
+    ):
+        return ["hermes_launcher_runtime_unattested"]
+    return []
+
+
+def _unobserved_workspace_receipt(envelope: dict[str, Any], *, reason: str) -> dict[str, Any]:
+    """Represent a workspace this attempt never observed as unknown evidence.
+
+    A denied, unclaimed or replaced workspace root must not be traversed, read
+    or hashed; the receipt records genuinely unobserved evidence instead of a
+    fake empty observation, and never erases a valid owned observation.
+    """
+
+    limits = envelope["workspace"]
+    return {
+        "logical_root": limits["logical_root"],
+        "local_path": None,
+        "root_identity": None,
+        "before_manifest": None,
+        "before_sha256": None,
+        "after_manifest": None,
+        "after_sha256": None,
+        "diff": None,
+        "boundary_ok": None,
+        "boundary_errors": [f"workspace_unobserved:{reason}"],
+        "file_count": None,
+        "total_bytes": None,
     }
 
 
@@ -1102,7 +3222,22 @@ def _workspace_receipt(
     *,
     envelope: dict[str, Any],
     declared_paths: list[str] | None = None,
+    workspace_identity: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
+    if workspace_root.is_symlink():
+        # The workspace root itself was replaced: any traversal would read and
+        # hash foreign state, so the evidence is unobserved, not empty.
+        return _unobserved_workspace_receipt(envelope, reason="workspace_root_symlink")
+    if workspace_identity is None:
+        # The clone never observed the root's identity, so ownership cannot
+        # be verified at all: an unobserved identity must stay unknown
+        # evidence instead of being upgraded by a traversal-time stat.
+        return _unobserved_workspace_receipt(envelope, reason="workspace_identity_unobserved")
+    if not _j4_attempt_root_owned(workspace_root, workspace_identity):
+        # The path no longer resolves to the directory this attempt cloned:
+        # an ancestor swap or a same-path replacement points elsewhere, so
+        # the evidence is unobserved instead of trusted foreign bytes.
+        return _unobserved_workspace_receipt(envelope, reason="workspace_root_replaced")
     after, errors = _manifest(workspace_root)
     unsafe_declared: list[str] = []
     declared_seen: set[str] = set()
@@ -1125,9 +3260,15 @@ def _workspace_receipt(
         and len(after) <= int(limits["max_files"])
         and total_bytes <= int(limits["max_bytes"])
     )
+    # Publish exactly the identity verified BEFORE the manifest traversal.
+    # A replacement directory created during the walk must not lend its fresh
+    # stat to this receipt: downstream scoring compares this tuple against
+    # the live source, so only the pre-verified identity is trusted.
+    root_identity: dict[str, int] = {"st_dev": workspace_identity[0], "st_ino": workspace_identity[1]}
     return {
         "logical_root": limits["logical_root"],
         "local_path": str(workspace_root.resolve()),
+        "root_identity": root_identity,
         "before_manifest": before,
         "before_sha256": _sha256_json(before),
         "after_manifest": after,
@@ -1142,6 +3283,66 @@ def _workspace_receipt(
         "file_count": len(after),
         "total_bytes": total_bytes,
     }
+
+
+def _create_scoring_snapshot(
+    *,
+    output_dir: Path,
+    runtime: str,
+    envelope: dict[str, Any],
+    receipt: dict[str, Any],
+) -> tuple[Path | None, str, list[str]]:
+    workspace = receipt.get("workspace") if isinstance(receipt.get("workspace"), dict) else {}
+    # Score only the workspace the receipt verified by exact identity: a
+    # replaced root (or a receipt that never observed one) must not be read,
+    # hashed, or copied into the scoring tree, even if its content matches.
+    observed_identity = workspace.get("root_identity") if isinstance(workspace.get("root_identity"), dict) else None
+    source = _runtime_workspace_path(output_dir, runtime, envelope["envelope_id"])
+    if observed_identity is None:
+        return None, "", ["scoring_workspace_unverified"]
+    try:
+        source_details = source.lstat()
+    except OSError:
+        return None, "", ["scoring_source_unavailable"]
+    if (
+        source.is_symlink()
+        or not stat.S_ISDIR(source_details.st_mode)
+        or (source_details.st_dev, source_details.st_ino)
+        != (observed_identity.get("st_dev"), observed_identity.get("st_ino"))
+    ):
+        return None, "", ["scoring_source_replaced"]
+    observed, errors = _manifest(source)
+    if errors or observed != workspace.get("after_manifest") or _sha256_json(observed) != workspace.get("after_sha256"):
+        return None, "", ["scoring_source_drift"]
+    envelope_root = output_dir / "j4_scoring" / runtime / str(envelope["envelope_id"])
+    destination = envelope_root / "workspace"
+    if destination.exists() or destination.is_symlink():
+        return None, "", ["scoring_snapshot_exists"]
+    claim_error = _claim_owned_output_subtree(output_dir, ("j4_scoring", runtime))
+    if claim_error == "unsupported":
+        return None, "", ["scoring_destination_unsupported"]
+    if claim_error is not None:
+        return None, "", ["scoring_destination_unavailable"]
+    try:
+        # The per-envelope scoring leaf is exclusive, exactly like the
+        # attempt root: a pre-existing entry is a typed conflict, never a
+        # foreign destination to copy scoring input into.
+        envelope_root.mkdir(mode=0o700)
+        destination.mkdir(mode=0o700)
+    except FileExistsError:
+        return None, "", ["scoring_snapshot_exists"]
+    except OSError:
+        return None, "", ["scoring_destination_unavailable"]
+    try:
+        shutil.copytree(source, destination, copy_function=shutil.copy2, dirs_exist_ok=True)
+        snapshot, snapshot_errors = _manifest(destination)
+    except (OSError, shutil.Error):
+        shutil.rmtree(destination, ignore_errors=True)
+        return None, "", ["scoring_snapshot_failed"]
+    if snapshot_errors or snapshot != observed:
+        shutil.rmtree(destination, ignore_errors=True)
+        return None, "", ["scoring_snapshot_mismatch"]
+    return destination, _sha256_json(snapshot), []
 
 
 def _base_receipt(
@@ -1180,6 +3381,7 @@ def _base_receipt(
         "envelope_sha256": envelope_sha256,
         "seed_sha256": envelope["workspace"]["seed_sha256"],
         "scorer_sha256": envelope["scorer"]["source_sha256"],
+        "scorer_loaded_code_sha256": envelope["scorer"]["loaded_code_sha256"],
         "status": status,
         "argv": list(argv),
         "duration_ms": duration_ms,
@@ -1273,6 +3475,10 @@ def _cli_authority_attestation(
     command: list[str],
     envelope: dict[str, Any],
     sandbox: dict[str, Any] | None,
+    *,
+    workspace_root: Path,
+    invocation_env: dict[str, str],
+    runtime_identity: dict[str, Any],
 ) -> dict[str, Any] | None:
     expected_tools = list(envelope["authority"]["allowed_tools"][runtime])
     if not isinstance(sandbox, dict) or sandbox.get("status") != "enforced":
@@ -1280,15 +3486,56 @@ def _cli_authority_attestation(
     if runtime == "freecode":
         configured = (_argv_value(command, "--tools") or "").split(",")
         tools_source = "freecode.argv.--tools"
-        command_scope_ok = configured == expected_tools
+        components = runtime_identity.get("components") if isinstance(runtime_identity.get("components"), dict) else {}
+        guard = components.get("authority_guard") if isinstance(components.get("authority_guard"), dict) else {}
+        try:
+            settings = json.loads(_argv_value(command, "--settings") or "")
+            hooks = settings["hooks"]["PreToolUse"]
+            hook_command = hooks[0]["hooks"][0]["command"]
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+            hook_command = ""
+        command_scope_ok = (
+            configured == expected_tools
+            and _argv_value(command, "--permission-mode") == "dontAsk"
+            and "--dangerously-skip-permissions" not in command
+            and str(guard.get("path") or "") in hook_command
+            and str(guard.get("python_path") or "") in hook_command
+            and invocation_env.get("HIVE_J4_WORKSPACE_ROOT") == str(workspace_root.resolve())
+            and invocation_env.get("HIVE_J4_FREECODE_HOOK_LOG")
+        )
+        guard_source = "freecode.PreToolUse.workspace_guard"
     else:
         configured = list(_J4_ALLOWED_TOOLS["hermes"]) if _argv_value(command, "-t") == "file" else []
         tools_source = "hermes.argv.-t=file"
-        command_scope_ok = "--safe-mode" in command and "--yolo" in command
+        state_root = _hermes_state_root(workspace_root, str(envelope["envelope_id"])).resolve()
+        expected_attempt_env = {
+            "HERMES_HOME": str(state_root / "hermes-home"),
+            "HOME": str(state_root / "os-home"),
+            "CODEX_HOME": str(state_root / "codex-home"),
+            "HERMES_MANAGED_DIR": str(state_root / "managed"),
+            "TMPDIR": str(state_root / "tmp"),
+            "TMP": str(state_root / "tmp"),
+            "TEMP": str(state_root / "tmp"),
+            "HERMES_SAFE_MODE": "1",
+            "HERMES_IGNORE_USER_CONFIG": "1",
+            "HERMES_IGNORE_RULES": "1",
+            "HERMES_BUNDLED_SKILLS": str(state_root / "nonexistent-bundled-skills"),
+            "PYTHONNOUSERSITE": "1",
+        }
+        command_scope_ok = (
+            "--safe-mode" in command
+            and "--yolo" not in command
+            and invocation_env.get(HERMES_J4_WORKSPACE_ROOT_ENV) == str(workspace_root.resolve())
+            and invocation_env.get("HERMES_WRITE_SAFE_ROOT") == str(workspace_root.resolve())
+            and all(invocation_env.get(name) == value for name, value in expected_attempt_env.items())
+            and not invocation_env.get("HERMES_CODEX_BASE_URL")
+        )
+        guard_source = "hermes.launcher.workspace_guard+attempt_local_environment"
     if configured != expected_tools or not command_scope_ok:
         return None
     requested = {
         "allowed_tools": expected_tools,
+        "readable_scope": envelope["authority"]["readable_scope"],
         "writable_scope": envelope["authority"]["writable_scope"],
     }
     return {
@@ -1296,9 +3543,13 @@ def _cli_authority_attestation(
         "effective": dict(requested),
         "sources": {
             "allowed_tools": tools_source,
+            "readable_scope": guard_source,
             "writable_scope": f"os_sandbox:{sandbox.get('provider') or 'unknown'}",
         },
         "sandbox": dict(sandbox),
+        "runtime_private_writable_roots": [
+            path for path in sandbox.get("writable_roots", []) if path != str(workspace_root.resolve())
+        ],
     }
 
 
@@ -1335,6 +3586,7 @@ def _hive_session_authority(
         return None
     requested = {
         "allowed_tools": expected_tools,
+        "readable_scope": envelope["authority"]["readable_scope"],
         "writable_scope": envelope["authority"]["writable_scope"],
     }
     return {
@@ -1342,6 +3594,7 @@ def _hive_session_authority(
         "effective": dict(requested),
         "sources": {
             "allowed_tools": "hive.session.permission_profile.allowed_tools",
+            "readable_scope": "hive.session.permission_profile.readable_roots",
             "writable_scope": "hive.session.permission_profile.writable_roots",
         },
         "sandbox": {
@@ -1351,9 +3604,28 @@ def _hive_session_authority(
     }
 
 
-def _freecode_command(*, prompt: str, envelope: dict[str, Any], binary: Path | None = None) -> list[str]:
+def _freecode_command(
+    *,
+    prompt: str,
+    envelope: dict[str, Any],
+    workspace_root: Path,
+    binary: Path,
+    hook: Path,
+    hook_python: Path,
+) -> list[str]:
+    guard_command = f"{shlex.quote(str(hook_python))} -I -S {shlex.quote(str(hook))}"
+    settings = {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "Read|Write|Edit|Glob|Grep",
+                    "hooks": [{"type": "command", "command": guard_command, "timeout": 5}],
+                }
+            ]
+        }
+    }
     return [
-        str(binary or _freecode_binary() or "freecode"),
+        str(binary),
         "-p",
         "--output-format",
         "json",
@@ -1370,8 +3642,9 @@ def _freecode_command(*, prompt: str, envelope: dict[str, Any], binary: Path | N
         "--tools",
         "Read,Write,Edit,Glob,Grep",
         "--permission-mode",
-        "bypassPermissions",
-        "--dangerously-skip-permissions",
+        "dontAsk",
+        "--settings",
+        _canonical_json(settings),
         "--setting-sources",
         "",
         "--strict-mcp-config",
@@ -1382,9 +3655,18 @@ def _freecode_command(*, prompt: str, envelope: dict[str, Any], binary: Path | N
     ]
 
 
-def _hermes_command(*, workspace_root: Path, envelope: dict[str, Any]) -> list[str]:
+def _hermes_command(
+    *,
+    workspace_root: Path,
+    envelope: dict[str, Any],
+    python: Path,
+    launcher: Path = HERMES_J4_LAUNCHER,
+) -> list[str]:
     return [
-        str(HERMES_BINARY.resolve()),
+        str(Path(os.path.abspath(python.expanduser()))),
+        "-I",
+        "-S",
+        str(launcher.resolve()),
         "chat",
         "--query-file",
         "prompt.txt",
@@ -1404,7 +3686,6 @@ def _hermes_command(*, workspace_root: Path, envelope: dict[str, Any]) -> list[s
         str(envelope["resources"]["max_tool_rounds"]),
         "--run-budget",
         str(envelope["resources"]["wall_clock_seconds"]),
-        "--yolo",
         "--safe-mode",
         "--source",
         "p08-j4",
@@ -1413,13 +3694,28 @@ def _hermes_command(*, workspace_root: Path, envelope: dict[str, Any]) -> list[s
 
 def _freecode_attestation(
     outer: dict[str, Any],
+    *,
+    invocation_env: dict[str, str] | None = None,
 ) -> tuple[str | None, str | None, bool | None, int | None, int | None, float | None]:
     usage = outer.get("modelUsage")
     if not isinstance(usage, dict) or not usage:
         return None, None, None, None, None, None
     models = {_normalize_model_id(key) for key in usage}
     effective_model = next(iter(models)) if len(models) == 1 else None
-    provider_attested = all(str(key).strip().lower().startswith(("openai/", "openai:")) for key in usage)
+    # FreeCode's Codex adapter records the selected model as a bare key (for
+    # example ``gpt-5.4``). The provider route is independently pinned by the
+    # adapter's CLAUDE_CODE_USE_OPENAI=1 invocation. Namespaced OpenAI keys are
+    # accepted for compatibility, while another explicit namespace is not.
+    usage_contract_attested = all(
+        not any(separator in str(key).strip().lower() for separator in ("/", ":"))
+        or str(key).strip().lower().startswith(("openai/", "openai:"))
+        for key in usage
+    )
+    provider_attested = (
+        isinstance(invocation_env, dict)
+        and invocation_env.get("CLAUDE_CODE_USE_OPENAI") == "1"
+        and usage_contract_attested
+    )
     effective_provider = "chatgpt-codex" if provider_attested else None
     fallback_observed = len(models) != 1 or effective_model != J4_MODEL or effective_provider != "chatgpt-codex"
     turns_value = outer.get("num_turns")
@@ -1453,66 +3749,192 @@ def _cli_failure_status(result: ProcessRunResult, *, runtime: str) -> str:
     return "failed"
 
 
-def _run_freecode_j4(
+def _freecode_hook_log_attestation(text: str) -> tuple[dict[str, Any], list[str]]:
+    event_count = 0
+    denied_count = 0
+    errors: list[str] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        event_count += 1
+        try:
+            record = _load_json_object(line)
+        except ValueError:
+            errors.append("hook_log_jsonl")
+            continue
+        if set(record) != {"allowed", "resolved_relative_path", "tool_name", "tool_use_id_hash"}:
+            errors.append("hook_log_schema")
+            continue
+        allowed = record.get("allowed")
+        relative = record.get("resolved_relative_path")
+        tool_name = record.get("tool_name")
+        call_hash = record.get("tool_use_id_hash")
+        relative_valid = relative == "."
+        if isinstance(relative, str) and relative not in {".", "<outside>", "<invalid>"}:
+            try:
+                relative_valid = _safe_relative_path(relative) == relative
+            except ValueError:
+                relative_valid = False
+        if (
+            not isinstance(allowed, bool)
+            or tool_name not in {*_J4_ALLOWED_TOOLS["freecode"], "<invalid>"}
+            or not re.fullmatch(r"[0-9a-f]{64}", str(call_hash or ""))
+            or (allowed and (tool_name == "<invalid>" or not relative_valid))
+            or (not allowed and relative not in {"<outside>", "<invalid>"})
+        ):
+            errors.append("hook_log_schema")
+        if allowed is False:
+            denied_count += 1
+    return {
+        "event_count": event_count,
+        "denied_count": denied_count,
+        "sha256": _sha256_bytes(text.encode("utf-8")),
+        "valid": not errors,
+    }, sorted(set(errors))
+
+
+def _run_freecode_j4_attempt(
     scenario: ScenarioWorkspace,
     envelope: dict[str, Any],
     envelope_sha256: str,
     *,
     output_dir: Path,
     config: J4RuntimeConfig,
+    prepared: PreparedJ4Runtimes | None = None,
 ) -> dict[str, Any]:
     workspace_root = _runtime_workspace_path(output_dir, "freecode", envelope["envelope_id"])
-    before, clone_errors = _clone_seed(scenario.workspace_dir, workspace_root)
-    binary_path = _freecode_binary()
-    binary = _binary_identity("freecode", binary_path)
-    command = _freecode_command(prompt=scenario.prompt, envelope=envelope, binary=binary_path)
-    if clone_errors or not all(binary.values()):
-        artifacts = _write_j4_artifacts(
+    before, clone_errors, workspace_identity = _clone_seed(scenario.workspace_dir, workspace_root)
+    if prepared is None:
+        binary: dict[str, Any] = {
+            "path": "",
+            "version": "",
+            "sha256": "",
+            "revision": "",
+            "runtime_sha256": "",
+            "components": {},
+        }
+        binary_path = Path("freecode")
+        frozen_hook = FREECODE_J4_HOOK
+        freeze_errors = ["prepared_runtime_required"]
+    else:
+        binary, binary_path, frozen_hook, freeze_errors = _freeze_freecode_runtime(
+            prepared,
+            workspace_root=workspace_root,
+        )
+        if not _freecode_prepared_runtime_stable(prepared, config):
+            freeze_errors.append("runtime_identity_drift")
+    hook_python = prepared.freecode_hook_python if prepared is not None else Path(sys.executable)
+    command = _freecode_command(
+        prompt=scenario.prompt,
+        envelope=envelope,
+        workspace_root=workspace_root,
+        binary=binary_path,
+        hook=frozen_hook,
+        hook_python=hook_python,
+    )
+    if clone_errors or freeze_errors:
+        artifacts, artifacts_errors = _write_j4_artifacts(
             output_dir,
             runtime="freecode",
             envelope_id=envelope["envelope_id"],
             stdout="",
             stderr="",
         )
-        workspace = _workspace_receipt(workspace_root, before, envelope=envelope)
+        workspace = _workspace_receipt(workspace_root, before, envelope=envelope, workspace_identity=workspace_identity)
         return _base_receipt(
             runtime="freecode",
             binary=binary,
             envelope=envelope,
             envelope_sha256=envelope_sha256,
-            status="cli_unavailable" if binary_path is None or not binary_path.is_file() else "attestation_failed",
+            status="attestation_failed",
             argv=command,
             duration_ms=0,
             exit_code=None,
             workspace=workspace,
             artifacts=artifacts,
-            schema_errors=[*clone_errors, "binary_identity"],
+            schema_errors=[*clone_errors, *freeze_errors, *artifacts_errors, "binary_identity"],
         )
 
+    assert prepared is not None
+    state_root = workspace_root.parent / "state"
+    hook_log = state_root / "hook.jsonl"
+    temporary = state_root / "tmp"
+    freecode_env = {
+        "CLAUDE_CODE_USE_OPENAI": "1",
+        "HIVE_J4_WORKSPACE_ROOT": str(workspace_root.resolve()),
+        "HIVE_J4_FREECODE_HOOK_LOG": str(hook_log.resolve()),
+        "TMPDIR": str(temporary.resolve()),
+        "TMP": str(temporary.resolve()),
+        "TEMP": str(temporary.resolve()),
+    }
+    pre_binary_sha = _sha256_file(binary_path)
+    pre_hook_sha = _sha256_file(frozen_hook)
+    pre_hook_python_sha = _safe_sha256_file(hook_python)
+    pre_hook_python_environment, pre_hook_python_environment_errors = _tree_identity(prepared.hermes_base_python_root)
     result = _run_process(
         command,
         workspace_root,
         timeout_seconds=envelope["resources"]["wall_clock_seconds"],
-        env_overrides={"CLAUDE_CODE_USE_OPENAI": "1"},
+        env_overrides=freecode_env,
         require_workspace_sandbox=True,
+        additional_writable_roots=(state_root,),
+    )
+    post_binary_sha = _sha256_file(binary_path) if binary_path.is_file() else ""
+    post_hook_sha = _sha256_file(frozen_hook) if frozen_hook.is_file() else ""
+    post_hook_python_sha = _safe_sha256_file(hook_python)
+    post_hook_python_environment, post_hook_python_environment_errors = _tree_identity(prepared.hermes_base_python_root)
+    runtime_stable = (
+        pre_binary_sha == post_binary_sha == binary.get("sha256")
+        and pre_hook_sha == post_hook_sha == binary.get("components", {}).get("authority_guard", {}).get("sha256")
+        and pre_hook_python_sha
+        == post_hook_python_sha
+        == binary.get("components", {}).get("authority_guard", {}).get("python_sha256")
+        and not pre_hook_python_environment_errors
+        and not post_hook_python_environment_errors
+        and pre_hook_python_environment.get("sha256")
+        == post_hook_python_environment.get("sha256")
+        == binary.get("components", {}).get("authority_guard", {}).get("python_environment_sha256")
     )
     effective_resources, resource_sources = _cli_resource_attestation("freecode", command, envelope)
-    authority = _cli_authority_attestation("freecode", command, envelope, result.sandbox)
-    artifacts = _write_j4_artifacts(
+    authority = _cli_authority_attestation(
+        "freecode",
+        command,
+        envelope,
+        result.sandbox,
+        workspace_root=workspace_root,
+        invocation_env=freecode_env,
+        runtime_identity=binary,
+    )
+    try:
+        hook_log_text = hook_log.read_text(encoding="utf-8") if hook_log.is_file() else ""
+    except (OSError, UnicodeDecodeError):
+        hook_log_text = ""
+        hook_log_errors = ["hook_log_unreadable"]
+    else:
+        hook_log_errors = []
+    hook_log_attestation, observed_hook_log_errors = _freecode_hook_log_attestation(hook_log_text)
+    hook_log_errors.extend(observed_hook_log_errors)
+    artifacts, artifacts_errors = _write_j4_artifacts(
         output_dir,
         runtime="freecode",
         envelope_id=envelope["envelope_id"],
         stdout=_ensure_text(result.stdout),
         stderr=_ensure_text(result.stderr),
+        transcript=hook_log_text,
     )
     payload: dict[str, Any] | None = None
     schema_errors: list[str] = []
+    schema_errors.extend(artifacts_errors)
+    schema_errors.extend(hook_log_errors)
     effective_model: str | None = None
     fallback_observed: bool | None = None
     turns: int | None = None
     tokens: int | None = None
     observed_cost: float | None = None
     status = _cli_failure_status(result, runtime="freecode") if result.returncode else "completed"
+    if not runtime_stable:
+        schema_errors.append("runtime_identity_drift")
+        status = "attestation_failed"
     if result.returncode == 0:
         try:
             outer = _load_json_object(_ensure_text(result.stdout))
@@ -1530,7 +3952,7 @@ def _run_freecode_j4(
             turns,
             tokens,
             observed_cost,
-        ) = _freecode_attestation(outer)
+        ) = _freecode_attestation(outer, invocation_env=freecode_env)
         if (
             effective_model != J4_MODEL
             or effective_provider != "chatgpt-codex"
@@ -1551,16 +3973,24 @@ def _run_freecode_j4(
             elif "resource_attestation" in schema_errors:
                 status = "resource_unavailable"
             else:
-                status = "attestation_failed" if "model_usage_attestation" in schema_errors else "invalid_output"
+                status = (
+                    "attestation_failed"
+                    if any(
+                        "attestation" in error or "runtime_identity" in error or error.startswith("hook_log")
+                        for error in schema_errors
+                    )
+                    else "invalid_output"
+                )
     workspace = _workspace_receipt(
         workspace_root,
         before,
         envelope=envelope,
         declared_paths=payload.get("files_created") if isinstance(payload, dict) else None,
+        workspace_identity=workspace_identity,
     )
     if status == "completed" and not workspace["boundary_ok"]:
         status = "sandbox_unavailable"
-    return _base_receipt(
+    receipt = _base_receipt(
         runtime="freecode",
         binary=binary,
         envelope=envelope,
@@ -1579,7 +4009,11 @@ def _run_freecode_j4(
         effective_model=effective_model,
         effective_provider=effective_provider,
         fallback_observed=fallback_observed,
-        attestation_source="freecode.stdout.modelUsage+invocation.CLAUDE_CODE_USE_OPENAI" if effective_model else None,
+        attestation_source=(
+            f"freecode.stdout.modelUsage+adapter.env.CLAUDE_CODE_USE_OPENAI=1+{FREECODE_CODEX_PROVIDER_CONTRACT}"
+            if effective_model
+            else None
+        ),
         effective_resources=effective_resources,
         resource_sources=resource_sources,
         authority=authority,
@@ -1591,9 +4025,158 @@ def _run_freecode_j4(
                 if effective_model and effective_provider
                 else []
             ),
-            "source": "freecode.stdout.modelUsage+invocation.CLAUDE_CODE_USE_OPENAI",
+            "source": (
+                f"freecode.stdout.modelUsage+adapter.env.CLAUDE_CODE_USE_OPENAI=1+{FREECODE_CODEX_PROVIDER_CONTRACT}"
+            ),
+            "provider_binding": {
+                "route": "chatgpt-codex",
+                "invocation_env": {"name": "CLAUDE_CODE_USE_OPENAI", "value": "1"},
+                "source_contract": FREECODE_CODEX_PROVIDER_CONTRACT,
+                "attested": effective_provider == "chatgpt-codex",
+            },
+        },
+        execution={
+            "chat_spawn_count": 1,
+            "argv_sha256": _sha256_json(command),
+            "cwd": str(workspace_root.resolve()),
+            "workspace_flag": None,
+            "runtime_pre_sha256": pre_binary_sha,
+            "runtime_post_sha256": post_binary_sha,
+            "guard_pre_sha256": pre_hook_sha,
+            "guard_post_sha256": post_hook_sha,
+            "guard_python_pre_sha256": pre_hook_python_sha,
+            "guard_python_post_sha256": post_hook_python_sha,
+            "guard_python_environment_pre_sha256": pre_hook_python_environment.get("sha256") or "",
+            "guard_python_environment_post_sha256": post_hook_python_environment.get("sha256") or "",
+            "hook_log": hook_log_attestation,
         },
     )
+    return receipt
+
+
+def _run_freecode_j4(
+    scenario: ScenarioWorkspace,
+    envelope: dict[str, Any],
+    envelope_sha256: str,
+    *,
+    output_dir: Path,
+    config: J4RuntimeConfig,
+    prepared: PreparedJ4Runtimes | None = None,
+) -> dict[str, Any]:
+    """Run FreeCode and clean only the runtime/state roots owned by this attempt."""
+
+    workspace_root = _runtime_workspace_path(output_dir, "freecode", envelope["envelope_id"])
+    attempt_root, attempt_identity, claim_error = _claim_j4_attempt_root(
+        output_dir,
+        "freecode",
+        str(envelope["envelope_id"]),
+    )
+    runtime_root = attempt_root / "runtime"
+    state_root = attempt_root / "state"
+
+    def blocked_receipt(*, status: str, schema_error: str) -> dict[str, Any]:
+        binary = {
+            "path": "",
+            "version": "",
+            "sha256": "",
+            "revision": "",
+            "runtime_sha256": "",
+            "components": {},
+        }
+        command = _freecode_command(
+            prompt=scenario.prompt,
+            envelope=envelope,
+            workspace_root=workspace_root,
+            binary=runtime_root / "freecode",
+            hook=runtime_root / "freecode_j4_hook.py",
+            hook_python=(prepared.freecode_hook_python if prepared is not None else Path(sys.executable)),
+        )
+        return _base_receipt(
+            runtime="freecode",
+            binary=binary,
+            envelope=envelope,
+            envelope_sha256=envelope_sha256,
+            status=status,
+            argv=command,
+            duration_ms=0,
+            exit_code=None,
+            workspace=_unobserved_workspace_receipt(envelope, reason="unclaimed_attempt_root"),
+            artifacts={},
+            schema_errors=[schema_error],
+            execution={"attempt_roots_owned": False, "state_cleanup_verified": False},
+        )
+
+    if claim_error is not None or attempt_identity is None:
+        status, schema_error = {
+            "attempt_root_conflict": ("needs_reconciliation", "freecode_attempt_state_conflict"),
+            "attempt_parent_unsupported": ("needs_reconciliation", "freecode_attempt_boundary_unsupported"),
+            "attempt_root_unsupported": ("needs_reconciliation", "freecode_attempt_boundary_unsupported"),
+        }.get(str(claim_error), ("resource_unavailable", "freecode_attempt_state_unavailable"))
+        return blocked_receipt(status=status, schema_error=schema_error)
+
+    owned_children: list[tuple[Path, tuple[int, int]]] = []
+    try:
+        for root in (runtime_root, state_root):
+            root.mkdir(mode=0o700, exist_ok=False)
+            details = root.lstat()
+            owned_children.append((root, (details.st_dev, details.st_ino)))
+    except OSError as exc:
+        # Roll back only children this attempt created and still owns by exact
+        # identity; a replaced child is foreign state and must survive.
+        setup_cleanup_errors: list[str] = []
+        for root, identity in reversed(owned_children):
+            outcome = _remove_owned_j4_root(root, identity)
+            if outcome == "ambiguous":
+                setup_cleanup_errors.append("freecode_attempt_state_cleanup_ambiguous")
+            elif outcome == "failed":
+                setup_cleanup_errors.append("freecode_attempt_state_cleanup_failed")
+        conflict = isinstance(exc, FileExistsError)
+        receipt = blocked_receipt(
+            status="needs_reconciliation" if conflict else "resource_unavailable",
+            schema_error="freecode_attempt_state_conflict" if conflict else "freecode_attempt_state_unavailable",
+        )
+        execution = receipt["execution"]
+        execution["attempt_roots_owned"] = _j4_attempt_root_owned(attempt_root, attempt_identity)
+        execution["state_cleanup_verified"] = not setup_cleanup_errors
+        if setup_cleanup_errors:
+            parsed = receipt["parsed"]
+            parsed["schema_errors"] = sorted({*parsed["schema_errors"], *setup_cleanup_errors})
+            parsed["schema_valid"] = False
+        return receipt
+
+    receipt: dict[str, Any] | None = None
+    cleanup_errors: list[str] = []
+    owned_at_cleanup = True
+    try:
+        receipt = _run_freecode_j4_attempt(
+            scenario,
+            envelope,
+            envelope_sha256,
+            output_dir=output_dir,
+            config=config,
+            prepared=prepared,
+        )
+    finally:
+        owned_at_cleanup = _j4_attempt_root_owned(attempt_root, attempt_identity)
+        if owned_at_cleanup:
+            for root, identity in reversed(owned_children):
+                outcome = _remove_owned_j4_root(root, identity)
+                if outcome == "ambiguous":
+                    cleanup_errors.append("freecode_attempt_state_cleanup_ambiguous")
+                elif outcome == "failed":
+                    cleanup_errors.append("freecode_attempt_state_cleanup_failed")
+        else:
+            cleanup_errors.append("freecode_attempt_state_cleanup_ambiguous")
+    assert receipt is not None
+    execution = receipt.setdefault("execution", {})
+    execution["attempt_roots_owned"] = owned_at_cleanup
+    execution["state_cleanup_verified"] = not cleanup_errors
+    if cleanup_errors:
+        receipt["status"] = "needs_reconciliation"
+        parsed = receipt.setdefault("parsed", {})
+        parsed["schema_errors"] = sorted(set([*(parsed.get("schema_errors") or []), *cleanup_errors]))
+        parsed["schema_valid"] = False
+    return receipt
 
 
 def _hermes_session_id(stderr: str) -> str | None:
@@ -1683,21 +4266,30 @@ def _hermes_attestation(
     return model, provider, fallback_observed, turns, tokens, sum(costs) if costs else None, attribution_complete
 
 
-def _run_hermes_j4(
+def _run_hermes_j4_attempt(
     scenario: ScenarioWorkspace,
     envelope: dict[str, Any],
     envelope_sha256: str,
     *,
     output_dir: Path,
     config: J4RuntimeConfig,
+    prepared: PreparedJ4Runtimes | None = None,
 ) -> dict[str, Any]:
     del config
     workspace_root = _runtime_workspace_path(output_dir, "hermes", envelope["envelope_id"])
-    before, clone_errors = _clone_seed(scenario.workspace_dir, workspace_root)
-    binary = _binary_identity("hermes", HERMES_BINARY)
-    command = _hermes_command(workspace_root=workspace_root, envelope=envelope)
-    if clone_errors or not all(binary.values()):
-        artifacts = _write_j4_artifacts(
+    before, clone_errors, workspace_identity = _clone_seed(scenario.workspace_dir, workspace_root)
+    binary = prepared.hermes_binary if prepared is not None else _empty_hermes_runtime_identity()
+    identity_errors = [] if prepared is not None else ["prepared_runtime_required"]
+    python_path = prepared.hermes_python if prepared is not None else Path("hermes-python")
+    launcher_path = prepared.hermes_launcher if prepared is not None else HERMES_J4_LAUNCHER
+    command = _hermes_command(
+        workspace_root=workspace_root,
+        envelope=envelope,
+        python=python_path,
+        launcher=launcher_path,
+    )
+    if clone_errors or identity_errors:
+        artifacts, artifacts_errors = _write_j4_artifacts(
             output_dir,
             runtime="hermes",
             envelope_id=envelope["envelope_id"],
@@ -1709,23 +4301,90 @@ def _run_hermes_j4(
             binary=binary,
             envelope=envelope,
             envelope_sha256=envelope_sha256,
-            status="cli_unavailable" if not HERMES_BINARY.is_file() else "attestation_failed",
+            status="cli_unavailable" if "hermes_python_unavailable" in identity_errors else "attestation_failed",
             argv=command,
             duration_ms=0,
             exit_code=None,
-            workspace=_workspace_receipt(workspace_root, before, envelope=envelope),
+            workspace=_workspace_receipt(
+                workspace_root, before, envelope=envelope, workspace_identity=workspace_identity
+            ),
             artifacts=artifacts,
-            schema_errors=[*clone_errors, "binary_identity"],
+            schema_errors=[*clone_errors, *identity_errors, *artifacts_errors, "binary_identity"],
         )
 
+    assert prepared is not None
+    state_root = _hermes_state_root(workspace_root, str(envelope["envelope_id"]))
+    # Bind the freshness attestation to a direct observation, not a constant:
+    # any filesystem entry named state.db at attempt start (including a
+    # symlink) means the state did not start fresh.
+    try:
+        (state_root / "state.db").lstat()
+        pre_state_absent = False
+    except FileNotFoundError:
+        pre_state_absent = True
+    except OSError:
+        pre_state_absent = False
+    attempt_env, attempt_home_errors = _initialize_hermes_attempt_home(state_root, prepared)
+    expires_at = prepared.hermes_auth_profile.get("expires_at")
+    if not isinstance(expires_at, int) or expires_at <= int(time()) + envelope["resources"]["wall_clock_seconds"] + 60:
+        attempt_home_errors.append("hermes_codex_access_token_window_insufficient")
+    if attempt_home_errors:
+        artifacts, artifacts_errors = _write_j4_artifacts(
+            output_dir,
+            runtime="hermes",
+            envelope_id=envelope["envelope_id"],
+            stdout="",
+            stderr="",
+        )
+        return _base_receipt(
+            runtime="hermes",
+            binary=binary,
+            envelope=envelope,
+            envelope_sha256=envelope_sha256,
+            status=(
+                "auth_required"
+                if "hermes_codex_access_token_window_insufficient" in attempt_home_errors
+                else "resource_unavailable"
+            ),
+            argv=command,
+            duration_ms=0,
+            exit_code=None,
+            workspace=_workspace_receipt(
+                workspace_root, before, envelope=envelope, workspace_identity=workspace_identity
+            ),
+            artifacts=artifacts,
+            schema_errors=sorted({*attempt_home_errors, *artifacts_errors}),
+        )
+    hermes_env = {
+        HERMES_J4_SOURCE_ROOT_ENV: str(prepared.hermes_source_root),
+        HERMES_J4_STATE_DB_ENV: str((state_root / "state.db").resolve()),
+        HERMES_J4_SITE_PACKAGES_ENV: str(prepared.hermes_site_packages),
+        HERMES_J4_WORKSPACE_ROOT_ENV: str(workspace_root.resolve()),
+        "HERMES_WRITE_SAFE_ROOT": str(workspace_root.resolve()),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        **attempt_env,
+    }
+    runtime_pre_stable = _hermes_frozen_runtime_stable(prepared)
     result = _run_process(
         command,
         workspace_root,
         timeout_seconds=envelope["resources"]["wall_clock_seconds"],
+        env_overrides=hermes_env,
+        env_remove=_HERMES_J4_AMBIENT_ENV_DENYLIST,
         require_workspace_sandbox=True,
+        additional_writable_roots=(state_root.resolve(),),
     )
+    runtime_post_chat_stable = _hermes_frozen_runtime_stable(prepared)
     effective_resources, resource_sources = _cli_resource_attestation("hermes", command, envelope)
-    authority = _cli_authority_attestation("hermes", command, envelope, result.sandbox)
+    authority = _cli_authority_attestation(
+        "hermes",
+        command,
+        envelope,
+        result.sandbox,
+        workspace_root=workspace_root,
+        invocation_env=hermes_env,
+        runtime_identity=binary,
+    )
     payload: dict[str, Any] | None = None
     schema_errors: list[str] = []
     effective_model: str | None = None
@@ -1735,7 +4394,15 @@ def _run_hermes_j4(
     tokens: int | None = None
     observed_cost: float | None = None
     transcript = ""
+    transcript_export_spawn_count = 0
+    session_attestation: dict[str, Any] | None = None
+    session_id: str | None = None
     status = _cli_failure_status(result, runtime="hermes") if result.returncode else "completed"
+    if not pre_state_absent:
+        schema_errors.append("state_not_fresh")
+    if not runtime_pre_stable or not runtime_post_chat_stable:
+        schema_errors.append("runtime_identity_drift")
+        status = "attestation_failed"
     if result.returncode == 0:
         try:
             payload = _load_json_object(_ensure_text(result.stdout))
@@ -1745,50 +4412,117 @@ def _run_hermes_j4(
         session_id = _hermes_session_id(_ensure_text(result.stderr))
         if session_id is None:
             schema_errors.append("session_id_attestation")
-        else:
-            export = _run_process(
+        elif runtime_pre_stable and runtime_post_chat_stable:
+            attest = _run_process(
                 [
-                    str(HERMES_BINARY.resolve()),
-                    "sessions",
-                    "export",
-                    "-",
-                    "--format",
-                    "jsonl",
+                    str(python_path),
+                    "-I",
+                    "-S",
+                    str(launcher_path),
+                    "attest-session",
                     "--session-id",
                     session_id,
-                    "--redact",
+                    "--expected-prompt-sha256",
+                    envelope["task"]["prompt_sha256"],
+                    "--expected-source",
+                    "p08-j4",
                 ],
                 workspace_root,
                 timeout_seconds=20,
+                env_overrides=hermes_env,
+                env_remove=_HERMES_J4_AMBIENT_ENV_DENYLIST,
                 require_workspace_sandbox=True,
+                additional_writable_roots=(state_root.resolve(),),
+                network_access=False,
             )
-            transcript = _ensure_text(export.stdout)
-            if export.returncode != 0:
-                schema_errors.append("transcript_export")
-            else:
+            try:
+                session_attestation = _load_json_object(_ensure_text(attest.stdout))
+            except ValueError:
+                session_attestation = None
+            if (
+                attest.returncode != 0
+                or not isinstance(session_attestation, dict)
+                or session_attestation.get("ok") is not True
+                or session_attestation.get("session_id") != session_id
+                or session_attestation.get("tip_session_id") != session_id
+                or session_attestation.get("source") != "p08-j4"
+                or session_attestation.get("all_sources_match") is not True
+                or session_attestation.get("prompt_sha256_match") is not True
+                or session_attestation.get("session_count") != session_attestation.get("lineage_count")
+            ):
+                schema_errors.append("session_lineage_attestation")
+            lineage_ids = (
+                session_attestation.get("lineage_session_ids")
+                if isinstance(session_attestation, dict)
+                and isinstance(session_attestation.get("lineage_session_ids"), list)
+                else []
+            )
+            records: list[dict[str, Any]] = []
+            transcript_parts: list[str] = []
+            for lineage_id in lineage_ids:
+                export = _run_process(
+                    [
+                        str(python_path),
+                        "-I",
+                        "-S",
+                        str(launcher_path),
+                        "sessions",
+                        "export",
+                        "-",
+                        "--format",
+                        "jsonl",
+                        "--session-id",
+                        str(lineage_id),
+                        "--redact",
+                    ],
+                    workspace_root,
+                    timeout_seconds=20,
+                    env_overrides=hermes_env,
+                    env_remove=_HERMES_J4_AMBIENT_ENV_DENYLIST,
+                    require_workspace_sandbox=True,
+                    additional_writable_roots=(state_root.resolve(),),
+                    network_access=False,
+                )
+                transcript_export_spawn_count += 1
+                exported = _ensure_text(export.stdout)
+                transcript_parts.append(exported.rstrip("\n"))
+                if export.returncode != 0:
+                    schema_errors.append("transcript_export")
+                    continue
                 try:
-                    records = _parse_jsonl(transcript)
+                    exported_records = _parse_jsonl(exported)
                 except ValueError:
-                    records = []
                     schema_errors.append("transcript_jsonl")
-                if records:
-                    (
-                        effective_model,
-                        effective_provider,
-                        fallback_observed,
-                        turns,
-                        tokens,
-                        observed_cost,
-                        attribution_complete,
-                    ) = _hermes_attestation(records)
-                    if (
-                        effective_model != J4_MODEL
-                        or effective_provider != "openai-codex"
-                        or fallback_observed is not False
-                        or turns < 1
-                        or attribution_complete is not True
-                    ):
-                        schema_errors.append("model_route_attestation")
+                    continue
+                if (
+                    len(exported_records) != 1
+                    or exported_records[0].get("id") != lineage_id
+                    or exported_records[0].get("source") != "p08-j4"
+                ):
+                    schema_errors.append("transcript_invocation_binding")
+                    continue
+                records.extend(exported_records)
+            transcript = "\n".join(part for part in transcript_parts if part)
+            if not lineage_ids or [record.get("id") for record in records] != lineage_ids:
+                schema_errors.append("transcript_lineage_coverage")
+            elif records:
+                (
+                    effective_model,
+                    effective_provider,
+                    fallback_observed,
+                    turns,
+                    tokens,
+                    observed_cost,
+                    attribution_complete,
+                ) = _hermes_attestation(records)
+                if (
+                    effective_model != J4_MODEL
+                    or effective_provider != "openai-codex"
+                    or fallback_observed is not False
+                    or turns < 1
+                    or attribution_complete is not True
+                ):
+                    schema_errors.append("model_route_attestation")
         if effective_resources is None:
             schema_errors.append("resource_attestation")
         if authority is None:
@@ -1801,22 +4535,43 @@ def _run_hermes_j4(
             else:
                 status = (
                     "attestation_failed"
-                    if any("attestation" in error or "transcript" in error for error in schema_errors)
+                    if any(
+                        "attestation" in error or "transcript" in error or "runtime_identity" in error
+                        for error in schema_errors
+                    )
                     else "invalid_output"
                 )
-    artifacts = _write_j4_artifacts(
+    runtime_final_stable = _hermes_frozen_runtime_stable(prepared)
+    if not runtime_final_stable:
+        schema_errors.append("runtime_identity_drift")
+        status = "attestation_failed"
+    state_manifest, state_manifest_errors = _hermes_attempt_state_attestation(
+        state_root,
+        prepared,
+    )
+    if state_manifest_errors:
+        schema_errors.extend(state_manifest_errors)
+        status = "attestation_failed"
+    secret_boundary = _hermes_auth_secret_boundary(prepared.hermes_auth_projection)
+    safe_stdout = secret_boundary.redact_text(_ensure_text(result.stdout)).text
+    safe_stderr = secret_boundary.redact_text(_ensure_text(result.stderr)).text
+    safe_transcript = secret_boundary.redact_text(transcript).text
+    safe_payload = secret_boundary.redact_payload(payload)
+    artifacts, artifacts_errors = _write_j4_artifacts(
         output_dir,
         runtime="hermes",
         envelope_id=envelope["envelope_id"],
-        stdout=_ensure_text(result.stdout),
-        stderr=_ensure_text(result.stderr),
-        transcript=transcript,
+        stdout=safe_stdout,
+        stderr=safe_stderr,
+        transcript=safe_transcript,
     )
+    schema_errors.extend(artifacts_errors)
     workspace = _workspace_receipt(
         workspace_root,
         before,
         envelope=envelope,
         declared_paths=payload.get("files_created") if isinstance(payload, dict) else None,
+        workspace_identity=workspace_identity,
     )
     if status == "completed" and not workspace["boundary_ok"]:
         status = "sandbox_unavailable"
@@ -1831,7 +4586,7 @@ def _run_hermes_j4(
         exit_code=result.returncode,
         workspace=workspace,
         artifacts=artifacts,
-        parsed_payload=payload,
+        parsed_payload=safe_payload,
         schema_errors=schema_errors,
         turns=turns,
         tokens=tokens,
@@ -1839,7 +4594,7 @@ def _run_hermes_j4(
         effective_model=effective_model,
         effective_provider=effective_provider,
         fallback_observed=fallback_observed,
-        attestation_source="hermes.sessions.export.jsonl" if effective_model else None,
+        attestation_source=("hermes.launcher.attest-session+hermes.sessions.export.jsonl" if effective_model else None),
         effective_resources=effective_resources,
         resource_sources=resource_sources,
         authority=authority,
@@ -1847,9 +4602,137 @@ def _run_hermes_j4(
             "call_count": turns if isinstance(turns, int) else 0,
             "count_semantics": "exact",
             "routes": ([{"model": effective_model, "provider": effective_provider}] if effective_model else []),
-            "source": "hermes.sessions.export.jsonl",
+            "source": "hermes.launcher.attest-session+hermes.sessions.export.jsonl",
+        },
+        execution={
+            "chat_spawn_count": 1,
+            "invocation_id": uuid.uuid5(uuid.NAMESPACE_URL, envelope_sha256).hex,
+            "argv_sha256": _sha256_json(command),
+            "cwd": str(workspace_root.resolve()),
+            "workspace_flag": _argv_value(command, "--in"),
+            "session_id": session_id,
+            "transcript_export_spawn_count": transcript_export_spawn_count,
+            "pre_state_db_absent": pre_state_absent,
+            "state_manifest_sha256": _sha256_json(state_manifest),
+            "runtime_pre_stable": runtime_pre_stable,
+            "runtime_post_chat_stable": runtime_post_chat_stable,
+            "runtime_final_stable": runtime_final_stable,
+            "auth_profile": dict(prepared.hermes_auth_profile),
+            "attempt_environment_sha256": _sha256_json(
+                {
+                    name: hermes_env[name]
+                    for name in (
+                        "HERMES_HOME",
+                        "HOME",
+                        "CODEX_HOME",
+                        "HERMES_MANAGED_DIR",
+                        "TMPDIR",
+                        "TMP",
+                        "TEMP",
+                        "HERMES_SAFE_MODE",
+                        "HERMES_IGNORE_USER_CONFIG",
+                        "HERMES_IGNORE_RULES",
+                        "HERMES_BUNDLED_SKILLS",
+                        "PYTHONNOUSERSITE",
+                    )
+                }
+            ),
+            "session_attestation": session_attestation,
         },
     )
+
+
+def _run_hermes_j4(
+    scenario: ScenarioWorkspace,
+    envelope: dict[str, Any],
+    envelope_sha256: str,
+    *,
+    output_dir: Path,
+    config: J4RuntimeConfig,
+    prepared: PreparedJ4Runtimes | None = None,
+) -> dict[str, Any]:
+    """Run Hermes and always remove attempt-local credentials and runtime state."""
+
+    workspace_root = _runtime_workspace_path(output_dir, "hermes", envelope["envelope_id"])
+    attempt_root, attempt_identity, claim_error = _claim_j4_attempt_root(
+        output_dir,
+        "hermes",
+        str(envelope["envelope_id"]),
+    )
+    state_root = _hermes_state_root(workspace_root, str(envelope["envelope_id"]))
+
+    def blocked_receipt(*, status: str, schema_error: str) -> dict[str, Any]:
+        binary = prepared.hermes_binary if prepared is not None else _empty_hermes_runtime_identity()
+        command = _hermes_command(
+            workspace_root=workspace_root,
+            envelope=envelope,
+            python=prepared.hermes_python if prepared is not None else Path("hermes-python"),
+            launcher=prepared.hermes_launcher if prepared is not None else HERMES_J4_LAUNCHER,
+        )
+        return _base_receipt(
+            runtime="hermes",
+            binary=binary,
+            envelope=envelope,
+            envelope_sha256=envelope_sha256,
+            status=status,
+            argv=command,
+            duration_ms=0,
+            exit_code=None,
+            workspace=_unobserved_workspace_receipt(envelope, reason="unclaimed_attempt_root"),
+            artifacts={},
+            schema_errors=[schema_error],
+            execution={"state_root_owned": False, "state_cleanup_verified": False},
+        )
+
+    if claim_error is not None or attempt_identity is None:
+        status, schema_error = {
+            "attempt_root_conflict": ("needs_reconciliation", "hermes_attempt_state_conflict"),
+            "attempt_parent_unsupported": ("needs_reconciliation", "hermes_attempt_boundary_unsupported"),
+            "attempt_root_unsupported": ("needs_reconciliation", "hermes_attempt_boundary_unsupported"),
+        }.get(str(claim_error), ("resource_unavailable", "hermes_attempt_state_unavailable"))
+        return blocked_receipt(status=status, schema_error=schema_error)
+
+    try:
+        state_root.mkdir(mode=0o700, exist_ok=False)
+        state_details = state_root.lstat()
+    except OSError as exc:
+        conflict = isinstance(exc, FileExistsError)
+        return blocked_receipt(
+            status="needs_reconciliation" if conflict else "resource_unavailable",
+            schema_error="hermes_attempt_state_conflict" if conflict else "hermes_attempt_state_unavailable",
+        )
+    state_identity = (state_details.st_dev, state_details.st_ino)
+    receipt: dict[str, Any] | None = None
+    cleanup_errors: list[str] = []
+    owned_at_cleanup = True
+    try:
+        receipt = _run_hermes_j4_attempt(
+            scenario,
+            envelope,
+            envelope_sha256,
+            output_dir=output_dir,
+            config=config,
+            prepared=prepared,
+        )
+    finally:
+        # Both the enclosing attempt root and the state child must still be
+        # exactly what this attempt created; a replaced state root is foreign
+        # state and must survive as a typed reconciliation, not be deleted.
+        owned_at_cleanup = _j4_attempt_root_owned(attempt_root, attempt_identity)
+        if owned_at_cleanup and _j4_attempt_root_owned(state_root, state_identity):
+            cleanup_errors = _cleanup_hermes_attempt_state(state_root)
+        else:
+            cleanup_errors = ["hermes_attempt_state_cleanup_ambiguous"]
+    assert receipt is not None
+    execution = receipt.setdefault("execution", {})
+    execution["state_root_owned"] = owned_at_cleanup
+    execution["state_cleanup_verified"] = not cleanup_errors
+    if cleanup_errors:
+        receipt["status"] = "needs_reconciliation"
+        parsed = receipt.setdefault("parsed", {})
+        parsed["schema_errors"] = sorted(set([*(parsed.get("schema_errors") or []), *cleanup_errors]))
+        parsed["schema_valid"] = False
+    return receipt
 
 
 def _http_error_status(status_code: int) -> str:
@@ -2268,7 +5151,11 @@ def _run_hive_j4(
     config: J4RuntimeConfig,
 ) -> dict[str, Any]:
     workspace_root = _runtime_workspace_path(output_dir, "hive", envelope["envelope_id"])
-    before, clone_errors = _clone_seed(scenario.workspace_dir, workspace_root)
+    attempt_root, attempt_identity, claim_error = _claim_j4_attempt_root(
+        output_dir,
+        "hive",
+        str(envelope["envelope_id"]),
+    )
     attempt_id = uuid.uuid4().hex
     remote_root = f"workspace/p08-j4/{attempt_id}/{envelope['envelope_id']}"
     base_url = str(config.hive_base_url or "").strip()
@@ -2286,6 +5173,35 @@ def _run_hive_j4(
         "GET transcript?schema_version=2",
         "POST run/<run>/cancel + GET runs/active fence on timeout",
     ]
+    if claim_error is not None or attempt_identity is None:
+        # No seed clone or other attempt effect runs before the attempt root is
+        # claimed: a denied root must not be written through or read from.
+        status, schema_error = {
+            "attempt_root_conflict": ("needs_reconciliation", "hive_attempt_state_conflict"),
+            "attempt_parent_unsupported": ("needs_reconciliation", "hive_attempt_boundary_unsupported"),
+            "attempt_root_unsupported": ("needs_reconciliation", "hive_attempt_boundary_unsupported"),
+        }.get(str(claim_error), ("resource_unavailable", "hive_attempt_state_unavailable"))
+        return _base_receipt(
+            runtime="hive",
+            binary=binary,
+            envelope=envelope,
+            envelope_sha256=envelope_sha256,
+            status=status,
+            argv=argv,
+            duration_ms=0,
+            exit_code=None,
+            workspace=_unobserved_workspace_receipt(envelope, reason="unclaimed_attempt_root"),
+            artifacts={},
+            schema_errors=[schema_error],
+            execution={
+                "attempt_id": attempt_id,
+                "session_id": None,
+                "run_id": None,
+                "remote_root": remote_root,
+                "terminal_status": None,
+            },
+        )
+    before, clone_errors, workspace_identity = _clone_seed(scenario.workspace_dir, workspace_root)
     setup_errors = [*clone_errors]
     if not _valid_hive_base_url(base_url):
         setup_errors.append("hive_base_url")
@@ -2294,7 +5210,7 @@ def _run_hive_j4(
     if not config.hive_agent_id:
         setup_errors.append("hive_agent_id")
     if setup_errors:
-        artifacts = _write_j4_artifacts(
+        artifacts, artifacts_errors = _write_j4_artifacts(
             output_dir,
             runtime="hive",
             envelope_id=envelope["envelope_id"],
@@ -2310,9 +5226,11 @@ def _run_hive_j4(
             argv=argv,
             duration_ms=0,
             exit_code=None,
-            workspace=_workspace_receipt(workspace_root, before, envelope=envelope),
+            workspace=_workspace_receipt(
+                workspace_root, before, envelope=envelope, workspace_identity=workspace_identity
+            ),
             artifacts=artifacts,
-            schema_errors=setup_errors,
+            schema_errors=[*setup_errors, *artifacts_errors],
             execution={
                 "attempt_id": attempt_id,
                 "session_id": None,
@@ -2707,17 +5625,21 @@ def _run_hive_j4(
             timeout=10,
         )
         if remote_error:
-            status = remote_error if remote_error in J4_STATUSES else "attestation_failed"
-            schema_errors.append(f"workspace_readback:{remote_error}")
+            status = "attestation_failed"
+            schema_errors.append(f"post_terminal_workspace_evidence:{remote_error}")
             raise RuntimeError("typed_http_stop")
         schema_errors.extend(_replace_local_workspace(workspace_root, remote_files))
-        status = "completed" if not schema_errors else "sandbox_unavailable"
+        status = "completed" if not schema_errors else "attestation_failed"
         terminal_status = "completed"
         execution["terminal_status"] = terminal_status
         exit_code = 0
     except (httpx.HTTPError, OSError):
         if run_id and terminal_status is None and "cancel" not in execution:
             fence_unsettled_run()
+        elif terminal_status == "completed":
+            status = "attestation_failed"
+            schema_errors.append("post_terminal_workspace_evidence:transport")
+            execution["terminal_status"] = terminal_status
         else:
             status = "needs_reconciliation" if run_id and terminal_status is None else "resource_unavailable"
             execution["terminal_status"] = terminal_status
@@ -2735,7 +5657,7 @@ def _run_hive_j4(
             client.close()
 
     transcript_text = "\n".join(_canonical_json(event) for event in transcript_events)
-    artifacts = _write_j4_artifacts(
+    artifacts, artifacts_errors = _write_j4_artifacts(
         output_dir,
         runtime="hive",
         envelope_id=envelope["envelope_id"],
@@ -2743,11 +5665,13 @@ def _run_hive_j4(
         stderr="",
         transcript=transcript_text,
     )
+    schema_errors.extend(artifacts_errors)
     workspace = _workspace_receipt(
         workspace_root,
         before,
         envelope=envelope,
         declared_paths=payload.get("files_created") if isinstance(payload, dict) else None,
+        workspace_identity=workspace_identity,
     )
     if status == "completed" and not workspace["boundary_ok"]:
         status = "sandbox_unavailable"
@@ -2884,9 +5808,19 @@ def _external_score(scenario_name: str, workspace_root: Path) -> dict[str, Any]:
     }
 
 
-def _receipt_blockers(receipt: dict[str, Any], envelope: dict[str, Any], envelope_sha256: str) -> list[str]:
+def _receipt_blockers(
+    receipt: dict[str, Any],
+    envelope: dict[str, Any],
+    envelope_sha256: str,
+    *,
+    output_dir: Path,
+    config: J4RuntimeConfig,
+    prepared: PreparedJ4Runtimes,
+    expected_prompt: str,
+) -> list[str]:
     runtime = str(receipt.get("runtime") or "")
     blockers: list[str] = []
+    expected_workspace = _runtime_workspace_path(output_dir, runtime, envelope["envelope_id"]).resolve()
     if receipt.get("schema") != J4_RECEIPT_SCHEMA:
         blockers.append("receipt_schema")
     if receipt.get("status") != "completed":
@@ -2897,6 +5831,8 @@ def _receipt_blockers(receipt: dict[str, Any], envelope: dict[str, Any], envelop
         blockers.append("seed_sha256")
     if receipt.get("scorer_sha256") != envelope["scorer"]["source_sha256"]:
         blockers.append("scorer_sha256")
+    if receipt.get("scorer_loaded_code_sha256") != envelope["scorer"]["loaded_code_sha256"]:
+        blockers.append("scorer_loaded_code_sha256")
     if receipt.get("effective_model") != J4_MODEL:
         blockers.append("effective_model")
     allowed_routes = envelope["model"]["allowed_provider_routes"].get(runtime, [])
@@ -2912,6 +5848,8 @@ def _receipt_blockers(receipt: dict[str, Any], envelope: dict[str, Any], envelop
         blockers.append("workspace_boundary")
     if receipt.get("workspace", {}).get("before_sha256") != envelope["workspace"]["seed_sha256"]:
         blockers.append("workspace_seed")
+    if receipt.get("workspace", {}).get("local_path") != str(expected_workspace):
+        blockers.append("workspace_identity")
     expected_resources = {
         "max_tool_rounds": envelope["resources"]["max_tool_rounds"],
         "wall_clock_seconds": envelope["resources"]["wall_clock_seconds"],
@@ -2929,6 +5867,7 @@ def _receipt_blockers(receipt: dict[str, Any], envelope: dict[str, Any], envelop
         blockers.append("hard_common_resources")
     expected_authority = {
         "allowed_tools": envelope["authority"]["allowed_tools"].get(runtime),
+        "readable_scope": envelope["authority"]["readable_scope"],
         "writable_scope": envelope["authority"]["writable_scope"],
     }
     authority = receipt.get("authority") if isinstance(receipt.get("authority"), dict) else {}
@@ -2938,6 +5877,7 @@ def _receipt_blockers(receipt: dict[str, Any], envelope: dict[str, Any], envelop
         authority.get("requested") != expected_authority
         or authority.get("effective") != expected_authority
         or not authority_sources.get("allowed_tools")
+        or not authority_sources.get("readable_scope")
         or not authority_sources.get("writable_scope")
         or sandbox.get("status") != "enforced"
     ):
@@ -2992,6 +5932,170 @@ def _receipt_blockers(receipt: dict[str, Any], envelope: dict[str, Any], envelop
         r"[0-9a-f]{64}", str(binary.get("sha256") or "")
     ):
         blockers.append("binary_identity")
+    if runtime == "hive" and (
+        binary.get("path") != str(config.hive_base_url or "").strip()
+        or binary.get("revision") != config.hive_revision
+        or binary.get("sha256") != str(config.hive_binary_sha256 or "").strip().lower()
+    ):
+        blockers.append("hive_expected_runtime_identity")
+    if runtime == "hermes":
+        if binary != prepared.hermes_binary:
+            blockers.append("hermes_expected_runtime_identity")
+        components = binary.get("components") if isinstance(binary.get("components"), dict) else {}
+        python_component = components.get("python") if isinstance(components.get("python"), dict) else {}
+        launcher_component = components.get("launcher") if isinstance(components.get("launcher"), dict) else {}
+        source_component = components.get("source") if isinstance(components.get("source"), dict) else {}
+        argv = receipt.get("argv") if isinstance(receipt.get("argv"), list) else []
+        expected_argv = _hermes_command(
+            workspace_root=expected_workspace,
+            envelope=envelope,
+            python=prepared.hermes_python,
+            launcher=prepared.hermes_launcher,
+        )
+        expected_excluded_runtime_roots: list[str] = []
+        try:
+            venv_root = Path(str(python_component.get("venv_root") or "")).resolve()
+            source_root = Path(str(source_component.get("root") or "")).resolve()
+            venv_root.relative_to(source_root)
+            expected_excluded_runtime_roots = [str(venv_root)]
+        except (OSError, ValueError):
+            pass
+        if (
+            binary.get("runtime_sha256") != binary.get("sha256")
+            or not re.fullmatch(r"[0-9a-f]{64}", str(binary.get("runtime_sha256") or ""))
+            or not re.fullmatch(r"[0-9a-f]{64}", str(python_component.get("sha256") or ""))
+            or not re.fullmatch(r"[0-9a-f]{64}", str(python_component.get("entry_sha256") or ""))
+            or not re.fullmatch(r"[0-9a-f]{64}", str(python_component.get("resolved_sha256") or ""))
+            or not re.fullmatch(r"[0-9a-f]{64}", str(python_component.get("pyvenv_sha256") or ""))
+            or not re.fullmatch(r"[0-9a-f]{64}", str(python_component.get("tree_sha256") or ""))
+            or not re.fullmatch(r"[0-9a-f]{64}", str(python_component.get("base_python_sha256") or ""))
+            or not re.fullmatch(r"[0-9a-f]{64}", str(python_component.get("base_tree_sha256") or ""))
+            or not isinstance(python_component.get("tree_entry_count"), int)
+            or python_component.get("tree_entry_count", 0) < 1
+            or not isinstance(python_component.get("base_tree_entry_count"), int)
+            or python_component.get("base_tree_entry_count", 0) < 1
+            or python_component.get("kind") not in {"file", "symlink"}
+            or not re.fullmatch(r"[0-9a-f]{64}", str(launcher_component.get("sha256") or ""))
+            or not re.fullmatch(r"[0-9a-f]{64}", str(source_component.get("sha256") or ""))
+            or not re.fullmatch(r"[0-9a-f]{64}", str(source_component.get("lock_sha256") or ""))
+            or source_component.get("revision") != binary.get("revision")
+            or source_component.get("clean") is not True
+            or source_component.get("excluded_runtime_roots") != expected_excluded_runtime_roots
+            or source_component.get("scope") != HERMES_J4_SOURCE_SCOPE
+            or len(argv) < 4
+            or argv != expected_argv
+            or argv[0] != binary.get("path")
+            or argv[0] != python_component.get("base_python_path")
+            or argv[1:3] != ["-I", "-S"]
+            or argv[3] != launcher_component.get("path")
+        ):
+            blockers.append("hermes_runtime_identity")
+        execution = receipt.get("execution") if isinstance(receipt.get("execution"), dict) else {}
+        session_attestation = (
+            execution.get("session_attestation") if isinstance(execution.get("session_attestation"), dict) else {}
+        )
+        expected_state_root = _hermes_state_root(
+            expected_workspace,
+            str(envelope["envelope_id"]),
+        ).resolve()
+        expected_attempt_environment_sha256 = _sha256_json(
+            {
+                "HERMES_HOME": str(expected_state_root / "hermes-home"),
+                "HOME": str(expected_state_root / "os-home"),
+                "CODEX_HOME": str(expected_state_root / "codex-home"),
+                "HERMES_MANAGED_DIR": str(expected_state_root / "managed"),
+                "TMPDIR": str(expected_state_root / "tmp"),
+                "TMP": str(expected_state_root / "tmp"),
+                "TEMP": str(expected_state_root / "tmp"),
+                "HERMES_SAFE_MODE": "1",
+                "HERMES_IGNORE_USER_CONFIG": "1",
+                "HERMES_IGNORE_RULES": "1",
+                "HERMES_BUNDLED_SKILLS": str(expected_state_root / "nonexistent-bundled-skills"),
+                "PYTHONNOUSERSITE": "1",
+            }
+        )
+        if (
+            execution.get("chat_spawn_count") != 1
+            or execution.get("argv_sha256") != _sha256_json(expected_argv)
+            or execution.get("transcript_export_spawn_count") != session_attestation.get("lineage_count")
+            or execution.get("cwd") != receipt.get("workspace", {}).get("local_path")
+            or execution.get("workspace_flag") != receipt.get("workspace", {}).get("local_path")
+            or execution.get("pre_state_db_absent") is not True
+            or execution.get("state_root_owned") is not True
+            or execution.get("state_cleanup_verified") is not True
+            or execution.get("runtime_pre_stable") is not True
+            or execution.get("runtime_post_chat_stable") is not True
+            or execution.get("runtime_final_stable") is not True
+            or execution.get("auth_profile") != prepared.hermes_auth_profile
+            or execution.get("attempt_environment_sha256") != expected_attempt_environment_sha256
+            or session_attestation.get("ok") is not True
+            or session_attestation.get("session_id") != execution.get("session_id")
+        ):
+            blockers.append("hermes_invocation_identity")
+    if runtime == "freecode":
+        components = binary.get("components") if isinstance(binary.get("components"), dict) else {}
+        build_manifest = components.get("build_manifest") if isinstance(components.get("build_manifest"), dict) else {}
+        fresh_build_receipt = (
+            components.get("fresh_build_receipt") if isinstance(components.get("fresh_build_receipt"), dict) else {}
+        )
+        source_component = components.get("source") if isinstance(components.get("source"), dict) else {}
+        guard = components.get("authority_guard") if isinstance(components.get("authority_guard"), dict) else {}
+        execution = receipt.get("execution") if isinstance(receipt.get("execution"), dict) else {}
+        expected_artifact = prepared.freecode_manifest["artifact"]
+        expected_source = prepared.freecode_manifest["source"]
+        expected_runtime_root = expected_workspace.parent / "runtime"
+        expected_argv = _freecode_command(
+            prompt=expected_prompt,
+            envelope=envelope,
+            workspace_root=expected_workspace,
+            binary=expected_runtime_root / "freecode",
+            hook=expected_runtime_root / "freecode_j4_hook.py",
+            hook_python=prepared.freecode_hook_python,
+        )
+        argv = receipt.get("argv") if isinstance(receipt.get("argv"), list) else []
+        if (
+            binary.get("path") != str(expected_runtime_root / "freecode")
+            or binary.get("version") != expected_artifact.get("version")
+            or binary.get("sha256") != expected_artifact.get("sha256")
+            or binary.get("revision") != expected_source.get("revision")
+            or binary.get("runtime_sha256") != _freecode_runtime_sha256(prepared)
+            or not re.fullmatch(r"[0-9a-f]{64}", str(binary.get("runtime_sha256") or ""))
+            or not re.fullmatch(r"[0-9a-f]{64}", str(build_manifest.get("sha256") or ""))
+            or build_manifest.get("sha256") != prepared.freecode_manifest_sha256
+            or build_manifest.get("schema") != FREECODE_BUILD_MANIFEST_SCHEMA
+            or fresh_build_receipt != prepared.freecode_build_receipt
+            or _sha256_json(fresh_build_receipt) != prepared.freecode_build_receipt_sha256
+            or fresh_build_receipt.get("inputs_stable") is not True
+            or fresh_build_receipt.get("network_access") is not False
+            or fresh_build_receipt.get("artifact") != expected_artifact
+            or source_component != expected_source
+            or not re.fullmatch(r"[0-9a-f]{64}", str(guard.get("sha256") or ""))
+            or guard.get("path") != str(expected_runtime_root / "freecode_j4_hook.py")
+            or guard.get("sha256") != prepared.freecode_hook_sha256
+            or guard.get("python_path") != str(prepared.freecode_hook_python)
+            or not re.fullmatch(r"[0-9a-f]{64}", str(guard.get("python_sha256") or ""))
+            or guard.get("python_sha256") != prepared.freecode_hook_python_sha256
+            or not re.fullmatch(r"[0-9a-f]{64}", str(guard.get("python_environment_sha256") or ""))
+            or guard.get("python_environment_sha256") != prepared.freecode_hook_python_environment_sha256
+            or execution.get("chat_spawn_count") != 1
+            or execution.get("attempt_roots_owned") is not True
+            or execution.get("state_cleanup_verified") is not True
+            or argv != expected_argv
+            or execution.get("argv_sha256") != _sha256_json(expected_argv)
+            or execution.get("cwd") != receipt.get("workspace", {}).get("local_path")
+            or execution.get("runtime_pre_sha256") != binary.get("sha256")
+            or execution.get("runtime_post_sha256") != binary.get("sha256")
+            or execution.get("guard_pre_sha256") != guard.get("sha256")
+            or execution.get("guard_post_sha256") != guard.get("sha256")
+            or execution.get("guard_python_pre_sha256") != guard.get("python_sha256")
+            or execution.get("guard_python_post_sha256") != guard.get("python_sha256")
+            or execution.get("guard_python_environment_pre_sha256") != guard.get("python_environment_sha256")
+            or execution.get("guard_python_environment_post_sha256") != guard.get("python_environment_sha256")
+            or not isinstance(execution.get("hook_log"), dict)
+            or execution["hook_log"].get("valid") is not True
+            or execution["hook_log"].get("sha256") != receipt.get("artifacts", {}).get("transcript", {}).get("sha256")
+        ):
+            blockers.append("freecode_runtime_identity")
     artifacts = receipt.get("artifacts") if isinstance(receipt.get("artifacts"), dict) else {}
     for name in ("stdout", "stderr", "transcript"):
         artifact = artifacts.get(name) if isinstance(artifacts.get(name), dict) else {}
@@ -3014,6 +6118,46 @@ def _empty_j4_report(*, blockers: list[dict[str, Any]], receipts: list[dict[str,
         "receipts": receipts or [],
         "envelopes": [],
         "artifact_paths": [],
+        "scenarios": {},
+    }
+
+
+def _post_run_blocked_report(
+    *,
+    blockers: list[dict[str, Any]],
+    receipts: list[dict[str, Any]],
+    envelopes: list[dict[str, Any]],
+    scoring_snapshots: dict[tuple[str, str], tuple[Path, str]],
+    scorer_artifact: dict[str, Any],
+) -> dict[str, Any]:
+    statuses = {
+        runtime: sorted(
+            {str(receipt.get("status") or "missing") for receipt in receipts if receipt.get("runtime") == runtime}
+        )
+        for runtime in _J4_RUNTIME_ORDER
+    }
+    auth_required = [runtime for runtime, observed in statuses.items() if "auth_required" in observed]
+    return {
+        "kind": "bakeoff",
+        "schema": J4_ENVELOPE_SCHEMA,
+        "transport": "same_envelope_live",
+        "runtime": {"status": "completed_with_blockers", "observed_statuses": statuses},
+        "auth_status": "auth_required" if auth_required else "ok",
+        "auth_required_runtimes": auth_required,
+        "benchmark_complete": False,
+        "acceptance_ready": False,
+        "comparison": {"status": "blocked", "scores": {}, "blockers": blockers},
+        "scenario_scores": {},
+        "receipts": receipts,
+        "envelopes": envelopes,
+        "artifact_paths": [
+            artifact["path"]
+            for receipt in receipts
+            for artifact in receipt.get("artifacts", {}).values()
+            if isinstance(artifact, dict) and artifact.get("path")
+        ],
+        "scoring_snapshot_paths": [str(path) for path, _sha256 in scoring_snapshots.values()],
+        "scorer_artifact": scorer_artifact,
         "scenarios": {},
     }
 
@@ -3052,6 +6196,15 @@ def _j4_acceptance_decision(scenario_scores: dict[str, dict[str, Any]]) -> dict[
     }
 
 
+def _j4_runtime_preflight(config: J4RuntimeConfig) -> list[dict[str, Any]]:
+    """Compatibility wrapper for callers that only need a no-model readiness result."""
+
+    prepared, blockers = _prepare_j4_runtimes(config)
+    if prepared is not None:
+        _cleanup_prepared(prepared)
+    return blockers
+
+
 def run_same_envelope_bakeoff(
     *,
     output_dir: Path,
@@ -3059,6 +6212,7 @@ def run_same_envelope_bakeoff(
 ) -> dict[str, Any]:
     """Run the manual three-runtime P08-J4 comparison without any model preflight."""
 
+    output_dir = output_dir.expanduser().resolve()
     precondition_blockers: list[dict[str, Any]] = []
     if not config.external_profile_authorized:
         precondition_blockers.append(
@@ -3074,6 +6228,10 @@ def run_same_envelope_bakeoff(
     )
     if not hive_configured:
         precondition_blockers.append({"code": "hive_session_authority_required", "runtime": "hive"})
+    if not str(config.hive_revision or "").strip() or not re.fullmatch(
+        r"[0-9a-f]{64}", str(config.hive_binary_sha256 or "").strip().lower()
+    ):
+        precondition_blockers.append({"code": "hive_build_identity_required", "runtime": "hive"})
     if (
         config.max_tool_rounds < 1
         or config.wall_clock_seconds < 1
@@ -3093,37 +6251,111 @@ def run_same_envelope_bakeoff(
     if precondition_blockers:
         return _empty_j4_report(blockers=precondition_blockers)
 
+    prepared, runtime_blockers = _prepare_j4_runtimes(config)
+    if runtime_blockers:
+        return _empty_j4_report(blockers=runtime_blockers)
+    assert prepared is not None
+
+    try:
+        return _run_same_envelope_bakeoff_prepared(
+            output_dir=output_dir,
+            config=config,
+            prepared=prepared,
+        )
+    finally:
+        _cleanup_prepared(prepared)
+
+
+def _run_same_envelope_bakeoff_prepared(
+    *,
+    output_dir: Path,
+    config: J4RuntimeConfig,
+    prepared: PreparedJ4Runtimes,
+) -> dict[str, Any]:
+
+    scorer_identity = _scorer_runtime_identity()
+    scorer_source, scorer_errors = _freeze_scorer_source(output_dir, scorer_identity)
+    if scorer_errors:
+        return _empty_j4_report(blockers=[{"code": code, "runtime": "external_scorer"} for code in scorer_errors])
+    assert scorer_source is not None
+    scorer_artifact = {
+        "path": str(scorer_source),
+        **scorer_identity,
+    }
+
     seed_root = output_dir / "j4_seed"
-    seed_root.mkdir(parents=True, exist_ok=True)
+    try:
+        seed_root.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        return _empty_j4_report(blockers=[{"code": "seed_workspace_conflict"}])
+    except OSError:
+        return _empty_j4_report(blockers=[{"code": "seed_workspace_unavailable"}])
     receipts: list[dict[str, Any]] = []
     envelopes: list[dict[str, Any]] = []
     envelope_hashes: dict[str, str] = {}
+    scenario_prompts: dict[str, str] = {}
     stopped_runtimes: set[str] = set()
+    runtime_drift_blockers: list[dict[str, Any]] = []
+    scoring_snapshots: dict[tuple[str, str], tuple[Path, str]] = {}
+    stop_all = False
     adapters = {
         "hive": _run_hive_j4,
         "freecode": _run_freecode_j4,
         "hermes": _run_hermes_j4,
     }
     for scenario_name in _SCENARIOS:
+        drift = _prepared_runtime_blockers(prepared, config)
+        if not _scorer_runtime_stable(scorer_identity, scorer_source):
+            drift.append({"code": "runtime_identity_drift", "runtime": "external_scorer"})
+        if drift:
+            runtime_drift_blockers.extend(
+                {**item, "scenario": scenario_name, "phase": "scenario_pre"} for item in drift
+            )
+            break
         scenario = _scenario_workspace(seed_root, scenario_name)
-        envelope, envelope_sha256 = _build_same_envelope(scenario, config=config)
+        envelope, envelope_sha256 = _build_same_envelope(
+            scenario,
+            config=config,
+            scorer_identity=scorer_identity,
+        )
         envelopes.append({"envelope": envelope, "sha256": envelope_sha256})
         envelope_hashes[scenario_name] = envelope_sha256
+        scenario_prompts[scenario_name] = scenario.prompt
         for runtime in _J4_RUNTIME_ORDER:
             if runtime in stopped_runtimes:
                 continue
-            receipt = adapters[runtime](
-                scenario,
-                envelope,
-                envelope_sha256,
-                output_dir=output_dir,
-                config=config,
-            )
+            adapter_kwargs: dict[str, Any] = {"output_dir": output_dir, "config": config}
+            if runtime != "hive":
+                adapter_kwargs["prepared"] = prepared
+            receipt = adapters[runtime](scenario, envelope, envelope_sha256, **adapter_kwargs)
             receipts.append(receipt)
+            if receipt.get("status") == "completed":
+                snapshot_path, snapshot_sha256, snapshot_errors = _create_scoring_snapshot(
+                    output_dir=output_dir,
+                    runtime=runtime,
+                    envelope=envelope,
+                    receipt=receipt,
+                )
+                if snapshot_errors:
+                    runtime_drift_blockers.extend(
+                        {
+                            "code": error,
+                            "runtime": runtime,
+                            "scenario": scenario_name,
+                            "phase": "post_receipt",
+                        }
+                        for error in snapshot_errors
+                    )
+                    stop_all = True
+                    break
+                assert snapshot_path is not None
+                scoring_snapshots[(scenario_name, runtime)] = (snapshot_path, snapshot_sha256)
             if receipt.get("status") == "auth_required":
                 stopped_runtimes.add(runtime)
+        if stop_all:
+            break
 
-    blockers: list[dict[str, Any]] = []
+    blockers: list[dict[str, Any]] = list(runtime_drift_blockers)
     by_scenario_runtime = {
         (str(envelope["task"]["scenario"]), runtime): next(
             (
@@ -3148,21 +6380,75 @@ def run_same_envelope_bakeoff(
             if receipt is None:
                 blockers.append({"scenario": scenario_name, "runtime": runtime, "code": "receipt_missing"})
                 continue
-            for code in _receipt_blockers(receipt, envelope, envelope_sha256):
+            for code in _receipt_blockers(
+                receipt,
+                envelope,
+                envelope_sha256,
+                output_dir=output_dir,
+                config=config,
+                prepared=prepared,
+                expected_prompt=scenario_prompts[scenario_name],
+            ):
                 blockers.append({"scenario": scenario_name, "runtime": runtime, "code": code})
             common_resources.add(_canonical_json(receipt.get("resources", {}).get("effective")))
         if len(common_resources) != 1:
             blockers.append({"scenario": scenario_name, "code": "hard_common_mismatch"})
 
-    if blockers:
-        report = _empty_j4_report(blockers=blockers, receipts=receipts)
-        report["envelopes"] = envelopes
-        report["artifact_paths"] = [
-            artifact["path"]
+    for runtime in _J4_RUNTIME_ORDER:
+        identities = {
+            (
+                _sha256_json(
+                    {key: receipt.get("binary", {}).get(key) for key in ("path", "version", "sha256", "revision")}
+                )
+                if runtime == "hive"
+                else str(receipt.get("binary", {}).get("runtime_sha256") or "")
+            )
             for receipt in receipts
-            for artifact in receipt.get("artifacts", {}).values()
-            if isinstance(artifact, dict) and artifact.get("path")
-        ]
+            if receipt.get("runtime") == runtime
+        }
+        if len(identities) != 1 or not all(re.fullmatch(r"[0-9a-f]{64}", value) for value in identities):
+            blockers.append({"runtime": runtime, "code": "cross_scenario_runtime_identity"})
+
+    hive_tool_identities = {
+        _canonical_json(
+            {
+                "tool_names": receipt.get("route_attestation", {}).get("tool_names"),
+                "tool_schema_sha256": receipt.get("route_attestation", {}).get("tool_schema_sha256"),
+            }
+        )
+        for receipt in receipts
+        if receipt.get("runtime") == "hive"
+    }
+    if len(hive_tool_identities) != 1:
+        blockers.append({"runtime": "hive", "code": "cross_scenario_hive_tool_schema_identity"})
+
+    scorer_identities = {
+        _sha256_json(
+            {
+                "source_sha256": receipt.get("scorer_sha256"),
+                "loaded_code_sha256": receipt.get("scorer_loaded_code_sha256"),
+            }
+        )
+        for receipt in receipts
+    }
+    if scorer_identities != {
+        _sha256_json(
+            {
+                "source_sha256": scorer_identity["source_sha256"],
+                "loaded_code_sha256": scorer_identity["loaded_code_sha256"],
+            }
+        )
+    }:
+        blockers.append({"runtime": "external_scorer", "code": "cross_scenario_scorer_identity"})
+
+    if blockers:
+        report = _post_run_blocked_report(
+            blockers=blockers,
+            receipts=receipts,
+            envelopes=envelopes,
+            scoring_snapshots=scoring_snapshots,
+            scorer_artifact=scorer_artifact,
+        )
         return report
 
     scenario_scores: dict[str, dict[str, Any]] = {}
@@ -3175,10 +6461,49 @@ def run_same_envelope_bakeoff(
         for runtime in _J4_RUNTIME_ORDER:
             receipt = by_scenario_runtime[(scenario_name, runtime)]
             assert receipt is not None
-            score = _external_score(scenario_name, Path(receipt["workspace"]["local_path"]))
+            snapshot_path, expected_snapshot_sha = scoring_snapshots[(scenario_name, runtime)]
+            snapshot_before, snapshot_before_errors = _manifest(snapshot_path)
+            if (
+                snapshot_before_errors
+                or _sha256_json(snapshot_before) != expected_snapshot_sha
+                or not _scorer_runtime_stable(scorer_identity, scorer_source)
+            ):
+                blockers.append(
+                    {
+                        "scenario": scenario_name,
+                        "runtime": runtime,
+                        "code": (
+                            "scoring_snapshot_drift"
+                            if snapshot_before_errors or _sha256_json(snapshot_before) != expected_snapshot_sha
+                            else "scorer_runtime_drift"
+                        ),
+                    }
+                )
+                break
+            score = _external_score(scenario_name, snapshot_path)
+            snapshot_after, snapshot_after_errors = _manifest(snapshot_path)
+            if (
+                snapshot_after_errors
+                or _sha256_json(snapshot_after) != expected_snapshot_sha
+                or not _scorer_runtime_stable(scorer_identity, scorer_source)
+            ):
+                blockers.append(
+                    {
+                        "scenario": scenario_name,
+                        "runtime": runtime,
+                        "code": (
+                            "scoring_snapshot_drift"
+                            if snapshot_after_errors or _sha256_json(snapshot_after) != expected_snapshot_sha
+                            else "scorer_runtime_drift"
+                        ),
+                    }
+                )
+                break
             receipt["score"] = score
             scenario_scores[scenario_name][runtime] = score
             runtime_totals[runtime].append(int(score["score"]))
+        if blockers:
+            break
         scores = [int(details["score"]) for details in scenario_scores[scenario_name].values()]
         scenarios[scenario_name] = {
             "ready": all(details["ready"] for details in scenario_scores[scenario_name].values()),
@@ -3187,11 +6512,20 @@ def run_same_envelope_bakeoff(
             "rubric": f"P08-J4 external rubric {scenario_name}",
             "score_breakdown": scenario_scores[scenario_name],
         }
+    if blockers:
+        report = _post_run_blocked_report(
+            blockers=blockers,
+            receipts=receipts,
+            envelopes=envelopes,
+            scoring_snapshots=scoring_snapshots,
+            scorer_artifact=scorer_artifact,
+        )
+        return report
     comparison_scores = {
         runtime: round(sum(scores) / len(scores), 2) if scores else 0.0 for runtime, scores in runtime_totals.items()
     }
     acceptance = _j4_acceptance_decision(scenario_scores)
-    return {
+    report = {
         "kind": "bakeoff",
         "schema": J4_ENVELOPE_SCHEMA,
         "transport": "same_envelope_live",
@@ -3214,5 +6548,8 @@ def run_same_envelope_bakeoff(
             for artifact in receipt.get("artifacts", {}).values()
             if isinstance(artifact, dict) and artifact.get("path")
         ],
+        "scoring_snapshot_paths": [str(path) for path, _sha256 in scoring_snapshots.values()],
+        "scorer_artifact": scorer_artifact,
         "scenarios": scenarios,
     }
+    return report

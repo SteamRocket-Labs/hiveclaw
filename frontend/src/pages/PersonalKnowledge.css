@@ -632,6 +632,24 @@
   line-height: var(--leading-body);
 }
 
+/* This page's focus indicator must hold ≥3:1 against its own surfaces
+   (WCAG 2.1 SC 1.4.11). The global --focus-ring token is translucent and
+   composites to ≈1.9:1 on light surfaces, so the rendered color is
+   strengthened page-locally with the existing --text-secondary token
+   (≥4.9:1 on every page surface in both themes). Width, style, and offset
+   stay inherited from the global :focus-visible rule. */
+.personal-kb-page :focus-visible {
+  outline-color: var(--text-secondary);
+}
+
+/* Form fields get the same strengthened ≥3:1 focus color as a shadow ring
+   flush at the control edge; the page E2E measures this shadow channel. */
+.personal-kb-page input:focus,
+.personal-kb-page textarea:focus,
+.personal-kb-page select:focus {
+  box-shadow: 0 0 0 2px var(--text-secondary);
+}
+
 @media (max-width: 1180px) {
   .personal-kb-shell {
     grid-template-columns: minmax(0, 1fr);
@@ -664,13 +682,21 @@
     grid-column: auto;
   }
 
+  /* Narrow viewports: all six lanes stay fully visible in a wrapping grid —
+     no horizontal scroll strip, no clipped labels. */
   .personal-kb-tabs {
-    flex-wrap: nowrap;
-    margin-right: calc(var(--space-4) * -1);
-    overflow-x: auto;
+    display: grid;
+    align-items: stretch;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .personal-kb-tab {
-    flex: 0 0 auto;
+  .personal-kb-tab small {
+    white-space: normal;
+  }
+}
+
+@media (max-width: 640px) {
+  .personal-kb-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

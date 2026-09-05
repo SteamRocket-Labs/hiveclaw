@@ -120,27 +120,40 @@ def _permission(
 
 
 @pytest.mark.asyncio
-async def test_company_read_requires_explicit_grant_even_for_org_admin() -> None:
+async def test_company_read_requires_explicit_grant_for_members_not_admins() -> None:
+    """PDEC-013: the human company administrator reads by role; a member
+    without a grant stays denied with the same typed reason as before."""
+
     tenant_id = uuid.uuid4()
     admin_id = uuid.uuid4()
-    principal = _principal(tenant_id=tenant_id, user_id=admin_id, role="org_admin")
+    member_id = uuid.uuid4()
+    admin = _principal(tenant_id=tenant_id, user_id=admin_id, role="org_admin")
+    member = _principal(tenant_id=tenant_id, user_id=member_id, role="member")
     resource = _resource(tenant_id=tenant_id)
 
-    decision = await resolve_company_knowledge_permission(
+    admin_decision = await resolve_company_knowledge_permission(
         _Session([]),
-        principal=principal,
+        principal=admin,
         resource=resource,
         action="read",
     )
+    assert admin_decision.allowed is True
+    assert "scoped_business_admin" in admin_decision.authority_sources
 
-    assert decision.allowed is False
-    assert decision.deny_reason_code == "explicit_resource_permission_required"
-    assert decision.authority_sources == ("tenant_membership",)
-    assert decision.audit_payload["resource_id"] == str(resource.resource_id)
+    member_decision = await resolve_company_knowledge_permission(
+        _Session([]),
+        principal=member,
+        resource=resource,
+        action="read",
+    )
+    assert member_decision.allowed is False
+    assert member_decision.deny_reason_code == "explicit_resource_permission_required"
+    assert member_decision.authority_sources == ("tenant_membership",)
+    assert member_decision.audit_payload["resource_id"] == str(resource.resource_id)
 
 
 @pytest.mark.asyncio
-async def test_company_admin_can_govern_metadata_without_inheriting_sensitive_body_access() -> None:
+async def test_company_admin_governs_metadata_and_reads_credentials_reference_only() -> None:
     tenant_id = uuid.uuid4()
     admin_id = uuid.uuid4()
     principal = _principal(tenant_id=tenant_id, user_id=admin_id, role="org_admin")
@@ -161,13 +174,13 @@ async def test_company_admin_can_govern_metadata_without_inheriting_sensitive_bo
     )
 
     assert manage.allowed is True
-    assert manage.authority_sources == ("tenant_membership", "tenant_admin_metadata_governance")
-    assert manage.sensitivity_ceiling == "PL1_public"
-    assert read.allowed is False
+    assert manage.authority_sources == ("tenant_membership", "scoped_business_admin")
+    assert read.allowed is True
+    assert read.redaction_policy == "credential_reference_only"
 
 
 @pytest.mark.asyncio
-async def test_company_admin_cannot_review_semantic_content_without_explicit_source_access() -> None:
+async def test_company_review_needs_grant_for_members_and_role_for_admins() -> None:
     tenant_id = uuid.uuid4()
     admin_id = uuid.uuid4()
     principal = _principal(tenant_id=tenant_id, user_id=admin_id, role="org_admin")
@@ -177,33 +190,48 @@ async def test_company_admin_cannot_review_semantic_content_without_explicit_sou
         source_acl={"role_names": ["org_admin"]},
     )
 
-    denied = await resolve_company_knowledge_permission(
+    member_id = uuid.uuid4()
+    member_principal = _principal(tenant_id=tenant_id, user_id=member_id, role="member")
+    resource = _resource(
+        tenant_id=tenant_id,
+        sensitivity="PL3_sensitive",
+        source_acl={"user_ids": [str(member_id)]},
+    )
+    member_denied = await resolve_company_knowledge_permission(
+        _Session([]),
+        principal=member_principal,
+        resource=resource,
+        action="review",
+    )
+    admin_review = await resolve_company_knowledge_permission(
         _Session([]),
         principal=principal,
         resource=resource,
         action="review",
     )
-    allowed = await resolve_company_knowledge_permission(
+    member_allowed = await resolve_company_knowledge_permission(
         _Session(
             [
                 _permission(
                     tenant_id=tenant_id,
-                    user_id=admin_id,
+                    user_id=member_principal.accountable_user_id,
                     resource=resource,
                     actions=["review"],
                     sensitivity_ceiling="PL3_sensitive",
                 )
             ]
         ),
-        principal=principal,
+        principal=member_principal,
         resource=resource,
         action="review",
     )
 
-    assert denied.allowed is False
-    assert denied.deny_reason_code == "explicit_resource_permission_required"
-    assert allowed.allowed is True
-    assert "source_acl_snapshot" in allowed.authority_sources
+    assert member_denied.allowed is False
+    assert member_denied.deny_reason_code == "explicit_resource_permission_required"
+    assert admin_review.allowed is True
+    assert "scoped_business_admin" in admin_review.authority_sources
+    assert member_allowed.allowed is True
+    assert "source_acl_snapshot" in member_allowed.authority_sources
 
 
 @pytest.mark.asyncio

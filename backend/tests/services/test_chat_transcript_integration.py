@@ -362,9 +362,7 @@ async def _prepare_terminal_owner_recovery_session(
         )
         await db.flush()
         db.add(Agent(id=agent_id, tenant_id=tenant_id, name="Owner Recovery Agent", creator_id=user_id))
-        db.add(
-            Agent(id=other_agent_id, tenant_id=tenant_id, name="Owner Recovery Other Agent", creator_id=user_id)
-        )
+        db.add(Agent(id=other_agent_id, tenant_id=tenant_id, name="Owner Recovery Other Agent", creator_id=user_id))
         await db.flush()
         db.add(ChatSession(id=session_id, agent_id=agent_id, tenant_id=tenant_id, user_id=user_id))
         db.add(ChatSession(id=other_session_id, agent_id=agent_id, tenant_id=tenant_id, user_id=user_id))
@@ -517,9 +515,7 @@ async def test_terminal_nonboundary_owner_seals_stale_segment_and_projects_incom
         agent_id=fx.agent_id,
         session_id=fx.session_id,
         reason="terminal_owner_segment_recovery",
-        idempotency_key=(
-            f"{runtime_control_bus.TERMINAL_OWNER_SEGMENT_RECOVERY_IDEMPOTENCY_KEY}:{fx.owner_run_id}"
-        ),
+        idempotency_key=(f"{runtime_control_bus.TERMINAL_OWNER_SEGMENT_RECOVERY_IDEMPOTENCY_KEY}:{fx.owner_run_id}"),
         expected_runtime_task_id=fx.owner_run_id,
         data_root=tmp_path,
     )

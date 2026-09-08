@@ -375,6 +375,106 @@ async def test_failed_job_is_not_auto_reselected_by_default_worker(complete_sche
     assert queued_status in {"ready", "degraded"}, (summary.results, drain.results, queued_status)
 
 
+async def test_queued_rebuild_receipt_worker_completes_searchable(complete_schema, owner_sessionmaker, tmp_path):
+    """B4: the owner-facing rebuild returns a persisted queued receipt while a
+    deliberately slow extractor stays uncalled inline; the real two-phase
+    worker then completes the rebuild and the contents stay searchable."""
+    from app.services.personal_knowledge_extractor import KnowledgeExtractionResult
+
+    tenant_id, owner_id = await _seed_owner(owner_sessionmaker)
+    service = PersonalKnowledgeService(data_root=tmp_path)
+    document_id, job_id = await _queue_markdown_job(
+        owner_sessionmaker,
+        tenant_id=tenant_id,
+        owner_id=owner_id,
+        tmp_path=tmp_path,
+        markdown=f"# Rebuild receipt doc\n\n{MARKER_EN} rebuild receipt body.",
+    )
+    first = await service.process_import_jobs(
+        None,
+        session_factory=lambda: _session_context(owner_sessionmaker),
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        current_user_id=owner_id,
+        limit=1,
+        statuses=("queued",),
+    )
+    assert first.succeeded == 1, first.results
+
+    extractor_calls: list[bool] = []
+
+    class _SlowExtractor:
+        async def extract_segment(self, *args, **kwargs):
+            extractor_calls.append(True)
+            await asyncio.sleep(0.2)
+            return KnowledgeExtractionResult()
+
+    service.extractor = _SlowExtractor()
+
+    async with owner_sessionmaker() as session:
+        receipt = await service.queue_rebuild_personal_document_index(
+            session,
+            tenant_id=tenant_id,
+            owner_user_id=owner_id,
+            document_id=document_id,
+            current_user_id=owner_id,
+        )
+        await session.commit()
+    assert receipt is not None
+    assert receipt.status == "queued"
+    assert str(receipt.job_id) == str(job_id)
+    # The slow extractor never ran inside the queuing request.
+    assert extractor_calls == []
+
+    # Duplicate rebuild while queued is idempotent on the persisted job.
+    async with owner_sessionmaker() as session:
+        duplicate = await service.queue_rebuild_personal_document_index(
+            session,
+            tenant_id=tenant_id,
+            owner_user_id=owner_id,
+            document_id=document_id,
+            current_user_id=owner_id,
+        )
+        await session.commit()
+    assert duplicate is not None
+    assert duplicate.status == "queued"
+    assert str(duplicate.job_id) == str(job_id)
+    queued_status, queued_attempts = await _read_job(owner_sessionmaker, job_id)
+    assert queued_status == "queued"
+    assert queued_attempts == 1
+
+    second = await service.process_import_jobs(
+        None,
+        session_factory=lambda: _session_context(owner_sessionmaker),
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        current_user_id=owner_id,
+        limit=1,
+        statuses=("queued",),
+    )
+    assert second.succeeded == 1, second.results
+    assert extractor_calls, "the real worker must run the rebuild extraction"
+
+    final_status, final_attempts, _metadata = await _read_job_full(owner_sessionmaker, job_id)
+    assert final_status in {"ready", "degraded"}, (second.results, final_status)
+    assert final_attempts == 2, final_attempts
+
+    from app.services.personal_knowledge_access import HumanBrowserPrincipal
+
+    async with owner_sessionmaker() as session:
+        hits = await service.search_personal(
+            session,
+            tenant_id=tenant_id,
+            owner_user_id=owner_id,
+            query=MARKER_EN,
+            principal=HumanBrowserPrincipal(user_id=owner_id),
+            limit=5,
+        )
+        await session.rollback()
+    assert hits
+    assert all(hit.document_id == document_id for hit in hits)
+
+
 async def test_stale_claim_loser_cannot_overwrite_reclaimed_job(complete_schema, owner_sessionmaker, tmp_path):
     """B2 two-worker race: worker A claims and is gated DURING its phase-2
     work (no row lock is held across conversion); worker B reclaims the stale

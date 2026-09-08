@@ -42,7 +42,9 @@ def _fixed_hr_boot_config(*, owner_user_id, root_session_id, candidate: dict | N
     from app.tools.handlers.hr import _stamp_hr_blueprint_trigger_exemption
 
     return _stamp_hr_trigger_authority(
-        _stamp_hr_blueprint_trigger_exemption(candidate or {"at": "2026-09-09T00:00:00+00:00", "trigger_class": "scheduled_job"}),
+        _stamp_hr_blueprint_trigger_exemption(
+            candidate or {"at": "2026-09-09T00:00:00+00:00", "trigger_class": "scheduled_job"}
+        ),
         owner_user_id=owner_user_id,
         root_session_id=root_session_id,
     )
@@ -109,7 +111,7 @@ def test_run_hr_provisioning_wires_trusted_claim_identity_into_every_trigger_cre
 
     source = inspect.getsource(run_hr_provisioning)
     assert source.count("_stamp_hr_trigger_authority(") >= 4  # 2 creations + 2 replay repairs
-    for site in ("name=\"first_task_boot\"", "name=_trigger_name"):
+    for site in ('name="first_task_boot"', "name=_trigger_name"):
         assert site in source
     # The trusted identity comes from the canonical claim tuple, not from args.
     assert "owner_user_id=user_id" in source
@@ -192,19 +194,13 @@ async def test_owner_sees_stamped_hr_trigger_while_another_member_is_denied(owne
         owner = await db.get(User, owner_id)
         other = await db.get(User, other_member_id)
         triggers = (
-            (await db.execute(select(AgentTrigger).where(AgentTrigger.agent_id == employee_agent_id)))
-            .scalars()
-            .all()
+            (await db.execute(select(AgentTrigger).where(AgentTrigger.agent_id == employee_agent_id))).scalars().all()
         )
         assert len(triggers) == 1
 
-        owner_visible = await filter_authorized_triggers(
-            db, owner, agent_id=employee_agent_id, triggers=list(triggers)
-        )
+        owner_visible = await filter_authorized_triggers(db, owner, agent_id=employee_agent_id, triggers=list(triggers))
         assert len(owner_visible) == 1
         assert owner_visible[0][1].authority_source == "resource_owner"
 
-        other_visible = await filter_authorized_triggers(
-            db, other, agent_id=employee_agent_id, triggers=list(triggers)
-        )
+        other_visible = await filter_authorized_triggers(db, other, agent_id=employee_agent_id, triggers=list(triggers))
         assert other_visible == []

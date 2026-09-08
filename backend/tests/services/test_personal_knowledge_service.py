@@ -2444,6 +2444,121 @@ async def test_retry_import_job_requeues_without_running_conversion(tmp_path: Pa
     assert conversions == []
 
 
+def _rebuild_pair(status: str, attempt_count: int, *, tmp_path: Path):
+    """Document + aligned job rows with a real canonical artifact on disk."""
+    document = _existing_document_row("ready", segment_count=2)
+    document.canonical_md_path = f"persons/{document.scope_id}/kb/rebuild.md"
+    artifact = tmp_path / document.canonical_md_path
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("# Rebuild\n\nqueued rebuild body.", encoding="utf-8")
+    job = _existing_job_row(status, attempt_count)
+    job.tenant_id = document.tenant_id
+    job.document_id = document.id
+    job.scope_id = document.scope_id
+    return document, job
+
+
+async def test_queue_rebuild_requeues_job_without_running_extraction(tmp_path: Path) -> None:
+    """The owner-facing rebuild only persists a queued transition; the model
+    extraction body never runs inside the request."""
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    document, job = _rebuild_pair("ready", 1, tmp_path=tmp_path)
+    service = PersonalKnowledgeService(data_root=tmp_path)
+    conversions = []
+
+    async def _fail_if_called(*args, **kwargs):  # pragma: no cover - must not run
+        conversions.append(True)
+        raise AssertionError("queued rebuild must not run extraction inside the request")
+
+    service.ingest_markdown = _fail_if_called  # type: ignore[method-assign]
+    service.rebuild_personal_document_index = _fail_if_called  # type: ignore[method-assign]
+
+    result = await service.queue_rebuild_personal_document_index(
+        _ExistingPairSession(document, job),
+        tenant_id=document.tenant_id,
+        owner_user_id=document.scope_id,
+        document_id=document.id,
+        current_user_id=document.scope_id,
+    )
+
+    assert result is not None
+    assert result.status == "queued"
+    assert result.job_id == job.id
+    assert job.status == "queued"
+    assert job.stage == "queued"
+    assert job.error_message is None
+    assert job.job_metadata_json["queued_import_kind"] == "rebuild"
+    assert job.attempt_count == 1
+    assert conversions == []
+
+    # Duplicate rebuild while queued: the persisted queued job is returned
+    # idempotently — no second job, no attempt mutation, no requeue churn.
+    duplicate = await service.queue_rebuild_personal_document_index(
+        _ExistingPairSession(document, job),
+        tenant_id=document.tenant_id,
+        owner_user_id=document.scope_id,
+        document_id=document.id,
+        current_user_id=document.scope_id,
+    )
+    assert duplicate is not None
+    assert duplicate.status == "queued"
+    assert duplicate.job_id == job.id
+    assert job.attempt_count == 1
+    assert conversions == []
+
+
+async def test_queue_rebuild_running_job_is_typed_conflict(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeJobConflict, PersonalKnowledgeService
+
+    document, job = _rebuild_pair("running", 1, tmp_path=tmp_path)
+    service = PersonalKnowledgeService(data_root=tmp_path)
+
+    with pytest.raises(PersonalKnowledgeJobConflict) as conflict:
+        await service.queue_rebuild_personal_document_index(
+            _ExistingPairSession(document, job),
+            tenant_id=document.tenant_id,
+            owner_user_id=document.scope_id,
+            document_id=document.id,
+            current_user_id=document.scope_id,
+        )
+    assert conflict.value.code == "rebuild_in_progress"
+    assert conflict.value.retryable is False
+    assert job.status == "running"
+
+
+async def test_queue_rebuild_denies_non_owner_and_resets_attempt_ceiling(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    document, job = _rebuild_pair("failed", 5, tmp_path=tmp_path)
+    service = PersonalKnowledgeService(data_root=tmp_path)
+
+    denied = await service.queue_rebuild_personal_document_index(
+        _ExistingPairSession(document, job),
+        tenant_id=document.tenant_id,
+        owner_user_id=document.scope_id,
+        document_id=document.id,
+        current_user_id=uuid.uuid4(),
+    )
+    assert denied is None
+    assert job.status == "failed"
+
+    # A job at the attempt ceiling (which the claim query would never select)
+    # restarts its attempt series on the explicit owner rebuild instead of
+    # sitting permanently queued.
+    result = await service.queue_rebuild_personal_document_index(
+        _ExistingPairSession(document, job),
+        tenant_id=document.tenant_id,
+        owner_user_id=document.scope_id,
+        document_id=document.id,
+        current_user_id=document.scope_id,
+    )
+    assert result is not None
+    assert result.status == "queued"
+    assert job.attempt_count == 0
+    assert job.job_metadata_json["rebuild_attempt_reset"] is True
+
+
 async def test_job_summary_derives_lifecycle_view_fields(tmp_path: Path) -> None:
     """The read model derives terminal/retryable/cancellable/error_code and
     exposes max_attempts without any schema change."""

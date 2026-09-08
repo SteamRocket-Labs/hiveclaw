@@ -857,20 +857,37 @@ async def restore_current_user_personal_document(
 @personal_router.post("/documents/{document_id}/rebuild-index")
 async def rebuild_current_user_personal_document_index(
     document_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     service = PersonalKnowledgeService()
-    result = await service.rebuild_personal_document_index(
-        db,
-        tenant_id=_tenant_id_for_user(current_user),
-        owner_user_id=uuid.UUID(str(current_user.id)),
-        document_id=document_id,
-        current_user_id=uuid.UUID(str(current_user.id)),
-    )
+    tenant_id = _tenant_id_for_user(current_user)
+    owner_user_id = uuid.UUID(str(current_user.id))
+    try:
+        result = await service.queue_rebuild_personal_document_index(
+            db,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            document_id=document_id,
+            current_user_id=owner_user_id,
+        )
+    except PersonalKnowledgeJobConflict as conflict:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": conflict.code,
+                "cancellable": conflict.cancellable,
+                "retryable": conflict.retryable,
+            },
+        ) from conflict
     if result is None:
         raise HTTPException(status_code=404, detail="Personal knowledge document not found")
     await db.commit()
+    # The endpoint only persists the queued job; the same asynchronous worker
+    # that owns imports performs the rebuild (model extraction never runs in
+    # this request).
+    _schedule_personal_import_worker(background_tasks, tenant_id=tenant_id, owner_user_id=owner_user_id)
     return _dataclass_payload(result)
 
 

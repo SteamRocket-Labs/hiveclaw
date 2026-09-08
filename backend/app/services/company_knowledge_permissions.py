@@ -381,8 +381,7 @@ async def resolve_company_knowledge_permission(
     if (
         principal.actor_type != "agent"
         and principal.accountable_role in _SCOPED_BUSINESS_ADMIN_ROLES
-        and action
-        in _CONTENT_ACTIONS | _TENANT_ADMIN_METADATA_ACTIONS | _SCOPED_ADMIN_LIFECYCLE_ACTIONS
+        and action in _CONTENT_ACTIONS | _TENANT_ADMIN_METADATA_ACTIONS | _SCOPED_ADMIN_LIFECYCLE_ACTIONS
     ):
         if action in _CONTENT_ACTIONS and not resource.evidence_access_complete:
             return _denied(

@@ -348,6 +348,7 @@ def test_current_user_personal_knowledge_document_actions(monkeypatch):
     job_id = uuid4()
     user = SimpleNamespace(id=owner_id, role="member", tenant_id=uuid4(), is_active=True)
     captured = []
+    background_calls = []
 
     class _FakeService:
         async def patch_personal_document(self, session, **kwargs):
@@ -369,7 +370,7 @@ def test_current_user_personal_knowledge_document_actions(monkeypatch):
                 metadata={},
             )
 
-        async def rebuild_personal_document_index(self, session, **kwargs):
+        async def queue_rebuild_personal_document_index(self, session, **kwargs):
             captured.append(("rebuild", kwargs))
             return SimpleNamespace(
                 document_id=document_id,
@@ -378,11 +379,15 @@ def test_current_user_personal_knowledge_document_actions(monkeypatch):
                 artifact_hash="b" * 64,
                 canonical_md_path="persons/owner/kb/doc.md",
                 segment_count=2,
-                status="ready",
+                status="queued",
                 warnings=[],
             )
 
+    async def fake_process_jobs(**kwargs):
+        background_calls.append(kwargs)
+
     monkeypatch.setattr(agent_knowledge_api, "PersonalKnowledgeService", lambda: _FakeService(), raising=False)
+    monkeypatch.setattr(agent_knowledge_api, "_process_current_user_personal_import_jobs", fake_process_jobs)
     client, fake_db, _user = _personal_client(monkeypatch, user=user)
 
     patched = client.patch(
@@ -395,11 +400,47 @@ def test_current_user_personal_knowledge_document_actions(monkeypatch):
     assert patched.json()["status"] == "archived"
     assert rebuilt.status_code == 200
     assert rebuilt.json()["job_id"] == str(job_id)
+    # The rebuild endpoint returns a persisted queued receipt and schedules
+    # the asynchronous worker — extraction never runs in the request.
+    assert rebuilt.json()["status"] == "queued"
+    assert background_calls == [
+        {"tenant_id": user.tenant_id, "owner_user_id": owner_id},
+    ]
     assert fake_db.commit_count == 2
     assert [name for name, _kwargs in captured] == ["patch", "rebuild"]
     for _name, kwargs in captured:
         assert kwargs["tenant_id"] == user.tenant_id
         assert kwargs["owner_user_id"] == owner_id
+
+
+def test_current_user_personal_rebuild_index_conflict_maps_to_409(monkeypatch):
+    """A rebuild against a running job is a typed 409 conflict, not a silent
+    duplicate attempt; another user's scope denial stays a 404."""
+    from app.services.personal_knowledge_service import PersonalKnowledgeJobConflict
+
+    owner_id = uuid4()
+    document_id = uuid4()
+    user = SimpleNamespace(id=owner_id, role="member", tenant_id=uuid4(), is_active=True)
+
+    class _FakeService:
+        async def queue_rebuild_personal_document_index(self, session, **kwargs):
+            if kwargs.get("owner_user_id") != owner_id:
+                # Another user's scope: the owner-scoped lookup finds no document.
+                return None
+            raise PersonalKnowledgeJobConflict("rebuild_in_progress", retryable=False)
+
+    monkeypatch.setattr(agent_knowledge_api, "PersonalKnowledgeService", lambda: _FakeService(), raising=False)
+    client, fake_db, _user = _personal_client(monkeypatch, user=user)
+
+    conflicted = client.post(f"/knowledge/personal/documents/{document_id}/rebuild-index")
+    assert conflicted.status_code == 409
+    assert conflicted.json()["detail"]["code"] == "rebuild_in_progress"
+
+    stranger = SimpleNamespace(id=uuid4(), role="member", tenant_id=user.tenant_id, is_active=True)
+    client2, _db2, _u2 = _personal_client(monkeypatch, user=stranger)
+    denied = client2.post(f"/knowledge/personal/documents/{document_id}/rebuild-index")
+    assert denied.status_code == 404
+    assert fake_db.commit_count == 0
 
 
 def test_current_user_personal_knowledge_source_preview_streams_owner_image(monkeypatch):

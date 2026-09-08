@@ -2824,6 +2824,158 @@ class PersonalKnowledgeService:
             managed_job_id=managed_job_id,
         )
 
+    async def queue_rebuild_personal_document_index(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        document_id: uuid.UUID,
+        current_user_id: uuid.UUID | None,
+    ) -> PersonalKnowledgeIngestResult | None:
+        """Requeue a durable rebuild job and return only a queued receipt.
+
+        The owner-facing HTTP request must never run model-backed extraction
+        inline: this persists the queued transition on the document's job row
+        (same queue/claim/retry/cancel machinery as imports) and the caller
+        schedules the existing asynchronous worker, whose body is the
+        synchronous rebuild_personal_document_index under a managed job.
+        """
+        if current_user_id != owner_user_id:
+            return None
+        result = await session.execute(
+            select(KnowledgeDocument).where(
+                KnowledgeDocument.tenant_id == tenant_id,
+                KnowledgeDocument.scope_type == "person",
+                KnowledgeDocument.scope_id == owner_user_id,
+                KnowledgeDocument.id == document_id,
+            )
+        )
+        document = result.scalar_one_or_none()
+        if document is None:
+            return None
+        # The row lock serializes this requeue against the worker claim and a
+        # concurrent duplicate rebuild request for the same document.
+        job_result = await session.execute(
+            select(KnowledgeIndexJob)
+            .where(
+                KnowledgeIndexJob.tenant_id == tenant_id,
+                KnowledgeIndexJob.scope_type == "person",
+                KnowledgeIndexJob.scope_id == owner_user_id,
+                KnowledgeIndexJob.document_id == document_id,
+            )
+            .order_by(KnowledgeIndexJob.updated_at.desc(), KnowledgeIndexJob.created_at.desc())
+            .limit(1)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        job = job_result.scalar_one_or_none()
+        status = str(getattr(job, "status", "") or "").lower() if job is not None else None
+        if status == "running":
+            raise PersonalKnowledgeJobConflict("rebuild_in_progress", retryable=False)
+        if status == "queued":
+            # Idempotent duplicate rebuild: the persisted queued job is the
+            # truthful receipt — no second job, no attempt mutation.
+            await session.flush()
+            return PersonalKnowledgeIngestResult(
+                document_id=document.id,
+                job_id=job.id,
+                source_sha256=str(document.source_sha256),
+                artifact_hash=str(document.artifact_hash or ""),
+                canonical_md_path=str(document.canonical_md_path or ""),
+                segment_count=int(dict(getattr(document, "doc_metadata_json", {}) or {}).get("segment_count") or 0),
+                status="queued",
+                warnings=[],
+            )
+        artifact_path = self.data_root / str(document.canonical_md_path or "")
+        if not artifact_path.exists():
+            # Same quick typed failure as the synchronous path, persisted on
+            # the (existing or fresh) job row so the receipt is evidence.
+            if job is None:
+                job = KnowledgeIndexJob(
+                    id=uuid.uuid4(),
+                    tenant_id=tenant_id,
+                    document_id=document.id,
+                    scope_type="person",
+                    scope_id=owner_user_id,
+                    artifact_hash=str(document.artifact_hash or document.source_sha256),
+                    stage="indexing",
+                    status="failed",
+                    error_message="canonical_markdown_missing",
+                    attempt_count=1,
+                    job_metadata_json={"source_kind": document.source_kind},
+                )
+                session.add(job)
+            else:
+                job.stage = "indexing"
+                job.status = "failed"
+                job.error_message = "canonical_markdown_missing"
+                job.attempt_count = int(getattr(job, "attempt_count", 0) or 0) + 1
+                job.job_metadata_json = {
+                    **dict(getattr(job, "job_metadata_json", {}) or {}),
+                    "error": "canonical_markdown_missing",
+                    "warnings": ["canonical_markdown_missing"],
+                }
+            await session.flush()
+            return PersonalKnowledgeIngestResult(
+                document_id=document.id,
+                job_id=job.id,
+                source_sha256=str(document.source_sha256),
+                artifact_hash=str(document.artifact_hash or ""),
+                canonical_md_path=str(document.canonical_md_path or ""),
+                segment_count=0,
+                status="failed",
+                warnings=["canonical_markdown_missing"],
+                error_code="canonical_markdown_missing",
+            )
+        if job is None:
+            # Legacy document without a job row: the rebuild gets its own
+            # durable job instead of a fabricated job id.
+            job = KnowledgeIndexJob(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                document_id=document.id,
+                scope_type="person",
+                scope_id=owner_user_id,
+                artifact_hash=str(document.artifact_hash or document.source_sha256),
+                attempt_count=0,
+            )
+            session.add(job)
+        metadata = dict(getattr(job, "job_metadata_json", {}) or {})
+        queued_metadata = {
+            **{key: value for key, value in metadata.items() if key not in _STALE_TERMINAL_JOB_METADATA_KEYS},
+            "queued_import_kind": "rebuild",
+            "source_kind": str(document.source_kind or "rebuild"),
+            "source_sha256": str(document.source_sha256),
+            "sensitivity": str(document.sensitivity or "internal"),
+            "agent_searchable": bool(document.agent_searchable),
+            "rebuild_requested_at": datetime.now(timezone.utc).isoformat(),
+        }
+        # An explicit owner rebuild owns reprocessing: a job at the attempt
+        # ceiling (which the claim query would never select) restarts its
+        # attempt series instead of sitting permanently queued.
+        max_attempts = int(
+            dict(getattr(job, "job_metadata_json", {}) or {}).get("max_attempts") or _DEFAULT_IMPORT_JOB_MAX_ATTEMPTS
+        )
+        if int(getattr(job, "attempt_count", 0) or 0) >= max(1, max_attempts):
+            job.attempt_count = 0
+            queued_metadata["rebuild_attempt_reset"] = True
+        job.stage = "queued"
+        job.status = "queued"
+        job.error_message = None
+        job.job_metadata_json = queued_metadata
+        await session.flush()
+        return PersonalKnowledgeIngestResult(
+            document_id=document.id,
+            job_id=job.id,
+            source_sha256=str(document.source_sha256),
+            artifact_hash=str(document.artifact_hash or ""),
+            canonical_md_path=str(document.canonical_md_path or ""),
+            segment_count=int(dict(getattr(document, "doc_metadata_json", {}) or {}).get("segment_count") or 0),
+            status="queued",
+            warnings=[],
+        )
+
     async def retry_import_job(
         self,
         session: Any,
@@ -3007,6 +3159,33 @@ class PersonalKnowledgeService:
         queued_kind = str(metadata.get("queued_import_kind") or "").strip()
         source_hash = _validate_source_sha256(metadata.get("source_sha256") or getattr(job, "artifact_hash", ""))
         attempt_kwargs: dict[str, Any] = {"attempt_increment": 0, "managed_job_id": managed_job_id}
+        if queued_kind == "rebuild":
+            # Queued owner rebuild: the synchronous rebuild body runs here
+            # under the claimed managed job (document lookup, archive-owned
+            # status, and force reindex semantics stay identical).
+            result = await self.rebuild_personal_document_index(
+                session,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                document_id=job.document_id,
+                current_user_id=owner_user_id,
+                **attempt_kwargs,
+            )
+            if result is None:
+                # The document is no longer readable for this scope — a typed
+                # terminal failure, never an indefinitely running job.
+                return PersonalKnowledgeIngestResult(
+                    document_id=job.document_id,
+                    job_id=managed_job_id,
+                    source_sha256=source_hash,
+                    artifact_hash=str(getattr(job, "artifact_hash", source_hash) or source_hash),
+                    canonical_md_path="",
+                    segment_count=0,
+                    status="failed",
+                    warnings=["document_missing"],
+                    error_code="document_missing",
+                )
+            return result
         if queued_kind == "markdown":
             queued_path = self.data_root / str(metadata.get("queued_markdown_path") or "")
             if not queued_path.exists():

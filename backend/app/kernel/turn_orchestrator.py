@@ -2304,6 +2304,132 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     if call_loop_decision:
                         await _inject_loop_guard_warning(call_loop_decision)
 
+                async def _apply_tool_expansion(
+                    trigger_tool_name: str, tool_args: dict[str, Any], executed: bool
+                ) -> None:
+                    # Shared deferred-tool expansion for sequential and parallel
+                    # batches: only executed expansion-trigger tools may load schemas.
+                    nonlocal tools_for_llm, full_toolset, system_prompt, dynamic_prompt_suffix
+                    if request.expand_tools and request.agent_id:
+                        if executed and _should_expand_tools(trigger_tool_name, tool_args):
+                            expansion_payload: ToolExpansionResult | list[dict] | None = None
+                            if self._deps.resolve_tool_expansion:
+                                expansion_payload = await _maybe_await(
+                                    self._deps.resolve_tool_expansion(request, trigger_tool_name, tool_args)
+                                )
+                            if isinstance(expansion_payload, ToolExpansionResult):
+                                full_toolset = expansion_payload.tools
+                                session_context = request.session_context
+                                if session_context is None:
+                                    session_context = request.session_context = SessionContext()
+                                new_tool_groups = _merge_active_tool_groups(
+                                    session_context, expansion_payload.active_tool_groups
+                                )
+                                if new_tool_groups:
+                                    # P1.10: Delayed loading metrics
+                                    _new_tool_count = sum(
+                                        len(p.get("tools", [])) for p in new_tool_groups if isinstance(p, dict)
+                                    )
+                                    _pack_names = [p.get("name", "?") for p in new_tool_groups if isinstance(p, dict)]
+                                    logger.info(
+                                        "[Kernel] Tool expansion: +%d tools via %s (trigger: %s)",
+                                        _new_tool_count,
+                                        _pack_names,
+                                        trigger_tool_name,
+                                        extra={
+                                            "metric": "tool_expansion",
+                                            "trigger_tool": trigger_tool_name,
+                                            "pack_names": _pack_names,
+                                            "new_tool_count": _new_tool_count,
+                                            "total_packs": len(session_context.active_tool_groups),
+                                        },
+                                    )
+                                    event_payload = expansion_payload.event_payload or {
+                                        "type": "tool_group_activation",
+                                        "packs": new_tool_groups,
+                                        "tool_groups": new_tool_groups,
+                                        "message": "Activated runtime tool groups for this task.",
+                                        "status": "info",
+                                    }
+                                    await _emit_event(event_payload)
+                                    prompt_prefix = session_context.prompt_prefix
+                                    if prompt_prefix is None:
+                                        prompt_prefix = await _maybe_await(
+                                            self._deps.build_system_prompt(
+                                                request,
+                                                runtime_config.tenant_id,
+                                                resolved_memory_context,
+                                                current_user_name,
+                                            )
+                                        )
+                                        current_manifest = build_frozen_context_dependency_manifest(prompt_prefix)
+                                        session_context.metadata["frozen_context_dependency_manifest"] = (
+                                            current_manifest
+                                        )
+                                        from app.runtime.context import ensure_runtime_assembly_state
+
+                                        assembly_state = ensure_runtime_assembly_state(session_context)
+                                        refreshed_prompt_manifest = dict(assembly_state.prompt_assembly_manifest)
+                                        refreshed_prompt_manifest["frozen_context_dependency_manifest"] = (
+                                            current_manifest
+                                        )
+                                        refreshed_prompt_manifest["frozen_sections"] = [
+                                            section["name"]
+                                            for section in current_manifest.get("sections", [])
+                                            if section.get("name")
+                                        ]
+                                        assembly_state.record_prompt_manifest(refreshed_prompt_manifest)
+                                        _current_prompt_cache_key = _build_frozen_prompt_cache_key(
+                                            request,
+                                            runtime_config,
+                                            current_user_name=current_user_name,
+                                            rendered_prefix=prompt_prefix,
+                                        )
+                                        _store_prompt_prefix_cache(
+                                            session_context,
+                                            prompt_prefix,
+                                            _current_prompt_cache_key,
+                                        )
+                                        session_context._memory_hash = hashlib.sha256(
+                                            resolved_memory_context.encode("utf-8")
+                                        ).hexdigest()[:16]
+                                    combined_prompt = assemble_runtime_prompt(
+                                        prompt_prefix,
+                                        build_dynamic_prompt_suffix(
+                                            active_tool_groups=session_context.active_tool_groups,
+                                            available_deferred_tools=available_deferred_tools,
+                                            memory_snapshot=resolved_memory_context,
+                                            skill_catalog=request.skill_catalog,
+                                            runtime_metadata_context=resolved_runtime_metadata_context,
+                                            permissions_context=resolved_permissions_context,
+                                            retrieval_context=resolved_retrieval_context,
+                                            system_prompt_suffix=_system_prompt_suffix,
+                                            system_prompt_suffix_sections=_system_prompt_suffix_sections(),
+                                            budget_profile=budget_profile,
+                                            latest_user_query=latest_user_query,
+                                            user_name=current_user_name or "",
+                                            channel=session_context.channel,
+                                            source=getattr(session_context, "source", "") or "",
+                                            agent_name=request.agent_name,
+                                        ),
+                                        context_window_tokens=_ctx_window,
+                                        budget_profile=budget_profile,
+                                    )
+                                    system_prompt, dynamic_prompt_suffix = _split_system_prompt_for_api(combined_prompt)
+                                    api_messages[0] = LLMMessage(role="system", content=system_prompt)
+                            elif isinstance(expansion_payload, list):
+                                full_toolset = expansion_payload
+                            if full_toolset is not None:
+                                # B-04 fix: re-filter expanded tools if coordinator mode active
+                                tools_for_llm = (
+                                    filter_tools_for_coordinator(
+                                        full_toolset,
+                                        dispatcher_only=_is_strict_dispatcher,
+                                    )
+                                    if _is_coordinator
+                                    else full_toolset
+                                )
+
                 _round_side_effect_messages: list[dict[str, Any]] = []
                 _session_permission_pause_pending = False
                 if len(parsed_tool_calls) > 1 and any(
@@ -2468,6 +2594,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                 await _inject_loop_guard_warning(result_loop_decision)
                             else:
                                 _loop_guard_terminal_decision = result_loop_decision
+                        await _apply_tool_expansion(tool_name, effective_args, _executed)
                         _raw_result, _model_result = _tool_result_views(result, _side_effects)
                         _replacement_reason = "result size threshold"
                         _content = _maybe_evict_tool_result(tool_name, tc["id"], _model_result, request.eviction_dir)
@@ -2652,129 +2779,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             else:
                                 _loop_guard_terminal_decision = result_loop_decision
 
-                        if request.expand_tools and request.agent_id:
-                            if executed and _should_expand_tools(tool_name, args):
-                                expansion_payload: ToolExpansionResult | list[dict] | None = None
-                                if self._deps.resolve_tool_expansion:
-                                    expansion_payload = await _maybe_await(
-                                        self._deps.resolve_tool_expansion(request, tool_name, args)
-                                    )
-                                if isinstance(expansion_payload, ToolExpansionResult):
-                                    full_toolset = expansion_payload.tools
-                                    session_context = request.session_context
-                                    if session_context is None:
-                                        session_context = request.session_context = SessionContext()
-                                    new_tool_groups = _merge_active_tool_groups(
-                                        session_context, expansion_payload.active_tool_groups
-                                    )
-                                    if new_tool_groups:
-                                        # P1.10: Delayed loading metrics
-                                        _new_tool_count = sum(
-                                            len(p.get("tools", [])) for p in new_tool_groups if isinstance(p, dict)
-                                        )
-                                        _pack_names = [
-                                            p.get("name", "?") for p in new_tool_groups if isinstance(p, dict)
-                                        ]
-                                        logger.info(
-                                            "[Kernel] Tool expansion: +%d tools via %s (trigger: %s)",
-                                            _new_tool_count,
-                                            _pack_names,
-                                            tool_name,
-                                            extra={
-                                                "metric": "tool_expansion",
-                                                "trigger_tool": tool_name,
-                                                "pack_names": _pack_names,
-                                                "new_tool_count": _new_tool_count,
-                                                "total_packs": len(session_context.active_tool_groups),
-                                            },
-                                        )
-                                        event_payload = expansion_payload.event_payload or {
-                                            "type": "tool_group_activation",
-                                            "packs": new_tool_groups,
-                                            "tool_groups": new_tool_groups,
-                                            "message": "Activated runtime tool groups for this task.",
-                                            "status": "info",
-                                        }
-                                        await _emit_event(event_payload)
-                                        prompt_prefix = session_context.prompt_prefix
-                                        if prompt_prefix is None:
-                                            prompt_prefix = await _maybe_await(
-                                                self._deps.build_system_prompt(
-                                                    request,
-                                                    runtime_config.tenant_id,
-                                                    resolved_memory_context,
-                                                    current_user_name,
-                                                )
-                                            )
-                                            current_manifest = build_frozen_context_dependency_manifest(prompt_prefix)
-                                            session_context.metadata["frozen_context_dependency_manifest"] = (
-                                                current_manifest
-                                            )
-                                            from app.runtime.context import ensure_runtime_assembly_state
-
-                                            assembly_state = ensure_runtime_assembly_state(session_context)
-                                            refreshed_prompt_manifest = dict(assembly_state.prompt_assembly_manifest)
-                                            refreshed_prompt_manifest["frozen_context_dependency_manifest"] = (
-                                                current_manifest
-                                            )
-                                            refreshed_prompt_manifest["frozen_sections"] = [
-                                                section["name"]
-                                                for section in current_manifest.get("sections", [])
-                                                if section.get("name")
-                                            ]
-                                            assembly_state.record_prompt_manifest(refreshed_prompt_manifest)
-                                            _current_prompt_cache_key = _build_frozen_prompt_cache_key(
-                                                request,
-                                                runtime_config,
-                                                current_user_name=current_user_name,
-                                                rendered_prefix=prompt_prefix,
-                                            )
-                                            _store_prompt_prefix_cache(
-                                                session_context,
-                                                prompt_prefix,
-                                                _current_prompt_cache_key,
-                                            )
-                                            session_context._memory_hash = hashlib.sha256(
-                                                resolved_memory_context.encode("utf-8")
-                                            ).hexdigest()[:16]
-                                        combined_prompt = assemble_runtime_prompt(
-                                            prompt_prefix,
-                                            build_dynamic_prompt_suffix(
-                                                active_tool_groups=session_context.active_tool_groups,
-                                                available_deferred_tools=available_deferred_tools,
-                                                memory_snapshot=resolved_memory_context,
-                                                skill_catalog=request.skill_catalog,
-                                                runtime_metadata_context=resolved_runtime_metadata_context,
-                                                permissions_context=resolved_permissions_context,
-                                                retrieval_context=resolved_retrieval_context,
-                                                system_prompt_suffix=_system_prompt_suffix,
-                                                system_prompt_suffix_sections=_system_prompt_suffix_sections(),
-                                                budget_profile=budget_profile,
-                                                latest_user_query=latest_user_query,
-                                                user_name=current_user_name or "",
-                                                channel=session_context.channel,
-                                                source=getattr(session_context, "source", "") or "",
-                                                agent_name=request.agent_name,
-                                            ),
-                                            context_window_tokens=_ctx_window,
-                                            budget_profile=budget_profile,
-                                        )
-                                        system_prompt, dynamic_prompt_suffix = _split_system_prompt_for_api(
-                                            combined_prompt
-                                        )
-                                        api_messages[0] = LLMMessage(role="system", content=system_prompt)
-                                elif isinstance(expansion_payload, list):
-                                    full_toolset = expansion_payload
-                                if full_toolset is not None:
-                                    # B-04 fix: re-filter expanded tools if coordinator mode active
-                                    tools_for_llm = (
-                                        filter_tools_for_coordinator(
-                                            full_toolset,
-                                            dispatcher_only=_is_strict_dispatcher,
-                                        )
-                                        if _is_coordinator
-                                        else full_toolset
-                                    )
+                        await _apply_tool_expansion(tool_name, args, executed)
 
                         _raw_result, _model_result = _tool_result_views(result, _side_effects)
                         _replacement_reason = "result size threshold"

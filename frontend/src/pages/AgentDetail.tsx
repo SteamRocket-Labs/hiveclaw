@@ -920,29 +920,52 @@ function AgentDetailInner() {
         navigate(buildSessionWorkbenchNavigation(location.pathname, location.search, sessionId), { replace: true });
     };
 
-    const openSessionCommandControl = (control: SessionCommandControlState) => {
-        if (activeSession?.id) {
-            ensureSessionWorkbenchRoute(String(activeSession.id));
+    const openSessionCommandControl = (commandSessionId: string | null | undefined, control: SessionCommandControlState) => {
+        // A response for an abandoned selection keeps its data under the requesting session but must not
+        // route or replace the newly selected panel/session.
+        if (
+            commandSessionId != null && commandSessionId !== ''
+            && activeSessionIdRef.current != null && activeSessionIdRef.current !== commandSessionId
+        ) {
+            return;
+        }
+        const sessionForRoute = activeSessionIdRef.current
+            ?? (activeSession?.id != null ? String(activeSession.id) : null);
+        if (sessionForRoute) {
+            ensureSessionWorkbenchRoute(sessionForRoute);
         } else {
             setActiveTab('chat');
         }
         setSessionCommandControl(control);
     };
 
-    const handleSessionCommandUiAction = async (response: Awaited<ReturnType<typeof ccParityApi.executeCommand>>) => {
+    const handleSessionCommandUiAction = async (
+        response: Awaited<ReturnType<typeof ccParityApi.executeCommand>>,
+        commandSessionId?: string | null,
+    ) => {
         const uiAction = getSessionCommandUiAction(response);
-        if (!uiAction || !id || !activeSession?.id) return false;
+        // Identity is the exact command request's durable session, passed by both callers: the slash
+        // sender materializes the durable Session (draft -> created) before executing, and the UI runner
+        // captures the id at request time. A completed response must never re-resolve identity from the
+        // mutable current UI selection, or a session selected while the command was pending would
+        // receive another session's result.
+        const currentSessionId = commandSessionId != null && commandSessionId !== ''
+            ? commandSessionId
+            : (activeSession?.id != null ? String(activeSession.id) : null);
+        if (!uiAction || !id || !currentSessionId) return false;
+        const selectionMoved = activeSessionIdRef.current != null && activeSessionIdRef.current !== currentSessionId;
         const actionResult = commandResultRecord(response);
-        const currentSessionId = String(activeSession.id);
         const message = typeof uiAction.message === 'string' && uiAction.message.trim()
             ? uiAction.message.trim()
             : formatSlashCommandResult(response);
         const routedCommand = sessionPanelCommandForUiAction(uiAction.type);
         if (routedCommand) {
             queryClient.setQueryData(['session-command-panel', id, currentSessionId, routedCommand], response);
-            const workbench = buildSessionWorkbenchNavigation(location.pathname, location.search, currentSessionId);
-            navigate(buildSessionCommandPanelNavigation(workbench.pathname, workbench.search, routedCommand), { replace: true });
-            setSessionCommandControl(null);
+            if (!selectionMoved) {
+                const workbench = buildSessionWorkbenchNavigation(location.pathname, location.search, currentSessionId);
+                navigate(buildSessionCommandPanelNavigation(workbench.pathname, workbench.search, routedCommand), { replace: true });
+                setSessionCommandControl(null);
+            }
             showToast(message, uiAction.level === 'error' ? 'error' : 'success');
             return true;
         }
@@ -984,7 +1007,7 @@ function AgentDetailInner() {
 
         if (uiAction.type === 'open_checkpoint_selector') {
             const checkpoints = normalizeSessionCommandCheckpoints(uiAction.checkpoints || actionResult?.checkpoints);
-            openSessionCommandControl({
+            openSessionCommandControl(currentSessionId, {
                 type: 'checkpoint_selector',
                 title: t('sessionWorkbench.commandPanel.selectCheckpointTitle', 'Choose where to go back'),
                 message: checkpoints.length > 0
@@ -1010,7 +1033,7 @@ function AgentDetailInner() {
                 interrupted: actionResult?.interrupted === true,
                 resumeState: typeof actionResult?.resume_state === 'string' ? actionResult.resume_state : undefined,
             });
-            openSessionCommandControl(control);
+            openSessionCommandControl(currentSessionId, control);
             invalidateSessionRuntimeQueries(id, currentSessionId);
             showToast(control.title, uiAction.level === 'error' ? 'error' : 'success');
             return true;
@@ -1026,7 +1049,7 @@ function AgentDetailInner() {
         }
 
         if (uiAction.type === 'open_export_panel') {
-            openSessionCommandControl({
+            openSessionCommandControl(currentSessionId, {
                 type: 'export_panel',
                 title: message || 'Session export',
                 message: 'Session export is ready.',
@@ -1039,7 +1062,7 @@ function AgentDetailInner() {
         }
 
         if (uiAction.type === 'confirm_workspace_restore') {
-            openSessionCommandControl(buildSessionCommandStatusControl(t, uiAction.type, {
+            openSessionCommandControl(currentSessionId, buildSessionCommandStatusControl(t, uiAction.type, {
                 command: response.command,
                 payload: actionResult,
             }));
@@ -1106,14 +1129,14 @@ function AgentDetailInner() {
                 level: uiAction.level === 'error' ? 'error' : 'success',
                 payload: actionResult,
             });
-            openSessionCommandControl(control);
+            openSessionCommandControl(currentSessionId, control);
             invalidateSessionRuntimeQueries(id, currentSessionId);
             showToast(control.title, uiAction.level === 'error' ? 'error' : 'success');
             return true;
         }
 
         if (uiAction.type === 'open_side_question') {
-            openSessionCommandControl({
+            openSessionCommandControl(currentSessionId, {
                 type: 'side_question',
                 title: message || 'Side question',
                 message,
@@ -1136,14 +1159,17 @@ function AgentDetailInner() {
     };
 
     const handleRunSessionCommandFromUi = async (command: string, args: Record<string, unknown> = {}) => {
-        if (!id || !activeSession?.id) return;
-        const currentSessionId = String(activeSession.id);
+        const currentSessionId = activeSessionIdRef.current
+            ?? (activeSession?.id != null ? String(activeSession.id) : null);
+        if (!id || !currentSessionId) return;
         try {
             const response = await ccParityApi.executeCommand(id, command, {
                 arguments: args,
                 session_id: currentSessionId,
             });
-            const handled = await handleSessionCommandUiAction(response);
+            // Bind the response to the exact request's session: currentSessionId was captured before the
+            // await, so a session selected while the command was pending cannot receive this result.
+            const handled = await handleSessionCommandUiAction(response, currentSessionId);
             if (!handled) {
                 showToast(formatSlashCommandResult(response), 'success');
                 invalidateSessionRuntimeQueries(id, currentSessionId);
@@ -1889,7 +1915,7 @@ function AgentDetailInner() {
                     });
                     const actionResult = commandResultRecord(response);
                     if (getSessionCommandUiAction(response)) {
-                        await handleSessionCommandUiAction(response);
+                        await handleSessionCommandUiAction(response, commandSessionId);
                         setChatMessagesAfterQueuedForSession(
                             commandSessionId,
                             prev => prev.filter(message => message.id !== commandMessageId),

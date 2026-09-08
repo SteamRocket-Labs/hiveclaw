@@ -293,6 +293,87 @@ describe('AgentDetail realtime refresh contract', () => {
     expect(hookSource).toContain('readSessionCommandPanel(search)');
   });
 
+  it('binds command responses to the requesting session, not the session selected while pending, and routes fresh drafts to the durable session', async () => {
+    const source = await readSource('./AgentDetail.tsx');
+
+    // Both real callers pass the exact command request's durable session id through to the response
+    // consumer; identity is never re-resolved from the mutable current UI selection at response time.
+    const slashCallIndex = source.indexOf('await handleSessionCommandUiAction(response, commandSessionId)');
+    expect(slashCallIndex).toBeGreaterThan(-1);
+    const runnerStart = source.indexOf('const handleRunSessionCommandFromUi = async');
+    const runnerEnd = source.indexOf('const createNewSession', runnerStart);
+    const runner = source.slice(runnerStart, runnerEnd);
+    expect(runner).toContain('const handled = await handleSessionCommandUiAction(response, currentSessionId);');
+    expect(runner).toContain('session_id: currentSessionId');
+
+    // Behavioral check against the real handler body (transpiled and executed, dependencies stubbed):
+    // this is the seam production uses, so the demonstrated wrong-session binding cannot pass here.
+    const handlerStart = source.indexOf('const handleSessionCommandUiAction = async');
+    const handlerEnd = source.indexOf('const handleRunSessionCommandFromUi', handlerStart);
+    expect(handlerStart).toBeGreaterThan(-1);
+    const tsModule = (await import(/* @vite-ignore */ 'typescript')) as typeof import('typescript');
+    const handlerJs = tsModule.transpileModule(source.slice(handlerStart, handlerEnd), {
+      compilerOptions: { target: tsModule.ScriptTarget.ES2022 },
+    }).outputText;
+
+    const runHandler = async (env: Record<string, unknown>, response: unknown, commandSessionId?: string) => {
+      const writes: unknown[][] = [];
+      const navigations: unknown[] = [];
+      const controls: unknown[] = [];
+      const toasts: unknown[][] = [];
+      const base = {
+        getSessionCommandUiAction: () => ({ type: 'open_context' }),
+        commandResultRecord: () => ({}),
+        formatSlashCommandResult: () => 'Context ready',
+        sessionPanelCommandForUiAction: () => 'context',
+        id: 'agent-A',
+        activeSession: { id: 'session-A' },
+        activeSessionIdRef: { current: 'session-A' },
+        currentAgentIdRef: { current: 'agent-A' },
+        queryClient: { setQueryData: (key: unknown[]) => writes.push(key) },
+        location: { pathname: '/agents/agent-A', search: '' },
+        buildSessionWorkbenchNavigation: (_p: string, _s: string, session: string) => ({ pathname: `/sessions/${session}`, search: '' }),
+        buildSessionCommandPanelNavigation: (pathname: string) => ({ pathname }),
+        navigate: (target: unknown) => navigations.push(target),
+        setSessionCommandControl: (value: unknown) => controls.push(value),
+        showToast: (message: string) => toasts.push([message]),
+        ...env,
+      };
+      const handler = new Function(...Object.keys(base), handlerJs + '\nreturn handleSessionCommandUiAction;')(...Object.values(base));
+      const handled = await handler(response, commandSessionId);
+      return { handled, writes, navigations, controls, toasts };
+    };
+
+    // Scenario 1 (the demonstrated regression): /context executes for session A, the user selects
+    // session B while it is pending, then A's response arrives. A's result must land under A and must
+    // not replace the newly selected panel/session.
+    const moved = await runHandler(
+      { activeSessionIdRef: { current: 'session-B' } },
+      { command: 'context', result: { session_id: 'session-A' } },
+      'session-A',
+    );
+    expect(moved.handled).toBe(true);
+    expect(moved.writes).toEqual([['session-command-panel', 'agent-A', 'session-A', 'context']]);
+    expect(moved.navigations).toEqual([]);
+    expect(moved.controls).toEqual([]);
+    expect(moved.toasts).toEqual([['Context ready']]);
+
+    // Scenario 2 (the original B4 failure): a fresh draft session runs a slash command; the durable
+    // session is materialized before execution and the routed panel must target that durable id.
+    const durable = await runHandler(
+      {
+        activeSession: { id: 'draft:11111111-1111-1111-1111-111111111111' },
+        activeSessionIdRef: { current: 'session-D' },
+      },
+      { command: 'context', result: { session_id: 'session-D' } },
+      'session-D',
+    );
+    expect(durable.handled).toBe(true);
+    expect(durable.writes).toEqual([['session-command-panel', 'agent-A', 'session-D', 'context']]);
+    expect(durable.navigations).toEqual([{ pathname: '/sessions/session-D' }]);
+    expect(JSON.stringify(durable.navigations)).not.toContain('draft:');
+  });
+
   it('keeps polling an absent authoritative run until the local grace state is actually cleared', async () => {
     const source = await readSource('./AgentDetail.tsx');
 

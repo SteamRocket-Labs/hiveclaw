@@ -3,9 +3,9 @@ document_id: weekend-rc-2026-08-30-journey-ledger
 owner: Example Owner / Codex
 status: active
 authority: canonical-human-journey-ledger
-last_reviewed: 2026-09-08
-source_commit: 33f6332f663f6e648f27eb704593876c4de17053
-verification_status: frozen-96-bounded-functional-pilot-partial-evidence
+last_reviewed: 2026-09-09
+source_commit: 8f7762e
+verification_status: frozen-96-functional-b4-in-progress
 ---
 
 # Journey Ledger
@@ -14,7 +14,17 @@ verification_status: frozen-96-bounded-functional-pilot-partial-evidence
 
 本文件记录旅程分母、主 Codex/owner 已接受的闭环状态和证据链接。Domain 文档记录验收标准；Evidence 文件记录实际结果；本文件不复制两者正文，也不从机械字段自行推导语义 verdict。
 
-## 2026-09-08 有限功能试批次 B1
+## 当前功能批次索引（B4 进行中）
+
+本轮按功能真实消费推进，不以最终发布分数概括用户已经可以使用的局部结果；未测、失败、外部阻塞分别保留。下列索引不修改96条冻结分母或完整D/E门槛。
+
+| 批次 | 已接受结果 | 未关闭范围 / 证据 |
+|---|---|---|
+| B4（09-09 01:54起） | draft命令会话绑定、五格式个人知识实际Agent消费、公司发布下线/恢复v2、新member首任务归属、显式记忆更正/退役/fresh检索、临时子Agent父消费、知识重建queued→ready、HR精确不自动首任务实际创建待命、390px标题操作可达、固定Reviewer A2A父消费、member Team计算/复核/报告/正式关闭、clear新空会话、内置Skill实际加载消费、rewind投影回退重读及真实续接 | Workflow三叶结束但缺计算工具/无文件，业务FAIL；原生DOCX仍待复验。Office/Plan/Goal/branch/compact及Workflow规范查询修复已主审提交；owner授权Codex接手的Workflow可信身份/工具修复8f7762e通过47本地检查，均待统一部署复验。其余未测保留。[第四批记录](evidence/87b845dba4ae397bd4205b21e657e6efeb9fac7f/functional-batch-2026-09-09-04.md) |
+| B3 | Local默认会话刷新/离开重开能读回原审批和实际pwd/marker | 本地连接器只发text无result、正式升级源unavailable；once原live权限生命周期阻塞，候选未接受。[第三批记录](evidence/aeaaacb59704ac7631da553c97d699c2cc87bdb4/functional-batch-2026-09-09-03.md) |
+| B2续接 | fresh和原两条文件/HR第二轮输入、显式终态恢复、文件预览/下载、HR修订拒绝与刷新、boundary自然delivered | 原底层重启恢复根因与独立trigger故障未闭环，不迁移成最终版本PASS。[第二批记录](evidence/33f6332f663f6e648f27eb704593876c4de17053/functional-batch-2026-09-08-02.md) |
+
+## 2026-09-08 有限功能试批次 B1（历史）
 
 PDEC-015 的两小时试批次收束，12:16:24 前交付，不自动续作；[单一证据记录](evidence/17f073bb4f07098e55d9ef1684781dc67cfa454e/functional-batch-2026-09-08-01.md)。前段测试绑定 `17f073bb`；11:54 后生产为三服务同源 `33f6332f`，新版本只取得下列 fresh KB/文件消费证据，不迁移旧业务 PASS。**NPTCR 仍为 0/96**。
 

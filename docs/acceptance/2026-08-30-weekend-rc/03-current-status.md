@@ -4,14 +4,16 @@ owner: Codex
 status: in_progress
 authority: canonical-working-state
 last_reviewed: 2026-09-09
-source_commit: 87b845dba4ae397bd4205b21e657e6efeb9fac7f
-verification_status: bounded-functional-b3-partial-delivery-blockers-retained
+source_commit: df463a8d
+verification_status: functional-b4-broad-coverage-in-progress
 ---
 # 当前状态与唯一下一动作
 
 [返回索引](README.md) · [旅程账本](04-journey-ledger.md) · [Findings](05-findings.md) · [Runbook](06-runbook-and-release-gates.md)
 
 ## 当前决定与本批次出口
+
+**第四批进行中（2026-09-09 01:54:45 起，Asia/Shanghai）**。owner 要求除明确阻塞项外完成剩余功能测试和必要修复，结束时 commit、更新文档并告知结果；新增授权覆盖“rocky的实验室”公司内经过认证的合成 Agent、对话、接口、知识与工作流实验。危险操作、真实外发、凭据/计费变更、无关数据与全库破坏性操作不在此授权内。按功能实际结果推进，不拿最终发布计数概括本轮；每个根因仍按一个方案与一次集中返修收束，阻塞单列，不阻挡独立功能。未重新启动旧 Goal/heartbeat，不夹带未接受的旧 runtime 候选。B4 明细与资产登记见[第四批记录](evidence/87b845dba4ae397bd4205b21e657e6efeb9fac7f/functional-batch-2026-09-09-04.md)。
 
 第三批按 **2026-09-09 00:31:46—02:31:46（Asia/Shanghai）** 的有界方案收尾，**部分交付，不是两项全部通过**。Local 默认会话恢复已通过 49 项主审检查，commit/push `87b845db`，三服务同源部署 SUCCESS；01:34—01:35 正式页面刷新、离开重开均读回原批准记录、实际 `pwd` 退出 0 和 marker，未重发。本机 Hive Connect v0.1.7 只发 text、无 result，云端仍 pending/requeued；升级未获新批准，正式安装源也 unavailable，未安装或重启。once 精确草案已确认，但原 `set_trigger` 停在过期的 permission waiting、尚无 trigger；一个实现及唯一返修均未接受，主审真实 live 等待回归仍失败，候选未提交/部署。按 PDEC-015 不自动第三轮、不延长或启动下一批。CI `34256570667` 前端及 15 条机械全栈检查通过，backend harness 仍在运行。[第三批完整证据与剩余问题](evidence/aeaaacb59704ac7631da553c97d699c2cc87bdb4/functional-batch-2026-09-09-03.md)
 
@@ -25,7 +27,9 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 
 ## 当前可核实结果
 
-- 当前 production application 为 exact **`87b845db`**：仅在 B2 已接受源码上加入 Local 默认会话恢复。三服务部署均 SUCCESS，backend/backend-api 运行 source hash `eb7edcf72abd898a3fed7b9396280c456bd40af5edef51e11a24425efffec577` 与干净 archive 一致，public health ok、frontend HTTP 200。正式默认页刷新/离开重开恢复原 7 条事件；日志仍仅一次本地执行。49 项主审 service/API/real-PG 检查通过。once 候选及旧 dirty runtime 均未进入发布；Local 完整终态和 once 交付仍阻塞，不增加 0/96。
+- B4 当前 production application **`df463a8d`** 三服务同源SUCCESS（04:36核对），包含移动标题栏、原生Office batch、Team插入顺序、文件内容hash delta、HR完整回执/模型投影分离、Workflow canonical requester、Goal transition与HR首任务精确字段。backend health/source hash与干净archive一致，backend-api独立身份也已核对一致。真实消费复验进行中，部署成功不等于业务通过。`e11a95d7`、移动及Office CI全部success；Team旧CI有Ruff格式与HR终态超时，后续c013 CI机械旅程/前端通过但session_tool_runtime格式未过，已精确机械修正，不重跑旧CI。旧runtime候选原样保留，未夹带。
+- B4 五格式个人文档与Agent消费、公司PDF发布/Agent读取、显式记忆更正→退役→fresh排除、临时子Agent、HR精确不自动首任务创建、390px标题入口已有实证。固定Reviewer A2A真实计算/父结果回读/报告完成；member Team两成员计算与独立复核、父写读报告及正式关闭均完成。05:54新增内置Skill真实加载/消费与clear新空会话、rewind正式投影回退/重新读取。Workflow三叶已结束，但缺execute_code、无目标文件，业务FAIL；规范查询a6b255a9已提交，可信执行身份/工具可用性修复中。Office41498c1f、Plan18e080f8、Goalc93637a3、Compact49df8227、Branchb3d8518c已主审提交，尚未推送部署/生产复验。临时管理员与自审批合同询问未获答复，不扩大权限或改政策；其余未测试项仍保留未测。
+- B3 历史 production application 为 exact **`87b845db`**：仅在 B2 已接受源码上加入 Local 默认会话恢复。三服务部署均 SUCCESS，backend/backend-api 运行 source hash `eb7edcf72abd898a3fed7b9396280c456bd40af5edef51e11a24425efffec577` 与干净 archive 一致，public health ok、frontend HTTP 200。正式默认页刷新/离开重开恢复原 7 条事件；日志仍仅一次本地执行。49 项主审 service/API/real-PG 检查通过。once 候选及旧 dirty runtime 均未进入发布；Local 完整终态和 once 交付仍阻塞，不增加 0/96。
 - 上一批 `aeaaacb5` 于 22:30 三服务部署均 SUCCESS，新增前端管理员显式终态恢复入口，复用已有 API，不改 backend/自动重试/模型。70 项主 Codex 相关检查、i18n、TypeScript/build 通过；CI `34238046718` 三 job 全部 success。23:04 经 owner 授权仅重启 backend 原部署一次，23:05 health 恢复 ok，23:07 worker/终态消费者 running；未重新构建或重启另外两服务。该 B2 历史证明不替代本批源码与业务复验。
 - B2 续接：fresh 文件创建/续写/刷新和 HR 三→五要点草案修订/刷新已通过，草案已拒绝、无员工创建。原两条死信各经正式 UI 恢复一次，旧 boundary 均 delivered、原 admissions 均自然 dispatched/completed；旧文件新 74 B artifact 的预览/下载 HTTP 200/刷新重开通过。旧 HR 草案已拒绝不可原位修改，Agent 保留原记录并生成正确的替代预览，未 provision。
 - **B2 收尾通过：两条原输入、最终摘要/回执、页面刷新与草案拒绝均有实证。** 22:37 起 backend 容器内外请求均超时，根因未知；上述单次重启后 HR 两轮历史、正确替代预览可刷新读回。替代 draft `7ecfd611-7c7e-41a7-b3b9-29d2a5183706` 于 23:05:50 正式拒绝，DB 与再次刷新均确认 rejected、无员工/provision。最新 boundary 经原生回收 attempt 2 于 23:11:09 delivered，summary sealed 至 seq 896；两条 Session 的四条 boundary 全部 delivered，目标 tasks 全部 completed，无 failed transcript 或残留 lease，恢复审计仍恰好两次。重启恢复可用性不是根因修复；独立 trigger 终态事务/过期 fence 错误未诊断。B2 有限恢复通过不提升最终 0/96。[B2 完整证据](evidence/33f6332f663f6e648f27eb704593876c4de17053/functional-batch-2026-09-08-02.md)
@@ -54,7 +58,7 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 
 ## 唯一下一动作
 
-交付第三批结果与文档 commit/push，等待 owner 决定是否授权 once 的新策略，以及连接器的明确升级范围与批准来源；**不自动续作、第三轮修补或创建下一批**。建议 once 下一步以真实 live 消费和原 permission pause 生命周期为切入点，不再用 hydration-only 或 completed-task 补偿声称闭环。连接器安装受当前正式来源 unavailable 限制，不猜 package、不改生产配置。保留两个合成 Session 与原 Local 请求作失败证据；once 未创建 trigger/目标文件，未宣称完整 cleanup。独立 runtime 不响应根因、trigger 历史错误及完整 96 条 D/E 仍未关闭。
+`8f7762e`已提交Workflow可信叶身份/工具修复（05:57:30 owner明确允许Codex接手），47相关检查通过；branch/compact/Office/Plan/Goal均已主审提交。完成最终干净archive检查后统一同源推送部署，复验这些真实入口。Plan原V2不重复生成，Goal旧过期目标不重放；继续余下支持命令及扩展消费。B3 once live permission、Local result/安装源明确阻塞不重置同根因返修次数。
 
 owner 自行修改的共享摘要模型 `zhipu / glm-5.3` 已实时核对。首版无限重试、返修 whole-summary 429 重放仍保持拒绝；本次实现的是明确操作员意图与重算风险确认的既有 API 消费入口。两次恢复均有正式 audit，未提取浏览器 token、伪造身份或手改 DB。完整历史见 B2 文档；目前仍没有完整单旅程吞吐样本，不能可靠外推 96 条总工期。
 

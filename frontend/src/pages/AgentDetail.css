@@ -38,6 +38,9 @@
   display: flex;
   align-items: center;
   gap: var(--space-4);
+  /* Let the header shrink without pushing actions out of the viewport. */
+  min-width: 0;
+  flex: 1;
 }
 .agent-detail-avatar {
   width: 48px;
@@ -62,7 +65,7 @@
   border-radius: var(--radius-md);
   color: var(--text-primary);
   padding: 4px 10px;
-  min-width: 320px;
+  min-width: min(320px, 100%);
   width: auto;
   outline: none;
   margin-bottom: 0;
@@ -95,6 +98,7 @@
   align-items: center;
   gap: var(--space-2);
   margin-top: 4px;
+  flex-wrap: wrap;
 }
 .agent-detail-role-input {
   background: var(--bg-elevated);
@@ -152,6 +156,7 @@
 .agent-detail-header-actions {
   display: flex;
   gap: var(--space-2);
+  flex-shrink: 0;
 }
 
 /* ── Tools tab intro ─────────────────────────────────── */

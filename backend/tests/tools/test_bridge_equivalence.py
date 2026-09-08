@@ -166,6 +166,7 @@ def test_combined_openai_tools_matches_registered_builtin_surface():
         "update_trigger",
         "upload_image",
         "verify_plan",
+        "get_workflow_definition_schema",
         "web_fetch",
         "web_search",
         "write_file",

@@ -154,5 +154,6 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         "get_goal",
         "advanced_plan",
         "verify_plan",
+        "get_workflow_definition_schema",
     }
     assert "web_search" in CORE_TOOL_NAMES  # Step 5: web_search promoted to CORE

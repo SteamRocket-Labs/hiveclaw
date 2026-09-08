@@ -841,3 +841,40 @@ async def test_start_workflow_threads_runtime_budget_to_workflow_launch(monkeypa
     )
 
     assert captured["budget_run_id"] == str(budget_run_id)
+
+
+async def test_get_workflow_definition_schema_offers_compilable_example():
+    """Model-facing discovery regression (B4): the schema tool must return the
+    canonical versioned JSON Schema generated from the parser's own model and a
+    minimal example that compiles through the same path preview_workflow uses,
+    so an agent can author a valid definition before spending validation retries."""
+    from app.runtime.workflow_compiler import compile_workflow
+    from app.services.governance_capability_taxonomy import CAPABILITY_MAP, CORE_TOOL_NAMES
+    from app.tools.decorator import get_all_registered_tools
+    from app.tools.handlers import workflow as workflow_handlers
+
+    result = workflow_handlers.get_workflow_definition_schema({})
+    payload = json.loads(result)
+
+    assert payload["ok"] is True
+    assert payload["definition_schema_version"] == "workflow_definition.v1"
+    # Generated from the parser's own Pydantic model, not a hand-maintained copy.
+    json_schema = payload["json_schema"]
+    assert json_schema["title"] == "WorkflowDefinition"
+    assert "agent_step" in json.dumps(json_schema["$defs"])
+    assert "fanout_step" in json.dumps(json_schema["$defs"])
+
+    # The offered example must compile through the canonical compiler the
+    # preview/start path uses, without any patching.
+    compiled = compile_workflow(payload["minimal_example"])
+    assert compiled.definition_hash == payload["minimal_example_definition_hash"]
+    assert [step.id for step in compiled.definition.steps] == ["compute", "verify"]
+
+    # The discovery surface is registered: core tool, capability-mapped, and
+    # listed in the workflow category catalog.
+    assert "get_workflow_definition_schema" in CORE_TOOL_NAMES
+    assert CAPABILITY_MAP["get_workflow_definition_schema"] == "agent.workflow.preview"
+    meta, handler = get_all_registered_tools()["get_workflow_definition_schema"]
+    assert meta.read_only is True
+    assert meta.category == "workflow"
+    assert handler is workflow_handlers.get_workflow_definition_schema

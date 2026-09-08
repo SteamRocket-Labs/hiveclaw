@@ -34,6 +34,35 @@ ArgType = Literal["string", "number", "boolean", "array", "object"]
 _ARG_TYPES = {"string", "number", "boolean", "array", "object"}
 
 
+DEFINITION_SCHEMA_VERSION = "workflow_definition.v1"
+
+# Canonical minimal example: the smallest shape the parser actually accepts
+# (agent_step leaves with {name} refs). ``get_workflow_definition_schema``
+# compiles this at call time, so it can never drift from the schema above.
+MINIMAL_WORKFLOW_DEFINITION_EXAMPLE: dict = {
+    "name": "compute-and-verify",
+    "description": "Compute a result with one leaf, then independently verify it.",
+    "args_schema": {
+        "a": {"type": "number", "required": True},
+        "b": {"type": "number", "required": True},
+    },
+    "steps": [
+        {
+            "id": "compute",
+            "type": "agent_step",
+            "leaf": {"name": "worker"},
+            "task": "Compute {{args.a}} + {{args.b}} and return only the numeric result.",
+        },
+        {
+            "id": "verify",
+            "type": "agent_step",
+            "leaf": {"name": "verifier", "type": "critic"},
+            "task": "Independently compute {{args.a}} + {{args.b}} and verify {{steps.compute.output}}.",
+        },
+    ],
+}
+
+
 class WorkflowDefinitionError(ValueError):
     """Raised when a definition payload fails schema validation."""
 

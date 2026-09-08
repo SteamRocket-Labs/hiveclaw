@@ -108,6 +108,7 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "get_goal",
         "advanced_plan",
         "verify_plan",
+        "get_workflow_definition_schema",
     }
 )
 
@@ -441,6 +442,7 @@ CAPABILITY_MAP: dict[str, str] = {
     "propose_dynamic_workflow": "agent.workflow.preview",
     "preview_workflow": "agent.workflow.preview",
     "start_workflow": "agent.workflow.run",
+    "get_workflow_definition_schema": "agent.workflow.preview",
     "check_async_task": "agent.async_task.read",
     "list_async_tasks": "agent.async_task.read",
     "cancel_async_task": "agent.async_task.modify",

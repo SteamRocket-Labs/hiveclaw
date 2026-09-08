@@ -27,7 +27,12 @@ from app.runtime.workflow_admission import (
     normalize_workflow_args,
 )
 from app.runtime.workflow_compiler import WorkflowCompileError, compile_workflow
-from app.runtime.workflow_definition import compute_definition_hash
+from app.runtime.workflow_definition import (
+    DEFINITION_SCHEMA_VERSION,
+    MINIMAL_WORKFLOW_DEFINITION_EXAMPLE,
+    WorkflowDefinition,
+    compute_definition_hash,
+)
 from app.services.workflow_confirmation_service import (
     WORKFLOW_AGENT_NO_CONFIRMATION_START_SOURCE,
     WorkflowConfirmationConflict,
@@ -53,9 +58,71 @@ _DEFINITION_PARAM = {
     "description": (
         "Structured workflow definition (data, not code): name, args_schema, steps "
         "(agent_step/fanout_step/gate_step/wait_until_step). Task strings may reference "
-        "{{args.x}} and {{steps.<id>.output}} (pure key substitution)."
+        "{{args.x}} and {{steps.<id>.output}} (pure key substitution). Call "
+        "get_workflow_definition_schema first for the exact canonical schema and a "
+        "valid minimal example instead of guessing the shape."
     ),
 }
+
+
+@tool(
+    ToolMeta(
+        name="get_workflow_definition_schema",
+        description=(
+            "Return the canonical, versioned JSON Schema for the workflow definition "
+            "plus a minimal valid example, before authoring one.\n\n"
+            "Usage:\n"
+            "- Call this FIRST when you are about to write a definition for "
+            "propose_dynamic_workflow / preview_workflow, instead of spending validation "
+            "retries guessing the shape.\n"
+            "- The schema is generated from the same parser that validates definitions, "
+            "so it is exactly what the runtime accepts.\n"
+            "- The minimal_example compiles cleanly; use it as the starting shape and "
+            "extend it with fanout_step / gate_step / wait_until_step as needed.\n"
+            "- The schema is data for authoring only; it grants no authority and does "
+            "not preview or start anything."
+        ),
+        parameters={"type": "object", "properties": {}, "additionalProperties": False},
+        category="workflow",
+        display_name="Get Workflow Definition Schema",
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        adapter="args_only",
+    )
+)
+def get_workflow_definition_schema(arguments: dict) -> str:
+    del arguments
+    try:
+        compiled_example = compile_workflow(MINIMAL_WORKFLOW_DEFINITION_EXAMPLE)
+        example = json.loads(json.dumps(MINIMAL_WORKFLOW_DEFINITION_EXAMPLE, ensure_ascii=False))
+    except (WorkflowCompileError, ValueError) as exc:
+        return json.dumps(
+            {
+                "ok": False,
+                "error_code": "workflow_schema_example_invalid",
+                "error": str(exc),
+            },
+            ensure_ascii=False,
+        )
+    return json.dumps(
+        {
+            "ok": True,
+            "schema": "hive.workflow.definition_schema.v1",
+            "definition_schema_version": DEFINITION_SCHEMA_VERSION,
+            "json_schema": WorkflowDefinition.model_json_schema(),
+            "minimal_example": example,
+            "minimal_example_definition_hash": compiled_example.definition_hash,
+            "notes": (
+                "Definitions are data, not code: steps are a discriminated union on "
+                "'type' (agent_step, fanout_step, gate_step, wait_until_step, "
+                "wait_signal_step); task strings resolve {{args.x}} / "
+                "{{steps.<id>.output}} by pure key lookup; external/irreversible "
+                "steps require a preceding gate_step; retry is reversible-only."
+            ),
+        },
+        ensure_ascii=False,
+    )
 
 
 def _request_identity(request: ToolExecutionRequest) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
@@ -258,7 +325,9 @@ def _dynamic_candidate_binding_error(
         description=(
             "Draft and validate Dynamic Workflow candidates WITHOUT previewing or starting execution.\n\n"
             "Use when the task needs many isolated workers, repeatable orchestration, adversarial review, "
-            "or long-running state outside the main context. Provide one to three candidates with success criteria, "
+            "or long-running state outside the main context. Call get_workflow_definition_schema "
+            "first for the exact lowered_definition shape and a valid minimal example. "
+            "Provide one to three candidates with success criteria, "
             "pattern mix, budget, failure policy, and a lowered governed WorkflowDefinition. "
             "This tool never runs workflow steps. After choosing a candidate, call preview_workflow with the returned "
             "lowered_definition and preview_args; start_workflow only after the user approves that exact preview."
@@ -321,6 +390,8 @@ async def propose_dynamic_workflow(request: ToolExecutionRequest) -> str:
         description=(
             "Compile and preflight an ephemeral workflow definition WITHOUT running it.\n\n"
             "Usage:\n"
+            "- Call get_workflow_definition_schema first for the exact definition shape and a "
+            "valid minimal example; do not guess it from validation errors.\n"
             "- Always preview before start_workflow: returns preview_id, definition_hash, args_hash, confirmation notes, "
             "planned leaf calls and budget.\n"
             "- Confirmation notes are informational; they do not force Plan Mode.\n"
@@ -427,6 +498,8 @@ async def preview_workflow(request: ToolExecutionRequest) -> str:
             "budget. For one-off parallelism or isolation, spawn_subagent is enough; for handing "
             "work to another digital employee, use delegate_to_agent.\n\n"
             "Usage:\n"
+            "- Author the definition with get_workflow_definition_schema and preview_workflow FIRST; "
+            "this tool only starts an existing preview.\n"
             "- preview_workflow FIRST and show the user what will run.\n"
             "- If the preview requires confirmation, this tool cannot start it. Stop and wait for the "
             "authenticated user to select Confirm and run on that exact preview; do not infer confirmation "

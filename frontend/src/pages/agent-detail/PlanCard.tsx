@@ -227,6 +227,17 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
             ? err.message
             : t('agent.plan.actionFailed', 'Action failed');
       setError(message);
+      // A revise/clarify/regenerate that failed at the transport layer (e.g. a
+      // gateway timeout while authoring continues server-side) must not leave
+      // the card frozen on the superseded version — refetch so the committed
+      // successor and its live status become visible.
+      if (kind === 'revise' || kind === 'clarify' || kind === 'regenerate') {
+        try {
+          if (onChanged) await onChanged();
+        } catch {
+          // The error banner above already reports the failed action.
+        }
+      }
     } finally {
       setBusy(null);
     }
@@ -631,7 +642,24 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
             {busy === 'regenerate' ? t('common.loading', 'Loading...') : t('agent.plan.retryGeneration', 'Retry plan generation')}
           </button>
         </div>
-      ) : isPlanning || isConfirmed ? null : (
+      ) : isPlanning ? (
+        /* Explicit recovery for an authoring run lost with its process (the
+           server marks planning_failed only when it observes the failure; a
+           hard kill leaves the row planning). Regenerate is the safe retry:
+           the backend holds a cross-process claim on the authoring run, so a
+           live run refuses with a visible conflict instead of double-spending
+           the model call, and an orphaned row starts a fresh run. */
+        <div className="plan-card-actions">
+          <button
+            type="button"
+            className="btn btn-primary plan-card-actions-submit"
+            disabled={busy !== null}
+            onClick={onRegenerate}
+          >
+            {busy === 'regenerate' ? t('common.loading', 'Loading...') : t('agent.plan.retryGeneration', 'Retry plan generation')}
+          </button>
+        </div>
+      ) : isConfirmed ? null : (
         <div className="plan-card-terminal">
           {t(`agent.plan.terminal.${plan.status}`, t('agent.plan.noActions', 'No actions available for this plan.'))}
         </div>

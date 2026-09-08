@@ -28,14 +28,49 @@ interface StructuredToolResultBodyProps {
   onEnterPlanMode?: (reason: string) => void | Promise<unknown>;
 }
 
-export function InlinePlanCard({ agentId, planId }: { agentId: string; planId: string }) {
+export function InlinePlanCard({
+  agentId,
+  planId,
+  visited = [],
+}: {
+  agentId: string;
+  planId: string;
+  /** Plan ids already resolved on this successor chain (cycle detection). */
+  visited?: string[];
+}) {
   const { t } = useTranslation();
   const { data: plan, isLoading, error, refetch } = useQuery({
     queryKey: ['agent-plan-inline', agentId, planId],
     queryFn: () => planApi.get(agentId, planId),
     enabled: !!agentId && !!planId,
-    refetchInterval: 10000,
+    // Stop polling once this node is known superseded: only the resolved live
+    // revision needs live status (ancestors stay mounted but dormant).
+    refetchInterval: (query) => (query.state.data?.status === 'superseded' ? false : 10000),
   });
+
+  // A superseded plan card must resolve to the live revision: the chat message
+  // pins the ORIGINAL plan id forever, but the backend commits
+  // superseded_by_plan_id before the new version finishes authoring. Follow the
+  // successor chain (no arbitrary version cutoff) so a reload — or a revise
+  // request that timed out — still lands the user on the current revision.
+  const successorId = plan?.status === 'superseded' ? plan.superseded_by_plan_id : null;
+  if (successorId) {
+    if (visited.includes(successorId)) {
+      // Real cycle detection: the API imposes no revision ceiling, so a broken
+      // successor chain must surface as a visible, recoverable error rather
+      // than an infinite render loop.
+      return (
+        <div style={{ fontSize: '12px', color: 'var(--danger, #d97706)' }}>
+          {t(
+            'agent.plan.successorCycle',
+            'This plan points to a revision chain that loops ({{a}} → {{b}}). Open Aware > Plan Queue to open the current revision directly.',
+            { a: planId, b: successorId },
+          )}
+        </div>
+      );
+    }
+    return <InlinePlanCard agentId={agentId} planId={successorId} visited={[...visited, planId]} />;
+  }
 
   if (isLoading) {
     return (

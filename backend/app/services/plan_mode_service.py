@@ -386,6 +386,52 @@ class PlanModeService:
             f"cannot generate a plan from status {plan.status!r}",
         )
 
+    async def mark_plan_authoring(self, plan_id: UUID) -> None:
+        """Durably move a ``draft``/``planning_failed`` row to ``planning``.
+
+        The REST create/revise/regenerate entries launch the authoring run
+        asynchronously; this transition is committed BEFORE the request
+        returns, so the row itself is the durable authoring state the frontend
+        polls and the regenerate endpoint recovers from — no separate run
+        ledger is introduced.
+        """
+        _tenant_id = await resolve_tenant_for_plan(plan_id)
+        async with tenant_scoped_session(_tenant_id) as db:
+            try:
+                plan = await self._load(db, plan_id)
+                if plan is None:
+                    raise LookupError(f"plan {plan_id} not found")
+                self._move_to_planning_if_needed(plan)
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
+
+    async def mark_planning_failed_if_unauthored(
+        self,
+        plan_id: UUID,
+        errors: list[str],
+    ) -> None:
+        """Fail closed after an authoring run that never submitted a plan.
+
+        Mirrors ``_mark_generation_failed`` for the async launcher: a row still
+        sitting in ``draft``/``planning`` after the system run finished is not
+        confirmable, and must surface as ``planning_failed`` so the card shows
+        the retry action instead of an eternal "planning" state.
+        """
+        _tenant_id = await resolve_tenant_for_plan(plan_id)
+        async with tenant_scoped_session(_tenant_id) as db:
+            try:
+                plan = await self._load(db, plan_id)
+                if plan is None:
+                    return
+                if plan.status in ("draft", "planning"):
+                    self._mark_generation_failed(plan, errors)
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
+
     def _mark_generation_failed(
         self,
         plan: AgentPlanRequest,

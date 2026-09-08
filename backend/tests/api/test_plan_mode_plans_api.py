@@ -91,7 +91,30 @@ def _plan_namespace(*, agent_id, status="awaiting_confirmation", version=1, requ
     )
 
 
-def _client(monkeypatch, *, service, user=None, db=None):
+class _FakeLease:
+    def __init__(self):
+        self.released = 0
+
+    async def release(self):
+        self.released += 1
+
+
+class _FakeLeaseManager:
+    """Stands in for the PG advisory-lock manager (no engine in unit tests)."""
+
+    def __init__(self, *, refuse=False):
+        self.refuse = refuse
+        self.acquired = []
+
+    async def try_acquire(self, plan_id):
+        if self.refuse:
+            return None
+        lease = _FakeLease()
+        self.acquired.append((plan_id, lease))
+        return lease
+
+
+def _client(monkeypatch, *, service, user=None, db=None, lease_manager=None):
     app = FastAPI()
     app.include_router(plans_api.router)
     user = user or SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4(), username="member")
@@ -125,7 +148,10 @@ def _client(monkeypatch, *, service, user=None, db=None):
     monkeypatch.setattr(plans_api, "_authorize_plan_action", allow_plan_action)
     monkeypatch.setattr(plans_api, "authorize_session_action", allow_session_action)
     monkeypatch.setattr(plans_api, "_service", service)
-    return TestClient(app), user, access
+    if lease_manager is None:
+        lease_manager = _FakeLeaseManager()
+    monkeypatch.setattr(plans_api, "_authoring_lease_manager", lease_manager)
+    return TestClient(app), user, access, lease_manager
 
 
 # ---------------------------------------------------------------------------
@@ -140,12 +166,14 @@ def _client(monkeypatch, *, service, user=None, db=None):
 # ---------------------------------------------------------------------------
 
 
-def _stub_launcher(monkeypatch, *, launched):
+def _stub_launcher(monkeypatch, *, launched, exc=None):
     """Stub launch_system_plan_run to capture calls (no real agent run / DB)."""
     import app.services.plan_mode_system_run as system_run
 
     async def fake_launch(plan, *, seed_context=None):
         launched.append({"plan_id": plan.id, "seed_context": seed_context})
+        if exc is not None:
+            raise exc
         return plan
 
     monkeypatch.setattr(system_run, "launch_system_plan_run", fake_launch)
@@ -154,25 +182,34 @@ def _stub_launcher(monkeypatch, *, launched):
 def test_create_plan_launches_system_run_and_returns_201(monkeypatch):
     agent_id = uuid4()
     draft = _plan_namespace(agent_id=agent_id, status="draft")
-    authored = _plan_namespace(agent_id=agent_id, status="awaiting_confirmation")
-    authored.id = draft.id  # launcher fills the same draft id
+    planning = _plan_namespace(agent_id=agent_id, status="planning")
+    planning.id = draft.id  # launcher fills the same draft id
     launched: list = []
     created = {}
+    marked = {"n": 0}
+    failed: list = []
 
     class _Service:
         async def create_plan_request(self, **kwargs):
             created.update(kwargs)
             return draft
 
+        async def mark_plan_authoring(self, plan_id):
+            assert plan_id == draft.id
+            marked["n"] += 1
+
+        async def mark_planning_failed_if_unauthored(self, plan_id, errors):
+            failed.append({"plan_id": plan_id, "errors": errors})
+
         async def generate_plan(self, **_kwargs):
             raise AssertionError("RPC planner removed — create must launch a plan run")
 
         async def get_plan(self, plan_id):
             assert plan_id == draft.id
-            return authored
+            return planning
 
     _stub_launcher(monkeypatch, launched=launched)
-    client, user, access = _client(monkeypatch, service=_Service())
+    client, user, access, _leases = _client(monkeypatch, service=_Service())
 
     resp = client.post(
         f"/agents/{agent_id}/plans",
@@ -186,13 +223,16 @@ def test_create_plan_launches_system_run_and_returns_201(monkeypatch):
 
     assert resp.status_code == 201
     body = resp.json()
-    assert body["status"] == "awaiting_confirmation"
+    # The request returns the durable actionable state immediately (the model
+    # run continues after the response); the card polls this same id.
+    assert body["status"] == "planning"
     assert body["intent_type"] == "autonomous_wake"
+    assert marked["n"] == 1
     # requested_by_user_id is derived from the authenticated user, not the body.
     assert created["requested_by_user_id"] == user.id
     assert created["intent_type"] == "autonomous_wake"
     assert access["calls"] == 1
-    # The agent run authored it (stable draft id); fill is carried as seed context.
+    # The agent run is scheduled (stable draft id); fill is carried as seed context.
     assert len(launched) == 1
     assert launched[0]["plan_id"] == draft.id
     assert launched[0]["seed_context"] == {"objective": "Daily brief"}
@@ -201,18 +241,25 @@ def test_create_plan_launches_system_run_and_returns_201(monkeypatch):
 def test_regenerate_launches_system_run(monkeypatch):
     agent_id = uuid4()
     existing = _plan_namespace(agent_id=agent_id, status="planning_failed")
-    authored = _plan_namespace(agent_id=agent_id, status="awaiting_confirmation")
-    authored.id = existing.id  # launcher fills the same plan id (stable for UI)
+    planning = _plan_namespace(agent_id=agent_id, status="planning")
+    planning.id = existing.id  # launcher fills the same plan id (stable for UI)
     launched: list = []
     get_calls = {"n": 0}
+    failed: list = []
 
     class _Service:
+        async def mark_plan_authoring(self, plan_id):
+            assert plan_id == existing.id
+
+        async def mark_planning_failed_if_unauthored(self, plan_id, errors):
+            failed.append({"plan_id": plan_id, "errors": errors})
+
         async def get_plan(self, plan_id):
-            # First call: _load_plan_for_agent returns the failed plan. Second
-            # call: the post-launch reload returns the authored result (same id).
+            # First call: _load_plan_for_agent returns the failed plan. Later
+            # calls: the durable planning row (same id) the card polls.
             assert plan_id == existing.id
             get_calls["n"] += 1
-            return existing if get_calls["n"] == 1 else authored
+            return existing if get_calls["n"] == 1 else planning
 
         async def generate_plan(self, **_kwargs):
             raise AssertionError("RPC planner removed — regenerate must launch a plan run")
@@ -226,7 +273,7 @@ def test_regenerate_launches_system_run(monkeypatch):
     )
 
     assert resp.status_code == 200
-    assert resp.json()["status"] == "awaiting_confirmation"  # authored result returned
+    assert resp.json()["status"] == "planning"  # durable actionable state returned
     assert len(launched) == 1
     assert launched[0]["plan_id"] == existing.id
     assert launched[0]["seed_context"] == {"revision_request": "focus on RWA"}
@@ -236,16 +283,23 @@ def test_revise_supersedes_to_draft_then_launches(monkeypatch):
     agent_id = uuid4()
     old = _plan_namespace(agent_id=agent_id, status="awaiting_confirmation", version=1)
     draft = _plan_namespace(agent_id=agent_id, status="draft", version=2)
-    authored = _plan_namespace(agent_id=agent_id, status="awaiting_confirmation", version=2)
-    authored.id = draft.id
+    planning = _plan_namespace(agent_id=agent_id, status="planning", version=2)
+    planning.id = draft.id
     launched: list = []
     calls = {"supersede": 0, "revise": 0}
+    failed: list = []
 
     class _Service:
         async def get_plan(self, plan_id):
             if plan_id == old.id:
                 return old
-            return authored
+            return planning
+
+        async def mark_plan_authoring(self, plan_id):
+            assert plan_id == draft.id
+
+        async def mark_planning_failed_if_unauthored(self, plan_id, errors):
+            failed.append({"plan_id": plan_id, "errors": errors})
 
         async def supersede_to_draft(self, *, plan_id):
             calls["supersede"] += 1
@@ -265,9 +319,160 @@ def test_revise_supersedes_to_draft_then_launches(monkeypatch):
     )
 
     assert resp.status_code == 200
+    # The successor row is committed planning before the response; the model
+    # run continues after it (no gateway timeout on the request).
     assert resp.json()["plan_version"] == 2
+    assert resp.json()["status"] == "planning"
     assert calls == {"supersede": 1, "revise": 0}
     assert launched[0]["plan_id"] == draft.id
+
+
+def test_authoring_run_fail_closed_marks_planning_failed(monkeypatch):
+    """An authoring run that ends without submitting a confirmable plan must
+    surface ``planning_failed`` (visible retry), not an eternal planning row."""
+    agent_id = uuid4()
+    draft = _plan_namespace(agent_id=agent_id, status="draft")
+    still_planning = _plan_namespace(agent_id=agent_id, status="planning")
+    still_planning.id = draft.id
+    launched: list = []
+    failed: list = []
+
+    class _Service:
+        async def create_plan_request(self, **_kwargs):
+            return draft
+
+        async def mark_plan_authoring(self, _plan_id):
+            return None
+
+        async def mark_planning_failed_if_unauthored(self, plan_id, errors):
+            failed.append({"plan_id": plan_id, "errors": errors})
+
+        async def get_plan(self, _plan_id):
+            return still_planning
+
+    _stub_launcher(monkeypatch, launched=launched)
+    client, *_ = _client(monkeypatch, service=_Service())
+
+    resp = client.post(
+        f"/agents/{agent_id}/plans",
+        json={"original_request": "x", "intent_type": "autonomous_wake", "session_id": str(uuid4())},
+    )
+
+    assert resp.status_code == 201
+    assert resp.json()["status"] == "planning"
+    # TestClient executes background tasks before returning, so the fail-closed
+    # transition has already happened by the time the caller can poll.
+    assert len(launched) == 1
+    assert len(failed) == 1
+    assert failed[0]["plan_id"] == draft.id
+
+
+def test_regenerate_is_the_retry_for_a_planning_row_orphaned_by_process_loss(monkeypatch):
+    """A ``planning`` row whose authoring process died has no in-flight guard in
+    the new process; regenerate must re-mark planning and start a fresh run —
+    the narrow explicit recovery path (no duplicate run within one process)."""
+    agent_id = uuid4()
+    orphaned = _plan_namespace(agent_id=agent_id, status="planning")
+    launched: list = []
+    marked = {"n": 0}
+
+    class _Service:
+        async def mark_plan_authoring(self, plan_id):
+            assert plan_id == orphaned.id
+            marked["n"] += 1
+
+        async def mark_planning_failed_if_unauthored(self, _plan_id, _errors):
+            return None
+
+        async def get_plan(self, _plan_id):
+            return orphaned
+
+        async def generate_plan(self, **_kwargs):
+            raise AssertionError("RPC planner removed — regenerate must launch a plan run")
+
+    _stub_launcher(monkeypatch, launched=launched)
+    client, *_ = _client(monkeypatch, service=_Service())
+
+    resp = client.post(f"/agents/{agent_id}/plans/{orphaned.id}/regenerate", json={})
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "planning"
+    assert marked["n"] == 1
+    assert len(launched) == 1
+    assert launched[0]["plan_id"] == orphaned.id
+
+
+def test_regenerate_conflicts_while_an_authoring_run_holds_the_lease(monkeypatch):
+    """The launch boundary claim: while a run holds the authoring lease, a
+    second regenerate is refused with 409 ``plan_authoring_in_progress`` and
+    never spends a model run or touches the row."""
+    agent_id = uuid4()
+    existing = _plan_namespace(agent_id=agent_id, status="planning_failed")
+    launched: list = []
+    marked = {"n": 0}
+
+    class _Service:
+        async def mark_plan_authoring(self, _plan_id):
+            marked["n"] += 1
+
+        async def mark_planning_failed_if_unauthored(self, *_args, **_kwargs):
+            raise AssertionError("no run started, so no fail-closed transition")
+
+        async def get_plan(self, _plan_id):
+            return existing
+
+    _stub_launcher(monkeypatch, launched=launched)
+    manager = _FakeLeaseManager(refuse=True)
+    client, *_ = _client(monkeypatch, service=_Service(), lease_manager=manager)
+
+    resp = client.post(f"/agents/{agent_id}/plans/{existing.id}/regenerate", json={})
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "plan_authoring_in_progress"
+    assert launched == []
+    assert marked["n"] == 0
+
+
+def test_stale_row_does_not_start_an_obsolete_authoring_run(monkeypatch):
+    """The scheduled run re-reads the row before spending the model call: a plan
+    cancelled while the run sat queued is skipped, and the lease is released so
+    a later attempt can recover."""
+    agent_id = uuid4()
+    draft = _plan_namespace(agent_id=agent_id, status="draft")
+    cancelled = _plan_namespace(agent_id=agent_id, status="cancelled")
+    cancelled.id = draft.id
+    launched: list = []
+    failed: list = []
+    states = [cancelled, cancelled]  # pre-launch re-read, response reload
+
+    class _Service:
+        async def create_plan_request(self, **_kwargs):
+            return draft
+
+        async def mark_plan_authoring(self, _plan_id):
+            return None
+
+        async def mark_planning_failed_if_unauthored(self, *_args, **_kwargs):
+            raise AssertionError("an obsolete run must not fail the row")
+
+        async def get_plan(self, _plan_id):
+            return states.pop(0) if states else cancelled
+
+    _stub_launcher(monkeypatch, launched=launched)
+    manager = _FakeLeaseManager()
+    client, *_ = _client(monkeypatch, service=_Service(), lease_manager=manager)
+
+    resp = client.post(
+        f"/agents/{agent_id}/plans",
+        json={"original_request": "x", "intent_type": "autonomous_wake", "session_id": str(uuid4())},
+    )
+
+    assert resp.status_code == 201
+    assert resp.json()["status"] == "cancelled"
+    assert launched == []
+    assert failed == []
+    # The run released its claim: a later regenerate is not blocked.
+    assert manager.acquired[0][1].released == 1
 
 
 def test_create_plan_rejects_unknown_intent_with_400(monkeypatch):
@@ -293,7 +498,7 @@ def test_create_plan_recommendation_records_authenticated_user(monkeypatch):
     class _Service:
         pass
 
-    client, user, access = _client(monkeypatch, service=_Service(), db=db)
+    client, user, access, _leases = _client(monkeypatch, service=_Service(), db=db)
     resp = client.post(
         f"/agents/{agent_id}/plan-recommendations",
         json={
@@ -343,7 +548,7 @@ def test_decline_plan_recommendation_requires_owner_user(monkeypatch):
     class _Service:
         pass
 
-    client, _user, _access = _client(monkeypatch, service=_Service(), user=user, db=db)
+    client, _user, _access, _leases = _client(monkeypatch, service=_Service(), user=user, db=db)
     resp = client.post(f"/agents/{agent_id}/plan-recommendations/{recommendation.id}/decline")
 
     assert resp.status_code == 200
@@ -464,7 +669,7 @@ def test_confirm_success_returns_confirmed_payload(monkeypatch):
             captured.update(kwargs)
             return _plan_namespace(agent_id=agent_id, status="confirmed")
 
-    client, user, _ = _client(monkeypatch, service=_Service())
+    client, user, _, _leases = _client(monkeypatch, service=_Service())
     plan_id = uuid4()
     resp = client.post(
         f"/agents/{agent_id}/plans/{plan_id}/confirm",
@@ -497,7 +702,7 @@ def test_confirm_and_handoff_success_returns_handoff_payload(monkeypatch):
             plan.handoff_payload = {"runtime_task_id": "run-123", "execution": "current_session"}
             return plan
 
-    client, user, _ = _client(monkeypatch, service=_Service())
+    client, user, _, _leases = _client(monkeypatch, service=_Service())
     plan_id = uuid4()
     resp = client.post(
         f"/agents/{agent_id}/plans/{plan_id}/confirm-and-handoff",

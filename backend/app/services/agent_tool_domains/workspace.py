@@ -140,6 +140,23 @@ def _authority_allows_path(authority_scope, rel_path: str, *, directory: bool = 
     return normalized in authority_scope.allowed_paths or authority_scope.operator_view
 
 
+def _authority_known_foreign_path(authority_scope, rel_path: str) -> bool:
+    """Known-but-unreadable workspace manifests deny BEFORE any existence probe.
+
+    Mirrors ``authorize_workspace_tool_path``: the trusted manifest registry
+    (``known_paths``) decides foreign ownership first, so filesystem existence
+    never becomes an oracle distinguishing a foreign manifest that happens to be
+    absent from one that is present. Unknown new paths and owned paths fall
+    through to the honest existence check.
+    """
+    if authority_scope is None:
+        return False
+    normalized = str(rel_path or "").replace("\\", "/").strip().lstrip("/")
+    if not normalized.startswith("workspace/"):
+        return False
+    return normalized in authority_scope.known_paths and not authority_scope.can_read(normalized)
+
+
 def _authorize_workspace_mutation_path(
     ws: Path,
     rel_path: str,
@@ -250,7 +267,16 @@ def _read_file(
     authority_scope=None,
     permission_profile=None,
 ) -> "str | ToolContentEnvelope":
-    if not _authority_allows_path(authority_scope, rel_path):
+    # Storage reserved for authority-bound recovery refs is denied regardless of
+    # existence; every other workspace read decides KNOWN FOREIGN OWNERSHIP from
+    # the trusted manifest registry before touching the filesystem, then checks
+    # existence, then the owner decision: a foreign manifest denies whether or
+    # not it is on disk (no existence oracle), while a not-yet-created file the
+    # requester may own (e.g. a fresh Plan Mode plan file) is an honest
+    # ``not_found``. An EXISTING file the requester cannot read stays denied.
+    if is_recovery_manifest_storage_path(rel_path):
+        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
+    if _authority_known_foreign_path(authority_scope, rel_path):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     profile = permission_profile_snapshot(permission_profile)
     profile_snapshot = profile.get("capability_policy_snapshot")
@@ -282,6 +308,8 @@ def _read_file(
             f"File not found: {rel_path}",
             actionable_hint="Check the path or use glob_search/list_files to discover the correct file first.",
         )
+    if not _authority_allows_path(authority_scope, rel_path):
+        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
 
     # Image files → typed image block (CC Read parity): vision-capable models see
     # the image natively; the text fallback names the file for text-only providers.
@@ -890,7 +918,12 @@ async def _read_document(
     return_format: str = "markdown",
     authority_scope=None,
 ) -> str:
-    if not _authority_allows_path(authority_scope, rel_path):
+    # Same ordering as _read_file: known foreign ownership denies before any
+    # existence probe; a not-yet-created workspace path is ``not_found``; an
+    # existing unreadable file stays denied.
+    if is_recovery_manifest_storage_path(rel_path):
+        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
+    if _authority_known_foreign_path(authority_scope, rel_path):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     workspace_root = ws
     if rel_path and rel_path.startswith("enterprise_info"):
@@ -912,6 +945,8 @@ async def _read_document(
 
     if not file_path.exists():
         return _workspace_error(tool_name, "not_found", f"File not found: {rel_path}")
+    if not _authority_allows_path(authority_scope, rel_path):
+        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
 
     try:
         from app.services.document_conversion import (

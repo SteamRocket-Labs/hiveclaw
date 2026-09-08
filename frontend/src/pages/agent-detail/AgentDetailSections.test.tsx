@@ -820,6 +820,71 @@ vi.mock('@tanstack/react-query', () => ({
     }
     if (key === 'agent-plan-inline') {
       const planId = String(queryKey[2] || 'plan-inline-1');
+      if (planId === 'plan-superseded-v1') {
+        // B4: a pinned V1 card must follow superseded_by_plan_id to the live
+        // successor revision instead of freezing on the superseded version.
+        return {
+          data: {
+            id: planId,
+            agent_id: 'agent-1',
+            status: 'superseded',
+            plan_version: 1,
+            plan_json: { title: 'Superseded V1' },
+            superseded_by_plan_id: 'plan-current-v2',
+            metadata: {},
+          },
+          refetch: vi.fn(),
+        };
+      }
+      if (planId === 'plan-current-v2') {
+        return {
+          data: {
+            id: planId,
+            agent_id: 'agent-1',
+            status: 'awaiting_confirmation',
+            plan_version: 2,
+            plan_json: { title: 'Current revision V2 28+36=64' },
+            superseded_by_plan_id: null,
+            metadata: {},
+          },
+          refetch: vi.fn(),
+        };
+      }
+      // B4 review: a revision chain LONGER than any fixed cutoff (the API has
+      // no version ceiling) must resolve to the live tail revision.
+      const chainMatch = /^plan-chain-v(\d+)$/.exec(planId);
+      if (chainMatch) {
+        const n = Number(chainMatch[1]);
+        const isTail = n >= 10;
+        return {
+          data: {
+            id: planId,
+            agent_id: 'agent-1',
+            status: isTail ? 'awaiting_confirmation' : 'superseded',
+            plan_version: n,
+            plan_json: { title: isTail ? 'Chain tail V10 live revision' : `Chain V${n}` },
+            superseded_by_plan_id: isTail ? null : `plan-chain-v${n + 1}`,
+            metadata: {},
+          },
+          refetch: vi.fn(),
+        };
+      }
+      // B4 review: a broken (cyclic) successor chain must surface a visible
+      // recoverable error, not an infinite render loop.
+      if (planId === 'plan-cycle-a' || planId === 'plan-cycle-b') {
+        return {
+          data: {
+            id: planId,
+            agent_id: 'agent-1',
+            status: 'superseded',
+            plan_version: 1,
+            plan_json: { title: `Cyclic ${planId}` },
+            superseded_by_plan_id: planId === 'plan-cycle-a' ? 'plan-cycle-b' : 'plan-cycle-a',
+            metadata: {},
+          },
+          refetch: vi.fn(),
+        };
+      }
       return {
         data: {
           id: planId,
@@ -4478,6 +4543,258 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('Confirm before creating the trigger.');
   });
 
+  it('renders the successor revision when the pinned plan card is superseded (B4 reload recovery)', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Analyst' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Plan Mode run',
+          created_at: '2026-06-01T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[
+          {
+            role: 'tool_call',
+            content: '',
+            toolName: 'set_trigger',
+            toolStatus: 'done',
+            toolResult: 'Plan created',
+            toolMeta: {
+              kind: 'plan_proposal',
+              planId: 'plan-superseded-v1',
+              planVersion: 1,
+              planHash: 'sha256:v1',
+              status: 'needs_plan',
+              summary: 'Plan created',
+              nextAction: 'Confirm before creating the trigger.',
+              planJson: { title: 'Inline tool plan' },
+            },
+          },
+        ]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    // The chat message pins V1 forever; after Adjust Plan the card must land
+    // on the committed successor (version 2) with its confirm action.
+    expect(markup).toContain('Current revision V2 28+36=64');
+    expect(markup).not.toContain('Superseded V1');
+    expect(markup).toContain('Implement this plan');
+  });
+
+  it('follows a successor chain past any fixed revision cutoff to the live tail', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Analyst' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Plan Mode run',
+          created_at: '2026-06-01T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[
+          {
+            role: 'tool_call',
+            content: '',
+            toolName: 'set_trigger',
+            toolStatus: 'done',
+            toolResult: 'Plan created',
+            toolMeta: {
+              kind: 'plan_proposal',
+              planId: 'plan-chain-v1',
+              planVersion: 1,
+              planHash: 'sha256:v1',
+              status: 'needs_plan',
+              summary: 'Plan created',
+              nextAction: 'Confirm before creating the trigger.',
+              planJson: { title: 'Inline tool plan' },
+            },
+          },
+        ]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    // Ten versions with no arbitrary frontend cutoff: the pinned V1 card must
+    // resolve all the way to the live V10 tail with its confirm action.
+    expect(markup).toContain('Chain tail V10 live revision');
+    expect(markup).not.toContain('Chain V1');
+    expect(markup).toContain('Implement this plan');
+  });
+
+  it('shows a visible recoverable error for a cyclic successor chain', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Analyst' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Plan Mode run',
+          created_at: '2026-06-01T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[
+          {
+            role: 'tool_call',
+            content: '',
+            toolName: 'set_trigger',
+            toolStatus: 'done',
+            toolResult: 'Plan created',
+            toolMeta: {
+              kind: 'plan_proposal',
+              planId: 'plan-cycle-a',
+              planVersion: 1,
+              planHash: 'sha256:v1',
+              status: 'needs_plan',
+              summary: 'Plan created',
+              nextAction: 'Confirm before creating the trigger.',
+              planJson: { title: 'Inline tool plan' },
+            },
+          },
+        ]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    // plan-cycle-a → plan-cycle-b → plan-cycle-a: cycle detection must stop
+    // the loop and surface a visible recovery path instead of hanging.
+    expect(markup).toContain('revision chain that loops');
+    expect(markup).toContain('plan-cycle-a');
+    expect(markup).toContain('plan-cycle-b');
+  });
+
   it('renders completed create-digital-employee tool cards in the chat transcript', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
@@ -6847,7 +7164,9 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Planning in progress');
     expect(markup).toContain('The agent is drafting a confirmable plan.');
     expect(markup).not.toContain('Implement this plan');
-    expect(markup).not.toContain('Retry plan generation');
+    // A planning row whose authoring process died must keep a reachable safe
+    // retry (the server cannot mark planning_failed for a hard kill).
+    expect(markup).toContain('Retry plan generation');
     expect(markup).not.toContain('No actions available for this plan.');
   });
 

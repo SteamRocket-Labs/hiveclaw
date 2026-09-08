@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from uuid import uuid4
 
 import pytest
 
 
-def _scope():
+def _scope(known_paths=frozenset()):
     from app.services.workspace_resource_authority import WorkspaceAuthorityScope
 
     return WorkspaceAuthorityScope(
@@ -16,6 +17,7 @@ def _scope():
         allowed_paths=frozenset({"workspace/mine/report.md", "workspace/mine/data.csv"}),
         operator_view=False,
         authority_source="resource_owner",
+        known_paths=frozenset(known_paths),
     )
 
 
@@ -78,6 +80,78 @@ def test_workspace_tools_never_expose_raw_recovery_manifest_storage(tmp_path):
     assert "authority-hash.json" not in globbed
     assert "authority-hash.json" not in grepped
     assert "No matches" in grepped
+
+
+def test_read_file_decides_known_foreign_ownership_before_existence(tmp_path):
+    """The trusted manifest registry decides KNOWN FOREIGN ownership before any
+    filesystem probe, so an absent foreign manifest and a present one return the
+    same denial (no existence oracle). Unknown new files and owned-but-missing
+    files stay honest ``not_found`` (Plan Mode authors plan/target files before
+    they exist)."""
+    from app.services.agent_tool_domains.workspace import _read_document, _read_file
+
+    workspace = tmp_path / "agent"
+    foreign_present = workspace / "workspace" / "foreign" / "present.md"
+    foreign_present.parent.mkdir(parents=True)
+    foreign_present.write_text("foreign secret", encoding="utf-8")
+    # The manifest registry knows both foreign paths; only one exists on disk.
+    scope = _scope(known_paths={"workspace/foreign/present.md", "workspace/foreign/absent.md"})
+
+    # Foreign manifest, ABSENT on disk: same denial as a present one.
+    absent_foreign = str(_read_file(workspace, "workspace/foreign/absent.md", authority_scope=scope))
+    assert "auth_or_permission" in absent_foreign
+    assert "not_found" not in absent_foreign
+
+    # Foreign manifest, PRESENT on disk.
+    present_foreign = str(_read_file(workspace, "workspace/foreign/present.md", authority_scope=scope))
+    assert "auth_or_permission" in present_foreign
+    assert "foreign secret" not in present_foreign
+
+    # Unknown NEW file (no manifest, nothing on disk): honest not_found.
+    unknown_new = str(_read_file(workspace, "workspace/mine/new-plan.md", authority_scope=scope))
+    assert "not_found" in unknown_new
+    assert "auth_or_permission" not in unknown_new
+
+    # Owned path that is missing on disk: honest not_found, not a denial.
+    owned_missing = str(_read_file(workspace, "workspace/mine/report.md", authority_scope=scope))
+    assert "not_found" in owned_missing
+    assert "auth_or_permission" not in owned_missing
+
+    # Reserved recovery storage is denied regardless of existence — its
+    # existence itself must not be probed or implied.
+    absent_reserved = str(
+        _read_file(
+            workspace,
+            "runtime_artifacts/recovery_manifests/session-hash/authority-hash.json",
+            authority_scope=scope,
+        )
+    )
+    assert "auth_or_permission" in absent_reserved
+
+    # _read_document keeps the same ordering for the absent foreign manifest.
+    absent_foreign_doc = str(
+        asyncio.run(_read_document(workspace, "workspace/foreign/absent.md", authority_scope=scope))
+    )
+    assert "auth_or_permission" in absent_foreign_doc
+    assert "not_found" not in absent_foreign_doc
+    unknown_new_doc = str(asyncio.run(_read_document(workspace, "workspace/mine/new-plan.md", authority_scope=scope)))
+    assert "not_found" in unknown_new_doc
+    assert "auth_or_permission" not in unknown_new_doc
+
+
+def test_write_then_read_roundtrip_for_new_scope_file(tmp_path):
+    """The companion write ordering: a scope-authorized new file can be written
+    and then read back through the same authority scope."""
+    from app.services.agent_tool_domains.workspace import _read_file, _write_file
+
+    workspace = tmp_path / "agent"
+    (workspace / "workspace" / "mine").mkdir(parents=True)
+    scope = _scope()
+
+    result = _write_file(workspace, "workspace/mine/report.md", "b4 plan body", authority_scope=scope)
+    assert "auth_or_permission" not in str(result)
+    read_back = str(_read_file(workspace, "workspace/mine/report.md", authority_scope=scope))
+    assert "b4 plan body" in read_back
 
 
 def test_workspace_authority_never_delivers_legacy_recovery_manifest(tmp_path):

@@ -24,11 +24,12 @@ binds the decision to its own canonical plan row and hash (§8.2).
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -71,25 +72,168 @@ async def _author_draft_plan(
     *,
     fill: dict[str, Any] | None,
     plan_id: uuid.UUID | None = None,
+    background_tasks: BackgroundTasks | None = None,
 ) -> AgentPlanRequest:
     """Author a freshly created/reset draft ``plan``'s plan_json (cut ③/④).
 
-    Launches a system_plan_run so the agent authors the plan in its own main loop
-    and ``exit_plan_mode`` fills THIS draft (stable id); then re-loads the row to
-    return the authored result. This is the single plan-authoring path — the
-    isolated RPC planner was removed in cut ④. Fail-closed: a plan that fails
-    authoring is returned in its non-confirmable state (the launcher never
-    executes the planned work).
+    Schedules a system_plan_run so the agent authors the plan in its own main
+    loop and ``exit_plan_mode`` fills THIS draft (stable id). This is the single
+    plan-authoring path — the isolated RPC planner was removed in cut ④.
+    Fail-closed: a plan that fails authoring is left in its non-confirmable
+    state (the launcher never executes the planned work).
+
+    The run executes AFTER the HTTP response is transmitted (FastAPI
+    BackgroundTasks): the plan row itself is the durable authoring state —
+    ``mark_plan_authoring`` commits ``planning`` before the response, the
+    frontend polls the stable id, and the existing ``regenerate`` endpoint
+    (same id) is the recovery action after a crash or timeout. The request
+    therefore returns the actionable ``planning`` row immediately instead of
+    awaiting a multi-minute model run behind a gateway timeout.
+
+    A PostgreSQL advisory-lock lease (see ``PlanAuthoringLeaseManager``) is
+    acquired BEFORE the row is marked and held until the run finishes: an
+    authoring run spends model budget and writes the plan file, so a second
+    concurrent launch — including from another API process — is refused with
+    ``plan_authoring_in_progress`` instead of silently double-authoring.
 
     ``plan_id`` defaults to ``plan.id`` but may be passed explicitly (regenerate
     keys the re-load on the URL plan id).
     """
-    from app.services.plan_mode_system_run import launch_system_plan_run
-
     target_id = plan_id or plan.id
-    await launch_system_plan_run(plan, seed_context=fill or None)
+    lease = await _authoring_lease_manager.try_acquire(target_id)
+    if lease is None:
+        raise PlanConflictError(
+            "plan_authoring_in_progress",
+            "A plan authoring run is already live for this plan; it will finish or fail visibly, and regenerate is the recovery once it is no longer live.",
+        )
+    try:
+        await service.mark_plan_authoring(target_id)
+        _schedule_authoring_run(
+            service, target_id, plan, seed_context=fill or None, lease=lease, background_tasks=background_tasks
+        )
+    except Exception:
+        # The run never took ownership of the lease — release it so a retry is
+        # not blocked by a claim nobody holds.
+        await lease.release()
+        raise
     reloaded = await service.get_plan(target_id)
     return reloaded or plan
+
+
+# Cross-process claim for one plan's authoring run, mirroring the workflow
+# runtime's per-run advisory-lock lease (``PGRunLeaseManager``) without coupling
+# Plan Mode to workflow objects. ``pg_try_advisory_lock`` is held on a dedicated
+# connection: the lock dies WITH the connection, so process loss releases the
+# claim automatically and a later regenerate recovers the row — no daemon, no
+# workflow engine.
+class _PlanAuthoringLease:
+    def __init__(self, connection, key: int) -> None:
+        self._connection = connection
+        self._key = key
+
+    async def release(self) -> None:
+        from sqlalchemy import text
+
+        try:
+            await self._connection.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": self._key})
+        finally:
+            await self._connection.close()
+
+
+class PlanAuthoringLeaseManager:
+    """One authoring run per plan row across all API processes."""
+
+    def __init__(self, engine=None) -> None:
+        if engine is None:
+            from app.database import engine as default_engine
+
+            engine = default_engine
+        self._engine = engine
+
+    @staticmethod
+    def _key(plan_id: uuid.UUID) -> int:
+        import zlib
+
+        # Stable 32-bit key in advisory-lock space, namespaced for plan authoring.
+        return zlib.crc32(f"plan_authoring:{plan_id}".encode()) & 0x7FFFFFFF
+
+    async def try_acquire(self, plan_id: uuid.UUID) -> _PlanAuthoringLease | None:
+        from sqlalchemy import text
+
+        key = self._key(plan_id)
+        connection = await self._engine.connect()
+        try:
+            got = (await connection.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": key})).scalar()
+        except Exception:
+            await connection.close()
+            raise
+        if not got:
+            await connection.close()
+            return None
+        return _PlanAuthoringLease(connection, key)
+
+
+_authoring_lease_manager = PlanAuthoringLeaseManager()
+
+_AUTHORING_TASKS: set[Any] = set()
+
+logger = logging.getLogger(__name__)
+
+
+def _schedule_authoring_run(
+    service: PlanModeService,
+    target_id: uuid.UUID,
+    plan: AgentPlanRequest,
+    *,
+    seed_context: dict[str, Any] | None,
+    lease: "_PlanAuthoringLease",
+    background_tasks: BackgroundTasks | None = None,
+) -> None:
+    async def _run() -> None:
+        from app.services.plan_mode_system_run import launch_system_plan_run
+
+        try:
+            # Re-read the row before spending model budget: a plan cancelled or
+            # superseded while this run sat queued must not start an obsolete
+            # authoring pass.
+            current = await service.get_plan(target_id)
+            if current is not None and current.status != "planning":
+                return
+            await launch_system_plan_run(plan, seed_context=seed_context)
+            final = await service.get_plan(target_id)
+            if final is not None and final.status in ("draft", "planning"):
+                # Fail closed with a visible retry: the agent never submitted a
+                # confirmable plan through exit_plan_mode.
+                await service.mark_planning_failed_if_unauthored(
+                    target_id,
+                    ["The plan authoring run finished without submitting a confirmable plan."],
+                )
+        except Exception:  # noqa: BLE001 — the durable row is the state; never raise into the response.
+            logger.exception("plan_authoring_task_failed", extra={"plan_id": str(target_id)})
+            try:
+                await service.mark_planning_failed_if_unauthored(
+                    target_id,
+                    ["The plan authoring run failed before submitting a plan."],
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("plan_authoring_failure_mark_failed", extra={"plan_id": str(target_id)})
+        finally:
+            await lease.release()
+
+    if background_tasks is not None:
+        background_tasks.add_task(_run)
+        return
+    # No BackgroundTasks (non-HTTP caller): fall back to the running loop.
+    import asyncio
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:  # pragma: no cover — sync test context
+        raise
+    task = loop.create_task(_run())
+    # Keep a strong reference so the task is not garbage-collected mid-run.
+    _AUTHORING_TASKS.add(task)
+    task.add_done_callback(_AUTHORING_TASKS.discard)
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +596,7 @@ async def create_plan(
     payload: PlanCreateIn,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    background_tasks: BackgroundTasks = None,
 ):
     """Create a plan request and generate its first version (§7 + §10.2)."""
     agent, _access = await check_agent_access(db, current_user, agent_id)
@@ -482,7 +627,10 @@ async def create_plan(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    plan = await _author_draft_plan(service, plan, fill=payload.fill)
+    try:
+        plan = await _author_draft_plan(service, plan, fill=payload.fill, background_tasks=background_tasks)
+    except PlanConflictError as exc:
+        raise HTTPException(status_code=409, detail={"error": exc.error_code, "message": exc.message}) from exc
     return _plan_out(plan)
 
 
@@ -594,12 +742,18 @@ async def revise_plan(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     admin_override_reason: AdminOverrideReason = None,
+    background_tasks: BackgroundTasks = None,
 ):
     """Supersede a plan with a new version and re-author it (§8.3).
 
     Cut ④: supersede to a fresh draft, then the agent authors the new version in a
     main-loop Plan Mode run (fills the draft via exit_plan_mode) — the single plan
     path. The legacy ``revise_plan`` (RPC planner) was removed.
+
+    The successor row (``superseded_by_plan_id``) and its ``planning`` state are
+    committed before the response; the model run continues after the response so
+    a slow authoring pass never 504s the request. The card follows the successor
+    and polls it to ``awaiting_confirmation``.
     """
     await check_agent_access(db, current_user, agent_id)
     service = get_plan_mode_service()
@@ -613,7 +767,10 @@ async def revise_plan(
         manager_override_reason=admin_override_reason,
     )
     draft = await service.supersede_to_draft(plan_id=plan_id)
-    new_plan = await _author_draft_plan(service, draft, fill=payload.fill)
+    try:
+        new_plan = await _author_draft_plan(service, draft, fill=payload.fill, background_tasks=background_tasks)
+    except PlanConflictError as exc:
+        raise HTTPException(status_code=409, detail={"error": exc.error_code, "message": exc.message}) from exc
     return _plan_out(new_plan)
 
 
@@ -625,6 +782,7 @@ async def regenerate_plan(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     admin_override_reason: AdminOverrideReason = None,
+    background_tasks: BackgroundTasks = None,
 ):
     """Retry generation for the same draft/planning_failed plan.
 
@@ -643,7 +801,9 @@ async def regenerate_plan(
         manager_override_reason=admin_override_reason,
     )
     try:
-        plan = await _author_draft_plan(service, existing, fill=payload.fill, plan_id=plan_id)
+        plan = await _author_draft_plan(
+            service, existing, fill=payload.fill, plan_id=plan_id, background_tasks=background_tasks
+        )
     except PlanConflictError as exc:
         raise HTTPException(status_code=409, detail={"error": exc.error_code, "message": exc.message}) from exc
     return _plan_out(plan)

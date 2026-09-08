@@ -686,8 +686,11 @@ async def spawn_agent_team_member_runtime(
         spec=member_spec,
         source=source,
     )
+    # Bare FK columns do not order ORM inserts; flush each dependency first.
     db.add(member_session)
+    await db.flush()
     db.add(member)
+    await db.flush()
     db.add(
         AgentTeamEvent(
             id=uuid.uuid4(),

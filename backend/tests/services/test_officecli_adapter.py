@@ -177,3 +177,111 @@ def test_officecli_adapter_maps_timeout_to_typed_timeout_error(tmp_path):
 
     assert exc.value.command == "view"
     assert exc.value.timeout_seconds == 3
+
+
+def test_officecli_adapter_run_batch_uses_real_input_contract(tmp_path):
+    from app.services.officecli_adapter import OfficeCLIAdapter
+
+    commands = tmp_path / "commands.json"
+    commands.write_text('[{"command": "validate"}]', encoding="utf-8")
+    captured = {}
+
+    def fake_runner(args, **_kwargs):
+        captured["args"] = args
+        return SimpleNamespace(returncode=0, stdout='{"success": true}', stderr="")
+
+    adapter = OfficeCLIAdapter(binary="officecli", runner=fake_runner)
+    doc = tmp_path / "demo.docx"
+
+    assert adapter.run_batch(doc, input_file=commands, cwd=tmp_path) == {"success": True}
+    assert captured["args"] == [
+        "officecli",
+        "batch",
+        str(doc),
+        "--json",
+        "--input",
+        str(commands),
+        "--stop-on-error",
+    ]
+
+
+def test_officecli_adapter_run_batch_can_continue_past_failures_when_requested(tmp_path):
+    from app.services.officecli_adapter import OfficeCLIAdapter
+
+    commands = tmp_path / "commands.json"
+    commands.write_text("[]", encoding="utf-8")
+    captured = {}
+
+    def fake_runner(args, **_kwargs):
+        captured["args"] = args
+        return SimpleNamespace(returncode=0, stdout='{"success": true}', stderr="")
+
+    adapter = OfficeCLIAdapter(binary="officecli", runner=fake_runner)
+
+    adapter.run_batch(tmp_path / "demo.docx", input_file=commands, stop_on_error=False)
+
+    assert "--stop-on-error" not in captured["args"]
+    assert "--force" not in captured["args"]
+    assert "--operations" not in captured["args"]
+    assert "--output" not in captured["args"]
+
+
+def test_officecli_adapter_run_batch_rejects_missing_input_file_before_execution(tmp_path):
+    from app.services.officecli_adapter import OfficeCLIAdapter, OfficeCLICommandError
+
+    calls = []
+
+    def fake_runner(*args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout='{"success": true}', stderr="")
+
+    adapter = OfficeCLIAdapter(binary="officecli", runner=fake_runner)
+
+    with pytest.raises(OfficeCLICommandError):
+        adapter.run_batch(tmp_path / "demo.docx", input_file=tmp_path / "missing.json")
+
+    assert calls == []
+
+
+def test_officecli_adapter_batch_is_not_reachable_through_generic_flag_serializer(tmp_path):
+    from app.services.officecli_adapter import OfficeCLIAdapter, OfficeCLICommandError
+
+    adapter = OfficeCLIAdapter(
+        binary="officecli", runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout="{}", stderr="")
+    )
+
+    with pytest.raises(OfficeCLICommandError):
+        adapter.run(
+            "batch",
+            tmp_path / "demo.docx",
+            options={"operations": str(tmp_path / "ops.json")},
+        )
+
+
+def test_officecli_adapter_nonzero_exit_with_non_json_stdout_reports_execution_error(tmp_path):
+    from app.services.officecli_adapter import OfficeCLIAdapter, OfficeCLIExecutionError
+
+    def fake_runner(*_args, **_kwargs):
+        return SimpleNamespace(
+            returncode=2,
+            stdout="unrecognized command or argument 'operations'",
+            stderr="batch failed",
+        )
+
+    adapter = OfficeCLIAdapter(binary="officecli", runner=fake_runner)
+
+    with pytest.raises(OfficeCLIExecutionError) as exc:
+        adapter.run_batch(
+            tmp_path / "demo.docx",
+            input_file=_write_commands(tmp_path),
+        )
+
+    assert exc.value.returncode == 2
+    assert exc.value.payload is None
+    assert "batch failed" in str(exc.value)
+
+
+def _write_commands(root):
+    commands = root / "commands.json"
+    commands.write_text('[{"command": "validate"}]', encoding="utf-8")
+    return commands

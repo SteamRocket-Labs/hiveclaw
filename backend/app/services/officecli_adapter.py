@@ -20,7 +20,6 @@ ALLOWED_OFFICECLI_COMMANDS: frozenset[str] = frozenset(
         "set",
         "add",
         "remove",
-        "batch",
         "validate",
         "render",
         "watch",
@@ -173,6 +172,33 @@ class OfficeCLIAdapter:
         args.extend(self._option_args(normalized_options))
         return self._run_json("view", args, cwd=cwd)
 
+    def run_batch(
+        self,
+        path: str | Path,
+        *,
+        input_file: str | Path,
+        stop_on_error: bool = True,
+        cwd: str | Path | None = None,
+    ) -> dict[str, Any]:
+        """Run the real OfficeCLI batch contract.
+
+        OfficeCLI 1.0.88 accepts ``batch <file> --input <JSON file>`` where the
+        input file is a bare JSON array of command objects (each with a required
+        ``command`` field); there is no ``--operations`` or ``--output`` flag and
+        the batch edits the target file in place. Keeping this shape explicit
+        prevents a generic flag serializer from regressing it to invalid flags.
+        """
+
+        input_path = Path(input_file)
+        if not input_path.is_file():
+            raise OfficeCLICommandError(f"OfficeCLI batch input file not found: {input_file}")
+
+        verified_binary = self._verify_binary_sha256()
+        args = [verified_binary, "batch", str(path), "--json", "--input", str(input_path)]
+        if stop_on_error:
+            args.append("--stop-on-error")
+        return self._run_json("batch", args, cwd=cwd)
+
     def version(self) -> str:
         """Return a stable renderer version for preview cache evidence."""
 
@@ -202,17 +228,23 @@ class OfficeCLIAdapter:
         completed = self._run_process(args, command=command, cwd=cwd)
         stdout = completed.stdout or ""
         stderr = completed.stderr or ""
-        payload = self._parse_json(stdout, allow_empty=completed.returncode != 0)
 
         if completed.returncode != 0:
+            # The exit status decides the failure type; unparseable stdout on a
+            # failed run must not mask it with an output error.
+            payload = None
+            if stdout.strip():
+                try:
+                    payload = self._parse_json(stdout, allow_empty=True)
+                except OfficeCLIError:
+                    payload = None
             raise OfficeCLIExecutionError(
                 command=command,
                 returncode=completed.returncode,
                 stderr=stderr,
                 payload=payload,
             )
-        if payload is None:
-            raise OfficeCLIOutputError(f"OfficeCLI command {command!r} returned no JSON output")
+        payload = self._parse_json(stdout, allow_empty=False)
         return payload
 
     def _run_process(

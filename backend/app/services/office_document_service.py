@@ -104,11 +104,7 @@ def extract_officecli_text_payload(payload: dict[str, Any], *, office_format: st
     if normalized_format == "docx":
         elements = data.get("elements")
         total_elements = data.get("totalElements")
-        if (
-            not isinstance(elements, list)
-            or type(total_elements) is not int
-            or total_elements < len(elements)
-        ):
+        if not isinstance(elements, list) or type(total_elements) is not int or total_elements < len(elements):
             raise OfficePreviewMalformedError("OfficeCLI DOCX text payload has invalid element coverage")
         paragraphs: list[str] = []
         for element in elements:
@@ -295,12 +291,10 @@ class OfficeDocumentService:
     ) -> dict[str, Any]:
         normalized = self._normalize_rel_path(rel_path)
         target = self._require_existing_file(normalized)
+        validated_operations = self._validate_operations(operations)
 
-        op_file = self._write_operation(normalized, operations)
-        options: dict[str, Any] = {"operations": op_file}
-        if output_path:
-            options["output"] = self.resolve_document_path(output_path)
-        payload = self.adapter.run("batch", target, options=options, cwd=self.workspace)
+        op_file = self._write_operation(normalized, validated_operations)
+        payload = self._apply_operations(target, op_file, source_normalized=normalized, output_path=output_path)
 
         manifest = self._load_manifest(normalized)
         manifest["updated_at"] = self._now()
@@ -308,12 +302,67 @@ class OfficeDocumentService:
             {
                 "file": Path(op_file).name,
                 "created_at": self._now(),
-                "operation_count": len(operations),
+                "operation_count": len(validated_operations),
                 "output_path": output_path,
             }
         )
         self._save_manifest(normalized, manifest)
         return payload
+
+    @staticmethod
+    def _validate_operations(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Validate the real OfficeCLI batch schema before touching the CLI.
+
+        OfficeCLI batch commands are objects with a required ``command`` field
+        (get/query/set/add/remove/move/swap/view/raw/raw-set/validate); a typed
+        rejection here beats a remote parse failure after the CLI has started.
+        """
+
+        if not isinstance(operations, list) or not operations:
+            raise ValueError("operations must be a non-empty list of OfficeCLI command objects")
+        for operation in operations:
+            if not isinstance(operation, dict):
+                raise ValueError("each operation must be an OfficeCLI command object")
+            command = operation.get("command")
+            if not isinstance(command, str) or not command.strip():
+                raise ValueError("each operation requires a non-empty 'command' field")
+        return operations
+
+    def _apply_operations(
+        self,
+        target: Path,
+        op_file: str,
+        *,
+        source_normalized: str,
+        output_path: str | None,
+    ) -> dict[str, Any]:
+        """Apply batch operations through the real CLI contract.
+
+        OfficeCLI batch edits its target file in place (there is no output
+        flag). When ``output_path`` differs from the source, the batch runs on a
+        temporary copy that atomically replaces the output on success, so the
+        source document and any pre-existing output stay untouched on failure.
+        """
+
+        normalized_output: str | None = None
+        if output_path:
+            normalized_output = self._normalize_rel_path(output_path)
+
+        if normalized_output is None or normalized_output == source_normalized:
+            return self.adapter.run_batch(target, input_file=op_file, cwd=self.workspace)
+
+        output_target = self.resolve_document_path(normalized_output)
+        output_target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=output_target.suffix, dir=output_target.parent) as handle:
+            tmp_path = Path(handle.name)
+        try:
+            shutil.copyfile(target, tmp_path)
+            payload = self.adapter.run_batch(tmp_path, input_file=op_file, cwd=self.workspace)
+            os.replace(tmp_path, output_target)
+            return payload
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
 
     def render_preview(self, rel_path: str) -> OfficePreviewResult:
         """Render and cache a workspace Office document preview."""
@@ -414,7 +463,9 @@ class OfficeDocumentService:
         try:
             return self.adapter.version()
         except OfficeCLIError as exc:
-            logger.warning("OfficeCLI version probe failed; preview cache uses unknown renderer: %s", type(exc).__name__)
+            logger.warning(
+                "OfficeCLI version probe failed; preview cache uses unknown renderer: %s", type(exc).__name__
+            )
             return "unknown"
 
     @staticmethod
@@ -437,9 +488,9 @@ class OfficeDocumentService:
         csp = html_lib.escape(OFFICE_PREVIEW_CSP, quote=True)
         escaped = html_lib.escape(text)
         return (
-            "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+            '<!DOCTYPE html><html><head><meta charset="utf-8">'
             f'<meta http-equiv="Content-Security-Policy" content="{csp}">'
-            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
             "<style>body{margin:0;padding:24px;background:#fff;color:#1f2937;font:14px/1.6 ui-monospace,monospace}"
             ".notice{margin-bottom:16px;padding:10px 12px;border:1px solid #f59e0b;border-radius:8px;background:#fffbeb}"
             "pre{white-space:pre-wrap;word-break:break-word}</style></head><body>"
@@ -450,9 +501,7 @@ class OfficeDocumentService:
     def _checked_output_size(self, value: str) -> int:
         output_bytes = len(value.encode("utf-8"))
         if output_bytes > self.preview_max_bytes:
-            raise OfficePreviewTooLargeError(
-                f"Office preview output exceeds {self.preview_max_bytes} bytes"
-            )
+            raise OfficePreviewTooLargeError(f"Office preview output exceeds {self.preview_max_bytes} bytes")
         return output_bytes
 
     def _load_preview_cache(
@@ -591,7 +640,9 @@ class OfficeDocumentService:
         operations_dir.mkdir(parents=True, exist_ok=True)
         operation_name = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%f')}.json"
         operation_path = operations_dir / operation_name
-        self._atomic_write_text(operation_path, json.dumps({"operations": operations}, ensure_ascii=False, indent=2))
+        # OfficeCLI batch --input expects a bare JSON array of command objects,
+        # each with a required "command" field — not a wrapped envelope.
+        self._atomic_write_text(operation_path, json.dumps(operations, ensure_ascii=False, indent=2))
         return str(operation_path)
 
     def _create_blank_document(self, target: Path, kind: str) -> None:

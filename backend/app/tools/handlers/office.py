@@ -252,9 +252,17 @@ async def office_document_query(
                 "operations": {
                     "type": "array",
                     "items": {"type": "object"},
-                    "description": "OfficeCLI operation objects",
+                    "description": (
+                        "OfficeCLI batch command objects; each requires a 'command' field "
+                        "(get/query/set/add/remove/move/swap/view/raw/raw-set/validate) "
+                        "with optional path/parent/type/props/selector fields, "
+                        'e.g. {"command": "set", "path": "/body/p[1]", "props": {"text": "Title"}}'
+                    ),
                 },
-                "output_path": {"type": "string", "description": "Optional workspace-relative output path"},
+                "output_path": {
+                    "type": "string",
+                    "description": "Optional workspace-relative output path; when given and different from path, the source stays unchanged",
+                },
             },
             "required": ["path", "operations"],
         },

@@ -67,10 +67,45 @@ def test_office_document_apply_tool_has_no_retired_editor_session_bypass():
 
     collected = collect_tools()
     definition = next(
-        tool["function"]
-        for tool in collected.openai_tools
-        if tool["function"]["name"] == "office_document_apply"
+        tool["function"] for tool in collected.openai_tools if tool["function"]["name"] == "office_document_apply"
     )
 
     assert "require_no_active_editor" not in definition["parameters"]["properties"]
     assert "editor session" not in definition["description"].lower()
+    assert "'command'" in definition["parameters"]["properties"]["operations"]["description"]
+
+
+@pytest.mark.asyncio
+async def test_office_document_apply_tool_forwards_operations_and_output_path(tmp_path, monkeypatch):
+    from app.tools.handlers import office as office_handlers
+
+    captured = {}
+
+    class _StubService:
+        def __init__(self, workspace):
+            self.workspace = workspace
+
+        def run_apply(self, rel_path, *, operations, output_path=None):
+            captured["rel_path"] = rel_path
+            captured["operations"] = operations
+            captured["output_path"] = output_path
+            return {"success": True, "data": {"applied": len(operations)}}
+
+    monkeypatch.setattr(office_handlers, "OfficeDocumentService", _StubService)
+
+    result = json.loads(
+        await office_handlers.office_document_apply(
+            tmp_path,
+            {
+                "path": "workspace/demo.docx",
+                "operations": [{"command": "set", "path": "/body/p[1]", "props": {"text": "Title"}}],
+                "output_path": "workspace/demo-v2.docx",
+            },
+            tenant_id="tenant-1",
+        )
+    )
+
+    assert result["ok"] is True
+    assert captured["rel_path"] == "workspace/demo.docx"
+    assert captured["operations"] == [{"command": "set", "path": "/body/p[1]", "props": {"text": "Title"}}]
+    assert captured["output_path"] == "workspace/demo-v2.docx"

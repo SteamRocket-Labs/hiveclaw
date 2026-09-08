@@ -24,6 +24,28 @@ class _PreviewAdapter:
         return response
 
 
+class _BatchAdapter:
+    """Records the real OfficeCLI batch invocation instead of pretending flags."""
+
+    def __init__(self, response=None):
+        self.response = response or {"success": True, "data": {"applied": 1}}
+        self.calls = []
+
+    def run_batch(self, path, *, input_file, stop_on_error=True, cwd=None):
+        self.calls.append(
+            {
+                "path": Path(path),
+                "input_file": Path(input_file),
+                "stop_on_error": stop_on_error,
+                "cwd": Path(cwd),
+                "commands": json.loads(Path(input_file).read_text(encoding="utf-8")),
+            }
+        )
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+
 def test_office_document_service_rejects_path_escape(tmp_path):
     from app.services.office_document_service import OfficeDocumentPathError, OfficeDocumentService
 
@@ -90,6 +112,120 @@ def test_office_document_service_removes_legacy_editor_metadata_without_blocking
     assert "active_editor_session" not in saved_manifest
 
 
+def test_office_document_service_apply_uses_real_batch_input_contract_in_place(tmp_path):
+    from app.services.office_document_service import OfficeDocumentService
+
+    target = tmp_path / "workspace" / "demo.docx"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"docx-source")
+    adapter = _BatchAdapter()
+    service = OfficeDocumentService(tmp_path, adapter=adapter)
+
+    operations = [{"command": "set", "path": "/body/p[1]", "props": {"text": "Title"}}]
+    payload = service.run_apply("workspace/demo.docx", operations=operations)
+
+    assert payload == {"success": True, "data": {"applied": 1}}
+    assert len(adapter.calls) == 1
+    call = adapter.calls[0]
+    assert call["path"] == target
+    assert call["cwd"] == tmp_path
+    assert call["stop_on_error"] is True
+    # The --input file must be the bare JSON array of command objects, not a wrapper.
+    assert call["commands"] == operations
+    assert call["input_file"].parent == service.manifest_path("workspace/demo.docx").parent / "operations"
+
+    manifest = json.loads(service.manifest_path("workspace/demo.docx").read_text(encoding="utf-8"))
+    assert manifest["operations"][0]["operation_count"] == 1
+    assert manifest["operations"][0]["output_path"] is None
+
+
+def test_office_document_service_apply_with_output_path_preserves_source_document(tmp_path):
+    from app.services.office_document_service import OfficeDocumentService
+
+    source = tmp_path / "workspace" / "demo.docx"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"docx-source")
+    adapter = _BatchAdapter()
+    service = OfficeDocumentService(tmp_path, adapter=adapter)
+
+    def apply_side_effect(path, *, input_file, stop_on_error=True, cwd=None):
+        adapter.calls.append(
+            {"path": Path(path), "input_file": Path(input_file), "stop_on_error": stop_on_error, "cwd": Path(cwd)}
+        )
+        path.write_bytes(b"docx-updated")
+        return {"success": True, "data": {"applied": 1}}
+
+    adapter.run_batch = apply_side_effect
+    payload = service.run_apply(
+        "workspace/demo.docx",
+        operations=[{"command": "add", "parent": "/body", "type": "paragraph", "props": {"text": "New"}}],
+        output_path="workspace/out/demo-v2.docx",
+    )
+
+    assert payload == {"success": True, "data": {"applied": 1}}
+    assert source.read_bytes() == b"docx-source"
+    output = tmp_path / "workspace" / "out" / "demo-v2.docx"
+    assert output.read_bytes() == b"docx-updated"
+    # The batch must have run on a temporary copy inside the output directory, not the source.
+    batched_paths = [call["path"] for call in adapter.calls]
+    assert all(path != source for path in batched_paths)
+    assert {path.suffix for path in batched_paths} == {".docx"}
+
+
+def test_office_document_service_apply_failure_leaves_source_and_output_untouched(tmp_path):
+    from app.services.office_document_service import OfficeDocumentService
+    from app.services.officecli_adapter import OfficeCLIExecutionError
+
+    source = tmp_path / "workspace" / "demo.docx"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"docx-source")
+    output = tmp_path / "workspace" / "out" / "demo-v2.docx"
+
+    def failing_run_batch(path, *, input_file, stop_on_error=True, cwd=None):
+        path.write_bytes(b"partially-applied")
+        raise OfficeCLIExecutionError(
+            command="batch",
+            returncode=2,
+            stderr="stop-on-error: command 1 failed",
+        )
+
+    adapter = _BatchAdapter()
+    adapter.run_batch = failing_run_batch
+    service = OfficeDocumentService(tmp_path, adapter=adapter)
+
+    with pytest.raises(OfficeCLIExecutionError):
+        service.run_apply(
+            "workspace/demo.docx",
+            operations=[{"command": "set", "path": "/", "props": {}}],
+            output_path="workspace/out/demo-v2.docx",
+        )
+
+    assert source.read_bytes() == b"docx-source"
+    assert not output.exists()
+    # No temporary copy is left behind in the output directory.
+    assert list((tmp_path / "workspace" / "out").iterdir()) == []
+
+
+def test_office_document_service_apply_rejects_non_batch_schema_operations_before_cli(tmp_path):
+    from app.services.office_document_service import OfficeDocumentService
+
+    target = tmp_path / "workspace" / "demo.docx"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"docx-source")
+    adapter = _BatchAdapter()
+    service = OfficeDocumentService(tmp_path, adapter=adapter)
+
+    for invalid in ([], [{"op": "replace_text"}], [{"command": " "}], ["not-a-dict"], [42]):
+        with pytest.raises(ValueError):
+            service.run_apply("workspace/demo.docx", operations=invalid)
+
+    assert adapter.calls == []
+    assert (
+        service.manifest_path("workspace/demo.docx").exists() is False
+        or json.loads(service.manifest_path("workspace/demo.docx").read_text(encoding="utf-8"))["operations"] == []
+    )
+
+
 def test_office_preview_renders_hardened_html_and_reuses_hash_cache(tmp_path):
     from app.services.office_document_service import OfficeDocumentService
 
@@ -112,7 +248,9 @@ def test_office_preview_renders_hardened_html_and_reuses_hash_cache(tmp_path):
     assert 'http-equiv="Content-Security-Policy"' in first.html
     assert "default-src &#x27;none&#x27;" in first.html
     assert len(adapter.calls) == 1
-    manifest = json.loads((service.manifest_path("workspace/demo.docx").parent / "preview" / "manifest.json").read_text())
+    manifest = json.loads(
+        (service.manifest_path("workspace/demo.docx").parent / "preview" / "manifest.json").read_text()
+    )
     assert manifest["source_sha256"] == first.source_sha256
     assert manifest["preview_mode"] == "html"
 

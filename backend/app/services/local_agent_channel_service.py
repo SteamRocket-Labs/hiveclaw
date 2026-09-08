@@ -17,7 +17,7 @@ from typing import Any
 
 from fastapi import HTTPException, status
 from jose import JWTError, jwt
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -927,21 +927,54 @@ async def get_or_create_default_channel_session(
             existing, chat_session = rows[0]
             return _session_payload(existing, chat_session)
     else:
-        stmt = (
-            select(LocalAgentChannelSession)
-            .where(
-                LocalAgentChannelSession.tenant_id == tenant_id,
-                LocalAgentChannelSession.owner_user_id == owner_user_id,
-                LocalAgentChannelSession.source == "web",
-                LocalAgentChannelSession.status == "active",
-            )
-            .order_by(LocalAgentChannelSession.created_at.desc(), LocalAgentChannelSession.id.desc())
-            .limit(1)
+        stmt = select(LocalAgentChannelSession).where(
+            LocalAgentChannelSession.tenant_id == tenant_id,
+            LocalAgentChannelSession.owner_user_id == owner_user_id,
+            LocalAgentChannelSession.source == "web",
+            LocalAgentChannelSession.status == "active",
         )
-        if source_agent_id is None:
-            stmt = stmt.where(LocalAgentChannelSession.source_agent_id.is_(None))
+        if source_agent_id is None and actor_user_id is None:
+            # The user-global default gets its source_agent_id bound by the
+            # first enqueue_channel_message call, so a NULL-only filter both
+            # misses the dispatched original and can be shadowed by a newer
+            # empty replacement this same bug created. Every session created
+            # with an explicit source_agent_id also binds a chat_session_id;
+            # an agent-bound session without one is exactly this user-global
+            # default after its first dispatch. Prefer that bound original —
+            # it holds the (possibly approved) request — then fall back to an
+            # empty NULL default, newest first. The preference key must be
+            # the FIRST order term: SQLAlchemy appends later order_by calls,
+            # so a shared created_at timestamp would otherwise let an
+            # arbitrary id decide before the preference is consulted.
+            stmt = stmt.where(
+                or_(
+                    LocalAgentChannelSession.source_agent_id.is_(None),
+                    and_(
+                        LocalAgentChannelSession.source_agent_id.is_not(None),
+                        LocalAgentChannelSession.chat_session_id.is_(None),
+                    ),
+                )
+            ).order_by(
+                case(
+                    (
+                        and_(
+                            LocalAgentChannelSession.source_agent_id.is_not(None),
+                            LocalAgentChannelSession.chat_session_id.is_(None),
+                        ),
+                        0,
+                    ),
+                    else_=1,
+                ),
+                LocalAgentChannelSession.created_at.desc(),
+                LocalAgentChannelSession.id.desc(),
+            )
         else:
-            stmt = stmt.where(LocalAgentChannelSession.source_agent_id == source_agent_id)
+            if source_agent_id is None:
+                stmt = stmt.where(LocalAgentChannelSession.source_agent_id.is_(None))
+            else:
+                stmt = stmt.where(LocalAgentChannelSession.source_agent_id == source_agent_id)
+            stmt = stmt.order_by(LocalAgentChannelSession.created_at.desc(), LocalAgentChannelSession.id.desc())
+        stmt = stmt.limit(1)
         result = await db.execute(stmt)
         existing = result.scalar_one_or_none()
         if existing is not None:

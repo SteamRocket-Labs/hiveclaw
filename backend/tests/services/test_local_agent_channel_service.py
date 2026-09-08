@@ -281,6 +281,65 @@ async def test_get_or_create_default_channel_session_creates_when_missing() -> N
 
 
 @pytest.mark.asyncio
+async def test_get_or_create_default_channel_session_recovers_bound_default_after_first_dispatch() -> None:
+    """A default session bound by its first enqueue must stay recoverable.
+
+    enqueue_channel_message writes the trusted snapshot's subject agent into
+    session.source_agent_id, so a NULL-only default lookup misses it and can
+    be shadowed by a newer empty replacement. Ordering and filter behavior
+    against live simultaneous rows is proven by the PostgreSQL integration
+    test (tests/integration/test_local_agent_default_recovery.py); this only
+    pins the returned payload when the bound default is the match.
+    """
+
+    tenant_id = uuid4()
+    owner_user_id = uuid4()
+    source_agent_id = uuid4()
+    bound_default = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+        source_agent_id=source_agent_id,
+        chat_session_id=None,
+        source="web",
+        status="active",
+        created_at=None,
+    )
+    db = _FakeDB([bound_default])
+
+    payload = await service.get_or_create_default_channel_session(
+        db,
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+    )
+
+    assert payload["id"] == bound_default.id
+    assert payload["agent_id"] == source_agent_id
+    assert db.added == []
+    assert db.committed is False
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_default_channel_session_still_creates_when_no_default_exists() -> None:
+    tenant_id = uuid4()
+    owner_user_id = uuid4()
+    db = _FakeDB([None])
+
+    payload = await service.get_or_create_default_channel_session(
+        db,
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+    )
+
+    assert payload["source"] == "web"
+    assert payload["status"] == "active"
+    assert len(db.added) == 1
+    assert db.flushed is True
+    assert db.committed is True
+    assert db.added[0].source_agent_id is None
+
+
+@pytest.mark.asyncio
 async def test_get_or_create_default_channel_session_creates_agent_scoped_chat_session(monkeypatch) -> None:
     tenant_id = uuid4()
     owner_user_id = uuid4()

@@ -22,7 +22,7 @@ verification_status: partial-results-not-full-journey-acceptance
 |---|---|---|
 | 平台管理员：设置→公司后台→返回 App | 真实打开 dashboard，并由返回 App 回到 home | 仅此入口；不是 P29/P32 全变体 |
 | 折叠侧栏→设置 | 菜单真实展开，账户/公司/平台/主题/通知/语言可达 | 未声称全部设置消费通过 |
-| Chrome 旧员工标签 | 旧 UI 显示 CEDAR 成员；Agent 详情加载失败；进入 KB 后数据与旧身份不一致，停止该 persona 读取并刷新 | 刷新后为平台管理员及 rocky 的实验室；旧身份缓存结果作废，不声称员工跨权限成功或泄漏；需新登录后复验 |
+| Chrome 旧员工标签 | 旧 UI 显示 CEDAR 成员；Agent 详情加载失败；进入 KB 后数据与旧身份不一致，停止该 persona 读取并刷新 | 刷新后为平台管理员及已登记的 owner 实验公司；旧身份缓存结果作废，不声称员工跨权限成功或泄漏；需新登录后复验 |
 
 ## 合成资产与 cleanup
 
@@ -51,7 +51,7 @@ verification_status: partial-results-not-full-journey-acceptance
 
 新增效果预登记：HR 草案 `WRC-FUNCTIONAL-B1-20260908-DraftWriter`，仅描述合成资料整理岗位、私有范围、无外部发送/真实个人知识/后台巡检；先验证草案生成、修订与拒绝，不在未核对最终权限前 provision。实际 draft/session ID 与拒绝/cleanup 结果待写入。
 
-新增效果预登记：向现有在线 Local Agent `rocky243deMacBook-Pro.local` 的用户级通道发送一条标记 `WRC-B1-LOCAL-684` 的只读回显消息，只允许回报 cwd 与 marker，不改配置/权限/文件，不查看其他内容，不安装/重连或重建绑定。此消息不授权处理历史任务。实际消息/回执与 cleanup 结果待记录。
+新增效果预登记：向已登记的现有在线本机 Local Agent 的用户级通道发送一条标记 `WRC-B1-LOCAL-684` 的只读回显消息，只允许回报 cwd 与 marker，不改配置/权限/文件，不查看其他内容，不安装/重连或重建绑定。本机设备名不进入公开证据。此消息不授权处理历史任务。实际消息/回执与 cleanup 结果待记录。
 
 ## 结果与消耗
 
@@ -72,7 +72,7 @@ verification_status: partial-results-not-full-journey-acceptance
 | Automation 新建/自定义表单 | 仅见小时/日/周/cron；已取消，零创建 | 一次性调度的 Session command 路径待查，不据单个表单判整体缺失 |
 | Local Agent 只读回显 | 现有 Codex 绑定在线，新消息返回 `approval_required: Waiting for owner approval`；未收到 marker 回显 | 未安装、改权限、重连或重建绑定；新页面通道记录为空，不冒充恢复/交付成功 |
 
-文件 Session `18911e1a-efff-4f49-b304-c7c3e93a30d7`；首轮 RuntimeTask `1ff0fc92-d275-5ec0-a5b8-8cb1d8b277dd`；artifact `10d7df62-40b6-42d8-a168-fda23b096a79`；目标 `workspace/WRC-FUNCTIONAL-B1-20260908/file-check.md`。实际下载 `/Users/rocky243/Downloads/file-check.md`，SHA256 `97e5277e613013daacd2a01cba72882e9dc1bcb6be72c38382dce3d32bc3ec9d`。续写 input `3c816e14-8588-4af1-bdb0-b2575eb617bb`，admission `4e79304d-f5cf-5f92-bf51-8f1327aefdfb`，checkpoint sequence 192，admitted sequence 198；没有 V2 artifact 回执。HR Session `22522912-a9b4-4a8a-98b2-5082d31b997c`；草案名 `WRC-FUNCTIONAL-B1-20260908-DraftWriter`。
+文件 Session `18911e1a-efff-4f49-b304-c7c3e93a30d7`；首轮 RuntimeTask `1ff0fc92-d275-5ec0-a5b8-8cb1d8b277dd`；artifact `10d7df62-40b6-42d8-a168-fda23b096a79`；目标 `workspace/WRC-FUNCTIONAL-B1-20260908/file-check.md`。实际下载文件 `file-check.md`（操作者本机 Downloads 目录），SHA256 `97e5277e613013daacd2a01cba72882e9dc1bcb6be72c38382dce3d32bc3ec9d`。续写 input `3c816e14-8588-4af1-bdb0-b2575eb617bb`，admission `4e79304d-f5cf-5f92-bf51-8f1327aefdfb`，checkpoint sequence 192，admitted sequence 198；没有 V2 artifact 回执。HR Session `22522912-a9b4-4a8a-98b2-5082d31b997c`；草案名 `WRC-FUNCTIONAL-B1-20260908-DraftWriter`。
 
 ### 工具加载小修复（源代码结论，不替代生产复验）
 
@@ -120,7 +120,7 @@ Harness CI `34182826176` 对 exact `33f6332f663f6e648f27eb704593876c4de17053` �
 - search result 在 sequence 116 返回该唯一 document 的两个 segment，`status=ok/outcome=success`，authority `allowed=true/interactive_owner_agent`；文本检索可用，optional vector 的 `provider_unconfigured` 对应“部分索引”，不冒充向量检索通过。
 - read result 在 sequence 192 返回唯一 document 的两段完整内容，均 `truncated=false`，authority `allowed=true`；原文为验证短语 `violet heron 473`、当前 cobalt 12、amber 7、总 folders 19、虚构协调员 Mira、Tuesday 14:30 UTC，Correction 明确旧 10 已被当前 12 取代。read result content hash `c84672ef1e4145345ab402cceb391cb447b40d4b20f8d540e22cb32500c0d48c`。
 - write_file 在 sequence 369 开始，唯一 artifact `dc645703-4732-479b-829c-4dcac9a8477c` 创建于 11:57:47.960128；read_file 在 sequence 397 成功回读报告及本 Session/run provenance。canonical `run_outcome.terminal_committed` 为 sequence 554，time `11:58:34.583439`；workbench RuntimeTask completed、active_run/active_turn null、无需 tool-effect reconciliation。此处未测第二轮或故障恢复，terminal commit 不冒充旧 outbox 已恢复。
-- 实际文件预览和下载各 HTTP 200；内容正确引用两个 segment，采用 12 与 19，包含 Mira 和 Tuesday 14:30 UTC。下载文件 `/Users/rocky243/Downloads/harbor-summary-r2.md` 为 1485 bytes（1483 characters），SHA256 `9371dee024a6777e0f6fe071fe04676dbe63310b386bcdac6ade6cc8b4231807`。Codex 已读取实际下载内容；刷新 Session 后再次打开保存快照，内容仍相同。
+- 实际文件预览和下载各 HTTP 200；内容正确引用两个 segment，采用 12 与 19，包含 Mira 和 Tuesday 14:30 UTC。下载文件 `harbor-summary-r2.md`（操作者本机 Downloads 目录）为 1485 bytes（1483 characters），SHA256 `9371dee024a6777e0f6fe071fe04676dbe63310b386bcdac6ade6cc8b4231807`。Codex 已读取实际下载内容；刷新 Session 后再次打开保存快照，内容仍相同。
 - 12:02 仅将合成知识文档 `b3656a46…` 正常归档；详情为“已归档”、操作为“恢复”，唯一标记 `violet heron 473` 搜索零命中。未删除历史文档或共享 fixture，可恢复。两份下载文件及报告 Session/artifact 保留为交付证据；旧 KB unknown、文件 V2/HR pending 与 Local approval-required 现场不强行清理。
 - 12:07 发布后正常刷新两个旧 UUID Session：HR 修订仍“处理中 78m13s”，原蓝图保持“已拒绝”，没有修订版本；文件续写仍“处理中 73m11s”，只有原 44-byte 文件，没有 V2。确认本次工具加载发布没有恢复这两个旧阻塞。没有重发输入、手改回执、新建员工或额外 provider 重试。
 - B-Worker 保持本批次临时 GLM-5.3；在 pending 输入恢复/取消前不改回未 ready 的 DeepSeek，避免待处理输入换模型执行。没有新增 automation/Goal/heartbeat、重连/安装或真实外发；原 heartbeat 仍 PAUSED。此保留项和未完全 cleanup 在交付中披露。

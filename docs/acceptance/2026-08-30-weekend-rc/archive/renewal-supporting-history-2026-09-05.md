@@ -77,3 +77,22 @@ verification_status: historical-supporting-evidence-not-current
 - 历史旧品牌 release hygiene working-tree gate 曾通过（3184 paths），当时结构回归 6 passed；`6d46459e` committed archive gate 当时通过（3375 paths）。历史 KDF salt、旧 env input fallback、一次性 theme-key 迁移与 LICENSE attribution 保留；该结果不替代当前候选 gate 或生产复验，2026-09-04 新实测见上表。
 - task-state resolve 指向本文件；本文件只保存当前目标、事实、证据摘要、唯一下一动作和 Not Done，不再保存旧 Kimi/zCode/ACP/timeout 执行日记。
 - `backend/scripts/weekend_rc_worker_gate.py` 与对应 zCode/`agent-delegate` 测试仍是未被 active RC gate 调用的 legacy compatibility artifact；本 Goal 不调用它们，也不把其结果当作当前工作流或验收证据。
+
+## 2026-09-07 Session restart 已结束审查与派单记录
+
+以下原文按历史快照保留；其中“下一动作/尚未复证/运行中”只描述当时状态，当前结论以03-current-status.md为准。
+
+以下为该作者任务的派单依据（已由上述终态与新CC复审替代）：
+
+07:46:22 UTC，主Codex已逐文件独立复证B1/B2/B3：分别10.21秒、9.71秒、9.05秒，真实文件效果与旧seal不一致、成功工具被报错、普通审批仅两条历史均成立（通过的是缺陷/观测探针，不是产品通过）。RLS门也独立为`1 failed / 16 passed / 205.48s`，同一指纹差异。证据见`/tmp/hive-weekend-renewal.MqQXgw/codex-session-worker-restart-correction-verification.md`；另确认作者kernel helper固定传初始prompt、不消费恢复history。已有足够拒绝依据，已向实时核对默认GLM-5.3的zCode派发`7416400176b54c7aa05b054b09f1e2c7`，修正包`/tmp/hive-weekend-renewal.MqQXgw/zcode-session-worker-restart-sealed-replay-correction.md`。要求原封存批次的真实native工具恢复、已成功结果复用、普通审批完整历史、真实effect fence和自然terminal consumer；安全pending不能降级为永久reconciliation。唯一下一动作改为收取该作者结果，冻结后CC→Codex复核；此前CC已结束，不再poll。无新部署，NPTCR仍0/96。
+
+以下为本轮退回修正的审查依据：
+
+07:37 UTC，CC `ea365f8ae1944eb2825929ebc7fcb06c`正常结束（2328.042秒、959事件、零协议错误），结论`REJECTED`。主Codex已完整读取返回正文与报告`/tmp/hive-weekend-renewal.MqQXgw/cc-session-worker-restart-correction-review-report.md`，SHA-256=`696c54545c36811d16ca3b0be8b0971e00ac29c7a62762b94286a542cd574916`，八个候选hash重新核对无漂移。CC报告四项阻断：B1重新生成的未提交响应驱动真实文件效果且旧pending轮次永久重入；B2混合批次虽未重复已结算效果，却向模型提供虚假失败结果；B3普通审批恢复仍丢此前轮次；B4本候选导致RLS AST指纹门失败。另指出作者kernel测试未转发`pre_effect_callback`，自然terminal outbox/UI消费仍无证据。以上目前是CC独立证据，尚未完成主Codex复证；唯一下一动作是读取完整调用链并逐文件隔离运行关键探针，裁决后交zCode修正。不得继续poll已结束CC、部署候选或把测试绿迁移为Journey PASS，NPTCR仍0/96。
+
+以下为本次CC审查的派单背景（“运行中/收取报告”已被上段终态替代）：
+
+owner已明确授权本任务合成数据的删除/修改，此范围不再重复提问，正式数据不动。LINDEN真实重启复现`SESSION-WORKER-RESTART-ROUND-001`；界面重叠文本来自重启前round8两条原生delta，不加前端语义去重。首候选由CC `78668785…`与Codex拒绝：独立真实PG **3+2** 条缺陷断言复证工具未结算抛错、状态缺口丢输入、committed行可变、旧worker响应穿透和permission丢历史。zCode GLM-5.3修正 `24ff1fd8…`已正常结束3703.111秒、3324事件、零协议错误；完整报告`/tmp/hive-weekend-renewal.MqQXgw/zcode-session-worker-restart-round-correction-report.md` SHA=`0b9b8939…d0ced`，八个终态文件hash逐项一致，HEAD仍`17f073bb`、diff-check绿。作者自报8+1真实PG/kernel/文件效果、78输入控制、356相邻通过；其旧五探针失败必须核对具体断言位置，不能自动等于修复证明。报告明确：已提交pending-tool轮次会重调模型、kernel未改；测试未执行最外层web run、stream batcher及live terminal outbox consumer。06:58:47 UTC已派CC `ea365f8ae1944eb2825929ebc7fcb06c`冻结八文件独立review，要求用不同工具ID/参数/最终回答的非确定性provider挑战旧seal与实际执行响应一致性，并核对mixed工具、真实continuation顺序、普通permission恢复、typed unknown可恢复消费及自然终态投递缺口。唯一下一动作：收取CC完整报告后由Codex加严复核；保留production现场、不重发输入或手改lease/round，不把作者自报、本地或旧D证据迁移为新D通过，NPTCR仍0/96。
+# 2026-09-07 final replay 四项修正历史（13:22 UTC归档）
+
+11:40 UTC，已派GLM-5.3 zCode `fec599c7eb5a4f28bdb894cc277b2f71`完成final replay四项修正，包`/tmp/hive-weekend-renewal.MqQXgw/zcode-final-replay-effects-correction.md` SHA-256=`a41b4b60768bf6ad1588f4fdfd221ee18fe5dd701a2b06d8e34c36f4736997ea`。默认及native model-I/O均已核对：`model-io-sess_a536e497…`中含本次mission的真实request全部为`GLM-5.3`，response model字段为空，不冒称响应侧验证；69秒时同任务仍running。允许最小关联backend/test/manifest修正，禁止production/凭据/安装/委派/commit/push；计费前后崩溃须区分、Stop保留决策并恢复已完成效果、metadata修真实别名根因、RLS终态重算。唯一下一动作是收取该作者结果后冻结hash，交CC独立复审再Codex；不得继续poll已结束的旧作者/CC。以下为主复核依据：CC `d663afc20ebc4525af27af7a7b49e238`已正常结束（1684.156秒、1278事件、零协议错误）；完整正文/content与312行报告已读，报告SHA-256=`1b56fef3bdc8b96a91841ad0a15185429ae95aff5ee66a28f93327743365f85f`，路径`/tmp/hive-weekend-renewal.MqQXgw/cc-final-commit-recovery-review-report.md`，14候选hash重核全吻合。CC独立复证原final红例转绿、19 restart/278 integration加1skip/467相邻，但RLS为1failed/16passed且新增token重复记账证据。Codex随后独立执行`/tmp/hive-cc-final-review/test_cc_final_replay_token_ledger.py`与`test_cc_restart_receipt_persistence.py`，真实PG **2 failed / 11.27s**：相同seal恢复前后各记15 token、恢复回执只在内存而不在新DB session读回。探针保留provider/ledger记录器等seam，不能称真实外部计费验证。主读源码另发现`accumulated_tokens`从initial起算后仍累加sealed usage，独立probe `/tmp/hive-cc-final-review/test_codex_baseline_only_fix.py`强制传入已记账baseline=15仍再次记录15，**1 failed / 10.05s**，反证CC仅提高baseline的建议无效（报告`/tmp/hive-weekend-renewal.MqQXgw/codex-final-replay-accounting-review.md`）；Stop重复效果已由`test_codex_stop_command_replay.py`独立复现：真实registry/runner及本地子进程生成两个临时目录，**1 failed / 10.13s**，纳入修正；plugin持久配置/production执行器未验证，pending后继真正执行与claim边界仍待裁决。主复核已形成上述修正包；CC/作者均已结束，不再poll，不部署，NPTCR仍0/96。以下10:00为历史依据。

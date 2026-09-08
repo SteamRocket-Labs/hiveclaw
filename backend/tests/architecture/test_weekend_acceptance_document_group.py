@@ -132,7 +132,9 @@ def test_journey_ledger_preserves_ci_ids_and_has_one_frozen_denominator() -> Non
     assert ci_ids == [f"J-{index:02d}" for index in range(1, 16)]
     assert candidate_ids == [f"PJ-{index:02d}" for index in range(1, 36)]
     assert PRODUCTION_MANIFEST.is_file()
-    assert "verification_status: frozen-96-p01-negative-workspace-path-governance-order-breakpoint" in ledger
+    # The frozen-96 prefix pins the one frozen denominator; the suffix is
+    # transient batch progress owned by Codex, not a structural contract.
+    assert re.search(r"^verification_status: frozen-96-[a-z0-9-]+$", ledger, flags=re.MULTILINE)
     assert "共 **96** 条可独立计分的 production journeys" in ledger
     assert "weekend_production_journeys.v1.json" in ledger
     assert "0/96 Closed；NPTCR 0%" in ledger
@@ -174,9 +176,9 @@ def test_execution_control_contract_is_explicit_and_non_semantic() -> None:
     assert "worker 不 commit/push/deploy、不自验收" in decisions
     assert "GitHub Issue 只是" in index
     assert "都不是 Journey/Finding verdict" in index
-    assert "PDEC-012 替代旧执行分工" in index
+    assert "PDEC-015 替代 PDEC-012/PDEC-014 的日常协作门" in index
     assert "worker/reviewer 的独立判断是审查意见，不直接改写 Journey verdict" in index
-    assert "本轮执行 PDEC-012/PDEC-014" in runbook
+    assert "当前执行以 [PDEC-015](02-owner-decisions.md#2026-09-08-已接受的功能收敛裁决) 为准" in runbook
     assert "zCode 负责后端及功能实现，Kimi Code 负责前端 UI" in runbook
     assert "CC 不可用、限额或等待不再阻断进度" in runbook
     assert "作者自审不能占据交叉审查席位" in runbook
@@ -197,8 +199,12 @@ def test_execution_control_contract_is_explicit_and_non_semantic() -> None:
     assert "owner 指令不能把未授权访问变成授权" in runbook
     assert "缺少预存身份、fixture、Session 或仓库内 runtime/build/adapter" in runbook
     assert "不属于停止条件" in runbook
-    assert "不设人工 Goal-wide timeout、step cap 或 attempt cap" in runbook
-    assert "expiry 只结束或恢复当前 attempt" in runbook
+    # PDEC-015 replaced the retired no-cap rule with bounded batches; the
+    # retired operative formulation must not return to the runbook.
+    assert "不设人工 Goal-wide timeout、step cap 或 attempt cap" not in runbook
+    assert "不能拆包或改名重置预算" in runbook
+    assert "到点报告未完成并停止未经下一轮授权的续作" in runbook
+    assert "上限不决定产品成功，96 条和最终 D/E 门不降低" in runbook
     assert "每个 worker 调用必须满足" not in runbook
     assert "不拥有 Journey、Finding、产品质量或最终语义 verdict" in runbook
     assert (
@@ -232,6 +238,7 @@ def test_execution_control_contract_is_explicit_and_non_semantic() -> None:
     assert "不降低产品 NPTCR" not in decisions
     for decision_id in tuple(f"PDEC-{index:03d}" for index in range(1, 13)):
         assert decision_id in decisions
+    assert "PDEC-015" in decisions
     assert "一个可独立回滚的共享根因对应一个 Codex integration commit" in runbook
     assert "新增纯 evidence/docs commit `E`" in runbook
 

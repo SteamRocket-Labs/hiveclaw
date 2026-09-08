@@ -3,9 +3,9 @@ document_id: weekend-rc-2026-08-30-journey-ledger
 owner: Example Owner / Codex
 status: active
 authority: canonical-human-journey-ledger
-last_reviewed: 2026-09-07
-source_commit: 17fed53097457cb23e52bb6545752198926c93ed
-verification_status: frozen-96-p01-negative-workspace-path-governance-order-breakpoint
+last_reviewed: 2026-09-08
+source_commit: 33f6332f663f6e648f27eb704593876c4de17053
+verification_status: frozen-96-bounded-functional-pilot-partial-evidence
 ---
 
 # Journey Ledger
@@ -13,6 +13,23 @@ verification_status: frozen-96-p01-negative-workspace-path-governance-order-brea
 [返回索引](README.md) · [当前状态](03-current-status.md) · [Runbook](06-runbook-and-release-gates.md)
 
 本文件记录旅程分母、主 Codex/owner 已接受的闭环状态和证据链接。Domain 文档记录验收标准；Evidence 文件记录实际结果；本文件不复制两者正文，也不从机械字段自行推导语义 verdict。
+
+## 2026-09-08 有限功能试批次 B1
+
+PDEC-015 的两小时试批次收束，12:16:24 前交付，不自动续作；[单一证据记录](evidence/17f073bb4f07098e55d9ef1684781dc67cfa454e/functional-batch-2026-09-08-01.md)。前段测试绑定 `17f073bb`；11:54 后生产为三服务同源 `33f6332f`，新版本只取得下列 fresh KB/文件消费证据，不迁移旧业务 PASS。**NPTCR 仍为 0/96**。
+
+本批次新增完整按冻结协议执行 **0/96**，完整功能要求通过 **0/96**，最终 D 严格闭环 **0/96**；另有八类跨域入口及局部操作实测，具体范围见表。这三个零不抹掉局部结果，也不把入口数或工具调用数换算成完整旅程数。历史 P01 正常双遍/负向/cleanup 仍只属于其原版本。
+
+| 涉及旅程 | 本批次实际取得的证据 | 未通过或未覆盖 |
+|---|---|---|
+| P10 / P30 | 个人粘贴 MD、归档排除/恢复重现；新版本 GLM fresh Session 搜索/完整读取唯一文档、正确采用修正并写读报告，预览/下载/reload 成功；最终文档已归档 | 旧 KB Session 的 delivery unknown 保留；文件 V2 输入未执行；上传被浏览器扩展阻止，完整格式/版本/角色与故障合同未完成 |
+| P13 | MiniMax 真实生成 HR 草案，正式拒绝且未 provision | 修订输入未执行；确认/创建/首任务本批次未做 |
+| P03 | 已保存 Session 的 context/permissions/usage 面板可用 | fresh draft context 422；其余命令及面板信息完整性未完整验证 |
+| P15 / P29 / P34 | 实际 member/org_admin API fixture 员工 Agent 200、平台公司后台 403、跨 tenant Agent/跨 person 文档 404 | 员工/公司管理员 UI、完整角色 matrix、撤销与故障恢复未完成 |
+| P22 / P24 | Automation 表单检查后取消；既有 Local Agent 在线，新消息返回 approval_required | 未建 once、未收 Local Agent 实际回显，不计执行或恢复成功 |
+| P29 / P32 / P33 | 管理后台返回 App、折叠设置；GLM 文件首轮、MiniMax HR 首轮实际执行 | 非完整前端/模型兼容性旅程；DeepSeek 不盲重试 |
+
+两个第二轮输入均被旧 turn_stop boundary 的 dead letter / attempt 8 / `WebTerminalBoundaryPending` 阻挡；11:47 app_rls/read-only/tenant-scoped 对账确认 `waiting_for_terminal_boundary_ack`，合并为一个共同入口 finding，不重复创建修复包。Automation once 未创建、Local Agent 仅到 approval_required；外部模型未 ready 不盲重试。其余未触及旅程保留原状态。
 
 ## 分母状态
 
@@ -92,16 +109,16 @@ verification_status: frozen-96-p01-negative-workspace-path-governance-order-brea
 
 ## 最新有效证据索引
 
-分母已冻结。旧 manifest hash 上的 `P29-PADMIN` production clean-path pass 1 只保留为 historical supporting evidence；current application `cc152f66` 的 `P01-MAIN` 已有两次clean signed-in pass与fresh authority-negative，七个workspace文件已清理。owner已确认删除七个Session，但首条正式DELETE在30秒statement timeout后HTTP 500并完整回滚，七条仍全部存在；`SESSION-V2-DELETE-ORDER-001`本地候选已完成zCode→CC→Codex复核，尚未通过exact CI/部署/production消费，cleanup仍不计入 NPTCR。这里只登记关系，不复制证据正文：
+分母已冻结，下表只保留历史 application `17f073bb` 的支持证据，不是当前 `33f6332f` 的通过数。该历史版本的 P01 双遍、negative、十 Session 和三文件 cleanup 均已核实；冻结的 disconnect/worker restart 恢复仍未完成，NPTCR 保持 0/96。这里只登记关系，不复制证据正文：
 
 latest exact `bf94b76a` finding verification 为 [`PLATFORM-ADMIN-WORKSPACE-AUDIENCE-001`](evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/PLATFORM-ADMIN-WORKSPACE-AUDIENCE-001-production-verification.md) 与 [`SYSTEM-SETTING-SECRET-DISCLOSURE-001`](evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/SYSTEM-SETTING-SECRET-DISCLOSURE-001-production-verification.md)。旧 [`P29-PADMIN-pass-1`](evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/P29-PADMIN-pass-1.md) 绑定 manifest `d320edce…`，不能迁移为 current-manifest PASS；旧 [`BLOCKED_PRECONDITION`](evidence/bf94b76a1706510daf2d11c4e98fd5051f23f28f/P29-PADMIN-fault-pass-2-role-session-precondition.md) 文件也只保存当时缺身份的历史事实。P29 current-manifest canonical pass 1/pass 2 均未运行。
 
 | Journey | Pass 1 | Pass 2 | Fault/Recovery | Negative Authority | Final Verdict |
 |---|---|---|---|---|---|
-| P01-MAIN | exact `cc152f66` [`pass 1`](evidence/cc152f6689a9bddc0310f24644e73b800ebb6df6/P01-MAIN-pass-1.md) `PASS`：CEDAR R2 fresh Session、GLM-5.3、每轮完整73-tool surface、21次governed invocation、唯一artifact、attempt1 terminal receipt与hard reload均clean | exact `cc152f66` [`pass 2`](evidence/cc152f6689a9bddc0310f24644e73b800ebb6df6/P01-MAIN-pass-2.md) `PASS`：第二个fresh Session、同一GLM-5.3/73-tool surface、20次governed invocation、不同唯一artifact、attempt1 terminal receipt与hard reload均clean | exact `17fed530` idle-seal recovery只作旧D修复消费证据；新D三条outbox均attempt1自然delivered且hard reload clean | exact `cc152f66` [`negative`](evidence/cc152f6689a9bddc0310f24644e73b800ebb6df6/P01-MAIN-negative-authority.md) `PASS`：唯一越界写typed deny/non-retryable/无fence零效果，同run允许写读成功 | `Breakpoint / SESSION-V2-DELETE-ORDER-001`：workspace文件已清理；首条Session删除超时并回滚，七Session仍全部存在。应用修正后须重跑双遍、negative与cleanup，未 Closed |
+| P01-MAIN | exact `17f073bb` fresh [`pass 1`](evidence/17f073bb4f07098e55d9ef1684781dc67cfa454e/P01-MAIN-pass-1.md) clean | exact `17f073bb` fresh [`pass 2`](evidence/17f073bb4f07098e55d9ef1684781dc67cfa454e/P01-MAIN-pass-2.md) clean | 三条terminal均attempt1自然delivered且hard reload clean；仍缺冻结合同的disconnect + worker restart零重复证明 | exact `17f073bb` fresh [`negative`](evidence/17f073bb4f07098e55d9ef1684781dc67cfa454e/P01-MAIN-negative-authority.md) clean：唯一越界写typed deny/non-retryable/无fence零效果，同run合法写读成功 | `Partial loop / FAULT_RECOVERY_PENDING`：十Session与三文件[`cleanup`](evidence/17f073bb4f07098e55d9ef1684781dc67cfa454e/P01-MAIN-cleanup.md)已核实；补真实断线/worker重启消费后才能Closed |
 | P29-PADMIN | 未运行；旧 `d320edce…` pass 1 仅历史 supporting evidence | 未运行；supported-path fixture setup pending | 旧 denied-route/reload evidence retained；current-manifest expired-session/role-change 待测 | 旧 9 URL + 14 API evidence retained；current-manifest 待测 | `Partial loop`，未 Closed |
 | 其余 94 条 | — | — | — | — | 未执行或仅有 finding-level evidence |
-| Aggregate | 1/96 条有 current-manifest pass 1，且已在current application重跑 | 1/96 条完成current-manifest signed-in双遍，且在current application成立 | 1/96 条有current application自然terminal/reload recovery | 1/96 条完成current application负向 | 0/96 Closed；NPTCR 0%，P01 cleanup因正式删除路径缺陷阻断 |
+| Aggregate（历史 `17f073bb`） | 历史1/96 条有 current-manifest pass 1 | 历史1/96 条完成current-manifest signed-in双遍 | 0/96完成整条fault/recovery合同 | 历史1/96完成fresh负向 | 0/96 Closed；NPTCR 0%，P01清理完成但fault/recovery尚缺 |
 
 ## 状态变化规则
 

@@ -3,9 +3,9 @@ document_id: weekend-rc-2026-08-30-findings
 owner: Codex
 status: active
 authority: canonical-active-finding-ledger
-last_reviewed: 2026-09-07
-source_commit: cc152f6689a9bddc0310f24644e73b800ebb6df6
-verification_status: p01-session-v2-delete-local-review-accepted
+last_reviewed: 2026-09-08
+source_commit: 33f6332f663f6e648f27eb704593876c4de17053
+verification_status: bounded-functional-pilot-fresh-observations
 ---
 
 # 当前 Findings 与 Blockers
@@ -24,11 +24,24 @@ verification_status: p01-session-v2-delete-local-review-accepted
 
 ## 当前 P1/P2 findings
 
+### 2026-09-08 B1 新观察
+
+执行状态按 PDEC-015 与 [03-current-status](03-current-status.md)：旧第八轮恢复候选已取消且未接受/部署，不执行下方历史行残留的 CC/Kimi 排队动作。该历史问题仍未关闭。本批次不扩大为恢复大包。
+
+| ID | 状态 | 影响 | 已证明的最早错误状态 / 下一步 |
+|---|---|---|---|
+| DEFERRED-TOOL-ACCUMULATION-001 | Verified / bounded production KB consumption | P10 / deferred capabilities | exact `17f073bb` 后一次 disjoint tool_search 或 MCP activation 替换整个 toolset，能丢失已加载 schema。`33f6332f` 复用现有 registry 重新解析累计名称，343 targeted checks 与 CI 通过并三服务同源部署。fresh GLM Session 真实调用 search/read_personal_kb 后写读报告，工具回执、预览/下载/reload 均核对。未覆盖所有 MCP/provider 生命周期，旧 KB 失败与该源码缺陷的因果关联仍非唯一解释；不升级完整 P10 |
+| FOLLOWUP-INPUT-NO-RUN-001 | Reproduced / terminal ack hold confirmed | P01/P02/P13/P30，以及依赖普通第二轮输入的功能 | 11:47 exact app_rls/read-only/tenant-scoped 查询证实：两条新输入 pending，receipt 均 `waiting_for_terminal_boundary_ack`；各自旧 turn_stop boundary 均 dead_letter/attempt 8/`WebTerminalBoundaryPending`，旧 RuntimeTask completed 且已 enqueue。UI 却仍“思考中”。下一步仅核对对应 T0/transcript/projection 的未满足条件，不能把同名旧错误当根因证明；不重发输入、不手改 outbox 或自动新返修 |
+| DRAFT-CONTEXT-ROUTE-001 | Reproduced | P03-CMD07 / fresh draft entry | 新草稿执行 `/context` 导航到含 `draft:*` 的 Session URL，index/workbench/context-usage 请求 422，页面持续解析会话；command execute 自身 200。已有 UUID Session 最终可打开面板；最初短暂排队不是 provider call 证明。留到后续授权批次 |
+
+以上均回链[本批次真实证据](evidence/17f073bb4f07098e55d9ef1684781dc67cfa454e/functional-batch-2026-09-08-01.md)，不把 local/unit/CI 绿升级为 production Journey Closed。上传扩展限制、Local Agent approval_required 与 Automation 表单观察目前是边界/未完成项，不擅自定成同一个产品根因。
+
 ### 当前状态
 
 | ID | 状态 | Severity | Journey | 最早错误状态 | 当前根因边界 | 下一动作 |
 |---|---|---:|---|---|---|---|
-| SESSION-V2-DELETE-ORDER-001 | Fix candidate / local review accepted | P1 | P01-MAIN cleanup / shared Session lifecycle | owner action-time确认后，正式DELETE首条Session `5b162001…`在删除`chat_transcript_events`处等待30.080秒，触发`asyncpg QueryCanceledError`并返回HTTP 500；事务完整回滚，七个目标Session、9,167条transcript与七个artifact仍全部存在 | zCode GLM-5.3已用真实PG证明`chat_transcript_events.parent_event_id`缺少supporting index导致逐行RI扫描超时；CC `05aaccff…1888`独立复现后拒绝首候选：漏删`session_tool_invocations`/`session_feedback_events`且migration可静默保留invalid索引。follow-up `762f5b2f…579e`逐项真实PG转红/转绿，复用既有invalid-index恢复范式，补齐完整V2依赖、artifact/RuntimeTask断言及intentional restrict 409；CC复审`24f64dda…894f`接受。Codex再用缺索引逆向红例、七类入向FK、真实409原子rollback、API/adjacent/migration回归独立接受 | 仅将冻结十一文件与task-owned状态/evidence进入exact CI；三服务同源部署后fresh重跑P01双遍、negative与cleanup。禁止提高timeout、直删production、禁用constraint/RLS或引入新生命周期框架 |
+| SESSION-WORKER-RESTART-ROUND-001 | Reproduced / unaccepted candidate paused | P1 | P01-MAIN fault recovery | exact `17f073bb` LINDEN Session 的真实 worker 重启恢复在 attempt 2 重用 round 1 并失败；原输入与唯一文件效果保留 | 后续恢复候选曾暴露计账、锁序、Stop 与重放一致性问题。第八轮候选已取消，未接受、未提交、未部署；历史审查不得视为当前运行中的任务 | 按 PDEC-015 保留现场与未接受修改，不自动恢复旧大包或 CC/Kimi 队列。原故障证据见 [P01 fault recovery](evidence/17f073bb4f07098e55d9ef1684781dc67cfa454e/P01-MAIN-fault-recovery.md)，历史审查见 [归档快照](archive/current-status-before-functional-batch-2026-09-08.md)；当前有限批次另按 03-current-status 执行 |
+| SESSION-V2-DELETE-ORDER-001 | Verified / current D cleanup consumed | P1 | P01-MAIN cleanup / shared Session lifecycle | owner action-time确认后，正式DELETE首条Session `5b162001…`在删除`chat_transcript_events`处等待30.080秒，触发`asyncpg QueryCanceledError`并返回HTTP 500；事务完整回滚，七个目标Session、9,167条transcript与七个artifact仍全部存在 | zCode GLM-5.3真实PG定位索引与V2依赖双根因；CC先拒绝首稿，follow-up后由CC/Codex接受。exact `17f073bb` Harness三job全绿并由同一clean archive部署三服务；当前D fresh双遍与negative均clean，三条terminal attempt1自然delivered并hard reload恢复 | current D精确十Session DELETE204、三文件DELETE200且PG/FS/UI对账通过，见[P01 cleanup](evidence/17f073bb4f07098e55d9ef1684781dc67cfa454e/P01-MAIN-cleanup.md)。保持修正；P01仍缺独立disconnect/worker restart恢复，不能据此升级Journey Closed |
 | WORKSPACE-PATH-GOVERNANCE-ORDER-001 | Verified / current D consumed | P1 | P01-MAIN negative / shared file tools | CEDAR R2对`../P01-MAIN-NEGATIVE-CEDAR-ELM-20260907.md`唯一一次`write_file`零效果，但返回`governance_dependency_unavailable`/`unavailable`/retryable，而不是要求的non-retryable typed denial；invocation无fence且保持`prepared_not_started`，随后允许workspace写读正常 | 标准Session的`run_tool_execution`只为`session_exact_scope` profile提前拒绝路径；普通Session在既有`authorize_workspace_tool_path`最终I/O检查前先运行整条可超时governance。最窄候选在可信参数改写、hooks/assets之后且governance/pre-effect之前复用同一权威，覆盖direct write/edit/delete、`fs_write`及Office create/apply，最终handler guard保留且不改5秒阈值。zCode GLM-5.3最终hash=`93bf151d…21a6`/`ada8ef81…8473`；CC先阻断漏掉的CORE facade/Office与whitespace parity，最终`e0ed570c…`接受。Codex独立关闭新stage精确恢复`unavailable/retryable`、开启后得到`denied/non-retryable`，并通过focused30、tools700、RLS登记2、结构10及Ruff/format/diff-check；exact `cc152f66`发布后fresh negative返回`denied/non-retryable`且同run允许写读成功 | 保留已发布修正及当前D消费证据；后继Session删除应用发布后fresh重跑P01全套，不迁移旧D双遍或negative |
 | TRANSCRIPT-PROJECTION-TERMINAL-DEADLETTER-001 | Verified / P01 double-pass consumed | P1 | P01-MAIN / P02-STREAM | completed employee run产生1033条transcript events；约12分钟后仍有118条pending，5秒sweeper约每轮只推进一个frontier；required terminal outbox在attempt 8先以`WebTerminalBoundaryPending`进入dead letter，RuntimeTask `completion_outbox_settled_at`保持null | 共享有序排空修正经zCode、CC `4fc7c994…`与Codex红/绿接受并在exact `53e23d1a`发布；旧1033条最终全projected。后继exact `17fed530` fresh pass1/pass2分别产生1461/1617条transcript并全部projected，两条新terminal outbox均attempt1自然delivered，证明大prefix正常路径已双遍真实消费。`completion_outbox_settled_at`不适用于`web_chat_turn`，不再用作该类型settlement信号 | 保留共享修正；P02 streaming继续覆盖后再决定Closed，不把下方独立idle-seal根因混回本finding |
 | T0-IDLE-SEAL-TERMINAL-RECOVERY-001 | Verified / production recovery and P01 double-pass consumed | P1 | P01-MAIN / P02-STREAM | exact `53e23d1a`部署后对`7b200f1c…`唯一一次operator redrive为HTTP 200/audit `df70806a…`，worker仍在attempt9以`WebTerminalBoundaryPending`dead-letter，required boundary未delivery | zCode `ff19df81…`删除alias并补真实projector held/failed回归；CC `bdb19fa5…`与Codex独立接受。exact `17fed530` Harness `34046037891`三job全绿并三服务同源部署；唯一attempt10新增单audit后delivered，复用原idle T0 event/seq1034且T0 index、transcript、tools、models、artifact、input/final零新增，T2仍held。后继fresh P01双遍新terminal均在attempt1自然delivered | 保留修正；继续P02 streaming，未完成各旅程双遍/negative/cleanup前finding级Verified不得升级Journey Closed |

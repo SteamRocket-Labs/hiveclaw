@@ -3,14 +3,16 @@ document_id: weekend-rc-2026-08-30-index
 owner: Example Owner / Codex
 status: active
 authority: canonical-index
-last_reviewed: 2026-09-07
-source_commit: 17fed53097457cb23e52bb6545752198926c93ed
-verification_status: p01-negative-workspace-path-governance-order-local-review-accepted
+last_reviewed: 2026-09-08
+source_commit: 33f6332f663f6e648f27eb704593876c4de17053
+verification_status: bounded-functional-pilot-closed-partial-results
 ---
 
 # Weekend RC 2026-08-30 验收文档组
 
 本目录是本轮整体验修的**唯一导航入口**。它不是另一本总纲；每类事实只由一个文件负责，索引只建立关系，不复制正文。
+
+当前采用 PDEC-015 的有限批次：首个两小时跨域功能试批次已收束，生产为 `33f6332f`，局部结果和未完成项见 [当前状态](03-current-status.md)。后续执行等待 owner 决定；无新 Goal/heartbeat。下文 `17f073bb` P01 结果是历史支持证据，不迁移为当前版本 PASS。
 
 ## 恢复顺序
 
@@ -53,9 +55,9 @@ verification_status: p01-negative-workspace-path-governance-order-local-review-a
 
 现有 [`acceptance/atomic_user_journeys.v1.json`](../../../acceptance/atomic_user_journeys.v1.json) 是被后端架构测试和 Playwright 消费的 15 条确定性 CI 旅程，允许声明过的受控外部 fake。它是 CI 行为底线，不是本轮生产 NPTCR 分母。
 
-本轮生产分母已按 owner 裁决冻结在 [`acceptance/weekend_production_journeys.v1.json`](../../../acceptance/weekend_production_journeys.v1.json)：35 个候选组展开为 96 条可独立计分旅程，禁止 external fake。当前 manifest 的 `P01-MAIN` 已有两次clean signed-in pass，且在current application `cc152f66`完成fresh authority-negative并清理七个workspace文件；但正式Session删除在首条目标上超时并完整回滚，七条仍全部存在，因此没有 `Closed loop` 旅程，NPTCR 为 0%。任何新应用修正后旧双遍均不能迁移。旧 manifest hash 上的 `P29-PADMIN` pass 1 只保留为历史 supporting evidence。[`backend/scripts/weekend_rc_gate.py`](../../../backend/scripts/weekend_rc_gate.py) 只校验 exact manifest/evidence/deployment facts并计算机械分数，固定输出 `semantic_verdict=not_computed_by_tool`。
+本轮生产分母已按 owner 裁决冻结在 [`acceptance/weekend_production_journeys.v1.json`](../../../acceptance/weekend_production_journeys.v1.json)：35 个候选组展开为 96 条可独立计分旅程，禁止 external fake。当前 manifest 的 `P01-MAIN` 已有两次clean signed-in pass，并在application `17f073bb`完成fresh authority-negative及十条Session/三个文件的正式cleanup；仍须补冻结合同要求的disconnect与worker restart零重复恢复证明，不能以hard reload或清理代替。因此NPTCR仍为0/96。此前application与旧manifest证据只作historical supporting。[`backend/scripts/weekend_rc_gate.py`](../../../backend/scripts/weekend_rc_gate.py)只计算机械分数，固定输出`semantic_verdict=not_computed_by_tool`。
 
-`WORKSPACE-PATH-GOVERNANCE-ORDER-001`已在exact `cc152f66`发布并由新D真实negative消费。随后发现的`SESSION-V2-DELETE-ORDER-001`已完成zCode GLM-5.3修正、CC独立接受与Codex真实PG逆向红例/邻接复核；production仍是未含该删除修正的exact `cc152f66`，只有后继exact CI、三服务同源部署和fresh P01全套重跑才能改变上述Breakpoint。
+`WORKSPACE-PATH-GOVERNANCE-ORDER-001` 已在 exact `cc152f66` 发布并由当时新 D 的真实 negative 消费。后继 `SESSION-V2-DELETE-ORDER-001` 修正已在 exact `17f073bb` 发布并完成当时 fresh P01 双遍、negative 与 cleanup；这些是历史支持证据，P01 的完整故障恢复仍未闭环，不迁移到后续应用版本。
 
 ```bash
 python3 backend/scripts/weekend_rc_gate.py validate
@@ -66,9 +68,9 @@ python3 backend/scripts/weekend_rc_gate.py score --deployed-commit <40-char-appl
 
 - Codex Goal 只保存最终目标和停止条件；本目录与冻结 manifest 记录 owner 接受的验收合同。Hive 产品 turn 的 selected runtime LLM 负责任务语义，RC 循环的主 Codex负责解释真实证据并形成验收 verdict，owner 负责产品/风险裁决；文档和机器清单都不能机械地产生语义结论。
 - GitHub Issue 只是从 fresh finding 投影出的 bounded work packet；label、comment、assignee、open/closed 都不是 Journey/Finding verdict。
-- 2026-09-04 的 PDEC-012 替代旧执行分工：zCode 负责后端及功能实现，Kimi Code 负责前端 UI；主 Codex 随后独立检查代码和证据、核对结论并补充遗漏。2026-09-05 PDEC-014 进一步规定 CC 不可用时不得等待：优先由未参与该候选实现的 zCode/Kimi 交叉只读 review，Codex 加严源码、调用链、逆向红例与真实运行证据复核；重大节点仍做方案/反例/证据对账，但不绑定 CC 品牌。
+- 2026-09-08 PDEC-015 替代 PDEC-012/PDEC-014 的日常协作门：zCode（GLM-5.3）负责前后端实现，Codex 负责完整 scoped review、必要回归、集成、部署和真实 E2E 反馈；不恢复固定 CC/Kimi 复审链。普通包一个实现方案、一次集中返修，批次到点交付并停止未授权续作。
 - 主 Codex 保留 Goal、派单、集成、生产 E2E/A2A、部署、最终验收和交付权威；通过现有 `agent-delegation` 派发有边界的任务，不新增 controller 或账本。worker/reviewer 的独立判断是审查意见，不直接改写 Journey verdict。
-- 代码事实由 Git diff、live wiring 和测试证明；生产事实只能进入不可变 evidence。非作者交叉审查与 Codex 严格复核前，不得因 worker、Issue、PR 或 CI 显示成功而升级状态；作者自审不算独立意见。
+- 代码事实由 Git diff、live wiring 和测试证明；生产事实只能进入不可变 evidence。zCode 作者自测不替代 Codex 非作者复核和真实业务消费，不得因 worker、Issue、PR 或 CI 显示成功而升级状态。
 - 每个已复现根因使用一个可独立回滚的 Codex integration commit；不为每个 checklist/test/receipt 建 commit，也不在每次 push 后自动部署。
 - 最终应用提交 `D` 同时部署三个 Railway 服务；随后纯证据提交 `E` 记录在 `D` 上完成的生产双遍。`E` 不重新部署，避免证据提交产生新的未验应用身份。
 

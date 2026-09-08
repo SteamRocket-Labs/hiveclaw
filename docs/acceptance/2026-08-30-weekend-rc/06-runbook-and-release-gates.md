@@ -14,7 +14,9 @@ verification_status: owner-approved-pdec-013-role-contract-implementation-pendin
 
 本文件规定执行顺序和机械发布门，不拥有产品语义、旅程状态或实际结果。
 
-本轮执行 PDEC-012/PDEC-014：zCode 负责后端及功能实现，Kimi Code 负责前端 UI；优先由未参与该候选实现的 zCode/Kimi 或可用 CC 做只读交叉 review，主 Codex 随后独立加严审查代码、调用链和真实证据。CC 不可用、限额或等待不再阻断进度；只有重大节点额外挑战方案、反例并对账证据。主 Codex 对派单、集成、Git、三服务部署、生产 E2E/A2A、证据与最终验收负责。旧 single-Codex 与禁用外部代理的分工已被替代；GitHub Issue 仍只是可选审计引用。
+历史分工（已被 PDEC-015 替代）：zCode 负责后端及功能实现，Kimi Code 负责前端 UI；优先由未参与该候选实现的 zCode/Kimi 或可用 CC 做只读交叉 review，主 Codex 随后独立加严审查代码、调用链和真实证据。CC 不可用、限额或等待不再阻断进度；只有重大节点额外挑战方案、反例并对账证据。主 Codex 对派单、集成、Git、三服务部署、生产 E2E/A2A、证据与最终验收负责。旧 single-Codex 与禁用外部代理的分工已被替代；GitHub Issue 仍只是可选审计引用。
+
+> 当前执行以 [PDEC-015](02-owner-decisions.md#2026-09-08-已接受的功能收敛裁决) 为准：有限批次、功能先行、zCode 实现/Codex 验收；下方旧无限续作与固定多重 review 条款仅保留历史，冲突时不执行。原 96 条业务标准及最终 D/E 双遍不变。
 
 ## 分工与 Review
 
@@ -79,7 +81,7 @@ PDEC-013 是当前产品角色合同：平台管理员/公司管理员可访问�
 
 该顺序只决定验收与修复优先级，不关闭任何现有 authorization、secret 或 external-effect boundary。若功能检查遇到真实越权/泄漏，立即隔离该 lane；除此之外，权限加固、RLS 扩张和安全评分不得提前阻断无关功能补全。Gate 3 必须基于 Gate 1/2 已真实可用的功能面验证“很好用，然后很安全”。
 
-不设人工 Goal-wide timeout、step cap 或 attempt cap。task-sized per-call/per-attempt timeout、cancel、quota 与 backoff 仍作为资源/生命周期控制；expiry 只结束或恢复当前 attempt，不参与产品语义判断。只要仍有安全的 in-scope 工作，Goal 继续，不缩小分母或降低门槛。
+按 PDEC-015 执行 owner 接受的有限批次：开始前写明目标、全部未关闭问题和总预算；首个试批次为 2026-09-08 10:16:24—12:16:24（Asia/Shanghai）。包括准备、实现、等待和交付；到点报告未完成并停止未经下一轮授权的续作，不能拆包或改名重置预算。每包默认一个方案和一次集中返修；仍失败则交付不同策略或明确受阻。上限不决定产品成功，96 条和最终 D/E 门不降低。
 
 ## 新一轮收敛节点
 
@@ -218,6 +220,8 @@ Complete the full Hive Weekend RC 2026-08-30 under the owner's 2026-09-04 renewa
 
 Deliver all functionality, especially useful and capable Agents; keep architecture simple and governance proportionate; make every user-visible page novice-friendly using Codex Desktop Session interaction and progressive disclosure as reference. Preserve all 96 frozen production journeys, including Agent intelligence, Memory/Growth J1-J4, Session commands, Knowledge, HR/creation, collaboration/A2A/workflows, automation/extensions/Local Agent, artifacts, models, role/security and release acceptance. Preserve legacy-brand and credential-compatibility gates plus admin company creation, administrator/member invitations and Back to App fixes in the final candidate and retest.
 
+PDEC-015 is authoritative for the current batch: zCode (GLM-5.3) implements frontend and backend; Codex independently reviews, integrates, deploys and performs production E2E. There is no routine CC/Kimi review gate. The first approved pilot ends at 2026-09-08 12:16:24 Asia/Shanghai, including setup and reporting. At the boundary, report actual results and unresolved work; do not start another batch without authorization. The following PDEC-012/PDEC-014 reviewer sequence is historical, not the active dispatch contract.
+
 PDEC-012 supersedes the old single-Codex/external-agent prohibition. zCode implements backend and functional code; Kimi Code implements frontend UI and interaction. PDEC-014 says Claude Code availability is not a progress gate: prefer a read-only cross-review by a non-author zCode/Kimi worker or CC when available, then require primary Codex to strictly inspect the full scoped diff, live callers, reversed-old-logic failures and decisive runtime evidence. An author cannot count self-review as independent. At major milestones, adversarially reconcile the plan, counterexamples and evidence with an available non-author reviewer; do not wait for CC, lower the acceptance bar or add fixed debate rounds.
 
 Use the existing agent-delegation skill with scoped missions and isolated or non-overlapping writes, not another controller or ledger. Workers/reviewers may reason independently but may not stage, commit, push, deploy, access production credentials, perform production effects or grant final acceptance. Primary Codex owns dispatch, integration, production effects, acceptance, deployment and delivery. Finish the current document review before implementation.
@@ -228,5 +232,5 @@ Follow runbook M0-M4: close the existing dirty candidate without expanding bench
 
 Done requires every in-scope frozen journey Closed loop, NPTCR 100%, all five guardrails, Evidence Coverage >=95 without missing acceptance atoms, Zero Known Defects, three services backend/backend-api/frontend on the same exact D, two clean signed-in production passes, negative-authority and fault/recovery evidence, rollback verification and registered synthetic cleanup. After final review, create evidence-only direct child E without deploying E. Any application/code/config/schema fix requires a new exact three-service D and full double pass. Mocks, historical passes, worker receipts, CI, health or scores are not production acceptance.
 
-Preserve unrelated owner changes. No artificial Goal-wide time/step/attempt cap decides completion. Pause before ungranted billing, real credentials/secrets, real external recipients, unauthorized protected data, irreversible production data effects or unresolved owner product/risk decisions; continue unrelated safe work. Use only the existing approved synthetic scope. Mark complete only when the actual full outcome is achieved.
+Preserve unrelated owner changes. PDEC-015 caps execution investment, never decides product completion; retain the original final quality gates. Do not continue beyond the approved batch or reset its budget by renaming work. Pause before ungranted billing, real credentials/secrets, real external recipients, unauthorized protected data, irreversible production data effects or unresolved owner product/risk decisions; continue unrelated safe work. Use only the existing approved synthetic scope. Mark complete only when the actual full outcome is achieved.
 ```

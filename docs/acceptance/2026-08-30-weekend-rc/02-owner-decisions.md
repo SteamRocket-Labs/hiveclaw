@@ -41,7 +41,7 @@ DEC-006、DEC-008、DEC-010～DEC-012 保留为历史记录，已分别由 PDEC-
 | PDEC-002 | 审计全部用户可见 surface，但只修改 fresh reproduction 的真实缺陷 | Session/整体表达以 Codex Desktop 为主；Letta 只参考 `Agent rail → Agent sidebar → Session`；没有 live failure 的页面以 PASS 证据收口，不做猜测性重写 |
 | PDEC-003 | UI 宣传的每种 Knowledge/Artifact 格式必须通过或准确移除 | 默认修复完整 `upload → parse → index → search/cite → preview/download → authority → recovery`；只有现有产品合同明确排除时才由 Codex 记录并移除宣传 |
 | PDEC-004 | 采用 `Agent 智能 → 全部前后端功能可用 → 权限/RLS/安全 → Release` 证明顺序 | 先补全所有功能主路径、功能性恢复和小白 UI，再集中验收角色权限、RLS 与安全对抗；既有 authority/secret/effect 边界全程保留，真实泄漏立即停 lane，但权限加固不得抢在功能补全前、阻断无关功能或掩盖产品不可用。调查和互不重叠实现可并行，主 Codex仍基于 live evidence 选择当前阶段最高杠杆的安全路径 |
-| PDEC-005 | 采用 condition-based application freeze 和 final exact-commit 双遍 | 不设人工 Goal-wide timeout/step/attempt cap；形成 coherent candidate 后冻结为应用提交 `D`，其后任何 runtime/code/config/schema 变化使 `D` 作废并生成 `D2`，重跑相关门、三服务部署和完整双遍；docs/evidence-only 直接子提交 `E` 不部署、不使 `D` 作废 |
+| PDEC-005 | 采用 condition-based application freeze 和 final exact-commit 双遍 | 原无 Goal-wide 上限已由 PDEC-015 的有限批次替代；形成 coherent candidate 后冻结为应用提交 `D`，其后任何 runtime/code/config/schema 变化使 `D` 作废并生成 `D2`，重跑相关门、三服务部署和完整双遍；docs/evidence-only 直接子提交 `E` 不部署、不使 `D` 作废 |
 | PDEC-006 | 采用真实语义 Runner 与 external readiness 分流合同 | Runner 是 Hive 生产 Agent 经真实 selected model/provider 的执行链，不是 Kimi/zCode。可用 provider 上的 Hive wiring/config/handling failure 是 Finding；经独立确认且不由 Hive 造成的 balance/credential/upstream/rate-limit/offline，在 Hive truthful typed、审计、保留无关能力并给出恢复指导后记 `EXTERNAL_UNAVAILABLE`，不写 `BLOCKED_PRECONDITION`、不写 PASS/Closed，也不停止其他 lane。真实 credential replacement、rotation 或充值仍需 owner action-time 授权；恢复后从旅程起点重跑 |
 | PDEC-007 | 历史：主 Codex 对全栈交付负责，允许 Codex 原生 Multi-Agent 与 subagent | **执行分工与外部 Harness 禁令已由 2026-09-04 PDEC-012 替代，不再生效。** 原合同仅允许原生 subagent；主 Codex 的 Goal、最终验收、集成、生产 E2E/A2A、部署、evidence 与交付责任继续保留 |
 | PDEC-008 | 主 Codex 自行建立可复用的实验 tenant 合成 fixture | 可创建/登录/切换/撤销 employee、company-admin、platform-admin、scoped-operator 身份及临时 grant、Session、Agent、KB、Workflow、Local Agent binding；只走受支持且经过认证的 UI/API/control-plane path，禁止伪造 JWT/token、直接修改 tenant/role DB 字段、关闭/放宽 RLS 或用 broad bypass 创造业务授权。生产 fixture effect 由主 Codex 执行；zCode、Kimi、CC 只做各自获准的 repo 工作。缺少预存会话或 fixture 不是 owner gate，支持路径失败形成 fresh Finding |
@@ -81,6 +81,14 @@ DEC-006、DEC-008、DEC-010～DEC-012 保留为历史记录，已分别由 PDEC-
 
 PDEC-014 只修改 reviewer 可用性与顺序，不修改 PDEC-012 的实现分工、Codex 的唯一验收/生产权威、96 条分母或 PDEC-013 产品语义。实际报告必须标注真实 reviewer 和证据来源；CC 历史 review 仍只对其 exact snapshot 有效。
 
+## 2026-09-08 已接受的功能收敛裁决
+
+| ID | 已接受决定 | 精确边界 |
+|---|---|---|
+| PDEC-015 | 有限批次、功能优先；zCode 实现，Codex 验收 | owner 认可[完整方案](../../../thinking/weekend-rc-convergence/RESULT.md)。zCode（GLM-5.3）负责本轮前后端实现，Codex 负责 Review、集成、部署、E2E 与反馈；取消日常 CC/Kimi 固定门。首批 10:16:24—12:16:24 两小时，包含准备与交付；不恢复无限 Goal/heartbeat。单项失败留最小复现并继续独立功能；每包默认一次方案与一次集中返修，两次仍失败则改变策略或交付受阻，不改名续预算。到点交付，未经新授权不自动下一批。 |
+
+PDEC-015 替代 PDEC-005 的无限执行规则与 PDEC-012/PDEC-014 的日常实现/reviewer 顺序。保留全部 96 条、PDEC-013、必要安全/恢复边界与最终 exact D 双遍及 E；时间/调用上限不判断产品成功。功能摸底、功能要求通过和最终严格 Closed 分开计数。旧证据保留但不迁移；第八轮未接受候选仍隔离保留。新反馈必须对应合同、真实可达路径或本包回归；可信严重危害 hold 受影响发布，不扩张无关工作。
+
 ## 当前动作权限
 
 | 动作 | 状态 |
@@ -88,8 +96,8 @@ PDEC-014 只修改 reviewer 可用性与顺序，不修改 PDEC-012 的实现分
 | 建立、移动、压缩和索引本轮文档 | 已授权 |
 | 增加只校验文档结构事实的测试 | 已授权，不能判断语义质量 |
 | 建立 Goal、RC milestone/labels/Issues 和只读 provider smoke | 已授权；Issue/worker 状态不是验收事实 |
-| 修改业务代码或前端 UI | 已授权于 fresh reproduction 或当前源码证明缺失实现后修复；按 PDEC-012 由 zCode/Kimi 实现、主 Codex 集成；PDEC-014 只允许替换 reviewer，不替换实现作者；禁止猜测性改写 |
-| 本地测试、交叉 review 与原子集成 | 已授权；优先由非作者 zCode/Kimi 或可用 CC 先只读 review，Codex 再加严复核 live wiring、完整 diff、逆向红例、关键真实测试和遗漏；reviewer 不可用不再 hold，处理阻塞发现后集成 |
+| 修改业务代码或前端 UI | 已授权于 fresh reproduction 或当前源码证明缺失实现后修复；按 PDEC-015 由 zCode 实现前后端、主 Codex 验收与集成；禁止猜测性改写 |
+| 本地测试、交叉 review 与原子集成 | 已授权；按 PDEC-015 由 Codex 独立审查 scoped diff、真实调用及必要行为回归，不要求额外固定 reviewer；处理受影响的实质阻塞后集成 |
 | commit / push | 已授权于验收基线和每个已验证修复；只提交本轮 scope，不夹带用户已有改动 |
 | Railway 部署 | 主 Codex 已获授权把 coherent frozen `D` 同时部署 `backend`、`backend-api`、`frontend`；不逐 commit 自动部署，本授权不覆盖凭据、计费、不可逆数据效果或非冻结提交 |
 | write-bearing production E2E | 主 Codex 已获授权仅在 Example Owner 实验账号/tenant 内按冻结 manifest 创建可识别、可登记、可回收的合成资产；必须先登记 cleanup，禁止真实客户数据和未列外部发送；zCode、Kimi、CC 不执行生产 effect |

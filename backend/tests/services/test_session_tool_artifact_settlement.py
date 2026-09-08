@@ -430,3 +430,108 @@ async def test_legacy_tool_result_materializes_artifact_owner_before_fk_insert(
     assert artifact is not None
     assert event.message_id == message.id
     assert event.parts_json[0]["artifact_id"] == str(artifact.id)
+
+
+@pytest.mark.asyncio
+async def test_enveloped_done_settlement_persists_raw_receipt_with_projection(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    """B4 HR handoff regression: a done event carrying both the complete raw
+    receipt (``result``) and the bounded provider projection
+    (``model_seen_result``) must persist the raw receipt as the durable
+    tool_result content and keep the projection only as the model-replay view."""
+
+    import json as _json
+
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.session_v2 import SessionToolInvocation
+    from app.services import web_chat_runtime as runtime
+
+    tenant_id, user_id, agent_id, session_id = await _seed(owner_sessionmaker)
+    run_id, provider_request_id = await _prepare_live_round(
+        owner_sessionmaker,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        session_id=session_id,
+    )
+    _patch_runtime_database(monkeypatch, owner_sessionmaker, tenant_id)
+    provider_tool_use_id = "provider-hr-handoff"
+    hr_agent_id = str(uuid.uuid4())
+    hr_session_id = str(uuid.uuid4())
+    raw_receipt = _json.dumps(
+        {
+            "ok": True,
+            "status": "hr_handoff_started",
+            "hr_agent_id": hr_agent_id,
+            "hr_session_id": hr_session_id,
+            "source_agent_name": "Source Agent",
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    model_projection = _json.dumps(
+        {"ok": True, "status": "hr_handoff_ready", "message": "direct the user to the handoff card"},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    base = {
+        "name": "start_hr_agent_handoff",
+        "args": {"creation_brief": "hire the marker employee"},
+        "tool_call_id": provider_tool_use_id,
+        "runtime_task_id": str(run_id),
+        "provider_request_id": provider_request_id,
+    }
+    await runtime._persist_tool_call(
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=str(session_id),
+        data={**base, "status": "running"},
+    )
+    await runtime._persist_tool_call(
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=str(session_id),
+        data={**base, "status": "effect_started"},
+    )
+    async with owner_sessionmaker() as db:
+        invocation = await db.scalar(
+            select(SessionToolInvocation).where(
+                SessionToolInvocation.tenant_id == tenant_id,
+                SessionToolInvocation.run_id == run_id,
+                SessionToolInvocation.provider_tool_use_id == provider_tool_use_id,
+            )
+        )
+        assert invocation is not None
+        args_hash = invocation.args_hash
+
+    envelopes = await runtime._persist_tool_call(
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=str(session_id),
+        data={
+            **base,
+            "status": "done",
+            "result": raw_receipt,
+            "model_seen_result": model_projection,
+            "tool_execution_evidence": _execution_evidence(args_hash, provider_tool_use_id),
+        },
+    )
+
+    async with owner_sessionmaker() as db:
+        result_event = await db.scalar(
+            select(ChatTranscriptEvent).where(
+                ChatTranscriptEvent.invocation_id == invocation.id,
+                ChatTranscriptEvent.item_kind == "tool_result",
+                ChatTranscriptEvent.lifecycle == "completed",
+            )
+        )
+    assert result_event is not None
+    assert result_event.content == raw_receipt, "durable transcript must keep the complete raw receipt"
+    persisted_payload = (result_event.metadata_json or {}).get("v2_payload") or {}
+    assert persisted_payload.get("model_visible_content") == model_projection
+    assert persisted_payload.get("content") == raw_receipt
+    done_envelope = next(e for e in envelopes if e.get("kind") == "tool_result.completed")
+    assert done_envelope["payload"]["content"] == raw_receipt
+    assert done_envelope["payload"]["model_visible_content"] == model_projection

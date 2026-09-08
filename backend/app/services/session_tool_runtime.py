@@ -574,12 +574,20 @@ async def complete_tool_invocation(
     invocation_id: uuid.UUID,
     provider_result_content: str,
     execution_evidence: Mapping[str, Any] | None,
+    model_visible_content: str | None = None,
     effective_arguments: Mapping[str, Any] | None = None,
     parts: list[dict[str, Any]] | None = None,
     message_id: uuid.UUID | None = None,
     permission_resolution: Mapping[str, Any] | None = None,
 ) -> list[ChatTranscriptEvent]:
-    """Settle one invocation and append its unique Provider matching result."""
+    """Settle one invocation and append its unique Provider matching result.
+
+    ``provider_result_content`` is the complete durable receipt persisted as the
+    tool_result event content (UI, audit, recovery). ``model_visible_content``
+    optionally carries the bounded provider projection a ToolContentEnvelope
+    producer declared; session replay feeds that projection — not the raw
+    receipt — back into model context when present.
+    """
 
     invocation = await db.scalar(
         select(SessionToolInvocation)
@@ -830,6 +838,13 @@ async def complete_tool_invocation(
                     "retryable": retryable,
                     "content": content,
                     "content_hash": content_hash,
+                    # Bounded provider projection for session replay into model
+                    # context; absent means the durable content is the projection.
+                    **(
+                        {"model_visible_content": model_visible_content}
+                        if model_visible_content is not None
+                        else {}
+                    ),
                     "content_or_error_ref": receipt_ref,
                     "parts": list(parts or []),
                 },

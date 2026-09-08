@@ -207,6 +207,7 @@ async def _settle_tool_invocation(
     tool_name,
     arguments,
     result_content=None,
+    model_visible_content=None,
 ):
     """Run the real tool lifecycle; without ``result_content`` the invocation
     stays started-but-unsettled (interrupted prior run shape)."""
@@ -245,6 +246,7 @@ async def _settle_tool_invocation(
         session_id=session_id,
         invocation_id=invocation.id,
         provider_result_content=result_content,
+        model_visible_content=model_visible_content,
         execution_evidence={
             "schema": "hive.tool_execution_evidence.v1",
             "status": "settled",
@@ -366,6 +368,7 @@ async def _run_v2_turn(
                 tool_name=tool["tool_name"],
                 arguments=tool["arguments"],
                 result_content=tool.get("result_content"),
+                model_visible_content=tool.get("model_visible_content"),
             )
             await _seal_round(
                 db,
@@ -614,6 +617,98 @@ async def test_prior_turn_tool_semantics_replay_in_provider_history(
     pairs = _role_content_pairs(conversation)
     assert ("user", first_prompt) in pairs
     assert ("assistant", final_answer) in pairs
+
+
+@pytest.mark.parametrize("empty_projection", [False, True])
+async def test_enveloped_tool_result_persists_raw_receipt_and_replays_projection(
+    owner_sessionmaker,
+    monkeypatch,
+    empty_projection,
+) -> None:
+    """B4 HR handoff regression: same-envelope tool results must persist the
+    complete raw receipt as durable transcript evidence while session replay
+    feeds the bounded provider projection back into model context."""
+
+    import json as _json
+
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+
+    tenant_id, user_id, agent_id, session_id = await _seed(owner_sessionmaker)
+    tool_use_id = f"handoff-{uuid.uuid4().hex}"
+    hr_agent_id = str(uuid.uuid4())
+    hr_session_id = str(uuid.uuid4())
+    raw_receipt = _json.dumps(
+        {
+            "ok": True,
+            "status": "hr_handoff_started",
+            "hr_agent_id": hr_agent_id,
+            "hr_session_id": hr_session_id,
+            "source_agent_name": "Source Agent",
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    model_projection = _json.dumps(
+        {"ok": True, "status": "hr_handoff_ready", "message": "direct the user to the handoff card"},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    if empty_projection:
+        model_projection = ""
+
+    await _run_v2_turn(
+        owner_sessionmaker,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        prompt="hire a new digital employee",
+        answer="handed off to HR Agent",
+        tool={
+            "provider_tool_use_id": tool_use_id,
+            "tool_name": "start_hr_agent_handoff",
+            "arguments": {"creation_brief": "brief"},
+            "result_content": raw_receipt,
+            "model_visible_content": model_projection,
+        },
+    )
+
+    async with owner_sessionmaker() as db:
+        result_events = list(
+            (
+                await db.execute(
+                    select(ChatTranscriptEvent).where(
+                        ChatTranscriptEvent.session_id == session_id,
+                        ChatTranscriptEvent.item_kind == "tool_result",
+                        ChatTranscriptEvent.lifecycle == "completed",
+                    )
+                )
+            ).scalars()
+        )
+    assert len(result_events) == 1, "expected exactly one settled tool_result event"
+    event = result_events[0]
+    assert event.content == raw_receipt, "durable transcript must keep the complete raw receipt"
+    persisted = (event.metadata_json or {}).get("v2_payload") or {}
+    assert persisted.get("model_visible_content") == model_projection
+
+    _input2, run2, _turn2 = await _submit_turn(
+        owner_sessionmaker,
+        user_id=user_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        content="continue with the handoff",
+    )
+    _runtime_task, _history, conversation = await _load_history_via_live_entry(
+        owner_sessionmaker, monkeypatch, run_id=run2
+    )
+    tool_result_entries = [entry for entry in conversation if entry.get("role") == "tool"]
+    assert len(tool_result_entries) == 1
+    replay_content = tool_result_entries[0]["content"]
+    assert replay_content == model_projection, "provider replay must use the declared projection"
+    assert hr_agent_id not in replay_content and hr_session_id not in replay_content, (
+        "internal ids must not leak into model context"
+    )
+    assert hr_agent_id in (event.content or ""), "raw evidence retained for UI/audit"
 
 
 async def test_dangling_prior_tool_call_never_replays_without_its_result(

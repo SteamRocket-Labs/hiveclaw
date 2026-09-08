@@ -4299,7 +4299,14 @@ async def _persist_tool_call(
                         agent_id=agent_id,
                         session_id=session_uuid,
                         invocation_id=invocation.id,
-                        provider_result_content=str(provider_content),
+                        # Durable receipt first: the transcript tool_result keeps
+                        # the complete raw evidence (UI, audit, recovery), while
+                        # the bounded provider projection survives only as the
+                        # model-replay view of that same event.
+                        provider_result_content=str(raw_result),
+                        model_visible_content=(
+                            str(provider_content) if str(provider_content) != str(raw_result) else None
+                        ),
                         execution_evidence=(
                             payload.get("tool_execution_evidence")
                             if isinstance(payload.get("tool_execution_evidence"), dict)

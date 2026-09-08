@@ -546,7 +546,12 @@ async def _committed_round_messages(
         )
         for tool_call, invocation, result_view in completed_pairs:
             payload = _event_payload(result_view.source)
-            tool_content = payload.get("content")
+            # Model replay uses the bounded provider projection when the durable
+            # receipt carries one; the complete receipt stays as UI/audit
+            # evidence and never leaks internal ids into provider context.
+            tool_content = payload.get("model_visible_content")
+            if not isinstance(tool_content, str):
+                tool_content = payload.get("content")
             if not isinstance(tool_content, str):
                 tool_content = ""
             messages.append(

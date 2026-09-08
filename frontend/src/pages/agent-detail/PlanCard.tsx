@@ -738,7 +738,9 @@ function HandoffBanner({
       : { color: 'var(--text-secondary)', bg: 'var(--bg-secondary)' };
 
   let headline: string;
-  if (status === 'completed') headline = t('agent.plan.handoff.completed', 'Started — executing in this conversation');
+  if (status === 'completed') headline = plan.plan_json?.handoff?.target === 'scheduled_trigger'
+    ? t('agent.plan.handoff.scheduled', 'Confirmed — schedule created')
+    : t('agent.plan.handoff.completed', 'Confirmed — handed off for execution');
   else if (status === 'queued') headline = t('agent.plan.handoff.queued', 'Confirmed — waiting for the current run to finish');
   else if (status === 'skipped') headline = t('agent.plan.handoff.skipped', 'Confirmed, but execution did not start');
   else if (status === 'failed') headline = t('agent.plan.handoff.failed', 'Confirmed, but execution failed to start');

@@ -212,3 +212,11 @@ owner 明确要求：除阻塞项外，把剩余功能测试并修复；结束�
 - 精确关联对账确认Plan生成enabled trigger `01ebc066-da4e-4dbd-a070-4069edc739ed`，名称`plan_wrc_functional_b4_20260909_minimax_plan_acceptance`，归属本轮Analyst及Plan `2554d8e2-333b-4689-9bdd-8392a9d81d30`。这不是仅有错误展示；正文限制没有被正确保持到时序效果。
 - 从正式自动化列表打开包含同一Plan ID的唯一链接，进入本轮Analyst自主控制台；其余首任务已暂停。仅点击该唯一活跃测试计划的“暂停”一次，随后正式页面读回“已暂停 / 自主唤醒已暂停 / 恢复”。未删除记录、未修改其他自动化、未直接写数据库，保留可恢复证据。未对未知执行状态做重复触发。
 - 当前新增问题需实现分工决定：原授权Codex例外仅Workflow工具能力/身份修复，zCode GLM作者配额尚不可用。阶段文档更新并提交；第四批仍未完成，不以该提交代替修复与复验。
+
+## 07:40 Codex独立接手后的集中根因修复
+
+- owner明确后续“都只剩Codex一个……没有什么zCode，也没有什么CC”，授权主Codex独立继续本轮修复与验收；不再委派作者。此指示取代旧实现分工，不扩大真实外发、权限或危险操作范围。
+- Plan删除显式入口的调度关键词分类，默认保留当前会话；结构化显式调度仍通过已有确认与handoff。scheduled handoff不再把manual/none/缺省静默改成cron，并复用现有trigger config校验；错误在写入前抛出已有HandoffError。原8个反例先红后绿，131项相关检查通过。Plan卡不再把所有handoff completed谎报为当前会话正在执行。
+- compact仅在绑定的terminal result event、允许的终态effect状态与typed outcome均匹配时恢复失败/拒绝/不可用/取消/中止记录；未知/缺失回执仍held。真实PG先复现5个终态非成功回放失败，再20项通过，含无current run的compact消费者。主工作区旧候选产生的无关schema警告不作为本次干净版本证据，独立archive联合检查待执行。
+- XLSX原始空白文件未编辑即被生产OfficeCLI1.0.88校验拒绝，font顺序name/family/color/sz/scheme；同一二进制原生create后的空白文件validate成功。故仅XLSX改用已有CLI create到服务自有临时路径，再沿原有原子替换发布；不增加依赖、不手改OOXML或忽略校验。Office41项检查通过；真实生成/公式/校验消费待部署复验。
+- Local审批复用现有AgentApprovalsSection，只补本地Agent owner可见tab；use/operator不扩大审批权限。Workflow按exact workflow run/step ID把先前pending/running与后来的终态回执关联，保留各事件细节，不让旧进度覆盖已完成状态；缺少回执、不同run/step和新的运行轮仍不算完成。前端141+155项检查、TypeScript与i18n通过，生产UI尚未重测。

@@ -763,13 +763,38 @@ export function buildRunAggregateSummary(steps: RunStepSnapshot[]): string {
   return parts.join(' · ');
 }
 
+function workflowEventKey(message: AgentChatMessage): string | null {
+  if (message.role !== 'event' || !message.eventWorkflowRunId) return null;
+  if (message.eventType === 'workflow_run') return JSON.stringify([message.eventWorkflowRunId]);
+  if (message.eventType === 'workflow_step' && message.eventWorkflowStepId) {
+    return JSON.stringify([message.eventWorkflowRunId, message.eventWorkflowStepId]);
+  }
+  return null;
+}
+
 export function buildRunTimelineFromMessages(
   messages: AgentChatMessage[],
   options: TimelineBuildOptions = {},
 ): RunTimelineSnapshot {
   const allowLiveRunning = options.activeRun === true;
+  const latestWorkflowEvents = new Map<string, AgentChatMessage>();
+  for (const message of messages) {
+    const key = workflowEventKey(message);
+    if (key) latestWorkflowEvents.set(key, message);
+  }
   const steps = messages
-    .map((message, index) => buildStep(message, index, allowLiveRunning))
+    .map((message, index) => {
+      const step = buildStep(message, index, allowLiveRunning);
+      const key = workflowEventKey(message);
+      const latest = key ? latestWorkflowEvents.get(key) : undefined;
+      // A lifecycle transition is not an abandoned turn when the same exact
+      // workflow entity has a later terminal receipt. Keep all event details.
+      if (step && (step.status === 'running' || step.status === 'interrupted') && latest
+        && ['done', 'completed', 'failed', 'error', 'cancelled', 'canceled'].includes(latest.eventStatus || '')) {
+        return { ...step, status: statusForMessage(latest, allowLiveRunning), completedAt: latest.timestamp };
+      }
+      return step;
+    })
     .filter((step): step is RunStepSnapshot => Boolean(step));
   const answerIndex = messages.findIndex(isAssistantAnswer);
   const answer = options.answer || (answerIndex >= 0 ? messages[answerIndex] : null);

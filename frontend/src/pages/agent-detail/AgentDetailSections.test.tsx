@@ -3306,7 +3306,11 @@ describe('AgentDetail extracted sections', () => {
   it('treats Local Agent as a real agent with a local runtime label and focused detail tabs', () => {
     expect(isLocalAgentRuntimeType({ agent_type: 'local_agent' })).toBe(true);
     expect(isLocalAgentRuntimeType({ agent_type: 'native' })).toBe(false);
-    expect(getVisibleAgentDetailTabs({ agent_type: 'local_agent' })).toEqual(['chat', 'workspace', 'settings']);
+    const localTabs = getVisibleAgentDetailTabs({ agent_type: 'local_agent' });
+    expect(localTabs).toEqual(['chat', 'workspace', 'approvals', 'settings']);
+    expect(getAgentDetailHashTab('#approvals', localTabs)).toBe('approvals');
+    expect(getVisibleAgentDetailTabs({ agent_type: 'local_agent', access_level: 'use' }))
+      .toEqual(['chat', 'workspace']);
     expect(getVisibleAgentDetailTabs({ access_level: 'operator', agent_type: 'native' })).toEqual([
       'chat',
       'workspace',
@@ -7243,12 +7247,15 @@ describe('AgentDetail extracted sections', () => {
     const markup = renderToStaticMarkup(<PlanCard agentId="agent-1" plan={plan} />);
 
     expect(markup).toContain('Daily industry news brief');
-    // CC-align §4.5/§4.6: a confirmed plan shows its real execution state via the
-    // handoff banner (here: started, executing in this conversation) — never a
-    // stale confirm/revise button.
-    expect(markup).toContain('Started — executing in this conversation');
+    expect(markup).toContain('Confirmed — handed off for execution');
     expect(markup).not.toContain('Adjust plan');
     expect(markup).not.toContain('Implement this plan');
+    const scheduledMarkup = renderToStaticMarkup(<PlanCard agentId="agent-1" plan={{
+      ...plan,
+      plan_json: { ...plan.plan_json, handoff: { target: 'scheduled_trigger', create_trigger: true } },
+    }} />);
+    expect(scheduledMarkup).toContain('Confirmed — schedule created');
+    expect(scheduledMarkup).not.toContain('executing in this conversation');
   });
 
   it('renders PlanCard handoff states: queued, skipped reason, and the markdown body', () => {

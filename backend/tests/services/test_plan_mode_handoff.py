@@ -156,6 +156,28 @@ async def _fake_resolve_tenant(_agent_id, **_kwargs):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "wake_policy",
+    [{}, {"type": "manual"}, {"type": "none"}, {"type": "cron", "config": {}}],
+)
+async def test_handoff_rejects_missing_schedule_before_trigger_mutation(monkeypatch, wake_policy):
+    import app.services.plan_mode_handoff as mod
+
+    plan = _confirmed_wake_plan()
+    plan.plan_json["wake_policy"] = wake_policy
+    session = _HandoffSession()
+
+    async def fake_load_agent(_db, _agent_id):
+        return _agent(plan)
+
+    monkeypatch.setattr(mod, "_load_agent", fake_load_agent)
+    with pytest.raises(mod.HandoffError):
+        await mod.handoff_scheduled_trigger(plan, db=session)
+    assert session.added == []
+    assert session.flush_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_handoff_creates_enabled_trigger_with_plan_id_and_no_objective(monkeypatch):
     import app.services.plan_mode_handoff as mod
 

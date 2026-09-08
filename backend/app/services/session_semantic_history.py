@@ -491,10 +491,14 @@ async def _committed_round_messages(
             if (
                 not tool_use_id
                 or invocation is None
-                or invocation.effect_state != "effect_committed"
+                # A failed/denied/cancelled call is history too. The bound
+                # terminal receipt, not successful execution, settles the pair.
+                or invocation.effect_state not in {"effect_committed", "failed", "prepared_not_started"}
                 or invocation.result_event_id is None
                 or result_view is None
                 or result_view.source.id != invocation.result_event_id
+                or _event_payload(result_view.source).get("outcome")
+                not in {"success", "failed", "denied", "unavailable", "cancelled", "aborted"}
             ):
                 missing_tool_use_ids.append(tool_use_id or "<missing-provider-tool-use-id>")
                 continue

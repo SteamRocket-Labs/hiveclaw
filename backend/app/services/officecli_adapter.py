@@ -138,6 +138,14 @@ class OfficeCLIAdapter:
         args.extend(self._option_args(normalized_options))
         return self._run_json(command, args, cwd=cwd)
 
+    def create_document(self, path: str | Path, *, cwd: str | Path | None = None) -> dict[str, Any]:
+        """Create at the service-owned temporary path, never through generic edits."""
+        return self._run_json(
+            "create",
+            [self._verify_binary_sha256(), "create", str(path), "--force", "--json"],
+            cwd=cwd,
+        )
+
     def run_view(
         self,
         path: str | Path,

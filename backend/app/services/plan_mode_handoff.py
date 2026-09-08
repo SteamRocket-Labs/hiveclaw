@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 HANDOFF_TARGET = "scheduled_trigger"
 
 #: Schedule types a confirmed plan may set up. Mirrors the daemon's
-#: time-driven bucket (cron/interval/once); anything else falls back to ``cron``.
+#: time-driven bucket (cron/interval/once); other types cannot create a schedule.
 _SCHEDULED_TRIGGER_TYPES = frozenset({"cron", "interval", "once"})
 
 
@@ -93,9 +93,9 @@ def _trigger_payload_from_plan(plan: Any, *, force_once: bool = False, now: date
     plan_json = plan.plan_json or {}
     wake_policy = dict(plan_json.get("wake_policy") or {})
 
-    trigger_type = "once" if force_once else str(wake_policy.get("type") or "cron")
+    trigger_type = "once" if force_once else str(wake_policy.get("type") or "")
     if trigger_type not in _SCHEDULED_TRIGGER_TYPES:
-        trigger_type = "cron"
+        raise HandoffError("scheduled_trigger requires an explicit cron, interval, or once wake policy")
 
     config: dict[str, Any] = strip_trigger_runtime_config(wake_policy.get("config"))
     # Promote top-level schedule keys (skeleton shape) into config.
@@ -109,6 +109,12 @@ def _trigger_payload_from_plan(plan: Any, *, force_once: bool = False, now: date
     if trigger_type == "once" and not config.get("at"):
         delay = int(config.pop("delay_seconds", 0) or 0) or 30
         config["at"] = ((now or datetime.now(timezone.utc)) + timedelta(seconds=delay)).isoformat()
+
+    from app.services.agent_tool_domains.triggers import _validate_trigger_config
+
+    validation_error = _validate_trigger_config("scheduled_trigger", trigger_type, config)
+    if validation_error:
+        raise HandoffError(validation_error)
 
     config["trigger_class"] = "scheduled_job"
     config["plan_id"] = str(plan.id)  # load-bearing backstop contract

@@ -208,6 +208,7 @@ async def _settle_tool_invocation(
     arguments,
     result_content=None,
     model_visible_content=None,
+    outcome="success",
 ):
     """Run the real tool lifecycle; without ``result_content`` the invocation
     stays started-but-unsettled (interrupted prior run shape)."""
@@ -232,13 +233,14 @@ async def _settle_tool_invocation(
     if result_content is None:
         await db.flush()
         return invocation
-    await mark_tool_effect_started(
-        db,
-        tenant_id=tenant_id,
-        agent_id=agent_id,
-        session_id=session_id,
-        invocation_id=invocation.id,
-    )
+    if outcome in {"success", "failed"}:
+        await mark_tool_effect_started(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            invocation_id=invocation.id,
+        )
     await complete_tool_invocation(
         db,
         tenant_id=tenant_id,
@@ -249,17 +251,21 @@ async def _settle_tool_invocation(
         model_visible_content=model_visible_content,
         execution_evidence={
             "schema": "hive.tool_execution_evidence.v1",
-            "status": "settled",
+            "status": outcome if outcome in {"cancelled", "aborted"} else "settled",
+            "pre_effect_fence_ref": "test-pre-effect-fence",
             "retryable": False,
             "tool_decision": {
                 "schema": "hive.tool_decision.v1",
                 "decision_id": f"decision-{provider_tool_use_id}",
-                "outcome": "allow",
+                "outcome": {"denied": "deny", "unavailable": "unavailable"}.get(outcome, "allow"),
                 "input_hash": invocation.args_hash,
                 "policy_snapshot_hash": "a" * 64,
                 "capability_snapshot_hash": "b" * 64,
             },
-            "execution_frame": {"status": "completed", "output_hash": "c" * 64},
+            "execution_frame": {
+                "status": "failed" if outcome == "failed" else "completed",
+                "output_hash": "c" * 64,
+            },
         },
     )
     await db.flush()
@@ -369,6 +375,7 @@ async def _run_v2_turn(
                 arguments=tool["arguments"],
                 result_content=tool.get("result_content"),
                 model_visible_content=tool.get("model_visible_content"),
+                outcome=tool.get("outcome", "success"),
             )
             await _seal_round(
                 db,
@@ -561,14 +568,16 @@ async def test_second_turn_provider_conversation_receives_prior_turn_semantics(
     assert roles <= {"user", "assistant", "tool"}, f"system/debug projections leaked as conversation: {pairs}"
 
 
+@pytest.mark.parametrize("outcome", ["success", "failed", "denied", "unavailable", "cancelled", "aborted"])
 async def test_prior_turn_tool_semantics_replay_in_provider_history(
     owner_sessionmaker,
     monkeypatch,
+    outcome,
 ) -> None:
     tenant_id, user_id, agent_id, session_id = await _seed(owner_sessionmaker)
     first_prompt = "read the marker file and decide"
     tool_use_id = f"tool-use-{uuid.uuid4().hex}"
-    tool_result_content = "marker file bytes: WEEKEND-RC"
+    tool_result_content = f"{outcome}: WEEKEND-RC"
     final_answer = "decision after reading the marker file"
 
     await _run_v2_turn(
@@ -584,6 +593,7 @@ async def test_prior_turn_tool_semantics_replay_in_provider_history(
             "tool_name": "read_file",
             "arguments": {"path": "marker.txt"},
             "result_content": tool_result_content,
+            "outcome": outcome,
         },
     )
 
@@ -617,6 +627,14 @@ async def test_prior_turn_tool_semantics_replay_in_provider_history(
     pairs = _role_content_pairs(conversation)
     assert ("user", first_prompt) in pairs
     assert ("assistant", final_answer) in pairs
+
+    # Compact uses the same canonical reader without a current run.
+    from app.services.session_semantic_history import load_session_semantic_history
+
+    async with owner_sessionmaker() as db:
+        history = await load_session_semantic_history(db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id)
+    assert history.receipt["held_items"] == []
+    assert any(message.role == "tool" and message.content == tool_result_content for message in history.messages)
 
 
 @pytest.mark.parametrize("empty_projection", [False, True])

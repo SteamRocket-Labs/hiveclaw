@@ -58,6 +58,31 @@ def test_office_document_service_rejects_path_escape(tmp_path):
         service.resolve_document_path("/tmp/outside.docx")
 
 
+def test_xlsx_creation_uses_native_template_and_atomic_publication(tmp_path):
+    from app.services.office_document_service import OfficeDocumentService
+    from app.services.officecli_adapter import OfficeCLIAdapter
+    from types import SimpleNamespace
+
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(argv)
+        temporary = Path(argv[2])
+        assert temporary.parent == tmp_path
+        assert temporary.name != "book.xlsx"
+        assert not (tmp_path / "book.xlsx").exists()
+        temporary.write_bytes(b"native-template")
+        return SimpleNamespace(returncode=0, stdout='{"success":true}', stderr="")
+
+    service = OfficeDocumentService(tmp_path, adapter=OfficeCLIAdapter(binary="test-officecli", runner=runner))
+    service.create_document("book.xlsx", kind="xlsx")
+
+    assert len(calls) == 1
+    assert calls[0][0:2] == ["test-officecli", "create"]
+    assert calls[0][3:] == ["--force", "--json"]
+    assert (tmp_path / "book.xlsx").read_bytes() == b"native-template"
+
+
 def test_office_document_service_atomic_save_creates_revision_and_manifest(tmp_path):
     from app.services.office_document_service import OfficeDocumentService
 

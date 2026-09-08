@@ -392,7 +392,7 @@ export function isAgentDetailTabVisible(agent: any, tab: AgentDetailTab): boolea
     if (agent?.access_level === 'operator') return ['chat', 'workspace', 'activityLog'].includes(tab);
     if (agent?.access_level === 'use' && (tab === 'settings' || tab === 'approvals')) return false;
     if (agent?.agent_type === 'local_agent') {
-        return ['chat', 'workspace', 'settings'].includes(tab);
+        return ['chat', 'workspace', 'approvals', 'settings'].includes(tab);
     }
     return true;
 }
@@ -407,7 +407,8 @@ export function getVisibleAgentDetailTabs(agent: any): AgentDetailTab[] {
         return ['chat', 'workspace', 'activityLog'];
     }
     if (agent?.agent_type === 'local_agent') {
-        return ['chat', 'workspace', 'settings'];
+        return (['chat', 'workspace', 'approvals', 'settings'] as AgentDetailTab[])
+            .filter((tab) => isAgentDetailTabVisible(agent, tab));
     }
     return AGENT_DETAIL_TABS.filter((tab) => isAgentDetailTabVisible(agent, tab));
 }

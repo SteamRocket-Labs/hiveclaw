@@ -44,6 +44,26 @@ def test_retired_manage_tasks_is_not_a_plan_mode_display_label():
     assert "manage_tasks" not in ACTION_DISPLAY_LABELS
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        "No schedules or other agents; execute this plan in the same conversation.",
+        "不要定时，不要监控；在当前会话执行。",
+        "Compare daily and weekly schedules without creating either.",
+        "Plan a daily report for later confirmation.",
+    ],
+)
+def test_plan_selection_does_not_infer_schedule_authority_from_words(content):
+    from app.services.plan_mode_core import classify_plan_mode_entry
+
+    decision = classify_plan_mode_entry(content, explicit=True)
+
+    assert decision.mode == "explicit"
+    assert decision.intent_type == "in_session_execution"
+    assert decision.action_kind == "start_long_task"
+    assert decision.tool_name == "continue_current_session"
+
+
 def test_extract_plan_confirmation_request_matches_explicit_plan_id_and_latest():
     from app.services.plan_mode_core import extract_plan_confirmation_request
 

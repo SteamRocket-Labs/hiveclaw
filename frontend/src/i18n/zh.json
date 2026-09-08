@@ -1671,7 +1671,8 @@
       "handoffState": "交接:{{state}}",
       "detailsSummary": "计划详情",
       "handoff": {
-        "completed": "已开始,正在当前对话执行",
+        "completed": "已确认，已交接执行",
+        "scheduled": "已确认，已创建定时任务",
         "queued": "已确认,等待当前运行完成后执行",
         "skipped": "已确认,但执行未能启动",
         "failed": "已确认,但执行启动失败",

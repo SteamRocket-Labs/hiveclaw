@@ -660,10 +660,7 @@ class OfficeDocumentService:
                 document.add_paragraph("")
                 document.save(tmp_path)
             elif kind == "xlsx":
-                from openpyxl import Workbook
-
-                workbook = Workbook()
-                workbook.save(tmp_path)
+                self.adapter.create_document(tmp_path, cwd=self.workspace)
             elif kind == "pptx":
                 from pptx import Presentation
 

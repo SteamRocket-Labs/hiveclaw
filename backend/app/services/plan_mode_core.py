@@ -115,11 +115,6 @@ _BARE_PLAN_CONFIRM_RE = re.compile(
     r"^\s*(确认|确认执行|同意|批准|开始|开始执行|执行|可以|confirm|approve|approved|start|go)\s*[。.!！]?\s*$",
     re.IGNORECASE,
 )
-_SCHEDULE_RE = re.compile(
-    r"(每天|每周|每月|每小时|定时|定期|到时候|提醒我|监控|盯着|盯一下|有变化|"
-    r"schedule|cron|daily|weekly|monthly|monitor|watch)",
-    re.IGNORECASE,
-)
 PLAN_MODE_RECOMMENDATION_MARKER = "建议先进入计划模式，确认执行频率、范围、成本、停止条件和通知方式"
 PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY = "plan_mode_trusted_user_decline"
 
@@ -173,9 +168,8 @@ def classify_plan_mode_entry(content: str, *, explicit: bool = False) -> PlanMod
     judgment must NEVER auto-enter Plan Mode; entry is always user-explicit):
     - explicit frontend/user Plan Mode selection enters Plan Mode;
     - explicit textual decline lets the normal agent continue with an auditable opt-out;
-    - schedule/monitor wording RECOMMENDS Plan Mode first (a suggestion — it does
-      not enter); the agent's own "should we plan?" judgment is taught in the prompt
-      (plan_mode_guidance), surfaced as a suggestion in its reply, never an auto-entry;
+    - wording alone does not choose scheduling; the model may propose an explicit
+      schedule for confirmation through the existing structured handoff;
     - everything else stays normal.
     """
     text = str(content or "").strip()
@@ -186,18 +180,8 @@ def classify_plan_mode_entry(content: str, *, explicit: bool = False) -> PlanMod
         return PlanModeEntryDecision(mode="declined", title=text[:120], reason="user_declined_recommended_plan_mode")
 
     has_explicit = explicit or bool(_EXPLICIT_PLAN_MODE_RE.search(text))
-    has_schedule = bool(_SCHEDULE_RE.search(text))
 
     if has_explicit:
-        if has_schedule:
-            return PlanModeEntryDecision(
-                mode="explicit",
-                intent_type="autonomous_wake",
-                action_kind="create_enabled_trigger",
-                tool_name="set_trigger",
-                title=text[:120],
-                reason="explicit_plan_mode_schedule",
-            )
         return PlanModeEntryDecision(
             mode="explicit",
             intent_type="in_session_execution",

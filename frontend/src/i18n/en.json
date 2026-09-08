@@ -1671,7 +1671,8 @@
       "handoffState": "Handoff: {{state}}",
       "detailsSummary": "Plan details",
       "handoff": {
-        "completed": "Started — executing in this conversation",
+        "completed": "Confirmed — handed off for execution",
+        "scheduled": "Confirmed — schedule created",
         "queued": "Confirmed — waiting for the current run to finish",
         "skipped": "Confirmed, but execution did not start",
         "failed": "Confirmed, but execution failed to start",

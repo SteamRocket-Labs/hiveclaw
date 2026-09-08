@@ -8,6 +8,31 @@ import {
 import type { AgentChatMessage } from './chatRuntime';
 
 describe('chatDisclosureReducer', () => {
+  it('settles earlier workflow progress only from the same run and step terminal receipt', () => {
+    const progress: AgentChatMessage[] = [
+      { role: 'event', content: '', eventType: 'workflow_run', eventStatus: 'pending', eventWorkflowRunId: 'wf-1' },
+      { role: 'event', content: '', eventType: 'workflow_step', eventStatus: 'running', eventWorkflowRunId: 'wf-1', eventWorkflowStepId: 'compute' },
+      { role: 'event', content: '', eventType: 'workflow_step', eventStatus: 'done', eventWorkflowRunId: 'wf-1', eventWorkflowStepId: 'compute' },
+      { role: 'event', content: '', eventType: 'workflow_run', eventStatus: 'completed', eventWorkflowRunId: 'wf-1' },
+    ];
+    const settled = buildRunTimelineFromMessages(progress);
+    expect(settled.status).toBe('done');
+    expect(settled.steps.every((step) => step.status === 'done')).toBe(true);
+
+    for (const unresolved of [
+      { ...progress[0], eventWorkflowRunId: 'wf-2' },
+      { ...progress[1], eventWorkflowStepId: 'verify' },
+      { ...progress[0], eventWorkflowRunId: undefined },
+    ]) {
+      const timeline = buildRunTimelineFromMessages([...progress, unresolved]);
+      expect(timeline.status).toBe('interrupted');
+      expect(timeline.steps.at(-1)?.status).toBe('interrupted');
+    }
+    expect(buildRunTimelineFromMessages(progress.slice(0, 2)).status).toBe('interrupted');
+    expect(buildRunTimelineFromMessages([...progress, { ...progress[0], eventStatus: 'running' }]).status)
+      .toBe('interrupted');
+  });
+
   it('projects canonical commentary and compaction without treating progress prose as the final answer', () => {
     const messages = [
       {

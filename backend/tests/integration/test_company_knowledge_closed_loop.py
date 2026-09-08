@@ -893,7 +893,11 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
         )
         assert revoked_member_read.status == "not_found_or_denied"
         member_permission.revoked_at = None
-        permission.revoked_at = None
+        await db.flush()
+        # Production reproduces the lifecycle as a role-sourced administrator
+        # operation: revoke the ordinary grant and confirm retire/list/restore
+        # (PDEC-013 scoped business admin) still take effect end to end.
+        permission.revoked_at = datetime.now(timezone.utc)
         await db.flush()
 
         retired = await service.retire_publication(

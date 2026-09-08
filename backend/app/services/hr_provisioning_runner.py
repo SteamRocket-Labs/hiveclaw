@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid as _uuid
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -45,6 +46,33 @@ def _normalize_blueprint_trigger_config(trigger: dict[str, Any]) -> tuple[dict[s
     if value is None or (isinstance(value, str) and not value.strip()):
         return config, hold_reason
     return config, None
+
+
+def _stamp_hr_trigger_authority(
+    config: dict[str, Any],
+    *,
+    owner_user_id: _uuid.UUID,
+    root_session_id: _uuid.UUID,
+) -> dict[str, Any]:
+    """Attribute an HR-created trigger to the trusted canonical-claim identity.
+
+    The blueprint and its trigger payloads are model-authored content; only
+    the authenticated confirmation claim returned by
+    ``_claim_canonical_hr_blueprint`` may attribute ownership.
+    ``stamp_trigger_authority`` overwrites any candidate authority fields, so
+    a blueprint string can never mint ``created_by``/``root_session_id``.
+    Without these keys the fired trigger's RuntimeTask stays unowned
+    (``batch_trigger_authority`` yields NULLs) and is invisible to its
+    creator in the owner-facing read models.
+    """
+
+    from app.services.trigger_resource_authority import stamp_trigger_authority
+
+    return stamp_trigger_authority(
+        config,
+        owner_user_id=owner_user_id,
+        root_session_id=root_session_id,
+    )
 
 
 async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) -> str:
@@ -588,14 +616,31 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                         "event_wait" if trig_type in {"poll", "on_message", "webhook"} else "scheduled_job",
                     )
                     raw_config = _stamp_hr_blueprint_trigger_exemption(raw_config)
+                    raw_config = _stamp_hr_trigger_authority(
+                        raw_config,
+                        owner_user_id=user_id,
+                        root_session_id=session_id,
+                    )
                     existing_trigger = await db.scalar(
-                        select(AgentTrigger.id).where(
+                        select(AgentTrigger).where(
                             AgentTrigger.agent_id == agent.id,
                             AgentTrigger.name == _trigger_name,
                             AgentTrigger.type == trig_type,
                         )
                     )
                     if existing_trigger is not None:
+                        # Idempotent replay of a partially provisioned draft:
+                        # a pre-attribution trigger from the same confirmed
+                        # claim lineage adopts the trusted claim identity.
+                        from app.services.trigger_resource_authority import trigger_owner_user_id
+
+                        if trigger_owner_user_id(existing_trigger) is None:
+                            existing_trigger.config = _stamp_hr_trigger_authority(
+                                dict(existing_trigger.config or {}),
+                                owner_user_id=user_id,
+                                root_session_id=session_id,
+                            )
+                            await db.flush()
                         continue
                     db.add(
                         AgentTrigger(
@@ -621,7 +666,7 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
 
                 _fire_at = (_dt.now(_tz.utc) + __import__("datetime").timedelta(seconds=30)).isoformat()
                 existing_boot = await db.scalar(
-                    select(AgentTrigger.id).where(
+                    select(AgentTrigger).where(
                         AgentTrigger.agent_id == agent.id,
                         AgentTrigger.name == "first_task_boot",
                         AgentTrigger.type == "once",
@@ -634,8 +679,12 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                             tenant_id=agent.tenant_id,
                             name="first_task_boot",
                             type="once",
-                            config=_stamp_hr_blueprint_trigger_exemption(
-                                {"at": _fire_at, "trigger_class": "scheduled_job"}
+                            config=_stamp_hr_trigger_authority(
+                                _stamp_hr_blueprint_trigger_exemption(
+                                    {"at": _fire_at, "trigger_class": "scheduled_job"}
+                                ),
+                                owner_user_id=user_id,
+                                root_session_id=session_id,
                             ),
                             reason=(
                                 f"Read soul.md for your full mission. Start with this first task: {_boot_task}\n\n"
@@ -645,6 +694,16 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                     )
                     await db.flush()
                     logger.info("[HR] Created boot trigger for agent %s: %s", agent.id, _boot_task[:80])
+                else:
+                    from app.services.trigger_resource_authority import trigger_owner_user_id
+
+                    if trigger_owner_user_id(existing_boot) is None:
+                        existing_boot.config = _stamp_hr_trigger_authority(
+                            dict(existing_boot.config or {}),
+                            owner_user_id=user_id,
+                            root_session_id=session_id,
+                        )
+                        await db.flush()
 
             # Copy default skills + requested skills
             from sqlalchemy.orm import selectinload

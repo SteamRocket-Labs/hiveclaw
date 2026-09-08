@@ -307,3 +307,98 @@ def test_trigger_view_never_falls_back_to_raw_kind_code_in_display_title():
 
     assert view["display_title"] == ""
     assert view["display_kind"] == "scheduled_job"
+
+
+def _consumed_once_trigger(*, enabled: bool, fire_count: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=uuid4(),
+        name="first_task_boot",
+        type="once",
+        config={"at": "2026-09-09T00:00:00+00:00", "trigger_class": "scheduled_job"},
+        reason="Read soul.md and start the first task.",
+        is_enabled=enabled,
+        fire_count=fire_count,
+        max_fires=None,
+        cooldown_seconds=60,
+        last_fired_at=None,
+        created_at=None,
+        expires_at=None,
+    )
+
+
+def _attempt_for(trigger_id, *, status: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=uuid4(),
+        task_type="trigger",
+        status=status,
+        result_summary="Marker written and read back.",
+        metadata_json={"trigger_ids": [str(trigger_id)]},
+        created_at=datetime.now(timezone.utc),
+        started_at=None,
+        completed_at=None,
+    )
+
+
+def test_consumed_one_shot_with_completed_attempt_presents_terminal_completed_not_paused():
+    """A successfully settled once-trigger is terminal, not paused-with-Resume.
+
+    The daemon disables a ``once`` trigger at successful settlement; without
+    this branch the owner UI reported a paused wake with a Resume action even
+    though the authorized completed attempt exists.
+    """
+    from app.services.autonomy_overview import build_trigger_view
+
+    trigger = _consumed_once_trigger(enabled=False, fire_count=1)
+    attempt = _attempt_for(trigger.id, status="completed")
+
+    view = build_trigger_view(trigger, attempts=[attempt], include_diagnostics=False)
+
+    assert view["attention_state"] == "completed"
+    assert view["next_action"] is None
+    assert view["last_attempt"] is not None
+    assert view["last_attempt"]["status"] == "completed"
+
+
+def test_completed_one_shot_requires_attempt_evidence_not_fire_count_alone():
+    from app.services.autonomy_overview import build_trigger_view
+
+    # Disabled with fire_count=1 but NO settled completed attempt (e.g. an
+    # operator-disabled wake): stays paused; fire_count is not success.
+    trigger = _consumed_once_trigger(enabled=False, fire_count=1)
+    view = build_trigger_view(trigger, attempts=[], include_diagnostics=False)
+    assert view["attention_state"] == "paused"
+    assert view["next_action"] == "resume_wake_policy"
+
+    # Failed attempt on a consumed one-shot must not be presented as completed.
+    failed = _attempt_for(trigger.id, status="failed")
+    view = build_trigger_view(trigger, attempts=[failed], include_diagnostics=False)
+    assert view["attention_state"] == "paused"
+
+
+def test_enabled_once_trigger_and_other_types_keep_existing_states():
+    from app.services.autonomy_overview import build_trigger_view
+
+    enabled_once = _consumed_once_trigger(enabled=True, fire_count=0)
+    view = build_trigger_view(
+        enabled_once, attempts=[_attempt_for(enabled_once.id, status="completed")], include_diagnostics=False
+    )
+    assert view["attention_state"] == "active"
+
+    disabled_cron = SimpleNamespace(
+        id=uuid4(),
+        name="daily_report",
+        type="cron",
+        config={"expr": "0 9 * * *"},
+        reason="Report",
+        is_enabled=False,
+        fire_count=5,
+        max_fires=None,
+        cooldown_seconds=60,
+        last_fired_at=None,
+        created_at=None,
+        expires_at=None,
+    )
+    view = build_trigger_view(
+        disabled_cron, attempts=[_attempt_for(disabled_cron.id, status="completed")], include_diagnostics=False
+    )
+    assert view["attention_state"] == "paused"

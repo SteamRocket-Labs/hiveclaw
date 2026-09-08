@@ -216,6 +216,24 @@ def _attention_from_last_attempt(task: Any | None) -> tuple[str | None, str | No
     return None, None, None
 
 
+def _one_shot_completed(trigger: Any, latest_attempt: Any) -> bool:
+    """A consumed one-shot with a successful settled attempt is terminal.
+
+    The daemon disables a ``once`` trigger at successful settlement, so
+    ``is_enabled=False`` alone cannot distinguish a user pause from a finished
+    one-shot. Completion is decided by the authorized attempt evidence (a
+    matching RuntimeTask settled ``completed``), never by ``fire_count``.
+    """
+
+    if str(getattr(trigger, "type", "") or "").strip().lower() != "once":
+        return False
+    if bool(getattr(trigger, "is_enabled", True)):
+        return False
+    if latest_attempt is None:
+        return False
+    return str(getattr(latest_attempt, "status", "") or "").strip() == "completed"
+
+
 def build_trigger_view(
     trigger: Any,
     *,
@@ -242,7 +260,10 @@ def build_trigger_view(
     max_fires = getattr(trigger, "max_fires", None) or cfg.get("max_fires")
     fire_count = int(getattr(trigger, "fire_count", 0) or 0)
 
-    if not bool(getattr(trigger, "is_enabled", True)):
+    if _one_shot_completed(trigger, latest_attempt):
+        attention_state = "completed"
+        attention_reason = "This one-shot wake ran and completed successfully."
+    elif not bool(getattr(trigger, "is_enabled", True)):
         attention_state = "paused"
         attention_reason = "Autonomous wake is paused."
         next_action = "resume_wake_policy"

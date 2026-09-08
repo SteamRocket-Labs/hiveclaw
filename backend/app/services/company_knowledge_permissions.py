@@ -88,6 +88,12 @@ _TENANT_ADMIN_METADATA_ACTIONS = frozenset(
         "curate",
     }
 )
+# PDEC-013 publication lifecycle governance (retire/restore) is business
+# operation authority: held by human scoped business administrators without a
+# redundant ordinary grant, and deliberately excluded from
+# ``_TENANT_ADMIN_METADATA_ACTIONS`` so an Agent-runtime principal carrying an
+# administrator role gains no worker-scope widening from this set.
+_SCOPED_ADMIN_LIFECYCLE_ACTIONS = frozenset({"retire", "restore"})
 _ADMIN_ROLES = frozenset({"org_admin"})
 _SCOPED_BUSINESS_ADMIN_ROLES = frozenset({"org_admin", "platform_admin"})
 
@@ -375,7 +381,8 @@ async def resolve_company_knowledge_permission(
     if (
         principal.actor_type != "agent"
         and principal.accountable_role in _SCOPED_BUSINESS_ADMIN_ROLES
-        and action in _CONTENT_ACTIONS | _TENANT_ADMIN_METADATA_ACTIONS
+        and action
+        in _CONTENT_ACTIONS | _TENANT_ADMIN_METADATA_ACTIONS | _SCOPED_ADMIN_LIFECYCLE_ACTIONS
     ):
         if action in _CONTENT_ACTIONS and not resource.evidence_access_complete:
             return _denied(
@@ -388,7 +395,9 @@ async def resolve_company_knowledge_permission(
         return CompanyKnowledgePermissionDecision(
             allowed=True,
             requested_action=action,
-            allowed_actions=tuple(sorted(_CONTENT_ACTIONS | _TENANT_ADMIN_METADATA_ACTIONS)),
+            allowed_actions=tuple(
+                sorted(_CONTENT_ACTIONS | _TENANT_ADMIN_METADATA_ACTIONS | _SCOPED_ADMIN_LIFECYCLE_ACTIONS)
+            ),
             authority_sources=("tenant_membership", "scoped_business_admin"),
             sensitivity_ceiling=SensitivityLevel.PL4_CREDENTIAL.value if action in _CONTENT_ACTIONS else "PL1_public",
             source_acl_snapshot_hash=resource.source_acl_snapshot_hash,

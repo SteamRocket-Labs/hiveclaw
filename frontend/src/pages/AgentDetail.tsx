@@ -920,39 +920,20 @@ function AgentDetailInner() {
         navigate(buildSessionWorkbenchNavigation(location.pathname, location.search, sessionId), { replace: true });
     };
 
-    const openSessionCommandControl = (commandSessionId: string | null | undefined, control: SessionCommandControlState) => {
-        // A response for an abandoned selection keeps its data under the requesting session but must not
-        // route or replace the newly selected panel/session.
-        if (
-            commandSessionId != null && commandSessionId !== ''
-            && activeSessionIdRef.current != null && activeSessionIdRef.current !== commandSessionId
-        ) {
-            return;
-        }
-        const sessionForRoute = activeSessionIdRef.current
-            ?? (activeSession?.id != null ? String(activeSession.id) : null);
-        if (sessionForRoute) {
-            ensureSessionWorkbenchRoute(sessionForRoute);
-        } else {
-            setActiveTab('chat');
-        }
+    const openSessionCommandControl = (commandSessionId: string, control: SessionCommandControlState) => {
+        // A response for an abandoned selection must not route or replace the newly selected session.
+        if (activeSessionIdRef.current != null && activeSessionIdRef.current !== commandSessionId) return;
+        const sessionForRoute = activeSessionIdRef.current ?? (activeSession?.id != null ? String(activeSession.id) : null);
+        if (sessionForRoute) ensureSessionWorkbenchRoute(sessionForRoute);
+        else setActiveTab('chat');
         setSessionCommandControl(control);
     };
 
-    const handleSessionCommandUiAction = async (
-        response: Awaited<ReturnType<typeof ccParityApi.executeCommand>>,
-        commandSessionId?: string | null,
-    ) => {
+    const handleSessionCommandUiAction = async (response: Awaited<ReturnType<typeof ccParityApi.executeCommand>>, currentSessionId: string) => {
         const uiAction = getSessionCommandUiAction(response);
-        // Identity is the exact command request's durable session, passed by both callers: the slash
-        // sender materializes the durable Session (draft -> created) before executing, and the UI runner
-        // captures the id at request time. A completed response must never re-resolve identity from the
-        // mutable current UI selection, or a session selected while the command was pending would
-        // receive another session's result.
-        const currentSessionId = commandSessionId != null && commandSessionId !== ''
-            ? commandSessionId
-            : (activeSession?.id != null ? String(activeSession.id) : null);
-        if (!uiAction || !id || !currentSessionId) return false;
+        if (!uiAction || !id) return false;
+        // currentSessionId is the exact command request's durable session, passed by both callers;
+        // never re-resolve identity from the mutable current UI selection at response time.
         const selectionMoved = activeSessionIdRef.current != null && activeSessionIdRef.current !== currentSessionId;
         const actionResult = commandResultRecord(response);
         const message = typeof uiAction.message === 'string' && uiAction.message.trim()
@@ -1159,16 +1140,13 @@ function AgentDetailInner() {
     };
 
     const handleRunSessionCommandFromUi = async (command: string, args: Record<string, unknown> = {}) => {
-        const currentSessionId = activeSessionIdRef.current
-            ?? (activeSession?.id != null ? String(activeSession.id) : null);
+        const currentSessionId = activeSessionIdRef.current ?? (activeSession?.id != null ? String(activeSession.id) : null);
         if (!id || !currentSessionId) return;
         try {
             const response = await ccParityApi.executeCommand(id, command, {
                 arguments: args,
                 session_id: currentSessionId,
             });
-            // Bind the response to the exact request's session: currentSessionId was captured before the
-            // await, so a session selected while the command was pending cannot receive this result.
             const handled = await handleSessionCommandUiAction(response, currentSessionId);
             if (!handled) {
                 showToast(formatSlashCommandResult(response), 'success');

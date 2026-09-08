@@ -352,6 +352,18 @@ describe('automation schedule/status display (live consumer seam)', () => {
     expect(zhStatus.needsReconciliation).toBe('需要管理员处理');
   });
 
+  it('presents a successfully settled one-shot as completed even though the daemon disabled it', () => {
+    // A consumed once-trigger is disabled at successful settlement; it must
+    // not fall into the paused/Resume presentation driven by is_enabled.
+    const settled = { id: 'trigger-1', attention_state: 'completed', is_enabled: false };
+    expect(automationStatus(settled, []).statusKey).toBe('completed');
+    expect(automationStatus(settled, []).section).toBe('current');
+    // A genuinely paused wake (no completed settlement) still pauses.
+    const paused = { id: 'trigger-2', attention_state: 'paused', is_enabled: false };
+    expect(automationStatus(paused, []).statusKey).toBe('paused');
+    expect(automationStatus(paused, []).section).toBe('paused');
+  });
+
   it('mirrors build_trigger_view precedence: gate states outrank the latest attempt outcome', () => {
     // build_trigger_view resolves paused > expired > max_fires_reached >
     // backoff_active > attempt-derived states. The trigger-level gate is the

@@ -341,6 +341,7 @@ const CANONICAL_ATTENTION_STATE_STATUS: Record<string, { status: string; statusK
   missing_model: { status: 'failed', statusKey: 'missingModel' },
   failed_recently: { status: 'failed', statusKey: 'failed' },
   needs_reconciliation: { status: 'failed', statusKey: 'needsReconciliation' },
+  completed: { status: 'completed', statusKey: 'completed' },
 };
 
 // Exact machine-code status mapping only. Every non-active attention state
@@ -355,6 +356,11 @@ export function automationStatus(
   attempts: any[],
 ): { status: string; statusKey: AutomationStatusKey; section: AutomationSection } {
   const attentionState = String(trigger?.attention_state || '').toLowerCase();
+  // A successfully settled one-shot is terminal even though the daemon
+  // disabled it; it must not fall into the paused/Resume presentation.
+  if (attentionState === 'completed') {
+    return { status: 'completed', statusKey: 'completed', section: 'current' };
+  }
   if (trigger?.is_enabled === false || attentionState === 'paused') {
     return { status: 'paused', statusKey: 'paused', section: 'paused' };
   }

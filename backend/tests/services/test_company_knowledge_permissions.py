@@ -384,6 +384,93 @@ async def test_agent_grant_is_bound_to_accountable_user_session_purpose_and_dele
 
 
 @pytest.mark.asyncio
+async def test_publication_lifecycle_is_role_sourced_for_human_scoped_business_admins_only() -> None:
+    """PDEC-013: retire/restore are company business operations, so the human
+    org/platform administrator holds them without an ordinary grant; members,
+    agent principals carrying an administrator role, and cross-tenant callers
+    stay on the explicit-permission path."""
+
+    tenant_id = uuid.uuid4()
+    org_admin = _principal(tenant_id=tenant_id, user_id=uuid.uuid4(), role="org_admin")
+    platform_admin = _principal(tenant_id=tenant_id, user_id=uuid.uuid4(), role="platform_admin")
+    member = _principal(tenant_id=tenant_id, user_id=uuid.uuid4(), role="member")
+    admin_agent = _principal(
+        tenant_id=tenant_id,
+        user_id=org_admin.accountable_user_id,
+        role="org_admin",
+        actor_type="agent",
+        actor_id=uuid.uuid4(),
+    )
+    resource = _resource(tenant_id=tenant_id)
+
+    for principal, action in (
+        (org_admin, "retire"),
+        (org_admin, "restore"),
+        (platform_admin, "retire"),
+        (platform_admin, "restore"),
+    ):
+        decision = await resolve_company_knowledge_permission(
+            _Session([]),
+            principal=principal,
+            resource=resource,
+            action=action,
+        )
+        assert decision.allowed is True
+        assert decision.authority_sources == ("tenant_membership", "scoped_business_admin")
+        assert "retire" in decision.allowed_actions
+        assert "restore" in decision.allowed_actions
+
+    for principal in (member, admin_agent):
+        decision = await resolve_company_knowledge_permission(
+            _Session([]),
+            principal=principal,
+            resource=resource,
+            action="retire",
+        )
+        assert decision.allowed is False
+        assert decision.deny_reason_code == "explicit_resource_permission_required"
+        assert decision.authority_sources == ("tenant_membership",)
+
+    cross_tenant = _principal(tenant_id=uuid.uuid4(), user_id=uuid.uuid4(), role="platform_admin")
+    cross_tenant_decision = await resolve_company_knowledge_permission(
+        _Session([]),
+        principal=cross_tenant,
+        resource=resource,
+        action="restore",
+    )
+    assert cross_tenant_decision.allowed is False
+    assert cross_tenant_decision.deny_reason_code == "tenant_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_member_lifecycle_grant_still_supported_without_content_bundle_gates() -> None:
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    principal = _principal(tenant_id=tenant_id, user_id=user_id)
+    resource = _resource(
+        tenant_id=tenant_id,
+        evidence_access_complete=False,
+        publication_status="retired",
+    )
+    grant = _permission(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        resource=resource,
+        actions=["retire", "restore"],
+    )
+
+    restore = await resolve_company_knowledge_permission(
+        _Session([grant]),
+        principal=principal,
+        resource=resource,
+        action="restore",
+    )
+
+    assert restore.allowed is True
+    assert restore.authority_sources == ("tenant_membership", "resource_permission")
+
+
+@pytest.mark.asyncio
 async def test_fail_closed_for_cross_tenant_unpublished_missing_acl_or_acl_denial() -> None:
     tenant_id = uuid.uuid4()
     user_id = uuid.uuid4()

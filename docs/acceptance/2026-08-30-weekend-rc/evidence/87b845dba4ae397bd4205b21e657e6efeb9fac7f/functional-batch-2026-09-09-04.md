@@ -28,16 +28,16 @@ owner 明确要求：除阻塞项外，把剩余功能测试并修复；结束�
 
 | 功能域 | B4 状态 | 实际范围 / 下一检查 |
 |---|---|---|
-| Session / 命令 / Plan / Goal / Ledger | partial-pass | fresh draft context/permissions/usage 已修复并实测，真实任务 Ledger 和跨会话消费通过；其余命令/恢复合同待测 |
-| Memory / Growth / J1–J4 | partial-pass | 显式记忆保存及 fresh Session 无重给答案取回通过；遗忘、candidate/feedback 与真实对比待测 |
-| 个人知识与多格式交付 | partial-pass | 五格式上传/解析/更正值检索读取与真实 Agent 引用、报告下载通过；TXT 归档恢复通过；重建回执候选主审110测试通过待部署 |
+| Session / 命令 / Plan / Goal / Ledger | partial-pass / failed | draft三面板、Ledger、clear、Skill、rewind、branch局部通过；MiniMax Goal暂停/继续/文件交付/完成通过。Plan负向schedule文字误路由且确认未启动；compact误扣留已失败终结工具，待修 |
+| Memory / Growth / J1–J4 | partial-pass / provider-blocked | 显式保存→fresh取回→更正→退役→fresh排除通过；Useful反馈确实落盘，但semantic_review_unavailable而held；候选、纵向成长和真实对比未完成 |
+| 个人知识与多格式交付 | partial-pass / failed | 五格式上传/解析/Agent引用、报告下载、归档恢复与重建通过。MiniMax原生DOCX校验/下载通过；XLSX公式真实计算并缓存29、下载通过，但字体XML schema校验失败 |
 | 公司知识与 promotion | partial-pass / policy-blocked | PDF 导入→提案→普通风险审批→发布→Agent引用→下线检索排除→恢复v2重现通过；member显式权限和自审批合同待owner决定 |
-| HR / 数字员工生命周期 / 角色 | partial-pass | 两个真实员工创建/首任务执行；新member所属HR trigger/receipt归属已通过；普通member权限负向通过，角色UI和Agent→HR待测 |
-| 子 Agent / Team / 动态和固定工作流 / A2A | in_progress | 临时子Agent及父消费/预览下载通过；Team实际暴露并行批次漏加载schema，修复在审；动态Workflow已发起只预览任务，固定/A2A待测 |
-| Automation / Approval / Notification | blocked-partial | B3 once permission 生命周期未闭环；其余 schedule/event/通知独立测 |
-| Local / Hook / Skill / MCP | blocked-partial | Local result 缺失且正式安装源 unavailable；其余独立能力消费待测 |
-| 导航 / 主题 / 窄屏 / 键盘 / 模型 | pending | 真实 UI 消费与 provider fidelity；不可用模型单列 |
-| 相关回归 / 发布 / cleanup | pending | scoped tests、准确 reviewed 指纹、同源部署、功能复验；不启动最终发布双遍 |
+| HR / 数字员工生命周期 / 角色 | partial-pass / policy-blocked | 三个真实员工创建；新member首任务归属、Agent→HR handoff、Reviewer首任务不自动执行通过；普通member负向通过。权限扩展/自批业务政策待owner选择，完整角色UI/转移与离职未完成 |
+| 子 Agent / Team / 动态和固定工作流 / A2A | partial-pass | 临时子Agent、固定Reviewer A2A、Team完整计算/关闭通过；MiniMax Workflow三叶真实Python/Bash计算、模板传值、文件写读与父消费通过，事件组误标中断待修。固定定义draft/activate/fork/deprecate/停用拒绝通过，未跑定时触发 |
+| Automation / Approval / Notification | partial-pass / blocked | B3 once权限生命周期未闭环；新正式once请求409 requires_confirmation且未创建。批准通知读取/单条已读通过，Local通知链接错落普通聊天页；schedule/event真实触发与渠道回流未完成 |
+| Local / Hook / Skill / MCP | partial-pass / blocked | Local历史恢复可用但result缺失、升级源unavailable；内置Skill加载/消费通过，member安全health200/内部hook诊断403；MCP extension_disabled，无外部安装或认证 |
+| 导航 / 主题 / 窄屏 / 键盘 / 模型 | partial-pass | 390px标题入口、主题light→dark→light/刷新保留、Escape返回设置按钮通过；完整无障碍和角色UI矩阵未完成。GLM长期配额阻塞，DeepSeek未ready不调用，MiniMax当前独立路径待核实 |
+| 相关回归 / 发布 / cleanup | partial-pass | 8f7762ec三服务同源SUCCESS，90最终archive检查通过；6c6ea30f CI34285873380三job全部success。新Goal完成/旧Goal停止、Team关闭、固定定义停用；证据资产保留，不冒充完整cleanup |
 
 ## 本批次合成资产预登记
 
@@ -169,3 +169,46 @@ owner 明确要求：除阻塞项外，把剩余功能测试并修复；结束�
 - RLS已对584条digest逐项核对：仅已审Team插入顺序模块、HR完整回执模块及对应complete_tool_invocation三项变化，无新bypass或权限扩大；指纹更新`f7af271c19cb42c2bd0d2a91e5ed6db2dd3246fc7b83fc6662fffd47d69a61e7`单行commit`7282fae7`，17项真实检查通过210.92s。owner dirty manifest内容未stage。Workflow最终archive的指纹与联合回归另在运行。
 - rewind续接实际已完成：V2 transcript seq96 assistant snapshot精确返回`B4-REWIND-WILLOW-582`，seq107 run completed，terminal`1dfe05bf…`。正式回退后能继续对话已证实；尚未检查旧marker是否完全排除于模型输入，不扩大为完整语义隔离证明。
 - 待上传的exact application为`8f7762e`，archive`/tmp/hiveclaw-railway-b4-8f7762e.oa6BoU`，1058files/source SHA256`78ef6a522fa1eb2e8e21f8818bb8e8d1eec103837ed98f81090fe831079e8337`。production仍df463a8d；尚未推送、上传或把上述单元/PG绿记成线上通过。
+
+## 06:29 统一部署、Branch恢复与GLM配额阻塞
+
+- 最终干净archive的RLS、subagent、真实PG Workflow身份及工具schema联合90项检查通过227.40s；指纹仍匹配，无追加豁免。应用8f7762ec与记录3d208dc4已push。06:15:25三服务同源上传，06:17均SUCCESS：backend`e05bed5f-596a-4d8a-a18c-22c38d218765`、backend-api`de6b0e30-e6cc-41d1-9397-cde57987475e`、frontend`44658f2c-9ee1-4bcb-9d02-78a4c13c4508`。backend health与backend-api独立SSH均1058files/source SHA256`78ef6a522fa1eb2e8e21f8818bb8e8d1eec103837ed98f81090fe831079e8337`。已有trigger终态事务错误仍存在，不把health ok当零错误。
+- Branch原member会话部署后正式单次POST200，新分支`4f4b1342-ce0a-4da9-abcf-5e23e51e117c`，source/root均`aaffd0f2-45fe-42fa-a0c4-22af8dccb2b3`；control`0c0cdb12-c7f2-4aa4-bd48-90bc631f0111`/seq42。正式V2 GET200/38条，原user seed与assistant完整答复都保留current13/old11obsolete及marker。创建与历史读取通过，provider续接未测；原旧compact错误摘要也被如实复制，不把它算新compact修复结果。
+- Plan原页面hard reload成功恢复既有v2卡，无重复生成。06:18仅点击一次“实施此计划”，UI confirmed/current-session执行，run`0ceee597-dd87-4a87-b417-a7b9e8007fb4`；真实首轮provider rejected/rate_limited/retry_safe，尚无目标文件成功证据。只读app_rls对账status failed/terminal_reason provider_error；没有重复批准或重放。
+- 新Goal Session`dccf2594-1e43-485b-9439-12184e6052c8`：首次文字/goal只建立目标、未启run，随后停止；改用正式/goal JSON建立300000tokens/2continuations/1200s的独立有界目标。UI预算显示正确，pause成功；确认GLM长期配额后停止，未消耗continuation，无后台任务或文件。不要把命令短暂optimistic“运行中”当实际模型调用，也不把尚未验证的continue记PASS。
+- Workflow原Session06:21单次新preview-only输入（marker882），明确先读新增schema、compute/verifier使用general-purpose并用真实步骤占位符传证据。run`904e2342-c4f5-5a91-8df4-fc82be053937`同样provider失败，没有新preview或叶执行。旧preview未重放。生产06:18:17原始日志明确HTTP429/code1310周/月额度耗尽，服务商提示2026-09-13 21:19:20重置，和zCode相同；停止盲重试，不换既有Agent绑定、不充值。GLM相关Plan执行/Goal续接/Office/Workflow模型消费及compact生产复验暂阻塞；继续独立非模型检查，并检查已有其他模型能否另建合成验收，不迁移为GLM PASS。
+- CI`34284758548`15条机械全栈journeys通过，backend在release archive个人路径检查失败，frontend在i18n missingBoth=1失败，完整后台/前端suite未运行。集成遗漏修正为`6c6ea30f`并push：补agent.plan.successorCycle中英文键，验收文档下载位置改为不含用户名的本机下载目录；不改门槛。i18n9测试/目录检查全通过、git-archive hygiene通过3469paths。该提交仅翻译/文档，未重新部署，backend源码与8f相同。
+- 普通member读取evolution200/schema v2/timeline24/pending soul0，knowledge observability200/growth空；只证明读面可用，不证明J1/J2成长。对五格式成功报告提交一次有具体依据的Useful反馈`B4-FEEDBACK-MAPLE-417`，45秒HTTP超时，正在只读对账，禁止未知状态重发；尚未声称反馈/成长闭环。
+
+## 06:44 非模型消费、反馈落盘与剩余入口
+
+- Useful反馈没有重发。app_rls/read-only/exact tenant+member Agent+Session对账找到唯一row`61f752a5-77ee-4d32-9787-65c86a118529`；06:30:04完成calibration，`memory_status=held`、`reason=semantic_review_unavailable`、无entry_id。正式sidecar GET200/matched1，event`ae:0bec174085c0da83b6a9faa6`同源，记录credited entry`explicit_3f139a95ce642dc8`。因此“反馈捕获持久化”成立，“记忆激活/长期成长”不成立；HTTP超时不是未写入证明。
+- 当前普通member `/runtime-health`200/schema v1/healthy/0 issues；`/admin/agents/{id}/runtime-hooks`403 Platform developer access required。没有修改hook配置或把零近期错误推导为完整Hook故障恢复通过。member通知列表200空，未做公司广播。
+- 正式页面主题切换后DOM data-theme依次dark/light，恢复原light并reload保留；设置菜单Escape后焦点实际回到“设置”BUTTON，aria-expanded=false。未修改账号或权限。此前390px标题操作可达的证据保留，不能扩成所有窄屏/键盘项通过。
+- owner通知列表包含本任务B3 Local请求与批准记录。仅点击00:46:04那一条approved，未读3→2，未点全部已读或旧无关通知。链接实际为`/agents/b8f6fc83-2e48-4a36-bebf-6e491bfcffeb#approvals`，页面却落到普通Local聊天历史，没有对应审批卡。源码`approval_service`固定生成#approvals，而`getVisibleAgentDetailTabs`对local_agent只返回chat/workspace/settings；这是具体通知消费缺陷，不等同审批执行失败。正确Local channel入口仍可独立打开；新根因待实现授权/作者恢复，不将其混入已接受Workflow修复。
+- 针对新合成`WRC-FUNCTIONAL-B4-20260909-ScheduleLifecycle`，正式once API仅提交一次未来时间2026-09-10 08:00+08:00/max_fires1/expires08:10，返回409 requires_confirmation；未创建、未触发、未伪造确认或decline记录。B3原权限生命周期失败保持独立，不能把另一个REST入口的计划前置拒绝当同一根因已修。
+- Models页面确认GLM-5.3/MiniMax M3/DeepSeek V4 Flash均有配置，不读取/更改密钥。HR新建入口实际仍GLM。C-Artifact旧会话标注MiniMax，但新空会话却显示当前DeepSeek，因此没有提交任何模型请求；A-Orchestrator设置实读主GLM/备用MiniMax、智能路由未启用。旧会话标签不等于当前绑定或provider readiness。已询问owner仅B4 Reviewer临时MiniMax并恢复的选择，答复前不改绑定、默认模型或HR。
+- CI`34285873380`对应6c6ea30f，前端unit/build/browser/a11y与15条机械全栈journeys success；archive hygiene及Ruff成功，backend全量仍运行中。没有用旧CI成功替代本次最终结果。
+
+## 07:07 MiniMax 恢复后的消费复验
+
+- owner 06:53明确“我已经全部改成minimax了 模型 继续吧”。新建Analyst会话实显MiniMax M3；不恢复GLM绑定，不将旧GLM失败改记为新模型结果。07:07 CI`34285873380`整体success。
+- Workflow新Session`45676ef7-9d8f-4b71-9f04-832b0daba996`先调用schema，模型纠正两次args_schema类型错误后生成ready预览`5a22f7da-43ef-4fc8-bda7-877505265ea3`。07:00:40仅经正式“运行工作流”确认一次，200000tokens/3顺序叶/default审批。只读app_rls对账attempt1：compute输出80、verify输出80 VERIFIED、record写读109字符，三步done；父会话随后实际读取文件并消费结果。模型叙述不能替代叶exec原始工具回执，该细项仍待核对。UI把已完成Workflow事件组误标为“已中断/没有完成记录”，但其内部明确有Workflow run completed；没有据此重跑。backend-api容器本地路径未找到文件，不据此推断worker未写入。
+- Goal新Session`d8d873e1-086d-4fe1-8a32-d1a5768f513e`通过正式/goal JSON建立300000tokens/2continuations/1200s目标，暂停→继续成功。目标26+37=63与marker`B4-GOAL-FIR-964`已被实际模型消费，生成267B artifact`workspace/b4-goal-minimax.md`，update_goal complete，UI零运行/零等待；刷新恢复最终回复与交付卡。目标卡仍显示300000tokens left和“active goal may continue”，计费/提示一致性未据此宣称通过。
+- 普通member原生Office新Session`f703a243-c5c4-41f4-a1e4-afa860daace9`/run`e7cdf2680f1956a089cd900a624a727d`，provider ledger明确minimax/MiniMax-M3，run.completed且active GET200/null。原生create/apply/view/validate生成`workspace/b4-office-minimax.docx`与`.xlsx`/marker`B4-OFFICE-MAPLE-796`，无代码备用生成。DOCX校验passed；XLSX B8真实formula SUM(17,12)、cachedValue/computedValue29、evaluated=true，但validate exit1报styles.xml字体color节点schema错误。模型称来自初始模板，尚未独立证明，不当成已确认根因；XLSX完整交付不记PASS。
+- 非模型命令补充：/task创建todo`3a37a632262a4a5eb56aecf717a0a4aa`，回执starts_execution=false，正式Work Ledger读回同ID；GET active200/null。task_get/task_update是隐藏命令，公开入口404，未伪造model origin完成todo。/team空参数400、/schedule与/once返回chat_prompt、/loop非法interval返回typed invalid_interval，未创建新后台任务；这些只算各输入/回执检查，不算完整命令执行通过。
+
+## 07:18 原始回执核对与新增明确失败
+
+- Workflow worker容器实际文件109字符存在，内容与record读回完全一致。T0 sealed工具记录补齐：compute的Python`print(31+49)`退出成功输出80；verify的Bash算式独立输出80；record的write_file/read_file均done，精确marker883/Result80。三个T0子会话实际depth2；不存在depth1不是无调用证明。父会话已消费并刷新读回。因此三叶执行/传值/文件消费成立，UI中断错误单列。
+- Office两个正式下载HTTP200：DOCX36677B/SHA256`a5104cb7fe2b42aa3f3ba9687d9c8ac90870f4827c2e7613c8ecf2a17b7ae2f8`，XLSX5078B/SHA256`7e4a0dd2886ccc988a9085461cce11eb1f25797188a77c8590696505e2125ac9`。内存ZIP/XML独立检查DOCX明确Rowan/current29/obsolete10/事实表；XLSX B8真实f=SUM(17,12)、v=29（按XML namespace解析确认）。字体子节点顺序name/family/color/sz/scheme；原生校验错误保留，不替模型断言为已知模板根因。
+- compact在该已结束Office会话单次正式POST返回outer200/innerunavailable，error_code=unsettled_semantic_history，无上下文修改。只读app_rls对账9个失败工具分布7个round，全部effect_state=failed/result_event_id非空/对应tool_result lifecyclecompleted/outcomefailed。`session_semantic_history._committed_round_messages`却只接受effect_committed，因而把已settled失败回执误当pending而扣留整轮。assistant_text.completed空字符串是协议的snapshot/seal去重设计，不是本次文本丢失；未重跑模型或工具。
+- Plan新Session`6cf456ad-3553-4e27-8d00-be34f7192f4c`/plan`2554d8e2-333b-4689-9bdd-8392a9d81d30`，07:12:33仅确认一次。UI显示当前会话已开始，但只读数据库仅planning run`490ae3fb-7b37-5a6e-96d6-f97656198188` completed，无执行任务，plan.runtime_task_id为空。正文禁止schedule、要求同会话；结构却intent_typeautonomous_wake/handoffscheduled_trigger/wake_policymanual，entry_reasonexplicit_plan_mode_schedule。源码classify_plan_mode_entry对显式/plan使用无否定语义的_SCHEDULE_RE，将“不需要schedule”也分配为create_enabled_trigger；未批准额外时序效果，不重放确认。关联trigger精确只读对账中。
+- 固定定义合成`a1ce9c8a-9728-457a-9cab-d491c8a7e06a`/v1/hash`46225209cdd74136cbcaa0a42c490535ab17ee06667bcb92689ce7bbfe84d1a8`，普通member在自己Agent scope正式draft→active→fork读回→deprecated均200，停用后fork409；未运行、未建立trigger。member全局定义列表403/自己Agent列表200，作用域未扩大。
+- 已询问owner是否把Codex实现例外从Workflow扩至本轮已复现问题；等待答复期间只做独立验收与只读诊断，不修改新增应用根因。zCode实现策略及旧once/Local返修上限不自行变更。
+
+## 07:23 Plan误建效果收束
+
+- 精确关联对账确认Plan生成enabled trigger `01ebc066-da4e-4dbd-a070-4069edc739ed`，名称`plan_wrc_functional_b4_20260909_minimax_plan_acceptance`，归属本轮Analyst及Plan `2554d8e2-333b-4689-9bdd-8392a9d81d30`。这不是仅有错误展示；正文限制没有被正确保持到时序效果。
+- 从正式自动化列表打开包含同一Plan ID的唯一链接，进入本轮Analyst自主控制台；其余首任务已暂停。仅点击该唯一活跃测试计划的“暂停”一次，随后正式页面读回“已暂停 / 自主唤醒已暂停 / 恢复”。未删除记录、未修改其他自动化、未直接写数据库，保留可恢复证据。未对未知执行状态做重复触发。
+- 当前新增问题需实现分工决定：原授权Codex例外仅Workflow工具能力/身份修复，zCode GLM作者配额尚不可用。阶段文档更新并提交；第四批仍未完成，不以该提交代替修复与复验。

@@ -20,7 +20,7 @@ verification_status: frozen-96-functional-b4-in-progress
 
 | 批次 | 已接受结果 | 未关闭范围 / 证据 |
 |---|---|---|
-| B4（09-09 01:54起） | draft命令会话绑定、五格式个人知识实际Agent消费、公司发布下线/恢复v2、新member首任务归属、显式记忆更正/退役/fresh检索、临时子Agent父消费、知识重建queued→ready、HR精确不自动首任务实际创建待命、390px标题操作可达、固定Reviewer A2A父消费、member Team计算/复核/报告/正式关闭、clear新空会话、内置Skill实际加载消费、rewind投影回退重读及真实续接 | Workflow三叶结束但缺计算工具/无文件，业务FAIL；原生DOCX仍待复验。Office/Plan/Goal/branch/compact及Workflow规范查询修复已主审提交；owner授权Codex接手的Workflow可信身份/工具修复8f7762e通过47本地检查，均待统一部署复验。其余未测保留。[第四批记录](evidence/87b845dba4ae397bd4205b21e657e6efeb9fac7f/functional-batch-2026-09-09-04.md) |
+| B4（09-09 01:54起） | draft命令会话绑定、五格式个人知识实际Agent消费、公司发布下线/恢复v2、新member首任务归属、显式记忆更正/退役/fresh检索、临时子Agent父消费、知识重建queued→ready、HR精确待命创建、390px标题可达、固定Reviewer A2A父消费、member Team计算/复核/报告/正式关闭、clear、内置Skill消费、rewind续接、branch创建/历史读取、Plan继任卡恢复/精确确认、Useful反馈落盘、主题/键盘局部消费；MiniMax Workflow三叶真实计算/文件/父消费、Goal暂停继续及完成、DOCX原生校验与Office下载、固定定义生命周期 | 8f7762ec三服务同源已部署，90最终archive检查通过；6c6ea30f CI整体success。新增明确失败：Plan禁止schedule仍误建trigger（已正式暂停）、compact扣留已终态失败工具、XLSX schema校验、Workflow完成组误标中断与Local通知错误deep-link；Goal预算/提示一致性未验。反馈memory held、B3 once/Local result、完整角色/成长/外部能力与故障矩阵仍未关闭。等待owner决定新增根因的Codex实施例外，不把配置/入口可用或未测项算PASS。[第四批记录](evidence/87b845dba4ae397bd4205b21e657e6efeb9fac7f/functional-batch-2026-09-09-04.md) |
 | B3 | Local默认会话刷新/离开重开能读回原审批和实际pwd/marker | 本地连接器只发text无result、正式升级源unavailable；once原live权限生命周期阻塞，候选未接受。[第三批记录](evidence/aeaaacb59704ac7631da553c97d699c2cc87bdb4/functional-batch-2026-09-09-03.md) |
 | B2续接 | fresh和原两条文件/HR第二轮输入、显式终态恢复、文件预览/下载、HR修订拒绝与刷新、boundary自然delivered | 原底层重启恢复根因与独立trigger故障未闭环，不迁移成最终版本PASS。[第二批记录](evidence/33f6332f663f6e648f27eb704593876c4de17053/functional-batch-2026-09-08-02.md) |
 

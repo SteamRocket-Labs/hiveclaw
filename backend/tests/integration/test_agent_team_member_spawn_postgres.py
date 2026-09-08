@@ -69,7 +69,10 @@ async def _seed_principal(owner_sessionmaker) -> tuple[uuid.UUID, uuid.UUID, uui
 
 def _stub_fanout(monkeypatch) -> None:
     async def _stub_message(**kwargs):
-        return {"ok": True, "results": [{"status": "queued", "member_id": "", "member_name": "", "child_session_id": ""}]}
+        return {
+            "ok": True,
+            "results": [{"status": "queued", "member_id": "", "member_name": "", "child_session_id": ""}],
+        }
 
     monkeypatch.setattr(agent_team_runtime_service, "message_agent_team_members_runtime", _stub_message)
 
@@ -119,17 +122,19 @@ async def test_team_create_and_member_spawn_persist_in_order(owner_sessionmaker,
         await db.commit()
 
     async with owner_sessionmaker() as db:
-        member = (
-            await db.execute(select(AgentTeamMember).where(AgentTeamMember.id == member_id))
-        ).scalar_one()
+        member = (await db.execute(select(AgentTeamMember).where(AgentTeamMember.id == member_id))).scalar_one()
         assert member.member_name == "worker-1"
         events = (
-            await db.execute(
-                select(AgentTeamEvent)
-                .where(AgentTeamEvent.team_id == team.id)
-                .order_by(AgentTeamEvent.created_at.asc())
+            (
+                await db.execute(
+                    select(AgentTeamEvent)
+                    .where(AgentTeamEvent.team_id == team.id)
+                    .order_by(AgentTeamEvent.created_at.asc())
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         event_types = [event.event_type for event in events]
         assert "team_created" in event_types
         assert "member_spawned" in event_types

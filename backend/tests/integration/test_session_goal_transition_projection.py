@@ -204,9 +204,7 @@ async def test_stop_from_paused_and_active_cancel_identity(owner_sessionmaker, m
 
     monkeypatch.setattr(goals_api, "submit_live_cancel_input", fake_cancel)
     run_id = uuid.uuid4()
-    active_goal_id = await _seed_goal(
-        owner_sessionmaker, seed, metadata={"last_continuation_run_id": str(run_id)}
-    )
+    active_goal_id = await _seed_goal(owner_sessionmaker, seed, metadata={"last_continuation_run_id": str(run_id)})
     async with owner_sessionmaker() as db:
         stopped = await goals_api.transition_goal(
             agent_id=agent_id,

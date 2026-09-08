@@ -840,11 +840,7 @@ async def complete_tool_invocation(
                     "content_hash": content_hash,
                     # Bounded provider projection for session replay into model
                     # context; absent means the durable content is the projection.
-                    **(
-                        {"model_visible_content": model_visible_content}
-                        if model_visible_content is not None
-                        else {}
-                    ),
+                    **({"model_visible_content": model_visible_content} if model_visible_content is not None else {}),
                     "content_or_error_ref": receipt_ref,
                     "parts": list(parts or []),
                 },

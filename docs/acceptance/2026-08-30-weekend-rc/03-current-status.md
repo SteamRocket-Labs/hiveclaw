@@ -5,7 +5,7 @@ status: in_progress
 authority: canonical-working-state
 last_reviewed: 2026-09-08
 source_commit: aeaaacb59704ac7631da553c97d699c2cc87bdb4
-verification_status: bounded-functional-b2-inputs-recovered-runtime-unresponsive
+verification_status: bounded-functional-b2-recovery-verified
 ---
 # 当前状态与唯一下一动作
 
@@ -17,15 +17,15 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 
 第二批下午首轮已在上限前结束：一个方案与唯一返修均未接受，当时未发布应用、未恢复两条输入，最终 NPTCR 仍 0/96。已定位 summary reconciliation 阻塞，并用本地复现排除会重复已成功摘要子调用的 whole-summary retry；按照 PDEC-015 暂停并交付策略选择，不自动生成第三版。[第二批结果文档](evidence/33f6332f663f6e648f27eb704593876c4de17053/functional-batch-2026-09-08-02.md)
 
-22:02:49（Asia/Shanghai）owner 明确要求先 commit/push 旧记录，再重试并完成第二批；已推送两份旧记录 `ade50f74`。本次继续第二批的**显式管理员恢复入口**策略，不恢复被拒绝的自动重试候选；最多继续到 2026-09-09 00:02:49（包括部署、实测与交付）。zCode 在隔离 worktree 实现最小现有 API 消费入口，主 Codex 审查与真实恢复；同一明确策略一个实现、一次集中返修，不自动第三轮。
+22:02:49（Asia/Shanghai）owner 明确要求先 commit/push 旧记录，再重试并完成第二批；已推送两份旧记录 `ade50f74`。本次继续第二批的**显式管理员恢复入口**策略，不恢复被拒绝的自动重试候选；最多继续到 2026-09-09 00:02:49（包括部署、实测与交付）。zCode 在隔离 worktree 实现最小现有 API 消费入口，主 Codex 审查与真实恢复；同一明确策略一个实现、一次集中返修，不自动第三轮。**本次有限恢复范围已闭环**：23:11:09 最后一条 HR boundary 自然 delivered，随后只读确认 summary sealed 至 seq 896；不消耗剩余时间扩大范围。
 
 首个试批次为 **2026-09-08 10:16:24—12:16:24（Asia/Shanghai）两小时**，包括准备、执行、记录与交付。先从不同功能域走真实入口，遇到单项失败记录最小复现后继续独立功能；仅共同入口缺陷可插入必要小修。到点交付实际结果与剩余问题，未获下一轮授权不自动续作。资源到期不是 PASS，96 条分母、PDEC-013 产品语义及最终 D/E 完成标准保持不变。
 
 ## 当前可核实结果
 
-- 当前 production application 为 exact `aeaaacb5`；22:30 三服务部署均 SUCCESS，backend/backend-api 运行 source hash 与干净 archive 一致。新增前端管理员显式终态恢复入口，复用已有 API，不改 backend/自动重试/模型。70 项主 Codex 相关检查、i18n、TypeScript/build 通过；CI 前端及 15 旅程 success，backend full suite 尚在执行。启动时 health / frontend 200 不代表此刻 runtime 健康。
+- 当前 production application 为 exact `aeaaacb5`；22:30 三服务部署均 SUCCESS，backend/backend-api 运行 source hash 与干净 archive 一致。新增前端管理员显式终态恢复入口，复用已有 API，不改 backend/自动重试/模型。70 项主 Codex 相关检查、i18n、TypeScript/build 通过；CI `34238046718` 三 job 全部 success。23:04 经 owner 授权仅重启 backend 原部署一次，23:05 health 恢复 ok，23:07 worker/终态消费者 running；未重新构建或重启另外两服务。
 - B2 续接：fresh 文件创建/续写/刷新和 HR 三→五要点草案修订/刷新已通过，草案已拒绝、无员工创建。原两条死信各经正式 UI 恢复一次，旧 boundary 均 delivered、原 admissions 均自然 dispatched/completed；旧文件新 74 B artifact 的预览/下载 HTTP 200/刷新重开通过。旧 HR 草案已拒绝不可原位修改，Agent 保留原记录并生成正确的替代预览，未 provision。
-- **收尾阻塞：backend runtime 不响应。** 22:37 后 HR 刷新持续加载，多个 runtime API 返回 504；公共 health 20 秒超时，容器内 health/OpenAPI 分别 5 秒超时。进程存在且低 CPU；own-role DB 样本无 blocking PID，具体根因未知。HR 最新 summary/boundary 尚未投递完成，替代草案尚未拒绝。已请求 owner 授权仅重启 backend 一次；未操作。不能宣布第二批完全通过，更不提升 0/96。[B2 完整证据](evidence/33f6332f663f6e648f27eb704593876c4de17053/functional-batch-2026-09-08-02.md)
+- **B2 收尾通过：两条原输入、最终摘要/回执、页面刷新与草案拒绝均有实证。** 22:37 起 backend 容器内外请求均超时，根因未知；上述单次重启后 HR 两轮历史、正确替代预览可刷新读回。替代 draft `7ecfd611-7c7e-41a7-b3b9-29d2a5183706` 于 23:05:50 正式拒绝，DB 与再次刷新均确认 rejected、无员工/provision。最新 boundary 经原生回收 attempt 2 于 23:11:09 delivered，summary sealed 至 seq 896；两条 Session 的四条 boundary 全部 delivered，目标 tasks 全部 completed，无 failed transcript 或残留 lease，恢复审计仍恰好两次。重启恢复可用性不是根因修复；独立 trigger 终态事务/过期 fence 错误未诊断。B2 有限恢复通过不提升最终 0/96。[B2 完整证据](evidence/33f6332f663f6e648f27eb704593876c4de17053/functional-batch-2026-09-08-02.md)
 - 现有 `17f073bb` P01 正常双遍、权限负向与 Session/文件 cleanup 保留为历史支持证据，不迁移到新版本；真实断线/worker 重启恢复尚未闭环。**最终 NPTCR=0/96**。
 - 第一批只记实际测试版本、真实身份、可见操作和结果；入口点击不等于整个 Journey，通过数在完整要求完成前不提升。[第一批证据](evidence/17f073bb4f07098e55d9ef1684781dc67cfa454e/functional-batch-2026-09-08-01.md)。
 - 第一批实际操作覆盖个人知识、文件交付、HR、Session 命令、角色 API、Automation、Local Agent、后台/设置八类入口。跑通个人知识粘贴/检索/归档排除/恢复重现、Markdown 预览/下载/刷新重开、MiniMax HR 草案生成/拒绝、已保存 Session 的 context/permissions/usage 面板及部分角色 API 正负向；完整格式/角色/故障要求未跑完，不把八类入口记成八条 Journey PASS。
@@ -51,7 +51,7 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 
 ## 唯一下一动作
 
-等待 owner 对单次 backend 重启的决定；先保留故障机械证据并核对活动任务。若授权，通过 Railway 受支持操作重启同一部署一次，核对 health、HR 刷新、最新 summary/boundary 与草案拒绝，再交付 B2 文档；不重发原输入、不自动第二次重启或第三次 redrive，不启动下一批。截止仍为 2026-09-09 00:02:49。
+交付并推送 B2 收尾文档，等待 owner 选择下一有限批次；不自动重启第二次、不再 redrive、不启动新 Goal/heartbeat。当前两条原输入恢复目标已完成，runtime 不响应的根因、独立 trigger 错误及完整 96 条 D/E 仍未关闭。合成 Session/文件快照按证据登记保留，HR 草案均已拒绝；不是完整 cleanup 声明。
 
 owner 自行修改的共享摘要模型 `zhipu / glm-5.3` 已实时核对。首版无限重试、返修 whole-summary 429 重放仍保持拒绝；本次实现的是明确操作员意图与重算风险确认的既有 API 消费入口。两次恢复均有正式 audit，未提取浏览器 token、伪造身份或手改 DB。完整历史见 B2 文档；目前仍没有完整单旅程吞吐样本，不能可靠外推 96 条总工期。
 

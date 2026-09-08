@@ -1,33 +1,35 @@
 ---
 document_id: weekend-rc-2026-09-08-functional-batch-02
 owner: Codex
-status: in_progress
+status: completed
 authority: bounded-production-functional-evidence
 last_reviewed: 2026-09-08
-source_commit: 33f6332f663f6e648f27eb704593876c4de17053
-verification_status: owner-resumed-explicit-recovery-ui-in-progress
+source_commit: aeaaacb59704ac7631da553c97d699c2cc87bdb4
+verification_status: bounded-input-recovery-and-consumption-verified
 ---
 # 第二批：普通第二轮输入恢复
 
 [当前状态](../../03-current-status.md) · [第一批证据](../17f073bb4f07098e55d9ef1684781dc67cfa454e/functional-batch-2026-09-08-01.md)
+
+当前摘要：**本次有限恢复范围通过并交付**。晚间续接已发布显式管理员恢复 UI，两条旧输入均自然执行完成；fresh 文件/HR 多轮与旧文件交付通过，旧 HR 替代草案刷新及拒绝通过。owner 授权的单次 backend 重启恢复页面可用性，最后 HR boundary 于 23:11:09 delivered，摘要 sealed 至 seq 896。下文保留下午拒绝方案及晚间恢复的时间线，不把下午“未恢复”当作当前状态；不宣称 runtime 根因已修复或完整 96 旅程通过。
 
 ## 范围与出口
 
 - owner 明确要求先 commit/push，再开始下一轮且轮末有文档。已完成 `f4575b0f40a10fe950455c1b0038ec5ab71742a2` 推送，17 文件仅验收文档/证据/对应文档检查；10 项文档测试、Ruff check/format 与 frozen 96 manifest validation 通过。旧未接受应用候选原样保留，未提交。
 - 本批次时间 **2026-09-08 13:38:12—15:38:12（Asia/Shanghai）**；聚焦文件续写、HR 修订被旧 terminal boundary 阻塞的共同断点。zCode GLM-5.3 实现，Codex 审查、集成、部署和真实复验；一个实现方案、一次集中返修，不恢复无限 Goal/heartbeat，不自动开启第三批。
 - 生产应用起点为 `33f6332f`；`f4575b0f` 是文档/测试提交，不是新应用发布。96 条分母与最终 D/E 门不变，起始最终 NPTCR=0/96。
-- 本批已在上限前收束：一个方案及唯一返修均未通过，不自动消耗余下时间生成第三版。结果是定位共同阻塞、排除两种不安全修复，并交付恢复策略选择；**没有恢复文件续写或 HR 修订，没有新增 Journey PASS**。`completed` 仅指本批次交付结束。
+- 下午首轮已在上限前收束：一个方案及唯一返修均未通过，不自动消耗余下时间生成第三版。当时结果是定位共同阻塞、排除两种不安全修复，并交付恢复策略选择；**当时没有恢复文件续写或 HR 修订，没有新增 Journey PASS**。随后 owner 明确授权晚间续接，见后文。
 
 ## 合成效果登记
 
 复用第一批已登记的两个隔离 Session，不读取真实业务内容，不新增员工/外发/权限变更，不重发原输入或直接修改 DB/outbox。必要恢复仅通过经过认证、受支持的产品/控制面入口；源码小修和同源部署沿用已授予的本任务权限。
 
-| 目标 | 已有输入与预期 | 当前状态 / cleanup |
+| 目标 | 已有输入与预期 | 下午首轮快照 / cleanup |
 |---|---|---|
 | 文件 Session `18911e1a-efff-4f49-b304-c7c3e93a30d7` | admission `4e79304d-f5cf-5f92-bf51-8f1327aefdfb`；原 `workspace/WRC-FUNCTIONAL-B1-20260908/file-check.md` 续写 | 本批只读复核仍 pending / boundary dead_letter；未恢复，保留现场 |
 | HR Session `22522912-a9b4-4a8a-98b2-5082d31b997c` | admission `0049d4ed-5c32-5aa1-9b3a-3abf577c9f31`；仅蓝图修订，不 provision | 本批只读复核仍 pending / boundary dead_letter；原蓝图已拒绝，未恢复，保留现场 |
 
-## 当前证据与结果
+## 下午首轮证据与结果
 
 13:42—13:46 通过现有 Railway SSH 对 exact 实验 tenant 做 `app_rls`、`READ ONLY` 事务并 rollback，只读两条已登记 Session 的机械状态。脚本 `tmp/wrc-functional-b1-20260908/inspect_followup_receipts.py`；无 DB/outbox 修改、无重放输入、无 provider 重试。
 
@@ -165,3 +167,30 @@ HR 原草案 `dbd1915e-7201-4e88-82dd-6c40cfe99b3d` 已在上午 11:15 被拒绝
 backend-api 的运行 source hash 已独立 SSH 核对，与 backend 及 exact archive 的 1058 文件 hash 一致。本次 backend 源码没有变化；尚无证据把此次不响应归因于新前端恢复 UI，也不能默认叫环境波动。此时替代 HR 草案未拒绝，HR 刷新和最新 summary/boundary 尚未收尾。
 
 已请求 owner 明确授权仅重启 backend 一次（不改源码/模型/数据，可能中断其他活跃任务，先核对），等待决定。未重启、未再次 redrive、未新增实现任务；第二批保持 in_progress，不把两条旧输入已经执行扩大成完整验收通过。
+
+### Owner 授权的单次 backend 重启
+
+23:01 owner 明确回复“授权”。23:03 经 backend-api 的 app_rls / READ ONLY / exact tenant 核对：验收租户没有 running/pending 任务，原两条目标任务均 completed；HR 最新 boundary 仍 processing / attempt 1、summary watermark 359。其他租户活动未跨权限核验。公共 health 再次 8 秒零字节超时；一次 backend SSH 连接关闭，未产生业务效果。
+
+23:04:18 仅对 production backend service `4eecf029-4acd-4efc-99a5-5d57c007637f` 执行一次受支持 Railway restart，命令 exit 0，返回原 deployment `df2a8aed-1c56-47ee-a2a4-ddd77ae9d711`。没有 rebuild、源码/模型变更、DB 手改、输入重发或再次 redrive；backend-api 与 frontend 未重启。刚提交后 health 502 属于重启期间观察，最终恢复待核对。
+
+应用 commit `aeaaacb5` 的 CI `34238046718` 此时已结束，Backend harness、Frontend gates、15 全栈旅程三个 job 全部 success；不扩大成 96 条验收通过。
+
+23:05 health 恢复 `ok`、source hash 不变；worker 在启动恢复 gate 释放后于 23:07 可见 running，terminal boundary worker 也 running。23:08 health 显示已自然 claimed/delivered 15 条回执，event-loop 当前 lag 1.03ms；另有 `trigger exception terminal transaction did not commit` 的 worker last_error，未在本批定位，不宣称平台所有后台工作健康。
+
+HR 正式刷新后重新加载完整两轮历史，最新预览的 12/7/19/2/21 和全部边界正确。23:05:50 经最新替代草案“拒绝”按钮提交一次；随后 UI 和 app_rls 只读查询均确认 `7ecfd611-7c7e-41a7-b3b9-29d2a5183706` rejected，provisioning_task_id / created_agent_id 仍 null，原草案拒绝时间未改。再刷新后两张卡均显示已拒绝；未创建员工。HR 最新 boundary 被原生租约回收后 attempt 1→2，仍等待自然终态消费完成，没有再次 operator redrive。
+
+### 最终对账与本批出口
+
+23:13 后返回的 app_rls / READ ONLY / exact tenant 查询确认：HR boundary `3d831010-9124-5ea7-84cc-0b4475eb91b5` attempt 2 已于 **23:11:09.345735** delivered；摘要 state sealed / attempt 3，watermark 与 terminal_sequence 均 896，result SHA-256 `3103f105ac544afb245a9e183a1c1f6beb130596dc497cc5a9af8ffa3748fc18`。文件 summary watermark 384 不变。两个旧 Session 的四条 boundary 全 delivered、lease 清空、四个对应 RuntimeTask 全 completed，全部 384/896 个 transcript events 已 projected、无 failed；两条原 admissions 仍各自 dispatched，operator audit 恰好两条，没有再次提交输入或恢复请求。重启后旧文件页面再次刷新，74 B 快照重开仍含原两行和 V2 marker。
+
+| 本批范围 | 最终结论 |
+|---|---|
+| 显式管理员恢复入口 | 已审查、测试、commit/push、同源部署，并真实恢复两条旧死信 |
+| fresh 文件 / HR 普通多轮 | 已通过；HR 同一草案 v2、拒绝与无 provision 有证据 |
+| 原文件第二轮输入 | 已完成实际续写、预览、下载 HTTP 200、刷新与最终摘要/回执 |
+| 原 HR 第二轮输入 | 已完成正确替代草案、刷新、拒绝及最终摘要/回执；原已拒绝草案不冒称原位 v2 |
+| runtime 可用性 | 单次授权重启后恢复；**不响应根因未定位/修复**。另观察到 trigger 终态事务及 stale worker fence 错误，未扩入本批修正 |
+| 全量验收 / cleanup | 最终 NPTCR 仍 0/96；全部 96 条 D/E、完整故障恢复、角色与格式覆盖、rollback 未完成。两组 Session/文件与不可变 artifact 留证，HR 草案已拒绝，未创建员工；完整 cleanup 未声明 |
+
+本轮不再启动代码修订、重启、redrive 或下一批。Ponytail 的最小实现原则体现为复用现有受支持 API，仅补前端消费入口；Task State 沿用既有当前状态/证据文档，未新建平行验收账本。

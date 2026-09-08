@@ -407,5 +407,10 @@ async def transition_goal(
             session=decision.session,
             goal=goal,
         )
+        # continue_session_goal flushes goal mutations (decision ledger, budget
+        # status), which expires the SQL-side updated_at a second time — reload
+        # before the synchronous projection read or it performs implicit IO
+        # (MissingGreenlet -> HTTP 500 after the continuation already launched).
+        await db.refresh(goal)
 
     return {**build_session_goal_projection(goal), "continuation": continuation}

@@ -36,6 +36,45 @@ class _ExecuteDB(_FakeDB):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("admission_state", ["admitted", "rejected", "needs_reconciliation", "cancelled"])
+async def test_goal_continuation_preserves_undispatched_input_receipt(monkeypatch, admission_state):
+    import app.services.goal_continuation_service as service
+    from app.models.agent_session_goal import AgentSessionGoal
+
+    goal = AgentSessionGoal(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        agent_id=uuid4(),
+        chat_session_id=uuid4(),
+        objective="Preserve admission evidence.",
+        status="active",
+    )
+    receipt = {"admission_state": admission_state, "dispatch_status": "not_dispatched", "run": None}
+
+    async def submit(**kwargs):
+        # These facts must be present when the canonical ingress commits.
+        assert goal.continuation_count == 1
+        assert goal.metadata_json["last_continuation_input_id"] == str(kwargs["input_id"])
+        assert goal.metadata_json["goal_decision_ledger"]
+        assert kwargs["role"] == "system"
+        return receipt
+
+    monkeypatch.setattr("app.services.session_live_input.submit_live_human_input", submit)
+    result = await service.continue_session_goal(
+        db=_FakeDB(),
+        goal=goal,
+        agent=SimpleNamespace(id=goal.agent_id, tenant_id=goal.tenant_id),
+        user=SimpleNamespace(id=uuid4()),
+        session=SimpleNamespace(id=goal.chat_session_id),
+    )
+    assert result["ok"] is (admission_state == "admitted")
+    assert result["run"]["input_receipt"] == receipt
+    assert goal.metadata_json["last_continuation_input_receipt"] == receipt
+    assert "last_continuation_started_at" not in goal.metadata_json
+    assert goal.status == ("active" if admission_state == "admitted" else "paused")
+
+
+@pytest.mark.asyncio
 async def test_continue_session_goal_starts_goal_continuation_run(monkeypatch):
     import app.services.goal_continuation_service as service
     from app.models.agent_session_goal import AgentSessionGoal
@@ -59,7 +98,7 @@ async def test_continue_session_goal_starts_goal_continuation_run(monkeypatch):
         calls.append(kwargs)
         return {"run_id": "run-1", "status": "running"}
 
-    monkeypatch.setattr(service, "start_web_chat_run", fake_start_web_chat_run)
+    monkeypatch.setattr(service, "_submit_goal_runtime_input", fake_start_web_chat_run)
 
     result = await service.continue_session_goal(
         db=db,
@@ -73,10 +112,8 @@ async def test_continue_session_goal_starts_goal_continuation_run(monkeypatch):
     assert result["run"]["run_id"] == "run-1"
     assert goal.continuation_count == 1
     assert goal.metadata_json["last_continuation_run_id"] == "run-1"
-    assert calls[0]["runtime_task_type"] == "goal_continuation"
-    assert calls[0]["append_user_message"] is False
-    assert calls[0]["run_id"] == service.goal_continuation_run_id(goal.id, 0)
-    assert calls[0]["extra_metadata"]["goal_id"] == str(goal.id)
+    assert calls[0]["input_id"] == service.goal_continuation_run_id(goal.id, 0)
+    assert calls[0]["extra_runtime_metadata"]["goal_id"] == str(goal.id)
     assert "Finish the parity implementation." in calls[0]["content"]
     decision_entry = goal.metadata_json["goal_decision_ledger"][-1]
     assert decision_entry["previous_terminal_reason"] is None
@@ -106,7 +143,7 @@ async def test_continue_session_goal_marks_budget_limited_without_starting_run(m
     async def fail_start_web_chat_run(**_kwargs):
         raise AssertionError("budget-limited goals must not start a continuation run")
 
-    monkeypatch.setattr(service, "start_web_chat_run", fail_start_web_chat_run)
+    monkeypatch.setattr(service, "_submit_goal_runtime_input", fail_start_web_chat_run)
 
     result = await service.continue_session_goal(
         db=db,
@@ -143,7 +180,7 @@ async def test_continue_session_goal_records_previous_tool_budget_as_usage_limit
     async def fail_start_web_chat_run(**_kwargs):
         raise AssertionError("tool-budget-limited turns must wait for the user")
 
-    monkeypatch.setattr(service, "start_web_chat_run", fail_start_web_chat_run)
+    monkeypatch.setattr(service, "_submit_goal_runtime_input", fail_start_web_chat_run)
 
     result = await service.continue_session_goal(
         db=db,
@@ -359,7 +396,7 @@ async def test_continue_session_goal_accounts_turn_tokens(monkeypatch):
     async def fake_start_web_chat_run(**_kwargs):
         return {"run_id": "run-acct", "status": "running"}
 
-    monkeypatch.setattr(service, "start_web_chat_run", fake_start_web_chat_run)
+    monkeypatch.setattr(service, "_submit_goal_runtime_input", fake_start_web_chat_run)
 
     result = await service.continue_session_goal(
         db=db,
@@ -393,7 +430,7 @@ async def test_continue_session_goal_turn_tokens_over_budget_stops(monkeypatch):
     async def fail_start_web_chat_run(**_kwargs):
         raise AssertionError("must not continue once the turn pushed us over budget")
 
-    monkeypatch.setattr(service, "start_web_chat_run", fail_start_web_chat_run)
+    monkeypatch.setattr(service, "_submit_goal_runtime_input", fail_start_web_chat_run)
 
     result = await service.continue_session_goal(
         db=db,
@@ -474,7 +511,7 @@ async def test_continue_session_goal_retries_provider_error_below_threshold(monk
     async def fake_start_web_chat_run(**_kwargs):
         return {"run_id": "run-retry", "status": "running"}
 
-    monkeypatch.setattr(service, "start_web_chat_run", fake_start_web_chat_run)
+    monkeypatch.setattr(service, "_submit_goal_runtime_input", fake_start_web_chat_run)
 
     result = await service.continue_session_goal(
         db=db,
@@ -511,7 +548,7 @@ async def test_continue_session_goal_blocks_after_three_consecutive_errors(monke
     async def fail_start_web_chat_run(**_kwargs):
         raise AssertionError("a goal blocked after repeated errors must not continue")
 
-    monkeypatch.setattr(service, "start_web_chat_run", fail_start_web_chat_run)
+    monkeypatch.setattr(service, "_submit_goal_runtime_input", fail_start_web_chat_run)
 
     result = await service.continue_session_goal(
         db=db,
@@ -547,7 +584,7 @@ async def test_continue_session_goal_resets_blocked_count_on_clean_turn(monkeypa
     async def fake_start_web_chat_run(**_kwargs):
         return {"run_id": "run-clean", "status": "running"}
 
-    monkeypatch.setattr(service, "start_web_chat_run", fake_start_web_chat_run)
+    monkeypatch.setattr(service, "_submit_goal_runtime_input", fake_start_web_chat_run)
 
     result = await service.continue_session_goal(
         db=db,
@@ -584,7 +621,7 @@ async def test_continuation_prompt_injects_objective_steering_when_pending(monke
     async def fake_start_web_chat_run(**kwargs):
         return {"run_id": "run-steer", "status": "running", "content": kwargs.get("content")}
 
-    monkeypatch.setattr(service, "start_web_chat_run", fake_start_web_chat_run)
+    monkeypatch.setattr(service, "_submit_goal_runtime_input", fake_start_web_chat_run)
 
     result = await service.continue_session_goal(
         db=db,
@@ -699,3 +736,86 @@ async def test_loop_delivered_turn_feeds_active_goal_continuation(monkeypatch):
 
     assert result["ok"] is True
     assert calls and calls[0]["goal"] is goal
+
+
+# --- B4: walltime budget enforced pre-dispatch ----------------------------
+
+
+@pytest.mark.asyncio
+async def test_continue_session_goal_rejects_already_expired_time_budget(monkeypatch):
+    """Production B4 shape: a 600s budget whose wallclock already elapsed must
+    park the goal at budget_limited BEFORE any run/input is dispatched."""
+    from datetime import datetime, timedelta, timezone
+
+    import app.services.goal_continuation_service as service
+    from app.models.agent_session_goal import AgentSessionGoal
+
+    goal = AgentSessionGoal(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        agent_id=uuid4(),
+        chat_session_id=uuid4(),
+        objective="Bounded in wallclock time.",
+        status="active",
+        time_budget_seconds=600,
+        created_at=datetime.now(timezone.utc) - timedelta(seconds=700),
+    )
+    db = _FakeDB()
+
+    async def fail_submit(**_kwargs):
+        raise AssertionError("an already-expired time budget must not dispatch a continuation input")
+
+    monkeypatch.setattr(service, "_submit_goal_runtime_input", fail_submit)
+
+    result = await service.continue_session_goal(
+        db=db,
+        agent=SimpleNamespace(id=goal.agent_id, name="Agent", tenant_id=goal.tenant_id),
+        user=SimpleNamespace(id=uuid4()),
+        session=SimpleNamespace(id=goal.chat_session_id),
+        goal=goal,
+    )
+
+    assert result["ok"] is False
+    assert result["decision"]["reason"] == "time budget exhausted"
+    assert result["decision"]["next_status"] == "budget_limited"
+    assert goal.status == "budget_limited"
+    decision_entry = goal.metadata_json["goal_decision_ledger"][-1]
+    assert decision_entry["stop_reason"] == "time budget exhausted"
+    assert decision_entry["user_visible_next_action"] == "show_budget_limit_prompt"
+    assert goal.continuation_count == 0
+
+
+@pytest.mark.asyncio
+async def test_continue_session_goal_allows_in_budget_wallclock(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    import app.services.goal_continuation_service as service
+    from app.models.agent_session_goal import AgentSessionGoal
+
+    goal = AgentSessionGoal(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        agent_id=uuid4(),
+        chat_session_id=uuid4(),
+        objective="Still inside the declared wallclock budget.",
+        status="active",
+        time_budget_seconds=600,
+        created_at=datetime.now(timezone.utc) - timedelta(seconds=10),
+    )
+    db = _FakeDB()
+
+    async def fake_submit(**_kwargs):
+        return {"run_id": "run-in-budget", "status": "pending"}
+
+    monkeypatch.setattr(service, "_submit_goal_runtime_input", fake_submit)
+
+    result = await service.continue_session_goal(
+        db=db,
+        agent=SimpleNamespace(id=goal.agent_id, name="Agent", tenant_id=goal.tenant_id),
+        user=SimpleNamespace(id=uuid4()),
+        session=SimpleNamespace(id=goal.chat_session_id),
+        goal=goal,
+    )
+
+    assert result["ok"] is True
+    assert goal.continuation_count == 1

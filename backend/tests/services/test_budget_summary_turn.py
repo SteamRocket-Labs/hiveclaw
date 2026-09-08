@@ -102,7 +102,7 @@ async def test_summary_only_run_issues_exactly_one_finalization_turn(monkeypatch
     async def fake_broadcast(agent_id, session_id, event):
         broadcasts.append((agent_id, session_id, event))
 
-    monkeypatch.setattr(svc, "start_web_chat_run", fake_start)
+    monkeypatch.setattr(svc, "_submit_goal_runtime_input", fake_start)
     monkeypatch.setattr(svc, "broadcast_web_chat_event", fake_broadcast)
 
     db = _SeqDB([goal, agent, session, user])
@@ -119,7 +119,7 @@ async def test_summary_only_run_issues_exactly_one_finalization_turn(monkeypatch
     assert result["reason"] == "budget_summary_issued"
     assert len(started_runs) == 1
     kwargs = started_runs[0]
-    extra = kwargs["extra_metadata"]
+    extra = kwargs["extra_runtime_metadata"]
     assert extra["budget_summary_turn"] is True
     assert extra["budget_run_id"] == str(budget_run_id)
     assert extra["goal_id"] == str(goal.id)
@@ -154,7 +154,7 @@ async def test_summary_wake_never_double_issues_and_never_continues_normally(mon
     async def fail_continue(**_kwargs):
         raise AssertionError("must not fall through to a normal continuation on summary_only")
 
-    monkeypatch.setattr(svc, "start_web_chat_run", fail_start)
+    monkeypatch.setattr(svc, "_submit_goal_runtime_input", fail_start)
     monkeypatch.setattr(svc, "continue_session_goal", fail_continue)
 
     async def noop_broadcast(*_args):
@@ -254,7 +254,7 @@ async def test_failed_summary_turn_retries_once_then_seals_with_summary_failed(m
         retry_runs.append(kwargs)
         return {"run_id": "summary-run-2", "status": "pending"}
 
-    monkeypatch.setattr(svc, "start_web_chat_run", fake_start)
+    monkeypatch.setattr(svc, "_submit_goal_runtime_input", fake_start)
 
     db = _SeqDB([agent, session, user, goal])
     first = await svc.maybe_continue_session_goal_after_turn(
@@ -272,7 +272,7 @@ async def test_failed_summary_turn_retries_once_then_seals_with_summary_failed(m
     )
     assert first["reason"] == "budget_summary_retry"
     assert len(retry_runs) == 1
-    assert retry_runs[0]["extra_metadata"]["summary_attempt"] == 2
+    assert retry_runs[0]["extra_runtime_metadata"]["summary_attempt"] == 2
     assert retry_service.hard_stops == []
 
     # Second failure: issued->retried CAS loses, retried->failed CAS wins, lane seals.

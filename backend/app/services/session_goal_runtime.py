@@ -156,6 +156,16 @@ def build_goal_decision_entry(
     )
 
 
+def goal_time_used_seconds(created_at: Any, now: Any) -> int:
+    """Wallclock seconds consumed by the goal, matching the user-facing
+    projection contract (session_goal_projection: elapsed since created_at;
+    paused time counts — the declared budget is a total, not a run clock)."""
+    if created_at is None or now is None:
+        return 0
+    delta = (now - created_at).total_seconds()
+    return max(0, int(delta))
+
+
 def should_continue_goal(
     goal: SessionGoal,
     *,
@@ -164,6 +174,7 @@ def should_continue_goal(
     active_run_exists: bool,
     ephemeral: bool = False,
     previous_terminal_reason: str | None = None,
+    time_used_seconds: int | None = None,
 ) -> GoalContinuationDecision:
     previous_decision = _previous_terminal_decision(previous_terminal_reason)
     if previous_decision is not None:
@@ -182,6 +193,20 @@ def should_continue_goal(
         return GoalContinuationDecision(
             continue_goal=False,
             reason="token budget exhausted",
+            next_status=GoalStatus.BUDGET_LIMITED,
+        )
+    # Walltime budget: enforced pre-dispatch with the same total-wallclock
+    # semantics the projection already shows the user. Exhaustion parks the
+    # goal at BUDGET_LIMITED (visible, resumable control surface); resume does
+    # not renew the numeric budget — an explicit goal update is required.
+    if (
+        goal.time_budget_seconds is not None
+        and time_used_seconds is not None
+        and time_used_seconds >= goal.time_budget_seconds
+    ):
+        return GoalContinuationDecision(
+            continue_goal=False,
+            reason="time budget exhausted",
             next_status=GoalStatus.BUDGET_LIMITED,
         )
     if goal.max_continuation_turns is not None and goal.continuation_count >= goal.max_continuation_turns:

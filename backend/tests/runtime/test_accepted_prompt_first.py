@@ -559,7 +559,7 @@ async def test_goal_continuation_dispatches_through_web_chat_gate_accepted_promp
         captured.update(kwargs)
         return {"run_id": "run-goal-1", "status": "running"}
 
-    monkeypatch.setattr(goal_service, "start_web_chat_run", fake_start)
+    monkeypatch.setattr(goal_service, "_submit_goal_runtime_input", fake_start)
 
     class _DB:
         async def flush(self):
@@ -586,10 +586,10 @@ async def test_goal_continuation_dispatches_through_web_chat_gate_accepted_promp
 
     result = await goal_service.continue_session_goal(db=_DB(), agent=agent, user=user, session=session, goal=goal)
 
-    # Kernel dispatch is delegated to the proven web-chat gate.
-    assert captured.get("runtime_task_type") == "goal_continuation"
-    assert captured.get("append_user_message") is False
-    assert captured["extra_metadata"]["source"] == "goal_continuation"
+    # Kernel dispatch is delegated to the canonical V2 input lane, which starts
+    # the run through the proven web-chat gate with an admitted input bound.
+    assert captured["extra_runtime_metadata"]["goal_id"] == str(goal.id)
+    assert "ship the report" in captured["content"]
     assert result["ok"] is True
     assert result["run"]["run_id"] == "run-goal-1"
 

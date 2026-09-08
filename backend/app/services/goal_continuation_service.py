@@ -33,17 +33,67 @@ from app.services.session_goal_runtime import (
     SessionGoal,
     account_goal_tokens,
     build_goal_decision_entry,
+    goal_time_used_seconds,
     mark_goal_blocked_if_repeated,
     should_continue_goal,
 )
-from app.services.web_chat_runtime import broadcast_web_chat_event, start_web_chat_run
+from app.services.web_chat_runtime import broadcast_web_chat_event
 
 # A6: how many consecutive retriable terminal errors before a goal is Blocked.
 _BLOCKED_THRESHOLD = 3
 
 
+async def _submit_goal_runtime_input(
+    *,
+    db: AsyncSession,
+    agent: Agent,
+    user: User,
+    session: ChatSession,
+    content: str,
+    input_id: uuid.UUID,
+    idempotency_key: str,
+    extra_runtime_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Route one runtime-authored Goal turn through the canonical V2 ingress.
+
+    The model round assembles turn input exclusively from admitted
+    SessionTurnInput rows (``bind_round_inputs`` -> ``input_parts_to_runtime_messages``).
+    Calling ``start_web_chat_run(append_user_message=False)`` directly leaves the
+    continuation prompt only on the RuntimeTask, so the assembled provider request
+    carries no goal content at all — observed in production as bound_input_ids=[]
+    with only the system prompt and its dynamic-suffix notice. Submitting through
+    ``submit_live_human_input`` keeps authority, redaction, admission, idempotency
+    and dispatch in the existing lane; ``role="system"`` preserves runtime (not
+    user) provenance for the authored continuation guidance.
+    """
+    from app.services.session_live_input import submit_live_human_input
+
+    receipt = await submit_live_human_input(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        content=content,
+        source="goal_continuation",
+        input_id=input_id,
+        idempotency_key=idempotency_key,
+        requested_kind="start_turn",
+        role="system",
+        runtime_metadata={
+            "runtime_task_type": "goal_continuation",
+            "budget_interactive": False,
+            **dict(extra_runtime_metadata or {}),
+        },
+    )
+    return {
+        **dict(receipt.get("run") or {}),
+        "ok": receipt.get("admission_state") not in {"rejected", "cancelled", "needs_reconciliation"},
+        "input_receipt": receipt,
+    }
+
+
 def goal_continuation_run_id(goal_id: uuid.UUID, continuation_count: int) -> uuid.UUID:
-    """Stable run identity for one logical Goal continuation turn."""
+    """Stable SessionTurnInput identity for one logical Goal continuation turn."""
 
     return uuid.uuid5(goal_id, f"continuation:{max(0, int(continuation_count))}")
 
@@ -66,17 +116,21 @@ def _goal_to_runtime_model(goal: AgentSessionGoal) -> SessionGoal:
     )
 
 
-def _prompt_state(goal: AgentSessionGoal) -> ThreadGoalPromptState:
+def _prompt_state(goal: AgentSessionGoal, *, now: datetime | None = None) -> ThreadGoalPromptState:
+    current = now or datetime.now(timezone.utc)
+    created_at = getattr(goal, "created_at", None)
+    if created_at is not None and created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
     return ThreadGoalPromptState(
         objective=goal.objective,
         tokens_used=goal.tokens_used or 0,
         token_budget=goal.token_budget,
-        time_used_seconds=0,
+        time_used_seconds=goal_time_used_seconds(created_at, current),
     )
 
 
-def _continuation_prompt(goal: AgentSessionGoal) -> str:
-    return continuation_prompt(_prompt_state(goal))
+def _continuation_prompt(goal: AgentSessionGoal, *, now: datetime | None = None) -> str:
+    return continuation_prompt(_prompt_state(goal, now=now))
 
 
 def _progress_evidence_from_metadata(metadata: dict[str, Any]) -> list[str]:
@@ -142,6 +196,11 @@ async def continue_session_goal(
 ) -> dict[str, Any]:
     reason = str(previous_terminal_reason or "").strip()
     runtime_goal = _goal_to_runtime_model(goal)
+    now = datetime.now(timezone.utc)
+    created_at = getattr(goal, "created_at", None)
+    if created_at is not None and created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    time_used_seconds = goal_time_used_seconds(created_at, now)
 
     # A6: bounded tolerance for retriable provider/turn/persistence errors. Each
     # consecutive occurrence bumps blocked_count; at the threshold the goal is
@@ -181,6 +240,7 @@ async def continue_session_goal(
             active_run_exists=active_run_exists,
             ephemeral=ephemeral,
             previous_terminal_reason=effective_previous_reason,
+            time_used_seconds=time_used_seconds,
         )
         if retry_reason and decision.continue_goal:
             decision = decision.model_copy(update={"reason": retry_reason})
@@ -203,7 +263,7 @@ async def continue_session_goal(
         if decision.next_status is not None:
             goal.status = decision.next_status.value
             if decision.next_status == GoalStatus.BUDGET_LIMITED:
-                metadata["budget_limit_prompt"] = budget_limit_prompt(_prompt_state(goal))
+                metadata["budget_limit_prompt"] = budget_limit_prompt(_prompt_state(goal, now=now))
         goal.metadata_json = metadata
         await db.flush()
         return {"ok": False, "goal_id": str(goal.id), "decision": decision_payload}
@@ -214,45 +274,51 @@ async def continue_session_goal(
 
     # A7: if the objective was re-scoped via update_goal, re-orient this turn and
     # consume the one-shot steering flag so later turns do not repeat it.
-    prompt = _continuation_prompt(goal)
+    prompt = _continuation_prompt(goal, now=now)
     if metadata.get("objective_updated_pending"):
-        prompt = f"{objective_updated_prompt(_prompt_state(goal))}\n\n{prompt}"
+        prompt = f"{objective_updated_prompt(_prompt_state(goal, now=now))}\n\n{prompt}"
         metadata["objective_updated_pending"] = False
 
     continuation_index = int(goal.continuation_count or 0)
-    continuation_run_id = goal_continuation_run_id(goal.id, continuation_index)
-    run = await start_web_chat_run(
+    continuation_input_id = goal_continuation_run_id(goal.id, continuation_index)
+    # The ingress commits internally: persist the count, decision, and input
+    # identity with it so recovery can reconcile an accepted but undispatched turn.
+    goal.continuation_count = continuation_index + 1
+    metadata.update(
+        {
+            "last_continuation_input_id": str(continuation_input_id),
+            "last_continuation_prompt": prompt,
+        }
+    )
+    goal.metadata_json = metadata
+    run = await _submit_goal_runtime_input(
         db=db,
         agent=agent,
         user=user,
         session=session,
         content=prompt,
-        display_content="",
-        file_name="",
-        append_user_message=False,
-        runtime_task_type="goal_continuation",
-        budget_interactive=False,
-        run_id=continuation_run_id,
-        extra_metadata={
-            "source": "goal_continuation",
+        input_id=continuation_input_id,
+        idempotency_key=f"session-goal:{goal.id}:continuation:{continuation_index}",
+        extra_runtime_metadata={
             "goal_id": str(goal.id),
             "goal_objective": goal.objective,
             "continuation_count_before": continuation_index,
-            "intent_id": f"goal:{goal.id}:continuation:{continuation_index}",
         },
     )
 
-    goal.continuation_count = (goal.continuation_count or 0) + 1
-    metadata.update(
-        {
-            "last_continuation_run_id": run.get("run_id"),
-            "last_continuation_started_at": datetime.now(timezone.utc).isoformat(),
-            "last_continuation_prompt": prompt,
-        }
-    )
+    receipt = dict(run.get("input_receipt") or {})
+    metadata["last_continuation_input_receipt"] = receipt
+    metadata["last_continuation_run_id"] = run.get("run_id")
+    if run.get("run_id"):
+        metadata["last_continuation_started_at"] = datetime.now(timezone.utc).isoformat()
+    else:
+        metadata.pop("last_continuation_started_at", None)
+    admitted = bool(run.get("ok", True))
+    if not admitted:
+        goal.status = GoalStatus.PAUSED.value
     goal.metadata_json = metadata
     await db.flush()
-    return {"ok": True, "goal_id": str(goal.id), "decision": decision_payload, "run": run}
+    return {"ok": admitted, "goal_id": str(goal.id), "decision": decision_payload, "run": run}
 
 
 def _summary_goal_prompt_state(goal: AgentSessionGoal | None) -> ThreadGoalPromptState:
@@ -366,19 +432,15 @@ async def _handle_budget_summary_turn_completion(
             )
             await _finalize_goal_after_summary(db, goal_id=goal_id, outcome="summary_failed")
             return {"ok": False, "reason": "summary_retry_context_missing"}
-        run = await start_web_chat_run(
+        run = await _submit_goal_runtime_input(
             db=db,
             agent=agent,
             user=user,
             session=session,
             content=budget_summary_contract_prompt(_summary_goal_prompt_state(goal)),
-            display_content="",
-            file_name="",
-            append_user_message=False,
-            runtime_task_type="goal_continuation",
-            budget_interactive=False,
-            extra_metadata={
-                "source": "goal_continuation",
+            input_id=uuid.uuid5(budget_run_id, "budget-summary-retry-input"),
+            idempotency_key=f"session-goal:budget-summary:{budget_run_id}:retry",
+            extra_runtime_metadata={
                 "budget_summary_turn": True,
                 "budget_summary_tenant_id": str(tenant_id) if tenant_id else None,
                 "budget_run_id": str(budget_run_id),
@@ -386,7 +448,13 @@ async def _handle_budget_summary_turn_completion(
                 "summary_attempt": 2,
             },
         )
-        return {"ok": True, "reason": "budget_summary_retry", "run": run}
+        if not run.get("ok", True):
+            await _finalize_goal_after_summary(db, goal_id=goal_id, outcome="summary_input_not_admitted")
+        return {
+            "ok": bool(run.get("ok", True)),
+            "reason": "budget_summary_retry" if run.get("ok", True) else "summary_input_not_admitted",
+            "run": run,
+        }
 
     # Second failure: seal the lane and surface the failure to the session.
     sealed = await service.mark_summary_turn_state(
@@ -464,19 +532,15 @@ async def _maybe_issue_budget_summary_turn(
         str(session.id),
         build_phase_event(RuntimePhase.AWAITING_BUDGET, detail={"budget_run_id": str(budget_run_id)}),
     )
-    summary_run = await start_web_chat_run(
+    summary_run = await _submit_goal_runtime_input(
         db=db,
         agent=agent,
         user=user,
         session=session,
         content=budget_summary_contract_prompt(_summary_goal_prompt_state(goal)),
-        display_content="",
-        file_name="",
-        append_user_message=False,
-        runtime_task_type="goal_continuation",
-        budget_interactive=False,
-        extra_metadata={
-            "source": "goal_continuation",
+        input_id=uuid.uuid5(budget_run_id, "budget-summary-input"),
+        idempotency_key=f"session-goal:budget-summary:{budget_run_id}",
+        extra_runtime_metadata={
             "budget_summary_turn": True,
             "budget_summary_tenant_id": str(agent.tenant_id) if agent.tenant_id else None,
             "budget_run_id": str(budget_run_id),
@@ -486,12 +550,15 @@ async def _maybe_issue_budget_summary_turn(
     )
     goal_metadata = dict(goal.metadata_json or {})
     goal_metadata["budget_summary_run_id"] = summary_run.get("run_id")
+    goal_metadata["budget_summary_input_id"] = str(uuid.uuid5(budget_run_id, "budget-summary-input"))
     goal_metadata["budget_summary_issued_at"] = datetime.now(timezone.utc).isoformat()
     goal.metadata_json = goal_metadata
     await db.flush()
+    if not summary_run.get("ok", True):
+        await _finalize_goal_after_summary(db, goal_id=goal.id, outcome="summary_input_not_admitted")
     return {
-        "ok": True,
-        "reason": "budget_summary_issued",
+        "ok": bool(summary_run.get("ok", True)),
+        "reason": "budget_summary_issued" if summary_run.get("ok", True) else "summary_input_not_admitted",
         "budget_run_id": str(budget_run_id),
         "run": summary_run,
     }

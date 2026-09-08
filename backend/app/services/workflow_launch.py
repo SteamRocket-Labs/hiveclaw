@@ -180,6 +180,46 @@ async def resolve_agent_runtime(
     return agent, model
 
 
+async def _verify_workflow_requester_user(
+    requester_user_id: uuid.UUID,
+    *,
+    tenant_id: uuid.UUID | str,
+    session_factory=None,
+) -> bool:
+    """Confirm the requester still resolves as a User at the existing
+    tenant-scoped boundary (mirrors the tool runtime's own lookup in
+    ``_load_workspace_authority_scope`` — existence check, no widening)."""
+
+    from sqlalchemy import select
+
+    from app.database import tenant_scoped_session
+    from app.models.user import User
+
+    async with tenant_scoped_session(
+        tenant_id, session_factory=session_factory, source="workflow_requester_resolution"
+    ) as db:
+        user = (await db.execute(select(User).where(User.id == requester_user_id))).scalar_one_or_none()
+        return user is not None
+
+
+def _workflow_requester_from_task(task: Any) -> uuid.UUID:
+    """Canonical requester for a persisted workflow run:
+    ``runtime_tasks.root_user_id`` only, with the metadata consistency check.
+    Raises :class:`RuntimeTaskRequesterUnavailable` (typed, recoverable) when
+    the durable authority is missing/invalid/inconsistent — never substitutes
+    another principal."""
+
+    from app.services.runtime_task_authority import runtime_task_requester_user_id
+
+    return runtime_task_requester_user_id(
+        {
+            "task_id": str(task.id),
+            "root_user_id": task.root_user_id,
+            "metadata": dict(task.metadata_json or {}),
+        }
+    )
+
+
 async def start_ephemeral_workflow_for_agent(
     *,
     agent_id: uuid.UUID,
@@ -203,22 +243,42 @@ async def start_ephemeral_workflow_for_agent(
     Risk gating happens BEFORE this function (tool intercept / REST gate);
     this is the post-confirmation launch path shared by both surfaces.
     """
-    agent, model = await resolve_agent_runtime(agent_id, session_factory=session_factory)
+    # The runtime (model/tenant) must still resolve before a run is created;
+    # the model itself is re-resolved per leaf by the shared executor.
+    agent, _model = await resolve_agent_runtime(agent_id, session_factory=session_factory)
     tenant_id = agent.tenant_id
     if tenant_id is None:
         raise LookupError(f"agent {agent_id} has no tenant — refusing tenant-less workflow run")
 
-    ctx = SubagentSpawnContext(
-        parent_agent_id=agent.id,
-        parent_user_id=user_id or agent.id,
-        model=model,
-        parent_agent_name=getattr(agent, "name", "Agent"),
-        role_description=getattr(agent, "role_description", "") or "",
-        tenant_id=tenant_id,
-        budget_run_id=str(budget_run_id) if budget_run_id else None,
-    )
+    # Early typed gate only for the explicitly authenticated principal: fail
+    # before creating a run when that user no longer resolves. A headless
+    # launch (user_id=None) deliberately defers requester resolution to the
+    # persisted RuntimeTask after `_ensure_run_session` has restored the
+    # canonical root user (parent-session user, else agent owner) — the same
+    # single source the resume executor consumes, never a parallel fallback.
+    if user_id is not None:
+        requester_user_id = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
+        if not await _verify_workflow_requester_user(
+            requester_user_id, tenant_id=tenant_id, session_factory=session_factory
+        ):
+            from app.services.runtime_task_authority import RuntimeTaskRequesterUnavailable
+
+            raise RuntimeTaskRequesterUnavailable(
+                reason_code="workflow_requester_user_not_found",
+                evidence={
+                    "authority_source": "launch.user_id",
+                    "agent_id": str(agent.id),
+                    "root_user_id": str(requester_user_id),
+                },
+            )
+
+    # Single shared leaf executor: every leaf — synchronous fresh start,
+    # worker-claimed fresh run, or daemon resume — resolves the REAL
+    # requester/session/budget from the persisted RuntimeTask
+    # (``root_user_id`` + bound sessions), so fresh and resumed leaves can
+    # never disagree about the acting principal.
+    executor = build_resumable_workflow_leaf_executor(session_factory=session_factory, spawn=spawn)
     service = WorkflowRuntimeService(session_factory=session_factory)
-    executor = build_subagent_leaf_executor(ctx, spawn=spawn)
     delivery_target = None
     try:
         from app.services.channel_delivery_service import channel_delivery_target
@@ -318,12 +378,17 @@ def build_resumable_workflow_leaf_executor(
     session_factory=None,
     spawn=spawn_subagent,
 ) -> LeafExecutor:
-    """Leaf executor for startup/signal resumes.
+    """Leaf executor for startup/signal resumes and worker-claimed runs.
 
-    A daemon resume receives only a ``LeafRequest``. The original run metadata
-    carries ``parent_agent_id`` + tenant, so this executor resolves that agent
-    on each leaf and then delegates to the normal real-spawn executor.
+    A daemon/worker resume receives only a ``LeafRequest``. The persisted run
+    carries the canonical requester (``runtime_tasks.root_user_id``) plus
+    parent session, so each leaf restores the REAL authenticated principal
+    from those trusted records and then delegates to the normal real-spawn
+    executor. Missing/invalid requester authority fails this leaf typed —
+    it never substitutes the agent id or any other principal.
     """
+
+    from app.services.runtime_task_authority import RuntimeTaskRequesterUnavailable
 
     async def leaf(request: LeafRequest) -> LeafOutcome:
         service = WorkflowRuntimeService(session_factory=session_factory)
@@ -332,9 +397,31 @@ def build_resumable_workflow_leaf_executor(
         loaded = await service.load_run(run_id, tenant_id=tenant_value)
         if loaded is None:
             return LeafOutcome(ok=False, error=f"workflow run {run_id} not found for resume")
-        agent_id = loaded.task.parent_agent_id
+        task = loaded.task
+        agent_id = task.parent_agent_id
         if agent_id is None:
             return LeafOutcome(ok=False, error=f"workflow run {run_id} has no parent agent for real leaf resume")
+
+        try:
+            requester_user_id = _workflow_requester_from_task(task)
+        except RuntimeTaskRequesterUnavailable as exc:
+            return LeafOutcome(
+                ok=False,
+                error=(
+                    f"workflow run {run_id} requester authority unavailable "
+                    f"({exc.reason_code}); safe recovery: reconcile runtime_tasks.root_user_id"
+                ),
+            )
+        if not await _verify_workflow_requester_user(
+            requester_user_id, tenant_id=tenant_value, session_factory=session_factory
+        ):
+            return LeafOutcome(
+                ok=False,
+                error=(
+                    f"workflow run {run_id} requester {requester_user_id} no longer resolves "
+                    "at the tenant boundary; safe recovery: restore owner access before resuming"
+                ),
+            )
 
         agent, model = await resolve_agent_runtime(agent_id, tenant_id=tenant_value, session_factory=session_factory)
         tenant_id = agent.tenant_id
@@ -343,11 +430,17 @@ def build_resumable_workflow_leaf_executor(
 
         ctx = SubagentSpawnContext(
             parent_agent_id=agent.id,
-            parent_user_id=agent.id,
+            parent_user_id=requester_user_id,
             model=model,
             parent_agent_name=getattr(agent, "name", "Agent"),
             role_description=getattr(agent, "role_description", "") or "",
             tenant_id=tenant_id,
+            parent_session_id=(
+                str(task.parent_session_id or task.root_session_id)
+                if (task.parent_session_id or task.root_session_id)
+                else None
+            ),
+            budget_run_id=str(task.budget_run_id) if task.budget_run_id else None,
         )
         executor = build_subagent_leaf_executor(ctx, spawn=spawn)
         return await executor(request)

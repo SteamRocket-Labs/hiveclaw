@@ -1153,6 +1153,10 @@ class WorkflowRuntimeService:
                 if task is not None:
                     task.parent_session_id = str(new_session_id)
                     task.child_session_id = str(new_session_id)
+                    # The freshly bound headless session is owned by the same
+                    # resolved principal — persist it as the canonical root so
+                    # leaf execution (fresh or resumed) reads one authority.
+                    task.root_user_id = uuid.UUID(resolved_user)
                     metadata = dict(task.metadata_json or {})
                     metadata["parent_session_id"] = str(new_session_id)
                     metadata["root_session_id"] = str(new_session_id)

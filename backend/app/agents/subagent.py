@@ -120,6 +120,7 @@ _WORKER_ALLOWED_TOOLS: tuple[str, ...] = (
     "read_file",
     "write_file",
     "edit_file",
+    "execute_code",
     "glob_search",
     "grep_search",
     "load_skill",

@@ -118,6 +118,14 @@ def test_resolve_tools_explicit_allowed_overrides_preset():
     assert allowed == ("read_file",)
 
 
+def test_general_purpose_can_compute_without_widening_readonly_presets():
+    allowed, _ = resolve_subagent_tools(SubagentSpec(name="compute", type="general-purpose"))
+    assert "execute_code" in allowed
+    for role in ("explorer", "critic"):
+        readonly, _ = resolve_subagent_tools(SubagentSpec(name="verify", type=role))
+        assert "execute_code" not in readonly
+
+
 def test_resolve_tools_dedups_exclusions():
     _, excluded = resolve_subagent_tools(
         SubagentSpec(name="e", type="explorer", excluded_tools=("delegate_to_agent", "custom_tool"))

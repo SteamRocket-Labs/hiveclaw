@@ -401,3 +401,96 @@ async def test_resume_leaf_unresolvable_requester_user_fails_typed(owner_session
 
     assert not outcome.ok
     assert "no longer resolves" in (outcome.error or "")
+
+
+async def test_workflow_native_spawn_preserves_run_session_and_permission_authority(
+    owner_sessionmaker, tenant_id, world, monkeypatch
+):
+    from app.agents import subagent
+    from app.runtime.invoker import _permission_profile_from_session_context, _tool_frame_kwargs_from_session_context
+    from app.runtime.recovery_manifest_store import resolve_recovery_authority
+    from app.tools.resolver import ToolRuntimeResolver
+
+    run_id = await _insert_workflow_task(
+        owner_sessionmaker, tenant_id=tenant_id, world=world, root_user_id=world.user_id
+    )
+    profile = {
+        "mode": "default",
+        "allowed_tools": ["read_file"],
+        "writable_roots": ["workspace/b4"],
+        "readable_roots": ["workspace/b4"],
+        "capability_policy_snapshot": {"session_exact_scope": True},
+    }
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as db:
+        parent = await db.get(ChatSession, world.session_id)
+        parent.transcript_metadata_json = {"permission_profile": profile}
+    _patch_tool_boundary_sessions(monkeypatch, owner_sessionmaker)
+    seen = []
+    from app import database
+    from app.tools import workspace
+
+    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
+    monkeypatch.setattr(workspace, "async_session", owner_sessionmaker)
+
+    async def invoke(request):
+        # Exercise native spawn and the same downstream resolvers as the live
+        # kernel. The provider is replaced; no live sandbox claim is made here.
+        assert "execute_code" in request.allowed_tool_names
+        assert request.session_context.session_id == str(world.session_id)
+        frame = _tool_frame_kwargs_from_session_context(request.session_context)
+        assert frame["runtime_task_id"] == str(run_id)
+        permission = _permission_profile_from_session_context(request.session_context)
+        assert permission.capability_policy_snapshot["session_exact_scope"] is True
+        assert list(permission.allowed_tools) == ["read_file"]
+        runtime = await ToolRuntimeResolver().resolve(
+            agent_id=request.agent_id,
+            user_id=request.user_id,
+            session_id=request.session_context.session_id,
+            runtime_task_id=frame["runtime_task_id"],
+            permission_profile=permission,
+        )
+        assert runtime.runtime_task_id == str(run_id)
+        authority = resolve_recovery_authority(request, SimpleNamespace(tenant_id=tenant_id))
+        assert authority.status == "bound"
+        from app.services import agent_tools
+
+        denied = await agent_tools._get_tool_runtime_service().execute(
+            "execute_code",
+            {"language": "python", "code": "print(31 + 49)"},
+            agent_id=request.agent_id,
+            user_id=request.user_id,
+            session_id=request.session_context.session_id,
+            runtime_task_id=frame["runtime_task_id"],
+            permission_profile=permission,
+        )
+        assert "exact_session_tool_scope_denied" in str(denied)
+        seen.append(request.session_context.metadata["turn_id"])
+        return SimpleNamespace(content="native context bound", tokens_used=1)
+
+    async def spawn(ctx, spec, task, *, budget=None):
+        return await subagent.spawn_subagent(ctx, spec, task, budget=budget, invoke=invoke)
+
+    executor = build_resumable_workflow_leaf_executor(session_factory=owner_sessionmaker, spawn=spawn)
+    for leaf_id in ("item-0", "item-1"):
+        request = _leaf_request(run_id, tenant_id)
+        request.leaf_id = leaf_id
+        outcome = await executor(request)
+        assert outcome.ok, outcome.error
+    assert len(set(seen)) == 2
+
+
+async def test_workflow_leaf_missing_bound_session_fails_before_spawn(owner_sessionmaker, tenant_id, world):
+    run_id = await _insert_workflow_task(
+        owner_sessionmaker, tenant_id=tenant_id, world=world, root_user_id=world.user_id
+    )
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as db:
+        task = await db.get(RuntimeTask, run_id)
+        task.child_session_id = str(uuid.uuid4())
+
+    async def spawn(*args, **kwargs):
+        raise AssertionError("spawn must not run without its bound session")
+
+    executor = build_resumable_workflow_leaf_executor(session_factory=owner_sessionmaker, spawn=spawn)
+    outcome = await executor(_leaf_request(run_id, tenant_id))
+    assert not outcome.ok
+    assert "workflow_session_not_found" in outcome.error

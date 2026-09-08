@@ -428,6 +428,33 @@ def build_resumable_workflow_leaf_executor(
         if tenant_id is None:
             return LeafOutcome(ok=False, error=f"agent {agent_id} has no tenant for workflow resume")
 
+        from sqlalchemy import select
+
+        from app.database import tenant_scoped_session
+        from app.models.chat_session import ChatSession
+
+        session_id = task.child_session_id or task.parent_session_id or task.root_session_id
+        async with tenant_scoped_session(tenant_id, session_factory=session_factory) as db:
+            session = (
+                await db.execute(
+                    select(ChatSession).where(
+                        ChatSession.id == session_id,
+                        ChatSession.agent_id == agent_id,
+                        ChatSession.tenant_id == tenant_id,
+                    )
+                )
+            ).scalar_one_or_none()
+        if session is None:
+            return LeafOutcome(
+                ok=False,
+                error=(
+                    f"workflow run {run_id} session authority unavailable "
+                    "(workflow_session_not_found); safe recovery: restore the bound agent session"
+                ),
+            )
+        task_metadata = dict(task.metadata_json or {})
+        session_metadata = dict(session.transcript_metadata_json or {})
+        turn_id = str(uuid.uuid5(run_id, f"workflow-leaf:{request.step_id}:{request.leaf_id or ''}"))
         ctx = SubagentSpawnContext(
             parent_agent_id=agent.id,
             parent_user_id=requester_user_id,
@@ -435,6 +462,17 @@ def build_resumable_workflow_leaf_executor(
             parent_agent_name=getattr(agent, "name", "Agent"),
             role_description=getattr(agent, "role_description", "") or "",
             tenant_id=tenant_id,
+            trace_id=turn_id,
+            child_session_id=str(session.id),
+            recovery_metadata={
+                "runtime_task_id": str(task.id),
+                "root_runtime_task_id": str(task.root_runtime_task_id or task.id),
+                "root_session_id": str(task.root_session_id or session.id),
+                "turn_id": turn_id,
+                "permission_profile": task_metadata.get(
+                    "permission_profile", session_metadata.get("permission_profile")
+                ),
+            },
             parent_session_id=(
                 str(task.parent_session_id or task.root_session_id)
                 if (task.parent_session_id or task.root_session_id)

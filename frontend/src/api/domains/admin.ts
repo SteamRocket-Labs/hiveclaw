@@ -96,6 +96,30 @@ export interface RuntimeProjectionRepairReceipt {
   repaired_task_ids: string[];
 }
 
+/**
+ * One runtime terminal-boundary outbox row, as returned by
+ * GET /runtime-terminal-boundaries. `last_error` is the server-recorded
+ * delivery failure summary; it must never embed secret values or raw provider
+ * bodies, and the UI renders it verbatim without interpretation.
+ */
+export interface RuntimeTerminalBoundary {
+  id: string;
+  runtime_task_id: string;
+  agent_id: string;
+  session_id: string;
+  event_kind: string;
+  terminal_status: string;
+  authority_ref: string;
+  authority_id: string;
+  status: string;
+  attempt_count: number;
+  last_error: string | null;
+  available_at: string;
+  delivered_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export const adminApi = {
   listCompanies: () => get<Company[]>('/admin/companies'),
   createCompany: (data: { name: string; slug?: string }) => post<CompanyCreateReceipt>('/admin/companies', data),
@@ -159,4 +183,35 @@ export const adminApi = {
     // when it is undefined.
     return post<RuntimeProjectionRepairReceipt>(`/admin/runtime-reconciliation/projection-repair?${query.toString()}`);
   },
+  listRuntimeTerminalBoundaries: (params: {
+    tenantId: string;
+    status?: string;
+    limit?: number;
+  }) => {
+    const query = new URLSearchParams({
+      tenant_id: params.tenantId,
+      limit: String(params.limit || 100),
+    });
+    if (params.status) query.set('status', params.status);
+    return get<RuntimeTerminalBoundary[]>(`/runtime-terminal-boundaries?${query.toString()}`);
+  },
+  // One explicit operator recovery of one exact dead-letter boundary. The
+  // tenant_id query parameter is only the selected-company echo; the server
+  // re-resolves and enforces it. summary_disposition is sent only when the
+  // operator explicitly opted into summary recomputation.
+  redriveRuntimeTerminalBoundary: (
+    outboxId: string,
+    params: {
+      tenantId: string;
+      reason: string;
+      summaryDisposition?: 'retry';
+    },
+  ) =>
+    post<RuntimeTerminalBoundary>(
+      `/runtime-terminal-boundaries/${encodeURIComponent(outboxId)}/redrive?tenant_id=${encodeURIComponent(params.tenantId)}`,
+      {
+        reason: params.reason,
+        ...(params.summaryDisposition ? { summary_disposition: params.summaryDisposition } : {}),
+      },
+    ),
 };

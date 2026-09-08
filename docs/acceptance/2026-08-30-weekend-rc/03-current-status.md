@@ -5,7 +5,7 @@ status: paused
 authority: canonical-working-state
 last_reviewed: 2026-09-08
 source_commit: 33f6332f663f6e648f27eb704593876c4de17053
-verification_status: bounded-functional-pilot-closed-partial-results
+verification_status: bounded-functional-b2-blocked-two-candidates-rejected
 ---
 # 当前状态与唯一下一动作
 
@@ -13,7 +13,9 @@ verification_status: bounded-functional-pilot-closed-partial-results
 
 ## 当前决定与本批次出口
 
-owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-convergence/RESULT.md)，按 PDEC-015 执行：zCode（GLM-5.3）负责前后端实现，Codex 负责 Review、集成、部署、真实 E2E 与反馈。首批已进入交付收束，后续执行暂停等待 owner 决定；不恢复日常 CC/Kimi 门，也不恢复无限 Goal/heartbeat。
+owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-convergence/RESULT.md)，按 PDEC-015 执行：zCode（GLM-5.3）负责前后端实现，Codex 负责 Review、集成、部署、真实 E2E 与反馈。首批已交付；owner 随后要求“先 commit，然后 git push 吧，然后我们开始下一轮结束的时候，也要有文档”。上一批文档与对应检查已 commit/push `f4575b0f`，应用源码未变。第二批 **13:38:12—15:38:12（Asia/Shanghai）两小时**，聚焦普通第二轮输入的终态回执阻塞，包含定位、必要修正、复验和文档交付；不恢复日常 CC/Kimi 门，也不恢复无限 Goal/heartbeat。
+
+第二批已在上限前结束：一个方案与唯一返修均未接受，未发布应用、未恢复两条输入，最终 NPTCR 仍 0/96。已定位 summary reconciliation 阻塞，并用本地复现排除会重复已成功摘要子调用的 whole-summary retry；按照 PDEC-015 暂停并交付策略选择，不自动生成第三版。[第二批结果文档](evidence/33f6332f663f6e648f27eb704593876c4de17053/functional-batch-2026-09-08-02.md)
 
 首个试批次为 **2026-09-08 10:16:24—12:16:24（Asia/Shanghai）两小时**，包括准备、执行、记录与交付。先从不同功能域走真实入口，遇到单项失败记录最小复现后继续独立功能；仅共同入口缺陷可插入必要小修。到点交付实际结果与剩余问题，未获下一轮授权不自动续作。资源到期不是 PASS，96 条分母、PDEC-013 产品语义及最终 D/E 完成标准保持不变。
 
@@ -21,8 +23,8 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 
 - 当前 production application 为 exact `33f6332f`；11:54 三服务部署均 SUCCESS，backend 与 backend-api 运行源码 hash 均与干净 archive 一致，backend health / frontend HTTP 200。只发布已接受的两文件工具加载修正，不代表所有工作状态健康或 RC 完成。
 - 现有 `17f073bb` P01 正常双遍、权限负向与 Session/文件 cleanup 保留为历史支持证据，不迁移到新版本；真实断线/worker 重启恢复尚未闭环。**最终 NPTCR=0/96**。
-- 本批次只记实际测试版本、真实身份、可见操作和结果；入口点击不等于整个 Journey，通过数在完整要求完成前不提升。[本批次证据](evidence/17f073bb4f07098e55d9ef1684781dc67cfa454e/functional-batch-2026-09-08-01.md)。
-- 本批次实际操作覆盖个人知识、文件交付、HR、Session 命令、角色 API、Automation、Local Agent、后台/设置八类入口。跑通个人知识粘贴/检索/归档排除/恢复重现、Markdown 预览/下载/刷新重开、MiniMax HR 草案生成/拒绝、已保存 Session 的 context/permissions/usage 面板及部分角色 API 正负向；完整格式/角色/故障要求未跑完，不把八类入口记成八条 Journey PASS。
+- 第一批只记实际测试版本、真实身份、可见操作和结果；入口点击不等于整个 Journey，通过数在完整要求完成前不提升。[第一批证据](evidence/17f073bb4f07098e55d9ef1684781dc67cfa454e/functional-batch-2026-09-08-01.md)。
+- 第一批实际操作覆盖个人知识、文件交付、HR、Session 命令、角色 API、Automation、Local Agent、后台/设置八类入口。跑通个人知识粘贴/检索/归档排除/恢复重现、Markdown 预览/下载/刷新重开、MiniMax HR 草案生成/拒绝、已保存 Session 的 context/permissions/usage 面板及部分角色 API 正负向；完整格式/角色/故障要求未跑完，不把八类入口记成八条 Journey PASS。
 - `33f6332f` fresh GLM Session 真实调用 `search_personal_kb`、`read_personal_kb`，读回唯一合成文档两段，采用修正后的 12 而非旧值 10，并写读真实报告。2m43s 完成，canonical terminal 已提交；报告预览/下载 HTTP 200、刷新重开与本地文件内容均核对。最终已归档该合成知识文档，唯一标记搜索零命中；报告及失败现场留作证据，未宣称完整 cleanup。
 - CEDAR R2 `member` 与 GROVE R3 `org_admin` 已经正式 API 登录重新核对 exact tenant；fixture 员工 Agent GET 200、平台公司后台 403、跨租户测试 Agent 与跨个人合成文档均 404。Chrome 旧员工 UI 为缓存，刷新后为平台管理员；本批次未完成员工/公司管理员 UI 登录，API evidence 不冒充 UI evidence。
 - 两条普通第二轮输入（文件续写、HR 修订）均被旧 turn_stop boundary 的 dead_letter/attempt 8/`WebTerminalBoundaryPending` 阻挡，11:47 app_rls/read-only/tenant-scoped 对账已确认 `waiting_for_terminal_boundary_ack`。后端无 active run/turn，UI 却持续“思考中”；没有新文件版本或修订蓝图。新 draft `/context` 为 422；已保存 Session 同命令可打开。Local Agent 只到 `approval_required`，单次自动化未创建。 pending 输入恢复前暂不把 B-Worker 改回未 ready 的 DeepSeek。
@@ -45,7 +47,7 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 
 ## 唯一下一动作
 
-交付本批次结果后等待 owner 决定，不自动续作。建议下一批仍限两小时，聚焦普通第二轮输入被终态回执阻挡的共同断点，修复后只复验原文件续写、HR 修订及必要回归；若仍不能在一个实现方案和一次集中返修内收束，交付明确策略选择，不恢复旧大包。该建议尚未获执行授权；目前没有完整单旅程吞吐样本，不能可靠外推 96 条总工期。
+等待 owner 决定是否允许将实验公司共享摘要/后台记忆模型改为已实际工作过的 GLM-5.3，再通过正式入口明确重算原两条摘要。该设置也影响 extraction、compaction、T2、AutoDream；显式重算可能重复历史成功子调用并产生额外费用，不仅影响两条 Session。建议保留原配置供回滚，获准后先解决 exact tenant operator 认证并核对 readiness；当前均未执行，不提取浏览器 token、不手改 DB。两条 transcript 全部 projected，卡点为 `needs_reconciliation / LLMError`；原始 HTTP/delivery 未知。首版无限重试、返修 whole-summary 429 重放均已拒绝；不自动第三版或第三批。目前没有完整单旅程吞吐样本，不能可靠外推 96 条总工期。
 
 ## 当前合成资产登记
 | marker | 目标与允许效果 | 禁止效果 | cleanup 状态 |

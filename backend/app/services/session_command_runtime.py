@@ -29,6 +29,10 @@ from app.memory.t0.ledger import T0SessionEvent, replay_t0_session_events_tail
 from app.runtime.hooks import HookEvent, emit_hook
 from app.services.chat_transcript import append_session_event, read_transcript_revision
 from app.services.conversation_branch_service import create_conversation_branch
+from app.services.session_semantic_history import (
+    SessionSemanticHistoryUnavailable,
+    load_session_semantic_history,
+)
 from app.services.session_user_checkpoint import (
     event_item_kind,
     event_lifecycle,
@@ -39,7 +43,7 @@ from app.services.session_user_checkpoint import (
     user_checkpoint_content,
     user_checkpoint_events,
 )
-from app.services.memory_service import _generate_session_summary, _wrap_compressed_summary
+from app.services.memory_service import _generate_session_summary, _safe_split, _wrap_compressed_summary
 from app.services.session_workspace_snapshot import (
     finalize_workspace_restore,
     restore_session_workspace_snapshot,
@@ -565,22 +569,27 @@ async def _prepare_rewind_mutation(
 
 
 def _event_to_summary_message(event: ChatTranscriptEvent | T0SessionEvent) -> dict[str, str] | None:
+    """Legacy/T0 projection only: a row enters the compact summary input
+    solely through a user/assistant/tool role. Debug projections persisted as
+    role=system JSON (e.g. provider_call_ledger) are runtime evidence, not
+    semantic conversation, and never reach the summary model. Canonical
+    Session V2 truth is served by ``load_session_semantic_history`` instead."""
     content = (getattr(event, "content", None) or "").strip()
     if not content:
         return None
-    role = _event_role(event) or "system"
+    role = _event_role(event)
     if role == "tool_call":
         role = "tool"
-    if role not in {"user", "assistant", "tool", "system"}:
-        role = "system"
+    if role not in {"user", "assistant", "tool"}:
+        return None
     return {"role": role, "content": content}
 
 
 def _events_to_summary_messages(events: list[ChatTranscriptEvent | T0SessionEvent]) -> list[dict[str, str]]:
-    # Session V2 parity: one authoritative HumanInput checkpoint per item with
-    # its exact rendered content enters the compact summary; superseded
-    # accepted bytes and queued/bound/applied state rows never do. Legacy rows
-    # keep their exact V1 projection and ordering.
+    """T0/legacy fallback projection for sessions whose DB event stream is
+    absent. One authoritative HumanInput checkpoint per item with its exact
+    rendered content; superseded accepted bytes and queued/bound/applied state
+    rows never enter."""
     checkpoint_row_ids = {_event_anchor_id(event) for event in user_checkpoint_events(events)}
     messages: list[dict[str, str]] = []
     for event in events:
@@ -1454,7 +1463,66 @@ async def _handle_compact(context: SessionCommandContext, session: ChatSession, 
         session=session,
         limit=_positive_int(arguments.get("limit"), default=1000, field="limit"),
     )
-    messages = _events_to_summary_messages(events)
+    semantic_receipt: dict[str, Any] | None = None
+    if truth_source == "chat_transcript_events":
+        # Canonical Session V2 truth: the shared semantic-history reader owns
+        # committed-round content (including zero-copy assistant finals from
+        # their immutable seals), source/run authority, branch lineage, and
+        # model-visible tool results. A typed unavailable state leaves the
+        # existing projection untouched — compact never installs summary
+        # input built over missing canonical evidence.
+        try:
+            history = await load_session_semantic_history(
+                context.db,
+                tenant_id=getattr(agent, "tenant_id", None) or getattr(session, "tenant_id", None),
+                agent_id=agent.id,
+                session_id=session.id,
+            )
+            if history.receipt.get("held_items"):
+                raise SessionSemanticHistoryUnavailable(
+                    code="unsettled_semantic_history",
+                    message="Unsettled tool rounds must remain recoverable before compaction.",
+                    run_id=None,
+                    tenant_id=agent.tenant_id,
+                    agent_id=agent.id,
+                    session_id=session.id,
+                    retryable=True,
+                    evidence_refs=tuple(
+                        ref for item in history.receipt["held_items"] for ref in item.get("evidence_refs", [])
+                    ),
+                )
+        except SessionSemanticHistoryUnavailable as exc:
+            return _typed_result(
+                command="compact",
+                action="unavailable",
+                session_id=session.id,
+                ok=False,
+                ui_action={
+                    "type": "toast",
+                    "level": "error",
+                    "message": "Compaction is unavailable: canonical session history could not be verified. Context was not changed.",
+                },
+                debug_payload={
+                    "missing": "canonical_session_history",
+                    "error_code": exc.code,
+                    "retryable": exc.retryable,
+                    "evidence_refs": list(exc.evidence_refs),
+                    "truth_source": truth_source,
+                },
+            )
+        semantic_receipt = history.receipt
+        messages = [
+            {
+                "role": message.role,
+                "content": message.content,
+                **({"tool_calls": message.tool_calls} if message.tool_calls else {}),
+                **({"tool_call_id": message.tool_call_id} if message.tool_call_id else {}),
+            }
+            for message in history.messages
+            if message.tool_calls or (isinstance(message.content, str) and message.content.strip())
+        ]
+    else:
+        messages = _events_to_summary_messages(events)
     if not messages:
         return _typed_result(
             command="compact",
@@ -1494,6 +1562,8 @@ async def _handle_compact(context: SessionCommandContext, session: ChatSession, 
         )
     keep_recent = _positive_int(arguments.get("keep_recent"), default=10, field="keep_recent")
     recent = messages[-keep_recent:] if len(messages) > keep_recent else []
+    if recent:
+        _, recent = _safe_split(messages[:-keep_recent], recent)
     replacement = [_wrap_compressed_summary(summary), *recent]
     projection = {
         "projection_reason": "compact",
@@ -1504,6 +1574,7 @@ async def _handle_compact(context: SessionCommandContext, session: ChatSession, 
         "original_message_count": len(messages),
         "kept_message_count": len(replacement),
         "replacement_messages": replacement,
+        "semantic_history_receipt": semantic_receipt,
     }
     metadata = dict(session.transcript_metadata_json or {})
     metadata["active_projection"] = projection
@@ -1541,7 +1612,11 @@ async def _handle_compact(context: SessionCommandContext, session: ChatSession, 
             "message": "Compacted current context.",
         },
         control_event=event,
-        debug_payload={"replacement_messages": replacement, "truth_source": truth_source},
+        debug_payload={
+            "replacement_messages": replacement,
+            "truth_source": truth_source,
+            "semantic_history_receipt": semantic_receipt,
+        },
         transcript_event_id=event.get("event_id"),
         hook_events=[HookEvent.PRE_COMPACTION.value, HookEvent.POST_COMPACTION.value],
         summary=summary,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -20,6 +21,23 @@ async def _run_session_command(owner, **kwargs):
     return await owner(SessionCommandContext(**kwargs), command_name)
 
 
+class _Scalars:
+    """Minimal stand-in for a SQLAlchemy ScalarsResult: supports iteration
+    (``list(result.scalars())``) plus ``.all()``/``.first()``."""
+
+    def __init__(self, value):
+        self._value = value
+
+    def all(self):
+        return list(self._value)
+
+    def first(self):
+        return self._value[0] if self._value else None
+
+    def __iter__(self):
+        return iter(self._value)
+
+
 class _ScalarResult:
     def __init__(self, value):
         self._value = value
@@ -31,7 +49,7 @@ class _ScalarResult:
 
     def scalars(self):
         value = self._value if isinstance(self._value, list) else ([] if self._value is None else [self._value])
-        return SimpleNamespace(all=lambda: value, first=lambda: value[0] if value else None)
+        return _Scalars(value)
 
 
 class _DB:
@@ -1229,9 +1247,41 @@ async def test_compact_command_installs_compacted_projection_and_session_compact
         _event(session, "user_message", sequence=1, content="Please build the report", role="user"),
         _event(session, "assistant_message", sequence=2, content="Report drafted", role="assistant"),
     ]
-    db = _DB(session, _db_rows(*events))
+    db = _DB(session, _db_rows(*events), _db_rows(*events))
     appended = []
     hooks = []
+
+    async def fake_history(*_args, **_kwargs):
+        # Handler-mechanics scope: the canonical reader is verified by its own
+        # real-PG suites; here it supplies a verified legacy-shaped history.
+        # The fake DB hands the row list to both `_load_events` and the reader.
+        from app.services.session_semantic_history import SessionSemanticHistory, SessionSemanticMessage
+
+        now = datetime.now(timezone.utc)
+        messages = [
+            SessionSemanticMessage(
+                id=f"legacy-{index}",
+                role=message["role"],
+                content=message["content"],
+                created_at=now,
+                sequence_start=index + 1,
+                sequence_end=index + 1,
+                group_id=f"legacy-{index}",
+                source_event_ids=(),
+            )
+            for index, message in enumerate(
+                [
+                    {"role": "user", "content": "Please build the report"},
+                    {"role": "assistant", "content": "Report drafted"},
+                ]
+            )
+        ]
+        return SessionSemanticHistory(
+            messages=messages,
+            receipt={"schema": "hive.session_semantic_history_receipt.v1", "status": "complete"},
+        )
+
+    monkeypatch.setattr(runtime, "load_session_semantic_history", fake_history)
 
     async def fake_generate_session_summary(messages, tenant_id, **kwargs):
         assert tenant_id == agent.tenant_id
@@ -1691,6 +1741,7 @@ async def test_clear_creates_new_context_boundary_without_deleting_source():
 @pytest.mark.asyncio
 async def test_compact_command_refuses_to_fake_success_without_messages(monkeypatch):
     import app.services.session_command_runtime as runtime
+    from app.services.session_semantic_history import SessionSemanticHistory
 
     agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
     user = SimpleNamespace(id=uuid4(), role="member")
@@ -1704,8 +1755,17 @@ async def test_compact_command_refuses_to_fake_success_without_messages(monkeypa
     async def fake_append_session_event(**kwargs):
         return SimpleNamespace(event_id=uuid4(), kwargs=kwargs)
 
+    async def empty_history(*_args, **_kwargs):
+        # A verified empty canonical history (real-PG equivalent: a session
+        # with no committed semantic entries).
+        return SessionSemanticHistory(
+            messages=[],
+            receipt={"schema": "hive.session_semantic_history_receipt.v1", "status": "empty"},
+        )
+
     monkeypatch.setattr(runtime, "emit_hook", fake_emit_hook)
     monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
+    monkeypatch.setattr(runtime, "load_session_semantic_history", empty_history)
 
     result = await _run_session_command(
         runtime.execute_session_command,
@@ -1774,6 +1834,7 @@ def _v2_input_row(
         visibility_scope="direct_user",
         listed_surface="chat",
         content="",
+        created_at=datetime.now(timezone.utc),
         metadata_json={
             "v2_payload": {"input_id": str(item_id), "content_parts": parts},
             "actor": {"type": "user"},
@@ -1845,6 +1906,7 @@ def _v2_final_row(session: ChatSession, *, sequence: int, item_id, content: str)
         visibility_scope="direct_user",
         listed_surface="chat",
         content=content,
+        created_at=datetime.now(timezone.utc),
         metadata_json={
             "v2_payload": {"phase": "final", "content": content},
             "actor": {"type": "assistant"},
@@ -1876,7 +1938,12 @@ def _v2_tool_row(session: ChatSession, *, sequence: int, item_id, kind: str) -> 
 
 @pytest.mark.asyncio
 async def test_compact_summary_includes_authoritative_v2_user_prompt_with_exact_content(monkeypatch):
+    """Compact summary input comes from the canonical semantic-history reader:
+    the revised HumanInput wins over its superseded accepted bytes, state
+    facts never enter, and an assistant_final without a committed provider
+    round is NOT semantic content (its bytes are owned by the round seal)."""
     from app.services.session_command_runtime import execute_session_command
+    from app.services.session_semantic_history import load_session_semantic_history
 
     agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
     user = SimpleNamespace(id=uuid4(), role="member")
@@ -1893,19 +1960,33 @@ async def test_compact_summary_includes_authoritative_v2_user_prompt_with_exact_
     queued = _v2_input_row(session, sequence=3, item_id=item, lifecycle="queued")
     bound = _v2_input_row(session, sequence=4, item_id=item, lifecycle="bound")
     applied = _v2_input_row(session, sequence=5, item_id=item, lifecycle="applied")
-    final = _v2_final_row(session, sequence=6, item_id=uuid4(), content="final answer")
-    db = _DB(session, _db_rows(accepted, revised, queued, bound, applied, final))
+    uncommitted_final = _v2_final_row(session, sequence=6, item_id=uuid4(), content="final answer")
+
+    reader_db = _DB(_db_rows(accepted, revised, queued, bound, applied, uncommitted_final))
+    history = await load_session_semantic_history(
+        reader_db,
+        tenant_id=agent.tenant_id,
+        agent_id=agent.id,
+        session_id=session.id,
+    )
+    assert [(m.role, m.content) for m in history.messages] == [("user", "first revised exact")]
+
+    db = _DB(session)
     captured: dict[str, object] = {}
 
     async def fake_generate(messages, *_args, **_kwargs):
         captured["messages"] = list(messages)
         return "compressed summary"
 
+    async def fake_history(*_args, **_kwargs):
+        return history
+
     def fake_wrap(summary_text):
         return {"role": "system", "content": f"compressed: {summary_text}"}
 
     monkeypatch.setattr("app.services.session_command_runtime._generate_session_summary", fake_generate)
     monkeypatch.setattr("app.services.session_command_runtime._wrap_compressed_summary", fake_wrap)
+    monkeypatch.setattr("app.services.session_command_runtime.load_session_semantic_history", fake_history)
 
     result = await _run_session_command(
         execute_session_command,
@@ -1919,10 +2000,7 @@ async def test_compact_summary_includes_authoritative_v2_user_prompt_with_exact_
     )
 
     assert result["action"] == "compacted_context_installed"
-    assert captured["messages"] == [
-        {"role": "user", "content": "first revised exact"},
-        {"role": "assistant", "content": "final answer"},
-    ]
+    assert captured["messages"] == [{"role": "user", "content": "first revised exact"}]
 
 
 @pytest.mark.asyncio
@@ -2073,25 +2151,43 @@ async def test_resume_recognizes_zero_copy_assistant_final_tail_without_inline_c
 
 @pytest.mark.asyncio
 async def test_compact_summary_preserves_exact_v2_user_bytes(monkeypatch):
+    """The canonical reader renders the checkpoint's exact bytes; compact
+    passes them to the summary model unchanged (strip decides emptiness only
+    at the reader boundary; here bytes are non-empty and stay verbatim)."""
     from app.services.session_command_runtime import execute_session_command
+    from app.services.session_semantic_history import load_session_semantic_history
 
     agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
     user = SimpleNamespace(id=uuid4(), role="member")
     session = _session(agent.id, user.id)
     exact_text = "  exact bytes  \n"
     accepted = _v2_input_row(session, sequence=1, item_id=uuid4(), content_parts=[{"type": "text", "text": exact_text}])
-    db = _DB(session, _db_rows(accepted))
+
+    reader_db = _DB(_db_rows(accepted))
+    history = await load_session_semantic_history(
+        reader_db,
+        tenant_id=agent.tenant_id,
+        agent_id=agent.id,
+        session_id=session.id,
+    )
+    assert [(m.role, m.content) for m in history.messages] == [("user", exact_text)]
+
+    db = _DB(session)
     captured: dict[str, object] = {}
 
     async def fake_generate(messages, *_args, **_kwargs):
         captured["messages"] = list(messages)
         return "compressed summary"
 
+    async def fake_history(*_args, **_kwargs):
+        return history
+
     monkeypatch.setattr("app.services.session_command_runtime._generate_session_summary", fake_generate)
     monkeypatch.setattr(
         "app.services.session_command_runtime._wrap_compressed_summary",
         lambda text: {"role": "system", "content": text},
     )
+    monkeypatch.setattr("app.services.session_command_runtime.load_session_semantic_history", fake_history)
 
     result = await _run_session_command(
         execute_session_command,

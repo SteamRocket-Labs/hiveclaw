@@ -1713,14 +1713,17 @@ def _history_tail_after_projection(history_messages: list[Any], applied_at: date
     return [msg for msg in history_messages if _created_after_projection(msg, applied_at)]
 
 
-def _normalize_projection_message(raw: Any) -> dict[str, str] | None:
+def _normalize_projection_message(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
     role = str(raw.get("role") or "").strip()
     content = raw.get("content")
-    if role not in {"system", "user", "assistant", "tool"} or content is None:
+    tool_calls = raw.get("tool_calls") if role == "assistant" else None
+    if role not in {"system", "user", "assistant", "tool"} or (content is None and not tool_calls):
         return None
-    normalized = {"role": role, "content": str(content)}
+    normalized = {"role": role, "content": str(content) if content is not None else None}
+    if tool_calls:
+        normalized["tool_calls"] = tool_calls
     if role == "tool" and raw.get("tool_call_id"):
         normalized["tool_call_id"] = str(raw["tool_call_id"])
     return normalized

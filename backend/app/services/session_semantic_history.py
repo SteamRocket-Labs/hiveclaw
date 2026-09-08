@@ -41,7 +41,7 @@ class SessionSemanticHistoryUnavailable(RuntimeError):
         *,
         code: str,
         message: str,
-        run_id: uuid.UUID,
+        run_id: uuid.UUID | None,
         tenant_id: uuid.UUID,
         agent_id: uuid.UUID,
         session_id: uuid.UUID,
@@ -159,7 +159,7 @@ def _unavailable(
     *,
     code: str,
     message: str,
-    run_id: uuid.UUID,
+    run_id: uuid.UUID | None,
     tenant_id: uuid.UUID,
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
@@ -184,7 +184,7 @@ async def _load_event_views(
     tenant_id: uuid.UUID,
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
-    run_id: uuid.UUID,
+    run_id: uuid.UUID | None,
 ) -> tuple[list[_EventView], dict[str, Any]]:
     target_events = list(
         (
@@ -284,8 +284,12 @@ async def _current_run_input_ids(
     *,
     tenant_id: uuid.UUID,
     session_id: uuid.UUID,
-    run_id: uuid.UUID,
+    run_id: uuid.UUID | None,
 ) -> set[uuid.UUID]:
+    if run_id is None:
+        # Non-run consumers (session commands such as compact) have no current
+        # run, so every admitted checkpoint is prior context by definition.
+        return set()
     return set(
         (
             await db.execute(
@@ -302,7 +306,7 @@ async def _current_run_input_ids(
 def _user_messages(
     views: list[_EventView],
     *,
-    current_run_id: uuid.UUID,
+    current_run_id: uuid.UUID | None,
     current_input_ids: set[uuid.UUID],
 ) -> list[SessionSemanticMessage]:
     latest_by_input: dict[uuid.UUID, _EventView] = {}
@@ -313,7 +317,9 @@ def _user_messages(
         input_id = _source_input_id(source)
         if input_id is None or input_id in current_input_ids:
             continue
-        if _source_scope_run_id(source) == current_run_id:
+        # Session-scoped checkpoints carry no run id; only a real current run
+        # can own and therefore exclude them.
+        if current_run_id is not None and _source_scope_run_id(source) == current_run_id:
             continue
         current = latest_by_input.get(input_id)
         if current is None:
@@ -350,7 +356,7 @@ async def _committed_round_messages(
     tenant_id: uuid.UUID,
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
-    current_run_id: uuid.UUID,
+    current_run_id: uuid.UUID | None,
     views: list[_EventView],
 ) -> tuple[list[SessionSemanticMessage], list[dict[str, Any]], int]:
     committed_views: dict[uuid.UUID, _EventView] = {}
@@ -575,7 +581,7 @@ async def _legacy_messages(
     *,
     tenant_id: uuid.UUID,
     agent_id: uuid.UUID,
-    current_run_id: uuid.UUID,
+    current_run_id: uuid.UUID | None,
     views: list[_EventView],
 ) -> list[SessionSemanticMessage]:
     candidates: list[_EventView] = []
@@ -670,9 +676,14 @@ async def load_session_semantic_history(
     tenant_id: uuid.UUID,
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
-    current_run_id: uuid.UUID,
+    current_run_id: uuid.UUID | None = None,
 ) -> SessionSemanticHistory:
-    """Load every authorized committed semantic entry for one provider turn."""
+    """Load every authorized committed semantic entry for one provider turn.
+
+    ``current_run_id=None`` serves non-run consumers (session commands such
+    as compact): no run-scoped exclusion applies, so every admitted user
+    checkpoint and every committed provider round is prior context. Authority
+    and seal checks are identical to the provider-turn path."""
 
     try:
         views, branch_receipt = await _load_event_views(
@@ -735,7 +746,7 @@ async def load_session_semantic_history(
         "status": status,
         "truth_source": "chat_transcript_events+session_model_results",
         "session_id": str(session_id),
-        "current_run_id": str(current_run_id),
+        "current_run_id": str(current_run_id) if current_run_id is not None else None,
         "mechanical_message_limit_applied": False,
         "event_count": len(views),
         "message_count": len(messages),

@@ -48,13 +48,7 @@ def test_workspace_tools_never_expose_raw_recovery_manifest_storage(tmp_path):
     from app.services.agent_tool_domains.workspace import _glob_search, _grep_search, _list_files, _read_file
 
     workspace = tmp_path / "agent"
-    manifest = (
-        workspace
-        / "runtime_artifacts"
-        / "recovery_manifests"
-        / "session-hash"
-        / "authority-hash.json"
-    )
+    manifest = workspace / "runtime_artifacts" / "recovery_manifests" / "session-hash" / "authority-hash.json"
     manifest.parent.mkdir(parents=True)
     manifest.write_text('{"pending_items":["PRIVATE_RECOVERY_SENTINEL"]}', encoding="utf-8")
     runtime_legacy = workspace / "runtime_artifacts" / "recovery_manifest.json"
@@ -189,6 +183,27 @@ def test_authorized_code_workspace_merges_new_outputs_without_exposing_or_overwr
     else:  # pragma: no cover - fail loudly if an implementation overwrites it
         raise AssertionError("foreign path collision was not rejected")
     assert foreign.read_text(encoding="utf-8") == "foreign"
+
+
+def test_authorized_code_workspace_skips_merge_for_mtime_drift_with_identical_bytes(tmp_path):
+    import os
+
+    from app.services.agent_tool_domains.code_exec import authorized_execution_workspace
+
+    workspace = tmp_path / "agent"
+    mine = workspace / "workspace" / "mine" / "report.md"
+    mine.parent.mkdir(parents=True)
+    mine.write_text("unchanged content", encoding="utf-8")
+    canonical_mtime = mine.stat().st_mtime_ns
+    scope = _scope()
+
+    with authorized_execution_workspace(workspace, scope) as isolated:
+        isolated_report = isolated / "workspace" / "mine" / "report.md"
+        stat = isolated_report.stat()
+        os.utime(isolated_report, ns=(stat.st_mtime_ns + 10_000_000_000,) * 2)
+
+    assert mine.read_text(encoding="utf-8") == "unchanged content"
+    assert mine.stat().st_mtime_ns == canonical_mtime
 
 
 def test_authorized_code_workspace_rejects_absent_foreign_manifest_path(tmp_path):

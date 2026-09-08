@@ -75,6 +75,23 @@ def _prepare_execution_environment(ws: Path) -> tuple[Path, dict[str, str]]:
     return work_dir, safe_env
 
 
+def _workspace_state_changed(before: dict[str, Any] | None, after: dict[str, Any]) -> bool:
+    """Exact-hash change detection with conservative fallback.
+
+    When both states carry an exact SHA256, hash equality decides: re-packaged
+    or re-extracted identical bytes (mtime drift from provider sync) are not
+    content changes. Without a usable hash on either side, fall back to the
+    size/mtime/sha256 comparison so unverifiable files stay conservative.
+    """
+    if before is None:
+        return True
+    before_sha = before.get("sha256")
+    after_sha = after.get("sha256")
+    if before_sha is not None and after_sha is not None:
+        return before_sha != after_sha
+    return any(before.get(key) != after.get(key) for key in ("size", "mtime_ns", "sha256"))
+
+
 @contextlib.contextmanager
 def authorized_execution_workspace(canonical_workspace: Path, authority_scope):
     """Materialize and merge a least-authority code-execution workspace."""
@@ -104,11 +121,7 @@ def authorized_execution_workspace(canonical_workspace: Path, authority_scope):
         before = _workspace_file_state(isolated_work)
         yield isolated
         after = _workspace_file_state(isolated_work)
-        changed = {
-            rel: state
-            for rel, state in after.items()
-            if any(before.get(rel, {}).get(key) != state.get(key) for key in ("size", "mtime_ns", "sha256"))
-        }
+        changed = {rel: state for rel, state in after.items() if _workspace_state_changed(before.get(rel), state)}
         deleted = set(before) - set(after)
 
         # Validate the complete merge before mutating the canonical directory.
@@ -252,7 +265,7 @@ def _workspace_artifact_manifest(
             "after_state": fingerprint,
         }
         for rel, fingerprint in sorted(after.items())
-        if any(before.get(rel, {}).get(key) != fingerprint.get(key) for key in ("size", "mtime_ns", "sha256"))
+        if _workspace_state_changed(before.get(rel), fingerprint)
     ]
     records.extend(
         {

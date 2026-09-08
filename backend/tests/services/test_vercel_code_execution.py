@@ -130,6 +130,41 @@ async def test_run_command_uses_vercel_sandbox_provider_and_syncs_workspace(tmp_
 
 
 @pytest.mark.asyncio
+async def test_vercel_roundtrip_reextracted_identical_file_is_not_a_new_artifact(tmp_path, monkeypatch, fake_vercel):
+    """Regression: workspace sync-back re-extracts identical bytes with fresh mtimes;
+    those must not surface as updated artifacts (mtime drift is not a content change)."""
+    import os
+    import time
+
+    from app.services.agent_tool_domains.code_exec import _run_command
+    from app.services.code_execution import vercel_provider
+
+    class _ReuploadFake(_FakeVercelSandbox):
+        async def run_command(self, cmd, args=None, **kwargs):
+            finished = await super().run_command(cmd, args, **kwargs)
+            args = list(args or [])
+            if cmd == "tar" and "-czf" in args and any("workspace-out.tar.gz" in a for a in args):
+                self.files["workspace-out.tar.gz"] = _tar_bytes({"out.txt": b"hi", "existing.txt": b"stable"})
+            return finished
+
+    monkeypatch.setattr(vercel_provider, "AsyncSandbox", _ReuploadFake)
+    _set_vercel_env(monkeypatch)
+    workspace_root = tmp_path / str(uuid4())
+    existing = workspace_root / "workspace" / "existing.txt"
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(b"stable")
+    past = time.time() - 3600
+    os.utime(existing, (past, past))
+
+    result = await _run_command(workspace_root, {"command": "printf hi > out.txt; cat out.txt", "timeout": 5})
+
+    actions = {(item["path"], item["action"]) for item in result.artifacts}
+    assert ("workspace/out.txt", "created") in actions
+    assert not any(path == "workspace/existing.txt" for path, _ in actions)
+    assert existing.read_bytes() == b"stable"
+
+
+@pytest.mark.asyncio
 async def test_create_timeout_is_milliseconds_not_seconds(tmp_path, monkeypatch, fake_vercel):
     """Regression: SDK create(timeout=) is milliseconds; seconds-as-ms expires instantly."""
     from app.services.agent_tool_domains.code_exec import _run_command

@@ -30,6 +30,50 @@ def test_workspace_artifact_manifest_records_deleted_paths(tmp_path):
     }
 
 
+def test_workspace_artifact_manifest_ignores_mtime_drift_when_hashes_match(tmp_path):
+    import os
+
+    from app.services.agent_tool_domains.code_exec import _workspace_artifact_manifest, _workspace_file_state
+
+    report = tmp_path / "report.xlsx"
+    report.write_bytes(b"PK\x03\x04same-bytes")
+    before = _workspace_file_state(tmp_path)
+
+    # Provider sync / archive re-extraction: identical bytes, drifted mtime.
+    os.utime(report, ns=(before["report.xlsx"]["mtime_ns"] + 10_000_000_000,) * 2)
+    after = _workspace_file_state(tmp_path)
+    assert after["report.xlsx"]["sha256"] == before["report.xlsx"]["sha256"]
+    assert after["report.xlsx"]["mtime_ns"] != before["report.xlsx"]["mtime_ns"]
+
+    artifacts = _workspace_artifact_manifest(tmp_path, before, source="execute_code")
+    assert [item["path"] for item in artifacts if item["path"] == "workspace/report.xlsx"] == []
+
+
+def test_workspace_artifact_manifest_detects_same_size_content_change_and_keeps_fallback(tmp_path):
+    import os
+
+    from app.services.agent_tool_domains.code_exec import _workspace_artifact_manifest, _workspace_file_state
+
+    report = tmp_path / "report.xlsx"
+    report.write_bytes(b"PK\x03\x04same-lenA")
+    before = _workspace_file_state(tmp_path)
+
+    # Same-size real content change must still be reported.
+    report.write_bytes(b"PK\x03\x04same-lenB")
+    changed = _workspace_artifact_manifest(tmp_path, before, source="execute_code")
+    updated = next(item for item in changed if item["path"] == "workspace/report.xlsx")
+    assert updated["action"] == "updated"
+
+    # Without an exact before-hash (lineage ceiling), mtime drift stays conservative.
+    drift_before = dict(before)
+    drift_before["report.xlsx"] = {**before["report.xlsx"], "sha256": None}
+    report.write_bytes(b"PK\x03\x04same-lenA")
+    stat = report.stat()
+    os.utime(report, ns=(stat.st_mtime_ns + 10_000_000_000,) * 2)
+    conservative = _workspace_artifact_manifest(tmp_path, drift_before, source="execute_code")
+    assert any(item["path"] == "workspace/report.xlsx" and item["action"] == "updated" for item in conservative)
+
+
 @pytest.mark.asyncio
 async def test_run_command_executes_inside_workspace(tmp_path: Path):
     from app.services.agent_tool_domains.code_exec import _run_command

@@ -21,7 +21,8 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+import pytest
+from sqlalchemy import delete, select
 
 from app.models.agent import Agent
 from app.models.agent_team import AgentTeam, AgentTeamEvent, AgentTeamMember
@@ -77,8 +78,24 @@ def _stub_fanout(monkeypatch) -> None:
     monkeypatch.setattr(agent_team_runtime_service, "message_agent_team_members_runtime", _stub_message)
 
 
-async def test_team_create_and_member_spawn_persist_in_order(owner_sessionmaker, monkeypatch) -> None:
-    tenant_id, user_id, agent_id, session_id = await _seed_principal(owner_sessionmaker)
+@pytest.fixture
+async def team_spawn_principal(owner_sessionmaker):
+    principal = await _seed_principal(owner_sessionmaker)
+    try:
+        yield principal
+    finally:
+        async with owner_sessionmaker() as db:
+            team_ids = select(AgentTeam.id).where(AgentTeam.tenant_id == principal[0])
+            await db.execute(delete(AgentTeamEvent).where(AgentTeamEvent.team_id.in_(team_ids)))
+            await db.execute(delete(AgentTeamMember).where(AgentTeamMember.team_id.in_(team_ids)))
+            await db.execute(delete(AgentTeam).where(AgentTeam.tenant_id == principal[0]))
+            await db.commit()
+
+
+async def test_team_create_and_member_spawn_persist_in_order(
+    owner_sessionmaker, monkeypatch, team_spawn_principal
+) -> None:
+    tenant_id, user_id, agent_id, session_id = team_spawn_principal
     _stub_fanout(monkeypatch)
 
     async with owner_sessionmaker() as db:

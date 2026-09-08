@@ -98,3 +98,11 @@ external_calls: 0
 正式入口为 `POST /api/runtime-terminal-boundaries/{boundary_id}/redrive`，`summary_disposition=retry`，须匹配 authenticated tenant；文件 boundary `55c4549c-7384-5d63-a626-d5843bc8da53`、HR boundary `3de38b11-efb9-5478-bae2-8d95a4e7bf25`。当前尚未取得此 exact tenant 的受支持 operator API 认证，前端也未发现该恢复按钮；不能提取浏览器 token 或用另一 fixture 的身份代替。若不能从现有支持入口完成，明确报告入口缺口，另获范围决定，不手改 DB。
 
 未获 owner 配置/风险决定前暂停该效果。完整 96 旅程、真实故障恢复和最终 cleanup 仍未完成；本批不替代最终验收。
+
+## 批后更新：owner 已修改模型，旧任务尚未恢复
+
+2026-09-08 16:17—16:18（Asia/Shanghai），owner 告知“改完了已经”后，Codex 用同一 exact tenant / app_rls / READ ONLY 查询核对：摘要模型已为 enabled `zhipu / glm-5.3`，ID `ae56afc0-f3d4-4021-96b3-158ebe766cab`。两条原摘要仍 needs_reconciliation / LLMError / attempt 1，summary watermark null；两条 boundary 仍 dead_letter / attempt 8，后续 admissions 仍 pending。修改配置不自动恢复历史死信，本次无新 provider call、redrive 或输入重发。首次 SSH 连接关闭，第二次只读查询成功；浏览器控制初始化超时，没有取得新的 UI 证据。
+
+剩余断点是已有恢复 API 缺少前端入口，以及当前缺 exact tenant 的正式 operator API 登录态；不绕过认证。此更新不是自动开启第三批，也不改变两版候选拒绝结论。生产 health 返回 ok，运行源码 hash 仍 `510f6eb45fdb671eb4cf4852bbc5e49d0f3a7322ade18098d240b2577ec2620c`。
+
+收尾提交 `085dc47c` 的 CI `34193585606` 已结束为 failure：Backend harness 和 Frontend gates success；atomic full-stack journeys 为 5 passed / 1 failed / 1 flaky / 8 did not run。失败 J-07 等待个人知识 ingest job completed 超过 90 秒；J-01 的重试 bootstrap 曾在 auth/register 超过 120 秒。仅确定失败观察，尚未查明根因；不标作环境故障或自动 rerun，不由文档提交推断应用回归。

@@ -47,7 +47,7 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 
 ## 唯一下一动作
 
-等待 owner 决定是否允许将实验公司共享摘要/后台记忆模型改为已实际工作过的 GLM-5.3，再通过正式入口明确重算原两条摘要。该设置也影响 extraction、compaction、T2、AutoDream；显式重算可能重复历史成功子调用并产生额外费用，不仅影响两条 Session。建议保留原配置供回滚，获准后先解决 exact tenant operator 认证并核对 readiness；当前均未执行，不提取浏览器 token、不手改 DB。两条 transcript 全部 projected，卡点为 `needs_reconciliation / LLMError`；原始 HTTP/delivery 未知。首版无限重试、返修 whole-summary 429 重放均已拒绝；不自动第三版或第三批。目前没有完整单旅程吞吐样本，不能可靠外推 96 条总工期。
+owner 已自行修改摘要模型；16:17—16:18 的 exact tenant / app_rls / READ ONLY 对账确认启用的 `zhipu / glm-5.3`（model ID `ae56afc0-f3d4-4021-96b3-158ebe766cab`）。两条旧摘要仍为 `needs_reconciliation / LLMError`、boundary dead_letter/attempt 8、后续输入 pending，没有自动恢复；本次未调用 provider 或执行 redrive。下一动作是解决已有正式管理员恢复 API 的可用入口与 exact tenant 认证，再显式恢复并验证原两条输入。前端当前没有恢复按钮；不提取浏览器 token、不伪造身份或手改 DB。显式重算仍可能重复历史成功子调用并产生额外费用；原始 HTTP/delivery 未知。首版无限重试、返修 whole-summary 429 重放均已拒绝；不自动第三版或第三批。目前没有完整单旅程吞吐样本，不能可靠外推 96 条总工期。
 
 ## 当前合成资产登记
 | marker | 目标与允许效果 | 禁止效果 | cleanup 状态 |

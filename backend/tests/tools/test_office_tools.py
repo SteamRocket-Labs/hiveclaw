@@ -109,3 +109,96 @@ async def test_office_document_apply_tool_forwards_operations_and_output_path(tm
     assert captured["rel_path"] == "workspace/demo.docx"
     assert captured["operations"] == [{"command": "set", "path": "/body/p[1]", "props": {"text": "Title"}}]
     assert captured["output_path"] == "workspace/demo-v2.docx"
+
+
+@pytest.mark.asyncio
+async def test_office_document_apply_tool_error_survives_structured_cli_payload_with_warning_stderr(
+    tmp_path, monkeypatch
+):
+    from app.services.officecli_adapter import OfficeCLIExecutionError
+    from app.tools.handlers import office as office_handlers
+
+    warning_stderr = (
+        "Warning: batch is reading from --commands/--input but stdin is also redirected; stdin will be ignored..."
+    )
+    structured_payload = {
+        "success": False,
+        "data": {
+            "results": [
+                {
+                    "index": 0,
+                    "success": False,
+                    "error": (
+                        "Unknown element type 'heading' for /body. Valid types: paragraph (p), "
+                        "run (r), table (tbl), row, cell, picture, chart, ole (object, embed), "
+                        "equation, comment, section, footnote, endnote, toc, style, watermark, "
+                        "bookmark, hyperlink, field, break, sdt, header, footer. "
+                        "Use 'officecli docx add' for details."
+                    ),
+                    "item": {
+                        "command": "add",
+                        "parent": "/body",
+                        "type": "heading",
+                        "props": {"text": "synthetic", "level": "1"},
+                    },
+                }
+            ],
+            "summary": {"total": 2, "executed": 1, "succeeded": 0, "failed": 1, "skipped": 1},
+        },
+    }
+
+    class _FailingService:
+        def __init__(self, workspace):
+            self.workspace = workspace
+
+        def run_apply(self, rel_path, *, operations, output_path=None):
+            raise OfficeCLIExecutionError(
+                command="batch",
+                returncode=1,
+                stderr=warning_stderr,
+                payload=structured_payload,
+            )
+
+    monkeypatch.setattr(office_handlers, "OfficeDocumentService", _FailingService)
+
+    result = json.loads(
+        await office_handlers.office_document_apply(
+            tmp_path,
+            {
+                "path": "workspace/demo.docx",
+                "operations": [
+                    {
+                        "command": "add",
+                        "parent": "/body",
+                        "type": "heading",
+                        "props": {"text": "synthetic", "level": 1},
+                    },
+                    {"command": "add", "parent": "/body", "type": "paragraph", "props": {"text": "synthetic"}},
+                ],
+            },
+            tenant_id="tenant-1",
+        )
+    )
+
+    # The tool result stays a typed failure, but the model now sees the CLI's
+    # own per-operation evidence instead of only the incidental stdin warning.
+    assert result["ok"] is False
+    assert result["error"] == "officecli_error"
+    assert result["returncode"] == 1
+    assert warning_stderr in result["message"]
+    assert result["payload"] == structured_payload
+    failed_result = result["payload"]["data"]["results"][0]
+    assert "Unknown element type 'heading'" in failed_result["error"]
+    assert failed_result["item"] == {
+        "command": "add",
+        "parent": "/body",
+        "type": "heading",
+        "props": {"text": "synthetic", "level": "1"},
+    }
+    assert result["payload"]["data"]["summary"] == {
+        "total": 2,
+        "executed": 1,
+        "succeeded": 0,
+        "failed": 1,
+        "skipped": 1,
+    }

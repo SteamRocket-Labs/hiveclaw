@@ -339,9 +339,13 @@ class OfficeDocumentService:
         """Apply batch operations through the real CLI contract.
 
         OfficeCLI batch edits its target file in place (there is no output
-        flag). When ``output_path`` differs from the source, the batch runs on a
-        temporary copy that atomically replaces the output on success, so the
-        source document and any pre-existing output stay untouched on failure.
+        flag). An in-place batch is not atomic: with --stop-on-error the CLI
+        may report per-operation succeeded/failed/skipped results after a
+        partial application, and that structured payload travels on the raised
+        execution error for callers to consume. When ``output_path`` differs
+        from the source, the batch runs on a temporary copy that atomically
+        replaces the output on success, so the source document and any
+        pre-existing output stay untouched on failure.
         """
 
         normalized_output: str | None = None

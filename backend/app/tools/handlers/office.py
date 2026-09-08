@@ -8,7 +8,7 @@ from app.services.office_document_service import (
     OfficeDocumentError,
     OfficeDocumentService,
 )
-from app.services.officecli_adapter import OfficeCLIError
+from app.services.officecli_adapter import OfficeCLIError, OfficeCLIExecutionError
 from app.services.connector_acl import authoritative_connector_source_item
 from app.services.workspace_resource_authority import (
     WorkspaceAuthorityError,
@@ -72,6 +72,16 @@ def _handle_office_error(exc: Exception) -> str:
         return _json_error(exc.code, exc.message)
     if isinstance(exc, OfficeDocumentError):
         return _json_error(exc.error_code, str(exc))
+    if isinstance(exc, OfficeCLIExecutionError):
+        # A failed CLI run can still carry structured per-operation evidence on
+        # stdout (e.g. a batch payload naming the exact invalid operation) while
+        # stderr holds only incidental warnings. Keep the typed failure but
+        # surface the CLI's own structured payload so the model can repair the
+        # real cause instead of only seeing the stderr warning.
+        extra: dict[str, Any] = {"returncode": exc.returncode}
+        if exc.payload is not None:
+            extra["payload"] = exc.payload
+        return _json_error("officecli_error", str(exc), **extra)
     if isinstance(exc, OfficeCLIError):
         return _json_error("officecli_error", str(exc))
     if isinstance(exc, ValueError):

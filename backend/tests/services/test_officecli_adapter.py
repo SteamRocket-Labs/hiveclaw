@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 from types import SimpleNamespace
 
@@ -279,6 +280,69 @@ def test_officecli_adapter_nonzero_exit_with_non_json_stdout_reports_execution_e
     assert exc.value.returncode == 2
     assert exc.value.payload is None
     assert "batch failed" in str(exc.value)
+
+
+def test_officecli_adapter_nonzero_exit_preserves_structured_payload_with_warning_stderr(tmp_path):
+    from app.services.officecli_adapter import OfficeCLIAdapter, OfficeCLIExecutionError
+
+    stdout = json.dumps(
+        {
+            "success": False,
+            "data": {
+                "results": [
+                    {
+                        "index": 0,
+                        "success": False,
+                        "error": (
+                            "Unknown element type 'heading' for /body. Valid types: paragraph (p), "
+                            "run (r), table (tbl), row, cell, picture, chart, ole (object, embed), "
+                            "equation, comment, section, footnote, endnote, toc, style, watermark, "
+                            "bookmark, hyperlink, field, break, sdt, header, footer. "
+                            "Use 'officecli docx add' for details."
+                        ),
+                        "item": {
+                            "command": "add",
+                            "parent": "/body",
+                            "type": "heading",
+                            "props": {"text": "synthetic", "level": "1"},
+                        },
+                    }
+                ],
+                "summary": {"total": 2, "executed": 1, "succeeded": 0, "failed": 1, "skipped": 1},
+            },
+        }
+    )
+
+    def fake_runner(*_args, **_kwargs):
+        return SimpleNamespace(
+            returncode=1,
+            stdout=stdout,
+            stderr=(
+                "Warning: batch is reading from --commands/--input but stdin is also "
+                "redirected; stdin will be ignored..."
+            ),
+        )
+
+    adapter = OfficeCLIAdapter(binary="officecli", runner=fake_runner)
+
+    with pytest.raises(OfficeCLIExecutionError) as exc:
+        adapter.run_batch(
+            tmp_path / "demo.docx",
+            input_file=_write_commands(tmp_path),
+        )
+
+    assert exc.value.returncode == 1
+    assert "stdin will be ignored" in exc.value.stderr
+    assert exc.value.payload == json.loads(stdout)
+    failed_result = exc.value.payload["data"]["results"][0]
+    assert "Unknown element type 'heading'" in failed_result["error"]
+    assert exc.value.payload["data"]["summary"] == {
+        "total": 2,
+        "executed": 1,
+        "succeeded": 0,
+        "failed": 1,
+        "skipped": 1,
+    }
 
 
 def _write_commands(root):

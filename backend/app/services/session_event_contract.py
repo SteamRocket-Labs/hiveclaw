@@ -1510,18 +1510,22 @@ def _redacted_payload(
     return projected, sorted(pointer for pointer, _tokens in validated)
 
 
-def _redacted_metadata(
-    metadata: Mapping[str, Any],
-    *,
-    visibility: Mapping[str, Any],
-    audience: str,
+def _redacted_legacy_payload(
+    original: Mapping[str, Any], visibility: Mapping[str, Any], audience: str
 ) -> tuple[dict[str, Any], list[str]]:
-    wrapper, redacted = _redacted_payload(
-        {"metadata": dict(metadata)},
+    """Apply the original contract to the legacy payload and its canonical copy."""
+    payload, redacted_fields = _redacted_payload(
+        original,
         visibility=visibility,
         audience=audience,
     )
-    return dict(wrapper["metadata"]), redacted
+    if audience != "operator" and isinstance(payload.get("metadata", {}).get("v2_payload"), Mapping):
+        # Branch copies retain the canonical payload as operator evidence.
+        # Apply its original redaction contract to this duplicate as well.
+        payload["metadata"]["v2_payload"], _ = _redacted_payload(
+            payload["metadata"]["v2_payload"], visibility=visibility, audience=audience
+        )
+    return payload, redacted_fields
 
 
 def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str, Any]:
@@ -1547,11 +1551,6 @@ def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str
     visibility_authority = (
         dict(metadata.get("visibility") or {}) if isinstance(metadata.get("visibility"), Mapping) else {}
     )
-    projected_metadata, redacted_fields = _redacted_metadata(
-        metadata,
-        visibility=visibility_authority,
-        audience=audience,
-    )
     event_id = _text(_value(row, "event_id")) or _text(_value(row, "id")) or ""
     item_kind = _legacy_kind(row, metadata)
     lifecycle = _legacy_lifecycle(row, item_kind, metadata) if item_kind else None
@@ -1559,11 +1558,11 @@ def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str
     if item_kind == "hook" and not _text(metadata.get("boundary")):
         scope = None
     if item_kind is None or lifecycle is None or scope is None:
-        return _compatibility_event(
+        compatibility = _compatibility_event(
             row,
             metadata=metadata,
-            projected_metadata=projected_metadata,
-            redacted_fields=redacted_fields,
+            projected_metadata=metadata,
+            redacted_fields=[],
             legacy_kind=item_kind,
             legacy_lifecycle=lifecycle,
             reason=(
@@ -1574,6 +1573,12 @@ def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str
                 else "insufficient_legacy_scope"
             ),
         )
+        compatibility["payload"], redacted_fields = _redacted_legacy_payload(
+            compatibility["payload"], visibility_authority, audience
+        )
+        if redacted_fields:
+            compatibility["redacted_fields"] = redacted_fields
+        return compatibility
     item_id = (
         _text(_value(row, "item_id"))
         or (_text(_value(row, "message_id")) if item_kind == "human_input" else None)
@@ -1582,11 +1587,11 @@ def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str
     payload: dict[str, Any] = {
         "content": str(_value(row, "content", "") or ""),
         "parts": list(_value(row, "parts_json", []) or []),
-        "metadata": projected_metadata,
+        "metadata": metadata,
         "legacy": True,
     }
     if item_kind in {"tool_call", "tool_result"}:
-        payload.update(_legacy_tool_payload(row, projected_metadata))
+        payload.update(_legacy_tool_payload(row, metadata))
     if item_kind == "assistant_text":
         payload["phase"] = "unknown"
     elif item_kind == "assistant_commentary":
@@ -1649,9 +1654,16 @@ def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str
     actor_id = _text(_value(row, "actor_id")) or _text(metadata.get("actor_user_id"))
     if actor_id:
         event["actor"]["id"] = actor_id
+    validate_session_event(event)
+    # Legacy rows can carry V2 visibility authority — branch prefix copies of
+    # private reasoning keep their exact redaction contract. Validate the full
+    # envelope first, then apply the same /payload redaction contract to the
+    # projected legacy payload: the operator envelope keeps exact bytes, user
+    # projections drop the redacted fields.
+    event["payload"], redacted_fields = _redacted_legacy_payload(payload, visibility_authority, audience)
     if redacted_fields:
         event["visibility"]["redacted_fields"] = redacted_fields
-    return validate_session_event(event)
+    return event
 
 
 @dataclass(frozen=True, slots=True)

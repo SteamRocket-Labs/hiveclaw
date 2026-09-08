@@ -1893,6 +1893,102 @@ async def test_tool_search_records_compact_requested_tool_alias(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_tool_search_second_disjoint_query_keeps_previously_loaded_tools(monkeypatch):
+    import app.runtime.invoker as invoker
+    from app.runtime.invoker import AgentInvocationRequest, _resolve_tool_expansion
+    from app.runtime.session import SessionContext
+
+    agent_id = uuid4()
+    session = SessionContext()
+
+    async def fake_get_agent_tools_for_llm(agent_id_arg, *, core_only=False, requested_names=None):
+        assert agent_id_arg == agent_id
+        assert core_only is False
+        return [
+            {
+                "type": "function",
+                "function": {"name": name, "description": "", "parameters": {"type": "object"}},
+            }
+            for name in (requested_names or [])
+        ]
+
+    query_to_names = {
+        "firecrawl": ["firecrawl_fetch"],
+        "knowledge": ["search_personal_kb"],
+    }
+
+    async def fake_deferred_tool_names(_agent_id, query):
+        return query_to_names[query]
+
+    monkeypatch.setattr(invoker, "get_agent_tools_for_llm", fake_get_agent_tools_for_llm)
+    monkeypatch.setattr(invoker, "_deferred_tool_names_for_query", fake_deferred_tool_names)
+
+    def build_request():
+        return AgentInvocationRequest(
+            model=SimpleNamespace(
+                provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None
+            ),
+            messages=[{"role": "user", "content": "search tools"}],
+            agent_name="Researcher",
+            role_description="Research agent",
+            agent_id=agent_id,
+            user_id=uuid4(),
+            session_context=session,
+        )
+
+    first = await _resolve_tool_expansion(build_request(), "tool_search", {"query": "firecrawl"})
+    assert first is not None
+    assert [tool["function"]["name"] for tool in first.tools] == ["firecrawl_fetch"]
+    assert session.discovered_tools == ["firecrawl_fetch"]
+
+    second = await _resolve_tool_expansion(build_request(), "tool_search", {"query": "knowledge"})
+    assert second is not None
+    second_names = [tool["function"]["name"] for tool in second.tools]
+    # The second disjoint load must keep the first tool's schema: the replaced
+    # full_toolset would otherwise drop it from the provider request.
+    assert second_names.count("firecrawl_fetch") == 1
+    assert second_names.count("search_personal_kb") == 1
+    assert len(second_names) == len(set(second_names))
+    assert session.discovered_tools == ["firecrawl_fetch", "search_personal_kb"]
+
+    # Mixed expansion: MCP activation after tool_search must keep the loaded KB
+    # schemas in its replacing full toolset, and the MCP set is recorded so a
+    # later tool_search keeps it too.
+    mcp_names = [
+        "discover_resources",
+        "import_mcp_server",
+        "list_mcp_resources",
+        "read_mcp_resource",
+    ]
+
+    third = await _resolve_tool_expansion(build_request(), "import_mcp_server", {})
+    assert third is not None
+    third_names = [tool["function"]["name"] for tool in third.tools]
+    assert "search_personal_kb" in third_names
+    assert "firecrawl_fetch" in third_names
+    for mcp_name in mcp_names:
+        assert mcp_name in third_names
+    assert len(third_names) == len(set(third_names))
+    assert session.discovered_tools == ["firecrawl_fetch", "search_personal_kb"] + mcp_names
+
+    # Registry removal: a previously loaded tool that the registry no longer
+    # authorizes must NOT be retained by accumulation.
+    removed = {"firecrawl_fetch"}
+    original_fake = fake_get_agent_tools_for_llm
+
+    async def filtering_get_agent_tools_for_llm(agent_id_arg, *, core_only=False, requested_names=None):
+        requested_names = [name for name in (requested_names or []) if name not in removed]
+        return await original_fake(agent_id_arg, core_only=core_only, requested_names=requested_names)
+
+    monkeypatch.setattr(invoker, "get_agent_tools_for_llm", filtering_get_agent_tools_for_llm)
+    fourth = await _resolve_tool_expansion(build_request(), "tool_search", {"query": "knowledge"})
+    assert fourth is not None
+    fourth_names = [tool["function"]["name"] for tool in fourth.tools]
+    assert "firecrawl_fetch" not in fourth_names
+    assert "search_personal_kb" in fourth_names
+
+
+@pytest.mark.asyncio
 async def test_load_skill_and_skill_file_reads_do_not_expand_tool_schemas(monkeypatch, tmp_path):
     import app.runtime.invoker as invoker
     from app.runtime.invoker import AgentInvocationRequest, _resolve_tool_expansion

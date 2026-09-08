@@ -1126,10 +1126,18 @@ async def _resolve_tool_expansion(
         requested_tool_names = await _deferred_tool_names_for_query(request.agent_id, query)
         if not requested_tool_names:
             return None
+        # Re-resolve the accumulated discovered set through the authority-aware
+        # registry so a later disjoint tool_search does not drop previously
+        # loaded schemas from the replacing full_toolset.
+        accumulated_names = list(requested_tool_names)
+        if request.session_context is not None:
+            for discovered_name in request.session_context.discovered_tools:
+                if discovered_name not in accumulated_names:
+                    accumulated_names.append(discovered_name)
         tools = await get_agent_tools_for_llm(
             request.agent_id,
             core_only=False,
-            requested_names=requested_tool_names,
+            requested_names=accumulated_names,
         )
         expanded_tool_names = _tool_names_from_openai_tools(tools)
         if not expanded_tool_names:
@@ -1165,19 +1173,32 @@ async def _resolve_tool_expansion(
         )
 
     if tool_name in {"discover_resources", "import_mcp_server"}:
+        # Same accumulation contract as tool_search: the resolver returns a
+        # replacing full toolset, so still-authorized previously discovered
+        # schemas must be re-resolved alongside the MCP group instead of being
+        # dropped; tools removed from the registry are filtered out by the
+        # registry itself rather than blindly merged back.
+        mcp_names = [
+            "discover_resources",
+            "import_mcp_server",
+            "list_mcp_resources",
+            "read_mcp_resource",
+        ]
+        accumulated_names = list(mcp_names)
+        if request.session_context is not None:
+            for discovered_name in request.session_context.discovered_tools:
+                if discovered_name not in accumulated_names:
+                    accumulated_names.append(discovered_name)
         tools = await get_agent_tools_for_llm(
             request.agent_id,
             core_only=False,
-            requested_names=[
-                "discover_resources",
-                "import_mcp_server",
-                "list_mcp_resources",
-                "read_mcp_resource",
-            ],
+            requested_names=accumulated_names,
         )
         expanded_tool_names = _tool_names_from_openai_tools(tools)
         if not expanded_tool_names:
             return None
+        if request.session_context is not None:
+            request.session_context.track_discovered_tools(expanded_tool_names)
         packs = _infer_active_tool_groups(expanded_tool_names)
         return ToolExpansionResult(
             tools=tools,

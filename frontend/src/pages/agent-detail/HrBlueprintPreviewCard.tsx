@@ -299,6 +299,14 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
       <div className="hr-blueprint-facts">
         {scopeLabel && <span>{t('agent.chat.toolResults.permissionScope', 'Access')}: {scopeLabel}</span>}
         {reviewRiskLabel && <span>{t('agent.chat.toolResults.risk', 'Risk')}: {reviewRiskLabel}</span>}
+        {canonicalPreview.firstTaskAutostart !== null && (
+          <span>
+            {t('agent.chat.toolResults.firstTaskStart', 'First task')}:{' '}
+            {canonicalPreview.firstTaskAutostart
+              ? t('agent.chat.toolResults.firstTaskAutostartEnabled', 'starts automatically on creation')
+              : t('agent.chat.toolResults.firstTaskAutostartDisabled', 'none on creation — stands by until requested')}
+          </span>
+        )}
       </div>
       <PreviewList label={t('agent.chat.toolResults.primaryUsers', 'Primary users')} items={canonicalPreview.primaryUsers} />
       <PreviewList label={t('agent.chat.toolResults.coreOutputs', 'Core outputs')} items={canonicalPreview.coreOutputs} />

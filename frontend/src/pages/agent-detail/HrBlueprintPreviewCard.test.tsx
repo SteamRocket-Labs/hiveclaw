@@ -26,6 +26,7 @@ const preview = {
   coreOutputs: ['Landscape brief'],
   boundaries: 'Never fabricate sources.',
   permissionScope: 'company',
+  firstTaskAutostart: true,
   sourceAttributions: [],
   riskClass: 'standard',
   missingGates: [],
@@ -57,6 +58,31 @@ describe('HrBlueprintPreviewCard', () => {
     expect(markup).not.toContain('78b5d739-2c18-4a4a-aa65-42b858b8c188');
     const primaryButton = markup.match(/<button[^>]*>Confirm &amp; create<\/button>/)?.[0] || '';
     expect(primaryButton).not.toContain('disabled');
+  });
+
+  it('discloses the exact first-task autostart contract for confirmed blueprints', () => {
+    const disabledMarkup = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <HrBlueprintPreviewCard agentId="hr-agent" preview={{ ...preview, firstTaskAutostart: false }} />
+      </QueryClientProvider>,
+    );
+    expect(disabledMarkup).toContain('First task');
+    expect(disabledMarkup).toContain('none on creation — stands by until requested');
+
+    const enabledMarkup = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <HrBlueprintPreviewCard agentId="hr-agent" preview={preview} />
+      </QueryClientProvider>,
+    );
+    expect(enabledMarkup).toContain('starts automatically on creation');
+
+    const legacyMarkup = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <HrBlueprintPreviewCard agentId="hr-agent" preview={{ ...preview, firstTaskAutostart: null }} />
+      </QueryClientProvider>,
+    );
+    expect(legacyMarkup).not.toContain('stands by until requested');
+    expect(legacyMarkup).not.toContain('starts automatically on creation');
   });
 
   it('maps UI actions directly to durable APIs without a model-message handoff', () => {

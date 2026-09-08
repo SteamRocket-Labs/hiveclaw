@@ -656,12 +656,20 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                 await db.flush()
 
             # Kick-start: create ONE 'once' boot trigger so the new agent wakes
-            # shortly after creation and starts its first task.
+            # shortly after creation and starts its first task — unless the
+            # confirmed blueprint's exact first_task_autostart contract says
+            # the employee must stand by. Absent flag = legacy boot contract.
+            _first_task_autostart = preview_payload["blueprint"]["first_task_autostart"]
             _first_tasks = _refined.get("first_tasks", [])
             _boot_task = next((str(t).strip() for t in _first_tasks if str(t).strip()), "")
             if not _boot_task:
                 _boot_task = str(args.get("focus_content", "")).strip()
-            if _boot_task and not defaults_already_completed:
+            if not _first_task_autostart:
+                logger.info(
+                    "[HR] Blueprint contract disables first-task autostart for agent %s; skipping first_task_boot.",
+                    agent.id,
+                )
+            if _first_task_autostart and _boot_task and not defaults_already_completed:
                 from app.models.trigger import AgentTrigger
 
                 _fire_at = (_dt.now(_tz.utc) + __import__("datetime").timedelta(seconds=30)).isoformat()

@@ -1004,3 +1004,132 @@ def test_incomplete_hr_creation_result_is_not_reported_as_success() -> None:
     assert payload["status"] == "incomplete"
     assert payload["creation_state"] == "provisioning_failed"
     assert "do not treat this employee as ready" in payload["message"]
+
+
+def test_blueprint_preview_first_task_autostart_contract() -> None:
+    """Exact autostart contract: absent keeps legacy boot, False disables,
+    non-boolean values never coerce into authorization."""
+    from app.tools.handlers.hr import _build_blueprint_preview_payload
+
+    base = {
+        "name": "Reviewer",
+        "role_description": "Review drafts on request.",
+        "focus_content": "Stand by for direct owner requests.",
+    }
+
+    legacy = _build_blueprint_preview_payload(dict(base))
+    assert legacy["blueprint"]["first_task_autostart"] is True
+    assert legacy["first_task_autostart"] is True
+    assert not any("first_task_autostart" in w for w in legacy["warnings"])
+
+    explicit_enabled = _build_blueprint_preview_payload({**base, "first_task_autostart": True})
+    assert explicit_enabled["blueprint_hash"] == legacy["blueprint_hash"]
+
+    disabled = _build_blueprint_preview_payload({**base, "first_task_autostart": False})
+    assert disabled["blueprint"]["first_task_autostart"] is False
+    assert disabled["first_task_autostart"] is False
+    assert disabled["blueprint_hash"] != legacy["blueprint_hash"]
+    assert not any("first_task_autostart" in w for w in disabled["warnings"])
+
+    # Non-boolean values cannot coerce into the boot authorization: they are
+    # recorded as disabled with a visible warning instead.
+    invalid = _build_blueprint_preview_payload({**base, "first_task_autostart": "false"})
+    assert invalid["blueprint"]["first_task_autostart"] is False
+    assert invalid["blueprint_hash"] == disabled["blueprint_hash"]
+    assert any("first_task_autostart" in w for w in invalid["warnings"])
+
+
+def test_first_task_autostart_survives_canonical_blueprint_round_trip() -> None:
+    """Provisioning re-derives the preview from the persisted canonical
+    blueprint (args == draft.blueprint_json); the exact flag and hash must
+    survive that round trip unchanged, including for legacy blueprints."""
+    from app.tools.handlers.hr import _build_blueprint_preview_payload
+
+    base = {"name": "Reviewer", "role_description": "Review drafts on request.", "focus_content": "Stand by."}
+
+    disabled = _build_blueprint_preview_payload({**base, "first_task_autostart": False})
+    round_trip = _build_blueprint_preview_payload(dict(disabled["blueprint"]))
+    assert round_trip["blueprint"]["first_task_autostart"] is False
+    assert round_trip["blueprint_hash"] == disabled["blueprint_hash"]
+
+    legacy = _build_blueprint_preview_payload(dict(base))
+    legacy_blueprint = {k: v for k, v in legacy["blueprint"].items() if k != "first_task_autostart"}
+    legacy_round_trip = _build_blueprint_preview_payload(legacy_blueprint)
+    assert legacy_round_trip["blueprint"]["first_task_autostart"] is True
+
+
+def test_revision_carries_forward_prior_first_task_autostart_decision() -> None:
+    from app.tools.handlers.hr import _carry_forward_first_task_autostart
+
+    omitted = {}
+    assert _carry_forward_first_task_autostart(omitted, {"first_task_autostart": False}) is True
+    assert omitted["first_task_autostart"] is False
+
+    explicit = {"first_task_autostart": True}
+    assert _carry_forward_first_task_autostart(explicit, {"first_task_autostart": False}) is False
+    assert explicit["first_task_autostart"] is True
+
+    legacy = {}
+    assert _carry_forward_first_task_autostart(legacy, {"name": "Reviewer"}) is False
+    assert "first_task_autostart" not in legacy
+
+    forged = {}
+    assert _carry_forward_first_task_autostart(forged, {"first_task_autostart": "enabled"}) is False
+    assert "first_task_autostart" not in forged
+
+
+def test_first_task_autostart_gates_the_provisioning_boot_trigger() -> None:
+    from app.services.hr_provisioning_runner import run_hr_provisioning
+    from app.tools.handlers.hr import preview_agent_blueprint
+
+    runner_src = inspect.getsource(run_hr_provisioning)
+    assert runner_src.index("first_task_autostart") < runner_src.index('name="first_task_boot"')
+    assert "_first_task_autostart and _boot_task" in runner_src
+
+    handler_src = inspect.getsource(preview_agent_blueprint)
+    assert "_carry_forward_first_task_autostart" in handler_src
+
+
+def test_preview_agent_blueprint_schema_declares_first_task_autostart_boolean() -> None:
+    from app.services.agent_tools import get_combined_openai_tools
+
+    all_tools = get_combined_openai_tools()
+    preview_tool = next(t for t in all_tools if t["function"]["name"] == "preview_agent_blueprint")
+    properties = preview_tool["function"]["parameters"]["properties"]
+    assert properties["first_task_autostart"]["type"] == "boolean"
+
+
+def test_append_hr_creation_t0_event_records_first_task_autostart(tmp_path) -> None:
+    from app.memory.t0.ledger import replay_t0_session_events
+    from app.tools.handlers.hr import _append_hr_creation_t0_event
+
+    hr_agent_id = uuid4()
+    session_id = uuid4()
+    _append_hr_creation_t0_event(
+        hr_agent_id=hr_agent_id,
+        created_agent_id=uuid4(),
+        created_agent_name="Reviewer",
+        session_id=session_id,
+        tenant_id=uuid4(),
+        user_id=uuid4(),
+        blueprint_hash="bp_stby",
+        preview_payload={
+            "risk_class": "standard",
+            "blueprint": {
+                "archetype": "generalist",
+                "primary_users": ["Owner"],
+                "core_outputs": ["Reviews"],
+                "skill_names": [],
+                "source_attributions": [],
+                "first_task_autostart": False,
+            },
+            "manual_steps": [],
+        },
+        installed_skill_names=[],
+        trigger_count=0,
+        data_root=tmp_path,
+    )
+
+    events = replay_t0_session_events(agent_id=hr_agent_id, session_id=session_id, data_root=tmp_path)
+    assert len(events) == 1
+    assert events[0].metadata["first_task_autostart"] is False

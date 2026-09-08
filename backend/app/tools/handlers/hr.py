@@ -1090,6 +1090,18 @@ def _build_blueprint_preview_payload(
         except (ValueError, TypeError):
             raw_triggers = []
     triggers = [item for item in raw_triggers if isinstance(item, dict)]
+    # Exact versioned contract for the new-employee boot effect: only an
+    # explicit boolean False suppresses the first_task_boot trigger. Absent
+    # keeps the legacy default (boot); a present non-boolean value can never
+    # coerce into the authorization to auto-start a task.
+    if "first_task_autostart" in arguments:
+        first_task_autostart = arguments.get("first_task_autostart")
+        first_task_autostart_valid = isinstance(first_task_autostart, bool)
+        if not first_task_autostart_valid:
+            first_task_autostart = False
+    else:
+        first_task_autostart = True
+        first_task_autostart_valid = True
     source_attributions, source_attribution_warnings = _parse_source_attributions(
         arguments.get("source_attributions"),
         validated_company_source_refs=validated_company_source_refs,
@@ -1118,6 +1130,11 @@ def _build_blueprint_preview_payload(
     will_install.extend(f"clawhub skill: {slug}" for slug in clawhub_slugs)
 
     warnings: list[str] = []
+    if not first_task_autostart_valid:
+        warnings.append(
+            "first_task_autostart must be a boolean; the invalid value is recorded as disabled, "
+            "so no first task will run on creation — revise the blueprint to enable it explicitly."
+        )
     if not role_description:
         warnings.append("role_description is empty — the created soul contract will be generic.")
     if not primary_users:
@@ -1198,6 +1215,7 @@ def _build_blueprint_preview_payload(
         "triggers": triggers,
         "welcome_message": welcome_message,
         "focus_content": focus_content,
+        "first_task_autostart": first_task_autostart,
         "heartbeat_topics": heartbeat_topics,
         "source_attributions": source_attributions,
         "ready_now": _default_ready_now(),
@@ -1212,6 +1230,7 @@ def _build_blueprint_preview_payload(
         "status": "preview",
         "blueprint_hash": blueprint_hash,
         "risk_class": risk_class,
+        "first_task_autostart": first_task_autostart,
         "missing_gates": missing_gates,
         "creation_flow": {
             "mode": "dynamic_rounds_mandatory_gates",
@@ -1246,6 +1265,23 @@ def _build_blueprint_preview_payload(
         "confirmation_requirements": _confirmation_requirements(source_attributions),
         "warnings": _dedupe_strings(warnings),
     }
+
+
+def _carry_forward_first_task_autostart(arguments: dict, prior_blueprint: object) -> bool:
+    """Preserve an explicit autostart decision across an in-place revision.
+
+    An omitted field on a revision means the model did not restate the
+    decision, not that the previously disclosed effect authorization flips
+    back to the legacy boot-on-create default. Returns True when a prior
+    explicit boolean was injected into the revision arguments.
+    """
+    if "first_task_autostart" in arguments or not isinstance(prior_blueprint, dict):
+        return False
+    prior = prior_blueprint.get("first_task_autostart")
+    if not isinstance(prior, bool):
+        return False
+    arguments["first_task_autostart"] = prior
+    return True
 
 
 def _normalize_charter_payload(value: object, *, allowed_keys: tuple[str, ...]) -> dict[str, list[str]]:
@@ -1334,6 +1370,7 @@ def _append_hr_creation_t0_event(
         "primary_users": [str(item) for item in (blueprint.get("primary_users") or [])],
         "core_outputs": [str(item) for item in (blueprint.get("core_outputs") or [])],
         "first_task_count": len([item for item in (blueprint.get("first_tasks") or []) if str(item).strip()]),
+        "first_task_autostart": blueprint.get("first_task_autostart"),
         "trigger_count": int(trigger_count),
         "installed_skill_names": _dedupe_strings(installed_skill_names),
         "manual_setup_debt": [str(item) for item in (manual_steps or [])],
@@ -1640,6 +1677,17 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                     "maxLength": HR_LONG_TEXT_MAX_CHARS,
                     "description": "Initial work agenda.",
                 },
+                "first_task_autostart": {
+                    "type": "boolean",
+                    "description": (
+                        "Exact contract for the new-employee boot effect: whether one first_task_boot trigger "
+                        "fires shortly after creation and starts the first task (refined first_tasks, else "
+                        "focus_content). Set false only when the owner explicitly wants the employee to stand "
+                        "by until a direct owner/A2A request arrives. Omit to keep the default legacy contract "
+                        "(autostart enabled). Natural-language standby wording never suppresses this effect; "
+                        "only this boolean does."
+                    ),
+                },
                 "heartbeat_topics": {
                     "type": "string",
                     "maxLength": HR_LONG_TEXT_MAX_CHARS,
@@ -1718,6 +1766,21 @@ async def preview_agent_blueprint(request: ToolExecutionRequest) -> str:
             )
         from app.tools.handlers.knowledge import _company_kb_runtime_principal
 
+        preview_arguments = dict(request.arguments)
+        if blueprint_id is not None:
+            from app.models.hr_creation import HrCreationDraft
+
+            prior_draft = await db.scalar(
+                select(HrCreationDraft).where(
+                    HrCreationDraft.id == blueprint_id,
+                    HrCreationDraft.tenant_id == tenant_id,
+                    HrCreationDraft.hr_agent_id == hr_agent_id,
+                    HrCreationDraft.session_id == session_id,
+                    HrCreationDraft.requested_by_user_id == user_id,
+                )
+            )
+            _carry_forward_first_task_autostart(preview_arguments, getattr(prior_draft, "blueprint_json", None))
+
         validated_company_source_refs: set[str] | None = None
         if any(
             isinstance(item, dict) and str(item.get("source_type") or "").strip() == COMPANY_SOURCE_ATTRIBUTION_TYPE
@@ -1735,7 +1798,7 @@ async def preview_agent_blueprint(request: ToolExecutionRequest) -> str:
                 logger.exception("[HR] Company Knowledge source verification failed")
                 validated_company_source_refs = set()
         preview_payload = _build_blueprint_preview_payload(
-            request.arguments,
+            preview_arguments,
             validated_company_source_refs=validated_company_source_refs,
         )
         try:

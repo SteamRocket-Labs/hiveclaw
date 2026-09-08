@@ -20,6 +20,7 @@ export interface HrPreviewToolResult {
   coreOutputs: string[];
   boundaries: string | null;
   permissionScope: string | null;
+  firstTaskAutostart: boolean | null;
   sourceAttributions: Record<string, unknown>[];
   riskClass: string | null;
   missingGates: string[];
@@ -266,6 +267,7 @@ export function parsePreviewAgentBlueprintResult(rawResult: unknown): HrPreviewT
     coreOutputs: normalizeStringList(blueprint.core_outputs),
     boundaries: typeof blueprint.boundaries === 'string' ? blueprint.boundaries : null,
     permissionScope: typeof blueprint.permission_scope === 'string' ? blueprint.permission_scope : null,
+    firstTaskAutostart: typeof blueprint.first_task_autostart === 'boolean' ? blueprint.first_task_autostart : null,
     sourceAttributions: normalizeRecordList(blueprint.source_attributions),
     riskClass: typeof parsed.risk_class === 'string' ? parsed.risk_class : null,
     missingGates: normalizeStringList(parsed.missing_gates),

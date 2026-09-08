@@ -49,6 +49,7 @@ const preview: HrPreviewToolResult = {
   coreOutputs: ['Checklist'],
   boundaries: 'Read-only.',
   permissionScope: 'company',
+  firstTaskAutostart: null,
   sourceAttributions: [],
   riskClass: 'standard',
   missingGates: [],

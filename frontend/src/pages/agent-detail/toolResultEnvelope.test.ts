@@ -88,6 +88,7 @@ describe('parseCreateEmployeeToolResult', () => {
       coreOutputs: ['Competitor brief'],
       boundaries: 'Never fabricate sources.',
       permissionScope: 'company',
+      firstTaskAutostart: null,
       sourceAttributions: [{ field: 'mission', source_type: 'confirmed_by_user' }],
       riskClass: 'controlled_write',
       missingGates: [],
@@ -99,6 +100,31 @@ describe('parseCreateEmployeeToolResult', () => {
       warnings: ['primary_users is empty — the agent may be less clear about who it serves.'],
       manualSteps: ['Validate the first deliverable before expanding capabilities.'],
     });
+  });
+
+
+  it('parses the exact first_task_autostart contract from the canonical blueprint', () => {
+    const base = {
+      status: 'preview',
+      blueprint_id: 'draft-1',
+      blueprint: { name: 'Reviewer' },
+    };
+    expect(parsePreviewAgentBlueprintResult(JSON.stringify({
+      ...base,
+      blueprint: { name: 'Reviewer', first_task_autostart: false },
+    }))?.firstTaskAutostart).toBe(false);
+    expect(parsePreviewAgentBlueprintResult(JSON.stringify({
+      ...base,
+      blueprint: { name: 'Reviewer', first_task_autostart: true },
+    }))?.firstTaskAutostart).toBe(true);
+    expect(parsePreviewAgentBlueprintResult(JSON.stringify({
+      ...base,
+      blueprint: { name: 'Reviewer' },
+    }))?.firstTaskAutostart).toBeNull();
+    expect(parsePreviewAgentBlueprintResult(JSON.stringify({
+      ...base,
+      blueprint: { name: 'Reviewer', first_task_autostart: 'false' },
+    }))?.firstTaskAutostart).toBeNull();
   });
 
   it('normalizes create employee JSON result into user-facing text and agent id', () => {
@@ -170,6 +196,7 @@ describe('parseCreateEmployeeToolResult', () => {
       coreOutputs: ['Landscape brief'],
       boundaries: 'Cite evidence.',
       permissionScope: 'self',
+      firstTaskAutostart: null,
       sourceAttributions: [],
       riskClass: null,
       missingGates: [],

@@ -1657,6 +1657,7 @@
       "needsConfirmation": "有一个计划需要你确认。",
       "inlineLoading": "正在加载计划卡片...",
       "inlineLoadFailed": "计划卡片加载失败。如果该计划仍在等待确认,请打开 Aware > 计划队列。",
+      "successorCycle": "此计划的修订链出现循环（{{a}} → {{b}}）。请打开 Aware > 计划队列，直接查看当前版本。",
       "request": {
         "badge": "进入计划模式请求",
         "title": "{{agent}} 想进入计划模式来先规划这件事:",

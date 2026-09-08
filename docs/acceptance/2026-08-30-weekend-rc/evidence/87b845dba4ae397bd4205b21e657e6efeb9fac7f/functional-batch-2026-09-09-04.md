@@ -85,7 +85,7 @@ owner 明确要求：除阻塞项外，把剩余功能测试并修复；结束�
 - 三项候选合并为 `5eef8fa20df09900ee0d8e30b01420db90d05ca8` 并推送：HR可信claim归属/一次成功状态、公司human scoped-admin的retire/restore、命令修复在原2900行预算内收束。主审完整diff，未提高门槛/改变模型/放宽member或Agent读取，未修改旧unowned记录。合并后1290前端tests、TypeScript/build/bundle、Ruff通过；HR87后端、公司真实DB闭环12、RLS/PDEC-013 28（210.41s）通过，原reviewed指纹仍匹配。
 - zCode行数收束`398af7cab76245e99017c55ad724797a`成功448.004s；公司生命周期`bffb2760ce7a45ee8cdc60356ad5d984`成功251.88s，作者131检查与red/green，主审补足角色和DB复核。没有第三版或额外审查层。
 - 部署干净archive `/tmp/hiveclaw-railway-b4-5eef8fa2.FZRHtx`：backend `fb3d1d49-b67e-4172-8634-daf6b14c038b` DEPLOYING、backend-api `06f6981b-daa9-4951-a376-cd8756eb4300` SUCCESS、frontend `930ba657-61ef-40c5-83db-a903ff6d7c3f` SUCCESS。尚待共同freshness与原入口复验。
-- 子Agent报告实际预览PASS；点击下载后CUA事件等待10秒超时，但本机 `/Users/rocky243/Downloads/b4-subagent-result.md` 确实于02:53:50生成，2293 bytes，marker/更正名/391/child run引用完整；不是下载失败。
+- 子Agent报告实际预览PASS；点击下载后CUA事件等待10秒超时，但本机下载目录中的 `b4-subagent-result.md` 确实于02:53:50生成，2293 bytes，marker/更正名/391/child run引用完整；不是下载失败。
 - Team Session `990fc4f9-e1b3-4bb8-af5b-febad4be9b2a` 02:55开始，要求真实具名calculator/reviewer验证19×21。21步骤时持续重复声称将调用team_create，尚无Team成功证据；部署期间实时连接恢复中，待终态/实际工具轨迹对账，不能仅据叙述判根因。
 - 个人TXT重建：已对账原jobs与revisions后仅显式再试一次；请求45秒超时，随后正式import-jobs读取原job `53ba398b-2005-42f6-a7d3-6318a2c5d48b` ready/indexed/attempt2、updated_at18:55:38UTC，文档ready/1段。真实重建完成与同步接口回执失败分开；无进一步重发。源码确认API内await模型抽取。zCode `76dfa394fc2f4ba9b788789527a36c1b` 在 `/private/tmp/hiveclaw-functional-b4-kb-rebuild.3IOPJn` 复用已有durable索引任务，修快速queued受理/进度；03:00进行中。
 

@@ -1657,6 +1657,7 @@
       "needsConfirmation": "A plan needs your confirmation.",
       "inlineLoading": "Loading plan card...",
       "inlineLoadFailed": "Plan card could not load. Open Aware > Plan Queue if it is still pending.",
+      "successorCycle": "This plan points to a revision chain that loops ({{a}} → {{b}}). Open Aware > Plan Queue to open the current revision directly.",
       "request": {
         "badge": "Plan Mode request",
         "title": "{{agent}} wants to enter Plan Mode to plan this first:",

@@ -1,11 +1,11 @@
 ---
 document_id: weekend-rc-2026-08-30-current-status
 owner: Codex
-status: paused
+status: in_progress
 authority: canonical-working-state
 last_reviewed: 2026-09-08
-source_commit: 33f6332f663f6e648f27eb704593876c4de17053
-verification_status: bounded-functional-b2-blocked-two-candidates-rejected
+source_commit: aeaaacb59704ac7631da553c97d699c2cc87bdb4
+verification_status: bounded-functional-b2-inputs-recovered-runtime-unresponsive
 ---
 # 当前状态与唯一下一动作
 
@@ -15,19 +15,23 @@ verification_status: bounded-functional-b2-blocked-two-candidates-rejected
 
 owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-convergence/RESULT.md)，按 PDEC-015 执行：zCode（GLM-5.3）负责前后端实现，Codex 负责 Review、集成、部署、真实 E2E 与反馈。首批已交付；owner 随后要求“先 commit，然后 git push 吧，然后我们开始下一轮结束的时候，也要有文档”。上一批文档与对应检查已 commit/push `f4575b0f`，应用源码未变。第二批 **13:38:12—15:38:12（Asia/Shanghai）两小时**，聚焦普通第二轮输入的终态回执阻塞，包含定位、必要修正、复验和文档交付；不恢复日常 CC/Kimi 门，也不恢复无限 Goal/heartbeat。
 
-第二批已在上限前结束：一个方案与唯一返修均未接受，未发布应用、未恢复两条输入，最终 NPTCR 仍 0/96。已定位 summary reconciliation 阻塞，并用本地复现排除会重复已成功摘要子调用的 whole-summary retry；按照 PDEC-015 暂停并交付策略选择，不自动生成第三版。[第二批结果文档](evidence/33f6332f663f6e648f27eb704593876c4de17053/functional-batch-2026-09-08-02.md)
+第二批下午首轮已在上限前结束：一个方案与唯一返修均未接受，当时未发布应用、未恢复两条输入，最终 NPTCR 仍 0/96。已定位 summary reconciliation 阻塞，并用本地复现排除会重复已成功摘要子调用的 whole-summary retry；按照 PDEC-015 暂停并交付策略选择，不自动生成第三版。[第二批结果文档](evidence/33f6332f663f6e648f27eb704593876c4de17053/functional-batch-2026-09-08-02.md)
+
+22:02:49（Asia/Shanghai）owner 明确要求先 commit/push 旧记录，再重试并完成第二批；已推送两份旧记录 `ade50f74`。本次继续第二批的**显式管理员恢复入口**策略，不恢复被拒绝的自动重试候选；最多继续到 2026-09-09 00:02:49（包括部署、实测与交付）。zCode 在隔离 worktree 实现最小现有 API 消费入口，主 Codex 审查与真实恢复；同一明确策略一个实现、一次集中返修，不自动第三轮。
 
 首个试批次为 **2026-09-08 10:16:24—12:16:24（Asia/Shanghai）两小时**，包括准备、执行、记录与交付。先从不同功能域走真实入口，遇到单项失败记录最小复现后继续独立功能；仅共同入口缺陷可插入必要小修。到点交付实际结果与剩余问题，未获下一轮授权不自动续作。资源到期不是 PASS，96 条分母、PDEC-013 产品语义及最终 D/E 完成标准保持不变。
 
 ## 当前可核实结果
 
-- 当前 production application 为 exact `33f6332f`；11:54 三服务部署均 SUCCESS，backend 与 backend-api 运行源码 hash 均与干净 archive 一致，backend health / frontend HTTP 200。只发布已接受的两文件工具加载修正，不代表所有工作状态健康或 RC 完成。
+- 当前 production application 为 exact `aeaaacb5`；22:30 三服务部署均 SUCCESS，backend/backend-api 运行 source hash 与干净 archive 一致。新增前端管理员显式终态恢复入口，复用已有 API，不改 backend/自动重试/模型。70 项主 Codex 相关检查、i18n、TypeScript/build 通过；CI 前端及 15 旅程 success，backend full suite 尚在执行。启动时 health / frontend 200 不代表此刻 runtime 健康。
+- B2 续接：fresh 文件创建/续写/刷新和 HR 三→五要点草案修订/刷新已通过，草案已拒绝、无员工创建。原两条死信各经正式 UI 恢复一次，旧 boundary 均 delivered、原 admissions 均自然 dispatched/completed；旧文件新 74 B artifact 的预览/下载 HTTP 200/刷新重开通过。旧 HR 草案已拒绝不可原位修改，Agent 保留原记录并生成正确的替代预览，未 provision。
+- **收尾阻塞：backend runtime 不响应。** 22:37 后 HR 刷新持续加载，多个 runtime API 返回 504；公共 health 20 秒超时，容器内 health/OpenAPI 分别 5 秒超时。进程存在且低 CPU；own-role DB 样本无 blocking PID，具体根因未知。HR 最新 summary/boundary 尚未投递完成，替代草案尚未拒绝。已请求 owner 授权仅重启 backend 一次；未操作。不能宣布第二批完全通过，更不提升 0/96。[B2 完整证据](evidence/33f6332f663f6e648f27eb704593876c4de17053/functional-batch-2026-09-08-02.md)
 - 现有 `17f073bb` P01 正常双遍、权限负向与 Session/文件 cleanup 保留为历史支持证据，不迁移到新版本；真实断线/worker 重启恢复尚未闭环。**最终 NPTCR=0/96**。
 - 第一批只记实际测试版本、真实身份、可见操作和结果；入口点击不等于整个 Journey，通过数在完整要求完成前不提升。[第一批证据](evidence/17f073bb4f07098e55d9ef1684781dc67cfa454e/functional-batch-2026-09-08-01.md)。
 - 第一批实际操作覆盖个人知识、文件交付、HR、Session 命令、角色 API、Automation、Local Agent、后台/设置八类入口。跑通个人知识粘贴/检索/归档排除/恢复重现、Markdown 预览/下载/刷新重开、MiniMax HR 草案生成/拒绝、已保存 Session 的 context/permissions/usage 面板及部分角色 API 正负向；完整格式/角色/故障要求未跑完，不把八类入口记成八条 Journey PASS。
 - `33f6332f` fresh GLM Session 真实调用 `search_personal_kb`、`read_personal_kb`，读回唯一合成文档两段，采用修正后的 12 而非旧值 10，并写读真实报告。2m43s 完成，canonical terminal 已提交；报告预览/下载 HTTP 200、刷新重开与本地文件内容均核对。最终已归档该合成知识文档，唯一标记搜索零命中；报告及失败现场留作证据，未宣称完整 cleanup。
 - CEDAR R2 `member` 与 GROVE R3 `org_admin` 已经正式 API 登录重新核对 exact tenant；fixture 员工 Agent GET 200、平台公司后台 403、跨租户测试 Agent 与跨个人合成文档均 404。Chrome 旧员工 UI 为缓存，刷新后为平台管理员；本批次未完成员工/公司管理员 UI 登录，API evidence 不冒充 UI evidence。
-- 两条普通第二轮输入（文件续写、HR 修订）均被旧 turn_stop boundary 的 dead_letter/attempt 8/`WebTerminalBoundaryPending` 阻挡，11:47 app_rls/read-only/tenant-scoped 对账已确认 `waiting_for_terminal_boundary_ack`。后端无 active run/turn，UI 却持续“思考中”；没有新文件版本或修订蓝图。新 draft `/context` 为 422；已保存 Session 同命令可打开。Local Agent 只到 `approval_required`，单次自动化未创建。 pending 输入恢复前暂不把 B-Worker 改回未 ready 的 DeepSeek。
+- 第一批 11:47 时，两条普通第二轮输入（文件续写、HR 修订）被旧 turn_stop boundary 的 dead_letter/attempt 8/`WebTerminalBoundaryPending` 阻挡，app_rls/read-only/tenant-scoped 对账确认 `waiting_for_terminal_boundary_ack`。这一历史阻塞现已通过上述两次显式恢复推进，不保留为当前 pending 结论。新 draft `/context` 的 422、Local Agent 仅到 `approval_required`、单次自动化未创建仍是未闭环项；不把 B-Worker 改回未 ready 的 DeepSeek。
 - zCode 工具加载小修复及一次集中返修由 Codex 审查，343 targeted checks 与 Ruff/format/diff check 通过；commit/push `33f6332f` 仅两文件，CI `34182826176` 三 job success，三服务已同源部署且完成上述真实 KB 消费。旧 KB 失败与此源码缺陷的因果关联并非唯一解释；第二轮输入仅做有界只读定位，不加新代码返修。
 - 第八轮 zCode 候选已取消；未审查的应用修改原样保留，未接受、未提交、未部署。本批次不要求先救完该候选。原 heartbeat 保持 PAUSED，无新 Goal。
 
@@ -47,7 +51,9 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 
 ## 唯一下一动作
 
-owner 已自行修改摘要模型；16:17—16:18 的 exact tenant / app_rls / READ ONLY 对账确认启用的 `zhipu / glm-5.3`（model ID `ae56afc0-f3d4-4021-96b3-158ebe766cab`）。两条旧摘要仍为 `needs_reconciliation / LLMError`、boundary dead_letter/attempt 8、后续输入 pending，没有自动恢复；本次未调用 provider 或执行 redrive。下一动作是解决已有正式管理员恢复 API 的可用入口与 exact tenant 认证，再显式恢复并验证原两条输入。前端当前没有恢复按钮；不提取浏览器 token、不伪造身份或手改 DB。显式重算仍可能重复历史成功子调用并产生额外费用；原始 HTTP/delivery 未知。首版无限重试、返修 whole-summary 429 重放均已拒绝；不自动第三版或第三批。目前没有完整单旅程吞吐样本，不能可靠外推 96 条总工期。
+等待 owner 对单次 backend 重启的决定；先保留故障机械证据并核对活动任务。若授权，通过 Railway 受支持操作重启同一部署一次，核对 health、HR 刷新、最新 summary/boundary 与草案拒绝，再交付 B2 文档；不重发原输入、不自动第二次重启或第三次 redrive，不启动下一批。截止仍为 2026-09-09 00:02:49。
+
+owner 自行修改的共享摘要模型 `zhipu / glm-5.3` 已实时核对。首版无限重试、返修 whole-summary 429 重放仍保持拒绝；本次实现的是明确操作员意图与重算风险确认的既有 API 消费入口。两次恢复均有正式 audit，未提取浏览器 token、伪造身份或手改 DB。完整历史见 B2 文档；目前仍没有完整单旅程吞吐样本，不能可靠外推 96 条总工期。
 
 ## 当前合成资产登记
 | marker | 目标与允许效果 | 禁止效果 | cleanup 状态 |

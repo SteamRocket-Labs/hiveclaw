@@ -1,11 +1,11 @@
 ---
 document_id: weekend-rc-2026-09-08-functional-batch-02
 owner: Codex
-status: completed
+status: in_progress
 authority: bounded-production-functional-evidence
 last_reviewed: 2026-09-08
 source_commit: 33f6332f663f6e648f27eb704593876c4de17053
-verification_status: blocked-recovery-two-candidates-rejected-no-deployment
+verification_status: owner-resumed-explicit-recovery-ui-in-progress
 ---
 # 第二批：普通第二轮输入恢复
 
@@ -106,3 +106,62 @@ external_calls: 0
 剩余断点是已有恢复 API 缺少前端入口，以及当前缺 exact tenant 的正式 operator API 登录态；不绕过认证。此更新不是自动开启第三批，也不改变两版候选拒绝结论。生产 health 返回 ok，运行源码 hash 仍 `510f6eb45fdb671eb4cf4852bbc5e49d0f3a7322ade18098d240b2577ec2620c`。
 
 收尾提交 `085dc47c` 的 CI `34193585606` 已结束为 failure：Backend harness 和 Frontend gates success；atomic full-stack journeys 为 5 passed / 1 failed / 1 flaky / 8 did not run。失败 J-07 等待个人知识 ingest job completed 超过 90 秒；J-01 的重试 bootstrap 曾在 auth/register 超过 120 秒。仅确定失败观察，尚未查明根因；不标作环境故障或自动 rerun，不由文档提交推断应用回归。
+
+## Owner 明确续接：显式恢复入口与第二批复测
+
+owner 随后提供一个新 HR 问候会话的成功截图，并要求“你再试一下，然后把第二批完成……之前的先 commit，然后 git push”。旧两份核对记录已单独 commit/push `ade50f740a4d142d96d16ad51362e59f1752b4a9`；exact archive 发布标识检查通过。截图只证明新会话问候成功，不证明旧摘要或第二轮输入恢复。
+
+本次续接从 **2026-09-08 22:02:49 至 2026-09-09 00:02:49（Asia/Shanghai）**，包括必要修正、部署、业务复验和文档。22:00 左右新只读对账确认同一 GLM 设置，但两条旧摘要、admissions、boundaries 与下午状态相同；真实浏览器旧文件 Session 显示“处理中 666m”，原 artifact 仍 44 B，正式运行面板无恢复按钮。
+
+选择此前已提出的不同策略：补齐既有 `runtime-terminal-boundaries` API 的最小管理员产品入口，由管理员明确确认摘要重算及可能重复调用成本；不让平台自动推断全摘要可安全重放。zCode GLM-5.3 author `72a0e2f692614d37bb930dd523e00edd`，工作面 `/private/tmp/hiveclaw-b2-operator.amxGjh`，base `ade50f74`，22:04:53 派发；主 Codex 仍负责 Review/集成/部署/E2E。旧两版自动重试实现保持拒绝，不改名重置其预算。
+
+补充合成效果预登记：`WRC-FUNCTIONAL-B2R-20260908`，允许在既有实验公司与已授权 Agent 下新建隔离 Session，创建/续写唯一新 workspace Markdown 文件，并生成/修订 HR 蓝图草案；不 provision 新员工、不检索真实业务内容、不外发、不覆盖旧文件或重发旧已接受输入。保留精确 Session/artifact/blueprint 与 cleanup 状态，fresh 正常结果和旧任务恢复分开记录。本次继续不是授权无限后台执行或下一批。
+
+### Fresh 正常链路复验（仍为 33f6332f 应用）
+
+22:07—22:20，从正式浏览器同一已认证实验公司入口新建两个合成 Session；模型均显示 GLM-5.3。未重复发送输入、未执行 operator redrive。
+
+| 消费路径 | 实际结果与精确定位 | 边界 / cleanup |
+|---|---|---|
+| 文件创建、同 Session 续写 | Session `236e112e-973c-4a3d-9670-e2593480f55f`；创建 `workspace/WRC-FUNCTIONAL-B2R-20260908/file-check.md`，49 B，artifact `9b593a27-6e54-466e-85b8-dd7a564727b6`；续写第三行 `Version marker: WRC-B2R-V2-683` 后 80 B，artifact `ecda6c58-9222-4676-affc-3f3a536318cb`。真实 write/read、edit/read；预览保留原两行且出现第三行，刷新重开仍正确 | 文件与两版 immutable artifact 留证；未覆盖旧 B1 文件。V2 正式下载动作的 artifact download API 为 HTTP 200 / text/markdown；未取得本机落盘证据，不冒称该层通过 |
+| HR 蓝图、正式“要求修改” | Session `81f168b2-00be-41e4-8f13-16084cef5d34`；合成名称 `WRC-B2R-Review-682`，首版三要点，要求修改后新预览的交付物和首任务均为五要点；名称、仅自己可见及全部访问限制保留。22:20 刷新后两版预览仍可见，最终 UI 为完成。只读确认同一 draft `5405fff6-6a34-445b-bcce-82ded896b3c0` v2/hash `bp_f3517c6503db48a300995e4a`，provisioning_task_id / created_agent_id 均 null | 22:23 经正式“拒绝”按钮提交一次，随后 UI 两版均显示已拒绝，Session 留证；无确认创建、provision 或外发 |
+
+文件首轮 UI 1m05s/6 步，第二轮 3m19s/7 步；HR 首轮 3m26s/6 步，修改轮 6m06s/3 步（UI 时长包含等待）。14:14 UTC 只读回执确认文件原首轮 boundary 已自然 delivered、后续 admission 从 pending 自然 dispatched；HR 修改当时仍等待首轮 summary，随后才实际生成五要点预览。这证明配置变更后 fresh 链路能自然跨轮推进，不把数分钟等待误报永久死锁，也不证明旧 dead_letter 已恢复。
+
+### 显式恢复 UI 审查
+
+作者 `72a0e2f692614d37bb930dd523e00edd` 610.039 秒正常结束，交回六文件 frontend 候选，无 backend 变更。入口是 platform-admin 的 `/admin/platform-settings` Dashboard 中既有运行对账下方；org_admin 的 backend operator 权限不变，本切片未提供 org_admin UI 入口。作者报告 7 项新 mounted、64 项相邻/i18n、TypeScript、build 和 7 项既有 backend API 合同检查通过；这些是本地检查，不代表生产消费。
+
+Codex 完整阅读变更、真实 HTTP adapter、selected-company 服务端校验、redrive/summary 消费及 route/确认组件。发现成功空队列后刷新失败仍保留旧空结论、mutation 成功后 reload 失败仍保留旧可操作行；22:19:52 发唯一集中返修 `e259e06cb3fc4d2ca72d22751956de67`，要求失效旧 loaded 状态但保留真实 requeued receipt，并加两条精确事件检查。另对齐服务端审计原因 1000 字符上限；不扩大后端/自动重试范围。
+
+返修 106.812 秒正常结束并被接受。Codex 只集成上述六文件到主工作面，未纳入旧 backend dirty 候选；应用 commit/push `aeaaacb59704ac7631da553c97d699c2cc87bdb4`。exact staged archive hygiene 3454 paths 通过；主工作面独立检查 `src/pages/admin-companies src/i18n src/App.routes.test.ts` 共 10 files / 70 tests 通过，i18n 9 tests 与全部 gates=0，TypeScript/build/bundle budgets 通过。第一次裸 Node 26.8.1 运行的 31 项 mounted 在 `localStorage.clear is not a function` 处失败，连未改 sibling 都受影响；只在命令环境使用 `NODE_OPTIONS=--no-experimental-webstorage` 后同一套 70 项通过，未改应用/断言以适配该本机环境差异。
+
+两次原生 model I/O 均按本次 mission 与时间核对：初版 68、返修 11 次记录，configured/wire `GLM-5.3`、response `glm-5.3`。作者原始 usage 合计 input 10,056,352（其中 cache-read 9,899,072）、output 24,150、total 10,080,502，cache-write 0；输入含跨调用重复读取的上下文，不等于独立新增文本或可由此直接推出的账单。主 Codex token 不可获得，以上不冒充任务总 token。新 CI `34238046718` 已开始；上一文档 CI `34235352724` 于 22:34 核对三 job 全部 success。
+
+### 同源部署与原输入恢复（aeaaacb5）
+
+22:26 从 exact committed archive 上传三服务，没有部署工作面 dirty 文件，backend tree 与 `33f6332f` 完全一致。22:30 核对三服务均 SUCCESS：backend `df2a8aed-1c56-47ee-a2a4-ddd77ae9d711`、backend-api `b3b82e8e-9fdf-4beb-9fc0-84f3f310b8de`、frontend `22586d86-5883-4d0d-bae5-ee0ed4aff735`。backend health `ok`、build hash `510f6eb45fdb671eb4cf4852bbc5e49d0f3a7322ade18098d240b2577ec2620c`，frontend HTTP 200。启动期间曾有 backend 502 / 页面 GET 504；当时没有提交 mutation，服务就绪后正式刷新读到三条死信。此时 CI 前端及 15 全栈旅程均 success，backend full suite 尚在执行；不是最终 RC 发布声明。
+
+22:30—22:32，从 `/admin/platform-settings` 的“终态边界恢复”，核对自动读取的 selected-company echo 和两条 exact Session/boundary/task；分别填写审计原因、勾选重算终态摘要、阅读包含未知原始投递状态及可能重复子调用/费用的确认框，然后每条只点一次确认。
+
+- 文件 boundary `55c4549c-7384-5d63-a626-d5843bc8da53`：正式页面返回 requeued / pending；原死信行从列表移除。
+- HR boundary `3de38b11-efb9-5478-bae2-8d95a4e7bf25`：同样返回 requeued / pending；列表只剩未操作的第三条死信。
+- 原输入没有重发、DB/outbox 没有手改、未假写 delivered、未创建员工；仅执行已授权的两次显式恢复。最终摘要、dispatch 和业务结果仍待消费者证据，不以 pending 回执宣告成功。
+
+22:33 只读审计核对恰好两条恢复记录：文件 audit `159bbb51-d243-41dd-a968-b69d0a7aa260`（22:30:43）、HR audit `17121891-fe8c-46d3-b3db-d8808157b534`（22:31:36），均 `summary_disposition=retry`、previous attempts 8。文件旧摘要已 sealed 至 seq 191，原 boundary attempt 9 于 22:31:44 delivered；原 admission `4e79304d-f5cf-5f92-bf51-8f1327aefdfb` 自然 dispatched 到新 runtime task `d42db8ca-3854-5134-a693-f11638a7c50a`。随后浏览器显示该输入真正 read/edit；HR 原修改也开始运行。UI 的 699/704 分钟包含上午提交以来的排队等待，不是此次 provider 执行时长。
+
+22:33 旧文件输入完成，真实 read → 一次 edit → read，产出 74 B 新 artifact `d269cf90-67b5-4669-b0d7-96c80ce51cb2`（22:33:14），保留原 artifact `10d7df62-40b6-42d8-a168-fda23b096a79`。正式预览含原标题/标记和新增 `Version marker: WRC-B1-V2-573`；新 artifact 正式下载返回 HTTP 200 / text/markdown。未把 Agent 自述当成唯一内容证据，也未声称本机下载落盘已验证。
+
+HR 原草案 `dbd1915e-7201-4e88-82dd-6c40cfe99b3d` 已在上午 11:15 被拒绝，本来就不能原位变 v2。恢复后的 Agent 遇到 typed `immutable` 拒绝，明确解释原因，保留原记录并通过正式 `preview_agent_blueprint` 返回替代草案；新预览保留名称、仅自己可见和所有边界，首任务明确 cobalt folders 12 + amber folders 7 = folders 19，另有 label sheets 2，all physical items 21，标签纸不是文件夹。该结果是可恢复的替代草案，不冒称已拒绝草案被原位修改，也不执行 provision。
+
+22:37 只读确认：旧 HR boundary attempt 9 已在 22:33:16 delivered；原 admission `0049d4ed-5c32-5aa1-9b3a-3abf577c9f31` 自然 dispatched，runtime task `b3fb0e1c-67da-5551-a2c2-874ad1b899a3` 已 completed。替代 draft `7ecfd611-7c7e-41a7-b3b9-29d2a5183706` v1/hash `bp_67256bdd91b03db397752a0d` 为 awaiting_confirmation，provisioning_task_id / created_agent_id 均 null。文件恢复轮的新 boundary `79f6a25e-8dfd-51ec-8287-b91c5235afd0` 已 delivered，summary watermark 384；HR 恢复轮的新 boundary `3d831010-9124-5ea7-84cc-0b4475eb91b5` 当时仍 processing，summary watermark 尚为上一轮 359。
+
+### 收尾出现 runtime 服务不响应，不能冒称完整通过
+
+旧文件在刷新后重开快照仍正确。HR 22:36 的新预览完成后，刷新页面长时间停在“正在加载持久会话历史”；一次带请求观察的正式 reload 显示 runtime 路径的 transcript、permissions、workbench、context-usage、runtime-summary 等返回 504，而 auth/me、agents list、sessions list 和 active-run 的 API-plane 路径返回 200。没有通过重发原输入修复页面。
+
+22:40—22:45 有界只读诊断：公共 backend health 20 秒无字节超时；容器内本机 health 与 OpenAPI 请求分别 5 秒超时，说明不能仅归为浏览器或公网代理问题。`uvicorn` PID 22 存在、state S，两个独立样本 CPU ticks 均 23539 / 样本增量 0；这不定位具体 Python 栈或根因。数据库 own-role pg_stat_activity 可读取，样本全部 blocking_pids 为空、未见锁等待；不据此排除所有数据库/客户端问题。Railway 仍显示 deployment SUCCESS，不能据该标记否認 runtime 不响应。
+
+backend-api 的运行 source hash 已独立 SSH 核对，与 backend 及 exact archive 的 1058 文件 hash 一致。本次 backend 源码没有变化；尚无证据把此次不响应归因于新前端恢复 UI，也不能默认叫环境波动。此时替代 HR 草案未拒绝，HR 刷新和最新 summary/boundary 尚未收尾。
+
+已请求 owner 明确授权仅重启 backend 一次（不改源码/模型/数据，可能中断其他活跃任务，先核对），等待决定。未重启、未再次 redrive、未新增实现任务；第二批保持 in_progress，不把两条旧输入已经执行扩大成完整验收通过。

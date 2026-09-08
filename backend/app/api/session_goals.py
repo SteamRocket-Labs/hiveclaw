@@ -396,6 +396,8 @@ async def transition_goal(
         action=body.action,
     )
     await db.flush()
+    # SQL-side updated_at must be loaded before synchronous projection reads.
+    await db.refresh(goal)
 
     if body.action == "resume":
         continuation = await continue_session_goal(

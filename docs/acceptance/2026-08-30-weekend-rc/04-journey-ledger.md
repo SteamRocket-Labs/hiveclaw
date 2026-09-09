@@ -10,6 +10,8 @@ verification_status: frozen-96-functional-b4-in-progress
 
 # Journey Ledger
 
+> 2026-09-09 PDEC-016：本文件的96条分母与旧分数现为历史验收记录，不再作为当前任务最终标准。当前采用八步功能闭环，步骤状态见 [03-current-status.md](03-current-status.md)。保留原ID、失败和证据，不将本轮完成写成96条全部通过。
+
 [返回索引](README.md) · [当前状态](03-current-status.md) · [Runbook](06-runbook-and-release-gates.md)
 
 本文件记录旅程分母、主 Codex/owner 已接受的闭环状态和证据链接。Domain 文档记录验收标准；Evidence 文件记录实际结果；本文件不复制两者正文，也不从机械字段自行推导语义 verdict。

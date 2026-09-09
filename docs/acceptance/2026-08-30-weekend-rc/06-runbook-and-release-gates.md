@@ -14,6 +14,10 @@ verification_status: owner-approved-pdec-013-role-contract-implementation-pendin
 
 本文件规定执行顺序和机械发布门，不拥有产品语义、旅程状态或实际结果。
 
+## 当前执行覆盖（2026-09-09 PDEC-016）
+
+本任务按 [八步功能闭环](03-current-status.md) 完成，不再执行下文旧96条全量双遍/D/E总门。由单一Codex修复、验证、集成和交付；无zCode/CC委派、Goal或heartbeat。针对改动运行必要回归，应用发布核对三服务同源与真实消费，纯文档提交不触发重部署。Local上游/npm发行、精确合成账号移交/停用已授权，仍须核对目标并保留恢复证据。最后清理已登记合成资产、更新八步结果并commit/push；不删除真实资产、历史证据或无关owner修改。下文冲突条款仅作历史记录，不产生新的完成要求。
+
 历史分工（已被 PDEC-015 替代）：zCode 负责后端及功能实现，Kimi Code 负责前端 UI；优先由未参与该候选实现的 zCode/Kimi 或可用 CC 做只读交叉 review，主 Codex 随后独立加严审查代码、调用链和真实证据。CC 不可用、限额或等待不再阻断进度；只有重大节点额外挑战方案、反例并对账证据。主 Codex 对派单、集成、Git、三服务部署、生产 E2E/A2A、证据与最终验收负责。旧 single-Codex 与禁用外部代理的分工已被替代；GitHub Issue 仍只是可选审计引用。
 
 > 当前执行以 [PDEC-015](02-owner-decisions.md#2026-09-08-已接受的功能收敛裁决) 为准：有限批次、功能先行、zCode 实现/Codex 验收；下方旧无限续作与固定多重 review 条款仅保留历史，冲突时不执行。原 96 条业务标准及最终 D/E 双遍不变。

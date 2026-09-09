@@ -14,6 +14,12 @@ verification_status: owner-approved-usability-simplicity-and-full-scope-renewal
 
 ## North Star
 
+### 当前任务的完成合同（2026-09-09，PDEC-016）
+
+Owner 明确纠正：“最终标准不是已经改成 8 步了吗？”本次收尾以八步功能闭环为最终标准，不再以旧 `0/96`、96 条完整双遍或历史 D/E 总门作为完成前置。八步为：固定/A2A 工作流、Dynamic、自动化、Local、Office/Goal、Memory/Growth、Hook/Skill/MCP、角色/移交/离职及发布清理。当前逐步状态由 [03-current-status.md](03-current-status.md) 单写维护。
+
+每步仍需实际入口、执行、结果消费及该步必要的权限/失败恢复证据；已观察到的错误必须修复复验，未测不能写成通过。历史 manifest、分数、失败和证据保留，不修改成 PASS；下文旧 96 条合同仅作历史参考，不再反向扩大本任务。产品 North Star、安全边界、模型主权和如实报告要求不变。
+
 > 一个不懂 Agent、模型、RuntimeTask、向量索引或内部权限术语的普通员工，能够在一个清晰、可恢复的 Session 中创建并使用数字员工完成真实任务；过程中知道 Agent 正在做什么、何时需要自己决定、最终交付了什么；Agent 能持续学习，但所有知识、权限和外部动作始终可控、可追溯、可恢复。
 
 该目标同时要求：

@@ -12,13 +12,13 @@ verification_status: bounded-functional-pilot-closed-partial-results
 
 本目录是本轮整体验修的**唯一导航入口**。它不是另一本总纲；每类事实只由一个文件负责，索引只建立关系，不复制正文。
 
-当前采用 PDEC-015 的有限批次：首个两小时跨域功能试批次已收束，生产为 `33f6332f`，局部结果和未完成项见 [当前状态](03-current-status.md)。后续执行等待 owner 决定；无新 Goal/heartbeat。下文 `17f073bb` P01 结果是历史支持证据，不迁移为当前版本 PASS。
+当前采用 [PDEC-016](02-owner-decisions.md#2026-09-09-最新裁决pdec-016)：以重新规划的八步功能闭环作为本任务最终标准，单一Codex继续修复、真实验收、发行、commit/push和文档收尾。逐步状态、剩余动作与当前部署只读 [当前状态](03-current-status.md)。旧96条分母、全量双遍/D/E及旧分工均不再是本任务完成门；以下相关记录仅作历史参考，无新Goal/heartbeat。
 
 ## 恢复顺序
 
 1. 先读本页，确认文件权威与写入路由。
 2. 再读 [03-current-status.md](03-current-status.md)，取得当前目标、提交、阻塞、下一动作和明确未完成项。
-3. 按 [04-journey-ledger.md](04-journey-ledger.md) 选择当前旅程，再进入对应领域清单。
+3. 按当前状态的八步选择剩余动作，需要时参照 [04-journey-ledger.md](04-journey-ledger.md) 历史证据与对应领域清单；不恢复旧96条总门。
 4. 发现问题写入 [05-findings.md](05-findings.md)；实际运行结果写入 [evidence/](evidence/README.md)。
 5. 历史长账只在 [archive/](archive/README.md) 中查阅，不得反向覆盖当前状态。
 

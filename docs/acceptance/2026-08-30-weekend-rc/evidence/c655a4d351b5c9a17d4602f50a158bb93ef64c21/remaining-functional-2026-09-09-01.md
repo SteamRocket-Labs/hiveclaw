@@ -144,3 +144,35 @@ once原Run审批已200/resolved并same-run恢复，随后工具被明确aborted/
 - Schedule01 trigger `60111a5a-83d4-4b54-978c-97abdb1f8ee2` / root Session `7b238679-9d0e-4871-b57d-bd584ad35ef8`，正常API计划decline后创建1min interval/max_fires1；runtime `c5272968-66d8-4735-ac4a-c66dc6002860` / child Session `db0742a6-4e8c-4b5b-9383-65a83958d8bc` completed，文件 `workspace/wrc-schedule-01.md`读取200/91，fire_count1且disabled。Event01 trigger `c28cef7b-bd84-4b73-b6d8-d5217770cd2f` / root Session `a6cff237-bf82-4be2-b422-cfc5442590a4`，实际消息marker `WRC-EVENT-AMBER-01`/value11触发runtime `4c00a60c-20c1-413d-94bb-3aa0cdeb7073` / child Session `069890a9-364e-48cd-a024-97cfc5da3386`。运行完成但产物诚实标明payload missing，不能计算、不计业务PASS。确定根因：evaluator只在内存config写_matched_message，worker重载definition时丢失。
 - Dynamic07实际leaf51/57、final tool计算108、`workspace/remaining-dynamic-ling-07.md`正式读取200。outbox `6b9eaccc-a3f1-589d-8c6f-a9b6c94bbfdc` delivered/attempt1/无error，父run `57a6443f-15bb-411a-aa51-ec788dd19955`真实调用Ling但仅重复旧preview。request snapshot含runtime-result ref及integration epoch2，放在35K System Notice中；所以不是通知漏投或旧seal冒用，尚未建立模型为何忽略的确定因果。旧06自动消费72与其错误任务绑定仍独立保留，不迁移为07通过。
 - 候选 `9939609e`：event数据随原RuntimeTask intent保存并仅恢复6个数据字段（不恢复权限/配置），保留消息为untrusted；原生委派max_depth在保存、worker及终态projection恢复三处一致保留，缺省仍2、显式0拒绝。101触发相关+1真实PG+103委派/A2A检查通过，ruff/diff通过，无依赖/DDL/权限改变。待同源部署后独立event02与A2A第三节点显式retry；其余once聊天/Growth/Hook/能力/角色和清理仍继续。
+
+### 16:08—16:30 发布与独立消费复核
+
+- 应用 `f0b6939effd336fcf2e4726482f162734888271f` 已push；backend `2f7e0fdb-0229-4f47-87d8-236270ce05f8`、backend-api `1eee73e1-4f86-4840-9917-55f3781b68e4`、frontend `f91fcdd4-0d94-425d-a1f6-93b91ebe3fd0`全部SUCCESS。精确archive/public backend均1062文件/source SHA256 `103d56d156ecfd6c3ac9e7bf317320095e0158a1f8c1f481f515a3abb0fdbdac`；backend-api三次SSH连接关闭，独立运行源码hash仍未核实，不把部署成功替代此证明。Plan/工具/编排110passed、Skill实际PG/API10passed、RLS17passed/202.73s、release archive hygiene3487paths通过。CI34327770653前端及15条机械journeys成功，backend当时仍在执行。
+- Event03 trigger `162e557a-134f-4347-af82-92dc4bb033de`，Session `89ce92cc-2b88-4050-adb5-336d5667aab6`；canonical匹配键 `session_input:f7209aca-c325-486b-ab74-f64f84fd8789:revision:1`，runtime `cd0db945abdb44dfac242bd1dd7c3985`。实际唯一输入提供value17，trigger reason未带17或85。16:16正式GET已fire_count1/disabled，`workspace/wrc-event-03.md`读取200，含原值17及17*5=85/marker。此为V2事件载荷到文件消费通过；因SSH不可用，未额外取得此child的完整工具/终态原始链，不外推完整故障恢复验收。
+- once04 Session `e839e26b-9356-47af-ae9c-f9533f152ec2`先实际调用request_plan_mode成功（invocation `c8df7867-97a3-5fa2-88c0-20047598156f`）；authenticated user后续明确拒绝Plan并授权准确参数。run `6505609d-705a-5059-b1dc-df809d3d742b`的set_trigger invocation `fba58499-e3fc-5fa6-8218-5989ac7ef5cb`成功，trigger `f07ba328-52ed-4c6f-adc9-8ced3e7cd044`/recommendation `5d1852a0-2972-4f49-a8f6-625e2728ffab`。准确at为08:30:43.258799Z、expires08:38:43.258799Z、max_fires1；16:30前文件404，未提前计算。正式页面重开有准确参数/回执；该管理员视角为read-only，不冒充其点击了member确认。
+- 自定义Skill `wrc-remaining-skill-20260909`经正式管理UI新建/编辑，registry `c3353d70-fb2f-45bb-87dc-0166a728b768`；合成member仅向自己的MemberAnalyst import-skill，files_written1、guard allowed。新Session `af7a3494-9bbb-4f63-a902-6988fa41021a`/run `4b7f8be9-9952-551b-9755-e7d1a8b7572b`真实load_skill invocation `b756267f-e23e-54f7-8e97-fb198b9a1a00`读到完整正文，随后execute_code `a678e20a-1a59-54ab-a188-1e7b66dc5a08`成功但无stdout，最终返回未在用户输入提供的marker `WRC-SKILL-ORCHID-731`及29+7=36。安装/加载成立，不宣称stdout实测36。
+- Skill清理仍未完成：正式目录精确列出唯一453B `skills/wrc-remaining-skill-20260909/SKILL.md`；正常DELETE files/content返回403，原文件GET仍200。活动Skill由promotion保护；AgentSkillsSection仅列出/导入，未找到受支持的活动Skill卸载入口。未通过SSH绕过、未删registry造成悬空来源。保留精确registry和安装副本供恢复，纯合成、不含凭据、未新建自动执行Hook；这是产品生命周期缺口，不伪装完整Skill PASS或cleanup完成。
+- A2A02正式流程页显示所有节点done（attempts1/1/gate1/deliver2）。原生下载的final.md SHA256 `5897f784ad3ee187aecb1686a33f9d3a250af5e18afcd1e0f177455762d35b5a`，source.json SHA256 `d0150e0c822376d8270071c29a497fe6cc068e1ffaa245e3749499970c4a134c`，均与不可变journal一致；实际完整报告含161/9/152及两上游hash。review.json下载点击未取得本地文件，原因未确定，不冒充403。16:30重新打开父Session仍只有旧01失败报告与02部分节点通知，完整最终父消费未通过；未直接重置outbox或新开A2A03掩盖原状态。
+- 角色/离职仅查看合成member的正式影响预览并取消：1个MemberAnalyst、1条直接权限、0KB/0token/0连接绑定/0inflight；唯一接收人为当前公司真实owner。未提交转移、删除、停用或升权。此预览的0inflight不包含未来once触发，不能据此在任务执行前删owner。临时管理员与自审政策未获答复，未修改。
+
+### 剩余范围的分类（不是全部完成声明）
+
+| 功能 | 已观察到的结果 | 未闭环部分 |
+|---|---|---|
+| Office | 原生HTML预览、CLI validate、公式缓存29、下载与重开通过 | 其他未测格式/故障组合不外推 |
+| 固定Workflow | 同一v1两组实际108/162，人工gate、等待、文件消费 | 不替代全96条最终双遍 |
+| A2A Workflow | 三个完整Agent、不可变交接、gate、受控retry、最终报告下载 | 最终父会话自动消费未通过 |
+| Dynamic | 真并行51/57、review/wait、文件108 | 07父模型收到通知仍重复旧预览，语义消费失败 |
+| Goal | host自动两个run143→286，187967tokens与canonical一致 | 不外推长期稳定性/成本最优 |
+| once/schedule/event | API once64、schedule91、V2 event85通过；聊天once04到时文件76通过 | 父聊天自动回帖未验，故障/重启组合未测 |
+| Local | 新独立会话、实际pwd exit0、完整final/ack及重开通过 | 本机候选未发布npm，不冒充上游0.1.9已修复 |
+| Memory/Growth | 更正/退役/fresh排除已验；新Useful active且实际读到 | fresh回答自相矛盾；长期成长/J4未完成，禁止外部作者边界未变 |
+| Skill/MCP/Hook | 内置/自定义Skill真实加载；Context7两工具实际成功；member runtime-health200/admin403 | 活动Skill卸载、完整Hook生命周期与其他扩展组合未完成 |
+| 角色/移交/离职 | 正负向API历史证据及本次只读影响预览 | 临时管理员/自审政策/向真实owner转移待决；未冒充执行 |
+| 发布与清理 | 已发布范围的针对性检查、三服务SUCCESS；旧候选保留 | backend-api独立hash未验、完整D/E/rollback/全部合成清理未完，NPTCR仍0/96 |
+
+旧once02/03未创建成功或过期，保持失败/拒绝证据；已成功触发的one-shot自动disabled，不重放。共享合成账号/Agent、workflow定义、文件、技能和审计记录保留精确ID，不执行模糊批量删除。需要新政策/角色权限或改变两次失败后的策略时，仅暂停对应项，不把“全部完成”解释为自动授权。
+
+16:33最终只读：once04 trigger已fire_count1/disabled，last_fired_at=`2026-09-09T08:31:48.425672+00:00`；正常member GET文件200，内容精确为 `# WRC-ONCE-CHAT-04`、`Marker: WRC-ONCE-CHAT-04`、`Computation: 19 * 4 = 76`。这证明聊天原生建议/拒绝绑定、创建、未来执行和文件消费；未取得原始child工具stdout/完整终态链，父聊天刷新仍只见创建回执，因此不扩大成自动回帖或完整故障恢复PASS。没有再发用户消息或手动执行计算来促成结果。
+
+文档结构10passed/0.35s及diff检查通过。应用CI34327770653的frontend/15journeys success，backend从08:11:36Z开始、当前仍在full hermetic pytest；未提前称完整CI通过。以上缺口和精确保留资产如实交付，未删真实业务、无关owner dirty或未接受的runtime候选，没有新增管理员、政策更改或外部作者。

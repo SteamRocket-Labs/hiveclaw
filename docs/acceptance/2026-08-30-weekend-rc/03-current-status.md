@@ -4,7 +4,7 @@ owner: Codex
 status: in_progress
 authority: canonical-working-state
 last_reviewed: 2026-09-09
-source_commit: bfd354b7
+source_commit: f0b6939e
 verification_status: remaining-functional-closure-in-progress
 ---
 # 当前状态与唯一下一动作
@@ -12,6 +12,10 @@ verification_status: remaining-functional-closure-in-progress
 [返回索引](README.md) · [旅程账本](04-journey-ledger.md) · [Findings](05-findings.md) · [Runbook](06-runbook-and-release-gates.md)
 
 ## 当前决定与本批次出口
+
+16:33 收尾核对：once04正式GET为fire_count1/disabled，last_fired_at=08:31:48.425672Z；文件 `workspace/wrc-once-chat-04.md`读取200，真实内容为marker及19*4=76。聊天原生Plan建议→authenticated decline→set_trigger→到时文件消费通过；父聊天重开仍只有创建回执，未把它说成自动回帖已验。Office、固定Workflow、Goal、Local、once/schedule/event已通过的有界路径不重做。A2A/Dynamic最终父消费、Growth回答矛盾、活动Skill卸载、角色/自审政策、完整D/E及cleanup仍未闭环，**不是全部完成，NPTCR仍0/96**。文档结构10passed/0.35s，diff检查通过；最新应用CI34327770653后端仍在全量pytest阶段，前端与15journeys成功。完整分类及精确资产见[收尾记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)。
+
+16:25 实测：`f0b6939e`已push，三服务SUCCESS：backend `2f7e0fdb-0229-4f47-87d8-236270ce05f8`、backend-api `1eee73e1-4f86-4840-9917-55f3781b68e4`、frontend `f91fcdd4-0d94-425d-a1f6-93b91ebe3fd0`。public backend与精确archive同1062文件/hash `103d56d156ecfd6c3ac9e7bf317320095e0158a1f8c1f481f515a3abb0fdbdac`；backend-api SSH三次连接关闭，未宣称其独立运行hash已核实。最终RLS17passed/202.73s，Skill真实PG及API10passed，release archive hygiene3487paths通过，CI34327770653仍在执行。Event03已捕获canonical input并仅fire1后停用，正式file GET200包含marker及17*5=85。once04真实request_plan_mode→用户拒绝→set_trigger成功，原生推荐账本绑定有效，trigger `f07ba328-52ed-4c6f-adc9-8ced3e7cd044`尚待16:30:43唤醒，不提前算PASS。Skill registry创建/编辑/安装/实际load_skill及29+7=36完成，待精确清理。A2A02最终报告正式UI下载hash5897f784…与journal一致，源文件hashd0150e0c…一致，三员工交接及最终文件已交付；父会话仍未见完整最终结果页，不声称自动父消费通过。离职仅打开合成member的影响预览并取消：1个Agent、1条直接权限、接收人为同公司owner；未转移、停用或升权。
 
 16:08 收尾候选：V2 admitted human input 已接入事件触发；预算拒绝父模型续轮时仍投递已提交结果；技能库新建关系集合已修复。原生 Plan 卡片的真实工具回执现可绑定 authenticated user 的拒绝，只对当前 run 生效，同 run 恢复可复用、其他 run 不可重放；未新增权限或改变 Plan 高风险边界。Plan/工具/编排110项检查通过，真实PG覆盖错误工具/用户/状态拒绝；其余相关与最终RLS检查进行中。旧once03 permission已正式deny200，同run resumable，不执行过期时间。Useful反馈已active且fresh会话load_memory读到143→286和证据续轮做法，但模型同时声称找不到，两者矛盾，成长效果仍不计PASS。CI f0671806 的唯一失败已定位为漏同步RLS源码指纹；新候选按真实源码差异复核后更新，不放宽断言。尚未部署本候选。
 
@@ -53,7 +57,8 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 
 ## 当前可核实结果
 
-- 最新production为 **`6c3e1a11`**（10:11三服务SUCCESS），backend/backend-api/archive同1058文件、source SHA256 `f510c09697d945c4a46325abfd9e7583745ebc1004875f3bae21ad3373e286bb`。headless固定Workflow已能真实启动；但两叶provider限流暴露subagent错误done，gate未批准、原run已正式取消，无产物。新的共享终态修复已部署，本地117项及真实spawn连接/RLS4项通过，前端1298项通过，CI前端/15journeys成功而backend仍执行。fresh once首请求限流，未到工具审批；审批修复虽已部署尚不称业务通过。详情及完整未完成清单见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)。
+- 当前生产应用为 **`f0b6939e`**；最新部署、检查与功能结论以上方16:25及后续收尾记录为准。以下带旧commit/时间的项目均为历史支持证据，不是当前阻塞清单。
+- 10:11历史production为 **`6c3e1a11`**（当时三服务SUCCESS），backend/backend-api/archive同1058文件、source SHA256 `f510c09697d945c4a46325abfd9e7583745ebc1004875f3bae21ad3373e286bb`。headless固定Workflow当时已能真实启动；两叶provider限流暴露subagent错误done，gate未批准、原run正式取消，无产物。后续固定v1两组实际结果108/162已通过，见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)，不继续沿用10:11未完成判断。
 - B4 当前 production application **`3ac6e2a1`** 三服务同源SUCCESS（08:34核对），backend/backend-api/干净archive均1058files/source SHA256 `0d68c1c49c3f55b90dc84c800f1725f5a583cf3aabfb3d133fc13d1e50f412c3`。本批应用修复均已push和部署；185d779d干净archive100项Goal/terminal/artifact检查、110前端检查及build通过，3ac6e2a1干净archive36项Office检查通过/2项无本机二进制skip，生产同二进制另有红绿对照。RLS指纹逐项584→588对账后仅同步精确hash，17项安全检查通过224.07s，已push `4318c490`（仅审查常量与文档，不再部署相同应用行为）；其完整CI `34296805208`仍在执行，前两次CI前端与15journeys已成功。08:35 public health degraded原始错误是Vercel sandbox_stopped410，08:39同配置单次探针复验3/3通过，未覆写持久health记录；另有旧trigger stale fence，未称零错误。旧runtime候选原样保留，未夹带。
 - B4 已取得五格式个人文档/Agent消费/报告下载、公司发布/引用/下线/恢复v2、知识重建、显式记忆更正/退役/fresh排除、HR首任务归属与精确待命、临时子Agent、固定Reviewer A2A、member Team完整计算/父报告/正式关闭、内置Skill消费、clear、rewind续接、branch正式创建/历史读取的局部实证。MiniMax Workflow三叶计算/文件/父消费及完成组刷新、Plan确认后真实同会话执行/文件消费且零trigger、compact失败工具历史消费、Local审批通知深链接均已修复并生产通过。原生DOCX/XLSX校验、公式缓存29及workspace下载通过；最终旧卡片定位CLI resident未flush，3ac6e2a1生产adapter及快照helper通过，但正式模型卡片复验在首请求即被MiniMax限流拒绝。Goal暂停→继续→产物→完成通过；canonical计费/自动两轮新检查及08:36唯一continue均被MiniMax限流拒绝，08:39正式停止/无活动run。Useful反馈唯一落盘但memory held，成长UI有T0/T2/Skill候选但无成长报告，不记成长生效；临时管理员、自批政策未获答复，不扩大权限。完整范围和未测项见B4功能表，未提升为全部通过。
 - B3 历史 production application 为 exact **`87b845db`**：仅在 B2 已接受源码上加入 Local 默认会话恢复。三服务部署均 SUCCESS，backend/backend-api 运行 source hash `eb7edcf72abd898a3fed7b9396280c456bd40af5edef51e11a24425efffec577` 与干净 archive 一致，public health ok、frontend HTTP 200。正式默认页刷新/离开重开恢复原 7 条事件；日志仍仅一次本地执行。49 项主审 service/API/real-PG 检查通过。once 候选及旧 dirty runtime 均未进入发布；Local 完整终态和 once 交付仍阻塞，不增加 0/96。
@@ -85,7 +90,7 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 
 ## 唯一下一动作
 
-提交并同源部署队列event数据和委派depth修复，A2A02仅对已确认零工具执行的第三节点显式retry，复验最终产物/父消费；用独立新event核对实际载荷，继续Dynamic自动消费、once聊天、Growth/能力/角色及最终回归清理。Office和Goal已通过路径不重跑，旧失效时间和未知调用不重放。细节与精确资产见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)。
+提交本轮收尾记录，向owner交付确切未闭环清单与待决边界；不自动新建第三轮整链、改变自审政策或升权。once04已实际文件消费，不再等待或重发。父会话消费需明确原页的受支持恢复策略，不能直接重置DB；Growth保留实际矛盾，活动Skill缺卸载入口，角色转移仅有只读预览。队列event/委派depth已部署，A2A02第三节点已retry完成，最终报告已真实下载，不再执行历史下一动作。Office、Goal和固定Workflow已通过路径不重跑。细节与精确资产见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)。
 
 此前交付背景（不替代上述下一动作）：
 

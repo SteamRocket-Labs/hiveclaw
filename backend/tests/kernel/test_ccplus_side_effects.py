@@ -386,8 +386,8 @@ async def test_tool_envelope_preserves_full_receipt_but_projects_bounded_model_r
     """
 
     raw_receipt = (
-        '{"ok":true,"hr_agent_id":"bef8b286-b923-4e29-84c9-022f995ae6b3",'
-        '"hr_session_id":"2eb843de-6f8c-52cf-aeda-a17cd08f26da",'
+        '{"ok":true,"hr_agent_id":"000003a0-0000-4000-8000-000000000000",'
+        '"hr_session_id":"000000e2-0000-4000-8000-000000000000",'
         '"creation_brief_sha256":"724d3ce32853c2dd8ef7e4d396cb6513"}'
     )
     model_projection = (

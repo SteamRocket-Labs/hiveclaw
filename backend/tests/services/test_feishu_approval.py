@@ -53,8 +53,8 @@ async def test_approval_create_maps_label_form_to_definition_widgets(monkeypatch
             "user_id": "u_submitter",
             "form": {
                 "项目名称": "测试",
-                "NDA用章申请人": "缪荣高",
-                "用章主体": "上海常春藤投资有限公司",
+                "NDA用章申请人": "测试申请人",
+                "用章主体": "示例科技有限公司",
             },
         },
     )
@@ -67,8 +67,8 @@ async def test_approval_create_maps_label_form_to_definition_widgets(monkeypatch
         "user_id": "u_submitter",
         "form": [
             {"id": "widget_project", "type": "input", "value": "测试"},
-            {"id": "widget_applicant", "type": "input", "value": "缪荣高"},
-            {"id": "widget_entity", "type": "input", "value": "上海常春藤投资有限公司"},
+            {"id": "widget_applicant", "type": "input", "value": "测试申请人"},
+            {"id": "widget_entity", "type": "input", "value": "示例科技有限公司"},
         ],
     }
 
@@ -110,12 +110,12 @@ async def test_approval_create_repairs_label_ids_and_trailing_punctuation(monkey
             "user_id": "u_submitter",
             "form": [
                 {"id": "项目名称.", "value": "测试"},
-                {"id": "widget_entity.", "value": "上海常春藤投资有限公司"},
+                {"id": "widget_entity.", "value": "示例科技有限公司"},
             ],
         },
     )
 
     assert captured["form"] == [
         {"id": "widget_project", "type": "input", "value": "测试"},
-        {"id": "widget_entity", "type": "input", "value": "上海常春藤投资有限公司"},
+        {"id": "widget_entity", "type": "input", "value": "示例科技有限公司"},
     ]

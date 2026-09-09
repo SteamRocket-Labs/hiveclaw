@@ -1,1 +1,0 @@
-- [Hiveclaw Channel Patterns](project_hiveclaw_channel_patterns.md) -- Channel integration patterns: ChannelConfig model, stream managers, _call_agent_llm from feishu.py, secrets_provider encrypt/decrypt

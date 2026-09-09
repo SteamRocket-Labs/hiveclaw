@@ -685,8 +685,8 @@ describe('session socket event projector', () => {
   });
 
   it('treats compact live and canonical terminal UUID forms as the same run for terminal side effects', () => {
-    const canonicalRunId = '391ef191-0a87-5d2e-ac8b-43be7184e3cc';
-    const compactRunId = '391ef1910a875d2eac8b43be7184e3cc';
+    const canonicalRunId = '00000122-0000-4000-8000-000000000000';
+    const compactRunId = '00000122000040008000000000000000';
     const harness = makeHarness(runTerminalEnvelope(canonicalRunId, 'event-run-terminal-uuid', 1));
     harness.dependencies.activeRunIdOf = vi.fn(() => compactRunId);
     wireRealCanonicalDedupe(harness);

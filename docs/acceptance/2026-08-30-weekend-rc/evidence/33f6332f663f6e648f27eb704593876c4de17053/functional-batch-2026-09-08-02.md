@@ -6,6 +6,7 @@ authority: bounded-production-functional-evidence
 last_reviewed: 2026-09-08
 source_commit: aeaaacb59704ac7631da553c97d699c2cc87bdb4
 verification_status: bounded-input-recovery-and-consumption-verified
+disclosure: public-redacted
 ---
 # 第二批：普通第二轮输入恢复
 
@@ -26,8 +27,8 @@ verification_status: bounded-input-recovery-and-consumption-verified
 
 | 目标 | 已有输入与预期 | 下午首轮快照 / cleanup |
 |---|---|---|
-| 文件 Session `18911e1a-efff-4f49-b304-c7c3e93a30d7` | admission `4e79304d-f5cf-5f92-bf51-8f1327aefdfb`；原 `workspace/WRC-FUNCTIONAL-B1-20260908/file-check.md` 续写 | 本批只读复核仍 pending / boundary dead_letter；未恢复，保留现场 |
-| HR Session `22522912-a9b4-4a8a-98b2-5082d31b997c` | admission `0049d4ed-5c32-5aa1-9b3a-3abf577c9f31`；仅蓝图修订，不 provision | 本批只读复核仍 pending / boundary dead_letter；原蓝图已拒绝，未恢复，保留现场 |
+| 文件 Session `00000079-0000-4000-8000-000000000000` | admission `00000188-0000-4000-8000-000000000000`；原 `workspace/WRC-FUNCTIONAL-B1-20260908/file-check.md` 续写 | 本批只读复核仍 pending / boundary dead_letter；未恢复，保留现场 |
+| HR Session `000000a8-0000-4000-8000-000000000000` | admission `00000004-0000-4000-8000-000000000000`；仅蓝图修订，不 provision | 本批只读复核仍 pending / boundary dead_letter；原蓝图已拒绝，未恢复，保留现场 |
 
 ## 下午首轮证据与结果
 
@@ -41,7 +42,7 @@ verification_status: bounded-input-recovery-and-consumption-verified
 | 摘要投影 | needs_reconciliation / LLMError / attempt 1；terminal seq 191 | needs_reconciliation / LLMError / attempt 1；terminal seq 359 |
 | summary_through_sequence | null | null |
 
-实时 tenant `memory_config.summary_model_id` 指向 enabled `deepseek-v4-flash`（ID `13157038-87da-48bb-8d48-f3e354ac473e`）；这不证明当时请求的实际 HTTP 状态，也不证明当前 billing readiness。源码 `_get_summary_model_config` 优先使用这一显式 tenant 设置；首轮 GLM/MiniMax 正常不代表后台摘要采用同一模型。旧部署按时间窗查摘要错误日志返回空，不能据空日志补写原始错误详情。
+实时 tenant `memory_config.summary_model_id` 指向 enabled `deepseek-v4-flash`（ID `00000062-0000-4000-8000-000000000000`）；这不证明当时请求的实际 HTTP 状态，也不证明当前 billing readiness。源码 `_get_summary_model_config` 优先使用这一显式 tenant 设置；首轮 GLM/MiniMax 正常不代表后台摘要采用同一模型。旧部署按时间窗查摘要错误日志返回空，不能据空日志补写原始错误详情。
 
 判断：阻塞已定位到 post-terminal summary 的 reconciliation 状态，不是 transcript 未投影、未 enqueue 或 provider 正在执行第二轮。尚未证明哪一种 LLMError，也未取得恢复后业务结果。现有受支持 operator redrive API 需要 exact boundary 和明确 summary retry disposition；未执行前先核对实际可恢复条件，不自动改全租户模型。
 
@@ -97,13 +98,13 @@ external_calls: 0
 
 建议先采用现有受支持的操作恢复路径，不再给失败重试方案加第三版：owner 决定是否允许把实验公司的共享摘要/后台记忆模型改为已实际工作过的 GLM-5.3，保留原设置作为 rollback；取得 exact tenant 的正式 operator 认证，并确认当前 readiness 后，再明确授权重算原两条摘要。恢复可能重复此前已成功的摘要子调用，必须明确这一费用风险；不能假称幂等、跳过消费者或伪造 delivered。
 
-正式入口为 `POST /api/runtime-terminal-boundaries/{boundary_id}/redrive`，`summary_disposition=retry`，须匹配 authenticated tenant；文件 boundary `55c4549c-7384-5d63-a626-d5843bc8da53`、HR boundary `3de38b11-efb9-5478-bae2-8d95a4e7bf25`。当前尚未取得此 exact tenant 的受支持 operator API 认证，前端也未发现该恢复按钮；不能提取浏览器 token 或用另一 fixture 的身份代替。若不能从现有支持入口完成，明确报告入口缺口，另获范围决定，不手改 DB。
+正式入口为 `POST /api/runtime-terminal-boundaries/{boundary_id}/redrive`，`summary_disposition=retry`，须匹配 authenticated tenant；文件 boundary `000001a8-0000-4000-8000-000000000000`、HR boundary `0000013c-0000-4000-8000-000000000000`。当前尚未取得此 exact tenant 的受支持 operator API 认证，前端也未发现该恢复按钮；不能提取浏览器 token 或用另一 fixture 的身份代替。若不能从现有支持入口完成，明确报告入口缺口，另获范围决定，不手改 DB。
 
 未获 owner 配置/风险决定前暂停该效果。完整 96 旅程、真实故障恢复和最终 cleanup 仍未完成；本批不替代最终验收。
 
 ## 批后更新：owner 已修改模型，旧任务尚未恢复
 
-2026-09-08 16:17—16:18（Asia/Shanghai），owner 告知“改完了已经”后，Codex 用同一 exact tenant / app_rls / READ ONLY 查询核对：摘要模型已为 enabled `zhipu / glm-5.3`，ID `ae56afc0-f3d4-4021-96b3-158ebe766cab`。两条原摘要仍 needs_reconciliation / LLMError / attempt 1，summary watermark null；两条 boundary 仍 dead_letter / attempt 8，后续 admissions 仍 pending。修改配置不自动恢复历史死信，本次无新 provider call、redrive 或输入重发。首次 SSH 连接关闭，第二次只读查询成功；浏览器控制初始化超时，没有取得新的 UI 证据。
+2026-09-08 16:17—16:18（Asia/Shanghai），owner 告知“改完了已经”后，Codex 用同一 exact tenant / app_rls / READ ONLY 查询核对：摘要模型已为 enabled `zhipu / glm-5.3`，ID `00000354-0000-4000-8000-000000000000`。两条原摘要仍 needs_reconciliation / LLMError / attempt 1，summary watermark null；两条 boundary 仍 dead_letter / attempt 8，后续 admissions 仍 pending。修改配置不自动恢复历史死信，本次无新 provider call、redrive 或输入重发。首次 SSH 连接关闭，第二次只读查询成功；浏览器控制初始化超时，没有取得新的 UI 证据。
 
 剩余断点是已有恢复 API 缺少前端入口，以及当前缺 exact tenant 的正式 operator API 登录态；不绕过认证。此更新不是自动开启第三批，也不改变两版候选拒绝结论。生产 health 返回 ok，运行源码 hash 仍 `510f6eb45fdb671eb4cf4852bbc5e49d0f3a7322ade18098d240b2577ec2620c`。
 
@@ -125,8 +126,8 @@ owner 随后提供一个新 HR 问候会话的成功截图，并要求“你再�
 
 | 消费路径 | 实际结果与精确定位 | 边界 / cleanup |
 |---|---|---|
-| 文件创建、同 Session 续写 | Session `236e112e-973c-4a3d-9670-e2593480f55f`；创建 `workspace/WRC-FUNCTIONAL-B2R-20260908/file-check.md`，49 B，artifact `9b593a27-6e54-466e-85b8-dd7a564727b6`；续写第三行 `Version marker: WRC-B2R-V2-683` 后 80 B，artifact `ecda6c58-9222-4676-affc-3f3a536318cb`。真实 write/read、edit/read；预览保留原两行且出现第三行，刷新重开仍正确 | 文件与两版 immutable artifact 留证；未覆盖旧 B1 文件。V2 正式下载动作的 artifact download API 为 HTTP 200 / text/markdown；未取得本机落盘证据，不冒称该层通过 |
-| HR 蓝图、正式“要求修改” | Session `81f168b2-00be-41e4-8f13-16084cef5d34`；合成名称 `WRC-B2R-Review-682`，首版三要点，要求修改后新预览的交付物和首任务均为五要点；名称、仅自己可见及全部访问限制保留。22:20 刷新后两版预览仍可见，最终 UI 为完成。只读确认同一 draft `5405fff6-6a34-445b-bcce-82ded896b3c0` v2/hash `bp_f3517c6503db48a300995e4a`，provisioning_task_id / created_agent_id 均 null | 22:23 经正式“拒绝”按钮提交一次，随后 UI 两版均显示已拒绝，Session 留证；无确认创建、provision 或外发 |
+| 文件创建、同 Session 续写 | Session `000000b3-0000-4000-8000-000000000000`；创建 `workspace/WRC-FUNCTIONAL-B2R-20260908/file-check.md`，49 B，artifact `000002ed-0000-4000-8000-000000000000`；续写第三行 `Version marker: WRC-B2R-V2-683` 后 80 B，artifact `0000046b-0000-4000-8000-000000000000`。真实 write/read、edit/read；预览保留原两行且出现第三行，刷新重开仍正确 | 文件与两版 immutable artifact 留证；未覆盖旧 B1 文件。V2 正式下载动作的 artifact download API 为 HTTP 200 / text/markdown；未取得本机落盘证据，不冒称该层通过 |
+| HR 蓝图、正式“要求修改” | Session `00000278-0000-4000-8000-000000000000`；合成名称 `WRC-B2R-Review-682`，首版三要点，要求修改后新预览的交付物和首任务均为五要点；名称、仅自己可见及全部访问限制保留。22:20 刷新后两版预览仍可见，最终 UI 为完成。只读确认同一 draft `000001a6-0000-4000-8000-000000000000` v2/hash `bp_f3517c6503db48a300995e4a`，provisioning_task_id / created_agent_id 均 null | 22:23 经正式“拒绝”按钮提交一次，随后 UI 两版均显示已拒绝，Session 留证；无确认创建、provision 或外发 |
 
 文件首轮 UI 1m05s/6 步，第二轮 3m19s/7 步；HR 首轮 3m26s/6 步，修改轮 6m06s/3 步（UI 时长包含等待）。14:14 UTC 只读回执确认文件原首轮 boundary 已自然 delivered、后续 admission 从 pending 自然 dispatched；HR 修改当时仍等待首轮 summary，随后才实际生成五要点预览。这证明配置变更后 fresh 链路能自然跨轮推进，不把数分钟等待误报永久死锁，也不证明旧 dead_letter 已恢复。
 
@@ -142,21 +143,21 @@ Codex 完整阅读变更、真实 HTTP adapter、selected-company 服务端校�
 
 ### 同源部署与原输入恢复（aeaaacb5）
 
-22:26 从 exact committed archive 上传三服务，没有部署工作面 dirty 文件，backend tree 与 `33f6332f` 完全一致。22:30 核对三服务均 SUCCESS：backend `df2a8aed-1c56-47ee-a2a4-ddd77ae9d711`、backend-api `b3b82e8e-9fdf-4beb-9fc0-84f3f310b8de`、frontend `22586d86-5883-4d0d-bae5-ee0ed4aff735`。backend health `ok`、build hash `510f6eb45fdb671eb4cf4852bbc5e49d0f3a7322ade18098d240b2577ec2620c`，frontend HTTP 200。启动期间曾有 backend 502 / 页面 GET 504；当时没有提交 mutation，服务就绪后正式刷新读到三条死信。此时 CI 前端及 15 全栈旅程均 success，backend full suite 尚在执行；不是最终 RC 发布声明。
+22:26 从 exact committed archive 上传三服务，没有部署工作面 dirty 文件，backend tree 与 `33f6332f` 完全一致。22:30 核对三服务均 SUCCESS：backend `00000425-0000-4000-8000-000000000000`、backend-api `0000036e-0000-4000-8000-000000000000`、frontend `000000a9-0000-4000-8000-000000000000`。backend health `ok`、build hash `510f6eb45fdb671eb4cf4852bbc5e49d0f3a7322ade18098d240b2577ec2620c`，frontend HTTP 200。启动期间曾有 backend 502 / 页面 GET 504；当时没有提交 mutation，服务就绪后正式刷新读到三条死信。此时 CI 前端及 15 全栈旅程均 success，backend full suite 尚在执行；不是最终 RC 发布声明。
 
 22:30—22:32，从 `/admin/platform-settings` 的“终态边界恢复”，核对自动读取的 selected-company echo 和两条 exact Session/boundary/task；分别填写审计原因、勾选重算终态摘要、阅读包含未知原始投递状态及可能重复子调用/费用的确认框，然后每条只点一次确认。
 
-- 文件 boundary `55c4549c-7384-5d63-a626-d5843bc8da53`：正式页面返回 requeued / pending；原死信行从列表移除。
-- HR boundary `3de38b11-efb9-5478-bae2-8d95a4e7bf25`：同样返回 requeued / pending；列表只剩未操作的第三条死信。
+- 文件 boundary `000001a8-0000-4000-8000-000000000000`：正式页面返回 requeued / pending；原死信行从列表移除。
+- HR boundary `0000013c-0000-4000-8000-000000000000`：同样返回 requeued / pending；列表只剩未操作的第三条死信。
 - 原输入没有重发、DB/outbox 没有手改、未假写 delivered、未创建员工；仅执行已授权的两次显式恢复。最终摘要、dispatch 和业务结果仍待消费者证据，不以 pending 回执宣告成功。
 
-22:33 只读审计核对恰好两条恢复记录：文件 audit `159bbb51-d243-41dd-a968-b69d0a7aa260`（22:30:43）、HR audit `17121891-fe8c-46d3-b3db-d8808157b534`（22:31:36），均 `summary_disposition=retry`、previous attempts 8。文件旧摘要已 sealed 至 seq 191，原 boundary attempt 9 于 22:31:44 delivered；原 admission `4e79304d-f5cf-5f92-bf51-8f1327aefdfb` 自然 dispatched 到新 runtime task `d42db8ca-3854-5134-a693-f11638a7c50a`。随后浏览器显示该输入真正 read/edit；HR 原修改也开始运行。UI 的 699/704 分钟包含上午提交以来的排队等待，不是此次 provider 执行时长。
+22:33 只读审计核对恰好两条恢复记录：文件 audit `0000006e-0000-4000-8000-000000000000`（22:30:43）、HR audit `00000076-0000-4000-8000-000000000000`（22:31:36），均 `summary_disposition=retry`、previous attempts 8。文件旧摘要已 sealed 至 seq 191，原 boundary attempt 9 于 22:31:44 delivered；原 admission `00000188-0000-4000-8000-000000000000` 自然 dispatched 到新 runtime task `000003eb-0000-4000-8000-000000000000`。随后浏览器显示该输入真正 read/edit；HR 原修改也开始运行。UI 的 699/704 分钟包含上午提交以来的排队等待，不是此次 provider 执行时长。
 
-22:33 旧文件输入完成，真实 read → 一次 edit → read，产出 74 B 新 artifact `d269cf90-67b5-4669-b0d7-96c80ce51cb2`（22:33:14），保留原 artifact `10d7df62-40b6-42d8-a168-fda23b096a79`。正式预览含原标题/标记和新增 `Version marker: WRC-B1-V2-573`；新 artifact 正式下载返回 HTTP 200 / text/markdown。未把 Agent 自述当成唯一内容证据，也未声称本机下载落盘已验证。
+22:33 旧文件输入完成，真实 read → 一次 edit → read，产出 74 B 新 artifact `000003e3-0000-4000-8000-000000000000`（22:33:14），保留原 artifact `00000059-0000-4000-8000-000000000000`。正式预览含原标题/标记和新增 `Version marker: WRC-B1-V2-573`；新 artifact 正式下载返回 HTTP 200 / text/markdown。未把 Agent 自述当成唯一内容证据，也未声称本机下载落盘已验证。
 
-HR 原草案 `dbd1915e-7201-4e88-82dd-6c40cfe99b3d` 已在上午 11:15 被拒绝，本来就不能原位变 v2。恢复后的 Agent 遇到 typed `immutable` 拒绝，明确解释原因，保留原记录并通过正式 `preview_agent_blueprint` 返回替代草案；新预览保留名称、仅自己可见和所有边界，首任务明确 cobalt folders 12 + amber folders 7 = folders 19，另有 label sheets 2，all physical items 21，标签纸不是文件夹。该结果是可恢复的替代草案，不冒称已拒绝草案被原位修改，也不执行 provision。
+HR 原草案 `00000410-0000-4000-8000-000000000000` 已在上午 11:15 被拒绝，本来就不能原位变 v2。恢复后的 Agent 遇到 typed `immutable` 拒绝，明确解释原因，保留原记录并通过正式 `preview_agent_blueprint` 返回替代草案；新预览保留名称、仅自己可见和所有边界，首任务明确 cobalt folders 12 + amber folders 7 = folders 19，另有 label sheets 2，all physical items 21，标签纸不是文件夹。该结果是可恢复的替代草案，不冒称已拒绝草案被原位修改，也不执行 provision。
 
-22:37 只读确认：旧 HR boundary attempt 9 已在 22:33:16 delivered；原 admission `0049d4ed-5c32-5aa1-9b3a-3abf577c9f31` 自然 dispatched，runtime task `b3fb0e1c-67da-5551-a2c2-874ad1b899a3` 已 completed。替代 draft `7ecfd611-7c7e-41a7-b3b9-29d2a5183706` v1/hash `bp_67256bdd91b03db397752a0d` 为 awaiting_confirmation，provisioning_task_id / created_agent_id 均 null。文件恢复轮的新 boundary `79f6a25e-8dfd-51ec-8287-b91c5235afd0` 已 delivered，summary watermark 384；HR 恢复轮的新 boundary `3d831010-9124-5ea7-84cc-0b4475eb91b5` 当时仍 processing，summary watermark 尚为上一轮 359。
+22:37 只读确认：旧 HR boundary attempt 9 已在 22:33:16 delivered；原 admission `00000004-0000-4000-8000-000000000000` 自然 dispatched，runtime task `00000371-0000-4000-8000-000000000000` 已 completed。替代 draft `00000267-0000-4000-8000-000000000000` v1/hash `bp_67256bdd91b03db397752a0d` 为 awaiting_confirmation，provisioning_task_id / created_agent_id 均 null。文件恢复轮的新 boundary `0000024f-0000-4000-8000-000000000000` 已 delivered，summary watermark 384；HR 恢复轮的新 boundary `0000013a-0000-4000-8000-000000000000` 当时仍 processing，summary watermark 尚为上一轮 359。
 
 ### 收尾出现 runtime 服务不响应，不能冒称完整通过
 
@@ -172,17 +173,17 @@ backend-api 的运行 source hash 已独立 SSH 核对，与 backend 及 exact a
 
 23:01 owner 明确回复“授权”。23:03 经 backend-api 的 app_rls / READ ONLY / exact tenant 核对：验收租户没有 running/pending 任务，原两条目标任务均 completed；HR 最新 boundary 仍 processing / attempt 1、summary watermark 359。其他租户活动未跨权限核验。公共 health 再次 8 秒零字节超时；一次 backend SSH 连接关闭，未产生业务效果。
 
-23:04:18 仅对 production backend service `4eecf029-4acd-4efc-99a5-5d57c007637f` 执行一次受支持 Railway restart，命令 exit 0，返回原 deployment `df2a8aed-1c56-47ee-a2a4-ddd77ae9d711`。没有 rebuild、源码/模型变更、DB 手改、输入重发或再次 redrive；backend-api 与 frontend 未重启。刚提交后 health 502 属于重启期间观察，最终恢复待核对。
+23:04:18 仅对 production backend service `0000018a-0000-4000-8000-000000000000` 执行一次受支持 Railway restart，命令 exit 0，返回原 deployment `00000425-0000-4000-8000-000000000000`。没有 rebuild、源码/模型变更、DB 手改、输入重发或再次 redrive；backend-api 与 frontend 未重启。刚提交后 health 502 属于重启期间观察，最终恢复待核对。
 
 应用 commit `aeaaacb5` 的 CI `34238046718` 此时已结束，Backend harness、Frontend gates、15 全栈旅程三个 job 全部 success；不扩大成 96 条验收通过。
 
 23:05 health 恢复 `ok`、source hash 不变；worker 在启动恢复 gate 释放后于 23:07 可见 running，terminal boundary worker 也 running。23:08 health 显示已自然 claimed/delivered 15 条回执，event-loop 当前 lag 1.03ms；另有 `trigger exception terminal transaction did not commit` 的 worker last_error，未在本批定位，不宣称平台所有后台工作健康。
 
-HR 正式刷新后重新加载完整两轮历史，最新预览的 12/7/19/2/21 和全部边界正确。23:05:50 经最新替代草案“拒绝”按钮提交一次；随后 UI 和 app_rls 只读查询均确认 `7ecfd611-7c7e-41a7-b3b9-29d2a5183706` rejected，provisioning_task_id / created_agent_id 仍 null，原草案拒绝时间未改。再刷新后两张卡均显示已拒绝；未创建员工。HR 最新 boundary 被原生租约回收后 attempt 1→2，仍等待自然终态消费完成，没有再次 operator redrive。
+HR 正式刷新后重新加载完整两轮历史，最新预览的 12/7/19/2/21 和全部边界正确。23:05:50 经最新替代草案“拒绝”按钮提交一次；随后 UI 和 app_rls 只读查询均确认 `00000267-0000-4000-8000-000000000000` rejected，provisioning_task_id / created_agent_id 仍 null，原草案拒绝时间未改。再刷新后两张卡均显示已拒绝；未创建员工。HR 最新 boundary 被原生租约回收后 attempt 1→2，仍等待自然终态消费完成，没有再次 operator redrive。
 
 ### 最终对账与本批出口
 
-23:13 后返回的 app_rls / READ ONLY / exact tenant 查询确认：HR boundary `3d831010-9124-5ea7-84cc-0b4475eb91b5` attempt 2 已于 **23:11:09.345735** delivered；摘要 state sealed / attempt 3，watermark 与 terminal_sequence 均 896，result SHA-256 `3103f105ac544afb245a9e183a1c1f6beb130596dc497cc5a9af8ffa3748fc18`。文件 summary watermark 384 不变。两个旧 Session 的四条 boundary 全 delivered、lease 清空、四个对应 RuntimeTask 全 completed，全部 384/896 个 transcript events 已 projected、无 failed；两条原 admissions 仍各自 dispatched，operator audit 恰好两条，没有再次提交输入或恢复请求。重启后旧文件页面再次刷新，74 B 快照重开仍含原两行和 V2 marker。
+23:13 后返回的 app_rls / READ ONLY / exact tenant 查询确认：HR boundary `0000013a-0000-4000-8000-000000000000` attempt 2 已于 **23:11:09.345735** delivered；摘要 state sealed / attempt 3，watermark 与 terminal_sequence 均 896，result SHA-256 `3103f105ac544afb245a9e183a1c1f6beb130596dc497cc5a9af8ffa3748fc18`。文件 summary watermark 384 不变。两个旧 Session 的四条 boundary 全 delivered、lease 清空、四个对应 RuntimeTask 全 completed，全部 384/896 个 transcript events 已 projected、无 failed；两条原 admissions 仍各自 dispatched，operator audit 恰好两条，没有再次提交输入或恢复请求。重启后旧文件页面再次刷新，74 B 快照重开仍含原两行和 V2 marker。
 
 | 本批范围 | 最终结论 |
 |---|---|

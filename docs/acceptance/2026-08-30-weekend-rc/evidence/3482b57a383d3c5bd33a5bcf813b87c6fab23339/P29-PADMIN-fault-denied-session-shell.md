@@ -11,12 +11,13 @@ pass: negative-authority-pre-fix
 environment: production
 source_commit: 3482b57a383d3c5bd33a5bcf813b87c6fab23339
 deployed_commit: 3482b57a383d3c5bd33a5bcf813b87c6fab23339
-deployment_ids: backend=7c196980-34c6-4846-bf25-0397b7b55c0e; backend-api=8e7545b8-9b6c-4b32-a77d-48883191728a; frontend=6f6bd18c-1681-4049-ac20-6660a3f84fc3
+deployment_ids: backend=0000025a-0000-4000-8000-000000000000; backend-api=000002af-0000-4000-8000-000000000000; frontend=00000219-0000-4000-8000-000000000000
 persona_principal: authenticated lab platform_admin
 result: FAIL
 recovery_result: NOT_RUN
 cleanup_result: NOT_APPLICABLE_READ_ONLY
 supersedes: none
+disclosure: public-redacted
 ---
 
 # P29-PADMIN denied Session route rendered a false workbench shell
@@ -25,13 +26,13 @@ supersedes: none
 
 ## Input
 
-- signed-in `platform_admin` 从 production 前端直接打开 `/agents/5d99fe45-7ea9-4f7e-979c-c57bcb2cd4ea/sessions/d5b47bd0-27d1-46e7-b417-4e9da362b553`。
-- 目标 Session metadata 只通过 Railway backend 内受控只读查询解析：Session `d5b47bd0-27d1-46e7-b417-4e9da362b553`、user `a9408982-237c-40c4-8af2-ec094179829f`、Agent `5d99fe45-7ea9-4f7e-979c-c57bcb2cd4ea`。没有读取 title、message、transcript、artifact 或业务正文。
+- signed-in `platform_admin` 从 production 前端直接打开 `/agents/000001ce-0000-4000-8000-000000000000/sessions/000003f2-0000-4000-8000-000000000000`。
+- 目标 Session metadata 只通过 Railway backend 内受控只读查询解析：Session `000003f2-0000-4000-8000-000000000000`、user `00000338-0000-4000-8000-000000000000`、Agent `000001ce-0000-4000-8000-000000000000`。没有读取 title、message、transcript、artifact 或业务正文。
 - URL 未携带 `operator_view` 或 `operator_reason`，因此这是普通 denied/not-found 负向探针，不是运营视图读取。
 
 ## Authority
 
-- 当前浏览器 principal 经服务端核验为 user `42778d4b-fa70-47c1-ad3a-15f7fcf5e8aa`、role `platform_admin`、tenant `aac728fb-fe1c-45df-a2ff-a56e024a37a0`。
+- 当前浏览器 principal 经服务端核验为 user `00000156-0000-4000-8000-000000000000`、role `platform_admin`、tenant `00000341-0000-4000-8000-000000000000`。
 - message 与 lineage API 均返回 `Session not found`；服务端没有返回目标 Session 正文或更强 audience 数据。
 - 未登录、未创建账号、未修改 role/grant、未读取 credential，也未启用 operator view。
 

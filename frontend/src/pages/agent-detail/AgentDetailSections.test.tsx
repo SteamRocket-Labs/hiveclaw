@@ -4841,7 +4841,7 @@ describe('AgentDetail extracted sections', () => {
             toolResult: 'Created',
             toolMeta: {
               kind: 'create_employee_success',
-              agentId: 'bef8b286-b923-4e29-84c9-022f995ae6b3',
+              agentId: '000003a0-0000-4000-8000-000000000000',
               agentName: 'RWA项目与营销专员',
               message: '数字员工已创建完成。',
               warnings: [],

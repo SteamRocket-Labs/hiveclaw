@@ -26,6 +26,8 @@ evidence/<exact-commit>/final-verdict.md
 
 Evidence 接受后不原地改写。发现错误时新增 `<original-name>-correction-N.md`，声明 `supersedes`、错误内容和新的事实源。
 
+公开副本的隐私脱敏不属于重新验收：在受限存储保留完整原件，公开正文使用匿名运行标识，frontmatter 以 `disclosure: public-redacted` 标注。不得借脱敏修改 source/deployed commit、PASS/FAIL、故障事实或未证明范围；真实生产目标、私人联系方式、账单与原始 payload 不进入 Git。重放与运维须读取经授权的受限原件。
+
 ## 每份文件必须包含
 
 ```yaml

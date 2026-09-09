@@ -29,12 +29,12 @@ loop/context detail: partially covered, needs gap-driven parity pass
 
 FreeCode baseline:
 
-- `/Users/example-owner/vc-saas/free-code-main/src/commands.ts`
-- `/Users/example-owner/vc-saas/free-code-main/src/commands/`
-- `/Users/example-owner/vc-saas/free-code-main/src/tools/`
-- `/Users/example-owner/vc-saas/free-code-main/src/query.ts`
-- `/Users/example-owner/vc-saas/free-code-main/src/utils/hooks/hooksConfigManager.ts`
-- `/Users/example-owner/vc-saas/free-code-main/docs/04-context-management.md`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/commands.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/commands/`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/tools/`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/query.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/utils/hooks/hooksConfigManager.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/docs/04-context-management.md`
 
 Hive current checkout:
 

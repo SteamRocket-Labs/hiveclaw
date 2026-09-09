@@ -11,11 +11,12 @@ pass: bounded-provider-probe-audit-verification
 environment: production
 source_commit: cc6e726218bd491120f942edfa91e51d2d167ff4
 deployed_commit: cc6e726218bd491120f942edfa91e51d2d167ff4
-deployment_ids: backend=f619e4a9-5ff3-4389-8b32-3e13de2efc2e; backend-api=7edd592d-9e8e-4c73-b074-1a8f5f818497; frontend=beb9cd36-f28c-4cba-a5f5-4614c88b88b0
+deployment_ids: backend=00000494-0000-4000-8000-000000000000; backend-api=00000268-0000-4000-8000-000000000000; frontend=0000039f-0000-4000-8000-000000000000
 persona_principal: authenticated lab platform_admin
 result: VERIFIED
 recovery_result: PASS_RELOAD_NO_REPLAY
 cleanup_result: NOT_APPLICABLE_CONTROL_PLANE_PROBE
+disclosure: public-redacted
 ---
 
 # LLM-PROBE-AUDIT-001 production verification
@@ -51,16 +52,16 @@ cleanup_result: NOT_APPLICABLE_CONTROL_PLANE_PROBE
 
 ## Evidence
 
-- post-fix production probe ID：`a0f1be98-27bd-4d69-9bde-247b57c6b16c`。
+- post-fix production probe ID：`00000304-0000-4000-8000-000000000000`。
 - provider/model：`zhipu` / `glm-5.3`；completed 为 `success=true`、`latency_ms=3411`。
 - audit UI 显示 completed `2026/8/31 05:21:36` 与 started `2026/8/31 05:21:32`；两条事件具有同一 probe ID、provider、model 与 `max_tokens=16`。
 - hard reload 后 exact counts 为 `startedActions=1`、`completedActions=1`、`probeOccurrences=2`、`hasSuccess=true`、`hasRawApiKey=false`。没有重复 provider call 或重复 audit pair。
-- exact application commit `cc6e726218bd491120f942edfa91e51d2d167ff4` 已 push；backend `f619e4a9-5ff3-4389-8b32-3e13de2efc2e`、backend-api `7edd592d-9e8e-4c73-b074-1a8f5f818497`、frontend `beb9cd36-f28c-4cba-a5f5-4614c88b88b0` 均 `SUCCESS` 且 deployment message 绑定该 full SHA。
+- exact application commit `cc6e726218bd491120f942edfa91e51d2d167ff4` 已 push；backend `00000494-0000-4000-8000-000000000000`、backend-api `00000268-0000-4000-8000-000000000000`、frontend `0000039f-0000-4000-8000-000000000000` 均 `SUCCESS` 且 deployment message 绑定该 full SHA。
 - backend health `status=ok`、RLS strict、`runtime_control_bus.last_error=null`；frontend HTTP 200。
 
 ## Recovery and deployment incident
 
-- 首次打包时错误地把 short SHA `cc6e7262` 手工扩展为不存在的 full SHA；`git archive` 失败，而原 zsh 脚本没有 fail-fast，导致 Railway 收到空上传。backend `446bb56e-f541-4baf-9fb9-de57ff59b715`、backend-api `771d44b3-e14d-4016-80c6-a5f543378848`、frontend `7f139625-77f3-4a97-949f-f0deeaae8e5c` 均立即 `FAILED`，没有替换当时运行实例。
+- 首次打包时错误地把 short SHA `cc6e7262` 手工扩展为不存在的 full SHA；`git archive` 失败，而原 zsh 脚本没有 fail-fast，导致 Railway 收到空上传。backend `00000166-0000-4000-8000-000000000000`、backend-api `0000023f-0000-4000-8000-000000000000`、frontend `0000026b-0000-4000-8000-000000000000` 均立即 `FAILED`，没有替换当时运行实例。
 - recovery 重新读取 `git rev-parse HEAD`，使用 `set -euo pipefail`，并在上传前机械确认 backend/frontend archive 含目标 Dockerfile 与 `railway.json`；随后三服务按 exact commit 成功部署。
 - audit 页面 hard reload 后仍只有同一 started/completed pair；恢复过程没有盲目重发 provider probe。
 

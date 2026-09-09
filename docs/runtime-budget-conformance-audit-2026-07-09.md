@@ -1,5 +1,7 @@
 # Runtime Budget Control Plane — 一致性审计 + 收窄-A 补齐记录
 
+> 公开副本：运行标识及本机路径已脱敏；原始证据由维护者受限保存。
+
 日期：2026-07-09 · 作者：g-budget-step12 · 施工图：`docs/runtime-budget-control-plane-plan-2026-07-03.md`
 
 ## 0. 结论
@@ -24,7 +26,7 @@ Runtime Budget Control Plane 的 **主体（Step 1–7 大部分）在 07-04 已
 | §9.1 内置默认 | ✅ | `_BUILTIN_PROFILE_DEFAULTS` 四 profile 数值与 §9.1 逐格吻合。🟢 本轮补 `max_parent_invocations`（interactive/scheduled=16, workflow=64, agent_team=24，来自 §9.1 列）。 |
 | §10 circuit breaker | 🟢 | **本轮核心。** 详见 §2。 |
 
-## 2. §10 breaker 补齐（本轮核心 = 常春藤复发防护）
+## 2. §10 breaker 补齐（本轮核心 = Example Company复发防护）
 
 **此前状态**：wake breaker 已存在（`subagent_wake_consumer._trip_child_failure_breaker_if_needed`），但**阈值硬编码在模块常量**（needs_reconciliation=3/failures=5/min_children=8/ratio=0.5），未从 policy 读；`max_parent_invocations` 完全缺失；settle 后无 breaker eval。
 
@@ -41,7 +43,7 @@ Runtime Budget Control Plane 的 **主体（Step 1–7 大部分）在 07-04 已
 1. **failures/needs_reconciliation = ground-truth 查询物化到列**，非在 ~15 个 child-failed 站点散落递增。理由：那 15 处多在 `subagent.py` 是 result 信封非 DB 持久化；散落计数器易漂移；安全 breaker 用 child 状态真相源无漂移。列在 wake 处从查询写入 = 满足「真实写入点」且零漂移。
 2. **parent_invocations = 纯计数器**，wake 单一干净写入点递增（真正全缺的维度）。
 3. **child_failure_ratio = failed/total**（wake 查询），`min_children=8` 统计显著性下限（沿用事故常量），settle 路径不查 child 故跳过 ratio。
-4. **事故校准常量 5/3/0.5 作 breaker 默认**：§9.1 未列这三维，沿用 wake 原硬编码值（常春藤校准）。
+4. **事故校准常量 5/3/0.5 作 breaker 默认**：§9.1 未列这三维，沿用 wake 原硬编码值（Example Company校准）。
 5. **`require_confirmation` fail_mode → summary_only 状态**：暂停放大 + 保留审批（`approve_overrun` 已存在）；`hard_stop`/`fail_closed` → hard_stopped。
 6. **settle 路径 breaker 只读 run 行**（无 child 查询，避免每 provider call 一次查询）；child-outcome breaker 归属 wake 路径（child 完成时刻）。
 7. **wake breaker 命中即阻断 wake**（任何 fail_mode），保留既有行为；summary_only「放行一次总结 wake」的细化归 **Step 5**（本轮未改 wake-proceed 语义）。

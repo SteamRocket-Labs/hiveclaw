@@ -93,15 +93,15 @@ describe('session experience information policy', () => {
   });
 
   it('presents an exact hash-pinned runtime receipt as a user-facing delivery state', () => {
-    const receipt = 'Durable result committed: ref=runtime-result://3be99530-7c50-5adc-9aa6-bdd6e401ffba/22664ea63afefe92980bbc9293ea8c711fcec8226ad46ad1b62c0109534a9a6d sha256=22664ea63afefe92980bbc9293ea8c711fcec8226ad46ad1b62c0109534a9a6d bytes=795.';
+    const receipt = 'Durable result committed: ref=runtime-result://00000132-0000-4000-8000-000000000000/22664ea63afefe92980bbc9293ea8c711fcec8226ad46ad1b62c0109534a9a6d sha256=22664ea63afefe92980bbc9293ea8c711fcec8226ad46ad1b62c0109534a9a6d bytes=795.';
     const item = {
-      id: '83fd572f-fc55-44b8-9deb-98809a53a2d5',
+      id: '0000027f-0000-4000-8000-000000000000',
       label: 'delegation',
       status: 'completed',
       state: 'completed',
       runtimeKind: 'peer_a2a',
       summary: receipt,
-      childSessionId: '437323b5-44bb-4d4d-8fb9-231e1df42421',
+      childSessionId: '0000015b-0000-4000-8000-000000000000',
       enterable: true,
       metrics: {
         elapsedSeconds: null,

@@ -1137,7 +1137,7 @@ Documentation-only work does not require TDD. Implementation must be TDD-first.
 Before implementation, add failing tests for:
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/backend
+cd ${REPO_ROOT}/backend
 source .venv/bin/activate
 
 pytest tests/services/test_llm_service_connections.py -q
@@ -1165,7 +1165,7 @@ Required cases:
 Connector Gateway implementation must add failing tests first:
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/backend
+cd ${REPO_ROOT}/backend
 source .venv/bin/activate
 
 pytest tests/services/test_open_connector_gateway.py -q
@@ -1192,7 +1192,7 @@ Required connector cases:
 ### 11.2 Frontend red tests
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
+cd ${REPO_ROOT}/frontend
 npm test -- WorkspaceLlmSection
 ```
 
@@ -1213,7 +1213,7 @@ Required cases:
 Connector Gateway frontend tests:
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
+cd ${REPO_ROOT}/frontend
 npm test -- ToolsManager
 npm test -- WorkspaceToolsSection
 ```
@@ -1234,7 +1234,7 @@ Required connector UI cases:
 After implementation:
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/backend
+cd ${REPO_ROOT}/backend
 source .venv/bin/activate
 pytest tests/services/test_llm_client_streaming.py \
   tests/services/test_llm_reasoning_adapter.py \
@@ -1246,7 +1246,7 @@ pytest tests/services/test_llm_client_streaming.py \
 And frontend:
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
+cd ${REPO_ROOT}/frontend
 npm run build
 ```
 

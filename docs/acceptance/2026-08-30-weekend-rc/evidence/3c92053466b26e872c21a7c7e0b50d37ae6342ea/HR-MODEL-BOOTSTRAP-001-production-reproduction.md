@@ -18,6 +18,7 @@ result: BREAKPOINT
 fault_recovery_result: NOT_RUN
 negative_authority_result: NOT_RUN
 cleanup_result: NOT_RUN
+disclosure: public-redacted
 ---
 
 # HR model bootstrap production reproduction
@@ -25,9 +26,9 @@ cleanup_result: NOT_RUN
 ## Input and authority
 
 - Chrome was already authenticated as synthetic employee `WRC M1 Employee CEDAR R2`; Settings showed `成员`.
-- An independent login response had already bound this principal server-side to tenant `0430e023-de03-4e8c-a3dc-b2a63e751427` with `role=member` and `needs_setup=false`.
+- An independent login response had already bound this principal server-side to tenant `00000018-0000-4000-8000-000000000000` with `role=member` and `needs_setup=false`.
 - Home showed zero visible digital employees. The user-facing `创建你的第一个数字员工` action led to `/agents/new`, whose only creation action is `使用 HR Agent 引导创建`.
-- That action created fresh HR Session `cae41732-3a3b-41b9-9ff2-477d5befcc9c`. Codex submitted exactly one creation brief with marker `WRC-P01-EMPLOYEE-AGENT-R1-20260906`.
+- That action created fresh HR Session `000003c5-0000-4000-8000-000000000000`. Codex submitted exactly one creation brief with marker `WRC-P01-EMPLOYEE-AGENT-R1-20260906`.
 - The brief requested a synthetic operations assistant able to plan, maintain Work Ledger, and use governed workspace file tools. It prohibited external Skills, MCP, connectors, messages, web, credentials, other Agents, workflow, trigger, automation, and company-wide data access. It explicitly requested preview first and no direct creation.
 
 ## Earliest wrong state
@@ -56,7 +57,7 @@ cleanup_result: NOT_RUN
 
 - The owner entered the provider credential directly in the production UI; Codex did not read, receive, log, or copy it.
 - `/enterprise/llm` subsequently showed `GLM-5.3`, `zhipu / glm-5.3`, enabled and default. `/enterprise/hr` showed `glm-5.3 (zhipu)` selected; after navigating away and back, the same binding was read back.
-- This closes the synthetic fixture's missing-model configuration gap. It does not change the terminal result of Session `cae41732-3a3b-41b9-9ff2-477d5befcc9c` or establish any Journey PASS.
+- This closes the synthetic fixture's missing-model configuration gap. It does not change the terminal result of Session `000003c5-0000-4000-8000-000000000000` or establish any Journey PASS.
 - A separate fresh Session reached the provider lane and failed on provider balance/credit; that result is recorded independently in `HR-MODEL-PROVIDER-BILLING-001-production-reproduction.md`.
 
 ## Not proven

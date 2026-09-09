@@ -2316,7 +2316,7 @@ Hive cloud
 
 ### 8.10 cc-connect Source-Derived Shape
 
-2026-06-22 进一步读了本地源码 `/Users/example-owner/vc-saas/cc-connect/`。结论不是“直接嵌入 cc-connect”，而是采用它已经跑成熟的形态：
+2026-06-22 进一步读了本地源码 `${LOCAL_HOME}/vc-saas/cc-connect/`。结论不是“直接嵌入 cc-connect”，而是采用它已经跑成熟的形态：
 
 ```text
 cc-connect mature shape:

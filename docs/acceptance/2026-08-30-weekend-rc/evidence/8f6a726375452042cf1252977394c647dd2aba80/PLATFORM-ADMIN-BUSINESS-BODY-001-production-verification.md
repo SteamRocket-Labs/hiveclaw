@@ -11,11 +11,12 @@ pass: bounded-platform-admin-business-content-boundary-verification
 environment: production
 source_commit: 8f6a726375452042cf1252977394c647dd2aba80
 deployed_commit: 8f6a726375452042cf1252977394c647dd2aba80
-deployment_ids: backend=35e6d6e5-4dc4-4167-b120-d9a42113f4a0; backend-api=86615c7d-ffc2-4e9d-8ad6-c31c9313dc70; frontend=cfa5f254-61f4-4666-b554-5b1fb9fc4d22
+deployment_ids: backend=0000010b-0000-4000-8000-000000000000; backend-api=0000028c-0000-4000-8000-000000000000; frontend=000003d7-0000-4000-8000-000000000000
 persona_principal: authenticated lab platform_admin
 result: VERIFIED
 recovery_result: PASS_HARD_RELOAD_AND_DENIED_ROUTE
 cleanup_result: NOT_APPLICABLE_READ_ONLY
+disclosure: public-redacted
 ---
 
 # PLATFORM-ADMIN-BUSINESS-BODY-001 production verification
@@ -50,7 +51,7 @@ cleanup_result: NOT_APPLICABLE_READ_ONLY
 
 ## Evidence
 
-- exact `8f6a726375452042cf1252977394c647dd2aba80` 已 push；backend `35e6d6e5-4dc4-4167-b120-d9a42113f4a0`、backend-api `86615c7d-ffc2-4e9d-8ad6-c31c9313dc70`、frontend `cfa5f254-61f4-4666-b554-5b1fb9fc4d22` 均 `SUCCESS` 且 deployment message 绑定 exact full SHA。
+- exact `8f6a726375452042cf1252977394c647dd2aba80` 已 push；backend `0000010b-0000-4000-8000-000000000000`、backend-api `0000028c-0000-4000-8000-000000000000`、frontend `000003d7-0000-4000-8000-000000000000` 均 `SUCCESS` 且 deployment message 绑定 exact full SHA。
 - backend health 为 `status=ok`、RLS `strict`、`runtime_control_bus.last_error=null`；frontend `/` 为 HTTP 200。
 - `/enterprise/info` hard reload 后：新 role-appropriate description 1、旧 description 0、边界标题 1、边界正文 1、company-intro heading 0、pre-fix body marker 0、legacy export surface 0、broadcast surface 0、tenant name 1、timezone 1、runtime error 0。
 - 同一 commit 的 `/enterprise/audit` hard reload 仍显示 400 条 summary；`session_id/job_id/issues/reason/agent_name/raw Insufficient Balance` 均为 0，既有 GLM probe correlation/provider/model/success 保留。
@@ -58,7 +59,7 @@ cleanup_result: NOT_APPLICABLE_READ_ONLY
 ## Recovery
 
 - `/enterprise/info` hard reload 后 role boundary 与零 business surface 保持，没有 stale company body、重复请求错误或 runtime alert。
-- 跨用户 Session `/agents/5d99fe45-7ea9-4f7e-979c-c57bcb2cd4ea/sessions/d5b47bd0-27d1-46e7-b417-4e9da362b553` 继续只显示 not-found、denied copy 与返回入口；read-only shell、runtime error、artifact 和合法 MAPLE marker 均为 0。
+- 跨用户 Session `/agents/000001ce-0000-4000-8000-000000000000/sessions/000003f2-0000-4000-8000-000000000000` 继续只显示 not-found、denied copy 与返回入口；read-only shell、runtime error、artifact 和合法 MAPLE marker 均为 0。
 
 ## Consumption
 

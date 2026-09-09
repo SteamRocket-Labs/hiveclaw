@@ -1,5 +1,7 @@
 # Runtime Budget Control Plane 方案
 
+> 公开副本：运行标识及本机路径已脱敏；原始证据由维护者受限保存。
+
 日期：2026-07-03
 状态：已定稿；2026-07-04 补充主 Agent 终止契约、Subagent/Workflow/Agent Team 计量边界和默认 profile 数值后进入实现验收；2026-07-17 Group 3 admission/approval/root coverage 切片已生产闭环，完整控制面仍按本文总验收判断
 范围：Hive runtime admission、预算预占、执行计量、自动运行熔断，以及企业控制中台里的预算治理。
@@ -23,11 +25,11 @@ Hive 现在已经有 tenant、user、agent 三个层级的 token quota counter�
 
 这个缺口危险的原因是：Hive 有 Claude Code 本地 CLI 没有以同样形式暴露的长期 durable execution surface，包括 scheduled trigger、heartbeat、durable `RuntimeTask`、background subagent、workflow run、parent continuation wake、restart recovery。
 
-因此这不是单个“众筹雷达”问题，而是 runtime 控制中台缺少一层统一预算治理。
+因此这不是单个“Example Scheduled Agent”问题，而是 runtime 控制中台缺少一层统一预算治理。
 
 ### 1.1 本轮根因拆分
 
-常春藤 / 众筹雷达事故不是单一 bug，而是两个问题叠在一起：
+Example Company / Example Scheduled Agent事故不是单一 bug，而是两个问题叠在一起：
 
 1. **主 Agent 没有足够明确的终止/失败判断。**
    定时任务本质上是平台在固定时间往一个 session chain 里投递 wake prompt。主 Agent 仍然负责判断任务是否完成、是否失败、是否还需要更多 subagent。但如果它把“子任务完成/失败”理解成“继续探索”，就会在 parent wake 后继续 spawn。
@@ -99,11 +101,11 @@ Claude Code 的 subagent/AgentTool 主要是 session-local、process-local worke
 - `backend/app/runtime/workflow_admission.py`：已有 workflow 的 static admission，覆盖 budget、fanout、concurrency、leaf calls、wall-clock。
 - `backend/app/runtime/invoker.py`：从 `max_tool_rounds` 推导 per-invocation `turn_token_budget`。
 
-常春藤事故的代码级闭环：
+Example Company事故的代码级闭环：
 
 ```text
 daily_scan trigger
-→ 众筹雷达 parent invocation
+→ Example Scheduled Agent parent invocation
 → LLM loop 反复调用 spawn_subagent(run_in_background=true)
 → start_subagent_run() 无 root-run cap 地创建 durable RuntimeTask
 → child completed / failed / needs_reconciliation
@@ -436,7 +438,7 @@ reservation 估值是安全系统的一部分，不是 UI 默认值。
 - `cache_miss_tokens` 对 background subagent 默认按 fresh context 估算；不能假设 prompt cache 命中。
 - 每次 settlement 都要把 actual usage 写入 calibration surface，用于周期性更新 default reservation。
 
-初始 default 不能拍脑袋。scheduled profile 的 `default_child_token_reservation`、`default_llm_call_token_reservation`、`max_cache_miss_tokens`、`max_subagents`、`max_continuation_wakes` 必须用常春藤事故和后续正常 trigger 的真实 Railway/DB 计量反推。
+初始 default 不能拍脑袋。scheduled profile 的 `default_child_token_reservation`、`default_llm_call_token_reservation`、`max_cache_miss_tokens`、`max_subagents`、`max_continuation_wakes` 必须用Example Company事故和后续正常 trigger 的真实 Railway/DB 计量反推。
 
 如果某个 provider 不返回 cache-miss metrics，cache-miss reservation 仍应按 prompt estimate 计入风险预算；settlement 时标记 `cache_miss_usage_observed=false`，但不能跳过 admission。
 

@@ -1,9 +1,11 @@
 # OfficeCLI HTML 预览闭环与 Office Online 完整退役计划
 
+> 公开副本：运行标识及本机路径已脱敏；原始证据由维护者受限保存。
+
 > 日期：2026-07-14
 > 状态：Step 1–9 全部完成；OfficeCLI 预览已闭环，production Office Online 服务已删除并通过删除后验收
 > 当前代码基线：`git HEAD = 33fbecd9d8021685aa2471114113b1edcc740b98`
-> 生产项目：Railway `dd959a13-19f9-497a-9704-42c310eae230`，environment=`production`
+> 生产项目：Railway `0000041c-0000-4000-8000-000000000000`，environment=`production`
 > 适用范围：Agent Detail 对话侧 Current Workspace、ChatArtifact Office 文件预览、OfficeCLI runtime、ONLYOFFICE 源码/配置/生产服务退役
 > 交付纪律：一次完成测试、实现、兼容数据清理、观测、三服务部署、生产验收和线上服务删除；不保留默认关闭的半成品或死代码
 
@@ -572,7 +574,7 @@ Artifact 行为：
 预期命令：
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/backend
+cd ${REPO_ROOT}/backend
 source .venv/bin/activate
 python -m app.scripts.retire_onlyoffice_metadata
 python -m app.scripts.retire_onlyoffice_metadata --apply --confirm
@@ -616,7 +618,7 @@ python -m app.scripts.retire_onlyoffice_metadata --apply --confirm
 Red 定向命令：
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/backend
+cd ${REPO_ROOT}/backend
 source .venv/bin/activate
 pytest \
   tests/services/test_officecli_adapter.py \
@@ -625,7 +627,7 @@ pytest \
   tests/api/test_resource_owned_surfaces.py \
   tests/tools/test_office_tools.py -q
 
-cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
+cd ${REPO_ROOT}/frontend
 npm test -- --run \
   src/api/domains/office.test.ts \
   src/pages/agent-detail/ArtifactSurface.test.tsx \
@@ -637,7 +639,7 @@ npm test -- --run \
 定向回归：
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/backend
+cd ${REPO_ROOT}/backend
 source .venv/bin/activate
 pytest \
   tests/services/test_officecli_adapter.py \
@@ -649,7 +651,7 @@ pytest \
   tests/integration/test_officecli_binary_contract.py -q
 ruff check app/ tests/
 
-cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
+cd ${REPO_ROOT}/frontend
 npm test -- --run \
   src/api/domains/office.test.ts \
   src/pages/agent-detail/ArtifactSurface.test.tsx \
@@ -660,12 +662,12 @@ npm run build
 全量门：
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/backend
+cd ${REPO_ROOT}/backend
 source .venv/bin/activate
 pytest tests -q
 ruff check app/ tests/
 
-cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
+cd ${REPO_ROOT}/frontend
 npm test -- --run
 npm run build
 ```
@@ -710,7 +712,7 @@ PPTX：
 生产代码与 infra 预期无匹配：
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main
+cd ${REPO_ROOT}
 rg -n "ONLYOFFICE|OnlyOfficeHost|DocsAPI|onlyoffice-documentserver|onlyoffice_not_configured" \
   backend/app frontend/src .env.example docker-compose.yml deploy
 ```
@@ -777,8 +779,8 @@ rg -n "ONLYOFFICE|OnlyOfficeHost|DocsAPI|onlyoffice-documentserver|onlyoffice_no
 必须部署 `backend`、`backend-api`、`frontend`，不能只部署两个：
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main
-PROJECT_ID=dd959a13-19f9-497a-9704-42c310eae230
+cd ${REPO_ROOT}
+PROJECT_ID=0000041c-0000-4000-8000-000000000000
 tmp_root=$(mktemp -d /tmp/hiveclaw-railway-upload.XXXXXX)
 mkdir -p "$tmp_root/backend-root" "$tmp_root/frontend-root"
 git archive --format=tar HEAD backend | tar -xf - -C "$tmp_root/backend-root"
@@ -797,13 +799,13 @@ railway up --service frontend --environment production --project "$PROJECT_ID" -
 轮询并验收：
 
 ```bash
-PROJECT_ID=dd959a13-19f9-497a-9704-42c310eae230
+PROJECT_ID=0000041c-0000-4000-8000-000000000000
 railway deployment list --service backend --environment production --project "$PROJECT_ID" --limit 1 --json
 railway deployment list --service backend-api --environment production --project "$PROJECT_ID" --limit 1 --json
 railway deployment list --service frontend --environment production --project "$PROJECT_ID" --limit 1 --json
 
-curl -fsS https://backend-production-326d.up.railway.app/api/health
-curl -I -fsS https://frontend-production-0346.up.railway.app/
+curl -fsS https://service-1.example.invalid/api/health
+curl -I -fsS https://service-3.example.invalid/
 ```
 
 删除前必须完成：
@@ -819,7 +821,7 @@ curl -I -fsS https://frontend-production-0346.up.railway.app/
 然后清理 Hive 服务中不再使用的变量。变量列表 JSON 含原始值，命令只允许通过 `jq` 输出 key，禁止保存完整 JSON：
 
 ```bash
-PROJECT_ID=dd959a13-19f9-497a-9704-42c310eae230
+PROJECT_ID=0000041c-0000-4000-8000-000000000000
 railway variable list --service backend --environment production --project "$PROJECT_ID" --json \
   | jq -r 'keys[] | select(startswith("ONLYOFFICE_"))'
 railway variable list --service backend-api --environment production --project "$PROJECT_ID" --json \
@@ -829,7 +831,7 @@ railway variable list --service backend-api --environment production --project "
 只对实际存在的 key 执行：
 
 ```bash
-PROJECT_ID=dd959a13-19f9-497a-9704-42c310eae230
+PROJECT_ID=0000041c-0000-4000-8000-000000000000
 railway variable delete ONLYOFFICE_DOCS_URL --service backend --environment production --project "$PROJECT_ID" --json
 railway variable delete ONLYOFFICE_INTERNAL_DOCS_URL --service backend --environment production --project "$PROJECT_ID" --json
 railway variable delete ONLYOFFICE_JWT_SECRET --service backend --environment production --project "$PROJECT_ID" --json
@@ -856,14 +858,14 @@ railway variable delete ONLYOFFICE_DOWNLOAD_TOKEN_EXPIRE_SECONDS --service backe
 先重新确认目标：
 
 ```bash
-PROJECT_ID=dd959a13-19f9-497a-9704-42c310eae230
+PROJECT_ID=0000041c-0000-4000-8000-000000000000
 railway service list --environment production --project "$PROJECT_ID" --json
 ```
 
 确认唯一目标为 `onlyoffice-documentserver` 后，执行最终删除：
 
 ```bash
-PROJECT_ID=dd959a13-19f9-497a-9704-42c310eae230
+PROJECT_ID=0000041c-0000-4000-8000-000000000000
 railway service delete \
   --service onlyoffice-documentserver \
   --environment production \
@@ -875,14 +877,14 @@ railway service delete \
 删除 receipt 必须保存到本轮执行证据，随后只读核验：
 
 ```bash
-PROJECT_ID=dd959a13-19f9-497a-9704-42c310eae230
+PROJECT_ID=0000041c-0000-4000-8000-000000000000
 railway service list --environment production --project "$PROJECT_ID" --json
 railway deployment list --service backend --environment production --project "$PROJECT_ID" --limit 1 --json
 railway deployment list --service backend-api --environment production --project "$PROJECT_ID" --limit 1 --json
 railway deployment list --service frontend --environment production --project "$PROJECT_ID" --limit 1 --json
 
-curl -fsS https://backend-production-326d.up.railway.app/api/health
-curl -I -fsS https://frontend-production-0346.up.railway.app/
+curl -fsS https://service-1.example.invalid/api/health
+curl -I -fsS https://service-3.example.invalid/
 ```
 
 最终完成证据必须同时表明：service list 不再包含 `onlyoffice-documentserver`、三个 Hive 服务仍为 `SUCCESS`、健康检查成功、production DOCX/XLSX/PPTX 预览仍可用。
@@ -942,9 +944,9 @@ Shared vendor: 591449 / 620000 bytes; gzip 186474 / 200000 bytes
 
 | 服务 | Deployment ID | 状态 |
 | --- | --- | --- |
-| `backend` | `0e1f43f4-ec0f-4d33-87d4-bb88831772a6` | `SUCCESS` |
-| `backend-api` | `1d560bc3-bd18-4d45-8714-1648b900274b` | `SUCCESS` |
-| `frontend` | `b4dbeba0-589e-4997-b95d-524bb94d5487` | `SUCCESS` |
+| `backend` | `0000004d-0000-4000-8000-000000000000` | `SUCCESS` |
+| `backend-api` | `00000091-0000-4000-8000-000000000000` | `SUCCESS` |
+| `frontend` | `00000377-0000-4000-8000-000000000000` | `SUCCESS` |
 
 健康面：
 
@@ -1007,8 +1009,8 @@ repeat:  {"scanned":21,"needs_update":0,"updated":0,"errors":0}
 
 ```text
 service name: onlyoffice-documentserver
-service id: e75cccb9-f46d-4f99-bd26-0d772438e7a4
-deployment id: c281e493-2205-47e9-9c53-8c1a633666bc
+service id: 00000452-0000-4000-8000-000000000000
+deployment id: 000003ad-0000-4000-8000-000000000000
 status: SUCCESS
 image: onlyoffice/documentserver:9.3
 Railway volume mounts: []
@@ -1019,7 +1021,7 @@ Railway volume mounts: []
 ```json
 {
   "environmentName": "production",
-  "id": "e75cccb9-f46d-4f99-bd26-0d772438e7a4",
+  "id": "00000452-0000-4000-8000-000000000000",
   "name": "onlyoffice-documentserver",
   "unlinked": false
 }
@@ -1028,7 +1030,7 @@ Railway volume mounts: []
 删除后最终验收：
 
 - production service list 中 `onlyoffice-documentserver` count=`0`。
-- `backend` deployment `0e1f43f4-ec0f-4d33-87d4-bb88831772a6`、`backend-api` deployment `1d560bc3-bd18-4d45-8714-1648b900274b`、`frontend` deployment `b4dbeba0-589e-4997-b95d-524bb94d5487` 均保持 `SUCCESS`。
+- `backend` deployment `0000004d-0000-4000-8000-000000000000`、`backend-api` deployment `00000091-0000-4000-8000-000000000000`、`frontend` deployment `00000377-0000-4000-8000-000000000000` 均保持 `SUCCESS`。
 - backend `/api/health` 为 `status=ok`、version=`1.7.0`，RLS role=`app_rls`、strict，所有 daemon healthy；frontend HTTP/2 `200`。
 - 三个 Hive 服务配置面均无 `ONLYOFFICE_*`；backend 与 backend-api 进程环境 key count 均为 `0`。
 - production OfficeCLI 1.0.88 的 DOCX/XLSX/PPTX HTML/text/CSP contract 再次全部 `ok`。

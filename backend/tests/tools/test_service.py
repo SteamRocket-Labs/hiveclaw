@@ -2763,7 +2763,7 @@ async def test_tool_runtime_service_allows_delegated_user_feishu_message():
         "send_feishu_message",
         {
             "open_id": "ou_example",
-            "message": "明天上午 9:00-9:30，常春藤办公室，讨论 Agent 新需求，有空吗？",
+            "message": "明天上午 9:00-9:30，示例公司办公室，讨论 Agent 新需求，有空吗？",
         },
         agent_id=context.agent_id,
         user_id=context.user_id,

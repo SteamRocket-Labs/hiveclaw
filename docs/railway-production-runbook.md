@@ -1,5 +1,7 @@
 # Railway Production Deployment Runbook
 
+> Public copy: runtime identifiers and host paths are anonymized; maintainers retain the original evidence privately.
+
 Use this runbook only after the owner explicitly authorizes a HiveClaw production
 deployment. It records the current three-service upload shape outside the always-on
 agent instructions so deployment detail can evolve independently.
@@ -38,11 +40,14 @@ Before submitting:
 
 ## Submit the exact committed source
 
-Run from the repository root. The project identifier is not a credential, but verify it
-against current Railway configuration before use.
+Run from the repository root. Set `RAILWAY_PROJECT_ID` in your local shell from the
+authenticated Railway project settings, and verify the selected environment before
+use. A project identifier is not a credential, but real infrastructure identifiers
+belong in restricted operational records, not this public runbook.
 
 ```bash
-PROJECT_ID=dd959a13-19f9-497a-9704-42c310eae230
+: "${RAILWAY_PROJECT_ID:?Set RAILWAY_PROJECT_ID from your private Railway project settings}"
+PROJECT_ID="$RAILWAY_PROJECT_ID"
 tmp_root=$(mktemp -d /tmp/hiveclaw-railway-upload.XXXXXX)
 mkdir -p "$tmp_root/backend-root" "$tmp_root/frontend-root"
 
@@ -81,14 +86,19 @@ railway deployment list --service frontend --environment production \
 All three must report `SUCCESS` for the intended deployment. `backend-api` is not
 publicly exposed, so a public backend response cannot prove its freshness.
 
-Then check the public transport surfaces:
+Set `HIVE_BACKEND_URL` and `HIVE_FRONTEND_URL` from the same project's authenticated
+service settings, then check the public transport surfaces:
 
 ```bash
-curl -fsS https://backend-production-326d.up.railway.app/api/health
-curl -I -fsS https://frontend-production-0346.up.railway.app/
+: "${HIVE_BACKEND_URL:?Set HIVE_BACKEND_URL from your private service settings}"
+: "${HIVE_FRONTEND_URL:?Set HIVE_FRONTEND_URL from your private service settings}"
+curl -fsS "${HIVE_BACKEND_URL%/}/api/health"
+curl -I -fsS "${HIVE_FRONTEND_URL%/}/"
 ```
 
-Record exact deployment IDs, source commit, terminal status, and health results. Run
+Record exact deployment IDs, source commit, terminal status, and health results in
+restricted operational storage. Public evidence keeps the source commit, observed
+outcome, and clearly marked anonymous identifiers; it is not a live operations target. Run
 the separately authorized signed-in or tenant-specific acceptance journey when the
 change requires it. Report deployment, health, and business acceptance as separate
 claims.

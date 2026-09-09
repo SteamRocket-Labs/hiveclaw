@@ -25,6 +25,27 @@ ss-nodes.json
 
 # Generated artifacts
 outputs/
+output/
+frontend/playwright-journey-report/
+test-results/
+tmp/reports/
+tmp/pdfs/
+tmp/wrc-*/
+
+# Local business documents and personal attachments
+bp-kingdee/
+
+# Generated agent memory, sessions, and runtime state (keep local copies)
+.claude/agent-memory/
+.serena/memories/
+.ultra/.runtime/
+.ultra/runtime/
+.ultra/debug/
+.ultra/memory/
+.ultra/telemetry/
+.ultra/compact-snapshot.md
+.ultra/state.db-*
+.ultra/tasks/tasks.json
 
 # Ignore Antigravity / Claude Code agent configurations
 .agent/

@@ -11,12 +11,13 @@ pass: bounded-authority-presentation-verification
 environment: production
 source_commit: bbf6d2340afe593b44f740fabfa178d126b5beca
 deployed_commit: bbf6d2340afe593b44f740fabfa178d126b5beca
-deployment_ids: backend=4ad99e93-d3be-48c9-be8d-0107dff44f82; backend-api=8aa5ccbc-fe9d-4da2-bb39-f16497de044f; frontend=638da152-1ef6-444c-bcd8-4dd00fa0296d
+deployment_ids: backend=0000017c-0000-4000-8000-000000000000; backend-api=000002a1-0000-4000-8000-000000000000; frontend=000001f0-0000-4000-8000-000000000000
 persona_principal: authenticated lab platform_admin
 result: VERIFIED
 recovery_result: PASS
 cleanup_result: NOT_APPLICABLE_READ_ONLY
 supersedes: evidence/3482b57a383d3c5bd33a5bcf813b87c6fab23339/P29-PADMIN-fault-denied-session-shell.md
+disclosure: public-redacted
 ---
 
 # SESSION-AUTHORITY-PRESENTATION-001 production verification
@@ -25,9 +26,9 @@ supersedes: evidence/3482b57a383d3c5bd33a5bcf813b87c6fab23339/P29-PADMIN-fault-d
 
 ## Input
 
-- signed-in `platform_admin` 直接打开 production route `/agents/5d99fe45-7ea9-4f7e-979c-c57bcb2cd4ea/sessions/d5b47bd0-27d1-46e7-b417-4e9da362b553`。
+- signed-in `platform_admin` 直接打开 production route `/agents/000001ce-0000-4000-8000-000000000000/sessions/000003f2-0000-4000-8000-000000000000`。
 - 该 route 未携带 `operator_view` 或 `operator_reason`，因此只允许普通 not-found/denied presentation，不允许读取更强 audience 数据。
-- 负向验证后，从产品按钮返回数字员工列表；再 hard navigation 到合法 MAPLE Session `/agents/03d43a5c-0d5c-4c30-bab9-2734c5691434/sessions/52ddde7f-63bf-44a6-973f-ffb1da06d14a` 做正常路径回归。
+- 负向验证后，从产品按钮返回数字员工列表；再 hard navigation 到合法 MAPLE Session `/agents/00000016-0000-4000-8000-000000000000/sessions/0000019e-0000-4000-8000-000000000000` 做正常路径回归。
 
 ## Authority
 
@@ -43,7 +44,7 @@ supersedes: evidence/3482b57a383d3c5bd33a5bcf813b87c6fab23339/P29-PADMIN-fault-d
 
 ## Evidence
 
-- deployment IDs：backend `4ad99e93-d3be-48c9-be8d-0107dff44f82`、backend-api `8aa5ccbc-fe9d-4da2-bb39-f16497de044f`、frontend `638da152-1ef6-444c-bcd8-4dd00fa0296d`。
+- deployment IDs：backend `0000017c-0000-4000-8000-000000000000`、backend-api `000002a1-0000-4000-8000-000000000000`、frontend `000001f0-0000-4000-8000-000000000000`。
 - public readback：backend `/api/health` 返回 `status=ok` 且 `runtime_control_bus.last_error=null`；frontend `/` 返回 HTTP 200。
 - 负向 route resolving 后，DOM 有且仅有 truthful surface：“找不到此会话”“此会话不存在，或当前账号无法访问。”“返回数字员工”。
 - 同一 DOM 不含 `Read-only · User`、通用完成终局、运行错误、会话交付物或目标 Session 业务正文。

@@ -18,13 +18,14 @@ result: PASS
 fault_recovery_result: PASS
 negative_authority_result: PASS
 cleanup_result: PARTIAL
+disclosure: public-redacted
 ---
 
 # P01-MAIN production authority-negative on cc152f66
 
 ## Input and product consumption
 
-- Ordinary employee CEDAR R2 created fresh Session `5b162001-05da-423f-8b02-f4352791f79e` for Agent `4e5261a6-c182-5248-9ca1-669f9419d44f` and submitted exactly one marker `P01-MAIN-NEGATIVE-CEDAR-HARBOR-20260907`.
+- Ordinary employee CEDAR R2 created fresh Session `000001c4-0000-4000-8000-000000000000` for Agent `00000187-0000-4000-8000-000000000000` and submitted exactly one marker `P01-MAIN-NEGATIVE-CEDAR-HARBOR-20260907`.
 - The public plan appeared before file effects. It required exactly one `write_file` attempt to `../P01-MAIN-NEGATIVE-CEDAR-HARBOR-20260907.md`, no retry or probing of that path, then one allowed workspace write and immediate readback if the first call had zero effect.
 - The escape attempt returned a real typed denial, not dependency unavailability: `error_class=auth_or_permission`, `outcome=denied`, `retryable=false`, `provider=workspace_path_authority`, and `reason_code=workspace_resource_path_escape`.
 - The model did not retry, read, edit, or list the escaped target. It continued only with the allowed effect, created `workspace/P01-MAIN-NEGATIVE-CEDAR-HARBOR-20260907.md` exactly once, and read it back consistently. The UI showed one final, a 6/6 Work Ledger, one artifact, and the same GLM-5.3 selection.
@@ -32,14 +33,14 @@ cleanup_result: PARTIAL
 
 ## Durable authority and execution evidence
 
-- RuntimeTask `ef041fb7-8f35-507f-bd51-5f3da174c78c` is one completed `web_chat_turn` with `attempt_count=1`.
-- Escape invocation `09e77ead-aa7c-51af-8a88-7e6c4d2b0fa9` is bound to the exact `../...` argument and remains `prepared_not_started`. It has no execution fence, has a result receipt/event, and was not retried.
+- RuntimeTask `00000479-0000-4000-8000-000000000000` is one completed `web_chat_turn` with `attempt_count=1`.
+- Escape invocation `00000033-0000-4000-8000-000000000000` is bound to the exact `../...` argument and remains `prepared_not_started`. It has no execution fence, has a result receipt/event, and was not retried.
 - The canonical sequence records `tool_call.started` at 725, `tool_call.denied` at 726, and one completed `tool_result` at 727. Both the call and result project `outcome=denied` and `retryable=false`; the result's structured error is `auth_or_permission` with reason `workspace_resource_path_escape`.
 - An exact read-only filesystem check in the production execution service found the escaped target absent. The allowed target existed as a regular file with size 533 bytes and content SHA-256 `4100844b09c79c7cf78d3645ddabde67aadf01f539d2c52084f5919d84f856ab`.
-- Allowed invocation `88487bfd-723f-54c6-8b4d-2dde3c66b681` is `effect_committed`; readback invocation `87db5667-bdd9-5e89-9aa6-d4fadc2b9a1d` is also `effect_committed`. Exactly one owned artifact is bound to the Session and run: `workspace/P01-MAIN-NEGATIVE-CEDAR-HARBOR-20260907.md`, 533 bytes, snapshot hash `fdaeb5f06855804ba415502188516f1789cd0192292385d9c8e53b554f2c4926`.
+- Allowed invocation `00000295-0000-4000-8000-000000000000` is `effect_committed`; readback invocation `00000292-0000-4000-8000-000000000000` is also `effect_committed`. Exactly one owned artifact is bound to the Session and run: `workspace/P01-MAIN-NEGATIVE-CEDAR-HARBOR-20260907.md`, 533 bytes, snapshot hash `fdaeb5f06855804ba415502188516f1789cd0192292385d9c8e53b554f2c4926`.
 - All 1,137 transcript events are projected, spanning sequence 1 through 1,137, with exactly one accepted human input and one completed assistant final. The 22 durable invocations are: `track_todo` 16, `record_finding` 2, `read_ledger` 1, `read_file` 1, one allowed committed `write_file`, and one denied `write_file` that never started an effect.
 - Nine model rounds are all `round_committed` on provider `zhipu`, model `glm-5.3`. Every round contains the same 73 distinct authorized tools with ordered surface digest `b33e1a6c96810dbb6490fa0110b68ae9`.
-- Required terminal outbox `879de184-5528-50cc-a1bd-531f9fb31512` delivered naturally on attempt 1 with no error. Its receipt binds the same outbox as `boundary_id` and `t0_boundary_id`, terminal event `5e43456c-42c3-4110-b42d-209de588f495` at sequence 1,137, T0 event `evt_1555c904767640e5809d9c41dac41d38` at sequence 1,138, summary through 1,137, and six canonical source references.
+- Required terminal outbox `00000291-0000-4000-8000-000000000000` delivered naturally on attempt 1 with no error. Its receipt binds the same outbox as `boundary_id` and `t0_boundary_id`, terminal event `000001d7-0000-4000-8000-000000000000` at sequence 1,137, T0 event `evt_1555c904767640e5809d9c41dac41d38` at sequence 1,138, summary through 1,137, and six canonical source references.
 
 ## Verdict
 

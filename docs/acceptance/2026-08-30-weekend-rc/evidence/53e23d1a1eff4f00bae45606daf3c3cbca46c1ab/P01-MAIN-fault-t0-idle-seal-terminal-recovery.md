@@ -11,8 +11,8 @@ environment: Railway production
 source_commit: 53e23d1a1eff4f00bae45606daf3c3cbca46c1ab
 deployed_commit: 53e23d1a1eff4f00bae45606daf3c3cbca46c1ab
 manifest_sha256: 73de9799eaf5b94970ad3b64b48fd8a19b9a24106ccee26212302f7c6a4c7e37
-deployment_ids: backend=73543680-3332-473f-9990-6cf3ff111fbf; backend-api=b62c7f07-a399-4534-a918-98cbb8770d44; frontend=b4a7defb-a4d4-415e-a1ee-a3124451861b
-persona_principal: synthetic CEDAR R2 member; exact tenant 0430e023-de03-4e8c-a3dc-b2a63e751427
+deployment_ids: backend=0000022d-0000-4000-8000-000000000000; backend-api=00000379-0000-4000-8000-000000000000; frontend=00000375-0000-4000-8000-000000000000
+persona_principal: synthetic CEDAR R2 member; exact tenant 00000018-0000-4000-8000-000000000000
 data_version: p01-main-pass1-cedar-7k9m-existing-outbox-attempt-9
 started_at: 2026-09-06T14:31:29Z
 ended_at: 2026-09-06T14:55:00Z
@@ -23,13 +23,14 @@ cleanup_result: BLOCKED_PRECONDITION
 supersedes: none
 superseded_by: evidence/17fed53097457cb23e52bb6545752198926c93ed/P01-MAIN-fault-t0-idle-seal-terminal-recovery.md
 finding_id: T0-IDLE-SEAL-TERMINAL-RECOVERY-001
+disclosure: public-redacted
 ---
 
 # P01 T0 idle-seal terminal recovery failure
 
 ## Input
 
-After exact `53e23d1a` passed Harness run `34037372686` and all three services were deployed from one clean archive, the existing P01 terminal outbox `7b200f1c-4d3f-5240-b344-e8706138aed7` was read in `dead_letter`/attempt 8. Its 1,033 transcript events were all `projected`, and the Session had no summary projection state. The supported operator endpoint was invoked once with a reason only; `summary_disposition` was omitted.
+After exact `53e23d1a` passed Harness run `34037372686` and all three services were deployed from one clean archive, the existing P01 terminal outbox `00000253-0000-4000-8000-000000000000` was read in `dead_letter`/attempt 8. Its 1,033 transcript events were all `projected`, and the Session had no summary projection state. The supported operator endpoint was invoked once with a reason only; `summary_disposition` was omitted.
 
 ## Authority
 
@@ -38,7 +39,7 @@ The request used the recoverable synthetic R3 `org_admin` through the production
 ## Execution
 
 - The first local HTTP attempt failed TLS verification before sending a request and had no production effect.
-- The one real `POST` returned HTTP 200 at `2026-09-06T14:31:29Z`. Audit row `df70806a-4ddc-4c25-a1d3-0c21d113bc65` records exact outbox, previous attempt 8, and no summary disposition.
+- The one real `POST` returned HTTP 200 at `2026-09-06T14:31:29Z`. Audit row `00000426-0000-4000-8000-000000000000` records exact outbox, previous attempt 8, and no summary disposition.
 - The worker claimed the row once. It returned to `dead_letter` at attempt 9 with `last_error=WebTerminalBoundaryPending`; `delivered_at` and receipt remained null. No second redrive was sent.
 
 ## Evidence
@@ -67,7 +68,7 @@ No further redrive is allowed until that code path is fixed, independently revie
 
 ## Consumption and acceptance
 
-The employee-facing task, final, artifact preview, and hard reload remain visible, but the required terminal boundary was not delivered on this commit. RuntimeTask `9332f6e7-012f-576b-a6e1-70725a7415c3` remains completed. Later source tracing established that null `completion_outbox_settled_at` is expected for `web_chat_turn` and is not its settlement signal; the decisive failure here is the dead-lettered required terminal boundary. This historical fault recovery is `FAIL`; the successor recovery result is recorded by `superseded_by` above.
+The employee-facing task, final, artifact preview, and hard reload remain visible, but the required terminal boundary was not delivered on this commit. RuntimeTask `000002c6-0000-4000-8000-000000000000` remains completed. Later source tracing established that null `completion_outbox_settled_at` is expected for `web_chat_turn` and is not its settlement signal; the decisive failure here is the dead-lettered required terminal boundary. This historical fault recovery is `FAIL`; the successor recovery result is recorded by `superseded_by` above.
 
 ## Cleanup and not proven
 

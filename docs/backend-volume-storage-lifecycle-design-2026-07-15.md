@@ -1,5 +1,7 @@
 # Backend Volume 存储生命周期与冷热分层设计
 
+> 公开副本：运行标识及本机路径已脱敏；原始证据由维护者受限保存。
+
 > 状态：P0 启动期写放大止血与 transaction payload 生命周期底座已于 2026-07-15 部署；21,163 个历史 default-Skill transaction 已完成 authority/backfill。生产事故处置已完成 restore drill、两批 transaction 精确 physical sweep、无引用 web-fetch cache 清理、PostgreSQL ACK trace spool 收敛，以及 retry-exhausted T2 可重建 staging payload 逐出；容器文件系统占用已降至 `11,316,330,496` bytes（24%）。T0、当前 Memory、10 个非 exhausted/running T2 job、workspace、workspace snapshots、当前/held transaction 与其它核心数据均未删除；Object Storage、snapshot CAS、sealed T0 cold archive 和常态化 trace/cache/T2 lifecycle 仍待 Group 8 后续施工。
 >
 > 日期：2026-07-15。
@@ -150,9 +152,9 @@ TDD 与回归证据：
 
 Railway production 证据：
 
-- backend deployment：`33b02f96-7b3f-4b7f-95a5-2ed1788ca215` -> `SUCCESS`。
-- backend-api deployment：`26e0972a-bc04-41bf-bb77-6544654f4c7e` -> `SUCCESS`。
-- frontend deployment：`f2c85d24-73ce-4733-ade1-621392a55335` -> `SUCCESS`。
+- backend deployment：`000000fe-0000-4000-8000-000000000000` -> `SUCCESS`。
+- backend-api deployment：`000000c2-0000-4000-8000-000000000000` -> `SUCCESS`。
+- frontend deployment：`00000489-0000-4000-8000-000000000000` -> `SUCCESS`。
 - `active_skill_package_install`：重启前 `21,163`，重启后仍为 `21,163`；已消除约 918 个一批的 startup 增量。
 - Volume：重启前 `28,648,972,288` bytes，重启后 `28,650,721,280` bytes，仅增加 `1,748,992` bytes（约 1.67 MiB），未再出现约 0.5 GB 阶梯。
 - health：`status=ok`；新实例 `event_loop.max_lag_ms=33,468.71`，相较修复前实例的 `198,063.26` 明显下降，但仍作为后续 startup/lifecycle 性能债继续跟踪。
@@ -182,7 +184,7 @@ TDD 与本地验收：
 
 Production migration/deployment：
 
-- backend=`b47ea815-d41f-42d1-b011-6bdf1f006deb`、backend-api=`372ab45d-8c03-47f5-a252-7e08ea773015`、frontend=`cf930cde-b88c-4e6f-bc14-bb78f449d977`，latest 均为 `SUCCESS`。
+- backend=`00000372-0000-4000-8000-000000000000`、backend-api=`00000115-0000-4000-8000-000000000000`、frontend=`000003d6-0000-4000-8000-000000000000`，latest 均为 `SUCCESS`。
 - backend migration readiness：expected/actual head 均为 `storage_blob_lifecycle_0715`，`checked_table_count=130`、`issues=[]`、`ready=true`。首次 backend-api 在 migration 完成前按 fail-closed readiness 拒绝旧 schema；schema ready 后用同一 `df4a815c5` archive 重提并成功。该时序恢复缺口继续进入 Group 8 bounded schema-wait 验收，不被最终成功掩盖。
 - backend health=`status=ok`；runtime role=`app_rls/strict/non-superuser/non-BYPASSRLS`；三 daemon、RuntimeTask worker 和 sandbox probe 健康；frontend=`HTTP/2 200`。
 
@@ -874,7 +876,7 @@ local_only
 实施完成后先运行：
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/backend
+cd ${REPO_ROOT}/backend
 source .venv/bin/activate
 
 python -m app.scripts.storage_lifecycle inventory --json
@@ -957,7 +959,7 @@ apply contract 分成两个不同风险层：
 实现后执行聚焦回归：
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/backend
+cd ${REPO_ROOT}/backend
 source .venv/bin/activate
 
 pytest \
@@ -976,7 +978,7 @@ pytest \
 然后执行完整 backend suite：
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/backend
+cd ${REPO_ROOT}/backend
 source .venv/bin/activate
 pytest tests -q
 ```

@@ -1,11 +1,13 @@
 # Session 工具呈现 Design QA
 
+> 公开副本：运行标识及本机路径已脱敏；原始证据由维护者受限保存。
+
 Date: 2026-07-17
 
 ## Comparison target
 
-- Source visual truth path: `/var/folders/cm/zpwxmr512rq1qz4_0_ryz8t80000gn/T/codex-clipboard-146d3a76-4327-45f6-973f-67a372e67619.png`
-- Secondary source state: `/var/folders/cm/zpwxmr512rq1qz4_0_ryz8t80000gn/T/codex-clipboard-15dc9897-28b6-47e7-a0dd-5db0d6f65d68.png`
+- Source visual truth path: `/var/folders/cm/zpwxmr512rq1qz4_0_ryz8t80000gn/T/codex-clipboard-00000068-0000-4000-8000-000000000000.png`
+- Secondary source state: `/var/folders/cm/zpwxmr512rq1qz4_0_ryz8t80000gn/T/codex-clipboard-00000070-0000-4000-8000-000000000000.png`
 - Browser-rendered implementation screenshot: `/tmp/hive-session-tool-qa/desktop-running.png`
 - Responsive evidence: `/tmp/hive-session-tool-qa/tablet-768.png`, `/tmp/hive-session-tool-qa/mobile-390.png`
 - Full-view comparison evidence: `/tmp/hive-session-tool-qa/source-implementation-comparison.png`

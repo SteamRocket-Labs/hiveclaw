@@ -11,7 +11,7 @@ environment: production
 source_commit: 56ec5dd0631ea3b27b796d086560b81f902e322b
 deployed_commit: eb61d468221aa22a4f22c1d96353baadef3b51e6
 manifest_sha256: d320edceeb26cf68fa724e77502d811e5476fa04ee3c9128075cc8c79eb38117
-deployment_ids: backend=7cf21899-44e2-411c-bb15-e5b746e9b7e2; backend-api=e7b62bc9-4737-4ee6-8a0a-abc062345eb7; frontend=7c133bf2-a005-4371-8f44-c468a24ec221
+deployment_ids: backend=0000025d-0000-4000-8000-000000000000; backend-api=00000455-0000-4000-8000-000000000000; frontend=00000257-0000-4000-8000-000000000000
 persona_principal: authenticated lab super-admin in the selected experimental tenant
 data_version: weekend-rc-gate0-synthetic-fixtures-v1
 started_at: 2026-08-30T19:12:45+08:00
@@ -21,6 +21,7 @@ fault_recovery_result: BLOCKED_PRECONDITION
 negative_authority_result: BLOCKED_PRECONDITION
 cleanup_result: BLOCKED_PRECONDITION
 supersedes: none
+disclosure: public-redacted
 ---
 
 # Gate 0 production preflight and first runner probe
@@ -32,7 +33,7 @@ This file records Gate 0 facts and a failed runner probe. It is not a `P01-MAIN`
 - Signed-in AgentDetail Session for `EventPilot` in the experimental tenant.
 - First marker: `WEEKEND-RC-P01-MAIN-20260830-1912`; bounded reasoning task with no external tool effect.
 - Second marker: `WEEKEND-RC-P02-EXISTING-20260830-1914`; same Session, asks the Agent to audit its immediately preceding answer.
-- Session ID: `59257e7a-960b-459a-9652-2ff39be117ee`.
+- Session ID: `000001b7-0000-4000-8000-000000000000`.
 
 ## Authority
 
@@ -43,7 +44,7 @@ This file records Gate 0 facts and a failed runner probe. It is not a `P01-MAIN`
 ## Execution
 
 - AgentDetail showed primary `zhipu/glm-5.3`, fallback `minimax/MiniMax-M3`, and selectable `deepseek/deepseek-v4-flash`.
-- GLM completed run `2fa2f887-b76e-556c-99c8-3a814c37f27b`, then completed same-Session run `58b222f2-b52b-5cb1-b5a1-f657ced4222a`.
+- GLM completed run `000000e7-0000-4000-8000-000000000000`, then completed same-Session run `000001b5-0000-4000-8000-000000000000`.
 - The second `POST .../sessions/{session_id}/runs` returned HTTP `201` in about `1.71s`; this is the server admission latency, not total run time.
 
 ## Evidence

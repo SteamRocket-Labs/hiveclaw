@@ -18,6 +18,7 @@ result: EXTERNAL_UNAVAILABLE
 fault_recovery_result: NOT_RUN
 negative_authority_result: NOT_RUN
 cleanup_result: NOT_RUN
+disclosure: public-redacted
 ---
 
 # HR model provider billing production reproduction
@@ -26,8 +27,8 @@ cleanup_result: NOT_RUN
 
 - The owner entered the provider credential directly in the production UI. Codex did not read, receive, log, or copy it.
 - Platform-admin readback showed `GLM-5.3`, provider/model `zhipu / glm-5.3`, enabled and default. System HR readback showed `glm-5.3 (zhipu)` selected after navigating away and back.
-- Chrome remained authenticated as synthetic employee `WRC M1 Employee CEDAR R2` in tenant `0430e023-de03-4e8c-a3dc-b2a63e751427`.
-- Codex created fresh HR Session `8544a582-e995-4adc-9ff0-e1f3d9e6f4d6` and submitted the same bounded creation brief exactly once. The input marker remained `WRC-P01-EMPLOYEE-AGENT-R1-20260906`.
+- Chrome remained authenticated as synthetic employee `WRC M1 Employee CEDAR R2` in tenant `00000018-0000-4000-8000-000000000000`.
+- Codex created fresh HR Session `00000287-0000-4000-8000-000000000000` and submitted the same bounded creation brief exactly once. The input marker remained `WRC-P01-EMPLOYEE-AGENT-R1-20260906`.
 
 ## Earliest terminal state
 
@@ -46,8 +47,8 @@ cleanup_result: NOT_RUN
 
 ## Readiness recovery follow-up
 
-- A later fresh Session `3b0b01e8-3819-455d-bade-58a042323845` completed on GLM-5.3 and produced the expected canonical blueprint preview, proving current provider readiness had recovered.
-- Session `8544a582-e995-4adc-9ff0-e1f3d9e6f4d6` was not retried. Its external-unavailability result remains immutable historical evidence and a final-cleanup target.
+- A later fresh Session `0000012c-0000-4000-8000-000000000000` completed on GLM-5.3 and produced the expected canonical blueprint preview, proving current provider readiness had recovered.
+- Session `00000287-0000-4000-8000-000000000000` was not retried. Its external-unavailability result remains immutable historical evidence and a final-cleanup target.
 - The successful preview is recorded independently in `P01-HR-PREVIEW-001-production-verification.md`; it does not create a Journey PASS.
 
 ## Not proven

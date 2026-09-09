@@ -1,5 +1,7 @@
 # A2A Relationship Group Collaboration Plan
 
+> 公开副本：运行标识及本机路径已脱敏；原始证据由维护者受限保存。
+
 状态：讨论稿，待 owner 确认后再实现
 日期：2026-06-20
 范围：A2A relationship 控制面、`relationships.md` 投影、A2A runtime gate、AgentDetail A2A 前端形态
@@ -216,7 +218,7 @@ updated_at timestamptz not null
 - Status: active
 - Members:
   - Leslie的智能助手 — coordinator — same owner
-  - 飞书知识库助手 — specialist — approved by Leslie Lu at ...
+  - 飞书知识库助手 — specialist — approved by Example User 2 at ...
 
 ## 不可直接协作
 跨 owner agent 必须先被邀请进 A2A Collaboration Group 并完成 owner/admin 确认。

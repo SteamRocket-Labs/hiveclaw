@@ -6,6 +6,7 @@ authority: advisory-audit-snapshot
 last_reviewed: 2026-09-05
 source_commit: 0ce51f049e03c689a440075a5de8a7a9d99c609c
 verification_status: source-inspected-targeted-checks-passed-production-acceptance-open
+disclosure: public-redacted
 ---
 
 # Hive CC+ 产品目标、系统差距与代码精简审计
@@ -398,9 +399,9 @@ Railway 查询使用已有 CLI 的 `status --json` 和各服务 `deployment list
 
 | 服务 | 本轮实时查询的部署 ID | 状态 |
 |---|---|---|
-| backend | `637818b5-1fd3-4ecc-9390-f1484d95a649` | SUCCESS |
-| backend-api | `0bce9b71-2ca0-4845-9918-dcf65b09464c` | SUCCESS |
-| frontend | `5dccd5b8-1eee-4b11-be5a-e0c72b5c02cb` | SUCCESS |
+| backend | `000001ef-0000-4000-8000-000000000000` | SUCCESS |
+| backend-api | `00000042-0000-4000-8000-000000000000` | SUCCESS |
+| frontend | `000001d3-0000-4000-8000-000000000000` | SUCCESS |
 
 部署 ID 与现有状态文档一致。CLI 结果没有提供可用的 commit hash；文档记载生产基线为 `6d46459e3a3dcf50dd32043583f4ab57667b0701`，该源码绑定本轮未独立验证。也未在本轮重新调用 health 或执行 signed-in 产品验收。
 

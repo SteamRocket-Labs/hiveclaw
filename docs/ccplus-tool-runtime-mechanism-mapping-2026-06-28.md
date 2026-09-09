@@ -24,7 +24,7 @@
 工具清单核对命令：
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/backend
+cd ${REPO_ROOT}/backend
 source .venv/bin/activate
 python - <<'PY'
 from collections import defaultdict

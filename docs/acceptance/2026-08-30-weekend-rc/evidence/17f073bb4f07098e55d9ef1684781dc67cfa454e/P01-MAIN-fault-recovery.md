@@ -8,6 +8,7 @@ verification_status: reproduced-session-worker-restart-round-001
 journey_id: P01-MAIN
 environment: production
 source_commit: 17f073bb4f07098e55d9ef1684781dc67cfa454e
+disclosure: public-redacted
 ---
 
 # P01-MAIN disconnect and worker restart recovery
@@ -16,17 +17,17 @@ This record addresses the frozen requirement: disconnect and worker restart must
 
 ## Exact scope
 
-- Tenant: `0430e023-de03-4e8c-a3dc-b2a63e751427`.
-- Agent: `4e5261a6-c182-5248-9ca1-669f9419d44f`, CEDAR R2 employee's synthetic Worker R1.
-- Session: `9dd7289e-14c6-4ec5-8e40-5838f9e71874`.
-- RuntimeTask: `a08158a3-9815-5f17-b3fa-e3941ff80870`.
+- Tenant: `00000018-0000-4000-8000-000000000000`.
+- Agent: `00000187-0000-4000-8000-000000000000`, CEDAR R2 employee's synthetic Worker R1.
+- Session: `000002f8-0000-4000-8000-000000000000`.
+- RuntimeTask: `00000301-0000-4000-8000-000000000000`.
 - Marker: `P01-MAIN-RECOVERY-CEDAR-LINDEN-20260907`.
 - Only file effect allowed: create `workspace/P01-MAIN-RECOVERY-CEDAR-LINDEN-20260907.md` once; preserve every existing file.
 - Actual provider/model: `zhipu/glm-5.3`; one accepted input. Only the six stated plan/ledger/workspace tools are allowed by the task. No external messages, internet, credentials, company data, other Agents, workflows, triggers or automation.
 
 ## Preflight evidence
 
-Production health reported exact source hash `8858ddcabb44fd055a0bb37f391b0a8e3127fc48228ae7a4780ccbfc430d51c9`, 1,058 files, runtime role and worker `4cdfb749e669:22`. Railway's current backend deployment is `fc55faed-91c4-4dc6-a08a-44e5f4a5e572`, SUCCESS. The worker executes within the runtime backend process; a service restart is not a tenant-local operation.
+Production health reported exact source hash `8858ddcabb44fd055a0bb37f391b0a8e3127fc48228ae7a4780ccbfc430d51c9`, 1,058 files, runtime role and worker `4cdfb749e669:22`. Railway's current backend deployment is `000004be-0000-4000-8000-000000000000`, SUCCESS. The worker executes within the runtime backend process; a service restart is not a tenant-local operation.
 
 Before starting the synthetic run, read-only counts showed no running RuntimeTask. One unrelated July 29 `goal_continuation` remained pending with no lease. A subsequent count-only join proved its budget status is `summary_only`, not `active`; the current claim predicate therefore excludes it. Its data is not modified. Recheck unrelated active work immediately before a restart.
 
@@ -36,12 +37,12 @@ The browser submitted exactly one input. Canonical transcript contains one `huma
 
 The live page publicly displayed its complete six-step plan, then wrote the file once and read it back. Immediately before restart, the RuntimeTask was still `running / attempt 1` under `4cdfb749e669:22`, with no unrelated running RuntimeTask.
 
-- Write invocation: `55ec18fd-e88e-563a-b42a-4f352a1cd3c2`, `effect_committed`.
-- Fence: `session-tool-effect:55ec18fd-e88e-563a-b42a-4f352a1cd3c2:generation:2`.
+- Write invocation: `000001a9-0000-4000-8000-000000000000`, `effect_committed`.
+- Fence: `session-tool-effect:000001a9-0000-4000-8000-000000000000:generation:2`.
 - Receipt: `tool-frame:8647b8105cb01719db4ae8085f519ac56c9588dd82ee495a2fee7b525d59d2e1`.
-- Artifact: `2723f51c-2e25-4224-b6f3-3aa179c70a65`, 10,096 bytes, snapshot hash `8bb7fa046808ba8c53c904578fb6fdf979deb12681ec6aa6a84f2d274c0690bd`.
+- Artifact: `000000c4-0000-4000-8000-000000000000`, 10,096 bytes, snapshot hash `8bb7fa046808ba8c53c904578fb6fdf979deb12681ec6aa6a84f2d274c0690bd`.
 
-Codex closed its dedicated Chrome tab `907506435`, disconnecting that Session page. Then `railway restart --service backend --environment production --project dd959a13-19f9-497a-9704-42c310eae230 --yes --json` returned the same deployment ID `fc55faed-91c4-4dc6-a08a-44e5f4a5e572`, without rebuilding or changing source/configuration.
+Codex closed its dedicated Chrome tab `907506435`, disconnecting that Session page. Then `railway restart --service backend --environment production --project 0000041c-0000-4000-8000-000000000000 --yes --json` returned the same deployment ID `000004be-0000-4000-8000-000000000000`, without rebuilding or changing source/configuration.
 
 The first health probe returned 502 during restart. By 04:49:15 UTC the official startup logs had completed existing schema/readiness startup and reached uvicorn. The run still held its old lease through `2026-09-07T04:50:51.536144Z`; no manual lease/status mutation or input resubmission was used. Observed committed tools at that point: list_files 2, read_file 1, read_ledger 1, record_finding 2, track_todo 11, write_file 1; seven model rounds committed and one streaming.
 
@@ -65,7 +66,7 @@ The failed run's terminal outbox naturally delivered on attempt 1 at `2026-09-07
 
 ### Repeated-text attribution
 
-At approximately 05:04 UTC, a tenant-pinned `app_rls` read-only query separated public `assistant_text` snapshots and deltas; no private-reasoning payload was read. The page's last partial text belongs to item `be570a30-84b8-52af-b9f6-09ec59cd97cb`, round 8: exactly two durable deltas created at `04:48:14.440951Z` and `04:48:15.635139Z`, before the restart. Their ordered contents reproduce the displayed partial text, including the overlap with round 7. Round 7's snapshot at sequence 1962 and round 6's at 1902 remain separate authoritative items. The frontend projects these items by identity; snapshots replace an item's content and deltas append within that item.
+At approximately 05:04 UTC, a tenant-pinned `app_rls` read-only query separated public `assistant_text` snapshots and deltas; no private-reasoning payload was read. The page's last partial text belongs to item `0000039b-0000-4000-8000-000000000000`, round 8: exactly two durable deltas created at `04:48:14.440951Z` and `04:48:15.635139Z`, before the restart. Their ordered contents reproduce the displayed partial text, including the overlap with round 7. Round 7's snapshot at sequence 1962 and round 6's at 1902 remain separate authoritative items. The frontend projects these items by identity; snapshots replace an item's content and deltas append within that item.
 
 This rules out a reconnect-created duplicate for the observed fragment. Do not add semantic text deduplication or label it a new frontend defect: the overlapping text was already emitted and persisted before the injected fault. The unresolved defect remains useful runtime recovery and its misleading provider-error attribution.
 

@@ -11,7 +11,7 @@ environment: production
 source_commit: 2cee9f3ec09c7191ed4eda3c70a7c01206341b89
 deployed_commit: 2cee9f3ec09c7191ed4eda3c70a7c01206341b89
 manifest_sha256: d320edceeb26cf68fa724e77502d811e5476fa04ee3c9128075cc8c79eb38117
-deployment_ids: backend=e853645d-9442-4322-938e-c76d0752343a; backend-api=f9aa545c-c1ce-40c4-af0d-19b68000d967; frontend=aed89005-ea52-4e47-8df9-0143c544269a
+deployment_ids: backend=0000045a-0000-4000-8000-000000000000; backend-api=000004ae-0000-4000-8000-000000000000; frontend=00000356-0000-4000-8000-000000000000
 persona_principal: authenticated lab platform-admin using EventPilot in the selected experimental tenant
 data_version: P01-MAIN-P1-CEDAR-734-retry-2
 started_at: 2026-08-30T23:13:25+08:00
@@ -21,6 +21,7 @@ fault_recovery_result: FAIL
 negative_authority_result: BLOCKED_PRECONDITION
 cleanup_result: BLOCKED_PRECONDITION
 supersedes: none
+disclosure: public-redacted
 ---
 
 # P01-MAIN rate-limit and tool-artifact-settlement fault
@@ -30,8 +31,8 @@ This is immutable failure evidence. It is not a pass file, does not enter NPTCR,
 ## Input
 
 - Signed-in normal AgentDetail Session entry for EventPilot in the experimental tenant, using the supported retry/edit action from the prior P01-MAIN failure.
-- Branch Session `b3962147-07cd-4223-8f23-f00193d7735c`; RuntimeTask `76a32f8e-f5d8-5a63-b02a-e591598321e9`.
-- Canonical round one bound the exact accepted retry input `1fd5cc5b-8378-5629-8cdc-98fd8250f27f`; the prompt retained the original synthetic marker and required plan, Work Ledger, governed write/read, and exact deliverable fields.
+- Branch Session `0000036c-0000-4000-8000-000000000000`; RuntimeTask `0000023d-0000-4000-8000-000000000000`.
+- Canonical round one bound the exact accepted retry input `0000009b-0000-4000-8000-000000000000`; the prompt retained the original synthetic marker and required plan, Work Ledger, governed write/read, and exact deliverable fields.
 
 ## Authority
 
@@ -49,7 +50,7 @@ This is immutable failure evidence. It is not a pass file, does not enter NPTCR,
 ## Evidence
 
 - Canonical tool lifecycle: sequence `304` `tool_call.started`; sequence `305` `tool_call.progress` with `effect_started`; no matching `tool_call.completed` or `tool_result.completed`; provider round six was nevertheless prepared at sequence `308`.
-- Production log at `2026-08-30T15:15:26Z`: `on_tool_call(done)` persistence failed with PostgreSQL `ForeignKeyViolationError` on `chat_artifacts_message_id_fkey`; synthetic message `32e6d45a-6bfd-5f9c-920b-14f7db5c98eb` did not exist in `chat_messages`.
+- Production log at `2026-08-30T15:15:26Z`: `on_tool_call(done)` persistence failed with PostgreSQL `ForeignKeyViolationError` on `chat_artifacts_message_id_fkey`; synthetic message `000000f9-0000-4000-8000-000000000000` did not exist in `chat_messages`.
 - The external effect is independently visible: file-change sequence `311`; before size `1914`, SHA-256 prefix `52313b…`; after size `1508`, SHA-256 prefix `ffdb3f…`; exactly one changed path.
 - Terminal facts: `result_commit.failed` sequence `309` records `retry_safe=true`, `error_class=rate_limited`, `delivery_state=rejected`; `runtime_failure` sequence `310` records `failure_code=rate_limited` and `requires_user_decision=true`.
 - Signed-in normal UI after hard reload showed `失败`, the rate-limit guidance and retry action, no active run, zero delivered artifacts, and Work Ledger `1 completed / 2 open`.

@@ -280,7 +280,7 @@ Provider/index 都是可拔 derived capability：
 ## 14. 验证入口
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/backend
+cd ${REPO_ROOT}/backend
 source .venv/bin/activate
 pytest -q \
   tests/migrations/test_personal_knowledge_core_migration.py \

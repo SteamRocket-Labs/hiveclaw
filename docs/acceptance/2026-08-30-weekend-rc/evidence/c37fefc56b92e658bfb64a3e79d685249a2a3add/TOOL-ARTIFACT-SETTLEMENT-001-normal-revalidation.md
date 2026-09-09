@@ -11,7 +11,7 @@ environment: production
 source_commit: c37fefc56b92e658bfb64a3e79d685249a2a3add
 deployed_commit: c37fefc56b92e658bfb64a3e79d685249a2a3add
 manifest_sha256: d320edceeb26cf68fa724e77502d811e5476fa04ee3c9128075cc8c79eb38117
-deployment_ids: backend=62e4ef56-7e6b-456e-a505-fea90fd286a0; backend-api=307f0df7-6ae0-4c57-817e-f9ca07fd59fc; frontend=db6b605d-7b8b-40ea-8da8-247259db29f8
+deployment_ids: backend=000001e9-0000-4000-8000-000000000000; backend-api=000000eb-0000-4000-8000-000000000000; frontend=0000040e-0000-4000-8000-000000000000
 persona_principal: authenticated lab platform-admin using EventPilot in the selected experimental tenant
 data_version: D3-SETTLEMENT-C37-8K4P
 started_at: 2026-08-31T01:10:29.465284+08:00
@@ -21,6 +21,7 @@ fault_recovery_result: BLOCKED_PRECONDITION
 negative_authority_result: BLOCKED_PRECONDITION
 cleanup_result: BLOCKED_PRECONDITION
 supersedes: none
+disclosure: public-redacted
 ---
 
 # TOOL-ARTIFACT-SETTLEMENT-001 normal production revalidation
@@ -30,7 +31,7 @@ supersedes: none
 ## Input
 
 - owner 在 action time 明确确认发送后，Codex 从已认证的普通 AgentDetail 产品入口创建 fresh EventPilot Session，并只点击一次「发送」。
-- Session `0731ec15-c662-4552-9500-3f68f1094f11`；RuntimeTask `c124e51f-c09e-5b0d-9265-38b48ae0db27`；selected provider/model 为 `zhipu/glm-5.3`。
+- Session `00000021-0000-4000-8000-000000000000`；RuntimeTask `000003a8-0000-4000-8000-000000000000`；selected provider/model 为 `zhipu/glm-5.3`。
 - 输入把唯一允许的 effect 固定为一次 `write_file` 创建 `workspace/WEEKEND-RC-TOOL-SETTLEMENT-C37-8K4P.md`，成功后一次 `read_file` 原路径读回；禁止其他工具、workflow、trigger、delegation、外部消息、credential 读取、其他路径和删除，write/settlement 失败时禁止重试 write。
 - canonical `human_input.accepted` 为 sequence `1`，`human_input.bound` 为 sequence `13`；round 1 的 `bound_input_count=1`，后两轮均为 0，证明当前 durable input 只绑定一次。
 
@@ -44,19 +45,19 @@ supersedes: none
 ## Execution
 
 - RuntimeTask 为 `web_chat_turn/completed`，`attempt_count=1`、`claim_version=2`；三个 `llm.stream` span 均 `status=ok`。
-- write invocation `dee92555-4588-5486-90d3-9310f5377b68`：sequence `121 tool_call.started` → `122 tool_call.progress(effect_started)` → `123 tool_call.completed(success)` → `124 tool_result.completed(success)`。
+- write invocation `00000422-0000-4000-8000-000000000000`：sequence `121 tool_call.started` → `122 tool_call.progress(effect_started)` → `123 tool_call.completed(success)` → `124 tool_result.completed(success)`。
 - write 的下一模型轮直到 sequence `127 result_commit.prepared` 才建立，因此 effect terminal pair 在后续 provider round 之前完成。
-- read invocation `c509a552-d7ba-5cac-a48b-0b836f1134b4`：sequence `167 started` → `168 effect_started` → `169 tool_call.completed(success)` → `170 tool_result.completed(success)`；下一轮直到 sequence `173 result_commit.prepared` 才建立。
+- read invocation `000003b2-0000-4000-8000-000000000000`：sequence `167 started` → `168 effect_started` → `169 tool_call.completed(success)` → `170 tool_result.completed(success)`；下一轮直到 sequence `173 result_commit.prepared` 才建立。
 - 两个 invocation 均为 `effect_state=effect_committed`、`permission_state=not_required`、`recovery_owner=null`，没有自动 retry。
 - 最终 sequence `205 assistant_final.completed`、`206 run.completed`、`207 turn.completed`、`208 run_outcome.terminal_committed` 全部 `projection_status=projected`。
 
 ## Evidence
 
-- write 的 canonical `tool_call.completed` 与 `tool_result.completed` 共用非空 message ID `07afe8cd-ff96-5c03-b0f1-e54ca9c12462`。
-- deterministic ChatMessage owner 恰一行；目标 ChatArtifact `be17c252-8a97-4782-ae3e-17e05d2f3519` 恰一行，并绑定同一 message、run、Session 与 path。
-- write terminal outbox：sequence `123` outbox `6c37bb02-3fa8-4003-96f6-a143d3a3c8c9`，sequence `124` outbox `a1244c48-4573-4400-bd45-22df5c573659`；均为 `published`、`attempts=1`、`last_error=null`。tool-result envelope 与 event 的 message ID 一致，parts 恰为 1。
+- write 的 canonical `tool_call.completed` 与 `tool_result.completed` 共用非空 message ID `00000025-0000-4000-8000-000000000000`。
+- deterministic ChatMessage owner 恰一行；目标 ChatArtifact `00000399-0000-4000-8000-000000000000` 恰一行，并绑定同一 message、run、Session 与 path。
+- write terminal outbox：sequence `123` outbox `00000211-0000-4000-8000-000000000000`，sequence `124` outbox `00000306-0000-4000-8000-000000000000`；均为 `published`、`attempts=1`、`last_error=null`。tool-result envelope 与 event 的 message ID 一致，parts 恰为 1。
 - read terminal outbox sequence `169/170` 同样为 `published`、`attempts=1`、`last_error=null`，无 artifact part，符合 read-only tool 预期。
-- canonical read tool-result event `24dabf4f-8d17-4129-bc13-23de8da8d7ec` 的 provider-visible wrapper 为 529 B；只读查询机械比较得到 `contains_expected=true`，完整包含期望的 77 B 三行正文。wrapper 还含工具回执字段，因此不要求 wrapper 本身与原文件逐字相等。
+- canonical read tool-result event `000000bc-0000-4000-8000-000000000000` 的 provider-visible wrapper 为 529 B；只读查询机械比较得到 `contains_expected=true`，完整包含期望的 77 B 三行正文。wrapper 还含工具回执字段，因此不要求 wrapper 本身与原文件逐字相等。
 - 计数：RuntimeTask 1；invocation 2；write 1；read 1；`tool_call.completed` 2；`tool_result.completed` 2；目标 artifact 1；目标 message owner 1；invocation/event/RuntimeTask reconciliation 均 0。
 - 保存快照为 77 B，正文是三行且无尾随换行：
 

@@ -11,11 +11,12 @@ pass: bounded-system-setting-secret-response-verification
 environment: production
 source_commit: bf94b76a1706510daf2d11c4e98fd5051f23f28f
 deployed_commit: bf94b76a1706510daf2d11c4e98fd5051f23f28f
-deployment_ids: backend=07059ce5-12ca-4b57-ac92-bc05d58dfb49; backend-api=c70ff972-b039-4cf5-831d-4526962c8d9d; frontend=308e7789-0b9c-46aa-93e9-7d1ddc110433
+deployment_ids: backend=00000020-0000-4000-8000-000000000000; backend-api=000003b8-0000-4000-8000-000000000000; frontend=000000ec-0000-4000-8000-000000000000
 persona_principal: authenticated lab platform_admin
 result: VERIFIED
 recovery_result: PASS_STATUS_ONLY_RELOAD
 cleanup_result: NOT_APPLICABLE_READ_ONLY
+disclosure: public-redacted
 ---
 
 # SYSTEM-SETTING-SECRET-DISCLOSURE-001 production verification

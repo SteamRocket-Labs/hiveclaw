@@ -6,6 +6,7 @@ authority: historical-only
 last_reviewed: 2026-09-05
 source_commit: 0ce51f049e03c689a440075a5de8a7a9d99c609c
 verification_status: historical-supporting-evidence-not-current
+disclosure: public-redacted
 ---
 
 # Renewal 历史 supporting evidence
@@ -53,7 +54,7 @@ verification_status: historical-supporting-evidence-not-current
 - fresh-schema atomic suite 已完整 **15/15 passed（3.0m）**。迭代中依次修复：Goal 初始输入未走 canonical admission、terminal boundary 对 T0 relay metadata 误判、T0 UUID hex/hyphen identity 漂移、artifact trigger 的 terminal UUID 文本匹配、subagent terminal 与 durable notification 非原子、canonical `session_terminal_outcome` 绕过 Team close projection。最终整组固定顺序无失败；该证据不迁移为 production Journey PASS。
 - 十个 Session/tool/authority/runtime/audit 根因已有 production `Verified` evidence；finding-level Verified 不自动升级 Journey。
 - 旧 manifest hash 上的 `P29-PADMIN` clean pass 1 与 pass-2 blocker 文件只保留为历史 supporting evidence；current manifest 下 pass 1/pass 2 均未运行。缺少 employee/operator fixture 不再阻断 Agent 功能探针，只影响后续 canonical persona acceptance。
-- signed-in Browser 只读复核确认 D3 Session `0731ec15…` 在生产显示 `完成 · GLM-5.3`、精确 final、一个 77 B artifact、0 running/0 waiting；它只证明真实 Session/model/tool/artifact 基础路径存在，不是当前 manifest P01 PASS。
+- signed-in Browser 只读复核确认 D3 Session `00000021…` 在生产显示 `完成 · GLM-5.3`、精确 final、一个 77 B artifact、0 running/0 waiting；它只证明真实 Session/model/tool/artifact 基础路径存在，不是当前 manifest P01 PASS。
 - `RESPONSE-LEARNING-COMMIT-ORDER-001` 已形成本地 `Fix Candidate`：Kernel/invoker 不再发低层 terminal hook；Web 只在 canonical commit receipt 后调度 secret-redacted `RESPONSE_COMPLETE`；candidate/projection 按稳定 key 原子幂等。主 Codex跨域 **304 passed**，独立 review **52 passed**，Ruff/format/diff check 绿；但 postcommit crash recovery 尚未闭环，不能标 `Verified`。
 - `SESSION-SUMMARY-COMMIT-ORDER-001` 已 production-shaped RED **1 failed**：实际顺序为 `summary_projection → canonical_hold`；`ChatSession.summary/last_message_at` 在 final authority 前已 commit，并可经 Session recall 回流后续 Agent。
 - owner action-time 确认后，`P01-STAGE1-FRESH-FALCON-682` 只发送一次。production GLM-5.3 完成公开 3 步计划、3/3 Work Ledger todos、一次 `write_file`、一次 `read_file`、七项硬判据 final 与一个 artifact；主 Codex通过 artifact preview 独立核对标题、marker、3 行议程、`TOTAL_MINUTES=90`、2 行风险、`RISK_ROWS=2`、四项现场清单。hard reload 后 final/todos/artifact/0 running/0 waiting 全部恢复。该 principal 为 `platform_admin`，只证明功能 supporting evidence，NPTCR 不变。
@@ -69,7 +70,7 @@ verification_status: historical-supporting-evidence-not-current
 - 首个 D 的 Linux CI 功能 E2E **29 passed**，另 5 个 active-state visual 因只更新了 Darwin 而稳定命中旧 Linux baseline（约 3%）。主 Codex逐张核对 CI expected/actual/diff，actual 与已接受的 Darwin active-state 结构一致，首跑/重试除 25 个抗锯齿像素外稳定；5 张 Linux baseline 已用 CI actual 精确更新，须随 Ruff pin 一起重跑 CI。
 - 修正提交 `e6957205` 的 CI run `33448515330` 已确认 frontend **34/34** 与 atomic full-stack **15/15（2.9m）** 全绿；backend 干净 runner 的最早根因是工作流忽略既有 `uv.lock`，拉取 Testcontainers 4.15 后将旧 import 的弃用警告放大为 812 个真实 PG setup error，同时 runner 缺少产品要求的 Linux `bubblewrap`。余下 4 个 unit failure 是新 DB/extension-policy seam 未显式注入，1 个 `/private/tmp` 断言错误地在 Linux 执行。candidate 现统一使用 frozen `uv.lock`、安装并验证 `bubblewrap`、补齐 unit seam 与 OS-specific gate；CI 同型定向 **15 passed**、完整 backend **8786 passed**，仍须新提交重跑三条 CI 后才部署。
 - `d5282517` 的 CI run `33451025118` 已把 frontend **34/34** 与 atomic full-stack **15/15（2.9m）** 跑绿；backend 在 Ubuntu 24.04.4 干净 runner 跑到 89% 后被 30 分钟 job timeout 取消，且 collection 顺序把 51% 唯一 `F` 精确映射为真实 `_run_command` Linux sandbox 执行测试。根因是 `bwrap --version` 只证明二进制存在，而 Ubuntu 24.04 默认以 AppArmor 限制无特权 user namespace。D4 candidate 安装官方 `apparmor-profiles`、只加载 scoped `bwrap-userns-restrict`，并调用仓库既有 `probe_os_sandbox_capability()` 证明真实 launch；不关闭全局 AppArmor、不启用 unsandboxed bypass、不跳过测试。完整 backend 本机实际需 14:19，job budget 从 30 调为 60 分钟；仍须新 CI 全绿才部署。
-- coherent baseline `6d46459e` 的 CI run `33453594851` 已全部成功，且 exact frozen archive 的 backend `637818b5…`、backend-api `0bce9b71…`、frontend `5dccd5b8…` 均为 production `SUCCESS`；public health/frontend 绿。它是当前 supporting baseline，不是含 operator 修复的最终 D。
+- coherent baseline `6d46459e` 的 CI run `33453594851` 已全部成功，且 exact frozen archive 的 backend `000001ef…`、backend-api `00000042…`、frontend `000001d3…` 均为 production `SUCCESS`；public health/frontend 绿。它是当前 supporting baseline，不是含 operator 修复的最终 D。
 - production `WEEKEND-RC-ROLE-FIXTURE-1B4BE5D2` 已通过支持路径形成 tenant、双 org-admin、双 member 与 operator candidate；公司创建、管理员/成员邀请、join/token refresh、Back to App→Home、管理员码不可见/不可复用与 member 负向均取得 supporting evidence。普通 Agent 功能探针不要求先切换这些角色。
 - `OPERATOR-AUTHORITY-001` 已在 production 复现：generic `manage` 能以任意 reason 跨用户读 Session，delegated permission GET 泄露主体，非法 company/root mutation 被静默改写。本地 candidate 将 operator inspect 变成独立 governed grant，跨 owner 只读且 reason 必填/审计，mutation 永拒，active deny 优先于 allow，revoked/expired fail closed，并把 operator-only Agent list/detail 降为最小身份壳；当前 backend/frontend/Playwright/atomic 已统一重验全绿，但尚未形成或部署新 D。
 - 首个 application candidate `ee4be6a0` 的 CI run `33526446421` 在 frontend i18n inventory 首门失败：7 个新增 operator UI key 依赖源码 fallback、未进入 en/zh catalog。当前树已补齐 exact 7 keys，local i18n audit **9/9**、en/zh **4071/4071**、所有 gap 为 0，且 Vitest **1216/1216**、build/bundle、Playwright **34/34** 相称重验全绿；`ee4be6a0` 永不部署，须以新提交重跑完整 CI。

@@ -1,5 +1,7 @@
 # Agent Team / Session Workbench 根因复核与完整修复方案
 
+> 公开副本：运行标识及本机路径已脱敏；原始证据由维护者受限保存。
+
 日期：2026-07-02
 
 状态：根因复核与修复 truth surface。本文只做诊断和方案，不替代后续代码实现。后续实现必须以本文作为验收口径，一次完整交付，不以 Workspace 隔离作为替代修复。
@@ -56,7 +58,7 @@
 
 ### 2.1 CC / FreeCode
 
-本机基线：`/Users/example-owner/vc-saas/free-code-main`
+本机基线：`${LOCAL_HOME}/vc-saas/free-code-main`
 
 关键源码：
 
@@ -83,7 +85,7 @@
 
 ### 2.2 Codex
 
-本机基线：`/Users/example-owner/Context Engineering/codex/codex-rs`
+本机基线：`${LOCAL_HOME}/Context Engineering/codex/codex-rs`
 
 关键源码：
 
@@ -145,9 +147,9 @@ Hive 应吸收的是这个原则：**workspace 可以共享，但 transcript/run
 命令形态：
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main
+cd ${REPO_ROOT}
 railway deployment list --service backend --environment production --limit 3 --json
-curl -fsS https://backend-production-326d.up.railway.app/api/health
+curl -fsS https://service-1.example.invalid/api/health
 railway logs --service backend --environment production --lines 5000
 ```
 
@@ -486,7 +488,7 @@ Hive 当前存在的偏差：
 新增或扩展测试：
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/backend
+cd ${REPO_ROOT}/backend
 source .venv/bin/activate
 
 pytest \
@@ -515,7 +517,7 @@ pytest \
 新增或扩展测试：
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
+cd ${REPO_ROOT}/frontend
 
 npm run test -- \
   chatDisclosureReducer.test.ts \
@@ -541,13 +543,13 @@ npm run build
 在后续代码实现并部署后，用以下 production smoke 验收：
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main
+cd ${REPO_ROOT}
 
 railway deployment list --service backend --environment production --limit 1 --json
 railway deployment list --service frontend --environment production --limit 1 --json
 
-curl -fsS https://backend-production-326d.up.railway.app/api/health
-curl -I -fsS https://frontend-production-0346.up.railway.app/
+curl -fsS https://service-1.example.invalid/api/health
+curl -I -fsS https://service-3.example.invalid/
 
 railway logs --service backend --environment production --lines 5000 | rg -i \
   "team_create|spawn_subagent|agent_team|team_member|UniqueViolationError|uq_chat_artifacts_agent_session_run_path_snapshot|artifact persistence|Transcript persistence"

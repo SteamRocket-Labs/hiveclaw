@@ -729,8 +729,8 @@ describe('chatRuntime helpers', () => {
   });
 
   it('uses UUID identity rather than wire formatting for terminal run ownership', () => {
-    const liveRunId = 'bb034234ef1a5bdc8356af3d9a0a0c1b';
-    const canonicalRunId = 'bb034234-ef1a-5bdc-8356-af3d9a0a0c1b';
+    const liveRunId = '00000391000040008000000000000000';
+    const canonicalRunId = '00000391-0000-4000-8000-000000000000';
 
     expect(isTerminalRunAcceptedForActiveRun(liveRunId, canonicalRunId)).toBe(true);
     expect(isTerminalRunAcceptedForActiveRun(
@@ -743,8 +743,8 @@ describe('chatRuntime helpers', () => {
       terminalRunIds: new Set([canonicalRunId]),
       terminalSessionKeys: new Set(),
     })).toBe(true);
-    expect(normalizeSessionRunId('BB034234EF1A5BDC8356AF3D9A0A0C1B')).toBe(canonicalRunId);
-    expect(normalizeSessionRunId('provider-run-BB034234EF1A')).toBe('provider-run-BB034234EF1A');
+    expect(normalizeSessionRunId('00000391000040008000000000000000')).toBe(canonicalRunId);
+    expect(normalizeSessionRunId('provider-run-000003910000')).toBe('provider-run-000003910000');
   });
 
   it('keeps an optimistic user prompt visible until transcript replay confirms it', () => {
@@ -1983,7 +1983,7 @@ describe('chatRuntime helpers', () => {
   });
 
   it('keeps opaque model ids and low-level token counts out of composer presentation', () => {
-    const opaqueModelId = 'dcafa6dc-b410-4e9f-954b-659300ab6c77';
+    const opaqueModelId = '00000416-0000-4000-8000-000000000000';
     const summary = buildRuntimeSummary({
       persistedSummary: null,
       activeModel: null,

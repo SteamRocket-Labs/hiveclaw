@@ -11,11 +11,11 @@ environment: production
 source_commit: 3482b57a383d3c5bd33a5bcf813b87c6fab23339
 deployed_commit: 3482b57a383d3c5bd33a5bcf813b87c6fab23339
 manifest_sha256: d320edceeb26cf68fa724e77502d811e5476fa04ee3c9128075cc8c79eb38117
-deployment_ids: backend=7c196980-34c6-4846-bf25-0397b7b55c0e; backend-api=8e7545b8-9b6c-4b32-a77d-48883191728a; frontend=6f6bd18c-1681-4049-ac20-6660a3f84fc3
+deployment_ids: backend=0000025a-0000-4000-8000-000000000000; backend-api=000002af-0000-4000-8000-000000000000; frontend=00000219-0000-4000-8000-000000000000
 persona_principal: authenticated lab platform-admin using EventPilot in the selected experimental tenant
-target_session_id: b3962147-07cd-4223-8f23-f00193d7735c
-target_runtime_task_id: 76a32f8e-f5d8-5a63-b02a-e591598321e9
-fresh_recovery_runtime_task_id: f8cdd9ac-91bf-58d5-a7c2-34176ca87b74
+target_session_id: 0000036c-0000-4000-8000-000000000000
+target_runtime_task_id: 0000023d-0000-4000-8000-000000000000
+fresh_recovery_runtime_task_id: 000004a4-0000-4000-8000-000000000000
 started_at: 2026-08-31T02:52:26+08:00
 ended_at: 2026-08-31T03:21:18+08:00
 result: PASS
@@ -23,6 +23,7 @@ fault_recovery_result: PASS
 negative_authority_result: NOT_RUN
 cleanup_result: NOT_RUN
 extends: TOOL-ARTIFACT-SETTLEMENT-001-recovery-admission-precheck.md
+disclosure: public-redacted
 ---
 
 # TOOL-ARTIFACT-SETTLEMENT-001 supported recovery verification
@@ -31,7 +32,7 @@ extends: TOOL-ARTIFACT-SETTLEMENT-001-recovery-admission-precheck.md
 
 ## Input
 
-- 恢复目标固定为 EventPilot Session `b3962147-07cd-4223-8f23-f00193d7735c` / RuntimeTask `76a32f8e-f5d8-5a63-b02a-e591598321e9` / invocation `1dcbdf47-50b8-5598-8980-60ea7ac6c35e`，没有操作队列中的 `ff9536bd…` 或其他任务。
+- 恢复目标固定为 EventPilot Session `0000036c-0000-4000-8000-000000000000` / RuntimeTask `0000023d-0000-4000-8000-000000000000` / invocation `00000093-0000-4000-8000-000000000000`，没有操作队列中的 `000004c9…` 或其他任务。
 - 管理员提交的 evidence reason 为：`已从 EventPilot 工作区只读核验现有合成文件 workspace/WEEKEND-RC-P01-MAIN-PASS-1.md：Marker=P01-MAIN-P1-CEDAR-734、TOTAL_MINUTES=90、RISK_ROWS=2；保留现有 effect，禁止重放旧 provider round。`
 - acknowledgement 完成后，只发送一次 fresh-turn probe：`D4-RECOVERY-ADMISSION-3482-K9M7：只回复“D4_RECOVERY_OK”。禁止调用任何工具、禁止写文件、禁止创建产物、禁止重放或继续先前轮次。`
 
@@ -43,18 +44,18 @@ extends: TOOL-ARTIFACT-SETTLEMENT-001-recovery-admission-precheck.md
 
 ## Execution
 
-- pre-action reload 先证明 unknown-effect alert、composer disabled、generic retry suppressed；目标 `76a32f8e…` 位于管理员队列首项，evidence 为空时 action disabled。
+- pre-action reload 先证明 unknown-effect alert、composer disabled、generic retry suppressed；目标 `0000023d…` 位于管理员队列首项，evidence 为空时 action disabled。
 - 填入上述 evidence reason 后，目标按钮 enabled；Codex 只点击一次 `确认效果并停止旧任务`。2.5 秒后目标行计数从 1 变为 0，没有点击或修改其他 reconciliation row。
 - 服务端只追加 sequence `312 tool_call.reconciled` 与 `313 recovery_action.reconciled`。目标 invocation 保持 `effect_state=needs_reconciliation`、`result_event_id=null`，只把 `recovery_owner` 清为 null，并把 receipt 指向 sequence 312 对应 event。
 - 原 RuntimeTask 保持原有 `failed` 终态、attempt 1 / claim version 1；metadata 变为 `reconciliation_status=tool_effect_acknowledged`、`needs_reconciliation=false`。系统没有恢复、retry 或改写旧 provider round。
-- fresh-turn probe 建立新的 RuntimeTask `f8cdd9ac-91bf-58d5-a7c2-34176ca87b74`，不是旧 run replay；唯一 round 绑定唯一新 input `ad602cdc-5008-4c62-a059-1fcf02ea1963` 并正常 `completed`。
+- fresh-turn probe 建立新的 RuntimeTask `000004a4-0000-4000-8000-000000000000`，不是旧 run replay；唯一 round 绑定唯一新 input `00000350-0000-4000-8000-000000000000` 并正常 `completed`。
 
 ## Evidence
 
-- reconciliation event IDs 为 `ea6a2c3d-3541-53cc-bd1c-3b04bc81c9b0` 与 `225b71bf-e6c0-5333-a037-545d021fe519`；对应 outbox 均为 `published`、attempts 1、`last_error=null`。
-- 目标 invocation 的 `receipt_ref=session-event://ea6a2c3d-3541-53cc-bd1c-3b04bc81c9b0`、version 3；它仍没有任何 `tool_result.completed`。旧 Session 中既有其他成功 todo/progress results 不属于该 invocation，未被误计为恢复结果。
+- reconciliation event IDs 为 `00000462-0000-4000-8000-000000000000` 与 `000000aa-0000-4000-8000-000000000000`；对应 outbox 均为 `published`、attempts 1、`last_error=null`。
+- 目标 invocation 的 `receipt_ref=session-event://00000462-0000-4000-8000-000000000000`、version 3；它仍没有任何 `tool_result.completed`。旧 Session 中既有其他成功 todo/progress results 不属于该 invocation，未被误计为恢复结果。
 - acknowledgement 后、fresh input 前，该 Session 仍只有原 `failed` RuntimeTask，目标 path 的 ChatArtifact 仍为 0；证明恢复动作没有制造 artifact、compatibility owner 或隐藏 run。
-- fresh input 是 canonical sequence `314 human_input.accepted`；model result 为 `round_committed` 且 `bound_input_ids=[ad602cdc…]`。sequence `375 assistant_text.snapshot` 逐字为 `D4_RECOVERY_OK`，sequence `385 assistant_final.completed`，sequence `386 run.completed`。
+- fresh input 是 canonical sequence `314 human_input.accepted`；model result 为 `round_committed` 且 `bound_input_ids=[00000350…]`。sequence `375 assistant_text.snapshot` 逐字为 `D4_RECOVERY_OK`，sequence `385 assistant_final.completed`，sequence `386 run.completed`。
 - 新 run 的 `SessionToolInvocation` 数为 0；Session 全部 tool counts 仍只属于旧 run：`write_file=1`、`track_todo=6`、`report_progress=1`。没有第二次 write、read、artifact 或旧轮工具调用。
 - Workspace reload 后目标文件列表恰一项；打开后 heading `WEEKEND-RC P01 MAIN PASS 1`、`P01-MAIN-P1-CEDAR-734`、`TOTAL_MINUTES=90`、`RISK_ROWS=2` 在 DOM 中各恰一，证明 effect 被保留且未重复。
 
@@ -62,7 +63,7 @@ extends: TOOL-ARTIFACT-SETTLEMENT-001-recovery-admission-precheck.md
 
 - acknowledgement 后旧 Session alert 消失，composer 恢复 enabled；没有自动新 run。fresh probe 由新的明确 user input 启动，并不使用旧 provider request、旧 run ID 或旧 invocation。
 - signed-in hard reload 后同一 Session 显示唯一 prompt 与唯一 `D4_RECOVERY_OK`，unknown-effect blocker 为 0、running 0、waiting 0、Stop 0，composer enabled。
-- 管理员页重新导航后目标 `76a32f8e` 行为 0、`.admin-reconcile-error` 为 0；旧 unknown effect 已退出 operational hold，但事实状态仍未被伪造为成功或失败 tool result。
+- 管理员页重新导航后目标 `0000023d` 行为 0、`.admin-reconcile-error` 为 0；旧 unknown effect 已退出 operational hold，但事实状态仍未被伪造为成功或失败 tool result。
 
 ## Consumption
 

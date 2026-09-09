@@ -1,5 +1,7 @@
 # 本轮 P0 止血执行入口：Session 呈现、Memory 不爆、A2A 三层（2026-07-17）
 
+> 公开副本：运行标识及本机路径已脱敏；原始证据由维护者受限保存。
+
 > 状态：本轮施工的**唯一执行入口与滚动证据页**。它不取代 `agent-native-unified-atomic-review-2026-07-14.md`（下称 AA 总账）的 Group 定义、103 leaf 与证据回填合同；它只做三件事——**(A) 把执行序从"依赖分层序"重排为"用户痛点垂直切片序"**，**(B) 修正 A2A 的层级定义（两层 → 三层）**，**(C) 记录三个切片的本地实现、提交与生产验收状态**。
 >
 > 冲突裁决：源码/运行事实 → L0（北极星/Model Agency）→ 三份源头设计合同（本文 §1）→ AA 总账 → 历史报告。AA 总账 §9 的依赖表仍是"正确性依赖"，本文 §4 是"施工先后"，二者不矛盾：依赖表说"谁不能先于谁闭环"，本文说"本轮先交付哪几个用户可见的垂直切片"。
@@ -66,7 +68,7 @@ Session V2 重构（AA 总账 Group 1–4，229 文件 / ~4 万行）**方向正
 5. 完整授权 evidence 始终可经 `search_memory` / `load_memory` 读取；selector/ledger/assembler 不可用时产生 typed degraded state，不把整个 Session 判失败，也不冻结仍有正常 authority 的无关 effect。
 6. selector failure 只保留 candidate ID/hash/coverage receipt，绝不恢复“全部正文兜底”。
 
-**当前状态**：P0 切片已完成 Red→Green、Memory/runtime 定向 `104 passed`、architecture `198 passed`、backend 全量 `7543 passed, 2 skipped`、frontend 对应 checkout `693 passed` 与 production build/bundle budget；当前 `HEAD b9852f37f` 已随 backend=`a64092a1-395b-48c2-9853-83ff9b45c2ae`、backend-api=`ab14d317-3c29-4b74-9d31-341e778f92b7`、frontend=`3ff852aa-e078-464c-80c7-7568b1272a2a` 同源发布。完整结果写入本文提交的 commit body 与 AA `EVID-G6-001`。当前仍不得写“生产闭环”，因为真实长 Session canary 与 production prompt-pressure/actual-token 指标尚未执行。
+**当前状态**：P0 切片已完成 Red→Green、Memory/runtime 定向 `104 passed`、architecture `198 passed`、backend 全量 `7543 passed, 2 skipped`、frontend 对应 checkout `693 passed` 与 production build/bundle budget；当前 `HEAD b9852f37f` 已随 backend=`00000325-0000-4000-8000-000000000000`、backend-api=`00000344-0000-4000-8000-000000000000`、frontend=`00000147-0000-4000-8000-000000000000` 同源发布。完整结果写入本文提交的 commit body 与 AA `EVID-G6-001`。当前仍不得写“生产闭环”，因为真实长 Session canary 与 production prompt-pressure/actual-token 指标尚未执行。
 
 **验收门**：`unified-context-assembly` §0/§1.2/§10 与 §18.10；memory 数量增长时 resident/automatic bytes 有界；selector prompt 不含全量 body；selector failure 无 body；同 Session 多 turn 不超过 60KiB；预算耗尽后 conversation/search/load 可继续；无 `prompt too long` 整轮失败。
 **native 回归门**：模型仍能通过 ref/search/load 读取全部授权 memory 证据，不因"不爆"而删除决定性尾部、冲突或 provenance；4KiB 自动 excerpt 是 recoverable preview，不是事实源替代。

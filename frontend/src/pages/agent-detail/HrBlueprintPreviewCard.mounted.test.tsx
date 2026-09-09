@@ -208,7 +208,7 @@ describe('HrBlueprintPreviewCard decision hierarchy', () => {
       blueprint_version: preview.blueprintVersion,
       blueprint_hash: preview.blueprintHash,
       draft_status: 'completed',
-      created_agent_id: '7733ee76-abee-5e03-aa6f-8c39fe098576',
+      created_agent_id: '00000240-0000-4000-8000-000000000000',
       blueprint: {},
     };
     client.setQueryData(['hr-creation-draft', 'hr-agent', preview.blueprintId], completedDraft);

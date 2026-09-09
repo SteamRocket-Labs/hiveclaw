@@ -11,10 +11,10 @@ environment: production
 source_commit: b2fb8b28ec00b24eca1235340a1ecc7ee4383fd4
 deployed_commit: b2fb8b28ec00b24eca1235340a1ecc7ee4383fd4
 manifest_sha256: e4c602f58e4c1736a147b82a62687e7ada361327bb13cd99c5a956d8998c78fb
-deployment_ids: backend=c93dafab-e80b-4bef-9e9d-d1342fdff712; backend-api=f4750d4b-ba00-4a2a-86e5-3aabea996e70; frontend=8110c8be-5252-4fe7-a918-9b189b52ca13
+deployment_ids: backend=000003c1-0000-4000-8000-000000000000; backend-api=0000048e-0000-4000-8000-000000000000; frontend=00000275-0000-4000-8000-000000000000
 persona_principal: authenticated lab platform-admin using EventPilot in the selected Example Owner experimental tenant
 data_version: session-v2-production
-target_session_id: 65b98e1a-8723-4288-b611-4ba8f3d1861a
+target_session_id: 000001f5-0000-4000-8000-000000000000
 marker: P01-STAGE1-FRESH-FALCON-682
 started_at: 2026-08-31T14:32:00+08:00
 ended_at: 2026-08-31T14:37:00+08:00
@@ -23,6 +23,7 @@ fault_recovery_result: PASS
 negative_authority_result: NOT_RUN
 cleanup_result: NOT_RUN
 supersedes: none
+disclosure: public-redacted
 ---
 
 # P01-MAIN platform-admin supporting function smoke
@@ -43,7 +44,7 @@ supersedes: none
 
 ## Execution
 
-- 点击发送后页面切换到 fresh Session `65b98e1a-8723-4288-b611-4ba8f3d1861a`，只产生一个 run。
+- 点击发送后页面切换到 fresh Session `000001f5-0000-4000-8000-000000000000`，只产生一个 run。
 - GLM-5.3 先公开三步计划，再建立三个 todo；随后一次 `write_file` 成功写入 2229 字符，一次 `read_file` 读回同一路径。
 - 最终三个 todo 全部 completed；Team/A2A/Workers/Workflow 均为 0，没有外部或跨 Agent effect。
 

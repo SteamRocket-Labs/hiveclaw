@@ -482,7 +482,7 @@ describe('chatDisclosureReducer', () => {
         role: 'tool_call',
         content: '',
         toolName: 'read_personal_kb',
-        toolArgs: { document_id: 'ab30fd09-b1c2-4451-86a1-6a7244cb7e9e', segment_id: 'e5a62664-a151-48b2-a322-efc42ae69299' },
+        toolArgs: { document_id: '00000345-0000-4000-8000-000000000000', segment_id: '00000449-0000-4000-8000-000000000000' },
         toolStatus: 'done',
       },
     ]);

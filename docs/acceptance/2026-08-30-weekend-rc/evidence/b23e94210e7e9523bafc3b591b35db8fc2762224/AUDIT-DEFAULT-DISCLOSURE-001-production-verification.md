@@ -11,12 +11,13 @@ pass: bounded-admin-audit-disclosure-verification
 environment: production
 source_commit: b23e94210e7e9523bafc3b591b35db8fc2762224
 deployed_commit: b23e94210e7e9523bafc3b591b35db8fc2762224
-deployment_ids: backend=03d0919e-c86f-4e8a-9697-ead67479774c; backend-api=b0bb7ca3-5749-4af2-b101-7f68bcc9fa39; frontend=0dd299d8-8dce-4052-9d7c-da2a1e2e50f4
+deployment_ids: backend=00000015-0000-4000-8000-000000000000; backend-api=0000035d-0000-4000-8000-000000000000; frontend=0000004b-0000-4000-8000-000000000000
 persona_principal: authenticated lab platform_admin
 result: VERIFIED
 recovery_result: PASS_HARD_RELOAD_AND_DENIED_ROUTE
 cleanup_result: NOT_APPLICABLE_READ_ONLY
 supersedes: evidence/cc6e726218bd491120f942edfa91e51d2d167ff4/LLM-PROBE-AUDIT-001-production-verification.md#not-proven
+disclosure: public-redacted
 ---
 
 # AUDIT-DEFAULT-DISCLOSURE-001 production verification
@@ -53,15 +54,15 @@ supersedes: evidence/cc6e726218bd491120f942edfa91e51d2d167ff4/LLM-PROBE-AUDIT-00
 
 ## Evidence
 
-- production hard reload 后仍显示 400 条记录；probe `a0f1be98-27bd-4d69-9bde-247b57c6b16c` 恰出现两次，`provider=zhipu`、`model=glm-5.3`、`success=true` 继续可消费。
+- production hard reload 后仍显示 400 条记录；probe `00000304-0000-4000-8000-000000000000` 恰出现两次，`provider=zhipu`、`model=glm-5.3`、`success=true` 继续可消费。
 - 同一 DOM 的 `session_id/job_id/issues/reason/agent_name/Insufficient Balance` counts 全部为 0；不是 CSS 隐藏或折叠，server response projection 与 frontend consumer 双重约束均已执行。
-- exact `b23e94210e7e9523bafc3b591b35db8fc2762224` 已 push；backend `03d0919e-c86f-4e8a-9697-ead67479774c`、backend-api `b0bb7ca3-5749-4af2-b101-7f68bcc9fa39`、frontend `0dd299d8-8dce-4052-9d7c-da2a1e2e50f4` 均 `SUCCESS` 且 message 绑定 exact full SHA。
+- exact `b23e94210e7e9523bafc3b591b35db8fc2762224` 已 push；backend `00000015-0000-4000-8000-000000000000`、backend-api `0000035d-0000-4000-8000-000000000000`、frontend `0000004b-0000-4000-8000-000000000000` 均 `SUCCESS` 且 message 绑定 exact full SHA。
 - backend health `status=ok`、RLS `strict`、`runtime_control_bus.last_error=null`；frontend HTTP 200。
 
 ## Recovery
 
 - hard reload 后记录数、安全 probe 关联与六类零披露保持稳定；没有 stale raw details、duplicate query 或重新触发 provider effect。
-- 同一 application commit 下重新 hard navigation 到跨用户 Session `/agents/5d99fe45-7ea9-4f7e-979c-c57bcb2cd4ea/sessions/d5b47bd0-27d1-46e7-b417-4e9da362b553`，终态只显示“找不到此会话 / 此会话不存在，或当前账号无法访问 / 返回数字员工”。DOM 不含 `Read-only · User`、运行错误、会话交付物、合法 MAPLE marker 或目标 Session body。
+- 同一 application commit 下重新 hard navigation 到跨用户 Session `/agents/000001ce-0000-4000-8000-000000000000/sessions/000003f2-0000-4000-8000-000000000000`，终态只显示“找不到此会话 / 此会话不存在，或当前账号无法访问 / 返回数字员工”。DOM 不含 `Read-only · User`、运行错误、会话交付物、合法 MAPLE marker 或目标 Session body。
 
 ## Consumption
 

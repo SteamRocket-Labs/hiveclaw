@@ -11,7 +11,7 @@ environment: production
 source_commit: 3482b57a383d3c5bd33a5bcf813b87c6fab23339
 deployed_commit: 3482b57a383d3c5bd33a5bcf813b87c6fab23339
 manifest_sha256: d320edceeb26cf68fa724e77502d811e5476fa04ee3c9128075cc8c79eb38117
-deployment_ids: backend=7c196980-34c6-4846-bf25-0397b7b55c0e; backend-api=8e7545b8-9b6c-4b32-a77d-48883191728a; frontend=6f6bd18c-1681-4049-ac20-6660a3f84fc3
+deployment_ids: backend=0000025a-0000-4000-8000-000000000000; backend-api=000002af-0000-4000-8000-000000000000; frontend=00000219-0000-4000-8000-000000000000
 persona_principal: authenticated lab platform_admin using the employee AgentDetail surface; frozen employee principal not proven
 data_version: P01-MAIN-PASS1-3482B-MAPLE-581
 started_at: 2026-08-31T03:34:29.012246+08:00
@@ -21,6 +21,7 @@ fault_recovery_result: BLOCKED_PRECONDITION
 negative_authority_result: BLOCKED_PRECONDITION
 cleanup_result: BLOCKED_PRECONDITION
 supersedes: none
+disclosure: public-redacted
 ---
 
 # P01-MAIN production path check blocked by principal mismatch
@@ -29,14 +30,14 @@ supersedes: none
 
 ## Input
 
-- Codex 从 EventPilot 侧栏的 `New conversation with EventPilot` 按钮进入真正的无 `session_id` draft；发送前 URL 为 `/agents/03d43a5c-0d5c-4c30-bab9-2734c5691434#chat`，旧 prompt、running、waiting 均为 0。
-- 唯一发送创建 fresh Session `52ddde7f-63bf-44a6-973f-ffb1da06d14a` 与 RuntimeTask `38381d84-779d-59fe-954d-dd75b2c07079`；输入 marker 为 `P01-MAIN-PASS1-3482B-MAPLE-581`，唯一允许的业务 artifact path 为 `workspace/WEEKEND-RC-P01-MAIN-PASS-1-3482B-MAPLE.md`。
+- Codex 从 EventPilot 侧栏的 `New conversation with EventPilot` 按钮进入真正的无 `session_id` draft；发送前 URL 为 `/agents/00000016-0000-4000-8000-000000000000#chat`，旧 prompt、running、waiting 均为 0。
+- 唯一发送创建 fresh Session `0000019e-0000-4000-8000-000000000000` 与 RuntimeTask `0000011d-0000-4000-8000-000000000000`；输入 marker 为 `P01-MAIN-PASS1-3482B-MAPLE-581`，唯一允许的业务 artifact path 为 `workspace/WEEKEND-RC-P01-MAIN-PASS-1-3482B-MAPLE.md`。
 - 输入要求模型先公开三步计划，建立并更新至少三个 Work Ledger todos，只写一次目标文件、结算成功后只读回一次，并以七项外部硬标准核验内容；write 失败、unknown 或 unresolved 时停止且禁止重试。外部消息、其他 Agent、web、workflow、trigger、其他路径与删除均禁止。
-- SessionTurnInput `417244b6-45b1-4b9e-9f8f-f7eb4990d3ce` 为 `start_turn/applied`，只绑定 run `38381d84…` 的 round 1；后续五轮没有新 input。运行及两次 hard reload 后 DB 仍是一个 input、一个 run。
+- SessionTurnInput `0000014c-0000-4000-8000-000000000000` 为 `start_turn/applied`，只绑定 run `0000011d…` 的 round 1；后续五轮没有新 input。运行及两次 hard reload 后 DB 仍是一个 input、一个 run。
 
 ## Authority
 
-- server-side principal `42778d4b…` 为 active `platform_admin`，tenant 精确绑定 `aac728fb-fe1c-45df-a2ff-a56e024a37a0`；EventPilot 具有同一 user scope 的 `manage` grant。
+- server-side principal `00000156…` 为 active `platform_admin`，tenant 精确绑定 `00000341-0000-4000-8000-000000000000`；EventPilot 具有同一 user scope 的 `manage` grant。
 - ChatSession 的 tenant、Agent、user、`source_channel=web`、`session_kind=human_chat`、`actor_type=user`、`runtime_source=web_chat`、`visibility_scope=direct_user` 和 `listed_surface=chat` 均由服务端持久化。
 - 冻结 P01-MAIN 要求 `profile=employee_session`、`persona=employee`。`platform_admin` 即使使用同一 employee-facing route，也不能证明普通 employee 的 DOM、能力或授权边界；更不能代替后续 denied-effect negative authority。
 - 没有读取或更改 credential，没有登录、创建账号、切换身份、变更 grant 或提升权限。当前无第二个已登录 browser identity，因此正式 employee pass 停在 login/principal precondition。
@@ -54,7 +55,7 @@ supersedes: none
 ## Evidence
 
 - 三个 model-authored todo 均持久化为 `completed`；ledger view 为 `todos_total=3`、`todos_complete=3`、`todos_open=0`、`verification_pending=0`、`failures_open=0`。底层 ledger container 仍显示 `status=running/current_phase=planning`，本证据如实保留该观察，不将它解释为 P04-LGR 已通过。
-- 只有一个 owned ChatArtifact：`a8a036af-5268-4a79-b5ae-822f66544d00`，同一 Session/run/path，size `1257` B、MIME `text/markdown`、preview `markdown`。content hash `82fa30a498812a96340803bc93ae3605695b73df28788bf4cff3d6f7ecfc982c`，revision/snapshot hash `be2ab61874b309383146ca2af6960e8c59429d133e92cac90d18244b1946a442`，delivery preview 未截断。
+- 只有一个 owned ChatArtifact：`00000335-0000-4000-8000-000000000000`，同一 Session/run/path，size `1257` B、MIME `text/markdown`、preview `markdown`。content hash `82fa30a498812a96340803bc93ae3605695b73df28788bf4cff3d6f7ecfc982c`，revision/snapshot hash `be2ab61874b309383146ca2af6960e8c59429d133e92cac90d18244b1946a442`，delivery preview 未截断。
 - 保存快照逐项满足硬标准：首行恰为 `# WEEKEND-RC P01 MAIN PASS 1`；marker、`TOTAL_MINUTES=90`、`RISK_ROWS=2` 各一条独立行；agenda 恰三条指定 data row；risk 恰两条指定 data row；checklist 明确包含 Owner、Timing、Fallback、Final handoff。
 - 9 个 invocation 均有 matching `tool_result.completed`。660 个 Session outbox 全为 `published`、attempts 恰 1、`last_error` 计数 0；unresolved/reconciliation tool 计数 0。
 - canonical spans：`agent_kernel.handle=ok` 一次，`llm.stream=ok` 六次，`track_todo=ok` 七次，`write_file=ok` 一次，`read_file=ok` 一次；除已披露的 typed Memory degradation 外零 tool/generation error。

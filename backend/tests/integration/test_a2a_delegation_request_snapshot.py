@@ -1,6 +1,6 @@
 """Restart rebuild must reproduce the persisted A2A delegation request snapshot.
 
-Production evidence (2026-08-27, task e8fa186d-7e9e-4c31-ac23-7d348d3e71a2):
+Production evidence (2026-08-27, task 0000045e-0000-4000-8000-000000000000):
 the resume dispatch held the run with ``a2a_request_snapshot_drift`` because
 the execution receipt's ``request_hash`` was computed over the
 dispatch-normalized ``edit_mode`` (``create_or_update``) while

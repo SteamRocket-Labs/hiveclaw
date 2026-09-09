@@ -1,5 +1,7 @@
 # Hive 自主触发与自我进化系统
 
+> 公开副本：运行标识及本机路径已脱敏；原始证据由维护者受限保存。
+
 ## 背景
 
 Hive 当前已经具备 heartbeat、trigger、focus.md、evolution files、auto-dream、memory distillation 等组件，但这些组件还没有形成强闭环。核心问题不是“触发器没有运行”，而是目标、唤醒、执行、结果之间缺少同一个可审计账本。
@@ -1036,7 +1038,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 2026-04-28 Railway 验收结果：
 
 ```text
-backend deployment: 267ecc26-388b-47e9-aa78-31041974ea34 SUCCESS
+backend deployment: 000000c0-0000-4000-8000-000000000000 SUCCESS
 autonomous-audit 1h: findings=0
 autonomy-repair-plan 1h: actions=0
 harness-canary: agents_considered=33, agents_written=32, skipped=1(no autonomous wake path)
@@ -1046,7 +1048,7 @@ harness-validation 1h/168h: findings=0, H4 passed=32, H5 passed=32
 2026-04-28 Railway 日志复核：
 
 ```text
-backend deployment: 4661d92f-00f3-459a-82b2-3f4bdf90ba53 SUCCESS
+backend deployment: 0000016d-0000-4000-8000-000000000000 SUCCESS
 startup migration reached: add_tool_runtime_activity_enum_0428
 healthcheck: /api/health => {"status":"ok","version":"1.7.0"}
 activity enum drift fixed: tool_call_direct / tool_call_approved added to activity_action_enum
@@ -1116,7 +1118,7 @@ P0 不做：
 验证命令：
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/backend
+cd ${REPO_ROOT}/backend
 source .venv/bin/activate
 
 pytest tests/services/test_focus_state.py \

@@ -1,5 +1,7 @@
 # Hive Runtime 模型自主性与过度约束审计、单轮修复与验收记录
 
+> 公开副本：运行标识及本机路径已脱敏；原始证据由维护者受限保存。
+
 > 日期：2026-07-13
 > 文档状态：**当前 checkout 的 C-01 至 C-20 已完成单轮修复；普通本地验收已通过；production 三服务已部署成功；历史数据 apply 未执行**
 > 审计与修复对象：当前 checkout；事故证据来自当时 Railway production 三服务、生产会话与调用记录；对照基线为当前本地 FreeCode / Codex 源码
@@ -100,11 +102,11 @@
 
 | 对象 | 生产标识 |
 |---|---|
-| 父 Agent | `8b7153bb-a53b-49fd-885b-b6408e2edc9e` |
-| 父 Session | `43a2bc01-1148-4893-b6bd-281812ac8912` |
-| 子 Agent（AI 产品经理） | `b20e2559-3a4d-4ce5-bf26-cf471a536070` |
-| 子 Session | `3ef9a0fa-8887-5990-bc67-c39b2d0d0ab4` |
-| 父 RuntimeTask | `9771b704-a219-4d05-8d6a-a36de54a90e1` |
+| 父 Agent | `000002a6-0000-4000-8000-000000000000` |
+| 父 Session | `0000015f-0000-4000-8000-000000000000` |
+| 子 Agent（AI 产品经理） | `00000364-0000-4000-8000-000000000000` |
+| 子 Session | `00000144-0000-4000-8000-000000000000` |
+| 父 RuntimeTask | `000002d9-0000-4000-8000-000000000000` |
 
 ### 2.2 子 Agent 的实际工具事实
 
@@ -144,9 +146,9 @@ A2A 接收成功 -> 子 Agent 执行成功 -> 文件生成成功 -> 子结果回
 
 | Service | Deployment ID |
 |---|---|
-| `backend` | `58c30df0-8dc3-4bac-8cda-9fa098dd07ca` |
-| `backend-api` | `674b7c7f-1d32-42b2-a707-78725874b0c3` |
-| `frontend` | `084058da-26e5-4042-b44a-3c5bd1fd5159` |
+| `backend` | `000001b6-0000-4000-8000-000000000000` |
+| `backend-api` | `00000203-0000-4000-8000-000000000000` |
+| `frontend` | `00000029-0000-4000-8000-000000000000` |
 
 生产 archive 标签 / commit 为 `ac19ee17b`，backend health 正常。当前本地 checkout 为：
 
@@ -237,12 +239,12 @@ flowchart TD
 
 对照位置：
 
-- FreeCode：`/Users/example-owner/vc-saas/free-code-main/src/query.ts`
+- FreeCode：`${LOCAL_HOME}/vc-saas/free-code-main/src/query.ts`
   - tool-use 决定是否继续 loop；
   - abort 来自显式中止、hook 或最大轮数；
   - 未发现 final-answer evidence regex rewriter。
 
-- Codex：`/Users/example-owner/Context Engineering/codex/codex-rs/core/src/session/turn.rs`
+- Codex：`${LOCAL_HOME}/Context Engineering/codex/codex-rs/core/src/session/turn.rs`
   - 使用 `needs_follow_up` 和 typed event 决定 turn 生命周期；
   - 原始 `last_agent_message` 作为完成结果；
   - 未发现按工具名关键词重写模型最终语义。
@@ -1419,7 +1421,7 @@ python -m app.scripts.repair_false_tool_evidence_notices --apply --confirm
 现有测试通过只能证明当前 contract 被实现，不证明 contract 正确。审计时的一个定向基线为：
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/backend
+cd ${REPO_ROOT}/backend
 source .venv/bin/activate
 pytest tests/kernel/test_tool_evidence_honesty.py \
   tests/kernel/test_loop_guard.py \
@@ -1435,7 +1437,7 @@ pytest tests/kernel/test_tool_evidence_honesty.py \
 ### 14.2 实施后的 backend 验收
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/backend
+cd ${REPO_ROOT}/backend
 source .venv/bin/activate
 
 pytest \
@@ -1469,7 +1471,7 @@ ruff check app/ tests/
 ### 14.3 实施后的 frontend 验收
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
+cd ${REPO_ROOT}/frontend
 npm run test -- \
   src/pages/agent-detail/HrBlueprintPreviewCard.test.tsx \
   src/pages/agent-detail/PlanCard.test.tsx \
@@ -1509,14 +1511,14 @@ npm run build
 部署后至少验证：
 
 ```bash
-PROJECT_ID=dd959a13-19f9-497a-9704-42c310eae230
+PROJECT_ID=0000041c-0000-4000-8000-000000000000
 
 railway deployment list --service backend --environment production --project "$PROJECT_ID" --limit 1 --json
 railway deployment list --service backend-api --environment production --project "$PROJECT_ID" --limit 1 --json
 railway deployment list --service frontend --environment production --project "$PROJECT_ID" --limit 1 --json
 
-curl -fsS https://backend-production-326d.up.railway.app/api/health
-curl -I -fsS https://frontend-production-0346.up.railway.app/
+curl -fsS https://service-1.example.invalid/api/health
+curl -I -fsS https://service-3.example.invalid/
 ```
 
 并在 production 运行 A2A 验收，再核对：
@@ -1529,13 +1531,13 @@ curl -I -fsS https://frontend-production-0346.up.railway.app/
 
 #### 14.5.1 2026-07-14 production 部署实测
 
-本次从干净 HEAD `4b9e96820100cc8f374cd0fa20a317ad9ec32a99` 生成保留顶层目录的 archive-root 上传包，并部署到项目 `dd959a13-19f9-497a-9704-42c310eae230` 的 `production` 环境：
+本次从干净 HEAD `4b9e96820100cc8f374cd0fa20a317ad9ec32a99` 生成保留顶层目录的 archive-root 上传包，并部署到项目 `0000041c-0000-4000-8000-000000000000` 的 `production` 环境：
 
 | 服务 | 上传根 | Deployment ID | 终态 |
 |---|---|---|---|
-| `backend` | `backend-root/` | `30f050dd-20bb-43d5-bed1-1af723600e75` | `SUCCESS` |
-| `backend-api` | `backend-root/backend/` | `03c92eb1-a49a-4ff9-ae02-5e32d937c4dc` | `SUCCESS` |
-| `frontend` | `frontend-root/` | `809611b9-0352-47b4-aefb-36ad4875f5d8` | `SUCCESS` |
+| `backend` | `backend-root/` | `000000ee-0000-4000-8000-000000000000` | `SUCCESS` |
+| `backend-api` | `backend-root/backend/` | `00000014-0000-4000-8000-000000000000` | `SUCCESS` |
+| `frontend` | `frontend-root/` | `00000273-0000-4000-8000-000000000000` | `SUCCESS` |
 
 部署运行证据：
 

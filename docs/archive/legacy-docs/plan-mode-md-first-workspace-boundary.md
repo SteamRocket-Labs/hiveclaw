@@ -1,5 +1,7 @@
 # Plan Mode MD-first 与 Workspace 读取边界修复文档
 
+> 公开副本：运行标识及本机路径已脱敏；原始证据由维护者受限保存。
+
 > 状态：2026-06-08 生产问题复盘后的实现前设计文档。
 >
 
@@ -7,7 +9,7 @@
 
 ## 1. 背景
 
-2026-06-08 production session `927783d8-c46e-472f-9d15-a47112ae0208` 暴露了五个连锁问题：
+2026-06-08 production session `000002c0-0000-4000-8000-000000000000` 暴露了五个连锁问题：
 
    - `workspace/defi_new_playbooks_20260608.md`
 3. agent 连续 5 次调用 `exit_plan_mode`，都在 kernel 层 JSON 参数解析失败；`agent_plan_requests` 没有创建任何 plan row。

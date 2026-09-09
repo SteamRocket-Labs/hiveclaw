@@ -1,5 +1,7 @@
 # Hive Session V2：CC 底线与 Codex 抽象对齐契约（2026-07-14）
 
+> 公开副本：运行标识及本机路径已脱敏；原始证据由维护者受限保存。
+
 > 状态：设计权威；Group 2/3/4 substrate 已分别形成并部署，但 2026-07-17 live-entry/path 复核重新打开 `P1-004`、`SES-CONSUMER-001`、`A2A-TERMINAL-001`、`TEAM-FANOUT-001`、`ROOT-TREE-001` 五个回归 leaf。`EVID-G2-016`–`020` 已证明 Task 专用消费、公开 commentary 持久化/reload、rolling render ownership、Peer A2A read-only、runtime forwarder、suffix/tail/live-tail、private/V1 sequence continuity，以及 active progress、Task、milestone 无刷新到达。`EVID-G2-021` 的第一轮 terminal suffix replay 随 `165682a20` 发布后被 authenticated canary N 证伪；最终修正不再在 terminal 重建整段 Session，而是保留当前 Run 已实时显示的 process，只从 exact-run canonical store 合并过程并让唯一 `assistant_final` 接管 render owner。commit `ee95cd98d` 已三服务发布，authenticated canary P 证明同一 Run 运行中 progress/milestone/Task 实时展开，成功后自动收进 `Processed` 且默认只留 final，展开/折回与 hard reload 等价，raw task/progress tool row 为零。`SES-CONSUMER-001` 当前为 `closed:EVID-G2-016/017/018/019/020/021`。最终产品合同保持：运行中公开 commentary/prose 实时展开；成功完成后与 Thinking、工具、A2A、compaction 一起进入同一个可恢复的 `Processed` disclosure；Task ledger 独立固定；整体 failed/blocked 继续自动展开。完整 Session V2 继续由 Group 6/7/8/9/10 验收。
 >
 > 集成关系：本文裁决 Session Event / Item / Reducer，不独立定义当前断点总数或程序施工顺序。fleet、单根 Session 的 100-way root execution、Context Resource Plane、跨渠道 A2A 与 canonical ledger 统一以 `docs/agent-native-unified-atomic-review-2026-07-14.md` 为准。
@@ -360,11 +362,11 @@ type TurnReconciledPayloadV2 = {
 | Hive（事故补全 stable HEAD） | `b805dd67eaeb4ee6ef78f661fb52777ea9cc859c` | 2026-07-16 只读设计证据；当时相关 dirty code 只能算 WIP，不能倒填为实现完成 |
 | Hive（本文完整设计校对快照） | `af8b42e29f7c4859ef3eb17bee34096d68413748` | S-01–S-30 / G1–G30 结构与源码引用复核时的 checkout provenance |
 | Hive（Group 2 implementation） | `c50fea9da`、`578e773ba`、`5ffdb464f` | canonical mechanical truth、legacy-open evidence projection 与 frontend single-reducer 三个独立 code commit；文档证据 commit 不改变 deployed runtime bytes |
-| Railway production（Group 2 exact source） | backend `e59dd282-97e5-42cb-b67a-84836bed0e09`；backend-api `77967ddf-77d8-4b70-84f4-f3b2d8299895`；frontend `3eb6c453-90dc-422d-990e-96ee2ee0131b` | 三服务均 `SUCCESS` 且来自 `5ffdb464f` archive；结合 migration/projection/health/log canary 才构成 Group 2 生产证据，不能外推为完整 Session V2 完成 |
+| Railway production（Group 2 exact source） | backend `00000448-0000-4000-8000-000000000000`；backend-api `00000242-0000-4000-8000-000000000000`；frontend `00000143-0000-4000-8000-000000000000` | 三服务均 `SUCCESS` 且来自 `5ffdb464f` archive；结合 migration/projection/health/log canary 才构成 Group 2 生产证据，不能外推为完整 Session V2 完成 |
 | Hive（Group 3 implementation） | `01e979bb3` | `runtime_root_items`、A2A/Subagent/Team/Workflow admission、durable path/approval/terminal、Team fanout recovery 与对应 migration/tests；只关闭 Group 3，不吞并 Group 4 result/fan-in |
-| Railway production（Group 3 exact source） | backend `b67055e5-9dbc-4e4d-903e-14fe8322b728`；backend-api `dd748dd4-ea68-4d94-a5bb-4fda7ecd7b90`；frontend `20ca32aa-7682-4f6a-b6a5-ceebcca0fdad` | 三服务最新 deployment 均 `SUCCESS` 且来自 `01e979bb3`；首次 API readiness fail-closed/同 archive 重提、migration head、145-table/4-trigger readiness、RLS/health 共同构成 Group 3 生产证据 |
+| Railway production（Group 3 exact source） | backend `0000037b-0000-4000-8000-000000000000`；backend-api `0000041b-0000-4000-8000-000000000000`；frontend `000000a4-0000-4000-8000-000000000000` | 三服务最新 deployment 均 `SUCCESS` 且来自 `01e979bb3`；首次 API readiness fail-closed/同 archive 重提、migration head、145-table/4-trigger readiness、RLS/health 共同构成 Group 3 生产证据 |
 | Hive（Group 4 implementation） | `4e385d423` | immutable `runtime_result_objects`、ref-only completion outbox、mailbox cursor、integration epoch/page、governed reader、metrics、lossless migration 与 real-PG concurrency/fault tests；只关闭 Group 4，不吞并 Group 6 完整 Context Resource Plane |
-| Railway production（Group 4 exact source） | backend `b16d1c5b-c28a-480e-896b-a8dd2ffd153a`；backend-api `da84f7ae-0157-4551-95d0-4f93dbe0f029`；frontend `96090a47-4267-488a-b0f5-94a5c18e6667` | 三服务均 `SUCCESS` 且来自 `4e385d423`；migration head=`runtime_result_fanin_0717`，148-table/4-trigger readiness、147-row lossless backfill、RLS/FORCE、source hash、health 与 ref-only production inventory 共同构成 Group 4 生产证据 |
+| Railway production（Group 4 exact source） | backend `00000361-0000-4000-8000-000000000000`；backend-api `00000407-0000-4000-8000-000000000000`；frontend `000002d4-0000-4000-8000-000000000000` | 三服务均 `SUCCESS` 且来自 `4e385d423`；migration head=`runtime_result_fanin_0717`，148-table/4-trigger readiness、147-row lossless backfill、RLS/FORCE、source hash、health 与 ref-only production inventory 共同构成 Group 4 生产证据 |
 | FreeCode | `7dc15d6c8fb0c40c7fcc02ce9b58204324252632` | CC 可运行语义底线 |
 | claude-code-org | `a99de1bb3c0c301b83b784abbcdb7a3674b2cd45` | CC 交叉验证 |
 | Codex | `5c19155cbd93bfa099016e7487259f61669823ff` | typed thread/item 与 Workbench 工程增量 |
@@ -795,7 +797,7 @@ flowchart LR
 
 ### 8.4 2026-07-15 截图事故的证据分级与根因裁决
 
-本次截图对应 Agent `118f8979-b3ce-4494-9d2f-740c44097994`、Session `04167751-45aa-40be-8c59-b098d2251cd4`。证据必须分四层，不能把“同一个 Session 后来发生的日志”冒充“截图那一次 Run 的唯一 trigger”：
+本次截图对应 Agent `0000005b-0000-4000-8000-000000000000`、Session `00000017-0000-4000-8000-000000000000`。证据必须分四层，不能把“同一个 Session 后来发生的日志”冒充“截图那一次 Run 的唯一 trigger”：
 
 | 证据层 | 已确认事实 | 不能推出的结论 |
 |---|---|---|
@@ -3247,7 +3249,7 @@ Group 3 没有把“100 个 child”解释成平台全量 Agent 数，而是严�
 - admission/recovery：A2A/Subagent 先持久化 task/root item，再发布 coordination 或 child projection；Team 先提交完整 requested set，再逐项 admission。cycle path、approval ref、producer/recovery lease 与 terminal seal 都 durable；恢复只能复用 exact intent/signal，缺字段时 hold，不能由平台补写语义。
 - capacity/Golden G9：pure root ledger 与 Team runtime 均覆盖 `1/10/25/50/100` mixed fanout，并满足 `requested = admitted + deferred + not_admitted`。Workflow gate/wait/restart/resume 更新同一 RuntimeTask/root item；frontend full regression 同时覆盖 Workflow segment、gate waiter、dedupe/count，因此 SESSION-G9 canonical scenario 已闭环。Group 9 的真实浏览器/right-rail 组合终验是独立 consumer acceptance，不重开 G9 owner。
 - tests：Group 3 focused=`480 passed`；backend full=`7508 passed, 2 skipped in 332.99s`；frontend SESSION-G9 `timelineModel` targeted=`31 passed`，full=`119 files / 688 tests`，typecheck/build/bundle budget 通过；real-PG migration、RLS、authority、100-way tenant isolation 与 lease fault injection 均在上述分母内。
-- production：backend=`b67055e5-9dbc-4e4d-903e-14fe8322b728`、backend-api=`dd748dd4-ea68-4d94-a5bb-4fda7ecd7b90`、frontend=`20ca32aa-7682-4f6a-b6a5-ceebcca0fdad` 均 `SUCCESS`。生产 actual/expected head=`runtime_root_ledger_0716`、145 tables/4 triggers readiness clean，runtime=`app_rls/strict/non-superuser/non-BYPASSRLS`，worker/daemon/HTTP healthy。首次 backend-api 在 migration 前按设计 fail-closed，schema ready 后同 archive 重提成功，未放宽门也未改写客户数据。
+- production：backend=`0000037b-0000-4000-8000-000000000000`、backend-api=`0000041b-0000-4000-8000-000000000000`、frontend=`000000a4-0000-4000-8000-000000000000` 均 `SUCCESS`。生产 actual/expected head=`runtime_root_ledger_0716`、145 tables/4 triggers readiness clean，runtime=`app_rls/strict/non-superuser/non-BYPASSRLS`，worker/daemon/HTTP healthy。首次 backend-api 在 migration 前按设计 fail-closed，schema ready 后同 archive 重提成功，未放宽门也未改写客户数据。
 - residual boundary：Group 3 的 7/7 owner leaf 已闭环；在该证据形成时 result manifest、mailbox/integration epoch 与 return storm 仍属 Group 4，现已由下节 `§28.3` 和总报告 `EVID-G4-001`–`006` 独立关闭。context/compaction 仍属 Group 6，跨渠道属 Group 7，UI/backfill/writer cutover 属 Group 9；完整 Session V2 仍未完成。
 
 因此当前正确结论扩展为：**Group 2 已建立唯一 Session 机械事实语言，Group 3 已建立其上的统一 root admission/coverage 与 G9 backend substrate；后续 Group 必须消费这两层事实，不得另造 event、root ledger 或 terminal 解释。**
@@ -3260,7 +3262,7 @@ Group 4 严格消费 Group 2 的 canonical Session event/item 与 Group 3 的 ro
 - concurrency/recovery：parent mailbox 使用唯一 sequence + cursor version；page 使用 integration epoch、claim token、lease、manifest hash 与 prior-page fence。interleaved roots 保留全局 mailbox 顺序，parallel workers 不能先交付更晚 epoch；duplicate、partial、late、payload-rank revision、ACK-after-commit、expired lease 与 final-before-crash 都有 typed replay 路径。旧 hash ref 在新 revision 交付后仍可读取。
 - capacity/consumer：100 个各约 1 MiB 的 synthetic child result 保留 100 份完整 immutable bytes，但 parent 只收到 4 个各 25 refs 的 page；每页 runtime context `<16,000` chars、合计 `<64,000` chars，raw decisive tail 可经 governed reader 恢复且不在 prompt manifest 中。A2A/Subagent/Team/Workflow/Trigger/Approval/RuntimeTask 均消费同一 completion contract。
 - tests：四个新增边界测试先为 `FFFF`；第一次 full suite 的唯一失败暴露 cursor first-create race，修复后 critical real-PG=`5 passed`、focused=`81 passed`、backend full=`7525 passed, 2 skipped in 375.96s`。frontend full=`119 files / 688 tests`，typecheck/build/bundle budget、Ruff、diff check 与 Alembic single-head 均通过。
-- production：backend=`b16d1c5b-c28a-480e-896b-a8dd2ffd153a`、backend-api=`da84f7ae-0157-4551-95d0-4f93dbe0f029`、frontend=`96090a47-4267-488a-b0f5-94a5c18e6667` 均 `SUCCESS`。production 147 条历史 outbox 对应 147 个 result object，hash/size/orphan/missing-ref 均为 0；inline `summary/artifacts_json` 列为 0，新 ref 列为 8。四张相关表 RLS ENABLE+FORCE，source SHA 与本地 commit 一致，schema readiness/health/daemon/sandbox/frontend 全绿。
+- production：backend=`00000361-0000-4000-8000-000000000000`、backend-api=`00000407-0000-4000-8000-000000000000`、frontend=`000002d4-0000-4000-8000-000000000000` 均 `SUCCESS`。production 147 条历史 outbox 对应 147 个 result object，hash/size/orphan/missing-ref 均为 0；inline `summary/artifacts_json` 列为 0，新 ref 列为 8。四张相关表 RLS ENABLE+FORCE，source SHA 与本地 commit 一致，schema readiness/health/daemon/sandbox/frontend 全绿。
 - rollout incident：migration 曾等待旧 stopped backend 的 outbox AccessShareLock；只读 `pg_blocking_pids` 锁图确认唯一直接 blocker 后，使用 PID + blocker relation 双前置条件终止该旧事务，PostgreSQL 回滚它后 migration 正常提交。没有批量 terminate、没有删除客户结果、没有放宽 readiness；该恢复事实同步保存在总报告 `EVID-G4-006`。
 - residual boundary：Group 4 的 6/6 owner leaf 已闭环，但 Group 6 仍负责所有资源域统一 disclosure、compaction/output continuation 与 pressure recovery；Group 7 仍负责跨渠道 delivery；Group 9 仍负责真实浏览器、全历史 Session backfill 与 V1 writer cleanup；Group 10 仍负责总重认证。真实 100 个付费 child 同秒 completion 仍是 coverage gap，不影响本 Group 的 ref-only mechanical contract 已独立发布。
 
@@ -3313,7 +3315,7 @@ Group 4 严格消费 Group 2 的 canonical Session event/item 与 Group 3 的 ro
 17. private-continuity commit `37599d2ca` 三服务发布后的 authenticated canary L 证明第 16 条已接线：21 条 private event 全部保留 sequence 且无 `payload.content/parts`；terminal 默认只留 final，展开恢复两条 progress，折回和 hard reload 等价。active snapshot 仍只有 Task 实时更新；DB/WS 对账发现缺失 sequence 全是 V1 `model_route/context_window_status/provider_call_ledger` 等 runtime row。V1 与 V2 共用唯一 cursor，因此任何 V1 append 也必须在同事务写 `SessionEventOutbox`；无法证明 typed V2 scope 的旧 row 以 user-safe compatibility envelope 推进 cursor，不能因为“只用于 debug”而跳号，也不能让 compatibility publisher重建语义。
 18. V1 continuity commit `5e6d47b06` 发布后的 authenticated canary M 首次证明 active progress、Task、milestone 均能无刷新到达，但 current Run 在 final 后仍停在 `处理中`。第一轮 terminal suffix replay 随 `165682a20` 三服务发布；authenticated canary N 的 durable sequence 已完整包含 progress、milestone、canonical final、run/turn completed 与 outcome terminal committed，页面却仍没有 N 的 `已处理`。因此 terminal 折叠不能通过“用本地 retained transcript 重建整个 Session”完成。
 19. live-tail 与 older-history hydration 必须保持两个恢复平面：前者保证当前 Run 即时消费，后者保证完整历史最终恢复；二者不能互相充当前置条件。本地 retained transcript 合法地可能存在历史空洞，所以 terminal 只封口 exact Run：保留 latest user 后已实时显示的 commentary/Thinking/tool/A2A/compaction，按 stable identity 补入 exact-run canonical process，并让唯一 canonical `assistant_final` 接管 render owner。完整 Session replay只用于 initial/reload/history recovery，不再用于 terminal state transition。
-20. commit `ee95cd98d` 已由 backend=`ace7f88d-d174-4036-87fa-f43669771588`、backend-api=`9e76b88e-0486-4504-b1ee-57bf0892aa77`、frontend=`78844f6d-e834-4de6-8647-523f633a0c16` 三服务发布且均 `SUCCESS`。authenticated canary P 在同一未刷新 Run 中先显示 `处理中`，exact progress/milestone/Task=1/1/1；terminal 后自动成为 collapsed `已处理（7 个步骤）`，process=0/0、final=1、Task=1；展开恢复 process=1/1，再折回 0/0；hard reload 后 `loading=false` 且保持同样默认折叠/唯一 final/Task 专用消费。raw `track_todo/report_progress` 在全部状态均为 0/0。该结果关闭 `SES-CONSUMER-001`，但不越权关闭 Group 9 的完整历史 migration/V1 cleanup 与长时重连。
+20. commit `ee95cd98d` 已由 backend=`0000034d-0000-4000-8000-000000000000`、backend-api=`000002fd-0000-4000-8000-000000000000`、frontend=`0000024b-0000-4000-8000-000000000000` 三服务发布且均 `SUCCESS`。authenticated canary P 在同一未刷新 Run 中先显示 `处理中`，exact progress/milestone/Task=1/1/1；terminal 后自动成为 collapsed `已处理（7 个步骤）`，process=0/0、final=1、Task=1；展开恢复 process=1/1，再折回 0/0；hard reload 后 `loading=false` 且保持同样默认折叠/唯一 final/Task 专用消费。raw `track_todo/report_progress` 在全部状态均为 0/0。该结果关闭 `SES-CONSUMER-001`，但不越权关闭 Group 9 的完整历史 migration/V1 cleanup 与长时重连。
 
 **Red→Green 与验收：** task `tool_result` 不刷新 read model、artifact authority 在 outcome seal 后漂移、即时 broadcast 失败污染已提交 round 三条新增回归均先按预期失败，再分别转绿。第一版 `report_progress` 发布后，真实 hard-reload canary 又证明 canonical tool event 不含 public args；follow-up real-PG、legacy serializer、frontend rolling replay以及 old-binary existing-invocation early-return Red 均先失败，再由原生 commentary transaction、幂等 rolling repair + V1 exact-envelope adapter 转绿。commit `a456932ec` 的 production DB/browser 又证明 commentary 本身已 durable/renderable，同时抓到旧消息 sequence 漂移和同 run 双 render owner；两个 production-shaped frontend Red 均先失败，再由 first-materialization sequence 与 typed-run canonical ownership 转绿。task/live-route 5 个 Red 也先按预期失败，Green 后 focused=`149 passed`、frontend full=`120 files / 728 tests`、architecture ledger=`11 passed`。bridge Red 进一步要求 runtime/api 启动 subscriber、read_model 不启动，并禁止 initial hydration 隐式写 active Session；`9ebb51f1b` 发布后 forwarder/live Task/final 已通过。suffix hydration、tail-watermark、first-snapshot readiness 与 typed live-tail 的逐轮 Red/Green 及部署证据保持在总报告 `EVID-G2-019`。terminal-fold Red=`2 failed / 8 passed`，最终 component=`10 passed`、focused Session disclosure/reducer=`4 files / 155 tests`、frontend full=`122 files / 745 tests`。private sequence Red=`2 failed / 2 passed`，Green backend=`57 passed`、frontend related=`4 files / 54 tests`、frontend full=`122 files / 746 tests`，build/bundle/Ruff 全绿；commit `37599d2ca` 已发布并由 canary L 证明 private absence、terminal fold/expand/collapse/hard reload。V1 outbox follow-up 再以 compatibility claim 与 `[1,3]` forward 两条 Red 复现断点，Green 后 append/outbox/claim/publish/forward、Session persistence/contract/terminal 与 tenant-less channel compatibility focused=`84 passed`。最终 visible-process merge Red=`1 failed / 12 passed`，Green targeted=`3 files / 30 tests`、相关 Session suite=`9 files / 220 tests`、frontend full=`122 files / 749 tests`；production build 通过，AgentDetail=`341268/380000` bytes、gzip=`94217/115000`，vendor=`591449/620000`、gzip=`186474/200000`。commit `ee95cd98d` 三服务发布与 authenticated canary P 已完成生产 acceptance，当前 `SES-CONSUMER-001` 可写 closed。
 
@@ -3346,31 +3348,31 @@ Group 4 严格消费 Group 2 的 canonical Session event/item 与 Group 3 的 ro
 
 ### FreeCode / CC
 
-- `/Users/example-owner/vc-saas/free-code-main/src/utils/messages.ts`：`normalizeMessages`
-- `/Users/example-owner/vc-saas/free-code-main/src/utils/messages.ts`：`getMessagesAfterCompactBoundary`
-- `/Users/example-owner/vc-saas/free-code-main/src/utils/handlePromptSubmit.ts`：用户输入提交与 queue/abort 入口
-- `/Users/example-owner/vc-saas/free-code-main/src/utils/messageQueueManager.ts`：运行中输入队列
-- `/Users/example-owner/vc-saas/free-code-main/src/components/PromptInput/PromptInputQueuedCommands.tsx`：queued input 产品消费
-- `/Users/example-owner/vc-saas/free-code-main/src/query.ts`：canonical model/tool loop、safe-boundary queue drain、Stop hook retry、tool pair repair 与 compaction continuation
-- `/Users/example-owner/vc-saas/free-code-main/src/QueryEngine.ts`：SDK/print wrapper、accepted prompt durability、stream/transcript projection 与 compact boundary flush
-- `/Users/example-owner/vc-saas/free-code-main/src/utils/processUserInput/processUserInput.ts`：`UserPromptSubmit` blocking 与 preventContinuation 精确差异
-- `/Users/example-owner/vc-saas/free-code-main/src/utils/sessionStart.ts`、`src/query/stopHooks.ts`、`src/utils/hooks.ts`：SessionStart/PreToolUse/Stop/SubagentStop 边界语义
-- `/Users/example-owner/vc-saas/free-code-main/src/services/compact/compact.ts::buildPostCompactMessages`：boundary → summary → preserved → attachments → hook results 精确顺序
-- `/Users/example-owner/vc-saas/free-code-main/src/tools/AgentTool/UI.tsx`：child live progress、最近活动、tool count 与 token usage
-- `/Users/example-owner/vc-saas/free-code-main/src/tasks/LocalAgentTask/LocalAgentTask.tsx`、`src/tools/TaskOutputTool/TaskOutputTool.tsx`、`src/utils/task/diskOutput.ts`：atomic completion notification、完整 task output/ref 与 durable disk result 底线
-- `/Users/example-owner/vc-saas/free-code-main/src/screens/REPL.tsx`、`src/components/Messages.tsx`：running queue、abort、稳定 streaming identity、完整 transcript/虚拟滚动/展开消费
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/utils/messages.ts`：`normalizeMessages`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/utils/messages.ts`：`getMessagesAfterCompactBoundary`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/utils/handlePromptSubmit.ts`：用户输入提交与 queue/abort 入口
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/utils/messageQueueManager.ts`：运行中输入队列
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/components/PromptInput/PromptInputQueuedCommands.tsx`：queued input 产品消费
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/query.ts`：canonical model/tool loop、safe-boundary queue drain、Stop hook retry、tool pair repair 与 compaction continuation
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/QueryEngine.ts`：SDK/print wrapper、accepted prompt durability、stream/transcript projection 与 compact boundary flush
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/utils/processUserInput/processUserInput.ts`：`UserPromptSubmit` blocking 与 preventContinuation 精确差异
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/utils/sessionStart.ts`、`src/query/stopHooks.ts`、`src/utils/hooks.ts`：SessionStart/PreToolUse/Stop/SubagentStop 边界语义
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/services/compact/compact.ts::buildPostCompactMessages`：boundary → summary → preserved → attachments → hook results 精确顺序
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/tools/AgentTool/UI.tsx`：child live progress、最近活动、tool count 与 token usage
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/tasks/LocalAgentTask/LocalAgentTask.tsx`、`src/tools/TaskOutputTool/TaskOutputTool.tsx`、`src/utils/task/diskOutput.ts`：atomic completion notification、完整 task output/ref 与 durable disk result 底线
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/screens/REPL.tsx`、`src/components/Messages.tsx`：running queue、abort、稳定 streaming identity、完整 transcript/虚拟滚动/展开消费
 
 ### Codex
 
-- `/Users/example-owner/Context Engineering/codex/codex-rs/protocol/src/models.rs`：`MessagePhase`
-- `/Users/example-owner/Context Engineering/codex/codex-rs/app-server-protocol/src/protocol/v2/item.rs`：`ThreadItem`、Item lifecycle 与 delta notifications
-- `/Users/example-owner/Context Engineering/codex/codex-rs/app-server-protocol/src/protocol/thread_history.rs`：stable item upsert
-- `/Users/example-owner/Context Engineering/codex/codex-rs/app-server-protocol/src/protocol/thread_history_projection.rs`：durable rollout 到 Thread history 的 typed projection
-- `/Users/example-owner/Context Engineering/codex/codex-rs/core/src/session/input_queue.rs`：session input queue
-- `/Users/example-owner/Context Engineering/codex/codex-rs/core/src/session/inject.rs`、`core/src/session/mod.rs::steer_input`：运行中输入注入与 session 语义
-- `/Users/example-owner/Context Engineering/codex/codex-rs/app-server-protocol/src/protocol/v2/turn.rs::TurnSteerParams`：typed steer contract
-- `/Users/example-owner/Context Engineering/codex/codex-rs/app-server/src/request_processors/turn_processor.rs`：turn steer request processing
-- `/Users/example-owner/Context Engineering/codex/codex-rs/app-server/tests/suite/v2/turn_steer.rs`：steer acceptance/regression evidence
-- `/Users/example-owner/Context Engineering/codex/codex-rs/app-server/src/thread_state.rs`、`app-server/src/request_processors/thread_lifecycle.rs`：active turn lock、lifecycle 与 terminal follow-up
-- `/Users/example-owner/Context Engineering/codex/codex-rs/tui/src/chatwidget.rs`、`tui/src/streaming/controller.rs`、`tui/src/chatwidget/input_queue.rs`：committed history、active streaming tail 与 pending input 产品表达
-- `/Users/example-owner/Context Engineering/codex/codex-rs/core/src/tools/handlers/multi_agents/wait.rs`、`multi_agents_common.rs`：typed agent wait/status 与 collaboration state 工程增量
+- `${LOCAL_HOME}/Context Engineering/codex/codex-rs/protocol/src/models.rs`：`MessagePhase`
+- `${LOCAL_HOME}/Context Engineering/codex/codex-rs/app-server-protocol/src/protocol/v2/item.rs`：`ThreadItem`、Item lifecycle 与 delta notifications
+- `${LOCAL_HOME}/Context Engineering/codex/codex-rs/app-server-protocol/src/protocol/thread_history.rs`：stable item upsert
+- `${LOCAL_HOME}/Context Engineering/codex/codex-rs/app-server-protocol/src/protocol/thread_history_projection.rs`：durable rollout 到 Thread history 的 typed projection
+- `${LOCAL_HOME}/Context Engineering/codex/codex-rs/core/src/session/input_queue.rs`：session input queue
+- `${LOCAL_HOME}/Context Engineering/codex/codex-rs/core/src/session/inject.rs`、`core/src/session/mod.rs::steer_input`：运行中输入注入与 session 语义
+- `${LOCAL_HOME}/Context Engineering/codex/codex-rs/app-server-protocol/src/protocol/v2/turn.rs::TurnSteerParams`：typed steer contract
+- `${LOCAL_HOME}/Context Engineering/codex/codex-rs/app-server/src/request_processors/turn_processor.rs`：turn steer request processing
+- `${LOCAL_HOME}/Context Engineering/codex/codex-rs/app-server/tests/suite/v2/turn_steer.rs`：steer acceptance/regression evidence
+- `${LOCAL_HOME}/Context Engineering/codex/codex-rs/app-server/src/thread_state.rs`、`app-server/src/request_processors/thread_lifecycle.rs`：active turn lock、lifecycle 与 terminal follow-up
+- `${LOCAL_HOME}/Context Engineering/codex/codex-rs/tui/src/chatwidget.rs`、`tui/src/streaming/controller.rs`、`tui/src/chatwidget/input_queue.rs`：committed history、active streaming tail 与 pending input 产品表达
+- `${LOCAL_HOME}/Context Engineering/codex/codex-rs/core/src/tools/handlers/multi_agents/wait.rs`、`multi_agents_common.rs`：typed agent wait/status 与 collaboration state 工程增量

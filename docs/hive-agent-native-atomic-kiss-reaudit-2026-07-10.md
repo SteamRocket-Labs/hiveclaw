@@ -922,18 +922,18 @@ Company Charter、Owner Agency Charter、不可违反的安全政策可以作为
 ### 13.1 自动化验证
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/backend
+cd ${REPO_ROOT}/backend
 source .venv/bin/activate
 ruff check app tests
 ruff format --check app tests
 alembic heads
 pytest tests -q
 
-cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
+cd ${REPO_ROOT}/frontend
 npm test -- --run
 npm run build
 
-cd /Users/example-owner/vc-saas/hiveclaw-main
+cd ${REPO_ROOT}
 git diff --check
 ```
 

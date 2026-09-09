@@ -11,7 +11,7 @@ environment: production
 source_commit: bf94b76a1706510daf2d11c4e98fd5051f23f28f
 deployed_commit: bf94b76a1706510daf2d11c4e98fd5051f23f28f
 manifest_sha256: d320edceeb26cf68fa724e77502d811e5476fa04ee3c9128075cc8c79eb38117
-deployment_ids: backend=07059ce5-12ca-4b57-ac92-bc05d58dfb49; backend-api=c70ff972-b039-4cf5-831d-4526962c8d9d; frontend=308e7789-0b9c-46aa-93e9-7d1ddc110433
+deployment_ids: backend=00000020-0000-4000-8000-000000000000; backend-api=000003b8-0000-4000-8000-000000000000; frontend=000000ec-0000-4000-8000-000000000000
 persona_principal: authenticated lab platform_admin
 data_version: live-production-read-only-2026-08-31
 started_at: 2026-08-31T00:32:59Z
@@ -21,6 +21,7 @@ fault_recovery_result: BLOCKED_PRECONDITION
 negative_authority_result: PASS
 cleanup_result: PASS
 supersedes: none
+disclosure: public-redacted
 ---
 
 # P29-PADMIN pass 2 role/session precondition

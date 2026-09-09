@@ -11,12 +11,13 @@ pass: positive-runtime-health-pre-fix
 environment: production
 source_commit: bbf6d2340afe593b44f740fabfa178d126b5beca
 deployed_commit: bbf6d2340afe593b44f740fabfa178d126b5beca
-deployment_ids: backend=4ad99e93-d3be-48c9-be8d-0107dff44f82; backend-api=8aa5ccbc-fe9d-4da2-bb39-f16497de044f; frontend=638da152-1ef6-444c-bcd8-4dd00fa0296d
+deployment_ids: backend=0000017c-0000-4000-8000-000000000000; backend-api=000002a1-0000-4000-8000-000000000000; frontend=000001f0-0000-4000-8000-000000000000
 persona_principal: authenticated lab platform_admin
 result: FAIL
 recovery_result: NOT_RUN
 cleanup_result: NOT_APPLICABLE_READ_ONLY
 supersedes: none
+disclosure: public-redacted
 ---
 
 # P29-PADMIN active runtime runs presented as safeguard interventions

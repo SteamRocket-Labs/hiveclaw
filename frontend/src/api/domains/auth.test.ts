@@ -21,10 +21,10 @@ describe('auth API adapter', () => {
     const { authApi } = await import('./auth');
     const { post } = await import('../core');
 
-    await authApi.login({ username: ' SimonXu1212 ', password: 'secret' });
+    await authApi.login({ username: ' example_user ', password: 'secret' });
 
     expect(post).toHaveBeenCalledWith('/auth/login', {
-      username: 'SimonXu1212',
+      username: 'example_user',
       password: 'secret',
     });
   });

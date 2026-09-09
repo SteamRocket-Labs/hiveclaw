@@ -8,43 +8,44 @@ verification_status: cleanup-verified-fault-recovery-pending
 journey_id: P01-MAIN
 environment: production
 source_commit: 17f073bb4f07098e55d9ef1684781dc67cfa454e
+disclosure: public-redacted
 ---
 
 # P01-MAIN cleanup — 2026-09-07
 
 - Application baseline: `17f073bb4f07098e55d9ef1684781dc67cfa454e`.
 - Authority: owner explicitly confirmed this synthetic batch and subsequently authorized deletion/modification of task-created synthetic data without repeated questions; formal data remains excluded.
-- Scope: Agent `4e5261a6-c182-5248-9ca1-669f9419d44f`, tenant `0430e023-de03-4e8c-a3dc-b2a63e751427`; no Agent or fixture deletion.
+- Scope: Agent `00000187-0000-4000-8000-000000000000`, tenant `00000018-0000-4000-8000-000000000000`; no Agent or fixture deletion.
 
 ## Exact Session targets
 
 ```text
-3351fede-216a-44d5-9dfc-21cce7313356
-a556482a-32e5-4c87-93d3-481ce239a07a
-2043d7d5-21c5-4eba-a58c-4ee6645c1765
-95702b70-f23c-4b59-8ea8-06c5d85ef2de
-23dd3d47-0fe4-4372-839f-423b55c3aa64
-ba59a6e3-30a1-48bd-8b64-3402b70d1a7a
-5b162001-05da-423f-8b02-f4352791f79e
-b9eb604a-2214-4308-85a6-37e2c9f2188f
-a0a78e0e-7419-4a92-828b-2df499b9ee3f
-dac0efb1-0ce5-43d6-874a-5d824078aa07
+000000fb-0000-4000-8000-000000000000
+0000031e-0000-4000-8000-000000000000
+0000009f-0000-4000-8000-000000000000
+000002d2-0000-4000-8000-000000000000
+000000b6-0000-4000-8000-000000000000
+0000038f-0000-4000-8000-000000000000
+000001c4-0000-4000-8000-000000000000
+0000038b-0000-4000-8000-000000000000
+00000303-0000-4000-8000-000000000000
+00000409-0000-4000-8000-000000000000
 ```
 
 The first browser-extension confirmation attempt timed out and did not establish deletion. Native Chrome subsequently exposed the real KELP confirmation; after confirmation the UI selected JUNIPER and no longer listed KELP. The next JUNIPER confirmation was followed by IRIS selection and JUNIPER removal. Browser control then changed; the remaining Session deletions were not independently performed or witnessed by Codex. Do not attribute the whole batch to autonomous Codex UI execution. Independent frontend HTTP logs subsequently proved all ten exact product DELETE requests returned 204:
 
 | Session prefix | UTC | Request ID |
 |---|---|---|
-| `dac0efb1` | 04:24:18 | `Upc5oBUWRvmnRQ8SVOLIQQ` |
-| `a0a78e0e` | 04:25:05 | `rVL79CQFR--N-h4zVOLIQQ` |
-| `b9eb604a` | 04:25:16 | `obfYs2KtQki09c9ToB_USg` |
-| `5b162001` | 04:25:22 | `9R45EFifQY2z8Klk0ubPiw` |
-| `ba59a6e3` | 04:25:25 | `5vZFFvoQSMOPA9BjVOLIQQ` |
-| `95702b70` | 04:25:29 | `8Gew1XiESl6bBqFzAQeqjw` |
-| `3351fede` | 04:25:32 | `olk35U4mQWSULsrq0ubPiw` |
-| `a556482a` | 04:25:34 | `h1ed5uwpSSqUo3Qx0ubPiw` |
-| `2043d7d5` | 04:25:36 | `rfrYzTyHQ76NYwWUJH0Vcg` |
-| `23dd3d47` | 04:25:40 | `vnzKDEr-RGaC90ad0ubPiw` |
+| `00000409` | 04:24:18 | `Upc5oBUWRvmnRQ8SVOLIQQ` |
+| `00000303` | 04:25:05 | `rVL79CQFR--N-h4zVOLIQQ` |
+| `0000038b` | 04:25:16 | `obfYs2KtQki09c9ToB_USg` |
+| `000001c4` | 04:25:22 | `9R45EFifQY2z8Klk0ubPiw` |
+| `0000038f` | 04:25:25 | `5vZFFvoQSMOPA9BjVOLIQQ` |
+| `000002d2` | 04:25:29 | `8Gew1XiESl6bBqFzAQeqjw` |
+| `000000fb` | 04:25:32 | `olk35U4mQWSULsrq0ubPiw` |
+| `0000031e` | 04:25:34 | `h1ed5uwpSSqUo3Qx0ubPiw` |
+| `0000009f` | 04:25:36 | `rfrYzTyHQ76NYwWUJH0Vcg` |
+| `000000b6` | 04:25:40 | `vnzKDEr-RGaC90ad0ubPiw` |
 
 The same logs show three later duplicate DELETE requests for already-removed targets returning 404, not partial failure of the original 204 transactions. These retries were not initiated by Codex. No DELETE 500 occurred in this batch. Evidence command: `railway logs --service frontend --environment production --http --method DELETE --since 2026-09-07T04:18:00Z --lines 40 --json`, projecting only timestamp/path/status/request ID/duration.
 

@@ -1856,7 +1856,7 @@ This design is not complete until these conditions are true:
 ## 19. Tests To Write First
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/backend
+cd ${REPO_ROOT}/backend
 source .venv/bin/activate
 
 pytest \

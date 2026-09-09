@@ -11,10 +11,10 @@ environment: production
 source_commit: 3482b57a383d3c5bd33a5bcf813b87c6fab23339
 deployed_commit: 3482b57a383d3c5bd33a5bcf813b87c6fab23339
 manifest_sha256: d320edceeb26cf68fa724e77502d811e5476fa04ee3c9128075cc8c79eb38117
-deployment_ids: backend=7c196980-34c6-4846-bf25-0397b7b55c0e; backend-api=8e7545b8-9b6c-4b32-a77d-48883191728a; frontend=6f6bd18c-1681-4049-ac20-6660a3f84fc3
+deployment_ids: backend=0000025a-0000-4000-8000-000000000000; backend-api=000002af-0000-4000-8000-000000000000; frontend=00000219-0000-4000-8000-000000000000
 persona_principal: authenticated lab platform-admin using EventPilot in the selected experimental tenant
-target_session_id: b3962147-07cd-4223-8f23-f00193d7735c
-target_runtime_task_id: 76a32f8e-f5d8-5a63-b02a-e591598321e9
+target_session_id: 0000036c-0000-4000-8000-000000000000
+target_runtime_task_id: 0000023d-0000-4000-8000-000000000000
 started_at: 2026-08-31T02:52:26+08:00
 ended_at: 2026-08-31T02:56:27+08:00
 result: PASS
@@ -22,6 +22,7 @@ fault_recovery_result: BLOCKED_PRECONDITION
 negative_authority_result: BLOCKED_PRECONDITION
 cleanup_result: BLOCKED_PRECONDITION
 supersedes: none
+disclosure: public-redacted
 ---
 
 # TOOL-ARTIFACT-SETTLEMENT-001 recovery admission precheck
@@ -30,7 +31,7 @@ supersedes: none
 
 ## Input
 
-- 目标是既有 D2 failure：EventPilot Session `b3962147-07cd-4223-8f23-f00193d7735c` / RuntimeTask `76a32f8e-f5d8-5a63-b02a-e591598321e9`。
+- 目标是既有 D2 failure：EventPilot Session `0000036c-0000-4000-8000-000000000000` / RuntimeTask `0000023d-0000-4000-8000-000000000000`。
 - 本次没有发送任何新 prompt，没有创建 Session、RuntimeTask、command、input、artifact 或 workspace effect。
 - 只执行 exact application commit 的三服务部署、公共健康读取、旧 Session hard reload 和管理员恢复队列只读检查。
 
@@ -42,7 +43,7 @@ supersedes: none
 
 ## Execution
 
-- backend deployment `7c196980-34c6-4846-bf25-0397b7b55c0e`、backend-api `8e7545b8-9b6c-4b32-a77d-48883191728a`、frontend `6f6bd18c-1681-4049-ac20-6660a3f84fc3` 均为 `SUCCESS`，deployment message 均为 `deploy 3482b57a runtime tool-effect recovery`。
+- backend deployment `0000025a-0000-4000-8000-000000000000`、backend-api `000002af-0000-4000-8000-000000000000`、frontend `00000219-0000-4000-8000-000000000000` 均为 `SUCCESS`，deployment message 均为 `deploy 3482b57a runtime tool-effect recovery`。
 - 公共 backend `/api/health` 返回 `status=ok`、`runtime_control_bus.last_error=null`；frontend `/` 返回 HTTP 200。backend-api freshness 只由其 exact deployment status 证明。
 - Session hard reload 后才读取 DOM，排除旧 frontend bundle/cache 造成的假阴性。
 
@@ -50,9 +51,9 @@ supersedes: none
 
 - 旧 Session hard reload 后显示 alert：`工具可能已经产生效果。管理员核对证据前，当前会话不会继续。`
 - 原 generic `重试本轮` 按钮消失；`输入消息...`、输入区动作和发送均 disabled。run 仍如实显示 `失败`，0 running、0 waiting，没有自动 replay、没有新 prompt 或新 effect。
-- 管理员 `运行时对账` 队列显示 50 pending，但旧 run `76a32f8e` 被提升为第一项：Agent `EventPilot`、type `web_chat_turn`、reason `tool_effect_outcome_unknown`、risk `effect_outcome_unknown`、status `failed`。
+- 管理员 `运行时对账` 队列显示 50 pending，但旧 run `0000023d` 被提升为第一项：Agent `EventPilot`、type `web_chat_turn`、reason `tool_effect_outcome_unknown`、risk `effect_outcome_unknown`、status `failed`。
 - 该行只暴露 `必填的效果证据说明` 与 `确认效果并停止旧任务`；证据为空时按钮 disabled。该行没有 `已处理`、`归档` 或 `重试`，证明未知 effect 不能走 generic terminal/retry action。
-- 更早的 EventPilot run `ff9536bd` 同样作为第二个 unknown-effect hold 出现在普通 reconciliation rows 之前；old hold 没有被 50-row limit 饿死。
+- 更早的 EventPilot run `000004c9` 同样作为第二个 unknown-effect hold 出现在普通 reconciliation rows 之前；old hold 没有被 50-row limit 饿死。
 
 ## Recovery
 

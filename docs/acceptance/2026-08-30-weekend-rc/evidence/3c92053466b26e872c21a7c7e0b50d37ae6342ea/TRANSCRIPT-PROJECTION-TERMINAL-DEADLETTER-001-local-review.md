@@ -8,13 +8,14 @@ verification_status: local-review-complete-exact-ci-pending
 finding_id: TRANSCRIPT-PROJECTION-TERMINAL-DEADLETTER-001
 source_commit: 3c92053466b26e872c21a7c7e0b50d37ae6342ea
 result: ACCEPTED_LOCAL_CANDIDATE
+disclosure: public-redacted
 ---
 
 # P01 terminal projection local repair review
 
 ## Scope and root cause
 
-Production P01 Session `3351fede-216a-44d5-9dfc-21cce7313356` completed its model, tools, final and artifact, but its required terminal outbox `7b200f1c-4d3f-5240-b344-e8706138aed7` dead-lettered before the transcript prefix drained. The old bridge consumed one predecessor per outer retry: a single call could project at most 39 predecessors, while the eight-attempt outbox envelope could cover at most 312. The production run still had 118 of 1,033 events pending after that envelope was exhausted.
+Production P01 Session `000000fb-0000-4000-8000-000000000000` completed its model, tools, final and artifact, but its required terminal outbox `00000253-0000-4000-8000-000000000000` dead-lettered before the transcript prefix drained. The old bridge consumed one predecessor per outer retry: a single call could project at most 39 predecessors, while the eight-attempt outbox envelope could cover at most 312. The production run still had 118 of 1,033 events pending after that envelope was exhausted.
 
 The candidate changes only the shared bridge: it loads the committed unfinished predecessor IDs in sequence order and bridges them one at a time, stopping at the first failure. It does not add a queue, increase an attempt cap, widen RLS, or bypass a failed frontier.
 
@@ -36,6 +37,6 @@ The 1,033-row probe establishes correctness and lease survival, not a throughput
 
 ## Recovery decision
 
-The code prevents the same recoverable backlog from exhausting a new terminal outbox, but it deliberately does not revive existing dead letters. The repository already has an operator-authorized, audited, exact-row redrive API. After exact CI and same-source deployment, read the current summary projection state, invoke that API once for `7b200f1c-4d3f-5240-b344-e8706138aed7`, and verify one audit, one delivery receipt, RuntimeTask settlement, and no duplicated input, tool effect, artifact, or final. Do not add automatic dead-letter revival.
+The code prevents the same recoverable backlog from exhausting a new terminal outbox, but it deliberately does not revive existing dead letters. The repository already has an operator-authorized, audited, exact-row redrive API. After exact CI and same-source deployment, read the current summary projection state, invoke that API once for `00000253-0000-4000-8000-000000000000`, and verify one audit, one delivery receipt, RuntimeTask settlement, and no duplicated input, tool effect, artifact, or final. Do not add automatic dead-letter revival.
 
 This local review is not production verification and does not change P01 from `Breakpoint` or NPTCR from 0/96.

@@ -11,12 +11,13 @@ pass: bounded-runtime-health-presentation-verification
 environment: production
 source_commit: 6a6695e88d915a0e37b44e64dcdfe5bdd90a9454
 deployed_commit: 6a6695e88d915a0e37b44e64dcdfe5bdd90a9454
-deployment_ids: backend=cdef3ce1-85e6-4662-a5aa-a6fb9793a21b; backend-api=2261b169-3c8a-4c3e-a42b-7a1239b2b8e2; frontend=feb46b17-e017-457a-8c09-b94065730ce1
+deployment_ids: backend=000003d0-0000-4000-8000-000000000000; backend-api=000000ac-0000-4000-8000-000000000000; frontend=000004c6-0000-4000-8000-000000000000
 persona_principal: authenticated lab platform_admin
 result: VERIFIED
 recovery_result: PASS
 cleanup_result: NOT_APPLICABLE_READ_ONLY
 supersedes: evidence/bbf6d2340afe593b44f740fabfa178d126b5beca/P29-PADMIN-fault-active-runtime-guard-presentation.md
+disclosure: public-redacted
 ---
 
 # RUNTIME-GUARD-PRESENTATION-001 production verification
@@ -41,7 +42,7 @@ supersedes: evidence/bbf6d2340afe593b44f740fabfa178d126b5beca/P29-PADMIN-fault-a
 
 ## Evidence
 
-- exact deployed commit `6a6695e88d915a0e37b44e64dcdfe5bdd90a9454`；backend `cdef3ce1-85e6-4662-a5aa-a6fb9793a21b`、backend-api `2261b169-3c8a-4c3e-a42b-7a1239b2b8e2`、frontend `feb46b17-e017-457a-8c09-b94065730ce1` 均 `SUCCESS`。
+- exact deployed commit `6a6695e88d915a0e37b44e64dcdfe5bdd90a9454`；backend `000003d0-0000-4000-8000-000000000000`、backend-api `000000ac-0000-4000-8000-000000000000`、frontend `000004c6-0000-4000-8000-000000000000` 均 `SUCCESS`。
 - backend health `status=ok`、`runtime_control_bus.last_error=null`；frontend HTTP 200。
 - production DOM：heading“最近运行”、说明“最近的运行活动；正在运行的任务可在此暂停。”、badge `5`。
 - 五条 row 都是“正在运行 / 运行正在正常进行 / 等待当前运行完成”，并保留五个“暂停”按钮。

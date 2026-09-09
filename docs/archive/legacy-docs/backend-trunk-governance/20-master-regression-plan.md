@@ -3,18 +3,18 @@
 Run this after any H1-H6 trunk change:
 
 ```bash
-cd /Users/example-owner/vc-saas/hiveclaw-main/backend
+cd ${REPO_ROOT}/backend
 source .venv/bin/activate
 
 pytest
 ruff check app tests
 alembic heads
 
-cd /Users/example-owner/vc-saas/hiveclaw-main/frontend
+cd ${REPO_ROOT}/frontend
 npm test
 npm run build
 
-cd /Users/example-owner/vc-saas/hiveclaw-main
+cd ${REPO_ROOT}
 git diff --check
 ```
 

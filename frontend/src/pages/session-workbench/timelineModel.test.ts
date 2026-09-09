@@ -378,7 +378,7 @@ describe('session workbench timeline model', () => {
           timestamp: '2026-08-29T00:01:44Z',
           eventType: 'assistant_message',
           eventStatus: 'completed',
-          eventRuntimeTaskId: '831241b7-3e2d-41b5-a359-612f1983fded',
+          eventRuntimeTaskId: '0000027c-0000-4000-8000-000000000000',
         },
         {
           id: 'file-changes-1',
@@ -387,7 +387,7 @@ describe('session workbench timeline model', () => {
           timestamp: '2026-08-29T00:01:45Z',
           eventType: 'file_changes',
           eventStatus: 'succeeded',
-          eventRuntimeTaskId: '831241b73e2d41b5a359612f1983fded',
+          eventRuntimeTaskId: '0000027c000040008000000000000000',
         },
       ] as AgentChatMessage[],
       activeSession: { id: 'session-1', title: 'Historical report' },
@@ -404,7 +404,7 @@ describe('session workbench timeline model', () => {
     const runCell = model.cells[1];
     expect(runCell).toMatchObject({
       kind: 'active_run',
-      runId: '831241b7-3e2d-41b5-a359-612f1983fded',
+      runId: '0000027c-0000-4000-8000-000000000000',
       timeline: {
         status: 'done',
         answerMessageId: 'answer-1',
@@ -2908,8 +2908,8 @@ describe('RuntimePhase in the thread projection (§3 seam 3)', () => {
   });
 
   it('treats live UUID hex and canonical hyphenated UUID as the same run without a second pending card', () => {
-    const canonicalRunId = 'bb034234-ef1a-5bdc-8356-af3d9a0a0c1b';
-    const liveRunId = 'bb034234ef1a5bdc8356af3d9a0a0c1b';
+    const canonicalRunId = '00000391-0000-4000-8000-000000000000';
+    const liveRunId = '00000391000040008000000000000000';
     const build = (activeRunId: string) => buildThreadTimeline({
       messages: [
         {

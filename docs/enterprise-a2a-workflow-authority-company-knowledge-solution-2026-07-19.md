@@ -1,5 +1,7 @@
 # Hive 企业 A2A Workflow、统一权限与 Company Knowledge 一体化方案
 
+> 公开副本：运行标识及本机路径已脱敏；原始证据由维护者受限保存。
+
 > 日期：2026-07-19
 >
 > 文档类型：跨域架构决策、生产事故复盘与单轮完整施工规格
@@ -88,7 +90,7 @@ TrustGraph Context Core / graph / vector / retrieval
 
 原请求中出现一次 “A2I”。当前 Hive 仓库没有独立的 A2I 领域定义，结合后续完整描述，本文件按 A2A runtime/interface 问题处理，不另行发明第四套概念。
 
-原请求文字中的 “StackDeck” 按用户同时提供的本地仓库 `/Users/example-owner/vc-saas/StaffDeck/` 解释为 **StaffDeck**。
+原请求文字中的 “StackDeck” 按用户同时提供的本地仓库 `${LOCAL_HOME}/vc-saas/StaffDeck/` 解释为 **StaffDeck**。
 
 ### 0.5 三个方向的正确排序：不是串行三阶段，而是交叉汇合
 
@@ -188,10 +190,10 @@ CC 反馈把三者都归为 Goal 2，因此得出“单 Agent P0 未关闭前都
 本轮对 Railway production、生产 PostgreSQL 与当前源码做了只读核验。目标测试根会话：
 
 ```text
-root_session_id = acbe033a-6801-45cb-af54-c3ce031e2f44
+root_session_id = 0000034c-0000-4000-8000-000000000000
 root Agent       = EventPilot
-tenant_id        = aac728fb-fe1c-45df-a2ff-a56e024a37a0
-accountable user = 42778d4b-fa70-47c1-ad3a-15f7fcf5e8aa
+tenant_id        = 00000341-0000-4000-8000-000000000000
+accountable user = 00000156-0000-4000-8000-000000000000
 test window      = 2026-07-17 11:21–11:45 UTC
                  = 2026-07-17 19:21–19:45 Asia/Shanghai
 ```
@@ -932,7 +934,7 @@ node_id: finance_analysis
 type: agent_task
 agent_ref:
   selector: fixed_agent_id | role_query | runtime_binding
-  value: 118f8979-b3ce-4494-9d2f-740c44097994
+  value: 0000005b-0000-4000-8000-000000000000
 input_schema: FinanceResearchRequest@1
 accepted_artifact_types:
   - CompanyDocumentRef@1

@@ -1,8 +1,12 @@
 # 生产修复与收尾统一方案
 
+> 公开副本：运行标识及本机路径已脱敏；原始证据由维护者受限保存。
+
+生产用量、账单、客户分布和容量快照的精确数值仅在受限原件中保留；下文“受限统计”表示已隐藏实测值，不表示零、未知或未测。故障机制、验证结论和明确未完成项不因此改变。
+
 > 建档 2026-08-23
 > 诊断证据：`docs/wip/memory-companykb-production-acceptance.md` §3.6
-> 生产：`postgres-volume 13.5 GB / 48.8 GB`、`backend-volume 21.3 GB / 48.8 GB`、三服务 Online、commit `b3e0546f`（与本地 HEAD `0cac825b` 在 backend/frontend 零差异）
+> 生产：三服务 Online；volume 用量快照受限保存；commit `b3e0546f`（与本地 HEAD `0cac825b` 在 backend/frontend 零差异）
 > 状态：方案待 owner 确认，未施工
 
 ---
@@ -37,7 +41,7 @@
 
 | 首版说法 | 实测 |
 |---|---|
-| 这 51 个数字员工「从未运行成功」 | **50/51 累计消耗 22.57 亿 token**（中位 1,530 万，最高 7.62 亿）。它们工作过，后来被清空主模型 |
+| 这些数字员工「从未运行成功」 | **历史调用和计量记录证明多数员工曾成功工作**，后来主模型被清空；逐员工计量明细受限保存 |
 | 空转是 `no_model` 特有的问题 | **与 skip reason 无关。** 另一个 agent 因 `plan_required` 空转，速率**恰好也是 1,440 次/天** |
 | 配上模型即可止损 | **不会。** 自主执行链已整体停摆 38 天，且与主模型无关；provider 账户同时已无额度 |
 
@@ -49,14 +53,14 @@
 
 | 原因 | 次数 | 首次 | 最近 | agent |
 |---|---|---|---|---|
-| `HTTP 429 已达到 Token Plan 用量上限：请升级 Token Plan 套餐或购买积分补充用量` | **1,119** | 2026-08-04 | **今天** | 5 |
-| `HTTP 402 Insufficient Balance` | 314 | 2026-07-24 | 2026-08-06 | 2 |
-| `ReadTimeout` / `JSONDecodeError` / 其它 | 280 | — | — | — |
+| `HTTP 429` provider quota rejection | 受限统计 | 受限记录 | 受限记录 | 匿名化 |
+| `HTTP 402` provider billing rejection | 受限统计 | 受限记录 | 受限记录 | 匿名化 |
+| `ReadTimeout` / `JSONDecodeError` / 其它 | 受限统计 | — | — | — |
 
 **这不是工程问题，是账单问题。** heartbeat 的 completed 在 2026-08-13 归零。
 在额度恢复之前，给任何 agent 配模型都不会产生一次成功运行。
 
-另：`常春藤` 租户（49/51 个空转 agent 在此）只有 **1 个** enabled 模型；其余 5 个租户各有 2–3 个，且 NULL 主模型数均为 **0**。
+受影响租户与对照租户的 enabled 模型、NULL 主模型分布不同；逐租户配置与数量受限保存，不能据此把全部故障归结为“从未配模型”。
 
 #### P0-B　trigger 执行从未进入 agent（**真正的产品故障**）
 
@@ -84,9 +88,9 @@ task_type=trigger 最后一次 completed   : 2026-07-16 09:30:17Z
 | 假设 | 证据 |
 |---|---|
 | ImportError（函数级 import 失效） | 在**生产镜像内**逐个 import，10/10 全部 OK；`inspect.getsource` 确认部署源码与本地一致 |
-| 部署陈旧 | VERSION=1.7.0，进程 `elapsed=29 天 12:36`，自 2026-07-24T19:51Z 未重启 |
-| DB 连接池耗尽 | `pg_stat_activity` 28/500 连接，无长事务 |
-| 锁竞争 | `pg_locks` 共 3 个，全部 granted |
+| 部署陈旧 | 生产源码与本地一致；精确运行时长保留在受限原件 |
+| DB 连接池耗尽 | 连接数低于上限，无长事务；精确连接快照受限保存 |
+| 锁竞争 | 检查到的锁全部 granted；精确快照受限保存 |
 | 信号量耗尽为**起因** | 07-24 冷启动后首批 15 个任务同样 0 span。全新信号量有 8 个空位，若只是排队，前 8 个应产出 `hook.setup`。（耗尽仍可能是**放大器**：`TRIGGER_MAX_CONCURRENT=8`，一旦 8 个挂住则后续永久排队） |
 | 各类有守卫的失败分支 | `agent_not_found` / `agent_not_runnable` / `model_error` / admission 失败**全部写 `skipped`**，与 `running` 不符 |
 
@@ -266,7 +270,7 @@ QueryCanceledError: canceling statement due to statement timeout
 
 主键查询加 `FOR UPDATE` 撞 30s `statement_timeout` —— **不是慢扫描，是行锁等待**。当前时刻复查 `pg_locks` 15 个锁全 granted、`blocked_by=0`，说明是**间歇性争用**而非持续阻塞。
 
-**这正是本文档 P1 一节预留的判据被触发**：「若 P0-B 的诊断指向查询超时，则 P1 不是 578 天以后的事，而是 P0-B 的共因，须并入 P0。」**现在成立，P1 应提级并入 P0。**
+**这正是本文档 P1 一节预留的判据被触发**：「若 P0-B 的诊断指向查询超时，则 P1 不是远期容量问题，而是 P0-B 的共因，须并入 P0。」**现在成立，P1 应提级并入 P0。**
 
 ##### 下一步（按顺序）
 
@@ -367,10 +371,10 @@ P0-D 51 个 agent 分类与配模型                       ← 需 owner。放�
 - `p0_agent_classification.csv`（可直接填「分类」列）
 - `p0_agent_classification.md`（带勾选框）
 
-两份文件**含 owner 邮箱，故未入库**，留在 session scratchpad：`/private/tmp/claude-501/-Users-example-owner-vc-saas-hiveclaw-main/a4df9afc-f0b1-460f-bfcc-7595730e6c18/scratchpad/`。
+两份文件**含 owner 邮箱，故未入库**，留在 session scratchpad：`/private/tmp/claude-501/-Users-example-owner-vc-saas-hiveclaw-main/0000031a-0000-4000-8000-000000000000/scratchpad/`。
 
 分类判据（实测）：**近 30 天有人类会话的只有 1/51**，最后一次成功触发全部早于 2026-07-16。
-涉及 21 个 owner，前三名：SimonXu1212（10）、Leslie Lu（9）、Zhuocheng Shi（4）。
+涉及多位 owner；姓名、账号及逐人分布仅保留在受限分类表，不在公开副本列出排名。
 3 个 `.local` 为 Local Agent，零 enabled trigger，12 次/天全来自 heartbeat——建议从 heartbeat 调度排除。
 
 ### 验收
@@ -384,22 +388,22 @@ P0-D 51 个 agent 分类与配模型                       ← 需 owner。放�
 
 | 事实 | 值 |
 |---|---|
-| `no_model` skipped（24h） | 33,856（与 14:0x 首测同值 → 速率恒定） |
-| 其中 `task_type=trigger` | 33,243 / 23 个 agent |
-| 其中 `task_type=heartbeat` | 612 / 51 个 agent |
+| `no_model` skipped（24h） | 受限统计；与首测同值，支持速率恒定的判断 |
+| 其中 `task_type=trigger` | 受限统计 |
+| 其中 `task_type=heartbeat` | 受限统计 |
 | `plan_required` + trigger | 1,440 / **1** 个 agent |
-| `primary_model_id IS NULL`（未删除） | **51 / 92**（首版记 60/103，含已删除 agent） |
-| 51 个 agent 累计 token | 2,257,173,741 |
-| `tokens_used_total = 0` 的 | **1**（`MuhandeMacBook-Pro.local`） |
+| `primary_model_id IS NULL`（未删除） | 受限统计；首版分母包含已删除 agent，口径已纠正 |
+| 受影响 agent 累计 token | 受限计量记录；非零，证伪“从未工作” |
+| `tokens_used_total = 0` 的 | 受限统计；不公开设备或员工名称 |
 | 全库 `running` 任务 | 2,108，全部 unclaimed、无租约 |
 | 其中 `task_type=trigger` | 2,107；**产出 span 的 0 个，建出 trigger_run 会话的 0 个** |
 | 30 天内 `failed \| trigger` | **0** → 外层 `except Exception` 从未执行 → 不是异常 |
-| 生产进程 uptime | 29 天 12:36（自 2026-07-24T19:51Z，未重启） |
-| `pg_stat_activity` | 28 / max 500 连接，无长事务；`pg_locks` 3 个全 granted |
+| 生产进程 uptime | 受限运行记录 |
+| `pg_stat_activity` | 未耗尽连接，无长事务；检查到的锁全部 granted，精确快照受限保存 |
 | 生产镜像内 import 自检 | 函数级 10 个 import 全部 OK；部署源码 == 本地源码 |
 | `TICK_INTERVAL` | **15s**（cron event key 按分钟切片，故仍是 1 次/分钟） |
 | `_TRIGGER_FIRE_INFLIGHT_STALE_SECONDS` | 21600（6h）→ 每个卡住的 trigger 每天重放 4 次 → 实测 72/天 |
-| `/api/health` trigger_daemon | `healthy=true, tick_count=87928` —— **健康检查未覆盖终态产出** |
+| `/api/health` trigger_daemon | `healthy=true` 且 tick 持续推进，**健康检查未覆盖终态产出**；精确计数受限保存 |
 | FK `agents.primary_model_id` delete_rule | `NO ACTION` → **不是级联清空**，是显式置 NULL |
 | `agents.updated_at` | 51 个全部聚在今天 → heartbeat 触碰导致，**不可用作取证** |
 
@@ -409,26 +413,26 @@ P0-D 51 个 agent 分类与配模型                       ← 需 owner。放�
 
 | 表 | 累计插入 | 累计删除 | 删除率 | 体积 |
 |---|---|---|---|---|
-| `runtime_tasks` | 2,322,010 | **0** | **0.0%** | **4,946 MB** |
-| `runtime_budget_runs` | 1,627,782 | **0** | **0.0%** | 1,769 MB |
-| `invocation_spans` | 665,589 | **0** | **0.0%** | 1,771 MB |
-| `agent_activity_logs` | 610,198 | 1,282 | 0.2% | 1,159 MB |
-| `chat_transcript_events` | 285,480 | 32,203 | 11.3% | 1,215 MB |
+| `runtime_tasks` | 受限统计 | **0** | **0.0%** | 受限统计 |
+| `runtime_budget_runs` | 受限统计 | **0** | **0.0%** | 受限统计 |
+| `invocation_spans` | 受限统计 | **0** | **0.0%** | 受限统计 |
+| `agent_activity_logs` | 受限统计 | 受限统计 | 受限统计 | 受限统计 |
+| `chat_transcript_events` | 受限统计 | 受限统计 | 受限统计 | 受限统计 |
 
-DB 12 GB / volume 13.5 GB，上限 48.8 GB → 剩 35.3 GB。三张零删除表约 61 MB/天 → **约 578 天触顶**。`runtime_budget_runs` 与 task 数 1:1（近 7 天各约 25 万），说明它随 P0 一同泄漏。
+数据库、volume 容量及增长预测受限保存。`runtime_budget_runs` 与 task 数 1:1，说明它随 P0 一同泄漏；这里保留机制判断，不公开生产存储规模。
 
-次生症状：`runtime_task_worker.last_error` = `QueryCanceledError`（`statement_timeout=30s`）；运维聚合查询在该表上不可用，EXPLAIN 显示 RLS filter `current_setting()` 不可下推、未设 tenant 上下文时逐行扫 232 万行；`agent_activity_logs` last_autovacuum = 2026-07-03（7 周前）、`chat_transcript_events` = 2026-07-17。
+次生症状：`runtime_task_worker.last_error` = `QueryCanceledError`（`statement_timeout=30s`）；运维聚合查询在该表上不可用，EXPLAIN 显示 RLS filter `current_setting()` 不可下推，未设 tenant 上下文时需要逐行扫描；扫描规模与 autovacuum 时间快照受限保存。
 
 ### 修复顺序（P0 完成后再评估紧迫性）
 
 1. **retention 策略**：terminal 态记录按保留窗归档/删除。**`invocation_spans` 是 CLAUDE.md 明载的 canonical trace surface，只可归档不可删。**
-2. **历史清理**：分批删除历史 `skipped` 行（小批次 + 间隔，避免长事务锁表），完成后 `VACUUM (ANALYZE)`。预计释放约 4 GB。
+2. **历史清理**：分批删除历史 `skipped` 行（小批次 + 间隔，避免长事务锁表），完成后 `VACUUM (ANALYZE)`。释放空间估算保留在受限运维记录中。
 3. **autovacuum 调优**：对超大表下调 `autovacuum_vacuum_scale_factor`。
 4. **运维可观测性**：为跨租户运维查询提供受审计的 BYPASS 通道或预聚合物化视图——否则表越大越查不动，问题越难发现。
 
-**注意**：P0-C 落地后写入量降约 98.6%，日增从 61 MB 降到个位数 MB，578 天将大幅延长。**因此 P1 的第 1–3 项应在 P0 之后重新评估，不必与 P0 并行。**
+**注意**：P0-C 落地后写入量显著降低，容量预测需重算。**因此 P1 的第 1–3 项应在 P0 之后重新评估，不必与 P0 并行。** 精确生产增长率不在公开副本重复。
 
-**但 P1 有一条需要提前判断的线索**：`statement_timeout=30s` 已经在打运行时——`runtime_task_worker.last_error = QueryCanceledError`，`agent_activity_logs` 自 2026-07-03 未被 autovacuum 触碰。表越大越查不动是自我加强的。若 P0-B 的诊断指向查询超时，则 P1 不是「578 天以后的事」，而是 **P0-B 的共因**，须并入 P0。
+**但 P1 有一条需要提前判断的线索**：`statement_timeout=30s` 已经在打运行时——`runtime_task_worker.last_error = QueryCanceledError`，且 autovacuum 长时间未运行。表越大越查不动是自我加强的。若 P0-B 的诊断指向查询超时，则 P1 不是远期容量问题，而是 **P0-B 的共因**，须并入 P0。
 
 ---
 
@@ -568,7 +572,7 @@ P5 = 两张新表 + alembic 单 revision + 异步作业 processor + `begin_revie
 1. **P0-B 定因**：取一个卡死 `running` trigger 任务的 `invocation_spans`，看执行停在哪个 span。这是把「07-16 起零 completed」从现象变成根因的最短路径，只读。
 2. **P3 术语净化**：与其他所有项无依赖，可直接开工。清单见 §P3，改动面是 `frontend/src/i18n/{en,zh}.json` 与 `AgentKnowledgeSection.tsx:37-38 / 62-65`。
 
-基线已取（2026-08-23 08:03Z）：`no_model` 24h = 33,856；`primary_model_id IS NULL` = 51/92；全库 `running` = 2,108。
+基线已取（2026-08-23 08:03Z）：`no_model`、NULL 主模型和卡住的 `running` 均有实测；精确生产计数保留在受限原件。
 
 ### 卡在 owner 的唯一一件事
 
@@ -596,12 +600,12 @@ P5 = 两张新表 + alembic 单 revision + 异步作业 processor + `begin_revie
 
 ### 复现要点（只读）
 
-生产访问：`railway ssh --project dd959a13-19f9-497a-9704-42c310eae230 --environment production --service backend 'python3 -' < <脚本>`（stdin 管道，脚本不落生产磁盘）。本轮所用探针保留在 session scratchpad。
+生产访问：`railway ssh --project 0000041c-0000-4000-8000-000000000000 --environment production --service backend 'python3 -' < <脚本>`（stdin 管道，脚本不落生产磁盘）。本轮所用探针保留在 session scratchpad。
 
 关键指标三条：
 
-- `SELECT count(*) FROM runtime_tasks WHERE status='skipped' AND metadata_json->>'skip_reason'='no_model' AND created_at > now() - interval '24 hours'` — 止血前基线 33,856
-- `SELECT count(*) FROM agents WHERE primary_model_id IS NULL` — 当前 60 / 103
+- `SELECT count(*) FROM runtime_tasks WHERE status='skipped' AND metadata_json->>'skip_reason'='no_model' AND created_at > now() - interval '24 hours'` — 与受限原件中的止血前基线比较
+- `SELECT count(*) FROM agents WHERE primary_model_id IS NULL` — 使用已纠正的未删除口径，精确结果受限保存
 - `SELECT relname, n_live_tup FROM pg_stat_user_tables ORDER BY n_live_tup DESC` — 容量趋势
 
 **盘点纪律（重要）**：这是 RLS-FORCE 库。只读盘点必须用 `pg_stat_user_tables.n_live_tup` / `pg_class.reltuples`，或先 `SET app.current_tenant_id = 'BYPASS'`。直接 `SELECT count(*)` 在 `app_rls` 角色下会**静默返回 0 而不报错**——本轮已因此误报过一次（诊断文档 §3.6.5）。另注：`statement_timeout = 30s`，RLS 的 `current_setting()` filter 不可下推，对 232 万行表做聚合必超时，务必带 tenant 条件或用统计表。
@@ -634,4 +638,4 @@ P5 = 两张新表 + alembic 单 revision + 异步作业 processor + `begin_revie
 | 2026-08-23 | **P0-B 修复实现完成（未提交未部署）。** 删除 trigger daemon 的三处 fire-and-forget 派发，改由既有 `runtime_task_worker` 认领执行（强引用 + done callback + 租约 + fence）；trigger 任务建成 `pending`；`trigger` 加入租约可回收类型；新增会话绑定守卫与陈旧意图守卫（后者同时防止修复本身首次部署时放出 2,107 条历史 fire）；`mark_daemon_tick` 不再冒充成功，新增 `mark_daemon_outcome`；新增存量孤儿对账脚本（dry-run 默认 + 确认短语）。新增 12 条红测，推翻 6 条钉着 bug 的旧断言。验收：`pytest tests -q` → 7992 passed, 2 skipped |
 | 2026-08-23 | **P0-B 定因闭合。** 在生产容器内复现前段：四个可疑 await 全部干净，整段 0.10 秒抵达 ChatSession 插入点 → 代码路径无问题，协程根本没运行。根因是派发方式：`_tick()` 把任务直接建成 `running` 绕过 worker 认领队列，裸 `asyncio.create_task` 不留强引用、不挂 done callback、不设租约，四条缺失叠加使协程死亡不可观测、不可恢复；唯一回收器是启动时的 orphan reconcile（指纹：30 天内 `needs_reconciliation\|trigger` 32 行，latest_created 2026-07-24 19:03Z 即最后一次部署重启前），而进程已连续运行 29.5 天。残留未证实项：具体是 GC/取消/饥饿哪一种杀死协程——不阻塞修复 |
 | 2026-08-23 | **P0-B 定因推进。** invocation_spans 诊断：2,107 个卡死 trigger 任务**零 span、零 trigger_run 会话**，执行从未进入 `invoke_agent`；30 天 `failed|trigger`=0 证明外层 `except Exception` 从未执行，**故非异常而是挂起或任务被销毁**；在生产镜像内逐项排除 ImportError、陈旧部署、连接池耗尽、锁竞争、信号量为起因；嫌疑窗口缩至四个无守卫 await；标记 `asyncio.create_task` 未保强引用为结构性可疑点（待日志证实）；附带发现 `/api/health` 只测 tick 循环不测终态产出，是 38 天无人发现的直接原因 |
-| 2026-08-23 | **P0 整节重写。** 生产只读复核证伪首版三个前提：① 51 个 agent 并非「从未运行」，累计消耗 22.57 亿 token；② 空转与 `no_model` 无关，`plan_required` 同样 1,440 次/天，机制是 skip 路径不推进 `last_fired_at` 导致 cron 永久判定为 due；③ 配模型不足以恢复服务——`task_type=trigger` 自 2026-07-16 09:30Z 起零 completed，2,108 个 running 任务无租约无法回收，且 provider 已返回 1,119 次 429 额度耗尽。P0 拆为 P0-A 充值 / P0-B 修终态 / P0-C 修调度游标 / P0-D 分类，owner 阻塞项从「51 个 agent 分类」改为「充值」 |
+| 2026-08-23 | **P0 整节重写。** 生产只读复核证伪首版三个前提：① 受影响 agent 并非「从未运行」，历史调用和计量记录证明它们曾工作；② 空转与 `no_model` 无关，`plan_required` 同样重复触发，机制是 skip 路径不推进 `last_fired_at` 导致 cron 永久判定为 due；③ 配模型不足以恢复服务——`task_type=trigger` 自 2026-07-16 09:30Z 起零 completed，running 任务无租约无法回收，且 provider 已拒绝请求。精确用量、故障次数和逐人记录受限保存。P0 拆为 P0-A 恢复 provider 条件 / P0-B 修终态 / P0-C 修调度游标 / P0-D 分类，owner 阻塞项从员工分类改为恢复 provider 条件 |

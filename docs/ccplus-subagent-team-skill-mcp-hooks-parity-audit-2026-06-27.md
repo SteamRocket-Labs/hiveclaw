@@ -51,11 +51,11 @@
 
 本轮第一参考是本地 FreeCode：
 
-- `/Users/example-owner/vc-saas/free-code-main/src/tools/AgentTool/AgentTool.tsx`
-- `/Users/example-owner/vc-saas/free-code-main/src/tools/AgentTool/prompt.ts`
-- `/Users/example-owner/vc-saas/free-code-main/src/tools/AgentTool/built-in/generalPurposeAgent.ts`
-- `/Users/example-owner/vc-saas/free-code-main/src/coordinator/coordinatorMode.ts`
-- `/Users/example-owner/vc-saas/free-code-main/src/utils/forkedAgent.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/tools/AgentTool/AgentTool.tsx`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/tools/AgentTool/prompt.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/tools/AgentTool/built-in/generalPurposeAgent.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/coordinator/coordinatorMode.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/utils/forkedAgent.ts`
 
 CC 语义：
 
@@ -70,13 +70,13 @@ CC 语义：
 
 参考：
 
-- `/Users/example-owner/vc-saas/free-code-main/src/tools/TeamCreateTool/TeamCreateTool.ts`
-- `/Users/example-owner/vc-saas/free-code-main/src/tools/TeamCreateTool/prompt.ts`
-- `/Users/example-owner/vc-saas/free-code-main/src/tools/shared/spawnMultiAgent.ts`
-- `/Users/example-owner/vc-saas/free-code-main/src/tools/SendMessageTool/SendMessageTool.ts`
-- `/Users/example-owner/vc-saas/free-code-main/src/tools/SendMessageTool/prompt.ts`
-- `/Users/example-owner/vc-saas/free-code-main/src/utils/teammateMailbox.ts`
-- `/Users/example-owner/vc-saas/free-code-main/src/utils/attachments.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/tools/TeamCreateTool/TeamCreateTool.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/tools/TeamCreateTool/prompt.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/tools/shared/spawnMultiAgent.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/tools/SendMessageTool/SendMessageTool.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/tools/SendMessageTool/prompt.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/utils/teammateMailbox.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/utils/attachments.ts`
 
 CC 语义：
 
@@ -91,10 +91,10 @@ CC 语义：
 
 参考：
 
-- `/Users/example-owner/vc-saas/free-code-main/src/tools/SkillTool/SkillTool.ts`
-- `/Users/example-owner/vc-saas/free-code-main/src/tools/SkillTool/prompt.ts`
-- `/Users/example-owner/vc-saas/free-code-main/src/skills/loadSkillsDir.ts`
-- `/Users/example-owner/vc-saas/free-code-main/src/utils/attachments.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/tools/SkillTool/SkillTool.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/tools/SkillTool/prompt.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/skills/loadSkillsDir.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/utils/attachments.ts`
 
 CC 语义：
 
@@ -108,12 +108,12 @@ CC 语义：
 
 参考：
 
-- `/Users/example-owner/vc-saas/free-code-main/src/services/mcp/client.ts`
-- `/Users/example-owner/vc-saas/free-code-main/src/services/mcp/mcpStringUtils.ts`
-- `/Users/example-owner/vc-saas/free-code-main/src/tools/McpAuthTool/McpAuthTool.ts`
-- `/Users/example-owner/vc-saas/free-code-main/src/tools/ListMcpResourcesTool/ListMcpResourcesTool.ts`
-- `/Users/example-owner/vc-saas/free-code-main/src/tools/ReadMcpResourceTool/ReadMcpResourceTool.ts`
-- `/Users/example-owner/vc-saas/free-code-main/src/utils/mcpInstructionsDelta.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/services/mcp/client.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/services/mcp/mcpStringUtils.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/tools/McpAuthTool/McpAuthTool.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/tools/ListMcpResourcesTool/ListMcpResourcesTool.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/tools/ReadMcpResourceTool/ReadMcpResourceTool.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/utils/mcpInstructionsDelta.ts`
 
 CC 语义：
 
@@ -127,10 +127,10 @@ CC 语义：
 
 参考：
 
-- `/Users/example-owner/vc-saas/free-code-main/src/entrypoints/sdk/coreTypes.ts`
-- `/Users/example-owner/vc-saas/free-code-main/src/types/hooks.ts`
-- `/Users/example-owner/vc-saas/free-code-main/src/utils/hooks.ts`
-- `/Users/example-owner/vc-saas/free-code-main/src/utils/hooks/registerSkillHooks.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/entrypoints/sdk/coreTypes.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/types/hooks.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/utils/hooks.ts`
+- `${LOCAL_HOME}/vc-saas/free-code-main/src/utils/hooks/registerSkillHooks.ts`
 
 CC 语义：
 

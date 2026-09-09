@@ -18,13 +18,14 @@ result: PASS
 fault_recovery_result: PASS
 negative_authority_result: PASS
 cleanup_result: PENDING
+disclosure: public-redacted
 ---
 
 # P01-MAIN production pass 2 on 17f073bb
 
 ## Input and product consumption
 
-- Ordinary employee CEDAR R2 created fresh Session `a0a78e0e-7419-4a92-828b-2df499b9ee3f` for Agent `4e5261a6-c182-5248-9ca1-669f9419d44f` and submitted exactly one marker `P01-MAIN-PASS2-CEDAR-JUNIPER-20260907`.
+- Ordinary employee CEDAR R2 created fresh Session `00000303-0000-4000-8000-000000000000` for Agent `00000187-0000-4000-8000-000000000000` and submitted exactly one marker `P01-MAIN-PASS2-CEDAR-JUNIPER-20260907`.
 - The distinct open task required a public plan, exactly five Work Ledger steps, a C/D staged night-maintenance decision across four trade-offs, one governed Markdown deliverable, readback, and nine externally checkable content classes. It prohibited external network, messages, other Agents, company knowledge, credentials, workflows, triggers, automations, and real scheduling or maintenance effects.
 - The UI exposed the complete plan before file effects, selected option D with 10/30/60-minute stages, showed a 5/5 Work Ledger with four findings, one final answer, and one artifact. The final reported all nine requested content classes after readback.
 - The only deliverable was `workspace/P01-MAIN-PASS2-CEDAR-JUNIPER-20260907.md`. Product UI showed the marker, fixed review time, four-dimensional C/D comparison, explicit choice with reasons, staged handoff, quantitative abort thresholds, responsibility matrix, and checklist.
@@ -32,12 +33,12 @@ cleanup_result: PENDING
 
 ## Durable execution evidence
 
-- RuntimeTask `a9419c89-09b0-5f21-b1c3-45b814804e39` is one completed `web_chat_turn` with `attempt_count=1`; execution ran from `2026-09-07T02:55:00Z` to `03:06:59Z`.
+- RuntimeTask `00000339-0000-4000-8000-000000000000` is one completed `web_chat_turn` with `attempt_count=1`; execution ran from `2026-09-07T02:55:00Z` to `03:06:59Z`.
 - All 2,642 transcript events are `projected`, spanning sequence 1 through 2,642. There is exactly one accepted human input and one completed assistant final.
 - Twelve model rounds are all `round_committed` on provider `zhipu`, model `glm-5.3`. Every round contains the same 73 distinct authorized tools; the ordered surface digest is `b33e1a6c96810dbb6490fa0110b68ae9` in all twelve rounds.
 - Twenty-four tool invocations are all settled as `effect_committed` or `not_required`: `track_todo` 15, `record_finding` 4, `read_ledger` 2, and one each of `list_files`, `write_file`, and `read_file`. The first ledger read observed step 5 running; the second followed its completion and proved 5/5.
 - Exactly one artifact is bound to the Session and run: `workspace/P01-MAIN-PASS2-CEDAR-JUNIPER-20260907.md`, 8,654 bytes, MIME `text/markdown`, preview kind `markdown`, snapshot hash `021a37cf4b8d9ffc77815a9861870f8ba36d864ddda0e88297cab650682f67a6`.
-- Required terminal outbox `d442d2fd-eb51-5f32-a137-d5ad56215716` delivered naturally on attempt 1 with no error at `2026-09-07T03:12:01Z`. Its receipt binds terminal event `e19bfc28-6007-45b1-bdc1-dce5efde22cd` at sequence 2,642, T0 event `evt_bd9d67e3ff66470ab2d93d3728921b0f` at sequence 2,643, response projection hash `b3867e3914855e9c38fdbea40c9f31fe7c6494293ef734101f622a07b7e88020`, summary through 2,642, and six canonical source references. Delivery lagged RuntimeTask completion by about 5 minutes 2 seconds but required no retry, redrive, or intervention.
+- Required terminal outbox `000003ec-0000-4000-8000-000000000000` delivered naturally on attempt 1 with no error at `2026-09-07T03:12:01Z`. Its receipt binds terminal event `00000434-0000-4000-8000-000000000000` at sequence 2,642, T0 event `evt_bd9d67e3ff66470ab2d93d3728921b0f` at sequence 2,643, response projection hash `b3867e3914855e9c38fdbea40c9f31fe7c6494293ef734101f622a07b7e88020`, summary through 2,642, and six canonical source references. Delivery lagged RuntimeTask completion by about 5 minutes 2 seconds but required no retry, redrive, or intervention.
 
 ## Verdict
 

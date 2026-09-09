@@ -6,6 +6,7 @@ authority: supporting-evidence
 last_reviewed: 2026-09-09
 source_commit: 87b845dba4ae397bd4205b21e657e6efeb9fac7f
 verification_status: local-default-recovery-verified-once-and-connector-blocked
+disclosure: public-redacted
 ---
 # 第三批：一次性自动化与 Local Agent
 
@@ -26,10 +27,10 @@ verification_status: local-default-recovery-verified-once-and-connector-blocked
 | 00:34 | production health 只读核对 | health ok、worker running，source hash 与 B2 同源；仍记录 trigger 终态事务错误 | 未推断为全部 trigger 不可用；不据此扩大审计 |
 | 00:41 | 自动化正式列表 | 可读取，已有 once 展示；新建表单无 once（B1 已观察），后端 `/once` 命令实际存在 | 继续验证正式命令路径；尚无本批任务提交 |
 | 00:42 | B-Worker 新 Session 正式 `/once` 输入 | GLM-5.3 实际处理，请求 01:05 Asia/Shanghai 执行一次合成写读并站内交付，先呈现精确计划再启用 | 输入一次；未授权立即写文件；等待草案 |
-| 00:43:31 | Local Agent 唯一只读输入 | 正式通道受理为 `approval_required`，approval `5db301b5-91cc-4df4-904f-5042b6cc47ba` | 未重复发送；无新权限/安装 |
+| 00:43:31 | Local Agent 唯一只读输入 | 正式通道受理为 `approval_required`，approval `000001d2-0000-4000-8000-000000000000` | 未重复发送；无新权限/安装 |
 | 00:46 | 公司后台 Approval Center | 与 00:43:31 本批请求对应的最新单经正式 UI 确认一次；旧 B1 单未动 | 批准仅本次已授权只读派发，不改变长期权限；实际回传待核对 |
-| 00:46 | once Session `cf6d05ee-f266-4775-9862-3dbcee3173c9` | 精确排程/文件/站内通知边界呈现后，选择“确认启用”并提交一次 | 待实际创建和 01:05 触发 |
-| 00:47—00:50 | Local 页面返回及 app_rls READ ONLY 对账 | 返回后显示无事件；原 message `a30a58b3-1fe8-4331-a54f-fa45e8890872` 已于 00:46:04 delivered，原 channel Session `fe3f34cc-a31c-4c37-9af0-022af9a61cb3` 有 6 条事件，最后一条本地回传含 marker，尚无 result/completed_at | 原会话未丢失但默认入口找错；真实目录不写入仓库 |
+| 00:46 | once Session `000003d5-0000-4000-8000-000000000000` | 精确排程/文件/站内通知边界呈现后，选择“确认启用”并提交一次 | 待实际创建和 01:05 触发 |
+| 00:47—00:50 | Local 页面返回及 app_rls READ ONLY 对账 | 返回后显示无事件；原 message `00000310-0000-4000-8000-000000000000` 已于 00:46:04 delivered，原 channel Session `000004c4-0000-4000-8000-000000000000` 有 6 条事件，最后一条本地回传含 marker，尚无 result/completed_at | 原会话未丢失但默认入口找错；真实目录不写入仓库 |
 
 ## 本批修复包
 
@@ -53,7 +54,7 @@ verification_status: local-default-recovery-verified-once-and-connector-blocked
 
 ### Once 授权卡消费缺陷（01:05 只读对账）
 
-精确名称的 trigger 仍为 0 条。第二轮 runtime task `53f93fc9-335b-5783-9593-d97e25482823` 与 terminal outbox 已 completed/delivered，但 Session UI 刷新后仍显示运行中、发送禁用、无授权卡。canonical transcript 1264—1268 分别为 tool_call.started、tool_permission.waiting、tool_call.waiting、run.waiting、turn.waiting。`set_trigger` invocation `9ad9739f-be6c-5e44-9808-351f2a52b07f` 为 `prepared_not_started / waiting`，permission item `5c520f0c-b392-5284-8014-181a45f39caa`，01:18:27 过期，尚无 result。故直接阻塞是正式工具授权未被消费，不是 scheduler 未触发；不绕过授权、不重复创建。
+精确名称的 trigger 仍为 0 条。第二轮 runtime task `000001a5-0000-4000-8000-000000000000` 与 terminal outbox 已 completed/delivered，但 Session UI 刷新后仍显示运行中、发送禁用、无授权卡。canonical transcript 1264—1268 分别为 tool_call.started、tool_permission.waiting、tool_call.waiting、run.waiting、turn.waiting。`set_trigger` invocation `000002ea-0000-4000-8000-000000000000` 为 `prepared_not_started / waiting`，permission item `000001c8-0000-4000-8000-000000000000`，01:18:27 过期，尚无 result。故直接阻塞是正式工具授权未被消费，不是 scheduler 未触发；不绕过授权、不重复创建。
 
 01:06:56 分派独立 zCode GLM-5.3 候选 `3f8ae98be72943158660015429524416`，session `wrc-functional-b3-once-20260909`，仅修复 sparse V2 permission event 到正式授权卡的 live/reload 消费与等待态；与 Local 默认会话文件所有权分离。保持单次批准、可信版本/hash、现有 endpoint 和无重复执行语义，不导入旧 runtime dirty 候选。限定首版约 20 分钟，最多一次集中返修，仍须本批 deadline 内审查部署实测。
 
@@ -69,9 +70,9 @@ verification_status: local-default-recovery-verified-once-and-connector-blocked
 
 | 服务 | 部署 ID | 终态 |
 |---|---|---|
-| backend | `f419f8dd-2214-4f4e-87e0-b45bec9f94a4` | SUCCESS |
-| backend-api | `e0d8e9c8-043a-4e31-8279-009e18472732` | SUCCESS |
-| frontend | `d00797d9-aff5-4bf6-ac26-2aa143545131` | SUCCESS |
+| backend | `0000048d-0000-4000-8000-000000000000` | SUCCESS |
+| backend-api | `0000042e-0000-4000-8000-000000000000` | SUCCESS |
+| frontend | `000003d9-0000-4000-8000-000000000000` | SUCCESS |
 
 01:34 public health `ok`、runtime/terminal worker running；frontend HTTP 200。public backend 与 private backend-api 的运行指纹都为 `source-sha256:eb7edcf72abd898a3fed7b9396280c456bd40af5edef51e11a24425efffec577`（1058 files），与 exact archive 一致。CI `34256570667` 截至 01:35 前端与 15 条机械全栈检查通过，backend harness 尚在运行；不把两项成功或部署成功当完整 CI/功能验收。
 

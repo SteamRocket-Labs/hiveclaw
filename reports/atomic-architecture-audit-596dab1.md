@@ -1,5 +1,7 @@
 # Hive 原子化架构独立审查报告
 
+> 公开副本：运行标识及本机路径已脱敏；原始证据由维护者受限保存。
+
 > 审查对象：当前仓库 main@596dab169fe44ade1d6e86cb5628fb45bc02aedf
 > 报告标识：由当前 Git commit 自动生成，不依赖固定日期或历史轮次
 > 审查性质：全新、独立、源码与生产证据优先；未继承任何旧报告结论
@@ -149,9 +151,9 @@ ruff check app
 
 | 服务 | deployment | 状态 | 创建时间 | 上传标识 | replica | volume |
 |---|---|---|---|---|---:|---|
-| backend | ec2507c0-c9ac-46d7-84e9-706af97344cb | SUCCESS | 2026-07-09T13:48:03Z | deploy 28b96cbc runtime budget migration recovery backend | 1 | /data/agents |
-| backend-api | e4070381-c40e-4163-8cd0-355308921ce8 | SUCCESS | 2026-07-09T13:48:06Z | deploy 28b96cbc runtime budget migration recovery backend-api | 1 | 无 |
-| frontend | 91b40cce-b01b-494f-9815-b3cd68ecc7e5 | SUCCESS | 2026-07-09T13:48:09Z | deploy 28b96cbc runtime budget migration recovery frontend | 1 | 无 |
+| backend | 0000046a-0000-4000-8000-000000000000 | SUCCESS | 2026-07-09T13:48:03Z | deploy 28b96cbc runtime budget migration recovery backend | 1 | /data/agents |
+| backend-api | 0000043f-0000-4000-8000-000000000000 | SUCCESS | 2026-07-09T13:48:06Z | deploy 28b96cbc runtime budget migration recovery backend-api | 1 | 无 |
+| frontend | 000002be-0000-4000-8000-000000000000 | SUCCESS | 2026-07-09T13:48:09Z | deploy 28b96cbc runtime budget migration recovery frontend | 1 | 无 |
 
 production 运行的是 28b96cbc，而非本报告审查的 596dab1。两者相差 1218 个文件和约 13.3 万新增行；当前 checkout 的 tenant_null_semantics_0712、workspace manifest、approval execution、runtime fencing 等不能当成已上线能力。
 
@@ -1756,11 +1758,11 @@ npx playwright test frontend/e2e/thread-workbench-recovery.spec.ts
 Production 只读验收：
 
 ~~~text
-railway deployment list --service backend --environment production --project dd959a13-19f9-497a-9704-42c310eae230 --limit 1 --json
-railway deployment list --service backend-api --environment production --project dd959a13-19f9-497a-9704-42c310eae230 --limit 1 --json
-railway deployment list --service frontend --environment production --project dd959a13-19f9-497a-9704-42c310eae230 --limit 1 --json
-curl -fsS https://backend-production-326d.up.railway.app/api/health
-curl -I -fsS https://frontend-production-0346.up.railway.app/
+railway deployment list --service backend --environment production --project 0000041c-0000-4000-8000-000000000000 --limit 1 --json
+railway deployment list --service backend-api --environment production --project 0000041c-0000-4000-8000-000000000000 --limit 1 --json
+railway deployment list --service frontend --environment production --project 0000041c-0000-4000-8000-000000000000 --limit 1 --json
+curl -fsS https://service-1.example.invalid/api/health
+curl -I -fsS https://service-3.example.invalid/
 ~~~
 
 生产 apply/backfill/rebind不属于自动验收命令；必须单独 dry-run、备份、确认。

@@ -23,10 +23,10 @@
 
 本计划依赖以下源码事实：
 
-1. FreeCode command/tool inventory：`/Users/example-owner/vc-saas/free-code-main/src/commands`、`/Users/example-owner/vc-saas/free-code-main/src/tools`。
-2. FreeCode Team/Task：`/Users/example-owner/vc-saas/free-code-main/src/tools/TeamCreateTool/TeamCreateTool.ts`、`/Users/example-owner/vc-saas/free-code-main/src/utils/tasks.ts`、`/Users/example-owner/vc-saas/free-code-main/src/utils/swarm/*`。
-3. FreeCode advanced plan：`/Users/example-owner/vc-saas/free-code-main/src/commands/ultraplan.tsx`、`/Users/example-owner/vc-saas/free-code-main/src/utils/ultraplan/prompt.txt`。
-4. Codex Goal delta：`/Users/example-owner/Context Engineering/codex/codex-rs/state/src/runtime/goals.rs`、`/Users/example-owner/Context Engineering/codex/CODEX_SESSION_INTERNALS.zh.md`。
+1. FreeCode command/tool inventory：`${LOCAL_HOME}/vc-saas/free-code-main/src/commands`、`${LOCAL_HOME}/vc-saas/free-code-main/src/tools`。
+2. FreeCode Team/Task：`${LOCAL_HOME}/vc-saas/free-code-main/src/tools/TeamCreateTool/TeamCreateTool.ts`、`${LOCAL_HOME}/vc-saas/free-code-main/src/utils/tasks.ts`、`${LOCAL_HOME}/vc-saas/free-code-main/src/utils/swarm/*`。
+3. FreeCode advanced plan：`${LOCAL_HOME}/vc-saas/free-code-main/src/commands/ultraplan.tsx`、`${LOCAL_HOME}/vc-saas/free-code-main/src/utils/ultraplan/prompt.txt`。
+4. Codex Goal delta：`${LOCAL_HOME}/Context Engineering/codex/codex-rs/state/src/runtime/goals.rs`、`${LOCAL_HOME}/Context Engineering/codex/CODEX_SESSION_INTERNALS.zh.md`。
 5. Hive current state：`backend/app/tools/handlers/tasks.py`、`backend/app/api/tasks.py`、`backend/app/services/plan_mode_core.py`、`backend/app/services/plan_mode_handoff.py`、`backend/app/api/chat_sessions.py`。
 6. Prior parity record：`docs/freecode-command-loop-feature-parity-audit-2026-06-22.md`。
 

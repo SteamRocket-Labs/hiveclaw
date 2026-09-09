@@ -11,11 +11,12 @@ pass: bounded-platform-admin-workspace-audience-verification
 environment: production
 source_commit: bf94b76a1706510daf2d11c4e98fd5051f23f28f
 deployed_commit: bf94b76a1706510daf2d11c4e98fd5051f23f28f
-deployment_ids: backend=07059ce5-12ca-4b57-ac92-bc05d58dfb49; backend-api=c70ff972-b039-4cf5-831d-4526962c8d9d; frontend=308e7789-0b9c-46aa-93e9-7d1ddc110433
+deployment_ids: backend=00000020-0000-4000-8000-000000000000; backend-api=000003b8-0000-4000-8000-000000000000; frontend=000000ec-0000-4000-8000-000000000000
 persona_principal: authenticated lab platform_admin
 result: VERIFIED
 recovery_result: PASS_HARD_RELOAD_AND_DIRECT_ROUTE_RECOVERY
 cleanup_result: NOT_APPLICABLE_READ_ONLY
+disclosure: public-redacted
 ---
 
 # PLATFORM-ADMIN-WORKSPACE-AUDIENCE-001 production verification
@@ -48,7 +49,7 @@ cleanup_result: NOT_APPLICABLE_READ_ONLY
 
 ## Evidence
 
-- `HEAD = origin/main = bf94b76a1706510daf2d11c4e98fd5051f23f28f` 后部署 application archive；backend `07059ce5-12ca-4b57-ac92-bc05d58dfb49`、backend-api `c70ff972-b039-4cf5-831d-4526962c8d9d`、frontend `308e7789-0b9c-46aa-93e9-7d1ddc110433` 均为 `SUCCESS`，deployment message 均为 `deploy bf94b76a platform-company admin boundary final`。
+- `HEAD = origin/main = bf94b76a1706510daf2d11c4e98fd5051f23f28f` 后部署 application archive；backend `00000020-0000-4000-8000-000000000000`、backend-api `000003b8-0000-4000-8000-000000000000`、frontend `000000ec-0000-4000-8000-000000000000` 均为 `SUCCESS`，deployment message 均为 `deploy bf94b76a platform-company admin boundary final`。
 - backend health 为 `status=ok`、RLS `strict`、`runtime_control_bus.last_error=null`；frontend `/` 为 HTTP 200。
 - production dashboard hard load：sidebar 显示“超级管理员”而非“公司后台”；nav 精确 8 项，dashboard cards 精确 7 项；只显示“后台页面”指标，不显示 User、数字员工或待审批业务指标，也不显示 Plaza；页面只请求 auth/public notification API。
 - direct URL 矩阵：`/enterprise/digital-employees`、`/enterprise/knowledge`、`/enterprise/users`、`/enterprise/org`、`/enterprise/invitations`、`/enterprise/hr`、`/enterprise/approvals`、`/enterprise/action-guardrails` 与 `/plaza` 全部收敛到 `/enterprise/dashboard`；各页面均为 0 table row、0 email-like、0 UUID-like business DOM。

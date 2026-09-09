@@ -36,7 +36,7 @@
   "context": {
     "items": [
       {
-        "ref": "railway://production/backend/a2ff201e-4344-4769-935d-450b1b7d465d",
+        "ref": "railway://production/backend/0000030f-0000-4000-8000-000000000000",
         "kind": "external",
         "reason": "Production read-only acceptance found legacy WeChat transports connected without provider proof.",
         "required": true,

@@ -1,5 +1,7 @@
 # Hive Agent-Native 七原子细致审查报告
 
+> 公开副本：运行标识及本机路径已脱敏；原始证据由维护者受限保存。
+
 > **历史来源报告提示（2026-07-14）**：本报告的 findings 已并入 `docs/agent-native-extreme-boundary-atomic-review-2026-07-14.md`。后者是当前 canonical 数量、极端边界裁决与最终施工方案；本文仅保留独立 session 的来源证据，不再单独承担总断点分母或最终顺序。
 >
 > 审查基准：`docs/reusable-agent-native-atomic-review-prompt.md`
@@ -98,9 +100,9 @@ flowchart LR
 
 生产部署是三个服务：`backend`（runtime/daemon）、`backend-api`（API package root）和 `frontend`。2026-07-14 读到的最新 deployment 均为 `SUCCESS`：
 
-- backend `0e1f43f4-ec0f-4d33-87d4-bb88831772a6`
-- backend-api `1d560bc3-bd18-4d45-8714-1648b900274b`
-- frontend `b4dbeba0-589e-4997-b95d-524bb94d5487`
+- backend `0000004d-0000-4000-8000-000000000000`
+- backend-api `00000091-0000-4000-8000-000000000000`
+- frontend `00000377-0000-4000-8000-000000000000`
 
 ## 5. 核心实体、状态机和事实源矩阵
 

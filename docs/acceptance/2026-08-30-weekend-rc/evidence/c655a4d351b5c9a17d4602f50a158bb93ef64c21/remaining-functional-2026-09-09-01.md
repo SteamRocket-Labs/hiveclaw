@@ -161,15 +161,15 @@ once原Run审批已200/resolved并same-run恢复，随后工具被明确aborted/
 |---|---|---|
 | Office | 原生HTML预览、CLI validate、公式缓存29、下载与重开通过 | 其他未测格式/故障组合不外推 |
 | 固定Workflow | 同一v1两组实际108/162，人工gate、等待、文件消费 | 不替代全96条最终双遍 |
-| A2A Workflow | 三个完整Agent、不可变交接、gate、受控retry、最终报告下载 | 最终父会话自动消费未通过 |
-| Dynamic | 真并行51/57、review/wait、文件108 | 07父模型收到通知仍重复旧预览，语义消费失败 |
+| A2A Workflow | 三个完整Agent、不可变交接、gate、受控retry、最终报告下载；22:24原父自动消费/最终报告/原生快照预览通过 | 旧01预算失败保留，不替代完整D双遍 |
+| Dynamic | 真并行51/57、review/wait、文件108；22:29辅助只读续轮正确读取最终文件 | 原自动消费未复验；辅助回复仍将旧06称为非失败，不记全语义PASS |
 | Goal | host自动两个run143→286，187967tokens与canonical一致 | 不外推长期稳定性/成本最优 |
-| once/schedule/event | API once64、schedule91、V2 event85通过；聊天once04到时文件76通过 | 父聊天自动回帖未验，故障/重启组合未测 |
+| once/schedule/event | API once64、schedule91、V2 event85通过；聊天once04到时文件76通过 | once04明确仅文件且默认独立任务会话，非原聊天回帖用例；same_session回帖及故障/重启组合未测 |
 | Local | 新独立会话、实际pwd exit0、完整final/ack及重开通过 | 本机候选未发布npm，不冒充上游0.1.9已修复 |
-| Memory/Growth | 更正/退役/fresh排除已验；新Useful active且实际读到 | fresh回答自相矛盾；长期成长/J4未完成，禁止外部作者边界未变 |
-| Skill/MCP/Hook | 内置/自定义Skill真实加载；Context7两工具实际成功；member runtime-health200/admin403 | 活动Skill卸载、完整Hook生命周期与其他扩展组合未完成 |
-| 角色/移交/离职 | 正负向API历史证据及本次只读影响预览 | 临时管理员/自审政策/向真实owner转移待决；未冒充执行 |
-| 发布与清理 | 已发布范围的针对性检查、三服务SUCCESS；旧候选保留 | backend-api独立hash未验、完整D/E/rollback/全部合成清理未完，NPTCR仍0/96 |
+| Memory/Growth | 更正/退役/fresh排除已验；新Useful active且实际读到 | 原回答矛盾；22:29只读纠错仍错误区分同一反馈，保持FAIL；长期成长/J4未完成 |
+| Skill/MCP/Hook | 内置/自定义Skill真实加载；Context7两工具实际成功；member runtime-health200/admin403；活动副本卸载/重装/幂等/UI精确清理已通过 | 完整Hook生命周期与其他扩展组合未完成 |
+| 角色/移交/离职 | 正负向API、只读影响预览；临时org_admin已实授/核实/撤回 | 实际移交/停用另待明确效果授权，自审政策未变 |
+| 发布与清理 | 已发布范围针对性检查、三服务SUCCESS、api/runtime/archive hash一致；Skill副本已清；旧候选保留 | 完整D/E/rollback/全部合成清理未完，NPTCR仍0/96 |
 
 旧once02/03未创建成功或过期，保持失败/拒绝证据；已成功触发的one-shot自动disabled，不重放。共享合成账号/Agent、workflow定义、文件、技能和审计记录保留精确ID，不执行模糊批量删除。需要新政策/角色权限或改变两次失败后的策略时，仅暂停对应项，不把“全部完成”解释为自动授权。
 
@@ -184,3 +184,24 @@ once原Run审批已200/resolved并same-run恢复，随后工具被明确aborted/
 - 随即通过同一UI的成员选项及明确确认恢复member；正式登录GET /auth/me核实member，GET /users重新403，GET所属MemberAnalyst仍200，UI也显示成员。一个拟验证旧管理员token的并发探针在撤回后才完成登录（before_revoke_role实际member），因此只计撤回后普通member拒绝，不声称旧org_admin token撤销已验证；未为补此额外指标重新升权。
 - 没有实际离职、资产移交、取消其他运行、创建/删除账号、配额/凭据/自审政策改变。临时角色验收的授权已消费并撤回，不能再列为pending。A2A/Dynamic语义消费、Growth矛盾和活动Skill卸载是独立缺口，不因org_admin权限而自动关闭。公司审计旧列表按Agent过滤，未查询到这次无Agent的role_changed行；不据此声称审计不存在或已可见。
 - 21:23实时gh run34327770653：status=completed、conclusion=success，后端harness/前端/15journeys三job全部success。本轮无应用源码修改，不部署相同应用。复用原有验收入口，纠正检索知识页把旧失败/新结果混在一起及误将所有缺口归因管理员权限的表述。
+
+### 22:03—22:23 原结果页恢复与活动 Skill 生命周期
+
+- `7fbd138f`提供平台/公司管理员可用的精确父Session结果页诊断及单页dead-letter redrive，复用既有tenant权限、事务锁和AuditLog；不包含结果正文，不重跑child、不改预算。三服务已SUCCESS，frontend `/api/health`核实api角色，与runtime/精确archive同1063文件/hash `96b69f3aae2ffb3532b94de6c7bdf85cdce40e404ced0b294d85994170d9a944`。47后端、17前端mounted、type/build/i18n通过。正式UI查原A2A父Session后发现epoch2仍prepared，非dead_letter；未执行redrive。
+- 根因：更高rank结果更新同一outbox并迁移其page绑定，旧不可变page仍prepared。完整迁移使旧页永不再claim却挡住后续页；部分迁移使manifest与claim行不一致。`dab247e98b396b6acaa2214eac0487abcccb1a3f`修复这两条路径：前驱仅阻塞仍有同tenant绑定的页；部分迁移必须核实所有缺失行已移走，旧页保留原manifest/hash与superseded事实，剩余行重新组页。无需DDL、直接DB重置、新bypass或child replay。
+- 本包98后端检查通过/225.94s，含真实PG完整/部分迁移红绿对照、API权限/事务/Skill写边界及17 RLS。前端18 mounted、TypeScript/build、4179 i18n key及gates通过。RLS精确指纹 `f29a4d7b4c5a14bdb036667ffd6a4166951e96b75597236eec8a806d4c28f2dc`，未新增allowlist；main owner脏文件保留，RLS仅将已验证candidate blob写入index。
+- `dab247e9`三服务SUCCESS：backend `94580fd5-1ab7-4fdc-9eed-b70088cd541b`、backend-api `2fc4d50f-5b8f-4f78-a602-e98ec8aa2c2f`、frontend `aa979f43-2dd3-4378-9d93-6c43c5a2eb2d`。两后端health均ok，api/runtime角色分开验证，与精确archive同1063文件/hash `b31829b0b3b785626f6b0528de94377cec061a361a9c64ba42bc4ec97e0fc638`。初次curl TLS失败，随后独立正式登录成功及health重验通过；不以失败请求冒充持续健康。CI34362683503仍进行中。
+- 正式UI同父Session `e1e9dc43-9773-4ebf-9253-8635e461fe0f`：旧epoch2、4绑定数均0；epoch3、5、6、7、8、9、10于14:20:17—14:20:33Z自然delivered/attempt1，旧manifest/hash保持。无需人工重投或新child。父聊天已出现恢复运行及真实read_runtime_result，正在汇总；此刻只计投递/父读取恢复，不提前计最终语义报告PASS。未静默扩大原预算，被预算拒绝的结果保留只读投影。
+- Skill卸载使用原AgentAssetTransaction的lock、journal及恢复备份，只移除一个workspace包；拒绝路径穿越、symlink和特殊文件。记入removed标记使默认seeder尊重卸载；显式导入清标记。API先require_agent_manage_access，前端准确folder确认，不依赖展示名，不删registry或其他员工副本。
+- 正式API登录核实同tenant/member且为MemberAnalyst owner。唯一包 `skills/wrc-remaining-skill-20260909/SKILL.md` 初始hash `b6a5d03f54c29434e32cdc7e060b82930cac747c9a3f6f3c614afeb0f2f711b2`。卸载200/files_removed1/transaction `c369d5aaf9a8473d9f0ddd9b09cfb027`；文件404、extensions重新发现零项；重复卸载200/already_uninstalled。由原registry `c3353d70-fb2f-45bb-87dc-0166a728b768`正常重装200/guard allowed，文件200且hash相同，extensions重新发现恰一项。卸载与重装有界链通过；这不等于所有扩展/Hook生命周期或最终cleanup通过。当前副本已恢复，registry保留供最终精确清理。
+- Growth原Session `147db867-00e6-497e-b4b3-74799ae57a99`的实际回答直接核对：引用explicit Useful反馈、143→286及证据续轮做法，同时宣称找不到。保留原FAIL，不静默更换Ling模型、不改记忆或用定式重写答案来制造PASS。Hook平台边界源码核实：org_admin不能读改raw hooks，内置保护immutable，只有已注册extension可按Agent配置；未为了验收扩大权限或关闭保护。
+
+### 22:24—22:36 最终消费与精确清理结果
+
+- 原A2A父Session无需新用户消息，自动运行4m28s后完成，实际调用read_runtime_result及读取文件；最终答复正确区分01 killed/failed与02 completed，汇总161、扣减9、净值152，生成 `workspace/受治理测试结论-WRC-REMAINING-20260909-A2A.md`。正式文件卡片打开“正在预览会话保存快照”，正文/表格、三产物hash链及独立producer Session均可见，截图已实际查看。模型提出重跑旧01仅是建议，未据此执行；01旧失败保留，02原父自动消费恢复通过，不替代NPTCR双遍。
+- Skill重装验证后，通过正式owner UI仅确认 `skills/wrc-remaining-skill-20260909` 卸载；列表自动刷新消失，独立member API extensions200/目标零项、文件404。随后读取原registry，核实唯一SKILL.md、非builtin、453B、相同hash；保存本地非活动恢复副本 `tmp/wrc-functional-b4-20260909/synthetic-skill-recovery.md`（hash同 `b6a5d03f…2f711b2`）。正式技能库UI逐字确认删除该目录，独立API核实registry404、workspace404；其他9个默认技能仍显示。合成技能库记录与安装副本已清理，内容可从恢复副本重建；审计/事务证据未删除。
+- Growth辅助纠错run `a52d355f-a8a3-5ba1-ae02-8cd9482283a1`于14:28:36Z提交，14:29完成。所选Ling模型仍把“分两轮”与已读到的143→286独立自动续轮反馈判为两件事，且误将distinct automatic continuation解释为与分两轮无关。这是第二个明确不通过的语义结果；不加第三次改写提问、不更改记忆、不替换模型答案或自动扩大到其他模型。需要明确的下一步比较/修复策略，不把持久化通过等同成长可用。
+- Dynamic辅助只读run `1519e71a-4378-560c-b86c-7a8316b37bbe`于14:28:36Z提交，52秒内完成，仅实际读取2文件，正确引用run `3372da66-07fe-4def-a218-6da42f6ee818` completed、51/57→108及最终路径。但其“旧06残留非失败”描述未保留原错误绑定失败口径，且此次是人工提示后的读取，不能替代自动通知消费通过。两Session的正式runs/active均200/null，无新workflow/child/trigger由本次检查启动。
+- once04正式trigger列表仍max_fires1/fire_count1/disabled。原请求及reason只要求到时真实计算并写读文件；config未设same_session，默认new_invocation。源码completion notification投影到trigger自己的Session而不是创建聊天；因此原创建聊天0个结果页是此用例的预期边界，非已复现“丢回帖”故障。独立same_session自动回帖和完整故障组合仍未验。
+- 读取user-audience workbench的hooks/compactions得到字段未公开（null），不能据此声称没有Hook执行；raw实现诊断仍属于平台operator面。完整P25需真实lifecycle/timeout/recovery证据，未用注册函数、health healthy或member403顶替。
+- Local CLI原仓库核实仍为本地commit `c0fec61`、npm0.1.9，未push或发布；未碰其3个无关untracked文件。已向owner分别询问原上游/npm发行，以及仅本合成账号的实际资产移交/停用；均未先执行。旧7fbd138f完整CI34360304501已success；dab247e9的CI34362683503前端和15journeys成功，backend仍进行中。文档结构10passed，全部D/E、完整Hook/故障组合与全资产cleanup尚未完成，NPTCR仍0/96。

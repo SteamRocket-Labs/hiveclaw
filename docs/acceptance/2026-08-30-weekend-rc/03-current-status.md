@@ -4,7 +4,7 @@ owner: Codex
 status: in_progress
 authority: canonical-working-state
 last_reviewed: 2026-09-09
-source_commit: f0b6939e
+source_commit: dab247e9
 verification_status: remaining-functional-closure-in-progress
 ---
 # 当前状态与唯一下一动作
@@ -12,6 +12,12 @@ verification_status: remaining-functional-closure-in-progress
 [返回索引](README.md) · [旅程账本](04-journey-ledger.md) · [Findings](05-findings.md) · [Runbook](06-runbook-and-release-gates.md)
 
 ## 当前决定与本批次出口
+
+22:36 收束：A2A原父自动最终报告/快照预览通过，Skill安装副本及唯一合成库记录均正式UI删除、独立API404，已保留同hash本地恢复副本。Growth辅助纠错仍错误区分同一反馈，第二次语义FAIL；Dynamic辅助读取最新108和交付路径正确，但原自动消费未复验且旧失败表述仍不严谨。两次只读续轮均结束，runs/active200/null。once04原请求只要求文件、默认独立任务Session，不把创建聊天无回帖误判故障；same_session回帖仍未验。已分别询问owner实际合成账号移交/停用与Local上游/npm发行范围，未执行未授权效果。完整Hook/故障组合、D/E和全资产cleanup仍未完成，NPTCR0/96。当前应用CI前端/15journeys成功，backend仍运行；旧7fbd138f完整CI成功。
+
+22:29 真实复验：`dab247e9`三服务已SUCCESS，api/runtime/精确archive同1063文件/hash `b31829b0b3b785626f6b0528de94377cec061a361a9c64ba42bc4ec97e0fc638`，health均ok。A2A旧epoch2/4绑定0，另外7待投递页已自然delivered；父会话自动读结果并于22:24完成正确区分A2A-01失败与A2A-02成功、161/9/152的最终报告，原生保存快照预览已核实，原父消费缺口恢复通过，不重跑旧链。Skill正式member API完成卸载→404/列表消失→幂等重复→同hash重装；随后正式owner UI准确确认卸载合成副本，独立API复核404/列表零项，registry与事务备份保留可恢复。Growth/Dynamic各一条只读纠错已于22:28提交，待终态；辅助恢复不抹掉原自动语义FAIL。实际移交/停用合成账号另询问owner，未先执行；NPTCR仍0/96。
+
+22:19 继续独立缺口：`7fbd138f`已三服务SUCCESS，并从前端/api/health直接核实backend-api为api角色，与runtime/精确archive同1063文件、hash `96b69f3aae2ffb3532b94de6c7bdf85cdce40e404ced0b294d85994170d9a944`。正式结果页诊断证明A2A旧epoch2为prepared而非dead_letter，后页均prior_integration_page_pending，未盲目redrive。更高rank结果会移走outbox绑定却留下旧不可变页；`dab247e9`已push，修复无绑定页阻塞及部分迁移页重组，保留旧manifest/hash/证据、不重跑child。并增加有权限检查、事务/备份/审计、启动防重装标记与显式重装的活动Skill卸载。98后端检查（含真实PG与17 RLS）、18前端mounted、type/build/i18n通过；三服务部署及真实消费复验进行中，尚未计功能PASS。Growth原会话已直接核实：实际load_memory引用了Useful反馈，却仍说找不到；这一矛盾保留，不用新提问覆盖原FAIL。
 
 21:28 临时管理员验收完成并撤回：owner明确回复“允许啊 快点吧”，仅授权合成账号 `wrc_b4_20260909_tester` 临时org_admin。正式管理UI确认后，独立登录核实同tenant/同user、role=org_admin；成员列表403→200、公司审计200，平台Hook403、platform_admin角色输入422、自身离职预览400（不能离职自己）。随后同UI确认恢复member，正式API核实role=member、成员列表重新403，所属MemberAnalyst仍200。没有实际离职/资产转移、真实用户变更或自审政策修改。完整应用CI34327770653现已三job success；本次只改验收文档，不再部署应用。A2A/Dynamic父消费、Growth、Skill卸载与完整D/E等独立缺口仍保留，不能用管理员验收代替它们。
 
@@ -59,7 +65,7 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 
 ## 当前可核实结果
 
-- 当前生产应用为 **`f0b6939e`**；最新部署、检查与功能结论以上方16:25及后续收尾记录为准。以下带旧commit/时间的项目均为历史支持证据，不是当前阻塞清单。
+- 当前已核实生产应用为 **`dab247e9`**；最新部署、检查与功能结论以上方最新记录为准。以下带旧commit/时间的项目均为历史支持证据，不是当前阻塞清单。
 - 10:11历史production为 **`6c3e1a11`**（当时三服务SUCCESS），backend/backend-api/archive同1058文件、source SHA256 `f510c09697d945c4a46325abfd9e7583745ebc1004875f3bae21ad3373e286bb`。headless固定Workflow当时已能真实启动；两叶provider限流暴露subagent错误done，gate未批准、原run正式取消，无产物。后续固定v1两组实际结果108/162已通过，见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)，不继续沿用10:11未完成判断。
 - B4 当前 production application **`3ac6e2a1`** 三服务同源SUCCESS（08:34核对），backend/backend-api/干净archive均1058files/source SHA256 `0d68c1c49c3f55b90dc84c800f1725f5a583cf3aabfb3d133fc13d1e50f412c3`。本批应用修复均已push和部署；185d779d干净archive100项Goal/terminal/artifact检查、110前端检查及build通过，3ac6e2a1干净archive36项Office检查通过/2项无本机二进制skip，生产同二进制另有红绿对照。RLS指纹逐项584→588对账后仅同步精确hash，17项安全检查通过224.07s，已push `4318c490`（仅审查常量与文档，不再部署相同应用行为）；其完整CI `34296805208`仍在执行，前两次CI前端与15journeys已成功。08:35 public health degraded原始错误是Vercel sandbox_stopped410，08:39同配置单次探针复验3/3通过，未覆写持久health记录；另有旧trigger stale fence，未称零错误。旧runtime候选原样保留，未夹带。
 - B4 已取得五格式个人文档/Agent消费/报告下载、公司发布/引用/下线/恢复v2、知识重建、显式记忆更正/退役/fresh排除、HR首任务归属与精确待命、临时子Agent、固定Reviewer A2A、member Team完整计算/父报告/正式关闭、内置Skill消费、clear、rewind续接、branch正式创建/历史读取的局部实证。MiniMax Workflow三叶计算/文件/父消费及完成组刷新、Plan确认后真实同会话执行/文件消费且零trigger、compact失败工具历史消费、Local审批通知深链接均已修复并生产通过。原生DOCX/XLSX校验、公式缓存29及workspace下载通过；最终旧卡片定位CLI resident未flush，3ac6e2a1生产adapter及快照helper通过，但正式模型卡片复验在首请求即被MiniMax限流拒绝。Goal暂停→继续→产物→完成通过；canonical计费/自动两轮新检查及08:36唯一continue均被MiniMax限流拒绝，08:39正式停止/无活动run。Useful反馈唯一落盘但memory held，成长UI有T0/T2/Skill候选但无成长报告，不记成长生效；临时管理员、自批政策未获答复，不扩大权限。完整范围和未测项见B4功能表，未提升为全部通过。
@@ -92,7 +98,7 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 
 ## 唯一下一动作
 
-临时管理员授权已实际使用、验证并撤回，不再把它列为等待授权。独立缺口仍按收尾分类处理：父会话消费需原页的受支持恢复策略，不能直接重置DB；Growth保留实际矛盾，活动Skill缺卸载入口，实际角色移交/离职与自审政策未执行。不要自动重跑旧整链、变更政策或重新升权。once04、Office、Goal、固定Workflow和A2A最终下载的已通过路径不重做。细节与精确资产见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)。
+等待owner对实际合成账号移交/停用、Local上游/npm发行的明确范围；Growth在原请求及一次纠错后仍FAIL，按有限返修约束先确定下一步对照/修复策略，不第三次改写提问或静默换模型。Dynamic辅助消费不迁移成自动PASS，完整Hook/故障组合和D/E仍未完成。A2A父消费、Skill卸载/重装/精确清理以及既有Office/Goal/固定Workflow不重做；临时管理员已撤回，不重新升权、手改DB或变更自审政策。细节与精确资产见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)。
 
 此前交付背景（不替代上述下一动作）：
 

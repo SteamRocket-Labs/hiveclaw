@@ -4,8 +4,8 @@ owner: Codex
 status: in_progress
 authority: canonical-working-state
 last_reviewed: 2026-09-10
-source_commit: 0236daae
-verification_status: runtime-recovery-local-suite-passed-not-deployed
+source_commit: 4fb087ddfb1fcc278f52738599dcb1be0a1fa50e
+verification_status: runtime-recovery-three-service-deployment-verified
 ---
 # 当前状态与唯一下一动作
 
@@ -13,13 +13,19 @@ verification_status: runtime-recovery-local-suite-passed-not-deployed
 
 ## 当前决定与本批次出口
 
-### 2026-09-10 Runtime 遗留候选收尾（源码与本地验证完成）
+### 2026-09-10 03:31 Runtime 遗留候选收尾（生产部署完成）
 
-Owner 在核对遗留 zCode 候选后批准“按照你的建议来吧”，并强调“如果修改当前相关的东西，你都需要经过测试”。本次基于 `0236daae` 由 Codex 单独完成候选集成与验证，作为独立 runtime commit/push 交付；不夹带临时产物、不部署生产、不恢复 Ling 或旧96条验收。页首 source_commit 指此次集成基线，实际变更版本随本记录所在提交确定。
+Owner 在核对遗留 zCode 候选后批准“按照你的建议来吧”，并强调“如果修改当前相关的东西，你都需要经过测试”。本次基于 `0236daae` 由 Codex 单独完成候选集成与验证，独立 commit/push `4fb087dd` 已与远端 main 一致。Owner 随后明确“部署吧”，授权该版本三服务同源发布；不夹带临时产物、不恢复 Ling 或旧96条验收。
+
+部署预检：Railway 项目 Hive / production 与三项服务布局已实时核实，精确 Git archive 3505 路径发布卫生检查通过；本批没有 migration、依赖或部署配置变更。CI [34385279787](https://github.com/SteamRocket-Labs/hiveclaw/actions/runs/34385279787) 首次三 job 均因 Chrome APT 源 `Hash Sum mismatch` 在依赖安装阶段失败；原提交 attempt 2 三 job 已全部 success。远端后端 `9394 passed / 4 skipped / 2 warnings`，2757.10秒，prompt gate、对抗检查与内部评估100分通过；前端全量/构建、79项浏览器检查与15条真实 API/worker/browser journeys 均通过。
+
+三服务已从同一 `4fb087dd` archive 部署并全部 `SUCCESS`：backend `50ebc6f5-c571-4352-bee0-4613b56b1d4e`；backend-api `5813618d-b206-48cf-9fc5-cc398f4e771d`；frontend `b9763965-c11d-4d60-a144-75920eb144de`。先确认 backend 就绪，再同步其余两项。发布前回退参照为 `bccda8c7`，三项旧 deployment 分别 `47a2d5ac-f1c7-49f9-bcc5-03a2db4a1c0d` / `8a1e42ee-7c5c-493b-9ef3-c214016cc77b` / `bcc02669-a4ed-4dd1-a2af-b71195863958`；未执行回退。
+
+独立运行核对：public backend `/api/health` 为 runtime 角色，frontend `/api/health` 代理为 API 角色，两者均 `ok`，与精确 archive 同1064文件/hash `3fedfcaef5d2e31793a85967b70374cb1d1be0ca5b1aabc934d3c4c5000fd9f6`；两者 RLS strict、非 superuser、无 bypass、零 violations。runtime worker/control bus/stream 均 running；19:30:36 UTC 的新 sandbox probe 通过、network deny 与 workspace round trip 成立。前端首页200，新入口 `index-CfXki53u.js` 与含清理入口的 `ControlPlane-zO99eyYf.js` 实际下载 SHA-256 均匹配已验证本地构建；未登录 GET `/api/agents/cleanup-pending` 返回401。上述证明本次部署、源码和有界健康/鉴权，不冒充生产重启/Stop/HR 清理业务验收；未做生产故障注入、新建任务或额外数据操作。
 
 已补齐 HR abandon 清理来源条件、删除/放弃后刷新可发现的清理重试入口与列表总数边界，保留普通成员/跨租户/非活动公司拒绝。Runtime 候选包含 advisory-first 终态锁序、已封存模型/工具轮恢复、Stop 效果围栏、逐轮幂等计费与有界公平重试。首次全量发现终态任务可因相同请求重新 prepare；已恢复终态拒绝，原不可变 seal 反例不改断言，未结束任务的合法恢复仍通过。主循环仅提取最终响应处理，架构上限不变。
 
-最终验证：首次后端全量 `9379 passed / 15 failed / 3 skipped`，失败逐项定位修复；数据库测试路由改为每测试恢复并覆盖 `_async_session`，真实 worker 按既有批量分轮消费且检查精确目标回执，真实非 owner RLS 隔离 claim，逆序并发检查保留模型结果顺序。第二次全量 `9395 passed / 3 skipped / 1 warning`，1113.97秒；两项跳过因本机缺 OfficeCLI，另一项钉钉 Skill 无声明工具，一项既有 Starlette 弃用警告。修后整目录真实 PG 与连接池另有 `380 passed / 2 skipped`；语义历史与恢复37、架构/内核116、来源ACL/Hook15等相关组合通过。前端175文件/1316项、TypeScript/Vite构建与预算、中英文4187项及i18n审计通过；50个本批Python文件 Ruff/格式、文档结构10项和diff检查通过。全量包含RLS正反例，审查保留110个直接调用，仅新增已审查的 deleted-agent cleanup 查询；指纹 `b2a25dfc940738bbd3b031bd7525ebec45a946af85fe7717b130dd20b12de51c`。上述均为本地/隔离PG验证，不冒充本批生产部署或真实业务验收；远端本批CI结果须单独核实。
+最终本地验证：首次后端全量 `9379 passed / 15 failed / 3 skipped`，失败逐项定位修复；数据库测试路由改为每测试恢复并覆盖 `_async_session`，真实 worker 按既有批量分轮消费且检查精确目标回执，真实非 owner RLS 隔离 claim，逆序并发检查保留模型结果顺序。第二次全量 `9395 passed / 3 skipped / 1 warning`，1113.97秒；两项跳过因本机缺 OfficeCLI，另一项钉钉 Skill 无声明工具，一项既有 Starlette 弃用警告。修后整目录真实 PG 与连接池另有 `380 passed / 2 skipped`；语义历史与恢复37、架构/内核116、来源ACL/Hook15等相关组合通过。前端175文件/1316项、TypeScript/Vite构建与预算、中英文4187项及i18n审计通过；50个本批Python文件 Ruff/格式、文档结构10项和diff检查通过。全量包含RLS正反例，审查保留110个直接调用，仅新增已审查的 deleted-agent cleanup 查询；指纹 `b2a25dfc940738bbd3b031bd7525ebec45a946af85fe7717b130dd20b12de51c`。上述均为本地/隔离PG验证；生产发布与远端CI结果见上方独立记录，均不替代真实业务验收。
 
 ### 00:28 八步交付：Ling 失败保留，不声明全部通过
 
@@ -155,7 +161,7 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 
 ## 唯一下一动作
 
-本批源码集成、相关反例和完整本地回归已完成，交付止于本批应用、测试与状态文档的独立 commit/push；没有自动续作项。无关旧审计草稿、临时产物和构建缓存原样保留。本次没有生产部署授权，Ling 按 Owner 最新要求暂不处理。此前 Dynamic 自动父消费、Hook 清理及合成账号移交/停用已交付，不再沿旧下一动作重做；历史证据见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)。
+Owner 授权的 `4fb087dd` 发布已完成：CI 三 job success，backend、backend-api、frontend 三服务同源 SUCCESS，健康、运行源码身份与前端资源核对通过；本次证据仅更新本文，不重新部署文档提交。没有自动续作项。无关旧审计草稿、临时产物和构建缓存原样保留；Ling 暂不处理，不重启旧验收。此前 Dynamic 自动父消费、Hook 清理及合成账号移交/停用已交付，不再沿旧下一动作重做；历史证据见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)。
 
 此前交付背景（不替代上述下一动作）：
 

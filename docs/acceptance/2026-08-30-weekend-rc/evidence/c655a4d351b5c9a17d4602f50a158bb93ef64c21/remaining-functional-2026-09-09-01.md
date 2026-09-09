@@ -3,11 +3,87 @@ document_id: weekend-rc-remaining-functional-2026-09-09-01
 owner: Codex
 status: in_progress
 authority: supporting-evidence
-last_reviewed: 2026-09-09
-source_commit: 6c3e1a11
-verification_status: partial-not-complete
+last_reviewed: 2026-09-10
+source_commit: bccda8c7
+verification_status: bounded-paths-delivered-ling-failure-retained
 ---
 # 剩余功能继续执行记录
+
+## 当前口径：八步功能闭环（00:28交付）
+
+22:52 Owner明确纠正最终标准为此前八步，要求剩余项全部落地、commit/push及更新文档；PDEC-016为当前合同。下方各时间段的96条、D双遍或等待授权表述仅为历史记录，不再作为本轮出口。新增实际合成账号资产移交/停用及Local原上游/npm发行已获授权；不包括真实用户、真实业务资产、凭据或全局政策变更。
+
+当前交付：除第6步原Ling语义失败外，其余七步本次有界路径已完成；应用`bccda8c7`同源生产发布及最后资产诊断真实复验通过。保留所有旧失败、辅助修正和操作偏差，不称八步全部通过；后续模型兼容性范围需Owner裁决，最新全量CI仍运行。以下按时间记录的“待执行”均以最后交付段为准。
+
+### Local 正式发行完成
+
+- 原上游发布`v0.1.10`，修复进度帧抢占最终receipt的问题。CI模式全套Go测试、CUJ、Go build及npm测试通过；六平台发行包及checksums逐一核对，本机arm64实际版本与发布commit一致。
+- npm `0.1.10`已正式发布，浏览器完成npm原生登录及发布验证；隔离目录全新安装成功、实际二进制版本正确。随后本机全局升级并重启原daemon，同一binding恢复online，无重新绑定或权限/凭据策略变化。发布完整性与npm返回integrity一致；具体批准包及源仍通过安装指南配置引用，不在公开验收记录展开个人命名空间。
+
+### Memory：平台缺陷修复与模型结论分开
+
+- `4b41ccbb`移除召回链上额外摘要模型的硬依赖，T0/legacy/DB直接返回完整检索证据；保留tenant/source权限。`load_memory`保留entry原有`source_refs`；检索无命中提示明确只是本次词法搜索范围。三项阻塞摘要反例先红后绿，相关52项通过；原RLS17项通过。
+- 原问题、原Ling模型fresh复验Session`1623d7c5-e55f-4eb8-b12b-9e971626179c` / run`32716887-1239-5052-9323-84b03ea1041d`仍FAIL：已读到Useful反馈与143→286，却以缺少中文“分两轮”标签否认关联。不得用平台测试通过覆盖此失败。
+- Owner明确批准仅一次MiniMax-M3对照并保留Ling失败。Session`0aee855f-f472-4a60-b819-fa909b0e0687` / run`2c564c62-22bc-519d-b17f-42491c1651a2`在原中文问题下正确对应Useful反馈、143→286做法、已保存记忆路径及源Session；正式UI/API实际核对。对照后已PATCH并GET核实MemberAnalyst恢复原Ling模型，公司默认模型未变；单次授权已消费，不自动继续换模型。
+- 两模型底层历史检索均出现来源权限拒绝；没有将拥有Session等同于拥有其中所有引用来源，没有绕过ACL。MiniMax此有界问题通过不证明所有Memory/Growth或Ling兼容性通过。
+- `3213c1f5`进一步消除实际3.7M字符召回中的三重重复投影，并让T0排除system/tool_call运行角色与DB路径一致；完整user/assistant/tool及canonical原始记录保留。两项反例先红后绿，相关45项通过。不宣称该去重已治愈Ling语义失败。
+
+### same_session：真实缺陷、修复与生产通过
+
+- 原once01虽fire1/disabled，但只有旧聊天投影、没有canonical human input，模型执行旧员工任务，预期文件404。失败Session`a4122d99-5eb5-46dc-9f0f-b9d50c34fd8b`保留，未重放。
+- `f68a67f2`将实际same_session入口接入既有Session V2输入、Hook admission、FIFO及幂等；旧直接run仅按精确agent/session匹配复用，不重跑。拒绝/403不fallback到另一个执行入口。真实PG覆盖空闲首轮准确输入、忙时排队/新worker恢复和重复单输入；相关60项与17项RLS通过，未加grant或改变预算。main的owner脏RLS文件原样保留，仅提交验证过的index blob。
+- 三服务均SUCCESS：backend`34017e4d-61bf-403d-a101-bd16b63d25e7`、backend-api`6fa09215-7df2-4301-b58a-f851dd60110d`、frontend`0fc180bb-0335-4b93-95a0-ee27677f0cc2`。API/runtime与精确archive均1063文件/hash`be4cd822e1d7e85bfc32f329624186a566e589ab186eb6af066144aff20ef794`，health均ok。
+- fresh once02 trigger`74685286-92d7-41a4-9b23-7110f48d3d79`真实15:43:21Z触发，max_fires1/fire_count1/disabled。原Session`fa029971-6605-48eb-b907-0d60173a1a43` / run`e89b91ad-7337-52eb-9d99-3e3c04dc428c`执行23×7；正式文件GET200，`workspace/wrc-eight-same-session-02.md`含marker及161。原生UI重开显示最终回帖与89B文件卡，active为null。没有人工补算或发续轮来促成结果，same_session此有界消费通过。
+
+### Hook 与 Dynamic 当前实证
+
+- Hook生命周期/超时/恢复等121项本地检查通过。正式技能管理UI创建唯一合成声明式技能`wrc-eight-hook-20260909`，registry`a34a7f17-3ff8-4617-8aa7-38b33a95e647`；普通member通过正式import-skill安装，SkillGuard允许，仅1文件。声明pre_tool_use/post_tool_use/stop，只增加上下文，不执行脚本或增加权限。
+- Session`848388b3-bc7c-43e7-a6ac-6423a1e62ba1` / run`fbf01a1f-fda0-5258-8b43-72eee5c3700a`实际load_skill、execute_code均success，正式UI重开显示31+8=39及marker。canonical UserPromptSubmit started/completed/allow已核对；随后通过既有DB公开代理、原app_rls身份、read-only事务、精确tenant/agent/session查询InvocationSpan，实际发现技能post/pre/stop生命周期回执，详尽投影仍在核对。未新建诊断UI或扩大raw Hook访问权限。
+- fresh Dynamic Session`1fff7006-3a5f-4eb9-a8e2-a3ac2b542237`生成真实proposal`9aa62a9e-b91e-4af1-ad75-f60f62bf87b6`、preview`41ff0421-ffa7-497c-a787-15e630984e1a`，hash`b9dcf775e31480ed20461cc82be037fe8f24dcb2d2c903aa601624761014ed02`：并行17×3与19×3、human review、10s wait、汇总到唯一文件，预算600000/1800s。正式UI核对后仅提交一次准确preview批准。202 receipt先waiting_for_terminal_boundary_ack，随后自然开始新run`3b32b1d5-9d0b-5699-b866-e0a9d2d7be9d`；测试脚本误只接受201而断言失败，输入已受理，因此没有重新发送。实际workflow/gate/最终自动父消费尚待核对。
+
+独立剩余项为Dynamic自动父消费、Hook精确清理、实际合成资产移交/停用和发布收尾；Ling失败仍必须显式交付，不能改成八步全通过。最新CI`34371419905`仍执行中；部署成功不是全量CI或最终业务验收。
+
+### 23:50—00:00 严格复核与最后小修
+
+- Hook精确InvocationSpan投影：共13个生命周期span；技能`post_tool_use`两次、`pre_tool_use`一次、`stop`一次均ok/add_context/advisory，并有独立hook_run_id及result_hash。非声明Hook同样可见真实setup/session_start/instructions_loaded/turn_stop/response_complete。这里只证明有界实际生命周期，121项本地超时/拒绝/恢复不改称生产故障注入。
+- 合成Hook安装副本正式卸载200、files_removed1、transaction`258e3a75592b4f1284f1ffbdc2a3cff3`，独立files404/extensions零项；registry正式UI逐字确认删除，独立GET404。原文非活动恢复副本hash`7a088236297d490d941ef210aed85c087602b016a2f932c80b8efd93f8d001dd`，审计和runtime历史保留。
+- Dynamic01的首个批准仅是聊天文字，模型六次重复start_workflow均被明确认证确认拒绝；未扩大权限。随后正式member POST /workflows/runs准确确认原preview，运行到human_review。查询真实leaf结果发现两叶均返回9，而非51/57，因此未放行；正式gate-decision reject200/replayed=false，旧run最终failed。
+- 精确冻结定义证明模型漏写模板绑定：per_item_task为字面量`print(item*3)`，aggregate引用也仅字面量；args本身确为[17,19]。平台按原定义执行，不能把这个已完成的错误计算记成业务PASS，也不靠关键词硬规则代替模型语义。只向原模型指出绑定缺陷，令其通过原生propose/preview产生一个修正版；这是显式辅助修正，旧失败保留。
+- Dynamic02 proposal`cc5b47d8-abc4-48c2-b86c-5742de7598c5`、preview/run`92d5aa71-47f2-4ff9-8a4c-1f53ae8b4b7f`，definition hash`941a7a7afa099507467953c3b21db3f3fecffac185b5595d437bc02253a36418`。正式API与read-only DB核实冻结正文确为`{{item}}`和`{{steps.fanout_compute.output}}`、args[17,19]；同600000/1800预算与结构，仅换唯一02文件/marker。正常member准确确认200，等待实际结果，不用模型代码展示替代冻结证据。
+- 清理暴露资产目录诊断缺陷：真实workspace已删除，但reconcile失败标记随API rollback丢失，界面仍旧applied。`41fa482b`只改API及回归：rollback之后复用既有`record_projection_failure`精确tenant/asset/actor记录并commit，仍保留原404/运行错误，不改权限、版本、文件或能力。两项反例先红，相关33项（含真实PG）通过、Ruff/diff通过；已push，尚待最后发布和原页面复验。无RLS调用或指纹范围变化。
+- 前一`4b41ccbb`完整CI`34368373881`三job已success；`f68a67f2`的`34371419905`前端/15journeys success、backend仍运行。当前文档结构10passed/0.34s，未把未完成CI计为全绿。
+
+### 00:02—00:05 Dynamic 自动父消费通过
+
+- 正常member经自己的files API读取两条精确子Session T0原始工具回执：trace`5ac4473c-f01b-5f4c-b028-d5c0a88dc957`的execute_code `print(17*3)`真实stdout51；trace`822ea2f6-b8c0-5899-95e4-205517eb0e3b`真实stdout57。只在这之后正式批准`human_review`，gate-decision200/replayed=false。
+- 同run自动wait到16:01:41Z并执行aggregate；正式文件GET200，`workspace/wrc-eight-dynamic-02.md`包含两个真实上游结果和51+57=108，随后workflow为completed/4steps done。
+- 原父Session无需新增用户消息，自动run`0a41eb28-ff66-4c17-9c23-cdf351ca6864`于16:02:27Z创建，实际先read_runtime_result、再read_file，于第3轮完成最终报告。正确汇总四步骤、实际51/57/108、文件路径/正文，并明确旧01因字面量输入而失败且没有重放。最终active200/null。原人工输入只修复提案绑定，不是运行结束后的催收或代写答案；自动父消费缺口在此有界路径通过。
+- 合成账号离职前独立preflight核实仍member、拥有唯一MemberAnalyst且启用trigger数0；原token只暂存执行进程内存，准备验证正式UI停用后的旧token和新登录拒绝，没有保存或输出token。
+- 最后`41fa482b`精确archive为1063文件/hash`85fc2c70a55b10947adae73fe213f5e1b84b5d8dd937b7dd128d6f9f40d23dfe`；tracked backend/frontend2686路径，禁止发布内容0。已开始三服务同源上传，等待SUCCESS和原生资产核对失败显示复验。
+
+### 00:08—00:18 离职、操作偏差和资产页修复
+
+- 正式owner UI仅对合成member `34f85428-154e-4025-9d97-6faf58f58de2`执行“转移并停用”；唯一Agent `241a66f9-6532-5d1a-9161-6d7094f8f07b`移交同公司owner `42778d4b-fa70-47c1-ad3a-15f7fcf5e8aa`。预览为1 Agent、1直接权限、其他grant/token/binding/inflight均0，所有测试trigger均已禁用。提交后UI显示已停用/0 Agent。
+- 进程内保留的旧token在auth/me与Agent入口均401；新登录403/Account disabled，之后未尝试重新登录或恢复权限。read-only app_rls、精确tenant查询核实is_active=false、角色仍member、唯一Agent归属准确、Ling模型未改变。审计`4352f8ff-a747-4ea3-81b6-d8a9f476ffe8`/user:offboarded、request`defc152b-59df-4717-93c6-133a7730f730`准确记录唯一移交与直接权限撤销；未删除会话或历史。账号可由owner恢复启用，但不自动恢复权限或归属。
+- `41fa482b`三服务SUCCESS：backend `bb69e5b7-f4e1-490a-946f-141cd0490124`、backend-api `723d1d65-db80-465f-bb84-fb7f245fb1f9`、frontend `38ea6bd6-5aaf-4a25-a43d-893b13f55b65`。API/runtime/archive均1063文件/hash`85fc2c70a55b10947adae73fe213f5e1b84b5d8dd937b7dd128d6f9f40d23dfe`；health及api/runtime角色正确。
+- **操作偏差**：执行方在资产页选择合成Hook后，详情仍为先前非合成Agent `b20e2559-3a4d-4ce5-bf26-cf471a536070`，未等详情身份一致便点击核对；实际仅对该非合成资产reconcile一次，诊断从applied变成drifted/`native content differs from active revision`。未改变该Agent原生配置、文件、权限、模型或历史。已立即向owner披露，未人为改回applied；该真实偏差不能计为合成资产复验成功。
+- 源码与实际DOM均证明列表选中Hook而inspector仍为旧Agent。根因是详情加载期间/失败后保留旧详情，操作只取detail.asset.id且无选择一致性保护；初始详情请求未完成或失败的具体原因尚未确定，不捏造后端500。真实挂载回归先红：第二项pending时旧Reconcile仍可用。
+- 最小修复`87565c5b`：开始加载时清空旧详情，渲染及rollback/reconcile均要求detail ID与selected ID相同；刷新同时重试选中详情；reconcile错误后重新读取持久化失败诊断。新回归覆盖pending、拒绝、刷新恢复及最终只操作second；前端174文件/1310tests、TypeScript/Vite/bundle、i18n9项及零违规全部通过。未新增依赖、状态机或权限。
+- `41fa482b` CI `34373738250`确实因新增测试的一行Ruff格式失败；`7a4777f8`仅修正格式并push，不改断言。`f68a67f2` CI `34371419905`已完整success。最新CI `34375657869`仍运行，不以部署成功代替检查完成。
+
+### 00:20—00:25 真实复验未通过后补齐事务边界
+
+- `7a4777f8`三服务均SUCCESS：backend `c79e57de-f072-48a5-ab68-e726af29453e`、backend-api `34b0721d-e929-46d4-9d5f-bf843e62be0d`、frontend `8f028603-c19c-44af-bb87-3537fc367572`。API/runtime/archive同1063文件/hash`85fc2c70a55b10947adae73fe213f5e1b84b5d8dd937b7dd128d6f9f40d23dfe`，health恢复ok；runtime切换期间曾502，不隐藏。
+- 新前端生产真实选择Hook时旧inspector和操作立即消失；待详情加载，标题及原生键准确匹配后才操作。精确合成资产ID `89f81d1d-b78c-452b-821c-3b54ed36055a`。首次reconcile在服务切换期间504/request `rpmdqR1KQaCAn4CYAQeqjw`；随后read-only app_rls精确查询仍旧applied/updated_at15:42:41Z，正式刷新恢复详情。
+- 服务健康后一次重试返回500/request `5kn9-UUyQdODlaK6mrpb1w`、130ms；未达到失败诊断持久化验收。没有继续盲目点击。真实PostgreSQL加载附着User再执行API失败/rollback的两项新反例均重现`MissingGreenlet`：异常分支在rollback后访问过期current_user.tenant_id/id，原有SimpleNamespace单测没有覆盖。生产堆栈未直接取到，因此这是与生产症状一致的已复现缺陷，不声称已从日志证明唯一原因。
+- 最小修复`bccda8c7`在两个入口事务前保留认证tenant_id/actor_user_id标量，异常记录复用同一值，不刷新用户或扩大权限。两个真实PG反例先红后绿，验证原HTTP404、failed状态及同一actor审计都持久化；相关API/service/adapter/resolution/real-PG共35项通过，Ruff check/format和diff检查通过。已push，精确archive1063文件/hash`7971dbb1cc4eca166df1e76d09dd6990abd9084ebd1c9a0eea040d5611c3ff07`已开始三服务同源部署；需要原页面复验才记闭环。
+
+### 00:27—00:28 最终发布与原页面闭环
+
+- `bccda8c7`三服务均SUCCESS：backend `47a2d5ac-f1c7-49f9-bcc5-03a2db4a1c0d`、backend-api `8a1e42ee-7c5c-493b-9ef3-c214016cc77b`、frontend `bcc02669-a4ed-4dd1-a2af-b71195863958`。API/runtime/精确archive同1063文件/hash`7971dbb1cc4eca166df1e76d09dd6990abd9084ebd1c9a0eea040d5611c3ff07`；两端health均ok且角色分别api/runtime。本次等待所有服务SUCCESS且health核对后才执行业务复验。
+- 再次从实际DOM核对列表选中及inspector原生键均准确指向同一合成Hook，仅对该资产操作一次。正式HTTP为预期404/request`EFwrOi7mQB6Ko59KoB_USg`、131ms，不再500。页面自动重读后显示projection failed及`ValueError: workspace Skill is missing skills/wrc-eight-hook-20260909/SKILL.md`，旧applied已消失；正式刷新后同目标、同failed及同警告仍可读。
+- 既有app_rls身份/read-only事务/精确tenant与asset独立查询，确认projection_status=failed、同一projection_error、updated_at`2026-09-09T16:27:29.668104Z`。原安装副本/registry删除、运行历史与可恢复原文均未改变；不把目录仍保留的历史资产记录称为仍安装。失败诊断与前端目标保护在该真实路径闭环。
+- 最新应用CI `34376519606`尚在运行；本地前端1310项、i18n、build、35项后端相关检查与10项文档结构检查通过分别成立，不替代未完成的全量CI。Owner无关脏改、旧runtime候选和测试历史均保留，没有被夹带发布或清理。
 
 ## 授权与起点
 

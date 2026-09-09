@@ -3,15 +3,45 @@ document_id: weekend-rc-2026-08-30-current-status
 owner: Codex
 status: in_progress
 authority: canonical-working-state
-last_reviewed: 2026-09-09
-source_commit: dab247e9
-verification_status: remaining-functional-closure-in-progress
+last_reviewed: 2026-09-10
+source_commit: bccda8c7
+verification_status: bounded-paths-delivered-ling-failure-retained
 ---
 # 当前状态与唯一下一动作
 
 [返回索引](README.md) · [旅程账本](04-journey-ledger.md) · [Findings](05-findings.md) · [Runbook](06-runbook-and-release-gates.md)
 
 ## 当前决定与本批次出口
+
+### 00:28 八步交付：Ling 失败保留，不声明全部通过
+
+本轮已授权修复、Local发行、合成清理和移交均已落地；八步中的其余七步在本文记录的有界路径完成，第6步仍有原Ling语义消费失败。下一动作是Owner明确Ling兼容性后续范围，不重跑已通过链、不自动切换模型、不恢复旧96条出口。应用`bccda8c7`三服务均SUCCESS；API/runtime/archive同1063文件/hash`7971dbb1cc4eca166df1e76d09dd6990abd9084ebd1c9a0eea040d5611c3ff07`、health均ok。最后合成资产诊断复验已通过：正确目标、缺失Skill→failed、刷新可读，read-only app_rls独立核对一致。
+
+Dynamic02已完成四步骤、真实51/57/108文件和原父自动最终报告；没有运行结束后的人工催收。已授权的合成账号离职移交已正式执行：唯一MemberAnalyst移交同公司owner，账号停用；旧token两个入口401、新登录403、审计和归属独立核对通过。新增Hook安装副本和唯一库记录均已删除并保留非活动恢复原文，不再待清理。
+
+Memory仍保留明确失败：原Ling读到反馈后错误否认关联；Owner授权的一次MiniMax对照成功后已恢复Ling。没有获得将这一差异改成全模型通过或扩大换模型测试的授权，因此不宣称八步全通过。
+
+资产页暴露并已修复“选中项切换失败但旧详情仍可操作”的缺陷。复核时执行方误对一个非合成Agent资产核对一次，仅更新诊断状态为drifted；原生配置、文件、权限未变，偏差已披露并记入证据，不伪造恢复applied。`87565c5b`令详情及动作精确绑定当前选择、刷新可重试详情；先红后绿回归、前端1310项、构建及i18n检查通过，生产切换/刷新保护已实际核实。`7a4777f8`修正前一测试格式并三服务SUCCESS，但合成reconcile仍500；真实PG新反例定位rollback后已认证User对象过期。`bccda8c7`在事务前保留身份标量，核对/回滚两入口共35项相关检查通过，并完成生产失败诊断/刷新/独立DB复验。`f68a67f2`完整CI success；最新`34376519606`仍运行，不声明最新全量CI已绿。
+
+### 00:02 历史收尾记录
+
+same_session与Hook有界路径已通过，唯一新增Hook库与安装副本已清并保留可恢复原文。Dynamic01冻结定义漏模板参数，真实叶输出9/9，已正式拒绝人工gate并保留failed；未批准错误结果。原模型按明确绑定缺陷产生Dynamic02，冻结定义/args再次独立核实，普通member正式确认；两叶真实execute_code stdout为51、57，随后才批准human_review，待10s wait、最终文件与自动父消费。
+
+资产目录的reconcile失败回执曾随rollback丢失，修复`41fa482b`已commit/push，33项相关检查（含真实PG）通过；仅复用既有精确资产失败记录与审计，不改生命周期/权限/文件。待Dynamic完成后从精确archive同源部署，以免打断本次结果消费。原Ling Memory失败与单次MiniMax通过仍分开记录；已向Owner询问是否接受按模型限定结论，未默许缩减标准。
+
+### 23:50 八步继续收尾
+
+`f68a67f2`三服务同源SUCCESS，API/runtime/archive同1063文件/hash`be4cd822e1d7e85bfc32f329624186a566e589ab186eb6af066144aff20ef794`。fresh same_session once02真实fire1/disabled，文件161、原会话最终回帖/文件卡与重开均通过；不再是待生产复验。Hook真实load_skill/execute_code/39与原生UI通过，read-only app_rls精确查询得到pre/post/stop均ok、add_context及独立result_hash，生命周期有界路径通过；超时/拒绝/恢复另有121项本地检查，不伪装生产故障注入。
+
+fresh Dynamic原生preview已获本合成验收准确批准，下一输入曾202等待terminal ack，后自然启动，不重复提交。实际human review与最终自动父消费仍在核对；之后才对合成账号执行已授权离职移交，避免撤销仍在执行的测试。最新CI仍运行。
+
+### 23:39 支持证据
+
+Local 上游及 npm `0.1.10` 已正式发布，隔离全新安装与本机后台更新/重启/同绑定恢复在线通过。记忆召回去掉额外摘要模型依赖的 `4b41ccbb` 已三服务同源上线；原问题、原 Ling 模型复验仍错误否认已读到的反馈。Owner 批准仅一次 MiniMax-M3 对照，同一原问题正确关联 Useful 反馈、143→286做法、记忆路径与源 Session，随后已恢复该合成员工的 Ling 模型；不据此将 Ling 改判通过。两者底层历史检索均出现来源权限拒绝，未绕过 ACL。
+
+same_session 实测触发一次后停用，但原实现只写旧聊天投影，没有 canonical 输入，模型执行了旧员工任务，预期文件404。修复 `f68a67f2` 已commit/push：复用 Session V2 输入、Hook admission、FIFO；真实PG证明空闲首轮精确输入、忙时等待和新worker恢复、重复投递单输入，旧直接运行记录不重放。60项相关检查及17项RLS通过。该修复连同 `3213c1f5` 召回去重/运行角色过滤正在部署，尚不计生产PASS。
+
+Hook生命周期/超时/恢复等121项检查通过；新增唯一合成声明式Hook技能已在正式管理UI创建、保存并导入，尚待实际调用和清理。Dynamic自动父消费、生产same_session复验、实际合成移交/停用及最终清理仍在执行，不以旧96条作为出口。
 
 ### 22:52 Owner 纠正：以八步完成，不再以 0/96 验收
 
@@ -20,15 +50,15 @@ verification_status: remaining-functional-closure-in-progress
 | 步骤 | 当前已验证结果 | 本轮剩余动作 |
 |---|---|---|
 | 1 固定 / A2A 工作流 | 固定v1两组参数复用；A2A三Agent交接、gate/retry、文件下载及原父自动报告/预览 | 保留失败历史，发布回归按实际改动覆盖，不重跑已完成链 |
-| 2 Dynamic | 并行51/57、review/wait、文件108；辅助读取成功 | 验证原生自动父消费，解决旧失败解释错误 |
-| 3 自动化 | once/schedule/event真实文件交付 | same_session回帖、必要故障/重启恢复 |
-| 4 Local | 本机修复后实际pwd、final/ack、重开及失败状态 | 已授权上游push/npm发行，验证发行产物 |
+| 2 Dynamic | 修正版冻结定义、真实并行51/57、review/wait、文件108、原父自动消费/正确解释旧失败及重开通过 | 有界路径完成；保留首版绑定错误和人工修正记录 |
+| 3 自动化 | once/schedule/event真实文件交付；same_session输入缺失已修、真实PG恢复及生产回帖/文件/重开通过 | 有界路径已完成，保留旧失败 |
+| 4 Local | 实际pwd、final/ack、重开；0.1.10上游/npm发布、隔离安装、本机更新与同绑定在线 | 已完成，保留发布证据 |
 | 5 Office / Goal | 原生预览/校验/公式/下载/重开；自动两run及计费一致 | 保留已验路径，按后续改动做必要回归 |
-| 6 Memory / Growth | 更正/退役/fresh排除；Useful反馈实际落盘并读到 | 原回答及纠错仍错误；检查原始证据、检索和上下文后修复并验证复用收益 |
-| 7 Hook / Skill / MCP | Skill加载、卸载/重装/幂等/精确清理；Context7实际调用 | 完整Hook生命周期及必要超时恢复 |
-| 8 角色 / 移交 / 离职 / 发布清理 | 正负向API、临时org_admin授予/撤回、离职预览 | 已授权精确合成资产移交/停用；必要回滚验证、合成清理、最终commit/push/文档 |
+| 6 Memory / Growth | 更正/退役/fresh排除；Useful反馈落盘；召回修复/去重已部署；单次MiniMax原问题正确消费/来源引用 | Ling仍FAIL；需Owner决定模型兼容性处理范围，来源权限拒绝不绕过 |
+| 7 Hook / Skill / MCP | Skill加载、卸载/重装/幂等；Context7实际调用；Hook pre/post/stop真实回执、121项本地生命周期/故障检查；新增合成Hook已卸载/删除可恢复 | 有界路径完成；本地故障测试不称生产故障注入 |
+| 8 角色 / 移交 / 离职 / 发布清理 | 正负向API、临时org_admin授予/撤回；真实合成移交/停用、旧token与新登录撤销；资产诊断修复发布和刷新复验通过 | 有界路径完成，证据随本次文档提交；最新全量CI仍运行 |
 
-八步状态仍在执行中；实际合成移交/停用和Local发行不再等待授权。Growth先查证据/检索而非再次改写提问；随后完成Dynamic自动消费、Hook/自动化恢复，再移交/停用及最终清理。所有操作继续保护无关owner脏改；不手改DB、不扩权真实用户、不外发真实业务数据。当前应用 `dab247e9`、文档 `7bbcd8d6`；后端全量CI仍运行，前端与15条CI旅程成功。
+八步状态以上方最新记录为准；Local发行、实际合成移交/停用均已完成。保护无关owner脏改；未手改DB或扩权真实用户；资产诊断操作偏差已单独披露。全量CI按实际状态另记，不替代业务验收。
 
 ### 历史进度（完成口径已被上述八步合同替代）
 
@@ -84,7 +114,7 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 
 ## 当前可核实结果
 
-- 当前已核实生产应用为 **`dab247e9`**；最新部署、检查与功能结论以上方最新记录为准。以下带旧commit/时间的项目均为历史支持证据，不是当前阻塞清单。
+- 当前应用部署、检查与功能结论以上方最新记录为准。以下带旧commit/时间的项目均为历史支持证据，不是当前阻塞清单。
 - 10:11历史production为 **`6c3e1a11`**（当时三服务SUCCESS），backend/backend-api/archive同1058文件、source SHA256 `f510c09697d945c4a46325abfd9e7583745ebc1004875f3bae21ad3373e286bb`。headless固定Workflow当时已能真实启动；两叶provider限流暴露subagent错误done，gate未批准、原run正式取消，无产物。后续固定v1两组实际结果108/162已通过，见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)，不继续沿用10:11未完成判断。
 - B4 当前 production application **`3ac6e2a1`** 三服务同源SUCCESS（08:34核对），backend/backend-api/干净archive均1058files/source SHA256 `0d68c1c49c3f55b90dc84c800f1725f5a583cf3aabfb3d133fc13d1e50f412c3`。本批应用修复均已push和部署；185d779d干净archive100项Goal/terminal/artifact检查、110前端检查及build通过，3ac6e2a1干净archive36项Office检查通过/2项无本机二进制skip，生产同二进制另有红绿对照。RLS指纹逐项584→588对账后仅同步精确hash，17项安全检查通过224.07s，已push `4318c490`（仅审查常量与文档，不再部署相同应用行为）；其完整CI `34296805208`仍在执行，前两次CI前端与15journeys已成功。08:35 public health degraded原始错误是Vercel sandbox_stopped410，08:39同配置单次探针复验3/3通过，未覆写持久health记录；另有旧trigger stale fence，未称零错误。旧runtime候选原样保留，未夹带。
 - B4 已取得五格式个人文档/Agent消费/报告下载、公司发布/引用/下线/恢复v2、知识重建、显式记忆更正/退役/fresh排除、HR首任务归属与精确待命、临时子Agent、固定Reviewer A2A、member Team完整计算/父报告/正式关闭、内置Skill消费、clear、rewind续接、branch正式创建/历史读取的局部实证。MiniMax Workflow三叶计算/文件/父消费及完成组刷新、Plan确认后真实同会话执行/文件消费且零trigger、compact失败工具历史消费、Local审批通知深链接均已修复并生产通过。原生DOCX/XLSX校验、公式缓存29及workspace下载通过；最终旧卡片定位CLI resident未flush，3ac6e2a1生产adapter及快照helper通过，但正式模型卡片复验在首请求即被MiniMax限流拒绝。Goal暂停→继续→产物→完成通过；canonical计费/自动两轮新检查及08:36唯一continue均被MiniMax限流拒绝，08:39正式停止/无活动run。Useful反馈唯一落盘但memory held，成长UI有T0/T2/Skill候选但无成长报告，不记成长生效；临时管理员、自批政策未获答复，不扩大权限。完整范围和未测项见B4功能表，未提升为全部通过。
@@ -101,7 +131,7 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 - zCode 工具加载小修复及一次集中返修由 Codex 审查，343 targeted checks 与 Ruff/format/diff check 通过；commit/push `33f6332f` 仅两文件，CI `34182826176` 三 job success，三服务已同源部署且完成上述真实 KB 消费。旧 KB 失败与此源码缺陷的因果关联并非唯一解释；第二轮输入仅做有界只读定位，不加新代码返修。
 - 第八轮 zCode 候选已取消；未审查的应用修改原样保留，未接受、未提交、未部署。本批次不要求先救完该候选。原 heartbeat 保持 PAUSED，无新 Goal。
 
-## 仍未完成 / 不重做
+## 历史B4剩余快照（已被八步合同替代）
 
 - 全部 96 条最终 D 双遍、真实故障恢复、完整角色/权限负向、rollback、cleanup 与 evidence-only E 未完成；本批次不能替代它们。
 - Memory/Growth、J4 bakeoff、多格式知识/文件交付、HR/首任务、协作/工作流/A2A、Automation/Hook/Skill/MCP/Local Agent 和 selected-model compatibility 仍按原合同逐项验证，不从分母删除。
@@ -117,7 +147,7 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 
 ## 唯一下一动作
 
-按PDEC-016继续八步剩余项：先定位Growth实际记忆与检索返回的差异，修复已证明的问题并真实复验；并完成Local已授权发行。后续Dynamic自动消费、Hook/自动化恢复、精确合成移交/停用与清理继续执行，不再等待已授权限，也不以96条旧门新增范围。细节与精确资产见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)。
+按PDEC-016完成fresh Dynamic人工gate到最终自动父消费，再精确清理新增Hook技能与合成账号资产移交/停用，最后核对CI、commit/push文档。Local发行与same_session/Hook有界实证已完成，不再重复。Ling原问题失败保留、单次MiniMax对照通过且已恢复原模型，不用更名或删失败制造全通过。细节与精确资产见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)。
 
 此前交付背景（不替代上述下一动作）：
 

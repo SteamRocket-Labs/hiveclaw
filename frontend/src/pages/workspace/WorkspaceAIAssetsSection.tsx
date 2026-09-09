@@ -143,6 +143,7 @@ export default function WorkspaceAIAssetsSection({ selectedTenantId }: Props) {
   }, [assetType, lifecycleStatus, selectedTenantId, t]);
 
   const loadDetail = useCallback(async (assetId: string) => {
+    setDetail(null);
     try {
       setDetail(await aiAssetsApi.detail(assetId));
     } catch (error) {
@@ -165,7 +166,7 @@ export default function WorkspaceAIAssetsSection({ selectedTenantId }: Props) {
   }), [assets]);
 
   const rollback = async (version: number) => {
-    if (!detail) return;
+    if (!detail || detail.asset.id !== selectedAssetId) return;
     const confirmed = await requestAppConfirm({
       title: t('enterprise.extensions.aiAssetsRollbackTitle', 'Rollback AI asset'),
       message: t('enterprise.extensions.aiAssetsRollbackConfirm', { version }),
@@ -185,7 +186,7 @@ export default function WorkspaceAIAssetsSection({ selectedTenantId }: Props) {
   };
 
   const reconcile = async () => {
-    if (!detail) return;
+    if (!detail || detail.asset.id !== selectedAssetId) return;
     setBusy(true);
     try {
       const result = await aiAssetsApi.reconcile(detail.asset.id);
@@ -194,6 +195,7 @@ export default function WorkspaceAIAssetsSection({ selectedTenantId }: Props) {
     } catch (error) {
       console.error(error);
       showAppToast(t('enterprise.extensions.aiAssetsReconcileFailed', 'Asset reconciliation failed'), 'error');
+      await Promise.all([loadAssets(), loadDetail(detail.asset.id)]);
     } finally { setBusy(false); }
   };
 
@@ -212,7 +214,7 @@ export default function WorkspaceAIAssetsSection({ selectedTenantId }: Props) {
         <select aria-label={t('enterprise.extensions.aiAssetsStatusFilter', 'Lifecycle status')} value={lifecycleStatus} onChange={(event) => setLifecycleStatus(event.target.value)}>
           {LIFECYCLE_STATES.map((value) => <option key={value || 'all'} value={value}>{value || t('enterprise.extensions.aiAssetsAllStates', 'All states')}</option>)}
         </select>
-        <button type="button" className="btn btn-secondary" onClick={() => void loadAssets()}>{t('common.refresh', 'Refresh')}</button>
+        <button type="button" className="btn btn-secondary" onClick={() => { void loadAssets(); if (selectedAssetId) void loadDetail(selectedAssetId); }}>{t('common.refresh', 'Refresh')}</button>
       </div>
       <div className="ai-asset-layout">
         <div className="ai-asset-list" role="list" aria-busy={loading}>
@@ -227,7 +229,7 @@ export default function WorkspaceAIAssetsSection({ selectedTenantId }: Props) {
             </button>
           ))}
         </div>
-        {detail ? (
+        {detail && detail.asset.id === selectedAssetId ? (
           <AIAssetDetailPanel detail={detail} busy={busy} onRollback={rollback} onReconcile={reconcile} />
         ) : (
           <div className="ai-asset-empty ai-asset-inspector-empty">{t('enterprise.extensions.aiAssetsSelect', 'Select an asset to inspect evidence and revisions')}</div>

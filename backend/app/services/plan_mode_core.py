@@ -176,7 +176,7 @@ def classify_plan_mode_entry(content: str, *, explicit: bool = False) -> PlanMod
     if not text:
         return PlanModeEntryDecision(mode="none")
 
-    if not explicit and _DECLINE_PLAN_MODE_RE.search(text):
+    if not explicit and (_DECLINE_PLAN_MODE_RE.search(text) or text == "Continue without entering Plan Mode."):
         return PlanModeEntryDecision(mode="declined", title=text[:120], reason="user_declined_recommended_plan_mode")
 
     has_explicit = explicit or bool(_EXPLICIT_PLAN_MODE_RE.search(text))

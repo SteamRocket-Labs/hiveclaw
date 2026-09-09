@@ -34,7 +34,7 @@ from app.models.runtime_task import (
 from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
 from app.models.user import User
 from app.services.execution_admission import ExecutionAdmission, ExecutionAdmissionDecision
-from app.services.runtime_budget_service import RuntimeBudgetReservation, RuntimeBudgetService
+from app.services.runtime_budget_service import RuntimeBudgetDenied, RuntimeBudgetReservation, RuntimeBudgetService
 from app.services.runtime_result_store import (
     RuntimeResultDescriptor,
     RuntimeResultIntegrationPage as RuntimeResultIntegrationPageValue,
@@ -1505,6 +1505,7 @@ class RuntimeNotificationOutboxService:
         admission: ExecutionAdmission | None = None
         admission_decision: ExecutionAdmissionDecision | None = None
         budget_run_id: uuid.UUID | None = None
+        continuation_denial: str | None = None
         if page.delivery_mode == "parent_continuation" and budget_run_ids:
             try:
                 budget_run_id = _uuid(next(iter(budget_run_ids)), field="budget_run_id")
@@ -1512,21 +1513,25 @@ class RuntimeNotificationOutboxService:
                 budget_run_id = None
             if budget_run_id is not None:
                 admission = ExecutionAdmission(RuntimeBudgetService(session_factory=self._session_factory))
-                admission_decision = await admission.admit(
-                    RuntimeBudgetReservation(
-                        budget_run_id=budget_run_id,
-                        reservation_key=f"runtime_result_page:{page.id}:continuation",
-                        continuation_wakes=1,
-                        reason="runtime_result_page_parent_continuation",
-                        metadata={
-                            "integration_page_id": str(page.id),
-                            "integration_epoch": page.integration_epoch,
-                            "root_scope_key": page.root_scope_key,
-                            "item_count": len(page.items),
-                        },
+                try:
+                    admission_decision = await admission.admit(
+                        RuntimeBudgetReservation(
+                            budget_run_id=budget_run_id,
+                            reservation_key=f"runtime_result_page:{page.id}:continuation",
+                            continuation_wakes=1,
+                            reason="runtime_result_page_parent_continuation",
+                            metadata={
+                                "integration_page_id": str(page.id),
+                                "integration_epoch": page.integration_epoch,
+                                "root_scope_key": page.root_scope_key,
+                                "item_count": len(page.items),
+                            },
+                        )
                     )
-                )
-                if admission_decision.waiting:
+                except RuntimeBudgetDenied as exc:
+                    # The denied inference must not block delivery of already committed evidence.
+                    continuation_denial = str(exc)
+                if admission_decision is not None and admission_decision.waiting:
                     raise CompletionDeliveryDeferred("runtime_budget_approval_required")
 
         async with tenant_scoped_session(
@@ -1587,7 +1592,8 @@ class RuntimeNotificationOutboxService:
                 integration_page_id=page.id,
                 manifest=page.manifest,
                 inherited_budget_run_id=budget_run_id,
-                resume_parent=page.delivery_mode == "parent_continuation",
+                resume_parent=page.delivery_mode == "parent_continuation" and continuation_denial is None,
+                **({"continuation_denial": continuation_denial} if continuation_denial else {}),
                 # Transient admission-time claim fence: threaded, never
                 # persisted into any durable authority marker.
                 page_claim_token=page.claim_token,

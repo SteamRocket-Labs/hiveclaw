@@ -83,6 +83,59 @@ async def _clear_outbox(owner_sessionmaker) -> None:
         await db.commit()
 
 
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_budget_denied_parent_wake_projects_evidence_without_blocking_later_pages(
+    owner_sessionmaker, monkeypatch
+):
+    from dataclasses import replace
+    from app.services.runtime_budget_service import RuntimeBudgetDenied
+
+    await _clear_outbox(owner_sessionmaker)
+    tenant_id, user_id, agent_id, session_id = await _seed_parent_session(owner_sessionmaker)
+    notice = replace(
+        _notification(tenant_id=tenant_id, user_id=user_id, agent_id=agent_id, session_id=session_id),
+        delivery_mode="parent_continuation",
+        metadata={"budget_run_id": str(uuid.uuid4())},
+    )
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        first_id = await enqueue_completion_notification(db, notice)
+        await db.commit()
+
+    async def denied(*_args, **_kwargs):
+        raise RuntimeBudgetDenied("runtime_budget_exhausted:tokens", dimensions=["tokens"])
+
+    async def forbidden_model_start(**_kwargs):
+        pytest.fail("A denied budget must never start another model run")
+
+    monkeypatch.setattr("app.services.execution_admission.ExecutionAdmission.admit", denied)
+    monkeypatch.setattr("app.services.agent_session_continuation.start_web_chat_run", forbidden_model_start)
+    service = RuntimeNotificationOutboxService(session_factory=owner_sessionmaker)
+    first = await service.drain_once(worker_id="budget-denied-page")
+    assert first["delivered"] == 1
+    async with owner_sessionmaker() as db:
+        row = await db.get(RuntimeNotificationOutbox, first_id)
+        assert row.status == "delivered"
+        assert row.delivery_receipt_json["consumer"] == "session_projection"
+        assert row.delivery_receipt_json["continuation_status"] == "denied"
+        event = await db.scalar(
+            select(ChatTranscriptEvent).where(
+                ChatTranscriptEvent.session_id == session_id,
+                ChatTranscriptEvent.event_type == "agent_task_notification",
+            )
+        )
+        assert "runtime_budget_exhausted:tokens" in event.content
+        assert event.metadata_json["result_refs"]
+
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        await enqueue_completion_notification(
+            db, replace(notice, source_run_id="later-result", delivery_mode="session_projection", metadata={})
+        )
+        await db.commit()
+    second = await service.drain_once(worker_id="later-page")
+    assert second["delivered"] == 1
+    assert second["deferred"] == 0
+
+
 def _notification(*, tenant_id, user_id, agent_id, session_id, source_run_id="run-1", status="completed"):
     return CompletionNotification(
         tenant_id=tenant_id,

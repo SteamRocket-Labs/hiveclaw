@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from typing import Any
 from uuid import UUID
 
@@ -166,6 +167,89 @@ async def decline_latest_recommendation_for_user(
     if recommendation is None or user_id is None:
         return None
     return decline_recommendation(recommendation, user_id=user_id)
+
+
+async def decline_native_recommendation_for_run(
+    db: Any,
+    *,
+    tenant_id: UUID,
+    agent_id: UUID,
+    user_id: UUID,
+    session_id: str,
+    run_id: UUID,
+) -> AgentPlanRecommendation | None:
+    """Bind a user decline to a committed native request, once per consuming run.
+
+    The tool receipt is the recommendation evidence; assistant prose is not.
+    Resuming the same run retains its binding, but another run cannot reuse it.
+    """
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionToolInvocation
+
+    row = (
+        await db.execute(
+            select(SessionToolInvocation, ChatTranscriptEvent)
+            .join(ChatTranscriptEvent, ChatTranscriptEvent.id == SessionToolInvocation.result_event_id)
+            .join(RuntimeTask, RuntimeTask.id == SessionToolInvocation.run_id)
+            .where(
+                SessionToolInvocation.tenant_id == tenant_id,
+                SessionToolInvocation.session_id == UUID(str(session_id)),
+                SessionToolInvocation.run_id != run_id,
+                SessionToolInvocation.tool_name == "request_plan_mode",
+                SessionToolInvocation.effect_state == "effect_committed",
+                ChatTranscriptEvent.agent_id == agent_id,
+                ChatTranscriptEvent.item_kind == "tool_result",
+                ChatTranscriptEvent.lifecycle == "completed",
+                RuntimeTask.root_user_id == user_id,
+            )
+            .order_by(ChatTranscriptEvent.sequence.desc())
+            .limit(1)
+            .with_for_update(of=SessionToolInvocation)
+        )
+    ).first()
+    if row is None:
+        return None
+    invocation, event = row
+    payload = dict(event.metadata_json or {}).get("v2_payload", {})
+    try:
+        result = json.loads(payload.get("content", ""))
+    except (TypeError, ValueError):
+        return None
+    if (
+        payload.get("outcome") != "success"
+        or not isinstance(result, dict)
+        or result.get("status") != "plan_mode_entry_requested"
+        or result.get("requested_by_user_id") != str(user_id)
+    ):
+        return None
+    recommendation = await db.scalar(
+        select(AgentPlanRecommendation).where(
+            AgentPlanRecommendation.tenant_id == tenant_id,
+            AgentPlanRecommendation.agent_id == agent_id,
+            AgentPlanRecommendation.session_id == str(session_id),
+            AgentPlanRecommendation.recommended_to_user_id == user_id,
+            AgentPlanRecommendation.metadata_json["native_invocation_id"].astext == str(invocation.id),
+        )
+    )
+    if recommendation is not None:
+        if recommendation.status == "declined" and recommendation.metadata_json.get("declined_for_run_id") == str(
+            run_id
+        ):
+            return recommendation
+        return None
+    recommendation = await create_plan_recommendation(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        recommended_to_user_id=user_id,
+        session_id=session_id,
+        runtime_task_id=invocation.run_id,
+        source="web",
+        original_request=str(result.get("reason") or ""),
+        metadata_json={"native_invocation_id": str(invocation.id), "declined_for_run_id": str(run_id)},
+    )
+    return decline_recommendation(recommendation, user_id=user_id) if recommendation is not None else None
 
 
 async def accept_latest_recommendation_for_user(

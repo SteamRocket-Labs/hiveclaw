@@ -125,6 +125,15 @@ once原Run审批已200/resolved并same-run恢复，随后工具被明确aborted/
 - 真实PG入口验证：重复start一个budget；worker恢复不重复child；子任务completed但缺文件保持suspended；跨user 404；retry保留previous_attempts并只新增一次child；unknown child取消保持cancel_needs_reconciliation且禁止retry；child对账killed后root才killed。25项通过11.08s。前端新增preview绑定、同intent transport重试、改参数失效与adapter检查，加Office共7passed；完整TypeScript/Vite build通过。前次124后端/28前端及本次RLS17passed/206.83s保留，无新RLS指纹变更。
 - 仍需A2A生产三员工交接/人工review/父消费及文件下载，Office预览和styles错误，Dynamic07最终文件及UI消费，once聊天/schedule/event，Goal阶段语义，Growth/Hook/Skills/角色移交离职与最终回归清理。无已通过主路径重做，无把单测/部署当功能PASS。
 
+### 15:34—16:08 事件与原生确认链收尾
+
+- A2A02第三节点仅retry一次后真实完成，最终文件含161/9/152及上游hash，root terminal committed。结果投递仍被旧预算拒绝阻断；候选只把预算拒绝限于新模型续轮，保留已提交结果的展示和明确denied原因，不加预算、不替模型撰写结果。真实PG反例验证不启动模型且后续结果页不被饿死。
+- Event02普通输入已完成，但无legacy ChatMessage；canonical SessionTurnInput/admission已有真实value13。候选在既有三个人类消息匹配入口读取同tenant/Agent、admitted且非内部通知/Goal的V2输入；原始正文随事件intent冻结。三个真实PG参数场景通过，包含未准入、取消、内部系统输入拒绝，旧入口保留。
+- 技能目录新建失败复现为异步ORM读取尚未初始化的files集合；构造时设files=[]，真实PG正式create/edit/read/delete/404检查通过。不新增存储、API或权限。
+- once03真实request_plan_mode已成功发出卡片，但旧binder依赖固定中文assistant marker和旧推荐row，新卡片不产生二者。候选从成功的canonical request_plan_mode invocation/result及原run user取得推荐证据，复用旧推荐账本记录authenticated decline并绑定consumer run；同run可恢复、另一个run不可重放。英文UI固定decline文本也正确进入declined分支；无历史证据仍不构成授权。Plan/工具/编排110项通过，包含真实PG错误工具、用户、状态负向检查。过期permission `7c15643a-f1af-555e-a271-08c6fbbc0397`正式deny200，control `cc9464ea-9185-5716-9393-baf4bde81676`；未执行旧时间任务。
+- Useful反馈 `f80e07f8-4e4e-4c65-ad8d-1491b1221556` active，entry `explicit_10806f9b93b87997`。fresh Session `147db867-00e6-497e-b4b3-74799ae57a99`完成，load_memory和模型最终原文已引用反馈中的143*2/286、证据驱动续轮、不把审批当效果；但同一回答又说找不到“分两轮”的反馈。记忆可达成立，回答一致性/完整成长闭环不成立，不修饰为PASS。
+- CI `34323900965` (f0671806)全量唯一失败是RLS fingerprint：实际824d649b…，常量仍cee37110…。当前候选实际5048843c…；与已部署源码相比仅trigger_daemon/runtime_notification_outbox的module-source变更，scope键无新增/删除，callsite精确注册检查已通过。仅同步审查hash，最终安全检查仍在运行。
+
 ### 14:40—15:30 原生Office闭环及队列交接实测
 
 - Office：正式CLI 1.0.88 的 `view --mode html --json` 实际输出 raw HTML，适配器误作JSON失败后fallback；只对HTML模式接收HTML，其他模式/非零退出仍严格报错，preview contract v2使旧fallback缓存失效。42项相关通过；生产原生DOCX/XLSX/PPTX候选HTML36621/7541/19240 bytes、text、service/CSP通过。`f8adc3ec`三服务SUCCESS；backend `03b499b3-e059-4b41-96a5-845762633b39`、backend-api `def87ace-d24c-47de-a85a-f467455b66aa`、frontend `da0bddab-8bef-4cd3-9aa0-139e30ab8aab`，同1062文件/hash `53e3146c3221c4838c0b6c4821a96f57ca3c48167add291682227e2f869624aa`。正式页面Word标题/正文/表格与Excel网格/标签/29已实际查看，无应用CSP错误。

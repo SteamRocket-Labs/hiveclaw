@@ -720,10 +720,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 
 # Reviewed normalized AST of direct bypass scopes and statically discoverable
 # contextmanager consumers. Predicates, locks, ORM writes, and add() targets are included.
-# 2026-09-09: reviewed the session_model_round module-source guard preventing
-# duplicate prepare from mutating a sealed result; all 588 scope entries and
-# bypass callsites remain unchanged, with no new query or authorization.
-RLS_BYPASS_SCOPES_SHA256 = "cee37110bbe46cd9435c12aea5bb6a6dd00a22aa59a7c51d6999749e49b7564e"
+# 2026-09-09: reviewed trigger_daemon and runtime_notification_outbox module-source
+# changes: tenant-scoped V2 message matching and evidence-only budget-denied
+# projection. No added bypass callsites, grants, or widened privileged queries.
+RLS_BYPASS_SCOPES_SHA256 = "5048843c37e16d4f42fd10660e18dbeec03f3654083eb3739ab95bec37c08b18"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

@@ -469,6 +469,7 @@ async def continue_parent_session_with_result_page(
     inherited_budget_run_id: uuid.UUID | None = None,
     resume_parent: bool = True,
     page_claim_token: uuid.UUID | None = None,
+    continuation_denial: str | None = None,
 ) -> dict[str, Any]:
     """Project one durable result page and wake the parent at most once."""
 
@@ -479,6 +480,8 @@ async def continue_parent_session_with_result_page(
         f"{int(manifest.get('integration_epoch') or 0)} "
         f"(terminal={int(coverage.get('terminal') or 0)}/expected={int(coverage.get('expected') or 0)})."
     )
+    if continuation_denial:
+        display_content += f" Parent continuation denied: {continuation_denial}. Results remain available for review."
     envelope = build_result_integration_message(manifest)
     runtime_context = build_result_integration_runtime_context(manifest)
     metadata = {
@@ -499,6 +502,9 @@ async def continue_parent_session_with_result_page(
         "message": display_content,
         "display_content": display_content,
         "causation_id": str(integration_page_id),
+        **(
+            {"continuation_status": "denied", "continuation_denial": continuation_denial} if continuation_denial else {}
+        ),
         **({"budget_run_id": str(inherited_budget_run_id)} if inherited_budget_run_id is not None else {}),
     }
     for item in items:
@@ -546,6 +552,11 @@ async def continue_parent_session_with_result_page(
             "status": "projected",
             "consumer": "session_projection",
             "integration_page_id": str(integration_page_id),
+            **(
+                {"continuation_status": "denied", "continuation_denial": continuation_denial}
+                if continuation_denial
+                else {}
+            ),
         }
     return await continue_agent_session_from_mailbox(
         db=db,

@@ -1223,11 +1223,66 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
             current_agent = agent_r.scalar_one_or_none()
             current_tenant_id = getattr(current_agent, "tenant_id", None)
 
+            async def _v2_human_match(*, session_id=None, user_id=None, source_label="") -> bool:
+                from sqlalchemy import func
+                from app.models.session_v2 import SessionCommand, SessionInputAdmission, SessionTurnInput
+
+                runtime = SessionCommand.target_json["runtime_metadata"]
+                statement = (
+                    select(SessionTurnInput, ChatSession)
+                    .join(ChatSession, ChatSession.id == SessionTurnInput.session_id)
+                    .join(SessionCommand, SessionCommand.id == SessionTurnInput.command_id)
+                    .join(
+                        SessionInputAdmission,
+                        (SessionInputAdmission.input_id == SessionTurnInput.id)
+                        & (SessionInputAdmission.input_revision == SessionTurnInput.revision),
+                    )
+                    .where(
+                        SessionTurnInput.tenant_id == current_tenant_id,
+                        ChatSession.agent_id == trigger.agent_id,
+                        SessionTurnInput.created_at > since,
+                        SessionTurnInput.status.in_(("accepted", "queued", "bound", "applied", "rolled_over")),
+                        SessionInputAdmission.state == "admitted",
+                        func.coalesce(runtime["task_notification"].astext, "false") != "true",
+                        func.coalesce(runtime["runtime_mailbox_role"].astext, "") != "system",
+                        func.coalesce(runtime["source"].astext, "") != "session_goal",
+                    )
+                    .order_by(SessionTurnInput.created_at.desc())
+                    .limit(20 if from_user_identity else 1)
+                )
+                if session_id:
+                    statement = statement.where(SessionTurnInput.session_id == uuid.UUID(str(session_id)))
+                if user_id:
+                    statement = statement.where(
+                        SessionCommand.principal_type == "user", SessionCommand.principal_id == user_id
+                    )
+                for input_row, input_session in (await db.execute(statement)).all():
+                    if from_user_identity:
+                        if from_channel and input_session.source_channel != from_channel:
+                            continue
+                        if _session_sender_identity(input_session) != from_user_identity:
+                            continue
+                    parts = input_row.content_parts_json or []
+                    cfg["_matched_message"] = (
+                        parts[0]["text"]
+                        if len(parts) == 1 and isinstance(parts[0], dict) and isinstance(parts[0].get("text"), str)
+                        else _json.dumps(parts, ensure_ascii=False)
+                    )
+                    cfg["_matched_from"] = source_label
+                    cfg["_matched_event_key"] = f"session_input:{input_row.id}:revision:{input_row.revision}"
+                    return True
+                return False
+
             if reply_to_current_sender:
                 reply_ctx = getattr(trigger, "reply_context", None) or {}
                 session_id = str(reply_ctx.get("session_id") or "")
                 if not session_id:
                     return False
+                if await _v2_human_match(
+                    session_id=session_id,
+                    source_label=reply_ctx.get("user_label") or reply_ctx.get("sender_identity") or "current_sender",
+                ):
+                    return True
                 result = await db.execute(
                     select(ChatMessage)
                     .where(
@@ -1247,6 +1302,8 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
                 )
 
             if from_user_identity:
+                if await _v2_human_match(source_label=from_user_identity):
+                    return True
                 result = await db.execute(
                     select(ChatMessage, ChatSession)
                     .join(ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString))
@@ -1343,6 +1400,8 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
                 if not target_user:
                     return False
 
+                if await _v2_human_match(user_id=target_user.id, source_label=from_user_name):
+                    return True
                 result = await db.execute(
                     select(ChatMessage)
                     .join(ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString))

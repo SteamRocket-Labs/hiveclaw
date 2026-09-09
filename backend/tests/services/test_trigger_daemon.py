@@ -966,6 +966,80 @@ async def test_check_new_agent_messages_from_user_name_has_no_latest_message_fal
     assert matched is False
 
 
+@pytest.mark.usefixtures("migrated_pg_url")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["name", "current_sender", "identity"])
+async def test_message_trigger_reads_admitted_v2_input_without_legacy_projection(
+    monkeypatch, owner_sessionmaker, app_user_sessionmaker, mode
+):
+    from sqlalchemy import select
+    from app.database import tenant_scoped_session
+    from app.models.chat_session import ChatSession
+    from app.models.session_v2 import SessionCommand, SessionInputAdmission, SessionTurnInput
+    from app.models.user import User
+    from app.services import trigger_daemon as daemon
+    from tests.services.test_session_input_control_v2 import _accepted_input, _authority, _seed_session
+
+    tenant_id, user_id, agent_id, session_id, _ = await _seed_session(owner_sessionmaker)
+    since = datetime.now(timezone.utc) - timedelta(seconds=1)
+    async with owner_sessionmaker() as db:
+        authority = await _authority(db, user_id=user_id, agent_id=agent_id, session_id=session_id)
+        receipt = await _accepted_input(db, authority=authority, session_id=session_id, content="AMBER value 13")
+        row = await db.get(SessionTurnInput, receipt.input_id)
+        admission = await db.scalar(select(SessionInputAdmission).where(SessionInputAdmission.input_id == row.id))
+        admission.state = "admitted"
+        input_id, command_id = row.id, row.command_id
+        user = await db.get(User, user_id)
+        username = user.username
+        session = await db.get(ChatSession, session_id)
+        session.source_channel = "feishu"
+        session.delivery_target_json = {"channel": "feishu", "user_id": "synthetic-sender"}
+        await db.commit()
+
+    config = {
+        "name": {"from_user_name": username},
+        "current_sender": {"reply_to_current_sender": True},
+        "identity": {"from_user_identity": "feishu:synthetic-sender", "from_channel": "feishu"},
+    }[mode]
+    trigger = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        name="v2-message",
+        config=config,
+        created_at=since,
+        last_fired_at=None,
+        fire_count=0,
+        reply_context={"session_id": str(session_id)},
+    )
+    _route_scoped_session(
+        monkeypatch,
+        daemon,
+        lambda: tenant_scoped_session(tenant_id, session_factory=app_user_sessionmaker),
+        tenant_id=tenant_id,
+    )
+    assert await daemon._check_new_agent_messages(trigger) is True
+    assert config["_matched_message"] == "AMBER value 13"
+    assert config["_matched_event_key"] == f"session_input:{input_id}:revision:1"
+
+    # An internal continuation, unadmitted input or cancelled intent is not a new human message.
+    for metadata, admission_state, input_status in [
+        ({"task_notification": True}, "admitted", "accepted"),
+        ({"runtime_mailbox_role": "system"}, "admitted", "accepted"),
+        ({"source": "session_goal"}, "admitted", "accepted"),
+        ({}, "admission_pending", "accepted"),
+        ({}, "admitted", "cancelled"),
+    ]:
+        async with owner_sessionmaker() as db:
+            command = await db.get(SessionCommand, command_id)
+            command.target_json = {"runtime_metadata": metadata}
+            admission = await db.scalar(select(SessionInputAdmission).where(SessionInputAdmission.input_id == input_id))
+            admission.state = admission_state
+            row = await db.get(SessionTurnInput, input_id)
+            row.status = input_status
+            await db.commit()
+        assert await daemon._check_new_agent_messages(trigger) is False
+
+
 @pytest.mark.asyncio
 async def test_check_new_agent_messages_from_agent_name_rejects_ambiguous_agent_names(monkeypatch):
     import app.services.trigger_daemon as trigger_daemon

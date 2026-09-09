@@ -1081,6 +1081,7 @@ async def browse_write(body: BrowseWriteIn, current_user: User = Depends(require
                 folder_name=folder,
                 is_builtin=False,
                 tenant_id=tenant_id,
+                files=[],
             )
             db.add(skill)
             await db.flush()

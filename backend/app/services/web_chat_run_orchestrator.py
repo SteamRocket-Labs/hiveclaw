@@ -778,23 +778,35 @@ async def _bind_trusted_decline(state: _WebChatRunState) -> dict[str, Any] | Non
     if state.internal_runtime_context_turn:
         return None
     core = state.ports.runtime.plan_mode_core
-    decline = core.trusted_decline_metadata(
-        content=str(state.metadata.get("display_content") or state.prompt),
-        messages=state.history_messages,
+    content = str(state.metadata.get("display_content") or state.prompt)
+    decision = core.classify_plan_mode_entry(
+        content,
         explicit=bool(state.metadata.get("plan_mode_requested")),
     )
-    if not decline or state.actor_user_id is None:
+    if decision.mode != "declined" or state.actor_user_id is None:
         return None
+    decline = {"reason": "user_declined_recommended_plan_mode", "title": content[:120]}
     try:
-        from app.services.plan_mode_recommendation_service import decline_latest_recommendation_for_user
+        from app.services.plan_mode_recommendation_service import (
+            decline_latest_recommendation_for_user,
+            decline_native_recommendation_for_run,
+        )
 
         async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
-            recommendation = await decline_latest_recommendation_for_user(
+            recommendation = await decline_native_recommendation_for_run(
                 db,
+                tenant_id=state.agent.tenant_id,
                 agent_id=state.agent.id,
                 user_id=state.actor_user_id,
                 session_id=state.session_id,
+                run_id=state.run_uuid,
             )
+            if recommendation is None and core.trusted_decline_metadata(
+                content=content, messages=state.history_messages
+            ):
+                recommendation = await decline_latest_recommendation_for_user(
+                    db, agent_id=state.agent.id, user_id=state.actor_user_id, session_id=state.session_id
+                )
             if recommendation is None:
                 return None
             decline["recommendation_id"] = str(recommendation.id)

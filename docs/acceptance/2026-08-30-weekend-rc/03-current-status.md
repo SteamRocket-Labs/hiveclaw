@@ -13,6 +13,8 @@ verification_status: remaining-functional-closure-in-progress
 
 ## 当前决定与本批次出口
 
+21:28 临时管理员验收完成并撤回：owner明确回复“允许啊 快点吧”，仅授权合成账号 `wrc_b4_20260909_tester` 临时org_admin。正式管理UI确认后，独立登录核实同tenant/同user、role=org_admin；成员列表403→200、公司审计200，平台Hook403、platform_admin角色输入422、自身离职预览400（不能离职自己）。随后同UI确认恢复member，正式API核实role=member、成员列表重新403，所属MemberAnalyst仍200。没有实际离职/资产转移、真实用户变更或自审政策修改。完整应用CI34327770653现已三job success；本次只改验收文档，不再部署应用。A2A/Dynamic父消费、Growth、Skill卸载与完整D/E等独立缺口仍保留，不能用管理员验收代替它们。
+
 16:33 收尾核对：once04正式GET为fire_count1/disabled，last_fired_at=08:31:48.425672Z；文件 `workspace/wrc-once-chat-04.md`读取200，真实内容为marker及19*4=76。聊天原生Plan建议→authenticated decline→set_trigger→到时文件消费通过；父聊天重开仍只有创建回执，未把它说成自动回帖已验。Office、固定Workflow、Goal、Local、once/schedule/event已通过的有界路径不重做。A2A/Dynamic最终父消费、Growth回答矛盾、活动Skill卸载、角色/自审政策、完整D/E及cleanup仍未闭环，**不是全部完成，NPTCR仍0/96**。文档结构10passed/0.35s，diff检查通过；最新应用CI34327770653后端仍在全量pytest阶段，前端与15journeys成功。完整分类及精确资产见[收尾记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)。
 
 16:25 实测：`f0b6939e`已push，三服务SUCCESS：backend `2f7e0fdb-0229-4f47-87d8-236270ce05f8`、backend-api `1eee73e1-4f86-4840-9917-55f3781b68e4`、frontend `f91fcdd4-0d94-425d-a1f6-93b91ebe3fd0`。public backend与精确archive同1062文件/hash `103d56d156ecfd6c3ac9e7bf317320095e0158a1f8c1f481f515a3abb0fdbdac`；backend-api SSH三次连接关闭，未宣称其独立运行hash已核实。最终RLS17passed/202.73s，Skill真实PG及API10passed，release archive hygiene3487paths通过，CI34327770653仍在执行。Event03已捕获canonical input并仅fire1后停用，正式file GET200包含marker及17*5=85。once04真实request_plan_mode→用户拒绝→set_trigger成功，原生推荐账本绑定有效，trigger `f07ba328-52ed-4c6f-adc9-8ced3e7cd044`尚待16:30:43唤醒，不提前算PASS。Skill registry创建/编辑/安装/实际load_skill及29+7=36完成，待精确清理。A2A02最终报告正式UI下载hash5897f784…与journal一致，源文件hashd0150e0c…一致，三员工交接及最终文件已交付；父会话仍未见完整最终结果页，不声称自动父消费通过。离职仅打开合成member的影响预览并取消：1个Agent、1条直接权限、接收人为同公司owner；未转移、停用或升权。
@@ -90,7 +92,7 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 
 ## 唯一下一动作
 
-提交本轮收尾记录，向owner交付确切未闭环清单与待决边界；不自动新建第三轮整链、改变自审政策或升权。once04已实际文件消费，不再等待或重发。父会话消费需明确原页的受支持恢复策略，不能直接重置DB；Growth保留实际矛盾，活动Skill缺卸载入口，角色转移仅有只读预览。队列event/委派depth已部署，A2A02第三节点已retry完成，最终报告已真实下载，不再执行历史下一动作。Office、Goal和固定Workflow已通过路径不重跑。细节与精确资产见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)。
+临时管理员授权已实际使用、验证并撤回，不再把它列为等待授权。独立缺口仍按收尾分类处理：父会话消费需原页的受支持恢复策略，不能直接重置DB；Growth保留实际矛盾，活动Skill缺卸载入口，实际角色移交/离职与自审政策未执行。不要自动重跑旧整链、变更政策或重新升权。once04、Office、Goal、固定Workflow和A2A最终下载的已通过路径不重做。细节与精确资产见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)。
 
 此前交付背景（不替代上述下一动作）：
 

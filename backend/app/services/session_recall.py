@@ -349,7 +349,9 @@ def _search_t0_session_ledger(
         events = [
             event
             for event in replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=data_root)
-            if event.event_type != "segment_boundary" and event.content.strip()
+            if event.event_type != "segment_boundary"
+            and event.role not in _EXCLUDED_ROLES
+            and event.content.strip()
         ]
         if not events:
             continue

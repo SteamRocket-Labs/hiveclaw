@@ -837,12 +837,6 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
                     source = hit.get("source", "unknown")
                     headline = hit.get("headline", "past session")
                     results.append(f"- ({ts} [{source}]) {headline}")
-                    focused_recap = (hit.get("focused_recap") or "").strip()
-                    if focused_recap:
-                        results.append(f"  Recap: {focused_recap}")
-                    summary = (hit.get("summary") or "").strip()
-                    if summary and summary != focused_recap:
-                        results.append(f"  Summary: {summary}")
                     complete_transcript = (hit.get("transcript") or "").strip()
                     if complete_transcript:
                         results.append("  Complete transcript:")
@@ -851,6 +845,12 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
                     else:
                         # Legacy/degraded hits may lack a canonical transcript.
                         # In that case expose every available evidence projection.
+                        focused_recap = (hit.get("focused_recap") or "").strip()
+                        if focused_recap:
+                            results.append(f"  Recap: {focused_recap}")
+                        summary = (hit.get("summary") or "").strip()
+                        if summary and summary != focused_recap:
+                            results.append(f"  Summary: {summary}")
                         evidence_lines = hit.get("evidence_lines") or []
                         if evidence_lines:
                             results.append("  Evidence:")

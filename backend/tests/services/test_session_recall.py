@@ -17,6 +17,35 @@ class _FakeResult:
         return list(self._rows)
 
 
+def test_t0_recall_excludes_runtime_roles_without_losing_conversation(monkeypatch, tmp_path):
+    from app.services import session_recall
+
+    agent_id = uuid.uuid4()
+    session_id = str(uuid.uuid4())
+    (tmp_path / str(agent_id) / "memory" / "t0" / "sessions" / session_id).mkdir(parents=True)
+    monkeypatch.setattr(session_recall, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    events = [
+        SimpleNamespace(
+            event_type="message", role=role, content=content, source="web", created_at="2026-09-09T00:00:00Z"
+        )
+        for role, content in [
+            ("system", "feedback INTERNAL_DIAGNOSTICS"),
+            ("tool_call", "feedback INTERNAL_CALL"),
+            ("user", "feedback original question"),
+            ("assistant", "saved behavior"),
+            ("tool", "ACTUAL_EVIDENCE_TAIL"),
+        ]
+    ]
+    monkeypatch.setattr(session_recall, "replay_t0_session_events", lambda **kwargs: events)
+    hits = session_recall._search_t0_session_ledger(agent_id, "feedback", limit=5, snippet_limit=3)
+    assert len(hits) == 1
+    assert "INTERNAL_DIAGNOSTICS" not in hits[0]["transcript"]
+    assert "INTERNAL_CALL" not in hits[0]["transcript"]
+    assert "original question" in hits[0]["transcript"]
+    assert "saved behavior" in hits[0]["transcript"]
+    assert "ACTUAL_EVIDENCE_TAIL" in hits[0]["transcript"]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("source", ["t0", "legacy", "db"])
 async def test_recall_returns_retrieved_evidence_without_waiting_for_summary_provider(monkeypatch, source):

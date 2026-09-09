@@ -273,8 +273,8 @@ async def test_search_memory_returns_complete_recalled_session_transcript(tmp_pa
                 "started_at": "2026-07-13T00:00:00Z",
                 "source": "web",
                 "headline": "Relevant prior session",
-                "focused_recap": "Short recap without the decisive tail.",
-                "summary": "Short summary without the decisive tail.",
+                "focused_recap": "Evidence passthrough: " + decisive_tail,
+                "summary": decisive_tail,
                 "evidence_lines": ["User: initial evidence"],
                 "transcript_window": "User: nearby context only",
                 "context_snippets": ["nearby context only"],
@@ -289,6 +289,7 @@ async def test_search_memory_returns_complete_recalled_session_transcript(tmp_pa
 
     assert "Complete transcript:" in result
     assert decisive_tail in result
+    assert result.count(decisive_tail) == 1
 
 
 @pytest.mark.asyncio

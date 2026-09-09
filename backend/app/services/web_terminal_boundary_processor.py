@@ -65,6 +65,7 @@ class _WebTerminalMaterial:
     main_model: str
     source_refs: tuple[str, ...]
     hook_metadata: dict[str, Any] = field(default_factory=dict)
+    has_bound_goal: bool = False
 
 
 T0Bridge = Callable[..., Awaitable[bool]]
@@ -965,6 +966,7 @@ async def _load_terminal_material(
         main_model=str(snapshot.get("model") or ""),
         source_refs=source_refs,
         hook_metadata=hook_metadata,
+        has_bound_goal=bool((task.metadata_json or {}).get("goal_id")),
     )
 
 
@@ -1528,4 +1530,21 @@ class WebTerminalBoundaryProcessor:
         )
         if summary_sequence is not None:
             receipt["summary_sequence"] = summary_sequence
+        if material.has_bound_goal:
+            from app.services.goal_continuation_service import continue_committed_goal_turn
+            from app.services.chat_transcript import lock_transcript_session
+
+            async with self._tenant_session(material.tenant_id, operation="goal_continuation") as db:
+                await lock_transcript_session(db, session_id=material.session_id)
+                task = await db.scalar(
+                    select(RuntimeTask)
+                    .where(
+                        RuntimeTask.id == material.runtime_task_id,
+                        RuntimeTask.tenant_id == material.tenant_id,
+                    )
+                    .with_for_update()
+                )
+                if task is None:
+                    raise TerminalBoundaryCanonicalMismatch("Goal continuation runtime task disappeared")
+                await continue_committed_goal_turn(db, task=task)
         return normalize_terminal_boundary_binding(receipt)

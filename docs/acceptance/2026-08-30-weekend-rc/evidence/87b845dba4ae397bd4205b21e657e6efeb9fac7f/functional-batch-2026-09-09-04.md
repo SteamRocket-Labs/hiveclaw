@@ -12,7 +12,7 @@ verification_status: functional-coverage-in-progress
 
 ## 目标与授权
 
-owner 明确要求：除阻塞项外，把剩余功能测试并修复；结束时提交 commit、更新文档、及时告知。允许在“rocky的实验室”公司内经过认证创建和使用合成 Agent、会话、知识、工作流，调用正式接口并开展可恢复实验；危险操作、真实外发、凭据、充值、无关数据和破坏性全库操作除外。旧 accepted plan 的功能优先、zCode 实现/Codex Review/部署/E2E 分工继续；不恢复固定 CC/Kimi 门与无限返修。当前状态唯一 writer 为 Codex，见 03-current-status。
+owner 明确要求：除阻塞项外，把剩余功能测试并修复；结束时提交 commit、更新文档、及时告知。允许在“rocky的实验室”公司内经过认证创建和使用合成 Agent、会话、知识、工作流，调用正式接口并开展可恢复实验；危险操作、真实外发、凭据、充值、无关数据和破坏性全库操作除外。07:25 owner明确后续只有Codex，取代旧zCode/CC分工；由主Codex独立实现、验证与交付，不新增代理或恢复固定审查门。当前状态唯一 writer 为 Codex，见 03-current-status。
 
 01:54:45 owner 授权后开始执行。完成以实际功能结果判定，不以旧最终发布计数或测试数量替代。长任务/外部依赖单列；四小时作为进度与投入复盘点，不将尚未测试的功能改名为 blocker。危险效果前单独确认。
 
@@ -28,9 +28,9 @@ owner 明确要求：除阻塞项外，把剩余功能测试并修复；结束�
 
 | 功能域 | B4 状态 | 实际范围 / 下一检查 |
 |---|---|---|
-| Session / 命令 / Plan / Goal / Ledger | partial-pass / failed | draft三面板、Ledger、clear、Skill、rewind、branch局部通过；MiniMax Goal暂停/继续/文件交付/完成通过。Plan负向schedule文字误路由且确认未启动；compact误扣留已失败终结工具，待修 |
+| Session / 命令 / Plan / Goal / Ledger | partial-pass | draft三面板、Ledger、clear、Skill、rewind、branch局部通过；Plan当前会话确认→真实计算/文件消费且零trigger、compact失败工具终态消费已生产通过。Goal暂停/继续/交付/完成通过，canonical计费与自动续接修复待部署复验 |
 | Memory / Growth / J1–J4 | partial-pass / provider-blocked | 显式保存→fresh取回→更正→退役→fresh排除通过；Useful反馈确实落盘，但semantic_review_unavailable而held；候选、纵向成长和真实对比未完成 |
-| 个人知识与多格式交付 | partial-pass / failed | 五格式上传/解析/Agent引用、报告下载、归档恢复与重建通过。MiniMax原生DOCX校验/下载通过；XLSX公式真实计算并缓存29、下载通过，但字体XML schema校验失败 |
+| 个人知识与多格式交付 | partial-pass / failed | 五格式上传/解析/Agent引用、报告下载、归档恢复与重建通过。MiniMax原生DOCX/XLSX校验与工作区下载通过，公式缓存29。新发现审批续跑未记录更新快照，最终卡片仍旧版本，修复待部署复验 |
 | 公司知识与 promotion | partial-pass / policy-blocked | PDF 导入→提案→普通风险审批→发布→Agent引用→下线检索排除→恢复v2重现通过；member显式权限和自审批合同待owner决定 |
 | HR / 数字员工生命周期 / 角色 | partial-pass / policy-blocked | 三个真实员工创建；新member首任务归属、Agent→HR handoff、Reviewer首任务不自动执行通过；普通member负向通过。权限扩展/自批业务政策待owner选择，完整角色UI/转移与离职未完成 |
 | 子 Agent / Team / 动态和固定工作流 / A2A | partial-pass | 临时子Agent、固定Reviewer A2A、Team完整计算/关闭通过；MiniMax Workflow三叶真实Python/Bash计算、模板传值、文件写读与父消费通过，事件组误标中断待修。固定定义draft/activate/fork/deprecate/停用拒绝通过，未跑定时触发 |
@@ -220,3 +220,19 @@ owner 明确要求：除阻塞项外，把剩余功能测试并修复；结束�
 - compact仅在绑定的terminal result event、允许的终态effect状态与typed outcome均匹配时恢复失败/拒绝/不可用/取消/中止记录；未知/缺失回执仍held。真实PG先复现5个终态非成功回放失败，再20项通过，含无current run的compact消费者。主工作区旧候选产生的无关schema警告不作为本次干净版本证据，独立archive联合检查待执行。
 - XLSX原始空白文件未编辑即被生产OfficeCLI1.0.88校验拒绝，font顺序name/family/color/sz/scheme；同一二进制原生create后的空白文件validate成功。故仅XLSX改用已有CLI create到服务自有临时路径，再沿原有原子替换发布；不增加依赖、不手改OOXML或忽略校验。Office41项检查通过；真实生成/公式/校验消费待部署复验。
 - Local审批复用现有AgentApprovalsSection，只补本地Agent owner可见tab；use/operator不扩大审批权限。Workflow按exact workflow run/step ID把先前pending/running与后来的终态回执关联，保留各事件细节，不让旧进度覆盖已完成状态；缺少回执、不同run/step和新的运行轮仍不算完成。前端141+155项检查、TypeScript与i18n通过，生产UI尚未重测。
+
+## 08:04 真实消费复验与剩余修正
+
+- `4a1d665e` 已push并三服务SUCCESS：backend `75e800ae-8fb3-4aed-bb22-a1ce8dacbbc0`、backend-api `7baa2f20-e6c3-4025-a372-4e3ff9cfa0bf`、frontend `9887b655-b512-4c1b-8e00-d55e99ed44cd`。干净archive、public health、backend-api SSH均为1058 files/source SHA256 `7c8b1b8c0335fa90eff4b1ebc44d21d8879a7116fbcd193067c98a00852849a4`。CI34291814880前端全门和15机械journeys成功；backend仅OfficeCLI测试一处format失败，未进入全量pytest；该格式已本地修正，待下一提交CI。
+- 原Office失败会话 `f703a243-c5c4-41f4-a1e4-afa860daace9` 单次正式compact成功，event `8095f782-8af0-44d3-95fa-53599972c824`/seq595，canonical receipt complete：17模型回合、35工具结果、53消息、held为空，压缩保留8消息。没有重跑原工具；摘要中的业务评价属于模型表达，不替代验收判定。
+- 新Plan Session `34ae29fc-d00a-4478-9e84-6c5cc55f0d7a`，plan `e0757c9f-2cb0-458b-bdfb-b03fd2a3bb58` v1/hash `960abb821e041e8732602565e608a3f928bf5363ccf20b784bb3112a2501729a`。正式确认一次后真实Python计算64、写读92B `workspace/b4-plan-fixed.md`/marker846，正式文件预览读回marker/result64。app_rls/read-only对账为in_session_execution/continue_current_session/create_trigger=false/wake_policy=none；执行任务 `f6b47e58-7dad-4402-9fd5-3fb01c00670a` completed，关联trigger为零。旧误建trigger仍以07:23正式暂停记录为准，未重放它。
+- 新普通member Office Session `e228f140-317f-4c4b-b4c0-02f4c9c43067`/run `1f7213a2-ed51-5730-9776-6efe6d4df2ff`，MiniMax原生create/apply/view/validate完成。seq971与973工具回执均明确Validation passed/no errors，DOCX/XLSX两格式成功。正式下载DOCX36914B/SHA256 `3ab043cc78b74060914ddd3a9192947f9beaa03e18ae893fe9a4189103c3536f`、XLSX2851B/SHA256 `7ec176c81581573bd521284c2f69f3420d8f6f2fe00e72f323ee68c63816d4ef`；ZIP/XML独立确认DOCX marker797、XLSX B6公式SUM(17,12)及缓存29。路径为`workspace/b4-office-template-fixed.docx/.xlsx`，旧失败文件未覆盖。
+- Workflow旧会话刷新后仍有中断误标，补充只读事件对账发现runtime_action_progress是同一run/step的第二套生命周期投影；首修只处理workflow_run/step。新增同实体action_progress/completed关联，真实类型反例先红后绿，121项相关前端检查通过；尚未部署此补充。
+- Goal完成后0tokens根因为canonical terminal commit未走旧计费/续接桥，且旧桥只查active Goal。当前本地修正把绑定Goal的canonical sealed usage在终态事务内幂等计费（包含complete），从既有terminal outbox消费一次续接；普通新输入绑定当时active Goal，旧任务不改绑定到replacement Goal。完成后的时间冻结、不再显示过时continue reason。80项service/真实PG检查通过，含active/complete、重复扣费/续接、replacement零效果及processor消费；干净版本验证和MiniMax真实两轮续接尚待完成。旧dirty runtime未接受、未提交。
+
+## 08:15 审批后文件快照缺口与集中修复验证
+
+- 校正08:04 Office结论：成功下载的是当前workspace文件，不是最终回复卡片。正式artifact下载 `6115177c-5fa9-4490-a2b2-5d34b06c1690` 返回2629B/SHA256 `db97361bd340bdcb2eee16c93c3c828e8018842a0370ad7c7e4d8e56440ceccd`，XML没有B6；当前workspace为2851B且B6公式/缓存29。不能宣称最终产物消费通过。
+- app_rls/read-only对账显示该run只有3个早期artifact记录；后续成功Office apply的canonical结果已存在但没有新快照。根因为审批续跑直接调用公共`complete_tool_invocation`，跳过web callback的artifact记录。修复在公共结算入口为成功且尚无parts的已执行写入复用既有快照、authority与ChatMessage FK，不改历史快照，不绕过审批，不以下载当前文件替换声明快照。
+- 新真实Postgres反例在修复前复现缺少artifact anchor，修复后包含重复回放共5项通过。干净staged archive联合Goal/terminal/artifact/permission/control **100 passed/31.84s**；前一同Goal代码archive的输入恢复3项通过；前端110项通过，12个Python文件Ruff/check-format通过。TypeScript/Vite/bundle及生产两轮Goal、Office最终卡片、Workflow刷新仍在验证，不以这些检查代替功能验收。
+- 仅暂存本轮14个实现/测试文件与本记录；`web_terminal_boundary_processor.py`原有owner的3处session factory修改保持未暂存，其他旧runtime候选不混入。

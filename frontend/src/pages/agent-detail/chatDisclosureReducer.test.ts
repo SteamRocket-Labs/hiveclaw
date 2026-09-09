@@ -10,9 +10,13 @@ import type { AgentChatMessage } from './chatRuntime';
 describe('chatDisclosureReducer', () => {
   it('settles earlier workflow progress only from the same run and step terminal receipt', () => {
     const progress: AgentChatMessage[] = [
+      { role: 'event', content: '', eventType: 'runtime_action_progress', eventStatus: 'pending', eventWorkflowRunId: 'wf-1' },
       { role: 'event', content: '', eventType: 'workflow_run', eventStatus: 'pending', eventWorkflowRunId: 'wf-1' },
       { role: 'event', content: '', eventType: 'workflow_step', eventStatus: 'running', eventWorkflowRunId: 'wf-1', eventWorkflowStepId: 'compute' },
       { role: 'event', content: '', eventType: 'workflow_step', eventStatus: 'done', eventWorkflowRunId: 'wf-1', eventWorkflowStepId: 'compute' },
+      { role: 'event', content: '', eventType: 'runtime_action_progress', eventStatus: 'running', eventWorkflowRunId: 'wf-1', eventWorkflowStepId: 'compute' },
+      { role: 'event', content: '', eventType: 'runtime_action_progress', eventStatus: 'done', eventWorkflowRunId: 'wf-1', eventWorkflowStepId: 'compute' },
+      { role: 'event', content: '', eventType: 'runtime_action_completed', eventStatus: 'completed', eventWorkflowRunId: 'wf-1' },
       { role: 'event', content: '', eventType: 'workflow_run', eventStatus: 'completed', eventWorkflowRunId: 'wf-1' },
     ];
     const settled = buildRunTimelineFromMessages(progress);
@@ -21,7 +25,7 @@ describe('chatDisclosureReducer', () => {
 
     for (const unresolved of [
       { ...progress[0], eventWorkflowRunId: 'wf-2' },
-      { ...progress[1], eventWorkflowStepId: 'verify' },
+      { ...progress[2], eventWorkflowStepId: 'verify' },
       { ...progress[0], eventWorkflowRunId: undefined },
     ]) {
       const timeline = buildRunTimelineFromMessages([...progress, unresolved]);

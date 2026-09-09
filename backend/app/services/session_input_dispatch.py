@@ -304,6 +304,17 @@ async def _start_input_runtime(
     input_metadata = (
         {"session_v2_rolled_over_input_id": str(row.id)} if rolled_over else {"session_v2_input_id": str(row.id)}
     )
+    if runtime_task_type == "web_chat_turn" and not metadata.get("goal_id"):
+        active_goal_id = await db.scalar(
+            select(AgentSessionGoal.id).where(
+                AgentSessionGoal.tenant_id == agent.tenant_id,
+                AgentSessionGoal.agent_id == agent.id,
+                AgentSessionGoal.chat_session_id == session.id,
+                AgentSessionGoal.status == "active",
+            )
+        )
+        if active_goal_id is not None:
+            metadata["goal_id"] = str(active_goal_id)
     payload = await start_web_chat_run(
         db=db,
         agent=agent,

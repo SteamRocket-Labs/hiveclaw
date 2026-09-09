@@ -31,7 +31,7 @@ def _elapsed_seconds(created_at: datetime | None, now: datetime) -> int:
 
 def _blocked_reason(metadata: dict[str, Any]) -> str | None:
     decision = metadata.get("last_continuation_decision")
-    if isinstance(decision, dict):
+    if isinstance(decision, dict) and decision.get("continue_goal") is not True:
         reason = str(decision.get("reason") or "").strip()
         if reason:
             return reason
@@ -52,7 +52,10 @@ def build_session_goal_projection(
     current_time = now or datetime.now(timezone.utc)
     status = str(goal.status or "active")
     metadata = dict(goal.metadata_json or {})
-    time_used_seconds = _elapsed_seconds(goal.created_at, current_time)
+    ended_at = goal.completed_at if status in _TERMINAL_STATUSES else None
+    if ended_at is not None and ended_at.tzinfo is None:
+        ended_at = ended_at.replace(tzinfo=timezone.utc)
+    time_used_seconds = _elapsed_seconds(goal.created_at, ended_at or current_time)
     return {
         "id": str(goal.id),
         "agent_id": str(goal.agent_id),
@@ -69,7 +72,7 @@ def build_session_goal_projection(
         "max_continuation_turns": goal.max_continuation_turns,
         "remaining_continuation_turns": _remaining(goal.max_continuation_turns, goal.continuation_count),
         "blocked_count": int(goal.blocked_count or 0),
-        "blocked_reason": _blocked_reason(metadata),
+        "blocked_reason": _blocked_reason(metadata) if status in _RESUMABLE_STATUSES else None,
         "completion_summary": goal.completion_summary,
         "controls": {
             "can_pause": status == "active",

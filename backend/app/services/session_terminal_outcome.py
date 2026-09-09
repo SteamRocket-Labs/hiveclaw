@@ -646,6 +646,10 @@ async def _enqueue_committed_web_terminal_boundary(
 ) -> None:
     """Atomically bind required post-commit projections to Session V2 truth."""
 
+    from app.services.goal_continuation_service import account_committed_goal_turn
+
+    await account_committed_goal_turn(db, task=task)
+
     if task.terminal_boundary_generation is None:
         return
     if task.parent_agent_id is None or not task.parent_session_id:

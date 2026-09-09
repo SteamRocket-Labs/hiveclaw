@@ -213,11 +213,14 @@ async def test_required_t2_rejects_persisted_failed_job(monkeypatch, tmp_path) -
         )
 
 
-async def test_success_processor_orders_projection_seal_learning_and_summary(monkeypatch) -> None:
+@pytest.mark.parametrize("has_bound_goal", [False, True])
+async def test_success_processor_orders_projection_seal_learning_and_summary(monkeypatch, has_bound_goal) -> None:
+    from contextlib import asynccontextmanager
+    from app.services import chat_transcript, goal_continuation_service
     from app.services.web_terminal_boundary_processor import WebTerminalBoundaryProcessor
 
     item = _claimed()
-    material = _material(item)
+    material = replace(_material(item), has_bound_goal=has_bound_goal)
     order: list[str] = []
 
     async def bridge(**kwargs):
@@ -279,6 +282,24 @@ async def test_success_processor_orders_projection_seal_learning_and_summary(mon
     monkeypatch.setattr(processor, "_verify_t0_frontier", verify)
     monkeypatch.setattr(processor, "_project_summary", summary)
 
+    task = SimpleNamespace(id=material.runtime_task_id)
+
+    async def scalar(_statement):
+        return task
+
+    @asynccontextmanager
+    async def goal_transaction(tenant_id, *, operation):
+        assert tenant_id == material.tenant_id and operation == "goal_continuation"
+        yield SimpleNamespace(scalar=scalar)
+
+    async def continue_goal(_db, *, task):
+        assert task.id == material.runtime_task_id
+        order.append("goal_continuation")
+
+    monkeypatch.setattr(processor, "_tenant_session", goal_transaction)
+    monkeypatch.setattr(chat_transcript, "lock_transcript_session", lambda *_args, **_kwargs: _async_value(None))
+    monkeypatch.setattr(goal_continuation_service, "continue_committed_goal_turn", continue_goal)
+
     receipt = await processor(item)
 
     assert order == [
@@ -290,7 +311,7 @@ async def test_success_processor_orders_projection_seal_learning_and_summary(mon
         "response_complete",
         "advisory_response_complete",
         "summary_cas",
-    ]
+    ] + (["goal_continuation"] if has_bound_goal else [])
     assert receipt["terminal_sequence"] == material.terminal_sequence
     assert receipt["summary_sequence"] == material.terminal_sequence
     assert len(receipt["response_projection_sha256"]) == 64

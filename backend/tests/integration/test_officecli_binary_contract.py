@@ -24,7 +24,9 @@ def test_release_officecli_binary_renders_docx_xlsx_and_pptx_html_and_text() -> 
 
     binary = os.environ.get("OFFICECLI_BIN") or shutil.which("officecli")
     if not binary:
-        pytest.skip("OfficeCLI binary is unavailable locally; Railway production runs the same verifier before retirement")
+        pytest.skip(
+            "OfficeCLI binary is unavailable locally; Railway production runs the same verifier before retirement"
+        )
 
     report = verify_officecli_binary_contract(binary=binary)
 

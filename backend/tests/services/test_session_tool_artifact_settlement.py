@@ -199,9 +199,11 @@ async def _start_effect(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("approved_continuation", [False, True])
 async def test_write_file_artifact_and_v2_tool_result_commit_against_real_fk(
     owner_sessionmaker,
     monkeypatch,
+    approved_continuation,
 ) -> None:
     from app.config import get_settings
     from app.models.audit import ChatMessage
@@ -235,6 +237,22 @@ async def test_write_file_artifact_and_v2_tool_result_commit_against_real_fk(
         provider_tool_use_id=provider_tool_use_id,
         path=rel_path,
     )
+
+    if approved_continuation:
+        from app.services.session_tool_runtime import complete_tool_invocation
+
+        async with owner_sessionmaker() as db:
+            await complete_tool_invocation(
+                db,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                session_id=session_id,
+                invocation_id=invocation_id,
+                provider_result_content="Wrote workspace/report.md",
+                execution_evidence=_execution_evidence(args_hash, provider_tool_use_id),
+                effective_arguments=base["args"],
+            )
+            await db.commit()
 
     envelopes = await runtime._persist_tool_call(
         agent_id=agent_id,

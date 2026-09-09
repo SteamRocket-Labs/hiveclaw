@@ -57,3 +57,23 @@ def test_session_goal_projection_clamps_exhausted_budgets():
     assert projection["remaining_tokens"] == 0
     assert projection["remaining_continuation_turns"] == 0
     assert projection["controls"]["can_resume"] is True
+
+
+def test_completed_goal_freezes_elapsed_time_and_drops_obsolete_continuation_reason():
+    now = datetime.now(timezone.utc)
+    goal = AgentSessionGoal(
+        id=uuid4(),
+        agent_id=uuid4(),
+        chat_session_id=uuid4(),
+        objective="Finished",
+        status="complete",
+        created_at=now - timedelta(seconds=600),
+        completed_at=now - timedelta(seconds=500),
+        metadata_json={"last_continuation_decision": {"continue_goal": True, "reason": "active goal may continue"}},
+    )
+    projection = build_session_goal_projection(goal, now=now)
+    assert projection["time_used_seconds"] == 100
+    assert projection["blocked_reason"] is None
+    goal.status = "active"
+    goal.completed_at = None
+    assert build_session_goal_projection(goal, now=now)["blocked_reason"] is None

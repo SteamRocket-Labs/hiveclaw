@@ -765,6 +765,11 @@ export function buildRunAggregateSummary(steps: RunStepSnapshot[]): string {
 
 function workflowEventKey(message: AgentChatMessage): string | null {
   if (message.role !== 'event' || !message.eventWorkflowRunId) return null;
+  if (message.eventType === 'runtime_action_progress' || message.eventType === 'runtime_action_completed') {
+    return JSON.stringify(message.eventWorkflowStepId
+      ? [message.eventWorkflowRunId, message.eventWorkflowStepId]
+      : [message.eventWorkflowRunId]);
+  }
   if (message.eventType === 'workflow_run') return JSON.stringify([message.eventWorkflowRunId]);
   if (message.eventType === 'workflow_step' && message.eventWorkflowStepId) {
     return JSON.stringify([message.eventWorkflowRunId, message.eventWorkflowStepId]);

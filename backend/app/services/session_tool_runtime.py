@@ -767,6 +767,48 @@ async def complete_tool_invocation(
 
     content = str(provider_result_content)
     content_hash = _sha256(content)
+    if outcome == "success" and not parts and message_id is None:
+        from pathlib import Path
+
+        from app.config import get_settings
+        from app.models.chat_session import ChatSession
+        from app.services.chat_artifact_delivery import create_chat_artifacts_for_message, tool_session_write_paths
+        from app.services.web_chat_runtime import _ensure_tool_result_artifact_message, _tool_result_anchor_content
+
+        paths = tool_session_write_paths(invocation.tool_name, effective_payload)
+        if paths:
+            session = await db.get(ChatSession, session_id)
+            if session is None or session.tenant_id != tenant_id or session.agent_id != agent_id:
+                raise RuntimeError("tool_artifact_session_scope_mismatch")
+            message_id = uuid.uuid5(invocation.id, "tool-result-artifact-message")
+            anchor = await _ensure_tool_result_artifact_message(
+                db,
+                message_id=message_id,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                session_id=session_id,
+                user_id=session.user_id,
+                external_principal_id=session.external_principal_id,
+                content=_tool_result_anchor_content(
+                    {"name": invocation.tool_name, "tool_call_id": invocation.provider_tool_use_id}, content
+                ),
+            )
+            # Approved continuations settle here without the web callback.
+            # Snapshot their successful writes before committing the result fence.
+            parts = await create_chat_artifacts_for_message(
+                db=db,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                session_id=session_id,
+                message_id=message_id,
+                runtime_task_id=invocation.run_id,
+                paths=paths,
+                workspace_root=Path(get_settings().AGENT_DATA_DIR) / str(agent_id),
+                source="workspace_write",
+            )
+            if not parts:
+                await db.delete(anchor)
+                message_id = None
     if isinstance((execution_evidence or {}).get("execution_frame"), Mapping):
         receipt_ref = f"tool-frame:{((execution_evidence or {}).get('execution_frame') or {}).get('output_hash')}"
     elif str((execution_evidence or {}).get("pre_effect_fence_ref") or ""):

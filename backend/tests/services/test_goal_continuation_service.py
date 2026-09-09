@@ -36,6 +36,39 @@ class _ExecuteDB(_FakeDB):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("prebound", [False, True])
+async def test_input_dispatch_binds_existing_goal_without_replacing_explicit_binding(monkeypatch, prebound):
+    from app.services import session_input_dispatch, web_chat_runtime
+
+    goal_id = uuid4()
+    selected = []
+    starts = []
+
+    async def scalar(statement):
+        selected.append(statement)
+        return goal_id
+
+    async def start(**kwargs):
+        starts.append(kwargs)
+        return {"run_id": str(kwargs["run_id"]), "status": "pending"}
+
+    monkeypatch.setattr(web_chat_runtime, "start_web_chat_run", start)
+    await session_input_dispatch._start_input_runtime(
+        SimpleNamespace(scalar=scalar),
+        row=SimpleNamespace(id=uuid4(), target_turn_id=None, content_parts_json=[{"type": "text", "text": "Continue"}]),
+        command=SimpleNamespace(
+            id=uuid4(), target_json={"runtime_metadata": {"goal_id": str(goal_id)} if prebound else {}}
+        ),
+        agent=SimpleNamespace(id=uuid4(), tenant_id=uuid4()),
+        user=SimpleNamespace(id=uuid4()),
+        session=SimpleNamespace(id=uuid4()),
+        successor=False,
+    )
+    assert starts[0]["extra_metadata"]["goal_id"] == str(goal_id)
+    assert len(selected) == (0 if prebound else 1)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("admission_state", ["admitted", "rejected", "needs_reconciliation", "cancelled"])
 async def test_goal_continuation_preserves_undispatched_input_receipt(monkeypatch, admission_state):
     import app.services.goal_continuation_service as service

@@ -945,7 +945,11 @@ async def test_fence_drift_preserves_abandoned_plan_and_requires_new_generation(
             await dispatch_committed_plan(db, plan_id=plan1_id, claim_owner="stale-worker")
 
 
-async def test_terminal_outcome_is_zero_copy_atomic_and_idempotent(owner_sessionmaker) -> None:
+@pytest.mark.parametrize("goal_status", ["active", "complete"])
+async def test_terminal_outcome_is_zero_copy_atomic_and_idempotent(
+    owner_sessionmaker, monkeypatch, goal_status
+) -> None:
+    from app.models.agent_session_goal import AgentSessionGoal
     from app.models.audit import ChatMessage
     from app.models.channel_config import ChannelConfig
     from app.models.channel_delivery_outbox import ChannelDeliveryOutbox
@@ -983,7 +987,12 @@ async def test_terminal_outcome_is_zero_copy_atomic_and_idempotent(owner_session
             turn_id=turn_id,
             round_index=1,
             provider_request_id=request_id,
-            response={"content": exact_final, "tool_calls": [], "finish_reason": "stop", "usage": {}},
+            response={
+                "content": exact_final,
+                "tool_calls": [],
+                "finish_reason": "stop",
+                "usage": {"input_tokens": 12, "output_tokens": 7},
+            },
         )
         session = await db.get(ChatSession, session_id)
         session.delivery_target_json = {"channel": "feishu", "chat_id": "oc_terminal"}
@@ -1034,8 +1043,20 @@ async def test_terminal_outcome_is_zero_copy_atomic_and_idempotent(owner_session
         db.add(artifact)
         await db.flush()
         task = await db.get(RuntimeTask, run_id)
+        goal = AgentSessionGoal(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            chat_session_id=session_id,
+            objective="Bound goal at canonical final commit",
+            status=goal_status,
+            tokens_used=3,
+        )
+        db.add(goal)
+        await db.flush()
+        goal_id = goal.id
         task.metadata_json = {
             **dict(task.metadata_json or {}),
+            "goal_id": str(goal.id),
             "source": "feishu",
             "artifact_ids": [str(artifact.id)],
             "artifact_paths": [artifact.path],
@@ -1156,6 +1177,40 @@ async def test_terminal_outcome_is_zero_copy_atomic_and_idempotent(owner_session
 
     async with owner_sessionmaker() as db:
         task = await db.get(RuntimeTask, run_id)
+        goal = await db.get(AgentSessionGoal, goal_id)
+        assert goal.tokens_used == 22
+        assert goal.status == goal_status
+        assert task.metadata_json["turn_tokens_used"] == 19
+        assert task.metadata_json["goal_turn_accounting"]["tokens"] == 19
+        from app.services import goal_continuation_service as goals
+
+        submits = []
+
+        async def admit_goal_input(**kwargs):
+            submits.append(kwargs["input_id"])
+            assert goal.tokens_used == 22  # Already charged in terminal commit.
+            assert task.metadata_json["goal_continuation_processed"] is True
+            await kwargs["db"].commit()  # Native ingress commits this same transaction.
+            return {"ok": True, "run_id": "next-goal-run", "input_receipt": {"admission_state": "admitted"}}
+
+        monkeypatch.setattr(goals, "_submit_goal_runtime_input", admit_goal_input)
+        if goal_status == "complete":
+            replacement = AgentSessionGoal(
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                chat_session_id=session_id,
+                objective="A replacement goal must not inherit the old run",
+                status="active",
+            )
+            db.add(replacement)
+            await db.flush()
+        await goals.continue_committed_goal_turn(db, task=task)
+        await db.commit()
+        await goals.continue_committed_goal_turn(db, task=task)
+        assert len(submits) == (1 if goal_status == "active" else 0)
+        assert goal.tokens_used == 22
+        if goal_status == "complete":
+            assert replacement.tokens_used == 0 and replacement.continuation_count == 0
         root_item = await db.scalar(select(RuntimeRootItem).where(RuntimeRootItem.runtime_task_id == run_id))
         outcome = await db.scalar(select(SessionRunOutcome).where(SessionRunOutcome.run_id == run_id))
         result = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request_id))

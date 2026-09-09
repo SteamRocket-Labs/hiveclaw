@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.agent import Agent
 from app.models.agent_session_goal import AgentSessionGoal
 from app.models.chat_session import ChatSession
+from app.models.runtime_task import RuntimeTask
 from app.models.user import User
 from app.runtime.prompts.goals import (
     ThreadGoalPromptState,
@@ -41,6 +42,80 @@ from app.services.web_chat_runtime import broadcast_web_chat_event
 
 # A6: how many consecutive retriable terminal errors before a goal is Blocked.
 _BLOCKED_THRESHOLD = 3
+
+
+async def account_committed_goal_turn(db: AsyncSession, *, task: RuntimeTask) -> None:
+    """Charge the bound Goal once in the canonical terminal transaction, even if complete."""
+    metadata = dict(task.metadata_json or {})
+    if (
+        task.task_type not in {"web_chat_turn", "goal_continuation"}
+        or not metadata.get("goal_id")
+        or metadata.get("goal_turn_accounting")
+    ):
+        return
+    from app.models.session_v2 import SessionModelResult
+    from app.services.web_chat_runtime import _committed_turn_usage_tokens, _round_index_from_id
+
+    goal = await db.scalar(
+        select(AgentSessionGoal)
+        .where(
+            AgentSessionGoal.id == uuid.UUID(str(metadata["goal_id"])),
+            AgentSessionGoal.tenant_id == task.tenant_id,
+            AgentSessionGoal.agent_id == task.parent_agent_id,
+            AgentSessionGoal.chat_session_id == uuid.UUID(task.parent_session_id),
+        )
+        .with_for_update()
+    )
+    if goal is None:
+        raise ValueError("session_goal_accounting_binding_missing")
+    results = list(
+        (
+            await db.scalars(
+                select(SessionModelResult).where(
+                    SessionModelResult.tenant_id == task.tenant_id,
+                    SessionModelResult.run_id == task.id,
+                    SessionModelResult.state == "round_committed",
+                )
+            )
+        ).all()
+    )
+    tokens = _committed_turn_usage_tokens(
+        results,
+        resume_round_index=max((_round_index_from_id(result.round_id) for result in results), default=0),
+    )
+    goal.tokens_used = account_goal_tokens(_goal_to_runtime_model(goal), tokens).tokens_used
+    metadata["turn_tokens_used"] = tokens
+    metadata["terminal_reason"] = "turn_stop"
+    metadata["goal_turn_accounting"] = {"goal_id": str(goal.id), "tokens": tokens, "source": "session_model_results"}
+    task.metadata_json = metadata
+
+
+async def continue_committed_goal_turn(db: AsyncSession, *, task: RuntimeTask) -> dict[str, Any]:
+    """Consume the existing terminal outbox once; admitted input recovery owns dispatch."""
+    metadata = dict(task.metadata_json or {})
+    if (
+        task.task_type not in {"web_chat_turn", "goal_continuation"}
+        or not metadata.get("goal_id")
+        or metadata.get("goal_continuation_processed")
+    ):
+        return {"ok": False, "reason": "no_pending_bound_goal"}
+    if task.status != "completed" or not metadata.get("session_v2_outcome"):
+        raise ValueError("session_goal_terminal_outcome_pending")
+    if not metadata.get("goal_turn_accounting"):
+        await account_committed_goal_turn(db, task=task)
+        metadata = dict(task.metadata_json or {})
+    # submit_live_human_input commits internally. Persist this marker in that
+    # same transaction as the Goal count and deterministic continuation input.
+    task.metadata_json = {**metadata, "goal_continuation_processed": True}
+    return await maybe_continue_session_goal_after_turn(
+        db=db,
+        agent_id=task.parent_agent_id,
+        session_id=task.parent_session_id,
+        user_id=task.root_user_id,
+        completed_task_type=task.task_type,
+        completed_status=task.status,
+        metadata_json=metadata,
+    )
 
 
 async def _submit_goal_runtime_input(
@@ -607,19 +682,27 @@ async def maybe_continue_session_goal_after_turn(
     if str(completed_status or "") != "completed":
         return {"ok": False, "reason": "non_completed_turn"}
 
+    goal_predicate = (
+        AgentSessionGoal.id == uuid.UUID(str(metadata["goal_id"]))
+        if metadata.get("goal_id")
+        else AgentSessionGoal.status == GoalStatus.ACTIVE.value
+    )
     goal_result = await db.execute(
         select(AgentSessionGoal)
         .where(
             AgentSessionGoal.agent_id == agent_id,
             AgentSessionGoal.chat_session_id == session_id,
-            AgentSessionGoal.status == GoalStatus.ACTIVE.value,
+            goal_predicate,
         )
         .order_by(AgentSessionGoal.created_at.desc())
         .limit(1)
+        .with_for_update()
     )
     goal = goal_result.scalar_one_or_none()
     if goal is None:
         return {"ok": False, "reason": "no_active_goal"}
+    if goal.status != GoalStatus.ACTIVE.value:
+        return {"ok": False, "reason": "bound_goal_not_active", "goal_id": str(goal.id)}
 
     agent_result = await db.execute(select(Agent).where(Agent.id == agent_id).limit(1))
     agent = agent_result.scalar_one_or_none()
@@ -657,5 +740,5 @@ async def maybe_continue_session_goal_after_turn(
         ephemeral=bool(metadata.get("ephemeral") or metadata.get("is_ephemeral")),
         previous_terminal_reason=str(metadata.get("terminal_reason") or "") or None,
         progress_evidence=_progress_evidence_from_metadata(metadata),
-        turn_tokens=_turn_tokens_from_metadata(metadata),
+        turn_tokens=0 if metadata.get("goal_turn_accounting") else _turn_tokens_from_metadata(metadata),
     )

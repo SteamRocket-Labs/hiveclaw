@@ -9,7 +9,15 @@ import pytest
 from app.api import runtime_result_pages as api
 from app.core.security import get_current_user
 from app.database import get_db
-from tests.api.test_runtime_terminal_boundaries_api import _FakeDB
+from tests.api.test_runtime_terminal_boundaries_api import _FakeDB, _Rows
+
+
+class _PageDB(_FakeDB):
+    async def execute(self, statement):
+        result = await super().execute(statement)
+        if " AS bound_item_count" in str(statement):
+            return _Rows([(row, row.item_count) for row in self.rows])
+        return result
 
 
 def _client(role="org_admin"):
@@ -33,7 +41,7 @@ def _client(role="org_admin"):
         manifest_json={"private": True},
         claim_token="secret-fence",
     )
-    db = _FakeDB([row])
+    db = _PageDB([row])
     user = SimpleNamespace(id=uuid.uuid4(), role=role, tenant_id=tenant_id)
     app = FastAPI()
     app.include_router(api.router)
@@ -51,6 +59,7 @@ def test_list_is_tenant_and_parent_scoped_without_content_or_claim_fences():
     response = client.get("/runtime-result-pages", params={"parent_session_id": str(row.parent_session_id)})
     assert response.status_code == 200
     assert response.json()[0]["id"] == str(row.id)
+    assert response.json()[0]["bound_item_count"] == 2
     assert "private" not in response.text and "secret-fence" not in response.text
     query = next(statement for statement in db.statements if str(statement).startswith("SELECT"))
     assert user.tenant_id in query.compile().params.values()

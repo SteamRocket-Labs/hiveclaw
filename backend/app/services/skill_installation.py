@@ -10,6 +10,7 @@ each caller.
 from __future__ import annotations
 
 from pathlib import Path
+import json
 from typing import Any
 
 from app.services.skill_guard import scan_skill_files
@@ -54,6 +55,52 @@ def collect_skill_package_files(root: Path) -> list[dict[str, str]]:
         rel = path.relative_to(root).as_posix()
         files.append({"path": rel, "content": path.read_text(encoding="utf-8", errors="replace")})
     return files
+
+
+def skill_uninstall_marker(folder_name: str) -> str:
+    return f"runtime_artifacts/skill_installation/removed/{_safe_folder_name(folder_name)}.json"
+
+
+def uninstall_active_skill_package(*, workspace: Path, folder_name: str, actor_user_id: str) -> dict[str, Any]:
+    """Remove one workspace package with the existing lock, journal and rollback payload."""
+    safe_folder = _safe_folder_name(folder_name)
+    workspace = workspace.resolve()
+    skills_root = workspace / "skills"
+    skill_dir = skills_root / safe_folder
+    marker = skill_uninstall_marker(safe_folder)
+    with AgentAssetTransaction(
+        workspace,
+        operation="active_skill_package_uninstall",
+        evidence_refs=(f"actor-user:{actor_user_id}", f"workspace-skill:{safe_folder}"),
+    ) as transaction:
+        if skills_root.is_symlink() or skill_dir.is_symlink():
+            raise ValueError("Symlink skill packages cannot be uninstalled")
+        paths = sorted(skill_dir.rglob("*")) if skill_dir.is_dir() else []
+        if any(path.is_symlink() or (not path.is_file() and not path.is_dir()) for path in paths):
+            raise ValueError("Skill package contains symlinks or unsupported file types")
+        files = [path for path in paths if path.is_file()]
+        if not files:
+            if transaction.read_text(marker) is not None:
+                return {"status": "already_uninstalled", "folder_name": safe_folder, "files_removed": 0}
+            raise FileNotFoundError("Workspace skill package not found")
+        for path in files:
+            transaction.stage_delete(path.relative_to(workspace).as_posix())
+        # Startup defaults must respect the owner's uninstall; an explicit import clears this marker.
+        transaction.stage_text(marker, json.dumps({"folder_name": safe_folder, "actor_user_id": actor_user_id}))
+        record_skill_lifecycle_event(
+            workspace,
+            skill_name=safe_folder,
+            status="uninstalled",
+            note=f"Explicit workspace uninstall by user {actor_user_id}; files={len(files)}",
+            transaction=transaction,
+        )
+        receipt = transaction.commit()
+        return {
+            "status": "uninstalled",
+            "folder_name": safe_folder,
+            "files_removed": len(files),
+            "asset_transaction_id": receipt.transaction_id,
+        }
 
 
 def install_active_skill_package(
@@ -104,6 +151,9 @@ def install_active_skill_package(
                 own_transaction.commit()
             return result
 
+    marker = skill_uninstall_marker(safe_folder)
+    if transaction.read_text(marker) is not None:
+        transaction.stage_delete(marker)
     written: list[str] = []
     for item in normalized_files:
         file_path = (skill_dir / item["path"]).resolve()

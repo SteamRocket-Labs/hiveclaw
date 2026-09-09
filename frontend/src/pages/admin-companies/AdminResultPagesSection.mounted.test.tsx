@@ -11,7 +11,7 @@ vi.mock('../../api/domains/admin', () => ({ adminApi: {
 const api = vi.mocked(adminApi);
 const row: RuntimeResultPage = {
   id: 'page-1', parent_session_id: 'session-1', parent_agent_id: 'agent-1', integration_epoch: 2,
-  delivery_mode: 'parent_continuation', item_count: 2, manifest_sha256: 'a'.repeat(64), status: 'dead_letter',
+  delivery_mode: 'parent_continuation', item_count: 2, bound_item_count: 2, manifest_sha256: 'a'.repeat(64), status: 'dead_letter',
   attempt_count: 8, last_error: 'RuntimeBudgetDenied', delivered_at: null, created_at: '', updated_at: '',
 };
 beforeEach(() => vi.resetAllMocks());

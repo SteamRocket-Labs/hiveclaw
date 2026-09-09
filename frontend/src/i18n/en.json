@@ -1980,6 +1980,9 @@
       "noPlugins": "No plugins assigned.",
       "toolsUnit": "tools",
       "governedNotice": "Active skill packages are governed by Skill promotion. Use imports and Evolution candidates instead of editing active skill files directly.",
+      "uninstall": "Uninstall workspace copy",
+      "uninstallConfirm": "Remove skills/{{folder}} from this agent only. Registry and other agents are unchanged. Reimport to install it again.",
+      "uninstalled": "Workspace skill uninstalled.",
       "importDesc": "Select a preset skill to import into this agent. All skill files will be copied to the agent's skills folder.",
       "importPreset": "Import from Presets"
     },
@@ -4041,6 +4044,7 @@
       "session": "Parent session ID",
       "count": "{{count}} result pages (up to 100)",
       "attempts": "{{items}} results; {{attempts}} attempts",
+      "bindings": "{{count}} queue items still bound to this page",
       "redrive": "Redrive result page",
       "reason": "Recovery reason",
       "confirm": "Redrive saved result delivery?",

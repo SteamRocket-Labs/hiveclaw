@@ -466,7 +466,7 @@ def _push_default_skill_packages_to_agent(*, agent_dir: Path, default_skills: li
     """Install one Agent's default Skills under one lock and one optional transaction."""
 
     from app.services.agent_asset_transaction import AgentAssetTransaction
-    from app.services.skill_installation import install_active_skill_package
+    from app.services.skill_installation import install_active_skill_package, skill_uninstall_marker
 
     result_counts = {"pushed": 0, "updated": 0, "unchanged": 0}
     with AgentAssetTransaction(
@@ -475,6 +475,9 @@ def _push_default_skill_packages_to_agent(*, agent_dir: Path, default_skills: li
         evidence_refs=("startup-default-skill-registry",),
     ) as transaction:
         for skill in default_skills:
+            if transaction.read_text(skill_uninstall_marker(skill.folder_name)) is not None:
+                result_counts["unchanged"] += 1
+                continue
             if not skill.files:
                 continue
             existing_paths = {

@@ -178,6 +178,10 @@ export const fileApi = {
   },
   importSkill: (agentId: string, skillId: string) =>
     post<any>(`/agents/${agentId}/files/import-skill`, { skill_id: skillId }),
+  uninstallSkill: (agentId: string, folderName: string) =>
+    post<{ status: string; folder_name: string; files_removed: number; asset_transaction_id?: string }>(
+      `/agents/${agentId}/files/uninstall-skill`, { folder_name: folderName },
+    ),
   importFromClawHub: (agentId: string, slug: string) =>
     post<any>(`/agents/${agentId}/files/import-from-clawhub`, { slug }),
   importFromUrl: (agentId: string, url: string) =>

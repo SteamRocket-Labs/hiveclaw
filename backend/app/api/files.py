@@ -1308,6 +1308,33 @@ class ImportSkillBody(BaseModel):
     skill_id: str
 
 
+class UninstallSkillBody(BaseModel):
+    folder_name: str
+
+
+@router.post("/uninstall-skill")
+async def uninstall_skill_from_agent(
+    agent_id: uuid.UUID,
+    body: UninstallSkillBody,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Uninstall one workspace copy without deleting the registry or other agents' copies."""
+    await require_agent_manage_access(db, current_user, agent_id)
+    from app.services.skill_installation import uninstall_active_skill_package
+
+    try:
+        return uninstall_active_skill_package(
+            workspace=_agent_base_dir(agent_id),
+            folder_name=body.folder_name,
+            actor_user_id=str(current_user.id),
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/import-skill")
 async def import_skill_to_agent(
     agent_id: uuid.UUID,

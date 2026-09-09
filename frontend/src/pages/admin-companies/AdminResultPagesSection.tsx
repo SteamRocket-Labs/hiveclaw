@@ -80,13 +80,14 @@ export default function AdminResultPagesSection({ initialTenantId }: { initialTe
       {receipt && <div className="admin-reconcile-receipt" role="status">{receipt}</div>}
       {rows !== null && <div className="admin-reconcile-count">{t('admin.resultPages.count', '{{count}} result pages (up to 100)', { count: rows.length })}</div>}
       {rows?.map((page) => (
-        <div key={page.id} className="card-pad" style={{ overflowWrap: 'anywhere' }}>
+        <div key={page.id} style={{ padding: 'var(--space-4) var(--space-5)', borderTop: '1px solid var(--border-subtle)', overflowWrap: 'anywhere' }}>
           <div>{page.id} · epoch {page.integration_epoch} · {page.status} · {page.delivery_mode}</div>
           <div>{t('admin.resultPages.attempts', '{{items}} results; {{attempts}} attempts', { items: page.item_count, attempts: page.attempt_count })}</div>
+          {page.bound_item_count != null && <div>{t('admin.resultPages.bindings', '{{count}} queue items still bound to this page', { count: page.bound_item_count })}</div>}
           <code>{page.manifest_sha256}</code>
           {page.last_error && <div>{page.last_error}</div>}
           {page.delivered_at && <div>{page.delivered_at}</div>}
-          {page.status === 'dead_letter' && <button type="button" className="btn-secondary" disabled={locked || !reason.trim()}
+          {page.status === 'dead_letter' && <button type="button" className="btn-secondary" disabled={locked || !reason.trim() || page.bound_item_count !== page.item_count}
             onClick={() => setPending(page)}>{t('admin.resultPages.redrive', 'Redrive result page')}</button>}
         </div>
       ))}

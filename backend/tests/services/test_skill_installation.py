@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -46,6 +47,57 @@ def test_install_active_skill_package_blocks_unsafe_files_without_partial_write(
     assert not (tmp_path / "escape.md").exists()
 
 
+def test_workspace_uninstall_is_recoverable_idempotent_and_survives_default_sync(tmp_path):
+    from app.services.skill_installation import install_active_skill_package, uninstall_active_skill_package
+    from app.services.skill_seeder import _push_default_skill_packages_to_agent
+    from app.skills.loader import WorkspaceSkillLoader
+
+    files = [{"path": "SKILL.md", "content": "---\nname: Owner Skill\n---\n# Owner Skill\n"}]
+    install_active_skill_package(workspace=tmp_path, folder_name="owner-skill", files=files, source="test")
+    assert len(WorkspaceSkillLoader().load_from_workspace(tmp_path)) == 1
+    result = uninstall_active_skill_package(workspace=tmp_path, folder_name="owner-skill", actor_user_id="owner-1")
+    assert result["status"] == "uninstalled" and result["files_removed"] == 1
+    assert WorkspaceSkillLoader().load_from_workspace(tmp_path) == []
+    journal_path = (
+        tmp_path / "runtime_artifacts/asset_transactions/transactions" / result["asset_transaction_id"] / "journal.json"
+    )
+    journal = json.loads(journal_path.read_text())
+    assert "actor-user:owner-1" in journal["evidence_refs"]
+    operation = next(item for item in journal["operations"] if item["path"] == "skills/owner-skill/SKILL.md")
+    assert (journal_path.parent / operation["backup_file"]).read_text() == files[0]["content"]
+    assert (
+        uninstall_active_skill_package(workspace=tmp_path, folder_name="owner-skill", actor_user_id="owner-1")["status"]
+        == "already_uninstalled"
+    )
+    default = SimpleNamespace(id="preset-1", folder_name="owner-skill", files=[SimpleNamespace(**files[0])])
+    assert _push_default_skill_packages_to_agent(agent_dir=tmp_path, default_skills=[default]) == {
+        "pushed": 0,
+        "updated": 0,
+        "unchanged": 1,
+    }
+    assert WorkspaceSkillLoader().load_from_workspace(tmp_path) == []
+    install_active_skill_package(
+        workspace=tmp_path, folder_name="owner-skill", files=files, source="registry_skill:preset-1", overwrite=True
+    )
+    assert len(WorkspaceSkillLoader().load_from_workspace(tmp_path)) == 1
+    assert _push_default_skill_packages_to_agent(agent_dir=tmp_path, default_skills=[default])["unchanged"] == 1
+
+
+def test_workspace_uninstall_rejects_traversal_and_symlinks_before_mutation(tmp_path):
+    from app.services.skill_installation import uninstall_active_skill_package
+
+    target = tmp_path / "workspace/keep"
+    target.mkdir(parents=True)
+    (target / "SKILL.md").write_text("keep")
+    (tmp_path / "skills").mkdir()
+    (tmp_path / "skills/linked").symlink_to(target, target_is_directory=True)
+    for folder in ("../workspace/keep", "", ".", "linked"):
+        with pytest.raises(ValueError):
+            uninstall_active_skill_package(workspace=tmp_path, folder_name=folder, actor_user_id="owner")
+    assert (target / "SKILL.md").read_text() == "keep"
+    assert not (tmp_path / "runtime_artifacts/skill_installation/removed/linked.json").exists()
+
+
 def test_install_active_skill_package_exact_overwrite_is_zero_write(tmp_path: Path) -> None:
     from app.services.agent_asset_transaction import read_agent_asset_revision
     from app.services.skill_installation import install_active_skill_package
@@ -88,9 +140,10 @@ def test_install_active_skill_package_exact_overwrite_is_zero_write(tmp_path: Pa
     assert review_path.read_bytes() == review_before
     assert skill_path.stat().st_mtime_ns == stable_ns
     assert review_path.stat().st_mtime_ns == stable_ns
-    assert sorted(
-        (tmp_path / "runtime_artifacts" / "asset_transactions" / "transactions").glob("*/journal.json")
-    ) == journals_before
+    assert (
+        sorted((tmp_path / "runtime_artifacts" / "asset_transactions" / "transactions").glob("*/journal.json"))
+        == journals_before
+    )
 
 
 def test_default_skill_startup_batches_one_recovery_scan_per_agent(
@@ -141,6 +194,7 @@ def test_default_skill_startup_batches_one_recovery_scan_per_agent(
 
     assert result == {"pushed": 0, "updated": 0, "unchanged": 2}
     assert recovery_calls == 1
-    assert sorted(
-        (tmp_path / "runtime_artifacts" / "asset_transactions" / "transactions").glob("*/journal.json")
-    ) == journals_before
+    assert (
+        sorted((tmp_path / "runtime_artifacts" / "asset_transactions" / "transactions").glob("*/journal.json"))
+        == journals_before
+    )

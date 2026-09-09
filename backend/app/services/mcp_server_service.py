@@ -227,6 +227,12 @@ async def _list_agent_workspace_skills(agent_id: uuid.UUID) -> list[dict]:
             "name": skill.metadata.name,
             "source": "workspace",
             "status": "available",
+            "folder_name": (
+                skill.file_path.parent.name
+                if skill.file_path.parent.parent == workspace.resolve() / "skills"
+                and skill.file_path.name.lower() == "skill.md"
+                else None
+            ),
         }
         for skill in parsed
     ]

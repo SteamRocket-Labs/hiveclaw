@@ -723,9 +723,9 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # 2026-09-09: reviewed trigger_daemon and runtime_notification_outbox module-source
 # changes: tenant-scoped V2 message matching and evidence-only budget-denied
 # projection. No added bypass callsites, grants, or widened privileged queries.
-# Result-page redrive adds only a tenant-scoped transaction in the reviewed
-# notification module; no bypass callsite or worker query is changed.
-RLS_BYPASS_SCOPES_SHA256 = "b6021fc77b50879b7e1cc885c892702ef7df3f77e6c3c420a7a58356f3e3e275"
+# Reviewed superseded result-page bindings and workspace Skill uninstall.
+# Replacement outbox lookups retain exact tenant/parent predicates; no new bypass grant.
+RLS_BYPASS_SCOPES_SHA256 = "f29a4d7b4c5a14bdb036667ffd6a4166951e96b75597236eec8a806d4c28f2dc"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

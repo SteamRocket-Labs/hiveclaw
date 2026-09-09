@@ -5,13 +5,14 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.channel_deliveries import _operator_tenant_id
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.runtime_result import RuntimeResultIntegrationPage
+from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
 from app.models.user import User
 from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService
 
@@ -27,6 +28,7 @@ class RuntimeResultPageItem(BaseModel):
     integration_epoch: int
     delivery_mode: str
     item_count: int
+    bound_item_count: int | None = None
     manifest_sha256: str
     status: str
     attempt_count: int
@@ -50,8 +52,16 @@ async def list_runtime_result_pages(
     db: AsyncSession = Depends(get_db),
 ) -> list[RuntimeResultPageItem]:
     effective_tenant = await _operator_tenant_id(db=db, user=current_user, requested_tenant_id=tenant_id)
+    bound_count = (
+        select(func.count(RuntimeNotificationOutbox.id))
+        .where(
+            RuntimeNotificationOutbox.integration_page_id == RuntimeResultIntegrationPage.id,
+            RuntimeNotificationOutbox.tenant_id == effective_tenant,
+        )
+        .scalar_subquery()
+    )
     statement = (
-        select(RuntimeResultIntegrationPage)
+        select(RuntimeResultIntegrationPage, bound_count.label("bound_item_count"))
         .where(
             RuntimeResultIntegrationPage.tenant_id == effective_tenant,
         )
@@ -62,8 +72,10 @@ async def list_runtime_result_pages(
         statement = statement.where(RuntimeResultIntegrationPage.parent_session_id == parent_session_id)
     if status:
         statement = statement.where(RuntimeResultIntegrationPage.status == status)
-    rows = (await db.execute(statement)).scalars().all()
-    return [RuntimeResultPageItem.model_validate(row) for row in rows]
+    rows = (await db.execute(statement)).all()
+    return [
+        RuntimeResultPageItem.model_validate(row).model_copy(update={"bound_item_count": count}) for row, count in rows
+    ]
 
 
 @router.post("/{page_id}/redrive", response_model=RuntimeResultPageItem)

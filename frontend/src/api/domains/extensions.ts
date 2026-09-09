@@ -17,6 +17,7 @@ export interface ExtensionSkill {
   name: string;
   source: string;
   status: string;
+  folder_name?: string | null;
 }
 
 /** One MCP server as seen from a single agent (server-level controls). */

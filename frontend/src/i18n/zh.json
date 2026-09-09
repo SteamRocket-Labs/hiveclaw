@@ -1980,6 +1980,9 @@
       "noPlugins": "暂无已分配插件。",
       "toolsUnit": "工具",
       "governedNotice": "已激活的 Skill 包由 Skill 晋升治理。请通过导入与 Evolution 候选变更能力，不要直接编辑已激活的 Skill 文件。",
+      "uninstall": "卸载工作区副本",
+      "uninstallConfirm": "仅移除此员工的 skills/{{folder}}，不修改技能库或其他员工。可通过重新导入恢复安装。",
+      "uninstalled": "已卸载工作区技能。",
       "importDesc": "选择预置 Skill 导入此员工；全部 Skill 文件都会复制到员工的 skills 目录。",
       "importPreset": "从预置导入"
     },
@@ -4041,6 +4044,7 @@
       "session": "父会话 ID",
       "count": "{{count}} 个结果页（最多显示 100 个）",
       "attempts": "{{items}} 个结果；已尝试 {{attempts}} 次",
+      "bindings": "当前仍有 {{count}} 个队列项绑定此页",
       "redrive": "重投结果页",
       "reason": "恢复原因",
       "confirm": "重投已保存的结果？",

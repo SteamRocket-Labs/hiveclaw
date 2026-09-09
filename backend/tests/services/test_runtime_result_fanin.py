@@ -131,6 +131,8 @@ def test_result_integration_runtime_context_contains_refs_not_child_bytes():
 
     assert descriptor.result_ref in result
     assert "read_runtime_result" in result
+    assert "Resume the original parent task" in result
+    assert "Do not replay completed child work" in result
     assert "terminal=1/expected=2" in result
     assert "Researcher" in result
     assert "Summary:" not in result

@@ -6,6 +6,7 @@ import { extensionsApi } from '../../api/domains/extensions';
 import { fileApi } from '../../api/domains/files';
 import { skillApi } from '../../api/domains/skills';
 import { showAppToast } from '../../components/AppDialogs';
+import ConfirmModal from '../../components/ConfirmModal';
 import './AgentSkillsSection.css';
 
 type AgentSkillsSectionProps = {
@@ -50,6 +51,8 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
   const [showAgentUrlImport, setShowAgentUrlImport] = useState(false);
   const [agentUrlInput, setAgentUrlInput] = useState('');
   const [agentUrlImporting, setAgentUrlImporting] = useState(false);
+  const [uninstallFolder, setUninstallFolder] = useState<string | null>(null);
+  const [uninstalling, setUninstalling] = useState(false);
 
   const { data: globalSkillsForImport } = useQuery({
     queryKey: ['global-skills-for-import'],
@@ -149,12 +152,38 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
                   <span className="agent-skills-row-meta">
                     {skillSourceLabel(t, skill.source)}
                   </span>
+                  {skill.source === 'workspace' && skill.folder_name && (
+                    <button className="btn btn-secondary" disabled={uninstalling}
+                      onClick={() => setUninstallFolder(skill.folder_name!)}>
+                      {t('agent.skills.uninstall', 'Uninstall workspace copy')}
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
           )}
         </section>
       </div>
+
+      <ConfirmModal open={uninstallFolder !== null} danger
+        title={t('agent.skills.uninstall', 'Uninstall workspace copy')}
+        message={t('agent.skills.uninstallConfirm', 'Remove skills/{{folder}} from this agent only. Registry and other agents are unchanged. Reimport to install it again.', { folder: uninstallFolder })}
+        onCancel={() => setUninstallFolder(null)}
+        onConfirm={async () => {
+          if (!uninstallFolder || uninstalling) return;
+          setUninstalling(true);
+          const folder = uninstallFolder;
+          setUninstallFolder(null);
+          try {
+            await fileApi.uninstallSkill(agentId, folder);
+            invalidateAgentSkillQueries(queryClient, agentId);
+            showAppToast(t('agent.skills.uninstalled', 'Workspace skill uninstalled.'), 'success');
+          } catch (error: any) {
+            showAppToast(String(error?.message || error), 'error');
+          } finally {
+            setUninstalling(false);
+          }
+        }} />
 
       {showAgentClawhub && (
         <div className="agent-skills-modal-overlay" onClick={() => setShowAgentClawhub(false)}>

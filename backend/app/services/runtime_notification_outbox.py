@@ -1319,10 +1319,43 @@ class RuntimeNotificationOutboxService:
                     for item in list((page.manifest_json or {}).get("items") or [])
                     if isinstance(item, dict) and item.get("outbox_id")
                 }
-                if manifest_ids != {row.id for row in page_rows}:
-                    raise RuntimeError("integration page manifest does not match its claimed outbox rows")
                 if page.status != "processing" or page.claimed_by != worker_id or page.claim_token is None:
                     raise RuntimeError("integration page claim fence is stale")
+                claimed_ids = {row.id for row in page_rows}
+                if manifest_ids != claimed_ids:
+                    # A higher-rank producer can move an item to a new immutable
+                    # result revision. Repage the remaining items, never rewrite
+                    # the old manifest or retry its superseded bindings.
+                    missing_ids = manifest_ids - claimed_ids
+                    replacements = list(
+                        (
+                            await db.scalars(
+                                select(RuntimeNotificationOutbox).where(
+                                    RuntimeNotificationOutbox.id.in_(missing_ids),
+                                    RuntimeNotificationOutbox.tenant_id == page.tenant_id,
+                                    RuntimeNotificationOutbox.parent_session_id == page.parent_session_id,
+                                )
+                            )
+                        ).all()
+                    )
+                    if (
+                        not claimed_ids.issubset(manifest_ids)
+                        or {row.id for row in replacements} != missing_ids
+                        or any(row.integration_page_id == page.id for row in replacements)
+                    ):
+                        raise RuntimeError("integration page manifest does not match its claimed outbox rows")
+                    page.status = "dead_letter"
+                    page.last_error = "result_page_superseded_by_newer_binding"
+                    page.delivery_receipt_json = {
+                        "status": "superseded",
+                        "moved_outbox_ids": sorted(map(str, missing_ids)),
+                    }
+                    page.claimed_by = None
+                    page.claim_token = None
+                    page.lease_expires_at = None
+                    for row in page_rows:
+                        row.integration_page_id = None
+                    continue
                 prepared.append(
                     ClaimedResultIntegrationPage(
                         id=page.id,
@@ -1527,6 +1560,14 @@ class RuntimeNotificationOutboxService:
                         RuntimeResultIntegrationPage.parent_session_id == page.parent_session_id,
                         RuntimeResultIntegrationPage.integration_epoch < page.integration_epoch,
                         RuntimeResultIntegrationPage.status.in_(("prepared", "processing")),
+                        # Historical pages with no remaining outbox bindings are
+                        # retained evidence, not executable predecessors.
+                        exists(
+                            select(RuntimeNotificationOutbox.id).where(
+                                RuntimeNotificationOutbox.integration_page_id == RuntimeResultIntegrationPage.id,
+                                RuntimeNotificationOutbox.tenant_id == page.tenant_id,
+                            )
+                        ),
                     )
                     .order_by(RuntimeResultIntegrationPage.integration_epoch)
                     .limit(1)

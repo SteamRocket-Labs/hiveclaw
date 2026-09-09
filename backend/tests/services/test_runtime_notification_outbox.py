@@ -263,6 +263,68 @@ async def test_enqueue_is_deterministic_and_unique(owner_sessionmaker):
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
+@pytest.mark.parametrize("item_count", [1, 2])
+async def test_higher_rank_result_cannot_leave_a_blocking_or_partial_integration_page(owner_sessionmaker, item_count):
+    from dataclasses import replace
+
+    await _clear_outbox(owner_sessionmaker)
+    tenant_id, user_id, agent_id, session_id = await _seed_parent_session(owner_sessionmaker)
+    initial = replace(
+        _notification(tenant_id=tenant_id, user_id=user_id, agent_id=agent_id, session_id=session_id),
+        payload_rank=10,
+        summary="Reconciled provisional result",
+    )
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        first_id = await enqueue_completion_notification(db, initial)
+        if item_count == 2:
+            await enqueue_completion_notification(db, replace(initial, source_run_id="other-result"))
+        await db.commit()
+
+    async def fail_delivery(_page):
+        raise RuntimeError("Temporary consumer outage")
+
+    service = RuntimeNotificationOutboxService(session_factory=owner_sessionmaker, retry_base_seconds=0)
+    service._deliver_page = fail_delivery
+    assert (await service.drain_once(worker_id="provisional-page"))["retried"] == item_count
+    async with owner_sessionmaker() as db:
+        old_page_id = (await db.get(RuntimeNotificationOutbox, first_id)).integration_page_id
+        old_page = await db.get(RuntimeResultIntegrationPage, old_page_id)
+        old_manifest, old_hash = old_page.manifest_json, old_page.manifest_sha256
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        assert (
+            await enqueue_completion_notification(
+                db, replace(initial, payload_rank=100, summary="Authoritative final result")
+            )
+            == first_id
+        )
+        await db.commit()
+    healthy = RuntimeNotificationOutboxService(session_factory=owner_sessionmaker)
+    outcome = await healthy.drain_once(worker_id="authoritative-page")
+    assert outcome["delivered"] == item_count and outcome["deferred"] == 0
+    async with owner_sessionmaker() as db:
+        first = await db.get(RuntimeNotificationOutbox, first_id)
+        assert first.integration_page_id != old_page_id and first.status == "delivered"
+        result = await db.get(RuntimeResultObject, first.result_object_id)
+        assert decode_runtime_result_payload(result.payload_bytes)["summary"] == "Authoritative final result"
+        old_page = await db.get(RuntimeResultIntegrationPage, old_page_id)
+        assert (old_page.manifest_json, old_page.manifest_sha256) == (old_manifest, old_hash)
+        assert old_page.delivered_at is None
+        if item_count == 2:
+            assert old_page.status == "dead_letter"
+            assert old_page.delivery_receipt_json["status"] == "superseded"
+        assert (
+            await db.scalar(
+                select(func.count())
+                .select_from(RuntimeResultObject)
+                .where(
+                    RuntimeResultObject.tenant_id == tenant_id,
+                )
+            )
+            == item_count + 1
+        )
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
 async def test_same_source_payload_can_be_delivered_to_two_parent_mailboxes(owner_sessionmaker):
     await _clear_outbox(owner_sessionmaker)
     tenant_id, user_id, agent_id, first_session_id = await _seed_parent_session(owner_sessionmaker)

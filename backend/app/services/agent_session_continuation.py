@@ -395,7 +395,9 @@ def build_result_integration_runtime_context(manifest: dict[str, Any]) -> str:
         )
     lines.append(
         "Integrate only after reading the result bodies needed for the task. Partial, failed, cancelled and late "
-        "results remain separate typed facts; decide their meaning yourself."
+        "results remain separate typed facts; decide their meaning yourself. "
+        "Resume the original parent task from these results and give the user a current delivery/status update. "
+        "Do not replay completed child work merely because this notification arrived."
     )
     return "\n".join(lines)
 

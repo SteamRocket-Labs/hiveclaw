@@ -127,6 +127,7 @@ export interface RuntimeResultPage {
   integration_epoch: number;
   delivery_mode: string;
   item_count: number;
+  bound_item_count?: number | null;
   manifest_sha256: string;
   status: string;
   attempt_count: number;

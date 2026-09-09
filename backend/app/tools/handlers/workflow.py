@@ -504,7 +504,10 @@ async def preview_workflow(request: ToolExecutionRequest) -> str:
             "- If the preview requires confirmation, this tool cannot start it. Stop and wait for the "
             "authenticated user to select Confirm and run on that exact preview; do not infer confirmation "
             "from chat text or enter Plan Mode unless the user explicitly asks for it.\n"
-            "- If the preview does not require confirmation, start_workflow may start that exact preview.\n"
+            "- confirmation_required=false only waives additional policy approval; it does not authorize execution. "
+            "Start only when the user's current request authorizes running the workflow. If the user requested "
+            "preview only or asked you to wait for approval, return the preview and stop, even when "
+            "confirmation_required=false.\n"
             "- Pass ledger_todo_id to mirror the run onto your work-ledger todo."
         ),
         parameters={

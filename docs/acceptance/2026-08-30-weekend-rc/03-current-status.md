@@ -13,7 +13,7 @@ verification_status: remaining-functional-closure-in-progress
 
 ## 当前决定与本批次出口
 
-11:38 续接：owner 已授权 MiniMax M3 / Ling 切换及准确Local安装来源，两后端指南已生效。固定v1的51/57原始工具回执已核实，review批准后自动延时恢复、写读合计108，实际闭环；同版本23/31参数复用run已到review。Local路由修复 `912a7291` 已三服务部署并能打开原B3会话；CLI0.1.9仍把进度误当最终result，已本地修复、全Go测试通过，安装可回退候选且保留原绑定。旧Codex会话writer冲突的新失败已正确failed/ack并在云端读回；“新建”仍复用旧chat的独立后端根因已两行修复、相关73passed，待指纹复验和发布后验证成功result。Office最终2卡片已生产显示且按artifact ID下载成功，表内旧marker已发一次纠正；once新草案待确认。所有未完成项保留，未宣称全部完成。
+12:05 续接：production `905e7876` 三服务SUCCESS；Local独立新会话真实pwd/exit0、完整final/ack与页面重开均通过，本地CLI候选可回退、未发npm。固定v1两组参数实跑分别108/162，review/wait/文件消费通过。通用once正式API已触发一次并停用、读回64文件；聊天入口仍被独立Plan前置拦住，旧时间请求已取消。Office最终2卡片下载通过但表内旧marker纠正遭遇provider ambiguous，原Session后续又报committed_model_seal_unavailable，未称语义完成。Goal两份文件已交付，但同run完成两阶段，不算自动续轮。Dynamic真实proposal/preview后模型违反“只预览”要求自行start，两叶计算后停review，现已正式取消；候选仅澄清共享工具说明中policy免额外审批不等于用户授权，26项检查通过，待发布复验。其余未完成项保留，不宣称全部完成。
 
 2026-09-09 owner 在核对功能覆盖后明确要求“把真正剩下的工作一次性全部完成掉……全部完成之后和我说，要求还是那一个”。继续由单一 Codex 实施、验证、提交推送、三服务部署和真实消费验收，不再沿旧两小时批次自动停止，也不重做已通过主路径。当前剩余执行清单：固定 Workflow 实跑与复用、A2A Workflow 编排、Dynamic 并行/等待恢复；通用 once/schedule/event 与 Local 最终 result；Office 最终卡片及 Goal 自动两轮/计费复验；Memory/Growth、Hook、Skill、MCP 的未闭环路径；角色/移交/离职和最终回归/清理。权限扩大、凭据、收费、真实外发与业务政策仍保留对应 owner 决策边界，不由“全部完成”推导授权。
 
@@ -65,7 +65,7 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 
 ## 唯一下一动作
 
-完成Local新建chat隔离修复的部署与真实成功result、固定v1参数复用的review/产物、11:43新once审批以及Office纠正后的最终卡片。旧失败回执不改写、旧失效时间不重放，保持MiniMax/Ling授权边界。独立 A2A Process Graph 尚未实现，其余 Growth/能力/角色/最终回归仍未完成。细节与精确资产见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)。
+交付并复验Dynamic工具说明修正，核对once终态与Goal计费；Office保留现有有效产物及原Session失败，不重放未知调用。旧失效时间不重放，保持MiniMax/Ling授权边界。独立 A2A Process Graph 尚未实现，其余 Growth/能力/角色/最终回归仍未完成。细节与精确资产见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)。
 
 此前交付背景（不替代上述下一动作）：
 

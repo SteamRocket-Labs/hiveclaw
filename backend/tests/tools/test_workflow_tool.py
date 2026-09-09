@@ -321,6 +321,9 @@ def test_start_workflow_schema_accepts_only_durable_preview_reference():
     assert meta.parameters["required"] == ["preview_id"]
     assert meta.parameters["additionalProperties"] is False
     assert set(meta.parameters["properties"]) == {"preview_id", "ledger_todo_id"}
+    assert "confirmation_required=false only waives additional policy approval" in meta.description
+    assert "preview only" in meta.description
+    assert "return the preview and stop" in meta.description
 
 
 async def test_preview_workflow_registered_adapter_matches_agent_arguments_signature():

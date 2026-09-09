@@ -81,3 +81,20 @@ Office原合成Session新请求 `ecec520557595ee386ce8d886bd0d5f5` 已正式受�
 11:38：独立archive检查89passed/1failed，唯一失败为上述两行引起的已审源码指纹变化。baseline/candidate均588条，差异只有 `local_agent_channel_service.py:<module-source>`，未改bypass范围、SQL或查询白名单；仅暂存精确新指纹 `ec5591cf9c222a973a220f64dc3237ad5e785928524ae0c930986ae64c2ad40f`，保留工作区owner原manifest候选，正在重验。Office11:30正式final有2张真实卡片，按artifact ID下载DOCX/XLSX均200且有效OOXML，公式仍SUM(17,12)；旧marker残留于表格，已给模型一次精确纠正反馈，不把artifact传输通过当语义全部正确。固定复用run `64a23167-e788-54ef-bef3-75db4031cc9b` 已进入review，输入23/31、预期69/93/162；once新草案Session `1934ba2f-3580-4e8a-a44c-022f0d047c42` target11:43:07，未确认前无trigger效果。
 
 继续通用 once/schedule/event、Local修复后的最终result和其余原清单。A2A固定graph等实现和其余功能继续按03-current-status原范围保留，不缩减、不宣称全部完成；无新heartbeat或后台Codex任务。
+
+11:49实证：`905e7876` 已commit/push，三服务SUCCESS：backend `29a37a6b-6c10-45f7-892a-3549854e4c96`、backend-api `d597964d-60db-4a4b-9cec-422f69024aae`、frontend `0dee8cb9-aa5d-4ba9-aa5e-a099fcd298fa`。两后端经SSH只读计算实际 `create_channel_session` 源码SHA256，均与精确archive同为 `c0bb14f8dc30e9caa9d70b20eb7f137f06fdcf7aa0b86c3afdf8c14d2eb8beb0`，health ok。正式新建Local已得到独立chat `09fd9213-627e-4399-9b5d-3c501471adac` / channel `2b382822-389f-4d0d-8ad5-5c86aa1d3b11`，原旧会话未改变。
+
+Local V019-04 request `b210d097-c37b-47a8-8b57-9ed2687957eb` 11:45:02单次批准，实际只执行一次pwd、exit0、输出为本项目工作目录；CLI最终receipt completed于03:45:36Z、云端ack于03:45:37Z，输出含准确marker与实际路径。正式页面重新打开完整读回最终答案。这条成功路径及此前真实failed/ack都已验证；CLI修复本地commit `c0fec61`，未push、未发npm，当前为可回退本地候选，不冒充正式发行。
+
+固定v1复用同一hash的23/31两叶T0原始结果69/93已核实，gate返回200且replayed=false；11:46正式run completed，workspace读回新marker `REMAINING-FIXED-LING-03` 和合计162。版本化实例/参数复用、并行、review、wait及文件均实际通过，不外推A2A。
+
+once原Run审批已200/resolved并same-run恢复，随后工具被明确aborted/`approved_permission_not_consumed`，没有trigger；源代码显示独立Plan前置在一般工具授权之前，单次工具批准不能代替Plan选择。旧11:43时间不重放。已通过原owner正式推荐/decline记录此前明确拒绝额外Plan的决定，新请求 `a45a85cefd4554eab4a61d7754b841eb` 确认新的11:53:14窗口、max_fires1、原受限产物；尚待实际创建与唤醒。
+
+## 11:52—12:05 继续实测
+
+- 新once聊天Run仍在seq110被`plan_confirmation_required`拦住；已declined的REST recommendation没有成为该轮工具Plan授权。11:53时间过期后正式cancel200，不批准迟到调用。通过原owner正式trigger API及已declined recommendation，另建 `e5043f2a-0817-4216-a491-117dc91f9844`，marker `WRC-REMAINING-20260909-ONCE-API-05`，03:57:18Z到期、max_fires1、30分钟截止；03:58:40Z实际触发且自动disabled/fire_count1。正式files API读回`workspace/remaining-once-api-05.md`含64，终态/工具证据仍核对中，不能替代聊天确认路径。
+- Office纠正Run `473ccc45…` seq1613实际在03:43:32Z记录provider_error/`model_round_provider_send_is_ambiguous`；无active run。随后一次精确纠正新输入201，但在模型前seq1624失败`committed_model_seal_unavailable`。两份已有artifact仍200可下载：DOCX正文新marker但表格旧marker，XLSX也仍有旧marker，不能将传输通过当内容修正完成。没有直接改生产文件或丢弃历史来伪造通过。
+- Goal fresh Session `88f2e17f-c3ae-4419-bf7d-10c42c9d0ca4`，Goal `edca23f8-c6ae-4ab8-8909-8c3e78e9951c`，300000tokens/2continuations/1200s。真实run `f49f28ee…`已写读stage1/final两文件63/126，正式页面重开显示两张artifact；但模型在同一run中完成两个阶段，未遵守分两轮要求，因此不能记自动续接PASS，计费仍待核对。
+- Dynamic fresh Session `0b5ac03b-d843-483b-99dd-80ff55d96274`，实际调用schema/propose后修正items_from格式，proposal `4399a5be-dae8-44c1-a179-ac2f0eabc17b`，preview/run `842ccce9-0df3-40a6-8e1a-c3dd9979ea77`，definition hash `09786a1e551fc52e6beaee0f4d5fc89fb7b0fc6f2b6728a086397176bbdc8ad1`。尽管原请求明确“STOP at preview until I approve”，模型看到`confirmation_required=false`后直接start。两叶done/token12070与12053，停human-review，尚无最终文件；正式cancel200且GET killed，未批准review、未重放。
+- 工具说明原句把免额外policy确认直接表达为may start，未区分当前用户只要求预览。最小候选仅澄清这一说明：policy免额外确认不产生用户执行授权，preview-only/wait-for-approval时返回预览并停止；没有增加自然语言扫描、关闭工具或全局Plan强制门。现有workflow工具测试26passed/3.85s，Ruff和format通过，待生产模型同类反例复验；文本断言不作为行为通过证据。
+- 905e7876 CI前端/15journeys success，backend仍执行。backend与backend-api两次只读SSH均连接关闭，尚未通过该途径取得Goal/once最终数据库对账；正式API继续可用，无凭据/网络策略改动。

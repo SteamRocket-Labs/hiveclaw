@@ -656,6 +656,8 @@ async def _load_owned_run(run_id: uuid.UUID, *, agent) -> LoadedWorkflowRun:
         agent.tenant_id is not None and metadata.get("tenant_id") != str(agent.tenant_id)
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="workflow run not found")
+    if metadata.get("kind") == "a2a_workflow":
+        raise HTTPException(status_code=409, detail="Use the A2A workflow run surface for this full-Agent graph")
     return loaded
 
 

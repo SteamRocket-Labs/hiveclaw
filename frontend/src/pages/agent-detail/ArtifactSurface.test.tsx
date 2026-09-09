@@ -2,13 +2,35 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
-import { ArtifactPreviewPanel, getArtifactOpenMode, getEffectiveArtifactPreviewKind } from './ArtifactSurface';
+import { ArtifactPreviewPanel, getArtifactOpenMode, getEffectiveArtifactPreviewKind, loadOfficeArtifactPreview } from './ArtifactSurface';
+import { officeApi } from '../../api/domains/office';
+import nginxConf from '../../../nginx.conf?raw';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (_key: string, fallback?: string) => fallback || _key }),
 }));
 
 describe('Office artifact preview surface', () => {
+  it('allows local blob frames in every deployed CSP without allowing external frames or weakening scripts', () => {
+    const policies = [...nginxConf.matchAll(/add_header Content-Security-Policy "([^"]+)"/g)].map((match) => match[1]);
+    expect(policies).toHaveLength(3);
+    for (const policy of policies) {
+      expect(policy.match(/(?:^|;)\s*frame-src ([^;]+);/)?.[1]).toBe("'self' blob:");
+      expect(policy).toContain("script-src 'self';");
+    }
+  });
+
+  it('recognizes a canonical snapshot storage reference even without legacy snapshot_hash', async () => {
+    const request = vi.spyOn(officeApi, 'getArtifactPreview').mockResolvedValue(new Blob(['<html>Saved</html>']));
+    try {
+      const result = await loadOfficeArtifactPreview({ id: 'artifact-1', name: 'report.xlsx', path: 'workspace/report.xlsx',
+        snapshotStoragePath: 'runtime_artifacts/chat_artifact_snapshots/session/run/revision.xlsx' }, 'agent-1');
+      expect(result.usingSnapshot).toBe(true);
+      expect(result.legacyCurrentFileFallback).toBe(false);
+      expect(request).toHaveBeenCalledWith('agent-1', 'artifact-1', undefined);
+      URL.revokeObjectURL(result.url!);
+    } finally { request.mockRestore(); }
+  });
   it('routes Office artifacts into the inspector instead of direct download', () => {
     expect(getArtifactOpenMode({
       name: 'deck.pptx',

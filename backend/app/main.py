@@ -48,6 +48,7 @@ from app.api.local_agent_channel import local_agent_browser_channel_ws
 from app.api.local_agent_channel import router as local_agent_channel_router
 from app.api.local_bridge import router as local_bridge_router
 from app.api.workflows import router as workflows_router
+from app.api.a2a_workflows import router as a2a_workflows_router
 from app.api.workflow_definitions import router as workflow_definitions_router
 from app.api.agent_knowledge import personal_router as personal_knowledge_router
 from app.api.agent_knowledge import router as agent_knowledge_router
@@ -909,6 +910,7 @@ _api_routers = [
     runtime_terminal_boundaries_router,
     tools_router,
     workflows_router,
+    a2a_workflows_router,
     workflow_definitions_router,
     company_knowledge_router,
     personal_knowledge_router,

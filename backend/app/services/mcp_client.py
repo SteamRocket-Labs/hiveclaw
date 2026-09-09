@@ -359,7 +359,17 @@ class MCPClient:
                 else:
                     texts.append(str(block))
 
-            return "\n".join(texts) if texts else str(result)
+            content = "\n".join(texts) if texts else str(result)
+            if isinstance(result, dict) and result.get("isError") is True:
+                return render_tool_error(
+                    tool_name=tool_name,
+                    error_class="operation_failed",
+                    message=content,
+                    provider="mcp",
+                    retryable=False,
+                    actionable_hint="Inspect the tool schema and error; revise the arguments before another call.",
+                )
+            return content
 
         except httpx.HTTPError as e:
             return render_tool_error(

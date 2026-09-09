@@ -2763,6 +2763,29 @@ async def _wake_parent_session_from_delegation_completion(
     if parent_session_uuid is None or child_session_uuid is None or parent_agent_uuid is None or tenant_uuid is None:
         return None
 
+    delivery_mode = "parent_continuation"
+    principal = request.execution_principal or {}
+    if principal.get("origin") == "a2a_workflow" and request.root_runtime_task_id:
+        from sqlalchemy import select
+
+        from app.models.runtime_task import RuntimeTask
+
+        graph = (
+            await db.execute(
+                select(RuntimeTask).where(
+                    RuntimeTask.id == uuid.UUID(request.root_runtime_task_id),
+                    RuntimeTask.tenant_id == tenant_uuid,
+                    RuntimeTask.root_user_id == request.owner_id,
+                    RuntimeTask.task_type == "workflow",
+                )
+            )
+        ).scalar_one_or_none()
+        if graph is None or (graph.metadata_json or {}).get("kind") != "a2a_workflow":
+            raise ValueError("A2A workflow completion is missing its authoritative graph")
+        # The graph advances its own edges; completion remains visible without
+        # creating a second, independent parent-model continuation.
+        delivery_mode = "session_projection"
+
     return await enqueue_completion_notification(
         db,
         CompletionNotification(
@@ -2777,7 +2800,7 @@ async def _wake_parent_session_from_delegation_completion(
             terminal_status=status,
             task_type="a2a_delegation",
             summary=summary,
-            delivery_mode="parent_continuation",
+            delivery_mode=delivery_mode,
             artifacts=artifacts or [],
             metadata={
                 "trace_id": request.trace_id,
@@ -3793,6 +3816,7 @@ async def delegate_async(
     edit_mode: str | None = None,
     budget_run_id: uuid.UUID | str | None = None,
     budget_service: RuntimeBudgetService | None = None,
+    runtime_task_id: uuid.UUID | None = None,
 ) -> AsyncDelegationHandle:
     """Launch a child agent in the background and return immediately.
 
@@ -3803,7 +3827,9 @@ async def delegate_async(
     `AsyncSession`-bound gateway pass it in explicitly.
     """
     _cleanup_stale_tasks()
-    task_id = uuid.uuid4().hex
+    # Durable graph callers serialize admission with their existing run lease.
+    # Reuse an exact child intent after recovery; never issue a second send.
+    task_id = (runtime_task_id or uuid.uuid4()).hex
     real_trace_id = trace_id or uuid.uuid4().hex
     budget_uuid = _maybe_uuid(budget_run_id)
     budget_reservation_key = f"delegation:{task_id}:start" if budget_uuid is not None else None
@@ -3871,6 +3897,22 @@ async def delegate_async(
         trace_id=real_trace_id,
         status="pending",
     )
+    if runtime_task_id is not None:
+        existing = await get_runtime_task_record(task_id)
+        if existing is not None:
+            receipt = (existing.get("metadata") or {}).get("execution_receipt") or {}
+            if any(
+                receipt.get(key) != request.execution_receipt.get(key)
+                for key in ("request_hash", "capability_snapshot_hash", "policy_snapshot_hash")
+            ):
+                raise ValueError("delegation task id is already bound to another request or authority")
+            return AsyncDelegationHandle(
+                task_id=task_id,
+                trace_id=str(existing.get("trace_id") or real_trace_id),
+                target_name=getattr(target, "name", "unknown"),
+                status=str(existing.get("status") or "unknown"),
+                receipt=receipt,
+            )
     from app.services.runtime_root_ledger import build_runtime_root_path
 
     ancestor_path = _delegation_ancestor_chain(request)

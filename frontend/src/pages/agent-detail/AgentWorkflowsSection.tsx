@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import './AgentWorkflowsSection.css';
+import A2AWorkflowPanel from './A2AWorkflowPanel';
 import {
   activateWorkflowDefinition,
   cancelWorkflowRun,
@@ -110,6 +111,7 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
 
   // ── advanced (manual run) state — original P12 flow, demoted ──
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [a2aOpen, setA2AOpen] = useState(false);
   const [definitionText, setDefinitionText] = useState('');
   const [argsText, setArgsText] = useState('{}');
   const [preview, setPreview] = useState<WorkflowPreview | null>(null);
@@ -286,6 +288,10 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
   return (
     <div className="agent-workflows-root">
       <p className="agent-workflows-intro">{t('workflows.intro')}</p>
+      <details onToggle={(event) => setA2AOpen(event.currentTarget.open)}>
+        <summary>A2A Workflow — full-Agent process graph</summary>
+        {a2aOpen && <A2AWorkflowPanel agentId={agentId} />}
+      </details>
 
       {actionError && (
         <div data-testid="workflow-action-error" className="agent-workflows-error">

@@ -373,6 +373,10 @@ async def execute_claimed_workflow_run(
         ).scalar_one_or_none()
     if task is None or task.task_type != "workflow":
         raise LookupError(f"workflow run {run_id} not found")
+    if (task.metadata_json or {}).get("kind") == "a2a_workflow":
+        from app.services.a2a_workflow_runtime import execute_claimed_run
+
+        return await execute_claimed_run(task)
     executor = build_resumable_workflow_leaf_executor(session_factory=session_factory, spawn=spawn)
     return await service.resume_run(
         run_uuid,

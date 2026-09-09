@@ -13,6 +13,12 @@ verification_status: remaining-functional-closure-in-progress
 
 ## 当前决定与本批次出口
 
+13:40 更新：A2A候选085e7cfe已完成原生worker/完整Agent执行、不可变文件交接、独立Session、人工gate、缺产物暂停、同child恢复、显式node retry和取消对账；未知/缺失child不伪装cancel成功。新增真实PG及相关25项、前端7项、完整build、RLS17项通过；之前124后端/28前端支持证据保留。MCP isError修复一并集成，Office本地blob预览修复待同源部署。尚无A2A生产业务PASS，继续三员工真实链、Office预览/表格styles验证、其余原剩余清单。保留main无关owner脏文件；workflow_runtime_service只集成候选blob至index，不覆盖owner工作区内容。
+
+13:29 消费反例：Office页面重开已见12:58最终两卡，但XLSX预览被父页面CSP拦截，且snapshotStoragePath存在却因缺旧snapshot_hash显示“无快照”。候选仅允许本地blob frame（iframe沙箱与脚本策略不变）并消费canonical快照路径，8项前端检查通过，尚未部署复验；表格既有styles.xml schema warning仍需处理，不把下载/内容通过外推完整Office通过。A2A真实PG扩展检查已通过缺产物暂停、跨user读拒绝、显式retry保留原attempt并只新增一个child。
+
+13:25 更新：`b09310d0` 三服务已于12:52同源SUCCESS（backend/source hash `0259d6f2a55e699aea0c706858db3ab417855e1654777ac418e5bc96be573860`，1058文件）。Office原Session最终新run正常completed，两最终artifact下载/哈希/新marker/29及B7真实公式SUM(17,12)均读回，旧marker已清除；Context7两次真实查询与最终terminal提交已核实。MCP协议isError被丢弃的独立修复74passed，干净候选a073e39f尚未部署。A2A独立parser、原生完整Agent委派、不可变artifact交接、journal/API/UI已在隔离worktree实现，首轮124后端/28前端与build通过；真实PG已验证单预算/原child恢复，继续验证缺产物、retry、权限反例，尚未发布或宣称业务通过。Dynamic07、其余清单及最终清理继续，未缩减完成标准。
+
 12:48 更新：Office 原历史失败已定位为 duplicate prepare 污染 committed aggregate，最小候选恢复 exact seal 读取且防止再污染；Context7 正式接入并审核两工具后，实调用发现动态 capability 分类缺失，候选补齐但不改权限。相关 semantic25/MCP70/RLS17通过，待部署复验。Dynamic修订07已真实逐项计算51/57，停review后继续等待/汇总消费；06的绑定缺失不冒充通过。MCP旧run cancel后留下ambiguous_provider_send/unknown，未当取消成功或重发。A2A新增Graph仍未编码，其余剩余清单不变。
 
 12:22 续接：production `9311b5ad` 三服务SUCCESS。Local独立新会话真实pwd/exit0、完整final/ack与页面重开通过，本地CLI候选可回退、未发npm；固定v1两组参数实跑108/162，review/wait/文件消费通过。通用once正式API触发一次后停用且读回64文件；聊天入口仍被独立Plan前置拦住，旧时间请求的cancel已受理但终态尚未核实。Office最终2卡片下载通过，表内旧marker纠正仍受原Session的committed_model_seal_unavailable阻挡。Goal已观察到自动第二run完成及123674tokens计费，分阶段跨run要求仍未通过。Dynamic工具说明修正后，新模型run正确停在ready预览且run_id为空；正式确认后并行两叶done、停review，随后批准进入等待与最终文件步骤，尚未全链验完。12:12 owner明确包含新增A2A编排，12:13指定Context7，继续既有实验范围实施与接入；其余未完成项保留，不宣称全部完成。
@@ -67,7 +73,7 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 
 ## 唯一下一动作
 
-交付并复验Dynamic工具说明修正，核对once终态与Goal计费；Office保留现有有效产物及原Session失败，不重放未知调用。旧失效时间不重放，保持MiniMax/Ling授权边界。独立 A2A Process Graph 尚未实现，其余 Growth/能力/角色/最终回归仍未完成。细节与精确资产见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)。
+提交并同源部署A2A/MCP/Office候选，实跑三员工文件交接与人工gate/父消费，复核Office最终预览和styles校验错误；再逐项完成Dynamic最终消费、once聊天/触发、Goal、Growth/能力/角色及最终回归清理。旧失效时间和未知调用不重放。细节与精确资产见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)。
 
 此前交付背景（不替代上述下一动作）：
 

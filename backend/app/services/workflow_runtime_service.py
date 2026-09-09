@@ -1637,6 +1637,7 @@ class WorkflowRuntimeService:
             )
             if tenant_id is not None:
                 tasks = [t for t in tasks if (t.metadata_json or {}).get("tenant_id") == str(tenant_id)]
+            tasks = [t for t in tasks if (t.metadata_json or {}).get("kind") != "a2a_workflow"]
             run_ids = [t.id for t in tasks]
             counts: dict[uuid.UUID, dict[str, int]] = {rid: {} for rid in run_ids}
             promoted: dict[uuid.UUID, uuid.UUID] = {}
@@ -1703,6 +1704,10 @@ class WorkflowRuntimeService:
 
         resumed: list[ResumedRun] = []
         for run_id, tenant_value, run_status, metadata in pending:
+            if metadata.get("kind") == "a2a_workflow":
+                # Full-Agent graphs are claimed by their own native worker path,
+                # never compiled as axis-1 governed-leaf workflows.
+                continue
             if not tenant_value:
                 logger.warning("[Workflow] run %s has no tenant mirror; skipping auto-resume", run_id)
                 continue

@@ -95,11 +95,12 @@ export async function loadOfficeArtifactPreview(
   const blob = artifact.id
     ? await officeApi.getArtifactPreview(artifactAgentId, artifact.id, authority)
     : await officeApi.getWorkspacePreview(artifactAgentId, artifact.path, authority);
+  const usingSnapshot = Boolean(artifact.id && (artifact.snapshotStoragePath || artifact.snapshotHash));
   return {
     artifact,
     url: URL.createObjectURL(blob),
-    usingSnapshot: Boolean(artifact.id && artifact.snapshotHash),
-    legacyCurrentFileFallback: Boolean(artifact.id && !artifact.snapshotHash),
+    usingSnapshot,
+    legacyCurrentFileFallback: Boolean(artifact.id && !usingSnapshot),
   };
 }
 

@@ -29,6 +29,29 @@ def _extract_tool_error_payload(result: str) -> dict:
     return json.loads(result[start:end])
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_error", [True, False])
+async def test_mcp_tool_result_preserves_protocol_error_flag(monkeypatch, is_error):
+    from app.services.mcp_client import MCPClient
+
+    content = "Input validation error: query is required"
+
+    async def response(self, method, params):
+        assert method == "tools/call"
+        return {"result": {"isError": is_error, "content": [{"type": "text", "text": content}]}}
+
+    monkeypatch.setattr(MCPClient, "_detect_and_request", response)
+    result = await MCPClient("https://mcp.example.com/mcp").call_tool("resolve-library-id", {})
+    if is_error:
+        payload = _extract_tool_error_payload(result)
+        assert payload["ok"] is False
+        assert payload["error_class"] == "operation_failed"
+        assert payload["message"] == content
+        assert payload["retryable"] is False
+    else:
+        assert result == content  # Natural-language error words are not the failure classifier.
+
+
 class _FakeResponse:
     def __init__(
         self,

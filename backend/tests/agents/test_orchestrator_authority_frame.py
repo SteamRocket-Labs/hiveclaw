@@ -6,6 +6,88 @@ from uuid import UUID, uuid4
 import pytest
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("drift", [False, True])
+async def test_graph_child_replay_reuses_only_exact_request_and_authority(monkeypatch, drift):
+    from app.agents import orchestrator
+
+    request = _delegation_request()
+    task_id = uuid4()
+    captured = {}
+    build = orchestrator._build_delegation_execution_receipt
+
+    def receipt(*args, **kwargs):
+        result = build(*args, **kwargs)
+        captured.update(result)
+        return result
+
+    async def existing(_task_id):
+        saved = dict(captured)
+        if drift:
+            saved["request_hash"] = "different-request"
+        return {"status": "completed", "trace_id": "trace-a2a", "metadata": {"execution_receipt": saved}}
+
+    async def allowed(_request):
+        return True, None
+
+    async def unexpected_create(**kwargs):
+        raise AssertionError("A replay must not create or publish another child")
+
+    monkeypatch.setattr(orchestrator, "_build_delegation_execution_receipt", receipt)
+    monkeypatch.setattr(orchestrator, "get_runtime_task_record", existing)
+    monkeypatch.setattr(orchestrator, "_delegation_plan_gate_allows", allowed)
+    monkeypatch.setattr(orchestrator, "create_runtime_task_record", unexpected_create)
+    kwargs = dict(
+        target=request.target,
+        target_model=request.target_model,
+        conversation_messages=request.conversation_messages,
+        owner_id=request.owner_id,
+        session_id=request.session_id,
+        parent_agent_id=request.parent_agent_id,
+        parent_session_id=request.parent_session_id,
+        execution_principal=request.execution_principal,
+        tenant_id=request.tenant_id,
+        trace_id=request.trace_id,
+        root_runtime_task_id=request.root_runtime_task_id,
+        permission_profile=request.permission_profile,
+        runtime_task_id=task_id,
+    )
+    if drift:
+        with pytest.raises(ValueError, match="another request or authority"):
+            await orchestrator.delegate_async(**kwargs)
+    else:
+        handle = await orchestrator.delegate_async(**kwargs)
+        assert handle.task_id == task_id.hex and handle.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_graph_completion_projects_without_an_independent_parent_wake(monkeypatch):
+    from app.agents import orchestrator
+
+    request = _delegation_request()
+    request.parent_session_id, request.session_id, request.root_runtime_task_id = [str(uuid4()) for _ in range(3)]
+    request.execution_principal["origin"] = "a2a_workflow"
+    notifications = []
+
+    class DB:
+        async def execute(self, query):
+            return SimpleNamespace(scalar_one_or_none=lambda: SimpleNamespace(metadata_json={"kind": "a2a_workflow"}))
+
+    async def enqueue(db, notification):
+        notifications.append(notification)
+        return uuid4()
+
+    monkeypatch.setattr(orchestrator, "enqueue_completion_notification", enqueue)
+    await orchestrator._wake_parent_session_from_delegation_completion(
+        db=DB(),
+        request=request,
+        task_id=str(uuid4()),
+        status="completed",
+        summary="Complete",
+    )
+    assert len(notifications) == 1 and notifications[0].delivery_mode == "session_projection"
+
+
 def _delegation_request(*, message: str = "complete the task"):
     from app.agents.orchestrator import (
         AgentDelegationRequest,

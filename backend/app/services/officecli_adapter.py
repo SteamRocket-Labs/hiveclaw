@@ -90,7 +90,7 @@ class OfficeCLIAdapter:
     """Narrow subprocess adapter for OfficeCLI.
 
     The adapter never exposes raw shell execution. Callers select a whitelisted
-    OfficeCLI subcommand, pass a document path, and receive parsed JSON only.
+    OfficeCLI subcommand, pass a document path, and receive a structured result.
     """
 
     def __init__(
@@ -178,7 +178,7 @@ class OfficeCLIAdapter:
             normalized_options["page"] = page
         args = [verified_binary, "view", str(path), normalized_mode, "--json"]
         args.extend(self._option_args(normalized_options))
-        return self._run_json("view", args, cwd=cwd)
+        return self._run_json("view", args, cwd=cwd, allow_html=normalized_mode == "html")
 
     def run_batch(
         self,
@@ -232,6 +232,7 @@ class OfficeCLIAdapter:
         args: list[str],
         *,
         cwd: str | Path | None,
+        allow_html: bool = False,
     ) -> dict[str, Any]:
         completed = self._run_process(args, command=command, cwd=cwd)
         stdout = completed.stdout or ""
@@ -252,6 +253,9 @@ class OfficeCLIAdapter:
                 stderr=stderr,
                 payload=payload,
             )
+        # Native HTML view writes HTML even with --json (OfficeCLI 1.0.88).
+        if allow_html and stdout.lstrip().lower().startswith(("<!doctype html", "<html")):
+            return {"success": True, "data": stdout}
         payload = self._parse_json(stdout, allow_empty=False)
         return payload
 

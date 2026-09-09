@@ -122,6 +122,24 @@ def test_officecli_adapter_rejects_reserved_view_options_before_execution(tmp_pa
     assert calls == []
 
 
+def test_officecli_adapter_normalizes_native_html_without_masking_errors(tmp_path):
+    from app.services.officecli_adapter import OfficeCLIAdapter, OfficeCLIExecutionError, OfficeCLIOutputError
+
+    native = "<!DOCTYPE html><html><head></head><body><table><tr><td>29</td></tr></table></body></html>"
+    completed = SimpleNamespace(returncode=0, stdout=native, stderr="")
+    adapter = OfficeCLIAdapter(binary="officecli", runner=lambda *_args, **_kwargs: completed)
+    assert adapter.run_view(tmp_path / "demo.xlsx", mode="html") == {"success": True, "data": native}
+    with pytest.raises(OfficeCLIOutputError):
+        adapter.run_view(tmp_path / "demo.xlsx", mode="text")
+    completed.returncode = 1
+    with pytest.raises(OfficeCLIExecutionError):
+        adapter.run_view(tmp_path / "demo.xlsx", mode="html")
+    completed.returncode = 0
+    completed.stdout = "renderer unavailable"
+    with pytest.raises(OfficeCLIOutputError):
+        adapter.run_view(tmp_path / "demo.xlsx", mode="html")
+
+
 def test_officecli_adapter_rejects_invalid_json(tmp_path):
     from app.services.officecli_adapter import OfficeCLIAdapter, OfficeCLIOutputError
 

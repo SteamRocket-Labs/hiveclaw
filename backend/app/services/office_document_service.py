@@ -523,7 +523,8 @@ class OfficeDocumentService:
         except (OSError, json.JSONDecodeError):
             return None
         if (
-            manifest.get("source_sha256") != source_sha256
+            manifest.get("preview_contract_version") != 2
+            or manifest.get("source_sha256") != source_sha256
             or manifest.get("renderer_version") != renderer_version
             or manifest.get("preview_sha256") != sha256(preview_html.encode("utf-8")).hexdigest()
         ):
@@ -551,6 +552,7 @@ class OfficeDocumentService:
         cache_dir.mkdir(parents=True, exist_ok=True)
         self._atomic_write_text(cache_dir / "current.html", result.html)
         manifest = {
+            "preview_contract_version": 2,
             "source_sha256": result.source_sha256,
             "renderer_version": result.renderer_version,
             "preview_mode": result.preview_mode,

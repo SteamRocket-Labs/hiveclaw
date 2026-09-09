@@ -13,6 +13,10 @@ verification_status: remaining-functional-closure-in-progress
 
 ## 当前决定与本批次出口
 
+15:00 Office 原生渲染修复：适配器仅对HTML模式接收CLI实际raw HTML，保留非零退出/其他模式严格JSON错误；preview contract v2使旧错误fallback缓存失效。相关42项通过、ruff/diff通过；生产1.0.88临时进程加载候选后，DOCX/XLSX/PPTX真实HTML、text、service preview HTML及CSP全部通过（36621/7541/19240 bytes）。未替换生产文件，待正式部署后UI复验。A2A原run已确认budget service以runtime_budget_exhausted终止，首child实际failed、无重发；默认200K graph上限与真实预算预留冲突正在核对，绝不伪装成功或扩大租户权限。
+
+14:50 live：e3e2d26a三服务SUCCESS，同1062文件/source SHA256 `5d271b150dfc7ec88a446f48ece54ea4a8c03d584a20dfb5320633a0f425cf62`。Office snapshot预览CSP阻断已消失，但原生HTML被适配层按JSON解析失败而错误fallback；owner明确要求修好OfficeCLI自带渲染。生产CLI1.0.88临时副本已复现，fresh原生XLSX公式29/validate0通过，旧表styles/无cache另保留。A2A已从正式UI预览并启动run `f781153f-d23c-4724-8b1d-a0f2c16f978b`，rootSession `e1e9dc43-9773-4ebf-9253-8635e461fe0f`，三participant为原Analyst/Reviewer/B-Worker，未改模型/权限。首child MiniMax真实运行中，但root意外显示killed（未执行取消）；正在查这一生产故障，不重发原run或声称业务通过。
+
 13:40 更新：A2A候选085e7cfe已完成原生worker/完整Agent执行、不可变文件交接、独立Session、人工gate、缺产物暂停、同child恢复、显式node retry和取消对账；未知/缺失child不伪装cancel成功。新增真实PG及相关25项、前端7项、完整build、RLS17项通过；之前124后端/28前端支持证据保留。MCP isError修复一并集成，Office本地blob预览修复待同源部署。尚无A2A生产业务PASS，继续三员工真实链、Office预览/表格styles验证、其余原剩余清单。保留main无关owner脏文件；workflow_runtime_service只集成候选blob至index，不覆盖owner工作区内容。
 
 13:29 消费反例：Office页面重开已见12:58最终两卡，但XLSX预览被父页面CSP拦截，且snapshotStoragePath存在却因缺旧snapshot_hash显示“无快照”。候选仅允许本地blob frame（iframe沙箱与脚本策略不变）并消费canonical快照路径，8项前端检查通过，尚未部署复验；表格既有styles.xml schema warning仍需处理，不把下载/内容通过外推完整Office通过。A2A真实PG扩展检查已通过缺产物暂停、跨user读拒绝、显式retry保留原attempt并只新增一个child。

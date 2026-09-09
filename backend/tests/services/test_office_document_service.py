@@ -278,6 +278,15 @@ def test_office_preview_renders_hardened_html_and_reuses_hash_cache(tmp_path):
     )
     assert manifest["source_sha256"] == first.source_sha256
     assert manifest["preview_mode"] == "html"
+    # The old JSON-only adapter cached a fallback for the same binary/source.
+    # Changing the integration contract must invalidate that legacy cache.
+    manifest.pop("preview_contract_version")
+    manifest["preview_mode"] = "text_fallback"
+    cache_dir = service.manifest_path("workspace/demo.docx").parent / "preview"
+    (cache_dir / "manifest.json").write_text(json.dumps(manifest))
+    assert service._load_preview_cache(
+        cache_dir, source_sha256=first.source_sha256, renderer_version=first.renderer_version
+    ) is None
 
 
 def test_office_preview_falls_back_to_escaped_text_on_html_renderer_failure(tmp_path):

@@ -4,7 +4,7 @@ owner: Codex
 status: in_progress
 authority: canonical-working-state
 last_reviewed: 2026-09-09
-source_commit: 6c3e1a11
+source_commit: bfd354b7
 verification_status: remaining-functional-closure-in-progress
 ---
 # 当前状态与唯一下一动作
@@ -12,6 +12,10 @@ verification_status: remaining-functional-closure-in-progress
 [返回索引](README.md) · [旅程账本](04-journey-ledger.md) · [Findings](05-findings.md) · [Runbook](06-runbook-and-release-gates.md)
 
 ## 当前决定与本批次出口
+
+15:30 继续：Office完整原生链已通过；Goal02已按两个独立run完成143→286，首轮45941+自动续轮142026=187967，canonical goal同值、continuation_count1、无active run，最终文件正式读取200。schedule01 runtime `c5272968-66d8-4735-ac4a-c66dc6002860` completed，实际文件91，trigger仅fire1后停用。event01虽唤醒但匹配正文在跨worker交接丢失，产物诚实报缺payload，不计PASS；候选9939609e把精确event数据随原intent保存并仅恢复数据字段。A2A02前两员工与人工gate通过，第三child `721ed9b2-7b68-5070-b913-c1e5c8b2d681`实际failed：queued metadata遗漏max_depth、恢复默认2而depth3；同候选补齐既有请求参数，不扩大权限或全局默认。相关205项（含真实PG及max_depth0拒绝反例）、ruff/diff通过，待部署后仅retry第三节点。Dynamic07通知确实delivered并启动父run，但模型收到35K runtime notice内的结果refs后仍重复旧preview；并非通知没投递，不能伪造自动消费PASS。bfd三服务同源1062/hash `5896fddc72dbf8eba4d8642bdbfc3dcda3c99bb030ac4d40cee66e537c0a93fb`已核实。
+
+15:12 Office原生预览已真实恢复，f8adc3ec三服务SUCCESS，backend/backend-api/archive同1062文件/hash `53e3146c3221c4838c0b6c4821a96f57ca3c48167add291682227e2f869624aa`。正式页面Word标题/正文/表格与Excel网格/标签/29正常。新原生修正版run `a115c34e-f133-577b-bbc6-25ec902a746e` completed，artifact `d9446c8b-2c61-4390-a9be-ee278d41f1e2`正式下载200/2938B/hash `07e7f8ea82f5f17deb76ffc06e5503bd8fc63d838f7e4f94f59ce39fd98fef82`，实际OOXML formula SUM(17,12)/cache29、生产native validate0/text29与正式保存快照预览通过；原DOCX/XLSX未删除。A2A默认轻量200K导致used104770+reserved50000+下一轮52247超限，非无故取消；bfd354b7最小改为既有configured workflow envelope，显式预算仍保留并展示真实budget终止原因，26项相关含真实PG通过，已三服务SUCCESS。新run `991cb743-2697-4e7b-9736-41fd2e5292a5`明确2M/1800s，独立02路径与hash `a76fa82beb92f7059dd9cba08275ca2d350fdf469a7fec7aeea6bdf5f49a85c2`，首child继续真实执行。新Goal `bdb0d07e-350d-48b6-a8d4-4d70886563b8` / Session `fc36005f-ca20-400f-8e85-2698b1cb1b96`明确首轮仅phase1，500K/3continuations/1200s，自动两轮仍实测中。Dynamic07实际两个execute_code51/57、join108和正式文件读取通过，但父会话仍只显示预览/两条失败通知，最终自动消费缺口仍查，不伪装通过。继续once聊天、schedule/event、Growth/能力/角色原清单。
 
 15:00 Office 原生渲染修复：适配器仅对HTML模式接收CLI实际raw HTML，保留非零退出/其他模式严格JSON错误；preview contract v2使旧错误fallback缓存失效。相关42项通过、ruff/diff通过；生产1.0.88临时进程加载候选后，DOCX/XLSX/PPTX真实HTML、text、service preview HTML及CSP全部通过（36621/7541/19240 bytes）。未替换生产文件，待正式部署后UI复验。A2A原run已确认budget service以runtime_budget_exhausted终止，首child实际failed、无重发；默认200K graph上限与真实预算预留冲突正在核对，绝不伪装成功或扩大租户权限。
 
@@ -77,7 +81,7 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 
 ## 唯一下一动作
 
-提交并同源部署A2A/MCP/Office候选，实跑三员工文件交接与人工gate/父消费，复核Office最终预览和styles校验错误；再逐项完成Dynamic最终消费、once聊天/触发、Goal、Growth/能力/角色及最终回归清理。旧失效时间和未知调用不重放。细节与精确资产见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)。
+提交并同源部署队列event数据和委派depth修复，A2A02仅对已确认零工具执行的第三节点显式retry，复验最终产物/父消费；用独立新event核对实际载荷，继续Dynamic自动消费、once聊天、Growth/能力/角色及最终回归清理。Office和Goal已通过路径不重跑，旧失效时间和未知调用不重放。细节与精确资产见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)。
 
 此前交付背景（不替代上述下一动作）：
 

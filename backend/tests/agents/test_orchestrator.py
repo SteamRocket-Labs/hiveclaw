@@ -376,7 +376,7 @@ async def test_delegate_async_captures_execution_identity_before_background_spaw
 
 @pytest.mark.asyncio
 async def test_delegate_async_enqueues_for_worker_claim_instead_of_in_process_spawn(monkeypatch):
-    from app.agents.orchestrator import delegate_async
+    from app.agents.orchestrator import OrchestrationPolicy, delegate_async
 
     target = SimpleNamespace(id=uuid4(), name="Target Agent", role_description="Helpful")
     target_model = SimpleNamespace(provider="openai", model="gpt-4.1")
@@ -416,6 +416,7 @@ async def test_delegate_async_enqueues_for_worker_claim_instead_of_in_process_sp
         conversation_messages=[{"role": "user", "content": "Prepare the market map"}],
         owner_id=owner_id,
         session_id="session-worker-claim",
+        policy=OrchestrationPolicy(max_depth=5),
         **_a2a_authority_kwargs(
             target=target,
             owner_id=owner_id,
@@ -428,11 +429,45 @@ async def test_delegate_async_enqueues_for_worker_claim_instead_of_in_process_sp
     assert handle.status == "queued"
     assert created["task_type"] == "delegation"
     assert created["status"] == "suspended"
+    assert created["metadata_json"]["max_depth"] == 5
     assert spawned == []
     assert len(updates) == 1
     assert updates[0][1]["status"] == "pending"
     assert updates[0][1]["metadata_json"]["coordination_publish_state"] == "published"
     assert wakeups == [{"reason": "delegation_created", "runtime_task_id": handle.task_id}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_depth", [None, 0, 5])
+async def test_delegation_policy_depth_survives_durable_reconstruction(monkeypatch, max_depth):
+    import app.agents.orchestrator as orchestrator
+
+    target = SimpleNamespace(id=uuid4(), name="Writer", tenant_id=uuid4())
+
+    async def resolve(*_args, **_kwargs):
+        return target, SimpleNamespace()
+
+    monkeypatch.setattr(orchestrator, "_resolve_resumable_target_runtime", resolve)
+    record = {
+        "task_id": str(uuid4()),
+        "tenant_id": str(target.tenant_id),
+        "child_agent_id": str(target.id),
+        "child_session_id": str(uuid4()),
+        "depth": 3,
+        "metadata": {
+            "owner_id": str(uuid4()),
+            "conversation_messages": [{"role": "user", "content": "Deliver the reviewed result"}],
+            **({"max_depth": max_depth} if max_depth is not None else {}),
+        },
+    }
+    for request in (
+        await orchestrator._build_delegation_request_from_runtime_record(record),
+        orchestrator._delegation_projection_request_from_record(record),
+    ):
+        assert request.policy.max_depth == (2 if max_depth is None else max_depth)
+        if max_depth == 0:
+            result = await orchestrator._delegate(request)
+            assert result.failed and result.depth_limited
 
 
 @pytest.mark.asyncio

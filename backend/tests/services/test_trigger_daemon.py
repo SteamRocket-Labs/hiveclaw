@@ -1315,7 +1315,7 @@ async def test_trigger_budget_approval_wait_persists_claimable_intent_without_st
         agent_id=agent_id,
         name="approval wake",
         type="cron",
-        config={"expr": "0 9 * * *"},
+        config={"expr": "0 9 * * *", "_matched_message": "marker AMBER; value 11", "_matched_from": "tester"},
     )
     captured: dict = {}
 
@@ -1373,6 +1373,9 @@ async def test_trigger_budget_approval_wait_persists_claimable_intent_without_st
     assert captured["task"]["status"] == "pending"
     assert captured["task"]["budget_admission_status"] == "waiting_budget_approval"
     assert captured["task"]["budget_reservation_key"] == captured["reservation"].reservation_key
+    assert captured["task"]["metadata_json"]["fire_event_payloads"] == {
+        str(trigger.id): {"_matched_message": "marker AMBER; value 11", "_matched_from": "tester"}
+    }
 
 
 @pytest.mark.asyncio

@@ -458,7 +458,11 @@ async def test_stale_trigger_intent_is_dropped_instead_of_replayed(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_fresh_trigger_intent_still_runs(monkeypatch):
+@pytest.mark.parametrize(
+    "event_snapshot",
+    [None, {"_matched_message": "marker AMBER; value 11", "_matched_from": "tester", "is_enabled": True}],
+)
+async def test_fresh_trigger_intent_still_runs(monkeypatch, event_snapshot):
     """The staleness guard must not swallow a normal fire."""
     import app.services.trigger_daemon as trigger_daemon
 
@@ -466,7 +470,14 @@ async def test_fresh_trigger_intent_still_runs(monkeypatch):
     agent_id = uuid4()
     trigger_id = uuid4()
     invoked: list[tuple] = []
-    trigger = SimpleNamespace(id=trigger_id, agent_id=agent_id, name="daily", type="cron", config={})
+    trigger = SimpleNamespace(
+        id=trigger_id,
+        agent_id=agent_id,
+        name="daily",
+        type="on_message",
+        reason="Process the event",
+        config={"_matched_message": "later unrelated message"},
+    )
 
     async def fake_get_record(_task_id):
         return {
@@ -476,11 +487,20 @@ async def test_fresh_trigger_intent_still_runs(monkeypatch):
             "tenant_id": uuid4(),
             "child_session_id": None,
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "metadata": {"trigger_ids": [str(trigger_id)], "agent_id": str(agent_id)},
+            "metadata": {
+                "trigger_ids": [str(trigger_id)],
+                "agent_id": str(agent_id),
+                **({"fire_event_payloads": {str(trigger_id): event_snapshot}} if event_snapshot is not None else {}),
+            },
         }
 
     async def fake_invoke(a_id, triggers, *, runtime_task_id):
         invoked.append((a_id, triggers, runtime_task_id))
+        if event_snapshot is not None:
+            context, _ = trigger_daemon._build_trigger_context(triggers)
+            assert "marker AMBER; value 11" in context
+            assert "later unrelated message" not in context
+            assert "is_enabled" not in triggers[0].config
 
     async def _noop(*_a, **_k):
         return None

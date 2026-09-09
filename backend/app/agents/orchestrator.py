@@ -1237,6 +1237,7 @@ def _build_runtime_task_metadata(request: AgentDelegationRequest, *, task_id: st
         "message_count": len(request.conversation_messages),
         "system_prompt_suffix": request.system_prompt_suffix,
         "tool_profile": request.policy.tool_profile,
+        "max_depth": request.policy.max_depth,
         "authority_frame_schema": A2A_TOOL_AUTHORITY_FRAME_SCHEMA,
         "authority_snapshot": authority_snapshot,
         "authority_snapshot_hash": canonical_payload_hash(authority_snapshot),
@@ -3131,6 +3132,7 @@ def _delegation_projection_request_from_record(record: dict[str, Any]) -> AgentD
         trace_id=str(record.get("trace_id") or metadata.get("trace_id") or "") or None,
         depth=int(record.get("depth") or metadata.get("depth") or 1),
         policy=OrchestrationPolicy(
+            max_depth=int(metadata.get("max_depth", OrchestrationPolicy().max_depth)),
             timeout_seconds=float(metadata.get("timeout_seconds") or ASYNC_DELEGATION_TIMEOUT_SECONDS),
             tool_profile=str(metadata.get("tool_profile") or "worker_safe"),
         ),
@@ -3383,6 +3385,7 @@ async def _build_delegation_request_from_runtime_record(record: dict[str, Any]) 
         trace_id=str(record.get("trace_id") or uuid.uuid4().hex),
         depth=int(record.get("depth") or 1),
         policy=OrchestrationPolicy(
+            max_depth=int(metadata.get("max_depth", OrchestrationPolicy().max_depth)),
             timeout_seconds=float(metadata.get("timeout_seconds") or 120.0),
             tool_profile=str(metadata.get("tool_profile") or "worker_safe"),
         ),

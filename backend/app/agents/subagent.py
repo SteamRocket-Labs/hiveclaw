@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from app.agents.tool_policies import DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
+from app.kernel.contracts import TerminalReason
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
 from app.services.knowledge_provenance import (
@@ -1261,6 +1262,12 @@ async def _spawn_one(
             error=f"{type(exc).__name__}: {exc}",
         )
 
+    terminal_reason = getattr(result, "terminal_reason", TerminalReason.TURN_STOP)
+    terminal_reason = getattr(terminal_reason, "value", terminal_reason)
+    status: SubagentStatus = "completed" if terminal_reason == TerminalReason.TURN_STOP.value else "failed"
+    failure_code = getattr(result, "failure_code", None)
+    error = f"{terminal_reason}: {failure_code or terminal_reason}" if status == "failed" else None
+    terminal_metadata = {"status": status, "terminal_reason": terminal_reason, "failure_code": failure_code}
     raw_content = str(getattr(result, "content", "") or "").strip()
     knowledge_provenance = merge_knowledge_provenance(captured_knowledge_provenance)
     _append_subagent_t0_event(
@@ -1272,7 +1279,7 @@ async def _spawn_one(
         role="assistant",
         content=raw_content,
         metadata=apply_inherited_knowledge_provenance(
-            {"status": "completed"},
+            terminal_metadata,
             knowledge_provenance,
         ),
     )
@@ -1281,8 +1288,8 @@ async def _spawn_one(
         spec=spec,
         session_id=t0_session_id,
         child_depth=child_depth,
-        reason="subagent_complete",
-        metadata={"status": "completed"},
+        reason="subagent_complete" if status == "completed" else "subagent_failed",
+        metadata=terminal_metadata,
     )
     try:
         stop_result = await _emit_subagent_lifecycle_hook(
@@ -1294,7 +1301,7 @@ async def _spawn_one(
             prompt=job.task,
             last_assistant_message=raw_content,
             transcript_path=str(getattr(sealed, "path", "") or ""),
-            status="completed",
+            status=status,
         )
         if stop_result and stop_result.block:
             return SubagentResult(
@@ -1310,8 +1317,9 @@ async def _spawn_one(
     subagent_result = SubagentResult(
         name=spec.name,
         type=spec.type,
-        status="completed",
+        status=status,
         content=content,
+        error=error,
         tokens_used=tokens_used,
         sources=captured_sources,
         knowledge_provenance=knowledge_provenance,

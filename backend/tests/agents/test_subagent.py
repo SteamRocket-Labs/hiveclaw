@@ -28,6 +28,8 @@ from app.agents.subagent import (
     explorer_spec,
     resolve_subagent_tools,
 )
+from app.kernel.contracts import TerminalReason
+from app.runtime.invoker import AgentInvocationResult
 
 
 def _ctx(**overrides) -> SubagentSpawnContext:
@@ -476,6 +478,42 @@ async def test_spawn_success_returns_completed():
     result = await _spawn_one(ctx, SubagentJob(spec=explorer_spec("e"), task="t"), invoke=_ok_invoke(content="  hi  "))
     assert result.status == "completed"
     assert result.content == "hi"  # stripped
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_reason", list(TerminalReason))
+async def test_spawn_preserves_typed_invocation_terminal(terminal_reason, monkeypatch):
+    import app.agents.subagent as subagent
+
+    events, seals, hooks = [], [], []
+    monkeypatch.setattr(subagent, "_append_subagent_t0_event", lambda **kw: events.append(kw))
+    monkeypatch.setattr(subagent, "_seal_subagent_t0_segment", lambda **kw: seals.append(kw))
+
+    async def hook(**kwargs):
+        hooks.append(kwargs)
+
+    monkeypatch.setattr(subagent, "_emit_subagent_lifecycle_hook", hook)
+    content = "[LLM Error] quoted example, not a status signal"
+
+    async def invoke(request):
+        return AgentInvocationResult(
+            content=content,
+            tokens_used=17,
+            terminal_reason=terminal_reason,
+            failure_code="rate_limited" if terminal_reason == TerminalReason.PROVIDER_ERROR else None,
+        )
+
+    result = await _spawn_one(_ctx(), SubagentJob(spec=explorer_spec("e"), task="t"), invoke=invoke)
+    expected = "completed" if terminal_reason == TerminalReason.TURN_STOP else "failed"
+    assert result.status == expected
+    assert result.content == content and result.tokens_used == 17
+    assert events[-1]["metadata"]["status"] == seals[-1]["metadata"]["status"] == hooks[-1]["status"] == expected
+    if expected == "failed":
+        assert terminal_reason.value in result.error
+    else:
+        assert result.error is None
+    if terminal_reason == TerminalReason.PROVIDER_ERROR:
+        assert "rate_limited" in result.error
 
 
 @pytest.mark.asyncio

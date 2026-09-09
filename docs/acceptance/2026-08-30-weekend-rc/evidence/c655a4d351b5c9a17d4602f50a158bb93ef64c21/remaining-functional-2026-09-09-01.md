@@ -25,6 +25,18 @@
 
 09:43 收束：RLS baseline/candidate 均588个精确记录，变化仅为 permission runtime/module、tool runtime/module及 `complete_tool_invocation`、web runtime/module四项；源码差异逐项核对为本包同源审批和卡片修改，查询白名单未变。更新精确指纹为 `5514ac5330f3adcd04d428fdda38a1f3b6a4f2d282724bb36778aba169ab73e9`，相关3项重验通过（90.12s）。共享真实 callback→finalizer 新检查1 passed（1.95s），证明本轮 tool batch 结束前不提前完成、结束后原 RuntimeTask suspended，未创建 assistant final。旧 HEAD `c655a4d3` 的完整 CI `34296978159` 已成功；它不替代本包待运行 CI。
 
+## 09:44—10:03 部署与真实复验
+
+- `b153d8cd79e99b7a21d4368754391a19c3d67f72` 已提交推送，仅包含上述修复与证据。09:48 三服务部署 SUCCESS：backend `a70e7707-ae86-4856-8725-f594f8a0c3bf`、backend-api `d6fc6c51-b720-4335-87ec-4d9642b6ef17`、frontend `642b8bdb-73cc-4d14-8402-0c8986aebcaa`。两后端运行源码与精确 archive 均为1058文件/source SHA256 `3f23136c948b484670d825c01d61aaaa8f4891b5d353fda986bc82f49e5299ee`；health ok/strict app_rls，启动时实际代码执行探针3项通过。旧候选未进入发布。
+- 正式推荐拒绝/启用入口只恢复原无效果失败 trigger `797e51a5…`，保留定义hash、用户、max_fires1；新推荐 `1ca0566b-65ab-43ae-a433-7d1db6aee546`。09:51真实 wrapper `2070589a-bebc-447b-b71f-052d081a69a2` 成功启动 registered run `726a11ff-cfb6-5f0c-99ce-ca7ffc6b192a`，Session `fc397e2d-0989-5570-a130-0c3c2c476b09`；证明headless租户启动缺陷消失，**不证明计算完成**。
+- 09:56读取原始结果，两个compute叶输出均为provider限流错误，却被共享subagent入口记为 completed，进而journal记done；tokens均0。审批checkpoint `7013c3e8-3455-4897-bc5f-e6c2a1e254ba` 未批准，无实际51/57结果、无最终文件。10:03正式GET确认trigger fire_count1/max_fires1且disabled。保持失败证据，不批准坏结果、不重复整次计算。
+- fresh owner Session `e45c4db2-c737-410e-a876-0ac471e4397e`，Agent `9fd0e9f9-2293-5514-b7f9-0c1df5ce2fe3`，marker `WRC-REMAINING-20260909-ONCE-CEDAR-926`；09:50正式页面仅提交一次10:10唤醒/64计算草案要求。原页面最终显示MiniMax繁忙/失败，无草案确认、无trigger、无待批工具调用；未点击重试，故新permission修复尚缺该业务路径生产通过证据。计划时间到期后不得复用旧时间窗口。
+- 新共享根因修复在干净 `b153d8cd` worktree：subagent消费已有 `terminal_reason`，仅turn_stop映射completed，失败保留内容/token/typed错误，T0 seal和Stop hook状态一致，既有memory成功判定不再接受失败。未用自然语言扫描、未换模型或工具。13种终态反例修复前12failed/1passed；修复后相关117passed。新增真实spawn→workflow leaf连接检查，不把mock provider当生产成功。
+- CI `34300370707` 的15条机械journeys通过；前端1297passed/1failed，唯一失败是AgentDetail新增wiring导致2901行超过既有2900行上限。仅收敛相邻函数签名排版，未放宽上限；修正后全部168文件/1298前端测试通过（8.87s）。backend完整CI当时仍运行。
+- 已询问是否允许剩余合成验收临时使用现有GLM-5.3并结束后还原；未获答复前保持MiniMax，不将替代模型结果记成MiniMax兼容性通过。
+
+10:04收束：真实spawn→workflow leaf连接检查及RLS登记/指纹4 passed（112.65s），本次没有指纹漂移、不需更新白名单常量。Ruff/format/diff检查通过。原坏结果run经正式cancel返回200/killed，审批未批准；保留失败叶和原回执，不篡改历史done、不自动repair或重放。
+
 ## 下一步
 
-验证并集成固定Workflow根因修复；继续收束once权限等待真实live/reload链，随后集中部署并复验固定定义、触发、gate/wait/产物。Office与Goal等待明确provider可用性；Local升级等待批准源。其余功能仍按03-current-status列出的剩余范围推进，不缩减为只做这一个修复。
+完成共享subagent失败传递检查并集成；保留未批准坏结果，不重放错误done叶。Office、Goal、once和固定计算均有当前MiniMax限流阻塞；Local升级等待批准源。继续不依赖这些阻塞的剩余功能。其余功能仍按03-current-status列出的剩余范围推进，不缩减为只做这一个修复。

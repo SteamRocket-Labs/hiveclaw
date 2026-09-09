@@ -474,8 +474,7 @@ function AgentDetailInner() {
         );
     };
     const applyTranscriptToSession = (
-        agentId: string,
-        sessionId: string,
+        agentId: string, sessionId: string,
         event: ChatTranscriptEventPayload,
         isActiveRuntime: boolean,
     ) => applyTranscriptToSessionRuntime({

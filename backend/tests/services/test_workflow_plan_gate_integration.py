@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from types import SimpleNamespace
 
-from app.agents.subagent import SubagentBudget, SubagentHandle, SubagentResult, SubagentSpawnContext
+from app.agents.subagent import SubagentBudget, SubagentHandle, SubagentResult, SubagentSpawnContext, spawn_subagent
+from app.kernel.contracts import TerminalReason
+from app.runtime.invoker import AgentInvocationResult
 from app.runtime.workflow_compiler import compile_workflow
 from app.runtime.workflow_engine import LeafRequest
 from app.services.workflow_launch import (
@@ -218,6 +221,30 @@ async def test_leaf_executor_maps_failure_to_not_ok():
 
     assert outcome.ok is False
     assert "worker exploded" in (outcome.error or "")
+
+
+async def test_real_spawn_provider_failure_cannot_become_successful_workflow_leaf():
+    async def rejected_invoke(request):
+        return AgentInvocationResult(
+            content="Provider unavailable",
+            tokens_used=23,
+            terminal_reason=TerminalReason.PROVIDER_ERROR,
+            failure_code="rate_limited",
+        )
+
+    executor = build_subagent_leaf_executor(_ctx(), spawn=partial(spawn_subagent, invoke=rejected_invoke))
+    outcome = await executor(
+        LeafRequest(
+            run_id=str(uuid.uuid4()),
+            step_id="scan",
+            task="Scan",
+            leaf=compile_workflow(_definition()).definition.steps[0].leaf,
+        )
+    )
+    assert outcome.ok is False
+    assert outcome.output is None
+    assert outcome.tokens_used == 23
+    assert "rate_limited" in outcome.error
 
 
 async def test_leaf_executor_respects_leaf_max_tool_rounds():

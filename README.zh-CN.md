@@ -1,242 +1,103 @@
 <div align="center">
-  <h1>Hive</h1>
-  <h3>AI Native 组织中台 —— 面向企业数字员工的 Agent-as-a-Service 控制平面</h3>
-  <p><a href="README.md">English</a> | <strong>简体中文</strong></p>
-</div>
-
-<div align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache_2.0-blue.svg" alt="License"></a>
-  <a href="#"><img src="https://img.shields.io/badge/python-3.12-blue.svg" alt="Python"></a>
-  <a href="#"><img src="https://img.shields.io/badge/react-19-61dafb.svg" alt="React"></a>
-  <a href="#"><img src="https://img.shields.io/badge/postgres-15-336791.svg" alt="PostgreSQL"></a>
+  <h1>HiveClaw</h1>
+  <p>有记忆、会用工具，能与你长期共事的 AI 员工。</p>
+  <p><a href="README.md">English</a> · <strong>简体中文</strong></p>
+  <p>
+    <a href="#开始使用">开始使用</a> ·
+    <a href="docs/README.md">文档</a> ·
+    <a href="CHANGELOG.md">更新日志</a> ·
+    <a href="https://github.com/SteamRocket-Labs/hiveclaw/issues">问题反馈</a>
+  </p>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache_2.0-blue.svg" alt="Apache 2.0 许可证"></a>
 </div>
 
 <br>
 
-Hive 是一个可自部署的 **AI Native 组织中台**。它给企业提供创建、授权、运行、观测和持续改进 AI 数字员工所需的控制平面。
+HiveClaw 是一个可以自行部署的 AI 数字员工工作空间。你可以为员工定义职责、选择模型、连接工具，再通过对话一起完成工作。它的身份、记忆和文件会保留下来，供后续任务继续使用。
 
-Hive 不是聊天机器人外壳，也不只是一个 Agent 框架。Hive 把每个 Agent 当作有责任边界的组织成员：它有身份、记忆、工具、技能、工作区、运行时状态、权限、审计记录和进化路径。Hive 最大的价值是组织层面的：让企业可以把 Agent 当作公司的一部分运营，而不是散落在各处的 Prompt 窗口。
+团队还可以在同一个地方管理员工、公司知识、权限和审批。每位员工能访问什么，哪些操作需要人来确认，都由你决定。
 
-## 定位
+![工作关系示意：人向 AI 员工分配任务，员工在公司权限范围内使用记忆、工具和文件。](docs/images/hiveclaw-overview.svg)
 
-Hive 可以用两个等价概念理解：
+## 可以用它做什么？
 
-1. **AI Native 组织 SaaS**：面向工作流、记忆、权限和运行节奏都围绕 AI 员工重新组织的企业系统。
-2. **Agent-as-a-Service 组织中台**：用于创建和治理数字员工的企业控制台，让 Agent 可以跨工具、渠道、文件、工作流和团队工作。
+- 为员工定义角色、选择模型，并维护它自己的记忆和工作空间。
+- 通过对话分享文件、查看工具执行、处理审批，也可以稍后回来继续。
+- 按照工作需要和员工权限，连接内置工具、Skill 与 MCP 服务。
+- 管理个人和公司知识库、授予访问权限，审核员工建议保存的内容。
+- 通过记忆和 Skill 候选逐步改进员工的工作方式，变更经过审核后再生效。
+- 设置自动化、把工作委派给其他员工，或为步骤明确的工作使用 Workflow。
 
-Hive 的北极星目标很明确：
+比如，你可以让研究员读取已授权的项目资料、整理一份简报，检查它引用的来源，再把结果留在工作空间。下一次对话时，你面对的仍然是这位员工，而不是一个全新的聊天窗口。
 
-- 建立具备企业级访问控制的自进化 Agent 基础设施。
-- 建立公司级组织中台，让企业安全地规模化运营这些 Agent。
+![个人知识库界面，包含收件箱、文件导入、资料库、员工提案和授权管理。](docs/images/personal-knowledge.png)
 
-## 核心闭环
+*个人知识库的真实界面，截图来自空资料库的 UI 测试，不含客户数据。*
 
-所有产品入口最终都会进入同一条 runtime loop：
+## 开始使用
 
-```text
-用户 / 触发器 / 渠道 / Agent
-        |
-        v
-ChatSession + RuntimeTask
-        |
-        v
-上下文组装
-  身份 + 公司 + 会话 + 记忆 + 技能 + 工具 + 治理
-        |
-        v
-AgentKernel 模型循环
-        |
-        v
-ToolRuntimeService
-  校验 + hook + 权限 + preflight + 执行 + 审计
-        |
-        v
-Transcript / T0 证据 / 交付物 / runtime 状态
-        |
-        v
-Memory、Skill、Workflow、治理反馈闭环
-```
-
-这是 Hive 的核心设计选择。Web Chat、渠道消息、触发器、Workflow、Subagent、Agent Team 成员和后台 continuation 不应该各自发明一套执行语义。它们都应该成为持久化的 session/runtime 对象，然后进入同一个 kernel 和同一套受治理工具层。
-
-## Hive 提供什么
-
-### 1. 数字员工
-
-每个 Agent 都有：
-
-- `soul.md` 身份契约。
-- 私有 workspace，用于文件和交付物。
-- 长期 memory vault。
-- 已安装 Skill 和 Skill candidate。
-- 工具与能力策略。
-- owner、tenant、company 和 channel context。
-- 持久 Session、Checkpoint、Branch 和 RuntimeTask。
-
-目标不是保存更长聊天记录，而是让 Agent 成为稳定的组织行动者。
-
-### 2. Session 原生 Runtime
-
-Hive 的 Session 是一等运行时容器：
-
-- `ChatSession` 保存对话表面。
-- `RuntimeTask` 保存当前运行句柄。
-- WebSocket 只是订阅者；关闭页面不应该杀掉后台运行。
-- Checkpoint 是导航锚点；Rewind 和 Branch 是显式动作。
-- Branch 创建新的 session lineage，而不是破坏原历史。
-- Rewind 将当前 session 投影回选中 checkpoint 的状态。
-
-前端 Session Workbench 要直接表达这些 runtime 状态：active run、工具、权限、压缩、checkpoint、child session、Agent Team 成员、Workflow 和后台任务。
-
-### 3. 受治理的工具调用
-
-所有工具都必须经过 `ToolRuntimeService.execute()`。工具层负责：
-
-- JSON / input 校验。
-- pre-tool、post-tool 和 failure hook。
-- Session permission profile。
-- capability 与 pack policy 检查。
-- MCP policy 检查。
-- 对外可见或敏感动作的 Action Preflight。
-- runtime-owned context 注入。
-- timeout、结构化错误、生命周期 frame 和审计记录。
-
-原生工具、MCP 工具、deferred tools、Workflow 工具、Skill 加载工具、Subagent 工具、文件/工作区工具都共享这条治理路径。
-
-### 4. 上下文组装
-
-上下文是分层组装出来的 runtime 产物，不是一个无限膨胀的大 Prompt：
-
-- Frozen prefix：身份、角色、操作契约、`soul.md`、公司信息、组织结构和稳定 prompt sections。
-- Dynamic suffix：memory snapshot、memory navigation、检索结果、skill catalog、runtime metadata、权限、active tool groups、available deferred tools、channel/session 状态。
-- User turn envelope：当前用户输入、附件、选择的 permission mode 和 session metadata。
-
-这个拆分让身份层可以被 prompt cache，而记忆、技能、工具和运行时状态可以每轮更新。
-
-### 5. Memory 与 Skill 进化
-
-Hive 区分原始证据和已接受行为：
-
-```text
-T0 原始 Session 证据
-  -> T2 reviewed segment packages
-  -> T3 accepted semantic memory
-  -> soul.md 与 skill candidates
-```
-
-Memory 写入必须经过 Memory Gate 和 Platform Gate。Skill 是渐进式能力胶囊：加载 Skill 只增加指令和参考资料；真正执行仍然走受治理的工具、Workflow、Subagent 或 sandbox runtime。Active Skill 变更通过 candidate package 和验证门晋升，不允许直接自我编辑上线。
-
-### 6. 多 Agent 工作
-
-Hive 支持几层多 Agent 执行：
-
-- `spawn_subagent`：Session 内局部专家 worker，拥有隔离 prompt 和 child-session 状态。
-- Agent Team：Session 内 team container；成员通过 `spawn_subagent(team_name + name)` 创建，并可以作为可进入的 Session 查看。
-- Dynamic Workflow：结构化 workflow run，leaf 通常是 subagent-style worker，具备 preview、admission、run state 和状态投影。
-- A2A-style collaboration：在组织边界允许时，提供跨 Agent 关系和消息协作表面。
-
-这些不是同一个 UI 对象。Agent Team 成员可以进入完整 Session；Dynamic Workflow 默认更适合展示 run / phase / leaf 状态，只有 leaf 明确有 child session 时才进入子 Session。
-
-### 7. 企业治理
-
-Hive 是组织控制平面：
-
-- PostgreSQL 多租户与 RLS。
-- Agent owner 与 company context。
-- Capability policy 与 pack policy。
-- Session 级 permission profile。
-- Approval 与 pending-tool frame。
-- MCP 导入和执行授权。
-- 针对敏感、外部可见、不可逆或跨公司边界动作的 Action Preflight。
-- Invocation span 与 transcript event 作为审计证据。
-- Company Admin 与 Platform Admin 控制面。
-
-治理约束的是 Agent 能做什么，而不是替代模型思考，也不应该压缩 Agent 的上下文能力。
-
-## 快速开始
+源码安装面向 **macOS 或 Linux 本地开发环境**。请先准备 Python 3.12+、Node.js 22 和 npm。脚本可以配置本地 PostgreSQL；Redis 需要另外启动，并通过 `REDIS_URL` 指向它，默认地址是 `redis://localhost:6379/0`。
 
 ```bash
 git clone https://github.com/SteamRocket-Labs/hiveclaw.git
 cd hiveclaw
 bash setup.sh --dev
-bash restart.sh
 ```
 
-打开 http://localhost:3008，注册第一个用户，然后通过 HR / 创建员工流程创建第一个 Agent。
+脚本会安装依赖、准备 `.env`、配置数据库并写入初始数据。请在开发环境中运行，不要连接已有生产数据库。启动前检查 [`.env.example`](.env.example) 和生成的 `.env`，不要把密钥提交到 Git。
 
-Docker：
+请替换 `SECRET_KEY` 和 `JWT_SECRET_KEY` 的占位值，并备份生成的 `SECRETS_MASTER_KEY`；它用于加密保存的模型服务商和渠道凭据。
 
 ```bash
-cp .env.example .env
-docker compose up -d --build
+bash restart.sh --source
 ```
 
-默认本地端口：
+打开 [localhost:3008](http://localhost:3008)。源码模式下，后端监听 [localhost:8008](http://localhost:8008)。
 
-| 服务 | 端口 |
-|------|------|
-| Frontend | 3008 |
-| Backend | 8008 |
-| PostgreSQL | 5432 |
-| Redis | 6379 |
+### 创建第一位员工
 
-## 开发命令
+1. 注册账号。第一位注册用户会成为平台管理员。
+2. 在管理设置中配置模型服务商，并启用可用模型。需要自备服务商凭据，调用模型可能产生费用。
+3. 点击 **新建数字员工**，按照 HR 创建流程确定员工职责和模型。
+4. 打开员工的对话，先交给它一个小任务，再按需要连接工具、授予知识访问权限。
 
-后端：
+第一次可以试着让它根据你提供的文件写一份简报。从有限权限开始；连接能发消息或修改外部数据的系统之前，先确认相关审批设置。
 
-```bash
-cd backend
-source .venv/bin/activate
-uvicorn app.main:app --host 0.0.0.0 --port 8008 --reload
-ruff check app/ --fix && ruff format app/
-pytest
-alembic upgrade head
-```
+### 容器与生产部署
 
-前端：
+仓库提供 [Docker Compose 配置](docker-compose.yml)。使用前请检查密钥、存储、网络暴露范围和 Docker socket 挂载。这是部署起点，不是已经完成安全加固的生产配置。
 
-```bash
-cd frontend
-npm run dev
-npm run build
-npm test
-```
+本地容器使用方法见[部署说明](ENGINEERING.md#14-development-commands)，Railway 运维见[生产运行手册](docs/railway-production-runbook.md)。可用工具和沙箱行为取决于宿主环境与已配置的服务。
 
-完整本地重启：
+## 它是怎么工作的？
 
-```bash
-bash restart.sh
-```
+HiveClaw 的前端使用 React 和 TypeScript，后端使用 Python 和 FastAPI，通过 PostgreSQL 保存状态，使用 Redis 协调运行。
 
-## 架构入口
+工作由后端承载，不依赖浏览器标签页一直打开。会话把员工上下文、模型调用、受权限约束的工具执行和保存的结果串在一起。平台在执行边界检查权限，推理和写作仍交给模型。
 
-| 层级 | 主要路径 |
-|------|----------|
-| API | `backend/app/api/` |
-| Runtime 入口 | `backend/app/services/web_chat_runtime.py`, `backend/app/runtime/invoker.py` |
-| Kernel | `backend/app/kernel/engine.py` |
-| 工具治理 | `backend/app/tools/service.py`, `backend/app/tools/governance.py` |
-| 上下文组装 | `backend/app/services/agent_context.py`, `backend/app/runtime/prompt_builder.py` |
-| Memory | `backend/app/memory/`, `backend/app/services/memory_service.py` |
-| Skill | `backend/app/skills/`, `backend/app/services/agent_tool_domains/workspace.py` |
-| Workflow | `backend/app/runtime/workflow_*`, `backend/app/tools/handlers/workflow.py` |
-| Agent Team | `backend/app/services/agent_team_runtime_service.py`, `backend/app/api/agent_teams.py` |
-| 前端 Session UI | `frontend/src/pages/AgentDetail.tsx`, `frontend/src/pages/agent-detail/` |
+模型接入包括 OpenAI、Anthropic、Gemini 和 OpenAI 兼容接口。会话中能用哪些工具和模型特性，取决于所选服务商与配置。
 
-完整工程路径见 [`ENGINEERING.md`](ENGINEERING.md)。AI 编程助手的开发规则见 [`AGENTS.md`](AGENTS.md)。
+想沿着代码理解执行过程，可以阅读 [ENGINEERING.md](ENGINEERING.md)。
 
-## 技术栈
+## 文档导航
 
-| 领域 | 技术 |
-|------|------|
-| 后端 | Python 3.12, FastAPI, SQLAlchemy async, Pydantic v2 |
-| 前端 | React 19, TypeScript 5, Vite 6, React Router 7 |
-| 状态 | PostgreSQL 15, Redis 7 |
-| Runtime | Durable `RuntimeTask`, session transcript, stateless kernel, governed tools |
-| 测试 | pytest, Vitest |
-| 部署 | Docker Compose, Railway |
-| 模型 | Anthropic, OpenAI, Gemini, DeepSeek, Qwen, MiniMax, Azure, OpenRouter, Zhipu, Kimi, vLLM, Ollama, SGLang, OpenAI-compatible endpoints |
+| 我想…… | 从这里开始 |
+| --- | --- |
+| 找使用说明或设计文档 | [文档索引](docs/README.md) |
+| 开发或排查问题 | [工程指南](ENGINEERING.md) |
+| 了解产品方向 | [产品目标](docs/hive-sota-master-goal.md) |
+| 查看有哪些更新 | [更新日志](CHANGELOG.md) |
+| 核对验收证据与剩余限制 | [验收入口](docs/acceptance/2026-08-30-weekend-rc/README.md) |
+| 让编码 Agent 参与开发 | [Agent 工作约定](AGENTS.md) |
 
-## License
+设计文档描述预期行为，验证状态请沿验收入口查询。文档中介绍了一项能力，不等于每套部署都已通过这项能力的验收。
 
-Apache 2.0。
+## 参与贡献
+
+欢迎提交问题、改进文档或提供范围明确的 Pull Request。报告问题时，请说明运行环境、复现步骤和预期结果，并先移除日志、截图中的凭据与私人对话数据。
+
+较大的改动建议先[开一个 Issue](https://github.com/SteamRocket-Labs/hiveclaw/issues)讨论范围。[工程指南](ENGINEERING.md)列出了代码入口和提交前可运行的检查。
+
+## 许可证
+
+HiveClaw 使用 [Apache 2.0 许可证](LICENSE)。

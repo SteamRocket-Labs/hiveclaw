@@ -1,17 +1,10 @@
-# Hive Engineering
+# HiveClaw Engineering
 
-Current snapshot: 2026-06-28
-Product version: 1.7.0 (`backend/VERSION`, `frontend/VERSION`)
-Stack: FastAPI, React 19, PostgreSQL, Redis
+For installation and a first task, start with the [README](README.md). This guide maps the runtime and development workflow. Find design documents in the [documentation index](docs/README.md), product updates in the [changelog](CHANGELOG.md), and verification status in the [acceptance index](docs/acceptance/2026-08-30-weekend-rc/README.md).
 
-This document is the engineering map for Hive. It is organized around the real execution path of one agent session, because that is the easiest way to understand the system without getting lost in module lists.
+The guide follows one agent session through the code. HiveClaw combines a runtime for employees that can learn and improve with company controls for creating, authorizing, and operating them.
 
-Hive should be understood as an **AI-Native Organization OS**:
-
-1. A self-evolving agent runtime with enterprise-grade access control.
-2. A company control plane for creating, operating, auditing, and improving AI digital employees.
-
-The runtime goal is not "make the model answer once." The runtime goal is to keep an agent's identity, session state, tool authority, memory, artifacts, and governance evidence coherent across turns, branches, workflows, subagents, channels, and restarts.
+The runtime keeps an employee's identity, session state, tool authority, memory, artifacts, and audit evidence coherent across turns, branches, workflows, subagents, channels, and restarts.
 
 ## 1. Core Invariants
 
@@ -56,6 +49,8 @@ Important entry paths:
 | Chat/session API | `backend/app/api/chat_sessions.py` |
 | WebSocket API | `backend/app/api/websocket.py` |
 | Durable web chat runtime | `backend/app/services/web_chat_runtime.py` |
+| Durable worker and task claims | `backend/app/services/runtime_task_worker.py`, `backend/app/services/runtime_task_claim_service.py` |
+| Session V2 input and event persistence | `backend/app/services/session_live_input.py`, `backend/app/services/session_v2_persistence.py` |
 | Unified invocation | `backend/app/runtime/invoker.py` |
 | Kernel loop | `backend/app/kernel/engine.py` |
 | Tool runtime | `backend/app/tools/service.py` |
@@ -76,8 +71,8 @@ This is the main loop.
 ```text
 1. User chooses or creates a ChatSession
 2. User submits a turn
-3. Backend creates or reuses a RuntimeTask
-4. Runtime loads session history and projection state
+3. Backend admits the input and queues durable work; a worker claims the RuntimeTask
+4. Runtime loads canonical session history and projection state
 5. Invoker builds execution request
 6. Context is assembled
 7. AgentKernel runs the model/tool loop
@@ -103,12 +98,22 @@ The frontend may show different surfaces such as "my conversations" and manageme
 
 ### 3.2 User Turn Admission
 
-HTTP start path:
+The explicit input API and the compatibility run endpoint both enter Session V2 admission before starting work:
 
 ```text
-POST /agents/{agent_id}/sessions/{session_id}/runs
+POST /agents/{agent_id}/sessions/{session_id}/inputs
+  -> chat_sessions.submit_session_human_input()
+  -> input admission and dispatch
+
+POST /agents/{agent_id}/sessions/{session_id}/runs  (compatibility endpoint)
   -> chat_sessions.start_session_run()
+  -> submit_live_human_input()
+
+Accepted start intent
   -> web_chat_runtime.start_web_chat_run()
+  -> durable queued task
+  -> runtime task worker claim and dispatch
+  -> execute_web_chat_run()
 ```
 
 `StartSessionRunIn` includes:
@@ -118,27 +123,26 @@ POST /agents/{agent_id}/sessions/{session_id}/runs
 - permission mode.
 - optional Plan Mode request.
 
-`start_web_chat_run()` is responsible for the first durable boundary:
+Input admission binds the authenticated principal, intent, and idempotency key. `start_web_chat_run()` then stages the run:
 
 - reject expired agents.
 - reject empty content.
 - check whether another active run already exists for the session.
 - queue mid-run user messages when a run is already active.
-- create a `RuntimeTask`.
+- create a durable `RuntimeTask` bound to the admitted input and writer generation.
 - persist the user message and transcript event when needed.
 - capture a checkpoint workspace snapshot for the user turn.
-- spawn `execute_web_chat_run()` as background work.
+- notify the runtime task worker after persistence; polling remains a fallback if the notification fails.
 
 The WebSocket is not the run. It is a subscriber to this durable work.
 
 ### 3.3 RuntimeTask Shape
 
-Normal web chat creates:
+Normal web chat creates a task with the following identifying fields. Consult [the runtime task model](backend/app/models/runtime_task.py) for lifecycle states; admission and worker execution are separate transitions.
 
 ```text
 RuntimeTask(
   task_type="web_chat_turn",
-  status="running",
   parent_agent_id=agent.id,
   child_agent_id=agent.id,
   parent_session_id=session.id,
@@ -647,19 +651,22 @@ Backend startup is responsible for:
 - creating or migrating database structures.
 - seeding tools, skills, default agents, and default company records.
 - running compatibility and hygiene repair where configured.
-- resuming active web chat runs after restart.
+- recovering eligible durable tasks after restart, with worker claims and reconciliation for unfinished effects.
 - starting trigger, channel, heartbeat, dream, evolution, and workflow-related daemons.
 
 Runtime recovery matters because long-running agent work should survive browser disconnects and process restarts.
 
 ## 14. Development Commands
 
-Backend:
+Run these from a checkout prepared with the [source setup](README.md#get-started). Use the smallest test set that covers the change while iterating, then the relevant CI checks before delivery.
+
+Backend (run Alembic only against the database you intend to migrate):
 
 ```bash
 cd backend
 source .venv/bin/activate
-ruff check app/ --fix && ruff format app/
+ruff check app/
+ruff format --check app/
 pytest
 alembic heads
 alembic upgrade head
@@ -677,14 +684,20 @@ npm test
 Full local stack:
 
 ```bash
-bash restart.sh
+bash restart.sh --source
 ```
 
-Docker:
+Local containers use [docker-compose.yml](docker-compose.yml). Create `.env` from [the example](.env.example) only if it does not already exist, then replace placeholder credentials and review the configuration before starting:
 
 ```bash
+test -e .env || cp .env.example .env
+# Edit .env before running the next command.
 docker compose up -d --build
 ```
+
+Compose exposes the frontend on port 3008; the backend and database are on the container network, not the source-mode host ports. Review the Docker socket and source/data mounts, the PostgreSQL extensions needed by enabled features, and the configured code-execution sandbox. Do not expose this local template as a production service without reviewing those boundaries. Railway has a separate [production runbook](docs/railway-production-runbook.md).
+
+The complete CI commands live in [Harness CI](.github/workflows/harness-ci.yml). Some backend integration tests use real PostgreSQL through Testcontainers; a passing unit test alone does not prove deployment behavior.
 
 ## 15. How to Read or Modify the System
 
@@ -692,7 +705,7 @@ For a session/runtime bug, follow this order:
 
 1. Start with `backend/app/api/chat_sessions.py` or `backend/app/api/websocket.py`.
 2. Trace to `backend/app/services/web_chat_runtime.py`.
-3. Check `RuntimeTask` metadata and `ChatSession` metadata.
+3. Check the admitted Session V2 input, events, worker claim, `RuntimeTask`, and `ChatSession` metadata.
 4. Trace `AgentInvocationRequest` into `backend/app/runtime/invoker.py`.
 5. Check context assembly in `agent_context.py` and `prompt_builder.py`.
 6. Trace model/tool behavior in `kernel/engine.py`.
@@ -722,12 +735,8 @@ T0 evidence
 
 ## 16. Documentation Boundary
 
-The local `docs/` directory is intentionally ignored by Git. Remote-facing engineering documentation should live in:
+The repository tracks canonical documents under `docs/`. Use the [documentation index](docs/README.md) to find them; local-only working notes may also exist, so check `git ls-files` before adding a public link.
 
-- `README.md`
-- `README.zh-CN.md`
-- `ENGINEERING.md`
-- `AGENTS.md`
-- `CLAUDE.md`
+Keep the two READMEs focused on the product and first use, and this guide focused on development. Record user-facing updates only in [CHANGELOG.md](CHANGELOG.md). When behavior changes, revise the relevant guide in place instead of appending push notices or per-session completion summaries.
 
-Use local `docs/` for planning, audits, and working notes. Do not link README or ENGINEERING to ignored docs as canonical remote documentation.
+Acceptance and deployment records retain exact commits, environments, and evidence where needed for verification. They are not a second changelog. Preserve historical evidence and its paths; a past result is not proof of current behavior. See the [documentation policy](docs/README.md#文档放在哪里) for placement rules.

@@ -41,6 +41,56 @@ async def _seed_principals(owner_sessionmaker) -> tuple[uuid.UUID, uuid.UUID]:
     return tenant_id, user_id
 
 
+@pytest.mark.parametrize("operation", ["reconcile", "rollback"])
+async def test_failed_asset_api_retains_principal_after_real_rollback(owner_sessionmaker, monkeypatch, operation):
+    from fastapi import HTTPException
+    from app.api import ai_assets as api
+
+    tenant_id, user_id = await _seed_principals(owner_sessionmaker)
+    async with owner_sessionmaker() as db:
+        agent = Agent(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            creator_id=user_id,
+            owner_user_id=user_id,
+            name="Failure evidence",
+            role_description="Synthetic",
+            status="idle",
+        )
+        db.add(agent)
+        await db.flush()
+        record = await register_agent_asset(db, agent, change_source="create", actor_user_id=user_id)
+        await db.commit()
+        asset_id = record.id
+
+    async def fail_native(*args, **kwargs):
+        raise ValueError("native asset not found")
+
+    monkeypatch.setattr(api.ai_asset_service, f"{operation}_asset", fail_native)
+    async with owner_sessionmaker() as db:
+        user = await db.get(User, user_id)
+        kwargs = {"asset_id": asset_id, "current_user": user, "db": db}
+        if operation == "rollback":
+            kwargs["body"] = api.RollbackAssetRequest(target_version=1)
+        with pytest.raises(HTTPException) as exc:
+            await getattr(api, f"{operation}_ai_asset")(**kwargs)
+        assert exc.value.status_code == 404
+
+    async with owner_sessionmaker() as db:
+        record = await db.get(AIAssetRecord, asset_id)
+        assert record.projection_status == "failed"
+        assert record.projection_error == "ValueError: native asset not found"
+        audit = (
+            await db.execute(
+                select(AuditLog).where(
+                    AuditLog.tenant_id == tenant_id,
+                    AuditLog.action == f"ai_asset.{operation}_failed",
+                )
+            )
+        ).scalar_one()
+        assert audit.user_id == user_id
+
+
 async def test_agent_rollback_applies_native_row_and_links_new_revision(owner_sessionmaker) -> None:
     tenant_id, user_id = await _seed_principals(owner_sessionmaker)
     agent_id = uuid.uuid4()

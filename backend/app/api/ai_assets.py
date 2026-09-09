@@ -121,23 +121,24 @@ async def rollback_ai_asset(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     _require_admin(current_user)
+    tenant_id, actor_user_id = _tenant_id(current_user), current_user.id
     try:
         record, revision = await ai_asset_service.rollback_asset(
             db,
-            tenant_id=_tenant_id(current_user),
+            tenant_id=tenant_id,
             asset_id=asset_id,
             target_version=body.target_version,
-            actor_user_id=current_user.id,
+            actor_user_id=actor_user_id,
         )
     except ValueError as exc:
         await db.rollback()
         await ai_asset_service.record_projection_failure(
             db,
-            tenant_id=_tenant_id(current_user),
+            tenant_id=tenant_id,
             asset_id=asset_id,
             operation="rollback",
             error=exc,
-            actor_user_id=current_user.id,
+            actor_user_id=actor_user_id,
         )
         await db.commit()
         code = status.HTTP_404_NOT_FOUND if "not found" in str(exc).lower() else status.HTTP_409_CONFLICT
@@ -146,11 +147,11 @@ async def rollback_ai_asset(
         await db.rollback()
         await ai_asset_service.record_projection_failure(
             db,
-            tenant_id=_tenant_id(current_user),
+            tenant_id=tenant_id,
             asset_id=asset_id,
             operation="rollback",
             error=exc,
-            actor_user_id=current_user.id,
+            actor_user_id=actor_user_id,
         )
         await db.commit()
         raise
@@ -164,10 +165,11 @@ async def reconcile_ai_asset(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     _require_admin(current_user)
+    tenant_id, actor_user_id = _tenant_id(current_user), current_user.id
     try:
         result = await ai_asset_service.reconcile_asset(
             db,
-            tenant_id=_tenant_id(current_user),
+            tenant_id=tenant_id,
             asset_id=asset_id,
         )
         await db.commit()
@@ -176,11 +178,11 @@ async def reconcile_ai_asset(
         await db.rollback()
         await ai_asset_service.record_projection_failure(
             db,
-            tenant_id=_tenant_id(current_user),
+            tenant_id=tenant_id,
             asset_id=asset_id,
             operation="reconcile",
             error=exc,
-            actor_user_id=current_user.id,
+            actor_user_id=actor_user_id,
         )
         await db.commit()
         if isinstance(exc, ValueError):

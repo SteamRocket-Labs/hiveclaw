@@ -28,16 +28,16 @@ owner 明确要求：除阻塞项外，把剩余功能测试并修复；结束�
 
 | 功能域 | B4 状态 | 实际范围 / 下一检查 |
 |---|---|---|
-| Session / 命令 / Plan / Goal / Ledger | partial-pass | draft三面板、Ledger、clear、Skill、rewind、branch局部通过；Plan当前会话确认→真实计算/文件消费且零trigger、compact失败工具终态消费已生产通过。Goal暂停/继续/交付/完成通过，canonical计费与自动续接修复待部署复验 |
-| Memory / Growth / J1–J4 | partial-pass / provider-blocked | 显式保存→fresh取回→更正→退役→fresh排除通过；Useful反馈确实落盘，但semantic_review_unavailable而held；候选、纵向成长和真实对比未完成 |
-| 个人知识与多格式交付 | partial-pass / failed | 五格式上传/解析/Agent引用、报告下载、归档恢复与重建通过。MiniMax原生DOCX/XLSX校验与工作区下载通过，公式缓存29。新发现审批续跑未记录更新快照，最终卡片仍旧版本，修复待部署复验 |
+| Session / 命令 / Plan / Goal / Ledger | partial-pass / provider-blocked | draft三面板、Ledger、clear、Skill、rewind、branch局部通过；Plan当前会话确认→真实计算/文件消费且零trigger、compact失败工具终态消费已生产通过。Goal暂停/继续/交付/完成通过，canonical计费与自动续接修复已部署；新两轮检查首请求及08:36唯一continue均被MiniMax限流拒绝，Goal已正式停止 |
+| Memory / Growth / J1–J4 | partial-pass / provider-blocked | 显式保存→fresh取回→更正→退役→fresh排除通过；Useful反馈确实落盘，但semantic_review_unavailable而held；成长UI显示真实T0/T2及两项Skill候选，尚无成长报告，纵向成长和真实对比未完成 |
+| 个人知识与多格式交付 | partial-pass / provider-blocked | 五格式上传/解析/Agent引用、报告下载、归档恢复与重建通过。MiniMax原生DOCX/XLSX校验与工作区下载通过，公式缓存29。最终卡片旧版本的实际根因是CLI resident未及时flush，非审批续跑；3ac6e2a1已部署，生产adapter+快照helper成功，但模型卡片复验在首请求即被限流拒绝 |
 | 公司知识与 promotion | partial-pass / policy-blocked | PDF 导入→提案→普通风险审批→发布→Agent引用→下线检索排除→恢复v2重现通过；member显式权限和自审批合同待owner决定 |
 | HR / 数字员工生命周期 / 角色 | partial-pass / policy-blocked | 三个真实员工创建；新member首任务归属、Agent→HR handoff、Reviewer首任务不自动执行通过；普通member负向通过。权限扩展/自批业务政策待owner选择，完整角色UI/转移与离职未完成 |
-| 子 Agent / Team / 动态和固定工作流 / A2A | partial-pass | 临时子Agent、固定Reviewer A2A、Team完整计算/关闭通过；MiniMax Workflow三叶真实Python/Bash计算、模板传值、文件写读与父消费通过，事件组误标中断待修。固定定义draft/activate/fork/deprecate/停用拒绝通过，未跑定时触发 |
-| Automation / Approval / Notification | partial-pass / blocked | B3 once权限生命周期未闭环；新正式once请求409 requires_confirmation且未创建。批准通知读取/单条已读通过，Local通知链接错落普通聊天页；schedule/event真实触发与渠道回流未完成 |
+| 子 Agent / Team / 动态和固定工作流 / A2A | partial-pass | 临时子Agent、固定Reviewer A2A、Team完整计算/关闭通过；MiniMax Workflow三叶真实Python/Bash计算、模板传值、文件写读与父消费通过，完成组误标中断已修且生产刷新通过。固定定义draft/activate/fork/deprecate/停用拒绝通过，未跑定时触发 |
+| Automation / Approval / Notification | partial-pass / blocked | B3 once权限生命周期未闭环；新正式once请求409 requires_confirmation且未创建。批准通知读取/单条已读通过；Local通知深链接已修，08:32实际落审批页并显示本轮已批准记录。schedule/event真实触发与渠道回流未完成 |
 | Local / Hook / Skill / MCP | partial-pass / blocked | Local历史恢复可用但result缺失、升级源unavailable；内置Skill加载/消费通过，member安全health200/内部hook诊断403；MCP extension_disabled，无外部安装或认证 |
-| 导航 / 主题 / 窄屏 / 键盘 / 模型 | partial-pass | 390px标题入口、主题light→dark→light/刷新保留、Escape返回设置按钮通过；完整无障碍和角色UI矩阵未完成。GLM长期配额阻塞，DeepSeek未ready不调用，MiniMax当前独立路径待核实 |
-| 相关回归 / 发布 / cleanup | partial-pass | 8f7762ec三服务同源SUCCESS，90最终archive检查通过；6c6ea30f CI34285873380三job全部success。新Goal完成/旧Goal停止、Team关闭、固定定义停用；证据资产保留，不冒充完整cleanup |
+| 导航 / 主题 / 窄屏 / 键盘 / 模型 | partial-pass | 390px标题入口、主题light→dark→light/刷新保留、Escape返回设置按钮通过；完整无障碍和角色UI矩阵未完成。既有MiniMax多条真实路径已成功；08:27新的Goal请求明确minimax/MiniMax-M3且rate_limited，不与无关GLM心跳配额日志混淆 |
+| 相关回归 / 发布 / cleanup | partial-pass | 3ac6e2a1三服务同源SUCCESS，public/backend-api/archive source hash相同；上一185d779d CI前端/15journeys成功、后台仍执行。新Goal完成/旧Goal停止、Team关闭、固定定义停用；证据资产保留，不冒充完整cleanup |
 
 ## 本批次合成资产预登记
 
@@ -243,3 +243,13 @@ owner 明确要求：除阻塞项外，把剩余功能测试并修复；结束�
 - 原生Office隔离create→apply复现file-in-use错误。核对当前二进制help与[1.0.88的自动resident源码](https://github.com/iofficeai/officecli/blob/v1.0.88/src/officecli/CommandBuilder.cs#L293)：create/read默认启动60s resident，resident batch在内存修改而磁盘保存依赖进程关闭；临时文件create后rename还遗留旧路径锁。仅为该子进程设置上游原生`OFFICECLI_NO_AUTO_RESIDENT=1`；现有workspace锁负责互斥，不新增等待、重试或后台进程。
 - 同一生产1.0.88、仅合成TemporaryDirectory的前后对照：不开选项失败；打开后create2624B→apply2730B，立即磁盘hash `8bbf2496c718b965abd1b4aeca968261cb3dde0a44b4f3a12d121681ce0ba9d8`；dump显示B6公式/缓存/计算29，validate0errors，后续读/校验磁盘hash不再变化。适配器环境断言先红后绿，41项Office检查通过；补充真实二进制create→view→apply→ZIP读B6回归。最终会话卡片仍待部署后真实复验。
 - 新Goal Session `3754558d-0453-4851-b496-46c68ceeb0f4`、Goal `5a8de2d0-2c8a-4de4-8276-7f66202fda09`、初始run `0d338186-9a81-5be4-aeca-85085bf58356`。08:22:54启动，但第一模型请求明确rejected/rate_limited/retry_safe=true，seq18失败、seq19runtime_failure，无模型/工具效果；因此未取得自动两轮业务证据，不能称Goal实测完成。保持MiniMax，不擅自切模型或重放未知效果。
+
+## 08:49 最终原生快照、Provider阻塞与UI补验
+
+- `3ac6e2a1` 已push并三服务SUCCESS：backend `4a6b7369-d1e7-446a-be57-83884ea8cb2b`、backend-api `38f92d98-9aaa-4d6b-adc4-4d6c52ae829e`、frontend `fd3b83d1-135e-4386-a7e6-7136294330fb`。干净archive/public health/API SSH同为1058files/source SHA256 `0d68c1c49c3f55b90dc84c800f1725f5a583cf3aabfb3d133fc13d1e50f412c3`。Office干净archive36passed/2本机无二进制skip；前一轮41passed含其他Office工具覆盖，不混为本次检查数量。
+- 08:40在新版本生产worker使用原生adapter及合成TemporaryDirectory再次验证，去掉探针自己设置的环境变量：create2624B→apply2730B，立即artifact candidate hash `ed8805862f070469b783efc78027e559dc8dd035b197dbd41ad98147ae4ecacb`，后续dump/validate hash完全相同；B6 formula SUM(17,12)、cached/computed29/evaluated=true、校验0errors。此证实新adapter及快照helper实际落盘，不冒充模型最终卡片PASS。
+- Office原Session正式单次更新受理201/run `226115eb-11ec-59c6-8ebb-56b35e103a53`，但第一请求即rejected/rate_limited（seq1159/1160），没有文件更新。Goal在确认首轮无效果后08:36只continue一次，正式200/run `73dbbd9f-b80f-544d-be06-8be54c358554`，同样第一请求rejected/rate_limited（seq36/37）。app_rls只读snapshot确认原Goal确为minimax/MiniMax-M3，不误用另一员工的GLM心跳1310日志。08:39:51经正式transition stop200，Goal cancelled/tokens0/continuation1；Office与Goal active GET均200/null，不再重试或变更模型。两轮自动续接和最终Office卡片仍provider-blocked。
+- Local原通知深链接08:32正式打开即显示“审批”，含本轮00:46:04已批准历史；旧无关待审批未处理。成长UI实际显示T0 sealed/T2 reviewed时间线与两个dynamic-workflow-authoring候选；成长报告为空、记忆事件记录为空，记忆概览仍有16段整理中/1段等待恢复。只算真实读面与状态呈现，不把候选存在或页面可开写为J1–J4业务闭环，也未安装候选。
+- 08:35health degraded的原始单次探针确为workspace round-trip收到Vercel HTTP410/sandbox_stopped，uname/network deny均成功。08:39在同配置使用已有探针命令只复验一次，三项全通过/18.84s；未修改策略、超时或持久health记录，不把瞬时恢复声称根因修复。旧trigger stale fence仍单列。
+- 185d779d与3ac6e2a1 CI前端、15机械journeys均success，后台全量尚在执行。额外对干净source的RLS审查指纹检查发现不匹配（旧f7af…，实际67fb…）。逐项对账584→588：四项新纳入项是共享结算引用的既有artifact lookup/create、ChatMessage anchor及web runtime源文件；其他变化仅已接受的Goal输入/终态/消费与tool settlement。没有新增bypass调用点或allowlist grant。复读可信tenant/agent/session/run约束、幂等anchor拒绝和workspace owner禁止rebind后，仅同步精确指纹；本机owner dirty registry及旧runtime候选不合入。
+- 最终staged干净archive的17项RLS allowlist/AST安全检查全部通过224.07s，指纹 `67fb08212984fd08363d840a4a25216ec73b8b9d699807f9b222582117ddadb6`；仅这一行registry与两份本轮状态记录进入下一commit。此前失败结果保留，完整CI不提前宣称成功。

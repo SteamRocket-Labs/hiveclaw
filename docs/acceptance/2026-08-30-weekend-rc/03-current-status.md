@@ -27,8 +27,8 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 
 ## 当前可核实结果
 
-- B4 当前 production application **`8f7762ec`** 三服务同源SUCCESS（06:17核对）。本批已接受的Office、Plan继任/持久化、Goal输入/预算、compact canonical history、branch脱敏、Workflow规范/可信身份/execute_code等修复均已push和部署；最终干净archive90项检查通过，backend/backend-api源hash一致。`6c6ea30f`仅补Plan中英文键与验收文档脱敏，已push未重部署；CI`34285873380`已整体success。旧runtime候选原样保留，未夹带。
-- B4 已取得五格式个人文档/Agent消费/报告下载、公司发布/引用/下线/恢复v2、知识重建、显式记忆更正/退役/fresh排除、HR首任务归属与精确待命、临时子Agent、固定Reviewer A2A、member Team完整计算/父报告/正式关闭、内置Skill消费、clear、rewind续接、branch正式创建/历史读取的局部实证。owner切换MiniMax后，Workflow三叶真实计算/独立复核/文件写读/父消费已通过，Goal暂停→继续→产物→完成与刷新通过，原生DOCX校验及两份Office文件下载通过。XLSX公式真实缓存29但schema校验失败；compact把9个已终态失败工具误当未结算；Plan正文禁止schedule却被分类为scheduled_trigger，确认后误建的精确测试trigger已通过正式UI暂停。Workflow完成组误标中断、Goal预算/提示一致性仍未通过。Useful反馈唯一落盘但memory held，不记成长生效；Local通知deep-link错误。临时管理员、自批政策未获答复，不扩大权限。完整范围和未测项见B4功能表，未提升为全部通过。
+- B4 当前 production application **`3ac6e2a1`** 三服务同源SUCCESS（08:34核对），backend/backend-api/干净archive均1058files/source SHA256 `0d68c1c49c3f55b90dc84c800f1725f5a583cf3aabfb3d133fc13d1e50f412c3`。本批已接受修复均已push和部署；185d779d干净archive100项Goal/terminal/artifact检查、110前端检查及build通过，3ac6e2a1干净archive36项Office检查通过/2项无本机二进制skip，生产同二进制另有红绿对照。两次CI前端与15journeys已成功、后台仍执行；本地发现遗漏同步已审RLS指纹，逐项584→588对账后仅更新指纹，最终检查中。08:35 public health degraded原始错误是Vercel sandbox_stopped410，08:39同配置单次探针复验3/3通过，未覆写持久health记录；另有旧trigger stale fence，未称零错误。旧runtime候选原样保留，未夹带。
+- B4 已取得五格式个人文档/Agent消费/报告下载、公司发布/引用/下线/恢复v2、知识重建、显式记忆更正/退役/fresh排除、HR首任务归属与精确待命、临时子Agent、固定Reviewer A2A、member Team完整计算/父报告/正式关闭、内置Skill消费、clear、rewind续接、branch正式创建/历史读取的局部实证。MiniMax Workflow三叶计算/文件/父消费及完成组刷新、Plan确认后真实同会话执行/文件消费且零trigger、compact失败工具历史消费、Local审批通知深链接均已修复并生产通过。原生DOCX/XLSX校验、公式缓存29及workspace下载通过；最终旧卡片定位CLI resident未flush，3ac6e2a1生产adapter及快照helper通过，但正式模型卡片复验在首请求即被MiniMax限流拒绝。Goal暂停→继续→产物→完成通过；canonical计费/自动两轮新检查及08:36唯一continue均被MiniMax限流拒绝，08:39正式停止/无活动run。Useful反馈唯一落盘但memory held，成长UI有T0/T2/Skill候选但无成长报告，不记成长生效；临时管理员、自批政策未获答复，不扩大权限。完整范围和未测项见B4功能表，未提升为全部通过。
 - B3 历史 production application 为 exact **`87b845db`**：仅在 B2 已接受源码上加入 Local 默认会话恢复。三服务部署均 SUCCESS，backend/backend-api 运行 source hash `eb7edcf72abd898a3fed7b9396280c456bd40af5edef51e11a24425efffec577` 与干净 archive 一致，public health ok、frontend HTTP 200。正式默认页刷新/离开重开恢复原 7 条事件；日志仍仅一次本地执行。49 项主审 service/API/real-PG 检查通过。once 候选及旧 dirty runtime 均未进入发布；Local 完整终态和 once 交付仍阻塞，不增加 0/96。
 - 上一批 `aeaaacb5` 于 22:30 三服务部署均 SUCCESS，新增前端管理员显式终态恢复入口，复用已有 API，不改 backend/自动重试/模型。70 项主 Codex 相关检查、i18n、TypeScript/build 通过；CI `34238046718` 三 job 全部 success。23:04 经 owner 授权仅重启 backend 原部署一次，23:05 health 恢复 ok，23:07 worker/终态消费者 running；未重新构建或重启另外两服务。该 B2 历史证明不替代本批源码与业务复验。
 - B2 续接：fresh 文件创建/续写/刷新和 HR 三→五要点草案修订/刷新已通过，草案已拒绝、无员工创建。原两条死信各经正式 UI 恢复一次，旧 boundary 均 delivered、原 admissions 均自然 dispatched/completed；旧文件新 74 B artifact 的预览/下载 HTTP 200/刷新重开通过。旧 HR 草案已拒绝不可原位修改，Agent 保留原记录并生成正确的替代预览，未 provision。
@@ -48,7 +48,7 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 - Memory/Growth、J4 bakeoff、多格式知识/文件交付、HR/首任务、协作/工作流/A2A、Automation/Hook/Skill/MCP/Local Agent 和 selected-model compatibility 仍按原合同逐项验证，不从分母删除。
 - M0、managed-shell、ChannelConfig/Feishu、inactive-tenant、post-claim/defer-order、PDEC-013、后台返回 App、折叠设置、知识库错误披露及历史 projection recovery 等已实现/部署结果不重建；当前生产业务消费仍须据实记录。完整历史及未关闭 finding 见[原状态快照](archive/current-status-before-functional-batch-2026-09-08.md)与 [Findings](05-findings.md)。
 - DeepSeek 缺 billing/credential readiness 不盲重试；MiniMax/GLM 旧 bounded probe 不冒充 P33 PASS。旧 reviewer/CI/部署绿不迁移成 Journey Closed。
-- 保留 owner 无关 dirty/untracked 文件和所有未接受候选；只在真实失败与冻结合同范围内派发 zCode 修复。
+- 保留 owner 无关 dirty/untracked 文件和所有未接受候选；按07:25新指示仅Codex在真实失败与既有合同范围内修复，不再委派zCode或CC。
 
 ## 权限与执行规则
 
@@ -58,7 +58,7 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 
 ## 唯一下一动作
 
-owner随后明确“接下来都只剩Codex一个了……没有什么zCode，也没有什么CC……继续吧”。后续由主Codex独立实现、验证、集成与交付，不再委派其他作者；该新指示取代前述zCode实现分工。先修Plan错误调度，再修compact终态失败回执、Office XLSX及结果/通知展示，保留旧候选并逐项生产复验。MiniMax消费复验已推进，旧GLM失败不迁移为新模型结果。误建测试trigger已暂停；不重放确认、不扩展管理员权限。B3 once/Local仍需按既有失败证据决定修复，不以换作者清零旧返修记录。第四批仍进行中，不是全功能PASS。
+owner随后明确“接下来都只剩Codex一个了……没有什么zCode，也没有什么CC……继续吧”。由主Codex独立实现、验证、集成与交付，不再委派其他作者。当前先交付已审RLS指纹与最新记录；MiniMax恢复后再做Office最终卡片及有新时间窗口的Goal两轮复验，不重放已停止的旧Goal。Plan/compact/Workflow显示/Local通知修复均已生产复验，不重复修建。误建测试trigger已暂停，不重放确认、不扩展管理员权限。B3 once/Local仍需按既有失败证据决定修复，不以换作者清零旧返修记录。完整成长、角色/转移/离职、时序与外部渠道仍没有业务通过证据，不把未测项改名已完成。第四批仍未全功能PASS。
 
 owner 自行修改的共享摘要模型 `zhipu / glm-5.3` 已实时核对。首版无限重试、返修 whole-summary 429 重放仍保持拒绝；本次实现的是明确操作员意图与重算风险确认的既有 API 消费入口。两次恢复均有正式 audit，未提取浏览器 token、伪造身份或手改 DB。完整历史见 B2 文档；目前仍没有完整单旅程吞吐样本，不能可靠外推 96 条总工期。
 

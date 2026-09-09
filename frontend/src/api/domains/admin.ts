@@ -120,7 +120,36 @@ export interface RuntimeTerminalBoundary {
   updated_at: string;
 }
 
+export interface RuntimeResultPage {
+  id: string;
+  parent_session_id: string;
+  parent_agent_id: string;
+  integration_epoch: number;
+  delivery_mode: string;
+  item_count: number;
+  manifest_sha256: string;
+  status: string;
+  attempt_count: number;
+  last_error: string | null;
+  delivered_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export const adminApi = {
+  listRuntimeResultPages: (params: { tenantId: string; parentSessionId: string }) => {
+    const query = new URLSearchParams({
+      tenant_id: params.tenantId,
+      parent_session_id: params.parentSessionId,
+      limit: '100',
+    });
+    return get<RuntimeResultPage[]>(`/runtime-result-pages?${query.toString()}`);
+  },
+  redriveRuntimeResultPage: (pageId: string, params: { tenantId: string; reason: string }) =>
+    post<RuntimeResultPage>(
+      `/runtime-result-pages/${encodeURIComponent(pageId)}/redrive?tenant_id=${encodeURIComponent(params.tenantId)}`,
+      { reason: params.reason },
+    ),
   listCompanies: () => get<Company[]>('/admin/companies'),
   createCompany: (data: { name: string; slug?: string }) => post<CompanyCreateReceipt>('/admin/companies', data),
   toggleCompany: (id: string) => put<void>(`/admin/companies/${id}/toggle`),

@@ -4033,6 +4033,20 @@
       "triggerDispositionUnavailable": "当前无法执行带类型的触发器对账",
       "repairReceipt": "投影修复完成：已检查 {{examined}} 个候选，已修复 {{repaired}} 条投影。"
     },
+    "resultPages": {
+      "title": "子任务结果投递恢复",
+      "refresh": "加载结果页",
+      "help": "查询一个父会话。重投仅恢复已保存结果的投递，不重跑子任务；现有预算和权限限制仍然生效。",
+      "tenant": "租户 ID",
+      "session": "父会话 ID",
+      "count": "{{count}} 个结果页（最多显示 100 个）",
+      "attempts": "{{items}} 个结果；已尝试 {{attempts}} 次",
+      "redrive": "重投结果页",
+      "reason": "恢复原因",
+      "confirm": "重投已保存的结果？",
+      "confirmMessage": "仅重投结果页 {{id}}，不重跑子任务。父会话续作仍受既有权限和预算约束。",
+      "receipt": "结果页 {{id}} 已重新排队（{{status}}）。这不代表投递完成或业务成功。"
+    },
     "terminalBoundaries": {
       "title": "终态边界恢复",
       "openItems": "条边界",

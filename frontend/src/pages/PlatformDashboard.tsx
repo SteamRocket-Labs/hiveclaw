@@ -4,6 +4,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { adminApi } from '../api/domains/admin';
 import AdminRuntimeReconciliationSection from './admin-companies/AdminRuntimeReconciliationSection';
 import AdminTerminalBoundariesSection from './admin-companies/AdminTerminalBoundariesSection';
+import AdminResultPagesSection from './admin-companies/AdminResultPagesSection';
 import './PlatformDashboard.css';
 
 function formatTokens(n: number | null | undefined): string {
@@ -179,6 +180,7 @@ export default function PlatformDashboard() {
 
             <AdminRuntimeReconciliationSection />
             <AdminTerminalBoundariesSection />
+            <AdminResultPagesSection />
         </div>
     );
 }

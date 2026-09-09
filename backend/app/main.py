@@ -35,6 +35,7 @@ from app.api.external_capabilities import router as external_capabilities_router
 from app.api.external_principals import router as external_principals_router
 from app.api.channel_deliveries import router as channel_deliveries_router
 from app.api.runtime_terminal_boundaries import router as runtime_terminal_boundaries_router
+from app.api.runtime_result_pages import router as runtime_result_pages_router
 from app.api.feature_flags import router as feature_flags_router
 from app.api.feishu import router as feishu_router
 from app.api.files import router as files_router
@@ -908,6 +909,7 @@ _api_routers = [
     external_principals_router,
     channel_deliveries_router,
     runtime_terminal_boundaries_router,
+    runtime_result_pages_router,
     tools_router,
     workflows_router,
     a2a_workflows_router,

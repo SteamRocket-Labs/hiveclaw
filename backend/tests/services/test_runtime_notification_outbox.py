@@ -154,6 +154,87 @@ def _notification(*, tenant_id, user_id, agent_id, session_id, source_run_id="ru
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
+async def test_dead_letter_page_redrive_preserves_result_and_rejects_stale_or_foreign_requests(owner_sessionmaker):
+    from app.models.audit import AuditLog
+
+    await _clear_outbox(owner_sessionmaker)
+    tenant_id, user_id, agent_id, session_id = await _seed_parent_session(owner_sessionmaker)
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        notification_id = await enqueue_completion_notification(
+            db,
+            _notification(tenant_id=tenant_id, user_id=user_id, agent_id=agent_id, session_id=session_id),
+        )
+        await db.commit()
+
+    async def failed(_page):
+        raise RuntimeError("synthetic delivery failure")
+
+    service = RuntimeNotificationOutboxService(session_factory=owner_sessionmaker, max_attempts=1)
+    service._deliver_page = failed
+    assert (await service.drain_once(worker_id="dead-letter-test"))["dead_lettered"] == 1
+    async with owner_sessionmaker() as db:
+        row = await db.get(RuntimeNotificationOutbox, notification_id)
+        page_id, object_id = row.integration_page_id, row.result_object_id
+        page = await db.get(RuntimeResultIntegrationPage, page_id)
+        original_manifest, original_hash, original_epoch = (
+            page.manifest_json,
+            page.manifest_sha256,
+            page.integration_epoch,
+        )
+        original_error = page.last_error
+
+    arguments = dict(page_id=page_id, actor_user_id=user_id, reason="Retry saved result after repairing delivery")
+    with pytest.raises(LookupError):
+        await service.redrive_dead_letter_page(tenant_id=uuid.uuid4(), **arguments)
+    with pytest.raises(ValueError, match="1-1000"):
+        await service.redrive_dead_letter_page(tenant_id=tenant_id, **{**arguments, "reason": "  "})
+    recovered = await service.redrive_dead_letter_page(tenant_id=tenant_id, **arguments)
+    assert recovered.status == "prepared"
+    assert recovered.attempt_count == 1
+    assert recovered.last_error == original_error
+    assert (recovered.manifest_json, recovered.manifest_sha256, recovered.integration_epoch) == (
+        original_manifest,
+        original_hash,
+        original_epoch,
+    )
+    with pytest.raises(ValueError, match="only a dead-letter"):
+        await service.redrive_dead_letter_page(tenant_id=tenant_id, **arguments)
+    healthy = RuntimeNotificationOutboxService(session_factory=owner_sessionmaker)
+    assert (await healthy.drain_once(worker_id="recovered-page"))["delivered"] == 1
+    assert (await healthy.drain_once(worker_id="recovered-page"))["delivered"] == 0
+    async with owner_sessionmaker() as db:
+        row = await db.get(RuntimeNotificationOutbox, notification_id)
+        assert row.status == "delivered" and row.result_object_id == object_id
+        assert row.integration_page_id == page_id and row.attempt_count == 2
+        audits = list(
+            (
+                await db.scalars(
+                    select(AuditLog).where(
+                        AuditLog.tenant_id == tenant_id,
+                        AuditLog.action == "runtime_result_page_redriven",
+                    )
+                )
+            ).all()
+        )
+        assert len(audits) == 1
+        assert audits[0].user_id == user_id
+        assert audits[0].details["previous_error"] == original_error
+        assert audits[0].details["manifest_sha256"] == original_hash
+        assert (
+            await db.scalar(
+                select(func.count())
+                .select_from(ChatTranscriptEvent)
+                .where(
+                    ChatTranscriptEvent.session_id == session_id,
+                    ChatTranscriptEvent.causation_id == page_id,
+                    ChatTranscriptEvent.event_type == "agent_task_notification",
+                )
+            )
+            == 1
+        )
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
 async def test_enqueue_is_deterministic_and_unique(owner_sessionmaker):
     await _clear_outbox(owner_sessionmaker)
     tenant_id, user_id, agent_id, session_id = await _seed_parent_session(owner_sessionmaker)

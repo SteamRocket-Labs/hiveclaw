@@ -4033,6 +4033,20 @@
       "triggerDispositionUnavailable": "Typed trigger reconciliation is unavailable",
       "repairReceipt": "Projection repair finished: examined {{examined}} candidates, repaired {{repaired}} projections."
     },
+    "resultPages": {
+      "title": "Child Result Delivery Recovery",
+      "refresh": "Load result pages",
+      "help": "Inspect one parent session. Redrive retries its saved result delivery, not child execution; existing budgets and permissions still apply.",
+      "tenant": "Tenant ID",
+      "session": "Parent session ID",
+      "count": "{{count}} result pages (up to 100)",
+      "attempts": "{{items}} results; {{attempts}} attempts",
+      "redrive": "Redrive result page",
+      "reason": "Recovery reason",
+      "confirm": "Redrive saved result delivery?",
+      "confirmMessage": "Retry only page {{id}}. Child work is not rerun. A parent continuation may run only within its existing authority and budget.",
+      "receipt": "Page {{id}} requeued ({{status}}). This is not delivery or business completion."
+    },
     "terminalBoundaries": {
       "title": "Terminal Boundary Recovery",
       "openItems": "boundaries",

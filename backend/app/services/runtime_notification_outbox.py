@@ -797,6 +797,94 @@ class RuntimeNotificationOutboxService:
             async with enter_rls_bypass(db, reason=f"runtime_notification_outbox.{operation}") as bypass_db:
                 yield bypass_db
 
+    async def redrive_dead_letter_page(
+        self,
+        *,
+        tenant_id: uuid.UUID | str,
+        page_id: uuid.UUID | str,
+        actor_user_id: uuid.UUID | str,
+        reason: str,
+    ) -> RuntimeResultIntegrationPage:
+        """Retry delivery of one immutable result page, never its child work."""
+        from app.models.audit import AuditLog
+
+        tenant_uuid = _uuid(tenant_id, field="tenant_id")
+        page_uuid = _uuid(page_id, field="page_id")
+        actor_uuid = _uuid(actor_user_id, field="actor_user_id")
+        normalized_reason = str(reason or "").strip()
+        if not normalized_reason or len(normalized_reason) > 1000:
+            raise ValueError("dead-letter redrive reason must contain 1-1000 characters")
+        now = datetime.now(UTC)
+        async with tenant_scoped_session(
+            tenant_uuid,
+            session_factory=self._session_factory,
+            require_tenant=True,
+            source="runtime_result_page_redrive",
+        ) as db:
+            page = await db.scalar(
+                select(RuntimeResultIntegrationPage)
+                .where(
+                    RuntimeResultIntegrationPage.id == page_uuid,
+                    RuntimeResultIntegrationPage.tenant_id == tenant_uuid,
+                )
+                .with_for_update()
+            )
+            if page is None:
+                raise LookupError("runtime result page not found")
+            if page.status != "dead_letter":
+                raise ValueError("only a dead-letter result page can be redriven")
+            # Match the worker's page-then-items lock order and preserve its fences.
+            rows = list(
+                (
+                    await db.scalars(
+                        select(RuntimeNotificationOutbox)
+                        .where(
+                            RuntimeNotificationOutbox.integration_page_id == page.id,
+                            RuntimeNotificationOutbox.tenant_id == tenant_uuid,
+                        )
+                        .order_by(RuntimeNotificationOutbox.mailbox_sequence)
+                        .with_for_update()
+                    )
+                ).all()
+            )
+            if len(rows) != page.item_count or any(row.status != "dead_letter" for row in rows):
+                raise ValueError("result page items require reconciliation before redrive")
+            db.add(
+                AuditLog(
+                    tenant_id=tenant_uuid,
+                    user_id=actor_uuid,
+                    agent_id=page.parent_agent_id,
+                    action="runtime_result_page_redriven",
+                    details={
+                        "integration_page_id": str(page.id),
+                        "parent_session_id": str(page.parent_session_id),
+                        "integration_epoch": page.integration_epoch,
+                        "manifest_sha256": page.manifest_sha256,
+                        "reason": normalized_reason,
+                        "previous_status": page.status,
+                        "previous_attempt_count": page.attempt_count,
+                        "previous_error": page.last_error,
+                        "redriven_at": now.isoformat(),
+                    },
+                )
+            )
+            page.status = "prepared"
+            page.claimed_by = None
+            page.claim_token = None
+            page.lease_expires_at = None
+            for row in rows:
+                row.status = "pending"
+                row.available_at = now
+                row.locked_by = None
+                row.locked_at = None
+                row.claim_token = None
+                row.lease_expires_at = None
+                await _set_approval_continuation_status(db, row, status="retrying", error=row.last_error)
+            await db.flush()
+            await db.refresh(page)
+            await db.commit()
+            return page
+
     async def claim_batch(
         self,
         *,

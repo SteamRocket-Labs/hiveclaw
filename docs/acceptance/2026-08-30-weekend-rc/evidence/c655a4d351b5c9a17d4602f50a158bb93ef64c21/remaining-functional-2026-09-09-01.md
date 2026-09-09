@@ -37,6 +37,14 @@
 
 10:04收束：真实spawn→workflow leaf连接检查及RLS登记/指纹4 passed（112.65s），本次没有指纹漂移、不需更新白名单常量。Ruff/format/diff检查通过。原坏结果run经正式cancel返回200/killed，审批未批准；保留失败叶和原回执，不篡改历史done、不自动repair或重放。
 
+## 10:11 最新交付与未完成项
+
+- `6c3e1a1151cdab7608ec12b20211c5083f7f8519`已commit/push，包含共享subagent终态修复、真实连接回归、前端行数收敛及记录。最初Railway连接TLS失败时尚未上传；逐服务确认仍旧deployment后才重试同一archive，没有不明状态重复发布。最新三服务全部SUCCESS：backend `e7772aee-20f4-436b-b56e-d7377b5967cb`、backend-api `3be5f674-95d6-46ac-8401-1e7f0e9de13b`、frontend `3bbc2075-f743-4d7d-a677-2cf75feaab8c`。两后端运行与archive同1058文件/source SHA256 `f510c09697d945c4a46325abfd9e7583745ebc1004875f3bae21ad3373e286bb`，backend health ok/strict app_rls、frontend200；最新sandbox实际探针通过。旧terminal candidates held仍300，不称运行时零积压。
+- CI `34301808749`前端unit/visual/accessibility及15条机械journeys全部success，backend完整harness仍in_progress；本地117项加真实spawn连接/RLS4项与1298前端检查保持上述证据，不冒充完整CI或生产业务闭环。
+- 已部署且本地回归完成：headless固定Workflow租户恢复；原Run权限等待/正式live与reload审批卡；shared subagent失败不再伪装completed。仅第一项已验证生产实际启动。后两项真实成功路径因当前MiniMax限流尚未复验，保留界限。
+- **未完成：**固定Workflow实际计算、gate/wait恢复/文件/复用；A2A固定流程graph（源码缺失，尚未实现）；Dynamic并行/等待的完整恢复；once/schedule/event成功交付；Local最终result；Office最终模型卡片；Goal自动两轮/计费；完整Growth/J1–J4、Hooks/Skill/MCP生命周期；角色/转移/离职与最终D双遍/故障/rollback/cleanup。直接A2A成功不替代固定graph；当前未开启新graph开发分支或把设计文档记成实现。
+- 模型选择、Hive Connect批准源与既有临时管理员/政策问题仍待owner答复，不擅自修改。GLM此前06:18记录为周/月额度耗尽、provider提示09-13重置；这不是10:11实时可用性证明，不能承诺换用GLM即恢复。模型切换即使获准也须先核实目标可用性，失败不得盲重试。
+
 ## 下一步
 
-完成共享subagent失败传递检查并集成；保留未批准坏结果，不重放错误done叶。Office、Goal、once和固定计算均有当前MiniMax限流阻塞；Local升级等待批准源。继续不依赖这些阻塞的剩余功能。其余功能仍按03-current-status列出的剩余范围推进，不缩减为只做这一个修复。
+先取得模型资源恢复/替代模型的明确选择，再用新的有效时间窗口验证已部署的once审批和固定Workflow成功链，绝不复活已取消run或沿用错误done叶。Local升级等待批准源。A2A固定graph等实现和其余功能继续按03-current-status原范围保留，不缩减、不宣称全部完成；无新heartbeat或后台Codex任务。

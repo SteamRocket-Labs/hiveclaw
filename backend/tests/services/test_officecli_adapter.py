@@ -58,6 +58,7 @@ def test_officecli_adapter_forces_json_and_disables_auto_update(tmp_path):
     ]
     assert captured["cwd"] == tmp_path
     assert captured["env"]["OFFICECLI_SKIP_UPDATE"] == "1"
+    assert captured["env"]["OFFICECLI_NO_AUTO_RESIDENT"] == "1"
     assert captured["timeout"] == 12
     assert captured["capture_output"] is True
     assert captured["text"] is True

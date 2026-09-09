@@ -7,6 +7,9 @@ import pytest
 
 
 def test_native_xlsx_template_passes_installed_validator(tmp_path) -> None:
+    from xml.etree import ElementTree
+    from zipfile import ZipFile
+
     from app.services.office_document_service import OfficeDocumentService
     from app.services.officecli_adapter import OfficeCLIAdapter
 
@@ -16,6 +19,18 @@ def test_native_xlsx_template_passes_installed_validator(tmp_path) -> None:
     adapter = OfficeCLIAdapter(binary=binary)
     service = OfficeDocumentService(tmp_path, adapter=adapter)
     service.create_document("native.xlsx", kind="xlsx")
+    service.run_view("native.xlsx", mode="text")
+    service.run_apply(
+        "native.xlsx",
+        operations=[{"command": "set", "path": "/Sheet1/B6", "props": {"value": "=SUM(17,12)"}}],
+    )
+    # Read the immediate disk delivery, not the CLI resident's in-memory view.
+    with ZipFile(tmp_path / "native.xlsx") as document:
+        sheet = ElementTree.fromstring(document.read("xl/worksheets/sheet1.xml"))
+    cell = sheet.find('.//{*}c[@r="B6"]')
+    assert cell is not None
+    assert cell.findtext("{*}f") == "SUM(17,12)"
+    assert cell.findtext("{*}v") == "29"
     assert adapter.run("validate", tmp_path / "native.xlsx")["success"] is True
 
 

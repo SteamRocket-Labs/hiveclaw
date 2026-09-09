@@ -233,6 +233,13 @@ owner 明确要求：除阻塞项外，把剩余功能测试并修复；结束�
 ## 08:15 审批后文件快照缺口与集中修复验证
 
 - 校正08:04 Office结论：成功下载的是当前workspace文件，不是最终回复卡片。正式artifact下载 `6115177c-5fa9-4490-a2b2-5d34b06c1690` 返回2629B/SHA256 `db97361bd340bdcb2eee16c93c3c828e8018842a0370ad7c7e4d8e56440ceccd`，XML没有B6；当前workspace为2851B且B6公式/缓存29。不能宣称最终产物消费通过。
-- app_rls/read-only对账显示该run只有3个早期artifact记录；后续成功Office apply的canonical结果已存在但没有新快照。根因为审批续跑直接调用公共`complete_tool_invocation`，跳过web callback的artifact记录。修复在公共结算入口为成功且尚无parts的已执行写入复用既有快照、authority与ChatMessage FK，不改历史快照，不绕过审批，不以下载当前文件替换声明快照。
+- app_rls/read-only对账显示该run只有3个早期artifact记录；后续成功Office apply的canonical结果已存在但没有新快照。最初归因审批续跑，后经permission_state全部not_required推翻：审批续跑跳过web callback的artifact记录是另一个真实测试缺口，但不是本次Office根因。公共结算入口已为成功且尚无parts的写入复用既有快照、authority与ChatMessage FK；该修复保留，线上Office继续按未关闭处理。
 - 新真实Postgres反例在修复前复现缺少artifact anchor，修复后包含重复回放共5项通过。干净staged archive联合Goal/terminal/artifact/permission/control **100 passed/31.84s**；前一同Goal代码archive的输入恢复3项通过；前端110项通过，12个Python文件Ruff/check-format通过。TypeScript/Vite/bundle及生产两轮Goal、Office最终卡片、Workflow刷新仍在验证，不以这些检查代替功能验收。
 - 仅暂存本轮14个实现/测试文件与本记录；`web_terminal_boundary_processor.py`原有owner的3处session factory修改保持未暂存，其他旧runtime候选不混入。
+
+## 08:27 Office真实根因与新Provider阻塞
+
+- `185d779d` 已提交/push且三服务SUCCESS：backend `59fb9bbe-1ec7-4f09-bd6c-3356f883209f`、backend-api `aa77c1a6-ae44-41bd-a6e2-c8baa5cb4803`、frontend `d405d967-51aa-4c91-aa8f-93e086b30d50`。干净archive/public health/API SSH同为1058 files/SHA256 `2cda06227d5b013bba64892653885056c9273857abcf3c71ae525c63e0b11758`，前端build已通过；Workflow原会话真实刷新后两个阶段均“已处理”，不再已中断。
+- 原生Office隔离create→apply复现file-in-use错误。核对当前二进制help与[1.0.88的自动resident源码](https://github.com/iofficeai/officecli/blob/v1.0.88/src/officecli/CommandBuilder.cs#L293)：create/read默认启动60s resident，resident batch在内存修改而磁盘保存依赖进程关闭；临时文件create后rename还遗留旧路径锁。仅为该子进程设置上游原生`OFFICECLI_NO_AUTO_RESIDENT=1`；现有workspace锁负责互斥，不新增等待、重试或后台进程。
+- 同一生产1.0.88、仅合成TemporaryDirectory的前后对照：不开选项失败；打开后create2624B→apply2730B，立即磁盘hash `8bbf2496c718b965abd1b4aeca968261cb3dde0a44b4f3a12d121681ce0ba9d8`；dump显示B6公式/缓存/计算29，validate0errors，后续读/校验磁盘hash不再变化。适配器环境断言先红后绿，41项Office检查通过；补充真实二进制create→view→apply→ZIP读B6回归。最终会话卡片仍待部署后真实复验。
+- 新Goal Session `3754558d-0453-4851-b496-46c68ceeb0f4`、Goal `5a8de2d0-2c8a-4de4-8276-7f66202fda09`、初始run `0d338186-9a81-5be4-aeca-85085bf58356`。08:22:54启动，但第一模型请求明确rejected/rate_limited/retry_safe=true，seq18失败、seq19runtime_failure，无模型/工具效果；因此未取得自动两轮业务证据，不能称Goal实测完成。保持MiniMax，不擅自切模型或重放未知效果。

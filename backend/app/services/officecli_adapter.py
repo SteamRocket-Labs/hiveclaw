@@ -264,6 +264,8 @@ class OfficeCLIAdapter:
     ) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         env["OFFICECLI_SKIP_UPDATE"] = "1"
+        # Each tool receipt must describe flushed bytes, not a resident's dirty in-memory document.
+        env["OFFICECLI_NO_AUTO_RESIDENT"] = "1"
         try:
             return self.runner(
                 args,

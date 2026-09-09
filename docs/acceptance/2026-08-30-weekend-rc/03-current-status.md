@@ -13,6 +13,8 @@ verification_status: remaining-functional-closure-in-progress
 
 ## 当前决定与本批次出口
 
+10:37 owner 新授权：验收可在 MiniMax M3 与新加入的 Ling 模型之间切换；允许 Local 安装及安装源配置。正式模型 API 已核对默认启用 `openrouter / inclusionai/ling-3.0-flash-sante:free` 与启用的 `minimax / MiniMax-M3`，不再等待旧的替代模型许可，不使用已撤下的 GLM。生产安装指南两项批准来源仍为空；本机已有 `@hiveclaw243/hive-connect`，其仓库为 `https://github.com/rocky2431/hive-connect`，已请求确认将这两个现有来源登记，期间保留既有登录连接。先验证新默认模型真实工具调用，再续固定 Workflow / once 和其他剩余验收。
+
 2026-09-09 owner 在核对功能覆盖后明确要求“把真正剩下的工作一次性全部完成掉……全部完成之后和我说，要求还是那一个”。继续由单一 Codex 实施、验证、提交推送、三服务部署和真实消费验收，不再沿旧两小时批次自动停止，也不重做已通过主路径。当前剩余执行清单：固定 Workflow 实跑与复用、A2A Workflow 编排、Dynamic 并行/等待恢复；通用 once/schedule/event 与 Local 最终 result；Office 最终卡片及 Goal 自动两轮/计费复验；Memory/Growth、Hook、Skill、MCP 的未闭环路径；角色/移交/离职和最终回归/清理。权限扩大、凭据、收费、真实外发与业务政策仍保留对应 owner 决策边界，不由“全部完成”推导授权。
 
 当前先追踪固定 Workflow 与 A2A Workflow 的真实入口，同时用既有合成 member/Agent 检查 MiniMax 新请求可用性。新合成资产前缀 `WRC-REMAINING-20260909`，仅本实验公司的合成会话、定义、受限 workspace 文件与可恢复触发器；不改真实业务数据，不创建新的凭据或权限。A2A 直接委派成功不替代 workflow 编排，固定定义生命周期成功不替代实跑；逐项结果按新证据追加，旧通过证据保留。
@@ -63,7 +65,7 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 
 ## 唯一下一动作
 
-按owner完整收尾要求，先取得模型资源恢复/替代模型的明确选择，再在新的有效时间窗口完成once审批与固定Workflow业务复验。共享subagent错误完成已修复、提交推送、三服务部署；旧坏结果run正式取消，未批准或重放。Office、once新请求及固定叶任务均明确rate_limited；已询问临时模型选择，未答复前不改模型，GLM此前也有配额不足记录，不保证当前可用。Local批准安装源仍空，等待owner；独立A2A Process Graph尚未实现，其余Growth/能力/角色/最终回归等仍未完成，不能用当前小包交付替代全部结果。细节与精确资产见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)。
+按 owner 10:37 新授权，使用 Ling / MiniMax 的真实可用模型，在新的有效时间窗口完成 once 审批与固定 Workflow 业务复验。共享 subagent 错误完成已修复并部署，旧坏结果 run 已正式取消，不重放。10:46 已明确批准 Skill 主仓库与 CLI 包来源，两后端配置已提交，接下来验证生效并升级 Local，保留旧绑定。独立 A2A Process Graph 尚未实现，其余 Growth/能力/角色/最终回归仍未完成。细节与精确资产见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)。
 
 此前交付背景（不替代上述下一动作）：
 

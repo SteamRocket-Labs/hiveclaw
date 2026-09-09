@@ -1,3 +1,12 @@
+---
+document_id: weekend-rc-remaining-functional-2026-09-09-01
+owner: Codex
+status: in_progress
+authority: supporting-evidence
+last_reviewed: 2026-09-09
+source_commit: 6c3e1a11
+verification_status: partial-not-complete
+---
 # 剩余功能继续执行记录
 
 ## 授权与起点
@@ -47,4 +56,10 @@
 
 ## 下一步
 
-先取得模型资源恢复/替代模型的明确选择，再用新的有效时间窗口验证已部署的once审批和固定Workflow成功链，绝不复活已取消run或沿用错误done叶。Local升级等待批准源。A2A固定graph等实现和其余功能继续按03-current-status原范围保留，不缩减、不宣称全部完成；无新heartbeat或后台Codex任务。
+10:37 owner 已批准 MiniMax / 新 Ling 切换及 Local 安装；10:46 明确批准准确来源：Skill 为 `https://github.com/SteamRocket-Labs/hiveclaw`，CLI 为 `@hiveclaw243/hive-connect`。原 CLI 仓库没有 Skill，本地主仓库 `.agents/skills/hive-connect/SKILL.md` 也未被 Git 收录，故将现有指南原样放入可分发的 `skills/hive-connect/SKILL.md`，结构验证通过。npm 正式注册信息版本0.1.9、仓库 `rocky2431/hive-connect`；两后端批准来源配置已提交，等待生效验证和保留旧绑定的升级。
+
+模型正式 API 现有且启用 Ling 与 MiniMax；MemberAnalyst 的模型绑定为空，初始 Session `8e8bc8e0-48b1-4da5-a66b-58ccd42d7230` 在模型调用前失败。按授权 PATCH 绑定 Ling 后，新 Session `7c7ab098-e40a-4ff6-96fc-8c0ad88b1d94` / run `fc03c252-a858-5290-9093-ae609858fc1b` 使用真实 `openrouter / inclusionai/ling-3.0-flash-sante:free`，已实际调用 execute_code，canonical 终态提交；工具回执为无输出，尚不作为计算108成功证明。旧取消 run 不复活。
+
+CI `34301808749` 最终后端9253passed/1failed/4skipped，唯一失败是本记录漏 frontmatter；已补齐原有七项必需元数据，相关文档结构检查10passed（0.36s），未改测试断言。前端与15journeys原 success 保持。
+
+继续验证 Ling 的实际结果与固定 Workflow / once 新时间窗口，完成 Local 升级后的真实最终 result。A2A固定graph等实现和其余功能继续按03-current-status原范围保留，不缩减、不宣称全部完成；无新heartbeat或后台Codex任务。

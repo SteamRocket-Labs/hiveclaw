@@ -124,7 +124,12 @@ async def test_failed_reconcile_persists_exact_asset_failure_after_rollback(monk
         )
     db.rollback.assert_awaited_once()
     mark_failure.assert_awaited_once_with(
-        db, tenant_id=tenant_id, asset_id=asset_id, operation="reconcile", error=failure, actor_user_id=user_id,
+        db,
+        tenant_id=tenant_id,
+        asset_id=asset_id,
+        operation="reconcile",
+        error=failure,
+        actor_user_id=user_id,
     )
     db.commit.assert_awaited_once()
 

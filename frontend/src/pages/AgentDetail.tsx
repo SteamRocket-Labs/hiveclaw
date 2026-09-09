@@ -490,6 +490,7 @@ function AgentDetailInner() {
             runtimeActivityAt: runtimeActivityAtRef.current,
             pendingUserMessages: pendingUserMessagesRef.current,
         },
+        getActiveRunId: (key) => activeRunStateRef.current[key]?.runId ?? null,
         markActiveRunTerminal,
         isTerminalTranscriptToolMessage,
         mergePendingMessages: mergePendingForSession,

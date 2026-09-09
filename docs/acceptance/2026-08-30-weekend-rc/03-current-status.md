@@ -4,14 +4,18 @@ owner: Codex
 status: in_progress
 authority: canonical-working-state
 last_reviewed: 2026-09-09
-source_commit: 8f7762ec
-verification_status: functional-b4-broad-coverage-in-progress
+source_commit: c655a4d3
+verification_status: remaining-functional-closure-in-progress
 ---
 # 当前状态与唯一下一动作
 
 [返回索引](README.md) · [旅程账本](04-journey-ledger.md) · [Findings](05-findings.md) · [Runbook](06-runbook-and-release-gates.md)
 
 ## 当前决定与本批次出口
+
+2026-09-09 owner 在核对功能覆盖后明确要求“把真正剩下的工作一次性全部完成掉……全部完成之后和我说，要求还是那一个”。继续由单一 Codex 实施、验证、提交推送、三服务部署和真实消费验收，不再沿旧两小时批次自动停止，也不重做已通过主路径。当前剩余执行清单：固定 Workflow 实跑与复用、A2A Workflow 编排、Dynamic 并行/等待恢复；通用 once/schedule/event 与 Local 最终 result；Office 最终卡片及 Goal 自动两轮/计费复验；Memory/Growth、Hook、Skill、MCP 的未闭环路径；角色/移交/离职和最终回归/清理。权限扩大、凭据、收费、真实外发与业务政策仍保留对应 owner 决策边界，不由“全部完成”推导授权。
+
+当前先追踪固定 Workflow 与 A2A Workflow 的真实入口，同时用既有合成 member/Agent 检查 MiniMax 新请求可用性。新合成资产前缀 `WRC-REMAINING-20260909`，仅本实验公司的合成会话、定义、受限 workspace 文件与可恢复触发器；不改真实业务数据，不创建新的凭据或权限。A2A 直接委派成功不替代 workflow 编排，固定定义生命周期成功不替代实跑；逐项结果按新证据追加，旧通过证据保留。
 
 **第四批进行中（2026-09-09 01:54:45 起，Asia/Shanghai）**。owner 要求除明确阻塞项外完成剩余功能测试和必要修复，结束时 commit、更新文档并告知结果；新增授权覆盖“rocky的实验室”公司内经过认证的合成 Agent、对话、接口、知识与工作流实验。危险操作、真实外发、凭据/计费变更、无关数据与全库破坏性操作不在此授权内。按功能实际结果推进，不拿最终发布计数概括本轮；每个根因仍按一个方案与一次集中返修收束，阻塞单列，不阻挡独立功能。未重新启动旧 Goal/heartbeat，不夹带未接受的旧 runtime 候选。B4 明细与资产登记见[第四批记录](evidence/87b845dba4ae397bd4205b21e657e6efeb9fac7f/functional-batch-2026-09-09-04.md)。
 
@@ -57,6 +61,10 @@ owner 于 2026-09-08 认可[有限验收方案](../../../thinking/weekend-rc-con
 每包默认一个实现方案、一次集中反馈后的返修；同根因两次仍失败就交付策略选择/明确阻塞，不改名重置预算。新增反馈须有合同与可达路径依据；本包回归和可信严重危害仍阻止受影响发布。优先行为测试，普通迭代不重复全量门；等待用完成通知/有界等待与退避小状态，不做 15 秒模型轮询。
 
 ## 唯一下一动作
+
+按owner最新完整收尾要求，继续固定Workflow与once共同根因修复及真实复验，再推进其余未闭环功能，不以模型阻塞停止独立工作。09:17固定定义实际触发暴露headless租户上下文缺失；已停用精确合成trigger防止重复失败，干净worktree修复及真实PG联合27项通过、尚未部署。Office09:13新请求仍明确rate_limited无修改；Local批准安装源仍空，已询问owner。独立A2A Process Graph当前为未接线实现缺口，不能用直接委派PASS替代。细节与精确资产见[剩余执行记录](evidence/c655a4d351b5c9a17d4602f50a158bb93ef64c21/remaining-functional-2026-09-09-01.md)。
+
+此前交付背景（不替代上述下一动作）：
 
 owner随后明确“接下来都只剩Codex一个了……没有什么zCode，也没有什么CC……继续吧”。由主Codex独立实现、验证、集成与交付，不再委派其他作者。本次集中修复和RLS指纹已提交推送，模型端到端复验停在明确限流；MiniMax恢复后再做Office最终卡片及有新时间窗口的Goal两轮复验，不重放已停止的旧Goal。Plan/compact/Workflow显示/Local通知修复均已生产复验，不重复修建。误建测试trigger已暂停，不重放确认、不扩展管理员权限。B3 once/Local仍需按既有失败证据决定修复，不以换作者清零旧返修记录。完整成长、角色/转移/离职、时序与外部渠道仍没有业务通过证据，不把未测项改名已完成。第四批仍未全功能PASS。
 

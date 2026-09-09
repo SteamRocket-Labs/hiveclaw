@@ -960,6 +960,48 @@ async def test_tool_terminal_signal_uses_tool_card_finalizer_without_fabricating
 
 
 @pytest.mark.asyncio
+async def test_typed_permission_batch_suspends_original_run_with_non_json_display():
+    from unittest.mock import AsyncMock
+    from app.services import web_chat_run_orchestrator as orchestrator
+    from app.services.web_chat_runtime import _interactive_pause_summary_for_tool_call
+
+    update = AsyncMock()
+    state = SimpleNamespace(
+        run_uuid=uuid4(),
+        interactive_pause_summary=None,
+        interactive_pause_channel_text=None,
+        cancel_event=SimpleNamespace(is_set=lambda: False),
+        metadata={},
+        runtime_session_context=None,
+        ports=SimpleNamespace(
+            events=SimpleNamespace(
+                runtime_action_from_tool_result=lambda _data: None, stream_batcher_type=_NoopStreamBatcher
+            ),
+            runtime=SimpleNamespace(interactive_pause_summary=_interactive_pause_summary_for_tool_call),
+            context=SimpleNamespace(is_web_origin_turn=lambda *_args: True),
+            terminal=SimpleNamespace(
+                phase_for_pause=lambda *_args, **_kwargs: "awaiting_approval",
+                terminal_reason=lambda **_kwargs: None,
+                update_runtime_task=update,
+            ),
+        ),
+    )
+    await orchestrator._WebChatCallbacks(state)._consume_completed_tool(
+        {
+            "name": "set_trigger",
+            "status": "done",
+            "result": "Approval needed.",
+            "tool_execution_evidence": {"tool_decision": {"outcome": "require_approval"}},
+        }
+    )
+    update.assert_not_awaited()
+    await orchestrator._finalize_invocation_result(state, SimpleNamespace(content=""))
+    assert update.await_args.args == (state.run_uuid,)
+    assert update.await_args.kwargs["status"] == "suspended"
+    assert state.terminal_phase_hint == "awaiting_approval"
+
+
+@pytest.mark.asyncio
 async def test_turn_token_budget_terminal_reason_is_persisted_as_failed_without_rewriting_content(monkeypatch):
     from app.kernel.contracts import TerminalReason
     from app.services import web_chat_run_orchestrator as orchestrator

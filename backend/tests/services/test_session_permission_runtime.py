@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -11,7 +12,9 @@ from sqlalchemy import func, select
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
-async def _seed_waiting_batch(owner_sessionmaker, *, tool_count: int = 1) -> SimpleNamespace:
+async def _seed_waiting_batch(
+    owner_sessionmaker, *, tool_count: int = 1, tool_name: str = "read_file", tool_arguments: dict | None = None
+) -> SimpleNamespace:
     from app.models.agent import Agent
     from app.models.chat_session import ChatSession
     from app.models.runtime_task import RuntimeTask
@@ -81,15 +84,15 @@ async def _seed_waiting_batch(owner_sessionmaker, *, tool_count: int = 1) -> Sim
                 "id": f"permission-tool-{index}-{run_id.hex}",
                 "type": "function",
                 "function": {
-                    "name": "read_file",
-                    "arguments": f'{{"path":"workspace/file-{index}.md"}}',
+                    "name": tool_name,
+                    "arguments": json.dumps(tool_arguments or {"path": f"workspace/file-{index}.md"}),
                 },
             }
             for index in range(tool_count)
         ]
         wire_request = {
             "messages": [{"role": "user", "content": "read the requested files"}],
-            "tools": [{"type": "function", "function": {"name": "read_file"}}],
+            "tools": [{"type": "function", "function": {"name": tool_name}}],
             "max_tokens": 8192,
         }
         request_id = await prepare_model_request(
@@ -136,7 +139,7 @@ async def _seed_waiting_batch(owner_sessionmaker, *, tool_count: int = 1) -> Sim
         )
         invocations = []
         for index, call in enumerate(calls):
-            arguments = {"path": f"workspace/file-{index}.md"}
+            arguments = tool_arguments or {"path": f"workspace/file-{index}.md"}
             invocation = await prepare_tool_invocation(
                 db,
                 tenant_id=tenant_id,
@@ -145,7 +148,7 @@ async def _seed_waiting_batch(owner_sessionmaker, *, tool_count: int = 1) -> Sim
                 run_id=run_id,
                 provider_request_id=request_id,
                 provider_tool_use_id=call["id"],
-                tool_name="read_file",
+                tool_name=tool_name,
                 arguments=arguments,
             )
             await complete_tool_invocation(
@@ -345,6 +348,28 @@ async def test_allow_session_grant_is_exact_not_tool_wide(owner_sessionmaker, mo
         assert grants[0]["tool_name"] == "read_file"
         assert grants[0]["input_hash"] == hash_tool_input("read_file", arguments)
         assert metadata.get("session_permission_allowed_tools") in (None, [])
+
+
+async def test_delete_mode_permission_only_offers_and_accepts_once(owner_sessionmaker) -> None:
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.services.session_permission_runtime import resolve_session_tool_permission
+
+    seed = await _seed_waiting_batch(
+        owner_sessionmaker, tool_name="fs_write", tool_arguments={"mode": "delete", "path": "workspace/test.md"}
+    )
+    async with owner_sessionmaker() as db:
+        event = await db.scalar(
+            select(ChatTranscriptEvent).where(
+                ChatTranscriptEvent.item_id == seed.permission_ids[0],
+                ChatTranscriptEvent.lifecycle == "waiting",
+            )
+        )
+        assert event.metadata_json["v2_payload"]["permission_request"]["allow_session_allowed"] is False
+        _user, authority = await _authority(db, seed)
+        with pytest.raises(ValueError, match="destructive_permission_must_be_allow_once"):
+            await resolve_session_tool_permission(
+                db, authority=authority, permission_request_id=seed.permission_ids[0], decision="allow_session"
+            )
 
 
 async def test_deny_and_expiry_each_create_one_matching_result_and_resume_same_run(

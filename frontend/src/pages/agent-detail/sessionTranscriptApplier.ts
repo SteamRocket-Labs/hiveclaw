@@ -2,6 +2,7 @@ import {
   applyTranscriptEvent,
   createEmptyTranscriptReplayState,
   getTerminalRunIdFromTranscriptEvent,
+  isSameSessionRunId,
   terminalRuntimePhaseForSessionEvent,
   uiForPhase,
   type AgentChatMessage,
@@ -14,6 +15,7 @@ import {
 import { latestTranscriptSequence, mergeTranscriptBackfill } from './chatTransportRecovery';
 import {
   applyCanonicalSessionSnapshot,
+  canonicalRuntimeProjectionEvent,
   applySessionVisibilityBoundary,
   compatibilityProjectionEvent,
   composeMixedPlaneSessionMessages,
@@ -53,6 +55,7 @@ export type SessionTranscriptApplierRefs = {
 
 export type SessionTranscriptApplierDeps = {
   refs: SessionTranscriptApplierRefs;
+  getActiveRunId: (key: string) => string | null;
   markActiveRunTerminal: (key: string, runId?: string | null) => boolean;
   isTerminalTranscriptToolMessage: (message: AgentChatMessage | undefined) => boolean;
   mergePendingMessages: (key: string, messages: AgentChatMessage[]) => AgentChatMessage[];
@@ -208,10 +211,10 @@ export function applyTranscriptToSessionRuntime(
   // The terminal merge binds to the canonical accepted terminal run when one
   // exists; a legacy-only accepted terminal keeps the legacy unbound seal.
   let canonicalTerminalRunId: string | null = null;
-  let canonicalTerminalPhase: RuntimePhase | null = null;
-  const syncCanonicalTerminalPhase = () => {
-    if (!canonicalTerminalPhase || !isActiveRuntime) return;
-    const terminalUi = uiForPhase(canonicalTerminalPhase);
+  let canonicalRuntimePhase: RuntimePhase | null = null;
+  const syncCanonicalRuntimePhase = () => {
+    if (!canonicalRuntimePhase || !isActiveRuntime) return;
+    const terminalUi = uiForPhase(canonicalRuntimePhase);
     refs.uiStates[key] = terminalUi;
     deps.setActivePhase(terminalUi.phase);
     deps.setIsWaiting(terminalUi.isWaiting);
@@ -226,6 +229,14 @@ export function applyTranscriptToSessionRuntime(
   // effects).
   const appliedCanonicalEvents = application?.canonicalEvents || [];
   if (consumed.store && appliedCanonicalEvents.length > 0) {
+    for (const canonical of appliedCanonicalEvents) {
+      const projection = canonicalRuntimeProjectionEvent(canonical);
+      const activeRunId = deps.getActiveRunId(key);
+      if (projection?.phase === 'awaiting_approval' && 'run_id' in canonical.scope
+        && (!activeRunId || isSameSessionRunId(activeRunId, canonical.scope.run_id))) {
+        canonicalRuntimePhase = 'awaiting_approval';
+      }
+    }
     applyCanonicalSessionSnapshot({
       events: appliedCanonicalEvents,
       store: consumed.store,
@@ -240,7 +251,7 @@ export function applyTranscriptToSessionRuntime(
       onTerminal: (runId, terminalEvent) => {
         const accepted = deps.markActiveRunTerminal(key, runId);
         if (accepted !== false) {
-          canonicalTerminalPhase = terminalRuntimePhaseForSessionEvent(
+          canonicalRuntimePhase = terminalRuntimePhaseForSessionEvent(
             terminalEvent.item_kind,
             terminalEvent.lifecycle,
           );
@@ -258,7 +269,7 @@ export function applyTranscriptToSessionRuntime(
     // A canonical carrier owns the lowest sequence in this transition; any
     // compatibility events it drains are later and may legitimately advance
     // the UI after this terminal phase.
-    if (consumed.canonical) syncCanonicalTerminalPhase();
+    if (consumed.canonical) syncCanonicalRuntimePhase();
   }
 
   const legacyResults: LegacyProjectionResult[] = [];
@@ -291,7 +302,7 @@ export function applyTranscriptToSessionRuntime(
   // A compatibility carrier that closes a gap owns the lowest sequence; its
   // drained canonical terminal is later and therefore settles the final UI
   // phase after the carrier's legacy projection.
-  if (!consumed.canonical) syncCanonicalTerminalPhase();
+  if (!consumed.canonical) syncCanonicalRuntimePhase();
 
   if (legacyResults.some((result) => result.applied)) commitRequested = true;
   if (!terminalCommit) {

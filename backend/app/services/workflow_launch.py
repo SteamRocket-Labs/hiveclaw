@@ -152,11 +152,20 @@ async def resolve_agent_runtime(
     agent or model cannot be resolved."""
     from sqlalchemy import select
 
-    from app.database import tenant_scoped_session
+    from app.database import get_current_tenant_id, tenant_scoped_session
     from app.models.agent import Agent
     from app.models.llm import LLMModel
 
-    async with tenant_scoped_session(str(tenant_id) if tenant_id else None, session_factory=session_factory) as db:
+    if tenant_id is None:
+        tenant_id = get_current_tenant_id()
+    if tenant_id is None:
+        from app.services.tenant_resolver import resolve_tenant_for_agent
+
+        tenant_id = await resolve_tenant_for_agent(agent_id, session_factory=session_factory)
+    if tenant_id is None:
+        raise LookupError(f"agent {agent_id} not found")
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=session_factory, require_tenant=True) as db:
         agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
         if agent is None:
             raise LookupError(f"agent {agent_id} not found")

@@ -33,6 +33,7 @@ from app.models.user import User
 from app.runtime.workflow_engine import LeafRequest
 from app.services.workflow_launch import (
     build_resumable_workflow_leaf_executor,
+    resolve_agent_runtime,
     start_ephemeral_workflow_for_agent,
 )
 
@@ -120,6 +121,25 @@ async def world(owner_sessionmaker, tenant_id):
             )
         )
     return SimpleNamespace(user_id=user_id, model_id=model_id, agent_id=agent_id, session_id=session_id)
+
+
+async def test_headless_runtime_resolves_tenant_under_enforced_rls(app_user_sessionmaker, tenant_id, world):
+    from app.database import reset_current_tenant, set_current_tenant
+
+    token = set_current_tenant(None)
+    try:
+        agent, model = await resolve_agent_runtime(world.agent_id, session_factory=app_user_sessionmaker)
+        assert (agent.id, agent.tenant_id, model.id) == (world.agent_id, tenant_id, world.model_id)
+        with pytest.raises(LookupError, match="not found"):
+            await resolve_agent_runtime(world.agent_id, tenant_id=uuid.uuid4(), session_factory=app_user_sessionmaker)
+        foreign_context = set_current_tenant(str(uuid.uuid4()))
+        try:
+            with pytest.raises(LookupError, match="not found"):
+                await resolve_agent_runtime(world.agent_id, session_factory=app_user_sessionmaker)
+        finally:
+            reset_current_tenant(foreign_context)
+    finally:
+        reset_current_tenant(token)
 
 
 async def _insert_workflow_task(

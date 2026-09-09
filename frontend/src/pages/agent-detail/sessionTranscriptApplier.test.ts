@@ -14,6 +14,7 @@ import {
 import { applyTranscriptToSessionRuntime, type SessionTranscriptApplierDeps } from './sessionTranscriptApplier';
 import {
   createCompatibilityMessageTimeline,
+  hydrateSessionTranscriptEvents,
   seedCompatibilityTimelineIdentities,
   type CompatibilityMessageTimeline,
   type SessionVisibilityBoundary,
@@ -88,7 +89,7 @@ function runScopedFailureEvent(sequence: number, runId = 'run-1'): ChatTranscrip
 
 function canonicalRunLifecycleEvent(
   sequence: number,
-  lifecycle: 'queued' | 'completed' | 'failed' | 'cancelled' | 'needs_reconciliation' = 'completed',
+  lifecycle: 'queued' | 'waiting' | 'completed' | 'failed' | 'cancelled' | 'needs_reconciliation' = 'completed',
   runId = 'run-1',
   turnId = 'turn-1',
 ): ChatTranscriptEventPayload {
@@ -205,6 +206,7 @@ function makeApplierHarness(messageStore?: SessionMessageStore) {
   const commits: Array<{ sessionId: string; kind: 'enqueue' | 'afterQueued'; result: AgentChatMessage[] }> = [];
   const deps: SessionTranscriptApplierDeps = {
     refs,
+    getActiveRunId: vi.fn(() => 'run-1'),
     markActiveRunTerminal: vi.fn(() => true),
     isTerminalTranscriptToolMessage: () => false,
     mergePendingMessages: (key, messages) => {
@@ -278,6 +280,63 @@ function makeApplierHarness(messageStore?: SessionMessageStore) {
 }
 
 describe('session transcript applier real consumption path (Codex REQUEST_CHANGES #3)', () => {
+  it('restores the same actionable permission and waiting phase live and after reload', () => {
+    const harness = makeApplierHarness();
+    const request = {
+      permission_request_id: 'permission-1',
+      tool_name: 'set_trigger',
+      arguments: { name: 'once-only' },
+      allow_session_allowed: false,
+    };
+    const permission = {
+      ...canonicalTextEvent(2, ''),
+      item_kind: 'tool_permission',
+      item_id: 'permission-1',
+      kind: 'tool_permission.waiting',
+      lifecycle: 'waiting',
+      payload_schema: 'hive.session.payload.tool_permission.waiting.v2',
+      payload: { permission_request: request },
+    } as unknown as ChatTranscriptEventPayload;
+    const waiting = {
+      ...canonicalRunLifecycleEvent(3, 'waiting'),
+      payload: { reason_code: 'tool_permission_required' },
+    } as unknown as ChatTranscriptEventPayload;
+    const events = [canonicalRunLifecycleEvent(1, 'queued'), permission, waiting];
+    for (const event of events) harness.applyEvent(event);
+    expect(harness.messages().find((message) => message.sessionPermissionRequest)?.sessionPermissionRequest).toEqual(request);
+    expect(harness.refs.uiStates[KEY]?.phase).toBe('awaiting_approval');
+    expect(harness.deps.markActiveRunTerminal).not.toHaveBeenCalled();
+    const reloaded = hydrateSessionTranscriptEvents(events);
+    expect(reloaded.ui.phase).toBe('awaiting_approval');
+    expect(reloaded.messages.find((message) => message.sessionPermissionRequest)?.sessionPermissionRequest).toEqual(request);
+    const resolved = {
+      ...permission,
+      event_id: 'permission-resolved',
+      sequence: 4,
+      ordinal: 3,
+      lifecycle: 'completed',
+      kind: 'tool_permission.completed',
+      payload_schema: 'hive.session.payload.tool_permission.completed.v2',
+      payload: { decision: 'allow_once' },
+    } as unknown as ChatTranscriptEventPayload;
+    harness.applyEvent(resolved);
+    expect(harness.messages().some((message) => message.eventStatus === 'session_permission_required')).toBe(false);
+    expect(hydrateSessionTranscriptEvents([...events, resolved]).messages
+      .some((message) => message.eventStatus === 'session_permission_required')).toBe(false);
+  });
+
+  it('does not let an older run permission wait replace the active run phase', () => {
+    const harness = makeApplierHarness();
+    harness.refs.uiStates[KEY] = uiForPhase('responding');
+    harness.applyEvent({
+      ...canonicalRunLifecycleEvent(1, 'waiting', 'old-run'),
+      payload: { reason_code: 'tool_permission_required' },
+    } as unknown as ChatTranscriptEventPayload);
+    expect(harness.refs.uiStates[KEY]?.phase).toBe('responding');
+    expect(harness.deps.setActivePhase).not.toHaveBeenCalled();
+    expect(harness.deps.markActiveRunTerminal).not.toHaveBeenCalled();
+  });
+
   it('settles the active UI phase when direct transcript backfill applies a canonical run terminal', () => {
     const harness = makeApplierHarness();
     harness.refs.uiStates[KEY] = uiForPhase('responding');

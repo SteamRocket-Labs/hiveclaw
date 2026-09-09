@@ -2040,6 +2040,20 @@ def test_interactive_pause_summary_accepts_structured_tool_payloads():
     )
 
 
+def test_interactive_pause_uses_typed_approval_when_display_result_is_not_json():
+    from app.services.web_chat_runtime import _interactive_pause_summary_for_tool_call
+
+    data = {
+        "name": "set_trigger",
+        "status": "done",
+        "result": "Approval is required before executing this tool.",
+        "tool_execution_evidence": {"tool_decision": {"outcome": "require_approval"}},
+    }
+    assert _interactive_pause_summary_for_tool_call(data) == "awaiting_session_permission"
+    data["tool_execution_evidence"]["tool_decision"]["outcome"] = "deny"
+    assert _interactive_pause_summary_for_tool_call(data) is None
+
+
 @pytest.mark.asyncio
 async def test_persist_runtime_event_writes_session_native_part(monkeypatch):
     import app.services.web_chat_runtime as runtime

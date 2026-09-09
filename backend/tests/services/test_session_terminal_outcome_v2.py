@@ -495,7 +495,12 @@ async def test_tool_invocation_has_pre_effect_fence_and_exactly_one_typed_result
         tool_results = [event for event in events if event.item_kind == "tool_result"]
         if decision_outcome == "require_approval":
             assert tool_results == []
-            assert any(event.event_type == "tool_permission.waiting" for event in events)
+            permission = next(event for event in events if event.event_type == "tool_permission.waiting")
+            request = permission.metadata_json["v2_payload"]["permission_request"]
+            assert request["permission_request_id"] == str(row.permission_item_id)
+            assert request["arguments"] == row.effective_arguments_json == {"path": "README.md"}
+            assert request["tool_name"] == "read_file"
+            assert request["expires_at"] == row.permission_expires_at.isoformat()
         else:
             assert len(tool_results) == 1
             assert tool_results[0].provider_tool_use_id == tool_use_id

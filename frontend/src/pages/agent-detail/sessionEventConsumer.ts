@@ -5,6 +5,7 @@ import {
   type AgentChatMessage,
   type ChatTranscriptEventPayload,
   type SessionUiState,
+  type SessionPermissionRequest,
 } from './chatRuntime';
 import { normalizeToolCallResult } from './toolResultEnvelope';
 import type { ThreadItem } from '../../api/domains/threadItems.generated';
@@ -293,6 +294,22 @@ function projectCanonicalItem(
   store: SessionEventStore,
   toolResultByCall: ReadonlyMap<string, SessionItemV2>,
 ): AgentChatMessage | null {
+  if (item.kind === 'tool_permission') {
+    const request = recordValue(item.payload.permission_request);
+    return {
+      role: 'event',
+      content: itemDisplayContent(item),
+      id: item.id,
+      transcriptEventId: item.id,
+      timestamp: item.occurredAt,
+      eventType: 'permission',
+      eventStatus: item.lifecycle === 'waiting' ? 'session_permission_required' : 'session_permission_decision',
+      sessionPermissionRequest: request?.permission_request_id
+        ? request as unknown as SessionPermissionRequest
+        : undefined,
+      sessionItem: item,
+    };
+  }
   if (item.kind === 'assistant_reasoning_private' && item.visibility.audience === 'private_provider') {
     return {
       role: 'event',
@@ -624,10 +641,14 @@ export function hydrateSessionTranscriptEvents(
  * settle the Session. Legacy-adapted assistant terminals remain the explicit
  * compatibility exception because that path has no later run terminal item.
  */
-function canonicalRuntimeProjectionEvent(
+export function canonicalRuntimeProjectionEvent(
   event: SessionEventV2,
 ): ChatTranscriptEventPayload | null {
   let eventType: string | null = null;
+  if (event.item_kind === 'run' && event.lifecycle === 'waiting'
+    && event.payload.reason_code === 'tool_permission_required') {
+    return { id: event.event_id, sequence: event.sequence, event_type: 'phase', phase: 'awaiting_approval' };
+  }
   if (event.item_kind === 'run') {
     eventType = event.kind;
   } else if (

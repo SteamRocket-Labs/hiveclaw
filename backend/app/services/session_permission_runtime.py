@@ -548,6 +548,7 @@ async def resolve_session_tool_permission(
         apply_permission_response_control_input,
     )
     from app.services.session_tool_runtime import complete_tool_invocation, mark_tool_effect_started
+    from app.tools.governance import _detect_destructive_delete
     from app.tools.registry import is_destructive_tool
 
     invocation = await db.scalar(
@@ -561,7 +562,11 @@ async def resolve_session_tool_permission(
     )
     if invocation is None:
         raise ValueError("pending_session_permission_not_found")
-    if decision == "allow_session" and is_destructive_tool(invocation.tool_name):
+    effective_arguments = dict(invocation.effective_arguments_json or invocation.provider_arguments_json or {})
+    if decision == "allow_session" and (
+        is_destructive_tool(invocation.tool_name)
+        or _detect_destructive_delete(invocation.tool_name, effective_arguments)
+    ):
         raise ValueError("destructive_permission_must_be_allow_once")
     control_id = uuid.uuid5(permission_request_id, f"permission-response:{decision}")
     await accept_tool_permission_response(
@@ -581,7 +586,6 @@ async def resolve_session_tool_permission(
     await db.commit()
     await db.refresh(invocation)
 
-    effective_arguments = dict(invocation.effective_arguments_json or invocation.provider_arguments_json or {})
     input_hash = hash_tool_input(invocation.tool_name, effective_arguments)
     session = await db.get(ChatSession, authority.session_id)
     if session is None:

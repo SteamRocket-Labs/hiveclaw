@@ -160,6 +160,7 @@ function wireRealSessionApplication(
   harness.dependencies.applyTranscriptToSession = vi.fn((agentId, sessionId, event, isActiveRuntime) => (
     applyTranscriptToSessionRuntime({
       refs,
+      getActiveRunId: () => null,
       markActiveRunTerminal: (key, runId) => {
         harness.dependencies.markActiveRunTerminal(key, runId);
         // The registry acceptance contract: only an explicit false rejects.

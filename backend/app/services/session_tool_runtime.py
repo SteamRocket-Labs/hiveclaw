@@ -682,6 +682,14 @@ async def complete_tool_invocation(
             permission_item_id = uuid.UUID(str(decision.get("approval_id") or ""))
         except (TypeError, ValueError):
             permission_item_id = uuid.uuid5(invocation.id, "tool-permission-item")
+        from app.tools.governance import _detect_destructive_delete
+        from app.tools.registry import is_destructive_tool
+
+        permission_created_at = datetime.now(timezone.utc)
+        permission_expires_at = permission_created_at + timedelta(minutes=30)
+        destructive = is_destructive_tool(invocation.tool_name) or bool(
+            _detect_destructive_delete(invocation.tool_name, effective_payload)
+        )
         waiting_events = await append_session_events(
             db,
             tenant_id=tenant_id,
@@ -700,6 +708,20 @@ async def complete_tool_invocation(
                         "decision_id": decision_id,
                         "approval_id": decision.get("approval_id"),
                         "retryable": retryable,
+                        "permission_request": {
+                            "permission_request_id": str(permission_item_id),
+                            "session_id": str(session_id),
+                            "runtime_task_id": str(invocation.run_id),
+                            "turn_id": result.turn_id,
+                            "tool_call_id": invocation.provider_tool_use_id,
+                            "tool_name": invocation.tool_name,
+                            "arguments": effective_payload,
+                            "decision_reason": ", ".join(decision.get("reason_codes") or []),
+                            "allow_session_allowed": not destructive,
+                            "destructive": destructive,
+                            "created_at": permission_created_at.isoformat(),
+                            "expires_at": permission_expires_at.isoformat(),
+                        },
                     },
                     result_id=result.id,
                     invocation_id=invocation.id,
@@ -761,7 +783,7 @@ async def complete_tool_invocation(
         invocation.permission_state = "waiting"
         invocation.permission_request_version = int(invocation.permission_request_version) + 1
         invocation.permission_authority_snapshot_hash = invocation.authority_snapshot_hash
-        invocation.permission_expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+        invocation.permission_expires_at = permission_expires_at
         invocation.version = int(invocation.version) + 1
         return waiting_events
 

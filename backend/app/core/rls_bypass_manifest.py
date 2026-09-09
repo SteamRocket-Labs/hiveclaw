@@ -725,7 +725,9 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # projection. No added bypass callsites, grants, or widened privileged queries.
 # Reviewed superseded result-page bindings and workspace Skill uninstall.
 # Replacement outbox lookups retain exact tenant/parent predicates; no new bypass grant.
-RLS_BYPASS_SCOPES_SHA256 = "f29a4d7b4c5a14bdb036667ffd6a4166951e96b75597236eec8a806d4c28f2dc"
+# Same-session triggers now use owner-authorized canonical input admission and FIFO
+# dispatch; legacy run replay validates exact agent/session. No bypass grants changed.
+RLS_BYPASS_SCOPES_SHA256 = "0ee9527c1595954501b1915f8dff9287276cece91d41e2e641b3a2ab33e1f632"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

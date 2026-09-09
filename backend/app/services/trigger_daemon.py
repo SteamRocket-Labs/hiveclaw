@@ -1756,13 +1756,9 @@ async def _deliver_batch_to_source_session(
     from fastapi import HTTPException
 
     from app.models.chat_session import ChatSession
-    from app.models.session_v2 import SessionTurnInput
+    from app.models.runtime_task import RuntimeTask
     from app.models.user import User
-    from app.services.web_chat_runtime import (
-        WEB_CHAT_TURN_TASK_TYPE,
-        ActiveWebChatRunExists,
-        start_web_chat_run,
-    )
+    from app.services.session_live_input import submit_live_human_input
 
     tid = await resolve_tenant_for_agent(agent_id)
     delivered_run_id: str | None = None
@@ -1806,40 +1802,43 @@ async def _deliver_batch_to_source_session(
             discriminator=str(source_session_id),
         )
         try:
-            existing_input = await db.get(SessionTurnInput, child_run_id) if child_run_id is not None else None
-            if existing_input is not None and existing_input.session_id == session.id:
-                queued = True
-                delivered_run_id = str(existing_input.target_run_id or "") or None
+            # Preserve deliveries made by the former direct-run adapter on replay.
+            legacy_run = await db.get(RuntimeTask, child_run_id) if child_run_id is not None else None
+            if legacy_run is not None:
+                if legacy_run.parent_agent_id != agent.id or str(legacy_run.parent_session_id) != str(session.id):
+                    raise RuntimeError("same-session legacy delivery binding mismatch")
+                delivered_run_id = str(legacy_run.id)
+                queued = legacy_run.status not in {"completed", "failed", "killed"}
             else:
-                payload = await start_web_chat_run(
+                payload = await submit_live_human_input(
                     db=db,
                     agent=agent,
                     user=user,
                     session=session,
                     content=content,
-                    runtime_task_type=WEB_CHAT_TURN_TASK_TYPE,
-                    run_id=child_run_id,
-                    budget_interactive=False,
-                    extra_metadata={
-                        "source": "loop_same_session",
+                    source="loop_same_session",
+                    input_id=child_run_id,
+                    idempotency_key=f"trigger-same-session:{runtime_task_id}:{source_session_id}",
+                    requested_kind="queue_next_turn",
+                    runtime_metadata={
+                        "budget_interactive": False,
                         "trigger_ids": trigger_ids,
                         "trigger_names": trigger_names,
                         "trigger_runtime_task_id": runtime_task_id,
                     },
                 )
-                delivered_run_id = str(payload.get("run_id") or "") or None
-        except ActiveWebChatRunExists as busy:
-            # REPL-busy: the loop prompt is queued behind the active run — never
-            # started concurrently (CC "only fires when the REPL is idle").
-            queued = True
-            delivered_run_id = str((getattr(busy, "run", None) or {}).get("run_id") or "") or None
+                if payload.get("admission_state") != "admitted":
+                    raise RuntimeError(f"same-session input admission: {payload.get('admission_state')}")
+                delivered_run_id = str((payload.get("run") or {}).get("run_id") or "") or None
+                queued = delivered_run_id is None
         except HTTPException as exc:
             logger.warning(
                 "[TriggerDaemon] same_session delivery rejected for session {}: {}",
                 source_session_id,
                 getattr(exc, "detail", exc),
             )
-            return False
+            # Admission denial is not authority to retry through another lane.
+            raise
 
     # The wrapper commit atomically settles the exact trigger fire intent.
     effective_overrides = _with_trigger_settlement_outcome(settlement_overrides, triggers, "success")

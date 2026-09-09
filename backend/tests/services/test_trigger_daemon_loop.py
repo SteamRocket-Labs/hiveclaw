@@ -110,7 +110,8 @@ def test_resolve_batch_same_session_target_none_when_mixed_or_multi_session():
 
 
 @pytest.mark.asyncio
-async def test_deliver_batch_to_source_session_idle_starts_new_turn(monkeypatch):
+@pytest.mark.parametrize("admission", ["admitted", "rejected", "denied"])
+async def test_deliver_batch_to_source_session_idle_starts_new_turn(monkeypatch, admission):
     import app.services.trigger_daemon as trigger_daemon
 
     agent_id = uuid4()
@@ -132,14 +133,18 @@ async def test_deliver_batch_to_source_session_idle_starts_new_turn(monkeypatch)
 
     start_calls = []
 
-    async def fake_start_web_chat_run(**kwargs):
+    async def fake_submit_live_human_input(**kwargs):
         start_calls.append(kwargs)
-        return {"run_id": "delivered-run-1", "status": "pending"}
+        if admission == "denied":
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=403, detail="No session write authority")
+        return {"admission_state": admission, "run": {"run_id": "delivered-run-1", "status": "pending"}}
 
     # ``_deliver_batch_to_source_session`` imports this locally from its source.
-    import app.services.web_chat_runtime as web_chat_runtime
+    import app.services.session_live_input as session_live_input
 
-    monkeypatch.setattr(web_chat_runtime, "start_web_chat_run", fake_start_web_chat_run)
+    monkeypatch.setattr(session_live_input, "submit_live_human_input", fake_submit_live_human_input)
 
     updated = []
 
@@ -148,6 +153,16 @@ async def test_deliver_batch_to_source_session_idle_starts_new_turn(monkeypatch)
         return True
 
     monkeypatch.setattr(trigger_daemon, "_update_trigger_runtime_task", fake_update_rt)
+
+    if admission != "admitted":
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException if admission == "denied" else RuntimeError):
+            await trigger_daemon._deliver_batch_to_source_session(
+                agent_id, [trigger], source_session_id=str(session_id), runtime_task_id="trigger-rt-1"
+            )
+        assert not updated
+        return
 
     delivered = await trigger_daemon._deliver_batch_to_source_session(
         agent_id,
@@ -163,9 +178,10 @@ async def test_deliver_batch_to_source_session_idle_starts_new_turn(monkeypatch)
     assert call["agent"] is agent
     assert call["user"] is user
     assert call["content"]  # the trigger context becomes the delivered user turn
-    assert call["runtime_task_type"] == "web_chat_turn"
-    assert call["extra_metadata"]["source"] == "loop_same_session"
-    assert str(trigger.id) in call["extra_metadata"]["trigger_ids"]
+    assert call["requested_kind"] == "queue_next_turn"
+    assert call["source"] == "loop_same_session"
+    assert call["runtime_metadata"]["budget_interactive"] is False
+    assert str(trigger.id) in call["runtime_metadata"]["trigger_ids"]
     # The atomic terminal update settles the trigger and points the wrapper at the session.
     assert updated and updated[0]["status"] == "completed"
     assert updated[0]["session_id"] == str(session_id)
@@ -176,7 +192,6 @@ async def test_deliver_batch_to_source_session_idle_starts_new_turn(monkeypatch)
 @pytest.mark.asyncio
 async def test_deliver_batch_to_source_session_busy_queues_without_concurrency(monkeypatch):
     import app.services.trigger_daemon as trigger_daemon
-    from app.services.web_chat_runtime import ActiveWebChatRunExists
 
     agent_id = uuid4()
     session_id = uuid4()
@@ -195,12 +210,13 @@ async def test_deliver_batch_to_source_session_busy_queues_without_concurrency(m
 
     monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", _fake_resolve_tenant)
 
-    async def fake_start_web_chat_run(**kwargs):
-        raise ActiveWebChatRunExists({"run_id": "already-active-run", "status": "running"})
+    async def fake_submit_live_human_input(**kwargs):
+        assert kwargs["requested_kind"] == "queue_next_turn"
+        return {"admission_state": "admitted", "run": None}
 
-    import app.services.web_chat_runtime as web_chat_runtime
+    import app.services.session_live_input as session_live_input
 
-    monkeypatch.setattr(web_chat_runtime, "start_web_chat_run", fake_start_web_chat_run)
+    monkeypatch.setattr(session_live_input, "submit_live_human_input", fake_submit_live_human_input)
 
     updated = []
 
@@ -223,7 +239,8 @@ async def test_deliver_batch_to_source_session_busy_queues_without_concurrency(m
 
 
 @pytest.mark.asyncio
-async def test_deliver_batch_to_source_session_replay_reuses_deterministic_child_run(monkeypatch):
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_deliver_batch_to_source_session_replay_reuses_deterministic_child_run(monkeypatch, legacy):
     import app.services.trigger_daemon as trigger_daemon
 
     agent_id = uuid4()
@@ -240,15 +257,21 @@ async def test_deliver_batch_to_source_session_replay_reuses_deterministic_child
         effect="same_session",
         discriminator=str(session_id),
     )
-    existing_input = SimpleNamespace(session_id=session_id, target_run_id=child_run_id)
+    legacy_run = (
+        SimpleNamespace(
+            id=child_run_id, parent_agent_id=agent_id, parent_session_id=str(session_id), status="completed"
+        )
+        if legacy
+        else None
+    )
     sessions = [
         _SequenceSession(
             [_ScalarResult(agent), _ScalarResult(session), _ScalarResult(user)],
-            get_results=[None],
+            get_results=[legacy_run],
         ),
         _SequenceSession(
             [_ScalarResult(agent), _ScalarResult(session), _ScalarResult(user)],
-            get_results=[existing_input],
+            get_results=[legacy_run],
         ),
     ]
     monkeypatch.setattr(trigger_daemon, "tenant_scoped_session", lambda *a, **k: sessions.pop(0))
@@ -260,13 +283,13 @@ async def test_deliver_batch_to_source_session_replay_reuses_deterministic_child
 
     start_calls = []
 
-    async def fake_start_web_chat_run(**kwargs):
+    async def fake_submit_live_human_input(**kwargs):
         start_calls.append(kwargs)
-        return {"run_id": str(kwargs["run_id"]), "status": "pending"}
+        return {"admission_state": "admitted", "run": {"run_id": str(kwargs["input_id"]), "status": "pending"}}
 
-    import app.services.web_chat_runtime as web_chat_runtime
+    import app.services.session_live_input as session_live_input
 
-    monkeypatch.setattr(web_chat_runtime, "start_web_chat_run", fake_start_web_chat_run)
+    monkeypatch.setattr(session_live_input, "submit_live_human_input", fake_submit_live_human_input)
 
     terminal_updates = []
 
@@ -292,9 +315,11 @@ async def test_deliver_batch_to_source_session_replay_reuses_deterministic_child
     assert first is True
     assert replay is True
     assert child_run_id is not None
-    assert [call["run_id"] for call in start_calls] == [child_run_id]
+    assert [call["input_id"] for call in start_calls] == ([] if legacy else [child_run_id, child_run_id])
+    if not legacy:
+        assert start_calls[0]["idempotency_key"] == start_calls[1]["idempotency_key"]
     assert len(terminal_updates) == 2
-    assert terminal_updates[1]["metadata_json"]["queued"] is True
+    assert terminal_updates[1]["metadata_json"]["queued"] is False
     assert terminal_updates[1]["metadata_json"]["delivered_run_id"] == str(child_run_id)
 
 

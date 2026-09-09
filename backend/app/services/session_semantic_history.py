@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit import ChatMessage
@@ -388,7 +388,14 @@ async def _committed_round_messages(
                 select(SessionModelResult).where(
                     SessionModelResult.id.in_(set(committed_views)),
                     SessionModelResult.tenant_id == tenant_id,
-                    SessionModelResult.state == "round_committed",
+                    or_(
+                        SessionModelResult.state == "round_committed",
+                        and_(
+                            SessionModelResult.state == "needs_reconciliation",
+                            SessionModelResult.reconciliation_owner == "session_model_round:ambiguous_prepare",
+                            SessionModelResult.round_committed_event_id.is_not(None),
+                        ),
+                    ),
                 )
             )
         ).scalars()
@@ -407,6 +414,16 @@ async def _committed_round_messages(
         )
     for result_id, result in results_by_id.items():
         source_event = committed_views[result_id].source
+        if result.state != "round_committed" and result.round_committed_event_id != source_event.id:
+            raise _unavailable(
+                code="committed_model_seal_unavailable",
+                message="A drifted prepare aggregate has no exact canonical round commit binding.",
+                run_id=current_run_id,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                session_id=session_id,
+                evidence_refs=(f"session_model_result:{result.id}",),
+            )
         if result.session_id != source_event.session_id or result.run_id != _source_scope_run_id(source_event):
             raise _unavailable(
                 code="committed_model_seal_authority_mismatch",

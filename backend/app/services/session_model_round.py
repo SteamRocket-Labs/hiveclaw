@@ -336,6 +336,12 @@ async def prepare_model_request(
         .where(SessionModelResult.id == result_id, SessionModelResult.tenant_id == tenant_id)
         .with_for_update()
     )
+    if result is not None and (
+        result.state in {"sealed", "round_committed"} or result.round_committed_event_id is not None
+    ):
+        # A duplicate prepare must neither resend nor invalidate the immutable
+        # response which a later Session turn consumes as canonical history.
+        raise ModelRoundNeedsReconciliation("model_round_response_already_sealed")
     request_lane = f"round:{int(round_index)}"
     if int(continuation_index) > 0:
         request_lane += f":output-continuation:{int(continuation_index)}"

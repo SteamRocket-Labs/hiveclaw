@@ -506,6 +506,110 @@ def _role_content_pairs(conversation):
     return [(entry.get("role"), entry.get("content")) for entry in conversation]
 
 
+async def test_duplicate_prepare_preserves_committed_provider_seal(owner_sessionmaker) -> None:
+    from copy import deepcopy
+
+    from app.models.session_v2 import SessionModelResult
+    from app.services.session_model_round import ModelRoundNeedsReconciliation
+
+    tenant_id, user_id, agent_id, session_id = await _seed(owner_sessionmaker)
+    run_id, turn_id = await _run_v2_turn(
+        owner_sessionmaker,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        prompt="immutable request",
+        answer="immutable provider result",
+    )
+    async with owner_sessionmaker() as db:
+        result = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == run_id))
+        before = (result.state, result.version, result.round_committed_event_id, deepcopy(result.seal_json))
+        with pytest.raises(ModelRoundNeedsReconciliation):
+            await _prepare_round(
+                db,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                session_id=session_id,
+                run_id=run_id,
+                turn_id=turn_id,
+                round_index=1,
+            )
+        # The live error path can commit its error receipt; it must not corrupt
+        # a previously committed aggregate in that same transaction.
+        await db.commit()
+        await db.refresh(result)
+        assert (result.state, result.version, result.round_committed_event_id, result.seal_json) == before
+
+
+@pytest.mark.parametrize("damage", ["ambiguous_prepare", "missing_commit", "wrong_commit", "other_reconciliation"])
+async def test_history_recovers_only_exact_committed_prepare_drift(
+    owner_sessionmaker,
+    monkeypatch,
+    damage,
+) -> None:
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.session_v2 import SessionModelResult
+    from app.services.session_semantic_history import SessionSemanticHistoryUnavailable
+
+    tenant_id, user_id, agent_id, session_id = await _seed(owner_sessionmaker)
+    run_id, _turn_id = await _run_v2_turn(
+        owner_sessionmaker,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        prompt="prior request",
+        answer="preserved committed bytes",
+    )
+    async with owner_sessionmaker() as db:
+        result = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == run_id))
+        assert result.round_committed_event_id is not None
+        result.state = "needs_reconciliation"
+        result.reconciliation_owner = "session_model_round:ambiguous_prepare"
+        if damage == "missing_commit":
+            result.round_committed_event_id = None
+        elif damage == "wrong_commit":
+            result.round_committed_event_id = await db.scalar(
+                select(ChatTranscriptEvent.id)
+                .where(
+                    ChatTranscriptEvent.session_id == session_id,
+                    ChatTranscriptEvent.id != result.round_committed_event_id,
+                )
+                .limit(1)
+            )
+        elif damage == "other_reconciliation":
+            result.reconciliation_owner = "session_model_round:ambiguous_failure"
+        if damage == "wrong_commit":
+            from sqlalchemy.exc import IntegrityError
+
+            # The existing database authority trigger rejects this corruption
+            # even before a history reader can encounter it.
+            with pytest.raises(IntegrityError, match="session_v2_authority_binding_mismatch"):
+                await db.commit()
+            await db.rollback()
+            return
+        await db.commit()
+    _input_id, next_run, _turn_id = await _submit_turn(
+        owner_sessionmaker,
+        user_id=user_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        content="continue",
+    )
+    if damage != "ambiguous_prepare":
+        with pytest.raises(SessionSemanticHistoryUnavailable) as error:
+            await _load_history_via_live_entry(owner_sessionmaker, monkeypatch, run_id=next_run)
+        assert error.value.code == "committed_model_seal_unavailable"
+    else:
+        _task, _history, conversation = await _load_history_via_live_entry(
+            owner_sessionmaker,
+            monkeypatch,
+            run_id=next_run,
+        )
+        assert ("assistant", "preserved committed bytes") in _role_content_pairs(conversation)
+
+
 async def test_second_turn_provider_conversation_receives_prior_turn_semantics(
     owner_sessionmaker,
     monkeypatch,

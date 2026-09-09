@@ -31,6 +31,7 @@ SYNTHETIC_CAPABILITY_TOOLS: dict[str, list[str]] = {
 
 DYNAMIC_CAPABILITY_TOOLS: dict[str, list[str]] = {
     "external.api.call": ["custom_api__*"],
+    "agent.mcp.call": ["mcp__*"],
 }
 
 _HR_SYSTEM_AGENT_DEFAULT_CAPABILITIES: frozenset[str] = frozenset({"agent.employee.create"})
@@ -199,7 +200,13 @@ async def _resolve_dynamic_capability(
     tenant_id: uuid.UUID,
     tool_name: str,
 ) -> str | None:
-    if not tool_name.startswith("custom_api__"):
+    if tool_name.startswith("custom_api__"):
+        tool_type, capability = "custom_api", "external.api.call"
+    elif tool_name.startswith("mcp_"):
+        # Classification is not authorization: the existing MCP metadata,
+        # assignment and server-mode gates still govern the concrete effect.
+        tool_type, capability = "mcp", "agent.mcp.call"
+    else:
         return None
     from app.models.tool import Tool
 
@@ -207,13 +214,13 @@ async def _resolve_dynamic_capability(
         select(Tool.id).where(
             Tool.tenant_id == tenant_id,
             Tool.name == tool_name,
-            Tool.type == "custom_api",
+            Tool.type == tool_type,
             Tool.enabled.is_(True),
         )
     )
     if result.scalar_one_or_none() is None:
         return None
-    return "external.api.call"
+    return capability
 
 
 async def _is_hr_system_agent_default_capability(

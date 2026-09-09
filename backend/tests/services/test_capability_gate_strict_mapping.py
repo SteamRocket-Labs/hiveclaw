@@ -267,6 +267,49 @@ class _QueuedScalarDB:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["mcp__wrc-context7__query-docs", "mcp_legacy_query_docs"])
+async def test_registered_mcp_mapping_keeps_explicit_capability_denial(name):
+    result = await capability_gate.check_capability(
+        db=_QueuedScalarDB([uuid.uuid4(), SimpleNamespace(allowed=False, requires_approval=False)]),
+        tenant_id=uuid.uuid4(),
+        agent_id=uuid.uuid4(),
+        tool_name=name,
+    )
+    assert result.capability == "agent.mcp.call"
+    assert result.denied is True
+    assert result.policy_found is True
+    assert capability_gate.get_unmapped_tool_counts() == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("registered", [True, False])
+async def test_dynamic_mcp_mapping_requires_exact_enabled_tenant_tool(monkeypatch, registered):
+    from app.config import get_settings
+    from sqlalchemy.dialects import postgresql
+
+    tenant_id = uuid.uuid4()
+    name = "mcp__wrc-context7__resolve-library-id"
+
+    class ScopedDB:
+        async def execute(self, stmt):
+            sql = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+            assert f"tools.tenant_id = '{tenant_id}'" in sql
+            assert f"tools.name = '{name}'" in sql
+            assert "tools.type = 'mcp'" in sql
+            assert "tools.enabled IS true" in sql
+            return SimpleNamespace(scalar_one_or_none=lambda: uuid.uuid4() if registered else None)
+
+    if registered:
+        assert await capability_gate._resolve_dynamic_capability(ScopedDB(), tenant_id, name) == "agent.mcp.call"
+    else:
+        monkeypatch.setattr(get_settings(), "STRICT_CAPABILITY_MAPPING", True)
+        result = await capability_gate.check_capability(ScopedDB(), tenant_id, uuid.uuid4(), name)
+        assert result.denied is True
+        assert result.capability == ""
+        assert "missing from CAPABILITY_MAP" in result.reason
+
+
+@pytest.mark.asyncio
 async def test_company_hr_agent_create_employee_missing_policy_is_allowed_by_platform_default() -> None:
     """The company HR system agent is the platform's built-in hiring lane.
 

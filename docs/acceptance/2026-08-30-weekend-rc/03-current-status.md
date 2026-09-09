@@ -13,7 +13,9 @@ verification_status: remaining-functional-closure-in-progress
 
 ## 当前决定与本批次出口
 
-12:05 续接：production `905e7876` 三服务SUCCESS；Local独立新会话真实pwd/exit0、完整final/ack与页面重开均通过，本地CLI候选可回退、未发npm。固定v1两组参数实跑分别108/162，review/wait/文件消费通过。通用once正式API已触发一次并停用、读回64文件；聊天入口仍被独立Plan前置拦住，旧时间请求已取消。Office最终2卡片下载通过但表内旧marker纠正遭遇provider ambiguous，原Session后续又报committed_model_seal_unavailable，未称语义完成。Goal两份文件已交付，但同run完成两阶段，不算自动续轮。Dynamic真实proposal/preview后模型违反“只预览”要求自行start，两叶计算后停review，现已正式取消；候选仅澄清共享工具说明中policy免额外审批不等于用户授权，26项检查通过，待发布复验。其余未完成项保留，不宣称全部完成。
+12:48 更新：Office 原历史失败已定位为 duplicate prepare 污染 committed aggregate，最小候选恢复 exact seal 读取且防止再污染；Context7 正式接入并审核两工具后，实调用发现动态 capability 分类缺失，候选补齐但不改权限。相关 semantic25/MCP70/RLS17通过，待部署复验。Dynamic修订07已真实逐项计算51/57，停review后继续等待/汇总消费；06的绑定缺失不冒充通过。MCP旧run cancel后留下ambiguous_provider_send/unknown，未当取消成功或重发。A2A新增Graph仍未编码，其余剩余清单不变。
+
+12:22 续接：production `9311b5ad` 三服务SUCCESS。Local独立新会话真实pwd/exit0、完整final/ack与页面重开通过，本地CLI候选可回退、未发npm；固定v1两组参数实跑108/162，review/wait/文件消费通过。通用once正式API触发一次后停用且读回64文件；聊天入口仍被独立Plan前置拦住，旧时间请求的cancel已受理但终态尚未核实。Office最终2卡片下载通过，表内旧marker纠正仍受原Session的committed_model_seal_unavailable阻挡。Goal已观察到自动第二run完成及123674tokens计费，分阶段跨run要求仍未通过。Dynamic工具说明修正后，新模型run正确停在ready预览且run_id为空；正式确认后并行两叶done、停review，随后批准进入等待与最终文件步骤，尚未全链验完。12:12 owner明确包含新增A2A编排，12:13指定Context7，继续既有实验范围实施与接入；其余未完成项保留，不宣称全部完成。
 
 2026-09-09 owner 在核对功能覆盖后明确要求“把真正剩下的工作一次性全部完成掉……全部完成之后和我说，要求还是那一个”。继续由单一 Codex 实施、验证、提交推送、三服务部署和真实消费验收，不再沿旧两小时批次自动停止，也不重做已通过主路径。当前剩余执行清单：固定 Workflow 实跑与复用、A2A Workflow 编排、Dynamic 并行/等待恢复；通用 once/schedule/event 与 Local 最终 result；Office 最终卡片及 Goal 自动两轮/计费复验；Memory/Growth、Hook、Skill、MCP 的未闭环路径；角色/移交/离职和最终回归/清理。权限扩大、凭据、收费、真实外发与业务政策仍保留对应 owner 决策边界，不由“全部完成”推导授权。
 

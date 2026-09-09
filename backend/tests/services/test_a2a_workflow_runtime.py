@@ -52,6 +52,26 @@ def test_graph_parser_uses_exact_artifact_contract_and_dependency_order():
         normalize_a2a_args(graph, {})
 
 
+def test_full_agent_graph_uses_configured_budget_and_preserves_explicit_limits(monkeypatch):
+    from app.config import get_settings
+    from app.services.a2a_workflow_runtime import run_payload
+
+    monkeypatch.setattr(get_settings(), "WORKFLOW_MAX_RUN_BUDGET_TOKENS", 2_000_000)
+    data = definition_data()
+    assert A2AWorkflowDefinition.model_validate(data).default_budget.max_total_tokens == 2_000_000
+    data["default_budget"] = {"max_total_tokens": 200_000}
+    assert A2AWorkflowDefinition.model_validate(data).default_budget.max_total_tokens == 200_000
+    task = SimpleNamespace(
+        id=uuid4(),
+        status="killed",
+        parent_session_id=str(uuid4()),
+        budget_run_id=uuid4(),
+        budget_terminal_reason="runtime_budget_exhausted",
+        metadata_json={"a2a_reason": "waiting_child:research"},
+    )
+    assert run_payload(task, [])["reason"] == "runtime_budget_exhausted"
+
+
 @pytest.mark.parametrize("defect", ["cycle", "unknown_output", "ungranted_text", "traversal", "schema_not_implemented"])
 def test_graph_rejects_unsupported_or_unbound_contracts(defect):
     data = definition_data()

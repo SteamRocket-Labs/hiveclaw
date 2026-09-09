@@ -15,6 +15,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.config import get_settings
 from app.runtime.workflow_definition import ArgSpec, BudgetSpec, compute_definition_hash
 
 
@@ -90,7 +91,11 @@ class A2AWorkflowDefinition(BaseModel):
     description: str = ""
     participants: dict[str, A2AParticipant] = Field(min_length=1)
     args_schema: dict[str, ArgSpec] = Field(default_factory=dict)
-    default_budget: BudgetSpec = Field(default_factory=BudgetSpec)
+    # Full Agents need their native context/tools across multiple turns. Reuse
+    # the configured workflow envelope, not the lightweight leaf IR default.
+    default_budget: BudgetSpec = Field(
+        default_factory=lambda: BudgetSpec(max_total_tokens=get_settings().WORKFLOW_MAX_RUN_BUDGET_TOKENS)
+    )
     max_artifact_bytes: int = Field(default=262144, ge=1)
     nodes: list[Annotated[A2AHandoffNode | A2AGateNode, Field(discriminator="type")]] = Field(min_length=1)
     edges: list[A2AEdge] = Field(default_factory=list)

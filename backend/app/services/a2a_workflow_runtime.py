@@ -59,7 +59,7 @@ def run_payload(task: RuntimeTask, steps: list[WorkflowStep]) -> dict:
         "definition": metadata.get("definition"),
         "definition_hash": metadata.get("definition_hash"),
         "args": metadata.get("args"),
-        "reason": metadata.get("a2a_reason"),
+        "reason": task.budget_terminal_reason or metadata.get("a2a_reason"),
         "session_id": task.parent_session_id,
         "budget_run_id": str(task.budget_run_id) if task.budget_run_id else None,
         "steps": [

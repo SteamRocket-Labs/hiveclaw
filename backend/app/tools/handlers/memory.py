@@ -664,6 +664,8 @@ def load_memory(agent_id: uuid.UUID, arguments: dict) -> str:
                 f"category={entry.category} target_hint={entry.target_hint}"
             )
             lines.append(f"  {entry.content}")
+            if entry.source_refs:
+                lines.append(f"  source_refs: {', '.join(entry.source_refs)}")
     for entry in visible_entries:
         ts = f" timestamp={entry.timestamp}" if entry.timestamp else ""
         lines.append(f"- id={entry.entry_id} source={entry.source} category={entry.category}{ts}")
@@ -692,7 +694,10 @@ def load_memory(agent_id: uuid.UUID, arguments: dict) -> str:
             "- Strategies that worked or approaches that failed\n"
             "- Any fact you saved previously with save_memory\n\n"
             "Returns every authorized matching fact and recalled session by default, with complete semantic content. "
-            "Set limit only when you intentionally want the retrieval layer to return fewer candidates."
+            "Set limit only when you intentionally want the retrieval layer to return fewer candidates. "
+            "Retrieval uses indexed terms and phrases, not a cross-language semantic guarantee. "
+            "A query miss is not proof that related memory does not exist; use known IDs/source references "
+            "or alternative wording when needed."
         ),
         parameters={
             "type": "object",
@@ -867,7 +872,11 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
             results.append(f"## Session Recall\n- [Search error: {exc}]")
 
     if not results:
-        return f"No memory found for query: {query}"
+        return (
+            f"No memory found for query: {query} (scope={scope}). "
+            "This is a query miss, not proof that related memory does not exist. "
+            "Try alternative wording or load_memory with previously returned IDs and follow their source_refs."
+        )
 
     return "\n".join(results)
 

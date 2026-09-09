@@ -191,7 +191,14 @@ async def test_search_and_load_memory_include_explicit_overlay(tmp_path: Path) -
             "app.memory.write_gate.classify_memory_write_threat_with_llm",
             _safe_memory_threat_classifier,
         )
-        await save_memory(agent_id, {"content": "Use snake_case for Python variable names", "category": "feedback"})
+        await save_memory(
+            agent_id,
+            {
+                "content": "Use snake_case for Python variable names",
+                "category": "feedback",
+                "source_refs": ["session:feedback-origin"],
+            },
+        )
         result = await search_memory(agent_id, {"query": "snake_case", "scope": "facts"})
 
         assert "## Explicit Memory Overlay" in result
@@ -204,6 +211,22 @@ async def test_search_and_load_memory_include_explicit_overlay(tmp_path: Path) -
     assert "## Loaded Explicit Memory Overlay" in loaded
     assert "Use snake_case for Python variable names" in loaded
     assert "source=memory/explicit/entries/" in loaded
+    assert "session:feedback-origin" in loaded
+
+
+@pytest.mark.asyncio
+async def test_session_query_miss_exposes_scope_and_memory_recovery(tmp_path, monkeypatch):
+    from app.tools.handlers.memory import search_memory
+
+    async def empty_history(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    monkeypatch.setattr("app.tools.handlers.memory.search_session_history", empty_history)
+    result = await search_memory(uuid.uuid4(), {"query": "分两轮", "scope": "sessions"})
+    assert "scope=sessions" in result
+    assert "load_memory" in result
+    assert "not proof" in result
 
 
 @pytest.mark.asyncio

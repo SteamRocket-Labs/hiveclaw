@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import logging
 import uuid
 from collections import OrderedDict
 from datetime import datetime, timezone
@@ -21,7 +20,6 @@ _FALLBACK_HEADLINE = "回顾到与查询相关的历史会话"
 _EXCLUDED_CHANNELS = {"agent", "heartbeat", "trigger", "task", "dream"}
 _EXCLUDED_ROLES = {"system", "tool_call"}
 _QUERY_SPLIT_RE = re.compile(r"\s+")
-logger = logging.getLogger(__name__)
 
 
 def _normalize_text(value: str) -> str:
@@ -277,149 +275,6 @@ def _annotate_recall_hit(
         fallback_summary=evidence_passthrough,
     )
     return hit
-
-
-async def _summarize_recall_hits(
-    query: str,
-    hits: list[dict],
-    tenant_id: uuid.UUID | None,
-    agent_id: uuid.UUID | None = None,
-) -> list[dict]:
-    """Optionally enrich recall hits with a focused summary model.
-
-    Retrieval remains transcript-first. If the model is unavailable, the full
-    evidence passthrough remains visible and failure status is explicit; the
-    platform never authors a semantic fallback recap.
-    """
-    if not hits:
-        return hits
-    if tenant_id is None:
-        for hit in hits:
-            hit["summary_model_status"] = "no_tenant"
-        return hits
-
-    client = None
-    try:
-        from app.services.llm_client import (
-            LLMMessage,
-            create_llm_client_from_config,
-            get_max_tokens,
-            with_llm_usage_context,
-        )
-        from app.services.memory_service import _get_summary_model_config
-
-        model_config = await _get_summary_model_config(tenant_id)
-        if not model_config:
-            for hit in hits:
-                hit["summary_model_status"] = "no_model"
-            return hits
-
-        output_tokens = get_max_tokens(
-            str(model_config.get("provider") or ""),
-            str(model_config.get("model") or ""),
-            model_config.get("max_output_tokens"),
-        )
-
-        client = create_llm_client_from_config(
-            with_llm_usage_context(
-                model_config,
-                source="session_recall",
-                agent_id=agent_id,
-                tenant_id=tenant_id,
-            )
-        )
-        for hit in hits:
-            try:
-                evidence = hit.get("context_snippets") or hit.get("snippets") or []
-                complete_transcript = (hit.get("transcript") or "").strip()
-                transcript_window = (hit.get("transcript_window") or "").strip()
-                evidence_lines = hit.get("evidence_lines") or []
-                evidence_block = "\n".join(f"- {snippet}" for snippet in evidence if snippet)
-                if transcript_window:
-                    evidence_block = f"{evidence_block}\nTranscript window:\n{transcript_window}".strip()
-                if evidence_lines:
-                    evidence_block = (
-                        f"{evidence_block}\nKey evidence:\n" + "\n".join(f"- {line}" for line in evidence_lines if line)
-                    ).strip()
-                if complete_transcript:
-                    evidence_block = f"Complete transcript:\n{complete_transcript}\n\n{evidence_block}".strip()
-                if not evidence_block:
-                    continue
-
-                prompt = (
-                    "<role>\n"
-                    "You are the session-recall summarizer. Given a user's current query\n"
-                    "and one candidate past session, produce a 1-2 sentence recap that\n"
-                    "helps the user decide whether this past session is worth reopening.\n"
-                    "You are NOT synthesizing memory for long-term storage — this summary\n"
-                    "is shown inline next to the recall hit in the UI.\n"
-                    "</role>\n\n"
-                    "<summary_rules>\n"
-                    "- Exactly 1-2 sentences. No more.\n"
-                    "- Lead with what was DECIDED or PRODUCED in that session.\n"
-                    "- Name concrete artifacts: file paths, commit hashes, ticket IDs,\n"
-                    "  URLs, tool results — whatever the evidence shows.\n"
-                    "- Use ONLY the provided evidence block + headline + evidence passthrough.\n"
-                    "  Do not infer, extrapolate, or fabricate details not present.\n"
-                    "- Match the query's language (English query → English summary,\n"
-                    "  Chinese → Chinese).\n"
-                    "</summary_rules>\n\n"
-                    "<good_examples>\n"
-                    "Query: `我们上次是怎么处理 auth token 的？`\n"
-                    "Evidence: `- middleware.py:142 reordered refresh before header write\\n- pytest: 24 passed`\n"
-                    "Good summary: `重排了 middleware.py:142 的 refresh 顺序，24 个 auth 测试通过。`\n\n"
-                    "Query: `What did we decide about the payment retry strategy?`\n"
-                    "Evidence: `- PR #482: exponential backoff (1s, 2s, 4s, max 3 tries)\\n- Stripe webhook tested`\n"
-                    "Good summary: `Adopted exponential backoff (1s → 4s, max 3 retries) in PR #482; Stripe webhook verified.`\n"
-                    "</good_examples>\n\n"
-                    "<bad_examples>\n"
-                    "❌ `The user asked about auth and we looked at it.` (no outcome, no artifact)\n"
-                    "❌ `Fixed several bugs and improved the system.` (vague; no decision; no artifact)\n"
-                    "❌ `We probably discussed the retry logic and chose a reasonable approach.`\n"
-                    "   (speculative — evidence doesn't say 'probably')\n"
-                    "❌ 5-sentence paragraph summarizing every detail. (length cap violated)\n"
-                    "</bad_examples>\n\n"
-                    "<input>\n"
-                    f"Query: {query}\n"
-                    f"Headline: {hit.get('headline', _FALLBACK_HEADLINE)}\n"
-                    f"Evidence passthrough: {hit.get('focused_recap', '')}\n"
-                    f"Evidence:\n{evidence_block}\n"
-                    "</input>\n\n"
-                    "<output_contract>\n"
-                    "Respond with ONLY the 1-2 sentence summary. No prefix, no quotes,\n"
-                    "no markdown formatting, no meta-commentary about the query.\n"
-                    "</output_contract>"
-                )
-                response = await client.stream(
-                    messages=[LLMMessage(role="user", content=prompt)],
-                    max_tokens=output_tokens,
-                    temperature=0.1,
-                )
-                summary = (response.content or "").strip()
-                if not summary:
-                    raise RuntimeError("session recall summary model returned empty output")
-                hit["summary"] = summary
-                hit["focused_recap"] = summary
-                hit["summary_method"] = "model"
-                hit["summary_model_status"] = "completed"
-                hit.pop("summary_model_error_class", None)
-            except Exception as exc:  # noqa: BLE001 - keep complete evidence for this hit
-                logger.exception("Session recall model summary failed")
-                hit["summary_model_status"] = "failed"
-                hit["summary_model_error_class"] = type(exc).__name__
-    except Exception as exc:  # noqa: BLE001 - setup failure is observable on every hit
-        logger.exception("Session recall summary model setup failed")
-        for hit in hits:
-            hit["summary_model_status"] = "failed"
-            hit["summary_model_error_class"] = type(exc).__name__
-    finally:
-        if client is not None:
-            try:
-                await client.close()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Session recall summary client close failed: %s", exc)
-
-    return hits
 
 
 def _infer_headline(body: str, query: str, *, fallback: str) -> str:
@@ -744,7 +599,7 @@ async def search_session_history(
         snippet_limit=snippet_limit,
     )
     if ledger_hits:
-        return await _summarize_recall_hits(needle, ledger_hits, tenant_id, agent_id)
+        return ledger_hits
 
     legacy_log_hits = _search_t0_chat_logs(
         agent_id,
@@ -753,7 +608,7 @@ async def search_session_history(
         snippet_limit=snippet_limit,
     )
     if legacy_log_hits:
-        return await _summarize_recall_hits(needle, legacy_log_hits, tenant_id, agent_id)
+        return legacy_log_hits
 
     db_hits = await _search_session_history_db(
         agent_id,
@@ -762,4 +617,4 @@ async def search_session_history(
         snippet_limit=snippet_limit,
         tenant_id=tenant_id,
     )
-    return await _summarize_recall_hits(needle, db_hits, tenant_id, agent_id)
+    return db_hits

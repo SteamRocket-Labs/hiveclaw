@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,36 @@ class _FakeResult:
 
     def all(self):
         return list(self._rows)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["t0", "legacy", "db"])
+async def test_recall_returns_retrieved_evidence_without_waiting_for_summary_provider(monkeypatch, source):
+    from app.services import session_recall
+
+    tail = "SAVED_CONTINUATION_EVIDENCE"
+    hits = [{"headline": "Prior feedback", "transcript": "User: " + tail}]
+    tenant_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+
+    async def unavailable_summary(_tenant):
+        await asyncio.Event().wait()
+
+    async def db_hits(actual_agent, query, **kwargs):
+        assert actual_agent == agent_id
+        assert kwargs["tenant_id"] == tenant_id
+        return hits
+
+    monkeypatch.setattr(session_recall, "_search_t0_session_ledger", lambda *a, **k: hits if source == "t0" else [])
+    monkeypatch.setattr(session_recall, "_search_t0_chat_logs", lambda *a, **k: hits if source == "legacy" else [])
+    monkeypatch.setattr(session_recall, "_search_session_history_db", db_hits)
+    monkeypatch.setattr("app.services.memory_service._get_summary_model_config", unavailable_summary)
+    result = await asyncio.wait_for(
+        session_recall.search_session_history(agent_id, "feedback", tenant_id=tenant_id),
+        timeout=0.2,
+    )
+    assert result is hits
+    assert tail in result[0]["transcript"]
 
 
 class _FakeSession:
@@ -376,168 +407,6 @@ tools: []
         "Assistant: 我会把最终版本写到 docs/release-checklist.md，并在 PR 模板里链接它。",
     ]
     assert hits[0]["summary_method"] == "evidence_passthrough"
-    assert hits[0]["summary_model_status"] == "no_tenant"
+    assert hits[0]["summary_model_status"] == "not_requested"
     assert "User: 需要落到哪里？" in hits[0]["transcript"]
     assert "Assistant: 我会把最终版本写到 docs/release-checklist.md，并在 PR 模板里链接它。" in hits[0]["transcript"]
-
-
-@pytest.mark.asyncio
-async def test_summary_model_receives_complete_recalled_transcript(monkeypatch) -> None:
-    from app.services import session_recall
-
-    captured: dict[str, object] = {}
-    decisive_tail = "SESSION_RECALL_DECISIVE_TAIL"
-    transcript = "User: question\nAssistant: " + ("x" * 4_000) + decisive_tail
-    hits = [
-        {
-            "headline": "Past decision",
-            "summary": "fallback",
-            "focused_recap": "fallback recap",
-            "snippets": ["question"],
-            "context_snippets": ["question"],
-            "transcript_window": "User: question",
-            "evidence_lines": ["User: question"],
-            "transcript": transcript,
-        }
-    ]
-
-    async def _get_summary_model_config(_tenant_id):
-        return {
-            "provider": "openai",
-            "model": "test",
-            "api_key": "key",
-            "max_output_tokens": 32_768,
-        }
-
-    class _Client:
-        async def stream(self, *, messages, max_tokens, temperature):
-            captured["prompt"] = messages[0].content
-            captured["max_tokens"] = max_tokens
-            captured["temperature"] = temperature
-            return SimpleNamespace(content="complete recap")
-
-        async def close(self):
-            return None
-
-    monkeypatch.setattr("app.services.memory_service._get_summary_model_config", _get_summary_model_config)
-    monkeypatch.setattr("app.services.llm_client.create_llm_client_from_config", lambda _config: _Client())
-    monkeypatch.setattr("app.services.llm_client.with_llm_usage_context", lambda config, **_kwargs: config)
-
-    result = await session_recall._summarize_recall_hits("question", hits, uuid.uuid4(), uuid.uuid4())
-
-    assert decisive_tail in str(captured["prompt"])
-    assert captured["max_tokens"] == 32_768
-    assert result[0]["summary"] == "complete recap"
-    assert result[0]["summary_method"] == "model"
-    assert result[0]["summary_model_status"] == "completed"
-
-
-@pytest.mark.asyncio
-async def test_summary_model_failure_keeps_full_evidence_passthrough_and_is_observable(monkeypatch) -> None:
-    from app.services import session_recall
-
-    decisive_tail = "RECALL_FAILURE_DECISIVE_TAIL"
-    transcript = "User: question\nAssistant: " + ("evidence " * 80) + decisive_tail
-    hits = [
-        {
-            "headline": "Past decision",
-            "summary": transcript,
-            "focused_recap": "Evidence passthrough:\n" + transcript,
-            "snippets": ["question"],
-            "context_snippets": ["question"],
-            "transcript_window": "User: question",
-            "evidence_lines": transcript.splitlines(),
-            "transcript": transcript,
-            "summary_method": "evidence_passthrough",
-        }
-    ]
-
-    async def _get_summary_model_config(_tenant_id):
-        return {"provider": "openai", "model": "test", "api_key": "key"}
-
-    class _Client:
-        async def stream(self, **_kwargs):
-            raise RuntimeError("model unavailable")
-
-        async def close(self):
-            return None
-
-    monkeypatch.setattr("app.services.memory_service._get_summary_model_config", _get_summary_model_config)
-    monkeypatch.setattr("app.services.llm_client.create_llm_client_from_config", lambda _config: _Client())
-    monkeypatch.setattr("app.services.llm_client.with_llm_usage_context", lambda config, **_kwargs: config)
-
-    result = await session_recall._summarize_recall_hits("question", hits, uuid.uuid4(), uuid.uuid4())
-
-    assert decisive_tail in result[0]["summary"]
-    assert decisive_tail in result[0]["focused_recap"]
-    assert result[0]["summary_method"] == "evidence_passthrough"
-    assert result[0]["summary_model_status"] == "failed"
-    assert result[0]["summary_model_error_class"] == "RuntimeError"
-
-
-@pytest.mark.asyncio
-async def test_search_session_history_uses_tenant_aware_summary_enrichment(monkeypatch) -> None:
-    from app.services.session_recall import search_session_history
-
-    agent_id = uuid.uuid4()
-    tenant_id = uuid.uuid4()
-    session_one = uuid.uuid4()
-    rows = [
-        (
-            session_one,
-            "web",
-            datetime(2026, 4, 9, 11, 0, tzinfo=timezone.utc),
-            "priority matrix 决策讨论",
-            "user",
-            "请回忆我们上次关于 priority matrix 的讨论。",
-            datetime(2026, 4, 9, 11, 2, tzinfo=timezone.utc),
-        ),
-    ]
-    transcript_rows = [
-        (
-            session_one,
-            "web",
-            datetime(2026, 4, 9, 11, 0, tzinfo=timezone.utc),
-            "priority matrix 决策讨论",
-            "user",
-            "请回忆我们上次关于 priority matrix 的讨论。",
-            datetime(2026, 4, 9, 11, 1, tzinfo=timezone.utc),
-        ),
-        (
-            session_one,
-            "web",
-            datetime(2026, 4, 9, 11, 0, tzinfo=timezone.utc),
-            "priority matrix 决策讨论",
-            "assistant",
-            "我会整理成一页决策摘要，并写入 workspace/decision-brief.md。",
-            datetime(2026, 4, 9, 11, 2, tzinfo=timezone.utc),
-        ),
-    ]
-
-    async def _fake_summarize(query, hits, tenant, agent=None):
-        assert query == "priority matrix"
-        assert tenant == tenant_id
-        assert agent == agent_id
-        assert hits[0]["summary"]
-        hits[0]["summary"] = "模型聚焦摘要：我们把 priority matrix 整理成了决策摘要。"
-        return hits
-
-    monkeypatch.setattr(
-        "app.services.session_recall.tenant_scoped_session", lambda *a, **k: _FakeSession([rows, transcript_rows])
-    )
-    monkeypatch.setattr(
-        "app.services.session_recall.get_settings",
-        lambda: SimpleNamespace(AGENT_DATA_DIR="/tmp/nonexistent-session-recall"),
-    )
-    monkeypatch.setattr("app.services.session_recall._summarize_recall_hits", _fake_summarize)
-
-    hits = await search_session_history(
-        agent_id,
-        "priority matrix",
-        limit=3,
-        snippet_limit=2,
-        tenant_id=tenant_id,
-    )
-
-    assert len(hits) == 1
-    assert hits[0]["summary"] == "模型聚焦摘要：我们把 priority matrix 整理成了决策摘要。"

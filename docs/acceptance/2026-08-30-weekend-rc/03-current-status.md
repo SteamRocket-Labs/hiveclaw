@@ -13,7 +13,7 @@ verification_status: remaining-functional-closure-in-progress
 
 ## 当前决定与本批次出口
 
-11:02 续接：owner 已授权 MiniMax M3 / Ling 切换，且准确批准 Skill 来源 `https://github.com/SteamRocket-Labs/hiveclaw` 和 CLI `@hiveclaw243/hive-connect`。两后端安装指南已生效；本机保留原绑定升级至0.1.9并重新上线，尚未取得新最终result。Ling真实调用成功，fresh固定Workflow两叶已结束并停在review，须读实际输出后再批准。Local页面实测暴露旧query与canonical path不一致、跳回默认旧会话；最小路由修复及4项回归通过，前端全量1302项和TypeScript通过，准备发布复验。SSH只读连接暂时关闭，继续经正式API取证，不绕过审批。其余清单保持，未宣称全部完成。
+11:09 续接：owner 已授权 MiniMax M3 / Ling 切换，且准确批准 Skill 来源 `https://github.com/SteamRocket-Labs/hiveclaw` 和部署配置 `HIVE_CONNECT_NPM_PACKAGE` 指定的CLI。两后端安装指南已生效；本机保留原绑定升级至0.1.9并重新上线，尚未取得新最终result。Ling真实调用成功，fresh固定Workflow两叶输出51/57并停在review，须核对原始工具回执后再批准。Local路由修复 `912a7291` 已push并三服务SUCCESS，正式页面已能打开指定B3会话并读回历史，不再跳回默认旧会话；4项回归、前端1302项、TypeScript及build通过。新只读Local请求已单次提交，等待本次审批/最终回执；未扩权限。公开记录移除个人命名空间，准确批准值保留在部署配置及安装指南，不放宽release gate。其余清单保持，未宣称全部完成。
 
 2026-09-09 owner 在核对功能覆盖后明确要求“把真正剩下的工作一次性全部完成掉……全部完成之后和我说，要求还是那一个”。继续由单一 Codex 实施、验证、提交推送、三服务部署和真实消费验收，不再沿旧两小时批次自动停止，也不重做已通过主路径。当前剩余执行清单：固定 Workflow 实跑与复用、A2A Workflow 编排、Dynamic 并行/等待恢复；通用 once/schedule/event 与 Local 最终 result；Office 最终卡片及 Goal 自动两轮/计费复验；Memory/Growth、Hook、Skill、MCP 的未闭环路径；角色/移交/离职和最终回归/清理。权限扩大、凭据、收费、真实外发与业务政策仍保留对应 owner 决策边界，不由“全部完成”推导授权。
 

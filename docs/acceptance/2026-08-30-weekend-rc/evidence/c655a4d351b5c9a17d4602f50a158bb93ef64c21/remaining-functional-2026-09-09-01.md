@@ -56,7 +56,7 @@ verification_status: partial-not-complete
 
 ## 下一步
 
-10:37 owner 已批准 MiniMax / 新 Ling 切换及 Local 安装；10:46 明确批准准确来源：Skill 为 `https://github.com/SteamRocket-Labs/hiveclaw`，CLI 为 `@hiveclaw243/hive-connect`。原 CLI 仓库没有 Skill，本地主仓库 `.agents/skills/hive-connect/SKILL.md` 也未被 Git 收录，故将现有指南原样放入可分发的 `skills/hive-connect/SKILL.md`，结构验证通过。npm 正式注册信息版本0.1.9、仓库 `rocky2431/hive-connect`；两后端批准来源配置已提交，等待生效验证和保留旧绑定的升级。
+10:37 owner 已批准 MiniMax / 新 Ling 切换及 Local 安装；10:46 明确批准准确来源：Skill 为 `https://github.com/SteamRocket-Labs/hiveclaw`，CLI 的准确包名已保存至 `HIVE_CONNECT_NPM_PACKAGE` 并由安装指南返回。原 CLI 仓库没有 Skill，本地主仓库 `.agents/skills/hive-connect/SKILL.md` 也未被 Git 收录，故将现有指南原样放入可分发的 `skills/hive-connect/SKILL.md`，结构验证通过。npm 正式注册信息版本0.1.9及其上游仓库均已核对；两后端批准来源配置已提交，等待生效验证和保留旧绑定的升级。个人命名空间不收录公开release archive。
 
 模型正式 API 现有且启用 Ling 与 MiniMax；MemberAnalyst 的模型绑定为空，初始 Session `8e8bc8e0-48b1-4da5-a66b-58ccd42d7230` 在模型调用前失败。按授权 PATCH 绑定 Ling 后，新 Session `7c7ab098-e40a-4ff6-96fc-8c0ad88b1d94` / run `fc03c252-a858-5290-9093-ae609858fc1b` 使用真实 `openrouter / inclusionai/ling-3.0-flash-sante:free`，已实际调用 execute_code，canonical 终态提交；工具回执为无输出，尚不作为计算108成功证明。旧取消 run 不复活。
 
@@ -65,5 +65,7 @@ CI `34301808749` 最终后端9253passed/1failed/4skipped，唯一失败是本记
 11:02新增实证：两后端批准安装指南HTTP200并返回准确来源；配置部署backend `d6936e1a-a329-449e-98e2-6535a249ee57`、backend-api `963f47a8-9555-4ea9-94cf-e564f6a7dd07`均SUCCESS，应用源码未变。本机0.1.9/6cf0b59已安装，旧0.1.7保留可恢复；daemon在10:51:43保留原connection/Agent/身份上线，没有重新登录或放宽权限。fresh Fixed trigger `2e7d1a81-f6bf-4df6-9a92-28c61690502f`实际fire_count=1且自动停用；run `a5d7d6e3-6ba5-5775-a255-67b3851daf6b`两叶done、token分别21867/18791，review `bfeddfe8-0694-4cef-a28c-72ff6616ee43`仍pending，未读取实际输出前不批准、不把done当计算正确。
 
 Local正式页面点击新/旧会话及详情均跳回旧默认会话，定位LocalAgentChatSection仅解析query、父页面已canonicalize为path；同时disabled默认query仍能返回旧cache。修复读取path优先、仅消费当前选择对应query，且详情导航不被chat redirect覆盖，复用现有canonical路由helper。4项mounted回归、原5项投影检查、全前端169文件1302项及TypeScript通过。尚待发布和正式浏览器复验；旧owner脏改未动。11:00两次SSH均连接关闭，正式API仍可用，未扩大网络或凭据配置。
+
+11:09路由修复 `912a7291` 已push；backend `3809e3e3-5cac-4231-86d1-57632053fca0`、backend-api `62a8f080-f267-4544-8af2-392ebb1e1187`、frontend `6d57a2d4-6a02-44f7-89ef-a803c53c32d7`均SUCCESS。backend源码hash仍为f510c096，public health ok。生产Chrome刷新后打开原B3会话成功且显示原pwd历史；在此隔离会话仅提交一次V019-02只读请求，审批/result仍待核对。Fixed持久step返回51/57，仍需T0工具回执。前一CI因公开记录包含个人命名空间失败；已移除记录中的具体个人标识、保留批准来源的配置引用，未更改或弱化gate。
 
 继续验证 Ling 的实际结果与固定 Workflow / once 新时间窗口，完成 Local 升级后的真实最终 result。A2A固定graph等实现和其余功能继续按03-current-status原范围保留，不缩减、不宣称全部完成；无新heartbeat或后台Codex任务。

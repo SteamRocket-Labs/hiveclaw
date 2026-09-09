@@ -68,4 +68,16 @@ Local正式页面点击新/旧会话及详情均跳回旧默认会话，定位Lo
 
 11:09路由修复 `912a7291` 已push；backend `3809e3e3-5cac-4231-86d1-57632053fca0`、backend-api `62a8f080-f267-4544-8af2-392ebb1e1187`、frontend `6d57a2d4-6a02-44f7-89ef-a803c53c32d7`均SUCCESS。backend源码hash仍为f510c096，public health ok。生产Chrome刷新后打开原B3会话成功且显示原pwd历史；在此隔离会话仅提交一次V019-02只读请求，审批/result仍待核对。Fixed持久step返回51/57，仍需T0工具回执。前一CI因公开记录包含个人命名空间失败；已移除记录中的具体个人标识、保留批准来源的配置引用，未更改或弱化gate。
 
-继续验证 Ling 的实际结果与固定 Workflow / once 新时间窗口，完成 Local 升级后的真实最终 result。A2A固定graph等实现和其余功能继续按03-current-status原范围保留，不缩减、不宣称全部完成；无新heartbeat或后台Codex任务。
+11:14 Fixed实际闭环：通过合成Agent owner的正式files API读取两叶T0工具回执，print分别输出51与57；随后gate-decision返回200/approve/replayed=false。原run自动完成delay和record，正式files API读回 `workspace/remaining-fixed-cedar-914.md`，包含marker `REMAINING-FIXED-LING-02`、两分量及合计108。此为注册v1固定定义实跑、并行、审核、延时恢复和产物消费的证据，不替代A2A或其他未测路径。
+
+Local V019-02在11:10:34经正式UI仅批准本次pwd，修复前V019-01先正式拒绝，未碰另一个历史审批。本地日志显示一次接收、一次工具、25秒完成；但receipt在第一条进度到达时已terminal/acknowledged，output仅“我只执行一次pwd”，真实最终输出被first-result-wins保护挡住。因此0.1.9仍未通过Local终态交付。定位CLI的Send直接调用Reply（终态持久化），core把thinking/tool/final均通过Send发送。已在CLI本地准备最小修复：Send保留text，core仅对真正终态调用可选协议接口，异常退出保留failed/unknown，复用原receipt/replay边界。回归先红后绿、CUJ通过；全套测试仅两个Cursor本机登录检查失败，正在用原生CI模式验证，未改变断言、账号或权限。尚未安装本地修复、未提交/推送CLI或发布npm。
+
+11:32续接：CLI全套 `CI=1 go test ./...` 通过，已构建并于11:25安装 `v0.1.9-local-terminal-fix` 本地候选，原0.1.9二进制保留可恢复；原binding/scopes未变，daemon已重新上线。未发布npm或推送CLI。V019-03请求 `c7105cd2-dc47-4dd2-8adb-2342028b4d5c` 于11:26:41单次批准，但旧Codex会话报active-writer冲突，未执行工具；本地receipt正确failed/`local_execution_failed`，03:26:45Z获云端ack，正式页面重新打开能读回完整失败，未误报completed。
+
+新建Local会话又复现独立后端缺陷：`create_channel_session(reuse_existing=False)`仍给chat binder传入固定external conversation ID，新channel绑定到旧chat，正式sidebar新建后仍显示旧历史。新反例先失败，修复只在非复用创建时为external ID增加UUID；默认入口与显式A2A reuse不变。service/API/messaging联合73passed；正在独立HEAD archive验证相关安全检查，不夹带owner脏改，尚未发布此两行修复。
+
+Office原合成Session新请求 `ecec520557595ee386ce8d886bd0d5f5` 已正式受理201，使用已授权Ling、幂等键 `wrc-remaining-office-ling-03`，只更新既有两份Office合成marker并重读/返回最终下载卡片；尚未核对终态。固定v1复用另以23/31和新marker验证，原108结果不篡改。
+
+11:38：独立archive检查89passed/1failed，唯一失败为上述两行引起的已审源码指纹变化。baseline/candidate均588条，差异只有 `local_agent_channel_service.py:<module-source>`，未改bypass范围、SQL或查询白名单；仅暂存精确新指纹 `ec5591cf9c222a973a220f64dc3237ad5e785928524ae0c930986ae64c2ad40f`，保留工作区owner原manifest候选，正在重验。Office11:30正式final有2张真实卡片，按artifact ID下载DOCX/XLSX均200且有效OOXML，公式仍SUM(17,12)；旧marker残留于表格，已给模型一次精确纠正反馈，不把artifact传输通过当语义全部正确。固定复用run `64a23167-e788-54ef-bef3-75db4031cc9b` 已进入review，输入23/31、预期69/93/162；once新草案Session `1934ba2f-3580-4e8a-a44c-022f0d047c42` target11:43:07，未确认前无trigger效果。
+
+继续通用 once/schedule/event、Local修复后的最终result和其余原清单。A2A固定graph等实现和其余功能继续按03-current-status原范围保留，不缩减、不宣称全部完成；无新heartbeat或后台Codex任务。

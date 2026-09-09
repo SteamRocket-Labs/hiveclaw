@@ -1750,6 +1750,8 @@ async def create_channel_session(
             source_agent_id=source_agent_id,
             source=source,
         )
+        if not reuse_existing:
+            external_conversation_id = f"{external_conversation_id}:{uuid.uuid4()}"
         if reuse_existing and isinstance(db, AsyncSession):
             bind = db.get_bind()
             if getattr(getattr(bind, "dialect", None), "name", "") == "postgresql":

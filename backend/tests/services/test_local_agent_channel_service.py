@@ -412,6 +412,22 @@ async def test_get_or_create_default_channel_session_separates_shared_actor_from
 
 
 @pytest.mark.asyncio
+async def test_new_channel_sessions_do_not_rebind_the_previous_chat(monkeypatch) -> None:
+    conversations = {}
+
+    async def bind(**kwargs):
+        key = kwargs["external_conversation_id"]
+        return conversations.setdefault(key, SimpleNamespace(id=uuid4()))
+
+    monkeypatch.setattr(service, "create_or_bind_chat_session", bind)
+    args = {"tenant_id": uuid4(), "owner_user_id": uuid4(), "source_agent_id": uuid4()}
+    first = await service.create_channel_session(_FakeDB(), **args)
+    second = await service.create_channel_session(_FakeDB(), **args)
+    assert first["id"] != second["id"]
+    assert first["chat_session_id"] != second["chat_session_id"]
+
+
+@pytest.mark.asyncio
 async def test_create_a2a_channel_session_reuses_exact_active_conversation(monkeypatch) -> None:
     tenant_id = uuid4()
     target_owner_id = uuid4()

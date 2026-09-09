@@ -106,6 +106,30 @@ async def test_failed_rollback_persists_projection_failure_evidence(monkeypatch)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [ValueError("workspace Skill is missing"), RuntimeError("native read failed")])
+async def test_failed_reconcile_persists_exact_asset_failure_after_rollback(monkeypatch, failure) -> None:
+    from app.api import ai_assets as api
+
+    tenant_id, asset_id, user_id = uuid4(), uuid4(), uuid4()
+    db = AsyncMock()
+    monkeypatch.setattr(api.ai_asset_service, "reconcile_asset", AsyncMock(side_effect=failure))
+    mark_failure = AsyncMock(return_value=True)
+    monkeypatch.setattr(api.ai_asset_service, "record_projection_failure", mark_failure)
+
+    with pytest.raises(HTTPException if isinstance(failure, ValueError) else RuntimeError):
+        await api.reconcile_ai_asset(
+            asset_id=asset_id,
+            current_user=SimpleNamespace(tenant_id=tenant_id, role="org_admin", id=user_id),
+            db=db,
+        )
+    db.rollback.assert_awaited_once()
+    mark_failure.assert_awaited_once_with(
+        db, tenant_id=tenant_id, asset_id=asset_id, operation="reconcile", error=failure, actor_user_id=user_id,
+    )
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_asset_detail_returns_durable_version_bound_usage_events(monkeypatch) -> None:
     from app.api import ai_assets as api
 

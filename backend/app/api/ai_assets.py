@@ -172,6 +172,17 @@ async def reconcile_ai_asset(
         )
         await db.commit()
         return result
-    except ValueError as exc:
+    except Exception as exc:
         await db.rollback()
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        await ai_asset_service.record_projection_failure(
+            db,
+            tenant_id=_tenant_id(current_user),
+            asset_id=asset_id,
+            operation="reconcile",
+            error=exc,
+            actor_user_id=current_user.id,
+        )
+        await db.commit()
+        if isinstance(exc, ValueError):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise

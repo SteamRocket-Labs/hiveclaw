@@ -62,4 +62,8 @@ verification_status: partial-not-complete
 
 CI `34301808749` 最终后端9253passed/1failed/4skipped，唯一失败是本记录漏 frontmatter；已补齐原有七项必需元数据，相关文档结构检查10passed（0.36s），未改测试断言。前端与15journeys原 success 保持。
 
+11:02新增实证：两后端批准安装指南HTTP200并返回准确来源；配置部署backend `d6936e1a-a329-449e-98e2-6535a249ee57`、backend-api `963f47a8-9555-4ea9-94cf-e564f6a7dd07`均SUCCESS，应用源码未变。本机0.1.9/6cf0b59已安装，旧0.1.7保留可恢复；daemon在10:51:43保留原connection/Agent/身份上线，没有重新登录或放宽权限。fresh Fixed trigger `2e7d1a81-f6bf-4df6-9a92-28c61690502f`实际fire_count=1且自动停用；run `a5d7d6e3-6ba5-5775-a255-67b3851daf6b`两叶done、token分别21867/18791，review `bfeddfe8-0694-4cef-a28c-72ff6616ee43`仍pending，未读取实际输出前不批准、不把done当计算正确。
+
+Local正式页面点击新/旧会话及详情均跳回旧默认会话，定位LocalAgentChatSection仅解析query、父页面已canonicalize为path；同时disabled默认query仍能返回旧cache。修复读取path优先、仅消费当前选择对应query，且详情导航不被chat redirect覆盖，复用现有canonical路由helper。4项mounted回归、原5项投影检查、全前端169文件1302项及TypeScript通过。尚待发布和正式浏览器复验；旧owner脏改未动。11:00两次SSH均连接关闭，正式API仍可用，未扩大网络或凭据配置。
+
 继续验证 Ling 的实际结果与固定 Workflow / once 新时间窗口，完成 Local 升级后的真实最终 result。A2A固定graph等实现和其余功能继续按03-current-status原范围保留，不缩减、不宣称全部完成；无新heartbeat或后台Codex任务。

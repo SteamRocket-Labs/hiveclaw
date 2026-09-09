@@ -13,7 +13,7 @@ verification_status: remaining-functional-closure-in-progress
 
 ## 当前决定与本批次出口
 
-10:37 owner 新授权：验收可在 MiniMax M3 与新加入的 Ling 模型之间切换；允许 Local 安装及安装源配置。正式模型 API 已核对默认启用 `openrouter / inclusionai/ling-3.0-flash-sante:free` 与启用的 `minimax / MiniMax-M3`，不再等待旧的替代模型许可，不使用已撤下的 GLM。生产安装指南两项批准来源仍为空；本机已有 `@hiveclaw243/hive-connect`，其仓库为 `https://github.com/rocky2431/hive-connect`，已请求确认将这两个现有来源登记，期间保留既有登录连接。先验证新默认模型真实工具调用，再续固定 Workflow / once 和其他剩余验收。
+11:02 续接：owner 已授权 MiniMax M3 / Ling 切换，且准确批准 Skill 来源 `https://github.com/SteamRocket-Labs/hiveclaw` 和 CLI `@hiveclaw243/hive-connect`。两后端安装指南已生效；本机保留原绑定升级至0.1.9并重新上线，尚未取得新最终result。Ling真实调用成功，fresh固定Workflow两叶已结束并停在review，须读实际输出后再批准。Local页面实测暴露旧query与canonical path不一致、跳回默认旧会话；最小路由修复及4项回归通过，前端全量1302项和TypeScript通过，准备发布复验。SSH只读连接暂时关闭，继续经正式API取证，不绕过审批。其余清单保持，未宣称全部完成。
 
 2026-09-09 owner 在核对功能覆盖后明确要求“把真正剩下的工作一次性全部完成掉……全部完成之后和我说，要求还是那一个”。继续由单一 Codex 实施、验证、提交推送、三服务部署和真实消费验收，不再沿旧两小时批次自动停止，也不重做已通过主路径。当前剩余执行清单：固定 Workflow 实跑与复用、A2A Workflow 编排、Dynamic 并行/等待恢复；通用 once/schedule/event 与 Local 最终 result；Office 最终卡片及 Goal 自动两轮/计费复验；Memory/Growth、Hook、Skill、MCP 的未闭环路径；角色/移交/离职和最终回归/清理。权限扩大、凭据、收费、真实外发与业务政策仍保留对应 owner 决策边界，不由“全部完成”推导授权。
 

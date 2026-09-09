@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { IconFileText } from '@tabler/icons-react';
 
@@ -21,6 +21,7 @@ import { SessionWorkbenchHeader } from '../session-workbench/SessionWorkbenchChr
 import type { AgentChatMessage, ChatArtifactPart } from './chatRuntime';
 import type { SessionWorkbenchHeaderModel } from '../session-workbench/timelineModel';
 import { composerShortcutText } from './sessionComposerShortcuts';
+import { buildSessionWorkbenchNavigation } from './agentDetailPolicy';
 import { saveBlob } from '../../utils/authenticatedResource';
 
 type AttachedLocalFile = LocalAgentWorkspaceUpload & {
@@ -339,6 +340,7 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
   const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
+  const { sessionId: pathSessionId } = useParams<{ sessionId?: string }>();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const channelCursorRef = useRef(0);
@@ -351,7 +353,7 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
   const [wsConnected, setWsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [localPlanModeRequested, setLocalPlanModeRequested] = useState(false);
-  const routeSessionId = routeSessionIdFromSearch(location.search);
+  const routeSessionId = pathSessionId ?? routeSessionIdFromSearch(location.search);
 
   const routeSessionQuery = useQuery({
     queryKey: ['local-agent-detail-route-session', agentId, routeSessionId],
@@ -367,7 +369,7 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
     retry: false,
   });
 
-  const activeSession: LocalAgentChannelSession | null = (routeSessionQuery.data || defaultSessionQuery.data || null) as LocalAgentChannelSession | null;
+  const activeSession: LocalAgentChannelSession | null = (routeSessionId ? routeSessionQuery.data : defaultSessionQuery.data) ?? null;
   const channelSessionId = activeSession?.id || null;
   const displaySessionId = activeSession?.chat_session_id || activeSession?.id || null;
 
@@ -386,11 +388,12 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
   });
 
   useEffect(() => {
-    if (!activeSession) return;
+    if (!activeSession || new URLSearchParams(location.search).has('manage')) return;
+    if (location.hash && location.hash !== '#chat') return;
     const canonicalSessionId = activeSession.chat_session_id || activeSession.id;
     if (!canonicalSessionId || routeSessionId === canonicalSessionId) return;
-    navigate(`/agents/${agentId}?session_id=${encodeURIComponent(canonicalSessionId)}#chat`, { replace: true });
-  }, [activeSession, agentId, navigate, routeSessionId]);
+    navigate(buildSessionWorkbenchNavigation(`/agents/${agentId}`, location.search, canonicalSessionId), { replace: true });
+  }, [activeSession, agentId, location.hash, location.search, navigate, routeSessionId]);
 
   useEffect(() => {
     if (!channelSessionId) return;

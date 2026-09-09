@@ -542,6 +542,10 @@
       "detail": "详情"
     },
     "hrRecovery": {
+      "loadFailed": "无法加载中断的创建任务或待清理项。",
+      "cleanupStatus": "文件待清理",
+      "cleanupPending": "移除已提交。重试只会完成剩余文件归档，不会再次移除员工。",
+      "retryCleanup": "重试文件清理",
       "description": "恢复原 HR 会话或直接恢复创建流程，无需模型重新表述。",
       "eyebrow": "HR 恢复",
       "operatorRequired": "重试前需要运营人员完成核查。",
@@ -3840,6 +3844,10 @@
     },
     "digitalEmployees": {
       "title": "数字员工管理",
+      "pendingCleanupTitle": "待完成的文件清理",
+      "cleanupPending": "删除已提交，文件尚待归档；可在下方仅重试清理。",
+      "cleanupLoadFailed": "无法检查待完成的文件清理。",
+      "retryCleanup": "重试文件清理",
       "description": "公司管理员可以在这个受治理后台查看并移除租户内数字员工。",
       "adminOnly": "只有公司管理员可以在这里管理数字员工。",
       "employeeDeleted": "数字员工已删除。",

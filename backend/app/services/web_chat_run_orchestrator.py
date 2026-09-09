@@ -15,6 +15,7 @@ from app.database import PostgresTextContractError
 from app.kernel.contracts import (
     ExecutionIdentityRef,
     ProviderRequestNeedsReconciliation,
+    SessionRestartRecoveryRequired,
     TerminalReason,
     ToolLifecyclePersistenceError,
 )
@@ -33,6 +34,8 @@ class RuntimeExceptionFailure:
 def _runtime_exception_failure(exc: Exception) -> RuntimeExceptionFailure:
     """Classify runtime failures from authoritative exception types, never message text."""
     if isinstance(exc, SessionSemanticHistoryUnavailable):
+        return RuntimeExceptionFailure(terminal_reason=TerminalReason.PERSISTENCE_ERROR.value)
+    if isinstance(exc, SessionRestartRecoveryRequired):
         return RuntimeExceptionFailure(terminal_reason=TerminalReason.PERSISTENCE_ERROR.value)
     if isinstance(exc, ToolLifecyclePersistenceError):
         return RuntimeExceptionFailure(terminal_reason=TerminalReason.PERSISTENCE_ERROR.value)
@@ -288,6 +291,15 @@ async def _configure_runtime_session(state: _WebChatRunState) -> None:
     context.channel = str(state.metadata.get("channel") or context.channel or "web")
     context.metadata["tenant_id"] = str(state.agent.tenant_id) if state.agent.tenant_id else None
     context.metadata["runtime_task_id"] = state.run_uuid.hex
+    # This worker's own claim identity: the kernel's Stop-effect fence verifies
+    # it against the RuntimeTask's CURRENT claim before arming a governed Stop
+    # emission, so a stale worker whose lease was reclaimed cannot execute the
+    # consequential effect (see session_stop_hook).
+    context.metadata["attempt_owner"] = (
+        f"{getattr(state.runtime_task, 'claimed_by', None) or 'unclaimed'}:"
+        f"{getattr(state.runtime_task, 'claim_version', 0)}:"
+        f"{getattr(state.runtime_task, 'attempt_count', 0)}"
+    )
     root_runtime_task_id = (
         getattr(state.runtime_task, "root_runtime_task_id", None)
         or state.metadata.get("root_runtime_task_id")
@@ -319,6 +331,11 @@ async def _configure_runtime_session(state: _WebChatRunState) -> None:
         context.metadata.pop("budget_summary_turn", None)
     context.metadata["request_id"] = str(state.run_uuid)
     context.metadata["turn_id"] = str(state.metadata.get("turn_id") or f"turn-{state.run_uuid.hex}")
+    # This run wires the Session V2 durable model-round/tool lifecycle
+    # callbacks: pending tool calls are recovered through the invocation/effect
+    # fence and the sealed-round replay, never through the legacy recovery
+    # manifest's frame replay.
+    context.metadata["session_v2_durable_tool_lifecycle"] = True
     context.metadata["intent_id"] = str(
         state.metadata.get("intent_id") or state.metadata.get("request_id") or f"intent-{state.run_uuid.hex}"
     )
@@ -961,8 +978,12 @@ async def _bind_session_round_inputs(state: _WebChatRunState, round_index: int) 
         return messages
 
 
-async def _prepare_session_model_request(state: _WebChatRunState, **payload: Any) -> str:
-    from app.services.session_model_round import ModelRoundNeedsReconciliation, prepare_model_request
+async def _prepare_session_model_request(state: _WebChatRunState, **payload: Any) -> str | dict[str, Any]:
+    from app.services.session_model_round import (
+        ModelRoundNeedsReconciliation,
+        prepare_model_request,
+        resume_committed_round_receipt,
+    )
 
     async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
         try:
@@ -971,6 +992,12 @@ async def _prepare_session_model_request(state: _WebChatRunState, **payload: Any
             logical_root_result_id = uuid.uuid5(
                 state.run_uuid,
                 f"session-model-result:{logical_round_id}",
+            )
+            _restart_receipt = (
+                state.metadata.get("session_restart_resume") if isinstance(state.metadata, dict) else None
+            ) or {}
+            _pending_replay_round = int(
+                _restart_receipt.get("pending_tool_round") or _restart_receipt.get("pending_final_round") or 0
             )
             provider_request_id = await prepare_model_request(
                 db,
@@ -994,12 +1021,44 @@ async def _prepare_session_model_request(state: _WebChatRunState, **payload: Any
                     f"{getattr(state.runtime_task, 'claim_version', 0)}:"
                     f"{getattr(state.runtime_task, 'attempt_count', 0)}"
                 ),
+                # The restart loader's authoritative receipt names the ONE
+                # committed round whose sealed calls are pending or whose
+                # committed no-tool final never provably reached terminal
+                # settlement; only that round may re-arm its committed lane
+                # without an exact provider-content match (its seal is
+                # replayed, not re-sent).
+                resume_committed_round=(
+                    int(payload.get("continuation_index") or 0) == 0 and round_index == _pending_replay_round
+                ),
+            )
+            # A committed round re-entered after a worker restart replays its
+            # immutable seal instead of reissuing the provider generation; the
+            # receipt carries the sealed response and any durable settled tool
+            # results so the kernel executes the model-authored calls natively.
+            # Only the logical root owns this contract: a committed physical
+            # continuation under an unsealed root belongs to the root's fresh
+            # re-entry lane, not to a sealed replay.
+            resume_receipt = (
+                await resume_committed_round_receipt(
+                    db,
+                    tenant_id=state.agent.tenant_id,
+                    agent_id=state.agent.id,
+                    session_id=uuid.UUID(str(state.session_id)),
+                    run_id=state.run_uuid,
+                    round_index=round_index,
+                    provider_request_id=provider_request_id,
+                    continuation_index=0,
+                )
+                if int(payload.get("continuation_index") or 0) == 0
+                else None
             )
         except ModelRoundNeedsReconciliation:
             await db.commit()
             raise
         await db.commit()
         state.active_provider_request_id = provider_request_id
+        if resume_receipt is not None:
+            return resume_receipt
         return provider_request_id
 
 
@@ -1566,6 +1625,9 @@ async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> N
     if isinstance(exc, ProviderRequestNeedsReconciliation):
         await _handle_provider_reconciliation_required(state, exc)
         return
+    if isinstance(exc, SessionRestartRecoveryRequired):
+        await _handle_restart_recovery_required(state, exc)
+        return
     summary = (
         "Canonical session history is unavailable; model invocation did not start."
         if isinstance(exc, SessionSemanticHistoryUnavailable)
@@ -1699,6 +1761,54 @@ async def _handle_provider_reconciliation_required(
             "retryable": False,
         },
     )
+
+
+async def _handle_restart_recovery_required(
+    state: _WebChatRunState,
+    exc: SessionRestartRecoveryRequired,
+) -> None:
+    """Hold a reclaimed run whose durable frontier needs typed reconciliation.
+
+    The restart loader proved that at least one round inside the frontier has
+    an unprovable commit or an unknown tool-effect outcome.  The run must stop
+    in a truthful ``needs_reconciliation`` state — never a provider error and
+    never a fabricated continuation.
+    """
+    metadata = {
+        "terminal_reason": TerminalReason.PERSISTENCE_ERROR.value,
+        "error_code": "session_restart_recovery_required",
+        "needs_reconciliation": True,
+        "session_restart_reconciliation": {
+            "reason_code": exc.reason_code,
+            **exc.detail,
+        },
+    }
+    await state.ports.terminal.update_runtime_task(
+        state.run_uuid,
+        status="needs_reconciliation",
+        result_summary="Worker-restart recovery requires operator reconciliation.",
+        metadata_json=metadata,
+    )
+    if state.agent is None or not state.session_id:
+        return
+    try:
+        await state.ports.events.broadcast(
+            state.agent.id,
+            state.session_id,
+            {
+                "type": "runtime_reconciliation_required",
+                "run_id": str(state.run_uuid),
+                "reason_code": exc.reason_code,
+                **exc.detail,
+                "retryable": False,
+            },
+        )
+    except Exception as broadcast_exc:
+        state.ports.runtime.logger.warning(
+            "[WebChatRun] Restart reconciliation broadcast failed for {}: {}",
+            state.run_uuid.hex,
+            broadcast_exc,
+        )
 
 
 async def _handle_cancelled_failure(state: _WebChatRunState) -> None:

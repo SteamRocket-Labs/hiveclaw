@@ -401,6 +401,10 @@ class AgentManager:
         agent.container_port = None
         return True
 
+    def has_agent_files(self, agent_id: uuid.UUID) -> bool:
+        """Read the same directory archived by the cleanup operation."""
+        return self._agent_dir(agent_id).exists()
+
     async def archive_agent_files(self, agent_id: uuid.UUID) -> None:
         """Archive (move) agent files to a backup location."""
         agent_dir = self._agent_dir(agent_id)

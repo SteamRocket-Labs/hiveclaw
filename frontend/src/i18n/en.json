@@ -567,6 +567,10 @@
       "detail": "Detail"
     },
     "hrRecovery": {
+      "loadFailed": "Could not load interrupted creations or pending cleanup.",
+      "cleanupStatus": "File cleanup pending",
+      "cleanupPending": "Removal is committed. Retry only the remaining file archival; the employee will not be removed again.",
+      "retryCleanup": "Retry file cleanup",
       "description": "Resume the original HR session or recover provisioning directly—no model restatement required.",
       "eyebrow": "HR recovery",
       "operatorRequired": "Operator reconciliation is required before retry.",
@@ -3840,6 +3844,10 @@
     },
     "digitalEmployees": {
       "title": "Digital Employee Management",
+      "pendingCleanupTitle": "Pending file cleanup",
+      "cleanupPending": "Deletion is committed. File archival is pending; retry only the cleanup below.",
+      "cleanupLoadFailed": "Could not check pending file cleanup.",
+      "retryCleanup": "Retry file cleanup",
       "description": "Company admins can review and remove tenant digital employees from this governed backend surface.",
       "adminOnly": "Only company administrators can manage digital employees here.",
       "employeeDeleted": "Digital employee deleted.",

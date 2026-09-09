@@ -21,7 +21,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.database import async_session, tenant_scoped_session
+import app.database as _app_database  # late-bound: a test (or redeploy) may rebind the app session factories
 from app.models.runtime_task import (
     TERMINAL_BOUNDARY_RETRY_SECONDS,
     TERMINAL_BOUNDARY_TERMINAL_STATUSES,
@@ -509,14 +509,14 @@ class RuntimeTerminalBoundaryOutboxService:
         max_attempts: int = 8,
         reconcile_retry_seconds: int = TERMINAL_BOUNDARY_RETRY_SECONDS,
     ) -> None:
-        self._session_factory = session_factory or async_session
+        self._session_factory = session_factory or _app_database.async_session
         self._lease_seconds = max(1, int(lease_seconds))
         self._retry_base_seconds = max(0, int(retry_base_seconds))
         self._max_attempts = max(1, int(max_attempts))
         self._reconcile_retry_seconds = max(0, int(reconcile_retry_seconds))
 
     def _tenant_session(self, tenant_id: uuid.UUID, *, operation: str):
-        return tenant_scoped_session(
+        return _app_database.tenant_scoped_session(
             tenant_id,
             session_factory=self._session_factory,
             require_tenant=True,

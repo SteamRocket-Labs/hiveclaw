@@ -669,7 +669,13 @@ async def finalize_business_task_execution(
         return None
     tenant_id = row[0]
     async with tenant_scoped_session(tenant_id) as db:
-        runtime_task = await db.get(RuntimeTask, runtime_task_id, with_for_update=True)
+        from app.services.runtime_terminal_settlement import lock_runtime_task_with_session_authority
+
+        # Advisory → row: finalization settles the run through the shared
+        # terminal boundary, which acquires the session advisory; locking the
+        # RuntimeTask row first is the demonstrated row → advisory edge
+        # against an in-flight transcript append of the same session.
+        runtime_task = await lock_runtime_task_with_session_authority(db, task_id=runtime_task_id)
         if runtime_task is None:
             return None
         metadata = dict(runtime_task.metadata_json or {})

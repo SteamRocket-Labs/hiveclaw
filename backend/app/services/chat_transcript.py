@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -101,6 +101,38 @@ async def lock_transcript_session(db: AsyncSession, *, session_id: uuid.UUID) ->
         # invert the global advisory -> row-lock order and can deadlock.
         with db.no_autoflush:
             await db.execute(select(func.pg_advisory_xact_lock(lock_key)))
+
+
+def _coerce_session_ids(session_ids: Iterable[uuid.UUID | str | None]) -> list[uuid.UUID]:
+    coerced: set[uuid.UUID] = set()
+    for value in session_ids:
+        if value is None:
+            continue
+        try:
+            coerced.add(uuid.UUID(str(value)))
+        except (ValueError, TypeError):
+            continue
+    return sorted(coerced, key=lambda session_id: session_id.bytes)
+
+
+async def lock_transcript_sessions(db: AsyncSession, *, session_ids: Iterable[uuid.UUID | str | None]) -> None:
+    """Acquire several session advisories in one deterministic global order.
+
+    Batch terminal writers (agent soft-delete, root-user offboarding) settle
+    RuntimeTask rows across several sessions through the shared terminal
+    settlement, which acquires each task's session advisory.  Locking the
+    RuntimeTask rows FIRST would put such a caller on the row → advisory
+    side of the global order and deadlock against any advisory-first writer
+    of the same session (an in-flight transcript append, the Stop fence, the
+    canonical web-chat terminal writer).  Holding EVERY affected session
+    advisory BEFORE any RuntimeTask row lock keeps the whole graph
+    advisory → row; acquiring the advisories in canonical sorted order keeps
+    two multi-session batch writers from cycling among themselves.  Each
+    lock is reentrant per session, so overlapping holders are unaffected.
+    """
+
+    for session_id in _coerce_session_ids(session_ids):
+        await lock_transcript_session(db, session_id=session_id)
 
 
 async def read_transcript_revision(

@@ -110,6 +110,53 @@ def migrated_pg_url(pg_container) -> str:
     return url
 
 
+@pytest.fixture(autouse=True)
+def _route_default_app_engine(migrated_pg_url):
+    """Route the app's process-level default engine to the integration container.
+
+    ``app.database`` builds its engine at import time from ``DATABASE_URL``,
+    whose default points at the developer's local ``localhost:5432/hive``
+    database.  Any app consumer that is not explicitly seam-patched by a test
+    would silently read/write that stale local database (or fail on its
+    missing objects) instead of the migrated container.  This fixture binds
+    the routed container engine/sessionmaker into ``app.database`` AND into
+    every already-imported module that captured the default objects at import
+    time, including the runtime's ``_async_session`` alias (identity-matched,
+    so test-local monkeypatched closures are never touched). Restore at each
+    test boundary, including imports made during the test: routing must not
+    leak a NullPool into later service tests or pool-configuration checks.
+    Functions with captured factory defaults still receive the container
+    factory explicitly at their existing injection seam.
+    """
+    import sys
+
+    import app.database as app_database
+
+    original_engine = app_database.engine
+    original_async_session = app_database.async_session
+
+    routed_engine = create_async_engine(migrated_pg_url, poolclass=NullPool)
+    routed_async_session = async_sessionmaker(routed_engine, class_=AsyncSession, expire_on_commit=False)
+
+    def _route(engine_before, engine_after, factory_before, factory_after):
+        for module in list(sys.modules.values()):
+            if module is None or not getattr(module, "__name__", "").startswith(("app.", "tests.")):
+                continue
+            for name, before, after in (
+                ("engine", engine_before, engine_after),
+                ("async_session", factory_before, factory_after),
+                ("_async_session", factory_before, factory_after),
+            ):
+                if getattr(module, name, None) is before:
+                    setattr(module, name, after)
+
+    _route(original_engine, routed_engine, original_async_session, routed_async_session)
+    try:
+        yield
+    finally:
+        _route(routed_engine, original_engine, routed_async_session, original_async_session)
+
+
 @pytest.fixture()
 async def owner_engine(migrated_pg_url):
     """Engine connected as the migration-running owner — mirrors production's
@@ -145,3 +192,35 @@ def app_user_sessionmaker(app_user_engine):
     ``hive`` (the POSTGRES_USER init user) — switching the app to a
     non-superuser role is the P15 deployment task."""
     return async_sessionmaker(app_user_engine, class_=AsyncSession, expire_on_commit=False)
+
+
+@pytest.fixture
+def drain_terminal_boundary_for_task(owner_sessionmaker):
+    """Poll the real bounded worker lane across shared-container discovery pages."""
+    from sqlalchemy import func, select
+
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+    from app.models.tenant import Tenant
+
+    async def drain(lane, *, task_id, worker_id, limit=20):
+        async with owner_sessionmaker() as db:
+            tenant_count = await db.scalar(select(func.count()).select_from(Tenant))
+        # Earlier tests may leave more than a page of work. Keep the product's
+        # batch size and allow one bounded sweep; require THIS task's receipts.
+        for _ in range(max(1, (tenant_count + limit - 1) // limit)):
+            counts = await lane(worker_id=worker_id, limit=limit, session_factory=owner_sessionmaker)
+            async with owner_sessionmaker() as db:
+                states = list(
+                    (
+                        await db.scalars(
+                            select(RuntimeTerminalBoundaryOutbox.status).where(
+                                RuntimeTerminalBoundaryOutbox.runtime_task_id == task_id
+                            )
+                        )
+                    )
+                )
+            if states and all(state == "delivered" for state in states):
+                return counts
+        pytest.fail(f"Target boundary not delivered within discovery sweep: states={states}, counts={counts}")
+
+    return drain

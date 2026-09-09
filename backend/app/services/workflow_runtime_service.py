@@ -1302,9 +1302,12 @@ class WorkflowRuntimeService:
                 budget_run = await session.scalar(
                     select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == loaded.task.budget_run_id).with_for_update()
                 )
-            task = (
-                await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id).with_for_update())
-            ).scalar_one_or_none()
+            from app.services.runtime_terminal_settlement import lock_runtime_task_with_session_authority
+
+            # Advisory → row: terminal settlement below acquires the session
+            # advisory; locking the row first is the demonstrated row →
+            # advisory deadlock edge against an in-flight transcript append.
+            task = await lock_runtime_task_with_session_authority(session, task_id=run_id)
             if task is None or task.task_type != "workflow":
                 raise WorkflowRunNotFound(str(run_id))
 
@@ -1462,11 +1465,10 @@ class WorkflowRuntimeService:
 
     async def kill_run(self, run_id: uuid.UUID | str, *, tenant_id: uuid.UUID | str | None = None) -> str:
         async with self._session(tenant_id) as session:
-            task = (
-                await session.execute(
-                    select(RuntimeTask).where(RuntimeTask.id == uuid.UUID(str(run_id))).with_for_update()
-                )
-            ).scalar_one_or_none()
+            from app.services.runtime_terminal_settlement import lock_runtime_task_with_session_authority
+
+            # Advisory → row for the terminal kill settlement below.
+            task = await lock_runtime_task_with_session_authority(session, task_id=uuid.UUID(str(run_id)))
             if task is None:
                 raise WorkflowRunNotFound(str(run_id))
             metadata = dict(task.metadata_json or {})
@@ -1637,7 +1639,6 @@ class WorkflowRuntimeService:
             )
             if tenant_id is not None:
                 tasks = [t for t in tasks if (t.metadata_json or {}).get("tenant_id") == str(tenant_id)]
-            tasks = [t for t in tasks if (t.metadata_json or {}).get("kind") != "a2a_workflow"]
             run_ids = [t.id for t in tasks]
             counts: dict[uuid.UUID, dict[str, int]] = {rid: {} for rid in run_ids}
             promoted: dict[uuid.UUID, uuid.UUID] = {}
@@ -1704,10 +1705,6 @@ class WorkflowRuntimeService:
 
         resumed: list[ResumedRun] = []
         for run_id, tenant_value, run_status, metadata in pending:
-            if metadata.get("kind") == "a2a_workflow":
-                # Full-Agent graphs are claimed by their own native worker path,
-                # never compiled as axis-1 governed-leaf workflows.
-                continue
             if not tenant_value:
                 logger.warning("[Workflow] run %s has no tenant mirror; skipping auto-resume", run_id)
                 continue
@@ -2093,9 +2090,11 @@ class WorkflowRuntimeService:
             from app.models.workflow import WorkflowLeafCall
             from app.services.runtime_task_fence import assert_runtime_task_fence
 
-            task = (
-                await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id).with_for_update())
-            ).scalar_one()
+            from app.services.runtime_terminal_settlement import lock_runtime_task_with_session_authority
+
+            # Advisory → row: completion settlement below acquires the
+            # session advisory; the row lock must not precede it.
+            task = await lock_runtime_task_with_session_authority(session, task_id=run_id)
             assert_runtime_task_fence(task)
             task_metadata = dict(task.metadata_json or {})
             if (

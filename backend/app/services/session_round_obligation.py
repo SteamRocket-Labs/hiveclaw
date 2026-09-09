@@ -459,6 +459,77 @@ async def settle_dispatched_plan(
     return rows
 
 
+async def release_dispatched_plans_without_sealed_result(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    run_id: uuid.UUID,
+) -> dict[str, int]:
+    """Restart recovery for plans whose round never sealed.
+
+    A worker death between ``dispatch_committed_plan`` and the provider seal
+    leaves the next-round plan ``dispatched`` with its obligations ``claimed``
+    forever.  The reclaimed worker re-enters the interrupted round with a new
+    fence generation, so ``commit_next_round_plan`` cannot reuse that plan.
+    When the target round has no sealed result, the plan is abandoned and its
+    still-claimed, unsettled obligations return to ``pending`` so the fresh
+    round can claim them.  Obligations of rounds that did seal are left alone;
+    their settlement is recoverable from the seal itself.
+    """
+    from app.models.session_v2 import SessionModelResult
+
+    plans = list(
+        (
+            await db.execute(
+                select(SessionNextRoundPlan)
+                .where(
+                    SessionNextRoundPlan.tenant_id == tenant_id,
+                    SessionNextRoundPlan.run_id == run_id,
+                    SessionNextRoundPlan.state == "dispatched",
+                )
+                .with_for_update()
+            )
+        ).scalars()
+    )
+    released_plans = 0
+    released_obligations = 0
+    for plan in plans:
+        target_result = await db.scalar(
+            select(SessionModelResult).where(
+                SessionModelResult.tenant_id == tenant_id,
+                SessionModelResult.run_id == run_id,
+                SessionModelResult.round_id == plan.next_round_id,
+                SessionModelResult.state.in_(("sealed", "round_committed")),
+            )
+        )
+        if target_result is not None:
+            continue
+        plan.state = "abandoned"
+        plan.version = int(plan.version) + 1
+        released_plans += 1
+        obligation_ids = [uuid.UUID(value) for value in plan.obligation_ids_json or []]
+        if not obligation_ids:
+            continue
+        rows = list(
+            (
+                await db.execute(
+                    select(SessionRoundObligation)
+                    .where(SessionRoundObligation.id.in_(obligation_ids))
+                    .with_for_update()
+                )
+            ).scalars()
+        )
+        for row in rows:
+            if row.state != "claimed" or row.settlement_ref:
+                continue
+            row.state = "pending"
+            row.claim_owner = None
+            row.claim_lease_expires_at = None
+            row.version = int(row.version) + 1
+            released_obligations += 1
+    return {"released_plans": released_plans, "released_obligations": released_obligations}
+
+
 async def recover_expired_obligations_once(
     db: AsyncSession,
     *,
@@ -527,6 +598,7 @@ __all__ = [
     "dispatch_committed_plan",
     "persist_round_obligations",
     "recover_expired_obligations_once",
+    "release_dispatched_plans_without_sealed_result",
     "settle_dispatched_plan",
     "unresolved_round_obligations",
 ]

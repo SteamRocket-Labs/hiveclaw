@@ -439,15 +439,14 @@ async def test_business_task_claim_quarantines_an_invalid_projection_link(monkey
         terminal_boundary_generation=1,
     )
     db = _BusinessTaskDB([runtime_task], None)
-    enqueued = []
+    deferred: list[list] = []
 
-    async def fake_settle(_db, task, **_kwargs):
-        enqueued.append((task.id, task.status))
-        task.terminal_boundary_enqueued_at = datetime.now(timezone.utc)
+    async def fake_finish(task_ids):
+        deferred.append(list(task_ids))
 
     monkeypatch.setattr(
-        "app.services.runtime_terminal_settlement.settle_and_enqueue_runtime_task_terminal",
-        fake_settle,
+        "app.services.runtime_task_claim_service._finish_deferred_business_task_quarantines",
+        fake_finish,
     )
 
     claimed = await RuntimeTaskClaimService(
@@ -461,12 +460,19 @@ async def test_business_task_claim_quarantines_an_invalid_projection_link(monkey
     assert runtime_task.status == "needs_reconciliation"
     assert runtime_task.metadata_json["phase"] == "terminal"
     assert "link" in runtime_task.result_summary
-    assert enqueued == [(runtime_task.id, "needs_reconciliation")]
+    # The mechanical terminal settlement is deferred to its own
+    # advisory-first transaction AFTER the claim commit (seventh correction);
+    # nothing settles synchronously inside the claim transaction.
+    assert deferred == [[runtime_task.id]]
     assert db.commits == 1
 
 
 @pytest.mark.asyncio
-async def test_invalid_business_task_claim_commits_terminal_outbox_atomically(owner_sessionmaker):
+async def test_invalid_business_task_claim_commits_terminal_outbox_atomically(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, drain_terminal_boundary_for_task
+):
+    import app.database as app_database
+
     from app.database import tenant_scoped_session
     from app.models.agent import Agent
     from app.models.runtime_task import RuntimeTask
@@ -475,6 +481,7 @@ async def test_invalid_business_task_claim_commits_terminal_outbox_atomically(ow
     from app.models.user import User
     from app.services.runtime_task_claim_service import RuntimeTaskClaimService
 
+    monkeypatch.setattr(app_database, "async_session", owner_sessionmaker)
     tenant_id, user_id, agent_id, runtime_task_id = (uuid4() for _ in range(4))
     async with owner_sessionmaker() as db:
         db.add(Tenant(id=tenant_id, name="Claim quarantine", slug=f"claim-{tenant_id.hex[:12]}"))
@@ -512,13 +519,28 @@ async def test_invalid_business_task_claim_commits_terminal_outbox_atomically(ow
         )
         await db.commit()
 
-    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+    async with tenant_scoped_session(tenant_id, session_factory=app_user_sessionmaker) as db:
         claimed = await RuntimeTaskClaimService(
             db=db,
             worker_id="quarantine-worker",
             task_types=("business_task",),
         ).claim_available(batch_size=1)
     assert claimed == []
+
+    # The claim transaction commits only the durable quarantine status; the
+    # terminal fence is stamped by the deferred advisory-first finish (seventh
+    # correction), and the direct terminal-boundary lane then enqueues and
+    # delivers the outbox row this business task's consumers read.
+    from app.services.runtime_task_claim_service import _finish_deferred_business_task_quarantines
+
+    await _finish_deferred_business_task_quarantines([runtime_task_id])
+
+    from app.services.runtime_task_worker import drain_direct_terminal_boundary_outbox_once
+
+    counts = await drain_terminal_boundary_for_task(
+        drain_direct_terminal_boundary_outbox_once, task_id=runtime_task_id, worker_id="quarantine-drain", limit=5
+    )
+    assert counts["delivered"] >= 1, counts
 
     async with owner_sessionmaker() as db:
         task = await db.get(RuntimeTask, runtime_task_id)
@@ -531,4 +553,3 @@ async def test_invalid_business_task_claim_commits_terminal_outbox_atomically(ow
     assert task.terminal_boundary_enqueued_at is not None
     assert outbox is not None
     assert outbox.event_kind == "runtime_terminal"
-    assert outbox.status == "pending"

@@ -720,14 +720,91 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 
 # Reviewed normalized AST of direct bypass scopes and statically discoverable
 # contextmanager consumers. Predicates, locks, ORM writes, and add() targets are included.
-# 2026-09-09: reviewed trigger_daemon and runtime_notification_outbox module-source
-# changes: tenant-scoped V2 message matching and evidence-only budget-denied
-# projection. No added bypass callsites, grants, or widened privileged queries.
-# Reviewed superseded result-page bindings and workspace Skill uninstall.
-# Replacement outbox lookups retain exact tenant/parent predicates; no new bypass grant.
-# Same-session triggers now use owner-authorized canonical input admission and FIFO
-# dispatch; legacy run replay validates exact agent/session. No bypass grants changed.
-RLS_BYPASS_SCOPES_SHA256 = "0ee9527c1595954501b1915f8dff9287276cece91d41e2e641b3a2ab33e1f632"
+# 2026-09-07 reviewed refresh (SESSION-WORKER-RESTART-ROUND-001 correction):
+# the whole-module capability consumers ``app/services/session_model_round.py``
+# and ``app/services/session_round_obligation.py`` gained only tenant/session/
+# run/round-scoped SELECT/COUNT reads (committed-lane fences, the read-only
+# sealed-round resume receipt, dispatched-plan release) and the
+# kernel/runtime modules gained the sealed-round replay contract — no new
+# bypass authorization, scope, or callsite was introduced.
+# 2026-09-07 final-replay-effects correction re-verified the same delta: set
+# difference against HEAD is still exactly those two ``<module-source>``
+# entries (584 total unchanged); the post-commit accounting/Stop-fence work
+# (token_tracker keyed charge, web_chat_runtime settlement, kernel ledger,
+# session_stop_hook transcript fence) added no bypass scope or callsite.
+# 2026-09-07 final-replay-effects SECOND correction: per-round keyed charge
+# identity (kernel usage-fold charge + token_tracker FOR NO KEY UPDATE
+# serialization), settlement True/False/None truthfulness, the legacy unkeyed
+# accounting marker, Stop-fence claim-superseded rejection, and the stale
+# committed-lane fence again changed only those same two ``<module-source>``
+# entries (584 total unchanged; ADDED 2 / REMOVED 2); no new bypass scope,
+# authorization, or callsite.
+#
+# Third correction (worker-restart recovery/accounting): the charge lock-order
+# fix (Tenant -> User -> Agent incl. autoflush ordering), the suppressed
+# per-round ledger retry, the reconciled-root settlement validation, the
+# Stop-fence compare-and-set, and the late-bound app.database session
+# factories in the two terminal-boundary modules again changed only
+# ``<module-source>`` entries (584 total unchanged; ADDED 4 / REMOVED 4:
+# session_model_round, session_round_obligation, and the two boundary
+# modules whose import moved from ``from app.database import ...`` to a
+# late-bound module attribute); no new bypass scope, authorization, or
+# callsite.
+#
+# Fourth correction (completed-run accounting + Stop/terminal lock order):
+# the reachable completed-run token settlement with its pending receipt lane,
+# the advisory-first Stop-fence CAS with a non-waiting claim re-read, the
+# canonical advisory-first terminal-settlement entry, the probe/emit context
+# alignment, and the token-tracker counter refresh changed only the same
+# ``<module-source>`` entries (web_chat_runtime, session_stop_hook,
+# turn_orchestrator, token_tracker, runtime_terminal_settlement); no new
+# bypass scope, authorization, or callsite.
+#
+# Fifth correction (retry-lane durable enumeration, receipt merge base,
+# row-first batch callers): the oldest-first receipt/pending enumeration and
+# the receipt writer's populate_existing in web_chat_runtime, the killed→
+# cancelled transcript lifecycle mapping in runtime_terminal_settlement, and
+# the advisory-first batch ordering in agent_identity_lifecycle /
+# user_offboarding_service plus the new chat_transcript.lock_transcript_sessions
+# helper again changed only ``<module-source>``/function digests of those
+# same modules (live 585 / HEAD 584; ADDED 12 / REMOVED 11, net +1 = the new
+# lock_transcript_sessions function entry); the new code only takes sorted
+# transaction-scoped advisory locks and plain SELECTs — no new bypass scope,
+# authorization, or callsite.
+#
+# Sixth correction (advisory-first terminal lock order closed across
+# consumers; keyset-paged retry lane with rotation): the new
+# runtime_terminal_settlement.lock_runtime_task_batch_with_session_authority
+# helper (savepoint-restart advisory-first batch locking) is the only net-new
+# function entry (live 586 / HEAD 584; ADDED 2 / REMOVED 0 = the inherited
+# chat_transcript.lock_transcript_sessions working-tree entry plus this
+# helper); web_chat_runtime's keyset-paged retry lane, the advisory-first
+# conversions in runtime_task_service / session_permission_runtime /
+# workflow_runtime_service / runtime_reconciliation / business_task_runtime /
+# session_model_round / runtime_budget_service / agent_identity_lifecycle /
+# user_offboarding_service / scripts/reconcile_orphaned_trigger_runs and the
+# maintained tests changed only ``<module-source>``/function digests of those
+# same modules. The new code takes only sorted transaction-scoped advisory
+# locks, SAVEPOINTs, and plain SELECTs — no new bypass scope, authorization,
+# or callsite; the scanner was not weakened.
+# Seventh + eighth correction (cleanup-recovery reachability, cursor/rank
+# decoupling, recovery-attribution fixes): the one net-new bypass entry is
+# app/core/permissions.py::load_deleted_agent_for_cleanup — a cleanup-only
+# platform-admin lookup that mirrors _load_agent_for_user's exact boundary
+# (live-Tenant join, selected-company equality, tenantless quarantine) but
+# resolves ONLY already-soft-deleted rows with a plain SELECT on Agent; the
+# DELETE/HR cleanup retry surfaces, the HR typed-conflict mapping, the
+# settlement scan-cursor decoupling and the claim-service comment corrections
+# changed only ``<module-source>``/function digests of those same modules. No
+# new bypass authorization, callsite shape, or scanner weakening.
+# 2026-09-10 integration with current main: deleted-agent inventory and HR
+# cleanup recovery retain authenticated tenant/role/abandonment predicates.
+# Only load_deleted_agent_for_cleanup adds a bypass callsite; the scanner and
+# existing grants remain unchanged. Includes the candidate's formatted source.
+# Full-suite correction: terminal runs cannot re-arm a committed model round;
+# the existing exact tenant/run lookup is reused. HR cleanup keeps its result
+# limit. No query widening, new bypass, or scanner changes in this correction.
+RLS_BYPASS_SCOPES_SHA256 = "b2a25dfc940738bbd3b031bd7525ebec45a946af85fe7717b130dd20b12de51c"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:
@@ -936,6 +1013,14 @@ RLS_BYPASS_ALLOWLIST = (
             "app/core/permissions.py",
             "_load_agent_for_user",
             "f'platform-admin agent access lookup for {agent_id}'",
+            ("select:Agent",),
+        )
+    ),
+    _grant(
+        *(
+            "app/core/permissions.py",
+            "load_deleted_agent_for_cleanup",
+            "f'platform-admin deleted-agent cleanup lookup for {agent_id}'",
             ("select:Agent",),
         )
     ),

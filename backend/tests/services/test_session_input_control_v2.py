@@ -4754,7 +4754,18 @@ async def test_prevented_hook_context_is_carried_once_into_next_turn_provider_sn
         assert carry.model_request_snapshot_ref
 
 
-async def test_prepared_provider_request_is_not_replayed_by_a_new_runtime_claim(owner_sessionmaker) -> None:
+async def test_unsealed_prepared_provider_request_is_retaken_by_a_new_runtime_claim(owner_sessionmaker) -> None:
+    """A prepared request with no seal and no tool effect is retakeable.
+
+    SESSION-WORKER-RESTART-ROUND-001: the previous owner died before any
+    durable response or effect existed, so a reclaimed worker must be able to
+    retake the lane — always on a fresh internal attempt lane.  Provider
+    request ids never leave the process (no provider-side idempotency
+    exists), so a new lane costs nothing and fences the dead owner's late
+    seal/stream/fail callbacks.  Rounds that own a seal or an unsettled tool
+    effect stay ambiguous (guarded by
+    tests/integration/test_web_chat_worker_restart_round_recovery.py).
+    """
     from app.models.session_v2 import SessionModelResult
     from app.services.session_model_round import (
         ModelRoundNeedsReconciliation,
@@ -4769,6 +4780,14 @@ async def test_prepared_provider_request_is_not_replayed_by_a_new_runtime_claim(
     assert run_id is not None
     turn_id = f"turn-{run_id.hex}"
     messages = [{"role": "user", "content": "exact provider bytes"}]
+    common = dict(
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        run_id=run_id,
+        turn_id=turn_id,
+        round_index=1,
+    )
     async with owner_sessionmaker() as db:
         await bind_round_inputs(
             db,
@@ -4795,27 +4814,161 @@ async def test_prepared_provider_request_is_not_replayed_by_a_new_runtime_claim(
             attempt_owner="worker-a:claim-1",
         )
         await db.commit()
+        retaken_request_id = await prepare_model_request(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            round_index=1,
+            messages=messages,
+            tools=None,
+            provider="openai",
+            model="gpt-4.1",
+            attempt_owner="worker-b:claim-2",
+        )
+        await db.commit()
+        result = await db.scalar(
+            select(SessionModelResult).where(SessionModelResult.provider_request_id == retaken_request_id)
+        )
+        assert retaken_request_id != provider_request_id
+        assert retaken_request_id.endswith(":attempt:3")
+        assert result is not None and result.state == "prepared"
+        assert result.reconciliation_owner == "worker-b:claim-2"
+        assert result.version == 3  # placeholder, first prepare, retake
+        assert result.seal_json is None
+        fence_id = (result.model_request_snapshot_json or {})["request_fence"]["hive_provider_request_id"]
+        assert fence_id == retaken_request_id
+
+        # The dead owner's late seal no longer matches the retaken row: the
+        # fresh attempt lane is the callback fence.
+        from app.services.session_model_round import seal_model_response
+
         with pytest.raises(ModelRoundNeedsReconciliation):
+            await seal_model_response(
+                db,
+                provider_request_id=provider_request_id,
+                response={"content": "late old-worker response", "tool_calls": [], "finish_reason": "stop"},
+                **common,
+            )
+
+
+async def test_committed_round_is_immutable_under_repeat_and_stale_prepare(owner_sessionmaker) -> None:
+    """Committed provider evidence is never mutated by prepare again.
+
+    SESSION-WORKER-RESTART-ROUND-001 defect 3: a repeat prepare with the exact
+    request content idempotently re-arms the committed lane (the reclaimed
+    worker re-enters the round; the seal/commit callbacks return the existing
+    seal); any other repeat or stale prepare is a typed rejection that leaves
+    state, owner, version, request id and seal byte-identical.
+    """
+    from app.models.session_v2 import SessionModelResult
+    from app.services.session_model_round import (
+        ModelRoundNeedsReconciliation,
+        bind_round_inputs,
+        commit_model_response,
+        prepare_model_request,
+    )
+
+    tenant_id, _user_id, agent_id, session_id, run_id = await _seed_session(
+        owner_sessionmaker,
+        active_run=True,
+    )
+    assert run_id is not None
+    turn_id = f"turn-{run_id.hex}"
+    messages = [{"role": "user", "content": "exact provider bytes"}]
+    common = dict(
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        run_id=run_id,
+        turn_id=turn_id,
+        round_index=1,
+    )
+    async with owner_sessionmaker() as db:
+        await bind_round_inputs(db, **common)
+        await db.commit()
+        provider_request_id = await prepare_model_request(
+            db,
+            messages=messages,
+            tools=None,
+            provider="openai",
+            model="gpt-4.1",
+            attempt_owner="worker-a:claim-1",
+            **common,
+        )
+        await commit_model_response(
+            db,
+            provider_request_id=provider_request_id,
+            response={"content": "first committed answer", "tool_calls": [], "finish_reason": "stop"},
+            **common,
+        )
+        await db.commit()
+        row = await db.scalar(
+            select(SessionModelResult).where(
+                SessionModelResult.id.in_(select(SessionModelResult.id).where(SessionModelResult.run_id == run_id))
+            )
+        )
+        before = (row.state, row.version, row.provider_request_id, row.seal_json, row.round_committed_event_id)
+
+        # Identical content: idempotent re-arm on the committed lane.
+        replay_id = await prepare_model_request(
+            db,
+            messages=messages,
+            tools=None,
+            provider="openai",
+            model="gpt-4.1",
+            attempt_owner="worker-b:claim-2",
+            **common,
+        )
+        await db.commit()
+        assert replay_id == provider_request_id
+        await db.refresh(row)
+        assert (row.state, row.version, row.provider_request_id, row.seal_json, row.round_committed_event_id) == before
+
+        # Stale/drifted prepare on a LIVE run whose committed round is a
+        # no-tool final at the frontier: this is the committed-final
+        # sealed-replay lane — the regenerated prompt's transient drift
+        # (timestamps, restart annotations) cannot be required to match a
+        # request that is never re-sent — so it idempotently re-arms and
+        # leaves the committed facts byte-identical.
+        replay_id2 = await prepare_model_request(
+            db,
+            messages=[{"role": "user", "content": "different bytes"}],
+            tools=None,
+            provider="openai",
+            model="gpt-4.1",
+            attempt_owner="worker-b:claim-2",
+            **common,
+        )
+        await db.commit()
+        assert replay_id2 == provider_request_id
+        await db.refresh(row)
+        assert (row.state, row.version, row.provider_request_id, row.seal_json, row.round_committed_event_id) == before
+
+        # Once the run's terminal settlement has completed, the same drifted
+        # prepare is a typed rejection again: there is no recovery left to
+        # re-arm, and committed provider evidence stays immutable.
+        from app.models.runtime_task import RuntimeTask
+
+        task = await db.get(RuntimeTask, run_id)
+        task.status = "completed"
+        await db.commit()
+        with pytest.raises(ModelRoundNeedsReconciliation) as excinfo:
             await prepare_model_request(
                 db,
-                tenant_id=tenant_id,
-                agent_id=agent_id,
-                session_id=session_id,
-                run_id=run_id,
-                turn_id=turn_id,
-                round_index=1,
-                messages=messages,
+                messages=[{"role": "user", "content": "different bytes"}],
                 tools=None,
                 provider="openai",
                 model="gpt-4.1",
                 attempt_owner="worker-b:claim-2",
+                **common,
             )
         await db.commit()
-        result = await db.scalar(
-            select(SessionModelResult).where(SessionModelResult.provider_request_id == provider_request_id)
-        )
-        assert result is not None and result.state == "needs_reconciliation"
-        assert "ambiguous_owner" in str(result.reconciliation_owner)
+        assert "model_round_result_already_committed" in str(excinfo.value)
+        await db.refresh(row)
+        assert (row.state, row.version, row.provider_request_id, row.seal_json, row.round_committed_event_id) == before
 
 
 async def test_ambiguous_provider_failure_fences_result_run_and_event_chain(owner_sessionmaker) -> None:

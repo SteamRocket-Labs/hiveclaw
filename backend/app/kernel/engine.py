@@ -194,7 +194,9 @@ ExecuteTool = Callable[
     Awaitable[str | ToolContentEnvelope] | str | ToolContentEnvelope,
 ]
 PersistMemory = Callable[..., Awaitable[None] | None]
-RecordTokenUsage = Callable[[Any, int], Awaitable[None] | None]
+# (agent_id, tokens, *, idempotency_key=None) — the optional key carries a
+# round's exact durable charge identity so replay recovery cannot double-charge.
+RecordTokenUsage = Callable[..., Awaitable[bool | None] | bool | None]
 RecordInvocationSpan = Callable[..., Awaitable[None] | None]
 GetMaxTokens = Callable[[str, str, int | None], int]
 ExtractUsageTokens = Callable[[dict | None], int | None]
@@ -2680,6 +2682,19 @@ async def _execute_recovered_pending_tool_frames(
     frames = _recovered_pending_tool_frames(session)
     if not frames:
         return ""
+    if metadata.get("session_v2_durable_tool_lifecycle"):
+        # A Session V2 web run owns pending tool recovery through the durable
+        # invocation/effect fence (prepare → mark_effect_started → complete,
+        # plus the sealed-round replay).  The legacy manifest replay must not
+        # re-execute those calls nor inject a reconciliation notice that would
+        # diverge the re-entered round's provider request from its committed
+        # snapshot.
+        _remove_recovered_tool_frames_from_metadata(metadata, frames)
+        try:
+            _persist_recovery_manifest_checkpoint(request, delete_if_empty=True)
+        except Exception as exc:
+            logger.debug("[Kernel] recovered tool-frame checkpoint update failed: %s", exc)
+        return ""
 
     sections: list[str] = []
     replay_results: list[dict[str, Any]] = []
@@ -3749,21 +3764,24 @@ async def _continue_after_output_cap(
             "reasoning": dict(reasoning_kwargs),
         }
         if model_request_prepare is not None and round_index is not None:
-            continuation_request_id = str(
-                await _maybe_await(
-                    model_request_prepare(
-                        round_index=round_index,
-                        continuation_index=attempts,
-                        messages=continuation_messages,
-                        tools=None,
-                        provider=provider,
-                        model=model,
-                        wire_request=wire_request,
-                        provider_idempotency_supported=provider_idempotency_supported,
-                        provider_idempotency_key_applied=False,
-                    )
+            prepared_continuation = await _maybe_await(
+                model_request_prepare(
+                    round_index=round_index,
+                    continuation_index=attempts,
+                    messages=continuation_messages,
+                    tools=None,
+                    provider=provider,
+                    model=model,
+                    wire_request=wire_request,
+                    provider_idempotency_supported=provider_idempotency_supported,
+                    provider_idempotency_key_applied=False,
                 )
             )
+            if isinstance(prepared_continuation, dict):
+                # Committed-round resume receipts are logical-root only; a
+                # continuation lane still addresses the provider by its id.
+                prepared_continuation = prepared_continuation.get("provider_request_id")
+            continuation_request_id = str(prepared_continuation) if prepared_continuation is not None else None
         continuation = await _stream_with_cancel(
             client,
             cancel_event=cancel_event,

@@ -103,21 +103,54 @@ async def reconcile_orphaned_trigger_runs(*, apply: bool, older_than_minutes: in
             require_tenant=True,
             source="reconcile_orphaned_trigger_runs",
         ) as db:
-            tasks = list(
-                (
-                    await db.execute(
-                        select(RuntimeTask)
-                        .where(
-                            RuntimeTask.id.in_(task_ids),
-                            RuntimeTask.task_type == "trigger",
-                            RuntimeTask.status == "running",
-                        )
-                        .with_for_update(skip_locked=True)
+            from app.services.chat_transcript import lock_transcript_sessions
+
+            # Advisory → row: the terminal settlement below acquires each
+            # session-bound task's session advisory. Acquire the advisories
+            # (canonical sorted order) BEFORE the skip_locked batch so this
+            # sweep is never on the row → advisory side of the global order
+            # against an in-flight transcript append of the same session.
+            prescan = (
+                await db.execute(
+                    select(RuntimeTask.id, RuntimeTask.parent_session_id, RuntimeTask.parent_agent_id).where(
+                        RuntimeTask.id.in_(task_ids),
+                        RuntimeTask.task_type == "trigger",
+                        RuntimeTask.status == "running",
                     )
                 )
-                .scalars()
-                .all()
+            ).all()
+            prescan_ids = {row.id for row in prescan}
+            await lock_transcript_sessions(
+                db,
+                session_ids=[
+                    row.parent_session_id
+                    for row in prescan
+                    if row.parent_session_id and row.parent_agent_id is not None
+                ],
             )
+            tasks = [
+                task
+                for task in (
+                    (
+                        await db.execute(
+                            select(RuntimeTask)
+                            .where(
+                                RuntimeTask.id.in_(task_ids),
+                                RuntimeTask.task_type == "trigger",
+                                RuntimeTask.status == "running",
+                            )
+                            .with_for_update(skip_locked=True)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                # A row that appeared after the prescan has no held advisory;
+                # repairing it under the row lock would be the row → advisory
+                # edge. It stays running and is swept by the next run of this
+                # script once its session is in the prescan.
+                if task.id in prescan_ids
+            ]
             for task in tasks:
                 created_at = getattr(task, "created_at", None)
                 if created_at is not None:

@@ -672,13 +672,18 @@ async def test_parallel_batch_applies_pre_tool_hook_modifications():
     from app.runtime.hooks import HookEvent, HookResult, hook_registry
 
     seen_paths: list[str] = []
+    second_tool_finished = asyncio.Event()
 
     def rewrite_args(ctx):
         return HookResult(block=False, modified_args={"path": f"safe::{ctx.tool_args['path']}"})
 
     async def execute_tool(tool_name, args, request, emit_event):
         del tool_name, request, emit_event
+        if args["path"] == "safe::a.txt":
+            await asyncio.wait_for(second_tool_finished.wait(), timeout=1)
         seen_paths.append(args["path"])
+        if args["path"] == "safe::b.txt":
+            second_tool_finished.set()
         return args["path"]
 
     hook_registry.clear()
@@ -732,4 +737,11 @@ async def test_parallel_batch_applies_pre_tool_hook_modifications():
         hook_registry.clear()
 
     assert result.content == "done"
-    assert seen_paths == ["safe::a.txt", "safe::b.txt"]
+    # Execution can finish in reverse order; rewrites and the model's
+    # canonical tool-result order must both survive that scheduling.
+    assert seen_paths == ["safe::b.txt", "safe::a.txt"]
+    tool_messages = [message for message in fake_client.calls[1]["messages"] if message.role == "tool"]
+    assert [(message.tool_call_id, message.content) for message in tool_messages] == [
+        ("call_1", "safe::a.txt"),
+        ("call_2", "safe::b.txt"),
+    ]

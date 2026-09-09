@@ -18,9 +18,26 @@ if TYPE_CHECKING:
 
 
 class _TurnTokenUsageLedger:
-    """Track one invocation's delta without double-charging a resumed turn."""
+    """Track one invocation's delta without double-charging a resumed turn.
 
-    __slots__ = ("initial", "recorded")
+    A keyed charge that is SUPPRESSED (returns ``None``: the transaction
+    failed and no durable evidence committed) is not silently forgotten: the
+    exact ``(tokens, idempotency_key)`` pair stays pending and is retried,
+    under its OWN round key, at every subsequent accounting boundary of the
+    same turn (the next round's fold and every exit boundary).  Retrying
+    under the failed round's key — never a later round's key — means a
+    suppressed round can never migrate its balance onto another round's
+    identity, and the keyed charge itself is idempotent, so a retry that
+    races the restart settlement dedupes durably.  Attempts are bounded by
+    the turn's own structure (one retry per accounting boundary, each a
+    single bounded transaction); a failure still pending at the very end of
+    the turn remains recoverable by the restart loader's settlement under
+    the same round identity.  Unkeyed charges keep the legacy swallow-and-
+    continue behavior: without a key a retry could double-charge, so none
+    is attempted.
+    """
+
+    __slots__ = ("initial", "recorded", "pending_retries")
 
     def __init__(self, initial: Any) -> None:
         try:
@@ -28,6 +45,32 @@ class _TurnTokenUsageLedger:
         except (TypeError, ValueError):
             self.initial = 0
         self.recorded = 0
+        self.pending_retries: list[tuple[int, str, int]] = []
+
+    async def _retry_pending(
+        self,
+        record_token_usage: Any,
+        maybe_await: Any,
+        agent_id: Any,
+    ) -> None:
+        if not self.pending_retries or not agent_id:
+            return
+        still_pending: list[tuple[int, str, int]] = []
+        for tokens, key, attempts in self.pending_retries:
+            if attempts >= 2:
+                # Bounded per-entry retries: persistently suppressed keys are
+                # dropped from the in-turn loop (an unbounded retry-all on
+                # every accounting boundary would amplify O(N²) charge
+                # transactions exactly during the DB failure causing the
+                # suppression).  The durable key keeps them recoverable by
+                # the completed-run/restart settlement under the same round
+                # identity.
+                still_pending.append((tokens, key, attempts))
+                continue
+            outcome = await self._charge(record_token_usage, maybe_await, agent_id, tokens, key)
+            if outcome is None:
+                still_pending.append((tokens, key, attempts + 1))
+        self.pending_retries = still_pending
 
     async def record(
         self,
@@ -35,12 +78,30 @@ class _TurnTokenUsageLedger:
         maybe_await: Any,
         agent_id: Any,
         accumulated_tokens: int,
+        idempotency_key: str | None = None,
     ) -> None:
+        await self._retry_pending(record_token_usage, maybe_await, agent_id)
         invocation_tokens = max(accumulated_tokens - self.initial, 0)
         unrecorded_tokens = max(invocation_tokens - self.recorded, 0)
         if agent_id and unrecorded_tokens > 0:
-            await maybe_await(record_token_usage(agent_id, unrecorded_tokens))
+            outcome = await self._charge(record_token_usage, maybe_await, agent_id, unrecorded_tokens, idempotency_key)
+            # Whether this call committed the charge or the durable evidence
+            # proved it already committed in a prior attempt, those tokens are
+            # accounted.  A suppressed KEYED failure is kept pending for a
+            # bounded retry under the same key (see class docstring); a
+            # suppressed unkeyed failure keeps the legacy swallow-and-continue
+            # behavior rather than risk a double charge.
             self.recorded += unrecorded_tokens
+            if outcome is None and idempotency_key:
+                self.pending_retries.append((unrecorded_tokens, str(idempotency_key), 0))
+
+    @staticmethod
+    async def _charge(
+        record_token_usage: Any, maybe_await: Any, agent_id: Any, tokens: int, idempotency_key: str | None
+    ) -> Any:
+        if idempotency_key:
+            return await maybe_await(record_token_usage(agent_id, tokens, idempotency_key=str(idempotency_key)))
+        return await maybe_await(record_token_usage(agent_id, tokens))
 
 
 class _RuntimeSpanRecorder:
@@ -244,28 +305,95 @@ async def _execute_committed_provider_round(
         "reasoning": dict(reasoning_kwargs),
     }
     provider_request_id: str | None = None
+    prepare_receipt: dict[str, Any] | None = None
     if request.model_request_prepare is not None:
-        provider_request_id = str(
-            await support._maybe_await(
-                request.model_request_prepare(
-                    round_index=logical_round_index,
-                    messages=stream_messages,
-                    tools=tools_for_llm or None,
-                    provider=provider,
-                    model=model,
-                    wire_request=wire_request,
-                    continuation_index=0,
-                    provider_idempotency_supported=provider_idempotency_supported,
-                    provider_idempotency_key_applied=False,
-                )
+        prepared = await support._maybe_await(
+            request.model_request_prepare(
+                round_index=logical_round_index,
+                messages=stream_messages,
+                tools=tools_for_llm or None,
+                provider=provider,
+                model=model,
+                wire_request=wire_request,
+                continuation_index=0,
+                provider_idempotency_supported=provider_idempotency_supported,
+                provider_idempotency_key_applied=False,
             )
         )
+        if isinstance(prepared, dict):
+            # A committed-round resume receipt: the caller's durable seal is
+            # the authoritative model-authored response for this round.
+            prepare_receipt = dict(prepared)
+            provider_request_id = str(prepare_receipt.get("provider_request_id") or "") or None
+        elif prepared is not None:
+            provider_request_id = str(prepared)
 
     llm_started_ms = support.monotonic_ms()
     attempt_state.update(
         provider_request_id=provider_request_id,
         llm_started_ms=llm_started_ms,
     )
+    sealed_round_resume = dict((prepare_receipt or {}).get("sealed_round_resume") or {})
+    if sealed_round_resume:
+        # Worker-restart recovery of a committed round whose tools never
+        # finished: the immutable seal is replayed instead of reissuing the
+        # provider generation, so a nondeterministic provider can never
+        # replace already-committed model semantics. Pending tool calls
+        # execute through the normal governed mechanism below; calls that
+        # already settled resume from their durable tool_result evidence.
+        from app.services.llm_client import LLMResponse
+
+        sealed_payload = dict(sealed_round_resume.get("response") or {})
+        response = LLMResponse(
+            content=str(sealed_payload.get("content") or ""),
+            tool_calls=list(sealed_payload.get("tool_calls") or []),
+            reasoning_content=sealed_payload.get("reasoning_content"),
+            reasoning_signature=sealed_payload.get("reasoning_signature"),
+            finish_reason=sealed_payload.get("finish_reason"),
+            usage=dict(sealed_payload.get("usage") or {}) or None,
+            model=sealed_payload.get("model"),
+        )
+        provider_prompt_ledger = support.build_provider_prompt_ledger(
+            messages=stream_messages,
+            tools=tools_for_llm or None,
+            provider=provider,
+            model=model,
+            round_index=logical_round_index,
+            model_window_tokens=getattr(active_model, "max_input_tokens", None),
+            cache_hints_applied=bool(self._deps.apply_cache_hints),
+        )
+        cache_metrics = support.extract_cache_metrics(
+            response.usage,
+            provider=provider or "unknown",
+        )
+        output_tokens = support._usage_int(
+            response.usage or {},
+            "output_tokens",
+            "completion_tokens",
+            "candidatesTokenCount",
+        )
+        replayed_receipt = dict((prepare_receipt or {}).get("model_result_receipt") or {})
+        return {
+            "response": response,
+            "provider_request_id": provider_request_id,
+            "llm_started_ms": llm_started_ms,
+            "empty": False,
+            # The replayed round's usage was already folded into the resume
+            # baseline and charged (or chargeable) under its durable provider
+            # request identity — see the usage fold in run_agent_turn.
+            "sealed_replay": True,
+            # A replayed committed round owns its OWN durable seal: terminal
+            # settlement must reference this round's committed result, not the
+            # previous round's receipt.
+            "result_receipt": replayed_receipt or previous_result_receipt,
+            "provider_prompt_ledger": provider_prompt_ledger,
+            "cache_metrics": cache_metrics,
+            "output_tokens": output_tokens,
+            "settled_tool_results": {
+                str(key): str(value)
+                for key, value in dict(sealed_round_resume.get("settled_tool_results") or {}).items()
+            },
+        }
     response = await support._stream_with_cancel(
         client,
         cancel_event=request.cancel_event,
@@ -405,6 +533,276 @@ async def _execute_committed_provider_round(
     }
 
 
+async def _finalize_model_response(
+    *,
+    support: Any,
+    request: Any,
+    response: Any,
+    runtime_config: Any,
+    api_messages: list[Any],
+    logical_round_index: int,
+    provider_request_id: str | None,
+    accumulated_tokens: int,
+    tools_for_llm: list[dict[str, Any]],
+    collected_parts: list[dict[str, Any]],
+    last_model_result_receipt: dict[str, Any] | None,
+    _enforce_generated_source_permissions: Any,
+    _flush_buffered_chunks: Any,
+    _emit_event: Any,
+    _record_new_token_usage: Any,
+) -> InvocationResult | None:
+    """Finalize authorized output; None means the Stop hook requested another round."""
+    InvocationResult = support.InvocationResult
+    LLMMessage = support.LLMMessage
+    _llm_messages_to_dicts = support._llm_messages_to_dicts
+    _emit_runtime_hook = support._emit_runtime_hook
+    build_done_event = support.build_done_event
+
+    final_content = response.content
+    final_content, _source_permission_allowed = await _enforce_generated_source_permissions(final_content)
+    if _source_permission_allowed:
+        await _flush_buffered_chunks()
+    from app.runtime.hooks import HookEvent
+
+    _session_source = request.session_context.source if request.session_context else "runtime"
+    _stop_metadata = {
+        "tenant_id": str(runtime_config.tenant_id) if runtime_config.tenant_id else None,
+        "agent_name": request.agent_name or "Agent",
+        "turn_count": logical_round_index,
+        "execution_mode": getattr(runtime_config, "execution_mode", None) or request.invocation_scope,
+    }
+    if request.session_context is not None:
+        _stop_metadata.update(
+            {
+                "runtime_task_id": request.session_context.metadata.get("runtime_task_id")
+                or request.session_context.metadata.get("task_id"),
+            }
+        )
+    _stop_result: Any = None
+    _stop_fence_mode = "emit"
+    from app.services.session_stop_hook import (
+        StopHookFenceUnavailable,
+        complete_stop_boundary,
+        recover_or_fence_stop_boundary,
+    )
+
+    _governed_stop_hooks = False
+    # The governed probe constructs a HookContext with exactly
+    # the same field set as the emit below (two equal-shaped
+    # objects, not one shared instance), so a matcher can
+    # never observe a different field set at fence-decision
+    # time than at emit time (an earlier probe omitted
+    # ``messages`` and ``last_assistant_message``; a
+    # programmatic matcher reading them would fence nothing
+    # yet still emit — an unfenced consequential effect).
+    _stop_probe_context: Any = None
+    try:
+        from app.runtime import hooks as _hooks_module
+
+        # Context-scoped governed check: the registry is a
+        # process-global singleton and ``handler_count`` is
+        # matcher-blind, so counting ALL STOP bindings would
+        # let an unrelated tenant's hook force this turn's
+        # safe final through the consequential-effect fence
+        # (and its fail-closed read path).  The probe context
+        # carries the exact fields the emit below carries, so
+        # only bindings whose own matcher/disabled-state
+        # would actually run THIS context count as governed.
+        _stop_probe_context = _hooks_module.HookContext(
+            event=_hooks_module.HookEvent.STOP,
+            agent_id=request.agent_id,
+            session_id=request.memory_session_id,
+            source=_session_source,
+            messages=_llm_messages_to_dicts(api_messages[1:]),
+            last_assistant_message=final_content,
+            stop_hook_active=bool(
+                request.session_context.metadata.get("stop_hook_active")
+                if request.session_context is not None
+                else False
+            ),
+            metadata=_stop_metadata,
+        )
+        _governed_stop_hooks = bool(
+            _hooks_module.hook_registry.matched_handler_count(
+                _hooks_module.HookEvent.STOP,
+                _stop_probe_context,
+            )
+        )
+    except Exception:  # registry probe failure degrades to unfenced legacy emit
+        _governed_stop_hooks = False
+    try:
+        _stop_fence_mode, _fence_decision = await recover_or_fence_stop_boundary(
+            agent_id=request.agent_id,
+            session_id=(
+                request.memory_session_id or str(getattr(request.session_context, "session_id", "") or "") or None
+            ),
+            turn_id=(request.session_context.metadata.get("turn_id") if request.session_context is not None else None),
+            provider_request_id=provider_request_id,
+            governed_stop_hooks_registered=_governed_stop_hooks,
+            attempt_owner=(
+                request.session_context.metadata.get("attempt_owner") if request.session_context is not None else None
+            ),
+        )
+    except StopHookFenceUnavailable as _fence_exc:
+        # A governed Stop effect must not run without its durable
+        # fence; denial stays local to this effect boundary and
+        # the typed state carries a reachable reconciliation path.
+        from app.kernel.contracts import SessionRestartRecoveryRequired
+
+        raise SessionRestartRecoveryRequired(
+            reason_code=f"stop_hook_{_fence_exc.reason_code}",
+            detail={
+                "provider_request_id": provider_request_id,
+                "round_index": logical_round_index,
+            },
+        ) from _fence_exc
+    if _stop_fence_mode == "unknown":
+        from app.kernel.contracts import SessionRestartRecoveryRequired
+
+        raise SessionRestartRecoveryRequired(
+            reason_code="stop_hook_effect_outcome_unknown",
+            detail={
+                "provider_request_id": provider_request_id,
+                "round_index": logical_round_index,
+            },
+        )
+    if _stop_fence_mode == "recovered":
+        # A completed Stop decision recovered from durable
+        # evidence: its authority (block / prevent / allow) is
+        # replayed WITHOUT re-executing its non-idempotent
+        # governed effect.
+        from types import SimpleNamespace as _StopDecisionNS
+
+        _stop_result = _StopDecisionNS(
+            block=bool(_fence_decision.get("block")),
+            prevent_continuation=bool(_fence_decision.get("prevent_continuation")),
+            reason=str(_fence_decision.get("reason") or ""),
+            stop_reason=str(_fence_decision.get("stop_reason") or ""),
+        )
+    if _stop_fence_mode == "emit":
+        _stop_result = await _emit_runtime_hook(
+            HookEvent.STOP,
+            agent_id=request.agent_id,
+            session_id=request.memory_session_id,
+            source=_session_source,
+            messages=_llm_messages_to_dicts(api_messages[1:]),
+            last_assistant_message=final_content,
+            stop_hook_active=bool(
+                request.session_context.metadata.get("stop_hook_active")
+                if request.session_context is not None
+                else False
+            ),
+            metadata=_stop_metadata,
+        )
+        if _governed_stop_hooks:
+            await complete_stop_boundary(
+                agent_id=request.agent_id,
+                session_id=(
+                    request.memory_session_id or str(getattr(request.session_context, "session_id", "") or "") or None
+                ),
+                turn_id=(
+                    request.session_context.metadata.get("turn_id") if request.session_context is not None else None
+                ),
+                provider_request_id=provider_request_id,
+                decision={
+                    "block": bool(_stop_result and _stop_result.block),
+                    "prevent_continuation": bool(_stop_result and _stop_result.prevent_continuation),
+                    "reason": str(getattr(_stop_result, "reason", "") or ""),
+                    "stop_reason": str(getattr(_stop_result, "stop_reason", "") or ""),
+                },
+            )
+    if _stop_result and _stop_result.prevent_continuation:
+        if request.session_context is not None:
+            request.session_context.metadata.pop("stop_hook_active", None)
+        await _emit_event(
+            {
+                "type": "stop_hook_prevented_continuation",
+                "reason": _stop_result.stop_reason or _stop_result.reason,
+            }
+        )
+    elif _stop_result and _stop_result.block:
+        _reason = _stop_result.reason or "Stop hook blocked stopping."
+        api_messages.append(
+            LLMMessage(
+                role="assistant",
+                content=final_content,
+                reasoning_content=response.reasoning_content,
+                reasoning_signature=getattr(response, "reasoning_signature", None),
+            )
+        )
+        api_messages.append(
+            LLMMessage(
+                role="user",
+                content=(
+                    "[Stop hook blocked stopping]\n"
+                    f"{_reason}\n\n"
+                    "Continue from where you left off and address the stop-hook requirement."
+                ),
+            )
+        )
+        if request.session_context is not None:
+            request.session_context.metadata["stop_hook_active"] = True
+        await _emit_event(
+            {
+                "type": "stop_hook_blocked",
+                "reason": _reason,
+                "part": {
+                    "type": "event",
+                    "event_type": "stop_hook_blocked",
+                    "title": "Stop Hook Blocked",
+                    "text": _reason,
+                    "status": "warning",
+                },
+            }
+        )
+        return None
+    elif request.session_context is not None:
+        request.session_context.metadata.pop("stop_hook_active", None)
+    # Subagent runs execute under the parent's agent_id but are
+    # clean specialists (standalone prompt): their INTERNAL
+    # transcript is not the parent's behavior. The conclusion
+    # reaches the parent's memory through the parent's own main
+    # session (the spawn tool result) — persisting/extracting the
+    # subagent session too would double-count it as tool noise.
+    _memory_isolated = _session_source == "subagent"
+    await _record_new_token_usage()
+
+    # RESPONSE_COMPLETE is a post-commit learning boundary. The
+    # Kernel can assemble its exact input, but cannot emit it:
+    # Web/Channel/Task callers own different durable terminal
+    # transactions outside this model loop.
+    response_complete_payload = None
+    if _session_source != "heartbeat" and not _memory_isolated:
+        response_complete_payload = {
+            "agent_id": request.agent_id,
+            "session_id": request.memory_session_id,
+            "messages": _llm_messages_to_dicts(api_messages[1:]),
+            "source": _session_source,
+            "metadata": {
+                "last_response": final_content or "",
+                "final_response": final_content or "",
+                "turn_count": logical_round_index,
+                "tenant_id": str(runtime_config.tenant_id) if runtime_config.tenant_id else None,
+                "agent_name": request.agent_name or "Agent",
+                "skill_candidate_loop_enabled": runtime_config.skill_candidate_loop_enabled,
+            },
+        }
+
+    return InvocationResult(
+        content=final_content,
+        tokens_used=accumulated_tokens,
+        final_tools=tools_for_llm,
+        reasoning_signature=getattr(response, "reasoning_signature", None),
+        parts=collected_parts
+        + build_done_event(
+            final_content,
+            thinking=response.reasoning_content,
+        )["parts"],
+        model_result_receipt=last_model_result_receipt,
+        response_complete_payload=response_complete_payload,
+    )
+
+
 async def _finalize_empty_provider_response(
     *,
     self: Any,
@@ -534,7 +932,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
     _continue_after_output_cap = support._continue_after_output_cap
     _dicts_to_llm_messages = support._dicts_to_llm_messages
     _dynamic_suffix_notice = support._dynamic_suffix_notice
-    _emit_runtime_hook = support._emit_runtime_hook
     _event_to_part = support._event_to_part
     _execute_recovered_pending_tool_frames = support._execute_recovered_pending_tool_frames
     _execute_tool_with_hooks = support._execute_tool_with_hooks
@@ -965,6 +1362,11 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         token_usage_ledger = _TurnTokenUsageLedger(request.initial_turn_tokens_used)
         initial_turn_tokens_used = token_usage_ledger.initial
         accumulated_tokens = initial_turn_tokens_used
+        # Durable charge identity of the round whose usage was folded most
+        # recently: every charge in that round's tail (final accounting, budget
+        # block, cancel, error) carries the round's provider request id so a
+        # replay of the same committed round dedupes against it durably.
+        round_charge_key: dict[str, str | None] = {"key": None}
 
         async def _record_new_token_usage() -> None:
             await token_usage_ledger.record(
@@ -972,6 +1374,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 _maybe_await,
                 request.agent_id,
                 accumulated_tokens,
+                idempotency_key=round_charge_key["key"],
             )
 
         collected_parts: list[dict[str, Any]] = []
@@ -1409,6 +1812,9 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         )
         turn_token_budget = getattr(runtime_config, "turn_token_budget", None)
         last_model_result_receipt: dict[str, Any] | None = None
+        # Tool results already settled durably for the current round's sealed
+        # replay; keyed by provider tool_call id, empty on fresh generations.
+        round_settled_tool_results: dict[str, str] = {}
         # full_toolset tracks expanded tools after deferred-schema discovery.
         # Intentionally persists across rounds — discovered tool schemas stay active once loaded.
         full_toolset = None
@@ -1579,6 +1985,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         response = provider_round["response"]
                         provider_request_id = provider_round["provider_request_id"]
                         llm_started_ms = int(provider_round["llm_started_ms"])
+                        round_settled_tool_results = dict(provider_round.get("settled_tool_results") or {})
                         if provider_round["empty"]:
                             return await _finalize_empty_provider_response(
                                 self=self,
@@ -2081,14 +2488,42 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             tokens_used=accumulated_tokens,
                         )
 
-                accumulated_tokens, context_usage_anchor_tokens = _add_response_usage(
-                    self._deps,
-                    response,
-                    api_messages,
-                    request,
-                    accumulated_tokens,
-                    context_usage_anchor_tokens,
-                )
+                if provider_round.get("sealed_replay"):
+                    # Committed-round sealed replay: the resume baseline already
+                    # owns this round's usage for truthful turn totals/budget,
+                    # so it must NOT be folded into accumulated_tokens again,
+                    # and the turn-delta charge path stays at zero for it.  The
+                    # round's charge is settled exactly once by the restart
+                    # loader under the round's durable identity (see
+                    # web_chat_runtime._settle_committed_round_token_usage):
+                    # deduped against a pre-crash charge, or committed there
+                    # when the crash happened before accounting.
+                    context_usage_anchor_tokens = max(context_usage_anchor_tokens, accumulated_tokens)
+                    if request.session_context is not None:
+                        request.session_context.metadata["usage_anchor_tokens"] = context_usage_anchor_tokens
+                    round_charge_key["key"] = provider_request_id
+                else:
+                    accumulated_tokens, context_usage_anchor_tokens = _add_response_usage(
+                        self._deps,
+                        response,
+                        api_messages,
+                        request,
+                        accumulated_tokens,
+                        context_usage_anchor_tokens,
+                    )
+                    round_charge_key["key"] = provider_request_id
+                    # Per-round charge identity: each round's incremental usage
+                    # is charged NOW under that round's own durable provider
+                    # request id (the round is already sealed/committed at this
+                    # point).  The settlement of a committed round and any
+                    # pre-crash charge therefore share ONE exact per-round
+                    # identity — an early tool round can never be re-settled
+                    # under a cumulative charge that carried only the last
+                    # round's key.  Exit-boundary ledger calls remain as
+                    # zero-delta safety nets (suppressed per-round failures are
+                    # re-settled durably by the restart loader under the same
+                    # key).
+                    await _record_new_token_usage()
 
                 if _turn_budget_blocks_tools(turn_token_budget, accumulated_tokens, response.tool_calls):
                     budget_msg = _turn_token_budget_message(
@@ -2119,132 +2554,26 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     await _inject_loop_guard_warning(text_loop_decision)
 
                 if not response.tool_calls:
-                    final_content = response.content
-                    final_content, _source_permission_allowed = await _enforce_generated_source_permissions(
-                        final_content
+                    final_result = await _finalize_model_response(
+                        support=support,
+                        request=request,
+                        response=response,
+                        runtime_config=runtime_config,
+                        api_messages=api_messages,
+                        logical_round_index=logical_round_index,
+                        provider_request_id=provider_request_id,
+                        accumulated_tokens=accumulated_tokens,
+                        tools_for_llm=tools_for_llm,
+                        collected_parts=collected_parts,
+                        last_model_result_receipt=last_model_result_receipt,
+                        _enforce_generated_source_permissions=_enforce_generated_source_permissions,
+                        _flush_buffered_chunks=_flush_buffered_chunks,
+                        _emit_event=_emit_event,
+                        _record_new_token_usage=_record_new_token_usage,
                     )
-                    if _source_permission_allowed:
-                        await _flush_buffered_chunks()
-                    from app.runtime.hooks import HookEvent
-
-                    _session_source = request.session_context.source if request.session_context else "runtime"
-                    _stop_metadata = {
-                        "tenant_id": str(runtime_config.tenant_id) if runtime_config.tenant_id else None,
-                        "agent_name": request.agent_name or "Agent",
-                        "turn_count": logical_round_index,
-                        "execution_mode": getattr(runtime_config, "execution_mode", None) or request.invocation_scope,
-                    }
-                    if request.session_context is not None:
-                        _stop_metadata.update(
-                            {
-                                "runtime_task_id": request.session_context.metadata.get("runtime_task_id")
-                                or request.session_context.metadata.get("task_id"),
-                            }
-                        )
-                    _stop_result = await _emit_runtime_hook(
-                        HookEvent.STOP,
-                        agent_id=request.agent_id,
-                        session_id=request.memory_session_id,
-                        source=_session_source,
-                        messages=_llm_messages_to_dicts(api_messages[1:]),
-                        last_assistant_message=final_content,
-                        stop_hook_active=bool(
-                            request.session_context.metadata.get("stop_hook_active")
-                            if request.session_context is not None
-                            else False
-                        ),
-                        metadata=_stop_metadata,
-                    )
-                    if _stop_result and _stop_result.prevent_continuation:
-                        if request.session_context is not None:
-                            request.session_context.metadata.pop("stop_hook_active", None)
-                        await _emit_event(
-                            {
-                                "type": "stop_hook_prevented_continuation",
-                                "reason": _stop_result.stop_reason or _stop_result.reason,
-                            }
-                        )
-                    elif _stop_result and _stop_result.block:
-                        _reason = _stop_result.reason or "Stop hook blocked stopping."
-                        api_messages.append(
-                            LLMMessage(
-                                role="assistant",
-                                content=final_content,
-                                reasoning_content=response.reasoning_content,
-                                reasoning_signature=getattr(response, "reasoning_signature", None),
-                            )
-                        )
-                        api_messages.append(
-                            LLMMessage(
-                                role="user",
-                                content=(
-                                    "[Stop hook blocked stopping]\n"
-                                    f"{_reason}\n\n"
-                                    "Continue from where you left off and address the stop-hook requirement."
-                                ),
-                            )
-                        )
-                        if request.session_context is not None:
-                            request.session_context.metadata["stop_hook_active"] = True
-                        await _emit_event(
-                            {
-                                "type": "stop_hook_blocked",
-                                "reason": _reason,
-                                "part": {
-                                    "type": "event",
-                                    "event_type": "stop_hook_blocked",
-                                    "title": "Stop Hook Blocked",
-                                    "text": _reason,
-                                    "status": "warning",
-                                },
-                            }
-                        )
-                        continue
-                    elif request.session_context is not None:
-                        request.session_context.metadata.pop("stop_hook_active", None)
-                    # Subagent runs execute under the parent's agent_id but are
-                    # clean specialists (standalone prompt): their INTERNAL
-                    # transcript is not the parent's behavior. The conclusion
-                    # reaches the parent's memory through the parent's own main
-                    # session (the spawn tool result) — persisting/extracting the
-                    # subagent session too would double-count it as tool noise.
-                    _memory_isolated = _session_source == "subagent"
-                    await _record_new_token_usage()
-
-                    # RESPONSE_COMPLETE is a post-commit learning boundary. The
-                    # Kernel can assemble its exact input, but cannot emit it:
-                    # Web/Channel/Task callers own different durable terminal
-                    # transactions outside this model loop.
-                    response_complete_payload = None
-                    if _session_source != "heartbeat" and not _memory_isolated:
-                        response_complete_payload = {
-                            "agent_id": request.agent_id,
-                            "session_id": request.memory_session_id,
-                            "messages": _llm_messages_to_dicts(api_messages[1:]),
-                            "source": _session_source,
-                            "metadata": {
-                                "last_response": final_content or "",
-                                "final_response": final_content or "",
-                                "turn_count": logical_round_index,
-                                "tenant_id": str(runtime_config.tenant_id) if runtime_config.tenant_id else None,
-                                "agent_name": request.agent_name or "Agent",
-                                "skill_candidate_loop_enabled": runtime_config.skill_candidate_loop_enabled,
-                            },
-                        }
-
-                    return InvocationResult(
-                        content=final_content,
-                        tokens_used=accumulated_tokens,
-                        final_tools=tools_for_llm,
-                        reasoning_signature=getattr(response, "reasoning_signature", None),
-                        parts=collected_parts
-                        + build_done_event(
-                            final_content,
-                            thinking=response.reasoning_content,
-                        )["parts"],
-                        model_result_receipt=last_model_result_receipt,
-                        response_complete_payload=response_complete_payload,
-                    )
+                    if final_result is not None:
+                        return final_result
+                    continue
 
                 # Tier 1-4: recover from DeepSeek-V4 style concatenated tool_call args
                 # so every payload becomes its own executable tool_call before history is
@@ -2452,6 +2781,10 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
 
                     # 1. Emit all "running" events
                     for _tc, tool_name, args in parsed_tool_calls:
+                        if _tc["id"] in round_settled_tool_results:
+                            # Already settled durably in a prior attempt of
+                            # this sealed round: no running card, no replay.
+                            continue
                         running_payload = {
                             "name": tool_name,
                             "args": args,
@@ -2517,6 +2850,13 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                 )
                             _call_side_effects: dict[str, Any] = {}
                             async with sem:
+                                _settled_content = round_settled_tool_results.get(parsed_tool_calls[index][0]["id"])
+                                if _settled_content is not None:
+                                    # This call of the sealed batch already
+                                    # settled in a prior attempt: resume the
+                                    # exact durable tool_result instead of
+                                    # re-executing or reporting a CAS error.
+                                    return _settled_content, t_args, True, None
                                 _r_str, _r_args, _r_exec = await _execute_tool_with_hooks(
                                     execute_tool=self._deps.execute_tool,
                                     request=request,
@@ -2575,6 +2915,18 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     # 3. Emit "done" events and append tool results in original order
                     for (tc, tool_name, _original_args), execution in zip(parsed_tool_calls, results):
                         result, effective_args, _executed, _side_effects = execution
+                        if tc["id"] in round_settled_tool_results:
+                            # Durable settlement already exists: append the
+                            # canonical result for the provider conversation
+                            # without re-broadcasting or re-persisting it.
+                            api_messages.append(
+                                LLMMessage(
+                                    role="tool",
+                                    tool_call_id=tc["id"],
+                                    content=round_settled_tool_results[tc["id"]],
+                                )
+                            )
+                            continue
                         _loop_proof = (_side_effects or {}).get("loop_guard_proof") or {}
                         _execution_evidence = (_side_effects or {}).get("tool_execution_evidence") or {}
                         _decision = _execution_evidence.get("tool_decision")
@@ -2678,6 +3030,18 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 else:
                     # --- Sequential execution (original logic) ---
                     for tc, tool_name, args in parsed_tool_calls:
+                        if tc["id"] in round_settled_tool_results:
+                            # Durable settlement already exists for this call
+                            # of the sealed batch: resume the exact canonical
+                            # result without re-executing the tool.
+                            api_messages.append(
+                                LLMMessage(
+                                    role="tool",
+                                    tool_call_id=tc["id"],
+                                    content=round_settled_tool_results[tc["id"]],
+                                )
+                            )
+                            continue
                         if request.cancel_event and request.cancel_event.is_set():
                             await _record_new_token_usage()
                             await self._persist_before_exit(

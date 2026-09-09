@@ -16,14 +16,14 @@ from typing import Any
 
 from fastapi import HTTPException
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
 from app.core.permissions import is_agent_expired
-from app.kernel.contracts import ExecutionIdentityRef, TerminalReason
+from app.kernel.contracts import ExecutionIdentityRef, SessionRestartRecoveryRequired, TerminalReason
 from app.models.agent import Agent
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
@@ -1569,20 +1569,37 @@ def _committed_turn_usage_tokens(
     committed_results: list[Any],
     *,
     resume_round_index: int,
+    extra_usage_results: list[Any] = (),
 ) -> int:
-    """Recover cumulative turn cost from logical-root ModelResult seals."""
+    """Recover cumulative turn cost from logical-root ModelResult seals.
+
+    ``extra_usage_results`` carries rounds BEYOND ``resume_round_index`` whose
+    committed usage the resumed kernel will REPLAY from their seal (the pending
+    final / pending tool round).  Their usage belongs in the resume baseline:
+    the kernel's sealed-replay fold does not re-add it to its turn totals, and
+    its charge goes through the round's durable idempotency identity instead of
+    the turn-delta path.  Omitting them would reset the turn budget/context
+    truth for a resumed turn; including them twice would be impossible because
+    they are never part of ``committed_results``.
+    """
 
     from app.services.token_tracker import estimate_tokens_from_chars, extract_usage_tokens
 
+    extra_ids = {id(row) for row in extra_usage_results}
     turn_tokens_used = 0
-    for committed_result in committed_results:
+    for committed_result in [*committed_results, *extra_usage_results]:
         seal = dict(committed_result.seal_json or {})
         continuation_index = int(
             seal.get("continuation_index")
             or (committed_result.model_request_snapshot_json or {}).get("continuation_index")
             or 0
         )
-        if continuation_index != 0 or _round_index_from_id(committed_result.round_id) > resume_round_index:
+        if continuation_index != 0:
+            continue
+        if (
+            _round_index_from_id(committed_result.round_id) > resume_round_index
+            and id(committed_result) not in extra_ids
+        ):
             continue
         usage_tokens = extract_usage_tokens(dict(seal.get("usage") or {}))
         if usage_tokens is None:
@@ -1599,35 +1616,16 @@ def _committed_turn_usage_tokens(
     return turn_tokens_used
 
 
-async def _session_permission_resume_history(
+async def _sealed_round_runtime_messages(
     db: AsyncSession,
-    runtime_task: RuntimeTask,
-) -> tuple[list[dict[str, Any]], int, int]:
-    """Rebuild the exact sealed assistant/tool batch before native continuation."""
+    result: Any,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Rebuild the exact sealed assistant/tool message batch of one committed round."""
 
-    resume = dict((runtime_task.metadata_json or {}).get("session_permission_resume") or {})
-    if not resume:
-        return [], 0, 0
-    from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+    from app.models.session_v2 import SessionToolInvocation
 
-    try:
-        source_result_id = uuid.UUID(str(resume["source_result_id"]))
-    except (KeyError, TypeError, ValueError) as exc:
-        raise RuntimeError("session_permission_resume_result_binding_invalid") from exc
-    result = await db.scalar(
-        select(SessionModelResult).where(
-            SessionModelResult.id == source_result_id,
-            SessionModelResult.run_id == runtime_task.id,
-            SessionModelResult.session_id == uuid.UUID(str(runtime_task.parent_session_id)),
-            SessionModelResult.state == "round_committed",
-        )
-    )
-    if result is None:
-        raise RuntimeError("session_permission_resume_result_missing")
     response = dict((result.seal_json or {}).get("response") or {})
     tool_calls = list(response.get("tool_calls") or [])
-    if not tool_calls:
-        raise RuntimeError("session_permission_resume_tool_batch_missing")
     invocations = list(
         (
             await db.execute(
@@ -1646,10 +1644,17 @@ async def _session_permission_resume_history(
         provider_tool_use_id = str((call or {}).get("id") or "") if isinstance(call, dict) else ""
         invocation = by_provider_id.get(provider_tool_use_id)
         if invocation is None or invocation.result_event_id is None:
-            raise RuntimeError("session_permission_resume_has_unsettled_tool_obligation")
+            raise RuntimeError("session_round_has_unsettled_tool_obligation")
         result_event = await db.get(ChatTranscriptEvent, invocation.result_event_id)
-        if result_event is None or result_event.item_kind != "tool_result":
-            raise RuntimeError("session_permission_resume_tool_result_missing")
+        if (
+            result_event is None
+            or result_event.item_kind != "tool_result"
+            or result_event.session_id != result.session_id
+            or result_event.run_id != result.run_id
+            or result_event.invocation_id != invocation.id
+            or str((result_event.scope_json or {}).get("round_id") or "") != result.round_id
+        ):
+            raise RuntimeError("session_round_tool_result_missing")
         payload = dict((result_event.metadata_json or {}).get("v2_payload") or {})
         tool_messages.append(
             {
@@ -1665,6 +1670,440 @@ async def _session_permission_resume_history(
         "reasoning_content": response.get("reasoning_content"),
         "reasoning_signature": response.get("reasoning_signature"),
     }
+    return assistant_message, tool_messages
+
+
+def _continuation_index_from_round_id(round_id: str) -> int:
+    marker = ":output-continuation:"
+    if marker not in str(round_id):
+        return 0
+    try:
+        return int(str(round_id).rsplit(marker, 1)[1].split(":", 1)[0])
+    except ValueError as exc:
+        raise RuntimeError("session_round_continuation_index_invalid") from exc
+
+
+async def _settle_committed_round_token_usage(
+    runtime_task: RuntimeTask,
+    committed_rows: list[Any],
+    db: AsyncSession | None = None,
+) -> dict[str, int]:
+    """Settle each committed round's sealed usage exactly once, durably keyed.
+
+    A committed model round does NOT prove its token charge committed: the real
+    ``record_token_usage`` runs in an independent transaction and suppresses
+    failures by default.  On every restart-resume load, each committed logical
+    root's sealed usage is charged under the round's exact durable identity
+    (its provider request id).  The charge, its counters, and its dedupe
+    evidence commit atomically inside ``record_token_usage``, so:
+
+    * crash AFTER the pre-crash charge committed → dedupe skips (no duplicate);
+    * crash BEFORE any charge (between round commit and kernel accounting, or
+      a suppressed ledger failure) → committed here exactly once;
+    * repeated recovery → the durable key keeps the total at exactly one.
+
+    Truthfulness of the receipt: ``True`` (settled now), ``False`` (durably
+    already charged) and ``None`` (suppressed failure) carry DISTINCT meaning —
+    a suppressed failure is reported as ``suppressed``, never as ``settled``;
+    it stays retryable because no durable evidence row was committed.
+
+    Legacy PRE-deploy rounds — sealed before ``token_accounting_version``
+    existed — were charged by the unkeyed ledger whose events carry no round
+    identity.  Whether such a round was already charged cannot be established
+    from exact evidence, so it is reported as ``legacy_unkeyed_unknown`` and
+    never re-debited and never claimed settled; unrelated final recovery
+    continues.
+    """
+
+    from app.services.session_model_round import TOKEN_ACCOUNTING_VERSION
+    from app.services.token_tracker import extract_usage_tokens, record_token_usage
+
+    agent_id = runtime_task.parent_agent_id
+    if agent_id is None:
+        return {
+            "settled": 0,
+            "already_recorded": 0,
+            "skipped": len(committed_rows),
+            "suppressed": 0,
+            "legacy_unkeyed_unknown": 0,
+            "estimated": 0,
+        }
+    settled = already_recorded = skipped = suppressed = legacy_unknown = estimated = 0
+    for row in committed_rows:
+        if _continuation_index_from_round_id(row.round_id) != 0:
+            skipped += 1
+            continue
+        if row.state == "needs_reconciliation":
+            # A canonically committed root that a stale prepare flipped to
+            # ``needs_reconciliation`` is recoverable evidence the loader
+            # supports (seal + canonical round-committed event).  Its charge
+            # must not silently escape accounting, but ONLY actual committed
+            # evidence justifies charging — the seal and the canonical
+            # committed event are validated here exactly as the recovery
+            # frontier validates them, before any charge happens.
+            if db is None or row.seal_json is None or row.round_committed_event_id is None:
+                skipped += 1
+                continue
+            from app.models.chat_transcript_event import ChatTranscriptEvent
+
+            event = await db.get(ChatTranscriptEvent, row.round_committed_event_id)
+            if not (
+                event is not None
+                and event.item_kind == "result_commit"
+                and event.lifecycle == "round_committed"
+                and event.session_id == row.session_id
+                and event.run_id == row.run_id
+                and str((event.scope_json or {}).get("round_id") or "") == row.round_id
+                and str((event.scope_json or {}).get("run_id") or "") == str(row.run_id)
+            ):
+                skipped += 1
+                continue
+        elif row.state != "round_committed":
+            skipped += 1
+            continue
+        seal = dict(row.seal_json or {})
+        try:
+            seal_version = int(seal.get("token_accounting_version") or 0)
+        except (TypeError, ValueError):
+            seal_version = 0
+        if seal_version < TOKEN_ACCOUNTING_VERSION:
+            # Pre-deploy seal: the unkeyed legacy ledger's events cannot be
+            # linked to this round by exact evidence, so the ambiguity stays
+            # explicit (no re-debit, no false settled claim).
+            legacy_unknown += 1
+            continue
+        if extract_usage_tokens(dict(seal.get("usage") or {})) is None:
+            # No provider usage: the settled amount is a character estimate,
+            # not an exact meter reading.
+            estimated += 1
+        amount = _committed_turn_usage_tokens([row], resume_round_index=2**31 - 1)
+        if amount <= 0:
+            skipped += 1
+            continue
+        try:
+            charged = await record_token_usage(
+                agent_id,
+                amount,
+                tenant_id=runtime_task.tenant_id,
+                idempotency_key=row.provider_request_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[WebChatRuntime] committed-round token settlement failed for run {} round {}: {}",
+                runtime_task.id,
+                row.round_id,
+                exc,
+            )
+            suppressed += 1
+            continue
+        if charged is True:
+            settled += 1
+        elif charged is False:
+            already_recorded += 1
+        else:
+            # Suppressed failure: the charge did NOT provably commit; the
+            # receipt must not claim it settled.  No durable key was written,
+            # so the next recovery load retries it safely.
+            suppressed += 1
+    return {
+        "settled": settled,
+        "already_recorded": already_recorded,
+        "skipped": skipped,
+        "suppressed": suppressed,
+        "legacy_unkeyed_unknown": legacy_unknown,
+        "estimated": estimated,
+    }
+
+
+async def _session_restart_resume_history(
+    db: AsyncSession,
+    runtime_task: RuntimeTask,
+) -> tuple[list[dict[str, Any]], int, int, dict[str, Any]]:
+    """Rebuild the durable model/tool frontier of a reclaimed run after a worker restart.
+
+    The semantic-history read model deliberately excludes the current run's
+    committed rounds, because a live worker already holds them in memory.  A
+    restarted worker has no memory, so this loader restores, in original round
+    order and from canonical seals/committed events only, the bound turn
+    inputs, sealed assistant batch, and settled tool results of every logical
+    round whose committed evidence is provable:
+
+    * ``round_committed`` rows, plus ``needs_reconciliation`` rows that still
+      carry a seal and a canonical ``round_committed`` event — the exact shape
+      a stale prepare produced in production — are recovered read-only; old
+      authoritative evidence is never mutated to make recovery contiguous.
+    * a committed round whose tool invocations are all still
+      ``prepared_not_started`` is deterministic pending work: the frontier
+      stops before it so the reclaimed kernel re-enters that round and
+      completes the tools through the existing invocation/effect mechanism
+      (a legitimate no-effect model reissue on the committed lane).
+    * a committed no-tool final at the end of the frontier is NOT proof the
+      turn finished: the kernel's post-commit stages and the caller's terminal
+      settlement are not durable facts on the round row.  The frontier stops
+      before it (``pending_final_round``) so the reclaimed kernel replays the
+      immutable seal instead of generating a replacement final, and the Stop
+      hook keeps its authority to open a genuine continuation round.
+    * a round whose effect outcome is unknown (``effect_started`` /
+      ``needs_reconciliation`` invocations), or an unrecoverable gap, raises
+      :class:`SessionRestartRecoveryRequired` — a typed unknown with a
+      reachable reconciliation path, never a fake result and never a replay.
+    * only logical root rows (continuation index 0) drive history and the
+      frontier: physical continuation receipts commit before the logical root
+      seal, so continuation rows without a committed root belong to a round
+      that is re-entered, not appended as ordinary history.
+
+    Rounds interrupted between seal and the committed registry are finalized
+    from their durable seal; dispatched next-round plans whose round never
+    sealed are released for the fresh attempt.  No provider response is
+    invented and no committed evidence is rewritten.
+    """
+
+    from app.models.session_v2 import SessionModelResult, SessionToolInvocation, SessionTurnInput
+    from app.services.session_human_input import input_parts_to_runtime_messages
+    from app.services.session_model_round import commit_sealed_model_round
+    from app.services.session_round_obligation import release_dispatched_plans_without_sealed_result
+    from app.services.session_tool_runtime import UNRESOLVED_TOOL_EFFECT_STATES
+    from app.services.runtime_terminal_settlement import TERMINAL_SETTLEMENT_STATUSES
+
+    run_id = runtime_task.id
+    # A run whose terminal settlement already completed has no post-commit
+    # recovery left: its committed final is settled history, never a
+    # ``pending_final_round`` to replay.
+    run_terminal_settled = str(getattr(runtime_task, "status", "") or "") in TERMINAL_SETTLEMENT_STATUSES
+    rows = list(
+        (
+            await db.execute(
+                select(SessionModelResult).where(
+                    SessionModelResult.tenant_id == runtime_task.tenant_id,
+                    SessionModelResult.run_id == run_id,
+                )
+            )
+        ).scalars()
+    )
+
+    finalized_sealed_rounds = 0
+    for row in rows:
+        if row.state != "sealed" or not row.seal_json:
+            continue
+        # Crash window between the durable result seal and the round-committed
+        # registry: finish the registry commit from the seal itself.
+        await commit_sealed_model_round(
+            db,
+            tenant_id=row.tenant_id,
+            agent_id=runtime_task.parent_agent_id,
+            session_id=row.session_id,
+            run_id=row.run_id,
+            turn_id=row.turn_id,
+            round_index=_round_index_from_id(row.round_id),
+            provider_request_id=row.provider_request_id,
+            continuation_index=_continuation_index_from_round_id(row.round_id),
+        )
+        row.state = "round_committed"
+        finalized_sealed_rounds += 1
+
+    plan_release = await release_dispatched_plans_without_sealed_result(
+        db,
+        tenant_id=runtime_task.tenant_id,
+        run_id=run_id,
+    )
+    token_settlement = await _settle_committed_round_token_usage(runtime_task, rows, db=db)
+
+    roots = {
+        _round_index_from_id(row.round_id): row for row in rows if _continuation_index_from_round_id(row.round_id) == 0
+    }
+    included_rows: list[Any] = []
+    pending_usage_rows: list[Any] = []
+    recovered_reconciled_rounds: list[int] = []
+    pending_tool_round: int | None = None
+    pending_final_round: int | None = None
+    resume_round_index = 0
+    for round_index in sorted(roots):
+        if round_index != resume_round_index + 1:
+            # A missing logical round before the durable maximum: the kernel
+            # re-enters at the first missing index; later rounds stay durable.
+            break
+        row = roots[round_index]
+        committed_event = None
+        if row.round_committed_event_id is not None:
+            event = await db.get(ChatTranscriptEvent, row.round_committed_event_id)
+            if (
+                event is not None
+                and event.item_kind == "result_commit"
+                and event.lifecycle == "round_committed"
+                and event.session_id == row.session_id
+                and event.run_id == row.run_id
+                and str((event.scope_json or {}).get("round_id") or "") == row.round_id
+                and str((event.scope_json or {}).get("run_id") or "") == str(row.run_id)
+            ):
+                committed_event = event
+            elif event is not None:
+                # The registry points at evidence outside this round's exact
+                # tenant/session/run/round scope: truthful typed unknown.
+                raise SessionRestartRecoveryRequired(
+                    reason_code="round_committed_event_scope_mismatch",
+                    detail={
+                        "round_index": round_index,
+                        "round_id": row.round_id,
+                        "event_id": str(row.round_committed_event_id),
+                    },
+                )
+        recoverable = row.state == "round_committed" or (
+            row.state == "needs_reconciliation" and row.seal_json is not None and committed_event is not None
+        )
+        invocations = list(
+            (
+                await db.execute(
+                    select(SessionToolInvocation).where(
+                        SessionToolInvocation.tenant_id == row.tenant_id,
+                        SessionToolInvocation.session_id == row.session_id,
+                        SessionToolInvocation.run_id == row.run_id,
+                        SessionToolInvocation.provider_request_id == row.provider_request_id,
+                    )
+                )
+            ).scalars()
+        )
+        unknown_effects = [
+            invocation for invocation in invocations if invocation.effect_state in UNRESOLVED_TOOL_EFFECT_STATES
+        ]
+        if unknown_effects:
+            raise SessionRestartRecoveryRequired(
+                reason_code="round_effect_outcome_unknown",
+                detail={
+                    "round_index": round_index,
+                    "round_id": row.round_id,
+                    "state": row.state,
+                    "invocation_ids": [str(invocation.id) for invocation in unknown_effects],
+                },
+            )
+        if not recoverable:
+            failure_seal = dict(row.seal_json or {})
+            if (
+                row.state == "failed"
+                and "response" not in failure_seal
+                and bool(failure_seal.get("retry_safe"))
+                and not invocations
+            ):
+                # A retry-safe provider failure inside the frontier owns no
+                # response and no effect: the reclaimed worker retakes this
+                # round on the fresh attempt lane (``prepare_model_request``
+                # re-arms retry-safe failed rounds).
+                break
+            if row.seal_json is not None or invocations:
+                # A sealed-but-uncommitted or otherwise ambiguous round inside
+                # the frontier: truthful typed unknown, never a blind skip.
+                raise SessionRestartRecoveryRequired(
+                    reason_code="round_requires_reconciliation",
+                    detail={"round_index": round_index, "round_id": row.round_id, "state": row.state},
+                )
+            # Interrupted between prepare and seal with no effect at all: the
+            # reclaimed worker safely retakes this round on a fresh lane.
+            break
+        sealed_tool_call_ids = [
+            str((call or {}).get("id") or "")
+            for call in ((row.seal_json or {}).get("response") or {}).get("tool_calls") or []
+            if isinstance(call, dict) and str((call or {}).get("id") or "").strip()
+        ]
+        invocation_call_ids = {invocation.provider_tool_use_id for invocation in invocations}
+        if any(call_id not in invocation_call_ids for call_id in sealed_tool_call_ids) or any(
+            invocation.result_event_id is None for invocation in invocations
+        ):
+            # Deterministic pending tool work on a committed round — including
+            # the crash window before ANY invocation row was created: re-enter
+            # the round so the sealed model-authored calls settle through the
+            # real tool mechanism instead of a platform-written result.
+            pending_tool_round = round_index
+            pending_usage_rows.append(row)
+            break
+        if not sealed_tool_call_ids and (round_index + 1) not in roots and not run_terminal_settled:
+            # A committed no-tool final at the durable frontier.  A run whose
+            # turn had settled terminally would not be resumable here, so the
+            # kernel's post-commit stages (source permission, Stop hook — which
+            # may still require continuation — token accounting and the
+            # response-complete payload) and the caller's terminal settlement
+            # never provably completed.  Stop the frontier BEFORE this round so
+            # the reclaimed kernel re-enters it through the committed sealed
+            # replay lane: the committed final's model semantics stay immutable
+            # (no new provider generation can replace them), while the Stop
+            # hook keeps its real authority to open a continuation round.  An
+            # interior no-tool round (a later committed root exists) was a live
+            # stop-hook continuation, not a final, and stays ordinary history.
+            pending_final_round = round_index
+            pending_usage_rows.append(row)
+            break
+        if row.state == "needs_reconciliation":
+            recovered_reconciled_rounds.append(round_index)
+        included_rows.append(row)
+        resume_round_index = round_index
+
+    messages: list[dict[str, Any]] = []
+    for row in included_rows:
+        bound_inputs = list(
+            (
+                await db.execute(
+                    select(SessionTurnInput)
+                    .where(
+                        SessionTurnInput.tenant_id == row.tenant_id,
+                        SessionTurnInput.session_id == row.session_id,
+                        SessionTurnInput.target_run_id == row.run_id,
+                        SessionTurnInput.bound_round_id == row.round_id,
+                        SessionTurnInput.status.in_(("bound", "applied")),
+                    )
+                    .order_by(SessionTurnInput.queue_ordinal)
+                )
+            ).scalars()
+        )
+        messages.extend(input_parts_to_runtime_messages(bound_inputs))
+        assistant_message, tool_messages = await _sealed_round_runtime_messages(db, row)
+        messages.append(assistant_message)
+        messages.extend(tool_messages)
+    turn_tokens_used = _committed_turn_usage_tokens(
+        included_rows,
+        resume_round_index=resume_round_index,
+        extra_usage_results=pending_usage_rows,
+    )
+    receipt = {
+        "schema": "hive.session_restart_resume_receipt.v1",
+        "committed_rounds": len(included_rows),
+        "finalized_sealed_rounds": finalized_sealed_rounds,
+        "released_plans": plan_release["released_plans"],
+        "released_obligations": plan_release["released_obligations"],
+        "recovered_reconciled_rounds": recovered_reconciled_rounds,
+        "pending_tool_round": pending_tool_round,
+        "pending_final_round": pending_final_round,
+        "resume_round_index": resume_round_index,
+        "token_settlement": token_settlement,
+    }
+    return messages, resume_round_index, turn_tokens_used, receipt
+
+
+async def _session_permission_resume_history(
+    db: AsyncSession,
+    runtime_task: RuntimeTask,
+) -> tuple[list[dict[str, Any]], int, int]:
+    """Rebuild the exact sealed assistant/tool batch before native continuation."""
+
+    resume = dict((runtime_task.metadata_json or {}).get("session_permission_resume") or {})
+    if not resume:
+        return [], 0, 0
+    from app.models.session_v2 import SessionModelResult
+
+    try:
+        source_result_id = uuid.UUID(str(resume["source_result_id"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("session_permission_resume_result_binding_invalid") from exc
+    result = await db.scalar(
+        select(SessionModelResult).where(
+            SessionModelResult.id == source_result_id,
+            SessionModelResult.run_id == runtime_task.id,
+            SessionModelResult.session_id == uuid.UUID(str(runtime_task.parent_session_id)),
+            SessionModelResult.state == "round_committed",
+        )
+    )
+    if result is None:
+        raise RuntimeError("session_permission_resume_result_missing")
+    assistant_message, tool_messages = await _sealed_round_runtime_messages(db, result)
+    if not tool_messages:
+        raise RuntimeError("session_permission_resume_tool_batch_missing")
     resume_round_index = _round_index_from_id(result.round_id)
     committed_results = list(
         (
@@ -5251,16 +5690,62 @@ async def _load_runtime_context(
         )
         history_messages: list[Any] = list(semantic_history.messages)
         metadata["session_semantic_history"] = dict(semantic_history.receipt)
-        runtime_task.metadata_json = metadata
+        # Bind a COPY, never the local dict: SQLAlchemy's committed-state
+        # snapshot would otherwise alias this exact object, and later in-place
+        # mutations (the restart receipt below) would edit the snapshot itself,
+        # producing no attribute-history change and no UPDATE — the receipt
+        # would silently never reach PostgreSQL (in-memory only).
+        runtime_task.metadata_json = dict(metadata)
         history_messages = await _apply_active_projection_to_history(db, session, history_messages)
-        resume_history, resume_round_index, resume_tokens_used = await _session_permission_resume_history(
-            db, runtime_task
-        )
-        if resume_history:
-            history_messages = [*history_messages, *resume_history]
-            metadata["session_resume_round_index"] = resume_round_index
-            metadata["session_resume_tokens_used"] = resume_tokens_used
-            runtime_task.metadata_json = metadata
+        # Shared recovery root: any re-dispatch of a run that already lost its
+        # in-memory conversation — a worker restart (reclaimed lease sets
+        # ``reclaimed_expired_claim``), an ordinary permission approval
+        # (claim released as ``resumable``; the claim service REMOVES the
+        # reclaim flag on that fresh dispatch, but increments ``attempt_count``)
+        # — rebuilds the full current-run frontier through the same loader, so
+        # the recovered history reaches the next provider request identically
+        # on every path.  A first dispatch (attempt_count == 1, no resume
+        # markers) never pays the loader.
+        if (
+            int(getattr(runtime_task, "attempt_count", 0) or 0) > 1
+            or metadata.get("reclaimed_expired_claim")
+            or metadata.get("session_permission_resume")
+        ):
+            (
+                restart_history,
+                restart_round_index,
+                restart_tokens_used,
+                restart_receipt,
+            ) = await _session_restart_resume_history(db, runtime_task)
+            if restart_history:
+                history_messages = [*history_messages, *restart_history]
+            if (
+                restart_round_index
+                or restart_history
+                or restart_receipt.get("pending_final_round") is not None
+                or restart_receipt.get("pending_tool_round") is not None
+            ):
+                # The resume baseline must reach the kernel even when the only
+                # committed round IS the pending round (no earlier history): a
+                # single-round final replay still needs its sealed usage in the
+                # turn baseline for truthful totals/budget accounting.
+                metadata["session_resume_round_index"] = restart_round_index
+                metadata["session_resume_tokens_used"] = restart_tokens_used
+            metadata["session_restart_resume"] = restart_receipt
+            # The receipt is durable diagnostics for operators and tests.  The
+            # sealed-replay lane itself derives eligibility from durable round
+            # facts (session_model_round.committed_final_round_at_frontier and
+            # this loader's round scan), never from this metadata hint.
+            runtime_task.metadata_json = dict(metadata)
+        else:
+            resume_history, resume_round_index, resume_tokens_used = await _session_permission_resume_history(
+                db, runtime_task
+            )
+            if resume_history:
+                history_messages = [*history_messages, *resume_history]
+                metadata["session_resume_round_index"] = resume_round_index
+                metadata["session_resume_tokens_used"] = resume_tokens_used
+                runtime_task.metadata_json = metadata
         return runtime_task, agent, user, primary_model, fallback_model, history_messages, session
 
 
@@ -5426,19 +5911,576 @@ def _web_chat_run_ports() -> Any:
     )
 
 
+# Bounded recovery budget for the completed-run charge settlement below.
+# Each pass is one short read-only caller session; every charge still runs
+# inside ``record_token_usage``'s OWN transaction (which locks Tenant → User
+# → Agent), so the caller must not — and does not — hold any row lock while
+# a pass is in flight.
+_COMPLETED_RUN_SETTLEMENT_PASSES = 3
+_COMPLETED_RUN_SETTLEMENT_BACKOFF_S = 0.1
+# Per-invocation ATTEMPT budget of the retry lane below (real settlement
+# passes, each with its own transaction). The enumeration itself is a
+# keyset-paged scan of the session's terminal executable-chat runs, so it is
+# bounded by the session's own history, not by a positional window: settled
+# rows are skipped by advancing the keyset cursor PAST them inside the same
+# invocation, and never pin the scan domain.
+_PENDING_SESSION_SETTLEMENT_SCAN_LIMIT = 32
+# Keyset page size of that scan (rows read per query; cheap unlocked reads).
+_PENDING_SESSION_SETTLEMENT_PAGE_ROWS = 128
+# Per-invocation READ bound: at most this many keyset pages are read and
+# decrypted per preflight. The scan's durable cursor (persisted on the
+# session's ChatSession row) makes progress across invocations and wraps to
+# the oldest rows once a scan pass completes, so the bound never excludes
+# debt permanently — it only spreads the enumeration over later runs of the
+# same session instead of rescanning the whole history every turn.
+_PENDING_SESSION_SETTLEMENT_MAX_PAGES = 4
+# Reserved per-invocation attempt budget for CHRONIC candidates (failed at
+# least one prior retry). Without a reservation, continuously arriving fresh
+# debt would consume the whole attempt budget every invocation and older
+# chronic debt — including a suppressed charge that has since become
+# settleable — would never be revisited.
+_PENDING_SESSION_SETTLEMENT_CHRONIC_RESERVE = 8
+
+
+async def _settle_completed_run_token_usage(
+    run_uuid: uuid.UUID,
+    *,
+    passes: int = _COMPLETED_RUN_SETTLEMENT_PASSES,
+) -> dict[str, int] | None:
+    """Reachable settlement of a finished run's committed-round charges.
+
+    A normally-completed first attempt never passes through the restart
+    loader, so a keyed charge suppressed at every in-turn accounting boundary
+    previously had NO caller and the amount was silently lost.  This closes
+    that gap with the exact settlement the restart path already uses: each
+    committed logical root is charged under its own durable
+    ``provider_request_id`` key, deduplicating against any inline charge that
+    did commit.  It runs AFTER the run's terminal transaction has committed
+    and inside its own session, because ``record_token_usage`` opens its own
+    transaction and locks Tenant/User/Agent — invoking it from a caller that
+    holds conflicting row locks would deadlock.  A receipt that still reports
+    ``suppressed`` after the bounded passes is persisted on the task as a
+    pending marker (truthful, never claiming ``settled``); the pending lane
+    below and the restart loader remain the durable retries.
+    """
+
+    from app.models.session_v2 import SessionModelResult
+    from app.services.runtime_terminal_settlement import TERMINAL_SETTLEMENT_STATUSES
+
+    tenant_id = await resolve_tenant_for_runtime_task(run_uuid, session_factory=_async_session)
+    if tenant_id is None:
+        return None
+    receipt: dict[str, int] | None = None
+    for attempt in range(max(1, int(passes))):
+        async with tenant_scoped_session(
+            tenant_id,
+            session_factory=_async_session,
+            require_tenant=True,
+            source="completed_run_token_settlement",
+        ) as db:
+            task = await _load_web_chat_run_by_id(db, run_uuid)
+            if (
+                task is None
+                or task.tenant_id is None
+                or task.parent_agent_id is None
+                or str(task.status or "") not in TERMINAL_SETTLEMENT_STATUSES
+                or str(task.task_type or "") not in EXECUTABLE_CHAT_TASK_TYPES
+            ):
+                # Not (yet) a settled executable-chat run: nothing to recover
+                # here — the restart loader owns in-flight recovery.
+                return None
+            rows = list(
+                (
+                    await db.execute(
+                        select(SessionModelResult).where(
+                            SessionModelResult.tenant_id == task.tenant_id,
+                            SessionModelResult.run_id == run_uuid,
+                        )
+                    )
+                ).scalars()
+            )
+            try:
+                receipt = await _settle_committed_round_token_usage(task, rows, db=db)
+            except Exception as exc:
+                logger.warning(
+                    "[WebChatRuntime] completed-run token settlement failed for run {}: {}",
+                    run_uuid,
+                    exc,
+                )
+                receipt = None
+        if receipt is not None and int(receipt.get("suppressed") or 0) == 0:
+            break
+        if attempt + 1 < max(1, int(passes)):
+            await asyncio.sleep(_COMPLETED_RUN_SETTLEMENT_BACKOFF_S * (attempt + 1))
+    await _persist_completed_run_settlement_receipt(run_uuid, tenant_id, receipt)
+    return receipt
+
+
+async def _persist_completed_run_settlement_receipt(
+    run_uuid: uuid.UUID,
+    tenant_id: uuid.UUID,
+    receipt: dict[str, int] | None,
+) -> None:
+    """Persist the settlement receipt truthfully (pending markers included).
+
+    Written in the canonical terminal order (session advisory first, then the
+    RuntimeTask row lock) with no other lock held, so it can never cycle with
+    the charge transactions themselves.
+    """
+
+    pending = receipt is None or int(receipt.get("suppressed") or 0) > 0
+    entry: dict[str, Any] = {"pending": pending, "updated_at": datetime.now(timezone.utc).isoformat()}
+    if receipt is None:
+        entry["error"] = "settlement_unavailable"
+    else:
+        entry.update({key: int(value) for key, value in receipt.items()})
+    async with tenant_scoped_session(
+        tenant_id,
+        session_factory=_async_session,
+        require_tenant=True,
+        source="completed_run_token_settlement_receipt",
+    ) as db:
+        row = (
+            await db.execute(
+                select(RuntimeTask).where(RuntimeTask.id == run_uuid, RuntimeTask.tenant_id == tenant_id).limit(1)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return
+        session_id_raw = str(getattr(row, "parent_session_id", "") or "")
+        if session_id_raw and getattr(row, "parent_agent_id", None) is not None:
+            await lock_transcript_session(db, session_id=uuid.UUID(session_id_raw))
+        locked = (
+            await db.execute(
+                select(RuntimeTask)
+                .where(RuntimeTask.id == run_uuid, RuntimeTask.tenant_id == tenant_id)
+                .with_for_update()
+                # The unlocked read above may have populated the identity map
+                # with a pre-lock snapshot; without this the locked re-read
+                # returns that same stale instance and the merge below would
+                # clobber metadata keys committed by other writers between
+                # the two reads (the same stale-identity-map class the Agent
+                # counter re-read guards against in ``token_tracker``).
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if locked is None:
+            return
+        metadata = dict(locked.metadata_json or {})
+        if pending:
+            # A still-pending replacement receipt must not erase the rotation
+            # counter: the fairness fact ("how often this run was already
+            # re-attempted") is carried forward so chronic rotation and the
+            # chronic attempt reservation keep ordering truthfully across
+            # suppressed receipts, failed counter writes, and restarts.
+            prior_attempts = int((metadata.get("session_v2_token_settlement") or {}).get("retry_attempts") or 0)
+            if prior_attempts:
+                entry["retry_attempts"] = prior_attempts
+        metadata["session_v2_token_settlement"] = entry
+        locked.metadata_json = metadata
+        await db.commit()
+
+
+def _settlement_candidate_sort_key(
+    entry: dict[str, Any],
+    *,
+    created_at: datetime | None,
+    run_id: uuid.UUID,
+) -> tuple[int, datetime, uuid.UUID]:
+    """Rotation key: fresh debt oldest-first; chronic failures rotate by attempts.
+
+    The receipt's ``retry_attempts`` counter is the durable record of how
+    often the retry lane has re-attempted this run. The key's first component
+    is a chronic RANK, not a binary band: never-attempted and first-failure
+    candidates rank 0 (fresh), and every chronic failure advances the rank by
+    one, so the least-recently-attempted chronic candidate sorts ahead of
+    every more-attempted one. A full budget of permanently failing chronic
+    candidates therefore rotates instead of freezing: each failed attempt
+    bumps its counter, which moves it behind every less-attempted chronic
+    candidate for the next invocation. Without a rank that advances with the
+    counter, more than ``_PENDING_SESSION_SETTLEMENT_SCAN_LIMIT`` chronic
+    failures would permanently exclude every later chronic candidate
+    (including one that has since become settleable).
+    """
+
+    fallback = created_at or datetime.min.replace(tzinfo=timezone.utc)
+    attempts = int(entry.get("retry_attempts") or 1) if entry else 0
+    chronic_rank = 0 if attempts < 2 else attempts - 1
+    return (chronic_rank, fallback, run_id)
+
+
+async def _bump_pending_settlement_retry_attempt(
+    run_uuid: uuid.UUID,
+    tenant_id: uuid.UUID,
+) -> None:
+    """Durably count one more failed retry so the rotation key can move on.
+
+    Written in the canonical advisory → row order (same shape as the receipt
+    writer) with no other lock held. A pending receipt written by the
+    settlement itself (``suppressed`` stays nonzero) and the lane's own
+    failure marker both flow through here, so every unsuccessful attempt is
+    counted regardless of which path recorded it.
+    """
+
+    async with tenant_scoped_session(
+        tenant_id,
+        session_factory=_async_session,
+        require_tenant=True,
+        source="pending_session_token_settlement_retry_attempt",
+    ) as db:
+        locked = (
+            await db.execute(
+                select(RuntimeTask)
+                .where(RuntimeTask.id == run_uuid, RuntimeTask.tenant_id == tenant_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if locked is None:
+            return
+        metadata = dict(locked.metadata_json or {})
+        entry = dict(metadata.get("session_v2_token_settlement") or {})
+        if not entry:
+            # The attempt raised before any receipt was persisted (marker-less
+            # failure): record the truthful pending failure now so the
+            # rotation counter exists for the next invocation.
+            entry = {"pending": True, "error": "settlement_unavailable"}
+        elif not bool(entry.get("pending")):
+            return  # a concurrent writer settled it; nothing to count
+        entry["retry_attempts"] = int(entry.get("retry_attempts") or 0) + 1
+        entry["updated_at"] = datetime.now(timezone.utc).isoformat()
+        metadata["session_v2_token_settlement"] = entry
+        locked.metadata_json = metadata
+        await db.commit()
+
+
+_SETTLEMENT_SCAN_CURSOR_METADATA_KEY = "session_v2_token_settlement_scan"
+
+
+def _decode_settlement_scan_cursor(value: Any) -> tuple[datetime, uuid.UUID] | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        return (
+            datetime.fromisoformat(str(value["last_created_at"])),
+            uuid.UUID(str(value["last_id"])),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+async def _load_settlement_scan_cursor(
+    db: AsyncSession,
+    *,
+    session_id: str | uuid.UUID,
+) -> tuple[datetime, uuid.UUID] | None:
+    """Read the retry lane's durable scan cursor (unlocked; advisory-free).
+
+    The cursor is session-scoped durable metadata on the ChatSession row, so
+    every later run of the same session continues the bounded enumeration
+    instead of restarting it. A missing/corrupt cursor simply restarts from
+    the oldest rows — the lane is idempotent, so an interrupted cursor write
+    costs one redundant bounded pass, never a lost charge.
+    """
+
+    row = (
+        await db.execute(
+            select(ChatSession.transcript_metadata_json).where(ChatSession.id == uuid.UUID(str(session_id)))
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return None
+    return _decode_settlement_scan_cursor((row or {}).get(_SETTLEMENT_SCAN_CURSOR_METADATA_KEY))
+
+
+async def _persist_settlement_scan_cursor(
+    tenant_id: uuid.UUID,
+    *,
+    session_id: str | uuid.UUID,
+    cursor: tuple[datetime, uuid.UUID] | None,
+) -> bool:
+    """Persist (``cursor``) or clear (``None``) the scan cursor durably.
+
+    ``None`` clears the key so the next invocation wraps to the oldest rows.
+    Returns whether a session row existed to carry the cursor. The write is a
+    single-row UPDATE with no advisory held, so it cannot participate in the
+    advisory/row global order.
+    """
+
+    async with tenant_scoped_session(
+        tenant_id,
+        session_factory=_async_session,
+        require_tenant=True,
+        source="pending_session_token_settlement_scan_cursor",
+    ) as db:
+        locked = (
+            await db.execute(
+                select(ChatSession)
+                .where(ChatSession.id == uuid.UUID(str(session_id)), ChatSession.tenant_id == tenant_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if locked is None:
+            return False
+        metadata = dict(locked.transcript_metadata_json or {})
+        if cursor is None:
+            metadata.pop(_SETTLEMENT_SCAN_CURSOR_METADATA_KEY, None)
+        else:
+            metadata[_SETTLEMENT_SCAN_CURSOR_METADATA_KEY] = {
+                "last_created_at": cursor[0].isoformat(),
+                "last_id": str(cursor[1]),
+            }
+        locked.transcript_metadata_json = metadata
+        await db.commit()
+        return True
+
+
+async def _retry_pending_session_run_settlements(
+    session_id: str | uuid.UUID,
+    tenant_id: uuid.UUID,
+) -> int:
+    """Bounded retry lane: settle this session's prior unfinished settlements.
+
+    The receipt lives in encrypted ``metadata_json``, so candidacy cannot be
+    a SQL predicate; the enumeration is a KEYSET-PAGED scan of the session's
+    terminal executable-chat runs. Two independent bounds keep a busy
+    session's preflight cheap without ever excluding debt permanently:
+
+    - READS are bounded: at most ``_PENDING_SESSION_SETTLEMENT_MAX_PAGES``
+      pages are read and decrypted per invocation, continuing from a durable
+      session-scoped cursor (see ``_persist_settlement_scan_cursor``). When a
+      pass reaches the end of the history the cursor wraps to the oldest
+      rows, so the whole session is eventually re-enumerated across later
+      runs of the same session.
+    - ATTEMPTS are bounded AND PARTITIONED: at most
+      ``_PENDING_SESSION_SETTLEMENT_SCAN_LIMIT`` real settlement attempts per
+      invocation, of which ``_PENDING_SESSION_SETTLEMENT_CHRONIC_RESERVE``
+      are reserved for chronic candidates (see
+      ``_settlement_candidate_sort_key``), so continuously arriving fresh
+      debt cannot monopolize the budget and permanently exclude older debt.
+
+    The cursor advances past every row the bounded pass ENUMERATED and wraps
+    to the oldest rows at the end of history, so the whole session is
+    eventually re-enumerated across later runs of the same session. It is
+    deliberately decoupled from attempted-candidate scheduling: a pending
+    receipt keeps an unattempted candidate a candidate across the wrap, and
+    the chronic-rank ordering below — not the cursor — decides when it is
+    attempted, so a high historic attempt count can delay an attempt but
+    never pin the scan position or hide later debt outside the window.
+    """
+
+    from app.services.runtime_terminal_settlement import TERMINAL_SETTLEMENT_STATUSES
+
+    session_uuid = uuid.UUID(str(session_id))
+    candidates: list[tuple[tuple[int, datetime, uuid.UUID], uuid.UUID, bool]] = []
+    scanned: list[tuple[datetime, uuid.UUID]] = []
+    attempted_keys: set[uuid.UUID] = set()
+    async with tenant_scoped_session(
+        tenant_id,
+        session_factory=_async_session,
+        require_tenant=True,
+        source="pending_session_token_settlement_retry",
+    ) as db:
+        cursor = await _load_settlement_scan_cursor(db, session_id=session_uuid)
+        wrapped = False
+        pages_read = 0
+        while pages_read < _PENDING_SESSION_SETTLEMENT_MAX_PAGES:
+            statement = (
+                select(RuntimeTask.id, RuntimeTask.metadata_json, RuntimeTask.created_at)
+                .where(
+                    RuntimeTask.tenant_id == tenant_id,
+                    RuntimeTask.parent_session_id == str(session_id),
+                    RuntimeTask.status.in_(TERMINAL_SETTLEMENT_STATUSES),
+                    RuntimeTask.task_type.in_(EXECUTABLE_CHAT_TASK_TYPES),
+                )
+                .order_by(RuntimeTask.created_at.asc(), RuntimeTask.id.asc())
+                .limit(_PENDING_SESSION_SETTLEMENT_PAGE_ROWS)
+            )
+            if cursor is not None:
+                statement = statement.where(tuple_(RuntimeTask.created_at, RuntimeTask.id) > cursor)
+            page = (await db.execute(statement)).all()
+            if not page:
+                wrapped = True
+                break
+            pages_read += 1
+            for run_id, metadata, created_at in page:
+                scanned.append((created_at, run_id))
+                entry = dict((dict(metadata or {}).get("session_v2_token_settlement") or {}) or {})
+                if entry and not bool(entry.get("pending")):
+                    continue  # settled: the cursor alone moves it out of the way
+                candidates.append(
+                    (
+                        _settlement_candidate_sort_key(entry, created_at=created_at, run_id=run_id),
+                        run_id,
+                        bool(entry.get("pending")) if entry else False,
+                    )
+                )
+            last = page[-1]
+            cursor = (last.created_at, last.id)
+            if len(page) < _PENDING_SESSION_SETTLEMENT_PAGE_ROWS:
+                wrapped = True
+                break
+    candidates.sort(key=lambda item: item[0])
+    recovered = 0
+    attempted = 0
+    fresh_budget = max(0, _PENDING_SESSION_SETTLEMENT_SCAN_LIMIT - _PENDING_SESSION_SETTLEMENT_CHRONIC_RESERVE)
+
+    async def _attempt(_sort_key, run_uuid: uuid.UUID, had_pending_marker: bool) -> None:
+        nonlocal attempted, recovered
+        try:
+            receipt = await _settle_completed_run_token_usage(run_uuid, passes=1)
+        except Exception as exc:
+            logger.warning(
+                "[WebChatRuntime] pending session token settlement retry failed for run {}: {}",
+                run_uuid,
+                exc,
+            )
+            receipt = None
+        if receipt is None or int(receipt.get("suppressed") or 0) > 0:
+            # Count the unsuccessful attempt durably so the chronic rank
+            # rotates this run behind every less-attempted chronic candidate
+            # of the next invocation; without it a persistently unavailable
+            # candidate would monopolize the attempt budget.
+            try:
+                await _bump_pending_settlement_retry_attempt(run_uuid, tenant_id)
+            except Exception as bump_exc:
+                logger.warning(
+                    "[WebChatRuntime] pending session token settlement retry-attempt counter could not be persisted for run {}: {}",
+                    run_uuid,
+                    bump_exc,
+                )
+            return
+        # ``recovered`` counts runs whose retry performed real settlement
+        # work (a charge, a durable dedupe hit, or a truthful legacy/unknown
+        # reconciliation) — not runs that merely turned out to owe nothing
+        # and only now received their first receipt.
+        performed_work = had_pending_marker or any(
+            int(receipt.get(bucket) or 0) > 0
+            for bucket in ("settled", "already_recorded", "legacy_unkeyed_unknown", "estimated", "skipped")
+        )
+        if performed_work:
+            recovered += 1
+
+    for sort_key, run_uuid, had_pending_marker in candidates:
+        if sort_key[0] == 0:
+            if attempted >= fresh_budget:
+                break
+        elif attempted >= _PENDING_SESSION_SETTLEMENT_SCAN_LIMIT:
+            break
+        attempted += 1
+        attempted_keys.add(run_uuid)
+        await _attempt(sort_key, run_uuid, had_pending_marker)
+    # The chronic pass: after the fresh prefix above, chronic candidates use
+    # the full remaining budget, which is at least the reserved share while
+    # any chronic candidate exists.
+    for sort_key, run_uuid, had_pending_marker in candidates:
+        if sort_key[0] == 0 or attempted >= _PENDING_SESSION_SETTLEMENT_SCAN_LIMIT or run_uuid in attempted_keys:
+            continue
+        attempted += 1
+        attempted_keys.add(run_uuid)
+        await _attempt(sort_key, run_uuid, had_pending_marker)
+    # Leftover-fresh pass: fresh candidates beyond the fresh budget are
+    # attempted ONLY after the chronic reserve is satisfied, using whatever
+    # budget remains. Without this pass a small fresh overhang at a window's
+    # tail would wait a full cursor wrap even though the invocation had
+    # unused attempt budget — the chronic reservation still decides priority,
+    # never the leftover pass.
+    for sort_key, run_uuid, had_pending_marker in candidates:
+        if sort_key[0] != 0 or attempted >= _PENDING_SESSION_SETTLEMENT_SCAN_LIMIT or run_uuid in attempted_keys:
+            continue
+        attempted += 1
+        attempted_keys.add(run_uuid)
+        await _attempt(sort_key, run_uuid, had_pending_marker)
+
+    # The cursor tracks bounded ENUMERATION progress only — it advances past
+    # every scanned row and wraps at the end of history — and is deliberately
+    # decoupled from attempted-candidate scheduling. Attempt fairness is
+    # owned solely by the chronic-rank ordering above: coupling the cursor to
+    # historic attempt counts let one high-rank candidate at the head of the
+    # read window pin the scan position (its rank only grows relative to the
+    # window), so later debt outside the window was never enumerated. A
+    # discovered-but-unattempted candidate is not lost: its pending receipt
+    # keeps it a candidate, the wrap re-enumerates it, and the rank ordering
+    # schedules its attempt without holding the window.
+    next_cursor: tuple[datetime, uuid.UUID] | None = None if wrapped else (scanned[-1] if scanned else None)
+    if scanned or wrapped:
+        try:
+            await _persist_settlement_scan_cursor(
+                tenant_id,
+                session_id=session_uuid,
+                cursor=next_cursor,
+            )
+        except Exception as cursor_exc:
+            # An interrupted cursor write only costs one redundant bounded
+            # pass on the next invocation; the lane stays correct without it.
+            logger.warning(
+                "[WebChatRuntime] pending session token settlement scan cursor could not be persisted for session {}: {}",
+                session_id,
+                cursor_exc,
+            )
+    if candidates:
+        logger.info(
+            "[WebChatRuntime] enumerated {} unfinished token settlement candidate(s) for session {} "
+            "(attempted {} recovered {})",
+            len(candidates),
+            session_id,
+            attempted,
+            recovered,
+        )
+    return recovered
+
+
 async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio.Event | None = None) -> None:
     """Delegate to the single run_web_chat_task lifecycle owner."""
     from app.services.web_chat_run_orchestrator import run_web_chat_task
     from app.services.runtime_task_fence import current_runtime_task_fence
 
     run_uuid = _run_id(run_id)
-    if current_runtime_task_fence() is not None and await _reconcile_claimed_web_chat_terminal_ghost(run_uuid):
-        return
-    return await run_web_chat_task(
-        run_id=run_uuid,
-        cancel_event=cancel_event,
-        ports=_web_chat_run_ports(),
-    )
+    try:
+        # Reachable retry for prior runs of this session whose committed-round
+        # charges stayed suppressed (bounded, idempotent, keyed).
+        try:
+            retry_tenant = await resolve_tenant_for_runtime_task(run_uuid, session_factory=_async_session)
+            if retry_tenant is not None:
+                async with tenant_scoped_session(
+                    retry_tenant,
+                    session_factory=_async_session,
+                    require_tenant=True,
+                    source="pending_session_token_settlement_preflight",
+                ) as db:
+                    prior = await db.scalar(
+                        select(RuntimeTask.parent_session_id).where(
+                            RuntimeTask.id == run_uuid, RuntimeTask.tenant_id == retry_tenant
+                        )
+                    )
+                if prior:
+                    await _retry_pending_session_run_settlements(prior, retry_tenant)
+        except Exception as exc:
+            logger.warning(
+                "[WebChatRuntime] pending session token settlement preflight failed for run {}: {}",
+                run_uuid,
+                exc,
+            )
+        if current_runtime_task_fence() is not None and await _reconcile_claimed_web_chat_terminal_ghost(run_uuid):
+            return
+        return await run_web_chat_task(
+            run_id=run_uuid,
+            cancel_event=cancel_event,
+            ports=_web_chat_run_ports(),
+        )
+    finally:
+        # The run's own terminal state is durable here and this caller holds
+        # no row lock, so the completed-run settlement (own transactions per
+        # charge) can never deadlock with the lifecycle that just finished.
+        try:
+            await _settle_completed_run_token_usage(run_uuid)
+        except Exception as exc:
+            logger.warning(
+                "[WebChatRuntime] completed-run token settlement raised for run {}: {}",
+                run_uuid,
+                exc,
+            )
 
 
 async def _reconcile_claimed_web_chat_terminal_ghost(run_uuid: uuid.UUID) -> bool:

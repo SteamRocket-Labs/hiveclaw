@@ -10,6 +10,7 @@ from tests.integration.conftest import (  # noqa: F401  (re-exported fixtures)
     _async_url,
     app_user_engine,
     app_user_sessionmaker,
+    drain_terminal_boundary_for_task,
     migrated_pg_url,
     owner_engine,
     owner_sessionmaker,

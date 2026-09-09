@@ -22,7 +22,7 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.database import async_session, tenant_scoped_session
+import app.database as _app_database  # late-bound: a test (or redeploy) may rebind the app session factories
 from app.models.agent import Agent
 from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -1118,7 +1118,7 @@ class WebTerminalBoundaryProcessor:
             from app.memory.t0.ledger import seal_t0_session_segment
 
             seal_t0 = seal_t0_session_segment
-        self._session_factory = session_factory or async_session
+        self._session_factory = session_factory or _app_database.async_session
         self._bridge_to_t0 = bridge_to_t0
         self._turn_boundary_projector = turn_boundary_projector
         self._emit_advisory_hook = emit_advisory_hook or emit_hook
@@ -1129,7 +1129,7 @@ class WebTerminalBoundaryProcessor:
         self._bridge_attempts = max(1, int(bridge_attempts))
 
     def _tenant_session(self, tenant_id: uuid.UUID, *, operation: str):
-        return tenant_scoped_session(
+        return _app_database.tenant_scoped_session(
             tenant_id,
             session_factory=self._session_factory,
             require_tenant=True,

@@ -42,7 +42,18 @@ class _ScalarResult:
         return self._value
 
     def scalars(self):
-        return self._values
+        return self
+
+    def all(self):
+        return list(self._values)
+
+
+class _NestedTransaction:
+    async def commit(self):
+        return None
+
+    async def rollback(self):
+        return None
 
 
 class _LifecycleDb:
@@ -78,6 +89,9 @@ class _LifecycleDb:
         if "FROM runtime_tasks" in statement:
             return _ScalarResult(None, values=self.runtime_tasks)
         return _ScalarResult(self.participant)
+
+    async def begin_nested(self):
+        return _NestedTransaction()
 
     def add(self, obj):
         if getattr(obj, "id", None) is None:
@@ -257,12 +271,15 @@ async def test_soft_delete_agent_preserves_identity_and_disables_execution_entry
         participant_id=uuid4(),
     )
     runtime_task = SimpleNamespace(
+        id=uuid4(),
         status="running",
         completed_at=None,
         result_summary=None,
         claim_version=4,
         claimed_by="worker-1",
         claim_expires_at=object(),
+        parent_session_id=None,
+        parent_agent_id=None,
     )
     settlements = []
 

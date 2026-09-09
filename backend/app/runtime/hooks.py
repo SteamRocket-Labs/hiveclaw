@@ -1600,6 +1600,35 @@ class HookRegistry:
     def handler_count(self, event: HookEvent) -> int:
         return len(self._handlers.get(event, []))
 
+    def matched_handler_count(self, event: HookEvent, ctx: HookContext) -> int:
+        """Count handlers that would actually RUN for this exact context.
+
+        Applies the same skip filters ``emit`` applies — disabled keys
+        (global and agent-scoped) and each binding's matcher — WITHOUT
+        invoking any handler.  ``handler_count`` is process-global and
+        matcher-blind: using it to decide whether an event is governed lets
+        an unrelated tenant's binding govern this context (e.g. force a
+        consequential-effect fence onto a turn whose own context has NO
+        governed handler).  A matcher that raises counts as matched
+        (conservative: the binding's behavior at emit time is unknown).
+        """
+        count = 0
+        for binding in self._handlers.get(event, []):
+            scoped = _agent_scope(ctx.agent_id, binding.key) if binding.key else None
+            if binding.key and (
+                scoped in _disabled_hook_agent_keys
+                or (scoped not in _hook_runtime_agent_policies and binding.key in _disabled_hook_keys)
+            ):
+                continue
+            if binding.matcher is not None:
+                try:
+                    if not binding.matcher(ctx):
+                        continue
+                except Exception:
+                    pass  # unknown matcher outcome: keep the conservative count
+            count += 1
+        return count
+
     def clear(self) -> None:
         """Remove all handlers (for testing)."""
         for handlers in self._handlers.values():

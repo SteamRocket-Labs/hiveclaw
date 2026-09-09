@@ -598,8 +598,13 @@ async def delete_tenant(
                     },
                 )
 
+            # FOR NO KEY UPDATE: serializes Agent mutation for retirement but
+            # still admits the FOR KEY SHARE an in-flight transcript append
+            # takes via the chat_transcript_events.agent_id FK — holding
+            # FOR UPDATE across revoke_user_authority's session advisories is
+            # the row → advisory side of the global order (CC6 B2 class).
             tenant_agents_result = await scoped_db.execute(
-                select(Agent).where(Agent.tenant_id == tenant_id).order_by(Agent.id).with_for_update()
+                select(Agent).where(Agent.tenant_id == tenant_id).order_by(Agent.id).with_for_update(key_share=True)
             )
             tenant_agents = list(tenant_agents_result.scalars().all())
             # Any non-deleted target-tenant Agent blocks retirement, not only

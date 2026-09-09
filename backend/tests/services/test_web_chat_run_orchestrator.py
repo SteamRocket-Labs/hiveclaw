@@ -585,6 +585,12 @@ async def test_production_invocation_request_wires_session_v2_round_callbacks(mo
 
     monkeypatch.setattr(session_model_round, "bind_round_inputs", fake_bind)
     monkeypatch.setattr(session_model_round, "prepare_model_request", fake_prepare)
+
+    async def fake_resume_receipt(_db, **kwargs):
+        calls.append(("resume_committed_round_receipt", kwargs))
+        return None
+
+    monkeypatch.setattr(session_model_round, "resume_committed_round_receipt", fake_resume_receipt)
     monkeypatch.setattr(session_model_round, "seal_model_response", fake_seal)
     monkeypatch.setattr(session_model_round, "commit_sealed_model_round", fake_round_commit)
     monkeypatch.setattr(session_model_round, "fail_model_request", fake_fail)
@@ -663,6 +669,7 @@ async def test_production_invocation_request_wires_session_v2_round_callbacks(mo
     assert [name for name, _ in calls if name != "db.commit"] == [
         "bind",
         "prepare",
+        "resume_committed_round_receipt",
         "response.sealed",
         "response.round_committed",
         "broadcast",

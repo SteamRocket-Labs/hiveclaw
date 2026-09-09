@@ -213,6 +213,14 @@ async def _queue_same_run_continuation(
     invocation: SessionToolInvocation,
     source_result: SessionModelResult,
 ) -> RuntimeTask:
+    from app.services.chat_transcript import lock_transcript_session
+
+    # Advisory → row: the resume write below appends session events (which
+    # take this session's advisory); taking the RuntimeTask row first would
+    # be the row → advisory side of the global order against an in-flight
+    # append of the same run's session. Reentrant when the caller (the
+    # round/quarantine flow) already holds the advisory.
+    await lock_transcript_session(db, session_id=session_id)
     task = await db.scalar(
         select(RuntimeTask)
         .where(
@@ -293,6 +301,11 @@ async def _quarantine_same_run_for_reconciliation(
 ) -> RuntimeTask:
     """Freeze the original Run when effect settlement cannot be proven."""
 
+    from app.services.chat_transcript import lock_transcript_session
+
+    # Advisory → row for the same reason as the resume path above: the
+    # quarantine write settles the run terminally and appends session events.
+    await lock_transcript_session(db, session_id=session_id)
     task = await db.scalar(
         select(RuntimeTask)
         .where(
@@ -423,6 +436,12 @@ async def expire_stale_session_permission_requests(
             if invocation is None:
                 await db.rollback()
                 continue
+            from app.services.chat_transcript import lock_transcript_session
+
+            # Advisory → row: the expiry write appends session events for this
+            # session; locking the RuntimeTask row first would invert the
+            # order against a concurrent append of the same run's session.
+            await lock_transcript_session(db, session_id=invocation.session_id)
             task = await db.scalar(
                 select(RuntimeTask)
                 .where(

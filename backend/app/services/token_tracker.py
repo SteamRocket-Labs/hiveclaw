@@ -179,7 +179,7 @@ async def _record_token_usage_event(
             now = datetime.now(timezone.utc)
             if tenant_id is not None:
                 tenant = (
-                    await db.execute(select(Tenant).where(Tenant.id == tenant_id).with_for_update())
+                    await db.execute(select(Tenant).where(Tenant.id == tenant_id).with_for_update(key_share=True))
                 ).scalar_one_or_none()
                 if tenant:
                     _reset_user_or_tenant_counter(tenant, now=now)
@@ -234,21 +234,33 @@ async def record_token_usage(
     tenant_id: uuid.UUID | None = None,
     usage: dict | None = None,
     details: dict | None = None,
+    idempotency_key: str | None = None,
     raise_on_error: bool = False,
-) -> None:
+) -> bool | None:
     """Record token consumption for an agent and its owner user.
 
     Updates Agent stats (tokens_used_today/month/total) and
     User enforcement counters (tokens_used_today/month/total).
     Uses an independent DB session to avoid interfering with the caller's transaction.
+
+    ``idempotency_key`` carries an exact charge identity (e.g. the durable
+    provider request of one model round).  When set, the TokenUsageEvent row is
+    both the charge evidence and the dedupe fence: the existence check, the
+    counter updates, and the event insert commit in ONE transaction, so a crash
+    can never leave "counters bumped without evidence" or vice versa.  Returns
+    ``True`` when this call committed the charge, ``False`` when the key's
+    charge already committed durably, and ``None`` on suppressed failure.
+    Round execution is serialized upstream by the claim/prepare fences, so only
+    the current claim owner can ever reach a keyed charge for its round.
     """
     if tokens <= 0:
-        return
+        return None
 
     try:
         from app.database import tenant_scoped_session
         from app.models.agent import Agent
         from app.models.tenant import Tenant
+        from app.models.token_usage_event import TokenUsageEvent
         from app.models.user import User
         from app.services.tenant_resolver import resolve_tenant_for_agent
         from sqlalchemy import select
@@ -261,43 +273,127 @@ async def record_token_usage(
         tenant_id = tenant_id or await resolve_tenant_for_agent(agent_id)
         async with tenant_scoped_session(tenant_id) as db:
             now = datetime.now(timezone.utc)
-            tenant_result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
-            tenant = tenant_result.scalar_one_or_none()
+            # Serialize charges on the shared counter rows BEFORE any dedupe
+            # read: two concurrent callers of the SAME key (a stale worker and
+            # the reclaiming worker) or of DIFFERENT keys sharing these rows
+            # must never interleave read-modify-write counters or race the
+            # keyed existence check.
+            #
+            # Lock order is Tenant -> User -> Agent.  User offboarding locks
+            # the target User (FOR UPDATE) and then the user's Agent rows
+            # (FOR UPDATE, ``_lock_owned_agents``); tenant retirement locks
+            # Tenant first.  Ordering every counter row Tenant -> User ->
+            # Agent keeps ONE consistent global order with BOTH authenticated
+            # production paths — the inverse order (Agent before User) is a
+            # reachable ABBA deadlock whenever an admin offboards an employee
+            # whose Agent is mid-turn.
+            #
+            # The order is not only about the explicit ``with_for_update``
+            # calls: no row may be dirtied before its lock is held, because
+            # the session's autoflush would emit that row's UPDATE (and take
+            # its row lock) at the NEXT select — silently re-introducing the
+            # inverse order even when the explicit Agent lock is removed.
+            # All counter mutations below therefore happen only after every
+            # lock AND the dedupe read.  The strength is FOR NO KEY UPDATE:
+            # it still serializes concurrent charges against each other
+            # (mutual conflict) and against offboarding's FOR UPDATE, but
+            # remains compatible with the foreign-key KEY SHARE row locks
+            # any open transaction holds after inserting child rows — a
+            # full FOR UPDATE here deadlocks whenever a charge runs while
+            # the caller's own transaction (e.g. the restart loader) is
+            # still open, because that transaction awaits this charge's
+            # result on the same event loop.
+            tenant = (
+                await db.execute(select(Tenant).where(Tenant.id == tenant_id).with_for_update(key_share=True))
+            ).scalar_one_or_none()
+
+            # Resolve the owning user BEFORE taking the Agent lock: the User
+            # row must be locked first (order above).  This snapshot read
+            # mutates nothing, so autoflush cannot reorder it.  The snapshot
+            # owner is DELIBERATELY the charge principal for the whole
+            # transaction: an ownership transfer that commits mid-charge must
+            # not split the charge across principals (for example, debit the
+            # snapshot user's counter while writing the new owner's identity
+            # into the evidence event).  The User row is locked under exactly
+            # that principal.
+            resolved_user_id = user_id
+            if not resolved_user_id:
+                owner_snapshot = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
+                if owner_snapshot is not None:
+                    resolved_user_id = owner_snapshot.owner_user_id or owner_snapshot.creator_id
+
+            user = None
+            if resolved_user_id:
+                user = (
+                    await db.execute(
+                        select(User)
+                        .where(
+                            User.id == resolved_user_id,
+                            User.tenant_id == tenant_id,
+                        )
+                        .with_for_update(key_share=True)
+                    )
+                ).scalar_one_or_none()
+
+            # The locking Agent re-read refreshes the row state
+            # (``populate_existing``) so the counter read-modify-write below
+            # uses the values as of THIS lock, not a stale identity-map
+            # instance from the mutation-free snapshot above.
+            agent = (
+                await db.execute(
+                    select(Agent)
+                    .where(Agent.id == agent_id)
+                    .with_for_update(key_share=True)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one_or_none()
+
+            if idempotency_key:
+                # Only after the counter rows are locked: the competing charge
+                # (if any) has either committed its evidence row — visible to
+                # this fresh READ COMMITTED snapshot — or not started, so the
+                # check-then-insert is a real fence, not a race window.
+                already = await db.scalar(
+                    select(TokenUsageEvent.id)
+                    .where(
+                        TokenUsageEvent.tenant_id == tenant_id,
+                        TokenUsageEvent.agent_id == agent_id,
+                        TokenUsageEvent.details["idempotency_key"].astext == str(idempotency_key),
+                    )
+                    .limit(1)
+                )
+                if already is not None:
+                    await db.rollback()
+                    return False
             if tenant:
                 _reset_user_or_tenant_counter(tenant, now=now)
                 tenant.tokens_used_today = (tenant.tokens_used_today or 0) + tokens
                 tenant.tokens_used_month = (tenant.tokens_used_month or 0) + tokens
                 tenant.tokens_used_total = (tenant.tokens_used_total or 0) + tokens
-
-            # Agent stats (tracking only)
-            result = await db.execute(select(Agent).where(Agent.id == agent_id))
-            agent = result.scalar_one_or_none()
             if agent:
                 _reset_agent_counter(agent, now=now)
                 agent.tokens_used_today = (agent.tokens_used_today or 0) + tokens
                 agent.tokens_used_month = (agent.tokens_used_month or 0) + tokens
                 agent.tokens_used_total = (agent.tokens_used_total or 0) + tokens
 
-                # Resolve user_id from agent if not provided
-                if not user_id and agent.owner_user_id:
-                    user_id = agent.owner_user_id
-                elif not user_id:
-                    user_id = agent.creator_id
+                # The evidence event carries the SAME principal that was
+                # locked and debited above (the snapshot owner) — never a
+                # mid-charge ownership transfer observed on the refreshed
+                # Agent row, which would split counter and evidence.
+                if not user_id:
+                    user_id = resolved_user_id
 
             # User enforcement counters
-            if user_id:
-                user_result = await db.execute(select(User).where(User.id == user_id))
-                user = user_result.scalar_one_or_none()
-                if user:
-                    _reset_user_or_tenant_counter(user, now=now)
+            if user:
+                _reset_user_or_tenant_counter(user, now=now)
+                user.tokens_used_today = (user.tokens_used_today or 0) + tokens
+                user.tokens_used_month = (user.tokens_used_month or 0) + tokens
+                user.tokens_used_total = (user.tokens_used_total or 0) + tokens
+                user.tokens_reset_at = now
 
-                    user.tokens_used_today = (user.tokens_used_today or 0) + tokens
-                    user.tokens_used_month = (user.tokens_used_month or 0) + tokens
-                    user.tokens_used_total = (user.tokens_used_total or 0) + tokens
-                    user.tokens_reset_at = now
-
-            from app.models.token_usage_event import TokenUsageEvent
-
+            event_details = dict(details or {})
+            if idempotency_key:
+                event_details["idempotency_key"] = str(idempotency_key)
             db.add(
                 TokenUsageEvent(
                     tenant_id=tenant_id,
@@ -308,15 +404,17 @@ async def record_token_usage(
                     model=model,
                     tokens=tokens,
                     usage=usage,
-                    details=details,
+                    details=event_details or None,
                 )
             )
             await db.commit()
             logger.debug(f"Recorded {tokens:,} tokens for agent {agent_id}" + (f" / user {user_id}" if user_id else ""))
+            return True
     except Exception as e:
         if raise_on_error:
             raise
         logger.warning(f"Failed to record token usage: {e}")
+        return None
 
 
 async def record_autonomous_llm_token_usage(

@@ -191,11 +191,22 @@ async def _lock_owned_agents(
     target_user_id: uuid.UUID,
     tenant_id: uuid.UUID,
 ) -> list[Agent]:
+    # FOR NO KEY UPDATE, not FOR UPDATE: the protected property is
+    # serialization of Agent ownership/status mutation against other agent
+    # writers, which this strength fully enforces. FOR UPDATE additionally
+    # blocks FOR KEY SHARE — the only lock an in-flight transcript append
+    # needs on the agents row via the ``chat_transcript_events.agent_id``
+    # FK — so FOR UPDATE here would put this outer offboarding transaction
+    # (agents row lock held across ``revoke_user_authority``'s session
+    # advisories) on the row → advisory side of the global order and
+    # deadlock a concurrent user turn (reproduced by the CC6 outer
+    # offboarding probe). FK child insertion does not mutate the parent, so
+    # admitting it does not weaken the offboarding authority.
     result = await db.execute(
         select(Agent)
         .where(Agent.tenant_id == tenant_id, agent_owned_by_clause(target_user_id))
         .order_by(Agent.id.asc())
-        .with_for_update()
+        .with_for_update(key_share=True)
     )
     return list(result.scalars().all())
 
@@ -210,21 +221,34 @@ async def revoke_user_authority(
     tenant_id = target_user.tenant_id
     target_user_id = target_user.id
 
-    runtime_tasks = list(
-        (
-            await db.execute(
-                select(RuntimeTask)
-                .where(
-                    RuntimeTask.tenant_id == tenant_id,
-                    RuntimeTask.root_user_id == target_user_id,
-                    RuntimeTask.status.in_(("pending", "running", "suspended", "resumable")),
-                )
-                .order_by(RuntimeTask.id.asc())
-                .with_for_update()
-            )
+    # Canonical advisory-first batch order: the shared terminal settlement
+    # below acquires each task's session advisory, so THIS caller must hold
+    # every affected session advisory BEFORE taking the RuntimeTask row locks
+    # — locking the rows first would be the row → advisory side of the global
+    # order and deadlocks against any concurrent advisory-first writer of the
+    # same session (in-flight transcript append, Stop fence, canonical
+    # web-chat terminal writer). Sorted multi-session acquisition keeps two
+    # batch writers from cycling among themselves.
+    from app.services.runtime_terminal_settlement import lock_runtime_task_batch_with_session_authority
+
+    # Canonical advisory → row batch order with late-admission closure: the
+    # helper holds every affected session advisory before the first row lock
+    # and restarts under a savepoint when a task is admitted between its
+    # prescan and the FOR UPDATE batch, so the newcomer's session advisory is
+    # acquired BEFORE its row. The previous trailing ``late_session_ids``
+    # acquisition took advisories while rows were already held — a real
+    # row → advisory edge (demonstrated deadlock by the CC5 late-admission
+    # probe) — and is gone.
+    revocable_statuses = ("pending", "running", "suspended", "resumable")
+    runtime_tasks = await lock_runtime_task_batch_with_session_authority(
+        db,
+        statement=select(RuntimeTask)
+        .where(
+            RuntimeTask.tenant_id == tenant_id,
+            RuntimeTask.root_user_id == target_user_id,
+            RuntimeTask.status.in_(revocable_statuses),
         )
-        .scalars()
-        .all()
+        .order_by(RuntimeTask.id.asc()),
     )
     runtime_task_signals: list[RuntimeTaskRevocationSignal] = []
     business_tasks_by_runtime_id: dict[uuid.UUID, Task] = {}

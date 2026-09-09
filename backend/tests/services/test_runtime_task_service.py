@@ -107,6 +107,14 @@ class _CreateSession(_FailingSession):
         self.commit_calls += 1
 
 
+class _NestedTransaction:
+    async def commit(self):
+        return None
+
+    async def rollback(self):
+        return None
+
+
 class _ListResult:
     def __init__(self, values):
         self._values = values
@@ -185,14 +193,20 @@ class _ReconcileSession:
             return _RowResult([(task.id, task.tenant_id) for task in self.tasks])
         return _ListResult(self.tasks)
 
+    async def begin_nested(self):
+        # The advisory-first batch helper locks rows inside a SAVEPOINT; the
+        # fake prescan and locked reads return the same rows, so the savepoint
+        # always commits and never needs a real rollback.
+        return _NestedTransaction()
+
     async def commit(self):
         self.commit_calls += 1
 
-    async def flush(self):
-        return None
-
     async def rollback(self):
         self.rollback_calls += 1
+
+    async def flush(self):
+        return None
 
 
 def test_runtime_task_projection_includes_claim_owner_and_expiry_for_startup_recovery() -> None:
@@ -296,6 +310,12 @@ class _OneTaskResult:
         self._task = task
 
     def scalar_one_or_none(self):
+        return self._task
+
+    def first(self):
+        # The advisory-first single-task helper reads the session binding as
+        # a (parent_session_id, parent_agent_id) row via .first(); the fake
+        # task object carries those attributes directly.
         return self._task
 
 

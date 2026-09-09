@@ -15,6 +15,12 @@ export interface AgentCreateParams {
   execution_mode?: 'standard' | 'coordinator' | 'coordinator_strict';
 }
 
+export interface AgentCleanupPending {
+  id: string;
+  name: string;
+  deleted_at: string;
+}
+
 export interface AgentUpdateParams {
   name?: string;
   role_description?: string;
@@ -143,6 +149,9 @@ export interface AgentChannelCapability {
 
 export const agentApi = {
   getHrAgent: () => get<HrAgentInfo>('/agents/system/hr'),
+  listPendingCleanup: (tenantId?: string) => get<AgentCleanupPending[]>(
+    `/agents/cleanup-pending${tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : ''}`,
+  ),
   list: (tenantId?: string, options?: { summary?: boolean }) => {
     const params = new URLSearchParams();
     if (tenantId) params.set('tenant_id', tenantId);

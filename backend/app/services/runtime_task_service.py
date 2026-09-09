@@ -867,8 +867,16 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
         source="runtime_task_status_update",
     ) as db:
         try:
-            result = await db.execute(select(RuntimeTask).where(RuntimeTask.id == runtime_task_id).with_for_update())
-            task = result.scalar_one_or_none()
+            from app.services.runtime_terminal_settlement import lock_runtime_task_with_session_authority
+
+            # Canonical advisory → row order: this generic terminal writer's
+            # call surface (runtime worker, A2A orchestrator, subagent runs,
+            # long tasks, heartbeat sweep, trigger daemon) runs concurrently
+            # with ordinary transcript appends of the same session, and the
+            # shared settlement/append boundary below acquires the session
+            # advisory — taking the row first deadlocks the append (the
+            # demonstrated CC5 failure on this exact function).
+            task = await lock_runtime_task_with_session_authority(db, task_id=runtime_task_id)
             if task is None:
                 return False
 
@@ -1241,19 +1249,34 @@ async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None 
             require_tenant=True,
             source="startup_orphan_runtime_task_reconciliation",
         ) as db:
-            result = await db.execute(
-                select(RuntimeTask)
-                .where(
-                    RuntimeTask.id.in_(task_ids),
-                    RuntimeTask.status == "running",
-                    or_(
-                        RuntimeTask.task_type.is_(None),
-                        RuntimeTask.task_type.notin_(_RESTART_RESUMABLE_TASK_TYPES),
-                    ),
-                )
-                .with_for_update(skip_locked=True)
+            # Canonical advisory → row order (skip-locked preserved): this
+            # sweep settles each orphan through the shared terminal boundary,
+            # which acquires the session advisory — taking the RuntimeTask
+            # rows first would be the row → advisory side of the global order
+            # and deadlock an in-flight transcript append of the same run
+            # (reproduced by the CC6 unmapped-consumer probe: a worker-restart
+            # sweep killing a live user turn's append). SKIP LOCKED keeps the
+            # startup semantics: rows another writer already holds are left
+            # for the next sweep, never blocked on.
+            from app.services.runtime_terminal_settlement import (
+                lock_runtime_task_batch_with_session_authority,
+                settle_and_enqueue_runtime_task_terminal,
             )
-            for task in result.scalars().all():
+
+            sweep_statement = select(RuntimeTask).where(
+                RuntimeTask.id.in_(task_ids),
+                RuntimeTask.status == "running",
+                or_(
+                    RuntimeTask.task_type.is_(None),
+                    RuntimeTask.task_type.notin_(_RESTART_RESUMABLE_TASK_TYPES),
+                ),
+            )
+            result = await lock_runtime_task_batch_with_session_authority(
+                db,
+                statement=sweep_statement,
+                skip_locked=True,
+            )
+            for task in result:
                 if getattr(task, "id", None) in excluded:
                     continue
                 task_type = str(getattr(task, "task_type", None) or "runtime_task")

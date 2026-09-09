@@ -1740,21 +1740,22 @@ class RuntimeBudgetService:
             run.terminal_reason = "runtime_budget_approval_rejected"
             run.completed_at = current
             self._clear_reserved(run)
-            waiting_tasks = list(
-                (
-                    await db.execute(
-                        select(RuntimeTask)
-                        .where(
-                            RuntimeTask.budget_run_id == run.id,
-                            RuntimeTask.status.in_(("pending", "resumable", "suspended")),
-                            RuntimeTask.claimed_by.is_(None),
-                            RuntimeTask.budget_admission_status == "waiting_budget_approval",
-                        )
-                        .with_for_update()
-                    )
-                )
-                .scalars()
-                .all()
+            from app.services.runtime_terminal_settlement import (
+                lock_runtime_task_batch_with_session_authority,
+            )
+
+            # Advisory → row: the terminal settlement below acquires each
+            # waiting task's session advisory; the batch helper holds every
+            # affected session advisory before any row lock (and restarts
+            # under a savepoint when a task is admitted in between).
+            waiting_tasks = await lock_runtime_task_batch_with_session_authority(
+                db,
+                statement=select(RuntimeTask).where(
+                    RuntimeTask.budget_run_id == run.id,
+                    RuntimeTask.status.in_(("pending", "resumable", "suspended")),
+                    RuntimeTask.claimed_by.is_(None),
+                    RuntimeTask.budget_admission_status == "waiting_budget_approval",
+                ),
             )
             for task in waiting_tasks:
                 metadata = dict(task.metadata_json or {})
@@ -2096,18 +2097,20 @@ class RuntimeBudgetService:
         result_summary: str,
         completed_at: datetime | None = None,
     ) -> None:
-        tasks = list(
-            (
-                await db.execute(
-                    select(RuntimeTask)
-                    .where(
-                        RuntimeTask.budget_run_id == run.id,
-                        RuntimeTask.status.in_(("pending", "resumable", "suspended")),
-                        RuntimeTask.claimed_by.is_(None),
-                    )
-                    .with_for_update()
-                )
-            ).scalars()
+        from app.services.runtime_terminal_settlement import (
+            lock_runtime_task_batch_with_session_authority,
+        )
+
+        # Advisory → row: same canonical order as the approval-rejection
+        # batch — every affected session advisory is held before the first
+        # RuntimeTask row lock is taken.
+        tasks = await lock_runtime_task_batch_with_session_authority(
+            db,
+            statement=select(RuntimeTask).where(
+                RuntimeTask.budget_run_id == run.id,
+                RuntimeTask.status.in_(("pending", "resumable", "suspended")),
+                RuntimeTask.claimed_by.is_(None),
+            ),
         )
         from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
 

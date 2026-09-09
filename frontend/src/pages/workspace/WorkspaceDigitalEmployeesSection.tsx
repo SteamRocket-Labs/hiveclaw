@@ -41,6 +41,13 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
         enabled: canManageEmployees,
     });
 
+    const cleanupQueryKey = ['agent-cleanup-pending', selectedTenantId];
+    const { data: pendingCleanups = [], error: cleanupError, refetch: reloadCleanups } = useQuery({
+        queryKey: cleanupQueryKey,
+        queryFn: () => agentApi.listPendingCleanup(selectedTenantId || undefined),
+        enabled: canManageEmployees,
+    });
+
     const { data: users = [] } = useQuery({
         queryKey: ['users', selectedTenantId, 'agent-owner-display'],
         queryFn: () => usersApi.list(selectedTenantId || undefined),
@@ -58,7 +65,16 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
             showAppToast(t('workspace.digitalEmployees.employeeDeleted', 'Digital employee deleted.'), 'success');
         },
         onError: (error: any) => {
-            showAppToast(error?.message || t('workspace.digitalEmployees.employeeDeleteFailed', 'Failed to delete digital employee.'), 'error');
+            showAppToast(
+                error?.data?.code === 'agent_cleanup_pending'
+                    ? t('workspace.digitalEmployees.cleanupPending', 'Deletion is committed. File archival is pending; retry only the cleanup below.')
+                    : error?.message || t('workspace.digitalEmployees.employeeDeleteFailed', 'Failed to delete digital employee.'),
+                'error',
+            );
+        },
+        onSettled: () => {
+            queryClient.invalidateQueries({ queryKey: cleanupQueryKey });
+            queryClient.invalidateQueries({ queryKey: ['agents'] });
         },
     });
 
@@ -105,7 +121,7 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
             danger: true,
         });
         if (!confirmed) return;
-        await deleteAgentMutation.mutateAsync(agent.id);
+        deleteAgentMutation.mutate(agent.id);
     };
 
     const openOwnershipModal = async (agent: Agent) => {
@@ -169,6 +185,36 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                         {t('employees.createViaHr', 'Create via HR')}
                     </Link>
                 </div>
+
+                {cleanupError && (
+                    <div role="alert">
+                        {t('workspace.digitalEmployees.cleanupLoadFailed', 'Could not check pending file cleanup.')}
+                        <button type="button" className="btn btn-secondary" onClick={() => void reloadCleanups()}>
+                            {t('common.retry', 'Retry')}
+                        </button>
+                    </div>
+                )}
+                {pendingCleanups.length > 0 && (
+                    <section aria-label={t('workspace.digitalEmployees.pendingCleanupTitle', 'Pending file cleanup')}>
+                        <h4>{t('workspace.digitalEmployees.pendingCleanupTitle', 'Pending file cleanup')}</h4>
+                        <p>{t('workspace.digitalEmployees.cleanupPending', 'Deletion is committed. File archival is pending; retry only the cleanup below.')}</p>
+                        <ul>
+                            {pendingCleanups.map((agent) => (
+                                <li key={agent.id}>
+                                    {agent.name}{' '}
+                                    <button
+                                        type="button"
+                                        className="btn btn-secondary"
+                                        disabled={deleteAgentMutation.isPending}
+                                        onClick={() => deleteAgentMutation.mutate(agent.id)}
+                                    >
+                                        {t('workspace.digitalEmployees.retryCleanup', 'Retry file cleanup')}
+                                    </button>
+                                </li>
+                            ))}
+                        </ul>
+                    </section>
+                )}
 
                 {agentsLoading ? (
                     <div className="ws-employees-loading">

@@ -7,6 +7,8 @@ from uuid import UUID
 from sqlalchemy import and_, desc, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from loguru import logger
+
 from app.models.runtime_budget import RuntimeBudgetRun
 from app.models.runtime_task import RuntimeTask
 from app.models.task import Task
@@ -38,6 +40,61 @@ LEASE_RECLAIMABLE_RUNTIME_TASK_TYPES = (
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+async def _finish_deferred_business_task_quarantines(task_ids: list[UUID]) -> None:
+    """Finish the mechanical terminal settlement of claim-time quarantines.
+
+    Runs AFTER the claim transaction committed the durable
+    ``needs_reconciliation`` status, in its own advisory-first transaction
+    (see ``_quarantine_business_task_claim``). Best-effort by design: an
+    interrupted finish leaves the committed terminal status, which the
+    DIRECT terminal-boundary worker lane (``drain_direct_terminal_boundary_outbox_once``)
+    recovers — its reconcile predicate matches exactly the generation-set,
+    un-enqueued, terminal-status shape an interruption leaves — after which
+    the operator reconciliation action consumes the recovered boundary.
+    """
+
+    from app.database import async_session, tenant_scoped_session
+    from app.services.runtime_terminal_settlement import (
+        lock_runtime_task_with_session_authority,
+        settle_and_enqueue_runtime_task_terminal,
+    )
+    from app.services.tenant_resolver import resolve_tenant_for_runtime_task
+
+    for task_id in task_ids:
+        try:
+            tenant_id = await resolve_tenant_for_runtime_task(task_id, session_factory=async_session)
+            if tenant_id is None:
+                continue
+            async with tenant_scoped_session(
+                tenant_id,
+                session_factory=async_session,
+                require_tenant=True,
+                source="business_task_claim_quarantine_settlement",
+            ) as db:
+                task = await lock_runtime_task_with_session_authority(db, task_id=task_id)
+                if (
+                    task is None
+                    or task.tenant_id != tenant_id
+                    or str(task.status) != "needs_reconciliation"
+                    or str(task.task_type) != "business_task"
+                ):
+                    continue  # already finished or superseded by another writer
+                await settle_and_enqueue_runtime_task_terminal(
+                    db,
+                    task,
+                    terminal_source="runtime_task_claim_service.business_task_quarantine",
+                    root_reason_code=str(task.result_summary or "business_task_claim_quarantine"),
+                )
+                await db.commit()
+        except Exception:
+            logger.warning(
+                "[RuntimeTaskClaim] deferred business-task quarantine settlement failed for {}; "
+                "the committed needs_reconciliation status remains reconcilable",
+                task_id,
+                exc_info=True,
+            )
 
 
 def _runtime_task_claim_conditions(*, claim_now: datetime):
@@ -136,9 +193,21 @@ async def _quarantine_business_task_claim(
         }
     )
     runtime_task.metadata_json = metadata
-    from app.services.business_task_runtime import enqueue_business_task_terminal_boundary
-
-    await enqueue_business_task_terminal_boundary(db, runtime_task)
+    # The shared terminal boundary (terminal fence, outbox, root ledger)
+    # acquires the session advisory; this quarantine runs INSIDE the claim
+    # transaction, which already holds the RuntimeTask row lock, so settling
+    # here would be the row → advisory side of the global order and could
+    # deadlock a concurrent transcript append of the same run. The durable
+    # ``needs_reconciliation`` status commits with the claim; the mechanical
+    # settlement is finished by ``_finish_deferred_business_task_quarantines``
+    # in its OWN advisory-first transaction after the claim commits. If that
+    # step is interrupted, the committed terminal status is recovered by the
+    # DIRECT terminal-boundary lane (``drain_direct_terminal_boundary_outbox_once``
+    # → ``RuntimeTerminalBoundaryOutboxService.reconcile_terminal_tasks_once``,
+    # which matches generation-set + un-enqueued + terminal-status rows), after
+    # which the operator reconciliation action can consume it. The worker-
+    # restart orphan sweep does NOT cover this state (its predicate is
+    # ``running`` only).
 
 
 async def _bind_business_task_claim(
@@ -256,6 +325,7 @@ class RuntimeTaskClaimService:
 
         claim_expires_at = now + timedelta(seconds=self.lease_seconds)
         claimed_tasks: list[RuntimeTask] = []
+        quarantined_task_ids: list[UUID] = []
         for task in tasks:
             reclaimed_expired_claim = str(getattr(task, "status", "") or "") == "running"
             previous_claim = {
@@ -270,6 +340,7 @@ class RuntimeTaskClaimService:
                 runtime_task=task,
                 now=now,
             ):
+                quarantined_task_ids.append(task.id)
                 continue
             task.status = "running"
             task.claimed_by = self.worker_id
@@ -306,6 +377,8 @@ class RuntimeTaskClaimService:
             task.metadata_json = metadata
             claimed_tasks.append(task)
         await self.db.commit()
+        if quarantined_task_ids:
+            await _finish_deferred_business_task_quarantines(quarantined_task_ids)
         return claimed_tasks
 
 

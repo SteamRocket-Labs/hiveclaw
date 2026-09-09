@@ -5150,7 +5150,10 @@ async def test_turn_token_budget_stops_before_next_tool_round_with_typed_receipt
     assert result.tokens_used == 50
     assert executed == []
     assert len(fake_client.calls) == 1
-    assert recorded_tokens == [50]
+    # The recorder suppresses the keyed charge (returns None), so the ledger
+    # retries the pending round amount once at the budget-block boundary
+    # under the SAME key: same amount, bounded by the turn's own boundaries.
+    assert recorded_tokens == [50, 50]
     assert result.model_result_receipt == {
         "provider_request_id": "provider-request-budget-1",
         "round_index": 1,

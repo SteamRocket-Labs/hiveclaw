@@ -18,7 +18,11 @@ EventCallback = Callable[[dict], Awaitable[None] | None]
 ToolExecutor = Callable[..., Awaitable[str] | str]
 MidRunMessageDrain = Callable[[], Awaitable[list[dict]] | list[dict]]
 RoundInputBind = Callable[[int], Awaitable[list[dict]] | list[dict]]
-ModelRequestPrepare = Callable[..., Awaitable[str] | str]
+# A prepare callback returns the durable provider request id, or a committed-
+# round resume receipt (``hive.session_committed_round_resume.v1``) whose
+# ``sealed_round_resume`` payload replays an already-sealed logical response
+# instead of reissuing the provider generation (worker-restart recovery).
+ModelRequestPrepare = Callable[..., Awaitable[str | dict[str, Any]] | str | dict[str, Any]]
 ModelResponseCommit = Callable[..., Awaitable[dict[str, Any] | None] | dict[str, Any] | None]
 ModelRequestFail = Callable[..., Awaitable[None] | None]
 MessagePart = dict[str, Any]
@@ -31,6 +35,21 @@ class ProviderRequestNeedsReconciliation(RuntimeError):
         super().__init__("provider_request_delivery_is_ambiguous")
         self.provider_request_id = provider_request_id
         self.error_class = error_class
+
+
+class SessionRestartRecoveryRequired(RuntimeError):
+    """A reclaimed run cannot be reassembled without operator reconciliation.
+
+    Raised when the durable frontier holds a round whose committed evidence is
+    unprovable or whose tool effect outcome is unknown.  This is a typed
+    ``unknown`` with a reachable reconciliation path — never a fake result and
+    never a blind replay of a possibly consequential effect.
+    """
+
+    def __init__(self, *, reason_code: str, detail: dict[str, Any] | None = None) -> None:
+        super().__init__(f"session_restart_recovery_required:{reason_code}")
+        self.reason_code = str(reason_code)
+        self.detail = dict(detail or {})
 
 
 class ToolLifecyclePersistenceError(RuntimeError):

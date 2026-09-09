@@ -478,13 +478,16 @@ async def apply_runtime_reconciliation_action(
     if not requested_reason:
         raise ValueError("reconciliation evidence reason is required")
     runtime_task_id = _coerce_uuid(task_id)
-    result = await db.execute(
-        select(RuntimeTask)
-        .where(RuntimeTask.id == runtime_task_id, RuntimeTask.tenant_id == tenant_id)
-        .with_for_update()
-    )
-    task = result.scalar_one_or_none()
-    if task is None:
+    # Canonical advisory → row order: the terminal actions below settle
+    # through the shared boundary, which acquires the session advisory, and
+    # ``acknowledge_unresolved_tool_effects`` appends session events —
+    # taking the RuntimeTask row first would be the row → advisory side of
+    # the global order and can deadlock a concurrent transcript append of
+    # the same session.
+    from app.services.runtime_terminal_settlement import lock_runtime_task_with_session_authority
+
+    task = await lock_runtime_task_with_session_authority(db, task_id=runtime_task_id)
+    if task is None or task.tenant_id != tenant_id:
         raise RuntimeReconciliationNotFound("Runtime reconciliation task not found")
     unresolved_effects = await list_unresolved_tool_effects(
         db,
@@ -730,28 +733,54 @@ async def repair_ambiguous_provider_send_terminal_projections(
     terminal_boundary_missing = RuntimeTask.terminal_boundary_generation.is_not(
         None
     ) & RuntimeTask.terminal_boundary_enqueued_at.is_(None)
-    rows = list(
-        (
-            await db.execute(
-                select(RuntimeTask)
-                .where(
-                    RuntimeTask.tenant_id == tenant_id,
-                    RuntimeTask.status == RECONCILIATION_STATUS,
-                    reason_filter == AMBIGUOUS_PROVIDER_SEND_REASON,
-                    or_(
-                        fence_missing,
-                        committed_status_incomplete,
-                        commit_source_missing,
-                        root_unsettled,
-                        terminal_boundary_missing,
-                    ),
-                )
-                .order_by(RuntimeTask.created_at, RuntimeTask.id)
-                .limit(max(1, min(int(limit), 500)))
-                .with_for_update(skip_locked=True)
-            )
-        ).scalars()
+    candidate_statement = (
+        select(RuntimeTask)
+        .where(
+            RuntimeTask.tenant_id == tenant_id,
+            RuntimeTask.status == RECONCILIATION_STATUS,
+            reason_filter == AMBIGUOUS_PROVIDER_SEND_REASON,
+            or_(
+                fence_missing,
+                committed_status_incomplete,
+                commit_source_missing,
+                root_unsettled,
+                terminal_boundary_missing,
+            ),
+        )
+        .order_by(RuntimeTask.created_at, RuntimeTask.id)
+        .limit(max(1, min(int(limit), 500)))
     )
+    from app.services.chat_transcript import lock_transcript_sessions
+
+    # Advisory → row: the projection repair below settles each task through
+    # the shared terminal boundary, which acquires that task's session
+    # advisory. The prescan and advisory acquisition use the SAME ordered,
+    # limited statement as the skip_locked batch, so every locked row's
+    # session advisory is held before its row lock is taken.
+    prescan = (
+        await db.execute(
+            candidate_statement.with_only_columns(
+                RuntimeTask.id, RuntimeTask.parent_session_id, RuntimeTask.parent_agent_id
+            )
+        )
+    ).all()
+    prescan_ids = {row.id for row in prescan}
+    await lock_transcript_sessions(
+        db,
+        session_ids=[
+            row.parent_session_id for row in prescan if row.parent_session_id and row.parent_agent_id is not None
+        ],
+    )
+    rows = [
+        row
+        for row in (await db.execute(candidate_statement.with_for_update(skip_locked=True))).scalars().all()
+        # A row that appeared after the prescan (admitted in between) has no
+        # held advisory; repairing it under the row lock would be the row →
+        # advisory edge. It is already durably needs_reconciliation, so
+        # skipping it this pass is truthful — the next sweep's prescan sees
+        # it first and repairs it under its advisory.
+        if row.id in prescan_ids
+    ]
 
     repaired: list[str] = []
     examined = 0

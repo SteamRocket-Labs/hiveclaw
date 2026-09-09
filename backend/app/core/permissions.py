@@ -112,6 +112,53 @@ async def _load_agent_for_user(db: AsyncSession, user: User, agent_id: uuid.UUID
     return agent
 
 
+async def load_deleted_agent_for_cleanup(db: AsyncSession, user: User, agent_id: uuid.UUID) -> Agent | None:
+    """Cleanup-only loader for an exact already-soft-deleted Agent.
+
+    The normal loaders resolve a deleted Agent exactly like a missing row
+    (404), which is the correct product boundary but leaves the post-commit
+    file cleanup of a committed deletion with no reachable retry surface.
+    This helper mirrors the exact authority boundary of
+    ``_load_agent_for_user`` — live-Tenant join, platform-admin selected-
+    company equality, tenantless quarantine, tenant equality/pin — but
+    resolves ONLY rows whose ``deleted_at`` is set; a live Agent, a tenant-
+    less row, an inactive company, or an out-of-scope row resolves to
+    ``None`` so the caller falls through to the ordinary access path
+    (404/410 there). Deleted Agents therefore never become usable through
+    this helper; the sole caller-exposed capability is the idempotent
+    pending-cleanup retry of the deletion endpoint.
+    """
+    if user.role == "platform_admin":
+        async with enter_rls_bypass(
+            db,
+            reason=f"platform-admin deleted-agent cleanup lookup for {agent_id}",
+            actor_id=str(user.id),
+        ) as bypass_db:
+            result = await bypass_db.execute(
+                select(Agent)
+                .join(Tenant, and_(Tenant.id == Agent.tenant_id, Tenant.is_active.is_(True)))
+                .where(Agent.id == agent_id, Agent.deleted_at.is_not(None))
+            )
+    else:
+        result = await db.execute(
+            select(Agent)
+            .join(Tenant, and_(Tenant.id == Agent.tenant_id, Tenant.is_active.is_(True)))
+            .where(Agent.id == agent_id, Agent.deleted_at.is_not(None))
+        )
+    agent = result.scalar_one_or_none()
+    if agent is None:
+        return None
+    if user.role == "platform_admin" and not _platform_admin_selection_allows_agent(user, agent.tenant_id):
+        return None
+    if agent.tenant_id is None:
+        return None
+    if user.role == "platform_admin":
+        await pin_rls_tenant_context(db, agent.tenant_id)
+    elif user.tenant_id is None or user.tenant_id != agent.tenant_id:
+        return None
+    return agent
+
+
 SCOPED_BUSINESS_ADMIN_AUTHORITY_SOURCE = "scoped_business_admin"
 
 

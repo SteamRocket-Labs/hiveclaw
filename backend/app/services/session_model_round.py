@@ -17,6 +17,7 @@ from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import (
     SessionCarryForward,
     SessionModelResult,
+    SessionToolInvocation,
     SessionTurnInput,
 )
 from app.services.session_human_input import (
@@ -29,6 +30,11 @@ from app.services.session_v2_persistence import SessionEventDraft, append_sessio
 
 class ModelRoundNeedsReconciliation(RuntimeError):
     """The provider-send fence is ambiguous and must never be replayed blindly."""
+
+
+# Rounds sealed with this version are charged by the keyed per-round ledger
+# (see kernel turn accounting and token_tracker.record_token_usage).
+TOKEN_ACCOUNTING_VERSION = 2
 
 
 def _canonical(value: Any) -> Any:
@@ -192,6 +198,68 @@ async def _carry_context_messages(
     return selected, messages
 
 
+def _root_round_index_from_id(round_id: str) -> int:
+    try:
+        return int(str(round_id).split(":round:", 1)[1].split(":", 1)[0])
+    except (IndexError, ValueError) as exc:
+        raise RuntimeError("session_round_index_invalid") from exc
+
+
+async def committed_final_round_at_frontier(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    run_id: uuid.UUID,
+    round_index: int,
+) -> bool:
+    """True when this committed round is a no-tool final at the run's frontier.
+
+    Durable facts only — never the RuntimeTask receipt, whose persistence the
+    caller cannot guarantee: the round row itself is the authority.  A
+    committed round with no sealed tool calls and no later committed logical
+    root is a final whose kernel post-commit stages / outer terminal
+    settlement never provably completed (a terminally settled run is never
+    re-dispatched), so re-entering it must replay the immutable seal rather
+    than issue a replacement provider generation.
+    """
+
+    from app.models.runtime_task import RuntimeTask
+    from app.services.runtime_terminal_settlement import TERMINAL_SETTLEMENT_STATUSES
+
+    task = await db.scalar(
+        select(RuntimeTask).where(
+            RuntimeTask.id == run_id,
+            RuntimeTask.tenant_id == tenant_id,
+        )
+    )
+    if task is not None and str(getattr(task, "status", "") or "") in TERMINAL_SETTLEMENT_STATUSES:
+        return False
+    result = await db.scalar(
+        select(SessionModelResult).where(
+            SessionModelResult.tenant_id == tenant_id,
+            SessionModelResult.run_id == run_id,
+            SessionModelResult.round_id == _round_id(run_id, round_index, 0),
+        )
+    )
+    if result is None or result.state not in {"sealed", "round_committed"} or not result.seal_json:
+        return False
+    if list((result.seal_json.get("response") or {}).get("tool_calls") or []):
+        return False
+    later_roots = list(
+        (
+            await db.execute(
+                select(SessionModelResult.round_id).where(
+                    SessionModelResult.tenant_id == tenant_id,
+                    SessionModelResult.run_id == run_id,
+                    SessionModelResult.state == "round_committed",
+                    SessionModelResult.round_id.not_like("%:output-continuation:%"),
+                )
+            )
+        ).scalars()
+    )
+    return not any(_root_round_index_from_id(round_id) > round_index for round_id in later_roots)
+
+
 async def bind_round_inputs(
     db: AsyncSession,
     *,
@@ -201,22 +269,41 @@ async def bind_round_inputs(
     run_id: uuid.UUID,
     turn_id: str,
     round_index: int,
+    bind_new_inputs: bool = True,
 ) -> list[dict[str, Any]]:
-    """Bind admitted inputs FIFO and return only durable rows for this exact round."""
+    """Bind admitted inputs FIFO and return only durable rows for this exact round.
+
+    ``bind_new_inputs=False`` is the committed-final sealed-replay lane: the
+    replayed round never re-sends the provider request, so a queued steer
+    input bound here could never reach the model in this turn.  Already-bound
+    rows are still returned (they authored the sealed round); new inputs stay
+    queued for the turn's natural next-turn fallback or a genuine Stop-hook
+    continuation round.
+    """
 
     round_id = _round_id(run_id, round_index)
     result_id = _result_id(run_id, round_id)
     ref = _snapshot_ref(result_id)
-    await bind_admitted_inputs_to_round(
-        db,
-        tenant_id=tenant_id,
-        agent_id=agent_id,
-        session_id=session_id,
-        run_id=run_id,
-        turn_id=turn_id,
-        round_id=round_id,
-        model_request_snapshot_ref=ref,
-    )
+    if bind_new_inputs and await committed_final_round_at_frontier(
+        db, tenant_id=tenant_id, run_id=run_id, round_index=int(round_index)
+    ):
+        # A committed-final sealed replay never re-sends the provider request,
+        # so newly queued inputs must not bind into it (they could never
+        # reach the model in this turn); they stay queued for the turn's
+        # natural next-turn fallback or a genuine Stop-hook continuation
+        # round, which binds them for real.
+        bind_new_inputs = False
+    if bind_new_inputs:
+        await bind_admitted_inputs_to_round(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            round_id=round_id,
+            model_request_snapshot_ref=ref,
+        )
     rows = await _bound_rows(
         db,
         tenant_id=tenant_id,
@@ -260,6 +347,87 @@ async def bind_round_inputs(
     return [*input_parts_to_runtime_messages(rows), *carry_messages]
 
 
+def _unsettled_effect_states() -> tuple[str, ...]:
+    """Invocation states in which a round may own an executed or in-flight effect.
+
+    Reuses the authoritative ``UNRESOLVED_TOOL_EFFECT_STATES`` (effect outcome
+    genuinely unknown) plus the deterministic pre-effect and committed-effect
+    fences.  Only a cleanly ``failed`` invocation is excluded: it settled
+    typed-failed without producing the effect.
+    """
+    from app.services.session_tool_runtime import UNRESOLVED_TOOL_EFFECT_STATES
+
+    return ("prepared_not_started", "effect_committed", *sorted(UNRESOLVED_TOOL_EFFECT_STATES))
+
+
+async def _round_has_unsettled_effects(db: AsyncSession, result: SessionModelResult) -> bool:
+    """True when a round may already own an executed or in-flight tool effect."""
+
+    count = await db.scalar(
+        select(func.count())
+        .select_from(SessionToolInvocation)
+        .where(
+            SessionToolInvocation.tenant_id == result.tenant_id,
+            SessionToolInvocation.run_id == result.run_id,
+            SessionToolInvocation.provider_request_id == result.provider_request_id,
+            SessionToolInvocation.effect_state.in_(_unsettled_effect_states()),
+        )
+    )
+    return bool(count)
+
+
+async def _round_has_unknown_effects(db: AsyncSession, result: SessionModelResult) -> bool:
+    """True when a round owns an invocation whose effect outcome is unknown.
+
+    Only the authoritative ``UNRESOLVED_TOOL_EFFECT_STATES`` qualify: a
+    ``prepared_not_started`` invocation is deterministic pending work whose
+    effect never started, so re-entering its round is safe and required.
+    """
+    from app.services.session_tool_runtime import UNRESOLVED_TOOL_EFFECT_STATES
+
+    count = await db.scalar(
+        select(func.count())
+        .select_from(SessionToolInvocation)
+        .where(
+            SessionToolInvocation.tenant_id == result.tenant_id,
+            SessionToolInvocation.run_id == result.run_id,
+            SessionToolInvocation.provider_request_id == result.provider_request_id,
+            SessionToolInvocation.effect_state.in_(sorted(UNRESOLVED_TOOL_EFFECT_STATES)),
+        )
+    )
+    return bool(count)
+
+
+def _committed_request_content_matches(result: SessionModelResult, snapshot: dict[str, Any]) -> bool:
+    """Compare only the provider request content of a committed snapshot.
+
+    Assembly-plan ids, fence generations and bound-input bookkeeping differ on
+    re-entry by construction; the bytes that reach the provider are the exact
+    ``provider``/``model``/``messages``/``tools`` quadruple plus its sampling
+    parameters.  Message dicts are compared after dropping null-valued
+    optional fields: a fresh assembly and a recovered-history assembly may
+    differ only in whether an absent ``tool_calls``/``reasoning_content`` key
+    is serialized as ``null``, which never changes provider-visible content.
+    """
+
+    def _normalized_message(message: Any) -> Any:
+        if not isinstance(message, dict):
+            return message
+        return {key: value for key, value in message.items() if value is not None}
+
+    def _normalized_messages(messages: Any) -> Any:
+        if not isinstance(messages, list):
+            return messages
+        return [_normalized_message(message) for message in messages]
+
+    stored = dict(result.model_request_snapshot_json or {})
+    return all(
+        _canonical(_normalized_messages(stored.get(key)) if key == "messages" else stored.get(key))
+        == _canonical(_normalized_messages(snapshot.get(key)) if key == "messages" else snapshot.get(key))
+        for key in ("provider", "model", "messages", "tools", "temperature", "max_tokens", "continuation_index")
+    )
+
+
 async def prepare_model_request(
     db: AsyncSession,
     *,
@@ -279,6 +447,7 @@ async def prepare_model_request(
     provider_idempotency_supported: bool = False,
     provider_idempotency_key_applied: bool = False,
     attempt_owner: str = "direct",
+    resume_committed_round: bool = False,
 ) -> str:
     """Persist the exact post-transform provider request before any bytes are sent."""
 
@@ -304,6 +473,101 @@ async def prepare_model_request(
             )
         ).scalars()
     )
+    canonical_wire_request = _canonical(
+        wire_request
+        or {
+            "messages": [_canonical(message) for message in messages],
+            "tools": _canonical(tools or []),
+            "temperature": None,
+            "max_tokens": None,
+            "reasoning": {},
+        }
+    )
+    result = await db.scalar(
+        select(SessionModelResult)
+        .where(SessionModelResult.id == result_id, SessionModelResult.tenant_id == tenant_id)
+        .with_for_update()
+    )
+    request_lane = f"round:{int(round_index)}"
+    if int(continuation_index) > 0:
+        request_lane += f":output-continuation:{int(continuation_index)}"
+    if result is not None and (
+        result.state in {"sealed", "round_committed"}
+        or (
+            result.state == "needs_reconciliation"
+            and (result.seal_json is not None or result.round_committed_event_id is not None)
+        )
+    ):
+        from app.services.runtime_terminal_settlement import TERMINAL_SETTLEMENT_STATUSES
+
+        task = await db.scalar(select(RuntimeTask).where(RuntimeTask.id == run_id, RuntimeTask.tenant_id == tenant_id))
+        if task is not None and str(task.status) in TERMINAL_SETTLEMENT_STATUSES:
+            # A terminal run has no recovery lane to re-arm, even when its
+            # request bytes match. Preserve its committed evidence unchanged.
+            raise ModelRoundNeedsReconciliation("model_round_result_already_committed")
+        # Durable provider evidence is immutable.  A repeat prepare carrying
+        # the exact request content is an idempotent re-arm: the reclaimed
+        # worker re-enters this round and the seal/commit callbacks return the
+        # existing committed seal.  Every other repeat or stale prepare is a
+        # typed rejection that leaves the committed facts byte-identical.
+        content_snapshot = {
+            "provider": provider,
+            "model": model,
+            "messages": list(canonical_wire_request.get("messages") or []),
+            "tools": _canonical(canonical_wire_request.get("tools") or []),
+            "temperature": canonical_wire_request.get("temperature"),
+            "max_tokens": canonical_wire_request.get("max_tokens"),
+            "continuation_index": int(continuation_index),
+        }
+        if (
+            result.state in {"sealed", "round_committed"}
+            and (
+                resume_committed_round
+                or (
+                    int(continuation_index) == 0
+                    and await committed_final_round_at_frontier(
+                        db, tenant_id=tenant_id, run_id=run_id, round_index=int(round_index)
+                    )
+                )
+                or _committed_request_content_matches(result, content_snapshot)
+            )
+            and not await _round_has_unknown_effects(db, result)
+        ):
+            # ``resume_committed_round`` is set only by the restart loader's
+            # authoritative receipt for the exact pending round: the sealed
+            # response is replayed (no provider bytes are re-sent), so the
+            # regenerated prompt's transient dynamic-suffix drift (timestamps,
+            # restart annotations) cannot diverge a request that is never
+            # issued.  The committed-final replay lane is additionally
+            # re-armed from DURABLE ROUND FACTS (a committed no-tool final at
+            # the run's frontier), so the re-arm holds regardless of the
+            # caller's in-memory metadata assembly.  Every other repeat
+            # prepare still requires an exact provider-content match.
+            #
+            # Re-arming hands the caller this round's durable identity and
+            # with it the path to the round's Stop boundary and its keyed
+            # charge — a CONSEQUENTIAL lane, so a worker whose lease was
+            # superseded (still alive, task already reclaimed) is rejected
+            # here instead of proceeding alongside the new owner.  Callers
+            # without a RuntimeTask row (kernel-only harness) keep the
+            # existing behavior: there is no claim to protect.
+            if task is not None and str(attempt_owner) != "direct":
+                # ``claim_version`` is the fencing token (the claim service
+                # increments it on EVERY claim); the worker name is
+                # informational.  A stale worker — one whose lease was
+                # superseded by a new claim — carries an older fencing suffix.
+                # Owners that do not carry the ``{worker}:{version}:{attempt}``
+                # fencing suffix cannot be checked and keep legacy behavior.
+                suffix = str(attempt_owner).rsplit(":", 2)
+                if (
+                    len(suffix) == 3
+                    and suffix[1].isdigit()
+                    and suffix[2].isdigit()
+                    and f"{suffix[1]}:{suffix[2]}" != f"{task.claim_version}:{task.attempt_count}"
+                ):
+                    raise ModelRoundNeedsReconciliation("model_round_claim_superseded")
+            return result.provider_request_id
+        raise ModelRoundNeedsReconciliation("model_round_result_already_committed")
     assembly_plan = None
     if int(continuation_index) == 0 and int(round_index) > 1:
         previous_result = await db.scalar(
@@ -316,6 +580,9 @@ async def prepare_model_request(
                 SessionModelResult.tenant_id == tenant_id,
                 SessionModelResult.run_id == run_id,
                 SessionModelResult.state == "round_committed",
+                # Physical continuation rows also reach round_committed, but
+                # only a logical root owns the round's obligation registry.
+                SessionModelResult.round_id.not_like("%:output-continuation:%"),
             )
             .order_by(ChatTranscriptEvent.sequence.desc())
             .limit(1)
@@ -331,36 +598,12 @@ async def prepare_model_request(
                 source_result_id=previous_result.id,
                 next_round_id=round_id,
             )
-    result = await db.scalar(
-        select(SessionModelResult)
-        .where(SessionModelResult.id == result_id, SessionModelResult.tenant_id == tenant_id)
-        .with_for_update()
-    )
-    if result is not None and (
-        result.state in {"sealed", "round_committed"} or result.round_committed_event_id is not None
-    ):
-        # A duplicate prepare must neither resend nor invalidate the immutable
-        # response which a later Session turn consumes as canonical history.
-        raise ModelRoundNeedsReconciliation("model_round_response_already_sealed")
-    request_lane = f"round:{int(round_index)}"
-    if int(continuation_index) > 0:
-        request_lane += f":output-continuation:{int(continuation_index)}"
     if result is not None and result.state == "failed" and bool((result.seal_json or {}).get("retry_safe")):
         candidate_provider_request_id = f"hive:{run_id}:{request_lane}:attempt:{int(result.version) + 1}"
     elif result is not None:
         candidate_provider_request_id = result.provider_request_id
     else:
         candidate_provider_request_id = f"hive:{run_id}:{request_lane}:attempt:1"
-    canonical_wire_request = _canonical(
-        wire_request
-        or {
-            "messages": [_canonical(message) for message in messages],
-            "tools": _canonical(tools or []),
-            "temperature": None,
-            "max_tokens": None,
-            "reasoning": {},
-        }
-    )
     snapshot = {
         "provider": provider,
         "model": model,
@@ -401,11 +644,49 @@ async def prepare_model_request(
                 # before the committed assembly plan was marked dispatched.
                 # Continue to the exact plan dispatch fence below.
                 emit_prepared_event = False
+            elif not result.seal_json and not await _round_has_unsettled_effects(db, result):
+                # Lease takeover after a worker restart: the interrupted send
+                # produced no durable response and settled no tool effect, so
+                # only the model generation itself may be reissued — always on
+                # a fresh internal attempt lane, so a late callback from the
+                # dead owner (seal/stream/fail) can no longer match this row.
+                result.version = int(result.version) + 1
+                result.provider_request_id = f"hive:{run_id}:{request_lane}:attempt:{int(result.version)}"
+                snapshot["request_fence"]["hive_provider_request_id"] = result.provider_request_id
+                snapshot_hash = _sha256(snapshot)
+                result.model_request_hash = snapshot_hash
+                result.model_request_snapshot_json = snapshot
+                result.state = "prepared"
+                result.reconciliation_owner = attempt_owner
+                emit_prepared_event = True
             else:
                 result.state = "needs_reconciliation"
                 result.reconciliation_owner = f"session_model_round:ambiguous_owner:{attempt_owner}"
                 result.version = int(result.version) + 1
                 raise ModelRoundNeedsReconciliation("model_round_provider_send_is_ambiguous")
+        elif (
+            result.state in {"prepared", "streaming"}
+            and not result.seal_json
+            and not await _round_has_unsettled_effects(db, result)
+        ):
+            # Restart recovery: a worker died between prepare/seal.  With no
+            # sealed response and no settled or in-flight tool effect, this
+            # round never produced a consequential fact, so the reclaimed
+            # worker may retake it on a fresh attempt lane.  Provider request
+            # ids are internal (no provider-side idempotency exists), so a new
+            # lane costs nothing and fences the dead owner's late callbacks;
+            # the exact snapshot request_fence always carries the actual id.
+            result.version = int(result.version) + 1
+            result.provider_request_id = f"hive:{run_id}:{request_lane}:attempt:{int(result.version)}"
+            snapshot["request_fence"]["hive_provider_request_id"] = result.provider_request_id
+            snapshot_hash = _sha256(snapshot)
+            result.state = "prepared"
+            result.model_request_hash = snapshot_hash
+            result.model_request_snapshot_json = snapshot
+            result.bound_input_ids_json = [str(row.id) for row in rows]
+            result.seal_json = None
+            result.reconciliation_owner = attempt_owner
+            emit_prepared_event = True
         elif result.state == "failed" and bool((result.seal_json or {}).get("retry_safe")):
             result.version = int(result.version) + 1
             result.provider_request_id = candidate_provider_request_id
@@ -493,6 +774,78 @@ async def prepare_model_request(
             claim_owner=f"provider-request:{result.provider_request_id}",
         )
     return result.provider_request_id
+
+
+async def resume_committed_round_receipt(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    run_id: uuid.UUID,
+    round_index: int,
+    provider_request_id: str,
+    continuation_index: int = 0,
+) -> dict[str, Any] | None:
+    """Return the authoritative sealed response of an already-committed round.
+
+    A committed logical round whose tools never ran — or only partly ran — is
+    recovered by replaying its immutable seal, never by reissuing the provider
+    generation.  The receipt carries the sealed model-authored response plus
+    the durable tool result of every call that already settled, so a mixed
+    batch resumes from canonical evidence instead of a fabricated CAS failure.
+    ``None`` means this round is a genuinely unsealed generation that may use
+    the normal fresh fenced attempt path.
+    """
+
+    round_id = _round_id(run_id, round_index, continuation_index)
+    result = await db.scalar(
+        select(SessionModelResult).where(
+            SessionModelResult.tenant_id == tenant_id,
+            SessionModelResult.session_id == session_id,
+            SessionModelResult.run_id == run_id,
+            SessionModelResult.round_id == round_id,
+        )
+    )
+    if result is None or result.provider_request_id != str(provider_request_id):
+        return None
+    if result.state not in {"sealed", "round_committed"} or not result.seal_json:
+        return None
+    response = dict(result.seal_json.get("response") or {})
+    settled_tool_results: dict[str, str] = {}
+    for call in response.get("tool_calls") or []:
+        if not isinstance(call, dict):
+            continue
+        call_id = str(call.get("id") or "").strip()
+        if not call_id:
+            continue
+        invocation = await db.scalar(
+            select(SessionToolInvocation).where(
+                SessionToolInvocation.tenant_id == tenant_id,
+                SessionToolInvocation.run_id == run_id,
+                SessionToolInvocation.provider_request_id == result.provider_request_id,
+                SessionToolInvocation.provider_tool_use_id == call_id,
+            )
+        )
+        if invocation is None or invocation.result_event_id is None:
+            continue
+        result_event = await db.get(ChatTranscriptEvent, invocation.result_event_id)
+        if result_event is None or result_event.item_kind != "tool_result":
+            continue
+        payload = dict((result_event.metadata_json or {}).get("v2_payload") or {})
+        settled_tool_results[call_id] = str(payload.get("content") or "")
+    return {
+        "schema": "hive.session_committed_round_resume.v1",
+        "provider_request_id": result.provider_request_id,
+        "sealed_round_resume": {
+            "response": response,
+            "settled_tool_results": settled_tool_results,
+        },
+        # The replayed round's own durable seal is the exact model-result
+        # receipt: a replayed committed final must settle terminally against
+        # its own committed result, never against the previous round's.
+        "model_result_receipt": dict(result.seal_json or {}),
+    }
 
 
 async def append_model_stream_delta(
@@ -846,6 +1199,17 @@ async def seal_model_response(
         "response": response_payload,
         "logical_round_complete": bool(logical_round_complete),
         "continuation_index": int(continuation_index),
+        # Accounting provenance: rounds sealed by this code version carry an
+        # explicit token-accounting version.  Post-deploy, every round is
+        # charged under its own durable idempotency key at the kernel usage
+        # fold, so a missing keyed charge for a version-2 round is a
+        # crash-before-accounting/suppressed-failure window the restart
+        # settlement may close.  PRE-deploy rounds (sealed without this
+        # marker) were charged through the legacy UNKEYED ledger whose events
+        # carry no round identity: whether such a round was already charged
+        # cannot be established from exact evidence, so recovery must keep
+        # that ambiguity explicit instead of re-debiting or claiming settled.
+        "token_accounting_version": TOKEN_ACCOUNTING_VERSION,
     }
     result.state = "sealed"
     result.last_content_sequence = last_content_sequence or result.last_content_sequence
@@ -1075,6 +1439,13 @@ async def fail_model_request(
     result.version = int(result.version) + 1
     run_task: RuntimeTask | None = None
     if not retry_safe:
+        from app.services.chat_transcript import lock_transcript_session
+
+        # Advisory → row: the ambiguous-send failure below appends session
+        # events and settles the run terminally (both take this session's
+        # advisory); locking the RuntimeTask row first would invert the
+        # order. Reentrant when the calling round flow already holds it.
+        await lock_transcript_session(db, session_id=session_id)
         run_task = await db.scalar(
             select(RuntimeTask)
             .where(
@@ -1224,10 +1595,12 @@ async def recover_sealed_model_rounds_once(
 __all__ = [
     "ModelRoundNeedsReconciliation",
     "bind_round_inputs",
+    "committed_final_round_at_frontier",
     "commit_sealed_model_round",
     "commit_model_response",
     "fail_model_request",
     "prepare_model_request",
     "recover_sealed_model_rounds_once",
+    "resume_committed_round_receipt",
     "seal_model_response",
 ]

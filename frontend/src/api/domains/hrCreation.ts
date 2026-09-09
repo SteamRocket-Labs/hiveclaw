@@ -1,6 +1,7 @@
 import { del, get, post } from '../core';
 
 export interface HrCreationRecovery {
+  cleanup_pending?: boolean;
   task_status?: string | null;
   can_resume: boolean;
   can_retry: boolean;

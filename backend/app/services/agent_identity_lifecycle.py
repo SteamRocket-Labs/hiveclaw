@@ -196,20 +196,34 @@ async def soft_delete_agent(
         .where(AgentSchedule.agent_id == agent.id, AgentSchedule.is_enabled.is_(True))
         .values(is_enabled=False)
     )
-    runtime_tasks = list(
-        (
-            await db.execute(
-                select(RuntimeTask)
-                .where(
-                    RuntimeTask.parent_agent_id == agent.id,
-                    RuntimeTask.status.in_(_ACTIVE_RUNTIME_TASK_STATUSES),
-                )
-                .with_for_update()
-            )
-        ).scalars()
+    # Canonical advisory-first batch order: the shared terminal settlement
+    # acquires each task's session advisory, so THIS caller must already hold
+    # every affected session advisory BEFORE taking the RuntimeTask row locks
+    # below — locking the rows first would be the row → advisory side of the
+    # global order and deadlocks against any concurrent advisory-first writer
+    # of the same session (in-flight transcript append, Stop fence, canonical
+    # web-chat terminal writer). Sorted multi-session acquisition keeps two
+    # batch writers from cycling among themselves.
+    from app.services.runtime_terminal_settlement import (
+        lock_runtime_task_batch_with_session_authority,
+        settle_and_enqueue_runtime_task_terminal,
     )
-    from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
 
+    # Canonical advisory → row batch order with late-admission closure: the
+    # helper holds every affected session advisory before the first row lock
+    # and, when a task is admitted between its prescan and the FOR UPDATE
+    # batch, rolls back to a savepoint and rescans so the newcomer's session
+    # advisory is acquired BEFORE its row. The previous trailing
+    # ``late_session_ids`` acquisition took advisories while rows were
+    # already held — a real row → advisory edge (demonstrated deadlock by the
+    # CC5 late-admission probe) — and is gone.
+    runtime_tasks = await lock_runtime_task_batch_with_session_authority(
+        db,
+        statement=select(RuntimeTask).where(
+            RuntimeTask.parent_agent_id == agent.id,
+            RuntimeTask.status.in_(_ACTIVE_RUNTIME_TASK_STATUSES),
+        ),
+    )
     for task in runtime_tasks:
         task.status = "killed"
         task.completed_at = now
@@ -224,3 +238,48 @@ async def soft_delete_agent(
             root_reason_code=reason,
         )
     await db.flush()
+
+
+async def perform_pending_agent_cleanup(
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+) -> dict[str, Any]:
+    """Run (or retry) the destructive file cleanup a soft-deleted Agent owes.
+
+    Must be called AFTER the soft-delete transaction committed. The durable
+    truth of "cleanup still owed" needs no marker: the Agent row is
+    soft-deleted and its data directory still exists (``archive_agent_files``
+    is idempotent — an already-archived or absent directory is a no-op), so a
+    failed archival is retried simply by re-issuing the supported DELETE (or
+    HR abandon) request for the already-deleted Agent. Returns a truthful
+    outcome dict (``performed`` / ``archive_ok``).
+    """
+
+    from app.services.agent_manager import agent_manager
+
+    outcome: dict[str, Any] = {"performed": False, "archive_ok": None}
+    from app.database import async_session, tenant_scoped_session
+
+    async with tenant_scoped_session(
+        tenant_id,
+        session_factory=async_session,
+        require_tenant=True,
+        source="agent_cleanup_pending",
+    ) as db:
+        agent = (
+            await db.execute(
+                select(Agent)
+                .where(Agent.id == agent_id, Agent.tenant_id == tenant_id)
+                .with_for_update(key_share=True)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if agent is None or agent.deleted_at is None:
+            return outcome
+        outcome["performed"] = True
+    try:
+        await agent_manager.archive_agent_files(agent_id)
+        outcome["archive_ok"] = True
+    except Exception:
+        outcome["archive_ok"] = False
+    return outcome

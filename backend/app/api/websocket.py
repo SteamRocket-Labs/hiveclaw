@@ -5,11 +5,11 @@ import os
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from loguru import logger
 from sqlalchemy import select
 
-from app.core.permissions import check_agent_access, is_agent_expired
+from app.core.permissions import authorize_loaded_session_access, check_agent_access, is_agent_expired
 from app.core.security import decode_access_token
 from app.database import tenant_scoped_session
 from app.kernel.contracts import ExecutionIdentityRef
@@ -274,9 +274,25 @@ async def websocket_chat(
             )
             if active_session is None:
                 raise SessionSubscriptionError("session_not_found")
-            if active_session.user_id != user.id:
+            if active_session.source_channel == "agent" or active_session.session_kind == "agent_chat":
                 raise SessionSubscriptionError("session_forbidden")
-            await apply_web_session_contract(db, session=active_session, agent_id=agent_id, user=user)
+            try:
+                authority_source = await authorize_loaded_session_access(
+                    db,
+                    user,
+                    agent=agent,
+                    session=active_session,
+                    access_level=_access_level,
+                    action="chat_session:subscribe",
+                    require_writable=True,
+                )
+            except HTTPException as error:
+                if error.status_code not in {403, 409}:
+                    raise
+                raise SessionSubscriptionError("session_forbidden") from error
+            # Subscribing as an administrator must not rebind the owner's delivery target.
+            if authority_source == "session_owner":
+                await apply_web_session_contract(db, session=active_session, agent_id=agent_id, user=user)
             await db.commit()
 
             await manager.begin_session_subscription(str(agent_id), websocket, str(active_session.id))

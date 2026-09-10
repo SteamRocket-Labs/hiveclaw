@@ -9,12 +9,92 @@ keep the exact audited operator lane.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
 
 from tests.api.test_chat_sessions_permissions import _QueryAwareDB
+
+
+@pytest.mark.parametrize(
+    ("role", "owns_session", "source_channel", "session_kind", "allowed"),
+    [
+        ("org_admin", False, "web", "human_chat", True),
+        ("platform_admin", False, "workflow", "system_run", True),
+        ("member", True, "web", "human_chat", True),
+        ("member", False, "web", "human_chat", False),
+        ("org_admin", False, "agent", "human_chat", False),
+        ("org_admin", False, "web", "agent_chat", False),
+        ("platform_admin", False, "web", "delegation_run", False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_session_subscription_uses_shared_actor_authority(
+    monkeypatch, role, owns_session, source_channel, session_kind, allowed
+):
+    from fastapi import WebSocketDisconnect
+
+    import app.api.websocket as websocket_api
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role=role, tenant_id=agent.tenant_id, username="viewer", display_name="Viewer")
+    session = SimpleNamespace(
+        id=uuid4(),
+        user_id=user.id if owns_session else uuid4(),
+        source_channel=source_channel,
+        session_kind=session_kind,
+        delivery_target_json={"channel": "web", "username": "owner"},
+    )
+    original_owner = session.user_id
+    db = AsyncMock()
+    db.scalar.side_effect = [user, session]
+    db.__aenter__.return_value = db
+    monkeypatch.setattr(websocket_api, "tenant_scoped_session", lambda _: db)
+    monkeypatch.setattr(websocket_api, "decode_access_token", lambda _: {"sub": str(user.id)})
+    monkeypatch.setattr(websocket_api, "resolve_tenant_for_agent", AsyncMock(return_value=agent.tenant_id))
+    monkeypatch.setattr(websocket_api, "check_agent_access", AsyncMock(return_value=(agent, "manage")))
+    monkeypatch.setattr(websocket_api, "is_agent_expired", lambda _: False)
+    monkeypatch.setattr(websocket_api, "manager", AsyncMock())
+    apply_contract = AsyncMock()
+    monkeypatch.setattr(websocket_api, "apply_web_session_contract", apply_contract)
+    audit = AsyncMock()
+    monkeypatch.setattr("app.core.policy.write_audit_event", audit)
+    monkeypatch.setattr(websocket_api, "get_active_web_chat_run", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        "app.services.session_subscription.load_session_catchup_window",
+        AsyncMock(return_value=SimpleNamespace(last_committed_sequence=0, cursor=SimpleNamespace(mode="identity"))),
+    )
+    socket = AsyncMock()
+    socket.receive_json.return_value = {
+        "type": "session.subscribe",
+        "session_id": str(session.id),
+        "after_sequence": 0,
+        "schema_version": 2,
+        "connection_attempt_id": "admin-subscription",
+    }
+
+    async def disconnect_after_ready(frame):
+        if frame["type"] == "session.ready":
+            raise WebSocketDisconnect()
+
+    socket.send_json.side_effect = disconnect_after_ready
+    await websocket_api.websocket_chat(socket, agent.id, token="test-token", session_id=str(session.id))
+    frame = socket.send_json.call_args.args[0]
+    if allowed:
+        assert frame["type"] == "session.ready"
+        assert frame["session_id"] == str(session.id)
+        assert apply_contract.await_count == int(owns_session)
+        if not owns_session:
+            assert audit.call_args.kwargs["actor_id"] == user.id
+            assert audit.call_args.kwargs["details"]["session_user_id"] == str(original_owner)
+    else:
+        assert frame["error"]["code"] == "session_forbidden"
+        socket.close.assert_awaited_once_with(code=4403, reason="session_forbidden")
+        apply_contract.assert_not_awaited()
+    assert session.user_id == original_owner
+    assert session.delivery_target_json == {"channel": "web", "username": "owner"}
 
 
 def _session_row(session_id, agent_id, owner_id):

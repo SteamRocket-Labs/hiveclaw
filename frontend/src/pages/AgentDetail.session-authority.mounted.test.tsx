@@ -146,13 +146,15 @@ vi.mock('./agent-detail/LocalAgentChatSection', () => ({
   default: () => <div data-testid="local-agent-chat">Local mutable chat</div>,
 }));
 vi.mock('./agent-detail/AgentChatSection', () => ({
-  default: ({ activeSession, historyMsgs, allSessions }: {
+  default: ({ activeSession, chatMessages, historyMsgs, allSessions }: {
     activeSession?: any;
+    chatMessages?: Array<{ content?: string }>;
     historyMsgs?: Array<{ content?: string }>;
     allSessions?: Array<{ id?: string; title?: string }>;
   }) => (
     <div data-testid="fabricated-session-shell">
-      {activeSession?.operator_view ? <strong>Operator View</strong> : 'Read-only · User'}
+      {activeSession?.operator_view ? <strong>Operator View</strong> : activeSession?.read_only ? 'Read-only · User' : null}
+      {(chatMessages || []).map((message, index) => <span key={`chat-${index}`}>{message.content}</span>)}
       {(historyMsgs || []).map((message, index) => <span key={index}>{message.content}</span>)}
       {(allSessions || []).map((session) => <span key={session.id}>{session.title}</span>)}
     </div>
@@ -454,7 +456,7 @@ describe('AgentDetail direct-session authority presentation', () => {
       user_id: 'employee-9',
       title: 'Employee private thread',
       source_channel: 'web',
-      read_only: true,
+      read_only: false,
       is_current_user_session: false,
       authority_source: 'scoped_business_admin',
       operator_view: false,
@@ -478,11 +480,11 @@ describe('AgentDetail direct-session authority presentation', () => {
     expect(allScopeCalls.every((call) => call[2] === undefined)).toBe(true);
     expect(screen.queryByTestId('agent-operator-reason')).toBeNull();
 
-    // The employee session opens as a truthful read-only business view: no
+    // The employee session opens as a writable business view: no
     // operator params on any read, no Operator View banner, the real sender's
     // content is shown.
     expect(await screen.findByText('EMPLOYEE-AUTHORED-TEXT')).toBeTruthy();
-    expect(screen.getByText('Read-only · User')).toBeTruthy();
+    expect(screen.queryByText('Read-only · User')).toBeNull();
     expect(screen.queryByText('Operator View')).toBeNull();
     const transcriptCalls = mocks.getSessionTranscript.mock.calls;
     expect(transcriptCalls.length).toBeGreaterThan(0);

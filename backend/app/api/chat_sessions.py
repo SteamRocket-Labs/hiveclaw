@@ -145,7 +145,9 @@ class SessionOut(BaseModel):
     participant_type: str = "user"  # 'user' | 'agent'
 
 
-def _session_view_flags(session: ChatSession, current_user: User) -> dict[str, bool]:
+def _session_view_flags(
+    session: ChatSession, current_user: User, *, resource_tenant_id: uuid.UUID | None = None
+) -> dict[str, bool]:
     is_current_user_session = str(getattr(session, "user_id", "")) == str(getattr(current_user, "id", ""))
     source_channel = str(getattr(session, "source_channel", "") or "").lower()
     participant_type = str(getattr(session, "participant_type", "") or "").lower()
@@ -153,9 +155,11 @@ def _session_view_flags(session: ChatSession, current_user: User) -> dict[str, b
     is_agent_session = (
         source_channel == "agent" or participant_type == "agent" or session_kind in {"agent_chat", "delegation_run"}
     )
+    # Callers supply scope from the authorized Agent, never from the session owner.
+    can_write = is_current_user_session or is_scoped_business_admin(current_user, resource_tenant_id=resource_tenant_id)
     return {
         "is_current_user_session": is_current_user_session,
-        "read_only": (not is_current_user_session) or is_agent_session,
+        "read_only": (not can_write) or is_agent_session,
     }
 
 
@@ -1178,7 +1182,7 @@ async def list_sessions(
                     created_at=session.created_at.isoformat(),
                     last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
                     message_count=count,
-                    **_session_view_flags(session, current_user),
+                    **_session_view_flags(session, current_user, resource_tenant_id=getattr(agent, "tenant_id", None)),
                     peer_agent_id=peer_agent_id,
                     peer_agent_name=peer_agent_name,
                     participant_type=participant_type,
@@ -1789,7 +1793,7 @@ async def list_session_branches(
     db: AsyncSession = Depends(get_db),
 ):
     """List direct branches created from a session."""
-    await _get_run_session_and_agent(
+    _session, agent, _authority_source = await _get_run_session_and_agent(
         db=db,
         agent_id=agent_id,
         session_id=session_id,
@@ -1818,7 +1822,7 @@ async def list_session_branches(
             created_at=session.created_at.isoformat(),
             last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
             message_count=0,
-            **_session_view_flags(session, current_user),
+            **_session_view_flags(session, current_user, resource_tenant_id=getattr(agent, "tenant_id", None)),
             **_session_contract_fields(session),
         )
         for session in sessions

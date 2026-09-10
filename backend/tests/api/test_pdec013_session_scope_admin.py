@@ -31,8 +31,14 @@ def _session_row(session_id, agent_id, owner_id):
 
 
 @pytest.mark.parametrize("admin_role", ["org_admin", "platform_admin"])
+@pytest.mark.parametrize(
+    ("source_channel", "session_kind", "read_only"),
+    [("web", "human_chat", False), ("agent", "agent_chat", True), ("web", "delegation_run", True)],
+)
 @pytest.mark.asyncio
-async def test_scoped_admin_lists_all_sessions_without_operator_reason(monkeypatch, admin_role):
+async def test_scoped_admin_lists_all_sessions_without_operator_reason(
+    monkeypatch, admin_role, source_channel, session_kind, read_only
+):
     import app.api.chat_sessions as chat_sessions_api
 
     agent_id = uuid4()
@@ -44,6 +50,8 @@ async def test_scoped_admin_lists_all_sessions_without_operator_reason(monkeypat
     empty_session_id = uuid4()
     agent = SimpleNamespace(id=agent_id, creator_id=owner_id, tenant_id=tenant_id)
     session = _session_row(session_id, agent_id, owner_id)
+    session.source_channel = source_channel
+    session.session_kind = session_kind
     # A zero-message session owned by another employee is hidden from the
     # listing, so its owner must not leak into the audited target set either:
     # the collection event names the sessions actually exposed.
@@ -87,6 +95,9 @@ async def test_scoped_admin_lists_all_sessions_without_operator_reason(monkeypat
     assert result[0].id == str(session_id)
     assert result[0].authority_source == "scoped_business_admin"
     assert result[0].operator_view is False
+    assert result[0].read_only is read_only
+    assert result[0].is_current_user_session is False
+    assert result[0].user_id == str(owner_id)
 
     # One collection event per request with the same schema the per-session
     # writer and the other collection writers already use: real actor,
@@ -106,6 +117,57 @@ async def test_scoped_admin_lists_all_sessions_without_operator_reason(monkeypat
     assert details["target_count"] == 1
     assert details["session_user_id"] == str(owner_id)
     assert "operator_reason" not in details
+
+    # Branch navigation must retain the same write authority as the inventory.
+    branches = await chat_sessions_api.list_session_branches(
+        agent_id=agent_id, session_id=session_id, current_user=admin, db=db
+    )
+    assert branches[0].read_only is read_only
+    assert branches[0].user_id == str(owner_id)
+
+    if not read_only:
+        submitted = []
+
+        async def submit_input(**kwargs):
+            submitted.append(kwargs)
+            return {"run": {"run_id": "admin-follow-up"}}
+
+        monkeypatch.setattr(chat_sessions_api, "submit_live_human_input", submit_input)
+        await chat_sessions_api.start_session_run(
+            agent_id=agent_id,
+            session_id=session_id,
+            body=chat_sessions_api.StartSessionRunIn(content="Continue this conversation."),
+            current_user=admin,
+            db=db,
+        )
+        assert len(submitted) == 1
+        assert submitted[0]["user"].id == admin_id
+        assert submitted[0]["session"].id == session_id
+        assert submitted[0]["session"].user_id == owner_id
+
+
+@pytest.mark.parametrize("admin_role", ["org_admin", "platform_admin"])
+@pytest.mark.asyncio
+async def test_admin_owned_parent_keeps_employee_branches_writable(monkeypatch, admin_role):
+    import app.api.chat_sessions as chat_sessions_api
+
+    tenant_id, agent_id, admin_id = uuid4(), uuid4(), uuid4()
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
+    admin = SimpleNamespace(id=admin_id, role=admin_role, tenant_id=tenant_id)
+    parent = _session_row(uuid4(), agent_id, admin_id)
+    branch = _session_row(uuid4(), agent_id, uuid4())
+    db = _QueryAwareDB(agent=agent, sessions=[branch])
+
+    async def load_parent(**_kwargs):
+        return parent, agent, "session_owner"
+
+    monkeypatch.setattr(chat_sessions_api, "_get_run_session_and_agent", load_parent)
+    result = await chat_sessions_api.list_session_branches(
+        agent_id=agent_id, session_id=parent.id, current_user=admin, db=db
+    )
+    assert result[0].user_id == str(branch.user_id)
+    assert result[0].is_current_user_session is False
+    assert result[0].read_only is False
 
 
 @pytest.mark.asyncio

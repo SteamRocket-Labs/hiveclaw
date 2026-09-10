@@ -563,6 +563,7 @@ export function isReadOnlySessionForCurrentUser(
   if (session.read_only === true || session.readOnly === true) return true;
   if (session.is_pending_session_lookup === true || session.isPendingSessionLookup === true) return true;
   if (isA2ASession(session)) return true;
+  if (session.read_only === false || session.readOnly === false) return false;
   if (session.is_current_user_session === true || session.isCurrentUserSession === true) return false;
   const ownerUserId = session.user_id ?? session.userId;
   return ownerUserId != null && currentUserId != null && String(ownerUserId) !== String(currentUserId);

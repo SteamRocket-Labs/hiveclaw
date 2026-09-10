@@ -953,6 +953,10 @@ describe('chatRuntime helpers', () => {
       is_current_user_session: true,
     }, 'client-user-id')).toBe(true);
     expect(shouldUseWritableSessionSurface({ id: 'other-session', source_channel: 'web', user_id: 'user-2' }, 'user-1')).toBe(false);
+    expect(shouldUseWritableSessionSurface({
+      id: 'managed-session', source_channel: 'web', user_id: 'user-2',
+      read_only: false, is_current_user_session: false,
+    }, 'user-1')).toBe(true);
     expect(shouldUseWritableSessionSurface({ id: 'a2a-session', source_channel: 'agent' }, 'user-1')).toBe(false);
     expect(shouldUseWritableSessionSurface({ id: 'unknown-session', source_channel: 'unknown', is_pending_session_lookup: true }, 'user-1')).toBe(false);
     expect(shouldUseWritableSessionSurface({ id: 'operator-session', operator_view: true }, 'user-1')).toBe(false);
@@ -963,6 +967,19 @@ describe('chatRuntime helpers', () => {
       user_id: 'user-2',
       is_current_user_session: true,
     }, 'user-1')).toBe(false);
+  });
+
+  it.each([
+    { operator_view: true },
+    { is_pending_session_lookup: true },
+    { source_channel: 'agent' },
+    { participant_type: 'agent' },
+    { session_kind: 'agent_chat' },
+    { session_kind: 'delegation_run' },
+  ])('keeps restricted sessions read-only despite a writable projection: %j', (restriction) => {
+    expect(shouldUseWritableSessionSurface({
+      user_id: 'user-2', read_only: false, ...restriction,
+    }, 'admin-1')).toBe(false);
   });
 
   it('preserves an active canonical session during requested-session lookup races', () => {

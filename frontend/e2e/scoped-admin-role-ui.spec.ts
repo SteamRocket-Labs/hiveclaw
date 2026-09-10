@@ -72,7 +72,7 @@ const managedSessionRow = {
   session_kind: 'human_chat',
   permission_mode: 'default',
   is_current_user_session: false,
-  read_only: true,
+  read_only: false,
   authority_source: 'scoped_business_admin',
   operator_view: false,
   message_count: 2,
@@ -235,47 +235,68 @@ async function bootstrap(page: Page, options: {
   return { scopedCalls };
 }
 
-test('scoped administrator opens an employee-private Session as a normal audited business actor', async ({ page }) => {
-  const { scopedCalls } = await bootstrap(page, { role: 'org_admin', path: `/agents/${AGENT_ID}#chat` });
+for (const role of ['org_admin', 'platform_admin'] as const) {
+  test(`${role} reopens and continues an employee-private Session as themselves`, async ({ page }) => {
+    const { scopedCalls } = await bootstrap(page, { role, path: `/agents/${AGENT_ID}#chat` });
+    const composer = page.getByTestId('session-composer-shell').getByRole('textbox');
 
-  // The managed inventory browser is available without any operator reason UI.
-  const browser = page.getByTestId('detail-session-browser');
-  await expect(browser).toBeVisible();
-  await expect(browser.getByText('Payroll reconciliation thread')).toBeVisible();
-  await expect(browser.getByText(/E2E Employee/)).toBeVisible();
-  await expect(page.getByLabel('Operator inspection reason')).toHaveCount(0);
-  // The listing call carried no fabricated operator authority.
-  await expect.poll(() => scopedCalls.length).toBeGreaterThan(0);
-  for (const call of scopedCalls) {
-    expect(call).not.toContain('operator_reason');
-    expect(call).not.toContain('operator_view');
-  }
+    // The managed inventory browser is available without any operator reason UI.
+    const browser = page.getByTestId('detail-session-browser');
+    await expect(browser).toBeVisible();
+    await expect(browser.getByText('Payroll reconciliation thread')).toBeVisible();
+    await expect(browser.getByText(/E2E Employee/)).toBeVisible();
+    await expect(page.getByLabel('Operator inspection reason')).toHaveCount(0);
+    // The listing call carried no fabricated operator authority.
+    await expect.poll(() => scopedCalls.length).toBeGreaterThan(0);
+    for (const call of scopedCalls) {
+      expect(call).not.toContain('operator_reason');
+      expect(call).not.toContain('operator_view');
+    }
 
-  // Opening the managed row presents the truthful read-only business view with
-  // the real owner identified (the detail browser selection intentionally keeps
-  // the address bar on the Agent page).
-  await browser.getByText('Payroll reconciliation thread').click();
-  await expect(page.getByTestId('session-workbench')).toBeVisible();
-  await expect(page.getByText('Read-only · E2E Employee')).toBeVisible();
-  await expect(page.getByText('Reconcile the September payroll export.')).toBeVisible();
-  await expect(page.getByTestId('session-operator-view')).toHaveCount(0);
+    // The server's writable projection restores the composer without changing
+    // the employee owner or fabricating operator authority.
+    await browser.getByText('Payroll reconciliation thread').click();
+    await expect(page.getByTestId('session-workbench')).toBeVisible();
+    await expect(composer).toBeEnabled();
+    await expect(page.getByText('Read-only · E2E Employee')).toHaveCount(0);
+    await expect(page.getByText('Reconcile the September payroll export.')).toBeVisible();
+    await expect(page.getByTestId('session-operator-view')).toHaveCount(0);
 
-  // The canonical direct URL renders the same server-backed view…
-  await page.goto(`/agents/${AGENT_ID}/sessions/${SESSION_ID}`);
-  await expect(page.getByTestId('session-workbench')).toBeVisible();
-  await expect(page.getByText('Read-only · E2E Employee')).toBeVisible();
-  await expect(page.getByText('Reconcile the September payroll export.')).toBeVisible();
-  await expect(page.getByTestId('session-operator-view')).toHaveCount(0);
+    // The canonical direct URL renders the same server-backed view…
+    await page.goto(`/agents/${AGENT_ID}/sessions/${SESSION_ID}`);
+    await expect(page.getByTestId('session-workbench')).toBeVisible();
+    await expect(composer).toBeEnabled();
+    await expect(page.getByText('Reconcile the September payroll export.')).toBeVisible();
+    await expect(page.getByTestId('session-operator-view')).toHaveCount(0);
 
-  // …and a reload keeps it — no cached authority drift.
-  await page.reload();
-  await expect(page.getByTestId('session-workbench')).toBeVisible();
-  await expect(page.getByText('Read-only · E2E Employee')).toBeVisible();
-  await expect(page.getByTestId('session-operator-view')).toHaveCount(0);
-  for (const call of scopedCalls) {
-    expect(call).not.toContain('operator_reason');
-  }
-});
+    // …and a reload keeps it — no cached authority drift.
+    await page.reload();
+    await expect(page.getByTestId('session-workbench')).toBeVisible();
+    await expect(composer).toBeEnabled();
+    await expect(page.getByTestId('session-operator-view')).toHaveCount(0);
+    for (const call of scopedCalls) {
+      expect(call).not.toContain('operator_reason');
+    }
+
+    const writes: Array<{ path: string; body: Record<string, unknown> }> = [];
+    page.on('request', (request) => {
+      if (request.method() === 'POST' && request.url().includes('/sessions')) {
+        writes.push({ path: new URL(request.url()).pathname, body: request.postDataJSON() });
+      }
+    });
+    await page.route(`**/api/agents/${AGENT_ID}/sessions/${SESSION_ID}/runs`, (route) => route.fulfill({
+      status: 201,
+      json: { run_id: '00000000-0000-4000-8000-000000000099', status: 'queued', session_id: SESSION_ID },
+    }));
+    await composer.fill('Continue the payroll reconciliation.');
+    await composer.press('Enter');
+    await expect(composer).toHaveValue('');
+    expect(writes).toHaveLength(1);
+    expect(writes[0].path).toBe(`/api/agents/${AGENT_ID}/sessions/${SESSION_ID}/runs`);
+    expect(writes[0].body).toMatchObject({ content: 'Continue the payroll reconciliation.' });
+    expect(writes[0].body).not.toHaveProperty('user_id');
+  });
+}
 
 test('employee direct URL to a foreign Session is denied and stays denied on reload', async ({ page }) => {
   const { scopedCalls } = await bootstrap(page, {

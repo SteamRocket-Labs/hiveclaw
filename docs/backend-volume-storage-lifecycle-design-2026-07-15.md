@@ -1162,7 +1162,7 @@ backend/tests/memory/test_t0_cold_storage.py
 
 ## 16. 当前继续禁止的动作
 
-本次事故清理已按 §2.3.2/§2.7 收口，owner 明确要求“可优化的优化，不勉强；不删除核心数据”。从该时点起：
+本次事故清理已按 §2.3.2/§2.7 收口，后续优化以实际收益为依据，并保留核心数据。从该时点起：
 
 - 不再对当前 Volume 做一次性物理清理；任何新动作必须回到完整 Group 8 代码、测试、migration/backfill、restore 和用户对具体不可逆 manifest 的确认门。
 - 不删除或即时 dedup T0、T2 job manifest/issues/replay identity、current Memory/Soul/Skill、workspace、workspace snapshot、current/latest transaction、policy hold、unacked trace 或有 durable ref 的 cache/artifact。

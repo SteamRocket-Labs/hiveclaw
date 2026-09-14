@@ -5,28 +5,12 @@
 - 状态：**架构决策已确认；尚未实施本文所述代码改动**
 - 日期：2026-07-28
 - Owner 决策：允许一个边界非常窄的 `Principal Resident Contract`
-- Owner 决策证据（Codex transcript，`user_stated`）：
-  - `task_id`: `00000007-0000-4000-8000-000000000000`
-  - `turn_id`: `00000008-0000-4000-8000-000000000000`
-  - `message_id`: `msg_019fa61f-3b7d-7b30-83d6-6c2a5127d6ed`
-  - 原文：“我觉得你说的是对的，应该是允许的，但边界非常的窄，我觉得这件事是没有问题的。”
-  - 本地原始证据：
-    `${LOCAL_HOME}/.codex/sessions/2026/07/28/rollout-2026-07-28T08-13-00-00000007-0000-4000-8000-000000000000.jsonl:325`
-- Owner 对本轮细化方案的实施确认（`user_committed`，只记录接受的 gist）：
-  - 被接受的方案：assistant message
-    `msg_041aae202496f718016a67fceb7160819190dc53a1fc951458`
-  - Owner response：`turn_id=00000009-0000-4000-8000-000000000000`，
-    `message_id=msg_019fa638-66e5-70b0-822c-c2a9d52cbc5e`，原文：“先改文档吧”
-  - 接受的 gist：拆成三个独立闭环 vertical；autonomous owner-Agent 使用 contract-specific grant；
-    projection last-valid 仅在来源仍获授权时沿用
-  - 本地原始证据：同一 rollout JSONL `:672`（方案）与 `:678`（Owner response）
-- Owner 对本次两项澄清的补充确认（`user_committed`）：
-  - `turn_id`: `0000000a-0000-4000-8000-000000000000`
-  - `message_id`: `msg_019fa69f-15dc-7e13-adc5-676d81e9736a`
-  - 原文：“补充进入文档吧”
-  - 接受的 gist：T2 使用 bounded hierarchical catalog；20 entries 与 2,000 rendered characters
-    是以先达到者为准的双重 ceiling
-  - 本地原始证据：同一 rollout JSONL `:899`
+- 已确认的设计边界：拆成三个独立闭环 vertical；autonomous owner-Agent 使用
+  contract-specific grant；projection last-valid 仅在来源仍获授权时沿用。
+- 文档澄清：T2 使用 bounded hierarchical catalog；20 entries 与 2,000 rendered characters
+  是以先达到者为准的双重 ceiling。数值的设计来源与实施条件见下条说明。
+- 此阶段仅获准更新文档，不代表已获实施授权。原始决策记录由维护者受限保存，
+  公开文档不包含私人会话原文、消息标识或本机会话日志定位。
 - 设计细化说明：20 条 / 2,000 rendered characters 是本文为“非常窄”给出的两个同时生效的
   可测试 ceiling，以先达到者为准；20 条不是容量承诺。这些数字不冒充 Owner 逐项确认过的产品值，
   实现前可以基于真实 prompt budget 证据调整，但必须保留显式双重 ceiling
@@ -941,8 +925,6 @@ rg -n "one-pass|全局发布锁" \
   AGENTS.md docs/reusable-agent-native-atomic-review-prompt.md \
   docs/agent-native-unified-atomic-review-2026-07-14.md
 
-rg -n 'msg_019fa61f-3b7d-7b30-83d6-6c2a5127d6ed|msg_041aae202496f718016a67fceb7160819190dc53a1fc951458|msg_019fa638-66e5-70b0-822c-c2a9d52cbc5e|msg_019fa69f-15dc-7e13-adc5-676d81e9736a' \
-  ${LOCAL_HOME}/.codex/sessions/2026/07/28/rollout-2026-07-28T08-13-00-00000007-0000-4000-8000-000000000000.jsonl
 ```
 
 ### 10.4 WIP 生命周期

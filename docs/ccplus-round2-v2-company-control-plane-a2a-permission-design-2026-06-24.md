@@ -253,6 +253,8 @@ Direct A2A chat、async delegation、team member、background subagent、Hive Co
 
 最小证据单元：
 
+<a id="reference-a08717a74cf8"></a>
+
 ```text
 A2ASessionEvidenceV1
   session_id

@@ -17,7 +17,7 @@ Hive 在“CC 作为底层，吸收 Codex 优势，成为 CCPlus”这个目标�
 2. 再吸收 Codex 在工程实现、线程/回合控制、本地执行、权限申请、产品接口上的优势。
 3. Hive 自己的 Memory / Iter / 自我进化系统必须构建在这个底座之上，不能反过来替代底座。
 
-当前不能诚实宣称 Hive 已经是终态 CCPlus，也不能把上一版文档直接当成可上线完成证明。当前状态更准确地说是：底座很强，很多机制已经存在，但 00-08 对应的完整生命周期还没有被收敛成一个统一、稳定、可测试、可产品化的契约。你指出的断点成立：部分能力是孤立实现，部分文档结论过宽，部分产品/API 表面像 Codex，但底下没有持续证明 FreeCode 的生命周期边界。
+当前不能诚实宣称 Hive 已经是终态 CCPlus，也不能把上一版文档直接当成可上线完成证明。当前状态更准确地说是：底座很强，很多机制已经存在，但 00-08 对应的完整生命周期还没有被收敛成一个统一、稳定、可测试、可产品化的契约。审计发现：部分能力是孤立实现，部分文档结论过宽，部分产品/API 表面像 Codex，但底下没有持续证明 FreeCode 的生命周期边界。
 
 因此本文档的执行用途是：
 
@@ -735,6 +735,8 @@ Migration / Backfill / Rollback：
 
 验证命令：
 
+<a id="reference-92e539b7b0a2"></a>
+
 ```bash
 cd ${REPO_ROOT}/backend
 source .venv/bin/activate
@@ -760,6 +762,8 @@ Migration / Backfill / Rollback：
 - rollback 不删除已落盘 tool result 文件，只停用新 projection。
 
 验证命令：
+
+<a id="reference-a6e376bdafc0"></a>
 
 ```bash
 cd ${REPO_ROOT}/backend

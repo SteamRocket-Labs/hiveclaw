@@ -1,6 +1,6 @@
 # RLS 真正生效迁移方案（Goal-2 地基的下一仗）
 
-> 状态：**设计稿，待 owner 拍板**。不动代码——这是 high-risk 权限层迁移（不可逆、影响所有查询），按交付纪律先文档定稿再实现。
+> 状态：**设计稿，待 产品负责人确认**。不动代码——这是 high-risk 权限层迁移（不可逆、影响所有查询），按交付纪律先文档定稿再实现。
 > 前置：`docs/archive/legacy-docs/system-audit-2026-06-09.md` P0-2（RLS 是摆设）+ `app/scripts/audit_rls_coverage.py`（量化脚本，已上线）。
 > 现状证据来自 2026-06-09 全量调查（184 bare session 清单 + 表覆盖矩阵 + GUC 机制）。
 
@@ -44,7 +44,7 @@
 ### 缺口 C — agent-scoped 表无 policy（~20 表）
 chat_sessions / tasks / runtime_tasks / triggers / channel_configs / notifications / chat_messages 等有 `agent_id` 但无 `tenant_id` 列（Phase 1 已确认）。FORCE 后它们要么不可访问，要么需要 join policy。
 
-## 4. 关键设计决策（待 owner 拍板）
+## 4. 关键设计决策（待 产品负责人确认）
 
 ### D1 — 翻开关方式：非 owner 角色 vs 全表 FORCE
 - **方案 A（推荐）非 owner 连接角色**：建一个 `app_rls`（NOLOGIN BYPASSRLS=false）角色，app 用它连接。**一处切换**即对所有表生效，回滚 = 切回 owner 角色。

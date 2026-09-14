@@ -3,7 +3,7 @@
 > 状态:**v0.7 完成稿**(2026-06-07)。T-G1/T-G2/T-G3.1 已落地。T-G3.1 修正 `28f236fc` 的 catalog 命名空间错误:旧 catalog 把 CC native attachment type 与 Hive native runtime guidance 通道混在同一个 `cc_type`,导致"覆盖 45 个 CC attachment/reminder 类型"声明失真。按本地 CC 源码 `claude-code-org/src/utils/attachments.ts` 的 Attachment union 区间抽取,CC native attachment type 当前为 **60 项**;工程权威源已改成双表:`CC_NATIVE_ATTACHMENT_CATALOG` 覆盖 60/60 真名(have 30/planned 19/n-a 11),`HIVE_NATIVE_GUIDANCE_CATALOG` 登记 35 项 Hive 自有通道(have 26/planned 1/n-a 8)。测试冻结 CC 真名清单并断言差集为空,同时钉住 Hive transient prompt 条目的唯一入口仍是 `ReminderScheduler`。
 > 前版:**v0.1 审计定稿**(2026-06-05)。源码实证:CC `utils/attachments.ts` / `utils/messages.ts` / `constants/prompts.ts`;Hive `kernel/engine.py`。
 > 关系:`docs/execution-mode-spectrum.md` 管 CC 引导体系的前两层——暴露架构 + 静态引导(§5 七原语决策序列、工具描述互指,T2 ✅ 已落地);**本文档管第三层:运行中的动态引导(reminder 注入)**。三层一起构成完整的"关键节点给模型判断信息"的体系。
-> 流程(用户拍板,2026-06-05):**机制对齐 → 提示词对齐 → 全面 CC 对标**。本文档按此分 §5 三阶段路线。
+> 流程(产品确认,2026-06-05):**机制对齐 → 提示词对齐 → 全面 CC 对标**。本文档按此分 §5 三阶段路线。
 
 ---
 

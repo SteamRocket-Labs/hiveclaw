@@ -327,7 +327,7 @@ async def fanout_subagents(
 
 ---
 
-## 12. 配置面与作用域（人类入口，v4 新增 —— 2026-06-05 用户拍板方向）
+## 12. 配置面与作用域（人类入口，v4 新增 —— 2026-06-05 产品确认方向）
 
 ### 12.0 问题：仓库建好了，没有门
 
@@ -427,7 +427,7 @@ DELETE /enterprise/subagents/{name}
 
 不变量复述：配置面**不新增任何运行时权力**——工具面收窄、capability gate、防递归、governed memory write 全部原样；本节只是给已有治理开人类入口。
 
-## 13. CC 全对齐三修（v5 —— 2026-06-05 用户拍板"ABC 全部一次对齐 一模一样"）
+## 13. CC 全对齐三修（v5 —— 2026-06-05 确认一次性对齐 ABC）
 
 配置面上线第一天，用户点开内置三类型发现 **md body 是空的**。溯源 + 对照 CC 源码（`loadAgentsDir.ts` / `built-in/*.ts` / `runAgent.ts:getAgentSystemPrompt`）后实锤三处与 CC 的实质差异，一次全部对齐：
 
@@ -438,7 +438,7 @@ DELETE /enterprise/subagents/{name}
 | **C** | suffix 叠加语义——subagent 继承宿主完整 prompt（soul/memory/skills/tasks）再叠 spec.system_prompt | `getSystemPrompt()` 返回值**就是** subagent 全部 system prompt（替换不叠加；Explore/Plan 还 `omitClaudeMd` 省 token） | `AgentInvocationRequest.standalone_system_prompt`（kernel contracts 贯穿）：设置时 `_build_system_prompt` 直接返回该文本，宿主 memory snapshot / retrieval / navigation 三 resolver 全短路返回空；`_spawn_one` 改走 standalone（`_build_standalone_system_prompt` = role prompt + subagent 自有 记忆.md，对应 CC `loadAgentMemoryPrompt` 拼接）。`system_prompt_suffix` 的 channel/delegation 叠加语义原样保留，零影响 |
 
 
-**Breaking**：存量定义.md 无 `description` 者 parse 拒绝（list 跳过 + warn，不空整表——同 CC failedFiles 语义）；配置面上线仅一天、存量≈0，用户知情拍板。证据：后端全量 **3804 passed**（新增 standalone 套件 `tests/runtime/test_standalone_prompt.py` 5 例：standalone 替换宿主身份/三 resolver 短路/控制组宿主路径不动）；前端 subagent 测试 6 passed / 我方文件 tsc 干净。
+**Breaking**：存量定义.md 无 `description` 者 parse 拒绝（list 跳过 + warn，不空整表——同 CC failedFiles 语义）；配置面上线仅一天、存量≈0，产品负责人知情确认。证据：后端全量 **3804 passed**（新增 standalone 套件 `tests/runtime/test_standalone_prompt.py` 5 例：standalone 替换宿主身份/三 resolver 短路/控制组宿主路径不动）；前端 subagent 测试 6 passed / 我方文件 tsc 干净。
 
 ### 13.2 记忆双修：堵父 T2 泄漏 + 接活蒸馏（同日第三轮，用户架构质疑实锤）
 
@@ -448,7 +448,7 @@ DELETE /enterprise/subagents/{name}
 
 ### 13.1 AI 生成创建流（CC `/agents` "Generate" 方法移植，vendor-neutral —— 同日第二轮）
 
-格式对齐后用户追问创建流程：CC `/agents` 向导的主路径是 **MethodStep "Generate"** —— 一句话描述 → `generateAgent.ts` 的 agent-architect 提示词 → LLM 产出 `{identifier, whenToUse, systemPrompt}` → 逐步确认 → 写盘；Hive 此前只有裸 md 编辑器（= CC 的 Manual 次路径），对企业非技术用户不可用且属 L1 违例（意图→定义的翻译是智能步骤却只给机械路径）。**用户拍板补齐 + L3 中立化约束：UI 与提示词一律 "AI 生成"，不得出现 Claude 或任何 vendor/模型名。**
+创建流程核对：CC `/agents` 向导的主路径是 **MethodStep "Generate"** —— 一句话描述 → `generateAgent.ts` 的 agent-architect 提示词 → LLM 产出 `{identifier, whenToUse, systemPrompt}` → 逐步确认 → 写盘；Hive 此前只有裸 md 编辑器（= CC 的 Manual 次路径），对企业非技术用户不可用且属 L1 违例（意图→定义的翻译是智能步骤却只给机械路径）。**已确认的创建流程与 L3 中立化约束：UI 与提示词一律 "AI 生成"，不得出现 Claude 或任何 vendor/模型名。**
 
 落地：`services/subagent_generator.py`（`GENERATION_SYSTEM_PROMPT` = CC agent-architect 提示词移植，中立化处理 = 删 CLAUDE.md 引用/Agent tool→spawn_subagent/无任何 vendor 字样 + Hive delta = LLM 选 `type` 工具基线（取最窄能胜任者）+ 输出语言跟随用户描述语言；输出经 `render_subagent_definition` 渲染 = 与 PUT 校验链同构，生成即合法）；走 `chat_complete` 平台 LLM 调用（同 HR soul refinement 先例，非 agent execution）；API 两端点 `POST /agents/{id}/subagents/generate`（manage 守卫，model=该 agent primary）+ `POST /enterprise/subagents/generate`（org-admin 守卫，model=tenant 首个 enabled），已有 names（含 builtin）注入提示词防撞名，LLM 响应不可用 → 502 fail-loud；前端两组件 create 模式顶部加描述输入 + "AI 生成"按钮，结果预填 name + md 编辑器——**人仍是最终确认门，保存走原 PUT 校验**。中立性入测试钉死：`test_generation_prompt_is_vendor_neutral`（提示词无 claude/anthropic/gpt/openai/gemini/deepseek 字样）。证据：后端 **3816 passed**（生成器 7 + API 5 新增）/ 前端 170 passed / tsc / build 2.24s。
 

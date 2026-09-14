@@ -357,6 +357,8 @@ commit：
 
 改动文件：
 
+<a id="reference-cf53bb55bb71"></a>
+
 - `backend/app/api/agent_knowledge.py`
 - `backend/app/services/personal_knowledge_service.py`
 - `backend/tests/api/test_agent_personal_knowledge_api.py`
@@ -495,11 +497,7 @@ commit：
 
 改动文件：
 
-- `backend/app/api/agent_knowledge.py`
-- `backend/app/services/personal_knowledge_service.py`
-- `backend/tests/api/test_agent_personal_knowledge_api.py`
-- `backend/tests/services/test_personal_knowledge_service.py`
-- `docs/personal-knowledge-base-completion-contract-2026-07-08.md`
+涉及的相同文件见[原始定义与命令](#reference-cf53bb55bb71)。
 
 功能证据：
 
@@ -510,6 +508,8 @@ commit：
 - grant upsert 会复用同一 tenant/scope/resource/grantee/permission 组合，避免重复授权记录。
 
 测试命令：
+
+<a id="reference-11b04d67bad2"></a>
 
 ```bash
 cd backend && source .venv/bin/activate && pytest tests/api/test_agent_personal_knowledge_api.py tests/services/test_personal_knowledge_service.py -q
@@ -612,11 +612,7 @@ commit：
 
 改动文件：
 
-- `backend/app/api/agent_knowledge.py`
-- `backend/app/services/personal_knowledge_service.py`
-- `backend/tests/api/test_agent_personal_knowledge_api.py`
-- `backend/tests/services/test_personal_knowledge_service.py`
-- `docs/personal-knowledge-base-completion-contract-2026-07-08.md`
+涉及的相同文件见[原始定义与命令](#reference-cf53bb55bb71)。
 
 功能证据：
 
@@ -627,10 +623,7 @@ commit：
 
 测试命令：
 
-```bash
-cd backend && source .venv/bin/activate && pytest tests/api/test_agent_personal_knowledge_api.py tests/services/test_personal_knowledge_service.py -q
-cd backend && source .venv/bin/activate && ruff check app/api/agent_knowledge.py app/services/personal_knowledge_service.py tests/api/test_agent_personal_knowledge_api.py tests/services/test_personal_knowledge_service.py
-```
+相同验证命令见[原始定义与命令](#reference-11b04d67bad2)。
 
 测试结果：
 

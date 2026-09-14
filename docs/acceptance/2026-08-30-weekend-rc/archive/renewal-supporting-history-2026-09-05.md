@@ -17,7 +17,7 @@ disclosure: public-redacted
 
 ### 已结束的历史过程（仅对应快照证据）
 
-- CC PDEC-013首次审查已读完；Codex随后独立查`security.py`/request header、`permissions`/resource authority、Personal/Company KB authority及ControlPlane。确认既有公司切换与角色真实来源可复用；同时反证CC的“直达users无guard”（ControlPlane198拦截）、“三处通用helper覆盖KB”（HumanBrowserPrincipal/SQL predicate另有路径）、“owner只授权读”（原话是管理员所有权限）及“恰好三条断言”。已向CC派重大节点反向挑战`58228`，不因其首份报告改变用户授权或制造生产P0/PASS。新zCode角色实现包`zcode-pdec013-role-implementation-next.md`已准备但未派发，须在方案收敛及offboarding writer释放后执行。
+- CC PDEC-013首次审查已读完；Codex随后独立查`security.py`/request header、`permissions`/resource authority、Personal/Company KB authority及ControlPlane。确认既有公司切换与角色真实来源可复用；同时反证CC的“直达users无guard”（ControlPlane198拦截）、“三处通用helper覆盖KB”（HumanBrowserPrincipal/SQL predicate另有路径）、“owner只授权读”（已接受的范围为管理员全部权限）及“恰好三条断言”。已向CC派重大节点反向挑战`58228`，不因其首份报告改变用户授权或制造生产P0/PASS。新zCode角色实现包`zcode-pdec013-role-implementation-next.md`已准备但未派发，须在方案收敛及offboarding writer释放后执行。
 
 - PDEC-013 文档变更后结构检查 **10 passed / 0.29s**，`git diff --check` 通过，working-tree release hygiene **3193 paths passed**。这些只证明结构/发布卫生，不证明业务权限。CC `1614` 正在独立审查方案；5份固定文档指纹在任务包内，不抢改其快照。
 - Kimi correction `9a17d5f…` 已完整返回；主 Codex读完最终报告并检查receipt，613条协议Internal error已如实保留，不因wrapper success升级质量。新选择事件/late audience/几何/文案/双平台截图候选待CC首审，Linux目录随作者返回释放后只交下一个reviewer独占；不把作者自测或旧13-pass当独立证据。

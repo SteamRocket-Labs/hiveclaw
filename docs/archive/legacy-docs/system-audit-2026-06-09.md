@@ -68,7 +68,7 @@
 | 子项 | commit | 证据 |
 |------|--------|------|
 | 5-1 Codex×20 去 vendor 名（L3） | `f063704a` | 20 SKILL.md description「Use when Codex」→「Use when you」；零 Codex 残留；parser 测试绿 |
-| 5-2 节奏数字 6 处 + objective 残留 4 处 | `2d368d64`(A) | 45min/4h→~2h/~daily 匹配 config；objective→wake-policy/work-ledger；**逮到 subagent 漏的 2 个 pin 测试**（test_system_section/test_dream_template）并修（[[feedback_green_tests_dont_mean_done]] 实证） |
+| 5-2 节奏数字 6 处 + objective 残留 4 处 | `2d368d64`(A) | 45min/4h→~2h/~daily 匹配 config；objective→wake-policy/work-ledger；**逮到 subagent 漏的 2 个 pin 测试**（test_system_section/test_dream_template）并修（测试通过不等于生产完成 实证） |
 
 **Phase 5 剩余（记录）**：save_memory escape-hatch 措辞统一 / 两套 3-failure 规则 / 静态 section 去重 / HR HEARTBEAT 克隆 / soul 写权限三说法 = 需判断的较大重写，归后续。
 

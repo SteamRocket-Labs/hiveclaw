@@ -28,7 +28,7 @@
 | 「月度报销审批：收集→校验→审批→打款→归档」 | **workflow** | 步骤刚性、合规审计、失败要重放——模型走偏不可接受 |
 | 「HEARTBEAT.md / DREAM.md」 | 第五类：**系统 SOP 模板**（平台级，per-agent 可覆盖） | 平台蒸馏器的操作手册，不属于 agent 的自学知识；见 §5 |
 
-### skill vs workflow 的核心判据（你问的重点）
+### skill vs workflow 的核心判据
 
 **"如果模型在某一步走偏了，后果可接受吗？"**
 
@@ -82,7 +82,7 @@ T0 session ledger ──extract──▶ T2 learnings ──heartbeat──▶ T
 2. **memory/strategies.md vs skill**：strategies 是"观察到某做法有效"（事实陈述）；skill 是"这样做"（可执行方法论）。**纪律：strategies.md 是 skill 的孵化器**——repeat 高的 strategy 是 skill_distiller 的第一候选源。strategy 一旦凝练成 skill，T3 里的原条目应标注 `[promoted_to_skill=X]` 避免双源漂移（这是现状没有的小纪律，待拍板）。
 3. **skill vs workflow**：见 §1 判据。补充：**skill 永远不该包含"必须严格按序、失败需重放"的承诺**——写出这种句子的 skill 就是 workflow 候选。workflow promote suggestion（P13）应该把这个作为检测信号之一。
 4. **混合 SOP**：workflow 骨架 + agent_step 关节（可挂 skill）。**反模式**：把整个混合 SOP 写成超长 skill 然后祈祷模型每次都遵守刚性步骤——这违反"软约束适用性"边界（CC 哲学的软约束是给适应性任务的，不是给合规流程的）。
-5. **第五类：系统 SOP 模板**（HEARTBEAT.md/DREAM.md/EXTRACT_PROMPT）：平台蒸馏器的操作手册，**不在 agent 的四容器内**——它们是 runtime 的一部分（per-agent workspace/HEARTBEAT.md 覆盖=配置不是记忆）。纪律（来自 B4 教训，[[heartbeat-not-worker]]）：改蒸馏器行为改模板本身，不要 runtime 旁路注入。
+5. **第五类：系统 SOP 模板**（HEARTBEAT.md/DREAM.md/EXTRACT_PROMPT）：平台蒸馏器的操作手册，**不在 agent 的四容器内**——它们是 runtime 的一部分（per-agent workspace/HEARTBEAT.md 覆盖=配置不是记忆）。纪律（来自 B4 教训，[蒸馏器与工作执行边界](archive/legacy-docs/agent-lifecycle-cc-alignment.md)）：改蒸馏器行为改模板本身，不要 runtime 旁路注入。
 
 ## 5. 现状审计：已对齐 vs 待拍板的优化项
 
@@ -141,7 +141,7 @@ T0 session ledger ──extract──▶ T2 learnings ──heartbeat──▶ T
 5. **Skill 文档里的 `<workflows>` 标签应改名**
    系统 skill 模板里大量使用 “Workflows” 作为普通操作流程标题，这会和产品级 Workflow 混淆。建议后续统一改成 `<usage_flows>` / `<procedures>` / `<recipes>`。产品语义里，Workflow 应保留给可执行、版本化、可审计的 runtime definition。
 
-### 7.3 我建议的落地顺序
+### 7.3 建议实施顺序
 
 **P0：先改文案和 prompt 边界，不动执行机制。**
 
@@ -221,7 +221,7 @@ T0 session ledger ──extract──▶ T2 learnings ──heartbeat──▶ T
 
 5. **artifact/run journal 边界也要写清。** 交付物、报告、测试输出、worker 中间产物、RuntimeTask journal、Work Ledger 都不是 soul/memory/skill/workflow 本身。它们是 run/workspace artifacts；只有经过蒸馏、验证和分流后，才可能进入 memory、skill 或 workflow promote suggestion。这个边界可以避免把“过程日志”误沉淀成长期知识。
 
-## 9. 记忆生命周期的环节明确化（2026-06-04，用户提出"孤儿文件/判定模糊/烂泥"问题后）
+## 9. 记忆生命周期的环节明确化（2026-06-04，孤儿文件与生命周期判定）
 
 **用户洞察的系统化**：分类本身没错——烂泥的根因是**环节之间缺判定契约**。一条记忆从产生到退役经过 8 个环节，任何一环判定模糊，下游全部模糊化：放错地方（③）→ 索引没人看（④）→ 召回不到/不知何时查（⑤⑥）→ 清理无数据（⑦⑧）→ 烂泥。解法不是砍分类，是给每个环节一张**判定卡**（判定主体/判据/证据），并让"是否被用过"成为可观测数据。
 

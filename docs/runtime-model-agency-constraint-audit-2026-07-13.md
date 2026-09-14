@@ -1551,7 +1551,7 @@ curl -I -fsS https://service-3.example.invalid/
 
 ### 14.6 本轮普通本地验收实测
 
-本轮按用户要求没有使用 `ultra-verify`，只使用仓库现有测试、静态检查、生成物一致性和生产构建：
+本轮验证使用仓库现有测试、静态检查、生成物一致性和生产构建：
 
 ```text
 backend targeted regression（最后一组）:

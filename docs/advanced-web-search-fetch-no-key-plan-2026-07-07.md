@@ -254,7 +254,7 @@ Hive 定位：
 
 - Hive 当前已有 `xcrawl_scrape` adapter。
 - 当前实现需要 `XCRAWL_API_KEY`。
-- 用户本轮明确选择方案 A：保留；有 key 才放进工具面；无 key 不放。
+- 采用方案 A：保留该能力，仅在配置 key 后暴露工具。
 
 Hive 定位：
 
@@ -953,6 +953,8 @@ source backend/.venv/bin/activate && pytest backend/tests/services/test_web_mcp_
 
 验证命令：
 
+<a id="reference-24fb2f40ed01"></a>
+
 ```bash
 source backend/.venv/bin/activate && pytest backend/tests/services/test_web_mcp_resilience.py backend/tests/tools/test_search_provider_tool_definitions.py backend/tests/api/test_tools_api_surface.py backend/tests/services/test_agent_tools.py backend/tests/services/test_capability_gate_policy_surface.py backend/tests/services/test_capability_group_policy_service.py backend/tests/services/test_pack_policy_service.py backend/tests/services/test_agent_tools_core_surface.py backend/tests/tools/test_bridge_equivalence.py backend/tests/tools/test_plan_mode_policy.py backend/tests/tools/test_parallel_metadata.py backend/tests/services/test_prompt_contracts.py backend/tests/tools/test_tool_contract.py -q
 ```
@@ -1080,9 +1082,7 @@ tsc && vite build
 
 验证命令：
 
-```bash
-source backend/.venv/bin/activate && pytest backend/tests/services/test_web_mcp_resilience.py backend/tests/tools/test_search_provider_tool_definitions.py backend/tests/api/test_tools_api_surface.py backend/tests/services/test_agent_tools.py backend/tests/services/test_capability_gate_policy_surface.py backend/tests/services/test_capability_group_policy_service.py backend/tests/services/test_pack_policy_service.py backend/tests/services/test_agent_tools_core_surface.py backend/tests/tools/test_bridge_equivalence.py backend/tests/tools/test_plan_mode_policy.py backend/tests/tools/test_parallel_metadata.py backend/tests/services/test_prompt_contracts.py backend/tests/tools/test_tool_contract.py -q
-```
+相同验证命令见[原始定义与命令](#reference-24fb2f40ed01)。
 
 结果：
 

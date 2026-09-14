@@ -278,7 +278,7 @@ worker 工具池用**自己的 permissionMode**（agent 定义 > 默认 acceptEd
 
 ## 第五部分 — 对齐路线建议（供 owner 决策，未实施）
 
-> 完整交付纪律：任何返工一次改完、禁 MVP、零债。以下是**建议的完整范围**，待 owner 拍板后一次性落地。
+> 完整交付纪律：任何返工一次改完、禁 MVP、零债。以下是**建议的完整范围**，待 产品负责人确认后一次性落地。
 
 **P0 — Worker 层归位（D4/D5 已闭合；D6 仍需历史清理）**
 把 `subagent` 提升为 RuntimeTask worker 一等公民，复用 `team_member`/`delegation` 已跑通的 durable 基建：

@@ -9,10 +9,10 @@
 
 ## 块1 — 单 Agent 运行机制（对齐 CC + 融合 Codex + 云端适配层）
 
-### 1.0 核心确认点（owner 原话）
+### 1.0 审计问题
 单 Agent 整个生命周期是否完全 follow CC 规范，并在此基础上融合 Codex 工程优化 + 云端适配层。
 
-### 1.1 云端适配层（CC 本地 CLI 结构性没有的一层 — owner 明示"云端场景需额外优化"）
+### 1.1 云端适配层（云端运行要求）
 
 这是判定的第一个关键：CC FreeCode 是单进程本地 CLI，用内存 `AbortController`（`QueryEngine.ts:187,1159`）做取消、`for await` 单循环做执行、进程即会话。Hive 是**云端多进程 + 断线可恢复**，必须加一层运行时基座。逐项判定这层是"正当 delta"还是"偏离 CC 语义"：
 
@@ -32,7 +32,7 @@
 
 四路并行取证进行中（上下文组装/工具循环+Codex delta/Rewind+Branch/Slash Command），完成后填充逐站判定表。
 
-### 1.3 Session Rewind + Branch（owner 点名"能否正常 work + 前后端逻辑"）— ✅ 取证完成
+### 1.3 Session Rewind + Branch（功能与前后端接线）— ✅ 取证完成
 
 **结论：Rewind 和 Branch/Fork 前后端都真实打通并有端到端测试。** 一个实质半接缺口。
 
@@ -50,7 +50,7 @@
 
 **与 CC 基线关系**：FreeCode `/rewind`（`free-code-main/src/commands/rewind/`）是 TUI 交互式 + `fileHistory` + `sessionStorage` 本地恢复、`supportsNonInteractive:false`。Hive 为多租户 Web 重写为 active_projection 投影 + sha256 workspace 快照 + T0 隔离分支——**不同基座的重实现（正当云端 delta），非移植**。
 
-### 1.4 Slash Command 一致性（owner 点名"校验命令行指令与 CC 是否一致"）— ✅ 取证完成
+### 1.4 Slash Command 一致性（与 CC 命令行为对照）— ✅ 取证完成
 
 **结论：会话控制类命令语义对齐 CC；Hive 新增 goal/team/schedule/loop 等 native 命令为正当扩展；5 个断点/半成品。**
 
@@ -244,4 +244,4 @@ _(7 路并行取证进行中：块1×4 + 块2×2 + 块3×1。回来后填充判�
 | 公司治理板块 | ~85% | 流水线干净有序，剩 C1 互锁（P0）+ RLS 部署一致性 |
 | **架构纯净度** | ~80% | 内核达超一线大厂结构，扣分在双轨/孤儿收尾 |
 
-**总判：系统已是「健壮的 CCPlus + Hive-native」骨架，距「优雅干净模块化鲁棒可维护的 agent-native 系统」只差 P0 的 C1 根治（消除唯一系统性风险）+ P1 的纯净度收尾（退役双轨/孤儿）。P2 是设计演进，需 owner 拍板。**
+**总判：系统已是「健壮的 CCPlus + Hive-native」骨架，距「优雅干净模块化鲁棒可维护的 agent-native 系统」只差 P0 的 C1 根治（消除唯一系统性风险）+ P1 的纯净度收尾（退役双轨/孤儿）。P2 是设计演进，需 产品负责人确认。**

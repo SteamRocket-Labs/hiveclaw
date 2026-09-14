@@ -407,6 +407,8 @@ A2A Process Graph
 
 后续不再从 Relationship gate 重新开始。当前推荐下一步必须服从 `docs/ccplus-final-prelaunch-convergence-master-plan-2026-06-27.md` 的总顺序：
 
+<a id="reference-3f93fb7dcde6"></a>
+
 ```text
 Session Control Spine
   -> AgentTool / Sub-agent / Completion Bus

@@ -256,7 +256,7 @@ once原Run审批已200/resolved并same-run恢复，随后工具被明确aborted/
 
 ### 21:23—21:28 临时公司管理员的真实授权/撤回
 
-- Owner对“仅对合成测试账号临时授予公司管理员权限，验完立即撤回”明确回复“允许啊 快点吧”。精确目标user `00000107-0000-4000-8000-000000000000` / username `wrc_b4_20260909_tester`，tenant `00000341-0000-4000-8000-000000000000`。变更前独立正常登录：member、is_active=true、GET /users 403。Chrome公司管理页筛选唯一合成账号；选择角色后须点击实际确认框，选择本身未生效，不算授权已落库。
+- 已获准仅对合成测试账号临时授予公司管理员权限，验证结束后立即撤回。精确目标user `00000107-0000-4000-8000-000000000000` / username `wrc_b4_20260909_tester`，tenant `00000341-0000-4000-8000-000000000000`。变更前独立正常登录：member、is_active=true、GET /users 403。Chrome公司管理页筛选唯一合成账号；选择角色后须点击实际确认框，选择本身未生效，不算授权已落库。
 - 正式UI确认管理员后，独立登录GET /auth/me返回同user/tenant、org_admin；GET /users 200（26行，仅输出数量、不发布成员身份）、GET /enterprise/audit-logs 200。拒绝反例：PATCH自身role=platform_admin返回422；GET平台runtime-hooks仍403；GET自身offboarding-preview返回400“Administrators cannot offboard their own account”。GET所属MemberAnalyst仍200。先前探测不存在的/admin/tenants返回404，未把不存在路由冒充权限负向通过。
 - 随即通过同一UI的成员选项及明确确认恢复member；正式登录GET /auth/me核实member，GET /users重新403，GET所属MemberAnalyst仍200，UI也显示成员。一个拟验证旧管理员token的并发探针在撤回后才完成登录（before_revoke_role实际member），因此只计撤回后普通member拒绝，不声称旧org_admin token撤销已验证；未为补此额外指标重新升权。
 - 没有实际离职、资产移交、取消其他运行、创建/删除账号、配额/凭据/自审政策改变。临时角色验收的授权已消费并撤回，不能再列为pending。A2A/Dynamic语义消费、Growth矛盾和活动Skill卸载是独立缺口，不因org_admin权限而自动关闭。公司审计旧列表按Agent过滤，未查询到这次无Agent的role_changed行；不据此声称审计不存在或已可见。

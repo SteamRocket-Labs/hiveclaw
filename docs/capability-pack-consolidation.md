@@ -2,7 +2,7 @@
 
 > 状态：设计稿 v0，待 owner 在本文档上拍板核心决策点（见 §8）。
 > 主线归属：`docs/execution-mode-spectrum.md`（CORE 收敛 / 选择性去 skill 化）的延伸。
-> 纪律：本整改按"交付纪律 — 一次改完，零债"执行（CLAUDE.md / [[feedback_no_mvp_finish_completely]]）——
+> 纪律：本整改按"交付纪律 — 一次改完，零债"执行（CLAUDE.md / 完整交付要求）——
 > 完整 scope 一次定义、一次交付，禁 MVP / 禁分期首版 / 禁默认关 flag 藏半成品。
 
 ---
@@ -127,7 +127,7 @@ Exa/Tavily 已拆成 `exa_search` / `tavily_search` deferred provider 工具，�
 
 把 Exa/Tavily key 从 **per-agent 工具 config**(`search.py` `config_schema` password 字段)迁到
 **tenant 级搜索 provider 配置**(加密存储，走 `SECRETS_MASTER_KEY` + RLS，复用 `_get_exa_api_key` /
-`_get_tavily_api_key` 已有的系统级读取路径，`web_mcp.py:373/382`)。⚠️ 别重蹈 [[project_system_audit_20260609]]
+`_get_tavily_api_key` 已有的系统级读取路径，`web_mcp.py:373/382`)。⚠️ 别重蹈 [2026-06-09 系统审计](archive/legacy-docs/system-audit-2026-06-09.md)
 租户 key 泄漏——凭据加密 + 租户隔离 + 不回显明文。
 
 ---
@@ -205,7 +205,7 @@ pack 的两个打架职责拆开：
 
 ---
 
-## 8. 待 owner 拍板的决策点
+## 8. 待 产品负责人确认的决策点
 
 1. **pack 目标形态**：确认"提纯保留"(本稿推荐)而非"激进消减向 CC 扁平看齐"？
    理由：Hive 多租户凭据隔离/治理需要 pack 这层，CC 无多租户故无需。

@@ -345,7 +345,7 @@ classification)通过**启动一个 system_plan_run**(预激活 Plan Mode + 带 
 
 ### 11.3 切口④ 实装记录(删 RPC + 移除全部 flag → plan mode/launcher 唯一路径)
 
-**用户拍板(方案 B,终态)**:删 RPC + 移除所有灰度 flag,plan mode/launcher 成为生产**唯一**规划路径
+**产品确认(方案 B,终态)**:删 RPC + 移除所有灰度 flag,plan mode/launcher 成为生产**唯一**规划路径
 (详见 §12.7)。这是彻底收口,符合硬约束"绝不能有两个 plan 路径"。
 
 **删除**:
@@ -460,9 +460,9 @@ fail-closed 测试。**全量回归:3375 passed / 7 skipped / 0 failed**(切口�
 - subtle:launcher run 的 `source="system_plan_run"` 已 active,不会被
   `_maybe_activate_interactive_plan_from_tool_result` 二次激活(`engine:1006` short-circuit)。
 
-### 12.7 用户拍板:方案 B(删 RPC + 移除 flag + plan mode 唯一)+ 非 eligible 静态降级
+### 12.7 产品确认:方案 B(删 RPC + 移除 flag + plan mode 唯一)+ 非 eligible 静态降级
 
-> **2026-06-03 用户拍板(切口④ 终态)**:删 RPC planner + 移除所有灰度 flag(`PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE`
+> **2026-06-03 产品确认(切口④ 终态)**:删 RPC planner + 移除所有灰度 flag(`PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE`
 > / `PLAN_MODE_UNATTENDED_RUN` / `PLAN_MODE_SYSTEM_RUN`),让 **plan mode / system_plan_run launcher 成为生产唯一规划路径**。
 > 不再保留任何"flag off 回退 RPC"的灰度后门——这是彻底收口,直接兑现硬约束"**绝不能有两个 plan 路径**"。
 

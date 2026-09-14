@@ -751,6 +751,8 @@ CCPlus 范围外、保留的既存 infra/env 债（非本轮回归、`main` 上�
 
 Red phase：
 
+<a id="reference-3dc95147f147"></a>
+
 ```bash
 cd ${REPO_ROOT}/backend
 .venv/bin/pytest tests/kernel/test_ccplus_side_effects.py tests/tools/test_governance_resolver.py tests/api/test_extension_registry_api.py tests/tools/test_tool_spec_v1.py -q
@@ -774,10 +776,7 @@ AssertionError: assert None is not None
 
 Green phase：
 
-```bash
-cd ${REPO_ROOT}/backend
-.venv/bin/pytest tests/kernel/test_ccplus_side_effects.py tests/tools/test_governance_resolver.py tests/api/test_extension_registry_api.py tests/tools/test_tool_spec_v1.py -q
-```
+相同验证命令见[原始定义与命令](#reference-3dc95147f147)。
 
 结果：
 

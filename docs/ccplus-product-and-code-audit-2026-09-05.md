@@ -43,7 +43,7 @@ disclosure: public-redacted
 
 **让普通员工无需理解 Agent 框架，就能使用具备 CC 级任务执行能力、持续记忆和成长能力的数字员工；企业能够安全地配置、管理、连接、观测和恢复这些数字员工。**
 
-这一表述综合了本次用户要求与既有 [SOTA 总目标](hive-sota-master-goal.md)、[CCPlus 合同](ccplus-north-star-contract-2026-06-24.md)、[当前 North Star](acceptance/2026-08-30-weekend-rc/01-north-star-and-boundaries.md)。本报告没有新增产品范围或替代 owner 已确认的决定。
+这一表述依据既有 [SOTA 总目标](hive-sota-master-goal.md)、[CCPlus 合同](ccplus-north-star-contract-2026-06-24.md)、[当前 North Star](acceptance/2026-08-30-weekend-rc/01-north-star-and-boundaries.md)。本报告没有新增产品范围或替代 owner 已确认的决定。
 
 ### 2.2 CC+ 的三个部分
 
@@ -94,7 +94,7 @@ CC 的本地生命周期语义在范围内；依赖供应商私有远程基础�
 | 标记 | 含义 | 本文示例 |
 |---|---|---|
 | 源码事实 | 本轮直接读到的实现或调用关系 | HR 拒绝平台管理员；生产未消费 Python 锁文件 |
-| 本轮验证 | 本会话实际执行并返回成功的检查 | 定向测试、类型检查、Ruff、Railway 状态 |
+| 本轮验证 | 本次审计实际执行并返回成功的检查 | 定向测试、类型检查、Ruff、Railway 状态 |
 | 当前记录 | 从既有状态/证据文档读取，本轮未独立重跑 | NPTCR、既有生产故障、其他 review 的完成情况 |
 | 审计判断 | 基于事实形成的工程或产品判断 | 核心依赖传递过重、用户路径需要收敛 |
 | 推进建议 | 尚未实施或单独验收的改进 | 删除孤立框架、收敛状态所有权、统一构建输入 |

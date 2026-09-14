@@ -1,7 +1,7 @@
 # Hive Eval 系统 — 实施规格
 
 版本:v1(2026-07-02,修订记录见文末)
-状态:**设计已闭环,据此实施。** 本规格取代 `external-behavior-eval-ci.md`(E1-E10 体系,已降为历史档案);§2.1 同时是 `memory-system-spec.md` §7.2 承诺的"效果 eval 最小骨架"定稿。现状证据(七套子系统盘点、Railway eval 环境、nightly 全红)见 2026-07-02 eval 讨论轮记录。
+状态:**设计已闭环,据此实施。** 本规格取代 `external-behavior-eval-ci.md`(E1-E10 体系,已降为历史档案);§2.1 同时是 `memory-system-spec.md` §7.2 承诺的"效果 eval 最小骨架"定稿。本规格记录的现状基线为 2026-07-02 的七套子系统盘点、Railway eval 环境与 nightly 失败结果；这些历史判断不替代当前源码和运行证据。
 
 ---
 
@@ -18,7 +18,7 @@
 | J3 | 平台改动没把 agent 改笨吧? | per-PR | 确定性回归层(§2.3) |
 | J4 | 和 hermes 比到底怎样? | 里程碑,一次性 | 手动 bakeoff(§2.4) |
 
-- **为什么推倒重来**(病根三行,证据见讨论记录):旧体系把四问全塞进"合成场景 + 克隆环境 + 夜跑"一个机制——① 实验室形态错置(企业产品没有 per-skill benchmark 任务集,任务是异构真实工作);② 合成玩具场景信息量趋零(判据是字符串暗号,答不了"越来越强");③ gate-first 守空管道(晋升门 fail-closed 等一个结构性跑不通的报告 → 生产零真晋升,克隆环境烧两周、nightly 全红、live 分数零产出)。
+- **重设计原因**：旧体系把四问全塞进"合成场景 + 克隆环境 + 夜跑"一个机制——① 实验室形态错置(企业产品没有 per-skill benchmark 任务集,任务是异构真实工作);② 合成玩具场景信息量趋零(判据是字符串暗号,答不了"越来越强");③ gate-first 守空管道(晋升门 fail-closed 等一个结构性跑不通的报告 → 生产零真晋升,克隆环境烧两周、nightly 全红、live 分数零产出)。
 
 **硬约束(实施不变量)**:
 1. **读数,不建第二生产**:禁克隆环境、禁常设合成场景套件、禁 eval 专用前后端。eval 是生产证据(T2 labels / session_feedback / invocation_spans / evolution_ledger)的读者。
@@ -174,5 +174,5 @@ Railway 面板关停 eval 环境(含 Postgres volume,内含仅 eval 租户配置
 
 ## 修订记录
 
-- **v1(2026-07-02)**:初版。方向 owner 拍板(2026-07-02 eval 专门讨论轮):读数化 eval、Railway eval 环境关停、nightly 删除、七套子系统归一为四组件、晋升换 provisional 试用制。取代 `external-behavior-eval-ci.md`。
+- **v1(2026-07-02)**:初版。2026-07-02 确认方向：读数化 eval、Railway eval 环境关停、nightly 删除、七套子系统归一为四组件、晋升换 provisional 试用制。取代 `external-behavior-eval-ci.md`。
 - **v1.1(2026-07-02 施工对齐)**:全组件落地。①J1 provisional 试用制 + §3.1 删除清单 + 前端退役由 eval 拆弹批完成(commit `0034ed7e`);②J2 成长报告实装(labels v3 失败信号轴、零 LLM 读数生成器 `services/growth_report.py`、heartbeat 挂载、既有 observability 端点直出);③J3 `self_evolution_bakeoff` 降级为普通集成测试 `tests/evals/test_self_evolution_behaviors.py`(服务级行为断言保留,打分/Hermes 对比/CLI 外衣与 CI 步骤退役;失效的 rerank 延迟特征串 check 随读侧零 LLM 收口一并退役);④J4 `bakeoff_runtime` 删除 `repo_evidence` 假分 fallback(CLI 不可用 = 诚实 `runtime_unavailable` 空报告,场景失败不回填合成分);⑤§2.3/§3.2 的 `retrieval_eval` "保留"条目被记忆主线 C7 读侧重构取代——该模块评测的旧 wiki 检索路径已退役,读侧覆盖改由 `tests/memory` 套件承担(本条为文档与现实对齐,非新决策);⑥seeder 中 shell-claude 的 eval-viewer/run_eval/run_loop 与装饰性 `eval.yaml` ×6 已从 payload 去除,agents/grader·comparator·analyzer 指引作为 Skill capsule evals 能力保留。

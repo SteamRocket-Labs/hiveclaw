@@ -65,7 +65,7 @@
 - **B1** workbench 默认瘦身：timeline 默认最新 50 条；`tool_calls` / `hooks` / `compactions` 改为 `?include=` 显式请求；全量回放走 transcript 端点。字段不删、默认值变化，**前端适配同批交付**。
 - **B2** teams 的 N+1 members 查询合并为单 IN 查询。
 - **B3** export 保持全量（导出语义），但同走 A1 线程池路径。
-- **B4** transcript 瘦身：端点已有 `after_sequence`/`limit` 分页（`chat_sessions.py:1816-1817`）——前端 `getSessionTranscript` 改为增量拉取（首屏最新 N 条 + 向上翻页），后端默认 `limit` 从 500 收紧；核验单事件序列化体积（465KB/500条 ≈ 平均 1KB/条，注意大 payload 事件裁剪）。**实现约束（owner 拍板 2026-07-02）**：不得破坏现有 `after_sequence` 增量语义——要么新增 `before_sequence`/`direction=backward`，要么首屏 tail 查询内部按尾部读取但返回仍为升序，前端按 sequence 正常合并。
+- **B4** transcript 瘦身：端点已有 `after_sequence`/`limit` 分页（`chat_sessions.py:1816-1817`）——前端 `getSessionTranscript` 改为增量拉取（首屏最新 N 条 + 向上翻页），后端默认 `limit` 从 500 收紧；核验单事件序列化体积（465KB/500条 ≈ 平均 1KB/条，注意大 payload 事件裁剪）。**实现约束（产品负责人确认 2026-07-02）**：不得破坏现有 `after_sequence` 增量语义——要么新增 `before_sequence`/`direction=backward`，要么首屏 tail 查询内部按尾部读取但返回仍为升序，前端按 sequence 正常合并。
 - 验收：默认 workbench 响应 < 100KB、服务端耗时 < 300ms；transcript 首屏 < 100KB；**同等操作路径下异常 499 不再成簇/不再由大响应等待触发**（用户主动切页、关闭窗口产生的合法 499 不计入）；nginx temp file 警告消失。
 
 ### C 组 — 连接池与 daemon 治理

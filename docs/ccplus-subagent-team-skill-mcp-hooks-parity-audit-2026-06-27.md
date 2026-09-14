@@ -405,29 +405,7 @@ Hive 本轮前的问题是两种风格混合但没有分层：
 
 Workstream B 证据（2026-06-27）：
 
-```bash
-cd backend && source .venv/bin/activate && pytest \
-  tests/services/test_subagent_wake_consumer.py \
-  tests/runtime/test_subagent_listing_section.py \
-  tests/tools/test_agent_tool_cc_compat.py \
-  tests/agents/test_subagent_spawn_tool.py \
-  tests/runtime/test_coordinator.py \
-  tests/runtime/test_coordinator_prompt.py \
-  tests/runtime/test_coordinator_force_async_acceptance.py \
-  tests/runtime/test_prompt_sections.py \
-  tests/tools/test_plan_mode_policy.py \
-  tests/runtime/test_t2_guidance_surface.py \
-  tests/runtime/test_unified_prompt_contracts.py \
-  tests/services/test_prompt_contracts.py \
-  tests/services/test_tool_registry.py \
-  tests/services/test_agent_tools_core_surface.py \
-  tests/tools/test_service.py \
-  tests/tools/test_collector.py \
-  tests/services/test_subagent_run_service.py \
-  tests/kernel/test_runtime_guidance_catalog.py \
-  -q
-# 248 passed, 4 warnings
-```
+相同验证命令见[原始定义与命令](ccplus-final-prelaunch-convergence-master-plan-2026-06-27.md#reference-7fd502f77c38)。
 
 ### P1 — 补 Skill / MCP dynamic session surface
 
@@ -513,20 +491,7 @@ cd backend && source .venv/bin/activate && pytest -q \
 
 Workstream C 最新验证（2026-06-27）：
 
-```bash
-cd backend && source .venv/bin/activate && pytest \
-  tests/services/test_agent_team_runtime_service.py \
-  tests/tools/test_cc_codex_parity_tools.py::test_team_create_tool_persists_through_agent_team_runtime \
-  tests/agents/test_subagent_spawn_tool.py::test_send_agent_session_message_routes_agent_team_by_name_without_child_session \
-  tests/agents/test_subagent_spawn_tool.py::test_send_agent_session_message_appends_child_mailbox_event \
-  tests/api/test_agent_teams_events_api.py \
-  tests/services/test_plan_mode_agent_team_handoff.py \
-  tests/api/test_cc_codex_parity_api.py::test_commands_api_team_create_and_delete_are_durable \
-  tests/api/test_cc_codex_parity_api.py::test_agent_teams_api_creates_control_index_and_member_sessions \
-  tests/services/test_prompt_contracts.py \
-  tests/runtime/test_unified_prompt_contracts.py \
-  -q
-```
+相同验证命令见[原始定义与命令](ccplus-final-prelaunch-convergence-master-plan-2026-06-27.md#reference-75c326c3ea45)。
 
 结果：
 

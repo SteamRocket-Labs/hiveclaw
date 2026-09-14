@@ -582,12 +582,6 @@ rg -n "AgentTeam|delegate_to_agent|spawn_subagent|parent_session_id|peer_agent_i
 
 正确路径是：
 
-```text
-Session Control Spine
-  -> AgentTool / Sub-agent / Completion Bus
-  -> Agent Team Runtime
-  -> A2A Session-first Delegation
-  -> TurnEnvelope / Workbench / Hooks / Skill / MCP
-```
+相同结构定义见[原始定义与命令](a2a-integrated-implementation-plan-2026-06-27.md#reference-3f93fb7dcde6)。
 
 只有 session identity、projection、completion bus 和 Workbench state 稳定后，A2A 才能作为 Agent-Agent long-running collaboration 正常运转。否则 A2A 每一次长任务都会继续暴露同一类 token、压缩、上下文记录、child completion 和 UI control 问题。

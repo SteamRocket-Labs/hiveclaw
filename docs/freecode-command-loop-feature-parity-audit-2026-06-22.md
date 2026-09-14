@@ -481,11 +481,9 @@ Correct Hive shape:
 6. **Telemetry commands**: cost/usage/status/context/doctor over invocation spans and runtime metadata.
 7. **Coding command pack**: diff/review/security-review/PR/comment/worktree commands as optional pack.
 
-## 7. Current Answer to the User Question
+## 7. Capability coverage conclusion
 
-Question: “FreeCode 里面所有目前所实现的一些功能，我们现在是不是都有？”
-
-Answer: **没有全都有。**
+Hive 尚未覆盖该审计基线中的全部 FreeCode 功能。
 
 Hive 已有并且更强的是组织化 agent runtime、Memory/Iter、governance、Workflow/Subagent/Skill substrate。FreeCode 更完整的是本地 CLI/TUI command layer、会话级任务/团队命令、完整 hook event surface、以及若干 coding/product commands。Worktree 是 FreeCode 的重要 coding 能力，但不是当前 Hive organization-first scope 的核心目标。
 

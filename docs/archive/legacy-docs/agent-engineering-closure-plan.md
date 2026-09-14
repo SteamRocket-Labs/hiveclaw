@@ -4,7 +4,7 @@
 >
 > **解释规则**: 下文保留当时的 review 裁决、红测、验收和行号证据，用于追溯第一轮 closure 的决策过程；不要把其中的"待执行"或"已知 delta"直接当成当前事实，必须先到当前基线文档和源码复核。
 
-> 状态: **v0.4 — R1/R2/R3 返工已落地(2026-06-07)**。v0.1 = 双 AI 交叉 review 合成；v0.2 = 采纳 Codex 四点反馈后用户拍板执行；v0.3 = 全部实装后做第二轮交叉 review，发现 B1/B2"测试全绿但生产空转"必须返工、C 轨道需降级；**v0.4 = R1 父唤醒生产接线、R2 T2 retention 诚实降级、R3 discovered schema recovery 全部回写证据**。执行方式 = 一项一 commit 红测先行，批次间独立可验收可 push。
+> 状态: **v0.4 — R1/R2/R3 返工已落地(2026-06-07)**。v0.1 = 双 AI 交叉 review 合成；v0.2 = 采纳 Codex 四点反馈后产品确认执行；v0.3 = 全部实装后做第二轮交叉 review，发现 B1/B2"测试全绿但生产空转"必须返工、C 轨道需降级；**v0.4 = R1 父唤醒生产接线、R2 T2 retention 诚实降级、R3 discovered schema recovery 全部回写证据**。执行方式 = 一项一 commit 红测先行，批次间独立可验收可 push。
 > ⚠️ **工程闭环已收口，但不可声称完整 CC 对齐**：B1/B2 生产空转缺口已返工；C 轨道是 T3a 保守默认，`tool_search` 发现后的 schema recovery 已补，但 turn-1 deferred tool name seeding 仍是已知 delta。以 §7 为准。
 > 范围: **Agent 本身的运行时**——① Max Token / 限制机制 ② Runtime 四元能力（Subagent / Skill / MCP / Workflow）③ Memory。把全部已验证的缺陷与断点一次性补齐。
 > 完成定义（工程闭环）: 配置面承诺的语义在执行路径全部兑现；管线状态面板说真话；与 CC 的机制级差距清零或有定稿路线并执行完毕；每项红测先行、全量绿。**工程闭环 ≠ 生产实证**——生产验收（挂账 #7 五点清单）在本计划完成后放真实流量另案执行。
@@ -219,7 +219,7 @@ M5 形态对齐    C0 拍板 → C1 T3a → C2 T3b → C3 T4 ─ Runtime 形态�
 - ✅ **落地证据（2026-06-07）**：`archive_absorbed_t2_entries()` docstring 与实现改为 absorbed-only archive；删除旧 reference scan/helper；`DREAM.md` / `HEARTBEAT.md` 模板改成 archive-resolvable provenance；`test_archive_absorbed_t2_entries_archives_referenced_absorbed_rows_with_provenance` 先翻转旧伪造 ref 契约，断言被下游文本提及的 absorbed row 仍归档且 archive 保留 `entry_id` / `from`。验证：`cd backend && .venv/bin/pytest tests/memory/test_t2_store.py::test_archive_absorbed_t2_entries_archives_referenced_absorbed_rows_with_provenance -q` → `1 passed`；`cd backend && .venv/bin/pytest tests/memory/test_t2_store.py tests/services/test_dream_phase6.py tests/test_memory_integration.py tests/services/test_distillation_boundary_contracts.py -q` → `72 passed, 3 warnings`；`cd backend && .venv/bin/ruff check app/memory/t2_store.py tests/memory/test_t2_store.py tests/services/test_distillation_boundary_contracts.py` → `All checks passed!`。
 
 ### ✅ R3 — C 轨道定位修正（已完成 2026-06-07）
-- **实锤**：deferred 工具名从不进 turn-1 prompt（只在 tool_search 返回值）；`session.__post_init__`(:150) **读回** discovered_tools（Codex 纠正 Claude 早先"没人读"措辞），但 `_kernel_get_tools`(`invoker.py:819`) `requested_names=_channel_tools` **不含 discovered_tools** → schema 不跨 invocation 恢复。C0 三决策（名字宣告载体=post-hoc 事件 / 持久化=内存+镜像 half-wired / subagent 独立发现集无测试）均由 Codex 擅自定、未经用户拍板。
+- **实锤**：deferred 工具名从不进 turn-1 prompt（只在 tool_search 返回值）；`session.__post_init__`(:150) **读回** discovered_tools（Codex 纠正 Claude 早先"没人读"措辞），但 `_kernel_get_tools`(`invoker.py:819`) `requested_names=_channel_tools` **不含 discovered_tools** → schema 不跨 invocation 恢复。C0 三决策（名字宣告载体=post-hoc 事件 / 持久化=内存+镜像 half-wired / subagent 独立发现集无测试）均由 Codex 擅自定、未经产品确认。
 - **修法（commit: `docs(runtime): downgrade C track to partial CC alignment` + 可选补完）**：
   1. **文档降级**：`docs/agent-engineering-closure-plan.md` §3 + `docs/execution-mode-spectrum.md` 把"C 全完成"改为"T3a conservative default landed；turn-1 name seeding + discovered_tools schema recovery 未完"。
   2. **可选顺手补（推荐）**：`_kernel_get_tools` 把 `session_context.discovered_tools` 并入 `requested_names` 重注入 schema——最小修，把 C 从"半成品"推到"schema 真跨 invocation 存活"。补了它 C 才算真 T3a 完成。

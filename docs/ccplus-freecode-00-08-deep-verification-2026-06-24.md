@@ -427,7 +427,7 @@
 
 ## 5. 技术债总账（Debt Ledger）
 
-本轮发现的**全部** P0/P1/P2，每条带 id/severity/title/location/fix 方向/owning Package。用户要求本轮结清，故须 exhaustive + executable。
+本轮发现的**全部** P0/P1/P2，每条带 id/severity/title/location/fix 方向/owning Package。本轮范围内须全部结清，因此清单须完整且可执行。
 
 > 说明：行为级真债（破坏 CC-LOCAL 语义或主动偏移 LAW）以 **P1** 计；契约统一/observability/安全覆盖加固以 P1/P2 计；CC TUI/Node 进程内机制与 provider-proprietary 不入债账（已在第 3 节标 hive-native/排除）。真实 **P0=0**（terminal-audit 的 P0 是契约收敛工程项，非已坏行为）。
 
@@ -501,7 +501,7 @@
 | **新增建议包** | — | — | **Latency-hiding overlap**（D-05 P1 + D-23 P2）：StreamingToolExecutor mid-stream + memory/skill prefetch + tool-summary；CC-LOCAL 语义在 scope，须有家或显式接受非债 |
 | **文档纪律（跨 Package）** | — | D-25/D-26/D-27 | 完成定义可测化、CLAUDE.md hook-count 修正、Migration/Backfill/Rollback per-package 化——非单一包，须贯穿全文档 |
 
-**结论**：Package A-G 的骨架正确（契约冻结优先），但当前**遗漏了本轮全部 7 条行为级 P1 中的 6 条的显式落点**（D-02/D-03/D-04/D-06/D-07 在 C/D，D-05 无家），以及 Command 层（D-10）、诊断 over-claim（D-17）、fail-open（D-13）、双源 deny（D-14）这些已确认的具体断点。按用户"本轮全部结清"要求，必须把第 5 节 32 条债（含 08 pass-2 新增 D-28~D-32）逐条挂到上表"未覆盖/需补"列指定的 Package，并对 latency-hiding 立新包或显式裁定接受非债——否则文档会被当成一串 MVP 切片执行，重蹈 CLAUDE.md "记忆变脏" 的 MVP-deferral 旧债。
+**结论**：Package A-G 的骨架正确（契约冻结优先），但当前**遗漏了本轮全部 7 条行为级 P1 中的 6 条的显式落点**（D-02/D-03/D-04/D-06/D-07 在 C/D，D-05 无家），以及 Command 层（D-10）、诊断 over-claim（D-17）、fail-open（D-13）、双源 deny（D-14）这些已确认的具体断点。按本轮完整交付范围，必须把第 5 节 32 条债（含 08 pass-2 新增 D-28~D-32）逐条挂到上表"未覆盖/需补"列指定的 Package，并对 latency-hiding 立新包或显式裁定接受非债——否则文档会被当成一串 MVP 切片执行，重蹈 CLAUDE.md "记忆变脏" 的 MVP-deferral 旧债。
 
 ---
 

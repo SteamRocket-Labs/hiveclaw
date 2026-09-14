@@ -215,7 +215,7 @@
 5. **呈现与诚实性收尾（P1-10/11/12）**：出处标签渲染、resume/projection chip 数据源修正+删除手写形状测试、hook catalog 诚实化（未接线标 declared/planned）。
 6. P2 按 §4 顺序消化（优先压缩双门+CJK 估算——同源小修，直接改善长会话质量；RLS 残留 bare session 收敛并入）。
 
-## 8. 建议追加到 `docs/hive-sota-master-goal.md` 循环台账的行（owner 拍板后入账）
+## 8. 建议追加到 `docs/hive-sota-master-goal.md` 循环台账的行（产品负责人确认后入账）
 
 > | 2026-07-02 | 单 Agent 框架全面原子化 review（四层对照，v1.1 经 owner 复核修订） | CC 底座/Codex 增量/Hive 治理/呈现层全景 | 11 路并行原子审计+全量测试（backend 5323/3 failed=93e5cbb9 测试债；frontend 430 绿）+FreeCode/Codex 源码对照（审计基准 4f211ee7）+owner 生产 env/health 复核（复核时 HEAD cdabf1c7） | CC 底座晴天面成立、呈现层 75-85%、自进化晋升臂代码级闭环、生产 daemon/RLS 经 health 证实在位；P0×0；P1×11 集中在 dream 分脑/迁移失明/daemon 部署契约/审计身份/预算帽/subagent 卡死/startup resume 未接 claim/D7 半退役/出处标签/死 chip 掩盖/catalog 诚实债；复核纠偏 6 条（daemon/RLS 生产态、signal 消费者漏看、web chat claim HEAD 漂移、hook 计数、ahead 元数据） | `docs/single-agent-framework-atomic-review-2026-07-02.md` |
 

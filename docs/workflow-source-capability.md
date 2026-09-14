@@ -9,7 +9,7 @@
 
 ---
 
-## 0. 主旨（用户拍板，2026-06-03）
+## 0. 主旨（产品确认，2026-06-03）
 
 1. **Workflow 是 Hive 的确定性执行编排基础能力，与 Plan Mode 并列。**
 2. **Confirmation / Plan Mode 管确认边界**（能不能开始执行、是否需要人确认、显式计划怎么被确认）；**Workflow 管执行控制流**（执行开始后，控制流如何确定性推进、暂停、恢复、审计）。两者可组合，**不能混成一个概念**——Workflow run 可以要求确认，但 Workflow 本身不是 Plan Mode 的一个 action type。
@@ -632,7 +632,7 @@ npm test -- --run
 npm run test:e2e -- --project=chromium
 ```
 
-#### P12.1 产品面补课：资产视图重构（2026-06-05，用户拍板）
+#### P12.1 产品面补课：资产视图重构（2026-06-05，产品确认）
 
 > **背景（诚实记录）**：P12 初版把每个 API 端点 1:1 翻译成 UI 控件——JSON 粘贴框占 C 位、模板表裸露 hash/scope、tab i18n key 错层级裸显 `agent.tabs.workflows`。这违背了 §4 自己定下的"一个心智模型"原则：**创作面在对话里**（agent 经 `preview_workflow`/`start_workflow` 生成 definition），这个 tab 应是**资产视图 + 治理面**，不是创作面。用户批评成立，本切口补课。
 >

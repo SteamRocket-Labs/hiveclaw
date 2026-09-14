@@ -1117,7 +1117,7 @@ Skills 页现在只剩导入入口和格式说明，这是错误的。用户进�
 | P1 | Agent Team 创建路径已对齐 container-only，不再是当前断点。 | `frontend/src/api/domains/ccParity.ts::CreateAgentTeamInput` 只有 `parent_session_id/name`；`frontend/src/pages/session-workbench/SessionNativeControls.tsx::createTeam` 只传这两个字段。 | 后续把 team/member rows 从控件列表升级为右侧 Runtime Agents panel；不要再回退到 `members` 创建。 |
 | P1 | Dynamic Workflow 当前仍应作为 workflow run window + leaf detail，不进入 leaf session。 | 当前 workflow detail leaf 没有 `child_session_id`；现有 UI 在 workflows section 展示 leaf status。 | 下一轮先不做 leaf enter；只在 Runtime Workflow tab / Workflow Run Window 展示 phase/step/leaf/detail。 |
 
-本轮讨论后的 checkpoint UI 规则必须作为下一轮前端测试的第一条验收：
+checkpoint UI 的前端验收规则：
 
 ```text
 hover checkpoint -> show compact status preview

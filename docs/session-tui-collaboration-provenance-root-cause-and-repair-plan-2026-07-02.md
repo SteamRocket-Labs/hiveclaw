@@ -33,11 +33,11 @@
 | BASE-1 | Codex（`${LOCAL_HOME}/Context Engineering/codex/codex-rs`） | TurnDiffTracker、thread/turn/item 身份、collab agent、Plan 模式、交付物形态 |
 | BASE-2 | CC/FreeCode（`${LOCAL_HOME}/vc-saas/free-code-main`） | Task 类型体系、AgentTool teammate 分支、TeamCreate 引导、TUI 呈现、文件清单行为 |
 
-### 0.2 Owner 视角总览（大白话，2026-07-02 与 owner 对齐并拍板）
+### 0.2 产品行为总览（2026-07-02 已确认）
 
 本次修复对使用者的四个可感知变化：
 
-1. **你说「用 Agent Team」，它就真的建团队。** 现状是 `team_create` 不在默认 callable schema，也可能因 inactive `command_pack` 不出现在 deferred 名字列表；提示词没教过何时建团，模型永远走最顺手的普通 `spawn_subagent`。修法：按 CC 语义让建团路径可发现（名字级可见/可 `tool_search select:team_create`/必要时加载 schema）+ 提示词写清触发规则 + 计划确认后强制走团队通道 + 万一走错就拦下来报带修复指引的结构化错误。
+1. **显式 Agent Team 请求必须进入团队执行路径。** 现状是 `team_create` 不在默认 callable schema，也可能因 inactive `command_pack` 不出现在 deferred 名字列表；提示词没教过何时建团，模型永远走最顺手的普通 `spawn_subagent`。修法：按 CC 语义让建团路径可发现（名字级可见/可 `tool_search select:team_create`/必要时加载 schema）+ 提示词写清触发规则 + 计划确认后强制走团队通道 + 万一走错就拦下来报带修复指引的结构化错误。
 2. **交付物列表只包含「这次真正做出来的东西」，打开时看到交付当时的内容。** 对齐 Codex 的因果作者归属：只有本次运行亲手写的、且模型明确声明为交付物的文件才出现在最终列表；artifact 卡片按交付时内容快照打开/下载，workspace 当前文件若已被后续覆盖，只显示 divergence 提示，不偷换内容；「本次改过的全部文件」挪到右栏独立的变更区。顺带修掉生产上重复写入撞数据库唯一约束把整个 run 搞挂的 bug；报错不再伪装成「AI 模型调用异常」。
 3. **界面上 Plan / Workflow / Sub-agent / Agent Team 四样东西分开长相，团队成员的会话可以点进去。** D1=(b) 档的目标效果：
 
@@ -392,7 +392,7 @@ Step 1–7 的提交都在 main（`46527c7f…7c422592`），每步有红/绿测
 7. **Plan Mode 关系**：Plan Mode 只确认执行方案；它可以批准 Dynamic Workflow，但不自动创建 workflow。`open_questions` 未答完时不得落成可确认计划。
 8. **资产页与 session 窗口分工**：`AgentWorkflowsSection` 保留为 workflow catalog/history/promote 管理页；Session 中新增/补齐 Workflow Run Window，二者不能互相替代。
 
-## 9. 决策点（owner 已全部拍板，2026-07-02）
+## 9. 决策点（产品负责人已全部确认，2026-07-02）
 
 | # | 决策 | 拍板结果 | 备注 |
 | --- | --- | --- | --- |

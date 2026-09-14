@@ -79,7 +79,7 @@ Contracts(纯 dataclass)
 
 ## 4. ⭐ 会不会影响线上?——生产安全收口策略
 
-**核心原则:绝不 big-bang。按生产风险分 5 个 Tier,每条收口走 `expand → migrate → verify → contract`,每步可回滚。** 你问"该怎么办"——答案就是这张分层表:
+**核心原则:绝不 big-bang。按生产风险分 5 个 Tier,每条收口走 `expand → migrate → verify → contract`,每步可回滚。** 分层安排如下：
 
 | Tier | 类型 | 生产风险 | 安全做法 | 可逆性 |
 |---|---|---|---|---|
@@ -206,7 +206,7 @@ cd ../frontend && npm run build
 
 ---
 
-## 7. "重打包"是什么(你说没理解 — 这里讲清)
+## 7. "重打包"的含义
 
 **现状(2026-07-02 当前 HEAD)**:`app/services/` 根目录仍有 **214 个 Python 文件平铺**(含子目录总计 254 个 Python 文件)。已有 `agent_tool_domains/`、`code_execution/`、`skill_creator_files/` 等局部子目录,但主体仍在根目录堆叠;要找"workflow 相关"仍得在 200+ 个根文件名里靠前缀认(`workflow_runtime_service.py`/`workflow_daemon.py`/`workflow_launch.py`…)。
 

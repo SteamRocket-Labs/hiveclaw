@@ -369,6 +369,8 @@ cd backend && source .venv/bin/activate && pytest \
 
 证据：
 
+<a id="reference-7fd502f77c38"></a>
+
 ```bash
 cd backend && source .venv/bin/activate && pytest \
   tests/services/test_subagent_wake_consumer.py \
@@ -491,6 +493,8 @@ A2A Process Graph
    - continuation / wait / interrupt / close controls。
 
 验收测试：
+
+<a id="reference-75c326c3ea45"></a>
 
 ```bash
 cd backend && source .venv/bin/activate && pytest \

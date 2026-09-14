@@ -125,7 +125,7 @@
 
 **对标修正**：Task 对标的是 CC 现役的 **Task 模式（multi-agent 作业看板）**，不是已淘汰的 `TodoWrite`（V1）。用户图景是一条主链：
 `主 Agent 派发子任务 → Task 看板 → Sub-agent 认领 → 新 Session 独立完成 → 返回结果 → 主/专门 Agent 汇总写报告`。
-**关键智能化判据（用户点名）**：派发给 sub-agent 的 prompt 必须由主 Agent 调 LLM 生成，不能是代码预设模板。
+**关键智能化判据**：派发给 sub-agent 的 prompt 必须由主 Agent 调 LLM 生成，不能是代码预设模板。
 
 逐环节代码验证：
 

@@ -2,22 +2,18 @@
 
 > **单一核心**：让生产里的持久记忆回归「纯净」—— 身份级、可读、有界、无遥测污染、无 episodic 漂移。
 > **方法**：**不重设计架构**。我们已有的 `docs/agent-memory-md-first-spec.md`（P0-P10）就是正确架构。本文做的是**逐项核对生产与该 spec 的偏离，把偏离当技术债清掉**。
-> **状态**：v0.4 closure record。owner 已拍板（2026-06-08）：**D1-D10 单次完整交付，禁 MVP，不留债**（见 CLAUDE.md/AGENTS.md「交付纪律」）。截至 2026-06-13，D1/D2/D8/D10 的存量清理已接入 startup workspace migration 和 `app.memory.hygiene` 可逆 quarantine 路径；D3/D4/D5/D6/D7/D9 的生产写入/归档/索引/隐私路径均已有回归测试守住。
+> **状态**：v0.4 closure record。产品负责人已确认（2026-06-08）：**D1-D10 单次完整交付，禁 MVP，不留债**（见 CLAUDE.md/AGENTS.md「交付纪律」）。截至 2026-06-13，D1/D2/D8/D10 的存量清理已接入 startup workspace migration 和 `app.memory.hygiene` 可逆 quarantine 路径；D3/D4/D5/D6/D7/D9 的生产写入/归档/索引/隐私路径均已有回归测试守住。
 
 ---
 
 ## 0. 结论先行
 
-Owner 判断（2026-06-08）：
-
-> "架构上没什么太大的问题，改进空间并不明显。它肯定是有很多小问题，或者说我们之前改造升级后遗留下来的技术债务没清，才导致整个结构出了问题。"
-
-**核对 spec 后，这个判断 100% 成立，且有逐条证据。** P0-P10 的 spec 是对的——它**明确定义甚至明令禁止**了生产里的每一种「脏」：
+2026-06-08 确定沿用现有架构，修复实现和存量数据对 P0-P10 规范的偏离。逐项核对依据如下：
 
 - §3.2 说 metadata 该进 **sidecar/frontmatter**，inline 只是「首版可接受的临时做法」。
 - §4.4 说 **prefer update/merge，capacity caps，avoid simple bullet append**。
 - §4.8/§4.9 定义了 supersede/archive/decay/retirement。
-- §7 说 `knowledge.md`/`strategies.md` **不要在没迁移的情况下合并**（→ 我们自己的 spec 就反对「收敛 2 层」式重设计）。
+- §7 说 `knowledge.md`/`strategies.md` **不要在没迁移的情况下合并**（→ 现有 spec 就反对「收敛 2 层」式重设计）。
 - §8 说 INDEX **不能是孤儿镜像**，soul **必须是身份不是导航**。
 
 生产偏离了这些。偏离的成因（结合记忆时间线）：**P0-P10 是 2026-06-04/05 才实装的，而生产 agent 数据从 4 月就在攒。** 实装走了 spec 允许的「首版捷径」，但债没还、老数据没回填、§4.4/§4.8/§4.9 的 consolidation/retirement 没真正接通。
@@ -94,7 +90,7 @@ cd backend && source .venv/bin/activate && pytest tests -q
 ## 4. 正面回答 Owner 原来的两个问题
 
 **Q1 — 三层蒸馏是否太臃肿 / 要不要收敛到 2 层？**
-**不收敛。** 我们自己的 spec §7 明确：`knowledge.md`/`strategies.md`「Do not immediately merge them without a migration」，合并只在「runtime/prompt/dream/tests/migration 全部一致后」才考虑。三层蒸馏（extractor→heartbeat→dream）在 §5 有清晰的 authority boundary，架构成立。**臃肿感来自 D3/D4（没合并、没退役）让每层产物无界膨胀，不是层数本身。清 D3/D4，臃肿感消失。**
+**不收敛。** 现有 spec §7 明确：`knowledge.md`/`strategies.md`「Do not immediately merge them without a migration」，合并只在「runtime/prompt/dream/tests/migration 全部一致后」才考虑。三层蒸馏（extractor→heartbeat→dream）在 §5 有清晰的 authority boundary，架构成立。**臃肿感来自 D3/D4（没合并、没退役）让每层产物无界膨胀，不是层数本身。清 D3/D4，臃肿感消失。**
 
 **Q2 — soul.md 谁更新 + 写法限制？**
 dream 仍是写入者（§5 IdentityPromoter），但现状矛盾门有盲点（D6）。修法：dream 提 diff candidate → 扩展矛盾门含「vs frozen Mission」→ soul 有界且 §8「soul≠navigation」。**主动更新能力**：对标 `claude-md-management` 的 `claude-md-improver`（对照模板审计 → 定向改写），给 owner/agent 一个显式触发的 soul 审计入口，而非只能等 dream 被动跑。
@@ -115,7 +111,7 @@ dream 仍是写入者（§5 IdentityPromoter），但现状矛盾门有盲点（
 
 ---
 
-## 6. 决策（owner 2026-06-08 已拍板）
+## 6. 决策（2026-06-08 已确认板）
 
 - **范围**：D1-D10 **全部，单次完整交付，禁 MVP**（交付纪律）。
 - **存量脏文件**：一次性回填清洗 → `archive.md`（可逆，保留证据；D2/D4 配套）。
@@ -128,6 +124,6 @@ dream 仍是写入者（§5 IdentityPromoter），但现状矛盾门有盲点（
 ## 附：不碰的范围
 
 - **架构 / spec 本身**：`agent-memory-md-first-spec.md` 是参照系，本文只让生产符合它。
-- **Skill 路径**（Harness Agent）：owner 明确「没大问题」，不动。
+- **Skill 路径**（Harness Agent）：本次清理范围不包含该路径。
 - **抽取 prompt**（`extract_agent.py`）：已是 L1 质量，不动；只把它的 lane 纪律下沉到 save_memory（D5）。
 - **§7 文件合并 / 2 层收敛**：spec 明令需完整迁移，不在本债务清册范围。

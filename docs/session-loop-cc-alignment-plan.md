@@ -4,7 +4,7 @@
 >
 > **▶ RESUME（compact 后从这里继续）**：进入实现，按落地顺序 **G/H.2+3 → E → I+J → A → F → G/H.1**，每组一个完整 PR、红测先行、真 PG（Testcontainers）、零 MVP 债。分支 `feat/session-loop-cc-alignment`（基线 = main 上飞书 Drive `8c5dbf77` + Plan-mode MD-first `491e6e8d` 两个遗留工作提交）。
 >
-> **进度**：✅ G/H.2+3（`b00ffcb5`）。✅ E（`7a8a4b27`：真 PG 回读 confirmed plan + 真实 fire 路径接线证明）。✅ J（`cc985adb`：MCP 进 tool_search，`list_agent_mcp_deferred_tools` 唯一枚举器，🦴#1 升权修复 + 🦴#2 text/schema 一致，6 测试）。✅ I（`ed619c4b`：tools.py MCP discovery seam + prompt_eval tripwire `tools_section_names_mcp_discovery` + frozen budget 倒置修复 identity-protected 分层 trim + cap 随 window scale，114 测试绿）。✅ A（`1e621a70`：删 `_LONG_TASK_RE`+auto 分支+auto 枚举，新 `plan_mode_guidance.py` suggest-only interactive-gated，feishu/web_chat 消费方收敛；**偏离设计稿=未加 request_plan_mode 工具**，遵循用户原话"Agent 判断本身不触发进入 Plan Mode、唯一进入=用户显式"——agent 在回复 suggest 由用户决定）。
+> **进度**：✅ G/H.2+3（`b00ffcb5`）。✅ E（`7a8a4b27`：真 PG 回读 confirmed plan + 真实 fire 路径接线证明）。✅ J（`cc985adb`：MCP 进 tool_search，`list_agent_mcp_deferred_tools` 唯一枚举器，🦴#1 升权修复 + 🦴#2 text/schema 一致，6 测试）。✅ I（`ed619c4b`：tools.py MCP discovery seam + prompt_eval tripwire `tools_section_names_mcp_discovery` + frozen budget 倒置修复 identity-protected 分层 trim + cap 随 window scale，114 测试绿）。✅ A（`1e621a70`：删 `_LONG_TASK_RE`+auto 分支+auto 枚举，新 `plan_mode_guidance.py` suggest-only interactive-gated，feishu/web_chat 消费方收敛；**偏离设计稿=未加 request_plan_mode 工具**，遵循"Agent 判断本身不触发进入 Plan Mode、唯一进入=用户显式"的边界——agent 在回复 suggest 由用户决定）。
 >
 ✅ **F**（multi-agent 集大成，路 A 免迁移）：F-1 派发对称 `55be76ce`（orchestrator `_build_delegation_brief` 三段式信封→`_delegation_user_message` 逐字透传 + worker prompt 删 ~120 行强制返回模板 + messaging 去 `[Delegated by]` 前缀 + `parent_agent_name` 旁路；核心不变量=派发指令主 agent 智能生成非模板；235 tests/agents 绿）；F-2 单一看板 `3bd60631`（退役 agent-facing manage_tasks/list_tasks/get_task，track_todo+Work Ledger 唯一看板，create≠execute，DB Task 表/REST/supervision 路 A 未动）；I/J 回归债 fixup `adba11e1`。F 全程亲自验证+清两 subagent 测试债（1264 passed）。
 >
@@ -70,7 +70,7 @@ CC 没有"模式调度器"。四形态分两轴，本方案的所有改动都服
 
 **F 单一看板存储 = Work Ledger JSON（存 JSON / 呈现 MD）—— 已确认可行。**
 
-**"MD-first"真义被校正（用户纠正我的误读）**：用户说"像写 MD 一样写 task"指的是 **目的——调用模型自己的分析能力去写整个 task 的内容（智能生成）**，不是 **格式——存成 MD 文件**。我之前盯着 JSON-vs-MD 的存储之争，是看错了层。
+**MD-first 的内容边界**：task 内容由模型运用自身分析能力完整生成。该要求不限定存储格式，不能仅凭 JSON 或 Markdown 的选择判断是否满足。
 
 → **F 核心不变量（实现必守）**：看板的 task **内容主体（subject/description/分析/上下文）必须由模型调用分析能力自由书写（智能生成）**；**禁止代码模板 / 机械结构化字段填充充当内容**。结构化（id/status/owner/JSON 存储）只是承载回写/调度的元数据外壳，不替代内容生成。这与 F 的派发判据（主 agent 智能生成派发指令）是**同一个 AI-Native L1 精神**——multi-agent 里 task 内容 + 派发指令都由模型智能生成，代码只承载与调度。
 

@@ -1469,7 +1469,7 @@ Shadow 期间 live effect 仍只有一个最终 authority；不能旧 allow OR �
 
 ## 16. 已拍板的 Owner 口径与仍需讨论的问题
 
-### 16.1 本轮不再讨论的基础口径
+### 16.1 已确定的基础边界
 
 1. 当前系统语境只定义个人 Agent；
 2. Creator/Sponsor 是不可变来源；canonical current Owner 是 `owner_user_id ?? creator_id`；

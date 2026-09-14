@@ -85,7 +85,7 @@ Hive 今天是一台**晴天机器**:每个部件(循环、压缩、治理、记
 - 整改状态(2026-06-12):已在 DB 查询和循环内双层排除 `task_type == "workflow"`;workflow run 不再被 startup orphan sweep 标 failed。证据见 §12.1。
 
 **P0-D2 协调 Signal 写/读 split-brain:父唤醒与 workflow 完成通知在默认配置下双死线**
-- 现状:`COORDINATION_BACKEND` 默认 `"memory"`(`config.py:169`)。写侧落进程内 singleton(`coordination.py:251`),workflow 完成信号更是硬编码写内存(`workflow_runtime_service.py:944-961`);而 daemon 消费方 `drain_subagent_completion_wakes`/`drain_signal_resumes` **只读 PG 表**;in-run 消费方又硬编码读内存。两种配置各死一条线;`workflow_completed` 信号**生产零消费方**。这是 [[绿测试≠完成]] 的又一实例(测试注入绕过生产接线)。
+- 现状:`COORDINATION_BACKEND` 默认 `"memory"`(`config.py:169`)。写侧落进程内 singleton(`coordination.py:251`),workflow 完成信号更是硬编码写内存(`workflow_runtime_service.py:944-961`);而 daemon 消费方 `drain_subagent_completion_wakes`/`drain_signal_resumes` **只读 PG 表**;in-run 消费方又硬编码读内存。两种配置各死一条线;`workflow_completed` 信号**生产零消费方**。这是 测试绕过生产路径的反例 的又一实例(测试注入绕过生产接线)。
 - 修复:生产与消费统一经 `pick_gateway`;`_emit_completion_signal` 改走 gateway;startup 加配置一致性断言。
 - 整改状态(2026-06-12):workflow completion signal 写侧已从硬编码 `coordination_runtime` 改为 `gateway_scope(tenant_id=...)`;memory backend 仍落 in-process gateway,postgres backend 会落 `CoordinationRepository`。完成后主动回流/通知仍归 P1-10,不由本条冒充。证据见 §12.2。
 
@@ -470,6 +470,8 @@ pytest tests/services/test_evolution_verification.py tests/services/test_skill_f
 
 Red 阶段失败摘要:
 
+<a id="reference-ce94c9b0f798"></a>
+
 ```bash
 cd ${REPO_ROOT}/backend
 source .venv/bin/activate
@@ -485,16 +487,7 @@ pytest tests/services/test_auto_dream.py::TestDreamSystemPromptStructure \
 
 Green 阶段通过摘要:
 
-```bash
-cd ${REPO_ROOT}/backend
-source .venv/bin/activate
-python -m py_compile app/services/auto_dream.py
-pytest tests/services/test_auto_dream.py::TestDreamSystemPromptStructure \
-  tests/runtime/test_dream_template.py \
-  tests/services/test_distillation_boundary_contracts.py::test_dream_prompts_do_not_promote_operational_autonomy_state_to_soul \
-  tests/services/test_distillation_boundary_contracts.py::test_dream_template_preserves_t2_retention_provenance \
-  tests/test_memory_integration.py::TestPromptIntegration::test_v17_dream_md_has_4_phases -q
-```
+相同验证命令见[原始定义与命令](#reference-ce94c9b0f798)。
 
 当前结果:40 passed,4 warnings。warnings 来自第三方 `lark_oapi` / `websockets` deprecation,与本次改动无关。
 

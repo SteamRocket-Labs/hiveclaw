@@ -18,7 +18,7 @@
 
 这轮最重要的判断是：**Hive 需要语义层，但不需要现在就建设一套企业级“大本体系统”。**
 
-我们之前把文档知识、向量语义、知识图谱、业务对象、指标定义、业务规则和 Workflow 动作都放进了 “Ontology / Semantic Layer” 这个大盒子，因此架构越看越重，也越难判断从哪里开始。正确做法是先把它们拆开：
+文档知识、向量语义、知识图谱、业务对象、指标定义、业务规则和 Workflow 动作需要分别定义职责。将它们全部归入 Ontology / Semantic Layer 会混淆边界与实施顺序。本文采用以下划分：
 
 | 问题 | 本文建议 |
 | --- | --- |
@@ -875,7 +875,7 @@ Chunk 安全不变量继续成立：
 
 ### 7.3 Evidence Association Kernel：关系合同必建，重型 Graph 不必建
 
-我们之前的“内层关系”应该正式收敛为 Hive-native `Evidence Association Kernel`。它位于 canonical evidence 与搜索索引之间，目标不是构建一张全局企业知识图谱，而是回答三个更窄的问题：
+内层证据关系应收敛为 Hive-native `Evidence Association Kernel`。它位于 canonical evidence 与搜索索引之间，目标不是构建一张全局企业知识图谱，而是回答三个更窄的问题：
 
 1. 一个检索候选完整表达的是哪一段授权证据；
 2. 哪些 source-bound semantic units 因共享实体、引用、支持、冲突或时间关系而可被局部联想；

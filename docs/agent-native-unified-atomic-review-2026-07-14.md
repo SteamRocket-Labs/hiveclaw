@@ -354,7 +354,7 @@ N + M + K = requested child executions
 
 ### 5.3 100-way 数量是 soft admission 目标，不是无界并发许可
 
-用户要求系统能承受一次请求 100 个 child，不等于必须同时运行 100 个模型调用。允许 active concurrency 受真实进程/provider capacity 约束，但超额 child 必须：
+系统须能接收一次请求的 100 个 child；接收容量与同时运行的模型调用数分别约束。允许 active concurrency 受真实进程/provider capacity 约束，但超额 child 必须：
 
 - durable `deferred/not_admitted`；
 - 不进入 expected set；

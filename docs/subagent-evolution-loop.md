@@ -82,7 +82,7 @@ proposal 落盘 <workspace>/subagents/.proposals/<name>.proposal.md + 通知 own
 - 提示词要点：吸收的是**反复出现/普适**的 craft；孤例留在记忆；body 改写保持原有角色骨架（增量编辑非重写）；语言跟随定义语言；禁 vendor 名。
 - 起草产物在落盘 proposal 前先 `parse_subagent_definition` 验证（frontmatter 不动 + body 替换后必须合法），失败 → log + 放弃本次提名（fail-soft，下次蒸馏再触发）。
 
-### 4.3 审核（双模式：人工审批 默认 / 自动审批 可选 —— 2026-06-05 用户拍板）
+### 4.3 审核（双模式：人工审批 默认 / 自动审批 可选 —— 2026-06-05 产品确认）
 
 - proposal 文件：`<workspace>/subagents/.proposals/<name>.proposal.md` —— frontmatter 记 `base_definition_sha`（防 TOCTOU：批准时定义已被人改 → 拒绝过期 proposal）、`absorbed_entry_ids`、`rationale`、`created_at`、`status: pending`；body = 修订后完整定义文本。
 - **审批模式开关**（agent 级设置，默认 `manual`）：

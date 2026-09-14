@@ -123,23 +123,7 @@ ProjectAgentLink 是 CC `add-dir` 的 Hive-native 抽象，但不能把 `add-dir
 
 A2A 的最小事实单元是 Session evidence：
 
-```text
-A2ASessionEvidenceV1
-  session_id
-  root_session_id
-  parent_session_id
-  source_agent_id
-  target_agent_id
-  relationship_edge_ref
-  collaboration_group_ref?
-  permission_profile_snapshot
-  approval_refs[]
-  transcript_event_refs[]
-  t0_segment_refs[]
-  runtime_task_refs[]
-  tool_evidence_refs[]
-  final_handoff_summary
-```
+相同结构定义见[原始定义与命令](ccplus-round2-v2-company-control-plane-a2a-permission-design-2026-06-24.md#reference-a08717a74cf8)。
 
 执行心智：
 

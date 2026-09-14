@@ -156,7 +156,7 @@ inline style 写不了 `:hover` / `:focus-visible` / `:active` / transition / �
 - 765b498f 的 12 项微交互（折叠、流式、chips、shimmer）全部保留，P2 在其上做形态层收敛。
 - 转录"叙事编排粒度"（后端事件流）不属于本轮 CSS/组件改造，独立立项，避免范围失控。
 
-## 六、需要 owner 拍板的三件事
+## 六、需要 产品负责人确认的三件事
 
 1. **字体**：换全平台中性系统栈（推荐——中英混排浑然一体、Codex 同款观感、零加载成本）还是保留 Plus Jakarta Sans（品牌个性，但 CJK 混排基线不齐）？
 2. **强调色**：灰阶高亮为主（现状、更像 Linear）还是启用蓝色作链接/选中强调（更像 Codex Desktop）？

@@ -1,6 +1,6 @@
 # Hook 治理 · Goal 收尾 · Session 表达 —— 三问统一设计（2026-07-09）
 
-> 状态：**设计稿，待 owner 拍板**。三块各自独立可分批实施，但共享同一条"运行时相位（phase）"骨架，故合一文档。
+> 状态：**设计稿，待 产品负责人确认**。三块各自独立可分批实施，但共享同一条"运行时相位（phase）"骨架，故合一文档。
 > 证据来源：FreeCode `src/` 一手 hook 语义（CC 第一基线）+ 当前仓库代码 grep + 目标文档 `docs/session-rendering-overhaul-plan-2026-07-03.md` / `docs/ccplus-session-tui-unified-expression-plan-2026-06-28.md`。
 > 铁律遵循：一次改完·零技术债（`feedback_no_mvp_finish_completely`）；AI-Native 设计法律 L1/L2/L3；只缩不放的权限不变量；验收以代码 grep 为准（`feedback_green_tests_dont_mean_done`）。
 
@@ -124,7 +124,7 @@ security zone → capability gate → [声明式策略钩子] → approval flow 
 5. 多层配置合并（user/company/managed，policy 最高，拼接去重——对齐 CC）。
 6. 全链 TDD：快路规则命中、慢路沙箱 deny、fail-closed（hook 挂→拒工具）、只缩不放（allow 不穿透平台 ask）、managed 强制、聚合优先序。
 
-### 1.7 owner 拍板点（Hook）
+### 1.7 产品负责人确认点（Hook）
 
 - **1.7-a 慢路（可执行 hook）是否本轮就做，还是先只做声明式快路？**
   - 建议：**本轮做声明式快路 + 可执行慢路的 command 型**，一次到位（零技术债）。`prompt`/`agent`/`http` 三型作为后续显式可选面（文档标注，不装死）。
@@ -191,7 +191,7 @@ run.status = summary_only → hard_stopped（关死通道，防反复）
 - **落状态**：收尾 turn 里模型调 `update_goal`（A1 已建的回写桥），status 终态化。
 - **TDD 钉死**：①run 转 summary_only 恰好调度一次收尾 turn ②收尾 prompt 含禁放大契约 ③收尾后 run hard_stopped、再无续跑 ④放大操作全程被拒 ⑤收尾 turn 里 update_goal 落库生效。
 
-### 2.5 owner 拍板点（Goal）
+### 2.5 产品负责人确认点（Goal）
 
 - **2.5-a 收尾 turn 失败怎么办**：收尾 turn 本身崩溃/超时，是重试一次还是直接 hard_stopped（放弃收尾）？
   - 建议：**重试一次**（收尾报告对 owner 有价值），二次失败则 hard_stopped 并记 `summary_failed`，前端显示"收尾未能生成"。避免无限重试烧预算。
@@ -253,7 +253,7 @@ done / failed / cancelled  终态
 
 **接缝1 是总闸**（也是 Hook/Goal 复用的骨架），先做。然后接缝2（工作态可见性，直治"等待差+看不懂"），再接缝3（F1 投影，治"Codex 半解"），最后接缝4（split-brain）。接缝1+2 一次消掉 Top10 里七条。
 
-### 3.6 owner 拍板点（Session）
+### 3.6 产品负责人确认点（Session）
 
 - **3.6-a 重构范围**：本轮做**全部 4 接缝**（一次改完，达 Codex Desktop 级），还是先做接缝1+2（治标最猛的"看不懂+等待差"）、接缝3+4 下一轮？
   - 建议：**4 接缝一次到位**。按铁律零技术债，且接缝3（F1 投影）是接缝2 的架构载体，分开做会返工。

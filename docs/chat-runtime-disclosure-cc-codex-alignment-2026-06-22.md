@@ -731,7 +731,7 @@ Hive 现在不是“完全没有 transcript replay 基础”。后端已经能�
 
 但它已经在 archive，不是当前 truth surface；在本文档创建时仍有以下历史缺口：
 
-1. 对标对象主要是旧 Onyx timeline，不是这次用户要求的 CC/Codex。
+1. 对标对象主要是旧 Onyx timeline，未覆盖本次 CC/Codex 对标范围。
 2. 没把 Codex 的 `TurnItem`、tool status、duration、RequestUserInput 事件结构纳入设计。
 3. 没把 Claude Code 的 `tool_progress`、compact boundary、permission request、tool-result collapse 作为对照标准。
 4. 没充分强调 backend durability：running step 如果不持久化，刷新期间会丢过程。

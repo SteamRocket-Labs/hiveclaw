@@ -52,7 +52,7 @@
 - raw debug data 只进入显式 inspector / disclosure，不和用户主信息同级。
 - Team、Sub-agent、Workflow 必须是三种不同交互模型。
 
-2026-07-13 owner 复核后纠正了本文早期“将四个产品入口全部收进 Home”的判断：信息降噪仍成立，但不能以隐藏高频产品入口为代价。
+2026-07-13 产品边界修订：四个高频产品入口保持常驻。信息降噪应针对内部信息，不应隐藏这些入口。
 
 ## 2. 用户面、公司后台与双面信息的最终分界
 
@@ -184,7 +184,7 @@ Session right rail
 **历史事实与校正**
 
 - 2026-07-10 的扫描正确发现了 Home 路由弹回、Company Admin 职责重复和技术信息泄漏，但错误地把 Agent Circle、Automation、Knowledge、Local connection 四个产品目的地也归入“应隐藏模块”。
-- 2026-07-13 owner 明确确认：这四个入口必须和 Home 一样常驻；需要隐藏的是 session/run UUID、raw schema、debug inspector、企业治理配置等内部面，不是用户高频目的地。
+- 2026-07-13 确认的导航规则：这四个入口必须和 Home 一样常驻；需要隐藏的是 session/run UUID、raw schema、debug inspector、企业治理配置等内部面，不是用户高频目的地。
 - `Bridge` 的产品名统一为“本地连接”；`Tasks / Automation` 统一为“自动化”，避免把 Work Ledger、BusinessTask 和 Trigger/Schedule 再次混为一谈。
 
 **最终契约**

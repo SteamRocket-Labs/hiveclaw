@@ -4,7 +4,7 @@
 >
 > **范围**:本文从触发系统起步(v0 只覆盖 trigger),现扩为**执行 / 自动化全线审计**:① 触发系统 ② Plan Mode ③ Task ④ Subagent。
 >
-> **状态**:v1 草案,待 owner 在文档上拍板后实现。对标基线 [[project_hive_cc_superset]](Hive = CC 加强版,先对标 CC 基线再谈 delta);遵循 [[feedback_foundation_first_doc]](先文档后叠加)、[[feedback_no_mvp_finish_completely]](单次完整、禁 MVP)。
+> **状态**:v1 草案,待 owner 在文档上拍板后实现。对标基线 [CCPlus 边界契约](ccplus-north-star-contract-2026-06-24.md)(Hive = CC 加强版,先对标 CC 基线再谈 delta);遵循 先确认设计再实施(先文档后叠加)、完整交付要求(单次完整、禁 MVP)。
 >
 > **证据**:本轮三个调研 agent 全源码实证(Hive 后端 `backend/app/` + CC 源码 `${LOCAL_HOME}/Context Engineering/claude-code-org/src/`),所有论断带 `file:line`。
 
@@ -20,7 +20,7 @@ Owner 判断(2026-06-08):**「Plan Mode、Task、Subagent 全部过一遍,特别
 
 | 类别 | 判据 | 处置 |
 |------|------|------|
-| **砍(自创杂物)** | CC 无 + **不服务** [[project_hive_north_star]] Goal 1/2 + 是「把简单的事复杂化」的层层抽象 | 删除 / 退役 |
+| **砍(自创杂物)** | CC 无 + **不服务** [产品总目标](hive-sota-master-goal.md) Goal 1/2 + 是「把简单的事复杂化」的层层抽象 | 删除 / 退役 |
 | **收敛(同概念塌缩 / 归位)** | CC 有对应物,但 Hive 实现发散、重复、或多套并行 | 塌缩成一套,对齐 CC 语义 |
 | **保留(有意 delta)** | CC 无,但**明确服务 North Star** Goal 1(self-evolution)/ Goal 2(控制中台),且符合 AI-Native L2(只 scope 权限 / 加治理,不降智) | 保留,但文档**明确标为 Hive delta 而非「CC 对齐」** |
 
@@ -66,7 +66,7 @@ Owner 判断(2026-06-08):**「Plan Mode、Task、Subagent 全部过一遍,特别
 
 **C6 净效果 + §4 处置核实**(审计 §4 三分按真实代码校准):
 - **T-D2 supervision = 砍**(已做):提醒/唤醒概念塞进 task 类型枚举,且 runner 是孤儿死代码。归位:周期提醒用 §2 trigger 桶。
-- **T-D1 业务 DB Task 第二套 = 保留(Goal-2 delta,非砍)**:审计原列"收敛",但 [[project_hive_north_star]] Goal 2 明确把"任务管理"列为控制中台能力——业务 Task 是**人给 agent 派活**(human/REST-facing),与 Work Ledger(agent 私有工作记忆,agent-facing)是**不同层非重复**;按优先级 rule 0(Goal-Alignment First)约束冲突目标时保目标。收敛**已在历史完成**:manage_tasks 退役(agent 不双写)+execute_task 漏斗进统一 invoke_agent runtime。
+- **T-D1 业务 DB Task 第二套 = 保留(Goal-2 delta,非砍)**:审计原列"收敛",但 [产品总目标](hive-sota-master-goal.md) Goal 2 明确把"任务管理"列为控制中台能力——业务 Task 是**人给 agent 派活**(human/REST-facing),与 Work Ledger(agent 私有工作记忆,agent-facing)是**不同层非重复**;按优先级 rule 0(Goal-Alignment First)约束冲突目标时保目标。收敛**已在历史完成**:manage_tasks 退役(agent 不双写)+execute_task 漏斗进统一 invoke_agent runtime。
 - **T-D7 should_enable_work_ledger = 无需改**(核实):docstring+map 实证它**只 gate nudge 注入时机**(简单回合零开销),**不 gate 工具可用性**(track_todo/record_finding 始终注册、lazy-create)。审计"机械门决定可用性"前提不准;这其实是 CC 对齐的(工具常驻+prompt 教用法+简单回合不 nag)。
 - **T-D6 required 完成门 = 无需改**(核实):map 实证 validate_completion 产出 audit finding 不 hard-block=已 advisory(守 sensor-vs-blocker 法)。
 - **T-D4 record_finding / T-D5 RuntimeTask.task_type = 保留**(Goal-1 认知脚手架 / 执行机器账本)。
@@ -268,9 +268,9 @@ Hive 两轴:`spawn_subagent`(worker)+ `delegate_to_agent`(peer delegation)。已
 |---|-----------|-----|------|------|
 | S-D3 | `ForkLevel` 三档 `none/brief/all` | subagent.py:138 | **收敛(砍 brief)** | CC 刻意二元:fresh(`subagent_type` 在场)vs full-fork(省略)。`brief`(压缩父消息)是自创中间态,且 LLM spawn 工具根本不暴露 fork 参数。收敛为 `none`+`all` |
 
-### 5.3 保留:进化闭环 = North Star Goal 1(✅ owner 2026-06-08 已拍 —— 保留全套)
+### 5.3 保留:进化闭环 = North Star Goal 1(✅ 2026-06-08 已确认 —— 保留全套)
 
-**owner 拍板:「这个要的。」** 进化闭环**保留为 Goal-1 self-evolution delta**(第三类),不进砍 / 收敛清单。我此前不盲从 subagent 的「砍」建议是对的 —— 它是 Hive 存在的理由本身,不是杂物。下面保留张力分析作为定性依据:
+2026-06-08 确认保留完整进化闭环，作为 Goal-1 self-evolution delta（第三类），不纳入删除或收敛清单。以下分析说明其产品价值与架构代价：
 
 **事实(CC 完全没有)**:
 - Hive `subagent.py:506` 每次 spawn 成功 → 自动 LLM 蒸馏 run-log(How-not-What)→ `subagent.py:531` `maybe_nominate` 自动提名 → 平台 LLM 起草修订 definition body(`subagent_evolution.py:41`)→ `apply_proposal`(`:233`)写回定义。
@@ -278,7 +278,7 @@ Hive 两轴:`spawn_subagent`(worker)+ `delegate_to_agent`(peer delegation)。已
 
 **张力**:
 - 一方面:这是 subagent 轴上唯一一整套 CC 没有的自动子系统(3 文件 + auto-nominate + LLM draft),形式上正是 owner 要揪的「自创」。
-- 另一方面:它**是 North Star Goal 1(self-evolution:skill acquisition / soul evolution)的直接实现**,是 [[project_hive_north_star]] 里「Hive 存在的理由」本身,**不是 trigger/long_task 那种把简单事复杂化的杂物**。CLAUDE.md 明确「Goal 1 是 foundational cornerstone」。
+- 另一方面:它**是 North Star Goal 1(self-evolution:skill acquisition / soul evolution)的直接实现**,是 [产品总目标](hive-sota-master-goal.md) 里「Hive 存在的理由」本身,**不是 trigger/long_task 那种把简单事复杂化的杂物**。CLAUDE.md 明确「Goal 1 是 foundational cornerstone」。
 
 **定性(owner 已拍)**:
 - **保留全套**,含 auto-nominate(`maybe_nominate` 自动提名)。self-evolution 的价值正在于「自动」—— agent 自己进化,而非等人手动提名;关掉 auto-nominate 会把 Goal-1 退化成人工定义编辑。
@@ -323,7 +323,7 @@ Hive 两轴:`spawn_subagent`(worker)+ `delegate_to_agent`(peer delegation)。已
 
 ---
 
-## 7. 迁移路径(单次完整交付,禁 MVP — [[feedback_no_mvp_finish_completely]])
+## 7. 迁移路径(单次完整交付,禁 MVP — 完整交付要求)
 
 > 内部依赖执行序,非可中途上线的阶段。生产数据(存量 objective trigger / AgentObjective / focus.md / 业务 DB Task)触碰数据卷 → dry-run + owner 确认(安全门,非 MVP 阶段)。
 
@@ -332,18 +332,18 @@ Hive 两轴:`spawn_subagent`(worker)+ `delegate_to_agent`(peer delegation)。已
 3. **Task 单板收敛**:砍 `Task.type=supervision`(归 trigger);业务 DB `Task` 第二套收敛 / 隔离到非 agent 面;`execute_task` lane 漏斗进统一 runtime;`should_enable`/`required` 改 prompt 驱动 / advisory。**保留** record_finding。
 4. **Subagent 收敛**:`ForkLevel` 砍 brief(二元);`fanout` 降为 DR 内部不进工具目录。**进化闭环按 §8 owner 决策**处理 auto-nominate。
 5. **存量生产数据**(dry-run + 确认):objective trigger(`objective_*` 命名)/ AgentObjective / focus.md / 业务 DB Task 行 → railway dry-run 列出 → 确认 → 禁用 / 删除 + 备份。
-6. **红测先行 + 生产实证验收**([[feedback_green_tests_dont_mean_done]]):plan 确认后续跑真接通;事件驱动不再新建孤立 session;objective/focus 退役后无残留唤醒;Task 单板下 agent 写 todo 不触发执行;subagent body 替换语义不回归。
+6. **红测先行 + 生产实证验收**(测试通过不等于生产完成):plan 确认后续跑真接通;事件驱动不再新建孤立 session;objective/focus 退役后无残留唤醒;Task 单板下 agent 写 todo 不触发执行;subagent body 替换语义不回归。
 
 ---
 
-## 8. 待 owner 拍板的开放点
+## 8. 待 产品负责人确认的开放点
 
 | # | 块 | 开放点 | 我的倾向 |
 |---|----|--------|----------|
 | 1 | 触发 | `AgentObjective` 实体:整删 vs 降级成纯「目标备注」(无唤醒、仅记录) | **整删**,长期目标交 task,避免再留半死实体 |
-| 2 | 触发 | 事件驱动「喂事件给主 agent」落地:v1 直接 `invoke_agent`(prompt=事件)vs 一步到位上 `Signal` 持久层 + consumer | **v1 起步**(Signal 与 [[project_workflow_determinism_hive]] wait_signal 同题,合并做) |
+| 2 | 触发 | 事件驱动「喂事件给主 agent」落地:v1 直接 `invoke_agent`(prompt=事件)vs 一步到位上 `Signal` 持久层 + consumer | **v1 起步**(Signal 与 [Workflow 执行契约](workflow-source-capability.md) wait_signal 同题,合并做) |
 | 3 | 触发 | `once` 在 UI/工具层呈现为「后台任务」还是仅内部归类 | 内部归类先行,UI 措辞次之 |
-| 4 | **Subagent** | ~~进化闭环 auto-nominate 处置~~ | ✅ **owner 2026-06-08 已拍:保留全套**(含 auto-nominate);定性 Goal-1 delta;apply 人审 409 锁守 L2;本次审计不动 |
+| 4 | **Subagent** | ~~进化闭环 auto-nominate 处置~~ | ✅ **2026-06-08 已确认:保留全套**(含 auto-nominate);定性 Goal-1 delta;apply 人审 409 锁守 L2;本次审计不动 |
 | 5 | 全局 | 存量生产数据盘点(objective trigger / AgentObjective / focus.md / 业务 DB Task)railway dry-run + 退役方式(禁用 vs 删除 + 备份) | dry-run 先列清单再决 |
 
 ---

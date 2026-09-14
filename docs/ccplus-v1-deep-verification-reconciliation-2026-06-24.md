@@ -210,11 +210,7 @@ Migration / Backfill / Rollback：
 
 验收：
 
-```bash
-cd ${REPO_ROOT}/backend
-source .venv/bin/activate
-pytest tests -q -k "tool_result or command_safety or permission_profile or capability_gate or coordinator_force_async or subagent_deny"
-```
+相同验证命令见[原始定义与命令](ccplus-freecode-00-08-terminal-audit-2026-06-24.md#reference-92e539b7b0a2)。
 
 ### Package D：Context / Compaction / Resume Byte Stability
 
@@ -234,11 +230,7 @@ Migration / Backfill / Rollback：
 
 验收：
 
-```bash
-cd ${REPO_ROOT}/backend
-source .venv/bin/activate
-pytest tests -q -k "context_policy or content_replacement or resume_byte_identical or diagnostic_context or tool_result_eviction"
-```
+相同验证命令见[原始定义与命令](ccplus-freecode-00-08-terminal-audit-2026-06-24.md#reference-a6e376bdafc0)。
 
 ### Package E：SessionWorkbenchV1
 

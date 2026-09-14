@@ -124,7 +124,7 @@
 
 **接线证据：** `memory_service.py build_memory_context` 内 `load_resident_memory`/`check_resident_budget`/`_retrieve_knowledge_pages`（经 retriever.retrieve 主流程 always-on）。退役：无（旧 t3 direct 读法保持至 Part H 收口）。
 
-**回归：** ruff 全过；受影响面 tests/memory+tests/runtime = 1043 passed；全量 = 5352 passed / 1 failed / 1 skipped——唯一失败 `test_alembic_single_head_is_current_closure_head` 系另一 session 的 commit `1378bf74` 新增 migration 未同步测试内 pin 常量（`retire_atlassian_rovo_0629` vs 新 head `web_chat_final_message_idempotency_0702`），非本 part 面，留给该 session 收尾（终汇报向 owner 点名）。
+**回归：** ruff 全过；受影响面 tests/memory+tests/runtime = 1043 passed；全量 = 5352 passed / 1 failed / 1 skipped——唯一失败 `test_alembic_single_head_is_current_closure_head` 系另一 session 的 commit `1378bf74` 新增 migration 未同步测试内 pin 常量（`retire_atlassian_rovo_0629` vs 新 head `web_chat_final_message_idempotency_0702`），非本 part 面，留给该 session 收尾（该轮已列为独立未解决项）。
 
 **Commit：** `7f53ad6d`（8 files, +708/-18；config.py hunk 级 staging）。
 
@@ -336,7 +336,7 @@ kernel+runtime 套件 = **869 passed**；全量 `pytest tests -q` = **1 failed, 
 
 ## Session 细节修复批（owner 07-02 第二轮点名：交付物/命令绑定/rewind）
 
-- **交付物语义修正（owner 点名"给的是全 agent workflow 改动而非 session 交付"）**：`buildWorkspaceDocumentsModel` 两处根因修复——①改 **path 聚合**（旧 key=`artifact.id:path` 导致同一文件每次交付各占一行,截图重复由此而来）：同 path 收敛一行、最新交付胜出、`revisions` 计数（UI ×N badge）;②**归属收紧**：带 `runtimeTaskId` 但**不属于本 session runs** 的 artifact（其他 workflow/任务写共享工作区的产物）从"当前会话交付物"降入 Historical——判定集合来自 `runtime_sections.runs`。红测 2 用例（聚合+外任务隔离）。
+- **交付物语义修正（区分 Agent 工作区与 Session 交付）**：`buildWorkspaceDocumentsModel` 两处根因修复——①改 **path 聚合**（旧 key=`artifact.id:path` 导致同一文件每次交付各占一行,截图重复由此而来）：同 path 收敛一行、最新交付胜出、`revisions` 计数（UI ×N badge）;②**归属收紧**：带 `runtimeTaskId` 但**不属于本 session runs** 的 artifact（其他 workflow/任务写共享工作区的产物）从"当前会话交付物"降入 Historical——判定集合来自 `runtime_sections.runs`。红测 2 用例（聚合+外任务隔离）。
 - **命令绑定核查与修复（"+ 菜单三项没绑定上"）**：核查结论=upload/计划模式（onTogglePlanMode）/goal（`/goal ` 前缀+slash 真执行链 parseSlashCommandInput→executeCommand→ui_action）**均真接线**;真 bug=**`/schedule 自然语言` 必 400**（后端 required name+cron_expr,菜单却引导自然语言）。修复=`schedule_create/once` 只带 instruction 时降级 `chat_prompt`（AI-Native L1：结构化 name/cron/at 是 agent 判断,由 agent 用治理内 trigger 工具草拟并向用户确认;红测钉死 action=chat_prompt+display `/schedule …`）。
 - **Rewind 前端加固（"修过一次还是不好"）**：数据链核查完整（后端 draft_content/ui_action ✓ 前端即时裁剪 ✓）;真根因=①裁剪锚点依赖 `transcriptEventId`,实时 append 的消息可能没有 → findIndex=-1 **静默空转**（用户点了没反应）——修复=checkpoint `created_at` 时间戳 fallback 裁剪,永不静默;②回退后无可视反馈——修复=裁剪处插入 **rewind marker** 事件行（"⏪ Rewound — 后续消息已离开当前上下文（历史保留）"）。
 - 测试：前端全量 **426 passed**（新增 deliverables 模型 2 用例）+ build 过;后端 schedule 闭环 3 passed;全量 `pytest tests -q` = 3 failed, **5323 passed**, 1 skipped——3 失败全部归属并行 session 的 transcript-window/files 活跃 WIP（本域套件复跑我方用例全绿）。

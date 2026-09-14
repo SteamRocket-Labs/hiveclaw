@@ -5,7 +5,7 @@
 > 8 维度并行深读 CC 源码(`${LOCAL_HOME}/Context Engineering/claude-code-org`)+ Hive 源码，
 > 综合统一方案，再过 3 道对抗 critic（漏链路 / 残留债 / 自创概念检测）。所有论断带 file:line。
 > 吸收并取代 `docs/capability-pack-consolidation.md`（web_search/SearXNG 专项详情仍见该文 §3）。
-> 纪律：一次改完零债（[[feedback_no_mvp_finish_completely]]）+ AI-Native L1/L2/L3 + 北极星。
+> 纪律：一次改完零债（完整交付要求）+ AI-Native L1/L2/L3 + 北极星。
 
 ---
 
@@ -101,7 +101,7 @@ skill frontmatter 死字段 · skill `declared_packs`(已退化 no-op) ·
 | **从 pack 迁移** | 三源收敛：①先砍死概念(§5.1 核实后)；②`pack.yaml` 成 **install/composition 权威(非 schema 权威)**，`RUNTIME_TOOL_GROUPS` 退化为内置系统 pack 的生成式 fallback，`@tool(ToolMeta.pack=)` 改为对清单**校验**(非重复定义 schema)；③runtime 可见性由 `TenantInstalledPlugin`/`AgentPluginAssignment` 决定；④`audit.py` startup 审计清单/decorator 分歧 fail；⑤`pack_policy_service` 迁安装记录 |
 
 **完成判据（诚实底线）**：一个租户安装的 `pack.yaml` **真改变 kernel turn-1 暴露的工具集**，经 `invoke_agent` 集成测试证明，
-非 catalog/UI 渲染——否则 = 又一个 built-but-unwired 死清单（`catalog_reader.py:1-5` 同类病复发，见 [[feedback_green_tests_dont_mean_done]]）。
+非 catalog/UI 渲染——否则 = 又一个 built-but-unwired 死清单（`catalog_reader.py:1-5` 同类病复发，见 测试通过不等于生产完成）。
 
 ---
 
@@ -165,7 +165,7 @@ Step 0/§2③ 的 cut_invented "死代码"列表**不可盲信**，Step 0 执行
 ### 5.2 必补的遗漏链路（critic 1，15 条）—— 漏一条即生产崩或留债
 
 **critical 五条（漏即 fail-closed 崩 / 跨租户泄漏 / 治理绕过）：**
-1. **`TenantInstalledPlugin` 多租户地基**：Step 5 只规划 alembic migration 不够；fresh/unversioned DB 会经 `create_all`/alembic bootstrap/stamp 路径跳过普通 migration 语义(`entrypoint.sh:38` 手动 import 一批 model 后 `create_all`)——必须同补：`app.models.import_all_models()` + `entrypoint.sh` 手动 import 覆盖 + `db_bootstrap.py` RLS 表清单(`RLS_TENANT_TABLES`/`RLS_FORCED_TENANT_TABLES`，`db_bootstrap.py:28`) + entrypoint ALTER patch。**漏 RLS = Web3 跨租户事故同类**([[project_rls_preauth_login_outage]])。
+1. **`TenantInstalledPlugin` 多租户地基**：Step 5 只规划 alembic migration 不够；fresh/unversioned DB 会经 `create_all`/alembic bootstrap/stamp 路径跳过普通 migration 语义(`entrypoint.sh:38` 手动 import 一批 model 后 `create_all`)——必须同补：`app.models.import_all_models()` + `entrypoint.sh` 手动 import 覆盖 + `db_bootstrap.py` RLS 表清单(`RLS_TENANT_TABLES`/`RLS_FORCED_TENANT_TABLES`，`db_bootstrap.py:28`) + entrypoint ALTER patch。**遗漏 RLS 会留下跨租户访问风险**。
 2. **`CAPABILITY_MAP` 注册**：Step 0/1 改工具 → STRICT_CAPABILITY_MAPPING 下漏注册 = 真实 tenant invocation **fail-closed 拒**(`capability_gate.py`)。
 3. **DB `Tool.category` 列 vs `ToolMeta.pack`**：前端真正分组依据是 DB `Tool.category` 列**不是** pack——改 pack 必须同步 category。
 4. **Plugin hook 治理链**：`runtime/hooks.py` 的 `PRE_TOOL_USE` 已在工具执行前生效，`HookResult` 可 `block`/`modified_args`；manifest 支持 hooks 就必须同步补 `PluginHookRegistration`、allowlist handler catalog、admin approval、timeout/failure mode、recursion guard、span/audit，并对 hook 修改后的最终 args 重跑 schema/capability/ActionPreflight/approval。漏任一项 = 租户逻辑进入治理关键路径却无治理。
@@ -184,7 +184,7 @@ Step 5 把 `is_pack_enabled` 的**"缺省=启用"静默翻成"未安装=禁用"*
 
 ---
 
-## 6. 决策已定（owner 拍板归档，呼应 critic 2：不悬置成分期）
+## 6. 决策已定（已确认，按完整范围实施）
 
 1. **fan-out = B(修正版)**：**不新增/不暴露 `fanout_subagents` 可执行工具**；现有 `fanout_subagents` 字符串仅作 `_SUBAGENT_BASE_EXCLUDED_TOOLS` recursion guard(`subagent.py:109`)，**保留**直到有等价 guard+测试替代；**不删** `SubagentJob`/`SubagentBudget`(`workflow_launch.py` 活机件)。fan-out 收敛为 workflow `fanout_step`(确定性，DR 已走)+ 并行 `spawn_subagent`(临时，接 `run_in_background`)，对齐 CC 两条路径；worker 本身的跨重启恢复在 Step 8 作为 durable run recovery 完成项。
 2. **web_search 进 CORE**：与 web_fetch 同层，无 key 走 SearXNG/DDG 兜底；`exa`/`tavily` 高级搜索与 `firecrawl`/`xcrawl` 抓取不随之进 CORE(留 provider plugin 的 `optional_providers`，由 `tool_search` 激活)。
@@ -209,7 +209,7 @@ Step 5 把 `is_pack_enabled` 的**"缺省=启用"静默翻成"未安装=禁用"*
 
 ## 8. 实施日志（Implementation Log）
 
-每个 Step 落地后在此记录：实际改动、与设计稿的偏差/发现、验证证据。纪律 = 一次改完零债（[[feedback_no_mvp_finish_completely]]）+ 每 Step 一 commit + 附证据（[[feedback_green_tests_dont_mean_done]]）。
+每个 Step 落地后在此记录：实际改动、与设计稿的偏差/发现、验证证据。纪律 = 一次改完零债（完整交付要求）+ 每 Step 一 commit + 附证据（测试通过不等于生产完成）。
 
 ### Step 0 — cleanup（✅ 2026-06-14，零行为变更）
 
@@ -399,11 +399,11 @@ $ pytest tests -q
 - `app/tools/runtime_tool_groups.py`：删死函数 `make_mcp_server_pack_name`+不再用的 `urlparse` import。
 - `app/tools/runtime.py`：`try_execute` 删死的 `FALLBACK_EXECUTOR_NAME` 中间查找+删常量→纯一等查找,未注册即 None,单一 service 兜底接手。
 - `app/scripts/backfill_mcp_tool_names.py`(新)：dry-run 默认/`--apply --confirm` 门(不可逆生产数据=安全门非 MVP)；`enter_rls_bypass` 跨租户审计；打印 JSON(tool_id/old/new)即回滚记录;幂等(已 canonical 跳过)。
-- 测试：`tests/services/test_mcp_naming.py`(新,14:build/parse/is/长度 hash/碰撞/charset/planner 五例)；`tests/services/test_mcp_tool_discovery.py` 5 个 `list_agent_mcp_deferred_tools` queue 删掉已退役的 pack-policy 占位(吞异常 mock-cascade:删 dead query 致 queue 错位,断言 `[]` 的用例曾靠吞异常假过——见 [[project_rls_groupd_mock_cascade]])。
+- 测试：`tests/services/test_mcp_naming.py`(新,14:build/parse/is/长度 hash/碰撞/charset/planner 五例)；`tests/services/test_mcp_tool_discovery.py` 5 个 `list_agent_mcp_deferred_tools` queue 删掉已退役的 pack-policy 占位(吞异常 mock-cascade:删 dead query 致 queue 错位,断言 `[]` 的用例曾靠吞异常假过，原因与本节描述的 mock 队列错位一致)。
 
 **完成判据（非 built-but-unwired）：** 新导入 MCP 工具即得 `mcp__server__tool` 名(`resource_discovery` 真生成路径)；`_execute_mcp_tool` canonical 别名使 canonical 调用对 legacy 行也解析(执行不依赖 backfill 时序)；伪 pack 退役后 MCP 可见性仅由 assignment 治理决定(零行为变更,5 discovery 测试钉死);死执行分支删除后单一兜底路径(全量回归证明)。
 
-**诚实范围说明（[[feedback_design_draft_overstates_maturity]]）：** "旧名 alias" 实现为 *canonical 名 → legacy 行* 的前向解析(canonical 名是持久身份)，**不**做 *legacy 名 → canonical 行* 的反向 alias——后者需存旧名映射表，价值仅限"部署+backfill 之间某个会话仍调旧名"的瞬态(模型每回合重读工具列表自纠),按 [[feedback_no_mvp_finish_completely]] 的"完整但不镀金"权衡不建表。existing 行的统一由 backfill 脚本(operator 执行,可逆)完成——这是不可逆生产数据的既定安全模式,非 MVP 分期。
+**诚实范围说明（实现与验证范围）：** "旧名 alias" 实现为 *canonical 名 → legacy 行* 的前向解析(canonical 名是持久身份)，**不**做 *legacy 名 → canonical 行* 的反向 alias——后者需存旧名映射表，价值仅限"部署+backfill 之间某个会话仍调旧名"的瞬态(模型每回合重读工具列表自纠),按 完整交付要求 的"完整但不镀金"权衡不建表。existing 行的统一由 backfill 脚本(operator 执行,可逆)完成——这是不可逆生产数据的既定安全模式,非 MVP 分期。
 
 **验证证据：**
 ```
@@ -434,7 +434,7 @@ $ pytest tests -q
 
 **完成判据(非 built-but-unwired)：** OAuth 路由真注册(`/api/enterprise/mcp/oauth/start|callback` 实测在 app.routes)；`resolve_mcp_oauth_bearer` 真接入 `_execute_mcp_tool`(configured server 的 token 被用作 Bearer,过期 fail-closed);协议 resource 工具进 mcp_admin_pack owns + 经 `_resolve_agent_mcp_server` 真连 MCPClient。
 
-**诚实边界([[feedback_design_draft_overstates_maturity]]/[[evidence_honesty]])：** OAuth2 的 PKCE/URL/token 交换刷新/加密存取/auth_status 全部**单元已验证**(mock transport);交互式端到端流程**未对真实 OAuth MCP 服务器 live 验证**(CI 无此服务器)。配置了 OAuth 但 token 过期/不可刷新的 server 一律 **fail-closed**(返回 authorization required,绝不发未鉴权请求)。canonical 生成可先于无 OAuth 部署:无 OAuth 的 server→`resolve_mcp_oauth_bearer` 返回 `(None,None)`→回退 config api_key。此与 Step 5 远程源"框架完整+安全门挡住"同诚实模式。
+**诚实边界(实现与验证范围/证据范围)：** OAuth2 的 PKCE/URL/token 交换刷新/加密存取/auth_status 全部**单元已验证**(mock transport);交互式端到端流程**未对真实 OAuth MCP 服务器 live 验证**(CI 无此服务器)。配置了 OAuth 但 token 过期/不可刷新的 server 一律 **fail-closed**(返回 authorization required,绝不发未鉴权请求)。canonical 生成可先于无 OAuth 部署:无 OAuth 的 server→`resolve_mcp_oauth_bearer` 返回 `(None,None)`→回退 config api_key。此与 Step 5 远程源"框架完整+安全门挡住"同诚实模式。
 
 **验证证据：**
 ```
@@ -462,7 +462,7 @@ $ pytest tests -q
 
 **完成判据(非 built-but-unwired)：** `run_in_background` 进 schema(LLM 可达,test 钉死);background spawn 真建 `RuntimeTask` 且 completion 真更新(on_complete 接线);`check_subagent` 进 CORE + 真读 record;orphan 走既有 reconcile→failed(`subagent` 类型非 resumable,test 钉死)。
 
-**诚实边界([[feedback_design_draft_overstates_maturity]])：** durable recovery 是 **fail-closed**(崩溃的 worker 报 failed),**非 mid-run resume**——非幂等 worker 不能安全自动重放(可能重复副作用),故报失败而非重跑。read-only explorer/critic 理论可安全重放,但本轮统一按 fail-closed 处理(简单可解释)。
+**诚实边界(实现与验证范围)：** durable recovery 是 **fail-closed**(崩溃的 worker 报 failed),**非 mid-run resume**——非幂等 worker 不能安全自动重放(可能重复副作用),故报失败而非重跑。read-only explorer/critic 理论可安全重放,但本轮统一按 fail-closed 处理(简单可解释)。
 
 **验证证据：**
 ```
@@ -480,7 +480,7 @@ $ pytest tests -q
 1. **`declared_packs` 不是 no-op**（纠正 §2③）—— 它在 `runtime/task_eval.py:228-231` 有活消费（按 pack 展开工具集做任务评估），`pack_service.py:351`/`skill_distiller.py` 也读。**保留**，仅删真正零消费字段。
 2. **distiller 晋升硬门已是外部 eval，非纯 LLM 自评**（纠正"需重写"判定）—— `decide_behavior_gated_promotion`(`evolution_verification.py:574`) 在 `behavior_report` 非 dict 或 `behavior_eval_passed` 不过时 **fail-closed `hold`**；`behavior_eval_passed`(`hive_live_runner.py:99`) 要求真 live run(非 fallback / benchmark_complete / trusted transport / 所有场景 ready)。两条 save 路径(patch+promote)都先过此门再 `_save_skill`，LLM confidence 仅是 pre-filter。这是 external-behavior-eval-ci(E1-E10) 的既有产物 → Step 9 此项是**核实 + 钉不变量**，非重写。
 
-**9.1 catalog 移出 frozen → 动态 suffix（cache 击穿修复，owner 拍板"选项 A：保留兼容参数定稿"）：**
+**9.1 catalog 移出 frozen → 动态 suffix（cache 击穿修复，已选定方案 A：保留兼容参数）：**
 - 根因：`invoker._build_system_prompt` 调 `build_frozen_prompt_prefix` **不传 skill_catalog**(死参数)，真正 catalog 经 `build_agent_context`(`agent_context.py:379`) 嵌进 `agent_context` → 进 frozen prefix → 每次 skill 增删/蒸馏即击穿 prompt-cache 边界。
 - `app/kernel/contracts.py`：`InvocationRequest` 加 `skill_catalog: str = ""`（invoker 加载一次 → 透传 kernel → dynamic suffix；standalone subagent 不携带宿主 catalog）。
 - `app/services/agent_context.py`：提取 `build_skill_catalog_section_for_agent(agent_id, budget_profile)` 单源 helper；`build_agent_context` 加 `include_skill_catalog: bool = True`，invoker 传 `False`（catalog 不再嵌 frozen）。

@@ -18,7 +18,10 @@ from app.models.task import Task, TaskLog
 from app.models.tenant import Tenant
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
-from app.services.agent_identity_lifecycle import get_agent_lifecycle_block_reason
+from app.services.agent_identity_lifecycle import (
+    get_agent_lifecycle_block_reason,
+    resolve_live_effect_principal,
+)
 from app.services.chat_transcript import AppendSessionEventResult, append_session_event
 from app.services.plan_authorization_lease import (
     PlanAuthorizationLeaseError,
@@ -54,6 +57,30 @@ def apply_remote_business_task_cancel(runtime_task_id: uuid.UUID | str) -> bool:
         return False
     event.set()
     return True
+
+
+async def resolve_task_effect_user(db, agent, requester_id: uuid.UUID | None):
+    """Choose the user id stamped on a new task effect.
+
+    An explicit requester is kept. An inactive, missing, or cross-company
+    requester blocks the effect instead of being replaced by the owner.
+    A missing requester uses the live responsible principal, never the
+    historical creator. ``task.created_by`` is not rewritten here.
+    """
+
+    from app.models.user import User
+
+    if requester_id is not None:
+        requester = (await db.execute(select(User).where(User.id == requester_id))).scalar_one_or_none()
+        if requester is None or getattr(requester, "is_active", True) is False:
+            return None, "requester_inactive"
+        if str(getattr(requester, "tenant_id", None)) != str(getattr(agent, "tenant_id", None)):
+            return None, "requester_tenant_mismatch"
+        return requester_id, None
+    principal = await resolve_live_effect_principal(db, agent)
+    if principal.block_reason or principal.user_id is None:
+        return None, principal.block_reason or "responsible_principal_missing"
+    return principal.user_id, None
 
 
 def release_business_task_cancel_event(runtime_task_id: uuid.UUID | str, event: asyncio.Event) -> None:
@@ -494,8 +521,19 @@ async def execute_task(
             )
 
         agent_name = agent.name
-        if task_requester_id is None:
-            task_requester_id = agent.creator_id
+        task_requester_id, effect_block = await resolve_task_effect_user(db, agent, task_requester_id)
+        if effect_block or task_requester_id is None:
+            await _log_error(
+                task_id,
+                f"任务执行人当前不可产生新效果：{effect_block or 'responsible_principal_missing'}",
+                tenant_id=tenant_id,
+            )
+            return TaskExecutionOutcome(
+                status=TaskExecutionStatus.BLOCKED,
+                summary="The recorded requester or responsible principal cannot authorize a new effect.",
+                error_code=effect_block or "responsible_principal_missing",
+                retryable=True,
+            )
         participant_result = await db.execute(
             select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id)
         )

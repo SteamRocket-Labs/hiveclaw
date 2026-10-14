@@ -1019,6 +1019,7 @@ async def _run_heartbeat_core_and_persist(
     heartbeat_session_id: str | None,
     agent_participant_id: uuid.UUID | None,
     tick_count: int,
+    effect_user_id: uuid.UUID,
 ) -> None:
     """Run direct T3 consolidation outside the preparatory DB session."""
     from app.config import get_settings
@@ -1052,7 +1053,7 @@ async def _run_heartbeat_core_and_persist(
             conversation_id=str(session_id),
             role="assistant",
             content=reply or "",
-            user_id=agent.creator_id,
+            user_id=effect_user_id,
             participant_id=agent_participant_id,
         )
         db2.add(assistant_message)
@@ -1358,6 +1359,24 @@ async def _execute_heartbeat(
             tick_count = _heartbeat_tick_counts.get(agent_id, 0) + 1
             _heartbeat_tick_counts[agent_id] = tick_count
 
+            from app.services.agent_identity_lifecycle import resolve_live_effect_principal
+
+            principal = await resolve_live_effect_principal(db, agent)
+            if principal.block_reason or principal.user_id is None:
+                logger.warning(
+                    "[Heartbeat] Responsible principal for {} cannot authorize a new effect ({})",
+                    agent.name,
+                    principal.block_reason or "responsible_principal_missing",
+                )
+                await _touch_last_heartbeat(agent_id, tenant_id)
+                await _skip_heartbeat_runtime_task(
+                    runtime_task_id,
+                    skip_reason=principal.block_reason or "responsible_principal_missing",
+                    result_summary="Skipped heartbeat because the responsible principal cannot authorize a new effect.",
+                )
+                return
+            effect_user_id = principal.user_id
+
             # Resolve participant for DB session
             p_result = await db.execute(
                 select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id)
@@ -1368,7 +1387,7 @@ async def _execute_heartbeat(
             session = ChatSession(
                 agent_id=agent_id,
                 tenant_id=tenant_id,
-                user_id=agent.creator_id,
+                user_id=effect_user_id,
                 participant_id=agent_participant_id,
                 source_channel="heartbeat",
                 session_kind="agent_internal_maintenance",
@@ -1390,7 +1409,7 @@ async def _execute_heartbeat(
                     conversation_id=str(session_id),
                     role="user",
                     content=tick_msg,
-                    user_id=agent.creator_id,
+                    user_id=effect_user_id,
                     participant_id=agent_participant_id,
                 )
             )
@@ -1418,6 +1437,7 @@ async def _execute_heartbeat(
                 heartbeat_session_id=heartbeat_session_id,
                 agent_participant_id=agent_participant_id,
                 tick_count=tick_count,
+                effect_user_id=effect_user_id,
             )
 
         await heartbeat_continuation

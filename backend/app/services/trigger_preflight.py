@@ -266,18 +266,34 @@ async def evaluate_trigger_preflight(
     return TriggerPreflightResult(True, metadata=runtime_options)
 
 
-async def load_context_from(db: AsyncSession, *, agent_id: uuid.UUID, context_refs: list[Any]) -> str:
+async def load_context_from(
+    db: AsyncSession,
+    *,
+    agent_id: uuid.UUID,
+    context_refs: list[Any],
+    reader: Any | None = None,
+) -> str:
     """Load explicit context references for scheduled jobs.
 
     Supported forms:
     - "objective:<uuid>" or {"type": "objective", "id": "..."}
     - "session:<uuid>" or {"type": "session", "id": "..."}
     - {"external_conv_id": "objective:<uuid>"}
+
+    ``reader`` is the effect user. When it is set, a session the reader cannot
+    open contributes nothing. Callers that omit ``reader`` keep the historical
+    load; the daemon always passes the effect user.
     """
     if not context_refs:
         return ""
+    from fastapi import HTTPException
+
+    from app.core.permissions import authorize_loaded_session_access
+    from app.models.agent import Agent
     from app.models.audit import ChatMessage
     from app.models.chat_session import ChatSession
+
+    reader_agent = await db.get(Agent, agent_id) if reader is not None else None
 
     sections: list[str] = []
     for ref in context_refs:
@@ -326,6 +342,20 @@ async def load_context_from(db: AsyncSession, *, agent_id: uuid.UUID, context_re
                 session = result.scalar_one_or_none()
             if not session:
                 continue
+            if reader is not None:
+                if reader_agent is None:
+                    continue
+                try:
+                    await authorize_loaded_session_access(
+                        db,
+                        reader,
+                        agent=reader_agent,
+                        session=session,
+                        access_level="read",
+                        action="read",
+                    )
+                except HTTPException:
+                    continue
             result = await db.execute(
                 select(ChatMessage)
                 .where(

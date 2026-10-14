@@ -18,6 +18,16 @@ class _FakeDB:
     async def flush(self) -> None:
         self.flushes += 1
 
+    async def execute(self, _statement):
+        class _Empty:
+            def scalars(self):
+                return self
+
+            def all(self):
+                return []
+
+        return _Empty()
+
 
 @pytest.mark.asyncio
 async def test_transfer_loaded_agent_owner_changes_only_current_owner_and_audits(monkeypatch) -> None:

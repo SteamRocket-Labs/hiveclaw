@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 
 from fastapi import HTTPException, status
@@ -15,6 +18,28 @@ from app.models.agent_collaboration import AgentCollaborationGroupMember
 from app.models.audit import AuditLog
 from app.models.user import User
 from app.services.ai_assets import register_agent_asset
+from app.services.trigger_resource_authority import quarantine_transferred_trigger_authority
+
+# Offboarding sets this so Trigger row locks happen after revoke_user_authority
+# takes the session advisory lock. Taking Trigger locks first deadlocks a
+# settlement that already holds that advisory lock. The handover audit is
+# inserted once, after the quarantined ids are final: audit_logs rejects UPDATE.
+_DEFERRED_HANDOVER_AUDITS: ContextVar[list[AuditLog] | None] = ContextVar(
+    "deferred_agent_handover_audits",
+    default=None,
+)
+
+
+@contextmanager
+def defer_agent_handover_audits() -> Iterator[list[AuditLog]]:
+    """Hold handover audits, and skip Trigger locks, until the caller inserts them."""
+
+    pending: list[AuditLog] = []
+    token = _DEFERRED_HANDOVER_AUDITS.set(pending)
+    try:
+        yield pending
+    finally:
+        _DEFERRED_HANDOVER_AUDITS.reset(token)
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,27 +136,43 @@ async def transfer_loaded_agent_owner(
             agent_id=agent.id,
             new_owner_id=new_owner.id,
         )
-        db.add(
-            AuditLog(
-                user_id=actor.id,
+        # A deferred caller (offboarding) must not lock or dirty Trigger here.
+        # revoke_user_authority takes the session advisory lock first; locking
+        # Trigger before that deadlocks a settlement that already holds advisory.
+        # The audit stays out of the session until that caller inserts it, because
+        # audit_logs rejects UPDATE after the append-only trigger has seen a row.
+        deferred_audits = _DEFERRED_HANDOVER_AUDITS.get()
+        quarantined_trigger_ids: list[uuid.UUID] = []
+        if deferred_audits is None:
+            quarantined_trigger_ids = await quarantine_transferred_trigger_authority(
+                db,
                 agent_id=agent.id,
-                tenant_id=agent.tenant_id,
-                action="agent:handover",
-                details={
-                    "schema": "hive.agent_owner_transfer.v1",
-                    "creator_id": str(agent.creator_id),
-                    "sponsor_user_id": str(agent.sponsor_user_id),
-                    "from_owner": str(old_owner_id) if old_owner_id else None,
-                    "to_owner": str(new_owner.id),
-                    "reason": clean_reason,
-                    "mode": str(mode),
-                    "request_id": request_id,
-                    "a2a_memberships_pending_reconfirmation": [
-                        str(value) for value in rebound_membership_ids
-                    ],
-                },
+                previous_owner_id=old_owner_id,
             )
+        handover_audit = AuditLog(
+            user_id=actor.id,
+            agent_id=agent.id,
+            tenant_id=agent.tenant_id,
+            action="agent:handover",
+            details={
+                "schema": "hive.agent_owner_transfer.v1",
+                "creator_id": str(agent.creator_id),
+                "sponsor_user_id": str(agent.sponsor_user_id),
+                "from_owner": str(old_owner_id) if old_owner_id else None,
+                "to_owner": str(new_owner.id),
+                "reason": clean_reason,
+                "mode": str(mode),
+                "request_id": request_id,
+                "a2a_memberships_pending_reconfirmation": [
+                    str(value) for value in rebound_membership_ids
+                ],
+                "quarantined_trigger_ids": [str(value) for value in quarantined_trigger_ids],
+            },
         )
+        if deferred_audits is None:
+            db.add(handover_audit)
+        else:
+            deferred_audits.append(handover_audit)
         await register_agent_asset(
             db,
             agent,

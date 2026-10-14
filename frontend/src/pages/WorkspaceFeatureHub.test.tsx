@@ -406,6 +406,9 @@ describe('automation schedule/status display (live consumer seam)', () => {
 
     // known statuses map to catalog keys
     expect(automationStatus({ is_enabled: false }, []).statusKey).toBe('paused');
+    expect(
+      automationStatus({ is_enabled: false, attention_state: 'authority_revoked' }, []).statusKey,
+    ).toBe('authorityRevoked');
     expect(automationStatus({ is_enabled: true, attention_state: 'missing_model' }, []).statusKey).toBe('missingModel');
     expect(automationStatus({ is_enabled: true, attention_state: 'active' }, []).statusKey).toBe('active');
     expect(

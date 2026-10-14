@@ -33,6 +33,7 @@ vi.mock('../api/domains/companyKnowledge', () => ({
     listReviews: vi.fn(),
     getReviewWorkspace: vi.fn(),
     listAccessRules: vi.fn(),
+    listIdentityOptions: vi.fn(),
     grantAccess: vi.fn(),
     revokeAccess: vi.fn(),
     listPublicationLifecycle: vi.fn(),
@@ -143,6 +144,7 @@ beforeEach(() => {
     Promise.resolve(workspaceFor(review, workspaceMarker)),
   );
   api.listAccessRules.mockImplementation(() => Promise.resolve(accessRules));
+  api.listIdentityOptions.mockResolvedValue({ grantable_users: [], visible_unlinked: [] });
   api.grantAccess.mockResolvedValue(undefined);
   api.revokeAccess.mockResolvedValue(undefined);
   vi.mocked(agentApi.list).mockResolvedValue([]);
@@ -229,5 +231,29 @@ describe('Company Knowledge control plane — mounted authority views', () => {
     await screen.findByText('No authorized review items are waiting for you.');
     await screen.findByText('Select an item to review its business content.');
     expect(screen.queryByText('Employee Handbook')).toBeNull();
+  });
+
+  it('grants an authenticated user id and keeps an unregistered directory person visible but unselectable', async () => {
+    api.listIdentityOptions.mockResolvedValue({
+      grantable_users: [{ user_id: 'user-real', label: 'Ada' }],
+      visible_unlinked: [{ org_member_id: 'member-pat', label: 'Unregistered Pat', reason: 'unregistered' }],
+    });
+    renderPlane();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Access' }));
+    const ada = (await screen.findByRole('option', { name: 'Ada' })) as HTMLOptionElement;
+    expect(screen.queryByRole('option', { name: 'Unregistered Pat' })).toBeNull();
+    expect(screen.getByText('Unregistered Pat')).toBeTruthy();
+    expect(screen.getAllByText(/authenticated account/i).length).toBeGreaterThan(0);
+
+    fireEvent.change(ada.closest('select') as HTMLSelectElement, { target: { value: ada.value } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save access rule' }));
+
+    await waitFor(() => expect(api.grantAccess).toHaveBeenCalledTimes(1));
+    expect(api.grantAccess.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        audience: expect.objectContaining({ kind: 'user', key: 'user-real' }),
+      }),
+    );
   });
 });

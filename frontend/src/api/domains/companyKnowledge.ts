@@ -113,6 +113,22 @@ export interface CompanyKnowledgeAudience {
   label: string;
 }
 
+export interface CompanyKnowledgeGrantableUser {
+  user_id: string;
+  label: string;
+}
+
+export interface CompanyKnowledgeVisibleUnlinked {
+  org_member_id: string;
+  label: string;
+  reason: string;
+}
+
+export interface CompanyKnowledgeIdentityOptions {
+  grantable_users: CompanyKnowledgeGrantableUser[];
+  visible_unlinked: CompanyKnowledgeVisibleUnlinked[];
+}
+
 export interface CompanyKnowledgePublicationLifecycle {
   publicationKey: string;
   documentKey: string;
@@ -534,6 +550,23 @@ export const companyKnowledgeApi = {
       valid_until: null,
       trace_id: requestRef('company-review-publish'),
     });
+  },
+
+  async listIdentityOptions(): Promise<CompanyKnowledgeIdentityOptions> {
+    const raw = await get<Partial<CompanyKnowledgeIdentityOptions>>('/knowledge/company/permission-audiences');
+    const users = Array.isArray(raw.grantable_users) ? raw.grantable_users : [];
+    const unlinked = Array.isArray(raw.visible_unlinked) ? raw.visible_unlinked : [];
+    return {
+      grantable_users: users.map((item) => ({
+        user_id: String(item.user_id || ''),
+        label: String(item.label || ''),
+      })),
+      visible_unlinked: unlinked.map((item) => ({
+        org_member_id: String(item.org_member_id || ''),
+        label: String(item.label || ''),
+        reason: String(item.reason || ''),
+      })),
+    };
   },
 
   async listAccessRules(): Promise<CompanyKnowledgeAccessRule[]> {

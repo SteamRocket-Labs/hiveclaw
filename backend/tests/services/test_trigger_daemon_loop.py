@@ -28,6 +28,17 @@ class _ScalarResult:
         return self._value
 
 
+class _ScalarsResult:
+    def __init__(self, values):
+        self._values = list(values)
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return list(self._values)
+
+
 class _SequenceSession:
     def __init__(self, execute_results, *, get_results=None):
         self._execute_results = list(execute_results)
@@ -54,13 +65,17 @@ class _SequenceSession:
         self.commits += 1
 
 
-def _loop_trigger(*, source_session_id, agent_id=None, delivery="same_session"):
+def _loop_trigger(*, source_session_id, agent_id=None, delivery="same_session", created_by=None):
+    config = {"minutes": 5, "delivery": delivery, "source_session_id": str(source_session_id)}
+    if created_by is not None:
+        config["created_by"] = str(created_by)
+        config["authority_state"] = "owned"
     return SimpleNamespace(
         id=uuid4(),
         agent_id=agent_id or uuid4(),
         name="loop_check_deploy",
         type="interval",
-        config={"minutes": 5, "delivery": delivery, "source_session_id": str(source_session_id)},
+        config=config,
         reason="Check the deploy status.",
         is_enabled=True,
         fire_count=0,
@@ -117,13 +132,24 @@ async def test_deliver_batch_to_source_session_idle_starts_new_turn(monkeypatch,
     agent_id = uuid4()
     session_id = uuid4()
     user_id = uuid4()
-    trigger = _loop_trigger(source_session_id=session_id, agent_id=agent_id)
+    trigger = _loop_trigger(source_session_id=session_id, agent_id=agent_id, created_by=user_id)
 
     agent = SimpleNamespace(id=agent_id, name="Rick", status="active", tenant_id=uuid4(), creator_id=user_id)
     session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id)
-    user = SimpleNamespace(id=user_id)
+    user = SimpleNamespace(id=user_id, tenant_id=agent.tenant_id, is_active=True, role="member")
 
-    sessions = [_SequenceSession([_ScalarResult(agent), _ScalarResult(session), _ScalarResult(user)])]
+    sessions = [
+        _SequenceSession(
+            [
+                _ScalarResult(agent),
+                _ScalarResult(session),
+                _ScalarResult(user),
+                _ScalarResult(user),
+                _ScalarsResult([trigger]),
+                _ScalarResult(agent),
+            ]
+        )
+    ]
     monkeypatch.setattr(trigger_daemon, "tenant_scoped_session", lambda *a, **k: sessions.pop(0))
 
     async def _fake_resolve_tenant(_agent_id, *_a, **_k):
@@ -196,13 +222,24 @@ async def test_deliver_batch_to_source_session_busy_queues_without_concurrency(m
     agent_id = uuid4()
     session_id = uuid4()
     user_id = uuid4()
-    trigger = _loop_trigger(source_session_id=session_id, agent_id=agent_id)
+    trigger = _loop_trigger(source_session_id=session_id, agent_id=agent_id, created_by=user_id)
 
     agent = SimpleNamespace(id=agent_id, name="Rick", status="active", tenant_id=uuid4(), creator_id=user_id)
     session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id)
-    user = SimpleNamespace(id=user_id)
+    user = SimpleNamespace(id=user_id, tenant_id=agent.tenant_id, is_active=True, role="member")
 
-    sessions = [_SequenceSession([_ScalarResult(agent), _ScalarResult(session), _ScalarResult(user)])]
+    sessions = [
+        _SequenceSession(
+            [
+                _ScalarResult(agent),
+                _ScalarResult(session),
+                _ScalarResult(user),
+                _ScalarResult(user),
+                _ScalarsResult([trigger]),
+                _ScalarResult(agent),
+            ]
+        )
+    ]
     monkeypatch.setattr(trigger_daemon, "tenant_scoped_session", lambda *a, **k: sessions.pop(0))
 
     async def _fake_resolve_tenant(_agent_id, *_a, **_k):
@@ -247,11 +284,11 @@ async def test_deliver_batch_to_source_session_replay_reuses_deterministic_child
     session_id = uuid4()
     user_id = uuid4()
     runtime_task_id = uuid4()
-    trigger = _loop_trigger(source_session_id=session_id, agent_id=agent_id)
+    trigger = _loop_trigger(source_session_id=session_id, agent_id=agent_id, created_by=user_id)
 
     agent = SimpleNamespace(id=agent_id, name="Rick", status="active", tenant_id=uuid4(), creator_id=user_id)
     session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id)
-    user = SimpleNamespace(id=user_id)
+    user = SimpleNamespace(id=user_id, tenant_id=agent.tenant_id, is_active=True, role="member")
     child_run_id = trigger_daemon._trigger_child_run_id(
         runtime_task_id,
         effect="same_session",
@@ -266,11 +303,25 @@ async def test_deliver_batch_to_source_session_replay_reuses_deterministic_child
     )
     sessions = [
         _SequenceSession(
-            [_ScalarResult(agent), _ScalarResult(session), _ScalarResult(user)],
+            [
+                _ScalarResult(agent),
+                _ScalarResult(session),
+                _ScalarResult(user),
+                _ScalarResult(user),
+                _ScalarsResult([trigger]),
+                _ScalarResult(agent),
+            ],
             get_results=[legacy_run],
         ),
         _SequenceSession(
-            [_ScalarResult(agent), _ScalarResult(session), _ScalarResult(user)],
+            [
+                _ScalarResult(agent),
+                _ScalarResult(session),
+                _ScalarResult(user),
+                _ScalarResult(user),
+                _ScalarsResult([trigger]),
+                _ScalarResult(agent),
+            ],
             get_results=[legacy_run],
         ),
     ]
@@ -356,6 +407,104 @@ async def test_deliver_batch_to_source_session_missing_session_falls_back(monkey
     )
 
     assert delivered is False  # caller then continues the normal new-invocation path
+
+
+@pytest.mark.asyncio
+async def test_deliver_batch_uses_collaborator_session_not_agent_owner(monkeypatch):
+    import app.services.trigger_daemon as trigger_daemon
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    owner_id = uuid4()
+    requester_id = uuid4()
+    tenant_id = uuid4()
+    trigger = _loop_trigger(source_session_id=session_id, agent_id=agent_id, created_by=requester_id)
+    agent = SimpleNamespace(
+        id=agent_id, name="Rick", status="active", tenant_id=tenant_id, creator_id=owner_id, owner_user_id=owner_id
+    )
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=requester_id)
+    owner = SimpleNamespace(id=owner_id, tenant_id=tenant_id, is_active=True, role="member")
+    requester = SimpleNamespace(id=requester_id, tenant_id=tenant_id, is_active=True, role="member")
+    grant = SimpleNamespace(scope_type="user", scope_id=requester_id, access_level="use")
+    monkeypatch.setattr(
+        trigger_daemon,
+        "tenant_scoped_session",
+        lambda *a, **k: _SequenceSession(
+            [
+                _ScalarResult(agent),
+                _ScalarResult(session),
+                _ScalarResult(owner),
+                _ScalarResult(requester),
+                _ScalarsResult([trigger]),
+                _ScalarResult(agent),
+                _ScalarsResult([grant]),
+            ]
+        ),
+    )
+
+    async def _resolve(_agent_id, *_a, **_k):
+        return tenant_id
+
+    submitted = []
+
+    async def fake_submit(**kwargs):
+        submitted.append(kwargs["user"].id)
+        return {"admission_state": "admitted", "run": {"run_id": "collab-run"}}
+
+    import app.services.session_live_input as session_live_input
+
+    async def fake_update(*_args, **_kwargs):
+        return True
+
+    monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", _resolve)
+    monkeypatch.setattr(session_live_input, "submit_live_human_input", fake_submit)
+    monkeypatch.setattr(trigger_daemon, "_update_trigger_runtime_task", fake_update)
+
+    delivered = await trigger_daemon._deliver_batch_to_source_session(
+        agent_id, [trigger], source_session_id=str(session_id), runtime_task_id="rt-collab"
+    )
+
+    assert delivered is True
+    assert submitted == [requester_id]
+
+
+@pytest.mark.asyncio
+async def test_deliver_batch_does_not_inject_collaborator_request_into_owner_session(monkeypatch):
+    import app.services.trigger_daemon as trigger_daemon
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    owner_id = uuid4()
+    requester_id = uuid4()
+    tenant_id = uuid4()
+    trigger = _loop_trigger(source_session_id=session_id, agent_id=agent_id, created_by=requester_id)
+    agent = SimpleNamespace(
+        id=agent_id, name="Rick", status="active", tenant_id=tenant_id, creator_id=owner_id, owner_user_id=owner_id
+    )
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=owner_id)
+    owner = SimpleNamespace(id=owner_id, tenant_id=tenant_id, is_active=True)
+    monkeypatch.setattr(
+        trigger_daemon,
+        "tenant_scoped_session",
+        lambda *a, **k: _SequenceSession([_ScalarResult(agent), _ScalarResult(session), _ScalarResult(owner)]),
+    )
+
+    async def _resolve(_agent_id, *_a, **_k):
+        return tenant_id
+
+    async def fail_submit(**_kwargs):
+        raise AssertionError("another person's request must not enter the owner session")
+
+    import app.services.session_live_input as session_live_input
+
+    monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", _resolve)
+    monkeypatch.setattr(session_live_input, "submit_live_human_input", fail_submit)
+
+    delivered = await trigger_daemon._deliver_batch_to_source_session(
+        agent_id, [trigger], source_session_id=str(session_id), runtime_task_id="rt-owner-session"
+    )
+
+    assert delivered is False
 
 
 # ── B1: run once immediately through the normal fire path ────────────────
@@ -593,7 +742,8 @@ async def test_invoke_agent_for_triggers_returns_after_same_session_delivery(mon
 
     agent_id = uuid4()
     session_id = uuid4()
-    trigger = _loop_trigger(source_session_id=session_id, agent_id=agent_id)
+    owner_id = uuid4()
+    trigger = _loop_trigger(source_session_id=session_id, agent_id=agent_id, created_by=owner_id)
 
     async def fake_fire_workflow(**_kwargs):
         return None  # keep the trigger on the prose/same_session path
@@ -632,10 +782,35 @@ async def test_invoke_agent_for_triggers_returns_after_same_session_delivery(mon
 
     monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task_record)
 
-    async def fail_resolve_tenant(*_a, **_k):
+    tenant_id = uuid4()
+    authorized_agent = SimpleNamespace(
+        id=agent_id,
+        name="Rick",
+        status="active",
+        tenant_id=tenant_id,
+        creator_id=owner_id,
+        owner_user_id=owner_id,
+    )
+    authorized_user = SimpleNamespace(id=owner_id, tenant_id=tenant_id, is_active=True, role="member")
+    hold_session = _SequenceSession(
+        [
+            _ScalarResult(authorized_agent),
+            _ScalarResult(authorized_user),
+            _ScalarsResult([trigger]),
+            _ScalarsResult([authorized_user]),
+            _ScalarResult(authorized_agent),
+        ]
+    )
+
+    async def resolve_known_tenant(*_args, **_kwargs):
+        return tenant_id
+
+    async def fail_fresh_invocation(*_args, **_kwargs):
         raise AssertionError("same_session delivery must return before loading a fresh trigger session")
 
-    monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", fail_resolve_tenant)
+    monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", resolve_known_tenant)
+    monkeypatch.setattr(trigger_daemon, "tenant_scoped_session", lambda *_args, **_kwargs: hold_session)
+    monkeypatch.setattr(trigger_daemon, "admit_agent_runtime_tenant", fail_fresh_invocation)
 
     result = await trigger_daemon._invoke_agent_for_triggers(agent_id, [trigger], runtime_task_id="rt-x")
 
@@ -703,7 +878,11 @@ async def test_mixed_workflow_hold_keeps_same_session_wrapper_reconcilable(monke
         updates.append(fields)
         return True
 
+    async def _missing_tenant(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr(workflow_trigger, "fire_workflow_for_trigger", fake_fire_workflow)
+    monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", _missing_tenant)
     monkeypatch.setattr(trigger_daemon, "_deliver_batch_to_source_session", fake_deliver)
     monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task_record)
 
@@ -769,7 +948,11 @@ async def test_mixed_workflow_success_outweighs_released_react_delivery(monkeypa
         updates.append(fields)
         return True
 
+    async def _missing_tenant(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr(workflow_trigger, "fire_workflow_for_trigger", fake_fire_workflow)
+    monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", _missing_tenant)
     monkeypatch.setattr(trigger_daemon, "admit_agent_runtime_tenant", denied_admission)
     monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task_record)
 
@@ -814,7 +997,11 @@ async def test_invoke_agent_for_triggers_defers_terminal_budget_intent_until_exc
         assert committed is True
         return True
 
+    async def _missing_tenant(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr(workflow_trigger, "fire_workflow_for_trigger", fake_fire_workflow)
+    monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", _missing_tenant)
     monkeypatch.setattr(trigger_daemon, "_deliver_batch_to_source_session", flaky_delivery)
 
     terminal_updates = []

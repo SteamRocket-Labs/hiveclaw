@@ -2893,6 +2893,46 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('runtime_artifacts/triggers');
   });
 
+  it('offers restore authority for a revoked wake without treating it as an ordinary pause', () => {
+    const markup = renderToStaticMarkup(
+      <AgentAwareSection
+        agentId="agent-1"
+        awareTriggers={[]}
+        reflectionSessions={[]}
+        reflectionMessages={{}}
+        autonomyOverview={{
+          agent_id: 'agent-1',
+          lookback_hours: 24,
+          totals: { triggers: 1, recent_attempts: 0, findings: 0 },
+          triggers: [
+            {
+              id: 'trigger-revoked',
+              display_kind: 'scheduled_job',
+              display_title: 'Daily launch report',
+              attention_state: 'authority_revoked',
+              next_action: 'reclaim_trigger_authority',
+            },
+          ],
+          recent_attempts: [],
+          findings: [],
+        }}
+        expandedReflection={null}
+        showAllTriggers={false}
+        reflectionPage={0}
+        onSetExpandedReflection={() => {}}
+        onSetReflectionMessages={() => {}}
+        onSetShowAllTriggers={() => {}}
+        onSetReflectionPage={() => {}}
+        onRefetchTriggers={async () => {}}
+        onRefetchAutonomy={async () => {}}
+      />,
+    );
+
+    expect(markup).toContain('Restore authority');
+    expect(markup).toContain('Authority revoked');
+    expect(markup).not.toContain('secret-token');
+  });
+
   it('renders manual automation creation with Agent vocabulary and without Codex-only controls', () => {
     const markup = renderToStaticMarkup(
       <AgentAwareSection

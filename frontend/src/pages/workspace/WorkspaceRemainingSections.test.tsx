@@ -63,6 +63,14 @@ vi.mock('@tanstack/react-query', () => ({
       return {
         data: [
           {
+            id: 'audit-person',
+            action: 'user:offboarded',
+            created_at: '2026-03-27T08:00:00Z',
+            agent_id: null,
+            user_id: 'user-87654321',
+            details: { status: 'completed' },
+          },
+          {
             id: 'audit-1',
             action: 'schedule_tick',
             created_at: '2026-03-27T09:00:00Z',
@@ -192,7 +200,9 @@ describe('Workspace remaining sections', () => {
     expect(auditMarkup).toContain('model-12');
     expect(auditMarkup).toContain('probe_id=probe-safe');
     expect(auditMarkup).toContain('status=completed');
-    expect(auditMarkup).toContain('records:2');
+    expect(auditMarkup).toContain('records:3');
+    expect(auditMarkup).toContain('user:offboarded');
+    expect(auditMarkup).toContain('user-876');
     expect(auditMarkup).not.toContain('job-private');
     expect(auditMarkup).not.toContain('session-private');
     expect(auditMarkup).not.toContain('customer recovery note');

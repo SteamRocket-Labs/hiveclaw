@@ -176,7 +176,10 @@ async def test_invoke_agent_for_triggers_injects_confirmed_plan_into_first_messa
     from app.services.session_writer_epoch import assign_runtime_task_writer_generation
 
     runtime_task_uuid = uuid.uuid4()
+    from app.models.agent import Agent
+
     async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        owner_id = (await session.get(Agent, agent_id)).creator_id
         pid = await _add_plan(
             session,
             agent_id=agent_id,
@@ -192,10 +195,34 @@ async def test_invoke_agent_for_triggers_injects_confirmed_plan_into_first_messa
         )
         await assign_runtime_task_writer_generation(session, runtime_task)
         session.add(runtime_task)
+        trigger_id = uuid.uuid4()
+        session.add(
+            AgentTrigger(
+                id=trigger_id,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                name="weekly",
+                type="interval",
+                reason="weekly digest",
+                config={
+                    "plan_id": str(pid),
+                    "created_by": str(owner_id),
+                    "authority_state": "owned",
+                },
+            )
+        )
+        await session.flush()
 
-    # The daemon uses the trigger objects it is handed (it does not re-query them);
-    # an in-memory row with the plan_id is exactly what _tick would pass.
-    trig = AgentTrigger(agent_id=agent_id, name="weekly", type="interval", config={"plan_id": str(pid)})
+    # Dispatch reloads the durable row. The object handed in is only the claim.
+    trig = AgentTrigger(
+        id=trigger_id,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        name="weekly",
+        type="interval",
+        reason="weekly digest",
+        config={"plan_id": str(pid), "created_by": str(owner_id), "authority_state": "owned"},
+    )
 
     # Mock only the true external boundaries; the trigger-context assembly + the
     # message commit run for real against the test DB.

@@ -223,7 +223,9 @@ class _ResolveApprovalDb:
 
     async def execute(self, query):
         self.queries.append(query)
-        return _FakeOneResult(self._values.pop(0))
+        if self._values:
+            return _FakeOneResult(self._values.pop(0))
+        return _FakeResult([])
 
     def add(self, item):
         self.added.append(item)

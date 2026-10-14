@@ -194,9 +194,15 @@ function AgentDetailInner() {
     };
     const selectDetailTab = (tab: string) => setActiveTab(tab, { detailChat: tab === 'chat' });
     useEffect(() => {
+        // A canonical /sessions/:id route is the chat workbench even when this
+        // page stays mounted from another tab. Hash tabs apply only without one.
+        if (routeSessionId) {
+            setActiveTabRaw((current) => (current === 'chat' ? current : 'chat'));
+            return;
+        }
         const nextHashTab = getAgentDetailHashTab(location.hash, validTabs);
         if (nextHashTab) setActiveTabRaw((current) => (current === nextHashTab ? current : nextHashTab));
-    }, [location.hash]);
+    }, [location.hash, routeSessionId]);
     const token = useAuthStore((s) => s.token);
     const currentUser = useAuthStore((s) => s.user);
 
@@ -1373,6 +1379,15 @@ function AgentDetailInner() {
 
     const handleCancelFullAccess = () => {
         setFullAccessPromptOpen(false);
+    };
+    const openPlanModeReview = async (request: string) => {
+        if (!id) throw new Error('agent_required');
+        const handoff = buildAssignmentHandoff(request, 'plan');
+        const session = await chatApi.createSession(id, buildAssignmentSessionTitle(handoff.content));
+        if (!session?.id) throw new Error('plan_review_session_missing');
+        navigate(`/agents/${id}/sessions/${session.id}`, {
+            state: { assignmentDraft: handoff },
+        });
     };
     const planModeScopeKey = buildPlanModeScopeKey(id, activeSession?.id);
     const planModeScopeKeyRef = useRef(planModeScopeKey);
@@ -2556,6 +2571,7 @@ function AgentDetailInner() {
                         autonomyOverview={autonomyOverview}
                         onRefetchAutonomy={refetchAutonomy}
                         onLoadReflectionMessages={loadReflectionMessages}
+                        onReviewWakeInPlanMode={openPlanModeReview}
                     />
                 )}
 
@@ -2763,13 +2779,7 @@ function AgentDetailInner() {
                             llmModels={llmModels}
                             canManage={canManage}
                             canManagePermissions={canManagePermissions}
-                            onReviewPatrolPlan={async (request) => {
-                                const handoff = buildAssignmentHandoff(request, 'plan');
-                                const session = await chatApi.createSession(id!, buildAssignmentSessionTitle(handoff.content));
-                                navigate(`/agents/${id}/sessions/${session.id}`, {
-                                    state: { assignmentDraft: handoff },
-                                });
-                            }}
+                            onReviewPatrolPlan={openPlanModeReview}
                             settingsForm={settingsForm}
                             onSettingsFormChange={setSettingsForm}
                             settingsSaving={settingsSaving}

@@ -69,7 +69,7 @@ export default function WorkspaceAuditSection({
   const combinedAuditLogs: WorkspaceAuditLog[] = [
     ...(auditLogs as AuditLog[]).map((log) => ({
       ...log,
-      reference_id: log.agent_id,
+      reference_id: log.agent_id || log.user_id,
       details: projectAdminAuditDetails(log.details),
     })),
     ...((securityAuditEvents?.items || []) as SecurityAuditEvent[]).map((event) => ({

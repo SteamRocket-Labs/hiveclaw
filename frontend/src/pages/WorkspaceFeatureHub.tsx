@@ -120,6 +120,7 @@ export type AutomationStatusKey =
   | 'backoff'
   | 'noRecentAttempt'
   | 'needsReconciliation'
+  | 'authorityRevoked'
   | 'unknown';
 
 // Exact typed facts from the trigger machine shape (type/config fields only):
@@ -358,6 +359,10 @@ export function automationStatus(
   const attentionState = String(trigger?.attention_state || '').toLowerCase();
   // A successfully settled one-shot is terminal even though the daemon
   // disabled it; it must not fall into the paused/Resume presentation.
+  // Revoked authority is also disabled, and must not look like an ordinary pause.
+  if (attentionState === 'authority_revoked') {
+    return { status: 'failed', statusKey: 'authorityRevoked', section: 'current' };
+  }
   if (attentionState === 'completed') {
     return { status: 'completed', statusKey: 'completed', section: 'current' };
   }
@@ -399,6 +404,7 @@ export const AUTOMATION_STATUS_FALLBACKS: Record<AutomationStatusKey, string> = 
   backoff: 'Cooling down',
   noRecentAttempt: 'No recent run',
   needsReconciliation: 'Needs admin review',
+  authorityRevoked: 'Authority revoked',
   unknown: 'Status unavailable',
 };
 
@@ -428,6 +434,8 @@ export function automationStatusLabel(statusKey: AutomationStatusKey, t: Schedul
       return t('featureHub.automationStatus.noRecentAttempt', AUTOMATION_STATUS_FALLBACKS.noRecentAttempt);
     case 'needsReconciliation':
       return t('featureHub.automationStatus.needsReconciliation', AUTOMATION_STATUS_FALLBACKS.needsReconciliation);
+    case 'authorityRevoked':
+      return t('featureHub.automationStatus.authorityRevoked', AUTOMATION_STATUS_FALLBACKS.authorityRevoked);
     case 'unknown':
     default:
       return t('featureHub.automationStatus.unknown', AUTOMATION_STATUS_FALLBACKS.unknown);

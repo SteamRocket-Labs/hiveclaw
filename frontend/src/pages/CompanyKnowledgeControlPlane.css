@@ -227,6 +227,18 @@
   font-size: 13px;
 }
 
+.company-control-unlinked {
+  display: grid;
+  gap: 6px;
+  color: var(--text-secondary, #475467);
+  font-size: 13px;
+}
+
+.company-control-unlinked ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
 .company-review-workspace h2,
 .company-review-workspace p {
   margin: 4px 0 0;

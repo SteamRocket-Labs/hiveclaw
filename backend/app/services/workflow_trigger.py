@@ -40,6 +40,7 @@ FireStatus = Literal[
     "rejected_args",
     "invalid_ref",
     "disabled",
+    "authority_unavailable",
 ]
 
 
@@ -232,12 +233,59 @@ async def _append_workflow_trigger_session_event(
         )
 
 
+async def _workflow_effect_user_id(
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    session_factory=None,
+    requester_user_id: uuid.UUID | None = None,
+) -> tuple[uuid.UUID | None, str | None]:
+    from sqlalchemy import select
+
+    from app.database import tenant_scoped_session
+    from app.models.agent import Agent
+    from app.models.user import User
+    from app.services.agent_identity_lifecycle import resolve_live_effect_principal
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=session_factory) as session:
+        agent = (await session.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
+        if agent is None:
+            return None, "agent_missing"
+        principal = await resolve_live_effect_principal(session, agent)
+        if principal.block_reason or principal.user_id is None:
+            return None, principal.block_reason or "responsible_principal_missing"
+        if requester_user_id is None or str(requester_user_id) == str(principal.user_id):
+            requester = (
+                await session.execute(select(User).where(User.id == principal.user_id))
+            ).scalar_one_or_none()
+        else:
+            requester = (
+                await session.execute(select(User).where(User.id == requester_user_id))
+            ).scalar_one_or_none()
+            if requester is None or getattr(requester, "is_active", True) is False:
+                return None, "trigger_requester_inactive"
+            if str(getattr(requester, "tenant_id", "")) != str(tenant_id):
+                return None, "trigger_requester_tenant_mismatch"
+        if requester is None:
+            return None, "responsible_principal_missing"
+        from fastapi import HTTPException
+
+        from app.core.permissions import check_agent_access
+
+        try:
+            await check_agent_access(session, requester, agent_id)
+        except HTTPException:
+            return None, "trigger_requester_unauthorized"
+        return requester.id, None
+
+
 async def _create_workflow_trigger_session(
     *,
     tenant_id: uuid.UUID,
     agent_id: uuid.UUID,
     trigger_name: str,
     ref: dict,
+    effect_user_id: uuid.UUID,
     session_id: uuid.UUID | None = None,
     session_factory=None,
 ) -> tuple[uuid.UUID | None, uuid.UUID | None]:
@@ -254,9 +302,6 @@ async def _create_workflow_trigger_session(
         agent = (await session.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
         if agent is None:
             return None, None
-        if getattr(agent, "creator_id", None) is None:
-            logger.warning("[WorkflowTrigger] agent %s has no creator_id; cannot bind trigger session", agent_id)
-            return None, None
 
         if session_id is not None:
             existing = await session.get(ChatSession, session_id)
@@ -267,7 +312,7 @@ async def _create_workflow_trigger_session(
                     or existing.runtime_source != "workflow_trigger"
                 ):
                     raise RuntimeError("workflow trigger session id is already bound to another execution")
-                return existing.id, agent.creator_id
+                return existing.id, effect_user_id
 
         participant = (
             await session.execute(
@@ -279,7 +324,7 @@ async def _create_workflow_trigger_session(
             id=session_id or uuid.uuid4(),
             agent_id=agent_id,
             tenant_id=tenant_id,
-            user_id=agent.creator_id,
+            user_id=effect_user_id,
             participant_id=participant.id if participant else None,
             source_channel="trigger",
             session_kind="trigger_run",
@@ -311,7 +356,7 @@ async def _create_workflow_trigger_session(
             actor_type="system",
             event_type="schedule_fire",
             role="system",
-            user_id=agent.creator_id,
+            user_id=effect_user_id,
             content=json.dumps(payload, ensure_ascii=False, sort_keys=True),
             source="workflow_trigger",
             visibility_scope="agent_owner",
@@ -320,7 +365,7 @@ async def _create_workflow_trigger_session(
             metadata=payload,
         )
         chat_session.last_message_at = datetime.now(timezone.utc)
-        return chat_session.id, agent.creator_id
+        return chat_session.id, effect_user_id
 
 
 async def fire_workflow_for_trigger(
@@ -334,6 +379,7 @@ async def fire_workflow_for_trigger(
     session_factory=None,
     definition_service: WorkflowDefinitionService | None = None,
     launch=start_ephemeral_workflow_for_agent,
+    requester_user_id: uuid.UUID | None = None,
 ) -> WorkflowTriggerFireResult | None:
     """Fire-time branch: returns None when the trigger carries no
     workflow_ref (caller falls through to the prose-ReAct path)."""
@@ -351,6 +397,35 @@ async def fire_workflow_for_trigger(
     tenant_id = await resolve_tenant_for_agent(agent_id, session_factory=session_factory)
     if tenant_id is None:
         return WorkflowTriggerFireResult(status="invalid_ref", reason=f"agent {agent_id} not found or tenant-less")
+
+    if trigger_id is not None:
+        from app.database import tenant_scoped_session
+        from app.models.trigger import AgentTrigger
+        from app.services.trigger_resource_authority import trigger_execution_block_reason
+
+        async with tenant_scoped_session(str(tenant_id), session_factory=session_factory) as session:
+            try:
+                durable_trigger_id = uuid.UUID(str(trigger_id))
+            except (TypeError, ValueError):
+                durable_trigger_id = None
+            durable_trigger = await session.get(AgentTrigger, durable_trigger_id) if durable_trigger_id else None
+            if durable_trigger is not None and trigger_execution_block_reason(durable_trigger):
+                return WorkflowTriggerFireResult(
+                    status="authority_unavailable",
+                    reason="trigger_authority_quarantined",
+                )
+
+    effect_user_id, block_reason = await _workflow_effect_user_id(
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_factory=session_factory,
+        requester_user_id=requester_user_id,
+    )
+    if block_reason or effect_user_id is None:
+        return WorkflowTriggerFireResult(
+            status="authority_unavailable",
+            reason=block_reason or "responsible_principal_missing",
+        )
 
     parent_session_effect_id = _workflow_trigger_effect_id(
         runtime_task_id,
@@ -370,6 +445,7 @@ async def fire_workflow_for_trigger(
         agent_id=agent_id,
         trigger_name=trigger_name,
         ref=ref,
+        effect_user_id=effect_user_id,
         session_id=parent_session_effect_id,
         session_factory=session_factory,
     )

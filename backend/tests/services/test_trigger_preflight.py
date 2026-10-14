@@ -46,9 +46,13 @@ class _ContextResult:
 
 
 class _ContextSession:
-    def __init__(self, session_rows):
+    def __init__(self, session_rows, agent=None):
         self._session_rows = list(session_rows)
+        self._agent = agent
         self._call_index = 0
+
+    async def get(self, _model, _identity):
+        return self._agent
 
     async def execute(self, stmt):
         row_index = self._call_index // 2
@@ -319,3 +323,32 @@ async def test_load_context_preserves_all_explicit_refs_messages_and_content():
     assert "ref-0-message-0" not in rendered  # the first message carries the long content instead
     assert decisive_content_tail in rendered
     assert "ref-0-message-1" in rendered
+
+
+@pytest.mark.asyncio
+async def test_load_context_omits_sessions_the_reader_cannot_open():
+    from app.services.trigger_preflight import load_context_from
+
+    agent_id = uuid4()
+    owner_id = uuid4()
+    tenant_id = uuid4()
+    session = SimpleNamespace(
+        id=uuid4(),
+        title="private",
+        external_conv_id="context:private",
+        user_id=owner_id,
+    )
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
+    reader = SimpleNamespace(id=uuid4(), role="member", tenant_id=tenant_id, is_active=True)
+
+    rendered = await load_context_from(
+        _ContextSession(
+            [(session, [SimpleNamespace(role="user", content="PRIVATE_SENTINEL")])],
+            agent=agent,
+        ),
+        agent_id=agent_id,
+        context_refs=[f"session:{session.id}"],
+        reader=reader,
+    )
+
+    assert rendered == ""

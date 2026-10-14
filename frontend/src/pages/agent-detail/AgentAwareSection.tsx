@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 
 import './AgentAwareSection.css';
 import { chatApi } from '../../api/domains/chat';
+import { planApi } from '../../api/domains/plans';
 import { triggerApi } from '../../api/domains/triggers';
 import { autonomyApi } from '../../api/domains/autonomy';
 import { agentApi } from '../../api/domains/agents';
@@ -32,6 +33,43 @@ export {
 };
 export type { WakeFormState, WakeSchedulePreset } from './wakePolicyForm';
 
+type WakePlanReviewTrigger = {
+  id: string;
+  display_title?: string | null;
+  name?: string | null;
+  reason?: string | null;
+};
+
+type Translate = (key: string, fallback: string, options?: Record<string, unknown>) => string;
+
+export function buildWakeEnablePlanReviewRequest(
+  trigger: WakePlanReviewTrigger,
+  scheduleLabel: string | null | undefined,
+  translate: Translate,
+): string {
+  const title = String(trigger.display_title || trigger.name || trigger.id).trim() || trigger.id;
+  const parts = [
+    translate(
+      'agent.aware.reviewPlanLead',
+      'Plan how to enable wake policy "{{title}}" ({{id}}).',
+      { title, id: trigger.id },
+    ),
+  ];
+  const schedule = String(scheduleLabel || '').trim();
+  if (schedule) {
+    parts.push(translate('agent.aware.reviewPlanSchedule', 'Schedule: {{schedule}}.', { schedule }));
+  }
+  const reason = String(trigger.reason || '').trim();
+  if (reason) {
+    parts.push(translate('agent.aware.reviewPlanCause', 'Current reason: {{reason}}.', { reason }));
+  }
+  parts.push(translate(
+    'agent.aware.reviewPlanIntent',
+    'The intended action is enabling this autonomous wake. Review scope, permissions, delivery, failure recovery, and budget. Do not enable it until I confirm the plan.',
+  ));
+  return parts.join(' ');
+}
+
 type AgentAwareSectionProps = {
   agentId: string;
   awareTriggers: any[];
@@ -49,6 +87,7 @@ type AgentAwareSectionProps = {
   autonomyOverview?: any | null;
   onRefetchAutonomy?: () => void | Promise<unknown>;
   initialShowCreateWake?: boolean;
+  onReviewWakeInPlanMode?: (request: string) => void | Promise<void>;
 };
 
 const REFLECTIONS_PAGE_SIZE = 10;
@@ -71,6 +110,7 @@ export default function AgentAwareSection({
   autonomyOverview,
   onRefetchAutonomy,
   initialShowCreateWake = false,
+  onReviewWakeInPlanMode,
 }: AgentAwareSectionProps) {
   const { t, i18n } = useTranslation();
   const [artifactView, setArtifactView] = React.useState<any | null>(null);
@@ -96,6 +136,9 @@ export default function AgentAwareSection({
     workflowArgsText: '{}',
   });
   const [wakeError, setWakeError] = React.useState('');
+  const [reclaimError, setReclaimError] = React.useState('');
+  const [enableTriggerId, setEnableTriggerId] = React.useState<string | null>(null);
+  const [enableError, setEnableError] = React.useState('');
 
   const { data: workflowDefinitions = [] } = useQuery({
     queryKey: ['workflow-definitions', agentId],
@@ -172,6 +215,79 @@ export default function AgentAwareSection({
     if (onRefetchAutonomy) await onRefetchAutonomy();
   };
 
+  const disableTrigger = async (trigger: { id: string }) => {
+    await triggerApi.update(agentId, trigger.id, { is_enabled: false });
+    await refreshAutonomy();
+  };
+
+  const openEnableDecision = (triggerId: string) => {
+    setEnableError('');
+    setEnableTriggerId(triggerId);
+  };
+
+  const reviewEnableInPlanMode = async (trigger: WakePlanReviewTrigger & { type?: string | null }) => {
+    setEnableError('');
+    if (!onReviewWakeInPlanMode) {
+      setEnableError(t('agent.aware.reviewPlanFailed', 'Plan Mode could not be opened for this wake policy.'));
+      return;
+    }
+    const schedule = scheduleLabelFromView(trigger) || (trigger.type ? triggerToHuman(trigger) : '');
+    try {
+      await onReviewWakeInPlanMode(buildWakeEnablePlanReviewRequest(trigger, schedule, (key, fallback, options) => (
+        t(key, fallback, options)
+      )));
+    } catch {
+      setEnableError(t('agent.aware.reviewPlanFailed', 'Plan Mode could not be opened for this wake policy.'));
+    }
+  };
+
+  const enableTriggerWithoutPlan = async (trigger: { id: string }) => {
+    setEnableError('');
+    try {
+      const reason = t(
+        'agent.aware.enableWithoutPlanRequest',
+        'Enable this wake policy after declining a fresh plan recommendation.',
+      );
+      const recommendation = await planApi.createRecommendation(agentId, {
+        original_request: reason,
+        title: t('agent.aware.enableWithoutPlanTitle', 'Enable wake policy'),
+        session_id: `trigger-authority:${agentId}:${trigger.id}`,
+        source: 'agent_aware',
+        intent_type: 'autonomous_wake',
+        action_kind: 'enable_autonomous_wake',
+        tool_name: 'trigger_rest',
+      });
+      const declined = await planApi.declineRecommendation(agentId, recommendation.id);
+      await triggerApi.update(agentId, trigger.id, {
+        is_enabled: true,
+        plan_mode_decision: 'declined',
+        plan_recommendation_id: declined.id,
+      });
+      setEnableTriggerId(null);
+    } catch {
+      setEnableError(t('agent.aware.enableFailed', 'Wake policy could not be enabled. Review a plan or try again.'));
+      return;
+    }
+    await refreshAutonomy();
+  };
+
+  const renderEnableDecision = (trigger: { id: string }) => {
+    if (enableTriggerId !== trigger.id) return null;
+    return (
+      <div className="agent-aware-trigger-actions" data-testid="wake-enable-decision">
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => { void reviewEnableInPlanMode(trigger); }}>
+          {t('agent.aware.reviewInPlanMode', 'Review in Plan Mode')}
+        </button>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => enableTriggerWithoutPlan(trigger)}>
+          {t('agent.aware.enableWithoutPlan', 'Enable without a plan')}
+        </button>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEnableTriggerId(null)}>
+          {t('common.cancel', 'Cancel')}
+        </button>
+      </div>
+    );
+  };
+
   // Trigger/wake state enums come from autonomy_overview as stable snake_case
   // codes; map the known vocabulary to translations. Unknown codes must not be
   // prettified into user-facing prose — normal users see a typed unknown label
@@ -195,6 +311,7 @@ export default function AgentAwareSection({
       stale: t('agent.aware.stateStale', 'Stale'),
       expired: t('agent.aware.stateExpired', 'Expired'),
       paused: t('agent.aware.statePaused', 'Paused'),
+      authority_revoked: t('agent.aware.stateAuthorityRevoked', 'Authority revoked'),
       unknown: t('agent.aware.stateUnknown', 'Unknown'),
     };
     if (known[code]) return known[code];
@@ -211,6 +328,7 @@ export default function AgentAwareSection({
     const code = String(state || '');
     const known: Record<string, string> = {
       paused: t('agent.aware.reasonPaused', 'Autonomous wake is paused.'),
+      authority_revoked: t('agent.aware.reasonAuthorityRevoked', 'Trigger authority was revoked. Restore it before this wake can run.'),
       expired: t('agent.aware.reasonExpired', 'This wake policy has expired.'),
       max_fires_reached: t('agent.aware.reasonMaxFires', 'This wake policy reached its run limit.'),
       backoff_active: t('agent.aware.reasonBackoff', 'Cooling down after a recent failure.'),
@@ -286,7 +404,7 @@ export default function AgentAwareSection({
   const stateToneClass = (state?: string | null): string => {
     if (['active', 'has_wake_policy', 'completed'].includes(String(state))) return 'agent-aware-tone-success';
     if (['waiting_approval', 'missing_model', 'no_wake_policy', 'backoff_active'].includes(String(state))) return 'agent-aware-tone-warning';
-    if (['blocked', 'stale', 'failed_recently', 'expired'].includes(String(state))) return 'agent-aware-tone-error';
+    if (['blocked', 'stale', 'failed_recently', 'expired', 'authority_revoked'].includes(String(state))) return 'agent-aware-tone-error';
     return 'agent-aware-tone-muted';
   };
 
@@ -294,9 +412,14 @@ export default function AgentAwareSection({
     <span className={`agent-aware-status-badge ${stateToneClass(state)}`}>{statusLabel(state)}</span>
   );
 
-  const pauseOrResumeTrigger = async (trigger: any, enabled: boolean) => {
-    await triggerApi.update(agentId, trigger.id, { is_enabled: enabled });
-    await refreshAutonomy();
+  const reclaimTriggerAuthority = async (trigger: any) => {
+    setReclaimError('');
+    try {
+      await triggerApi.reclaim(agentId, trigger.id);
+      await refreshAutonomy();
+    } catch {
+      setReclaimError(t('agent.aware.reclaimFailed', 'Trigger authority could not be restored.'));
+    }
   };
 
   const viewArtifact = async (attempt: any) => {
@@ -528,6 +651,12 @@ export default function AgentAwareSection({
             <h4 className="agent-aware-h4">{t('agent.aware.wakePolicies', 'Wake Policies')}</h4>
             <span className="u-meta u-tertiary">{triggers.length}</span>
           </div>
+          {reclaimError && (
+            <div className="agent-aware-trigger-reason agent-aware-tone-error" role="alert">{reclaimError}</div>
+          )}
+          {enableError && (
+            <div className="agent-aware-trigger-reason agent-aware-tone-error" role="alert">{enableError}</div>
+          )}
           <div className="agent-aware-list">
             {triggers.length === 0 && <div className="u-row u-tertiary">{t('agent.aware.noTriggers')}</div>}
             {triggers.map((trigger: any) => (
@@ -548,10 +677,15 @@ export default function AgentAwareSection({
                     {trigger.last_attempt?.display_summary && <div className="agent-aware-trigger-summary">{trigger.last_attempt.display_summary}</div>}
                   </div>
                   <div className="agent-aware-trigger-actions">
-                    {trigger.attention_state === 'paused' ? (
-                      <button className="btn btn-ghost btn-sm" onClick={() => pauseOrResumeTrigger(trigger, true)}>{t('agent.aware.enable')}</button>
+                    {trigger.attention_state === 'authority_revoked' || trigger.next_action === 'reclaim_trigger_authority' ? (
+                      <button className="btn btn-ghost btn-sm" onClick={() => reclaimTriggerAuthority(trigger)}>{t('agent.aware.reclaimAuthority', 'Restore authority')}</button>
+                    ) : trigger.attention_state === 'paused' ? (
+                      <>
+                        <button className="btn btn-ghost btn-sm" onClick={() => openEnableDecision(trigger.id)}>{t('agent.aware.enable')}</button>
+                        {renderEnableDecision(trigger)}
+                      </>
                     ) : (
-                      <button className="btn btn-ghost btn-sm" onClick={() => pauseOrResumeTrigger(trigger, false)}>{t('agent.aware.disable')}</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => disableTrigger(trigger)}>{t('agent.aware.disable')}</button>
                     )}
                     {trigger.last_attempt?.artifact && (
                       <button className="btn btn-ghost btn-sm" onClick={() => viewArtifact(trigger.last_attempt)}>{artifactLoading ? t('common.loading', 'Loading') : t('agent.aware.viewArtifact', 'View artifact')}</button>
@@ -599,7 +733,9 @@ export default function AgentAwareSection({
     return (
       <div className="agent-aware-root">
         <TeamMemorySummaryCard agentId={agentId} section="aware" />
-        <PlanQueueSection agentId={agentId} />
+        <div id="agent-aware-plan-queue" tabIndex={-1}>
+          <PlanQueueSection agentId={agentId} />
+        </div>
         {renderAutonomyOverview()}
       </div>
     );
@@ -612,7 +748,9 @@ export default function AgentAwareSection({
   return (
     <div className="agent-aware-root">
       <TeamMemorySummaryCard agentId={agentId} section="aware" />
-      <PlanQueueSection agentId={agentId} />
+      <div id="agent-aware-plan-queue" tabIndex={-1}>
+        <PlanQueueSection agentId={agentId} />
+      </div>
 
       {hasStandalone && (
         <div className="card agent-aware-block">
@@ -624,6 +762,9 @@ export default function AgentAwareSection({
               {standaloneTriggers.length} trigger{standaloneTriggers.length > 1 ? 's' : ''}
             </span>
           </div>
+          {enableError && (
+            <div className="agent-aware-trigger-reason agent-aware-tone-error" role="alert">{enableError}</div>
+          )}
           <div className="agent-aware-compact-list">
             {[...standaloneTriggers]
               .sort((a: any, b: any) => (b.is_enabled ? 1 : 0) - (a.is_enabled ? 1 : 0))
@@ -646,13 +787,17 @@ export default function AgentAwareSection({
                   <div className="agent-aware-row-actions">
                     <button
                       className="btn btn-ghost btn-sm"
-                      onClick={async () => {
-                        await triggerApi.update(agentId, trigger.id, { is_enabled: !trigger.is_enabled });
-                        await onRefetchTriggers();
+                      onClick={() => {
+                        if (trigger.is_enabled) {
+                          void disableTrigger(trigger);
+                          return;
+                        }
+                        openEnableDecision(trigger.id);
                       }}
                     >
                       {trigger.is_enabled ? t('agent.aware.disable') : t('agent.aware.enable')}
                     </button>
+                    {renderEnableDecision(trigger)}
                     <button
                       className="btn btn-ghost btn-sm agent-aware-danger"
                       onClick={async () => {

@@ -6,6 +6,8 @@ export const triggerApi = {
     post<any>(`/agents/${agentId}/triggers`, data),
   update: (agentId: string, triggerId: string, data: any) =>
     patch<any>(`/agents/${agentId}/triggers/${triggerId}`, data),
+  reclaim: (agentId: string, triggerId: string) =>
+    post<any>(`/agents/${agentId}/triggers/${triggerId}/reclaim`, {}),
   delete: (agentId: string, triggerId: string) =>
     del(`/agents/${agentId}/triggers/${triggerId}`),
 };

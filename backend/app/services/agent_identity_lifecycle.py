@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -77,6 +78,38 @@ def get_agent_lifecycle_block_reason(agent: Any) -> str | None:
 
 def is_agent_lifecycle_active(agent: Any) -> bool:
     return get_agent_lifecycle_block_reason(agent) is None
+
+
+@dataclass(frozen=True, slots=True)
+class LiveEffectPrincipal:
+    """The user who may authorize a new effect for an agent right now."""
+
+    user_id: uuid.UUID | None
+    block_reason: str | None
+
+
+async def resolve_live_effect_principal(db: AsyncSession, agent: Any) -> LiveEffectPrincipal:
+    """Resolve the current responsible user without rewriting historical identity.
+
+    ``creator_id`` and ``sponsor_user_id`` stay provenance. A missing, inactive,
+    or cross-company responsible user blocks the new effect.
+    """
+
+    from app.core.permissions import effective_agent_owner_id
+
+    owner_id = effective_agent_owner_id(agent)
+    if owner_id is None:
+        return LiveEffectPrincipal(user_id=None, block_reason="responsible_principal_missing")
+    user = (await db.execute(select(User).where(User.id == owner_id))).scalar_one_or_none()
+    if user is None:
+        return LiveEffectPrincipal(user_id=None, block_reason="responsible_principal_missing")
+    if getattr(user, "is_active", True) is False:
+        return LiveEffectPrincipal(user_id=owner_id, block_reason="responsible_principal_inactive")
+    agent_tenant_id = getattr(agent, "tenant_id", None)
+    user_tenant_id = getattr(user, "tenant_id", None)
+    if agent_tenant_id is None or user_tenant_id is None or str(agent_tenant_id) != str(user_tenant_id):
+        return LiveEffectPrincipal(user_id=owner_id, block_reason="responsible_principal_tenant_mismatch")
+    return LiveEffectPrincipal(user_id=owner_id, block_reason=None)
 
 
 def agent_lifecycle_active_clause():

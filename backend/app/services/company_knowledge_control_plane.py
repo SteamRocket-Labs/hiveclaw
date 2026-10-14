@@ -398,6 +398,22 @@ class CompanyKnowledgePermissionService:
         )
         return [await self._summary(session, row) for row in rows]
 
+    async def list_grant_identity_options(
+        self,
+        session: Any,
+        *,
+        principal: CompanyKnowledgePrincipal,
+    ) -> dict[str, list[dict[str, str]]]:
+        await self._require_manage(session, principal=principal)
+        from app.models.org import OrgMember
+        from app.services.company_knowledge_identity import company_knowledge_grant_audiences
+
+        users = list((await session.execute(select(User).where(User.tenant_id == principal.tenant_id))).scalars().all())
+        members = list(
+            (await session.execute(select(OrgMember).where(OrgMember.tenant_id == principal.tenant_id))).scalars().all()
+        )
+        return company_knowledge_grant_audiences(users, members)
+
     async def list_review_queue(
         self,
         session: Any,

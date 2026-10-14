@@ -15,6 +15,14 @@ class _ScalarResult:
         return self.value
 
 
+class _EmptyScalars:
+    def scalars(self):
+        return self
+
+    def all(self):
+        return []
+
+
 @pytest.mark.asyncio
 async def test_offboard_user_atomically_transfers_agents_then_deactivates(monkeypatch) -> None:
     import app.services.user_offboarding_service as service
@@ -87,7 +95,11 @@ async def test_offboard_user_atomically_transfers_agents_then_deactivates(monkey
     async def flush():
         db.flushes += 1
 
+    async def execute(_statement):
+        return _EmptyScalars()
+
     db.flush = flush
+    db.execute = execute
 
     receipt = await service.offboard_loaded_user(
         db,

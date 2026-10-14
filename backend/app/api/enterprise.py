@@ -10,7 +10,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_admin, get_current_user
@@ -740,6 +740,24 @@ async def verify_platform_security_audit_chain(
     return await verify_persisted_platform_security_audit_chain()
 
 
+def enterprise_audit_log_scope(target_tenant_id: uuid.UUID, agent_id: uuid.UUID | None = None):
+    """Tenant audit rows, including personnel events that have no agent.
+
+    A row stamped with another company's ``tenant_id`` stays out even when its
+    agent belongs here. Legacy rows with no ``tenant_id`` remain visible only
+    through an agent of this company. An agent filter drops personnel rows.
+    """
+
+    tenant_agent_ids = select(Agent.id).where(Agent.tenant_id == target_tenant_id)
+    scope = or_(
+        AuditLog.tenant_id == target_tenant_id,
+        and_(AuditLog.tenant_id.is_(None), AuditLog.agent_id.in_(tenant_agent_ids)),
+    )
+    if agent_id is not None:
+        scope = and_(scope, AuditLog.agent_id == agent_id)
+    return scope
+
+
 @router.get("/audit-logs", response_model=list[AuditLogSummaryOut])
 async def list_audit_logs(
     agent_id: uuid.UUID | None = None,
@@ -750,12 +768,9 @@ async def list_audit_logs(
 ):
     """List audit logs scoped to a tenant (admin only)."""
     query = select(AuditLog).order_by(AuditLog.created_at.desc()).limit(limit)
-    # Scope by tenant: only show logs for agents belonging to this tenant
+    # Personnel rows carry tenant_id; legacy agent rows may only carry agent_id.
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
-    tenant_agent_ids = select(Agent.id).where(Agent.tenant_id == target_tenant_id)
-    query = query.where(AuditLog.agent_id.in_(tenant_agent_ids))
-    if agent_id:
-        query = query.where(AuditLog.agent_id == agent_id)
+    query = query.where(enterprise_audit_log_scope(target_tenant_id, agent_id=agent_id))
     result = await db.execute(query)
     return [AuditLogSummaryOut.model_validate(log) for log in result.scalars().all()]
 

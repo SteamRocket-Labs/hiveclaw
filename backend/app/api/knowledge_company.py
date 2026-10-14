@@ -1375,6 +1375,21 @@ async def restore_publication(
     return _payload(publication)
 
 
+@router.get("/permission-audiences")
+async def list_company_knowledge_permission_audiences(
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    return await _call(
+        _permission_service().list_grant_identity_options(
+            db,
+            principal=_principal(current_user, target_tenant),
+        )
+    )
+
+
 @router.get("/permissions")
 async def list_company_knowledge_permissions(
     tenant_id: uuid.UUID | None = Query(None),

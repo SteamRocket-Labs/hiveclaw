@@ -11,6 +11,7 @@ from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate, stamp_plan
 from app.core.permissions import check_agent_access, check_agent_operator_reachability
 from app.core.security import get_current_user
 from app.database import get_db
+from app.models.audit import AuditLog
 from app.models.trigger import AgentTrigger
 from app.models.user import User
 from app.services.plan_mode_core import (
@@ -31,13 +32,17 @@ from app.services.agent_tool_domains.triggers import (
 )
 from app.services.autonomy_overview import build_trigger_view
 from app.services.trigger_resource_authority import (
+    append_trigger_authority_recovery,
+    apply_trigger_authority_reclaim,
     authorize_trigger_action,
+    caller_may_reclaim_trigger_authority,
     filter_authorized_triggers,
     lock_trigger_for_update,
     preserve_trigger_authority,
     require_trigger_not_fire_inflight,
     stamp_trigger_authority,
     strip_trigger_runtime_config,
+    trigger_authority_state,
 )
 
 router = APIRouter(prefix="/agents", tags=["triggers"])
@@ -195,6 +200,14 @@ async def list_agent_triggers(
         agent_access=agent_access,
         operator_view=use_operator_view,
         operator_reason=normalized_operator_reason,
+    )
+    authorized = await append_trigger_authority_recovery(
+        db,
+        current_user,
+        agent_id=agent_id,
+        triggers=list(triggers),
+        visible=authorized,
+        agent_access=agent_access,
     )
 
     return [
@@ -477,6 +490,72 @@ async def update_trigger(
         "authority_source": decision.authority_source,
         "operator_view": decision.operator_view,
     }
+
+
+@router.post("/{agent_id}/triggers/{trigger_id}/reclaim", response_model=TriggerResponse)
+async def reclaim_trigger_authority(
+    agent_id: uuid.UUID,
+    trigger_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Restore execution authority to the agent's current responsible person.
+
+    A normal enable cannot do this: quarantined triggers are not writable by
+    the new resource owner, and content updates preserve the old authority.
+    """
+
+    from app.services.agent_identity_lifecycle import resolve_live_effect_principal
+
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+    trigger = await lock_trigger_for_update(db, agent_id=agent_id, trigger_id=trigger_id)
+    if trigger is None:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+    require_trigger_not_fire_inflight(trigger)
+    principal = await resolve_live_effect_principal(db, agent)
+    if trigger_authority_state(trigger) != "quarantined":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "trigger_authority_not_revoked",
+                "summary": (
+                    "Only revoked trigger authority can be reclaimed. A paused trigger "
+                    "stays disabled until enable_autonomous_wake is authorized."
+                ),
+            },
+        )
+    if not caller_may_reclaim_trigger_authority(caller=current_user, agent=agent, principal=principal):
+        if principal.block_reason or principal.user_id is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": principal.block_reason or "responsible_principal_missing",
+                    "summary": "The current responsible person cannot authorize a new effect.",
+                },
+            )
+        raise HTTPException(
+            status_code=403,
+            detail="Only the current agent owner or a scoped administrator can reclaim trigger authority",
+        )
+    previous_owner_id = apply_trigger_authority_reclaim(trigger, live_owner_id=principal.user_id)
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            agent_id=agent.id,
+            tenant_id=agent.tenant_id,
+            action="trigger:authority_reclaimed",
+            details={
+                "schema": "hive.trigger_authority_reclaim.v1",
+                "trigger_id": str(trigger.id),
+                "actor_user_id": str(current_user.id),
+                "previous_authority_owner_id": str(previous_owner_id) if previous_owner_id else None,
+                "execution_owner_id": str(principal.user_id),
+                "creator_id": str(agent.creator_id),
+            },
+        )
+    )
+    await db.commit()
+    return _trigger_response(trigger)
 
 
 @router.delete("/{agent_id}/triggers/{trigger_id}")

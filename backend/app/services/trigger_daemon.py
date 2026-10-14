@@ -15,6 +15,7 @@ import hashlib
 import ipaddress
 import json as _json
 import uuid
+from contextvars import ContextVar
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,7 @@ from urllib.parse import urlparse
 
 from croniter import croniter
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 
 from app.runtime.context_candidates import build_context_candidate_ref
 from app.core.events import get_redis
@@ -33,7 +34,11 @@ from app.services.agent_identity_lifecycle import agent_lifecycle_active_clause
 from app.services.daemon_liveness import mark_daemon_outcome
 from app.services.plan_mode_core import build_plan_execution_instruction
 from app.services.tenant_resolver import resolve_tenant_for_agent
-from app.services.trigger_resource_authority import trigger_owner_user_id, trigger_root_session_id
+from app.services.trigger_resource_authority import (
+    trigger_execution_block_reason,
+    trigger_owner_user_id,
+    trigger_root_session_id,
+)
 from app.services.runtime_tenant_admission import admit_agent_runtime_tenant
 from app.services.runtime_task_service import (
     build_restart_reconciliation_metadata,
@@ -81,6 +86,8 @@ _TRIGGER_EVENT_FIELDS = frozenset(
 # Statuses that mean a fired trigger reached an end state. Reaching one is the
 # daemon's only real evidence of work; ticking the loop is not.
 _TERMINAL_TRIGGER_STATUSES = frozenset({"completed", "failed", "killed", "skipped", "needs_reconciliation"})
+# Non-final prose groups record settlement here instead of sealing the shared task.
+_TRIGGER_TERMINAL_SINK: ContextVar[list | None] = ContextVar("trigger_terminal_sink", default=None)
 
 # Track last invocation time per agent to enforce dedup window
 _last_invoke: dict[uuid.UUID, datetime] = {}
@@ -484,6 +491,11 @@ async def _update_trigger_runtime_task(
         metadata.setdefault("reconciliation_reason", "trigger_effect_evidence_pending")
     if status in _TERMINAL_TRIGGER_STATUSES:
         metadata["runtime_budget_actuals"] = {"background_tasks": 1}
+    sink = _TRIGGER_TERMINAL_SINK.get()
+    if sink is not None and status in _TERMINAL_TRIGGER_STATUSES:
+        overrides = metadata.get("trigger_settlement_overrides")
+        sink.append(dict(overrides) if isinstance(overrides, dict) else {})
+        return True
     fields = {
         "status": status,
         "result_summary": result_summary,
@@ -767,71 +779,146 @@ WEBHOOK_RATE_LIMIT = 5  # max hits per minute per token
 
 # ── Reply target recovery for pre-unified triggers ──────────────────
 
+# A null reply_context may be filled only from a channel session owned by the
+# trigger's requesting principal. Inspection, a newer session, or another
+# person's destination is not authority to choose the send recipient.
+AUTHORIZED_DELIVERY_ORIGIN_UNAVAILABLE = "authorized_delivery_origin_unavailable"
+
+
+def _unavailable_delivery_recovery() -> dict[str, Any]:
+    """Typed, recoverable refusal. It is not a channel destination."""
+
+    return {
+        "status": "unavailable",
+        "code": AUTHORIZED_DELIVERY_ORIGIN_UNAVAILABLE,
+        "recoverable": True,
+    }
+
+
+def _reply_context_absent():
+    """No persisted destination: SQL NULL or JSON null.
+
+    ``EncryptedDeliveryTargetJSON`` stores Python ``None`` as JSON null.
+    ``IS NULL`` alone misses every ORM-cleared reply context, including reclaim.
+    """
+
+    return or_(
+        AgentTrigger.reply_context.is_(None),
+        func.jsonb_typeof(AgentTrigger.reply_context) == "null",
+    )
+
+
+def _sendable_channel_target(value: dict | None) -> dict | None:
+    if not isinstance(value, dict) or str(value.get("status") or "") == "unavailable":
+        return None
+    channel = str(value.get("channel") or "").strip()
+    if not channel:
+        return None
+    target = dict(value)
+    target["channel"] = channel
+    return target
+
+
+def _legacy_delivery_principal(trigger) -> uuid.UUID | None:
+    """The requester allowed to receive this trigger's legacy delivery.
+
+    Quarantine and a missing ``created_by`` have no authorized origin.
+    A scoped admin who can see the row is not that requester.
+    """
+
+    if trigger_execution_block_reason(trigger):
+        return None
+    return trigger_owner_user_id(trigger)
+
+
+async def _latest_authorized_channel_target(db, *, agent_id: uuid.UUID, principal_id: uuid.UUID) -> dict | None:
+    """Latest non-web channel target whose session belongs to ``principal_id``."""
+
+    from app.models.chat_session import ChatSession
+
+    session = (
+        await db.execute(
+            select(ChatSession)
+            .where(
+                ChatSession.agent_id == agent_id,
+                ChatSession.user_id == principal_id,
+                ChatSession.source_channel.notin_(("web", "agent")),
+                ChatSession.delivery_target_json.isnot(None),
+            )
+            .order_by(ChatSession.last_message_at.desc().nullslast(), ChatSession.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if session is None:
+        return None
+    return _sendable_channel_target(dict(session.delivery_target_json or {}))
+
 
 async def _recover_reply_target_from_session(
     agent_id: uuid.UUID,
     triggers: list,
 ) -> dict | None:
-    """Try to recover a channel delivery target for triggers that have
-    reply_context=NULL (created before the unified-delivery refactor).
+    """Recover one channel target for triggers that still have reply_context=NULL.
 
-    Strategy: find the agent's most recent non-web ChatSession that has
-    a delivery_target_json with a "channel" key. This is a best-effort
-    heuristic — it picks the last channel the user talked to this agent on.
+    The batch must share one requesting principal. The destination is that
+    principal's own latest channel session, never the agent's latest session.
+    A missing authorized origin stays unavailable and is not persisted.
     """
-    from app.models.chat_session import ChatSession
+
+    pending = [trigger for trigger in triggers if getattr(trigger, "reply_context", None) is None]
+    if not pending:
+        return None
+    principals = [_legacy_delivery_principal(trigger) for trigger in pending]
+    if any(principal is None for principal in principals) or len({str(principal) for principal in principals}) != 1:
+        return _unavailable_delivery_recovery()
+    principal = principals[0]
+    assert principal is not None
 
     try:
         tid = await resolve_tenant_for_agent(agent_id)
         async with tenant_scoped_session(tid) as db:
-            result = await db.execute(
-                select(ChatSession)
-                .where(
-                    ChatSession.agent_id == agent_id,
-                    ChatSession.source_channel != "web",
-                    ChatSession.source_channel != "agent",
-                    ChatSession.delivery_target_json.isnot(None),
-                )
-                .order_by(ChatSession.last_message_at.desc().nullslast())
-                .limit(1)
-            )
-            session = result.scalar_one_or_none()
-            if not session or not session.delivery_target_json:
-                return None
-
-            target = dict(session.delivery_target_json)
-            if not target.get("channel"):
-                return None
-
-            # Persist the recovered context back to the trigger so this
-            # fallback only runs once per trigger.
-            for trigger in triggers:
-                if getattr(trigger, "reply_context", None) is None:
-                    try:
-                        trigger_r = await db.execute(select(AgentTrigger).where(AgentTrigger.id == trigger.id))
-                        t_obj = trigger_r.scalar_one_or_none()
-                        if t_obj:
-                            t_obj.reply_context = target
-                    except Exception as exc:
-                        logger.debug("[TriggerDaemon] reply_context persist skipped: {}", exc)
+            target = await _latest_authorized_channel_target(db, agent_id=agent_id, principal_id=principal)
+            if target is None:
+                return _unavailable_delivery_recovery()
+            rows = []
+            for trigger in pending:
+                trigger_id = getattr(trigger, "id", None)
+                if trigger_id is None:
+                    return _unavailable_delivery_recovery()
+                row = (
+                    await db.execute(
+                        select(AgentTrigger).where(
+                            AgentTrigger.id == trigger_id,
+                            AgentTrigger.agent_id == agent_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if (
+                    row is None
+                    or row.reply_context is not None
+                    or str(_legacy_delivery_principal(row) or "") != str(principal)
+                ):
+                    return _unavailable_delivery_recovery()
+                rows.append(row)
+            for row in rows:
+                row.reply_context = dict(target)
             await db.commit()
-            return target
+            return dict(target)
     except Exception as exc:
         logger.debug("[TriggerDaemon] _recover_reply_target_from_session failed: {}", exc)
-        return None
+        return _unavailable_delivery_recovery()
 
 
 async def backfill_null_reply_contexts() -> dict:
-    """One-time startup job: patch all enabled triggers that have reply_context=NULL.
+    """Startup repair for enabled triggers whose reply_context is still NULL.
 
-    For each such trigger, look up the agent's most recent non-web ChatSession
-    with a delivery_target_json and copy it into reply_context. This fixes
-    triggers created before commit c0e00c8 (unified delivery refactor) where
-    only Feishu triggers got reply_context — TG/WeChat were left NULL.
+    Uses the same principal-scoped legacy rule as fire recovery. A trigger
+    keeps a same-principal channel destination and is skipped, still NULL,
+    when that origin is missing. Another person's session is never copied.
 
-    Returns: {"patched": N, "skipped": M}
+    Returns patched/skipped counts. ``unavailable_code`` is set when at least
+    one trigger had no authorized origin.
     """
-    from app.models.chat_session import ChatSession
 
     patched = 0
     skipped = 0
@@ -840,47 +927,38 @@ async def backfill_null_reply_contexts() -> dict:
             async_session() as db,
             enter_rls_bypass(db, reason="trigger reply_context backfill — enumerate all tenants' enabled triggers"),
         ):
-            # All enabled triggers with NULL reply_context
             null_triggers = await db.execute(
                 select(AgentTrigger).where(
                     AgentTrigger.is_enabled.is_(True),
-                    AgentTrigger.reply_context.is_(None),
+                    _reply_context_absent(),
                 )
             )
             triggers = null_triggers.scalars().all()
             if not triggers:
-                return {"patched": 0, "skipped": 0}
+                return {"patched": 0, "skipped": 0, "unavailable_code": None}
 
-            # Group by agent for efficient session lookup
-            agent_triggers: dict[uuid.UUID, list] = {}
-            for t in triggers:
-                agent_triggers.setdefault(t.agent_id, []).append(t)
-
-            for aid, agent_trigs in agent_triggers.items():
-                # Find the most recent non-web session with delivery_target
-                session_r = await db.execute(
-                    select(ChatSession)
-                    .where(
-                        ChatSession.agent_id == aid,
-                        ChatSession.source_channel != "web",
-                        ChatSession.source_channel != "agent",
-                        ChatSession.delivery_target_json.isnot(None),
-                    )
-                    .order_by(ChatSession.last_message_at.desc().nullslast())
-                    .limit(1)
-                )
-                session = session_r.scalar_one_or_none()
-                if not session or not session.delivery_target_json or not session.delivery_target_json.get("channel"):
-                    skipped += len(agent_trigs)
+            grouped: dict[tuple[uuid.UUID, uuid.UUID], list] = {}
+            for trigger in triggers:
+                principal = _legacy_delivery_principal(trigger)
+                if principal is None:
+                    skipped += 1
                     continue
+                grouped.setdefault((trigger.agent_id, principal), []).append(trigger)
 
-                target = dict(session.delivery_target_json)
-                for t in agent_trigs:
-                    t.reply_context = target
+            for (aid, principal), rows in grouped.items():
+                target = await _latest_authorized_channel_target(db, agent_id=aid, principal_id=principal)
+                if target is None:
+                    skipped += len(rows)
+                    continue
+                for row in rows:
+                    if str(_legacy_delivery_principal(row) or "") != str(principal):
+                        skipped += 1
+                        continue
+                    row.reply_context = dict(target)
                     patched += 1
                     logger.info(
                         "[TriggerDaemon] Backfilled reply_context for trigger '{}' (agent {}): channel={}",
-                        t.name,
+                        row.name,
                         aid,
                         target.get("channel"),
                     )
@@ -889,7 +967,11 @@ async def backfill_null_reply_contexts() -> dict:
     except Exception as exc:
         logger.warning("[TriggerDaemon] backfill_null_reply_contexts failed: {}", exc)
 
-    return {"patched": patched, "skipped": skipped}
+    return {
+        "patched": patched,
+        "skipped": skipped,
+        "unavailable_code": AUTHORIZED_DELIVERY_ORIGIN_UNAVAILABLE if skipped else None,
+    }
 
 
 # ── SSRF Protection ─────────────────────────────────────────────────
@@ -971,6 +1053,8 @@ def _inflight_fire_is_active(config: dict, now: datetime) -> bool:
 async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
     """Return True if this trigger should fire right now."""
     if not trigger.is_enabled:
+        return False
+    if str((trigger.config or {}).get("authority_state") or "").strip().lower() == "quarantined":
         return False
     cfg = trigger.config or {}
     if _inflight_fire_is_active(cfg, now):
@@ -1786,13 +1870,45 @@ async def _deliver_batch_to_source_session(
                 source_session_id,
             )
             return False
-        user = (await db.execute(select(User).where(User.id == session.user_id))).scalar_one_or_none()
-        if user is None:
+        from app.services.agent_identity_lifecycle import resolve_live_effect_principal
+
+        principal = await resolve_live_effect_principal(db, agent)
+        if principal.block_reason or principal.user_id is None:
+            logger.warning(
+                "[TriggerDaemon] same_session source session {} has no live responsible principal — falling back",
+                source_session_id,
+            )
+            return False
+        requester_id = _shared_trigger_requester_id(triggers)
+        if requester_id is None or str(getattr(session, "user_id", "") or "") != str(requester_id):
+            logger.warning(
+                "[TriggerDaemon] same_session source session {} does not belong to the trigger requester — falling back",
+                source_session_id,
+            )
+            return False
+        user = (await db.execute(select(User).where(User.id == requester_id))).scalar_one_or_none()
+        if user is None or getattr(user, "is_active", True) is False:
             logger.warning(
                 "[TriggerDaemon] same_session source session {} has no resolvable owner — falling back",
                 source_session_id,
             )
             return False
+        if not await _requester_may_execute_triggers(db, user, agent_id=agent.id, triggers=triggers):
+            logger.warning(
+                "[TriggerDaemon] same_session source session {} requester lost execute authority — not falling through",
+                source_session_id,
+            )
+            await _skip_trigger_runtime_task(
+                runtime_task_id,
+                skip_reason="trigger_requester_unauthorized",
+                result_summary="Skipped same-session delivery because the requester cannot execute the trigger.",
+                settlement_overrides={
+                    str(getattr(trigger, "id", "")): "release"
+                    for trigger in triggers
+                    if getattr(trigger, "id", None)
+                },
+            )
+            return True
 
         content, trigger_names = _build_trigger_context(triggers)
         trigger_ids = [str(getattr(t, "id", "")) for t in triggers if getattr(t, "id", None)]
@@ -1864,11 +1980,244 @@ async def _deliver_batch_to_source_session(
     return True
 
 
+def _shared_trigger_requester_id(triggers: list[AgentTrigger]) -> uuid.UUID | None:
+    """The one requester authorized to deliver this batch, or None."""
+
+    from app.services.trigger_resource_authority import trigger_execution_block_reason, trigger_owner_user_id
+
+    requester_ids: list[uuid.UUID] = []
+    for trigger in triggers:
+        if trigger_execution_block_reason(trigger):
+            return None
+        requester_id = trigger_owner_user_id(trigger)
+        if requester_id is None:
+            return None
+        requester_ids.append(requester_id)
+    if len({str(value) for value in requester_ids}) != 1:
+        return None
+    return requester_ids[0]
+
+
+def _sole_effect_user(effect_users: dict[str, uuid.UUID], triggers: list[AgentTrigger]) -> uuid.UUID | None:
+    """Return the only mapped requester. An empty map has no opinion."""
+
+    if not effect_users:
+        return None
+    chosen: uuid.UUID | None = None
+    for trigger in triggers:
+        user_id = effect_users.get(str(getattr(trigger, "id", "")))
+        if user_id is None:
+            return None
+        if chosen is None:
+            chosen = user_id
+        elif str(chosen) != str(user_id):
+            return None
+    return chosen
+
+
+def _group_triggers_by_effect_user(
+    triggers: list[AgentTrigger],
+    effect_users: dict[str, uuid.UUID],
+) -> list[tuple[uuid.UUID, list[AgentTrigger]]] | None:
+    if not triggers:
+        return []
+    groups: dict[str, tuple[uuid.UUID, list[AgentTrigger]]] = {}
+    for trigger in triggers:
+        user_id = effect_users.get(str(getattr(trigger, "id", "")))
+        if user_id is None:
+            return None
+        key = str(user_id)
+        if key not in groups:
+            groups[key] = (user_id, [])
+        groups[key][1].append(trigger)
+    return list(groups.values())
+
+
+async def _load_durable_triggers(
+    db,
+    *,
+    agent_id: uuid.UUID,
+    triggers: list[AgentTrigger],
+) -> dict[uuid.UUID, AgentTrigger]:
+    """Reload claimed trigger rows. A snapshot is not current authority."""
+
+    trigger_ids = [trigger.id for trigger in triggers if getattr(trigger, "id", None) is not None]
+    if not trigger_ids:
+        return {}
+    rows = list(
+        (
+            await db.execute(
+                select(AgentTrigger).where(
+                    AgentTrigger.agent_id == agent_id,
+                    AgentTrigger.id.in_(trigger_ids),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {row.id: row for row in rows}
+
+
+async def _requester_may_execute_triggers(db, user, *, agent_id: uuid.UUID, triggers: list[AgentTrigger]) -> bool:
+    """Current Agent execute authority on the durable rows, not the claim snapshot."""
+
+    from fastapi import HTTPException
+
+    from app.services.trigger_resource_authority import authorize_trigger_action, trigger_execution_block_reason
+
+    durable = await _load_durable_triggers(db, agent_id=agent_id, triggers=triggers)
+    for trigger in triggers:
+        row = durable.get(getattr(trigger, "id", None))
+        if row is None or trigger_execution_block_reason(row):
+            return False
+        try:
+            await authorize_trigger_action(db, user, agent_id=agent_id, trigger=row, action="execute")
+        except HTTPException:
+            return False
+    return True
+
+
+async def _prepare_trigger_authority(
+    agent_id: uuid.UUID,
+    triggers: list[AgentTrigger],
+    runtime_task_id: str | None,
+) -> tuple[list[AgentTrigger], dict[str, str], dict[str, uuid.UUID]] | None:
+    """Return runnable triggers, release overrides, and requester ids.
+
+    None means the runtime task was skipped. A missing tenant is not a skip.
+    A blocked responsible principal skips the whole batch and does not
+    quarantine legacy rows. One refused trigger does not drop the others.
+    Runnable rows are the durable records, rechecked at the Agent boundary.
+    """
+
+    from fastapi import HTTPException
+
+    from app.models.user import User
+    from app.services.agent_identity_lifecycle import resolve_live_effect_principal
+    from app.services.trigger_resource_authority import (
+        authorize_trigger_action,
+        quarantine_stale_trigger_authority,
+        trigger_execution_block_reason,
+        trigger_owner_user_id,
+    )
+
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    if tenant_id is None:
+        return list(triggers), {}, {}
+
+    skip_reason = None
+    skip_summary = None
+    runnable: list[AgentTrigger] = []
+    refused: list[tuple[AgentTrigger, str]] = []
+    effect_users: dict[str, uuid.UUID] = {}
+    async with tenant_scoped_session(tenant_id, require_tenant=True, source="trigger_authority") as db:
+        agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
+        if agent is None:
+            skip_reason = "agent_not_found"
+            skip_summary = f"Skipped trigger invocation because agent {agent_id} was not found."
+        else:
+            principal = await resolve_live_effect_principal(db, agent)
+            if principal.block_reason or principal.user_id is None:
+                skip_reason = principal.block_reason or "responsible_principal_missing"
+                skip_summary = (
+                    "Skipped trigger invocation because the responsible principal cannot authorize a new effect."
+                )
+            else:
+                durable = await _load_durable_triggers(db, agent_id=agent_id, triggers=triggers)
+                candidates: list[tuple[AgentTrigger, uuid.UUID]] = []
+                for claimed in triggers:
+                    row = durable.get(getattr(claimed, "id", None))
+                    if row is None:
+                        refused.append((claimed, "trigger_authority_unavailable"))
+                        continue
+                    reason = trigger_execution_block_reason(row)
+                    if reason:
+                        refused.append((row, reason))
+                        continue
+                    created_by = trigger_owner_user_id(row)
+                    if created_by is None:
+                        refused.append((row, "trigger_authority_quarantined"))
+                        continue
+                    candidates.append((row, created_by))
+                loaded: dict[str, User] = {}
+                requester_ids = list(dict.fromkeys(created_by for _row, created_by in candidates))
+                if requester_ids:
+                    users = list(
+                        (await db.execute(select(User).where(User.id.in_(requester_ids)))).scalars().all()
+                    )
+                    loaded = {str(user.id): user for user in users}
+                for row, created_by in candidates:
+                    requester = loaded.get(str(created_by))
+                    if requester is None or getattr(requester, "is_active", True) is False:
+                        refused.append((row, "trigger_requester_inactive"))
+                        continue
+                    if str(getattr(requester, "tenant_id", "")) != str(getattr(agent, "tenant_id", "")):
+                        refused.append((row, "trigger_requester_tenant_mismatch"))
+                        continue
+                    try:
+                        await authorize_trigger_action(
+                            db,
+                            requester,
+                            agent_id=agent.id,
+                            trigger=row,
+                            action="execute",
+                        )
+                    except HTTPException:
+                        refused.append((row, "trigger_requester_unauthorized"))
+                        continue
+                    effect_users[str(row.id)] = requester.id
+                    runnable.append(row)
+                quarantine_ids = [
+                    trigger.id
+                    for trigger, reason in refused
+                    if reason != "trigger_authority_unavailable" and getattr(trigger, "id", None) is not None
+                ]
+                if quarantine_ids:
+                    await quarantine_stale_trigger_authority(
+                        db,
+                        agent_id=agent_id,
+                        trigger_ids=quarantine_ids,
+                        reason_by_id={
+                            str(trigger.id): reason
+                            for trigger, reason in refused
+                            if reason != "trigger_authority_unavailable" and getattr(trigger, "id", None) is not None
+                        },
+                    )
+                    await db.commit()
+    if skip_reason is not None:
+        await _skip_trigger_runtime_task(
+            runtime_task_id,
+            skip_reason=skip_reason,
+            result_summary=skip_summary or "Skipped trigger invocation.",
+            metadata_json={"trigger_ids": [str(trigger.id) for trigger in triggers if getattr(trigger, "id", None)]},
+            settlement_overrides={str(trigger.id): "release" for trigger in triggers if getattr(trigger, "id", None)},
+        )
+        return None
+    if refused and not runnable:
+        await _skip_trigger_runtime_task(
+            runtime_task_id,
+            skip_reason="trigger_authority_unavailable",
+            result_summary="Skipped trigger invocation because no trigger has an authorized requester.",
+            metadata_json={
+                "trigger_ids": [str(trigger.id) for trigger in triggers if getattr(trigger, "id", None)],
+                "refused_trigger_reasons": {str(trigger.id): reason for trigger, reason in refused},
+            },
+            settlement_overrides={str(trigger.id): "release" for trigger, _reason in refused},
+        )
+        return None
+    return runnable, {str(trigger.id): "release" for trigger, _reason in refused}, effect_users
+
+
 async def _invoke_agent_for_triggers(
     agent_id: uuid.UUID,
     triggers: list[AgentTrigger],
     *,
     runtime_task_id: str | None = None,
+    _authority_checked: bool = False,
+    _effect_user_id: uuid.UUID | None = None,
+    _inherited_overrides: dict[str, str] | None = None,
+    _inherited_workflow_results: list[dict[str, Any]] | None = None,
 ):
     """Invoke an agent with context from one or more fired triggers.
 
@@ -1884,13 +2233,28 @@ async def _invoke_agent_for_triggers(
     # engine branch; the rest continue down the existing prose-ReAct path.
     from app.services.workflow_trigger import fire_workflow_for_trigger
 
-    batch_triggers = list(triggers)
+    original_trigger_ids = [str(getattr(trigger, "id", "")) for trigger in triggers if getattr(trigger, "id", None)]
+    if _authority_checked:
+        batch_source = list(triggers)
+        release_overrides = dict(_inherited_overrides or {})
+        effect_users = (
+            {str(getattr(trigger, "id", "")): _effect_user_id for trigger in batch_source}
+            if _effect_user_id is not None
+            else {}
+        )
+    else:
+        prepared = await _prepare_trigger_authority(agent_id, list(triggers), runtime_task_id)
+        if prepared is None:
+            return
+        batch_source, release_overrides, effect_users = prepared
+
+    batch_triggers = list(batch_source)
     batch_trigger_ids = [str(getattr(trigger, "id", "")) for trigger in batch_triggers]
     batch_trigger_names = [str(getattr(trigger, "name", "")) for trigger in batch_triggers]
     batch_trigger_types = [str(getattr(trigger, "type", "")) for trigger in batch_triggers]
     react_triggers: list[AgentTrigger] = []
-    settlement_overrides: dict[str, str] = {}
-    workflow_results: list[dict[str, Any]] = []
+    settlement_overrides: dict[str, str] = dict(release_overrides)
+    workflow_results: list[dict[str, Any]] = list(_inherited_workflow_results or [])
     for trigger in batch_triggers:
         trigger_id = str(getattr(trigger, "id", ""))
         trigger_config = getattr(trigger, "config", None) or {}
@@ -1903,6 +2267,7 @@ async def _invoke_agent_for_triggers(
                 webhook_payload=trigger_config.get("_webhook_payload"),
                 trigger_id=getattr(trigger, "id", None),
                 runtime_task_id=runtime_task_id,
+                requester_user_id=effect_users.get(str(getattr(trigger, "id", ""))),
             )
         except Exception as exc:
             logger.error("[TriggerDaemon] workflow_ref fire failed for {}: {}", trigger.name, exc)
@@ -1925,7 +2290,7 @@ async def _invoke_agent_for_triggers(
                 "success"
                 if fire_result.status == "launched"
                 else "hold"
-                if fire_result.status == "needs_reconciliation"
+                if fire_result.status in {"needs_reconciliation", "authority_unavailable"}
                 else "failure"
             )
             workflow_results.append(
@@ -1945,38 +2310,77 @@ async def _invoke_agent_for_triggers(
                 fire_result.status,
                 fire_result.run_id,
             )
+    prose_groups = None if _authority_checked else _group_triggers_by_effect_user(react_triggers, effect_users)
+    if prose_groups is not None and len(prose_groups) > 1:
+        inherited = dict(settlement_overrides)
+        inherited_results = list(workflow_results)
+        for index, (user_id, group) in enumerate(prose_groups):
+            if index < len(prose_groups) - 1:
+                captured: list[dict[str, str]] = []
+                token = _TRIGGER_TERMINAL_SINK.set(captured)
+                try:
+                    await _invoke_agent_for_triggers(
+                        agent_id,
+                        group,
+                        runtime_task_id=runtime_task_id,
+                        _authority_checked=True,
+                        _effect_user_id=user_id,
+                    )
+                finally:
+                    _TRIGGER_TERMINAL_SINK.reset(token)
+                for overrides in captured:
+                    inherited.update(overrides)
+                continue
+            await _invoke_agent_for_triggers(
+                agent_id,
+                group,
+                runtime_task_id=runtime_task_id,
+                _authority_checked=True,
+                _effect_user_id=user_id,
+                _inherited_overrides=inherited,
+                _inherited_workflow_results=inherited_results,
+            )
+        return
     if not react_triggers:
         workflow_reconciliation_required = any(outcome == "hold" for outcome in settlement_overrides.values())
         workflow_failed = any(outcome == "failure" for outcome in settlement_overrides.values())
+        authority_hold = any(item.get("status") == "authority_unavailable" for item in workflow_results)
+        asset_hold = any(item.get("status") == "needs_reconciliation" for item in workflow_results)
         if workflow_reconciliation_required:
             terminal_status = "needs_reconciliation"
         elif workflow_failed:
             terminal_status = "failed"
         else:
             terminal_status = "completed"
+        if authority_hold and not asset_hold:
+            workflow_summary = (
+                "Workflow trigger held because no live responsible principal can authorize a new effect."
+            )
+            workflow_terminal_reason = "workflow_authority_unavailable"
+        elif authority_hold and asset_hold:
+            workflow_summary = "Workflow trigger held for authority and asset-usage reconciliation."
+            workflow_terminal_reason = "workflow_authority_and_asset_hold"
+        elif workflow_reconciliation_required:
+            workflow_summary = (
+                "One or more workflow runs launched, but their asset usage evidence requires reconciliation."
+            )
+            workflow_terminal_reason = "workflow_asset_usage_evidence_pending"
+        elif workflow_failed:
+            workflow_summary = "One or more workflow-backed triggers failed before launch."
+            workflow_terminal_reason = "workflow_trigger_failed"
+        else:
+            workflow_summary = "All fired triggers were durably launched by the workflow engine branch."
+            workflow_terminal_reason = "workflow_launched"
         terminal_committed = await _update_trigger_runtime_task(
             runtime_task_id,
             status=terminal_status,
-            result_summary=(
-                "One or more workflow runs launched, but their asset usage evidence requires reconciliation."
-                if workflow_reconciliation_required
-                else "One or more workflow-backed triggers failed before launch."
-                if workflow_failed
-                else "All fired triggers were durably launched by the workflow engine branch."
-            ),
+            result_summary=workflow_summary,
             metadata_json={
                 "delivery": "workflow",
-                "terminal_reason": (
-                    "workflow_asset_usage_evidence_pending"
-                    if workflow_reconciliation_required
-                    else "workflow_trigger_failed"
-                    if workflow_failed
-                    else "workflow_launched"
-                ),
+                "terminal_reason": workflow_terminal_reason,
                 "needs_reconciliation": workflow_reconciliation_required,
-                "reconciliation_reason": (
-                    "workflow_asset_usage_evidence_pending" if workflow_reconciliation_required else None
-                ),
+                "reconciliation_reason": workflow_terminal_reason if workflow_reconciliation_required else None,
+                "trigger_ids": original_trigger_ids,
                 "trigger_settlement_overrides": settlement_overrides,
                 "workflow_trigger_results": workflow_results,
             },
@@ -2091,33 +2495,102 @@ async def _invoke_agent_for_triggers(
                 return
             runtime_options = collect_trigger_runtime_options(triggers)
 
-            explicit_context = ""
-            if runtime_options.get("context_from"):
-                explicit_context = await load_context_from(
-                    db,
-                    agent_id=agent_id,
-                    context_refs=list(runtime_options.get("context_from") or []),
-                )
-
             # E: a plan-born trigger fires for a user-confirmed plan — inject the
             # approved plan body as marching orders (read fresh from the plan row).
             confirmed_plan_context = await _build_confirmed_plan_context(db, triggers, agent_id)
 
-            # Three-bucket framing + event payload (exec/automation §2) — pure helper.
-            trigger_context, trigger_names = _build_trigger_context(
-                triggers,
-                explicit_context=explicit_context,
-                confirmed_plan_context=confirmed_plan_context,
-            )
-
-            # Create a fresh Reflection Session for this wake.
-            title = f"🤖 Reflection: {', '.join(trigger_names)}"
             run_uuid = _runtime_task_uuid_or_none(runtime_task_id)
             # Find agent's participant
             result = await db.execute(
                 select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id)
             )
             agent_participant = result.scalar_one_or_none()
+
+            from app.services.agent_identity_lifecycle import resolve_live_effect_principal
+
+            principal = await resolve_live_effect_principal(db, agent)
+            if principal.block_reason or principal.user_id is None:
+                await _skip_trigger_runtime_task(
+                    runtime_task_id,
+                    skip_reason=principal.block_reason or "responsible_principal_missing",
+                    result_summary=(
+                        "Skipped trigger invocation because the responsible principal cannot authorize a new effect."
+                    ),
+                    metadata_json={"workflow_trigger_results": workflow_results},
+                    settlement_overrides=_with_trigger_settlement_outcome(
+                        settlement_overrides,
+                        triggers,
+                        "release",
+                    ),
+                )
+                return
+            sole_effect_user = _effect_user_id or _sole_effect_user(effect_users, triggers)
+            if sole_effect_user is None and effect_users:
+                await _skip_trigger_runtime_task(
+                    runtime_task_id,
+                    skip_reason="trigger_authority_unavailable",
+                    result_summary=(
+                        "Skipped trigger invocation because the batch does not share one authorized requester."
+                    ),
+                    metadata_json={
+                        "trigger_ids": original_trigger_ids,
+                        "workflow_trigger_results": workflow_results,
+                    },
+                    settlement_overrides=_with_trigger_settlement_outcome(
+                        settlement_overrides,
+                        triggers,
+                        "release",
+                    ),
+                )
+                return
+            effect_user_id = sole_effect_user or principal.user_id
+            if effect_users or _effect_user_id is not None:
+                from app.models.user import User
+
+                effect_user = await db.get(User, effect_user_id)
+                if effect_user is None or not await _requester_may_execute_triggers(
+                    db,
+                    effect_user,
+                    agent_id=agent_id,
+                    triggers=triggers,
+                ):
+                    await _skip_trigger_runtime_task(
+                        runtime_task_id,
+                        skip_reason="trigger_requester_unauthorized",
+                        result_summary=(
+                            "Skipped trigger invocation because the requester cannot execute the durable trigger."
+                        ),
+                        metadata_json={"workflow_trigger_results": workflow_results},
+                        settlement_overrides=_with_trigger_settlement_outcome(
+                            settlement_overrides,
+                            triggers,
+                            "release",
+                        ),
+                    )
+                    return
+
+            explicit_context = ""
+            context_refs = list(runtime_options.get("context_from") or [])
+            if context_refs:
+                from app.models.user import User
+
+                context_reader = await db.get(User, effect_user_id)
+                explicit_context = (
+                    await load_context_from(
+                        db,
+                        agent_id=agent_id,
+                        context_refs=context_refs,
+                        reader=context_reader,
+                    )
+                    if context_reader is not None
+                    else ""
+                )
+            trigger_context, trigger_names = _build_trigger_context(
+                triggers,
+                explicit_context=explicit_context,
+                confirmed_plan_context=confirmed_plan_context,
+            )
+            title = f"🤖 Reflection: {', '.join(trigger_names)}"
 
             # Mint the session id up front so the run can be bound to it before
             # anything takes a lock on the RuntimeTask row.
@@ -2153,7 +2626,7 @@ async def _invoke_agent_for_triggers(
                 id=session_id,
                 agent_id=agent_id,
                 tenant_id=tenant_id,
-                user_id=agent.creator_id,
+                user_id=effect_user_id,
                 participant_id=agent_participant.id if agent_participant else None,
                 source_channel="trigger",
                 session_kind="trigger_run",
@@ -2197,7 +2670,7 @@ async def _invoke_agent_for_triggers(
                 actor_type="user",
                 event_type="user_message",
                 role="user",
-                user_id=agent.creator_id,
+                user_id=effect_user_id,
                 participant_id=agent_participant.id if agent_participant else None,
                 content=trigger_context,
                 source="trigger",
@@ -2212,7 +2685,7 @@ async def _invoke_agent_for_triggers(
             # tenant_id and run under a tenant-scoped session).
             agent_participant_id = agent_participant.id if agent_participant else None
             agent_tenant_id = tenant_id
-            agent_creator_id = agent.creator_id
+            agent_creator_id = effect_user_id
             trigger_run_uuid = run_uuid
 
         # Call LLM (outside the DB session to avoid long transactions)
@@ -2286,16 +2759,24 @@ async def _invoke_agent_for_triggers(
             None,
         )
 
-        # Fallback: if reply_context is NULL (pre-unified-delivery triggers),
-        # try to recover from the agent's most recent non-web ChatSession.
+        # Fallback: NULL reply_context may be filled only from the requesting
+        # principal's own channel session. An unavailable recovery is not a
+        # destination and must not be installed as the send target.
         if reply_target is None:
             try:
-                reply_target = await _recover_reply_target_from_session(agent_id, triggers)
+                recovered = await _recover_reply_target_from_session(agent_id, triggers)
+                reply_target = _sendable_channel_target(recovered if isinstance(recovered, dict) else None)
                 if reply_target:
                     logger.info(
                         "[TriggerDaemon] Recovered reply_target from session for agent {}: channel={}",
                         agent_id,
                         reply_target.get("channel"),
+                    )
+                elif isinstance(recovered, dict) and recovered.get("status") == "unavailable":
+                    logger.info(
+                        "[TriggerDaemon] Reply target unavailable for agent {}: code={}",
+                        agent_id,
+                        recovered.get("code"),
                     )
             except Exception as _recover_err:
                 logger.debug("[TriggerDaemon] reply_target recovery failed: {}", _recover_err)
@@ -2327,7 +2808,7 @@ async def _invoke_agent_for_triggers(
                 role_description=agent.role_description or "",
                 tenant_id=agent_tenant_id,
                 agent_id=agent_id,
-                user_id=agent.creator_id,
+                user_id=effect_user_id,
                 on_chunk=on_chunk,
                 on_tool_call=on_tool_call,
                 session_id=str(session_id),

@@ -159,7 +159,8 @@ async def test_execute_task_delegates_to_runtime_invoker(monkeypatch, terminal_r
     )
 
     setup_session = _FakeSession([task])
-    model_session = _FakeSession([agent, model, None])
+    requester = SimpleNamespace(id=creator_id, tenant_id=tenant_id, is_active=True)
+    model_session = _FakeSession([agent, model, requester, None])
     final_session = _FakeSession([task])
     sessions = [setup_session, model_session, final_session]
 
@@ -335,9 +336,10 @@ async def test_execute_task_persists_reflection_session_tool_calls_and_t0_ledger
         tenant_id=tenant_id,
     )
     participant = SimpleNamespace(id=participant_id)
+    requester = SimpleNamespace(id=creator_id, tenant_id=tenant_id, is_active=True)
 
     setup_session = _FakeSession([task])
-    prepare_session = _FakeSession([agent, model, participant])
+    prepare_session = _FakeSession([agent, model, requester, participant])
     tool_call_session = _FakeSession([])
     final_session = _FakeSession([task])
     sessions = [setup_session, prepare_session, tool_call_session, final_session]

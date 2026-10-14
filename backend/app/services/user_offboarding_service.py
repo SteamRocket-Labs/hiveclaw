@@ -26,7 +26,8 @@ from app.models.runtime_task import RuntimeTask
 from app.models.security_audit import ResourcePermission
 from app.models.task import Task
 from app.models.user import User
-from app.services.agent_ownership_service import transfer_loaded_agent_owner
+from app.services.agent_ownership_service import defer_agent_handover_audits, transfer_loaded_agent_owner
+from app.services.trigger_resource_authority import quarantine_transferred_trigger_authority
 from app.services.external_principal_service import unlink_external_principal
 
 
@@ -563,20 +564,24 @@ async def offboard_loaded_user(
         )
 
     transferred_agent_ids: list[uuid.UUID] = []
-    for agent in agents:
-        receipt = await transfer_loaded_agent_owner(
-            db,
-            agent=agent,
-            new_owner=successor,
-            actor=actor,
-            reason=clean_reason,
-            expected_owner_id=target_user.id,
-            mode="user_offboarding",
-            request_id=clean_request_id,
-            flush=False,
-        )
-        if receipt.status == "transferred":
-            transferred_agent_ids.append(agent.id)
+    # Advisory (inside revoke) must be held before any Trigger row lock.
+    # The handover audit is inserted only after quarantine, so the append-only
+    # audit_logs trigger never sees an UPDATE of quarantined_trigger_ids.
+    with defer_agent_handover_audits() as handover_audits:
+        for agent in agents:
+            receipt = await transfer_loaded_agent_owner(
+                db,
+                agent=agent,
+                new_owner=successor,
+                actor=actor,
+                reason=clean_reason,
+                expected_owner_id=target_user.id,
+                mode="user_offboarding",
+                request_id=clean_request_id,
+                flush=False,
+            )
+            if receipt.status == "transferred":
+                transferred_agent_ids.append(agent.id)
 
     now = datetime.now(timezone.utc)
     revocations = await revoke_user_authority(
@@ -585,6 +590,17 @@ async def offboard_loaded_user(
         actor_user=actor,
         now=now,
     )
+    for audit in handover_audits:
+        quarantined_trigger_ids = await quarantine_transferred_trigger_authority(
+            db,
+            agent_id=audit.agent_id,
+            previous_owner_id=target_user.id,
+        )
+        audit.details = {
+            **dict(audit.details or {}),
+            "quarantined_trigger_ids": [str(value) for value in quarantined_trigger_ids],
+        }
+        db.add(audit)
     was_active = bool(target_user.is_active)
     target_user.is_active = False
     db.add(

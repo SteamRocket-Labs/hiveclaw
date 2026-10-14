@@ -21,7 +21,10 @@ from app.models.runtime_task import RuntimeTask
 from app.models.trigger import AgentTrigger
 from app.core.execution_context import ExecutionPrincipal
 from app.services.runtime_task_authority import authorize_runtime_task_record
-from app.services.trigger_resource_authority import filter_authorized_triggers
+from app.services.trigger_resource_authority import (
+    append_trigger_authority_recovery,
+    filter_authorized_triggers,
+)
 
 EVENT_WAIT_TRIGGER_TYPES = {"poll", "on_message", "webhook"}
 SCHEDULED_TRIGGER_TYPES = {"cron", "once", "interval"}
@@ -260,7 +263,11 @@ def build_trigger_view(
     max_fires = getattr(trigger, "max_fires", None) or cfg.get("max_fires")
     fire_count = int(getattr(trigger, "fire_count", 0) or 0)
 
-    if _one_shot_completed(trigger, latest_attempt):
+    if str(cfg.get("authority_state") or "").strip().lower() == "quarantined":
+        attention_state = "authority_revoked"
+        attention_reason = "Trigger authority was revoked and must be reclaimed by the current responsible person."
+        next_action = "reclaim_trigger_authority"
+    elif _one_shot_completed(trigger, latest_attempt):
         attention_state = "completed"
         attention_reason = "This one-shot wake ran and completed successfully."
     elif not bool(getattr(trigger, "is_enabled", True)):
@@ -395,6 +402,14 @@ async def build_agent_autonomy_overview(
             resource_user,
             agent_id=agent_id,
             triggers=triggers,
+            agent_access=agent_access,
+        )
+        authorized_triggers = await append_trigger_authority_recovery(
+            db,
+            resource_user,
+            agent_id=agent_id,
+            triggers=triggers,
+            visible=authorized_triggers,
             agent_access=agent_access,
         )
         triggers = [trigger for trigger, _decision in authorized_triggers]

@@ -38,15 +38,109 @@ def _can_resolve_agent_approval(agent: Agent, user: User) -> bool:
     """Return whether user can resolve approvals for this agent.
 
     The current Agent owner and scoped business administrators (PDEC-013) hold
-    resolution authority; a delegated capability is never enough.
+    resolution authority; a delegated capability is never enough. An inactive
+    user cannot resolve, including an inactive current owner.
     """
     from app.core.permissions import is_scoped_business_admin
 
+    if getattr(user, "is_active", True) is False:
+        return False
     user_id = getattr(user, "id", None)
     owner_user_id = getattr(agent, "owner_user_id", None) or getattr(agent, "creator_id", None)
     if _same_uuid(owner_user_id, user_id):
         return True
     return is_scoped_business_admin(user, resource_tenant_id=getattr(agent, "tenant_id", None))
+
+
+def approval_notification_user_ids(
+    *,
+    agent: Agent,
+    owner: User | None,
+    admins: list[User],
+    requester: User | None = None,
+    include_requester: bool = False,
+) -> list[uuid.UUID]:
+    """Live approvers for a pending or resolved approval.
+
+    The active current owner is the recipient. When that owner is missing or
+    inactive, live scoped administrators of the company are the fallback.
+    The historical creator is included only when they are that owner, a live
+    administrator in the fallback, or the original requester.
+    """
+
+    from app.core.permissions import effective_agent_owner_id, is_scoped_business_admin
+
+    recipient_ids: list[uuid.UUID] = []
+    owner_id = effective_agent_owner_id(agent)
+    owner_is_live = (
+        owner is not None
+        and getattr(owner, "is_active", True) is not False
+        and _same_uuid(getattr(owner, "id", None), owner_id)
+    )
+    if owner_is_live and owner is not None:
+        recipient_ids.append(owner.id)
+    else:
+        tenant_id = getattr(agent, "tenant_id", None)
+        for admin in admins:
+            if getattr(admin, "is_active", True) is False:
+                continue
+            if not is_scoped_business_admin(admin, resource_tenant_id=tenant_id):
+                continue
+            if not any(_same_uuid(admin.id, existing) for existing in recipient_ids):
+                recipient_ids.append(admin.id)
+    if (
+        include_requester
+        and requester is not None
+        and getattr(requester, "is_active", True) is not False
+        and not any(_same_uuid(requester.id, existing) for existing in recipient_ids)
+    ):
+        recipient_ids.append(requester.id)
+    return recipient_ids
+
+
+async def _load_approval_recipients(
+    db: AsyncSession,
+    agent: Agent,
+    *,
+    requester_id: uuid.UUID | None = None,
+    include_requester: bool = False,
+) -> list[User]:
+    from app.core.permissions import effective_agent_owner_id
+
+    owner_id = effective_agent_owner_id(agent)
+    owner = None
+    if owner_id is not None:
+        owner = (await db.execute(select(User).where(User.id == owner_id))).scalar_one_or_none()
+    admins: list[User] = []
+    if owner is None or getattr(owner, "is_active", True) is False:
+        admins = list(
+            (
+                await db.execute(
+                    select(User).where(
+                        User.tenant_id == agent.tenant_id,
+                        User.is_active.is_(True),
+                        User.role.in_(("org_admin", "platform_admin")),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    requester = None
+    if include_requester and requester_id is not None:
+        requester = (await db.execute(select(User).where(User.id == requester_id))).scalar_one_or_none()
+    recipient_ids = approval_notification_user_ids(
+        agent=agent,
+        owner=owner,
+        admins=admins,
+        requester=requester,
+        include_requester=include_requester,
+    )
+    by_id = {}
+    for user in [owner, requester, *admins]:
+        if user is not None and getattr(user, "id", None) is not None:
+            by_id[str(user.id)] = user
+    return [by_id[str(user_id)] for user_id in recipient_ids if str(user_id) in by_id]
 
 
 class ApprovalService:
@@ -147,7 +241,7 @@ class ApprovalService:
         return {
             "allowed": False,
             "approval_id": str(approval.id),
-            "message": "Approval requested from creator",
+            "message": "Approval requested from the current responsible approver",
         }
 
     async def resolve_approval(
@@ -314,32 +408,44 @@ class ApprovalService:
                 body_text = "Approval expired; submit a new request before execution."
             elif approval.execution_status == "failed" and approval.execution_result:
                 body_text = approval.execution_result[:200]
-            await send_notification(
-                db,
-                user_id=agent.creator_id,
-                type="approval_resolved",
-                title=f"[{agent.name}] {approval.action_type} — {status_label}",
-                body=body_text,
-                link=f"/agents/{agent.id}#approvals",
-                ref_id=approval.id,
-            )
-
+            requester_id = None
             requested_by = approval.details.get("requested_by") if approval.details else None
             if requested_by:
                 try:
-                    requester_id = uuid.UUID(requested_by)
-                    if requester_id != agent.creator_id:
-                        await send_notification(
-                            db,
-                            user_id=requester_id,
-                            type="approval_resolved",
-                            title=f"[{agent.name}] {approval.action_type} — {status_label}",
-                            body=body_text,
-                            link=f"/agents/{agent.id}#activityLog",
-                            ref_id=approval.id,
-                        )
+                    requester_id = uuid.UUID(str(requested_by))
                 except (ValueError, AttributeError) as notify_err:
-                    logger.debug("Could not notify requester %s: %s", requested_by, notify_err)
+                    logger.debug("Could not parse approval requester %s: %s", requested_by, notify_err)
+            approvers = await _load_approval_recipients(db, agent)
+            approver_ids = {str(user.id) for user in approvers}
+            for recipient in approvers:
+                await send_notification(
+                    db,
+                    user_id=recipient.id,
+                    type="approval_resolved",
+                    title=f"[{agent.name}] {approval.action_type} — {status_label}",
+                    body=body_text,
+                    link=f"/agents/{agent.id}#approvals",
+                    ref_id=approval.id,
+                )
+            if requester_id is not None and str(requester_id) not in approver_ids:
+                requester_recipients = await _load_approval_recipients(
+                    db,
+                    agent,
+                    requester_id=requester_id,
+                    include_requester=True,
+                )
+                for recipient in requester_recipients:
+                    if str(recipient.id) in approver_ids:
+                        continue
+                    await send_notification(
+                        db,
+                        user_id=recipient.id,
+                        type="approval_resolved",
+                        title=f"[{agent.name}] {approval.action_type} — {status_label}",
+                        body=body_text,
+                        link=f"/agents/{agent.id}#activityLog",
+                        ref_id=approval.id,
+                    )
 
         await db.flush()
         return approval
@@ -348,25 +454,27 @@ class ApprovalService:
         """Send pending approval notification via web and Feishu when available."""
         from app.services.notification_service import send_notification
 
-        await send_notification(
-            db,
-            user_id=agent.creator_id,
-            type="approval_pending",
-            title=f"[{agent.name}] approval required: {approval.action_type}",
-            body=json.dumps(approval.details, ensure_ascii=False)[:200],
-            link=f"/agents/{agent.id}#approvals",
-            ref_id=approval.id,
-        )
+        recipients = await _load_approval_recipients(db, agent)
+        body = json.dumps(approval.details, ensure_ascii=False)[:200]
+        for recipient in recipients:
+            await send_notification(
+                db,
+                user_id=recipient.id,
+                type="approval_pending",
+                title=f"[{agent.name}] approval required: {approval.action_type}",
+                body=body,
+                link=f"/agents/{agent.id}#approvals",
+                ref_id=approval.id,
+            )
 
         channel_result = await db.execute(select(ChannelConfig).where(ChannelConfig.agent_id == agent.id))
         channel = channel_result.scalars().first()
         if channel and channel.app_id and channel.app_secret:
-            creator_result = await db.execute(select(User).where(User.id == agent.creator_id))
-            creator = creator_result.scalar_one_or_none()
-            delivery_target = (
-                await channel_user_service.get_feishu_delivery_target(db, user=creator) if creator else None
-            )
-            if creator and delivery_target:
+            card_body = json.dumps(approval.details, ensure_ascii=False)[:500]
+            for recipient in recipients:
+                delivery_target = await channel_user_service.get_feishu_delivery_target(db, user=recipient)
+                if not delivery_target:
+                    continue
                 receive_id, id_type = delivery_target
                 await feishu_service.send_approval_card(
                     channel.app_id,
@@ -375,7 +483,7 @@ class ApprovalService:
                     id_type,
                     agent.name,
                     approval.action_type,
-                    json.dumps(approval.details, ensure_ascii=False)[:500],
+                    card_body,
                     str(approval.id),
                     extra_config=channel.extra_config,
                 )

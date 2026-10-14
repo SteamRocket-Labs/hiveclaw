@@ -6,7 +6,10 @@ import uuid
 
 from fastapi import HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import NoInspectionAvailable
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.inspection import inspect as sqlalchemy_inspect
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.resource_authority import authorize_resource_action, filter_authorized_resources
 from app.models.trigger import AgentTrigger
@@ -21,6 +24,22 @@ _RUNTIME_CONFIG_KEYS = frozenset(
         "backoff_until",
     }
 )
+# Another principal's source, plan, and approval. Reclaim and ordinary-owner
+# recovery must not carry these forward. The trigger's own identity stays.
+_PRIVATE_AUTHORITY_CONFIG_KEYS = frozenset(
+    {
+        "root_session_id",
+        "source_session_id",
+        "confirmed_plan_session_id",
+        "context_from",
+        "delivery_target_json",
+        "plan_id",
+        "plan_version",
+        "plan_hash",
+        "plan_authorization",
+    }
+)
+_PRIVATE_AUTHORITY_METADATA_KEYS = frozenset({"plan_exempt_reason", "plan_recommendation_id"})
 
 
 def _runtime_config_key(key: object) -> bool:
@@ -46,7 +65,7 @@ def _uuid_value(config: dict, *keys: str) -> uuid.UUID | None:
 
 
 def trigger_owner_user_id(trigger: AgentTrigger) -> uuid.UUID | None:
-    return _uuid_value(dict(trigger.config or {}), "created_by")
+    return _uuid_value(dict(getattr(trigger, "config", None) or {}), "created_by")
 
 
 def trigger_root_session_id(trigger: AgentTrigger) -> uuid.UUID | None:
@@ -168,6 +187,226 @@ async def authorize_trigger_action(
         manager_override_reason=operator_reason,
         agent_access=agent_access,
     )
+
+
+def trigger_execution_block_reason(trigger: AgentTrigger, _responsible_user_id: uuid.UUID | None = None) -> str | None:
+    """Return why this trigger's own authority cannot create a new effect.
+
+    Quarantine and missing ``created_by`` block. A recorded requester who is
+    not the agent owner is not stale: resource ownership is ``created_by``.
+    The caller still has to revalidate that requester. This helper does not
+    grant the agent owner's privilege to a missing or foreign requester.
+    """
+
+    config = dict(getattr(trigger, "config", None) or {})
+    state = str(config.get("authority_state") or "").strip().lower()
+    if state == "quarantined" or trigger_owner_user_id(trigger) is None:
+        return "trigger_authority_quarantined"
+    return None
+
+
+def _without_private_authority(config: dict) -> dict:
+    cleaned = {key: value for key, value in config.items() if key not in _PRIVATE_AUTHORITY_CONFIG_KEYS}
+    metadata = dict(cleaned.get("metadata") or {})
+    for key in _PRIVATE_AUTHORITY_METADATA_KEYS:
+        metadata.pop(key, None)
+    if metadata:
+        cleaned["metadata"] = metadata
+    else:
+        cleaned.pop("metadata", None)
+    return cleaned
+
+
+def _assign_trigger_config(trigger: AgentTrigger, config: dict) -> None:
+    trigger.config = config
+    try:
+        sqlalchemy_inspect(trigger)
+    except NoInspectionAvailable:
+        return
+    flag_modified(trigger, "config")
+
+
+async def quarantine_transferred_trigger_authority(
+    db: AsyncSession,
+    *,
+    agent_id: uuid.UUID,
+    previous_owner_id: uuid.UUID | None,
+) -> list[uuid.UUID]:
+    """Disable triggers bound to the owner who just lost the agent.
+
+    Historical ``created_by`` stays in place. Triggers with no ``created_by``,
+    and triggers bound to someone else, are left untouched.
+    """
+
+    if previous_owner_id is None:
+        return []
+    rows = list(
+        (
+            await db.execute(select(AgentTrigger).where(AgentTrigger.agent_id == agent_id).with_for_update())
+        )
+        .scalars()
+        .all()
+    )
+    quarantined: list[uuid.UUID] = []
+    for trigger in rows:
+        owner_id = trigger_owner_user_id(trigger)
+        if owner_id is None or str(owner_id) != str(previous_owner_id):
+            continue
+        config = dict(trigger.config or {})
+        if str(config.get("authority_state") or "").strip().lower() == "quarantined":
+            continue
+        config["authority_state"] = "quarantined"
+        config["authority_revoked_reason"] = "agent_owner_transferred"
+        _assign_trigger_config(trigger, config)
+        trigger.is_enabled = False
+        quarantined.append(trigger.id)
+    return quarantined
+
+
+async def quarantine_stale_trigger_authority(
+    db: AsyncSession,
+    *,
+    agent_id: uuid.UUID,
+    trigger_ids: list[uuid.UUID],
+    reason_by_id: dict | None = None,
+) -> list[uuid.UUID]:
+    """Quarantine and disable the listed triggers without rewriting ``created_by``."""
+
+    if not trigger_ids:
+        return []
+    reasons = {str(key): value for key, value in dict(reason_by_id or {}).items()}
+    rows = list(
+        (
+            await db.execute(
+                select(AgentTrigger)
+                .where(AgentTrigger.agent_id == agent_id, AgentTrigger.id.in_(list(trigger_ids)))
+                .with_for_update()
+            )
+        )
+        .scalars()
+        .all()
+    )
+    changed: list[uuid.UUID] = []
+    for trigger in rows:
+        config = dict(trigger.config or {})
+        if str(config.get("authority_state") or "").strip().lower() != "quarantined":
+            config["authority_state"] = "quarantined"
+            config["authority_revoked_reason"] = (
+                config.get("authority_revoked_reason") or reasons.get(str(trigger.id)) or "trigger_authority_stale"
+            )
+        _assign_trigger_config(trigger, config)
+        trigger.is_enabled = False
+        changed.append(trigger.id)
+    return changed
+
+
+def caller_may_reclaim_trigger_authority(*, caller: User, agent, principal) -> bool:
+    """Current live owner or a scoped administrator may reclaim a trigger.
+
+    An inactive or missing responsible principal blocks reclaim even for an
+    administrator. The historical creator has no authority from provenance.
+    """
+
+    from app.core.permissions import is_scoped_business_admin
+
+    if principal is None or getattr(principal, "block_reason", None) or getattr(principal, "user_id", None) is None:
+        return False
+    if getattr(caller, "is_active", True) is False:
+        return False
+    if str(getattr(caller, "id", "")) == str(principal.user_id):
+        return True
+    return is_scoped_business_admin(caller, resource_tenant_id=getattr(agent, "tenant_id", None))
+
+
+def apply_trigger_authority_reclaim(trigger: AgentTrigger, *, live_owner_id: uuid.UUID) -> uuid.UUID | None:
+    """Bind revoked authority to the live owner without enabling the trigger.
+
+    Enabling stays on the existing ``enable_autonomous_wake`` gate. The previous
+    ``created_by`` is retained as ``previous_authority_owner_id``. Source, plan,
+    and approval references from the old principal are cleared. This does not
+    rewrite the agent creator.
+    """
+
+    if trigger_authority_state(trigger) != "quarantined":
+        raise ValueError("trigger_authority_not_revoked")
+    previous = trigger_owner_user_id(trigger)
+    config = dict(trigger.config or {})
+    config["created_by"] = str(live_owner_id)
+    config["authority_state"] = "owned"
+    config.pop("authority_revoked_reason", None)
+    if previous is not None and str(previous) != str(live_owner_id):
+        config["previous_authority_owner_id"] = str(previous)
+    config = _without_private_authority(config)
+    _assign_trigger_config(trigger, config)
+    # Channel delivery is a column, not a config key. Leaving it would keep
+    # the previous principal's send target after the config refs are gone.
+    trigger.reply_context = None
+    trigger.is_enabled = False
+    return previous
+
+
+class _RecoveredTrigger:
+    """Read-only view. The stored row keeps the old principal's private config."""
+
+    def __init__(self, trigger: AgentTrigger):
+        self._trigger = trigger
+        self.config = _without_private_authority(dict(getattr(trigger, "config", None) or {}))
+        self.reply_context = None
+
+    def __getattr__(self, name: str):
+        return getattr(self._trigger, name)
+
+
+async def append_trigger_authority_recovery(
+    db: AsyncSession,
+    user: User,
+    *,
+    agent_id: uuid.UUID,
+    triggers: list[AgentTrigger],
+    visible: list,
+    agent_access,
+):
+    """Add quarantined recovery rows for the live owner or a scoped admin.
+
+    Ordinary owners receive a redacted view. Scoped admins already pass the
+    normal filter with full visibility; rows they can already see are not
+    duplicated. A collaborator who cannot reclaim sees nothing extra.
+    """
+
+    if agent_access is None:
+        return list(visible)
+    from app.core.resource_authority import ResourceAuthorityDecision
+    from app.services.agent_identity_lifecycle import resolve_live_effect_principal
+
+    agent = agent_access[0]
+    principal = await resolve_live_effect_principal(db, agent)
+    if not caller_may_reclaim_trigger_authority(caller=user, agent=agent, principal=principal):
+        return list(visible)
+    live_owner = str(getattr(user, "id", "")) == str(principal.user_id)
+    recovered = list(visible)
+    seen = {getattr(item, "id", None) for item, _decision in recovered}
+    access_level = agent_access[1] if len(agent_access) > 1 else "manage"
+    for trigger in triggers:
+        trigger_id = getattr(trigger, "id", None)
+        if trigger_id in seen or str(getattr(trigger, "agent_id", agent_id)) != str(agent_id):
+            continue
+        if trigger_authority_state(trigger) != "quarantined":
+            continue
+        recovered.append(
+            (
+                _RecoveredTrigger(trigger) if live_owner else trigger,
+                ResourceAuthorityDecision(
+                    agent=agent,
+                    access_level=access_level,
+                    resource_kind="trigger",
+                    resource_id=trigger_id,
+                    action="read",
+                    authority_source="trigger_authority_recovery",
+                ),
+            )
+        )
+        seen.add(trigger_id)
+    return recovered
 
 
 async def filter_authorized_triggers(

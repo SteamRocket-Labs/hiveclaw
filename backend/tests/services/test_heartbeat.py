@@ -638,8 +638,9 @@ async def test_execute_heartbeat_uses_direct_t3_core(monkeypatch):
         tenant_id=tenant_id,
     )
     participant = SimpleNamespace(id=uuid4(), type="agent", ref_id=agent_id)
+    responsible_user = SimpleNamespace(id=creator_id, tenant_id=tenant_id, is_active=True)
 
-    fake_session = _FakeSession([agent, model, participant])
+    fake_session = _FakeSession([agent, model, responsible_user, participant])
     captured = {}
 
     async def fake_core(**kwargs):
@@ -691,6 +692,7 @@ async def test_execute_heartbeat_uses_direct_t3_core(monkeypatch):
     assert captured["core"]["model"] is model
     assert captured["core"]["session_id"] is not None
     assert captured["core"]["tick_count"] == 1
+    assert captured["core"]["effect_user_id"] == creator_id
 
 
 @pytest.mark.asyncio
@@ -721,7 +723,8 @@ async def test_execute_heartbeat_releases_db_session_before_invoking_model(monke
         tenant_id=tenant_id,
     )
     participant = SimpleNamespace(id=uuid4(), type="agent", ref_id=agent_id)
-    execute_values = [agent, model, participant]
+    responsible_user = SimpleNamespace(id=creator_id, tenant_id=tenant_id, is_active=True)
+    execute_values = [agent, model, responsible_user, participant]
     tracker = {"active": 0, "max_active": 0, "active_at_core": None}
 
     def fake_tenant_scoped_session(*_args, **_kwargs):

@@ -556,8 +556,9 @@ async def test_trigger_terminal_learning_waits_for_committed_outbox(
             order.append("transcript_commit")
             await super().commit()
 
+    responsible_user = SimpleNamespace(id=creator_id, tenant_id=tenant_id, is_active=True)
     sessions = [
-        _InvocationSession([_ScalarResult(agent), _ScalarResult(participant)]),
+        _InvocationSession([_ScalarResult(agent), _ScalarResult(participant), _ScalarResult(responsible_user)]),
         _InvocationSession([_ScalarResult(participant)]),
     ]
 
@@ -633,7 +634,11 @@ async def test_trigger_terminal_learning_waits_for_committed_outbox(
         order.append("artifact:prepared")
         return None
 
+    async def fake_resolve_tenant(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr(trigger_daemon, "tenant_scoped_session", scoped_session)
+    monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", fake_resolve_tenant)
     monkeypatch.setattr(trigger_daemon, "admit_agent_runtime_tenant", fake_admit)
     monkeypatch.setattr(trigger_daemon, "select_trigger_model", fake_select_model)
     monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task_record)
@@ -1527,15 +1532,35 @@ async def test_invoke_trigger_marks_runtime_task_skipped_when_agent_has_no_model
     import app.services.trigger_daemon as trigger_daemon
 
     agent_id = uuid4()
-    trigger = SimpleNamespace(id=uuid4(), name="daily_brief", type="cron", reason="Run")
+    tenant_id = uuid4()
+    owner_id = uuid4()
+    trigger = SimpleNamespace(
+        id=uuid4(),
+        name="daily_brief",
+        type="cron",
+        reason="Run",
+        config={"created_by": str(owner_id), "authority_state": "owned"},
+    )
     agent = SimpleNamespace(
         id=agent_id,
         name="No Model Agent",
         status="running",
         primary_model_id=None,
-        tenant_id=uuid4(),
+        tenant_id=tenant_id,
+        creator_id=owner_id,
+        owner_user_id=owner_id,
     )
-    session = _SequenceSession([_ScalarResult(agent)])
+    responsible_user = SimpleNamespace(id=owner_id, tenant_id=tenant_id, is_active=True, role="member")
+    session = _SequenceSession(
+        [
+            _ScalarResult(agent),
+            _ScalarResult(responsible_user),
+            _ScalarsResult([trigger]),
+            _ScalarsResult([responsible_user]),
+            _ScalarResult(agent),
+            _ScalarResult(agent),
+        ]
+    )
     updates = []
 
     async def fake_update_runtime_task_record(task_id, **fields):

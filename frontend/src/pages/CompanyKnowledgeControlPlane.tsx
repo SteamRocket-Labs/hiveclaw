@@ -20,6 +20,7 @@ import {
   type CompanyKnowledgeArea,
   type CompanyKnowledgeAudience,
   type CompanyKnowledgeCapability,
+  type CompanyKnowledgeVisibleUnlinked,
   type CompanyKnowledgeIntake,
   type CompanyKnowledgePublicationLifecycle,
   type CompanyKnowledgeReview,
@@ -29,7 +30,6 @@ import {
   type CompanySourceContractSummary,
   type LegacyKnowledgeCandidate,
 } from '../api/domains/companyKnowledge';
-import { enterpriseApi } from '../api/domains/enterprise';
 import './CompanyKnowledgeControlPlane.css';
 
 type ControlLane = 'intake' | 'review' | 'access' | 'lifecycle';
@@ -621,13 +621,37 @@ function ReviewWorkspace({
   );
 }
 
+function unlinkedPersonReason(
+  reason: string,
+  t: ReturnType<typeof useTranslation>['t'],
+): string {
+  if (reason === 'ambiguous_identity') {
+    return t(
+      'companyKnowledge.unlinked.ambiguous',
+      'This directory person matches more than one authenticated account and cannot be selected.',
+    );
+  }
+  if (reason === 'authenticated_user_inactive') {
+    return t(
+      'companyKnowledge.unlinked.inactive',
+      'The linked authenticated account is inactive and cannot receive a new grant.',
+    );
+  }
+  return t(
+    'companyKnowledge.unlinked.unregistered',
+    'This person has no authenticated account yet and cannot receive a grant.',
+  );
+}
+
 function AccessGrantForm({
   audiences,
+  unlinked,
   pending,
   error,
   onSubmit,
 }: {
   audiences: CompanyKnowledgeAudience[];
+  unlinked: CompanyKnowledgeVisibleUnlinked[];
   pending: boolean;
   error: unknown;
   onSubmit: (input: {
@@ -715,6 +739,25 @@ function AccessGrantForm({
           </label>
         ))}
       </fieldset>
+      {unlinked.length > 0 && (
+        <div className="company-control-unlinked" role="note">
+          <span>
+            {t(
+              'companyKnowledge.unlinked.title',
+              'Directory people without a selectable authenticated account',
+            )}
+          </span>
+          <ul>
+            {unlinked.map((person) => (
+              <li key={person.org_member_id}>
+                <strong>{person.label}</strong>
+                {' — '}
+                {unlinkedPersonReason(person.reason, t)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {Boolean(error) && (
         <div className="company-control-error" role="alert">
           {t(
@@ -1199,9 +1242,9 @@ export default function CompanyKnowledgeControlPlane() {
     queryFn: () => companyKnowledgeApi.getOntologyStatus(),
     enabled: activeLane === 'lifecycle',
   });
-  const membersQuery = useQuery({
-    queryKey: ['company-knowledge-audience-members'],
-    queryFn: () => enterpriseApi.getOrgMembers(),
+  const identityQuery = useQuery({
+    queryKey: ['company-knowledge-grant-identities'],
+    queryFn: () => companyKnowledgeApi.listIdentityOptions(),
     enabled: activeLane === 'access',
   });
   const agentsQuery = useQuery({
@@ -1428,18 +1471,20 @@ export default function CompanyKnowledgeControlPlane() {
         label: t('companyKnowledge.audiences.platformAdmins', 'Platform administrators'),
       },
     ];
-    const members = (membersQuery.data ?? []).map((member) => ({
-      kind: 'user' as const,
-      key: member.id,
-      label: member.name || member.email || t('companyKnowledge.audiences.member', 'Company member'),
-    }));
+    const users = (identityQuery.data?.grantable_users ?? [])
+      .filter((user) => user.user_id)
+      .map((user) => ({
+        kind: 'user' as const,
+        key: user.user_id,
+        label: user.label || t('companyKnowledge.audiences.authenticatedUser', 'Authenticated user'),
+      }));
     const agents = (agentsQuery.data ?? []).map((agent) => ({
       kind: 'agent' as const,
       key: agent.id,
       label: agent.name,
     }));
-    return [...roles, ...members, ...agents];
-  }, [agentsQuery.data, membersQuery.data, t]);
+    return [...roles, ...users, ...agents];
+  }, [agentsQuery.data, identityQuery.data, t]);
 
   const lanes: Array<{ key: ControlLane; label: string; icon: ReactNode }> = [
     { key: 'intake', label: t('companyKnowledge.tabs.intake', 'Intake & recovery'), icon: <IconDatabase size={15} /> },
@@ -1640,8 +1685,17 @@ export default function CompanyKnowledgeControlPlane() {
                 </p>
               </div>
             </div>
+            {identityQuery.isError && (
+              <div className="company-control-error" role="alert">
+                {t(
+                  'companyKnowledge.identityOptionsError',
+                  'Authenticated accounts could not be loaded. No person was granted access.',
+                )}
+              </div>
+            )}
             <AccessGrantForm
               audiences={audiences}
+              unlinked={identityQuery.data?.visible_unlinked ?? []}
               pending={grantMutation.isPending}
               error={grantMutation.error}
               onSubmit={(input) => grantMutation.mutate(input)}

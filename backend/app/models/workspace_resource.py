@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.models.organization_identity import AUDIENCE_KIND_CHECK
 
 
 class WorkspaceResourceManifest(Base):
@@ -26,6 +27,7 @@ class WorkspaceResourceManifest(Base):
             "authority_state IN ('owned','quarantined')",
             name="ck_workspace_resource_manifest_authority_state",
         ),
+        CheckConstraint(AUDIENCE_KIND_CHECK, name="ck_workspace_resource_manifest_audience_kind"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -39,6 +41,8 @@ class WorkspaceResourceManifest(Base):
     owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    audience_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    audience_ref: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     root_session_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("chat_sessions.id", ondelete="SET NULL"), nullable=True, index=True
     )

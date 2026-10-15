@@ -637,6 +637,36 @@ function unlinkedPersonReason(
       'The linked authenticated account is inactive and cannot receive a new grant.',
     );
   }
+  if (reason === 'conflict') {
+    return t(
+      'companyKnowledge.unlinked.conflict',
+      'The stored identity link conflicts and cannot be used for a grant.',
+    );
+  }
+  if (reason === 'revoked') {
+    return t(
+      'companyKnowledge.unlinked.revoked',
+      'The stored identity link was revoked and cannot be used for a grant.',
+    );
+  }
+  if (reason === 'stale_subject') {
+    return t(
+      'companyKnowledge.unlinked.stale',
+      'The stored identity link no longer matches the directory person.',
+    );
+  }
+  if (reason === 'unproven_provider') {
+    return t(
+      'companyKnowledge.unlinked.unproven',
+      'The stored identity link does not have a proven provider for this company.',
+    );
+  }
+  if (reason === 'cross_tenant') {
+    return t(
+      'companyKnowledge.unlinked.crossTenant',
+      'The stored identity link is outside this company and cannot be used for a grant.',
+    );
+  }
   return t(
     'companyKnowledge.unlinked.unregistered',
     'This person has no authenticated account yet and cannot receive a grant.',

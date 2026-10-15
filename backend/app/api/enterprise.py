@@ -3,6 +3,7 @@
 from functools import partial
 import logging
 from pathlib import Path
+from typing import Literal
 import uuid
 
 import anyio
@@ -1354,6 +1355,151 @@ async def dry_run_identity_links(
             status_code=status_code,
             detail={"code": exc.code, "message": exc.message, "applied": False, "retryable": True},
         ) from None
+
+
+_SubjectKind = Literal["provider_user_id", "provider_open_id", "provider_union_id"]
+_LinkStatus = Literal["active", "conflict", "inactive_user", "revoked"]
+
+
+class IdentityLinkCreate(BaseModel):
+    org_member_id: uuid.UUID
+    user_id: uuid.UUID
+    provider_id: uuid.UUID
+    subject_kind: _SubjectKind
+
+    model_config = {"extra": "forbid"}
+
+
+class IdentityLinkRevoke(BaseModel):
+    expected_version: str
+    expected_user_id: uuid.UUID
+    expected_provider_id: uuid.UUID
+    expected_subject_kind: _SubjectKind
+    expected_status: _LinkStatus
+
+    model_config = {"extra": "forbid"}
+
+
+class IdentityLinkReplace(IdentityLinkRevoke):
+    user_id: uuid.UUID
+    provider_id: uuid.UUID
+    subject_kind: _SubjectKind
+
+
+def _identity_link_http(exc) -> HTTPException:
+    from app.services.identity_links import IdentityLinkRejected
+
+    if not isinstance(exc, IdentityLinkRejected):
+        raise exc
+    return HTTPException(status_code=exc.http_status, detail=exc.detail)
+
+
+@router.get("/org/identity-links")
+async def list_org_identity_links(
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """List stored directory links for the current company. This does not call the provider."""
+
+    _require_org_admin(current_user)
+    from app.services.identity_links import list_identity_links
+
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    return await list_identity_links(db, target, actor_id=current_user.id)
+
+
+@router.post("/org/identity-links")
+async def create_org_identity_link(
+    body: IdentityLinkCreate,
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Store one manual link. The subject is copied from the directory person."""
+
+    _require_org_admin(current_user)
+    from app.services.identity_links import IdentityLinkRejected, create_manual_link
+
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    try:
+        outcome = await create_manual_link(
+            db,
+            tenant_id=target,
+            actor_id=current_user.id,
+            org_member_id=body.org_member_id,
+            user_id=body.user_id,
+            provider_id=body.provider_id,
+            subject_kind=body.subject_kind,
+        )
+    except IdentityLinkRejected as exc:
+        raise _identity_link_http(exc) from None
+    return outcome.as_dict()
+
+
+@router.post("/org/identity-links/{link_id}/revoke")
+async def revoke_org_identity_link(
+    link_id: uuid.UUID,
+    body: IdentityLinkRevoke,
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoke one link when the caller confirms its current stored mapping."""
+
+    _require_org_admin(current_user)
+    from app.services.identity_links import IdentityLinkRejected, revoke_identity_link
+
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    try:
+        outcome = await revoke_identity_link(
+            db,
+            tenant_id=target,
+            actor_id=current_user.id,
+            link_id=link_id,
+            expected_version=body.expected_version,
+            expected_user_id=body.expected_user_id,
+            expected_provider_id=body.expected_provider_id,
+            expected_subject_kind=body.expected_subject_kind,
+            expected_status=body.expected_status,
+        )
+    except IdentityLinkRejected as exc:
+        raise _identity_link_http(exc) from None
+    return outcome.as_dict()
+
+
+@router.post("/org/identity-links/{link_id}/replace")
+async def replace_org_identity_link(
+    link_id: uuid.UUID,
+    body: IdentityLinkReplace,
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Replace one confirmed link with a new active mapping in the same transaction."""
+
+    _require_org_admin(current_user)
+    from app.services.identity_links import IdentityLinkRejected, replace_identity_link
+
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    try:
+        outcome = await replace_identity_link(
+            db,
+            tenant_id=target,
+            actor_id=current_user.id,
+            link_id=link_id,
+            expected_version=body.expected_version,
+            expected_user_id=body.expected_user_id,
+            expected_provider_id=body.expected_provider_id,
+            expected_subject_kind=body.expected_subject_kind,
+            expected_status=body.expected_status,
+            user_id=body.user_id,
+            provider_id=body.provider_id,
+            subject_kind=body.subject_kind,
+        )
+    except IdentityLinkRejected as exc:
+        raise _identity_link_http(exc) from None
+    return outcome.as_dict()
 
 
 # ─── Invitation Codes ───────────────────────────────────

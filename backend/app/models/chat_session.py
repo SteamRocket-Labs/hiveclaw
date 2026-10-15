@@ -3,11 +3,23 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, String, Text, ForeignKey, Index, func, UniqueConstraint, text
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    String,
+    Text,
+    ForeignKey,
+    Index,
+    func,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.models.organization_identity import SESSION_AUDIENCE_CHECK
 from app.services.channel_secret_storage import EncryptedDeliveryTargetJSON
 
 
@@ -30,6 +42,7 @@ class ChatSession(Base):
             text("last_message_at DESC NULLS LAST"),
             text("created_at DESC"),
         ),
+        CheckConstraint(SESSION_AUDIENCE_CHECK, name="ck_chat_sessions_audience"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -80,6 +93,14 @@ class ChatSession(Base):
     # CAS watermark for post-terminal summary projection. Historical summaries
     # have no mechanically provable source sequence and intentionally stay NULL.
     summary_through_sequence: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    audience_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    audience_ref: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("business_teams.id", name="fk_chat_sessions_audience_ref", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    group_installation_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    group_subject_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
 
 # Keep isolated ChatSession imports mapper-safe for runtime_task_id flushes.

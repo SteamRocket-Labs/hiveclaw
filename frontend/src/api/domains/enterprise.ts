@@ -133,6 +133,60 @@ export interface IdentityDryRunReport {
   department_proposals?: Array<{ name?: string; action?: string; applied?: boolean }>;
 }
 
+export interface IdentityLinkRecord {
+  id: string;
+  org_member_id: string;
+  user_id: string;
+  provider_id: string | null;
+  subject_kind: string | null;
+  status: string;
+  stored_status: string;
+  version: string;
+  source: string | null;
+  created_by_user_id: string | null;
+  valid: boolean;
+  reason: string;
+}
+
+export interface IdentityLinkMember {
+  org_member_id: string;
+  label: string;
+  subject_kinds: string[];
+  reason: string;
+  valid: boolean;
+  links: IdentityLinkRecord[];
+}
+
+export interface IdentityLinkList {
+  members: IdentityLinkMember[];
+  accounts: Array<{ user_id: string; label: string; is_active: boolean }>;
+  providers: Array<{ id: string; provider_type: string; name: string; is_active: boolean }>;
+}
+
+export interface IdentityLinkResult {
+  applied: boolean;
+  code: string;
+  reason: string;
+  message: string;
+  retryable: boolean;
+  link: IdentityLinkRecord | null;
+}
+
+export interface IdentityLinkCreateBody {
+  org_member_id: string;
+  user_id: string;
+  provider_id: string;
+  subject_kind: string;
+}
+
+export interface IdentityLinkRevokeBody {
+  expected_version: string;
+  expected_user_id: string;
+  expected_provider_id: string;
+  expected_subject_kind: string;
+  expected_status: string;
+}
+
 export interface LLMProviderSpec {
   provider: string;
   display_name: string;
@@ -301,6 +355,20 @@ export const enterpriseApi = {
     post<IdentityDryRunReport>(
       `/enterprise/org/identity-links/dry-run${tenantId ? `?tenant_id=${tenantId}` : ''}`,
     ),
+  listIdentityLinks: (tenantId?: string) =>
+    get<IdentityLinkList>(`/enterprise/org/identity-links${tenantQuerySuffix(tenantId)}`),
+  createIdentityLink: (body: IdentityLinkCreateBody, tenantId?: string) =>
+    post<IdentityLinkResult>(`/enterprise/org/identity-links${tenantQuerySuffix(tenantId)}`, body),
+  revokeIdentityLink: (linkId: string, body: IdentityLinkRevokeBody, tenantId?: string) =>
+    post<IdentityLinkResult>(`/enterprise/org/identity-links/${linkId}/revoke${tenantQuerySuffix(tenantId)}`, body),
+  replaceIdentityLink: (
+    linkId: string,
+    body: IdentityLinkRevokeBody & Omit<IdentityLinkCreateBody, 'org_member_id'>,
+    tenantId?: string,
+  ) => post<IdentityLinkResult>(
+    `/enterprise/org/identity-links/${linkId}/replace${tenantQuerySuffix(tenantId)}`,
+    body,
+  ),
 
   /** Approvals */
   listApprovals: (tenantId?: string) => get<unknown[]>(`/enterprise/approvals${tenantId ? `?tenant_id=${tenantId}` : ''}`),

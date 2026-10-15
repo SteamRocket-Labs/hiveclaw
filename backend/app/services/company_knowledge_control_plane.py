@@ -406,13 +406,13 @@ class CompanyKnowledgePermissionService:
     ) -> dict[str, list[dict[str, str]]]:
         await self._require_manage(session, principal=principal)
         from app.models.org import OrgMember
-        from app.services.company_knowledge_identity import company_knowledge_grant_audiences
+        from app.services.identity_links import persistent_grant_audiences
 
         users = list((await session.execute(select(User).where(User.tenant_id == principal.tenant_id))).scalars().all())
         members = list(
             (await session.execute(select(OrgMember).where(OrgMember.tenant_id == principal.tenant_id))).scalars().all()
         )
-        return company_knowledge_grant_audiences(users, members)
+        return await persistent_grant_audiences(session, principal.tenant_id, users, members)
 
     async def list_review_queue(
         self,

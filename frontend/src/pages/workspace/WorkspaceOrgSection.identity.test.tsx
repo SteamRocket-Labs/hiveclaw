@@ -17,6 +17,10 @@ const api = vi.hoisted(() => ({
   updateSetting: vi.fn(),
   syncOrg: vi.fn(),
   dryRunIdentityLinks: vi.fn(),
+  listIdentityLinks: vi.fn(),
+  createIdentityLink: vi.fn(),
+  revokeIdentityLink: vi.fn(),
+  replaceIdentityLink: vi.fn(),
   getFeishuRuntimeStatus: vi.fn(),
 }));
 
@@ -101,6 +105,10 @@ beforeEach(() => {
   api.updateSetting.mockResolvedValue({});
   api.syncOrg.mockResolvedValue({});
   api.getFeishuRuntimeStatus.mockResolvedValue(null);
+  api.listIdentityLinks.mockResolvedValue({ members: [], accounts: [], providers: [] });
+  api.createIdentityLink.mockResolvedValue({ applied: false, code: 'unregistered', reason: 'unregistered', message: '', retryable: false, link: null });
+  api.revokeIdentityLink.mockResolvedValue({ applied: false, code: 'revoked', reason: 'revoked', message: '', retryable: false, link: null });
+  api.replaceIdentityLink.mockResolvedValue({ applied: false, code: 'active', reason: 'active', message: '', retryable: false, link: null });
 });
 
 afterEach(() => {
@@ -110,7 +118,8 @@ afterEach(() => {
 describe('organization identity check', () => {
   it('shows trusted and blocked rows from the dry-run without saving or syncing', async () => {
     let resolveReport: (value: typeof trustedReport) => void = () => {};
-    api.dryRunIdentityLinks.mockReturnValue(new Promise((resolve) => {
+    api.listIdentityLinks.mockResolvedValue({ members: [], accounts: [], providers: [] });
+  api.dryRunIdentityLinks.mockReturnValue(new Promise((resolve) => {
       resolveReport = resolve;
     }));
     mount();

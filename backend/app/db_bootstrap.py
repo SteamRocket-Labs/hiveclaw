@@ -117,6 +117,12 @@ RLS_TENANT_TABLES: tuple[str, ...] = (
     "runtime_tasks",
     "task_logs",
     "tasks",
+    "org_member_user_links",
+    "department_directory_links",
+    "business_teams",
+    "business_team_memberships",
+    "identity_cutover_journal",
+    "content_input_receipts",
 )
 
 # Additional table families that also need FORCE ROW LEVEL SECURITY. The
@@ -357,6 +363,12 @@ STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
     "workflow_leaf_calls",
     "workflow_quotas",
     "workflow_steps",
+    "org_member_user_links",
+    "department_directory_links",
+    "business_teams",
+    "business_team_memberships",
+    "identity_cutover_journal",
+    "content_input_receipts",
 )
 
 OPERATOR_NULLABLE_TENANT_TABLES: tuple[str, ...] = ("audit_logs", "users")
@@ -825,6 +837,138 @@ def apply_audit_evidence_immutability(connection: Connection) -> None:
         )
 
 
+def apply_identity_link_guards(connection: Connection) -> None:
+    """Install receipt, journal, and creator guards that create_all cannot express."""
+
+    if connection.dialect.name != "postgresql":
+        return
+    existing = set(inspect(connection).get_table_names())
+    if "identity_cutover_journal" in existing:
+        connection.execute(
+            text(
+                """
+                CREATE OR REPLACE FUNCTION reject_identity_cutover_journal_mutation()
+                RETURNS trigger AS $$
+                BEGIN
+                    RAISE EXCEPTION 'identity_cutover_journal is append-only'
+                        USING ERRCODE = '55000';
+                    RETURN NULL;
+                END;
+                $$ LANGUAGE plpgsql
+                """
+            )
+        )
+        connection.execute(text(
+            "DROP TRIGGER IF EXISTS trg_identity_cutover_journal_immutable ON identity_cutover_journal"
+        ))
+        connection.execute(
+            text(
+                """
+                CREATE TRIGGER trg_identity_cutover_journal_immutable
+                BEFORE UPDATE OR DELETE ON identity_cutover_journal
+                FOR EACH ROW EXECUTE FUNCTION reject_identity_cutover_journal_mutation()
+                """
+            )
+        )
+        connection.execute(text(
+            "DROP TRIGGER IF EXISTS trg_identity_cutover_journal_no_truncate ON identity_cutover_journal"
+        ))
+        connection.execute(
+            text(
+                """
+                CREATE TRIGGER trg_identity_cutover_journal_no_truncate
+                BEFORE TRUNCATE ON identity_cutover_journal
+                FOR EACH STATEMENT EXECUTE FUNCTION reject_identity_cutover_journal_mutation()
+                """
+            )
+        )
+    if "content_input_receipts" in existing:
+        connection.execute(
+            text(
+                """
+                CREATE OR REPLACE FUNCTION reject_invalid_content_input_receipt()
+                RETURNS trigger AS $$
+                DECLARE
+                    element jsonb;
+                    element_key text;
+                    allowed_keys text[] := ARRAY['source_kind', 'source_id', 'source_version'];
+                BEGIN
+                    IF NEW.dependencies_json IS NULL
+                       OR jsonb_typeof(NEW.dependencies_json) <> 'array' THEN
+                        RAISE EXCEPTION 'content_input_receipts.dependencies_json must be an array'
+                            USING ERRCODE = '23514';
+                    END IF;
+                    FOR element IN SELECT value FROM jsonb_array_elements(NEW.dependencies_json)
+                    LOOP
+                        IF jsonb_typeof(element) <> 'object' THEN
+                            RAISE EXCEPTION 'content_input_receipts dependency must be an object'
+                                USING ERRCODE = '23514';
+                        END IF;
+                        IF (
+                            SELECT COUNT(*) FROM jsonb_object_keys(element)
+                        ) <> 3 THEN
+                            RAISE EXCEPTION 'content_input_receipts dependency has the wrong keys'
+                                USING ERRCODE = '23514';
+                        END IF;
+                        FOREACH element_key IN ARRAY allowed_keys
+                        LOOP
+                            IF NOT jsonb_exists(element, element_key)
+                               OR jsonb_typeof(element -> element_key) <> 'string'
+                               OR btrim(element ->> element_key) = '' THEN
+                                RAISE EXCEPTION 'content_input_receipts dependency fields must be non-empty strings'
+                                    USING ERRCODE = '23514';
+                            END IF;
+                        END LOOP;
+                    END LOOP;
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql
+                """
+            )
+        )
+        connection.execute(text(
+            "DROP TRIGGER IF EXISTS trg_content_input_receipts_dependencies ON content_input_receipts"
+        ))
+        connection.execute(
+            text(
+                """
+                CREATE TRIGGER trg_content_input_receipts_dependencies
+                BEFORE INSERT OR UPDATE ON content_input_receipts
+                FOR EACH ROW EXECUTE FUNCTION reject_invalid_content_input_receipt()
+                """
+            )
+        )
+    if "business_teams" in existing:
+        connection.execute(
+            text(
+                """
+                CREATE OR REPLACE FUNCTION reject_business_team_creator_change()
+                RETURNS trigger AS $$
+                BEGIN
+                    IF NEW.created_by_user_id IS DISTINCT FROM OLD.created_by_user_id THEN
+                        RAISE EXCEPTION 'business_teams.created_by_user_id is immutable'
+                            USING ERRCODE = '55000';
+                    END IF;
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql
+                """
+            )
+        )
+        connection.execute(text(
+            "DROP TRIGGER IF EXISTS trg_business_teams_creator_immutable ON business_teams"
+        ))
+        connection.execute(
+            text(
+                """
+                CREATE TRIGGER trg_business_teams_creator_immutable
+                BEFORE UPDATE OF created_by_user_id ON business_teams
+                FOR EACH ROW EXECUTE FUNCTION reject_business_team_creator_change()
+                """
+            )
+        )
+
+
 _RUNTIME_TERMINAL_BOUNDARY_TASK_TYPES: tuple[str, ...] = (
     "web_chat_turn",
     "goal_continuation",
@@ -991,6 +1135,7 @@ def prepare_runtime_schema(connection: Connection, metadata: MetaData) -> bool:
     apply_audit_evidence_immutability(connection)
     apply_runtime_terminal_boundary_generation_contract(connection)
     apply_session_v2_contracts(connection)
+    apply_identity_link_guards(connection)
     return True
 
 
@@ -1035,6 +1180,7 @@ def bootstrap_database_to_head(connection: Connection, metadata: MetaData, heads
     apply_audit_evidence_immutability(connection)
     apply_runtime_terminal_boundary_generation_contract(connection)
     apply_session_v2_contracts(connection)
+    apply_identity_link_guards(connection)
     ensure_alembic_version_table_width(connection)
     connection.execute(text("DELETE FROM alembic_version"))
     for head in heads:

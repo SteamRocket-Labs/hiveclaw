@@ -8,6 +8,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.models.organization_identity import AUDIENCE_KIND_CHECK
 
 
 class Task(Base):
@@ -20,6 +21,7 @@ class Task(Base):
             "status IN ('pending','doing','done','blocked','failed','cancelled','needs_reconciliation')",
             name="ck_tasks_status",
         ),
+        CheckConstraint(AUDIENCE_KIND_CHECK, name="ck_tasks_audience_kind"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -42,6 +44,17 @@ class Task(Base):
     )
     assignee: Mapped[str] = mapped_column(String(50), default="self")  # "self" or user_id
     created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    responsible_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", name="fk_tasks_responsible_user_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    business_team_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("business_teams.id", name="fk_tasks_business_team_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    audience_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
     root_session_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("chat_sessions.id", ondelete="SET NULL"), nullable=True, index=True
     )

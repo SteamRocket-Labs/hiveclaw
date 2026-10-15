@@ -150,6 +150,11 @@ class Agent(Base):
         ForeignKey("users.id"),
         nullable=True,
     )
+    home_business_team_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("business_teams.id", name="fk_agents_home_business_team_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     channel_perms: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
     config_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False, server_default="1")
     # Subagent evolution loop (docs/subagent-evolution-loop.md §4.3): when True,

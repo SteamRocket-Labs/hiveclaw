@@ -668,5 +668,3 @@ async def test_sync_oauth_and_inbound_identity_stay_continuous(
         unresolved = await channel_user_service.resolve_feishu_user(db, tenant_id=tenant_c, provider_open_id=f"ou-disabled-{tag}")
         assert unresolved is None
         await db.rollback()
-
-

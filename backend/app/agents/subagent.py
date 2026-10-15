@@ -598,10 +598,22 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
+def explicit_child_model_selector(model: str | None) -> str | None:
+    """Return a child model that must be resolved independently of the parent.
+
+    An empty value or ``inherit`` keeps the parent model. Any other value is an
+    explicit selection: a disabled or cross-tenant row is a failure, and the
+    parent fallback is not a substitute.
+    """
+
+    value = str(model or "").strip()
+    if not value or value.lower() == "inherit":
+        return None
+    return value
+
+
 async def _resolve_child_model(ctx: SubagentSpawnContext, spec: SubagentSpec) -> Any:
-    if not spec.model:
-        return ctx.model
-    if str(spec.model).strip().lower() == "inherit":
+    if explicit_child_model_selector(spec.model) is None:
         return ctx.model
     if ctx.model_resolver is None:
         raise ValueError(f"subagent model override {spec.model!r} requires a model_resolver")

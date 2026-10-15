@@ -5526,46 +5526,14 @@ async def _resolve_runtime_models_for_task(
     if override_value is not None and override_model_id is None:
         raise RuntimeError("RuntimeTask has an invalid runtime_model_id")
 
-    primary_model_id = override_model_id or agent.primary_model_id
-    primary_model = None
-    fallback_model = None
-    if primary_model_id:
-        primary_filters = [
-            LLMModel.id == primary_model_id,
-            LLMModel.tenant_id == agent.tenant_id,
-        ]
-        if override_model_id is not None:
-            primary_filters.append(LLMModel.enabled.is_(True))
-        primary_result = await db.execute(select(LLMModel).where(*primary_filters))
-        primary_model = primary_result.scalar_one_or_none()
-        if override_model_id is not None and primary_model is None:
-            raise RuntimeError("RuntimeTask model override is unavailable in the Agent tenant")
+    from app.services.model_resolution import resolve_agent_runtime_models
 
-    if agent.fallback_model_id and agent.fallback_model_id != primary_model_id:
-        fallback_result = await db.execute(
-            select(LLMModel).where(
-                LLMModel.id == agent.fallback_model_id,
-                LLMModel.tenant_id == agent.tenant_id,
-            )
-        )
-        fallback_model = fallback_result.scalar_one_or_none()
-    if not primary_model and fallback_model:
-        primary_model = fallback_model
-        fallback_model = None
-    if primary_model and agent.tenant_id:
-        from app.services.model_resolution import choose_runtime_model_pair, resolve_default_model_for_tenant
-
-        default_runtime_model = await resolve_default_model_for_tenant(
-            db,
-            agent.tenant_id,
-            exclude_model_id=primary_model.id,
-        )
-        primary_model, fallback_model = choose_runtime_model_pair(
-            primary_model,
-            fallback_model,
-            default_runtime_model,
-        )
-    return primary_model, fallback_model
+    selection = await resolve_agent_runtime_models(db, agent, override_model_id=override_model_id)
+    if override_model_id is not None and selection.status != "selected":
+        raise RuntimeError("RuntimeTask model override is unavailable in the Agent tenant")
+    if selection.status != "selected":
+        return None, None
+    return selection.model, selection.fallback
 
 
 async def _load_runtime_context(

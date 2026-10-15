@@ -1437,7 +1437,7 @@ async def _resolve_resumable_target_runtime(
 
     from app.database import tenant_scoped_session
     from app.models.agent import Agent
-    from app.models.llm import LLMModel
+    from app.services.model_resolution import resolve_agent_runtime_models
 
     async with tenant_scoped_session(
         tenant_id,
@@ -1450,23 +1450,10 @@ async def _resolve_resumable_target_runtime(
             return None
         if target.status in ("expired", "stopped", "archived"):
             return None
-        target_model = None
-        if target.primary_model_id:
-            model_r = await db.execute(
-                select(LLMModel).where(LLMModel.id == target.primary_model_id, LLMModel.tenant_id == target.tenant_id)
-            )
-            target_model = model_r.scalar_one_or_none()
-
-        if not target_model and target.fallback_model_id:
-            fb_r = await db.execute(
-                select(LLMModel).where(LLMModel.id == target.fallback_model_id, LLMModel.tenant_id == target.tenant_id)
-            )
-            target_model = fb_r.scalar_one_or_none()
-
-        if not target_model:
+        selection = await resolve_agent_runtime_models(db, target)
+        if selection.status != "selected" or selection.model is None:
             return None
-
-        return target, target_model
+        return target, selection.model
 
 
 async def delegate_to_agent(

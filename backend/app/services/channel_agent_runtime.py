@@ -468,6 +468,22 @@ async def try_resolve_channel_session_permission_from_text(
     return f"已允许本次权限请求{tool_label}，原运行将从同一工具轮继续。"
 
 
+def _channel_plan_authoring_reply(plan: Any) -> str:
+    """Describe the plan the caller can actually confirm.
+
+    ``awaiting_confirmation`` is the only state with a submitted plan. A draft
+    that the launcher could not author must not be advertised as ready.
+    """
+
+    status = getattr(plan, "status", None)
+    plan_id = getattr(plan, "id", None)
+    if status == "awaiting_confirmation":
+        return f"已进入计划模式，并生成一份待确认计划（plan_id={plan_id}）。请确认、修改或拒绝；确认后我再开始执行。"
+    errors = (getattr(plan, "metadata_json", None) or {}).get("planning_errors") or []
+    detail = str(errors[0]) if errors else "计划编写没有提交可确认的内容。"
+    return f"计划尚未生成，不能确认（plan_id={plan_id}，status={status or 'draft'}）。{detail} 可在修复后重试生成。"
+
+
 async def call_agent_llm(
     db: AsyncSession,
     agent_id: uuid.UUID,
@@ -489,7 +505,6 @@ async def call_agent_llm(
     """Call the agent runtime from an external channel turn."""
     from app.api.websocket import call_llm
     from app.models.agent import Agent
-    from app.models.llm import LLMModel
 
     agent_result = await db.execute(
         select(Agent).options(selectinload(Agent.owner), selectinload(Agent.creator)).where(Agent.id == agent_id)
@@ -767,24 +782,19 @@ async def call_agent_llm(
             },
         )
         plan = await plan_service.get_plan(draft.id) or draft
-        return f"已进入计划模式，并生成一份待确认计划（plan_id={plan.id}）。请确认、修改或拒绝；确认后我再开始执行。"
+        if getattr(plan, "status", None) in ("draft", "planning"):
+            errors = list((getattr(draft, "metadata_json", None) or {}).get("planning_errors") or [])
+            if not errors:
+                errors = ["The plan authoring run finished without submitting a confirmable plan."]
+            await plan_service.mark_planning_failed_if_unauthored(plan.id, errors)
+            plan = await plan_service.get_plan(plan.id) or draft
+        return _channel_plan_authoring_reply(plan)
 
-    model = None
-    if agent.primary_model_id:
-        model_result = await db.execute(
-            select(LLMModel).where(LLMModel.id == agent.primary_model_id, LLMModel.tenant_id == agent.tenant_id)
-        )
-        model = model_result.scalar_one_or_none()
+    from app.services.model_resolution import primary_model_unavailable, resolve_agent_runtime_models
 
-    fallback_model = None
-    if agent.fallback_model_id:
-        fb_result = await db.execute(
-            select(LLMModel).where(LLMModel.id == agent.fallback_model_id, LLMModel.tenant_id == agent.tenant_id)
-        )
-        fallback_model = fb_result.scalar_one_or_none()
-
-    from app.services.model_resolution import primary_model_unavailable
-
+    selection = await resolve_agent_runtime_models(db, agent)
+    model = selection.model
+    fallback_model = selection.fallback
     if primary_model_unavailable(agent, model):
         logger.error(
             f"[Channel] Primary model {agent.primary_model_id} unavailable for agent "
@@ -794,24 +804,6 @@ async def call_agent_llm(
             "你为该数字员工配置的主模型当前不可用(可能已删除、被禁用,或不属于本公司),"
             "请在「设置 → 模型」中重新选择一个本公司可用的模型。"
         )
-
-    if not model and fallback_model:
-        model = fallback_model
-        fallback_model = None
-        logger.warning(f"[Channel] Primary model unavailable, using fallback: {model.model}")
-
-    if model and agent.tenant_id:
-        from app.services.model_resolution import choose_runtime_model_pair, resolve_default_model_for_tenant
-
-        default_runtime_model = await resolve_default_model_for_tenant(
-            db,
-            agent.tenant_id,
-            exclude_model_id=model.id,
-        )
-        previous_fallback = fallback_model
-        model, fallback_model = choose_runtime_model_pair(model, fallback_model, default_runtime_model)
-        if fallback_model and fallback_model is not previous_fallback:
-            logger.info(f"[Channel] Tenant default fallback loaded: {fallback_model.model}")
 
     if not model:
         return f"⚠️ {agent.name} 未配置 LLM 模型，请在管理后台设置。"

@@ -154,7 +154,7 @@ async def resolve_agent_runtime(
 
     from app.database import get_current_tenant_id, tenant_scoped_session
     from app.models.agent import Agent
-    from app.models.llm import LLMModel
+    from app.services.model_resolution import resolve_agent_runtime_models
 
     if tenant_id is None:
         tenant_id = get_current_tenant_id()
@@ -169,21 +169,12 @@ async def resolve_agent_runtime(
         agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
         if agent is None:
             raise LookupError(f"agent {agent_id} not found")
-        model = None
-        if agent.primary_model_id:
-            model = (
-                await db.execute(
-                    select(LLMModel).where(LLMModel.id == agent.primary_model_id, LLMModel.tenant_id == agent.tenant_id)
-                )
-            ).scalar_one_or_none()
-        if model is None and agent.fallback_model_id:
-            model = (
-                await db.execute(
-                    select(LLMModel).where(
-                        LLMModel.id == agent.fallback_model_id, LLMModel.tenant_id == agent.tenant_id
-                    )
-                )
-            ).scalar_one_or_none()
+        selection = await resolve_agent_runtime_models(db, agent)
+        if selection.status == "primary_unavailable":
+            raise LookupError(
+                f"agent {agent_id} primary model is unavailable (deleted, disabled, or outside this company)"
+            )
+        model = selection.model
         if model is None:
             raise LookupError(f"agent {agent_id} has no resolvable model")
     return agent, model

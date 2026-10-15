@@ -27,6 +27,7 @@ from app.agents.subagent import (
     SubagentSpawnContext,
     SubagentSpec,
     canonical_subagent_type,
+    explicit_child_model_selector,
     spawn_subagent,
 )
 from app.agents.subagent_definition import (
@@ -178,27 +179,12 @@ async def _resolve_parent_runtime(
         ).scalar_one_or_none()
         if agent is None:
             return None, None, None
-        model = None
-        fallback_model = None
-        if agent.primary_model_id:
-            model = (
-                await db.execute(
-                    select(LLMModel).where(
-                        LLMModel.id == agent.primary_model_id,
-                        LLMModel.tenant_id == agent.tenant_id,
-                    )
-                )
-            ).scalar_one_or_none()
-        if agent.fallback_model_id:
-            fallback_model = (
-                await db.execute(
-                    select(LLMModel).where(
-                        LLMModel.id == agent.fallback_model_id,
-                        LLMModel.tenant_id == agent.tenant_id,
-                    )
-                )
-            ).scalar_one_or_none()
-        return model or fallback_model, fallback_model, agent
+        from app.services.model_resolution import resolve_agent_runtime_models
+
+        selection = await resolve_agent_runtime_models(db, agent)
+        if selection.status == "primary_unavailable" or selection.model is None:
+            return None, None, agent
+        return selection.model, selection.fallback, agent
 
 
 async def _resolve_model_override(model_name: str, tenant_id: uuid.UUID | None) -> Any | None:
@@ -569,7 +555,7 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
 
     agent_id = request.context.agent_id
     model, fallback_model, agent = await _resolve_parent_runtime(agent_id)
-    if model is None or agent is None:
+    if agent is None:
         return _json({"ok": False, "error": "No model or agent available for spawning a subagent"})
 
     tenant_id: uuid.UUID | None = None
@@ -681,6 +667,25 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
     scoped_allowed_tools = _permission_profile_allowed_tools(normalized_args)
     if scoped_allowed_tools:
         spec.allowed_tools = scoped_allowed_tools
+
+    child_selector = explicit_child_model_selector(spec.model)
+    if child_selector:
+        resolved_child = await _resolve_model_override(child_selector, tenant_id)
+        if resolved_child is None:
+            return _json(
+                {
+                    "ok": False,
+                    "error": f"subagent model override {child_selector!r} could not be resolved",
+                    "error_code": "child_model_unavailable",
+                }
+            )
+        model = resolved_child
+        fallback_model = None
+    elif model is None:
+        body = {"ok": False, "error": "No model or agent available for spawning a subagent"}
+        if getattr(agent, "primary_model_id", None):
+            body["error_code"] = "primary_model_unavailable"
+        return _json(body)
 
     # §12.5: memory follows the definition's scope — agent-private definitions
     # accumulate craft in the agent workspace; tenant definitions (and inline

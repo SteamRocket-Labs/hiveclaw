@@ -80,6 +80,25 @@ def _build_launcher_user_prompt(plan: AgentPlanRequest, *, seed_context: dict[st
     return "\n".join(lines)
 
 
+def _mark_launcher_plan_unauthored(plan: AgentPlanRequest, errors: list[str]) -> None:
+    """Mirror ``PlanModeService._mark_generation_failed`` on the caller's row.
+
+    The channel and REST callers persist this through
+    ``mark_planning_failed_if_unauthored`` when their reload is still a draft.
+    Setting the same fields here keeps an in-memory draft from being described
+    as confirmable before that reload.
+    """
+
+    if getattr(plan, "status", None) not in {None, "draft", "planning"}:
+        return
+    plan.status = "planning_failed"
+    metadata = dict(getattr(plan, "metadata_json", None) or {})
+    metadata["planning_errors"] = list(errors)
+    plan.metadata_json = metadata
+    if hasattr(plan, "plan_hash"):
+        plan.plan_hash = None
+
+
 async def _resolve_agent_models(agent_id: UUID) -> tuple[LLMModel | None, LLMModel | None, Agent | None]:
     """Resolve (primary, fallback, agent) tenant-scoped for the plan-mode run."""
     tenant_id = await resolve_tenant_for_agent(agent_id)
@@ -89,20 +108,12 @@ async def _resolve_agent_models(agent_id: UUID) -> tuple[LLMModel | None, LLMMod
         if agent is None:
             return None, None, None
 
-        model = None
-        fallback_model = None
-        model_id = agent.primary_model_id or agent.fallback_model_id
-        if model_id:
-            model_result = await db.execute(
-                select(LLMModel).where(LLMModel.id == model_id, LLMModel.tenant_id == agent.tenant_id)
-            )
-            model = model_result.scalar_one_or_none()
-        if agent.fallback_model_id and agent.fallback_model_id != model_id:
-            fallback_result = await db.execute(
-                select(LLMModel).where(LLMModel.id == agent.fallback_model_id, LLMModel.tenant_id == agent.tenant_id)
-            )
-            fallback_model = fallback_result.scalar_one_or_none()
-        return model, fallback_model, agent
+        from app.services.model_resolution import resolve_agent_runtime_models
+
+        selection = await resolve_agent_runtime_models(db, agent)
+        if selection.status == "primary_unavailable":
+            return None, None, agent
+        return selection.model, selection.fallback, agent
 
 
 async def launch_system_plan_run(
@@ -131,9 +142,21 @@ async def launch_system_plan_run(
     model, fallback_model, agent = await _resolve_agent_models(plan.agent_id)
     if agent is None:
         logger.warning("system_plan_run_agent_not_found", extra={"plan_id": str(plan.id)})
+        _mark_launcher_plan_unauthored(
+            plan,
+            ["The agent for this plan was not found; the plan was not authored."],
+        )
         return plan
     if model is None:
         logger.warning("system_plan_run_model_missing", extra={"plan_id": str(plan.id)})
+        if getattr(agent, "primary_model_id", None):
+            errors = [
+                "The configured primary model is unavailable (deleted, disabled, or outside this company); "
+                "the plan was not authored."
+            ]
+        else:
+            errors = ["No resolvable model is configured; the plan was not authored."]
+        _mark_launcher_plan_unauthored(plan, errors)
         return plan
 
     user_id = plan.requested_by_user_id or getattr(agent, "owner_user_id", None) or agent.creator_id

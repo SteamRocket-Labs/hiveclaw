@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
@@ -62,8 +63,89 @@ def primary_model_unavailable(agent: Any, resolved_primary: Any | None) -> bool:
 
     A *missing* primary (``primary_model_id`` is None) is not a failure — the agent
     simply has no explicit primary, so the caller may legitimately use a fallback.
+    A resolved row with no ``enabled`` attribute stays usable; only an explicit
+    ``enabled is False`` counts as disabled.
     """
-    return bool(getattr(agent, "primary_model_id", None)) and resolved_primary is None
+    if not getattr(agent, "primary_model_id", None):
+        return False
+    if resolved_primary is None:
+        return True
+    return getattr(resolved_primary, "enabled", None) is False
+
+
+async def load_enabled_tenant_model(
+    db: AsyncSession,
+    model_id: uuid.UUID | None,
+    tenant_id: uuid.UUID | None,
+) -> LLMModel | None:
+    """Load one enabled model in the given tenant. A null tenant still queries."""
+
+    if model_id is None:
+        return None
+    result = await db.execute(
+        select(LLMModel).where(
+            LLMModel.id == model_id,
+            LLMModel.tenant_id == tenant_id,
+            LLMModel.enabled.is_(True),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModelSelection:
+    model: Any | None
+    fallback: Any | None
+    status: str
+
+
+async def _load_explicit_fallback(
+    db: AsyncSession,
+    agent: Any,
+    tenant_id: uuid.UUID | None,
+    *,
+    selected_id: uuid.UUID | None,
+) -> Any | None:
+    fallback_id = getattr(agent, "fallback_model_id", None)
+    if not fallback_id or fallback_id == selected_id:
+        return None
+    return await load_enabled_tenant_model(db, fallback_id, tenant_id)
+
+
+async def resolve_agent_runtime_models(
+    db: AsyncSession,
+    agent: Any,
+    *,
+    override_model_id: uuid.UUID | None = None,
+) -> RuntimeModelSelection:
+    """Resolve the model pair for one execution.
+
+    An explicit override or configured primary that is missing, disabled, or in
+    another tenant is a typed refusal. It does not promote the agent fallback or
+    a company default. Invalid fallback is dropped and does not reject a valid
+    primary. No configured primary may promote an explicit enabled fallback.
+    """
+
+    tenant_id = getattr(agent, "tenant_id", None)
+    if override_model_id is not None:
+        override = await load_enabled_tenant_model(db, override_model_id, tenant_id)
+        if override is None:
+            return RuntimeModelSelection(None, None, "override_unavailable")
+        fallback = await _load_explicit_fallback(db, agent, tenant_id, selected_id=getattr(override, "id", None))
+        model, fallback = choose_runtime_model_pair(override, fallback, None)
+        return RuntimeModelSelection(model, fallback, "selected")
+
+    primary_id = getattr(agent, "primary_model_id", None)
+    primary = None
+    if primary_id:
+        primary = await load_enabled_tenant_model(db, primary_id, tenant_id)
+        if primary_model_unavailable(agent, primary):
+            return RuntimeModelSelection(None, None, "primary_unavailable")
+    fallback = await _load_explicit_fallback(db, agent, tenant_id, selected_id=primary_id)
+    model, fallback = choose_runtime_model_pair(primary, fallback, None)
+    if model is None:
+        return RuntimeModelSelection(None, None, "unconfigured")
+    return RuntimeModelSelection(model, fallback, "selected")
 
 
 async def resolve_default_model_for_tenant(

@@ -117,6 +117,7 @@ def _skip_reason_to_text(reason: str | None) -> str | None:
     mapping = {
         "no_model": "No model is configured for this autonomous run.",
         "model_not_found": "The configured model is unavailable.",
+        "primary_model_unavailable": "The configured primary model is unavailable.",
         "model_pin_not_found": "The trigger pinned a model that is unavailable.",
         "invalid_model_pin": "The trigger has an invalid model override.",
         "conflicting_model_pin": "Multiple triggers in this run requested different models.",
@@ -210,7 +211,12 @@ def _attention_from_last_attempt(task: Any | None) -> tuple[str | None, str | No
             _reconciliation_reason_to_text(reconciliation_reason) or getattr(task, "result_summary", None),
             "inspect_reconciliation",
         )
-    if status == "skipped" and skip_reason in {"no_model", "model_not_found", "model_pin_not_found"}:
+    if status == "skipped" and skip_reason in {
+        "no_model",
+        "model_not_found",
+        "primary_model_unavailable",
+        "model_pin_not_found",
+    }:
         return "missing_model", _skip_reason_to_text(skip_reason), "configure_model"
     if status == "skipped":
         return "failed_recently", _skip_reason_to_text(skip_reason), "inspect_or_fix_blocker"

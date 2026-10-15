@@ -19,6 +19,7 @@ from app.agents.subagent import (
     SubagentResult,
     SubagentSpec,
     SubagentSpawnContext,
+    explicit_child_model_selector,
     spawn_subagent,
     subagent_spec_from_snapshot,
     subagent_spec_to_snapshot,
@@ -886,7 +887,7 @@ async def _wake_parent_session_from_subagent_completion(
 
 
 async def _resolve_parent_runtime(parent_agent_id: uuid.UUID) -> dict[str, Any] | None:
-    from app.services.model_resolution import choose_runtime_model_pair
+    from app.services.model_resolution import resolve_agent_runtime_models
 
     tenant_id = await resolve_tenant_for_agent(parent_agent_id, session_factory=async_session)
     if tenant_id is None:
@@ -907,44 +908,50 @@ async def _resolve_parent_runtime(parent_agent_id: uuid.UUID) -> dict[str, Any] 
         ).scalar_one_or_none()
         if agent is None:
             return None
-        primary_model = None
-        fallback_model = None
-        if getattr(agent, "primary_model_id", None):
-            primary_model = (
-                await db.execute(
-                    select(LLMModel).where(
-                        LLMModel.id == agent.primary_model_id,
-                        LLMModel.tenant_id == agent.tenant_id,
-                        LLMModel.enabled.is_(True),
-                    )
-                )
-            ).scalar_one_or_none()
-        if getattr(agent, "fallback_model_id", None):
-            fallback_model = (
-                await db.execute(
-                    select(LLMModel).where(
-                        LLMModel.id == agent.fallback_model_id,
-                        LLMModel.tenant_id == agent.tenant_id,
-                        LLMModel.enabled.is_(True),
-                    )
-                )
-            ).scalar_one_or_none()
-        model, fallback_model = choose_runtime_model_pair(primary_model, fallback_model, None)
+        selection = await resolve_agent_runtime_models(db, agent)
+        identity = {
+            "parent_agent_id": parent_agent_id,
+            "parent_agent_name": getattr(agent, "name", None) or "Agent",
+            "role_description": getattr(agent, "role_description", None) or "",
+            "tenant_id": agent.tenant_id,
+        }
+        if selection.status == "primary_unavailable":
+            return {
+                "status": "primary_unavailable",
+                "primary_model_id": str(agent.primary_model_id),
+                "identity": identity,
+            }
+        model = selection.model
+        fallback_model = selection.fallback
         if model is None:
-            return None
+            return {"status": "unconfigured", "identity": identity}
         # Requester identity is intentionally absent here. Agent configuration
         # and model resolution come from the parent Agent, while the caller is
         # rebound later from the canonical RuntimeTask.root_user_id.
         return {
             "ctx_kwargs": {
-                "parent_agent_id": parent_agent_id,
+                **identity,
                 "model": model,
                 "fallback_model": fallback_model,
-                "parent_agent_name": getattr(agent, "name", None) or "Agent",
-                "role_description": getattr(agent, "role_description", None) or "",
-                "tenant_id": agent.tenant_id,
             }
         }
+
+
+def _parent_runtime_identity(resolved: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(resolved, dict):
+        return None
+    identity = resolved.get("identity")
+    if isinstance(identity, dict):
+        return dict(identity)
+    ctx_kwargs = resolved.get("ctx_kwargs")
+    if isinstance(ctx_kwargs, dict):
+        return {
+            "parent_agent_id": ctx_kwargs.get("parent_agent_id"),
+            "parent_agent_name": ctx_kwargs.get("parent_agent_name"),
+            "role_description": ctx_kwargs.get("role_description"),
+            "tenant_id": ctx_kwargs.get("tenant_id"),
+        }
+    return None
 
 
 async def _resolve_model_override(model_name: str, tenant_id: uuid.UUID | None) -> Any | None:
@@ -1607,8 +1614,51 @@ async def dispatch_persisted_subagent_run(task_id: str) -> bool:
         )
         return True
 
+    resolved_runtime = await _resolve_parent_runtime(parent_agent_id)
+    child_selector = explicit_child_model_selector(getattr(snapshot_spec, "model", None))
+    if child_selector:
+        identity = _parent_runtime_identity(resolved_runtime)
+        child_model = None
+        if identity is not None:
+            child_model = await _resolve_model_override(child_selector, identity.get("tenant_id"))
+        if identity is not None and child_model is None:
+            await update_runtime_task_record(
+                run_id,
+                status="failed",
+                result_summary="Subagent could not be dispatched because the selected child model is unavailable.",
+                metadata_json={
+                    "resume_failed": True,
+                    "worker_dispatch_failed": True,
+                    "error_code": "child_model_unavailable",
+                    "child_model": child_selector,
+                    "runtime_budget_actuals": dict(_SUBAGENT_OUTER_BUDGET_ACTUALS),
+                },
+            )
+            return True
+        if child_model is not None and identity is not None:
+            resolved_runtime = {
+                "ctx_kwargs": {
+                    **identity,
+                    "model": child_model,
+                    "fallback_model": None,
+                }
+            }
+    if isinstance(resolved_runtime, dict) and resolved_runtime.get("status") == "primary_unavailable":
+        await update_runtime_task_record(
+            run_id,
+            status="failed",
+            result_summary="Subagent could not be dispatched because the configured primary model is unavailable.",
+            metadata_json={
+                "resume_failed": True,
+                "worker_dispatch_failed": True,
+                "error_code": "primary_model_unavailable",
+                "primary_model_id": resolved_runtime.get("primary_model_id"),
+                "runtime_budget_actuals": dict(_SUBAGENT_OUTER_BUDGET_ACTUALS),
+            },
+        )
+        return True
     runtime = _coerce_runtime_context(
-        await _resolve_parent_runtime(parent_agent_id),
+        resolved_runtime,
         requester_user_id=requester_user_id,
     )
     if runtime is None:

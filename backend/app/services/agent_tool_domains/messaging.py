@@ -234,7 +234,7 @@ async def _resolve_target_agent_runtime(
 ):
     """Resolve source agent, target agent, and target model for A2A delegation."""
     from app.models.agent import Agent
-    from app.models.llm import LLMModel
+    from app.services.model_resolution import resolve_agent_runtime_models
 
     # RLS 阶段1: agents/llm_models are policy-bearing — scope to the source
     # agent's tenant (resolved via audited single-row bypass). Cross-tenant A2A
@@ -288,29 +288,17 @@ async def _resolve_target_agent_runtime(
         if not policy.allowed:
             return source_agent, target, None, f"❌ {policy.message}"
 
-        target_model = None
-        if target.primary_model_id:
-            model_r = await db.execute(
-                select(LLMModel).where(LLMModel.id == target.primary_model_id, LLMModel.tenant_id == target.tenant_id)
+        selection = await resolve_agent_runtime_models(db, target)
+        if selection.status == "primary_unavailable":
+            return (
+                source_agent,
+                target,
+                None,
+                f"⚠️ {target.name} primary model is unavailable (deleted, disabled, or outside this company)",
             )
-            target_model = model_r.scalar_one_or_none()
-
-        if not target_model and target.fallback_model_id:
-            fb_r = await db.execute(
-                select(LLMModel).where(LLMModel.id == target.fallback_model_id, LLMModel.tenant_id == target.tenant_id)
-            )
-            target_model = fb_r.scalar_one_or_none()
-            if target_model:
-                logger.warning(
-                    "[A2A] Primary model unavailable for %s, using fallback: %s",
-                    target.name,
-                    target_model.model,
-                )
-
-        if not target_model:
+        if selection.model is None:
             return source_agent, target, None, f"⚠️ {target.name} has no LLM model configured"
-
-        return source_agent, target, target_model, None
+        return source_agent, target, selection.model, None
 
 
 async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
@@ -1247,38 +1235,25 @@ async def _send_message_to_agent_outcome(
             session_id = str(chat_session.id)
             session_agent_id = chat_session.agent_id
 
-            # Prepare target LLM
-            from app.models.llm import LLMModel
+            from app.services.model_resolution import resolve_agent_runtime_models
 
-            # Load primary model (with fallback support)
-            target_model = None
-            if target.primary_model_id:
-                model_r = await db.execute(
-                    select(LLMModel).where(
-                        LLMModel.id == target.primary_model_id, LLMModel.tenant_id == target.tenant_id
-                    )
+            selection = await resolve_agent_runtime_models(db, target)
+            if selection.status == "primary_unavailable":
+                return _a2a_failure(
+                    "consult",
+                    error_code="primary_model_unavailable",
+                    message=(
+                        f"{target.name} primary model is unavailable "
+                        "(deleted, disabled, or outside this company)"
+                    ),
                 )
-                target_model = model_r.scalar_one_or_none()
-
-            # Config-level fallback: primary missing -> use fallback
-            if not target_model and target.fallback_model_id:
-                fb_r = await db.execute(
-                    select(LLMModel).where(
-                        LLMModel.id == target.fallback_model_id, LLMModel.tenant_id == target.tenant_id
-                    )
-                )
-                target_model = fb_r.scalar_one_or_none()
-                if target_model:
-                    logger.warning(
-                        f"[A2A] Primary model unavailable for {target.name}, using fallback: {target_model.model}"
-                    )
-
-            if not target_model:
+            if selection.model is None:
                 return _a2a_failure(
                     "consult",
                     error_code="target_model_not_configured",
                     message=f"{target.name} has no LLM model configured",
                 )
+            target_model = selection.model
 
             # Load recent history for context
             conversation_messages: list[dict] = []

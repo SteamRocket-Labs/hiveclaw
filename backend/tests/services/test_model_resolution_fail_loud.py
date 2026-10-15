@@ -56,4 +56,4 @@ def test_feishu_fails_loud_before_silent_fallback():
     assert "call_agent_llm" in inspect.getsource(fs)
     src = inspect.getsource(channel_runtime.call_agent_llm)
     assert "primary_model_unavailable" in src
-    assert src.index("primary_model_unavailable") < src.index("if not model and fallback_model")
+    assert src.index("primary_model_unavailable") < src.index("await call_llm")

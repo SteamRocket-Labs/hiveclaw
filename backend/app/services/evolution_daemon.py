@@ -106,56 +106,17 @@ async def _maybe_run_skill_curator(
 async def _resolve_agent_model(agent_id: uuid.UUID, tenant_id: uuid.UUID | None):
     from app.database import tenant_scoped_session
     from app.models.agent import Agent
-    from app.models.llm import LLMModel
-    from app.services.model_resolution import choose_runtime_model_pair, resolve_default_model_for_tenant
+    from app.services.model_resolution import resolve_agent_runtime_models
 
     async with tenant_scoped_session(tenant_id) as db:
         result = await db.execute(select(Agent).where(Agent.id == agent_id))
         agent = result.scalar_one_or_none()
         if not agent:
             return None
-
-        model = None
-        if agent.primary_model_id:
-            model_result = await db.execute(
-                select(LLMModel).where(LLMModel.id == agent.primary_model_id, LLMModel.tenant_id == agent.tenant_id)
-            )
-            model = model_result.scalar_one_or_none()
-
-        fallback_model = None
-        if agent.fallback_model_id:
-            fallback_result = await db.execute(
-                select(LLMModel).where(
-                    LLMModel.id == agent.fallback_model_id,
-                    LLMModel.tenant_id == agent.tenant_id,
-                )
-            )
-            fallback_model = fallback_result.scalar_one_or_none()
-
-        if not model and not fallback_model:
+        selection = await resolve_agent_runtime_models(db, agent)
+        if selection.status != "selected":
             return None
-
-        if model and agent.tenant_id:
-            default_runtime_model = await resolve_default_model_for_tenant(
-                db,
-                agent.tenant_id,
-                exclude_model_id=model.id,
-            )
-            model, _fallback = choose_runtime_model_pair(model, fallback_model, default_runtime_model)
-            return model
-
-        if fallback_model:
-            default_runtime_model = None
-            if agent.tenant_id:
-                default_runtime_model = await resolve_default_model_for_tenant(
-                    db,
-                    agent.tenant_id,
-                    exclude_model_id=fallback_model.id,
-                )
-            model, _fallback = choose_runtime_model_pair(None, fallback_model, default_runtime_model)
-            return model
-
-        return model
+        return selection.model
 
 
 async def run_heartbeat_evolution_maintenance(

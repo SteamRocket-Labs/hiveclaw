@@ -12,7 +12,6 @@ from app.kernel.contracts import ExecutionIdentityRef, TerminalReason
 from app.database import tenant_scoped_session
 from app.models.agent import Agent
 from app.models.chat_session import ChatSession
-from app.models.llm import LLMModel
 from app.models.participant import Participant
 from app.models.task import Task, TaskLog
 from app.models.tenant import Tenant
@@ -490,8 +489,7 @@ async def execute_task(
                 retryable=True,
             )
 
-        model_id = agent.primary_model_id or agent.fallback_model_id
-        if not model_id:
+        if not agent.primary_model_id and not agent.fallback_model_id:
             await _log_error(task_id, f"{agent.name} 未配置 LLM 模型，无法执行任务", tenant_id=tenant_id)
             return TaskExecutionOutcome(
                 status=TaskExecutionStatus.BLOCKED,
@@ -500,17 +498,11 @@ async def execute_task(
                 retryable=True,
             )
 
-        model_result = await db.execute(
-            select(LLMModel).where(LLMModel.id == model_id, LLMModel.tenant_id == agent.tenant_id)
-        )
-        model = model_result.scalar_one_or_none()
-        # Load fallback model for runtime resilience (mirrors websocket/heartbeat behavior)
-        fallback_model = None
-        if agent.fallback_model_id and agent.fallback_model_id != model_id:
-            fb_result = await db.execute(
-                select(LLMModel).where(LLMModel.id == agent.fallback_model_id, LLMModel.tenant_id == agent.tenant_id)
-            )
-            fallback_model = fb_result.scalar_one_or_none()
+        from app.services.model_resolution import resolve_agent_runtime_models
+
+        selection = await resolve_agent_runtime_models(db, agent)
+        model = selection.model
+        fallback_model = selection.fallback
         if not model:
             await _log_error(task_id, "配置的模型不存在", tenant_id=tenant_id)
             return TaskExecutionOutcome(

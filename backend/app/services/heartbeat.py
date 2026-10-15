@@ -1193,7 +1193,6 @@ async def _execute_heartbeat(
         from app.models.agent import Agent
         from app.models.audit import ChatMessage
         from app.models.chat_session import ChatSession
-        from app.models.llm import LLMModel
         from app.models.participant import Participant
 
         async with tenant_scoped_session(tenant_id) as db:
@@ -1303,51 +1302,19 @@ async def _execute_heartbeat(
                 )
                 return
 
-            model = None
-            if agent.primary_model_id:
-                model_result = await db.execute(
-                    select(LLMModel).where(LLMModel.id == agent.primary_model_id, LLMModel.tenant_id == agent.tenant_id)
+            from app.services.model_resolution import resolve_agent_runtime_models
+
+            selection = await resolve_agent_runtime_models(db, agent)
+            model = selection.model
+            if model is None:
+                skip_reason = "primary_model_unavailable" if agent.primary_model_id else "model_not_found"
+                logger.warning(
+                    f"[Heartbeat] Model for agent {agent.name} ({agent_id}) unavailable ({skip_reason}) — skipping"
                 )
-                model = model_result.scalar_one_or_none()
-
-            fallback_model = None
-            if agent.fallback_model_id:
-                fallback_result = await db.execute(
-                    select(LLMModel).where(
-                        LLMModel.id == agent.fallback_model_id, LLMModel.tenant_id == agent.tenant_id
-                    )
-                )
-                fallback_model = fallback_result.scalar_one_or_none()
-
-            if model and agent.tenant_id:
-                from app.services.model_resolution import choose_runtime_model_pair, resolve_default_model_for_tenant
-
-                default_runtime_model = await resolve_default_model_for_tenant(
-                    db,
-                    agent.tenant_id,
-                    exclude_model_id=model.id,
-                )
-                model, fallback_model = choose_runtime_model_pair(model, fallback_model, default_runtime_model)
-            elif fallback_model:
-                from app.services.model_resolution import choose_runtime_model_pair, resolve_default_model_for_tenant
-
-                model = fallback_model
-                fallback_model = None
-                default_runtime_model = None
-                if agent.tenant_id:
-                    default_runtime_model = await resolve_default_model_for_tenant(
-                        db,
-                        agent.tenant_id,
-                        exclude_model_id=model.id,
-                    )
-                model, fallback_model = choose_runtime_model_pair(model, fallback_model, default_runtime_model)
-
-            if not model:
-                logger.warning(f"[Heartbeat] Model for agent {agent.name} ({agent_id}) not found — skipping")
                 await _touch_last_heartbeat(agent_id, tenant_id)
                 await _skip_heartbeat_runtime_task(
                     runtime_task_id,
-                    skip_reason="model_not_found",
+                    skip_reason=skip_reason,
                     result_summary=f"Skipped heartbeat because configured model was not found for {agent.name}.",
                     metadata_json={
                         "primary_model_id": str(agent.primary_model_id) if agent.primary_model_id else None,

@@ -10,8 +10,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.llm import LLMModel
 from app.services import plan_mode_core
+from app.services.model_resolution import load_enabled_tenant_model
 from app.services.plan_mode_gate import get_plan_mode_gate
 
 
@@ -110,10 +110,7 @@ async def select_trigger_model(
             model_uuid = uuid.UUID(model_ids[0])
         except ValueError:
             return None, {"model_id": model_ids[0]}, "invalid_model_pin"
-        result = await db.execute(
-            select(LLMModel).where(LLMModel.id == model_uuid, LLMModel.tenant_id == getattr(agent, "tenant_id", None))
-        )
-        model = result.scalar_one_or_none()
+        model = await load_enabled_tenant_model(db, model_uuid, getattr(agent, "tenant_id", None))
         if not model:
             return None, {"model_id": model_ids[0]}, "model_pin_not_found"
         return model, {"model_id": str(model_uuid), "model_source": "trigger_config"}, None
@@ -121,10 +118,7 @@ async def select_trigger_model(
     primary_model_id = getattr(agent, "primary_model_id", None)
     if not primary_model_id:
         return None, {}, "no_model"
-    result = await db.execute(
-        select(LLMModel).where(LLMModel.id == primary_model_id, LLMModel.tenant_id == getattr(agent, "tenant_id", None))
-    )
-    model = result.scalar_one_or_none()
+    model = await load_enabled_tenant_model(db, primary_model_id, getattr(agent, "tenant_id", None))
     if not model:
         return None, {"model_id": str(primary_model_id)}, "model_not_found"
     return model, {"model_id": str(primary_model_id), "model_source": "agent_primary"}, None

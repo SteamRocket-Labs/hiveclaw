@@ -1,0 +1,31 @@
+# Keep private, local, and cache inputs out of the frontend image context.
+# BuildKit matches a slash-free pattern only at the context root, so these
+# private environment, runtime, and cache inputs are recursive.
+.git
+.hg
+**/.DS_Store
+
+**/.env
+**/.env.*
+!**/.env.example
+**/*.env
+
+**/.venv
+**/venv
+**/node_modules
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/.cache
+**/.vite
+**/.uv
+**/*.egg-info
+**/*.tsbuildinfo
+
+**/agent_data
+dist
+test-results
+playwright-report
+playwright-journey-report

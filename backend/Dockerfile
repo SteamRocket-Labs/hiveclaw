@@ -1,5 +1,8 @@
-# ─── Backend Dockerfile (Optimized) ─────────────────────
-# Multi-stage: deps → production
+# Backend image. Build context is backend/.
+# Runtime dependencies come from uv.lock via uv 0.9.21.
+# --locked fails when the lock is missing or no longer matches pyproject.toml.
+# --frozen would install the lock without that drift check, so it is not used.
+# This image does not install Node or lark-cli; those stay on the root image.
 FROM python:3.12-slim AS deps
 
 WORKDIR /app
@@ -7,7 +10,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends gcc libpq-dev && \
     rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml ./
+COPY pyproject.toml uv.lock ./
 COPY scripts/patch_lark_oapi.py ./scripts/patch_lark_oapi.py
 ARG HIVE_PIP_INDEX_URL
 ARG HIVE_PIP_TRUSTED_HOST
@@ -15,13 +18,30 @@ ARG CLAWITH_PIP_INDEX_URL
 ARG CLAWITH_PIP_TRUSTED_HOST
 RUN EFFECTIVE_PIP_INDEX_URL="${HIVE_PIP_INDEX_URL:-$CLAWITH_PIP_INDEX_URL}"; \
     EFFECTIVE_PIP_TRUSTED_HOST="${HIVE_PIP_TRUSTED_HOST:-$CLAWITH_PIP_TRUSTED_HOST}"; \
+    set -eu; \
     if [ -n "$EFFECTIVE_PIP_INDEX_URL" ] && [ -n "$EFFECTIVE_PIP_TRUSTED_HOST" ]; then \
-        pip install --no-cache-dir --index-url "$EFFECTIVE_PIP_INDEX_URL" --trusted-host "$EFFECTIVE_PIP_TRUSTED_HOST" .; \
+        pip install --no-cache-dir --index-url "$EFFECTIVE_PIP_INDEX_URL" --trusted-host "$EFFECTIVE_PIP_TRUSTED_HOST" "uv==0.9.21"; \
     elif [ -n "$EFFECTIVE_PIP_INDEX_URL" ]; then \
-        pip install --no-cache-dir --index-url "$EFFECTIVE_PIP_INDEX_URL" .; \
+        pip install --no-cache-dir --index-url "$EFFECTIVE_PIP_INDEX_URL" "uv==0.9.21"; \
     else \
-        pip install --no-cache-dir .; \
-    fi
+        pip install --no-cache-dir "uv==0.9.21"; \
+    fi; \
+    export UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy; \
+    uv export --python /usr/local/bin/python --locked --no-dev --no-emit-project \
+        --format requirements.txt --output-file /tmp/requirements.lock.txt; \
+    if [ -n "$EFFECTIVE_PIP_INDEX_URL" ] && [ -n "$EFFECTIVE_PIP_TRUSTED_HOST" ]; then \
+        uv pip install --python /usr/local/bin/python --system --require-hashes --no-cache \
+            --default-index "$EFFECTIVE_PIP_INDEX_URL" --allow-insecure-host "$EFFECTIVE_PIP_TRUSTED_HOST" \
+            -r /tmp/requirements.lock.txt; \
+    elif [ -n "$EFFECTIVE_PIP_INDEX_URL" ]; then \
+        uv pip install --python /usr/local/bin/python --system --require-hashes --no-cache \
+            --default-index "$EFFECTIVE_PIP_INDEX_URL" \
+            -r /tmp/requirements.lock.txt; \
+    else \
+        uv pip install --python /usr/local/bin/python --system --require-hashes --no-cache \
+            -r /tmp/requirements.lock.txt; \
+    fi; \
+    rm -f /tmp/requirements.lock.txt
 RUN python scripts/patch_lark_oapi.py
 
 # ─── Production ─────────────────────────────────────────

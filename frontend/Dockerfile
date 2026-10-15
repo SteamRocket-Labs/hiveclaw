@@ -1,4 +1,5 @@
-FROM node:20-alpine AS build
+# Node 22 matches Harness CI (actions/setup-node node-version 22).
+FROM node:22-alpine AS build
 WORKDIR /app
 COPY package*.json ./
 ARG NPM_REGISTRY

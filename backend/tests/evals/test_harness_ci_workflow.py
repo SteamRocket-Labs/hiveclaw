@@ -39,8 +39,11 @@ def test_harness_ci_uses_the_locked_backend_environment_and_linux_sandbox() -> N
     backend_job = source.split("  backend-harness:", 1)[1].split("  atomic-user-journeys:", 1)[0]
     atomic_job = source.split("  atomic-user-journeys:", 1)[1]
 
-    assert "uv sync --frozen --extra dev" in backend_job
-    assert "uv sync --frozen --extra dev" in atomic_job
+    assert 'python -m pip install "uv==0.9.21"' in backend_job
+    assert 'python -m pip install "uv==0.9.21"' in atomic_job
+    assert "uv sync --locked --extra dev" in backend_job
+    assert "uv sync --locked --extra dev" in atomic_job
+    assert "uv sync --frozen" not in source
     assert "backend/uv.lock" in backend_job
     assert "backend/uv.lock" in atomic_job
     assert "timeout-minutes: 60" in backend_job

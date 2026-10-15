@@ -45,3 +45,37 @@ def test_harness_ci_uses_fail_fast_postgres_and_keeps_sqlite_test_only() -> None
     dev_dependencies = pyproject["project"]["optional-dependencies"]["dev"]
     assert not any(dependency.split(">=", 1)[0] == "aiosqlite" for dependency in dependencies)
     assert any(dependency.split(">=", 1)[0] == "aiosqlite" for dependency in dev_dependencies)
+
+
+def test_shipping_builds_consume_the_locked_dependency_set() -> None:
+    """Images install the committed lock and use the same uv release as CI.
+
+    uv 0.9.21 --frozen installs a present lock without checking pyproject drift.
+    --locked is the check that fails closed when the lock is missing or stale.
+    """
+
+    workflow = _read(".github/workflows/harness-ci.yml")
+    root = _read("Dockerfile")
+    backend = _read("backend/Dockerfile")
+    frontend = _read("frontend/Dockerfile")
+    locked_export = "uv export --python /usr/local/bin/python --locked --no-dev --no-emit-project"
+
+    assert workflow.count('python -m pip install "uv==0.9.21"') == 2
+    assert workflow.count("uv sync --locked --extra dev") == 2
+    assert "uv sync --frozen" not in workflow
+    assert 'node-version: "22"' in workflow
+    assert "FROM node:22-alpine AS build" in frontend
+    assert "npm ci" in frontend
+
+    for name, dockerfile in (("Dockerfile", root), ("backend/Dockerfile", backend)):
+        assert "uv==0.9.21" in dockerfile, name
+        assert locked_export in dockerfile, name
+        assert "--require-hashes" in dockerfile, name
+        assert "uv.lock" in dockerfile, name
+        assert "pip install --no-cache-dir ." not in dockerfile, name
+        assert "python scripts/patch_lark_oapi.py" in dockerfile, name
+
+    assert "npm install -g @larksuite/cli@1.0.98" in root
+    assert "npm install -g @larksuite/cli &&" not in root
+    assert "@larksuite/cli" not in backend
+    assert "setup_20.x" in root

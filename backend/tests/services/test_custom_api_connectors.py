@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import threading
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
 import pytest
@@ -45,7 +48,8 @@ def test_prepare_custom_api_request_injects_secret_server_side_and_redacts_audit
     assert "sk-live-secret" not in json.dumps(request.audit, ensure_ascii=False)
 
 
-def test_prepare_custom_api_request_rejects_credential_arguments() -> None:
+@pytest.mark.parametrize("argument", ["api_key", "approved_networks", "network_grant"])
+def test_prepare_custom_api_request_rejects_credential_arguments(argument: str) -> None:
     from app.services.custom_api_connectors import CustomApiConnectorError, prepare_custom_api_request
 
     with pytest.raises(CustomApiConnectorError, match="credentials must be configured by an admin"):
@@ -57,7 +61,7 @@ def test_prepare_custom_api_request_rejects_credential_arguments() -> None:
                 "action": {"method": "GET", "path": "/v1/things"},
             },
             secret_config={},
-            arguments={"api_key": "sk-user-pasted"},
+            arguments={argument: "sk-user-pasted"},
         )
 
 
@@ -90,38 +94,51 @@ def test_build_custom_api_tool_payload_keeps_secret_out_of_tool_config() -> None
     assert payload.config_schema["fields"][0]["type"] == "password"
 
 
-@pytest.mark.asyncio
-async def test_custom_api_success_preserves_complete_response_body() -> None:
-    from app.services.custom_api_connectors import (
-        execute_prepared_custom_api_request,
-        prepare_custom_api_request,
-    )
+@contextmanager
+def _local_http(status: int, body: bytes):
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(body)
 
-    tail = "CUSTOM_API_DECISIVE_TAIL"
-    body = "b" * 21000 + tail
+        def log_message(self, _format, *_args):
+            return
 
-    class _Client:
-        async def __aenter__(self):
-            return self
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_address[1]
+    finally:
+        server.shutdown()
+        server.server_close()
 
-        async def __aexit__(self, *_args):
-            return None
 
-        async def request(self, *_args, **_kwargs):
-            return SimpleNamespace(status_code=200, text=body, headers={})
+def _local_prepared(port: int):
+    from app.services.custom_api_connectors import prepare_custom_api_request
 
-    prepared = prepare_custom_api_request(
+    return prepare_custom_api_request(
         tool_name="custom_api__example__read",
-        tool_config={"base_url": "https://api.example.com", "action": {"method": "GET", "path": "/v1/read"}},
+        tool_config={
+            "base_url": f"http://127.0.0.1:{port}",
+            "action": {"method": "GET", "path": "/v1/read"},
+            "approved_networks": ["127.0.0.1/32"],
+        },
         secret_config={},
         arguments={},
     )
 
-    result = await execute_prepared_custom_api_request(
-        "custom_api__example__read",
-        prepared,
-        http_client_factory=lambda **_kwargs: _Client(),
-    )
+
+@pytest.mark.asyncio
+async def test_custom_api_success_preserves_complete_response_body() -> None:
+    from app.services.custom_api_connectors import execute_prepared_custom_api_request
+
+    tail = "CUSTOM_API_DECISIVE_TAIL"
+    with _local_http(200, ("b" * 21000 + tail).encode()) as port:
+        result = await execute_prepared_custom_api_request("custom_api__example__read", _local_prepared(port))
 
     assert tail in result
     assert "...[truncated]" not in result
@@ -129,35 +146,31 @@ async def test_custom_api_success_preserves_complete_response_body() -> None:
 
 @pytest.mark.asyncio
 async def test_custom_api_http_error_preserves_complete_error_evidence() -> None:
-    from app.services.custom_api_connectors import (
-        execute_prepared_custom_api_request,
-        prepare_custom_api_request,
-    )
+    from app.services.custom_api_connectors import execute_prepared_custom_api_request
 
     tail = "CUSTOM_API_ERROR_DECISIVE_TAIL"
-    body = "e" * 900 + tail
-
-    class _Client:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
-            return None
-
-        async def request(self, *_args, **_kwargs):
-            return SimpleNamespace(status_code=422, text=body, headers={})
-
-    prepared = prepare_custom_api_request(
-        tool_name="custom_api__example__read",
-        tool_config={"base_url": "https://api.example.com", "action": {"method": "GET", "path": "/v1/read"}},
-        secret_config={},
-        arguments={},
-    )
-
-    result = await execute_prepared_custom_api_request(
-        "custom_api__example__read",
-        prepared,
-        http_client_factory=lambda **_kwargs: _Client(),
-    )
+    with _local_http(422, ("e" * 900 + tail).encode()) as port:
+        result = await execute_prepared_custom_api_request("custom_api__example__read", _local_prepared(port))
 
     assert tail in result
+
+
+def test_network_grant_stays_on_the_connector_and_rejects_a_bad_cidr() -> None:
+    from app.services.custom_api_connectors import (
+        CustomApiConnectorError,
+        merge_preserved_network_grant,
+        set_connector_network_grant,
+    )
+
+    tool = SimpleNamespace(config={"base_url": "https://api.example.com", "approved_networks": ["10.0.0.0/8"]})
+    merged = merge_preserved_network_grant(
+        {"base_url": "https://api.example.com", "approved_networks": ["0.0.0.0/0"]},
+        tool.config,
+    )
+    assert merged["approved_networks"] == ["10.0.0.0/8"]
+    with pytest.raises(CustomApiConnectorError, match="save again"):
+        set_connector_network_grant(tool, ["not-a-cidr"])
+    assert tool.config["approved_networks"] == ["10.0.0.0/8"]
+    assert set_connector_network_grant(tool, ["10.8.0.0/16", "10.8.0.0/16"]) == ["10.8.0.0/16"]
+    assert set_connector_network_grant(tool, []) == []
+    assert "approved_networks" not in tool.config

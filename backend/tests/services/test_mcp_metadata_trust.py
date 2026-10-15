@@ -256,3 +256,132 @@ def test_invalid_metadata_quarantine_revokes_a_previous_review_without_model_exp
     assert tool.parameters_schema == {"type": "object", "properties": {}}
     assert "invalid_metadata" in tool.mcp_metadata_risk_flags
     assert len(tool.mcp_metadata_fingerprint) == 64
+
+
+def test_legacy_approval_does_not_cover_new_activation_until_exact_review() -> None:
+    from app.services.mcp_metadata_trust import (
+        MCPMetadataValidationError,
+        apply_mcp_metadata_candidate,
+        current_mcp_fingerprint,
+        is_mcp_metadata_runtime_approved,
+        prepare_mcp_metadata_candidate,
+        review_mcp_metadata,
+    )
+
+    now = datetime(2026, 7, 12, tzinfo=timezone.utc)
+    tool = _tool()
+    metadata = {
+        "server_name": "ledger",
+        "server_url": "https://mcp.example/ledger",
+        "tool_name": "post_entry",
+        "raw_description": "Post one ledger entry",
+        "raw_schema": {"type": "object", "properties": {}},
+    }
+    legacy = prepare_mcp_metadata_candidate(**metadata)
+    assert apply_mcp_metadata_candidate(tool, legacy) is True
+    review_mcp_metadata(
+        tool,
+        decision="approve",
+        reviewer_id=uuid4(),
+        expected_fingerprint=legacy.fingerprint,
+        canonical_description="Post one reviewed ledger entry.",
+        now=now,
+    )
+    assert is_mcp_metadata_runtime_approved(tool) is True
+
+    tool.config = {"api_key": "ledger-secret"}
+    assert is_mcp_metadata_runtime_approved(tool) is False
+    with pytest.raises(MCPMetadataValidationError, match="fingerprint changed"):
+        review_mcp_metadata(
+            tool,
+            decision="approve",
+            reviewer_id=uuid4(),
+            expected_fingerprint=legacy.fingerprint,
+            now=now,
+        )
+    assert is_mcp_metadata_runtime_approved(tool) is False
+
+    sealed = prepare_mcp_metadata_candidate(
+        **metadata,
+        configuration={"transport": "sse", "api_key": "ledger-secret"},
+        permissions=["ledger:write"],
+    )
+    assert apply_mcp_metadata_candidate(tool, sealed) is True
+    assert tool.enabled is False
+    assert is_mcp_metadata_runtime_approved(tool) is False
+    review_mcp_metadata(
+        tool,
+        decision="approve",
+        reviewer_id=uuid4(),
+        expected_fingerprint=sealed.fingerprint,
+        canonical_description="Post one reviewed ledger entry.",
+        now=now,
+    )
+    assert is_mcp_metadata_runtime_approved(tool) is True
+
+    tool.config["api_key"] = "rotated-secret"
+    assert is_mcp_metadata_runtime_approved(tool) is False
+    with pytest.raises(MCPMetadataValidationError, match="fingerprint changed"):
+        review_mcp_metadata(
+            tool,
+            decision="approve",
+            reviewer_id=uuid4(),
+            expected_fingerprint=sealed.fingerprint,
+            now=now,
+        )
+    review_mcp_metadata(
+        tool,
+        decision="approve",
+        reviewer_id=uuid4(),
+        expected_fingerprint=current_mcp_fingerprint(tool),
+        canonical_description="Post one reviewed ledger entry.",
+        now=now,
+    )
+    assert is_mcp_metadata_runtime_approved(tool) is True
+
+    changed = prepare_mcp_metadata_candidate(
+        **metadata,
+        configuration={"transport": "sse", "api_key": "rotated-secret"},
+        permissions=["ledger:admin"],
+    )
+    assert apply_mcp_metadata_candidate(tool, changed) is True
+    assert tool.enabled is False
+    assert is_mcp_metadata_runtime_approved(tool) is False
+
+
+def test_rediscovery_replaces_permissions_and_can_clear_them() -> None:
+    from app.services.mcp_metadata_trust import (
+        apply_mcp_metadata_candidate,
+        is_mcp_metadata_runtime_approved,
+        prepare_mcp_metadata_candidate,
+        review_mcp_metadata,
+    )
+    from app.services.resource_discovery import _apply_discovered_mcp_metadata
+
+    metadata = {
+        "server_name": "ledger",
+        "server_url": "https://mcp.example/ledger",
+        "tool_name": "post_entry",
+        "raw_description": "Post one ledger entry",
+        "raw_schema": {"type": "object", "properties": {}},
+    }
+    tool = _tool()
+    initial = prepare_mcp_metadata_candidate(**metadata, permissions=["ledger:read"])
+    apply_mcp_metadata_candidate(tool, initial)
+    review_mcp_metadata(
+        tool,
+        decision="approve",
+        reviewer_id=uuid4(),
+        expected_fingerprint=initial.fingerprint,
+        canonical_description="Post one reviewed ledger entry.",
+    )
+    discovered = dict(metadata)
+    discovered["remote_tool_name"] = discovered.pop("tool_name")
+    _apply_discovered_mcp_metadata(
+        tool,
+        **discovered,
+        configuration={"transport": ""},
+        discovered={"permissions": []},
+    )
+    assert "permissions" not in tool.config
+    assert is_mcp_metadata_runtime_approved(tool) is False

@@ -92,6 +92,7 @@ async def test_validate_public_http_url_fails_closed_on_unexpected_resolver_erro
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
 async def test_validate_public_http_url_returns_canonical_target_and_all_pins():
     target = await validate_public_http_url(
         "HTTPS://Example.COM.:443/a/../report?q=1#ignored",
@@ -326,9 +327,7 @@ async def test_web_fetch_returns_typed_deny_without_opening_http_client(monkeypa
 
     monkeypatch.setattr(httpx, "AsyncClient", _ForbiddenClient)
 
-    result = await web_mcp._web_fetch(
-        {"url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/"}
-    )
+    result = await web_mcp._web_fetch({"url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/"})
 
     payload = _extract_tool_error(result)
     assert payload["error_class"] == "network_target_denied"

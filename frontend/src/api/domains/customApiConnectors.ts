@@ -43,4 +43,9 @@ export const customApiConnectorsApi = {
     post<{ ok: boolean; result: string }>(`/enterprise/custom-api-connectors/${id}/test`, {
       arguments: argumentsPayload,
     }),
+  setNetworkGrant: (id: string, networks: string[]) =>
+    put<{ ok: boolean; tool_id: string; approved_networks: string[] }>(
+      `/enterprise/custom-api-connectors/${id}/network-grant`,
+      { networks },
+    ),
 };

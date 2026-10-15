@@ -26,6 +26,29 @@ _provider_config_cache: dict[tuple[str, str | None], tuple[float, str]] = {}
 _provider_config_locks: dict[tuple[str, str | None], asyncio.Lock] = {}
 
 
+def _discovered_permissions(discovered) -> list | None:
+    """Return discovered permissions, including an explicit empty list.
+
+    None means the discovery document did not state permissions. An empty
+    list is a removal and must not fall back to the previously stored grant.
+    """
+
+    if not isinstance(discovered, dict):
+        return None
+    annotations = discovered.get("annotations") if isinstance(discovered.get("annotations"), dict) else {}
+    if "permissions" in discovered:
+        values = discovered.get("permissions")
+    elif "permissions" in annotations:
+        values = annotations.get("permissions")
+    elif "scopes" in annotations:
+        values = annotations.get("scopes")
+    else:
+        return None
+    if not isinstance(values, (list, tuple)):
+        return []
+    return [str(item) for item in values]
+
+
 def _apply_discovered_mcp_metadata(
     tool: Tool,
     *,
@@ -34,9 +57,47 @@ def _apply_discovered_mcp_metadata(
     remote_tool_name: str,
     raw_description,
     raw_schema,
+    package: str | None = None,
+    configuration: dict | None = None,
+    permissions=None,
+    discovered=None,
 ) -> bool:
     """Apply one remote metadata snapshot and return runtime eligibility."""
 
+    current = dict(tool.config) if isinstance(getattr(tool, "config", None), dict) else {}
+    merged = {
+        key: current[key]
+        for key in ("transport", "headers", "command", "args", "scopes", "api_key")
+        if current.get(key) not in (None, "", [], {})
+    }
+    if isinstance(configuration, dict):
+        for key, value in configuration.items():
+            if value in (None, "", [], {}):
+                merged.pop(key, None)
+                current.pop(key, None)
+                continue
+            merged[key] = value
+            if key == "api_key":
+                current["api_key"] = value
+    package_name = package or current.get("package") or current.get("qualified_name")
+    if package_name:
+        current["package"] = package_name
+    if permissions is not None:
+        permission_values = [str(item) for item in permissions] if isinstance(permissions, (list, tuple)) else []
+    else:
+        discovered_permissions = _discovered_permissions(discovered)
+        if discovered_permissions is not None:
+            permission_values = discovered_permissions
+        elif isinstance(current.get("permissions"), (list, tuple)):
+            permission_values = [str(item) for item in current["permissions"]]
+        else:
+            permission_values = None
+    if permission_values:
+        current["permissions"] = list(permission_values)
+    elif permission_values is not None:
+        current.pop("permissions", None)
+    if current:
+        tool.config = current
     try:
         candidate = prepare_mcp_metadata_candidate(
             server_name=server_name,
@@ -44,6 +105,9 @@ def _apply_discovered_mcp_metadata(
             tool_name=remote_tool_name,
             raw_description=raw_description,
             raw_schema=raw_schema,
+            package=package_name,
+            configuration=merged or None,
+            permissions=permission_values,
         )
     except MCPMetadataValidationError as exc:
         quarantine_invalid_mcp_metadata(
@@ -636,9 +700,11 @@ async def import_mcp_from_smithery(
                         existing_tool,
                         server_name=display_name,
                         server_url=base_mcp_url,
+                        package=qualified_name,
                         remote_tool_name=mcp_tool["name"],
                         raw_description=mcp_tool.get("description", description),
                         raw_schema=mcp_tool.get("inputSchema", {"type": "object", "properties": {}}),
+                        discovered=mcp_tool,
                     )
                     await _ensure_agent_tool(existing_tool.id, enabled=runtime_enabled)
                     if not runtime_enabled:
@@ -670,9 +736,11 @@ async def import_mcp_from_smithery(
                     tool,
                     server_name=display_name,
                     server_url=base_mcp_url,
+                    package=qualified_name,
                     remote_tool_name=mcp_tool["name"],
                     raw_description=mcp_tool.get("description", description),
                     raw_schema=mcp_tool.get("inputSchema", {"type": "object", "properties": {}}),
+                    discovered=mcp_tool,
                 )
                 db.add(tool)
                 try:
@@ -686,9 +754,11 @@ async def import_mcp_from_smithery(
                             existing_tool,
                             server_name=display_name,
                             server_url=base_mcp_url,
+                            package=qualified_name,
                             remote_tool_name=mcp_tool["name"],
                             raw_description=mcp_tool.get("description", description),
                             raw_schema=mcp_tool.get("inputSchema", {"type": "object", "properties": {}}),
+                            discovered=mcp_tool,
                         )
                         await _ensure_agent_tool(existing_tool.id, enabled=runtime_enabled)
                         imported_tools.append(
@@ -714,6 +784,7 @@ async def import_mcp_from_smithery(
                     existing_tool,
                     server_name=display_name,
                     server_url=base_mcp_url,
+                    package=qualified_name,
                     remote_tool_name=tool_name,
                     raw_description=description,
                     raw_schema={"type": "object", "properties": {}},
@@ -749,6 +820,7 @@ async def import_mcp_from_smithery(
                 tool,
                 server_name=display_name,
                 server_url=base_mcp_url,
+                package=qualified_name,
                 remote_tool_name=tool_name,
                 raw_description=description,
                 raw_schema={"type": "object", "properties": {}},
@@ -765,6 +837,7 @@ async def import_mcp_from_smithery(
                         existing_tool,
                         server_name=display_name,
                         server_url=base_mcp_url,
+                        package=qualified_name,
                         remote_tool_name=tool_name,
                         raw_description=description,
                         raw_schema={"type": "object", "properties": {}},
@@ -885,9 +958,11 @@ async def import_mcp_direct(
                         existing_tool,
                         server_name=display_name,
                         server_url=mcp_url,
+                        configuration={"api_key": api_key} if api_key else None,
                         remote_tool_name=mcp_tool["name"],
                         raw_description=mcp_tool.get("description", ""),
                         raw_schema=mcp_tool.get("inputSchema", {"type": "object", "properties": {}}),
+                        discovered=mcp_tool,
                     )
                     await _ensure_agent_tool(existing_tool.id, enabled=runtime_enabled)
                     imported_tools.append(
@@ -916,9 +991,11 @@ async def import_mcp_direct(
                     tool,
                     server_name=display_name,
                     server_url=mcp_url,
+                    configuration={"api_key": api_key} if api_key else None,
                     remote_tool_name=mcp_tool["name"],
                     raw_description=mcp_tool.get("description", ""),
                     raw_schema=mcp_tool.get("inputSchema", {"type": "object", "properties": {}}),
+                    discovered=mcp_tool,
                 )
                 db.add(tool)
                 try:
@@ -932,9 +1009,11 @@ async def import_mcp_direct(
                             existing_tool,
                             server_name=display_name,
                             server_url=mcp_url,
+                            configuration={"api_key": api_key} if api_key else None,
                             remote_tool_name=mcp_tool["name"],
                             raw_description=mcp_tool.get("description", ""),
                             raw_schema=mcp_tool.get("inputSchema", {"type": "object", "properties": {}}),
+                            discovered=mcp_tool,
                         )
                         await _ensure_agent_tool(existing_tool.id, enabled=runtime_enabled)
                         imported_tools.append(
@@ -957,6 +1036,7 @@ async def import_mcp_direct(
                     existing_tool,
                     server_name=display_name,
                     server_url=mcp_url,
+                    configuration={"api_key": api_key} if api_key else None,
                     remote_tool_name=tool_name,
                     raw_description="",
                     raw_schema={"type": "object", "properties": {}},
@@ -986,6 +1066,7 @@ async def import_mcp_direct(
                 tool,
                 server_name=display_name,
                 server_url=mcp_url,
+                configuration={"api_key": api_key} if api_key else None,
                 remote_tool_name=tool_name,
                 raw_description="",
                 raw_schema={"type": "object", "properties": {}},
@@ -1002,6 +1083,7 @@ async def import_mcp_direct(
                         existing_tool,
                         server_name=display_name,
                         server_url=mcp_url,
+                        configuration={"api_key": api_key} if api_key else None,
                         remote_tool_name=tool_name,
                         raw_description="",
                         raw_schema={"type": "object", "properties": {}},

@@ -23,6 +23,7 @@ export default function WorkspaceCustomApiView({ selectedTenantId }: WorkspaceTo
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [results, setResults] = useState<Record<string, string>>({});
+  const [grantDrafts, setGrantDrafts] = useState<Record<string, string>>({});
   const [form, setForm] = useState(INITIAL_FORM);
   const requestVersion = useRef(0);
 
@@ -149,6 +150,37 @@ export default function WorkspaceCustomApiView({ selectedTenantId }: WorkspaceTo
                     setBusy(connector.id);
                     try { await customApiConnectorsApi.delete(connector.id); await load(); } finally { setBusy(null); }
                   }}>{t('enterprise.tools.delete', 'Delete')}</button>
+                </div>
+              </div>
+              <div className="ws-tools-mt-10">
+                <label className="ws-tools-sub" htmlFor={`network-grant-${connector.id}`}>
+                  {t('enterprise.tools.networkGrant', 'Approved internal networks')}
+                </label>
+                <div className="ws-tools-row-8">
+                  <input
+                    id={`network-grant-${connector.id}`}
+                    className="form-input"
+                    value={grantDrafts[connector.id] ?? (Array.isArray(connector.config.approved_networks) ? (connector.config.approved_networks as string[]).join(', ') : '')}
+                    onChange={(event) => setGrantDrafts((current) => ({ ...current, [connector.id]: event.target.value }))}
+                    placeholder={t('enterprise.tools.networkGrantPlaceholder', 'Comma-separated CIDRs')}
+                  />
+                  <button className="btn btn-ghost" disabled={busy === `grant:${connector.id}`} onClick={async () => {
+                    setBusy(`grant:${connector.id}`);
+                    try {
+                      const networks = (grantDrafts[connector.id] ?? (Array.isArray(connector.config.approved_networks) ? (connector.config.approved_networks as string[]).join(', ') : ''))
+                        .split(',')
+                        .map((item) => item.trim())
+                        .filter(Boolean);
+                      const saved = await customApiConnectorsApi.setNetworkGrant(connector.id, networks);
+                      setGrantDrafts((current) => ({ ...current, [connector.id]: saved.approved_networks.join(', ') }));
+                      showAppToast(t('enterprise.tools.networkGrantSaved', 'Network grant saved'), 'success');
+                      await load();
+                    } catch (error) {
+                      showAppToast(error instanceof Error ? error.message : String(error), 'error');
+                    } finally {
+                      setBusy(null);
+                    }
+                  }}>{t('enterprise.tools.saveNetworkGrant', 'Save network grant')}</button>
                 </div>
               </div>
               <div className="ws-tools-row-8 ws-tools-mt-10">

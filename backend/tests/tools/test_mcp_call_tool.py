@@ -93,17 +93,23 @@ def _compiled_sql(stmt) -> str:
 
 
 def _approved_mcp_row(**values):
+    from app.services.mcp_metadata_trust import current_mcp_fingerprint, live_mcp_activation
+
     tool_type = values.pop("type", "mcp")
-    fingerprint = values.pop("mcp_metadata_fingerprint", "a" * 64)
-    reviewed_fingerprint = values.pop("mcp_reviewed_fingerprint", fingerprint)
+    supplied_fingerprint = values.pop("mcp_metadata_fingerprint", None)
+    review_supplied = "mcp_reviewed_fingerprint" in values
+    supplied_review = values.pop("mcp_reviewed_fingerprint", None)
     trust_status = values.pop("mcp_trust_status", "approved")
-    return SimpleNamespace(
-        type=tool_type,
-        mcp_trust_status=trust_status,
-        mcp_metadata_fingerprint=fingerprint,
-        mcp_reviewed_fingerprint=reviewed_fingerprint,
-        **values,
-    )
+    row = SimpleNamespace(type=tool_type, mcp_trust_status=trust_status, **values)
+    activation = live_mcp_activation(row)
+    if activation:
+        config = dict(getattr(row, "config", None) or {})
+        config["mcp_activation"] = activation
+        row.config = config
+    fingerprint = supplied_fingerprint or current_mcp_fingerprint(row)
+    row.mcp_metadata_fingerprint = fingerprint
+    row.mcp_reviewed_fingerprint = supplied_review if review_supplied else fingerprint
+    return row
 
 
 @pytest.fixture
@@ -434,6 +440,73 @@ async def test_call_mcp_tool_rejects_local_only_transport_before_client(install_
 
     assert _SpyClient.instances == []
     assert "local bridge" in out
+
+
+@pytest.mark.asyncio
+async def test_rediscovered_permission_change_blocks_the_call_until_exact_review(
+    install_fake_session, patch_mcp_client
+):
+    from app.services.mcp_metadata_trust import (
+        MCPMetadataValidationError,
+        apply_mcp_metadata_candidate,
+        current_mcp_fingerprint,
+        is_mcp_metadata_runtime_approved,
+        prepare_mcp_metadata_candidate,
+        review_mcp_metadata,
+    )
+    from app.services.resource_discovery import _apply_discovered_mcp_metadata
+
+    metadata = dict(
+        server_name="review",
+        server_url="https://mcp.example/review",
+        tool_name="write",
+        raw_description="Write one reviewed entry",
+        raw_schema={"type": "object", "properties": {}},
+    )
+    tool = SimpleNamespace(type="mcp", config={}, name="mcp__review__write", enabled=False)
+    initial = prepare_mcp_metadata_candidate(**metadata, permissions=["ledger:read"])
+    apply_mcp_metadata_candidate(tool, initial)
+    review_mcp_metadata(tool, decision="approve", reviewer_id=uuid.uuid4(), expected_fingerprint=initial.fingerprint)
+    values = dict(metadata)
+    values["remote_tool_name"] = values.pop("tool_name")
+    _apply_discovered_mcp_metadata(tool, **values, discovered={"permissions": ["ledger:admin"]})
+    assert is_mcp_metadata_runtime_approved(tool) is False
+    install_fake_session(tool)
+    denied = await call_mcp_tool(uuid.uuid4(), {"tool_name": tool.name, "arguments": {}})
+    assert _SpyClient.instances == []
+    assert "review" in denied.lower()
+
+    stale = initial.fingerprint
+    with pytest.raises(MCPMetadataValidationError, match="fingerprint changed"):
+        review_mcp_metadata(tool, decision="approve", reviewer_id=uuid.uuid4(), expected_fingerprint=stale)
+    assert is_mcp_metadata_runtime_approved(tool) is False
+
+    review_mcp_metadata(
+        tool,
+        decision="approve",
+        reviewer_id=uuid.uuid4(),
+        expected_fingerprint=current_mcp_fingerprint(tool),
+        canonical_description="Write one reviewed entry.",
+    )
+    assert is_mcp_metadata_runtime_approved(tool) is True
+    _SpyClient.instances.clear()
+    install_fake_session(tool)
+    allowed = await call_mcp_tool(uuid.uuid4(), {"tool_name": tool.name, "arguments": {}})
+    assert _SpyClient.instances
+    assert "OK from write" in allowed
+
+    tool.config = {**tool.config, "api_key": "synthetic-unreviewed-key"}
+    assert is_mcp_metadata_runtime_approved(tool) is False
+    with pytest.raises(MCPMetadataValidationError, match="fingerprint changed"):
+        review_mcp_metadata(tool, decision="approve", reviewer_id=uuid.uuid4(), expected_fingerprint=stale)
+    review_mcp_metadata(
+        tool,
+        decision="approve",
+        reviewer_id=uuid.uuid4(),
+        expected_fingerprint=current_mcp_fingerprint(tool),
+        canonical_description="Write one reviewed entry.",
+    )
+    assert is_mcp_metadata_runtime_approved(tool) is True
 
 
 @pytest.mark.asyncio

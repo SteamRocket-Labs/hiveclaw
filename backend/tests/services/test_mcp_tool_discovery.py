@@ -53,8 +53,9 @@ class _FakeSession:
 
 
 def _mcp_tool(*, name, tool_id, is_default=False):
-    fingerprint = "a" * 64
-    return SimpleNamespace(
+    from app.services.mcp_metadata_trust import _live_legacy_fingerprint
+
+    tool = SimpleNamespace(
         id=tool_id,
         name=name,
         display_name=name,
@@ -70,9 +71,11 @@ def _mcp_tool(*, name, tool_id, is_default=False):
         mcp_server_url="https://gh",
         mcp_tool_name=name,
         mcp_trust_status="approved",
-        mcp_metadata_fingerprint=fingerprint,
-        mcp_reviewed_fingerprint=fingerprint,
     )
+    fingerprint = _live_legacy_fingerprint(tool)
+    tool.mcp_metadata_fingerprint = fingerprint
+    tool.mcp_reviewed_fingerprint = fingerprint
+    return tool
 
 
 def _mcp_tool_for_tenant(*, name, tool_id, tenant_id, is_default=False):

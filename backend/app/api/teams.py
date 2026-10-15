@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -405,35 +406,26 @@ async def teams_event_webhook(
 ):
     """Handle Microsoft Teams Bot Framework callbacks."""
     try:
+        from app.services.channel_ingress_dispatcher import ChannelIngressReplayRequest
+
         body_bytes = await request.body()
-        replay_event_id = getattr(getattr(request, "state", None), "channel_ingress_event_id", None)
+        is_replay = isinstance(request, ChannelIngressReplayRequest)
         try:
             body = json.loads(body_bytes)
-        except json.JSONDecodeError as e:
-            logger.error(f"Teams: Failed to parse JSON body: {e}, body={body_bytes[:200]}")
+        except json.JSONDecodeError:
+            logger.error("Teams: Failed to parse JSON body")
             return Response(status_code=400, content="Invalid JSON")
 
-        # Microsoft Teams Bot Framework sends the activity directly in the body (not wrapped in "activity" key)
-        # Check if body itself is the activity (has "type" field) or if it's wrapped
         if isinstance(body, dict) and "type" in body:
             activity = body
-        elif isinstance(body, dict) and "activity" in body:
+        elif isinstance(body, dict) and isinstance(body.get("activity"), dict):
             activity = body["activity"]
         else:
-            logger.warning(
-                f"Teams: Unexpected body structure for agent {agent_id}: {list(body.keys()) if isinstance(body, dict) else type(body)}"
-            )
+            logger.warning(f"Teams: Unexpected body structure for agent {agent_id}")
             activity = body if isinstance(body, dict) else {}
 
-        logger.info(
-            f"Teams: Webhook received for agent {agent_id}, activity type={activity.get('type')}, from={activity.get('from', {}).get('id', 'unknown')}, text={activity.get('text', '')[:50] if activity.get('text') else 'no text'}"
-        )
+        logger.info(f"Teams: Webhook received for agent {agent_id}, activity type={activity.get('type')}")
 
-        # Teams Bot Framework uses a simple token for authentication, not HMAC for incoming webhooks
-        # For now, we rely on the unguessable URL token.
-        # In a full production setup, you'd validate the JWT token in the Authorization header.
-
-        # Get channel config and pin tenant RLS for this public webhook.
         config = await load_public_agent_channel_config(
             db,
             agent_id=agent_id,
@@ -447,15 +439,36 @@ async def teams_event_webhook(
             _agent_obj = await db.get(AgentModel, agent_id)
             agent_tenant_id = _agent_obj.tenant_id if _agent_obj else None
 
-        # Extract serviceUrl from the activity for sending replies
-        service_url = activity.get("serviceUrl")
-        if service_url:
+        if not is_replay:
+            from app.services.bot_connector_auth import (
+                BotConnectorAuthError,
+                authenticate_connector_activity,
+                get_connector_key_source,
+            )
+
+            try:
+                await authenticate_connector_activity(
+                    authorization=request.headers.get("authorization"),
+                    activity=activity if isinstance(activity, dict) else {},
+                    app_id=str(getattr(config, "app_id", "") or ""),
+                    key_source=get_connector_key_source(),
+                )
+            except BotConnectorAuthError as exc:
+                if exc.retryable:
+                    return JSONResponse(
+                        status_code=503,
+                        content={"error": "bot_connector_key_discovery_unavailable", "retryable": True},
+                    )
+                return JSONResponse(status_code=401, content={"error": "bot_connector_unauthorized"})
+
+        service_url = activity.get("serviceUrl") if isinstance(activity, dict) else None
+        if service_url and isinstance(getattr(config, "extra_config", None), dict):
             if config.extra_config.get("service_url") != service_url:
                 config.extra_config["service_url"] = service_url
                 config.is_connected = True
                 await db.flush()
                 await db.commit()
-                logger.info(f"Teams: Updated service_url for agent {agent_id} to {service_url}")
+                logger.info(f"Teams: Updated service_url for agent {agent_id}")
 
         activity_id = activity.get("id")
 
@@ -486,7 +499,7 @@ async def teams_event_webhook(
             logger.warning(f"Teams: Missing conversation_id or sender_id in activity for agent {agent_id}")
             return {"ok": True}
 
-        if replay_event_id is None:
+        if not is_replay:
             from app.services.channel_ingress_inbox import accept_authenticated_channel_event, channel_installation_ref
 
             await accept_authenticated_channel_event(
@@ -502,7 +515,7 @@ async def teams_event_webhook(
             )
             return {"ok": True}
 
-        logger.info(f"Teams: Message from={sender_id}, conversation={conversation_id}: {user_text[:80]}")
+        logger.info(f"Teams: Replaying admitted activity for agent {agent_id}")
 
         from app.services.channel_ingress_inbox import channel_installation_ref
         from app.services.external_principal_service import resolve_or_create_external_principal

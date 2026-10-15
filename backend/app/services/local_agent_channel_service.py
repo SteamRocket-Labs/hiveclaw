@@ -52,6 +52,7 @@ from app.services.local_bridge_service import (
     BridgeAuthContext,
     hash_secret,
     require_local_agent_capability_policy,
+    select_effective_capability_policy,
     utcnow,
 )
 from app.services.runtime_notification_outbox import (
@@ -1196,7 +1197,7 @@ async def _agent_capability_names(
     allowed: list[str] = []
     for capability in server_capabilities:
         policy_name = f"local_agent.{capability}"
-        policy = agent_policies.get(policy_name) or tenant_policies.get(policy_name)
+        policy = select_effective_capability_policy(agent_policies.get(policy_name), tenant_policies.get(policy_name))
         # The snapshot advertises supported governed capabilities. A live
         # per-action check below decides whether an invocation is immediate or
         # waits for an owner decision. Missing policy is always deny.

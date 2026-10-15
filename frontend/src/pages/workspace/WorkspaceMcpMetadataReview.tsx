@@ -1,7 +1,87 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import type { EnterpriseMcpMetadataTool } from '../../api/domains/extensions';
+import type { EnterpriseMcpActivationFacts, EnterpriseMcpMetadataTool } from '../../api/domains/extensions';
+
+function configurationText(
+  configuration: NonNullable<EnterpriseMcpActivationFacts['configuration']>,
+): string {
+  const parts: string[] = [];
+  if (configuration.transport) parts.push(configuration.transport);
+  if (configuration.command) parts.push(configuration.command);
+  if (Array.isArray(configuration.args)) parts.push(configuration.args.join(' '));
+  else if (configuration.args) parts.push(configuration.args);
+  if (Array.isArray(configuration.scopes)) parts.push(configuration.scopes.join(', '));
+  else if (configuration.scopes) parts.push(configuration.scopes);
+  if (configuration.headers && typeof configuration.headers === 'object') {
+    parts.push(Object.entries(configuration.headers).map(([name, value]) => `${name} ${value}`).join(', '));
+  } else if (typeof configuration.headers === 'string') {
+    parts.push(configuration.headers);
+  }
+  return parts.filter(Boolean).join(' · ');
+}
+
+function ActivationFacts({ tool }: { tool: EnterpriseMcpMetadataTool }) {
+  const { t } = useTranslation();
+  const activation = tool.activation;
+  if (!activation) return null;
+  const configText = activation.configuration ? configurationText(activation.configuration) : '';
+  const previous = tool.reviewed_fingerprint
+    && tool.reviewed_fingerprint !== tool.metadata_fingerprint
+    ? tool.reviewed_fingerprint
+    : null;
+  const credentialSet = activation.configuration?.credential === 'set';
+  if (
+    !activation.endpoint
+    && !activation.package
+    && !activation.permissions?.length
+    && !configText
+    && !credentialSet
+    && !previous
+  ) {
+    return null;
+  }
+  return (
+    <dl className="ws-mcp-activation" aria-label={t('enterprise.tools.mcpActivationFacts', 'Activation being approved')}>
+      {activation.endpoint ? (
+        <div>
+          <dt>{t('enterprise.tools.mcpActivationEndpoint', 'Endpoint')}</dt>
+          <dd>{activation.endpoint}</dd>
+        </div>
+      ) : null}
+      {activation.package ? (
+        <div>
+          <dt>{t('enterprise.tools.mcpActivationPackage', 'Package')}</dt>
+          <dd>{activation.package}</dd>
+        </div>
+      ) : null}
+      {activation.permissions?.length ? (
+        <div>
+          <dt>{t('enterprise.tools.mcpActivationPermissions', 'Permissions')}</dt>
+          <dd>{activation.permissions.join(', ')}</dd>
+        </div>
+      ) : null}
+      {configText ? (
+        <div>
+          <dt>{t('enterprise.tools.mcpActivationConfiguration', 'Configuration')}</dt>
+          <dd>{configText}</dd>
+        </div>
+      ) : null}
+      {credentialSet ? (
+        <div>
+          <dt>{t('enterprise.tools.mcpActivationCredential', 'Credential')}</dt>
+          <dd>{t('enterprise.tools.mcpActivationCredentialSet', 'Set')}</dd>
+        </div>
+      ) : null}
+      {previous ? (
+        <div>
+          <dt>{t('enterprise.tools.mcpPreviouslyApproved', 'Previously approved')}</dt>
+          <dd><code title={previous}>{previous.slice(0, 12)}</code></dd>
+        </div>
+      ) : null}
+    </dl>
+  );
+}
 
 interface McpMetadataReviewPanelProps {
   serverName: string;
@@ -56,6 +136,7 @@ export function McpMetadataReviewPanel({
                   <span>{tool.trust_tier}</span>
                   <code title={tool.metadata_fingerprint}>{tool.metadata_fingerprint.slice(0, 12)}</code>
                 </div>
+                <ActivationFacts tool={tool} />
                 {tool.risk_flags.length > 0 ? (
                   <div className="ws-mcp-risk-flags">
                     {tool.risk_flags.map((flag) => <span key={flag}>{flag}</span>)}

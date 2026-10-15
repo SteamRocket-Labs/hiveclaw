@@ -15,7 +15,7 @@ import re
 import socket
 import ssl
 from typing import Any
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpcore
 import httpx
@@ -36,6 +36,12 @@ _NAT64_NETWORKS = (
     ipaddress.ip_network("64:ff9b::/96"),
     ipaddress.ip_network("64:ff9b:1::/48"),
 )
+_METADATA_HOSTS = {"metadata.google.internal", "metadata.google.com"}
+_METADATA_ADDRESSES = {
+    ipaddress.ip_address("169.254.169.254"),
+    ipaddress.ip_address("169.254.170.2"),
+    ipaddress.ip_address("fd00:ec2::254"),
+}
 
 
 class GovernedEgressError(RuntimeError):
@@ -128,14 +134,46 @@ def _is_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -
     )
 
 
-def _parse_public_address(value: str, *, url: str, source: str) -> str:
+def _network_grants(
+    allowed_networks: Sequence[str] | None,
+) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    grants = []
+    for item in allowed_networks or ():
+        try:
+            grants.append(ipaddress.ip_network(str(item), strict=False))
+        except ValueError as exc:
+            raise _deny("approved network range is invalid") from exc
+    return tuple(grants)
+
+
+def _is_metadata_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if address.is_link_local or address in _METADATA_ADDRESSES:
+        return True
+    if isinstance(address, ipaddress.IPv6Address):
+        embedded = _embedded_ipv4(address)
+        if embedded is not None and (embedded.is_link_local or embedded in _METADATA_ADDRESSES):
+            return True
+    return False
+
+
+def _parse_public_address(
+    value: str,
+    *,
+    url: str,
+    source: str,
+    grants: Sequence[ipaddress.IPv4Network | ipaddress.IPv6Network] = (),
+) -> str:
     try:
         address = ipaddress.ip_address(value.split("%", 1)[0])
     except ValueError as exc:
         raise _deny(f"{source} returned an invalid IP address", url=url) from exc
-    if not _is_public_address(address):
-        raise _deny(f"{source} resolved to a non-public network address", url=url)
-    return str(address)
+    if _is_metadata_address(address):
+        raise _deny(f"{source} resolved to a metadata or link-local address", url=url)
+    if isinstance(address, ipaddress.IPv6Address) and _embedded_ipv4(address) is not None:
+        raise _deny(f"{source} resolved to an embedded IPv4 address", url=url)
+    if _is_public_address(address) or any(address in network for network in grants):
+        return str(address)
+    raise _deny(f"{source} resolved to a non-public network address", url=url)
 
 
 def _normalize_http_url(
@@ -220,12 +258,16 @@ async def validate_public_http_url(
     value: str,
     *,
     resolver: AddressResolver | None = None,
+    allowed_networks: Sequence[str] = (),
 ) -> ValidatedPublicTarget:
-    """Validate one URL and return the complete public address pin set."""
+    """Validate one URL and return the address pins permitted for this caller."""
 
+    grants = _network_grants(allowed_networks)
     canonical_url, scheme, hostname, port, literal = _normalize_http_url(value)
+    if hostname.lower() in _METADATA_HOSTS:
+        raise _deny("metadata service targets are denied", url=canonical_url)
     if literal is not None:
-        resolved = (_parse_public_address(str(literal), url=canonical_url, source="URL"),)
+        resolved = (_parse_public_address(str(literal), url=canonical_url, source="URL", grants=grants),)
     else:
         selected_resolver = resolver or resolve_public_addresses
         try:
@@ -238,7 +280,7 @@ async def validate_public_http_url(
             raise _deny("DNS resolution returned no addresses", url=canonical_url)
         pins: list[str] = []
         for answer in answers:
-            canonical_ip = _parse_public_address(str(answer), url=canonical_url, source="DNS")
+            canonical_ip = _parse_public_address(str(answer), url=canonical_url, source="DNS", grants=grants)
             if canonical_ip not in pins:
                 pins.append(canonical_ip)
         resolved = tuple(pins)
@@ -255,12 +297,20 @@ async def validate_public_http_url(
 class PinnedPublicNetworkBackend(httpcore.AsyncNetworkBackend):
     """Connect only to IPs produced by the validated resolver pass."""
 
-    def __init__(self, backend: httpcore.AsyncNetworkBackend | None = None):
+    def __init__(
+        self,
+        backend: httpcore.AsyncNetworkBackend | None = None,
+        allowed_networks: Sequence[str] = (),
+    ):
         self._backend = backend or httpcore.AnyIOBackend()
         self._pins: dict[tuple[str, int], tuple[str, ...]] = {}
+        self._grants = _network_grants(allowed_networks)
 
     def register(self, hostname: str, port: int, resolved_ips: Sequence[str]) -> None:
-        pins = tuple(_parse_public_address(str(value), url=hostname, source="Pinned target") for value in resolved_ips)
+        pins = tuple(
+            _parse_public_address(str(value), url=hostname, source="Pinned target", grants=self._grants)
+            for value in resolved_ips
+        )
         if not pins:
             raise _deny("Validated target has no connection pins", url=hostname)
         self._pins[(hostname.lower().rstrip("."), int(port))] = pins
@@ -290,7 +340,7 @@ class PinnedPublicNetworkBackend(httpcore.AsyncNetworkBackend):
                 peer = stream.get_extra_info("server_addr")
                 peer_ip = str(peer[0]).split("%", 1)[0] if isinstance(peer, tuple) and peer else ""
                 try:
-                    canonical_peer = _parse_public_address(peer_ip, url=host, source="Socket peer")
+                    canonical_peer = _parse_public_address(peer_ip, url=host, source="Socket peer", grants=self._grants)
                 except GovernedEgressError as exc:
                     await stream.aclose()
                     raise httpcore.ConnectError(exc.reason) from exc
@@ -335,17 +385,41 @@ class _PinnedAsyncHTTPTransport(httpx.AsyncHTTPTransport):
         )
 
 
-def _default_client_factory(backend: PinnedPublicNetworkBackend) -> httpx.AsyncClient:
+def _default_client_factory(backend: PinnedPublicNetworkBackend, timeout: float = 10.0) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         transport=_PinnedAsyncHTTPTransport(backend),
         follow_redirects=False,
         trust_env=False,
-        timeout=httpx.Timeout(10.0),
+        timeout=httpx.Timeout(timeout),
     )
 
 
-def _strip_cross_origin_credentials(headers: Mapping[str, str]) -> dict[str, str]:
-    return {key: value for key, value in headers.items() if key.lower() not in _SENSITIVE_REDIRECT_HEADERS}
+def _strip_cross_origin_credentials(
+    headers: Mapping[str, str],
+    secret_values: Sequence[str] = (),
+) -> dict[str, str]:
+    secrets = {value for value in secret_values if value}
+    kept: dict[str, str] = {}
+    for key, value in headers.items():
+        if key.lower() in _SENSITIVE_REDIRECT_HEADERS:
+            continue
+        if secrets and any(secret in str(value) for secret in secrets):
+            continue
+        kept[key] = value
+    return kept
+
+
+def _without_secret_query(url: str, secret_values: Sequence[str]) -> str:
+    secrets = {value for value in secret_values if value}
+    if not secrets:
+        return url
+    parts = urlsplit(url)
+    kept = [
+        (key, value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if value not in secrets and not any(secret in value for secret in secrets)
+    ]
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(kept), ""))
 
 
 async def _read_limited_response(response: httpx.Response, limits: EgressLimits, *, url: str) -> bytes:
@@ -382,32 +456,46 @@ async def _read_limited_response(response: httpx.Response, limits: EgressLimits,
     return b"".join(chunks)
 
 
-async def fetch_public_http(
+async def request_governed_http(
+    method: str,
     url: str,
     *,
     headers: Mapping[str, str] | None = None,
+    params: Mapping[str, Any] | None = None,
+    json_body: Any = None,
+    allowed_networks: Sequence[str] = (),
+    secret_values: Sequence[str] = (),
     resolver: AddressResolver | None = None,
     limits: EgressLimits | None = None,
     client_factory: ClientFactory | None = None,
 ) -> GovernedHTTPResponse:
-    """GET a public URL through DNS-pinned, manually redirected HTTP."""
+    """Send one HTTP request through DNS-pinned, manually redirected egress."""
 
     policy = limits or EgressLimits()
-    backend = PinnedPublicNetworkBackend()
-    factory = client_factory or _default_client_factory
-    current_headers = dict(headers or {})
+    backend = PinnedPublicNetworkBackend(allowed_networks=allowed_networks)
+    original_headers = dict(headers or {})
+    current_headers = dict(original_headers)
+    send_params = dict(params) if params else None
+    send_json = json_body
+    verb = method.upper()
 
     async def execute() -> GovernedHTTPResponse:
-        target = await validate_public_http_url(url, resolver=resolver)
+        nonlocal send_json, send_params, verb
+        target = await validate_public_http_url(url, resolver=resolver, allowed_networks=allowed_networks)
         backend.register(target.hostname, target.port, target.resolved_ips)
         redirect_count = 0
+        factory = client_factory or (
+            lambda pinned: _default_client_factory(pinned, timeout=policy.total_timeout_seconds)
+        )
 
         async with factory(backend) as client:
             while True:
                 async with client.stream(
-                    "GET",
+                    verb,
                     target.url,
                     headers=current_headers,
+                    params=send_params,
+                    json=send_json,
                     follow_redirects=False,
                 ) as response:
                     if response.status_code in _REDIRECT_STATUSES and response.headers.get("location"):
@@ -418,7 +506,11 @@ async def fetch_public_http(
                                 code="network_redirect_denied",
                             )
                         redirected_url = urljoin(target.url, response.headers["location"])
-                        next_target = await validate_public_http_url(redirected_url, resolver=resolver)
+                        next_target = await validate_public_http_url(
+                            redirected_url,
+                            resolver=resolver,
+                            allowed_networks=allowed_networks,
+                        )
                         if target.scheme == "https" and next_target.scheme != "https":
                             raise _deny(
                                 "HTTPS to HTTP redirect downgrade is not allowed",
@@ -426,8 +518,18 @@ async def fetch_public_http(
                                 code="network_redirect_denied",
                             )
                         if next_target.origin != target.origin:
+                            redirected_url = _without_secret_query(redirected_url, secret_values)
+                            next_target = await validate_public_http_url(
+                                redirected_url,
+                                resolver=resolver,
+                                allowed_networks=allowed_networks,
+                            )
                             current_headers.clear()
-                            current_headers.update(_strip_cross_origin_credentials(headers or {}))
+                            current_headers.update(_strip_cross_origin_credentials(original_headers, secret_values))
+                        if response.status_code in {301, 302, 303}:
+                            verb = "GET"
+                            send_json = None
+                        send_params = None
                         backend.register(next_target.hostname, next_target.port, next_target.resolved_ips)
                         target = next_target
                         redirect_count += 1
@@ -448,3 +550,23 @@ async def fetch_public_http(
         raise
     except TimeoutError as exc:
         raise _deny("HTTP request exceeded the total timeout", url=url, code="network_timeout") from exc
+
+
+async def fetch_public_http(
+    url: str,
+    *,
+    headers: Mapping[str, str] | None = None,
+    resolver: AddressResolver | None = None,
+    limits: EgressLimits | None = None,
+    client_factory: ClientFactory | None = None,
+) -> GovernedHTTPResponse:
+    """GET a public URL. Callers without an admin network grant stay public-only."""
+
+    return await request_governed_http(
+        "GET",
+        url,
+        headers=headers,
+        resolver=resolver,
+        limits=limits,
+        client_factory=client_factory,
+    )

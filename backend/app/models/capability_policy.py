@@ -18,7 +18,7 @@ class CapabilityPolicy(Base):
     """Per-tenant (or per-agent) capability access policy.
 
     When agent_id is NULL, the policy applies as the tenant default.
-    Agent-specific policies override tenant defaults.
+    A company denial wins over an agent allow. An agent policy can only narrow access.
     """
 
     __tablename__ = "capability_policies"

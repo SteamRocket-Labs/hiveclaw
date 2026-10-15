@@ -150,7 +150,6 @@ async def test_execute_mcp_tool_rejects_token_passthrough_config(monkeypatch) ->
 
     agent_id = uuid4()
     tenant_id = uuid4()
-    fingerprint = "a" * 64
     tool = SimpleNamespace(
         id=uuid4(),
         name="mcp_sensitive_search",
@@ -163,9 +162,10 @@ async def test_execute_mcp_tool_rejects_token_passthrough_config(monkeypatch) ->
         mcp_server_name="Sensitive MCP",
         mcp_tool_name="search",
         mcp_trust_status="approved",
-        mcp_metadata_fingerprint=fingerprint,
-        mcp_reviewed_fingerprint=fingerprint,
     )
+    from app.services.mcp_metadata_trust import _live_legacy_fingerprint
+
+    tool.mcp_metadata_fingerprint = tool.mcp_reviewed_fingerprint = _live_legacy_fingerprint(tool)
 
     async def _resolve(*_a, **_k):
         return tenant_id
@@ -197,7 +197,6 @@ async def test_execute_mcp_tool_rejects_local_only_transport_before_client(monke
 
     agent_id = uuid4()
     tenant_id = uuid4()
-    fingerprint = "a" * 64
     tool = SimpleNamespace(
         id=uuid4(),
         name="mcp_local_shell",
@@ -210,9 +209,12 @@ async def test_execute_mcp_tool_rejects_local_only_transport_before_client(monke
         mcp_server_name="Local Shell",
         mcp_tool_name="shell",
         mcp_trust_status="approved",
-        mcp_metadata_fingerprint=fingerprint,
-        mcp_reviewed_fingerprint=fingerprint,
     )
+    from app.services.mcp_metadata_trust import current_mcp_fingerprint, live_mcp_activation
+
+    activation = live_mcp_activation(tool)
+    tool.config = {**tool.config, "mcp_activation": activation}
+    tool.mcp_metadata_fingerprint = tool.mcp_reviewed_fingerprint = current_mcp_fingerprint(tool)
 
     async def _resolve(*_a, **_k):
         return tenant_id

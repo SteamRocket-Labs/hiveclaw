@@ -42,6 +42,20 @@ export interface AgentMcpServerTool {
   runtime_approved?: boolean;
 }
 
+export interface EnterpriseMcpActivationFacts {
+  endpoint?: string;
+  package?: string;
+  permissions?: string[];
+  configuration?: {
+    transport?: string;
+    command?: string;
+    args?: string[] | string;
+    scopes?: string[] | string;
+    headers?: Record<string, string> | string;
+    credential?: 'set';
+  };
+}
+
 export interface EnterpriseMcpMetadataTool {
   tool_id: string;
   tool_name: string;
@@ -51,6 +65,8 @@ export interface EnterpriseMcpMetadataTool {
   raw_description: string;
   raw_schema: Record<string, unknown>;
   metadata_fingerprint: string;
+  reviewed_fingerprint?: string | null;
+  activation?: EnterpriseMcpActivationFacts;
   risk_flags: string[];
   trust_status: string;
   trust_tier: string;
@@ -71,6 +87,8 @@ export interface EnterpriseMcpMetadataReviewResult {
   display_name?: string;
   canonical_description?: string;
   metadata_fingerprint?: string;
+  reviewed_fingerprint?: string | null;
+  activation?: EnterpriseMcpActivationFacts;
   risk_flags?: string[];
   trust_status: string;
   trust_tier?: string;

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 import uuid
+from types import SimpleNamespace
+from typing import Any
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,8 +40,10 @@ from app.services import mcp_oauth
 from app.services.mcp_authz import assert_mcp_cloud_transport_allowed
 from app.services.mcp_metadata_trust import (
     MCPMetadataValidationError,
+    current_mcp_fingerprint,
     is_mcp_metadata_runtime_approved,
     prepare_mcp_metadata_candidate,
+    public_mcp_review_facts,
     review_mcp_metadata,
 )
 
@@ -491,25 +495,30 @@ async def list_tenant_mcp_server_tools(
             .order_by(MCPServerTool.display_name.asc(), MCPServerTool.mcp_tool_name.asc())
         )
     ).all()
-    return [
-        {
-            "tool_id": str(runtime_tool.id),
-            "tool_name": server_tool.mcp_tool_name,
-            "display_name": server_tool.display_name or server_tool.mcp_tool_name,
-            "canonical_description": runtime_tool.description,
-            "canonical_schema": runtime_tool.parameters_schema or {},
-            "raw_description": runtime_tool.mcp_raw_description or "",
-            "raw_schema": runtime_tool.mcp_raw_schema or {},
-            "metadata_fingerprint": runtime_tool.mcp_metadata_fingerprint,
-            "risk_flags": list(runtime_tool.mcp_metadata_risk_flags or []),
-            "trust_status": runtime_tool.mcp_trust_status or "missing",
-            "trust_tier": runtime_tool.mcp_trust_tier or "untrusted",
-            "reviewed_by": str(runtime_tool.mcp_reviewed_by) if runtime_tool.mcp_reviewed_by else None,
-            "reviewed_at": _isoformat_or_none(runtime_tool.mcp_reviewed_at),
-            "runtime_approved": is_mcp_metadata_runtime_approved(runtime_tool),
-        }
-        for server_tool, runtime_tool in rows
-    ]
+    result: list[dict] = []
+    for server_tool, runtime_tool in rows:
+        facts = public_mcp_review_facts(runtime_tool)
+        result.append(
+            {
+                "tool_id": str(runtime_tool.id),
+                "tool_name": server_tool.mcp_tool_name,
+                "display_name": server_tool.display_name or server_tool.mcp_tool_name,
+                "canonical_description": runtime_tool.description,
+                "canonical_schema": runtime_tool.parameters_schema or {},
+                "raw_description": runtime_tool.mcp_raw_description or "",
+                "raw_schema": runtime_tool.mcp_raw_schema or {},
+                "metadata_fingerprint": facts["fingerprint"],
+                "reviewed_fingerprint": facts["reviewed_fingerprint"],
+                "activation": facts["activation"],
+                "risk_flags": list(runtime_tool.mcp_metadata_risk_flags or []),
+                "trust_status": runtime_tool.mcp_trust_status or "missing",
+                "trust_tier": runtime_tool.mcp_trust_tier or "untrusted",
+                "reviewed_by": str(runtime_tool.mcp_reviewed_by) if runtime_tool.mcp_reviewed_by else None,
+                "reviewed_at": _isoformat_or_none(runtime_tool.mcp_reviewed_at),
+                "runtime_approved": is_mcp_metadata_runtime_approved(runtime_tool),
+            }
+        )
+    return result
 
 
 async def review_mcp_server_tool_metadata(
@@ -525,7 +534,7 @@ async def review_mcp_server_tool_metadata(
 ) -> dict:
     """Review one exact metadata fingerprint and restore preserved assignments."""
 
-    await _require_tenant_server(db, tenant_id, server_id)
+    server = await _require_tenant_server(db, tenant_id, server_id)
     rows = (
         await db.execute(
             select(MCPServerTool, Tool)
@@ -542,8 +551,8 @@ async def review_mcp_server_tool_metadata(
     if len(rows) != 1:
         raise ValueError("MCP server tool not found")
     server_tool, runtime_tool = rows[0]
-    current_fingerprint = str(runtime_tool.mcp_metadata_fingerprint or "")
-    if not current_fingerprint or current_fingerprint != str(expected_fingerprint or ""):
+    live_fingerprint = current_mcp_fingerprint(runtime_tool)
+    if not live_fingerprint or live_fingerprint != str(expected_fingerprint or ""):
         raise ValueError("MCP metadata fingerprint changed; reload before reviewing")
     validated_schema = None
     try:
@@ -576,7 +585,26 @@ async def review_mcp_server_tool_metadata(
                 assignment.enabled = bool(requested)
                 assignment.mcp_trust_requested_enabled = None
         server_tool.schema_hash = runtime_tool.mcp_metadata_fingerprint
+        server.status = "connected" if is_mcp_metadata_runtime_approved(runtime_tool) else "pending_review"
     else:
+        sibling_tools = (
+            (
+                await db.execute(
+                    select(Tool)
+                    .join(MCPServerTool, MCPServerTool.tool_id == Tool.id)
+                    .where(
+                        MCPServerTool.tenant_id == tenant_id,
+                        MCPServerTool.mcp_server_id == server_id,
+                        Tool.type == "mcp",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        server.status = (
+            "connected" if any(is_mcp_metadata_runtime_approved(tool) for tool in sibling_tools) else "pending_review"
+        )
         for assignment in assignments:
             if assignment.mcp_trust_requested_enabled is None:
                 assignment.mcp_trust_requested_enabled = bool(assignment.enabled)
@@ -599,12 +627,15 @@ async def review_mcp_server_tool_metadata(
         )
     )
     await db.commit()
+    facts = public_mcp_review_facts(runtime_tool)
     return {
         "tool_id": str(runtime_tool.id),
         "tool_name": tool_name,
         "display_name": server_tool.display_name or tool_name,
         "canonical_description": runtime_tool.description,
-        "metadata_fingerprint": runtime_tool.mcp_metadata_fingerprint,
+        "metadata_fingerprint": facts["fingerprint"],
+        "reviewed_fingerprint": facts["reviewed_fingerprint"],
+        "activation": facts["activation"],
         "risk_flags": list(runtime_tool.mcp_metadata_risk_flags or []),
         "trust_status": runtime_tool.mcp_trust_status,
         "trust_tier": runtime_tool.mcp_trust_tier,
@@ -818,7 +849,7 @@ async def delete_tenant_server(db: AsyncSession, tenant_id: uuid.UUID, server_id
 
 async def _read_tenant_mcp_tools_for_server(
     db: AsyncSession, tenant_id: uuid.UUID, server_name: str, server_url: str
-) -> tuple[list[McpToolRow], dict[str, bool], dict[tuple[str, str], AgentToolState]]:
+) -> tuple[list[McpToolRow], dict[str, bool], dict[tuple[str, str], AgentToolState], str]:
     """Read one freshly-imported server's ``Tool(type="mcp")`` rows + per-agent states.
 
     Scoped to a single ``(server_name, server_url)`` so the upsert stays per-server
@@ -832,6 +863,14 @@ async def _read_tenant_mcp_tools_for_server(
             Tool.mcp_server_name,
             Tool.mcp_server_url,
             Tool.is_default,
+            Tool.type,
+            Tool.enabled.label("tool_enabled"),
+            Tool.mcp_trust_status,
+            Tool.mcp_metadata_fingerprint,
+            Tool.mcp_reviewed_fingerprint,
+            Tool.mcp_raw_description,
+            Tool.mcp_raw_schema,
+            Tool.config,
             AgentTool.agent_id,
             AgentTool.enabled,
         )
@@ -848,7 +887,8 @@ async def _read_tenant_mcp_tools_for_server(
     seen: set[str] = set()
     is_default: dict[str, bool] = {}
     states: dict[tuple[str, str], AgentToolState] = {}
-    for r in result.all():
+    raw_rows = result.all()
+    for r in raw_rows:
         tid = str(r.id)
         if tid not in seen:
             seen.add(tid)
@@ -866,7 +906,30 @@ async def _read_tenant_mcp_tools_for_server(
         states[(str(r.agent_id), tid)] = AgentToolState(
             agent_id=str(r.agent_id), tool_id=tid, has_row=True, enabled=bool(r.enabled)
         )
-    return tool_rows, is_default, states
+    return tool_rows, is_default, states, _mcp_server_activation_status(raw_rows)
+
+
+def _approval_view(row: Any) -> SimpleNamespace:
+    return SimpleNamespace(
+        type=getattr(row, "type", None),
+        enabled=getattr(row, "tool_enabled", False),
+        mcp_trust_status=getattr(row, "mcp_trust_status", None),
+        mcp_metadata_fingerprint=getattr(row, "mcp_metadata_fingerprint", None),
+        mcp_reviewed_fingerprint=getattr(row, "mcp_reviewed_fingerprint", None),
+        mcp_server_name=getattr(row, "mcp_server_name", None),
+        mcp_server_url=getattr(row, "mcp_server_url", None),
+        mcp_tool_name=getattr(row, "mcp_tool_name", None),
+        mcp_raw_description=getattr(row, "mcp_raw_description", None),
+        mcp_raw_schema=getattr(row, "mcp_raw_schema", None),
+        config=getattr(row, "config", None),
+    )
+
+
+def _mcp_server_activation_status(rows: list[Any]) -> str:
+    mcp_rows = [row for row in rows if getattr(row, "type", None) == "mcp"]
+    if mcp_rows and not any(is_mcp_metadata_runtime_approved(_approval_view(row)) for row in mcp_rows):
+        return "pending_review"
+    return "connected"
 
 
 async def register_imported_server(
@@ -883,7 +946,9 @@ async def register_imported_server(
     ``(tenant_id, server_key)``: a re-run reuses the existing ``MCPServer`` and
     only adds the tools/assignments not yet present.
     """
-    tool_rows, is_default, states = await _read_tenant_mcp_tools_for_server(db, tenant_id, server_name, server_url)
+    tool_rows, is_default, states, activation_status = await _read_tenant_mcp_tools_for_server(
+        db, tenant_id, server_name, server_url
+    )
     if not tool_rows:
         return None
 
@@ -909,12 +974,14 @@ async def register_imported_server(
             server_key=server_key,
             server_url=spec.server_url or None,
             registry_source="direct",
-            status="connected",
+            status=activation_status,
             auth_status="none",
             config_json={},
         )
         db.add(mcp_server)
         await db.flush()
+    else:
+        mcp_server.status = activation_status
 
     # Upsert MCPServerTool rows (skip the ones already linked).
     existing_tools_result = await db.execute(

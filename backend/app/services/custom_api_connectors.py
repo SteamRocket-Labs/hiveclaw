@@ -8,14 +8,14 @@ and injected server-side at execution time.
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import re
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import quote, urljoin, urlparse
 
-import httpx
 from sqlalchemy import select
 
 from app.database import tenant_scoped_session
@@ -37,6 +37,9 @@ _CREDENTIAL_ARGUMENT_KEYS = {
     "password",
     "secret",
     "token",
+    "approved_networks",
+    "allowed_networks",
+    "network_grant",
 }
 _SECRET_CONFIG_KEYS = ("api_key", "bearer_token", "basic_username", "basic_password")
 _TEMPLATE_RE = re.compile(r"{([A-Za-z_][A-Za-z0-9_]*)}")
@@ -55,6 +58,8 @@ class PreparedCustomApiRequest:
     json_body: Any | None
     timeout_seconds: float
     audit: dict[str, Any]
+    allowed_networks: tuple[str, ...] = ()
+    secret_values: tuple[str, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
@@ -185,6 +190,51 @@ def _render_template(value: Any, arguments: dict[str, Any], *, path_context: boo
     return value
 
 
+def canonicalize_network_grant(networks: list[str]) -> list[str]:
+    if len(networks) > 32:
+        raise CustomApiConnectorError(
+            "At most 32 approved network ranges are allowed. Remove a range and save the grant again."
+        )
+    canonical: list[str] = []
+    for raw in networks:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        try:
+            rendered = str(ipaddress.ip_network(text, strict=False))
+        except ValueError as exc:
+            raise CustomApiConnectorError(
+                f"Network range {text!r} is not a valid CIDR. Use a range such as 10.0.0.0/8 and save again."
+            ) from exc
+        if rendered not in canonical:
+            canonical.append(rendered)
+    return canonical
+
+
+def set_connector_network_grant(tool: Any, networks: list[str]) -> list[str]:
+    """Replace one connector's admin-approved internal ranges. An empty list clears them."""
+
+    canonical = canonicalize_network_grant(networks)
+    config = dict(tool.config or {})
+    if canonical:
+        config["approved_networks"] = canonical
+    else:
+        config.pop("approved_networks", None)
+    tool.config = config
+    return canonical
+
+
+def merge_preserved_network_grant(new_config: dict[str, Any], previous_config: dict[str, Any] | None) -> dict[str, Any]:
+    """Keep the admin grant across ordinary connector edits, and ignore a grant in the edit payload."""
+
+    previous = list((previous_config or {}).get("approved_networks") or [])
+    merged = dict(new_config or {})
+    merged.pop("approved_networks", None)
+    if previous:
+        merged["approved_networks"] = list(previous)
+    return merged
+
+
 def _validate_base_url(base_url: str) -> str:
     parsed = urlparse(base_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -251,6 +301,7 @@ def prepare_custom_api_request(
     timeout_seconds = float(action.get("timeout_seconds") or 30.0)
     timeout_seconds = min(max(timeout_seconds, 1.0), 120.0)
     audit_params = {k: ("[secret]" if v in secret_values else v) for k, v in params.items()}
+    networks = tool_config.get("approved_networks") if isinstance(tool_config.get("approved_networks"), list) else []
     return PreparedCustomApiRequest(
         method=method,
         url=url,
@@ -266,34 +317,64 @@ def prepare_custom_api_request(
             "params": audit_params,
             "has_json_body": json_body is not None,
         },
+        allowed_networks=tuple(str(item) for item in networks),
+        secret_values=tuple(secret_values),
     )
 
 
-async def execute_prepared_custom_api_request(
-    tool_name: str,
-    prepared: PreparedCustomApiRequest,
-    *,
-    http_client_factory: Callable[..., Any] | None = None,
-) -> str:
-    client_factory = http_client_factory or httpx.AsyncClient
-    try:
-        async with client_factory(timeout=prepared.timeout_seconds) as client:
-            response = await client.request(
-                prepared.method,
-                prepared.url,
-                headers=prepared.headers,
-                params=prepared.params,
-                json=prepared.json_body,
-            )
-    except Exception as exc:
+def _governed_custom_api_error(tool_name: str, exc: Exception) -> str:
+    from app.services.governed_egress import GovernedEgressError
+
+    if isinstance(exc, GovernedEgressError):
+        dns_unavailable = exc.code == "network_target_denied" and exc.reason == "DNS resolution failed closed"
+        if exc.code == "network_timeout" or dns_unavailable:
+            error_class = "custom_api_unavailable"
+            retryable = True
+            hint = "Check the connector URL, allowlist, network route, and request template."
+        elif exc.code in {"network_target_denied", "network_redirect_denied"}:
+            error_class = "custom_api_target_denied"
+            retryable = False
+            hint = "Ask an administrator to approve this connector's network range."
+        else:
+            error_class = "custom_api_request_error"
+            retryable = False
+            hint = "Check the connector URL, allowlist, network route, and request template."
         return render_tool_error(
             tool_name=tool_name,
-            error_class="custom_api_request_error",
-            message=f"{tool_name} request failed: {str(exc)}",
+            error_class=error_class,
+            message=f"{tool_name} blocked: {exc.reason}",
             provider="custom_api",
-            retryable=True,
-            actionable_hint="Check the connector URL, allowlist, network route, and request template.",
+            retryable=retryable,
+            actionable_hint=hint,
         )
+    return render_tool_error(
+        tool_name=tool_name,
+        error_class="custom_api_request_error",
+        message=f"{tool_name} request failed: {exc}",
+        provider="custom_api",
+        retryable=True,
+        actionable_hint="Check the connector URL, allowlist, network route, and request template.",
+    )
+
+
+async def execute_prepared_custom_api_request(tool_name: str, prepared: PreparedCustomApiRequest) -> str:
+    from app.services.governed_egress import EgressLimits, GovernedEgressError, request_governed_http
+
+    try:
+        response = await request_governed_http(
+            prepared.method,
+            prepared.url,
+            headers=prepared.headers,
+            params=prepared.params,
+            json_body=prepared.json_body,
+            allowed_networks=prepared.allowed_networks,
+            secret_values=prepared.secret_values,
+            limits=EgressLimits(total_timeout_seconds=prepared.timeout_seconds),
+        )
+    except GovernedEgressError as exc:
+        return _governed_custom_api_error(tool_name, exc)
+    except Exception as exc:
+        return _governed_custom_api_error(tool_name, exc)
     body = response.text
     if response.status_code >= 400:
         error_class, retryable = classify_http_status(response.status_code)

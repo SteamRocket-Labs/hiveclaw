@@ -161,6 +161,14 @@ class BridgeAuthContext:
     device_name: str
 
 
+def select_effective_capability_policy(agent_policy, tenant_policy):
+    """Company denial wins. An agent policy can only narrow a company allow."""
+
+    if tenant_policy is not None and not tenant_policy.allowed:
+        return tenant_policy
+    return agent_policy or tenant_policy
+
+
 async def require_local_agent_capability_policy(
     db: AsyncSession,
     *,
@@ -190,7 +198,7 @@ async def require_local_agent_capability_policy(
     )
     agent_policy = next((row for row in policies if row.agent_id == agent_id), None)
     tenant_policy = next((row for row in policies if row.agent_id is None), None)
-    policy = agent_policy or tenant_policy
+    policy = select_effective_capability_policy(agent_policy, tenant_policy)
     if policy is None or not policy.allowed:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

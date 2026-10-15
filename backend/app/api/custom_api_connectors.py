@@ -20,7 +20,9 @@ from app.services.custom_api_connectors import (
     CustomApiConnectorError,
     build_custom_api_tool_payload,
     execute_prepared_custom_api_request,
+    merge_preserved_network_grant,
     prepare_custom_api_request,
+    set_connector_network_grant,
 )
 from app.services.tool_config_service import (
     mask_tool_config_secrets,
@@ -75,6 +77,10 @@ class CustomApiConnectorUpdateIn(BaseModel):
 
 class CustomApiConnectorTestIn(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class CustomApiNetworkGrantIn(BaseModel):
+    networks: list[str] = Field(default_factory=list)
 
 
 def _serialize_custom_api_tool(
@@ -249,7 +255,7 @@ async def update_custom_api_connector(
     tool.display_name = payload.display_name
     tool.description = payload.description
     tool.parameters_schema = payload.parameters_schema
-    tool.config = payload.tool_config
+    tool.config = merge_preserved_network_grant(payload.tool_config, existing_custom)
     tool.config_schema = payload.config_schema
     if data.enabled is not None:
         tool.enabled = data.enabled
@@ -284,6 +290,23 @@ async def delete_custom_api_connector(
     await db.delete(tool)
     await db.commit()
     return {"ok": True, "tool_id": str(tool_id)}
+
+
+@router.put("/enterprise/custom-api-connectors/{tool_id}/network-grant")
+async def set_custom_api_network_grant(
+    tool_id: uuid.UUID,
+    data: CustomApiNetworkGrantIn,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant_id = _require_tenant(current_user)
+    tool = await _get_connector_or_404(db, tenant_id, tool_id)
+    try:
+        networks = set_connector_network_grant(tool, data.networks)
+    except CustomApiConnectorError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
+    await db.commit()
+    return {"ok": True, "tool_id": str(tool.id), "approved_networks": networks}
 
 
 @router.post("/enterprise/custom-api-connectors/{tool_id}/test")

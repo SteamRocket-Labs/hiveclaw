@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
-import { enterpriseApi } from '../../api/domains/enterprise';
+import { enterpriseApi, type IdentityDryRunReport } from '../../api/domains/enterprise';
 import { toolsApi, type FeishuRuntimeStatus } from '../../api/domains/tools';
 import FeishuRuntimeStatusCard from '../../components/FeishuRuntimeStatusCard';
 
@@ -34,6 +34,150 @@ interface DeptTreeProps {
   selectedDept: string | null;
   onSelect: (id: string | null) => void;
   level: number;
+}
+
+function identityKindLabel(kind: string, t: (key: string, fallback: string) => string): string {
+  if (kind === 'org_member') return t('enterprise.org.identityKindMember', 'Directory person');
+  if (kind === 'org_department') return t('enterprise.org.identityKindDepartment', 'Directory department');
+  if (kind === 'runtime_task') return t('enterprise.org.identityKindTask', 'Task requester');
+  return kind;
+}
+
+function IdentityCheckCard({ tenantId }: { tenantId: string }) {
+  const { t } = useTranslation();
+  const mounted = useRef(true);
+  const [state, setState] = useState<'idle' | 'loading' | 'error' | 'ready'>('idle');
+  const [report, setReport] = useState<IdentityDryRunReport | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  const checkIdentity = async () => {
+    setState('loading');
+    setError(null);
+    try {
+      const next = await enterpriseApi.dryRunIdentityLinks(tenantId || undefined);
+      if (!mounted.current) return;
+      setReport(next);
+      setState('ready');
+    } catch (caught: unknown) {
+      if (!mounted.current) return;
+      setReport(null);
+      const message = caught instanceof Error ? caught.message : '';
+      setError(message || t('enterprise.org.identityUnavailable', 'The identity check is unavailable.'));
+      setState('error');
+    }
+  };
+
+  const complete = Boolean(report?.inputs?.stored_rows && report?.inputs?.incoming_provider_subjects);
+  const buttonLabel = state === 'loading'
+    ? t('enterprise.org.identityChecking', 'Checking identity links…')
+    : state === 'error'
+      ? t('enterprise.org.identityRetry', 'Retry identity check')
+      : t('enterprise.org.identityCheck', 'Check identity links');
+
+  return (
+    <div className="card ws-org-card">
+      <h4 className="ws-org-card-title">{t('enterprise.org.identityCheck', 'Check identity links')}</h4>
+      <p className="ws-org-card-desc">
+        {t(
+          'enterprise.org.identityCheckDesc',
+          'Compare stored people with the configured directory. This does not sync, save the secret, or apply links.',
+        )}
+      </p>
+      <div className="ws-org-actions">
+        <button className="btn btn-secondary" type="button" onClick={checkIdentity} disabled={state === 'loading'}>
+          {buttonLabel}
+        </button>
+      </div>
+      {state === 'error' ? (
+        <div className="ws-org-sync-result is-error" role="alert">
+          {error}
+        </div>
+      ) : null}
+      {state === 'ready' && report ? (
+        <div className="ws-org-identity" role="status">
+          <div className={report.applied === false ? 'ws-org-sync-result is-ok' : 'ws-org-sync-result is-error'}>
+            {report.applied === false
+              ? t('enterprise.org.identityAppliedNone', 'Nothing was applied. No users, departments, or links were changed.')
+              : t('enterprise.org.identityAppliedUnexpected', 'This response did not confirm that nothing was applied.')}
+          </div>
+          <p className="ws-org-card-desc">
+            {complete
+              ? t('enterprise.org.identityCoverage', 'Stored rows and the incoming provider snapshot were both included.')
+              : t(
+                  'enterprise.org.identityIncompleteInputs',
+                  'This check did not include both stored rows and the provider snapshot, so it is not a complete result.',
+                )}
+          </p>
+          <div className="ws-org-meta">Revision {report.source_revision}</div>
+          {complete ? (
+            <div className="ws-org-identity-counts">
+              {Object.entries(report.counts).map(([key, count]) => (
+                <span key={key}>
+                  {t(`enterprise.org.disposition.${key}`, key)} {count}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {complete && report.rows.length === 0 ? (
+            <div className="ws-org-empty">{t('enterprise.org.identityEmpty', 'No identity rows to review.')}</div>
+          ) : null}
+          {complete && (report.department_proposals?.length || 0) > 0 ? (
+            <p className="ws-org-card-desc">
+              {t('enterprise.org.identityProposals', {
+                count: report.department_proposals?.length || 0,
+                defaultValue: 'Departments that could be created later: {{count}}. They were not created.',
+              })}
+            </p>
+          ) : null}
+          {complete ? (
+            <div className="ws-org-identity-list">
+              {report.rows.map((row) => (
+                <div
+                  key={`${row.object_kind}:${row.object_id}:${row.disposition}:${row.reason}`}
+                  className="ws-org-identity-row"
+                  data-disposition={row.disposition}
+                >
+                  <div className="ws-org-member-name">
+                    {identityKindLabel(row.object_kind, t)}
+                    {' · '}
+                    {t(`enterprise.org.disposition.${row.disposition}`, row.disposition)}
+                  </div>
+                  <div className="ws-org-member-meta">{row.object_id}</div>
+                  <div>{t(`enterprise.org.reason.${row.reason}`, row.reason)}</div>
+                  <div>{t(`enterprise.org.remedy.${row.disposition}`, row.disposition)}</div>
+                  {row.user_id ? (
+                    <div className="ws-org-member-meta">
+                      {t('enterprise.org.identityMatchedUser', 'Matched user')} {row.user_id}
+                    </div>
+                  ) : null}
+                  {row.global_unique_blocked ? (
+                    <div>
+                      {row.reason === 'local_subject_collision'
+                        ? t(
+                            'enterprise.org.identityBlockedLocal',
+                            'This subject is already used by another record in this company. Nothing was changed.',
+                          )
+                        : t(
+                            'enterprise.org.identityBlocked',
+                            'This subject is already used outside this company. The other company is not shown.',
+                          )}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function DeptTree({
@@ -197,6 +341,8 @@ export default function WorkspaceOrgSection({
           </div>
         ) : null}
       </div>
+
+      <IdentityCheckCard key={selectedTenantId} tenantId={selectedTenantId} />
 
       {feishuRuntimeStatus ? (
         <FeishuRuntimeStatusCard status={feishuRuntimeStatus} isAdmin />

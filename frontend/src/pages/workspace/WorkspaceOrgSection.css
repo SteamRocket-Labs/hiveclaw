@@ -173,3 +173,29 @@
   font-size: var(--text-body);
   color: var(--text-tertiary);
 }
+
+.ws-org-identity {
+  margin-top: var(--space-3);
+}
+
+.ws-org-identity-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-2) 0;
+  font-size: var(--text-meta);
+  color: var(--text-secondary);
+}
+
+.ws-org-identity-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.ws-org-identity-row {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  font-size: var(--text-row);
+}

@@ -98,3 +98,44 @@ def company_knowledge_grant_audiences(users: list[Any], org_members: list[Any]) 
         )
     unlinked.sort(key=lambda item: (item["label"], item["org_member_id"]))
     return {"grantable_users": grantable, "visible_unlinked": unlinked}
+
+
+_FIELD_KINDS = (
+    ("feishu_open_id", "provider_open_id"),
+    ("open_id", "provider_open_id"),
+    ("unionid", "provider_union_id"),
+    ("feishu_user_id", "provider_user_id"),
+    ("external_id", "provider_user_id"),
+)
+
+
+def explicit_subject_matches(users: list[Any], member: Any) -> dict[str, Any]:
+    """Return the users and subject kinds matched for one directory person.
+
+    Uses the same subject indexes as ``company_knowledge_grant_audiences``.
+    Name, email, and equal ids are not inputs.
+    """
+
+    by_open, by_union, by_feishu_user = _subject_indexes(users)
+    buckets = {
+        "provider_open_id": by_open,
+        "provider_union_id": by_union,
+        "provider_user_id": by_feishu_user,
+    }
+    kinds_by_user: dict[str, list[str]] = {}
+    subjects_by_user: dict[str, dict[str, str]] = {}
+    for field, kind in _FIELD_KINDS:
+        key = _clean(getattr(member, field, None))
+        if key is None:
+            continue
+        for user in buckets[kind].get(key, []):
+            user_id = str(user.id)
+            kinds = kinds_by_user.setdefault(user_id, [])
+            if kind not in kinds:
+                kinds.append(kind)
+            subjects_by_user.setdefault(user_id, {}).setdefault(kind, key)
+    return {
+        "users": _matched_users(member, (by_open, by_union, by_feishu_user)),
+        "kinds_by_user": kinds_by_user,
+        "subjects_by_user": subjects_by_user,
+    }

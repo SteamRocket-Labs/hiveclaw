@@ -1317,6 +1317,45 @@ async def trigger_org_sync(
     return result
 
 
+def identity_dry_run_fetcher():
+    """Production directory adapter. Tests replace this dependency."""
+
+    from app.services.org_sync_service import get_identity_directory_fetcher
+
+    return get_identity_directory_fetcher()
+
+
+@router.post("/org/identity-links/dry-run")
+async def dry_run_identity_links(
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+    fetcher=Depends(identity_dry_run_fetcher),
+):
+    """Assess stored and incoming identities. This route does not apply links."""
+
+    _require_org_admin(current_user)
+    from app.services.identity_dry_run import build_identity_dry_run_report, identity_source_revision
+    from app.services.org_sync_service import DirectoryFetchError, org_sync_service
+
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    try:
+        snapshot = await org_sync_service.fetch_pending_directory(db, target, fetcher=fetcher)
+        return await build_identity_dry_run_report(
+            db,
+            tenant_id=target,
+            snapshot=snapshot,
+            actor_id=current_user.id,
+            source_revision=identity_source_revision(),
+        )
+    except DirectoryFetchError as exc:
+        status_code = status.HTTP_409_CONFLICT if exc.code == "missing_config" else status.HTTP_503_SERVICE_UNAVAILABLE
+        raise HTTPException(
+            status_code=status_code,
+            detail={"code": exc.code, "message": exc.message, "applied": False, "retryable": True},
+        ) from None
+
+
 # ─── Invitation Codes ───────────────────────────────────
 
 

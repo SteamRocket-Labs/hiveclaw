@@ -104,6 +104,35 @@ export interface OrgMember {
   avatar_url?: string;
 }
 
+export interface IdentityDryRunRow {
+  object_kind: string;
+  object_id: string;
+  disposition: string;
+  reason: string;
+  user_id: string | null;
+  global_unique_blocked: boolean;
+  provenance?: {
+    source?: string;
+    observed_at?: string;
+    origin?: string;
+    applied?: boolean;
+    subject_kind?: string | null;
+    match_subject?: string | null;
+    claimed_root_user_id?: string | null;
+  };
+}
+
+export interface IdentityDryRunReport {
+  schema: string;
+  tenant_id: string;
+  source_revision: string;
+  applied: boolean;
+  inputs: { stored_rows: boolean; incoming_provider_subjects: boolean };
+  counts: Record<string, number>;
+  rows: IdentityDryRunRow[];
+  department_proposals?: Array<{ name?: string; action?: string; applied?: boolean }>;
+}
+
 export interface LLMProviderSpec {
   provider: string;
   display_name: string;
@@ -268,6 +297,10 @@ export const enterpriseApi = {
     return get<OrgMember[]>(`/enterprise/org/members${suffix}`);
   },
   syncOrg: (tenantId?: string) => post<Record<string, unknown>>(`/enterprise/org/sync${tenantId ? `?tenant_id=${tenantId}` : ''}`),
+  dryRunIdentityLinks: (tenantId?: string) =>
+    post<IdentityDryRunReport>(
+      `/enterprise/org/identity-links/dry-run${tenantId ? `?tenant_id=${tenantId}` : ''}`,
+    ),
 
   /** Approvals */
   listApprovals: (tenantId?: string) => get<unknown[]>(`/enterprise/approvals${tenantId ? `?tenant_id=${tenantId}` : ''}`),

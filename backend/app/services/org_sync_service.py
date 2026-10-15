@@ -50,7 +50,8 @@ class OrgSyncService:
                 },
             )
             data = resp.json()
-            logger.info(f"[OrgSync] Token response: code={data.get('code')}, msg={data.get('msg')}")
+            code = data.get("code") if isinstance(data, dict) else None
+            logger.info("[OrgSync] Token response: code={}", code if isinstance(code, int) else "invalid")
             token = data.get("tenant_access_token") or data.get("app_access_token") or ""
             return token, data
 
@@ -458,6 +459,178 @@ class OrgSyncService:
             }
             logger.info(f"[OrgSync] Complete: {stats}")
             return stats
+
+    async def fetch_pending_directory(self, db: AsyncSession, tenant_id: uuid.UUID, *, fetcher=None) -> dict:
+        """Read the configured directory without writing rows or the secret.
+
+        ``fetcher`` is the synthetic adapter seam. Production leaves it empty
+        and uses the read-only Feishu calls below. A missing setting or a
+        partial response raises ``DirectoryFetchError`` instead of returning
+        an empty success.
+        """
+
+        config = await self._get_feishu_config(db, tenant_id)
+        app_id = str((config or {}).get("app_id") or "").strip()
+        app_secret = str((config or {}).get("app_secret") or "").strip()
+        if not app_id or not app_secret:
+            raise DirectoryFetchError("missing_config", MISSING_CONFIG_MESSAGE)
+        if fetcher is not None:
+            snapshot = await fetcher(app_id, app_secret)
+        else:
+            snapshot = await self._fetch_directory_readonly(app_id, app_secret)
+        if (
+            not isinstance(snapshot, dict)
+            or snapshot.get("complete") is not True
+            or not isinstance(snapshot.get("departments"), list)
+            or not isinstance(snapshot.get("members"), list)
+        ):
+            raise DirectoryFetchError("incomplete", INCOMPLETE_MESSAGE)
+        return snapshot
+
+    async def _fetch_directory_readonly(self, app_id: str, app_secret: str) -> dict:
+        try:
+            token, token_resp = await self._get_app_token(app_id, app_secret)
+        except Exception:
+            logger.warning("[IdentityDryRun] token request failed")
+            raise DirectoryFetchError("provider_unavailable", UNAVAILABLE_MESSAGE) from None
+        code = token_resp.get("code") if isinstance(token_resp, dict) else "invalid"
+        if not token or code not in (0, None):
+            logger.warning(
+                "[IdentityDryRun] token unavailable code={}",
+                code if isinstance(code, int) and not isinstance(code, bool) else "invalid",
+            )
+            raise DirectoryFetchError("provider_unavailable", UNAVAILABLE_MESSAGE)
+        departments = []
+        for item in await self._collect_directory_pages(
+            token,
+            f"{FEISHU_DEPT_CHILDREN_URL}/0/children",
+            {
+                "department_id_type": "open_department_id",
+                "page_size": "50",
+                "fetch_child": "true",
+            },
+        ):
+            projected = _project_directory_department(item)
+            if projected is None:
+                raise DirectoryFetchError("incomplete", INCOMPLETE_MESSAGE)
+            departments.append(projected)
+        # The requested root is a user scope even when it has children.
+        # https://github.com/larksuite/oapi-sdk-python-demo/blob/main/composite_api/contact/list_user_by_department.py
+        department_ids = ["0"]
+        for item in departments:
+            if item["open_department_id"] not in department_ids:
+                department_ids.append(item["open_department_id"])
+        members: list[dict] = []
+        for department_id in department_ids:
+            for item in await self._collect_directory_pages(
+                token,
+                FEISHU_USERS_URL,
+                {
+                    "department_id_type": "open_department_id",
+                    "department_id": department_id,
+                    "page_size": "50",
+                },
+            ):
+                members.append(_project_directory_member(item, department_id))
+        return {"complete": True, "departments": departments, "members": members}
+
+    async def _collect_directory_pages(self, token: str, url: str, params: dict) -> list[dict]:
+        items: list[dict] = []
+        page_token = ""
+        seen: set[str] = set()
+        while True:
+            query = dict(params)
+            if page_token:
+                if page_token in seen:
+                    raise DirectoryFetchError("incomplete", INCOMPLETE_MESSAGE)
+                seen.add(page_token)
+                query["page_token"] = page_token
+            try:
+                async with httpx.AsyncClient(timeout=20) as client:
+                    response = await client.get(
+                        url,
+                        params=query,
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                    data = response.json()
+            except Exception:
+                logger.warning("[IdentityDryRun] directory page failed")
+                raise DirectoryFetchError("incomplete", INCOMPLETE_MESSAGE) from None
+            if not isinstance(data, dict) or data.get("code") != 0 or not isinstance(data.get("data"), dict):
+                observed = data.get("code") if isinstance(data, dict) else None
+                logger.warning(
+                    "[IdentityDryRun] directory page rejected code={}",
+                    observed if isinstance(observed, int) and not isinstance(observed, bool) else "invalid",
+                )
+                raise DirectoryFetchError("incomplete", INCOMPLETE_MESSAGE)
+            payload = data["data"]
+            items.extend(_assessed_page_items(payload))
+            if not payload.get("has_more"):
+                return items
+            page_token = str(payload.get("page_token") or "")
+            if not page_token:
+                raise DirectoryFetchError("incomplete", INCOMPLETE_MESSAGE)
+
+
+class DirectoryFetchError(Exception):
+    """The dry-run could not obtain a complete directory snapshot."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+MISSING_CONFIG_MESSAGE = (
+    "Feishu directory sync is not configured for this company. Save the connection, then check again."
+)
+INCOMPLETE_MESSAGE = (
+    "The directory snapshot did not finish. Nothing was checked or applied. Try again when the provider responds."
+)
+UNAVAILABLE_MESSAGE = (
+    "The directory provider could not be reached. Nothing was checked or applied. Try again."
+)
+
+
+def _assessed_page_items(payload: dict) -> list[dict]:
+    """Return every object on the page. Null, missing, and non-object items are incomplete."""
+
+    if "items" not in payload:
+        raise DirectoryFetchError("incomplete", INCOMPLETE_MESSAGE)
+    page_items = payload["items"]
+    if page_items is None or not isinstance(page_items, list):
+        raise DirectoryFetchError("incomplete", INCOMPLETE_MESSAGE)
+    if any(not isinstance(item, dict) for item in page_items):
+        raise DirectoryFetchError("incomplete", INCOMPLETE_MESSAGE)
+    return page_items
+
+
+def _project_directory_department(item: dict) -> dict | None:
+    feishu_id = str(item.get("open_department_id") or "").strip()
+    if not feishu_id:
+        return None
+    return {
+        "open_department_id": feishu_id,
+        "name": str(item.get("name") or "").strip(),
+        "parent_department_id": str(item.get("parent_department_id") or "").strip(),
+    }
+
+
+def _project_directory_member(item: dict, department_id: str) -> dict:
+    return {
+        "open_id": str(item.get("open_id") or "").strip(),
+        "user_id": str(item.get("user_id") or "").strip(),
+        "union_id": str(item.get("union_id") or "").strip(),
+        "email": str(item.get("email") or "").strip(),
+        "name": str(item.get("name") or "").strip(),
+        "department_id": department_id,
+    }
+
+
+def get_identity_directory_fetcher():
+    """Production dependency. Tests override it with a synthetic adapter."""
+
+    return None
 
 
 org_sync_service = OrgSyncService()

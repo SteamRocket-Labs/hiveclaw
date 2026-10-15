@@ -13,6 +13,10 @@ from app.models.org import AgentRelationship, OrgMember
 from app.models.user import User
 
 
+class _SubjectRejected(Exception):
+    """A supplied subject contradicts another account, or the provider cannot prove it."""
+
+
 class ChannelUserService:
     """Resolve platform users from Feishu sender identifiers."""
 
@@ -108,22 +112,40 @@ class ChannelUserService:
         provider_user_id: str | None = None,
         provider_open_id: str | None = None,
         email: str | None = None,
+        provider_union_id: str | None = None,
     ) -> User | None:
-        """Resolve by stable user_id, then open_id, then exact tenant email."""
-        if provider_user_id:
-            user = await self._find_by_provider_user_id(db, tenant_id, provider_user_id)
-            if user:
-                return user
+        """Resolve every supplied Feishu subject to the same active account.
 
-        if provider_open_id:
-            user = await self._find_by_open_id(db, tenant_id, provider_open_id)
-            if user:
-                return user
+        ``email`` stays in the signature for existing callers and is not a match.
+        A subject bound to a different account blocks the others.
+        """
 
-        if email:
-            return await self._find_by_email(db, tenant_id, email)
-
-        return None
+        del email
+        found: list[User | None] = []
+        try:
+            if provider_user_id:
+                found.append(await self._find_by_provider_user_id(db, tenant_id, provider_user_id))
+            if provider_open_id:
+                found.append(await self._find_by_open_id(db, tenant_id, provider_open_id))
+            if provider_union_id:
+                found.append(await self._find_by_union_id(db, tenant_id, provider_union_id))
+        except _SubjectRejected:
+            return None
+        accounts = [user for user in found if user is not None]
+        if not accounts:
+            return None
+        if len({user.id for user in accounts}) != 1:
+            return None
+        user = accounts[0]
+        if getattr(user, "is_active", True) is not True:
+            return None
+        account_tenant = getattr(user, "tenant_id", tenant_id)
+        if tenant_id is None:
+            if account_tenant is not None:
+                return None
+        elif account_tenant != tenant_id:
+            return None
+        return user
 
     async def get_feishu_delivery_target(
         self,
@@ -152,6 +174,53 @@ class ChannelUserService:
         if user.feishu_open_id:
             return user.feishu_open_id, "open_id"
         return None
+
+    async def _get_identity_provider(self, db: AsyncSession, tenant_id: uuid.UUID | None) -> IdentityProvider | None:
+        """The provider that may prove an inbound subject. A tenant never borrows the global row."""
+
+        query = select(IdentityProvider).where(IdentityProvider.provider_type == "feishu")
+        if tenant_id is None:
+            query = query.where(IdentityProvider.tenant_id.is_(None))
+        else:
+            query = query.where(IdentityProvider.tenant_id == tenant_id)
+        rows = (await db.execute(query)).scalars().all()
+        active = [row for row in rows if row.is_active is True]
+        if active:
+            return active[0]
+        if rows:
+            raise _SubjectRejected()
+        return None
+
+    def _tenant_user_clause(self, tenant_id: uuid.UUID | None):
+        if tenant_id is None:
+            return User.tenant_id.is_(None)
+        return User.tenant_id == tenant_id
+
+    async def _legacy_user(self, db: AsyncSession, tenant_id: uuid.UUID | None, column, value: str) -> User | None:
+        rows = (
+            await db.execute(select(User).where(column == value, self._tenant_user_clause(tenant_id)).limit(2))
+        ).scalars().all()
+        if len(rows) > 1:
+            raise _SubjectRejected()
+        return rows[0] if rows else None
+
+    async def _external_user(self, db: AsyncSession, provider: IdentityProvider, column, value: str) -> User | None:
+        rows = (
+            await db.execute(
+                select(User)
+                .join(ExternalIdentity, ExternalIdentity.user_id == User.id)
+                .where(ExternalIdentity.provider_id == provider.id, column == value)
+            )
+        ).scalars().all()
+        ids = {row.id: row for row in rows}
+        if len(ids) > 1:
+            raise _SubjectRejected()
+        return next(iter(ids.values())) if ids else None
+
+    async def _agree(self, external: User | None, legacy: User | None) -> User | None:
+        if external is not None and legacy is not None and external.id != legacy.id:
+            raise _SubjectRejected()
+        return external or legacy
 
     async def _get_tenant_provider(self, db: AsyncSession, tenant_id: uuid.UUID | None) -> IdentityProvider | None:
         result = await db.execute(
@@ -182,29 +251,12 @@ class ChannelUserService:
         tenant_id: uuid.UUID | None,
         provider_user_id: str,
     ) -> User | None:
-        provider = await self._get_tenant_provider(db, tenant_id)
-        if provider:
-            result = await db.execute(
-                select(User)
-                .join(ExternalIdentity, ExternalIdentity.user_id == User.id)
-                .where(
-                    ExternalIdentity.provider_id == provider.id,
-                    ExternalIdentity.provider_user_id == provider_user_id,
-                )
-            )
-            user = result.scalar_one_or_none()
-            if user:
-                return user
-
-        result = await db.execute(
-            select(User)
-            .where(
-                User.feishu_user_id == provider_user_id,
-                User.tenant_id == tenant_id,
-            )
-            .limit(1)
-        )
-        return result.scalar_one_or_none()
+        provider = await self._get_identity_provider(db, tenant_id)
+        external = None
+        if provider is not None:
+            external = await self._external_user(db, provider, ExternalIdentity.provider_user_id, provider_user_id)
+        legacy = await self._legacy_user(db, tenant_id, User.feishu_user_id, provider_user_id)
+        return await self._agree(external, legacy)
 
     async def _find_by_open_id(
         self,
@@ -212,40 +264,25 @@ class ChannelUserService:
         tenant_id: uuid.UUID | None,
         provider_open_id: str,
     ) -> User | None:
-        provider = await self._get_tenant_provider(db, tenant_id)
-        if provider:
-            result = await db.execute(
-                select(User)
-                .join(ExternalIdentity, ExternalIdentity.user_id == User.id)
-                .where(
-                    ExternalIdentity.provider_id == provider.id,
-                    ExternalIdentity.provider_open_id == provider_open_id,
-                )
-            )
-            user = result.scalar_one_or_none()
-            if user:
-                return user
+        provider = await self._get_identity_provider(db, tenant_id)
+        external = None
+        if provider is not None:
+            external = await self._external_user(db, provider, ExternalIdentity.provider_open_id, provider_open_id)
+        legacy = await self._legacy_user(db, tenant_id, User.feishu_open_id, provider_open_id)
+        return await self._agree(external, legacy)
 
-        result = await db.execute(
-            select(User)
-            .where(
-                User.feishu_open_id == provider_open_id,
-                User.tenant_id == tenant_id,
-            )
-            .limit(1)
-        )
-        return result.scalar_one_or_none()
-
-    async def _find_by_email(
+    async def _find_by_union_id(
         self,
         db: AsyncSession,
         tenant_id: uuid.UUID | None,
-        email: str,
+        provider_union_id: str,
     ) -> User | None:
-        query = select(User).where(User.email == email)
-        if tenant_id is not None:
-            query = query.where(User.tenant_id == tenant_id)
-        result = await db.execute(query.limit(1))
-        return result.scalar_one_or_none()
+        provider = await self._get_identity_provider(db, tenant_id)
+        external = None
+        if provider is not None:
+            external = await self._external_user(db, provider, ExternalIdentity.provider_union_id, provider_union_id)
+        legacy = await self._legacy_user(db, tenant_id, User.feishu_union_id, provider_union_id)
+        return await self._agree(external, legacy)
+
 
 channel_user_service = ChannelUserService()

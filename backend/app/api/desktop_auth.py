@@ -27,10 +27,10 @@ from app.core.security import (
     revoke_refresh_token,
     verify_refresh_token,
 )
-from app.database import get_db, pin_rls_tenant_context
+from app.database import enter_rls_bypass, get_db
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
-from app.services.auth_provider import feishu_auth_provider
+from app.services.auth_provider import CONTRADICTORY_SUBJECTS, FeishuIdentityConflict, feishu_auth_provider
 
 settings = get_settings()
 
@@ -139,31 +139,46 @@ async def feishu_callback_desktop(
         return RedirectResponse(url=error_url, status_code=status.HTTP_302_FOUND)
 
     try:
-        user, access_token = await feishu_auth_provider.authenticate_with_code(db, code=code, tenant_id=None)
+        # Global desktop users have a null tenant. Users RLS only admits BYPASS
+        # or an exact tenant id, so this callback is the narrow trusted path.
+        async with enter_rls_bypass(db, reason="desktop global feishu sign-in"):
+            user, access_token = await feishu_auth_provider.authenticate_with_code(db, code=code, tenant_id=None)
+            if user.tenant_id is not None:
+                raise FeishuIdentityConflict("contradictory_subjects", CONTRADICTORY_SUBJECTS)
+            await db.execute(
+                update(RefreshToken)
+                .where(
+                    RefreshToken.user_id == user.id,
+                    RefreshToken.device_id == device_id,
+                    RefreshToken.revoked.is_(False),
+                )
+                .values(revoked=True)
+            )
+            refresh_token_raw = await create_refresh_token(db, user.id, device_id)
+            params = urlencode(
+                {
+                    "token": access_token,
+                    "refresh_token": refresh_token_raw,
+                    "user_id": str(user.id),
+                    "display_name": user.display_name or user.username,
+                }
+            )
+            await db.flush()
     except Exception as exc:
+        await db.rollback()
         # P0 fix #1: never leak internal exception details to client
-        logger.error(f"[desktop-auth] Feishu code exchange failed: {exc}")
-        error_url = f"{settings.DESKTOP_DEEP_LINK_SCHEME}://auth/error?reason=auth_failed"
+        if isinstance(exc, FeishuIdentityConflict):
+            logger.warning("[desktop-auth] Feishu sign-in rejected code={}", exc.code)
+            reason = exc.code
+        elif isinstance(exc, ValueError) and "inactive" in str(exc).lower():
+            logger.warning("[desktop-auth] Feishu sign-in rejected code=inactive_user")
+            reason = "inactive_user"
+        else:
+            logger.warning("[desktop-auth] Feishu sign-in failed")
+            reason = "auth_failed"
+        error_url = f"{settings.DESKTOP_DEEP_LINK_SCHEME}://auth/error?reason={reason}"
         return RedirectResponse(url=error_url, status_code=status.HTTP_302_FOUND)
 
-    await pin_rls_tenant_context(db, user.tenant_id)
-
-    # P1 fix #8: revoke prior refresh tokens for same (user, device) before issuing new one
-    await db.execute(
-        update(RefreshToken)
-        .where(RefreshToken.user_id == user.id, RefreshToken.device_id == device_id, RefreshToken.revoked.is_(False))
-        .values(revoked=True)
-    )
-    refresh_token_raw = await create_refresh_token(db, user.id, device_id)
-
-    params = urlencode(
-        {
-            "token": access_token,
-            "refresh_token": refresh_token_raw,
-            "user_id": str(user.id),
-            "display_name": user.display_name or user.username,
-        }
-    )
     deep_link = f"{settings.DESKTOP_DEEP_LINK_SCHEME}://auth/callback?{params}"
 
     logger.info(f"[desktop-auth] User {user.username} authenticated via Feishu, redirecting to Desktop")
@@ -183,7 +198,15 @@ async def exchange_refresh_token(
     token_row = await verify_refresh_token(db, body.refresh_token, device_id=body.device_id)
 
     user = await db.get(User, token_row.user_id)
-    if not user or not user.is_active:
+    if user is None:
+        # A null-tenant desktop account stays invisible under the empty tenant GUC.
+        async with enter_rls_bypass(db, reason="desktop global refresh exchange"):
+            hidden = await db.get(User, token_row.user_id)
+            if hidden is None or hidden.tenant_id is not None or hidden.is_active is not True:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User inactive")
+            access_token = create_access_token(str(hidden.id), hidden.role, tenant_id=None)
+        return DesktopExchangeResponse(access_token=access_token)
+    if not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User inactive")
 
     access_token = create_access_token(

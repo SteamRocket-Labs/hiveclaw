@@ -78,6 +78,7 @@
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
   font-size: var(--text-row);
+  overflow-wrap: anywhere;
 }
 
 .ws-org-sync-result.is-error {
@@ -86,6 +87,10 @@
 
 .ws-org-sync-result.is-ok {
   background: var(--success-subtle);
+}
+
+.ws-org-sync-result.is-attention {
+  background: var(--warning-subtle);
 }
 
 /* ── Org browser ───────────────────────────────────── */

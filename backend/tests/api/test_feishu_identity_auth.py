@@ -180,20 +180,26 @@ def test_feishu_sso_init_pins_explicit_tenant(monkeypatch: pytest.MonkeyPatch):
     from app import database
 
     tenant_id = uuid4()
-    db = _FakeDB(execute_results=[None])
+    tenant_setting = SimpleNamespace(value={"app_id": "cli_tenant_app", "app_secret": "tenant-secret"})
+    db = _FakeDB(execute_results=[tenant_setting])
     app = _build_app(db)
 
     settings = SimpleNamespace(
-        FEISHU_APP_ID="cli_test_app_id",
-        FEISHU_APP_SECRET="secret",
+        FEISHU_APP_ID="cli_global_app_id",
+        FEISHU_APP_SECRET="global-secret",
         FEISHU_REDIRECT_URI="https://example.com/api/auth/feishu/callback",
+        PUBLIC_BASE_URL="",
+        BASE_URL="",
     )
     monkeypatch.setattr("app.config.get_settings", lambda: settings)
 
     client = TestClient(app, raise_server_exceptions=False)
     response = client.post(f"/auth/feishu/sso/init?tenant_id={tenant_id}")
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
+    assert "client_id=cli_tenant_app" in response.json()["authorize_url"]
+    assert "cli_global_app_id" not in response.text
+    assert "global-secret" not in response.text
     assert db.added[0].tenant_id == tenant_id
     assert db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(tenant_id)
     assert any(f"SET LOCAL app.current_tenant_id = '{tenant_id}'" in str(stmt) for stmt in db.statements)

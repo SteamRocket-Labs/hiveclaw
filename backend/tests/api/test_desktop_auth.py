@@ -35,6 +35,16 @@ _FAKE_USER = SimpleNamespace(
     tenant_id=_TENANT_ID,
     is_active=True,
 )
+_GLOBAL_USER = SimpleNamespace(
+    id=_USER_ID,
+    username="zhangsan",
+    email="zhangsan@test.com",
+    display_name="张三",
+    avatar_url=None,
+    role="member",
+    tenant_id=None,
+    is_active=True,
+)
 
 
 class _FakeDB:
@@ -50,6 +60,9 @@ class _FakeDB:
 
     async def flush(self):
         self.flushed = True
+
+    async def rollback(self):
+        self.rolled_back = True
 
     async def execute(self, stmt):
         self.statements.append(str(stmt))
@@ -178,7 +191,7 @@ def test_callback_desktop_redirects_to_deep_link():
             desktop_auth_mod.feishu_auth_provider,
             "authenticate_with_code",
             new_callable=AsyncMock,
-            return_value=(_FAKE_USER, "jwt_access_token_here"),
+            return_value=(_GLOBAL_USER, "jwt_access_token_here"),
         ),
         patch.object(
             desktop_auth_mod, "create_refresh_token", new_callable=AsyncMock, return_value="raw_refresh_token_here"
@@ -200,9 +213,9 @@ def test_callback_desktop_redirects_to_deep_link():
     assert test_nonce not in _oauth_state_fallback
 
 
-def test_callback_desktop_pins_user_tenant_before_refresh_token_writes():
-    """RefreshToken RLS is user-derived, so the public OAuth callback must pin
-    the session to the authenticated user's tenant before revoke/issue writes."""
+def test_callback_desktop_uses_global_scope_and_rejects_company_accounts():
+    """The desktop callback is the global mode. It can see a null-tenant user
+    through the narrow bypass, and it does not accept a company account."""
     app, fake_db = _build_app()
     test_nonce = "test_csrf_nonce_pin_tenant"
     _oauth_state_fallback[test_nonce] = "dev1"
@@ -212,9 +225,9 @@ def test_callback_desktop_pins_user_tenant_before_refresh_token_writes():
             desktop_auth_mod.feishu_auth_provider,
             "authenticate_with_code",
             new_callable=AsyncMock,
-            return_value=(_FAKE_USER, "jwt_access_token_here"),
+            return_value=(_GLOBAL_USER, "jwt_access_token_here"),
         ),
-        patch.object(desktop_auth_mod, "create_refresh_token", new_callable=AsyncMock, return_value="raw_refresh"),
+        patch.object(desktop_auth_mod, "create_refresh_token", new_callable=AsyncMock, return_value="raw_refresh") as refresh,
         patch.object(desktop_auth_mod, "settings", SimpleNamespace(DESKTOP_DEEP_LINK_SCHEME="copaw")),
     ):
         client = TestClient(app, raise_server_exceptions=False)
@@ -223,7 +236,30 @@ def test_callback_desktop_pins_user_tenant_before_refresh_token_writes():
         )
 
     assert resp.status_code == 302
-    assert any(f"SET LOCAL app.current_tenant_id = '{_TENANT_ID}'" in stmt for stmt in fake_db.statements)
+    assert resp.headers["location"].startswith("copaw://auth/callback?")
+    assert any("SET LOCAL app.current_tenant_id = 'BYPASS'" in stmt for stmt in fake_db.statements)
+    assert refresh.await_count == 1
+
+    company_nonce = "test_csrf_nonce_company"
+    _oauth_state_fallback[company_nonce] = "dev1"
+    with (
+        patch.object(
+            desktop_auth_mod.feishu_auth_provider,
+            "authenticate_with_code",
+            new_callable=AsyncMock,
+            return_value=(_FAKE_USER, "jwt_access_token_here"),
+        ),
+        patch.object(desktop_auth_mod, "create_refresh_token", new_callable=AsyncMock, return_value="raw_refresh") as company_refresh,
+        patch.object(desktop_auth_mod, "settings", SimpleNamespace(DESKTOP_DEEP_LINK_SCHEME="copaw")),
+    ):
+        client = TestClient(app, raise_server_exceptions=False)
+        rejected = client.get(
+            f"/auth/feishu/callback-desktop?code=auth_code_123&state={company_nonce}", follow_redirects=False
+        )
+
+    assert rejected.status_code == 302
+    assert "reason=contradictory_subjects" in rejected.headers["location"]
+    assert company_refresh.await_count == 0
 
 
 def test_callback_desktop_rejects_invalid_state():

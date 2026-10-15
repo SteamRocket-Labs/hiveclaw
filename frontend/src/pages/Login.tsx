@@ -2,7 +2,7 @@ import { useState, useRef, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
-import { authApi } from '../api/domains/auth';
+import { authApi, feishuConflictMessage } from '../api/domains/auth';
 import { ApiError } from '../api/core/errors';
 import { showAppToast } from '../components/AppDialogs';
 import { safePostLoginRedirect } from '../routing/authRedirect';
@@ -60,7 +60,7 @@ export default function Login() {
                     }
                     if (res.status === 'expired' || res.status === 'error') {
                         popup?.close();
-                        setError(res.detail || t('auth.feishu.ssoFailed', 'Feishu login failed'));
+                        setError(feishuConflictMessage(res.code, t) || res.detail || t('auth.feishu.ssoFailed', 'Feishu login failed'));
                         break;
                     }
                 } catch {

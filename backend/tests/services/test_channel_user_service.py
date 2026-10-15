@@ -29,7 +29,7 @@ async def test_resolve_feishu_user_prefers_provider_user_id(monkeypatch):
 
     monkeypatch.setattr(service, "_find_by_provider_user_id", by_user_id)
     monkeypatch.setattr(service, "_find_by_open_id", by_open_id)
-    monkeypatch.setattr(service, "_find_by_email", by_email)
+    monkeypatch.setattr(service, "_find_by_email", by_email, raising=False)
 
     user = await service.resolve_feishu_user(
         db=object(),
@@ -40,16 +40,18 @@ async def test_resolve_feishu_user_prefers_provider_user_id(monkeypatch):
     )
 
     assert user is expected_user
-    assert calls == ["user_id:ouser_123"]
+    assert calls == ["user_id:ouser_123", "open_id:ou_open_456"]
+    assert not any(call.startswith("email:") for call in calls)
 
 
 @pytest.mark.asyncio
-async def test_resolve_feishu_user_falls_back_open_id_then_email(monkeypatch):
+async def test_resolve_feishu_user_does_not_use_email_or_hide_another_subject(monkeypatch):
     from app.services.channel_user_service import ChannelUserService
 
     service = ChannelUserService()
     tenant_id = uuid4()
-    expected_user = SimpleNamespace(id=uuid4(), email="fallback@test.com")
+    email_user = SimpleNamespace(id=uuid4(), email="fallback@test.com")
+    other_user = SimpleNamespace(id=uuid4(), email="other@test.com")
     calls: list[str] = []
 
     async def by_user_id(db, tenant_id, provider_user_id):
@@ -58,30 +60,42 @@ async def test_resolve_feishu_user_falls_back_open_id_then_email(monkeypatch):
 
     async def by_open_id(db, tenant_id, provider_open_id):
         calls.append(f"open_id:{provider_open_id}")
-        return None
+        return other_user
 
     async def by_email(db, tenant_id, email):
         calls.append(f"email:{email}")
-        return expected_user
+        return email_user
 
     monkeypatch.setattr(service, "_find_by_provider_user_id", by_user_id)
     monkeypatch.setattr(service, "_find_by_open_id", by_open_id)
-    monkeypatch.setattr(service, "_find_by_email", by_email)
+    monkeypatch.setattr(service, "_find_by_email", by_email, raising=False)
 
-    user = await service.resolve_feishu_user(
+    unmatched = await service.resolve_feishu_user(
         db=object(),
         tenant_id=tenant_id,
         provider_user_id="ouser_123",
         provider_open_id="ou_open_456",
         email="fallback@test.com",
     )
+    assert unmatched is other_user
+    assert calls == ["user_id:ouser_123", "open_id:ou_open_456"]
 
-    assert user is expected_user
-    assert calls == [
-        "user_id:ouser_123",
-        "open_id:ou_open_456",
-        "email:fallback@test.com",
-    ]
+    calls.clear()
+
+    async def by_user_id_other(db, tenant_id, provider_user_id):
+        calls.append(f"user_id:{provider_user_id}")
+        return email_user
+
+    monkeypatch.setattr(service, "_find_by_provider_user_id", by_user_id_other)
+    hidden = await service.resolve_feishu_user(
+        db=object(),
+        tenant_id=tenant_id,
+        provider_user_id="ouser_123",
+        provider_open_id="ou_open_456",
+        email="fallback@test.com",
+    )
+    assert hidden is None
+    assert not any(call.startswith("email:") for call in calls)
 
 
 def test_channel_resolution_has_no_inbound_user_creation_surface():

@@ -9,18 +9,194 @@ from datetime import datetime, timezone
 import httpx
 from loguru import logger
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import tenant_scoped_session
+from app.models.identity import IdentityProvider
 from app.models.org import OrgDepartment, OrgMember
 from app.models.tenant_setting import TenantSetting
 from app.models.user import User
-from app.core.security import hash_password
-from app.services.auth_provider import feishu_auth_provider
+from app.services.auth_provider import FeishuIdentityConflict, feishu_auth_provider
+from app.services.identity_links import (
+    IdentityLinkRejected,
+    apply_observed_subject_link,
+    begin_deferred_identity_audit,
+    commit_deferred_identity_audit,
+    discard_deferred_identity_audit,
+    identity_audit_mark,
+    lock_directory_sync,
+    rewind_deferred_identity_audit,
+)
 
 FEISHU_APP_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
 FEISHU_DEPT_CHILDREN_URL = "https://open.feishu.cn/open-apis/contact/v3/departments"
 FEISHU_USERS_URL = "https://open.feishu.cn/open-apis/contact/v3/users/find_by_department"
+
+
+class _SyncUnavailable(Exception):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+class _SkipRow(Exception):
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+_CONFLICT_DISPOSITIONS = {"conflict", "email_only_candidate", "cross_tenant"}
+_SKIPPED_MEMBER_DISPOSITIONS = _CONFLICT_DISPOSITIONS | {"inactive_user"}
+
+
+def _sync_unavailable(code: str, message: str) -> dict:
+    return {
+        "status": "unavailable",
+        "code": code,
+        "error": message,
+        "applied": 0,
+        "skipped": 0,
+        "conflicts": 0,
+        "departments": 0,
+        "members": 0,
+        "users_created": 0,
+        "rows": [],
+    }
+
+
+def _index_snapshot_people(members: list[dict]) -> dict[tuple[str, str], dict]:
+    index: dict[tuple[str, str], dict] = {}
+    for item in members:
+        keys = []
+        for kind, field in (("open", "open_id"), ("user", "user_id"), ("union", "union_id")):
+            value = str(item.get(field) or "").strip()
+            if value:
+                keys.append((kind, value))
+        person = next((index[key] for key in keys if key in index), None)
+        if person is None:
+            person = {
+                "open_ids": [],
+                "user_ids": [],
+                "union_ids": [],
+                "department_ids": [],
+                "name": "",
+                "email": "",
+                "avatar_url": "",
+                "title": "",
+                "phone": "",
+            }
+        for key in keys:
+            index[key] = person
+        for field, bucket in (("open_id", "open_ids"), ("user_id", "user_ids"), ("union_id", "union_ids")):
+            value = str(item.get(field) or "").strip()
+            if value and value not in person[bucket]:
+                person[bucket].append(value)
+        department_id = str(item.get("department_id") or "").strip()
+        if department_id and department_id not in person["department_ids"]:
+            person["department_ids"].append(department_id)
+        for field in ("name", "email", "avatar_url", "title", "phone"):
+            value = str(item.get(field) or "").strip()
+            if value and not person[field]:
+                person[field] = value
+    return index
+
+
+def _person_for(index: dict[tuple[str, str], dict], open_id: str, user_id: str, union_id: str) -> dict:
+    for key in (("user", user_id), ("open", open_id), ("union", union_id)):
+        if key[1] and key in index:
+            return index[key]
+    return {"name": "", "email": "", "avatar_url": "", "title": "", "phone": ""}
+
+
+def _observed_department_ids(people: dict[tuple[str, str], dict], provenance: dict) -> list[str]:
+    """Keep every department observation for one person, including the root id."""
+
+    for kind, field in (("user", "user_ids"), ("open", "open_ids"), ("union", "union_ids")):
+        for value in provenance.get(field) or []:
+            person = people.get((kind, str(value).strip()))
+            if person and person.get("department_ids"):
+                return [str(item) for item in person["department_ids"] if item]
+    return [str(value) for value in provenance.get("department_ids") or [] if value]
+
+
+def _one_subject(values) -> list[str]:
+    found = [str(value).strip() for value in values or [] if str(value).strip()]
+    if len(found) > 1:
+        raise _SkipRow("ambiguous_subject")
+    return found
+
+
+def _keep_subject(current: str | None, incoming: str) -> str | None:
+    value = incoming.strip()
+    if not value or current in (None, "", value):
+        return value or current
+    return current
+
+
+def _sync_profile(person: dict, open_id: str, user_id: str, union_id: str) -> dict:
+    return {
+        "user_id": user_id or None,
+        "open_id": open_id or None,
+        "union_id": union_id or None,
+        "name": person.get("name") or "",
+        "email": person.get("email") or "",
+        "avatar_url": person.get("avatar_url") or "",
+        "mobile": person.get("phone") or "",
+        "raw_profile": {"source": "org_sync"},
+    }
+
+
+def _member_name(person: dict, user_id: str, open_id: str) -> str:
+    return (person.get("name") or user_id or open_id or "Directory member")[:100]
+
+
+def _fill_existing_user(user: User, person: dict, open_id: str, user_id: str, union_id: str) -> None:
+    if person.get("name") and not (user.display_name or "").strip():
+        user.display_name = person["name"][:100]
+    if person.get("avatar_url") and not user.avatar_url:
+        user.avatar_url = person["avatar_url"][:500]
+    user.feishu_open_id = _keep_subject(user.feishu_open_id, open_id)
+    user.feishu_user_id = _keep_subject(user.feishu_user_id, user_id)
+    user.feishu_union_id = _keep_subject(user.feishu_union_id, union_id)
+
+
+def _fill_member(
+    member: OrgMember,
+    provider: IdentityProvider,
+    person: dict,
+    open_id: str,
+    user_id: str,
+    union_id: str,
+    department_ids: list[str],
+    departments: dict[str, OrgDepartment],
+    now: datetime,
+) -> None:
+    if member.provider_id not in (None, provider.id):
+        raise _SkipRow("provider_namespace")
+    member.provider_id = provider.id
+    if person.get("name"):
+        member.name = person["name"][:100]
+    if person.get("email"):
+        member.email = person["email"][:200]
+    if person.get("avatar_url"):
+        member.avatar_url = person["avatar_url"][:500]
+    if person.get("title"):
+        member.title = person["title"][:200]
+    if person.get("phone"):
+        member.phone = person["phone"][:50]
+    member.feishu_open_id = _keep_subject(member.feishu_open_id, open_id)
+    member.open_id = _keep_subject(member.open_id, open_id)
+    member.feishu_user_id = _keep_subject(member.feishu_user_id, user_id)
+    member.external_id = _keep_subject(member.external_id, user_id)
+    member.unionid = _keep_subject(member.unionid, union_id)
+    real_departments = [value for value in department_ids if value and value != "0"]
+    if len(real_departments) == 1 and real_departments[0] in departments:
+        department = departments[real_departments[0]]
+        member.department_id = department.id
+        member.department_path = (department.path or department.name or "")[:500]
+    member.synced_at = now
 
 
 class OrgSyncService:
@@ -55,410 +231,400 @@ class OrgSyncService:
             token = data.get("tenant_access_token") or data.get("app_access_token") or ""
             return token, data
 
-    async def _fetch_departments(self, token: str, parent_id: str = "0") -> list[dict]:
-        """Recursively fetch all departments from Feishu."""
-        all_depts = []
-        page_token = ""
-        while True:
-            async with httpx.AsyncClient() as client:
-                url = f"{FEISHU_DEPT_CHILDREN_URL}/{parent_id}/children"
-                params = {
-                    "department_id_type": "open_department_id",
-                    "page_size": "50",
-                    "fetch_child": "true",
+    async def full_sync(
+        self,
+        tenant_id: uuid.UUID,
+        *,
+        actor_id: uuid.UUID | None = None,
+        fetcher=None,
+    ) -> dict:
+        """Apply one complete directory snapshot, then commit it as a single transaction."""
+
+        try:
+            async with tenant_scoped_session(tenant_id) as db:
+                await lock_directory_sync(db, tenant_id)
+                snapshot = await self.fetch_pending_directory(db, tenant_id, fetcher=fetcher)
+                provider = await self._sync_provider(db, tenant_id)
+                from app.services.identity_dry_run import build_identity_dry_run_report
+
+                report = await build_identity_dry_run_report(
+                    db,
+                    tenant_id=tenant_id,
+                    snapshot=snapshot,
+                    actor_id=actor_id,
+                    source_revision="org_sync",
+                )
+                return await self._apply_directory(db, tenant_id, snapshot, report, provider, actor_id)
+        except DirectoryFetchError as exc:
+            return _sync_unavailable(exc.code, exc.message)
+        except _SyncUnavailable as exc:
+            return _sync_unavailable(exc.code, exc.message)
+
+    async def _sync_provider(self, db: AsyncSession, tenant_id: uuid.UUID) -> IdentityProvider:
+        providers = (
+            await db.execute(
+                select(IdentityProvider).where(
+                    IdentityProvider.provider_type == "feishu",
+                    IdentityProvider.tenant_id == tenant_id,
+                )
+            )
+        ).scalars().all()
+        if len(providers) > 1:
+            raise _SyncUnavailable(
+                "provider_unproven",
+                "Feishu directory sync does not have one company provider. Nothing was saved.",
+            )
+        if len(providers) == 1:
+            provider = providers[0]
+            if provider.is_active is not True:
+                raise _SyncUnavailable(
+                    "provider_disabled",
+                    "Feishu directory sync is disabled for this company. Nothing was saved.",
+                )
+            return provider
+        config = await self._get_feishu_config(db, tenant_id) or {}
+        provider = IdentityProvider(
+            provider_type="feishu",
+            name="Feishu",
+            is_active=True,
+            sso_login_enabled=True,
+            tenant_id=tenant_id,
+            config={
+                "app_id": config.get("app_id"),
+                "app_secret": config.get("app_secret"),
+                "platform_region": config.get("platform_region") or "feishu_cn",
+                "open_api_domain": config.get("open_api_domain") or "",
+                "oauth_authorize_url": config.get("oauth_authorize_url") or "",
+                "source": "tenant_setting",
+            },
+        )
+        db.add(provider)
+        await db.flush()
+        return provider
+
+    async def _apply_directory(
+        self,
+        db: AsyncSession,
+        tenant_id: uuid.UUID,
+        snapshot: dict,
+        report: dict,
+        provider: IdentityProvider,
+        actor_id: uuid.UUID | None,
+    ) -> dict:
+        now = datetime.now(timezone.utc)
+        departments_written = await self._apply_departments(db, tenant_id, snapshot, report, now)
+        stored_departments = {
+            department.feishu_id: department
+            for department in (
+                await db.execute(select(OrgDepartment).where(OrgDepartment.tenant_id == tenant_id))
+            ).scalars().all()
+            if department.feishu_id
+        }
+        people = _index_snapshot_people(snapshot["members"])
+        applied = skipped = conflicts = created = 0
+        outcomes: list[dict] = []
+        seen: set[str] = set()
+        seen_subjects: set[tuple[str, str]] = set()
+        begin_deferred_identity_audit(db)
+        try:
+            for row in report["rows"]:
+                if row.get("object_kind") != "org_member" or row.get("disposition") == "department_conflict":
+                    continue
+                provenance = row.get("provenance") or {}
+                if provenance.get("origin") == "stored":
+                    continue
+                object_id = str(row["object_id"])
+                if object_id in seen:
+                    continue
+                disposition = str(row.get("disposition") or "")
+                subject_keys = [
+                    (kind, str(value).strip())
+                    for kind, field in (("user", "user_ids"), ("open", "open_ids"), ("union", "union_ids"))
+                    for value in provenance.get(field) or []
+                    if str(value).strip()
+                ]
+                if disposition in {"trusted", "unregistered"} and any(key in seen_subjects for key in subject_keys):
+                    continue
+                seen.add(object_id)
+                seen_subjects.update(subject_keys)
+                reason = str(row.get("reason") or "")
+                department_ids = _observed_department_ids(people, provenance)
+                outcome = {
+                    "object_id": object_id,
+                    "disposition": disposition,
+                    "reason": reason,
+                    "applied": False,
+                    "department_ids": department_ids,
                 }
-                if page_token:
-                    params["page_token"] = page_token
-
-                logger.info(f"[OrgSync] GET {url} params={params}")
-                resp = await client.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
-                data = resp.json()
-                logger.info(
-                    f"[OrgSync] Dept response: code={data.get('code')}, msg={data.get('msg')}, items={len(data.get('data', {}).get('items', []))}"
-                )
-
-                if data.get("code") != 0:
-                    logger.error(f"[OrgSync] Dept API error: {data}")
-                    break
-
-                items = data.get("data", {}).get("items", [])
-                if items and not all_depts:  # Print first raw item for debugging
-                    logger.info(f"[OrgSync] RAW first dept item keys: {list(items[0].keys())}")
-                    logger.info(f"[OrgSync] RAW first dept item: {items[0]}")
-                for item in items:
-                    logger.info(f"[OrgSync]   dept: {item.get('name')} (id={item.get('open_department_id')})")
-                all_depts.extend(items)
-
-                if not data.get("data", {}).get("has_more"):
-                    break
-                page_token = data["data"].get("page_token", "")
-
-        # If fetch_child=true didn't work (no items), try without recursion + manual recurse
-        if not all_depts:
-            logger.info("[OrgSync] fetch_child=true returned nothing, trying simple list...")
-            all_depts = await self._fetch_departments_simple(token, parent_id)
-
-        return all_depts
-
-    async def _fetch_departments_simple(self, token: str, parent_id: str = "0") -> list[dict]:
-        """Fetch departments without fetch_child, manually recurse."""
-        all_depts = []
-        page_token = ""
-        while True:
-            async with httpx.AsyncClient() as client:
-                url = f"{FEISHU_DEPT_CHILDREN_URL}/{parent_id}/children"
-                params = {"department_id_type": "open_department_id", "page_size": "50"}
-                if page_token:
-                    params["page_token"] = page_token
-                resp = await client.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
-                data = resp.json()
-                logger.info(
-                    f"[OrgSync] Simple dept response (parent={parent_id}): code={data.get('code')}, items={len(data.get('data', {}).get('items', []))}"
-                )
-
-                if data.get("code") != 0:
-                    logger.error(f"[OrgSync] Simple dept error: {data}")
-                    break
-
-                items = data.get("data", {}).get("items", [])
-                all_depts.extend(items)
-                if not data.get("data", {}).get("has_more"):
-                    break
-                page_token = data["data"].get("page_token", "")
-
-        # Recurse into children and inject parent_department_id
-        for dept in list(all_depts):
-            dept_id = dept.get("open_department_id", "")
-            if dept_id:
-                children = await self._fetch_departments_simple(token, dept_id)
-                # Set parent_department_id explicitly (API may not return it)
-                for child in children:
-                    if not child.get("parent_department_id"):
-                        child["parent_department_id"] = dept_id
-                all_depts.extend(children)
-
-        return all_depts
-
-    async def _fetch_department_users(self, token: str, dept_id: str) -> list[dict]:
-        """Fetch all users in a department."""
-        all_users = []
-        page_token = ""
-        while True:
-            async with httpx.AsyncClient() as client:
-                params = {
-                    "department_id_type": "open_department_id",
-                    "department_id": dept_id,
-                    "page_size": "50",
-                }
-                if page_token:
-                    params["page_token"] = page_token
-                resp = await client.get(
-                    FEISHU_USERS_URL,
-                    params=params,
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-                data = resp.json()
-                logger.info(
-                    f"[OrgSync] Users response (dept={dept_id}): code={data.get('code')}, items={len(data.get('data', {}).get('items', []))}"
-                )
-
-                if data.get("code") != 0:
-                    logger.error(f"[OrgSync] Users API error: {data}")
-                    break
-
-                items = data.get("data", {}).get("items", [])
-                if items and not all_users:  # Print first raw user for debugging
-                    logger.info(f"[OrgSync] RAW first user item keys: {list(items[0].keys())}")
-                    logger.info(f"[OrgSync] RAW first user item: {items[0]}")
-                all_users.extend(items)
-                if not data.get("data", {}).get("has_more"):
-                    break
-                page_token = data["data"].get("page_token", "")
-        return all_users
-
-    async def full_sync(self, tenant_id: uuid.UUID) -> dict:
-        """Run a full org sync from Feishu. Returns stats."""
-        async with tenant_scoped_session(tenant_id) as db:
-            config = await self._get_feishu_config(db, tenant_id)
-            if not config:
-                return {"error": "未配置飞书组织架构同步信息"}
-
-            app_id = config.get("app_id")
-            app_secret = config.get("app_secret")
-            if not app_id or not app_secret:
-                return {"error": "缺少 App ID 或 App Secret"}
-
-            try:
-                token, token_resp = await self._get_app_token(app_id, app_secret)
-                if not token:
-                    feishu_code = token_resp.get("code", "?")
-                    feishu_msg = token_resp.get("msg", "unknown")
-                    return {"error": f"获取飞书 token 失败 (code={feishu_code}: {feishu_msg})"}
-                logger.info(f"[OrgSync] Got token: {token[:20]}...")
-            except Exception as e:
-                return {"error": f"连接飞书失败: {e}"}
-
-            now = datetime.now(timezone.utc)
-            dept_count = 0
-            member_count = 0
-            user_count = 0
-
-            # --- Sync departments ---
-            try:
-                depts = await self._fetch_departments(token, "0")
-                logger.info(f"[OrgSync] Total departments fetched: {len(depts)}")
-
-                for d in depts:
-                    feishu_id = d.get("open_department_id", "")
-                    if not feishu_id:
-                        continue
-                    result = await db.execute(
-                        select(OrgDepartment).where(
-                            OrgDepartment.tenant_id == tenant_id,
-                            OrgDepartment.feishu_id == feishu_id,
-                        )
-                    )
-                    dept = result.scalar_one_or_none()
-                    if dept:
-                        dept.name = d.get("name", dept.name)
-                        dept.member_count = d.get("member_count", 0)
-                        dept.synced_at = now
-                    else:
-                        dept = OrgDepartment(
-                            feishu_id=feishu_id,
-                            name=d.get("name", ""),
-                            member_count=d.get("member_count", 0),
-                            path=d.get("name", ""),
-                            tenant_id=tenant_id,
-                            synced_at=now,
-                        )
-                        db.add(dept)
-                    dept_count += 1
-
-                await db.flush()
-
-                # Build feishu_id -> db_id + parent mapping
-                dept_map = {}
-                all_result = await db.execute(select(OrgDepartment).where(OrgDepartment.tenant_id == tenant_id))
-                for dept in all_result.scalars().all():
-                    if dept.feishu_id:
-                        dept_map[dept.feishu_id] = dept
-
-                # Set parent_id from Feishu parent info
-                for d in depts:
-                    feishu_id = d.get("open_department_id", "")
-                    parent_feishu_id = d.get("parent_department_id", "")
-                    if feishu_id in dept_map and parent_feishu_id and parent_feishu_id in dept_map:
-                        dept_map[feishu_id].parent_id = dept_map[parent_feishu_id].id
-
-                await db.flush()
-            except Exception as e:
-                import traceback
-
-                traceback.print_exc()
-                logger.error(f"[OrgSync] Department sync failed: {e}")
-                return {"error": f"部门同步失败: {e}"}
-
-            # --- Sync members ---
-            try:
-                all_dept_result = await db.execute(select(OrgDepartment).where(OrgDepartment.tenant_id == tenant_id))
-                departments = all_dept_result.scalars().all()
-                provider = await feishu_auth_provider._ensure_provider(db, tenant_id)
-
-                for dept in departments:
-                    if not dept.feishu_id:
-                        continue
-                    users = await self._fetch_department_users(token, dept.feishu_id)
-                    if users:
-                        logger.info(
-                            f"[OrgSync] dept={dept.name} got {len(users)} users, first user keys={list(users[0].keys())}, open_id={users[0].get('open_id', '')!r}, user_id={users[0].get('user_id', '')!r}"
-                        )
-                    for u in users:
-                        open_id = u.get("open_id", "")
-                        user_id = u.get("user_id", "")
-                        if not open_id and not user_id:
-                            logger.warning(
-                                f"[OrgSync] Skipping user with no open_id and no user_id: {u.get('name', '?')}"
-                            )
-                            continue
-                        if not user_id:
-                            logger.warning(
-                                f"[OrgSync] User {u.get('name', '?')} has no user_id — App may lack contact:user.employee_id:readonly permission"
-                            )
-
-                        # Find existing member: prefer user_id (tenant-stable), fallback open_id
-                        member = None
-                        if user_id:
-                            result = await db.execute(
-                                select(OrgMember).where(
-                                    OrgMember.tenant_id == tenant_id,
-                                    OrgMember.feishu_user_id == user_id,
-                                )
-                            )
-                            member = result.scalar_one_or_none()
-                        if not member and open_id:
-                            result = await db.execute(
-                                select(OrgMember).where(
-                                    OrgMember.tenant_id == tenant_id,
-                                    OrgMember.feishu_open_id == open_id,
-                                )
-                            )
-                            member = result.scalar_one_or_none()
-
-                        if member:
-                            member.name = u.get("name", member.name)
-                            member.email = u.get("email", member.email)
-                            member.avatar_url = u.get("avatar", {}).get("avatar_origin", member.avatar_url)
-                            member.title = (u.get("job_title") or u.get("description") or member.title or "")[:200]
-                            member.department_id = dept.id
-                            member.department_path = dept.path or dept.name
-                            member.phone = u.get("mobile", member.phone)
-                            # Always update IDs to latest values
-                            if open_id:
-                                member.feishu_open_id = open_id
-                            if user_id:
-                                member.feishu_user_id = user_id
-                            member.provider_id = provider.id
-                            member.external_id = user_id or member.external_id
-                            member.open_id = open_id or member.open_id
-                            member.unionid = u.get("union_id") or member.unionid
-                            member.synced_at = now
-                        else:
-                            member = OrgMember(
-                                provider_id=provider.id,
-                                external_id=user_id or None,
-                                open_id=open_id or None,
-                                unionid=u.get("union_id") or None,
-                                feishu_open_id=open_id or None,
-                                feishu_user_id=user_id or None,
-                                name=u.get("name", ""),
-                                email=u.get("email", ""),
-                                avatar_url=u.get("avatar", {}).get("avatar_origin", ""),
-                                title=(u.get("job_title") or u.get("description") or "")[:200],
-                                department_id=dept.id,
-                                department_path=dept.path or dept.name,
-                                phone=u.get("mobile", ""),
-                                tenant_id=tenant_id,
-                                synced_at=now,
-                            )
-                            db.add(member)
-                        # Ensure tenant_id is set on existing members
-                        if member.tenant_id is None and tenant_id:
-                            member.tenant_id = tenant_id
-                        member_count += 1
-
-                        # --- Auto-create/update platform User ---
-                        # Prefer user_id (tenant-stable), then open_id, then email
-                        platform_user = None
-                        if user_id:
-                            pu_result = await db.execute(
-                                select(User).where(
-                                    User.tenant_id == tenant_id,
-                                    User.feishu_user_id == user_id,
-                                )
-                            )
-                            platform_user = pu_result.scalar_one_or_none()
-                        if not platform_user and open_id:
-                            pu_result = await db.execute(
-                                select(User).where(
-                                    User.tenant_id == tenant_id,
-                                    User.feishu_open_id == open_id,
-                                )
-                            )
-                            platform_user = pu_result.scalar_one_or_none()
-                        # Fallback: match by real email (most reliable cross-app identifier)
-                        member_email = u.get("email", "")
-                        if (
-                            not platform_user
-                            and member_email
-                            and "@" in member_email
-                            and not member_email.endswith("@feishu.local")
-                        ):
-                            pu_result = await db.execute(
-                                select(User).where(
-                                    User.tenant_id == tenant_id,
-                                    User.email == member_email,
-                                )
-                            )
-                            platform_user = pu_result.scalar_one_or_none()
-
-                        member_name = u.get("name", "")
-                        if platform_user:
-                            # Update existing user info
-                            platform_user.display_name = member_name or platform_user.display_name
-                            # Always update feishu IDs to track the current app's values
-                            if open_id:
-                                platform_user.feishu_open_id = open_id
-                            if user_id:
-                                platform_user.feishu_user_id = user_id
-                            if tenant_id and not platform_user.tenant_id:
-                                platform_user.tenant_id = tenant_id
-                        else:
-                            # Create new user — prefer user_id in username.
-                            # Default password is the well-known "123456" so the
-                            # imported employee can actually log in. The
-                            # must_change_password flag forces a rotate prompt
-                            # on first sign-in; the user can swap to a real
-                            # password right after.
-                            username_base = f"feishu_{user_id or (open_id[:16] if open_id else uuid.uuid4().hex[:8])}"
-                            email = member_email or f"{username_base}@feishu.local"
-                            platform_user = User(
-                                username=username_base,
-                                email=email,
-                                password_hash=hash_password("123456"),
-                                must_change_password=True,
-                                display_name=member_name,
-                                role="member",
-                                feishu_open_id=open_id or None,
-                                feishu_user_id=user_id or None,
-                                tenant_id=tenant_id,
-                            )
-                            db.add(platform_user)
-                            user_count += 1
-
-                        await feishu_auth_provider._upsert_external_identity(
+                if disposition in _SKIPPED_MEMBER_DISPOSITIONS:
+                    skipped += 1
+                    if disposition in _CONFLICT_DISPOSITIONS:
+                        conflicts += 1
+                    outcomes.append(outcome)
+                    continue
+                if disposition not in {"trusted", "unregistered"}:
+                    skipped += 1
+                    outcomes.append(outcome)
+                    continue
+                mark = identity_audit_mark(db)
+                try:
+                    async with db.begin_nested():
+                        created_user = await self._apply_member_row(
                             db,
-                            provider,
-                            platform_user,
-                            {
-                                "user_id": user_id or None,
-                                "open_id": open_id or None,
-                                "union_id": u.get("union_id") or None,
-                                "name": member_name,
-                                "email": member_email,
-                                "avatar_url": u.get("avatar", {}).get("avatar_origin", ""),
-                                "mobile": u.get("mobile", ""),
-                                "raw_profile": u,
-                            },
+                            tenant_id=tenant_id,
+                            row=row,
+                            people=people,
+                            provider=provider,
+                            departments=stored_departments,
+                            department_ids=department_ids,
+                            actor_id=actor_id,
+                            now=now,
                         )
-            except Exception as e:
-                import traceback
+                except (_SkipRow, IntegrityError, IdentityLinkRejected, FeishuIdentityConflict) as exc:
+                    rewind_deferred_identity_audit(db, mark)
+                    skipped += 1
+                    conflicts += 1
+                    outcome["disposition"] = "conflict"
+                    outcome["reason"] = getattr(exc, "code", None) or "global_unique_collision"
+                    outcomes.append(outcome)
+                    continue
+                applied += 1
+                created += 1 if created_user else 0
+                outcome["applied"] = True
+                outcomes.append(outcome)
+            await self._mark_synced(db, tenant_id, now)
+            await commit_deferred_identity_audit(db)
+            return {
+                "status": "complete",
+                "departments": departments_written,
+                "members": applied + skipped,
+                "applied": applied,
+                "skipped": skipped,
+                "conflicts": conflicts,
+                "users_created": created,
+                "synced_at": now.isoformat(),
+                "rows": outcomes,
+            }
+        finally:
+            discard_deferred_identity_audit(db)
 
-                traceback.print_exc()
-                logger.error(f"[OrgSync] Member sync failed: {e}")
-                return {"error": f"成员同步失败: {e}", "departments": dept_count}
-
-            # Update last sync time on the tenant-scoped config.
-            result = await db.execute(
+    async def _mark_synced(self, db: AsyncSession, tenant_id: uuid.UUID, now: datetime) -> None:
+        setting = (
+            await db.execute(
                 select(TenantSetting).where(
                     TenantSetting.tenant_id == tenant_id,
                     TenantSetting.key == "feishu_org_sync",
                 )
             )
-            setting = result.scalar_one_or_none()
-            if setting:
-                setting.value = {**setting.value, "last_synced_at": now.isoformat()}
+        ).scalar_one_or_none()
+        if setting is not None:
+            setting.value = {**dict(setting.value or {}), "last_synced_at": now.isoformat()}
 
-            await db.commit()
+    async def _apply_departments(
+        self,
+        db: AsyncSession,
+        tenant_id: uuid.UUID,
+        snapshot: dict,
+        report: dict,
+        now: datetime,
+    ) -> int:
+        blocked: set[str] = set()
+        for row in report["rows"]:
+            if row.get("object_kind") != "org_department":
+                continue
+            if row.get("disposition") not in {"cross_tenant", "conflict"}:
+                continue
+            feishu_id = str((row.get("provenance") or {}).get("provider_department_id") or "").strip()
+            if feishu_id:
+                blocked.add(feishu_id)
+        written = 0
+        for item in snapshot["departments"]:
+            feishu_id = str(item.get("open_department_id") or "").strip()
+            name = str(item.get("name") or "").strip()
+            if not feishu_id or not name or feishu_id in blocked:
+                continue
+            try:
+                async with db.begin_nested():
+                    department = (
+                        await db.execute(
+                            select(OrgDepartment).where(
+                                OrgDepartment.tenant_id == tenant_id,
+                                OrgDepartment.feishu_id == feishu_id,
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    count = _directory_member_count(item)
+                    if department is None:
+                        db.add(
+                            OrgDepartment(
+                                feishu_id=feishu_id,
+                                name=name[:200],
+                                path=name[:500],
+                                member_count=count,
+                                tenant_id=tenant_id,
+                                synced_at=now,
+                            )
+                        )
+                    else:
+                        department.name = name[:200]
+                        department.member_count = count
+                        department.synced_at = now
+            except IntegrityError:
+                continue
+            written += 1
+        await db.flush()
+        stored = {
+            department.feishu_id: department
+            for department in (
+                await db.execute(select(OrgDepartment).where(OrgDepartment.tenant_id == tenant_id))
+            ).scalars().all()
+            if department.feishu_id
+        }
+        for item in snapshot["departments"]:
+            feishu_id = str(item.get("open_department_id") or "").strip()
+            parent_id = str(item.get("parent_department_id") or "").strip()
+            department = stored.get(feishu_id)
+            parent = stored.get(parent_id)
+            if department is not None and parent is not None and parent.id != department.id:
+                department.parent_id = parent.id
+        await db.flush()
+        return written
 
-            stats = {
-                "departments": dept_count,
-                "members": member_count,
-                "users_created": user_count,
-                "synced_at": now.isoformat(),
-            }
-            logger.info(f"[OrgSync] Complete: {stats}")
-            return stats
+    async def _apply_member_row(
+        self,
+        db: AsyncSession,
+        *,
+        tenant_id: uuid.UUID,
+        row: dict,
+        people: dict[tuple[str, str], dict],
+        provider: IdentityProvider,
+        departments: dict[str, OrgDepartment],
+        department_ids: list[str],
+        actor_id: uuid.UUID | None,
+        now: datetime,
+    ) -> bool:
+        provenance = row.get("provenance") or {}
+        open_ids = _one_subject(provenance.get("open_ids"))
+        user_ids = _one_subject(provenance.get("user_ids"))
+        union_ids = _one_subject(provenance.get("union_ids"))
+        open_id = open_ids[0] if open_ids else ""
+        user_id = user_ids[0] if user_ids else ""
+        union_id = union_ids[0] if union_ids else ""
+        if not open_id and not user_id and not union_id:
+            raise _SkipRow("missing_provider_subject")
+        person = _person_for(people, open_id, user_id, union_id)
+        member = await self._load_member(db, tenant_id, str(row["object_id"]), open_id, user_id)
+        created_user = False
+        if row["disposition"] == "trusted":
+            account_id = row.get("user_id")
+            user = await db.get(User, uuid.UUID(str(account_id))) if account_id else None
+            if user is None or user.tenant_id != tenant_id:
+                raise _SkipRow("cross_tenant")
+            if user.is_active is not True:
+                raise _SkipRow("inactive_user")
+            _fill_existing_user(user, person, open_id, user_id, union_id)
+        else:
+            user = await feishu_auth_provider._create_user(
+                db,
+                tenant_id,
+                _sync_profile(person, open_id, user_id, union_id),
+            )
+            created_user = True
+        if member is None:
+            member = OrgMember(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                provider_id=provider.id,
+                name=_member_name(person, user_id, open_id),
+                status="active",
+                synced_at=now,
+            )
+            db.add(member)
+        _fill_member(
+            member,
+            provider,
+            person,
+            open_id,
+            user_id,
+            union_id,
+            department_ids,
+            departments,
+            now,
+        )
+        prepared = False
+
+        async def persist_identity() -> None:
+            nonlocal prepared
+            if prepared:
+                return
+            prepared = True
+            await feishu_auth_provider._upsert_external_identity(
+                db,
+                provider,
+                user,
+                _sync_profile(person, open_id, user_id, union_id),
+            )
+
+        for kind, value in (
+            ("provider_open_id", open_id),
+            ("provider_user_id", user_id),
+            ("provider_union_id", union_id),
+        ):
+            if not value:
+                continue
+            outcome = await apply_observed_subject_link(
+                db,
+                tenant_id=tenant_id,
+                actor_id=actor_id,
+                member=member,
+                user=user,
+                provider=provider,
+                subject_kind=kind,
+                source="org_sync",
+                after_lock=persist_identity,
+            )
+            if not outcome.applied:
+                raise _SkipRow(outcome.code or "conflict")
+        return created_user
+
+    async def _load_member(
+        self,
+        db: AsyncSession,
+        tenant_id: uuid.UUID,
+        object_id: str,
+        open_id: str,
+        user_id: str,
+    ) -> OrgMember | None:
+        try:
+            member_id = uuid.UUID(object_id)
+        except ValueError:
+            member_id = None
+        if member_id is not None:
+            member = await db.get(OrgMember, member_id)
+            if member is not None and member.tenant_id == tenant_id:
+                return member
+        if user_id:
+            member = (
+                await db.execute(
+                    select(OrgMember).where(
+                        OrgMember.tenant_id == tenant_id,
+                        OrgMember.feishu_user_id == user_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if member is not None:
+                return member
+        if open_id:
+            return (
+                await db.execute(
+                    select(OrgMember).where(
+                        OrgMember.tenant_id == tenant_id,
+                        OrgMember.feishu_open_id == open_id,
+                    )
+                )
+            ).scalar_one_or_none()
+        return None
+
 
     async def fetch_pending_directory(self, db: AsyncSession, tenant_id: uuid.UUID, *, fetcher=None) -> dict:
         """Read the configured directory without writing rows or the secret.
@@ -605,6 +771,13 @@ def _assessed_page_items(payload: dict) -> list[dict]:
     return page_items
 
 
+def _directory_member_count(item: dict) -> int:
+    value = item.get("member_count", 0)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return value if value >= 0 else 0
+
+
 def _project_directory_department(item: dict) -> dict | None:
     feishu_id = str(item.get("open_department_id") or "").strip()
     if not feishu_id:
@@ -613,10 +786,12 @@ def _project_directory_department(item: dict) -> dict | None:
         "open_department_id": feishu_id,
         "name": str(item.get("name") or "").strip(),
         "parent_department_id": str(item.get("parent_department_id") or "").strip(),
+        "member_count": _directory_member_count(item),
     }
 
 
 def _project_directory_member(item: dict, department_id: str) -> dict:
+    avatar = item.get("avatar") if isinstance(item.get("avatar"), dict) else {}
     return {
         "open_id": str(item.get("open_id") or "").strip(),
         "user_id": str(item.get("user_id") or "").strip(),
@@ -624,6 +799,9 @@ def _project_directory_member(item: dict, department_id: str) -> dict:
         "email": str(item.get("email") or "").strip(),
         "name": str(item.get("name") or "").strip(),
         "department_id": department_id,
+        "avatar_url": str(item.get("avatar_url") or avatar.get("avatar_origin") or "").strip(),
+        "title": str(item.get("job_title") or item.get("title") or item.get("description") or "").strip()[:200],
+        "phone": str(item.get("mobile") or item.get("phone") or "").strip(),
     }
 
 

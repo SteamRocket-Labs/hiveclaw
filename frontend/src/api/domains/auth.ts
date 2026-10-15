@@ -45,6 +45,42 @@ export interface FeishuSsoPollResponse {
   access_token?: string;
   user?: User;
   detail?: string;
+  code?: string;
+}
+
+type FeishuTranslator = (key: string, defaultValue: string) => string;
+
+export function feishuConflictMessage(
+  code: string | undefined,
+  translate: FeishuTranslator,
+  scope: 'auth' | 'account' = 'auth',
+): string | null {
+  if (code === 'email_only_candidate') {
+    return scope === 'account'
+      ? translate('account.feishuEmailOnlyCandidate', 'This sign-in matches an email only. Nothing was linked. An administrator can repair the directory link.')
+      : translate('auth.feishu.emailOnlyCandidate', 'This sign-in matches an email only. Nothing was linked. An administrator can repair the directory link.');
+  }
+  if (code === 'contradictory_subjects') {
+    return scope === 'account'
+      ? translate('account.feishuContradictorySubjects', 'The Feishu subjects belong to different accounts. Nothing was linked.')
+      : translate('auth.feishu.contradictorySubjects', 'The Feishu subjects belong to different accounts. Nothing was linked.');
+  }
+  if (code === 'external_identity_conflict') {
+    return scope === 'account'
+      ? translate('account.feishuExternalIdentityConflict', 'This Feishu subject is already linked to another account. Nothing was changed.')
+      : translate('auth.feishu.externalIdentityConflict', 'This Feishu subject is already linked to another account. Nothing was changed.');
+  }
+  if (code === 'provider_disabled') {
+    return scope === 'account'
+      ? translate('account.feishuProviderDisabled', 'Feishu sign-in is disabled for this company.')
+      : translate('auth.feishu.providerDisabled', 'Feishu sign-in is disabled for this company.');
+  }
+  if (code === 'inactive_user') {
+    return scope === 'account'
+      ? translate('account.feishuInactiveUser', 'This account is inactive. Nothing was changed.')
+      : translate('auth.feishu.inactiveUser', 'This account is inactive. Nothing was changed.');
+  }
+  return null;
 }
 
 function normalizeLoginParams(data: LoginParams): LoginParams {

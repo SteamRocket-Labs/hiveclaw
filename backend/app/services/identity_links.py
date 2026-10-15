@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -357,8 +358,57 @@ def _member_reason(subjects: SubjectMap, links: list[tuple[bool, str, uuid.UUID]
 
 
 async def _lock(session: AsyncSession, keys: list[int]) -> None:
-    for key in sorted(set(keys)):
-        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
+    # Autoflush would take row locks before this advisory lock and deadlock a repair.
+    with session.no_autoflush:
+        for key in sorted(set(keys)):
+            await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
+
+
+# A multi-member transaction locks the next member only after the previous
+# member's link write. The tenant audit chain is one transaction advisory lock.
+# Taking it in the first write, then locking another member, deadlocks a repair
+# that already holds that member and then needs the chain. Queue the events
+# until every member lock for this transaction is held, then write them.
+_IDENTITY_AUDIT_GATE = "identity_audit_gate"
+
+
+def begin_deferred_identity_audit(session: AsyncSession) -> None:
+    session.info[_IDENTITY_AUDIT_GATE] = []
+
+
+def identity_audit_mark(session: AsyncSession) -> int:
+    gate = session.info.get(_IDENTITY_AUDIT_GATE)
+    if not isinstance(gate, list):
+        return -1
+    return len(gate)
+
+
+def rewind_deferred_identity_audit(session: AsyncSession, mark: int) -> None:
+    if mark < 0:
+        return
+    gate = session.info.get(_IDENTITY_AUDIT_GATE)
+    if isinstance(gate, list):
+        del gate[mark:]
+
+
+async def commit_deferred_identity_audit(session: AsyncSession) -> None:
+    gate = session.info.pop(_IDENTITY_AUDIT_GATE, None)
+    if not isinstance(gate, list):
+        return
+    for kwargs in gate:
+        await write_audit_event(session, **kwargs)
+
+
+def discard_deferred_identity_audit(session: AsyncSession) -> None:
+    session.info.pop(_IDENTITY_AUDIT_GATE, None)
+
+
+async def _record_identity_audit(session: AsyncSession, **kwargs: Any) -> None:
+    gate = session.info.get(_IDENTITY_AUDIT_GATE)
+    if isinstance(gate, list):
+        gate.append(kwargs)
+        return
+    await write_audit_event(session, **kwargs)
 
 
 async def _bindings_for_providers(
@@ -439,6 +489,19 @@ async def _revalidate_for_update(session: AsyncSession, statement, cached: Any |
     return (
         await session.execute(
             statement.with_for_update(),
+            execution_options={"populate_existing": True},
+        )
+    ).scalar_one_or_none()
+
+
+async def _reload_visible(session: AsyncSession, statement, cached: Any | None):
+    """Re-read a committed row without holding its lock for later members."""
+
+    if cached is not None:
+        session.expire(cached)
+    return (
+        await session.execute(
+            statement,
             execution_options={"populate_existing": True},
         )
     ).scalar_one_or_none()
@@ -574,7 +637,7 @@ async def _write_link(
     session: AsyncSession,
     *,
     tenant_id: uuid.UUID,
-    actor_id: uuid.UUID,
+    actor_id: uuid.UUID | None,
     member: OrgMember,
     user: User,
     provider: IdentityProvider,
@@ -583,6 +646,7 @@ async def _write_link(
     status: str,
     external_identity_id: uuid.UUID | None,
     action: str,
+    source: str = "manual",
     previous: OrgMemberUserLink | None = None,
 ) -> OrgMemberUserLink:
     now = datetime.now(timezone.utc)
@@ -596,7 +660,7 @@ async def _write_link(
         match_subject=match_subject,
         external_identity_id=external_identity_id,
         status=status,
-        evidence_json={"source": "manual", "observed_at": now.isoformat()},
+        evidence_json={"source": source, "observed_at": now.isoformat()},
         created_by_user_id=actor_id,
     )
     try:
@@ -627,7 +691,7 @@ async def _write_link(
                 )
             )
             await session.flush()
-            await write_audit_event(
+            await _record_identity_audit(
                 session,
                 event_type="org.identity_link",
                 actor_type="user",
@@ -708,11 +772,14 @@ async def _locked_write_target(
 ) -> tuple[User, IdentityProvider]:
     """Re-read account, provider, and namespace after the advisory lock is held."""
 
-    current_user = await _revalidate_for_update(session, select(User).where(User.id == user_id), user)
+    # The account and provider are shared with other members in the same
+    # directory transaction. An exclusive lock conflicts with the key share
+    # from an identity insert and deadlocks the next member's advisory lock.
+    current_user = await _reload_visible(session, select(User).where(User.id == user_id), user)
     if current_user is None or current_user.tenant_id != tenant_id:
         await _require_user(session, tenant_id, user_id, actor_id)
         raise AssertionError("unreachable")
-    current_provider = await _revalidate_for_update(
+    current_provider = await _reload_visible(
         session,
         select(IdentityProvider).where(IdentityProvider.id == provider_id),
         provider,
@@ -864,6 +931,309 @@ async def create_manual_link(
     return _outcome_for_existing(link, created=True)
 
 
+async def lock_directory_sync(session: AsyncSession, tenant_id: uuid.UUID) -> None:
+    """Serialize directory application with other sync writers for one company."""
+
+    await _lock(session, [_advisory_key("org_sync", tenant_id)])
+
+
+async def _attach_proven_identity(
+    session: AsyncSession,
+    *,
+    link: OrgMemberUserLink,
+    user: User,
+    member: OrgMember,
+    bindings: list[_Binding],
+    actor_id: uuid.UUID | None,
+) -> IdentityLinkOutcome | None:
+    """Fill a missing identity reference on an existing link. Do not retarget it."""
+
+    if link.status != "active" or link.external_identity_id is not None or link.provider_id is None:
+        return None
+    requested = _bindings_matching(bindings, link.provider_id, link.subject_kind, link.match_subject)
+    if len(requested) != 1 or requested[0].user_id != user.id:
+        return None
+    subjects = member_subject_map(member)
+    for kind, value in subjects.values.items():
+        matches = _bindings_matching(bindings, link.provider_id, kind, value)
+        if len(matches) > 1 or any(match.user_id != user.id for match in matches):
+            return None
+    evidence = dict(link.evidence_json or {})
+    source = evidence.get("source")
+    if source not in {"org_sync", "sso", "manual", "dry_run"}:
+        return None
+    now = datetime.now(timezone.utc)
+    before = _snapshot(link)
+    evidence["observed_at"] = now.isoformat()
+    link.external_identity_id = requested[0].id
+    link.evidence_json = evidence
+    session.add(
+        IdentityCutoverJournal(
+            tenant_id=link.tenant_id,
+            object_kind="org_member_user_link",
+            object_id=link.id,
+            before_json=before,
+            after_json=_snapshot(link),
+            applied_at=now,
+        )
+    )
+    await session.flush()
+    await _record_identity_audit(
+        session,
+        event_type="org.identity_link",
+        actor_type="user",
+        actor_id=actor_id,
+        tenant_id=link.tenant_id,
+        action="identity_link.identity_reference",
+        resource_type="org_member_user_link",
+        resource_id=link.id,
+        details={
+            "org_member_id": str(link.org_member_id),
+            "user_id": str(link.user_id),
+            "provider_id": str(link.provider_id),
+            "subject_kind": link.subject_kind,
+            "status": link.status,
+        },
+    )
+    return IdentityLinkOutcome(
+        True,
+        "active",
+        "active",
+        "This link is already stored.",
+        False,
+        _public_link(link, valid=True, reason="active"),
+    )
+
+
+async def _preserved_association(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    provider_id: uuid.UUID,
+    subjects: dict[str, str],
+) -> OrgMemberUserLink | None:
+    """A revoked or conflicting current subject blocks every sibling kind too."""
+
+    clauses = [
+        and_(OrgMemberUserLink.subject_kind == kind, OrgMemberUserLink.match_subject == value)
+        for kind, value in subjects.items()
+        if value
+    ]
+    if not clauses:
+        return None
+    return (
+        await session.execute(
+            select(OrgMemberUserLink)
+            .where(
+                OrgMemberUserLink.tenant_id == tenant_id,
+                OrgMemberUserLink.provider_id == provider_id,
+                OrgMemberUserLink.status.in_(("revoked", "conflict")),
+                or_(*clauses),
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+def _preserved_outcome(link: OrgMemberUserLink) -> IdentityLinkOutcome:
+    return IdentityLinkOutcome(
+        False,
+        link.status,
+        link.status,
+        "The stored directory link stays unchanged.",
+        False,
+        _public_link(link, valid=False, reason=link.status),
+    )
+
+
+async def apply_observed_subject_link(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    actor_id: uuid.UUID | None,
+    member: OrgMember,
+    user: User,
+    provider: IdentityProvider,
+    subject_kind: str,
+    source: str,
+    after_lock: Callable[[], Awaitable[None]] | None = None,
+) -> IdentityLinkOutcome:
+    """Write one org_sync or sso link using the manual repair locks and journal.
+
+    An identical active row is unchanged and does not add another journal entry.
+    A revoked or conflicting row for any current subject of this person is not
+    turned back into an active link through a sibling kind. Another user's
+    external identity is not overwritten. ``after_lock`` runs only after the
+    shared advisory locks, so callers can flush row changes without inverting
+    that order. The provider row is shared by every member of one installation
+    and is re-read without a row lock: that lock would stay held until the
+    outer transaction commits and deadlock the next member.
+    """
+
+    if source not in {"org_sync", "sso"}:
+        _reject("subject_kind", "An automatic link must come from organization sync or SSO.")
+    if subject_kind not in SUBJECT_KINDS:
+        _reject("subject_kind", "The subject kind is not one of the stored provider subjects.")
+    subjects = member_subject_map(member)
+    if subjects.ambiguous or subject_kind not in subjects.values:
+        code = "ambiguous_subject" if subjects.ambiguous else "missing_provider_subject"
+        return IdentityLinkOutcome(False, code, code, "The directory subject is not safe to link.", False, None)
+    match_subject = subjects.values[subject_kind]
+    await _lock(session, _lock_keys(tenant_id, member.id, provider.id, subjects))
+    if after_lock is not None:
+        await after_lock()
+    await session.flush()
+    member = await _lock_member(session, tenant_id, member.id)
+    if member is None:
+        return IdentityLinkOutcome(False, "member_not_in_tenant", "member_not_in_tenant", "That directory person is not in this company.", False, None)
+    current_user = await _reload_visible(session, select(User).where(User.id == user.id), user)
+    current_provider = await _reload_visible(
+        session, select(IdentityProvider).where(IdentityProvider.id == provider.id), provider
+    )
+    if current_user is None or current_user.tenant_id != tenant_id:
+        return IdentityLinkOutcome(False, "cross_tenant", "cross_tenant", "That account cannot be linked in this company.", False, None)
+    if current_user.is_active is not True:
+        return IdentityLinkOutcome(False, "inactive_user", "inactive_user", "The account is inactive.", False, None)
+    if (
+        current_provider is None
+        or current_provider.tenant_id is None
+        or current_provider.tenant_id != tenant_id
+        or current_provider.is_active is not True
+    ):
+        return IdentityLinkOutcome(
+            False,
+            "provider_unproven",
+            "provider_unproven",
+            "That provider is not a proven provider for this company.",
+            False,
+            None,
+        )
+    namespace = _namespace_reason(member, current_provider)
+    if namespace is not None:
+        return IdentityLinkOutcome(False, namespace, namespace, "The directory provider does not match this installation.", False, None)
+    rebound = member_subject_map(member)
+    if rebound.ambiguous or rebound.values.get(subject_kind) != match_subject:
+        return IdentityLinkOutcome(
+            False,
+            "stale_mapping",
+            "stale_mapping",
+            "The directory person changed before the link was saved. Reload and retry.",
+            True,
+            None,
+        )
+    active = await _active_links(
+        session,
+        tenant_id=tenant_id,
+        provider_id=current_provider.id,
+        subject_kind=subject_kind,
+        match_subject=match_subject,
+        org_member_id=member.id,
+    )
+    identical = next(
+        (
+            row
+            for row in active
+            if _same_row(
+                row,
+                org_member_id=member.id,
+                user_id=current_user.id,
+                provider_id=current_provider.id,
+                subject_kind=subject_kind,
+                match_subject=match_subject,
+                status="active",
+            )
+        ),
+        None,
+    )
+    if identical is not None:
+        bindings = await _bindings_for_providers(session, [current_provider.id], actor_id=actor_id)
+        valid, reason = recheck_stored_link(
+            identical, member=member, user=current_user, provider=current_provider, bindings=bindings
+        )
+        if valid:
+            return IdentityLinkOutcome(
+                True, "active", "active", "This link is already stored.", False, _public_link(identical, valid=True, reason="active")
+            )
+        attached = await _attach_proven_identity(
+            session,
+            link=identical,
+            user=current_user,
+            member=member,
+            bindings=bindings,
+            actor_id=actor_id,
+        )
+        if attached is not None:
+            return attached
+        return IdentityLinkOutcome(
+            False,
+            reason,
+            reason,
+            "The stored link no longer matches the current directory subject.",
+            False,
+            _public_link(identical, valid=False, reason=reason),
+        )
+    preserved = await _preserved_association(
+        session,
+        tenant_id=tenant_id,
+        provider_id=current_provider.id,
+        subjects=rebound.values,
+    )
+    if preserved is not None:
+        return _preserved_outcome(preserved)
+    if active:
+        return IdentityLinkOutcome(
+            False,
+            "conflict",
+            "active_link_conflict",
+            "An active link already uses this directory person or subject.",
+            True,
+            None,
+        )
+    bindings = await _bindings_for_providers(session, [current_provider.id], actor_id=actor_id)
+    status, external_identity_id = _decide_status(
+        user=current_user,
+        provider_id=current_provider.id,
+        subject_kind=subject_kind,
+        subjects=rebound,
+        bindings=bindings,
+        user_id=current_user.id,
+    )
+    existing = (
+        await session.execute(
+            select(OrgMemberUserLink).where(
+                OrgMemberUserLink.tenant_id == tenant_id,
+                OrgMemberUserLink.org_member_id == member.id,
+                OrgMemberUserLink.user_id == current_user.id,
+                OrgMemberUserLink.provider_id == current_provider.id,
+                OrgMemberUserLink.subject_kind == subject_kind,
+                OrgMemberUserLink.match_subject == match_subject,
+                OrgMemberUserLink.status == status,
+            )
+        )
+    ).scalars().first()
+    if existing is not None:
+        return _outcome_for_existing(existing, created=False)
+    if status == "conflict":
+        requested = _bindings_matching(bindings, current_provider.id, subject_kind, match_subject)
+        if not requested or requested[0].user_id != current_user.id:
+            external_identity_id = None
+    link = await _write_link(
+        session,
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        member=member,
+        user=current_user,
+        provider=current_provider,
+        subject_kind=subject_kind,
+        match_subject=match_subject,
+        status=status,
+        external_identity_id=external_identity_id,
+        action=f"identity_link.{source}",
+        source=source,
+    )
+    return _outcome_for_existing(link, created=True)
+
+
 def _expected_matches(
     link: OrgMemberUserLink,
     *,
@@ -979,7 +1349,7 @@ async def revoke_identity_link(
                 )
             )
             await session.flush()
-            await write_audit_event(
+            await _record_identity_audit(
                 session,
                 event_type="org.identity_link",
                 actor_type="user",

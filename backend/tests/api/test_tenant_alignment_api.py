@@ -396,9 +396,10 @@ async def test_platform_admin_triggers_selected_tenant_org_sync(monkeypatch):
     target_tenant_id = uuid4()
     calls = {}
 
-    async def fake_full_sync(tenant_id):
+    async def fake_full_sync(tenant_id, *, actor_id=None):
         calls["full_sync"] = tenant_id
-        return {"synced": 0}
+        calls["actor_id"] = actor_id
+        return {"status": "complete", "departments": 0, "members": 0}
 
     class _ScopedSession:
         def __init__(self, tenant_id):
@@ -427,10 +428,43 @@ async def test_platform_admin_triggers_selected_tenant_org_sync(monkeypatch):
         db=_FakeDB([]),
     )
 
-    assert result == {"synced": 0}
+    assert result["status"] == "complete"
     assert calls["full_sync"] == target_tenant_id
+    assert calls["actor_id"] is not None
     assert calls["scoped"] == target_tenant_id
     assert calls["sync_org"] == target_tenant_id
+
+
+@pytest.mark.asyncio
+async def test_incomplete_org_sync_does_not_publish_workspace_projection(monkeypatch):
+    import app.api.enterprise as enterprise_api
+
+    target_tenant_id = uuid4()
+    calls = {}
+
+    async def fake_full_sync(tenant_id, *, actor_id=None):
+        calls["full_sync"] = tenant_id
+        return {"status": "unavailable", "code": "incomplete", "error": "The directory snapshot did not finish."}
+
+    async def fake_sync_org_structure(_db, tenant_id):
+        calls["sync_org"] = tenant_id
+
+    def fake_mark_dirty(tenant_id):
+        calls["dirty"] = tenant_id
+
+    monkeypatch.setattr("app.services.org_sync_service.org_sync_service.full_sync", fake_full_sync)
+    monkeypatch.setattr("app.services.workspace_sync.sync_org_structure", fake_sync_org_structure)
+    monkeypatch.setattr("app.services.workspace_sync_dirty.mark_tenant_dirty", fake_mark_dirty)
+
+    result = await enterprise_api.trigger_org_sync(
+        tenant_id=str(target_tenant_id),
+        current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=target_tenant_id),
+        db=_FakeDB([]),
+    )
+
+    assert result["status"] == "unavailable"
+    assert "sync_org" not in calls
+    assert "dirty" not in calls
 
 
 @pytest.mark.asyncio

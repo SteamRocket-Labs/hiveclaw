@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
-import { authApi } from '../api/domains/auth';
+import { authApi, feishuConflictMessage } from '../api/domains/auth';
 
 export default function SsoEntry() {
     const { t } = useTranslation();
@@ -40,7 +40,7 @@ export default function SsoEntry() {
                     }
                     if (res.status === 'expired' || res.status === 'error') {
                         setStatus('error');
-                        setError(res.detail || t('auth.feishu.ssoFailed', 'Login failed or expired'));
+                        setError(feishuConflictMessage(res.code, t) || res.detail || t('auth.feishu.ssoFailed', 'Login failed or expired'));
                         return;
                     }
                 } catch {

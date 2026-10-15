@@ -142,6 +142,7 @@ async def test_readonly_directory_projects_a_complete_snapshot_without_secrets(m
                 "open_department_id": "od_research",
                 "name": "Research",
                 "parent_department_id": "0",
+                "member_count": 7,
                 "extra": "drop-me",
             }],
             "has_more": False,
@@ -178,6 +179,7 @@ async def test_readonly_directory_projects_a_complete_snapshot_without_secrets(m
         "open_department_id": "od_research",
         "name": "Research",
         "parent_department_id": "0",
+        "member_count": 7,
     }]
     assert snapshot["members"][0]["open_id"] == "ou_1"
     assert "mobile" not in snapshot["members"][0]

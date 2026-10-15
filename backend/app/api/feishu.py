@@ -1,6 +1,7 @@
 """Feishu OAuth and Channel API routes."""
 
 import asyncio
+import json
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -23,7 +24,14 @@ from app.models.channel_config import ChannelConfig
 from app.models.identity import SSOScanSession
 from app.models.user import User
 from app.schemas.schemas import ChannelConfigCreate, ChannelConfigOut, TokenResponse, UserOut
-from app.services.auth_provider import feishu_auth_provider
+from app.services.auth_provider import (
+    CONTRADICTORY_SUBJECTS,
+    EMAIL_ONLY_CANDIDATE,
+    EXTERNAL_IDENTITY_CONFLICT,
+    PROVIDER_DISABLED,
+    FeishuIdentityConflict,
+    feishu_auth_provider,
+)
 from app.services.feishu_app_registration import (
     FeishuRegistrationConflict,
     FeishuRegistrationError,
@@ -351,6 +359,57 @@ async def _resolve_feishu_oauth_authorize_config(
     return app_id, redirect_uri, config
 
 
+_SSO_FAILURES = {
+    "email_only_candidate": EMAIL_ONLY_CANDIDATE,
+    "contradictory_subjects": CONTRADICTORY_SUBJECTS,
+    "external_identity_conflict": EXTERNAL_IDENTITY_CONFLICT,
+    "provider_disabled": PROVIDER_DISABLED,
+    "inactive_user": "This account is inactive. Nothing was changed.",
+    "auth_failed": "Feishu sign-in failed. Nothing was linked.",
+}
+
+
+def _sso_failure_payload(code: str) -> dict[str, str]:
+    safe = code if code in _SSO_FAILURES else "auth_failed"
+    return {"code": safe, "message": _SSO_FAILURES[safe]}
+
+
+def _public_sso_failure(error_msg: str | None) -> dict[str, str] | None:
+    if not error_msg:
+        return None
+    try:
+        parsed = json.loads(error_msg)
+    except json.JSONDecodeError:
+        return _sso_failure_payload("auth_failed")
+    if not isinstance(parsed, dict):
+        return _sso_failure_payload("auth_failed")
+    return _sso_failure_payload(str(parsed.get("code") or "auth_failed"))
+
+
+async def _record_sso_failure(db: AsyncSession, session_id: uuid.UUID, code: str) -> None:
+    await db.rollback()
+    session = await _load_public_sso_scan_session(db, session_id)
+    if session is None:
+        return
+    session.status = "error"
+    session.provider_type = "feishu"
+    session.error_msg = json.dumps(_sso_failure_payload(code))
+    await db.commit()
+
+
+def _identity_http(code: str, *, retryable: bool) -> HTTPException:
+    payload = _sso_failure_payload(code)
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "code": payload["code"],
+            "message": payload["message"],
+            "applied": False,
+            "retryable": retryable,
+        },
+    )
+
+
 async def _load_public_sso_scan_session(db: AsyncSession, session_id: uuid.UUID) -> SSOScanSession | None:
     """Load a public SSO scan session by unguessable state and pin its tenant."""
     async with enter_rls_bypass(
@@ -417,6 +476,14 @@ async def feishu_sso_poll(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
 
     from datetime import datetime, timezone
+
+    if session.status == "error" or (session.status == "expired" and session.error_msg):
+        failure = _public_sso_failure(session.error_msg)
+        payload = {"status": session.status}
+        if failure is not None:
+            payload["detail"] = failure["message"]
+            payload["code"] = failure["code"]
+        return payload
 
     if session.expires_at < datetime.now(timezone.utc):
         return {"status": "expired"}
@@ -494,11 +561,16 @@ async def feishu_oauth_callback_get(code: str, state: str, db: AsyncSession = De
         session.access_token = token or ""
         session.error_msg = None
         await db.commit()
-    except Exception as exc:
-        session.status = "expired"
-        session.provider_type = "feishu"
-        session.error_msg = str(exc)
-        await db.commit()
+    except FeishuIdentityConflict as exc:
+        await _record_sso_failure(db, session_id, exc.code)
+        return HTMLResponse("<html><body>Feishu SSO failed.</body></html>", status_code=400)
+    except ValueError as exc:
+        code = "inactive_user" if "inactive" in str(exc).lower() else "auth_failed"
+        await _record_sso_failure(db, session_id, code)
+        return HTMLResponse("<html><body>Feishu SSO failed.</body></html>", status_code=400)
+    except Exception:
+        logger.warning("Feishu SSO callback failed")
+        await _record_sso_failure(db, session_id, "auth_failed")
         return HTMLResponse("<html><body>Feishu SSO failed.</body></html>", status_code=400)
 
     redirect_target = f"/sso/entry?sid={session.id}&complete=1"
@@ -520,9 +592,19 @@ async def feishu_oauth_callback(
             await pin_rls_tenant_context(db, tenant_id)
         user, token = await feishu_auth_provider.authenticate_with_code(db, code=code, tenant_id=tenant_id)
         await db.commit()
+    except FeishuIdentityConflict as exc:
+        await db.rollback()
+        raise _identity_http(exc.code, retryable=True) from None
+    except ValueError as exc:
+        await db.rollback()
+        if "inactive" in str(exc).lower():
+            raise _identity_http("inactive_user", retryable=False) from None
+        logger.warning("Feishu auth rejected")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Feishu authentication failed") from None
     except Exception:
-        logger.exception("Feishu auth failed")
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Feishu authentication failed")
+        await db.rollback()
+        logger.warning("Feishu auth failed")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Feishu authentication failed") from None
 
     return TokenResponse(access_token=token, user=UserOut.model_validate(user))
 
@@ -534,8 +616,22 @@ async def bind_feishu_account(
     db: AsyncSession = Depends(get_db),
 ):
     """Bind Feishu account to existing user."""
-    user = await feishu_auth_provider.bind_with_code(db, user=current_user, code=code)
-    await db.commit()
+    try:
+        user = await feishu_auth_provider.bind_with_code(db, user=current_user, code=code)
+        await db.commit()
+    except FeishuIdentityConflict as exc:
+        await db.rollback()
+        raise _identity_http(exc.code, retryable=True) from None
+    except ValueError as exc:
+        await db.rollback()
+        if "inactive" in str(exc).lower():
+            raise _identity_http("inactive_user", retryable=False) from None
+        logger.warning("Feishu bind rejected")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Feishu authentication failed") from None
+    except Exception:
+        await db.rollback()
+        logger.warning("Feishu bind failed")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Feishu authentication failed") from None
     return UserOut.model_validate(user)
 
 

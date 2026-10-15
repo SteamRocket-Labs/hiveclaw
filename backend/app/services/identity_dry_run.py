@@ -19,9 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import enter_rls_bypass
 from app.models.identity import ExternalIdentity, IdentityProvider
 from app.models.org import OrgDepartment, OrgMember
+from app.models.organization_identity import OrgMemberUserLink
 from app.models.runtime_task import RuntimeTask
 from app.models.user import Department, User
 from app.services.company_knowledge_identity import explicit_subject_matches
+from app.services.identity_links import _Binding, recheck_stored_link
 from app.services.org_sync_service import DirectoryFetchError, INCOMPLETE_MESSAGE
 
 SCHEMA = "hive.identity_dry_run.v1"
@@ -275,6 +277,31 @@ async def build_identity_dry_run_report(
     departments_by_id = {department.id: department for department in departments}
     org_departments_by_id = {department.id: department for department in org_departments}
     identity_by_subject: dict[tuple[str, str], list[ExternalIdentity]] = {}
+    bindings = [
+        _Binding(
+            id=identity.id,
+            provider_id=identity.provider_id,
+            user_id=identity.user_id,
+            provider_user_id=identity.provider_user_id,
+            provider_open_id=identity.provider_open_id,
+            provider_union_id=identity.provider_union_id,
+        )
+        for identity in identities
+    ]
+    active_links: list[OrgMemberUserLink] = []
+    if proven is not None:
+        active_links = list(
+            (
+                await db.execute(
+                    select(OrgMemberUserLink).where(
+                        OrgMemberUserLink.tenant_id == tenant_id,
+                        OrgMemberUserLink.provider_id == proven.id,
+                        OrgMemberUserLink.status == "active",
+                    )
+                )
+            ).scalars().all()
+        )
+    members_by_id = {member.id: member for member in org_members}
     for identity in identities:
         for kind, value in (
             ("provider_open_id", _text(identity.provider_open_id)),
@@ -316,6 +343,10 @@ async def build_identity_dry_run_report(
                 identity_by_subject=identity_by_subject,
                 blocked=blocked,
                 observed=observed,
+                active_links=active_links,
+                members_by_id=members_by_id,
+                users_by_id=users_by_id,
+                bindings=bindings,
             )
         )
     active_user_ids = {user.id for user in users if user.is_active}
@@ -586,6 +617,45 @@ def _department_rows(record, *, names, blocked, observed, proposals) -> list[dic
     return []
 
 
+def _accounts_for_active_links(record, proven, active_links, members_by_id, users_by_id, bindings) -> tuple[list, str | None]:
+    """Return accounts a current directory link proves. Email is not consulted."""
+
+    if proven is None or not active_links:
+        return [], None
+    try:
+        member_id = uuid.UUID(str(record.get("object_id")))
+    except ValueError:
+        return [], None
+    member = members_by_id.get(member_id)
+    if member is None:
+        return [], None
+    kind_values = {
+        "provider_open_id": record["open_ids"],
+        "provider_user_id": record["user_ids"],
+        "provider_union_id": record["union_ids"],
+    }
+    accepted: dict[uuid.UUID, User] = {}
+    inactive = False
+    for link in active_links:
+        if link.org_member_id != member_id or link.provider_id != proven.id or link.status != "active":
+            continue
+        if link.match_subject not in (kind_values.get(link.subject_kind) or []):
+            continue
+        account = users_by_id.get(link.user_id)
+        valid, reason = recheck_stored_link(
+            link, member=member, user=account, provider=proven, bindings=bindings
+        )
+        if valid and account is not None:
+            accepted[account.id] = account
+        elif reason == "inactive_user":
+            inactive = True
+    if accepted:
+        return list(accepted.values()), None
+    if inactive:
+        return [], "inactive_user"
+    return [], None
+
+
 def _member_rows(
     record,
     *,
@@ -596,6 +666,10 @@ def _member_rows(
     identity_by_subject,
     blocked,
     observed,
+    active_links=None,
+    members_by_id=None,
+    users_by_id=None,
+    bindings=None,
 ) -> list[dict]:
     namespaces = []
     for open_id in record["open_ids"]:
@@ -614,18 +688,31 @@ def _member_rows(
     matched_users = matched["users"]
     kinds = sorted({kind for values in matched["kinds_by_user"].values() for kind in values})
     primary_kind = _preferred_kind(kinds)
-    subject = None
-    if len(matched_users) == 1 and primary_kind:
-        subject = matched["subjects_by_user"].get(str(matched_users[0].id), {}).get(primary_kind)
-    candidate_ids = sorted(str(user.id) for user in matched_users)
     provider_ok = _provider_ok(record, proven)
-    local_identity_conflict, same_identity = _local_identity_conflict(
-        matched_users, record, identity_by_subject
-    )
     foreign_identity = _foreign_identity(record, blocked)
     open_blocked = any(("open", value) in blocked for value in record["open_ids"])
     email = _real_email(record.get("email"))
     email_blocked = bool(email and ("email", email) in blocked)
+    linked_users, link_rejection = _accounts_for_active_links(
+        record,
+        proven,
+        active_links or [],
+        members_by_id or {},
+        users_by_id or {},
+        bindings or [],
+    )
+    if linked_users:
+        known = {user.id: user for user in matched_users}
+        for account in linked_users:
+            known.setdefault(account.id, account)
+        matched_users = list(known.values())
+    local_identity_conflict, same_identity = _local_identity_conflict(
+        matched_users, record, identity_by_subject
+    )
+    subject = None
+    if len(matched_users) == 1 and primary_kind:
+        subject = matched["subjects_by_user"].get(str(matched_users[0].id), {}).get(primary_kind)
+    candidate_ids = sorted(str(user.id) for user in matched_users)
     email_user = users_by_email.get(email) if email and not matched_users else None
     provenance = {
         "source": "dry_run",
@@ -638,6 +725,10 @@ def _member_rows(
         "provider_id": str(proven.id) if proven is not None and provider_ok else None,
         "external_identity_id": str(same_identity.id) if same_identity is not None else None,
         "candidate_user_ids": candidate_ids,
+        "open_ids": list(record["open_ids"]),
+        "user_ids": list(record["user_ids"]),
+        "union_ids": list(record["union_ids"]),
+        "department_ids": list(record["department_ids"]),
     }
     rows = []
     if open_blocked or (email_blocked and email_user is None and not matched_users):
@@ -685,6 +776,8 @@ def _member_rows(
         disposition, reason = "conflict", "directory_member_inactive"
     elif len(matched_users) == 1:
         disposition, reason, user_id = "trusted", primary_kind or "provider_open_id", matched_users[0].id
+    elif link_rejection == "inactive_user":
+        disposition, reason = "inactive_user", "authenticated_user_inactive"
     elif email_user is not None:
         disposition, reason, user_id = "email_only_candidate", "email_only_candidate", email_user.id
         provenance["candidate_user_ids"] = [str(email_user.id)]

@@ -1304,9 +1304,11 @@ async def trigger_org_sync(
     from app.services.org_sync_service import org_sync_service
 
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
-    result = await org_sync_service.full_sync(target_tenant_id)
+    result = await org_sync_service.full_sync(target_tenant_id, actor_id=current_user.id)
+    if result.get("status") != "complete":
+        return result
 
-    # Sync org structure to workspace files + broadcast dirty mark to peers
+    # A complete snapshot is the only result that may publish the workspace projection.
     from app.services.workspace_sync import sync_org_structure
     from app.services.workspace_sync_dirty import mark_tenant_dirty
     from app.database import tenant_scoped_session

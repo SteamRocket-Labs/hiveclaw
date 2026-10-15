@@ -88,7 +88,7 @@ function IdentityCheckCard({ tenantId }: { tenantId: string }) {
       : t('enterprise.org.identityCheck', 'Check identity links');
 
   return (
-    <div className="card ws-org-card">
+    <div className="card ws-org-card" id="identity-check">
       <h4 className="ws-org-card-title">{t('enterprise.org.identityCheck', 'Check identity links')}</h4>
       <p className="ws-org-card-desc">
         {t(
@@ -191,6 +191,47 @@ function kindLabel(kind: string, t: (key: string, fallback: string) => string): 
   if (kind === 'provider_union_id') return t('enterprise.org.identityKindProviderUnionId', 'Provider union id');
   if (kind === 'provider_user_id') return t('enterprise.org.identityKindProviderUserId', 'Provider user id');
   return kind;
+}
+
+function syncRowNeedsStoredRepair(
+  row: { object_id?: string },
+  members: Array<{ org_member_id?: string }> | undefined,
+): boolean {
+  const storedIds = new Set(
+    (members ?? []).map((member) => member.org_member_id).filter((id): id is string => Boolean(id)),
+  );
+  const objectId = String(row.object_id || '');
+  if (objectId && storedIds.has(objectId)) return true;
+  if (objectId) return false;
+  return storedIds.size > 0;
+}
+
+function syncRowReason(reason: string, t: (key: string, fallback: string) => string): string {
+  if (reason === 'email_only_candidate') {
+    return t('enterprise.org.reason.email_only_candidate', 'The email matches one user, and no provider subject matched.');
+  }
+  if (reason === 'cross_tenant_subject' || reason === 'cross_tenant') {
+    return t('enterprise.org.reason.cross_tenant_subject', 'This subject is already reserved outside this company.');
+  }
+  if (reason === 'external_identity_conflict') {
+    return t('enterprise.org.reason.external_identity_conflict', 'An identity record for this subject disagrees with the matched user.');
+  }
+  if (reason === 'ambiguous_identity') {
+    return t('enterprise.org.reason.ambiguous_identity', 'The provider subjects match more than one user.');
+  }
+  if (reason === 'local_subject_collision') {
+    return t('enterprise.org.reason.local_subject_collision', 'Two directory records in this company claim this subject. They were not merged.');
+  }
+  if (reason === 'provider_unproven' || reason === 'unproven_provider') {
+    return t('enterprise.org.reason.provider_unproven', 'This company does not have one proven Feishu installation for the subject.');
+  }
+  if (reason === 'inactive_user' || reason === 'authenticated_user_inactive' || reason === 'directory_member_inactive') {
+    return t('enterprise.org.reason.inactive_user', 'The account is inactive.');
+  }
+  if (reason === 'missing_provider_subject') {
+    return t('enterprise.org.reason.missing_provider_subject', 'The directory person has no provider subject.');
+  }
+  return t('enterprise.org.syncRowSkipped', 'This directory row was skipped. No account was changed.');
 }
 
 function statusLabel(status: string, t: (key: string, fallback: string) => string): string {
@@ -698,7 +739,20 @@ export default function WorkspaceOrgSection({
   const queryClient = useQueryClient();
   const [syncForm, setSyncForm] = useState({ app_id: '', app_secret: '' });
   const [syncing, setSyncing] = useState(false);
-  const [syncResult, setSyncResult] = useState<{ departments?: number; members?: number; error?: string } | null>(null);
+  const [syncResult, setSyncResult] = useState<{
+    status?: string;
+    code?: string;
+    error?: string;
+    departments?: number;
+    members?: number;
+    applied?: number;
+    skipped?: number;
+    conflicts?: number;
+    rows?: Array<{ object_id?: string; reason?: string; disposition?: string; applied?: boolean }>;
+  } | null>(null);
+  const syncRequest = useRef(0);
+  const selectedTenantRef = useRef(selectedTenantId);
+  selectedTenantRef.current = selectedTenantId;
   const [memberSearch, setMemberSearch] = useState('');
   const [selectedDept, setSelectedDept] = useState<string | null>(null);
 
@@ -718,6 +772,10 @@ export default function WorkspaceOrgSection({
       ...(selectedTenantId ? { tenantId: selectedTenantId } : {}),
     }),
   });
+  const { data: identityLinks } = useQuery({
+    queryKey: ['org-identity-links', selectedTenantId],
+    queryFn: () => enterpriseApi.listIdentityLinks(selectedTenantId || undefined),
+  });
   const { data: feishuRuntimeStatus } = useQuery<FeishuRuntimeStatus | null>({
     queryKey: ['feishu-runtime-status'],
     queryFn: () => toolsApi.getFeishuRuntimeStatus(),
@@ -729,6 +787,12 @@ export default function WorkspaceOrgSection({
     }
   }, [config]);
 
+  useEffect(() => {
+    syncRequest.current += 1;
+    setSyncResult(null);
+    setSyncing(false);
+  }, [selectedTenantId]);
+
   const saveConfig = async () => {
     await enterpriseApi.updateSetting('feishu_org_sync', {
       app_id: syncForm.app_id,
@@ -739,21 +803,46 @@ export default function WorkspaceOrgSection({
   };
 
   const triggerSync = async () => {
+    const requestId = syncRequest.current + 1;
+    syncRequest.current = requestId;
+    const tenantId = selectedTenantId;
     setSyncing(true);
     setSyncResult(null);
     try {
       if (syncForm.app_secret) {
         await saveConfig();
       }
-      const result = await enterpriseApi.syncOrg(selectedTenantId || undefined);
-      setSyncResult(result);
-      queryClient.invalidateQueries({ queryKey: ['org-departments'] });
-      queryClient.invalidateQueries({ queryKey: ['org-members'] });
-      queryClient.invalidateQueries({ queryKey: ['feishu-runtime-status'] });
+      const result = await enterpriseApi.syncOrg(tenantId || undefined) as {
+        status?: string;
+        code?: string;
+        error?: string;
+        departments?: number;
+        members?: number;
+        applied?: number;
+        skipped?: number;
+        conflicts?: number;
+        rows?: Array<{ object_id?: string; reason?: string; disposition?: string; applied?: boolean }>;
+      };
+      if (requestId !== syncRequest.current || tenantId !== selectedTenantRef.current) return;
+      const failed = result.status === 'unavailable' || Boolean(result.error);
+      setSyncResult(failed
+        ? { ...result, error: result.error || t('enterprise.org.syncUnavailable', 'The directory snapshot did not finish. Nothing was saved.') }
+        : result);
+      if (result.status === 'complete' && !result.error) {
+        queryClient.invalidateQueries({ queryKey: ['org-departments'] });
+        queryClient.invalidateQueries({ queryKey: ['org-members'] });
+        queryClient.invalidateQueries({ queryKey: ['feishu-runtime-status'] });
+        queryClient.invalidateQueries({ queryKey: ['org-identity-links', tenantId] });
+        queryClient.invalidateQueries({ queryKey: ['company-knowledge-grant-identities'] });
+      }
     } catch (error: any) {
-      setSyncResult({ error: error.message });
+      if (requestId !== syncRequest.current || tenantId !== selectedTenantRef.current) return;
+      setSyncResult({
+        status: 'unavailable',
+        error: error.message || t('enterprise.org.syncUnavailable', 'The directory snapshot did not finish. Nothing was saved.'),
+      });
     }
-    setSyncing(false);
+    if (requestId === syncRequest.current) setSyncing(false);
   };
 
   return (
@@ -795,13 +884,48 @@ export default function WorkspaceOrgSection({
           ) : null}
         </div>
         {syncResult ? (
-          <div className={`ws-org-sync-result ${syncResult.error ? 'is-error' : 'is-ok'}`}>
+          <div className={`ws-org-sync-result ${syncResult.error ? 'is-error' : ((syncResult.skipped || 0) > 0 || (syncResult.conflicts || 0) > 0) ? 'is-attention' : 'is-ok'}`}>
             {syncResult.error
               ? syncResult.error
-              : t('enterprise.org.syncComplete', {
-                  departments: syncResult.departments,
-                  members: syncResult.members,
+              : (syncResult.applied ?? 0) > 0
+                ? t('enterprise.org.syncComplete', {
+                    departments: syncResult.departments ?? 0,
+                    members: syncResult.applied ?? 0,
+                  })
+                : t('enterprise.org.syncFinishedWithoutImport', {
+                    applied: syncResult.applied ?? 0,
+                  })}
+            {!syncResult.error && ((syncResult.skipped || 0) > 0 || (syncResult.conflicts || 0) > 0) ? (
+              <div>
+                {t('enterprise.org.syncSkipped', {
+                  applied: syncResult.applied ?? 0,
+                  skipped: syncResult.skipped ?? 0,
+                  conflicts: syncResult.conflicts ?? 0,
                 })}
+                {(syncResult.rows ?? []).filter((row) => row.applied !== true).map((row, index) => (
+                  <div key={`${row.object_id ?? row.reason ?? row.disposition ?? 'skipped'}-${index}`}>
+                    <div>{syncRowReason(row.reason || row.disposition || '', t)}</div>
+                    {syncRowNeedsStoredRepair(row, identityLinks?.members) ? (
+                      <a href="#identity-repair-person">{t('enterprise.org.syncRepair', 'Review identity repair')}</a>
+                    ) : (
+                      <div>
+                        {t(
+                          'enterprise.org.syncIncomingOnly',
+                          'This directory person was not stored. That person opens Account Settings and chooses Link Feishu Account. Then sync again.',
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {syncResult.error ? (
+              <div>
+                <button type="button" className="btn btn-secondary" onClick={triggerSync} disabled={syncing || !syncForm.app_id}>
+                  {t('enterprise.org.syncRetry', 'Retry sync')}
+                </button>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>

@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../stores';
 import { agentApi } from '../api/domains/agents';
-import { authApi } from '../api/domains/auth';
+import { authApi, feishuConflictMessage } from '../api/domains/auth';
 import { notificationsApi } from '../api/domains/notifications';
 import { systemApi } from '../api/domains/system';
 import { adminApi } from '../api/domains/admin';
@@ -129,7 +129,7 @@ function AccountSettingsModal({ user, onClose }: { user: any; onClose: () => voi
                                             }
                                             if (res.status === 'expired' || res.status === 'error') {
                                                 popup?.close();
-                                                showMsg(res.detail || t('account.feishuBindFailed', 'Failed to link Feishu'), 'error');
+                                                showMsg(feishuConflictMessage(res.code, t, 'account') || res.detail || t('account.feishuBindFailed', 'Failed to link Feishu'), 'error');
                                                 break;
                                             }
                                         } catch { /* network blip */ }

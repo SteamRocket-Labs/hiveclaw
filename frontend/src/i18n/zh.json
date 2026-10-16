@@ -3253,6 +3253,10 @@
       "selectionUnavailable": "之前选择的账号已不可用。请选择可用账号，再为此工作确认。",
       "ownerRequired": "请账号持有人重新连接，或选择另一个已获准的账号。",
       "employeePermissionRequired": "请员工管理者先开通此连接及工具权限，再继续使用。"
+    },
+    "mailboxAccounts": {
+      "title": "邮箱与使用范围",
+      "confirm": "确认本次工作使用此邮箱"
     }
   },
   "wizard": {

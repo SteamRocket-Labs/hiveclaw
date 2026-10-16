@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toolsApi, type SessionToolConfiguration } from '../../api/domains/tools';
 import ToolConfigurationForm from './ToolConfigurationForm';
+import MailboxAccounts from './MailboxAccounts';
 
 export default function InlineToolConfigurationCard({ agentId, sessionId, questionId, question, answered, onAnswer }: {
   agentId: string;
@@ -17,6 +18,7 @@ export default function InlineToolConfigurationCard({ agentId, sessionId, questi
   const [error, setError] = useState('');
   const [continuing, setContinuing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [mailboxDirty, setMailboxDirty] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [reload, setReload] = useState(0);
   const interactive = !!onAnswer;
@@ -26,7 +28,7 @@ export default function InlineToolConfigurationCard({ agentId, sessionId, questi
     setLoading(true);
     setError('');
     void toolsApi.getSessionToolConfiguration(agentId, sessionId, questionId).then((result) => {
-      if (active) setConfiguration(result);
+      if (active) { setConfiguration(result); setMailboxDirty(false); }
     }).catch((failure: unknown) => {
       if (active) setError(failure instanceof Error ? failure.message : t('agent.configuration.loadFailed', 'Could not load configuration.'));
     }).finally(() => { if (active) setLoading(false); });
@@ -54,7 +56,18 @@ export default function InlineToolConfigurationCard({ agentId, sessionId, questi
     {loading && <p>{t('common.loading')}</p>}
     {error && <p role="alert">{error}</p>}
     {!loading && !configuration && <button className="btn btn-secondary" onClick={() => setReload((value) => value + 1)}>{t('common.retry', 'Retry')}</button>}
-    {!loading && configuration?.state === 'waiting' && <ToolConfigurationForm key={questionId} tool={configuration.tool}
+    {!loading && configuration?.tool.name === 'send_email' && <MailboxAccounts key={configuration.target_agent_id}
+      agentId={configuration.target_agent_id} tool={configuration.tool} canManageCompany={!!configuration.can_manage_company_mailbox}
+      initialAccountId={configuration.mailbox_selection?.account_id} onSelectionChange={() => setMailboxDirty(true)}
+      onBusyChange={setSaving} onSaveCompany={async (config) => {
+        const result = await toolsApi.saveSessionToolConfiguration(agentId, sessionId, questionId, config);
+        setConfiguration({ ...result, can_manage_company_mailbox: configuration.can_manage_company_mailbox });
+      }} onConfirm={async (account) => {
+        const result = await toolsApi.confirmSessionMailbox(agentId, sessionId, questionId, account);
+        setConfiguration({ ...result, can_manage_company_mailbox: configuration.can_manage_company_mailbox });
+        setMailboxDirty(false);
+      }} />}
+    {!loading && configuration?.tool.name !== 'send_email' && configuration?.state === 'waiting' && <ToolConfigurationForm key={questionId} tool={configuration.tool}
       submitLabel={t('agent.configuration.saveContinue', 'Save and continue')} onSave={async (config) => {
         setSaving(true);
         try {
@@ -65,7 +78,7 @@ export default function InlineToolConfigurationCard({ agentId, sessionId, questi
       }} />}
     {configuration?.state === 'saved' && <>
       <p>{t('agent.configuration.saved', 'Configuration saved. Connection will be verified when the employee uses it.')}</p>
-      <button className="btn btn-primary" disabled={continuing} onClick={() => void resume(true)}>{t('agent.configuration.continue', 'Continue original work')}</button>
+      <button className="btn btn-primary" disabled={continuing || saving || loading || mailboxDirty} onClick={() => void resume(true)}>{t('agent.configuration.continue', 'Continue original work')}</button>
     </>}
     {configuration?.state !== 'saved' && <button className="btn btn-secondary" disabled={saving || continuing || loading}
       onClick={() => void resume(false)}>{t('agent.configuration.skip', 'Continue without configuration')}</button>}

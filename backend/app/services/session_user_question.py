@@ -74,6 +74,10 @@ async def validate_configuration_answer(db, question, content_parts, *, user=Non
     if content_parts == saved and not payload.get("configuration_saved"):
         raise HTTPException(status_code=409, detail={"code": "configuration_not_saved",
             "message": "Save the configuration before continuing, or continue without changing it."})
+    if content_parts == saved and payload["configuration_request"].get("tool_name") == "send_email":
+        from app.services.email_accounts import validate_configuration_answer as validate_mailbox
+
+        await validate_mailbox(db, question=question, payload=payload, user=user)
 
 
 async def load_answer_question(db, *, authority, item_id):

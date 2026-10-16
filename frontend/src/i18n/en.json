@@ -3253,6 +3253,10 @@
       "selectionUnavailable": "The previous account selection is unavailable. Choose an available account and confirm it for this work.",
       "ownerRequired": "Ask the account owner to reconnect, or choose another authorized account.",
       "employeePermissionRequired": "An employee manager must enable this connection and its tools before it can be used."
+    },
+    "mailboxAccounts": {
+      "title": "Mailboxes and use",
+      "confirm": "Use this mailbox for this work"
     }
   },
   "wizard": {

@@ -59,6 +59,7 @@ async def send_email(request: ToolExecutionRequest) -> str:
         request.context.agent_id,
         request.context.workspace,
         request.arguments,
+        context=request.context,
     )
 
 
@@ -103,6 +104,7 @@ async def read_emails(request: ToolExecutionRequest) -> str:
         request.context.agent_id,
         request.context.workspace,
         request.arguments,
+        context=request.context,
     )
 
 
@@ -146,4 +148,5 @@ async def reply_email(request: ToolExecutionRequest) -> str:
         request.context.agent_id,
         request.context.workspace,
         request.arguments,
+        context=request.context,
     )

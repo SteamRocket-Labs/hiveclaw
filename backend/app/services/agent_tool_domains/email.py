@@ -16,7 +16,7 @@ async def _get_email_config(agent_id: uuid.UUID) -> dict:
     return await resolve_tool_config("send_email", agent_id=agent_id)
 
 
-async def _handle_email_tool(tool_name: str, agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
+async def _handle_email_tool(tool_name: str, agent_id: uuid.UUID, ws: Path, arguments: dict, *, context=None) -> str:
     """Dispatch email tool calls to the email_service module."""
     from app.services.email_service import (
         send_email,
@@ -25,7 +25,19 @@ async def _handle_email_tool(tool_name: str, agent_id: uuid.UUID, ws: Path, argu
         validate_email_tool_request,
     )
 
-    config = await _get_email_config(agent_id)
+    from fastapi import HTTPException
+
+    try:
+        if context is None:
+            config = await _get_email_config(agent_id)
+        else:
+            from app.services.email_accounts import resolve_email_config
+
+            config = await resolve_email_config(agent_id, context)
+    except HTTPException as exc:
+        return render_tool_error(tool_name=tool_name, error_class="auth_or_permission" if exc.status_code in {403, 404} else "not_configured",
+            message=str(exc.detail), provider="email", retryable=False,
+            actionable_hint="Review the mailbox and its use grant in the original work. Other authorized tools remain available.")
     preflight_error = validate_email_tool_request(
         tool_name=tool_name,
         config=config or {"email_provider": "email"},

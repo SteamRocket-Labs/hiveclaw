@@ -62,6 +62,7 @@ export default function ToolConfigurationForm({ tool, onSave, onCancel, submitLa
                   <input
                     id={`${formId}-${field.key}`}
                     type="password"
+                    disabled={saving}
                     autoComplete="new-password"
                     className="form-input"
                     value={data[field.key] ?? ''}
@@ -69,7 +70,7 @@ export default function ToolConfigurationForm({ tool, onSave, onCancel, submitLa
                     onChange={(event) => setData((previous) => ({ ...previous, [field.key]: event.target.value }))}
                   />
                 ) : field.type === 'select' ? (
-                  <select id={`${formId}-${field.key}`} className="form-input" value={data[field.key] ?? field.default ?? ''} onChange={(event) => setData((previous) => ({ ...previous, [field.key]: event.target.value }))}>
+                  <select id={`${formId}-${field.key}`} disabled={saving} className="form-input" value={data[field.key] ?? field.default ?? ''} onChange={(event) => setData((previous) => ({ ...previous, [field.key]: event.target.value }))}>
                     {(field.options || []).map((option: any) => (
                       <option key={option.value} value={option.value}>
                         {option.label}
@@ -80,6 +81,7 @@ export default function ToolConfigurationForm({ tool, onSave, onCancel, submitLa
                   <input
                     id={`${formId}-${field.key}`}
                     type="number"
+                    disabled={saving}
                     className="form-input"
                     value={data[field.key] ?? field.default ?? ''}
                     placeholder={field.placeholder || ''}
@@ -91,6 +93,7 @@ export default function ToolConfigurationForm({ tool, onSave, onCancel, submitLa
                   <input
                     id={`${formId}-${field.key}`}
                     type="text"
+                    disabled={saving}
                     className="form-input"
                     value={data[field.key] ?? ''}
                     placeholder={field.placeholder || 'Leave blank to use global default'}
@@ -105,6 +108,7 @@ export default function ToolConfigurationForm({ tool, onSave, onCancel, submitLa
       <div>
         <label className="tools-manager-field-label" htmlFor={formId}>Config JSON (Agent Override)</label>
         <textarea
+          disabled={saving}
           id={formId}
           className="form-input tools-manager-json-input"
           value={json}

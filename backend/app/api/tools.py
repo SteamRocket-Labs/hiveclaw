@@ -1116,7 +1116,7 @@ async def _configuration_question_context(db, current_user, agent_id, session_id
 
 async def _configuration_request_context(db, current_user, agent_id, session_id, question_id):
     authority, question, target, descriptor = await _configuration_question_context(
-        db, current_user, agent_id, session_id, question_id)
+        db, current_user, agent_id, session_id, question_id, target_management_required=False)
     if not descriptor.get("tool_name"):
         raise HTTPException(status_code=409, detail="Use the requested connection settings")
     # Match the runtime's platform-first lookup, then apply the existing visibility gate.
@@ -1126,6 +1126,8 @@ async def _configuration_request_context(db, current_user, agent_id, session_id,
     tool = await _get_visible_agent_tool(db, target, tool_id) if tool_id else None
     if tool is None:
         raise HTTPException(status_code=404, detail="Configuration tool not found")
+    if tool.name != "send_email":
+        await _require_manage_access(db, current_user, target.id)
     if tool.type == "mcp" or (not (tool.config_schema or {}).get("fields") and tool.name != "send_email"):
         raise HTTPException(status_code=409, detail={"code": "configuration_uses_connection_settings",
             "message": "Use the existing connection settings for this capability; this form only saves employee tool settings."})
@@ -1138,9 +1140,11 @@ async def _configuration_request_response(db, *, question, target, tool, replaye
     saved = question_payload(question).get("configuration_saved") or {}
     assignment = await _get_agent_tool(db, target.id, tool.id)
     defaults, _enabled = await resolve_tool_config_for_tenant_display(db, tool, target.tenant_id)
-    return {"state": "saved" if saved else "waiting", "receipt_ref": saved.get("receipt_ref"),
+    mailbox = saved.get("mailbox_selection") if tool.name == "send_email" else None
+    return {"state": "saved" if saved and (tool.name != "send_email" or mailbox) else "waiting", "receipt_ref": saved.get("receipt_ref"),
         "replayed": replayed, "target_agent_id": str(target.id), "target_agent_name": target.name,
-        "tool": _serialize_agent_tool_row(tool, assignment, base_config=defaults)}
+        "tool": _serialize_agent_tool_row(tool, assignment, base_config=defaults),
+        **({"mailbox_selection": mailbox} if tool.name == "send_email" else {})}
 
 
 @router.get("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/configuration")
@@ -1150,7 +1154,11 @@ async def get_session_tool_configuration(
 ):
     _authority, question, target, tool = await _configuration_request_context(
         db, current_user, agent_id, session_id, question_id)
-    return await _configuration_request_response(db, question=question, target=target, tool=tool)
+    response = await _configuration_request_response(db, question=question, target=target, tool=tool)
+    if tool.name == "send_email":
+        _agent, access = await check_agent_access(db, current_user, target.id)
+        response["can_manage_company_mailbox"] = access == "manage"
+    return response
 
 
 @router.put("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/configuration")
@@ -1163,8 +1171,9 @@ async def save_session_tool_configuration(
 
     authority, question, target, tool = await _configuration_request_context(
         db, current_user, agent_id, session_id, question_id)
+    await _require_manage_access(db, current_user, target.id)
     payload = question_payload(question)
-    if payload.get("configuration_saved"):
+    if payload.get("configuration_saved") and tool.name != "send_email":
         return await _configuration_request_response(db, question=question, target=target, tool=tool, replayed=True)
     if question.lifecycle not in {"created", "waiting"}:
         raise HTTPException(status_code=409, detail="Configuration request is no longer waiting")
@@ -1177,6 +1186,40 @@ async def save_session_tool_configuration(
             payload={**payload, "configuration_saved": {"receipt_ref": f"tool-configuration:{uuid.uuid4()}",
                 "target_agent_id": str(target.id), "tool_id": str(tool.id)}},
         )])
+    await db.commit()
+    return await _configuration_request_response(db, question=events[0], target=target, tool=tool)
+
+
+class MailboxSelectionIn(BaseModel):
+    account_id: uuid.UUID | None = None
+    account_version: int | None = Field(default=None, ge=1)
+    grant_version: int | None = Field(default=None, ge=1)
+    company_revision: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
+@router.post("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/configuration/mailbox")
+async def confirm_session_mailbox(agent_id: uuid.UUID, session_id: uuid.UUID, question_id: uuid.UUID, data: MailboxSelectionIn,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.email_accounts import bind_account, binding_snapshot
+    from app.services.session_user_question import question_payload
+    from app.services.session_v2_persistence import SessionEventDraft, append_session_events
+
+    authority, question, target, tool = await _configuration_request_context(db, current_user, agent_id, session_id, question_id)
+    if tool.name != "send_email" or question.lifecycle not in {"created", "waiting"}:
+        raise HTTPException(409, "This question is not waiting for a mailbox choice")
+    binding = await bind_account(db, agent=target, session_id=session_id, user=current_user,
+        account_id=data.account_id, account_version=data.account_version, grant_version=data.grant_version,
+        company_revision=data.company_revision)
+    payload = question_payload(question)
+    snapshot = binding_snapshot(binding)
+    if (payload.get("configuration_saved") or {}).get("mailbox_selection") == snapshot:
+        return await _configuration_request_response(db, question=question, target=target, tool=tool, replayed=True)
+    events = await append_session_events(db, tenant_id=authority.tenant_id, agent_id=agent_id, session_id=session_id,
+        drafts=[SessionEventDraft(item_id=question.item_id, item_kind="user_question", lifecycle="waiting", scope=question.scope_json,
+            actor=authority.event_actor(), invocation_id=question.invocation_id, result_id=question.result_id,
+            provider_tool_use_id=question.provider_tool_use_id, payload={**payload, "configuration_saved": {
+                "receipt_ref": f"mailbox-selection:{uuid.uuid4()}", "target_agent_id": str(target.id), "tool_id": str(tool.id),
+                "mailbox_selection": snapshot}})])
     await db.commit()
     return await _configuration_request_response(db, question=events[0], target=target, tool=tool)
 

@@ -392,6 +392,42 @@ async def _incoming_transcript_run_is_terminal_nonboundary(
     )
 
 
+async def _is_settled_question_followup(db: AsyncSession, *, transcript_event: Any) -> bool:
+    """A user review after a delivered turn cannot reopen that turn's segment."""
+    from app.models.runtime_task import RuntimeTask
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+
+    if (getattr(transcript_event, "item_kind", None) != "user_question"
+        or getattr(transcript_event, "actor_type", None) != "user"
+        or getattr(transcript_event, "run_id", None) is None):
+        return False
+    task = await db.get(RuntimeTask, transcript_event.run_id)
+    if (task is None or task.status != "completed" or task.completed_at is None
+        or task.tenant_id != transcript_event.tenant_id
+        or transcript_event.agent_id not in {task.parent_agent_id, task.child_agent_id}
+        or transcript_event.session_id not in {_uuid_or_none(task.parent_session_id), _uuid_or_none(task.child_session_id)}):
+        return False
+    boundary = await db.scalar(select(RuntimeTerminalBoundaryOutbox).where(
+        RuntimeTerminalBoundaryOutbox.runtime_task_id == task.id,
+        RuntimeTerminalBoundaryOutbox.tenant_id == transcript_event.tenant_id,
+        RuntimeTerminalBoundaryOutbox.agent_id == transcript_event.agent_id,
+        RuntimeTerminalBoundaryOutbox.session_id == str(transcript_event.session_id),
+        RuntimeTerminalBoundaryOutbox.status == "delivered",
+        RuntimeTerminalBoundaryOutbox.terminal_status == "completed",
+    ).order_by(RuntimeTerminalBoundaryOutbox.created_at.desc()).limit(1))
+    if boundary is None:
+        return False
+    receipt = boundary.delivery_receipt_json or {}
+    binding = boundary.binding_json or {}
+    sequence = receipt.get("terminal_sequence")
+    return bool(type(sequence) is int and sequence < transcript_event.sequence
+        and binding.get("terminal_sequence") == sequence
+        and _uuid_or_none(receipt.get("terminal_event_id")) is not None
+        and receipt.get("terminal_event_id") == binding.get("terminal_event_id")
+        and receipt.get("boundary_id") == str(boundary.id)
+        and _uuid_or_none(receipt.get("t0_boundary_id")) is not None)
+
+
 async def bridge_transcript_event_to_t0(
     *,
     transcript_event_id: str | Any,
@@ -513,7 +549,8 @@ async def bridge_transcript_event_to_t0(
                         try:
                             if existing_t0_event is None:
                                 try:
-                                    t0_result = _append_t0_event()
+                                    t0_result = _append_t0_event(join_active_segment=await _is_settled_question_followup(
+                                        db, transcript_event=transcript_event))
                                 except T0SegmentBoundaryPending as boundary_error:
                                     # Three disjoint recovery cases; every
                                     # unproven fact still re-raises and fails

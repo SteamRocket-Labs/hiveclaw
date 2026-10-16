@@ -1516,6 +1516,14 @@ async def _claim_canonical_hr_blueprint(
                 "missing_confirmation_evidence",
                 "HR creation requires authenticated confirmation from the requesting user.",
             )
+        if draft.status != "completed":
+            from app.services.hr_creation_source import require_creation_capability
+
+            try:
+                await require_creation_capability(db, tenant_id, hr_agent_id)
+            except HTTPException as exc:
+                detail = exc.detail
+                raise HrCreationConflict(detail["error"], detail["message"]) from exc
         if runtime_task_id is not None and expected is not None:
             from app.services.hr_provisioning_runtime import _runtime_authority_issues
 

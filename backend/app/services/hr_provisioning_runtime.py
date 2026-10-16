@@ -26,6 +26,7 @@ from app.services.hr_creation_service import (
     canonical_hr_blueprint_payload_hash,
 )
 from app.services.runtime_task_fence import assert_runtime_task_fence, renew_current_runtime_task_lease
+from app.services.hr_creation_source import CREATION_PRECLAIM_BLOCKS
 
 
 HR_PROVISIONING_JOB_SCHEMA = "hr_provisioning_job.v1"
@@ -462,6 +463,27 @@ async def _converge_hr_provisioning(
                 "automatic_retry_allowed": False,
             }
             return "needs_reconciliation"
+        if authority_issues and set(authority_issues) <= CREATION_PRECLAIM_BLOCKS:
+            if draft.status == "completed":
+                return _mark_task_completed(task, draft)
+            live_claim = bool(draft.claim_token and draft.claim_expires_at and draft.claim_expires_at > _utcnow())
+            if live_claim:
+                return _schedule_for_draft_claim(task, draft, reason="Creation authority changed while a domain claim is active.")
+            from app.services.hr_creation_service import mark_hr_creation_failed_record
+
+            code = authority_issues[0]
+            message = runner_error or "Employee creation requires restored authority before retry."
+            mark_hr_creation_failed_record(draft, code=code, message=message)
+            result = _mark_task_failed(task, draft, reason=message)
+            task.metadata_json = {
+                **dict(task.metadata_json or {}),
+                "automatic_retry_allowed": False,
+                "outcome": {
+                    **dict((task.metadata_json or {}).get("outcome") or {}),
+                    "status": {"capability_unavailable": "unavailable", "approval_required": "approval_required"}.get(code, "denied"),
+                },
+            }
+            return result
         if authority_issues:
             return await _mark_runtime_authority_blocked(
                 db,
@@ -522,11 +544,11 @@ async def execute_claimed_hr_provisioning(task_id: uuid.UUID) -> str:
         result = await _run_domain_provisioning(task=task, draft=draft)
     except HrCreationConflict as exc:
         error = f"{type(exc).__name__}: {exc}"
-        if exc.code in {
+        if exc.code in ({
             "blueprint_integrity_mismatch",
             "missing_confirmation_evidence",
             "runtime_authority_mismatch",
-        }:
+        } | CREATION_PRECLAIM_BLOCKS):
             authority_issues.append(exc.code)
         logger.warning("[HRProvisioning] task {} blocked at domain claim: {}", task_id, exc.code)
     except Exception as exc:  # The draft journal decides whether replay is safe.

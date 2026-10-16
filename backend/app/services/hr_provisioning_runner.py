@@ -96,16 +96,17 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
     uuid = support.uuid
 
     from app.services.hr_creation_service import HrCreationConflict
+    from app.services.hr_creation_source import CREATION_PRECLAIM_BLOCKS
 
     try:
         draft_id, scope_tenant_id, user_id, session_id, args, claim = await _claim_canonical_hr_blueprint(request)
     except (HrCreationConflict, ValueError) as exc:
         code = getattr(exc, "code", "invalid_request")
-        if request.arguments.get("_runtime_authority") is not None and code in {
+        if request.arguments.get("_runtime_authority") is not None and code in ({
             "blueprint_integrity_mismatch",
             "missing_confirmation_evidence",
             "runtime_authority_mismatch",
-        }:
+        } | CREATION_PRECLAIM_BLOCKS):
             raise
         message = getattr(exc, "message", str(exc))
         return json.dumps({"status": "error", "error": code, "message": message}, ensure_ascii=False)

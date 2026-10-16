@@ -16,7 +16,7 @@ from app.database import get_db
 from app.models.hr_creation import HrCreationDraft
 from app.models.runtime_task import RuntimeTask
 from app.models.user import User
-from app.services.hr_creation_source import load_creation_source_agent
+from app.services.hr_creation_source import load_creation_source_agent, require_creation_capability
 from app.services.hr_creation_service import (
     HrCreationConflict,
     confirm_hr_creation_draft_record,
@@ -308,6 +308,8 @@ async def confirm_hr_creation_draft(
         db=db, current_user=current_user, agent_id=agent_id, draft_id=draft_id, for_update=True
     )
     was_awaiting_confirmation = draft.status == "awaiting_confirmation"
+    if was_awaiting_confirmation or (draft.status != "completed" and draft.provisioning_task_id is None):
+        await require_creation_capability(db, draft.tenant_id, draft.hr_agent_id)
     try:
         confirm_hr_creation_draft_record(
             draft,
@@ -388,6 +390,7 @@ async def retry_hr_creation_draft(
         agent_id=agent_id,
         draft_id=draft_id,
     )
+    await require_creation_capability(db, draft.tenant_id, draft.hr_agent_id)
     try:
         assert task is not None
         if draft.status not in {"failed", "provisioning"}:

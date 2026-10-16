@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from uuid import uuid4
 
 import pytest
@@ -19,6 +20,51 @@ def _scope(known_paths=frozenset()):
         authority_source="resource_owner",
         known_paths=frozenset(known_paths),
     )
+
+
+@pytest.mark.parametrize("alias", ["symlink", "hardlink"])
+def test_workspace_alias_cannot_launder_foreign_bytes_through_owned_or_system_path(tmp_path, alias):
+    from app.services.agent_tool_domains.workspace import (
+        _glob_search, _grep_search, _list_files, _read_document, _read_file, _write_file,
+    )
+
+    foreign = tmp_path / "workspace/foreign/private.md"
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text("PRIVATE_ALIAS_SENTINEL")
+    mine = tmp_path / "workspace/mine/report.md"
+    mine.parent.mkdir()
+    system = tmp_path / "skills/alias.md"
+    system.parent.mkdir()
+    for path in (mine, system):
+        path.symlink_to(foreign) if alias == "symlink" else os.link(foreign, path)
+        assert "auth_or_permission" in str(_read_file(tmp_path, path.relative_to(tmp_path).as_posix(), authority_scope=_scope()))
+        assert "auth_or_permission" in asyncio.run(_read_document(tmp_path, path.relative_to(tmp_path).as_posix(), authority_scope=_scope()))
+    assert "auth_or_permission" in _write_file(tmp_path, "workspace/mine/report.md", "Replacement", authority_scope=_scope())
+    assert "report.md" not in _list_files(tmp_path, "workspace/mine", authority_scope=_scope())
+    assert "report.md" not in _glob_search(tmp_path, "**/*.md", "workspace", authority_scope=_scope())
+    assert "PRIVATE_ALIAS_SENTINEL" not in _grep_search(tmp_path, "PRIVATE_ALIAS", authority_scope=_scope())
+    assert foreign.read_text() == "PRIVATE_ALIAS_SENTINEL"
+
+
+def test_workspace_alias_guard_preserves_normal_files_and_skill_aliases(tmp_path):
+    from app.services.agent_tool_domains.workspace import _read_file, _write_file
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError, resolve_workspace_storage_path
+
+    skill = tmp_path / "skills/review/SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("Independent skill content")
+    (tmp_path / "skills/current.md").symlink_to(skill)
+    assert "Independent skill content" in str(_read_file(tmp_path, "skills/current.md", authority_scope=_scope()))
+    assert "Written" in _write_file(tmp_path, "workspace/mine/report.md", "Owned content", authority_scope=_scope())
+    assert "Owned content" in str(_read_file(tmp_path, "workspace/mine/report.md", authority_scope=_scope()))
+    recovery = tmp_path / "runtime_artifacts/recovery_manifest.json"
+    recovery.parent.mkdir()
+    recovery.write_text("PRIVATE_RECOVERY_ALIAS")
+    (tmp_path / "skills/recovery.md").symlink_to(recovery)
+    with pytest.raises(WorkspaceAuthorityError) as denied:
+        resolve_workspace_storage_path(tmp_path, "skills/recovery.md")
+    assert denied.value.code == "recovery_manifest_raw_access_forbidden"
+    assert "PRIVATE_RECOVERY_ALIAS" not in str(_read_file(tmp_path, "skills/recovery.md", authority_scope=_scope()))
 
 
 def test_workspace_read_tools_hide_foreign_session_files(tmp_path):

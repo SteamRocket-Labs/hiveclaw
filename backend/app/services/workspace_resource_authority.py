@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import stat
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -46,6 +47,44 @@ def is_recovery_manifest_storage_path(path: str) -> bool:
         "workspace/recovery_manifest.json",
         "runtime_artifacts/recovery_manifests",
     } or normalized.startswith("runtime_artifacts/recovery_manifests/")
+
+
+def resolve_workspace_storage_path(workspace: Path, path: str) -> Path:
+    """Keep path-based resource ownership bound to an unaliased physical file."""
+    try:
+        root = workspace.resolve()
+        if Path(path).is_absolute() or workspace.is_symlink():
+            raise ValueError("aliased or absolute Agent path")
+        requested = normalize_workspace_resource_path(path)
+        logical = root / requested
+        target = logical.resolve()
+        resolved = target.relative_to(root).as_posix()
+        if is_recovery_manifest_storage_path(requested) or is_recovery_manifest_storage_path(resolved):
+            raise WorkspaceAuthorityError(
+                "recovery_manifest_raw_access_forbidden",
+                "Recovery Manifest storage is available only through its authority-bound context resource ref.",
+            )
+        if _is_workspace_path(requested) or _is_workspace_path(resolved):
+            # Configured parent roots may be OS aliases; resource paths may not be.
+            current = root
+            for part in Path(requested).parts:
+                current = current / part
+                if current.is_symlink():
+                    raise ValueError("aliased workspace resource")
+        try:
+            metadata = target.stat()
+        except FileNotFoundError:
+            return target
+        if stat.S_ISREG(metadata.st_mode) and metadata.st_nlink > 1:
+            raise ValueError("shared file inode")
+        return target
+    except (OSError, RuntimeError, ValueError) as exc:
+        if isinstance(exc, WorkspaceAuthorityError):
+            raise
+        raise WorkspaceAuthorityError(
+            "workspace_resource_alias_forbidden",
+            "Use an independent file at its canonical workspace path; filesystem aliases cannot prove resource ownership.",
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -129,7 +168,7 @@ def authorize_workspace_tool_path(
             "recovery_manifest_raw_access_forbidden",
             "Recovery Manifest storage is available only through its authority-bound context resource ref.",
         )
-    target = (root / requested_path).resolve()
+    target = resolve_workspace_storage_path(workspace, requested_path)
     try:
         normalized = target.relative_to(root).as_posix()
     except ValueError as exc:
@@ -233,6 +272,9 @@ async def authorize_workspace_path(
     )
     if agent.tenant_id is None:
         raise WorkspaceAuthorityError("workspace_tenant_required", "The Agent has no tenant authority.")
+    from app.config import get_settings
+
+    resolve_workspace_storage_path(Path(get_settings().AGENT_DATA_DIR) / str(agent_id), normalized)
     manifest = await _load_manifest(db, agent_id=agent_id, path=normalized, for_update=for_update)
     root_session_id = await _canonical_root_session(
         db,

@@ -152,11 +152,12 @@ def _is_within_path(path: Path, root: Path) -> bool:
 
 def _safe_path(agent_id: uuid.UUID, rel_path: str) -> Path:
     """Ensure the path is within the agent's directory (no path traversal)."""
-    base = _agent_base_dir(agent_id)
-    full = (base / rel_path).resolve()
-    if not _is_within_path(full, base):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Path traversal not allowed")
-    return full
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError, resolve_workspace_storage_path
+
+    try:
+        return resolve_workspace_storage_path(_agent_base_dir(agent_id), rel_path)
+    except WorkspaceAuthorityError as exc:
+        raise _workspace_authority_http_error(exc) from exc
 
 
 def _safe_agent_relative_path(agent_id: uuid.UUID, rel_path: str) -> Path:
@@ -469,7 +470,12 @@ async def list_files(
             continue
         if scope is not None and not scope.visible_child(path, entry.name, is_dir=entry.is_dir()):
             continue
-        rel = str(entry.resolve().relative_to(base_abs))
+        logical_rel = entry.relative_to(target).as_posix()
+        logical_rel = f"{path.rstrip('/')}/{logical_rel}" if path else logical_rel
+        try:
+            rel = _safe_path(agent_id, logical_rel).relative_to(base_abs).as_posix()
+        except HTTPException:
+            continue
         stat = entry.stat()
         items.append(
             FileInfo(

@@ -17,6 +17,7 @@ from app.services.workspace_resource_authority import (
     WorkspaceAuthorityError,
     authorize_workspace_tool_path,
     is_recovery_manifest_storage_path,
+    resolve_workspace_storage_path,
 )
 from app.skills import SkillRegistry, WorkspaceSkillLoader
 from app.runtime.ccplus_contracts import permission_profile_snapshot
@@ -68,8 +69,9 @@ def _resolved_workspace_path(ws: Path, rel_path: str, permission_profile: Any | 
     """Resolve a workspace path and enforce an exact session root at the final I/O boundary."""
 
     workspace = ws.resolve()
-    target = (workspace / rel_path).resolve()
-    if not _is_within_path(target, workspace):
+    try:
+        target = resolve_workspace_storage_path(ws, rel_path)
+    except WorkspaceAuthorityError:
         return None
     profile = permission_profile_snapshot(permission_profile)
     snapshot = profile.get("capability_policy_snapshot")
@@ -202,9 +204,8 @@ def _list_files(
         if not _is_within_path(target, enterprise_root):
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
     else:
-        target = (ws / rel_path) if rel_path else ws
-        target = target.resolve()
-        if not _is_within_path(target, ws):
+        target = _resolved_workspace_path(ws, rel_path)
+        if target is None:
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
 
     if not target.exists():
@@ -230,6 +231,8 @@ def _list_files(
         if p.name.startswith("."):
             continue
         if enterprise_context and p.name not in COMPANY_CONTEXT_FILENAMES:
+            continue
+        if not enterprise_context and _resolved_workspace_path(ws, p.relative_to(ws.resolve()).as_posix()) is None:
             continue
         if authority_scope is not None and not authority_scope.visible_child(
             rel_path,
@@ -939,8 +942,8 @@ async def _read_document(
         if not _is_within_path(file_path, enterprise_root):
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
     else:
-        file_path = (ws / rel_path).resolve()
-        if not _is_within_path(file_path, ws):
+        file_path = _resolved_workspace_path(ws, rel_path)
+        if file_path is None:
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
 
     if not file_path.exists():

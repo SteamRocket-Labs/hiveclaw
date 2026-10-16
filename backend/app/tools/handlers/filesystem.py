@@ -502,11 +502,13 @@ async def read_document(workspace: Path, arguments: dict, tenant_id: str | None 
     )
 )
 async def execute_code(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None) -> str:
+    from app.services.agent_tool_domains.workspace import _workspace_storage_error
     from app.services.agent_tool_domains.code_exec import (
         WorkspaceExecutionAuthorityError,
         authorized_execution_workspace,
     )
     from app.services.agent_tools import _execute_code
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError
 
     try:
         with authorized_execution_workspace(workspace, authority_scope) as execution_workspace:
@@ -515,6 +517,8 @@ async def execute_code(workspace: Path, arguments: dict, tenant_id: str | None =
                 arguments,
                 canonical_workspace=workspace,
             )
+    except WorkspaceAuthorityError as exc:
+        return _workspace_storage_error("execute_code", exc, mutation=True)
     except WorkspaceExecutionAuthorityError as exc:
         return render_tool_error(
             tool_name="execute_code",
@@ -566,15 +570,19 @@ async def execute_code(workspace: Path, arguments: dict, tenant_id: str | None =
     )
 )
 async def run_command(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None) -> str:
+    from app.services.agent_tool_domains.workspace import _workspace_storage_error
     from app.services.agent_tool_domains.code_exec import (
         WorkspaceExecutionAuthorityError,
         authorized_execution_workspace,
     )
     from app.services.agent_tools import _run_command
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError
 
     try:
         with authorized_execution_workspace(workspace, authority_scope) as execution_workspace:
             return await _run_command(execution_workspace, arguments)
+    except WorkspaceAuthorityError as exc:
+        return _workspace_storage_error("run_command", exc, mutation=True)
     except WorkspaceExecutionAuthorityError as exc:
         return render_tool_error(
             tool_name="run_command",

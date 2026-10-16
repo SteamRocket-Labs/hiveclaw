@@ -5,6 +5,7 @@ import contextlib
 import logging
 import os
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,12 @@ from app.services.external_capabilities.skill_source_adapter import (
     stage_external_skill_package_review_for_agent_workspace,
 )
 from app.services.subprocess_env import build_agent_subprocess_env
-from app.services.workspace_resource_authority import is_recovery_manifest_storage_path
+from app.services.workspace_resource_authority import (
+    WorkspaceAuthorityError,
+    is_recovery_manifest_storage_path,
+    open_workspace_file,
+    resolve_workspace_storage_path,
+)
 from app.tools.result_envelope import ToolContentEnvelope
 
 logger = logging.getLogger(__name__)
@@ -92,11 +98,27 @@ def _workspace_state_changed(before: dict[str, Any] | None, after: dict[str, Any
     return any(before.get(key) != after.get(key) for key in ("size", "mtime_ns", "sha256"))
 
 
+def _copy_workspace_resource(source_workspace: Path, destination_workspace: Path, path: str) -> None:
+    written = False
+    try:
+        with open_workspace_file(source_workspace, path) as source:
+            source_info = os.fstat(source.fileno())
+            with open_workspace_file(destination_workspace, path, mode="wb") as destination:
+                written = True
+                shutil.copyfileobj(source, destination, length=64 * 1024)
+                destination.flush()
+                os.fchmod(destination.fileno(), stat.S_IMODE(source_info.st_mode))
+                os.utime(destination.fileno(), ns=(source_info.st_atime_ns, source_info.st_mtime_ns))
+    except WorkspaceAuthorityError as exc:
+        if written and exc.code not in {"workspace_resource_changed", "workspace_storage_unavailable"}:
+            raise WorkspaceAuthorityError("workspace_resource_changed", "File copy may have changed the destination; reconcile before retrying.") from exc
+        raise
+
+
 @contextlib.contextmanager
 def authorized_execution_workspace(canonical_workspace: Path, authority_scope):
     """Materialize and merge a least-authority code-execution workspace."""
 
-    canonical_workspace = canonical_workspace.resolve()
     if authority_scope is None:
         yield canonical_workspace
         return
@@ -105,6 +127,7 @@ def authorized_execution_workspace(canonical_workspace: Path, authority_scope):
     isolated_work = isolated / "workspace"
     isolated_work.mkdir(parents=True, exist_ok=True)
     canonical_work = canonical_workspace / "workspace"
+    mutated = False
     try:
         readable_paths = set(authority_scope.allowed_paths)
         if authority_scope.operator_view and canonical_work.exists():
@@ -115,13 +138,10 @@ def authorized_execution_workspace(canonical_workspace: Path, authority_scope):
                 continue
             if is_recovery_manifest_storage_path(allowed_path):
                 continue
-            rel = Path(allowed_path.removeprefix("workspace/"))
-            source = (canonical_work / rel).resolve()
-            if not _is_within(source, canonical_work) or not source.is_file() or source.is_symlink():
+            source = resolve_workspace_storage_path(canonical_workspace, allowed_path)
+            if not source.is_file():
                 continue
-            target = isolated_work / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
+            _copy_workspace_resource(canonical_workspace, isolated, allowed_path)
         before = _workspace_file_state(isolated_work)
         yield isolated
         after = _workspace_file_state(isolated_work)
@@ -130,13 +150,8 @@ def authorized_execution_workspace(canonical_workspace: Path, authority_scope):
 
         # Validate the complete merge before mutating the canonical directory.
         for rel in changed:
-            canonical_target = (canonical_work / rel).resolve()
             resource_path = f"workspace/{rel}"
-            if not _is_within(canonical_target, canonical_work):
-                raise WorkspaceExecutionAuthorityError(
-                    "workspace_resource_escape",
-                    f"Code execution output escapes workspace/: {resource_path}",
-                )
+            canonical_target = resolve_workspace_storage_path(canonical_workspace, resource_path)
             if (
                 resource_path in authority_scope.known_paths and not authority_scope.can_perform(resource_path, "write")
             ) or (canonical_target.exists() and not authority_scope.can_perform(resource_path, "write")):
@@ -155,11 +170,14 @@ def authorized_execution_workspace(canonical_workspace: Path, authority_scope):
             target = canonical_work / rel
             if target.exists() and target.is_file():
                 target.unlink()
+                mutated = True
         for rel in sorted(changed):
-            source = isolated_work / rel
-            target = canonical_work / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
+            _copy_workspace_resource(isolated, canonical_workspace, f"workspace/{rel}")
+            mutated = True
+    except WorkspaceAuthorityError as exc:
+        if mutated and exc.code not in {"workspace_resource_changed", "workspace_storage_unavailable"}:
+            raise WorkspaceAuthorityError("workspace_resource_changed", "Code execution merged some changes before a file failed; reconcile before retrying.") from exc
+        raise
     finally:
         shutil.rmtree(isolated, ignore_errors=True)
 

@@ -92,7 +92,7 @@ def resolve_workspace_storage_path(workspace: Path, path: str) -> Path:
             raise
         raise WorkspaceAuthorityError(
             "workspace_resource_alias_forbidden",
-            "Use an independent file at its canonical workspace path; filesystem aliases cannot prove resource ownership.",
+            "Access denied. Use an independent file at its canonical workspace path; filesystem aliases cannot prove resource ownership.",
         ) from exc
 
 
@@ -725,15 +725,18 @@ async def load_workspace_authority_scope(
 def workspace_mutations_from_tool(tool_name: str, arguments: dict, result) -> list[dict[str, str | None]]:
     """Project actual filesystem mutations from the governed tool result."""
 
+    rendered = str(result or "")
+    payload = None
     if isinstance(result, str):
-        if result.lstrip().startswith("❌") or "<tool_error>" in result:
-            return []
         try:
             payload = json.loads(result)
         except (TypeError, ValueError):
             payload = None
         if isinstance(payload, dict) and payload.get("ok") is False:
             return []
+    structured_success = isinstance(payload, dict) and payload.get("ok") is True
+    if not structured_success and (rendered.lstrip().startswith("❌") or "<tool_error>" in rendered):
+        return []
 
     mutations: list[dict[str, str | None]] = []
     name = str(tool_name or "")
@@ -799,9 +802,6 @@ async def record_workspace_tool_mutations(*, context, tool_name: str, arguments:
     scope = getattr(context, "workspace_authority_scope", None)
     tenant_raw = getattr(context, "tenant_id", None)
     if scope is None or not tenant_raw:
-        return
-    rendered = str(result or "")
-    if "<tool_error>" in rendered or rendered.lstrip().startswith("❌"):
         return
     mutations = workspace_mutations_from_tool(tool_name, arguments, result)
     if not mutations:

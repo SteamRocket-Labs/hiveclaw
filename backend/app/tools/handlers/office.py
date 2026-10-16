@@ -292,22 +292,21 @@ async def office_document_apply(
 ) -> str:
     try:
         source_path = str(arguments.get("path", ""))
+        output_path = str(arguments.get("output_path") or source_path)
         authorize_workspace_tool_path(
             workspace,
             authority_scope,
             source_path,
+            action="read",
+            require_user_workspace=True,
+        )
+        authorize_workspace_tool_path(
+            workspace,
+            authority_scope,
+            output_path,
             action="write",
             require_user_workspace=True,
         )
-        output_path = str(arguments.get("output_path") or source_path)
-        if output_path != source_path:
-            authorize_workspace_tool_path(
-                workspace,
-                authority_scope,
-                output_path,
-                action="write",
-                require_user_workspace=True,
-            )
         operations = arguments.get("operations") or []
         if not isinstance(operations, list):
             raise ValueError("operations must be a list")

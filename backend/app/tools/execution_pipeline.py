@@ -745,14 +745,14 @@ async def _resolve_assets(state: _ToolExecutionState) -> _Stop | None:
 
 # Each field maps to (action, optionality). ``None`` marks the required
 # ``path`` field; optional fields mirror the final handlers' fallback rules:
-# ``template_path`` is honored only when truthy, and ``output_path`` falls
-# back to the source path unless it names a different target.
+# ``template_path`` is honored only when truthy; ``source_default`` writes
+# the output path when supplied, otherwise the source path.
 _WORKSPACE_MUTATION_PATH_AUTHORITY: dict[str, tuple[tuple[tuple[str, str, str | None], ...], bool]] = {
     "write_file": ((("path", "write", None),), False),
     "edit_file": ((("path", "write", None),), False),
     "delete_file": ((("path", "delete", None),), False),
     "office_document_create": ((("path", "create", None), ("template_path", "read", "truthy")), True),
-    "office_document_apply": ((("path", "write", None), ("output_path", "write", "differ_source")), True),
+    "office_document_apply": ((("path", "read", None), ("output_path", "write", "source_default")), True),
 }
 
 _FS_WRITE_TOOL_NAME = "fs_write"
@@ -790,6 +790,8 @@ async def _apply_workspace_mutation_path_authority(state: _ToolExecutionState) -
     context = state.runtime_context
     for field, action, optionality in fields:
         path = state.arguments.get(field)
+        if optionality == "source_default":
+            path = path or state.arguments.get("path")
         if path is None:
             continue
         text = str(path)
@@ -797,8 +799,6 @@ async def _apply_workspace_mutation_path_authority(state: _ToolExecutionState) -
         # ``""`` falls back to the default path, but whitespace-only values
         # are still honored as distinct targets and must be authorized here.
         if optionality == "truthy" and not text:
-            continue
-        if optionality == "differ_source" and (not text or text == str(state.arguments.get("path", ""))):
             continue
         try:
             authorize_workspace_tool_path(

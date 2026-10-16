@@ -413,6 +413,18 @@ def test_workspace_mutation_extraction_covers_unified_and_code_execution_artifac
         {"path": "workspace/source.docx", "output_path": "workspace/result.docx"},
         json.dumps({"ok": True}),
     ) == [{"path": "workspace/result.docx", "action": "written", "content_hash": None}]
+    assert workspace_mutations_from_tool(
+        "office_document_apply",
+        {"path": "workspace/source.docx", "output_path": "workspace/result.docx"},
+        json.dumps({"ok": True, "result": {"text": "<tool_error>literal document content</tool_error>"}}),
+    ) == [{"path": "workspace/result.docx", "action": "written", "content_hash": None}]
+    assert workspace_mutations_from_tool(
+        "office_document_apply", {"path": "workspace/source.docx"},
+        json.dumps({"ok": False, "payload": {"ok": True}}),
+    ) == []
+    assert workspace_mutations_from_tool("run_command", {}, ToolContentEnvelope(
+        text="<tool_error>Failed</tool_error>", artifacts=envelope.artifacts,
+    )) == []
 
 
 @pytest.mark.asyncio

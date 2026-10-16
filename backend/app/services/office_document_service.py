@@ -292,11 +292,12 @@ class OfficeDocumentService:
         normalized = self._normalize_rel_path(rel_path)
         target = self._require_existing_file(normalized)
         validated_operations = self._validate_operations(operations)
+        audit_path = self._normalize_rel_path(output_path) if output_path else normalized
 
-        op_file = self._write_operation(normalized, validated_operations)
+        op_file = self._write_operation(audit_path, validated_operations)
         payload = self._apply_operations(target, op_file, source_normalized=normalized, output_path=output_path)
 
-        manifest = self._load_manifest(normalized)
+        manifest = self._load_manifest(audit_path)
         manifest["updated_at"] = self._now()
         manifest.setdefault("operations", []).append(
             {
@@ -306,7 +307,7 @@ class OfficeDocumentService:
                 "output_path": output_path,
             }
         )
-        self._save_manifest(normalized, manifest)
+        self._save_manifest(audit_path, manifest)
         return payload
 
     @staticmethod

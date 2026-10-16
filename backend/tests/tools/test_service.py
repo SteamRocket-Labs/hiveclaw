@@ -1935,6 +1935,7 @@ def test_tool_result_failure_classification_uses_typed_machine_contract_only():
     assert _tool_result_failed("❌ This heading discusses failure modes, but is not a tool failure receipt.") is False
     assert _tool_result_failed('{"status":"ok","message":"failed examples are documented"}') is False
     assert _tool_result_failed('{"status":"failed","message":"typed failure"}') is True
+    assert _tool_result_failed('{"ok":true,"result":{"text":"<tool_error>{}</tool_error>"}}') is False
 
 
 def test_tool_result_failure_classification_accepts_rendered_typed_error_receipt():

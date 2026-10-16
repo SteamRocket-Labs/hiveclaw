@@ -392,8 +392,8 @@ async def test_office_mutation_cross_owner_denied_before_governance(tmp_path, to
         # path-denied here.
         ("office_document_create", {"path": "workspace/ok.docx", "kind": "docx", "template_path": ""}),
         ("office_document_apply", {"path": "workspace/ok.docx", "operations": [{}], "output_path": ""}),
-        # An output_path identical to the source needs no second authority
-        # decision beyond the already-checked source path.
+        # An identical output_path keeps both the source-read and output-write
+        # checks; it must still reach governance when both are allowed.
         (
             "office_document_apply",
             {"path": "workspace/ok.docx", "operations": [{}], "output_path": "workspace/ok.docx"},

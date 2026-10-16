@@ -292,6 +292,12 @@ def _inject_runtime_context_arguments(
 def _extract_tool_error_payload(result: str) -> dict[str, Any] | None:
     if not result or "<tool_error>" not in result:
         return None
+    try:
+        structured = _json.loads(result)
+    except (TypeError, ValueError):
+        structured = None
+    if isinstance(structured, dict) and structured.get("ok") is True:
+        return None
     match = _TOOL_ERROR_PAYLOAD_RE.search(result)
     if not match:
         return None

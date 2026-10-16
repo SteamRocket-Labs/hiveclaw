@@ -1511,7 +1511,9 @@ async def _claim_canonical_hr_blueprint(
             await load_creation_source_agent(db, requester, hr_agent_id, require_execute=True)
         except HTTPException as exc:
             raise HrCreationConflict("source_execute_denied", "The creation source no longer permits execution.") from exc
-        if draft.confirmed_by_user_id != user_id or draft.confirmed_at is None:
+        from app.services.hr_creation_service import direct_creation_authorization, has_creation_authorization
+
+        if not has_creation_authorization(draft):
             raise HrCreationConflict(
                 "missing_confirmation_evidence",
                 "HR creation requires authenticated confirmation from the requesting user.",
@@ -1520,7 +1522,12 @@ async def _claim_canonical_hr_blueprint(
             from app.services.hr_creation_source import require_creation_capability
 
             try:
-                await require_creation_capability(db, tenant_id, hr_agent_id)
+                if direct_creation_authorization(draft):
+                    from app.services.direct_employee_creation import validate_direct_creation
+
+                    await validate_direct_creation(db, draft)
+                else:
+                    await require_creation_capability(db, tenant_id, hr_agent_id)
             except HTTPException as exc:
                 detail = exc.detail
                 raise HrCreationConflict(detail["error"], detail["message"]) from exc
@@ -1560,6 +1567,52 @@ async def _claim_canonical_hr_blueprint(
         await db.commit()
 
     return draft_id, tenant_id, user_id, session_id, canonical_blueprint, claim
+
+
+@tool(ToolMeta(
+    name="create_employee_from_request", category="hr", display_name="Create Requested Employee",
+    adapter="request", governance="sensitive", risk_class="enterprise_asset_mutation",
+    work_amplifying=True, idempotency_scope="tool_call",
+    description=(
+        "Create a persistent digital employee directly when the current authenticated human explicitly requests one. "
+        "Use approved company model and private native defaults; no extra installs, sharing, credentials or routines. "
+        "Model owns interpretation: ordinary task requests use existing employees or temporary helpers instead. "
+        "Only include first_task when the user explicitly requested that work; it is dispatched once after readiness. "
+        "Missing authority/defaults returns a recoverable blocker. Use preview_agent_blueprint for custom scope."
+    ),
+    parameters={"type": "object", "properties": {
+        "name": {"type": "string", "minLength": 2, "maxLength": 100},
+        "role_description": {"type": "string", "minLength": 1, "maxLength": 4000},
+        "core_outputs": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "boundaries": {"type": "string", "minLength": 1, "maxLength": 4000},
+        "first_task": {"type": "string", "maxLength": 20000},
+    }, "required": ["name", "role_description", "core_outputs", "boundaries"], "additionalProperties": False},
+))
+async def create_employee_from_request(request: ToolExecutionRequest) -> str:
+    from fastapi import HTTPException
+    from sqlalchemy.exc import SQLAlchemyError
+    from app.database import tenant_scoped_session
+    from app.services.direct_employee_creation import create_from_request
+    from app.services.hr_creation_service import HrCreationConflict
+    from app.services.runtime_task_worker import notify_runtime_task_worker
+
+    try:
+        async with tenant_scoped_session(uuid.UUID(str(request.context.tenant_id))) as db:
+            payload, queued = await create_from_request(db, request)
+            await db.commit()
+        if queued:
+            await notify_runtime_task_worker(reason="employee_creation_policy_direct", runtime_task_id=payload["provisioning_task_id"])
+        return json.dumps(payload, ensure_ascii=False, default=str)
+    except HrCreationConflict as exc:
+        return json.dumps({"status": "error", "error": exc.code, "message": exc.message})
+    except (ValueError, TypeError, KeyError):
+        return json.dumps({"status": "error", "error": "direct_human_input_required",
+                           "message": "Creation requires valid fields and the current authenticated human turn."})
+    except HTTPException as exc:
+        return json.dumps({"status": "error", "error": "source_execute_denied", "message": str(exc.detail)})
+    except SQLAlchemyError:
+        logger.exception("Direct employee creation policy/storage unavailable")
+        return json.dumps({"status": "error", "error": "capability_unavailable", "message": "Creation is temporarily unavailable; retry the same request."})
 
 
 @tool(

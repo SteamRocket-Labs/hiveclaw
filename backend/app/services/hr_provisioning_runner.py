@@ -149,7 +149,9 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
     # New customization params
     welcome_message = args.get("welcome_message", "")
     preview_payload = _build_blueprint_preview_payload(args)
-    skill_names = list(preview_payload["blueprint"]["effective_skill_names"])
+    # The approved private package never turns model recommendations into installations.
+    direct_model_id = args.get("approved_model_id")
+    skill_names = [] if direct_model_id else list(preview_payload["blueprint"]["effective_skill_names"])
     external_skill_refs = list(preview_payload["blueprint"]["external_skill_refs"])
     manual_steps = list(preview_payload["manual_steps"])
     warnings = list(preview_payload["warnings"])
@@ -263,7 +265,15 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
             # Resolve a model only while creating the core row or producing the
             # one canonical refinement receipt. Recovery reuses that receipt;
             # it never asks the model to regenerate a previously committed soul.
-            creation_model = await _resolve_employee_creation_model(db, effective_tenant_id)
+            if direct_model_id:
+                from app.models.llm import LLMModel
+
+                creation_model = await db.scalar(select(LLMModel).where(
+                    LLMModel.id == _uuid.UUID(str(direct_model_id)),
+                    LLMModel.tenant_id == effective_tenant_id, LLMModel.enabled.is_(True),
+                ))
+            else:
+                creation_model = await _resolve_employee_creation_model(db, effective_tenant_id)
             if not creation_model and existing_agent is None:
                 model_step = steps_by_key["model"]
                 transition_hr_provisioning_step_record(

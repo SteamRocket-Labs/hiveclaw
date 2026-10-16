@@ -59,6 +59,7 @@ class AgentActivityLog(Base):
             "heartbeat",
             "plaza_post",
             "delegation_started",
+            "delegation_queued",
             "delegation_completed",
             "delegation_failed",
             "delegation_killed",

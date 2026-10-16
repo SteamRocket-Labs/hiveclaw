@@ -86,6 +86,25 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+it('recovers a requested first task on the existing employee without confirming or navigating', async () => {
+  const directPreview = { ...preview, status: 'completed', authorizationMode: 'policy_direct',
+    explicitFirstTask: 'Draft a comparison', firstTaskAutostart: false };
+  const draft = { blueprint_id: preview.blueprintId, blueprint_version: 1, blueprint_hash: preview.blueprintHash,
+    draft_status: 'completed', blueprint: {}, created_agent_id: 'existing-employee',
+    provisioning: { first_task: { status: 'blocked' } }, recovery: { can_retry: true } };
+  hrMocks.get.mockResolvedValue(draft);
+  hrMocks.retry.mockResolvedValue({ ...draft, recovery: { can_retry: false } });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><HrBlueprintPreviewCard agentId="source" preview={directPreview} /></QueryClientProvider>);
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Retry first task' }) as HTMLButtonElement).disabled).toBe(false));
+  expect(screen.getByText('Authorized from your request using approved private defaults.')).toBeTruthy();
+  expect(screen.getByText('Draft a comparison')).toBeTruthy();
+  expect(screen.queryByText('Prepare three checks.')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Retry first task' }));
+  await waitFor(() => expect(hrMocks.retry).toHaveBeenCalledWith('source', 'draft-1'));
+  expect(hrMocks.confirm).not.toHaveBeenCalled();
+});
+
 describe('HrBlueprintPreviewCard revision UX', () => {
   it('collects the requested change locally instead of sending an agent prompt on click', () => {
     const onSendMessage = vi.fn().mockResolvedValue(undefined);

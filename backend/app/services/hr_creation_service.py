@@ -43,6 +43,34 @@ def canonical_hr_blueprint_hash(blueprint: dict[str, Any]) -> str:
     return f"bp_{canonical_hr_blueprint_payload_hash(blueprint)[:24]}"
 
 
+def direct_creation_authorization(draft: HrCreationDraft) -> dict[str, Any] | None:
+    evidence = (draft.preview_json or {}).get("creation_authorization")
+    if not isinstance(evidence, dict) or evidence.get("schema") != "hive.employee_creation_authorization.v1":
+        return None
+    bindings = {
+        "mode": "policy_direct", "tenant_id": str(draft.tenant_id),
+        "requester_user_id": str(draft.requested_by_user_id), "source_agent_id": str(draft.hr_agent_id),
+        "source_session_id": str(draft.session_id), "blueprint_hash": draft.blueprint_hash,
+        "package": "private_native_employee.v1",
+    }
+    if any(evidence.get(key) != value for key, value in bindings.items()):
+        return None
+    if not all(isinstance(evidence.get(key), str) and evidence[key] for key in (
+        "source_run_id", "input_id", "input_hash", "tool_input_hash", "approved_model_id", "owner_policy_hash",
+    )):
+        return None
+    if not isinstance(evidence.get("tool_arguments"), dict):
+        return None
+    return evidence
+
+
+def has_creation_authorization(draft: HrCreationDraft) -> bool:
+    return bool(
+        (draft.confirmed_at is not None and draft.confirmed_by_user_id == draft.requested_by_user_id)
+        or direct_creation_authorization(draft)
+    )
+
+
 _SAFE_FAILED_REVISION_TASK_STATUSES = frozenset({"failed", "killed", "skipped"})
 
 
@@ -256,7 +284,8 @@ def claim_hr_creation_draft_record(
 ) -> HrCreationClaim:
     if draft.id is None:
         raise HrCreationConflict("invalid_draft", "Blueprint must be persisted before creation.")
-    idempotency_key = f"hr-draft:{draft.id}"
+    direct = direct_creation_authorization(draft)
+    idempotency_key = f"direct-employee:{direct['input_id']}" if direct else f"hr-draft:{draft.id}"
     current = now or _now()
     if draft.status == "completed" and draft.created_agent_id:
         return HrCreationClaim(
@@ -673,19 +702,22 @@ def hr_creation_recovery_payload(
     runtime_task: Any | None = None,
 ) -> dict[str, Any]:
     task_status = str(getattr(runtime_task, "status", None) or "") or None
-    requires_operator = task_status == "needs_reconciliation" or draft.failure_code in {
+    first_task = (draft.provisioning_json or {}).get("first_task") or {}
+    requires_operator = task_status == "needs_reconciliation" or first_task.get("status") == "needs_reconciliation" or draft.failure_code in {
         "cancellation_reconciliation_required",
         "runtime_task_needs_reconciliation",
         "runtime_task_draft_divergence",
     }
     can_retry = (
         not requires_operator
-        and draft.status in {"failed", "provisioning"}
+        and (draft.status in {"failed", "provisioning"} or (
+            draft.status == "completed" and first_task.get("status") in {"blocked", "unknown"}
+        ))
         and task_status in {"failed", "killed", "resumable"}
     )
     return {
         "task_status": task_status,
-        "can_resume": draft.status in RECOVERABLE_HR_DRAFT_STATUSES and draft.session_id is not None,
+        "can_resume": (draft.status in RECOVERABLE_HR_DRAFT_STATUSES or bool(first_task)) and draft.session_id is not None,
         "can_retry": can_retry,
         "can_abandon": draft.status in RECOVERABLE_HR_DRAFT_STATUSES,
         "requires_operator": requires_operator,

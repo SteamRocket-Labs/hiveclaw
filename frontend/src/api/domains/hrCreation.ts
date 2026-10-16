@@ -25,6 +25,7 @@ export interface HrCreationDraft {
   knowledge_debt?: unknown[];
   confirmation_requirements?: unknown[];
   warnings?: string[];
+  creation_authorization?: { mode: 'policy_direct'; first_task?: string } | null;
   manual_steps?: string[];
   confirmed_by_user_id?: string | null;
   confirmed_at?: string | null;

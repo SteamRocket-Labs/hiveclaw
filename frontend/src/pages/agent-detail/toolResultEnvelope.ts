@@ -21,6 +21,8 @@ export interface HrPreviewToolResult {
   boundaries: string | null;
   permissionScope: string | null;
   firstTaskAutostart: boolean | null;
+  authorizationMode?: string | null;
+  explicitFirstTask?: string | null;
   sourceAttributions: Record<string, unknown>[];
   riskClass: string | null;
   missingGates: string[];
@@ -253,6 +255,8 @@ export function parsePreviewAgentBlueprintResult(rawResult: unknown): HrPreviewT
     parsed.summary && typeof parsed.summary === 'object' && !Array.isArray(parsed.summary)
       ? (parsed.summary as Record<string, unknown>)
       : {};
+  const authorization = parsed.creation_authorization && typeof parsed.creation_authorization === 'object'
+    ? parsed.creation_authorization as Record<string, unknown> : {};
 
   return {
     kind: 'hr_preview',
@@ -268,6 +272,10 @@ export function parsePreviewAgentBlueprintResult(rawResult: unknown): HrPreviewT
     boundaries: typeof blueprint.boundaries === 'string' ? blueprint.boundaries : null,
     permissionScope: typeof blueprint.permission_scope === 'string' ? blueprint.permission_scope : null,
     firstTaskAutostart: typeof blueprint.first_task_autostart === 'boolean' ? blueprint.first_task_autostart : null,
+    ...(authorization.mode === 'policy_direct' ? {
+      authorizationMode: 'policy_direct',
+      explicitFirstTask: typeof authorization.first_task === 'string' ? authorization.first_task : null,
+    } : {}),
     sourceAttributions: normalizeRecordList(blueprint.source_attributions),
     riskClass: typeof parsed.risk_class === 'string' ? parsed.risk_class : null,
     missingGates: normalizeStringList(parsed.missing_gates),
@@ -282,6 +290,9 @@ export function parsePreviewAgentBlueprintResult(rawResult: unknown): HrPreviewT
 }
 
 function buildPreviewDisplayResult(preview: HrPreviewToolResult): string {
+  if (preview.authorizationMode === 'policy_direct') {
+    return preview.name ? `Employee creation requested for ${preview.name}.` : 'Employee creation requested.';
+  }
   if (preview.name) {
     return `Blueprint preview ready for ${preview.name}.`;
   }
@@ -550,7 +561,7 @@ export function normalizeToolCallResult(toolName: string | undefined, rawResult:
     };
   }
 
-  if (toolName === 'preview_agent_blueprint' || toolName === 'create_digital_employee') {
+  if (toolName === 'preview_agent_blueprint' || toolName === 'create_digital_employee' || toolName === 'create_employee_from_request') {
     const preview = parsePreviewAgentBlueprintResult(rawResult);
     if (preview) {
       return {

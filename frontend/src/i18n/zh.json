@@ -584,6 +584,7 @@
       "detail": "详情"
     },
     "hrRecovery": {
+      "firstTaskPending": "员工已就绪，首任务尚需恢复。",
       "loadFailed": "无法加载中断的创建任务或待清理项。",
       "cleanupStatus": "文件待清理",
       "cleanupPending": "移除已提交。重试只会完成剩余文件归档，不会再次移除员工。",
@@ -2320,6 +2321,15 @@
         "openNamed": "打开 {{name}}"
       },
       "toolResults": {
+        "retryFirstTask": "重试首任务",
+        "firstTaskDenied": "公司策略阻止这项任务，具备所需权限后才能重试。",
+        "firstTaskApproval": "这项任务需要取得相应授权后才能重试。",
+        "directCreationTitle": "创建数字员工",
+        "directCreationAuthorization": "根据你的请求，使用已批准的私有默认配置开通。",
+        "explicitFirstTask": "你交代的首个任务",
+        "firstTaskDispatched": "任务已派发，进度和成果会返回当前工作。",
+        "firstTaskRecovery": "员工已就绪，首任务需要恢复；尚未报告任务已经启动。",
+        "firstTaskWaiting": "员工就绪后将启动这项任务。",
         "blueprintPreviewTitle": "Agent 蓝图预览",
         "unnamedAgent": "未命名数字员工",
         "handoffTitle": "创建需求已转交",

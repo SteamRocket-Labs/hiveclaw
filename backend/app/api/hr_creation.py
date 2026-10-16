@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -43,6 +43,7 @@ class HrCreationDraftOut(BaseModel):
     ready_now: list[str] = Field(default_factory=list)
     will_install: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    creation_authorization: dict[str, Any] | None = None
     manual_steps: list[str] = Field(default_factory=list)
     confirmed_by_user_id: str | None = None
     confirmed_at: str | None = None
@@ -210,8 +211,10 @@ async def _list_creation_drafts(db, current_user, *, tenant_id, agent_id, limit)
                 .options(selectinload(HrCreationDraft.provisioning_steps))
                 .where(
                     *scope,
-                    HrCreationDraft.status.in_(
-                        ("awaiting_confirmation", "confirmed", "creating", "provisioning", "failed")
+                    or_(
+                        HrCreationDraft.status.in_(("awaiting_confirmation", "confirmed", "creating", "provisioning", "failed")),
+                        and_(HrCreationDraft.status == "completed",
+                             HrCreationDraft.provisioning_json["first_task"]["status"].astext.in_(("blocked", "unknown", "needs_reconciliation"))),
                     ),
                 )
                 .order_by(
@@ -390,12 +393,24 @@ async def retry_hr_creation_draft(
         agent_id=agent_id,
         draft_id=draft_id,
     )
-    await require_creation_capability(db, draft.tenant_id, draft.hr_agent_id)
     try:
+        from app.services.hr_creation_service import direct_creation_authorization
+        from app.services.employee_first_task import needs_first_task_dispatch
+
+        if direct_creation_authorization(draft):
+            from app.services.direct_employee_creation import validate_direct_creation
+
+            await validate_direct_creation(db, draft, check_creation_policy=draft.status != "completed")
+        else:
+            await require_creation_capability(db, draft.tenant_id, draft.hr_agent_id)
         assert task is not None
-        if draft.status not in {"failed", "provisioning"}:
+        if draft.status not in {"failed", "provisioning"} and not (
+            draft.status == "completed" and needs_first_task_dispatch(draft)
+        ):
             raise HrCreationConflict("invalid_status", f"HR provisioning cannot be retried from {draft.status}.")
-        if draft.confirmed_by_user_id is None or draft.confirmed_at is None:
+        from app.services.hr_creation_service import has_creation_authorization
+
+        if not has_creation_authorization(draft):
             raise HrCreationConflict(
                 "confirmation_missing",
                 "HR provisioning cannot retry without authenticated blueprint confirmation.",
@@ -413,7 +428,8 @@ async def retry_hr_creation_draft(
     from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc)
-    draft.status = "confirmed" if draft.status == "failed" else "provisioning"
+    if draft.status != "completed":
+        draft.status = "confirmed" if draft.status == "failed" else "provisioning"
     draft.failure_code = None
     draft.failure_message = None
     draft.claim_token = None

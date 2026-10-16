@@ -474,6 +474,8 @@ async def _persist_delegation_event(
     trace_id: str | None = None,
     result_preview: str = "",
     timed_out: bool = False,
+    requester_user_id: uuid.UUID | None = None,
+    root_session_id: str | None = None,
 ) -> None:
     """Best-effort persistence of delegation lifecycle events via activity logger."""
     if not parent_agent_id:
@@ -492,6 +494,8 @@ async def _persist_delegation_event(
             detail["result_preview"] = result_preview
         await log_activity(
             agent_id=uuid.UUID(str(parent_agent_id)),
+            owner_user_id=requester_user_id,
+            root_session_id=_maybe_uuid(root_session_id),
             action_type="delegation_" + status,
             summary="Delegation " + status + ": " + (child_agent_name or task_id),
             detail=detail,
@@ -4284,6 +4288,8 @@ async def delegate_async(
         child_agent_name=target.name,
         trace_id=real_trace_id,
         status="queued",
+        requester_user_id=owner_id,
+        root_session_id=(request.execution_principal or {}).get("root_session_id") or parent_session_id,
     )
     logger.info(
         "[Orchestrator] Async delegation queued: task_id=%s target=%s",

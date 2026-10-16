@@ -783,7 +783,7 @@ def _inline_content_replacement(value: Any) -> str | None:
 def _interactive_tool_result_status_allowed(tool_name: str, status: Any) -> bool:
     if status in _TRANSCRIPT_INTERACTIVE_TOOL_RESULT_STATUSES:
         return True
-    if status == "preview" and tool_name == "preview_agent_blueprint":
+    if status == "preview" and tool_name in {"preview_agent_blueprint", "create_employee_from_request"}:
         return True
     return status == "success" and tool_name == "create_digital_employee"
 

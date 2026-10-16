@@ -22,10 +22,10 @@ const draft = {
   recovery: { can_resume: true, can_retry: true },
 };
 
-function mount() {
+function mount(records = [draft]) {
   useAuthStore.setState({ user: { id: "owner", tenant_id: "company", role: "member" } as User });
   mocks.getHr.mockResolvedValue({ id: 'system-hr' });
-  mocks.listMine.mockResolvedValue([draft]);
+  mocks.listMine.mockResolvedValue(records);
   mocks.listRecoverable.mockResolvedValue([draft]);
   mocks.retry.mockResolvedValue(draft);
   return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -46,4 +46,12 @@ it('retries the draft under its stored originating employee', async () => {
   mount();
   fireEvent.click(await screen.findByRole('button', { name: 'Retry provisioning' }));
   await waitFor(() => expect(mocks.retry).toHaveBeenCalledWith('my-assistant', 'draft-origin'));
+});
+
+it('recovers the first task without removing or reopening employee provisioning', async () => {
+  const completed = { ...draft, draft_status: 'completed', provisioning: { first_task: { status: 'blocked' } } };
+  mount([completed]);
+  fireEvent.click(await screen.findByRole('button', { name: 'Retry first task' }));
+  await waitFor(() => expect(mocks.retry).toHaveBeenCalledWith('my-assistant', 'draft-origin'));
+  expect(screen.queryByRole('button', { name: 'Remove unfinished employee' })).toBeNull();
 });

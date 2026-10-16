@@ -7,6 +7,15 @@ import {
   parsePreviewAgentBlueprintResult,
 } from './toolResultEnvelope';
 
+it('projects direct creation as a recoverable creation card for live and restored results', () => {
+  const result = JSON.stringify({ status: 'preview', blueprint_id: 'direct-draft', draft_status: 'confirmed',
+    blueprint: { name: 'Research colleague', first_task_autostart: false, permission_scope: 'self' },
+    creation_authorization: { mode: 'policy_direct', first_task: 'Draft a comparison' } });
+  const projected = normalizeToolCallResult('create_employee_from_request', result);
+  expect(projected.toolMeta).toMatchObject({ kind: 'hr_preview', status: 'confirmed',
+    authorizationMode: 'policy_direct', explicitFirstTask: 'Draft a comparison', firstTaskAutostart: false });
+});
+
 describe('parseCreateEmployeeToolResult', () => {
   it('parses structured JSON payloads', () => {
     const parsed = parseCreateEmployeeToolResult(JSON.stringify({

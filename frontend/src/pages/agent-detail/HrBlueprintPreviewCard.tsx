@@ -184,7 +184,8 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
     || canonicalPreview.deferredCapabilities.length > 0
     || canonicalPreview.sourceAttributions.length > 0
     || canonicalPreview.knowledgeDebt.length > 0;
-  const durableAction = hrCreationActionForStatus(status);
+  const durableAction = draft?.recovery?.can_retry ? 'retry' : hrCreationActionForStatus(status);
+  const firstTask = draft?.provisioning?.first_task as { status?: string; session_id?: string; error?: string } | undefined;
 
   const confirmMutation = useMutation({
     mutationFn: () => hrCreationApi.confirm(agentId!, preview.blueprintId!, {
@@ -262,22 +263,41 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
     && durableAction !== 'none';
   const canReviseOrReject = canLoad && status === 'awaiting_confirmation';
   const canCancel = canLoad && ['confirmed', 'creating', 'provisioning'].includes(status);
+  const openEmployee = createdAgentId && durableAction !== 'retry';
 
   return (
     <article className="hr-blueprint-card">
       <header>
         <div>
-          <span>{t('agent.chat.toolResults.blueprintPreviewTitle', 'Agent Blueprint Preview')}</span>
+          <span>{canonicalPreview.authorizationMode === 'policy_direct'
+            ? t('agent.chat.toolResults.directCreationTitle', 'Employee creation')
+            : t('agent.chat.toolResults.blueprintPreviewTitle', 'Agent Blueprint Preview')}</span>
           <h3>{canonicalPreview.name || t('agent.chat.toolResults.unnamedAgent', 'Unnamed digital employee')}</h3>
         </div>
         <span className="hr-blueprint-status">{statusLabel}</span>
       </header>
 
       {canonicalPreview.mission && <p className="hr-blueprint-mission">{canonicalPreview.mission}</p>}
+      {canonicalPreview.authorizationMode === 'policy_direct' && (
+        <p>{t('agent.chat.toolResults.directCreationAuthorization', 'Authorized from your request using approved private defaults.')}</p>
+      )}
+      {canonicalPreview.explicitFirstTask && (
+        <section className="hr-blueprint-boundaries">
+          <h4>{t('agent.chat.toolResults.explicitFirstTask', 'Your first task')}</h4>
+          <p>{canonicalPreview.explicitFirstTask}</p>
+          <p>{firstTask?.status === 'dispatched'
+            ? t('agent.chat.toolResults.firstTaskDispatched', 'Task dispatched. Updates and results return to this work.')
+            : firstTask?.status
+              ? t('agent.chat.toolResults.firstTaskRecovery', 'Employee ready. The first task needs recovery; it has not been reported as started.')
+              : t('agent.chat.toolResults.firstTaskWaiting', 'The task will start once the employee is ready.')}</p>
+          {firstTask?.error === 'capability_denied' && <p>{t('agent.chat.toolResults.firstTaskDenied', 'Company policy blocks this task. Restore the required permission before retrying.')}</p>}
+          {firstTask?.error === 'approval_required' && <p>{t('agent.chat.toolResults.firstTaskApproval', 'This task needs scoped authorization before retrying.')}</p>}
+        </section>
+      )}
       <div className="hr-blueprint-facts">
         {scopeLabel && <span>{t('agent.chat.toolResults.permissionScope', 'Access')}: {scopeLabel}</span>}
         {reviewRiskLabel && <span>{t('agent.chat.toolResults.risk', 'Risk')}: {reviewRiskLabel}</span>}
-        {canonicalPreview.firstTaskAutostart !== null && (
+        {canonicalPreview.firstTaskAutostart !== null && !canonicalPreview.explicitFirstTask && (
           <span>
             {t('agent.chat.toolResults.firstTaskStart', 'First task')}:{' '}
             {canonicalPreview.firstTaskAutostart
@@ -288,7 +308,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
       </div>
       <PreviewList label={t('agent.chat.toolResults.primaryUsers', 'Primary users')} items={canonicalPreview.primaryUsers} />
       <PreviewList label={t('agent.chat.toolResults.coreOutputs', 'Core outputs')} items={canonicalPreview.coreOutputs} />
-      {canonicalPreview.firstMission && (
+      {canonicalPreview.firstMission && canonicalPreview.authorizationMode !== 'policy_direct' && (
         <section className="hr-blueprint-boundaries">
           <h4>{t('agent.chat.toolResults.firstMission', 'First mission')}</h4>
           <p>{canonicalPreview.firstMission}</p>
@@ -381,23 +401,28 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
         <button
           type="button"
           className="btn btn-primary"
-          disabled={!createdAgentId && (!canStartCreation || busy || revisionOpen)}
-          onClick={createdAgentId ? () => location.assign(`/agents/${createdAgentId}`) : runDurableAction}
+          disabled={!openEmployee && (!canStartCreation || busy || revisionOpen)}
+          onClick={openEmployee ? () => location.assign(`/agents/${createdAgentId}`) : runDurableAction}
         >
-          {createdAgentId
+          {openEmployee
             ? t('hrChat.goToAgent')
             : confirmMutation.isPending
               ? t('common.confirming')
               : retryMutation.isPending
                 ? t('agent.chat.toolResults.retryingProvisioning')
                 : durableAction === 'retry'
-                  ? t('agent.chat.toolResults.retryProvisioning')
+                  ? firstTask ? t('agent.chat.toolResults.retryFirstTask', 'Retry first task') : t('agent.chat.toolResults.retryProvisioning')
                   : durableAction === 'confirm'
                     ? t('agent.chat.toolResults.confirmAndCreate')
                     : ['confirmed', 'creating'].includes(status)
                       ? t('agent.chat.toolResults.provisioning')
                       : statusLabel}
         </button>
+        {createdAgentId && durableAction === 'retry' && (
+          <button type="button" className="btn btn-secondary" onClick={() => location.assign(`/agents/${createdAgentId}`)}>
+            {t('hrChat.goToAgent')}
+          </button>
+        )}
         <button type="button" className="btn btn-secondary" disabled={!canReviseOrReject || busy || !onSendMessage || revisionOpen} onClick={() => setRevisionOpen(true)}>
           {t('agent.chat.toolResults.requestChanges', 'Request changes')}
         </button>

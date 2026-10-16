@@ -609,6 +609,7 @@
       "detail": "Detail"
     },
     "hrRecovery": {
+      "firstTaskPending": "The employee is ready; its first task needs recovery.",
       "loadFailed": "Could not load interrupted creations or pending cleanup.",
       "cleanupStatus": "File cleanup pending",
       "cleanupPending": "Removal is committed. Retry only the remaining file archival; the employee will not be removed again.",
@@ -2320,6 +2321,15 @@
         "openNamed": "Open {{name}}"
       },
       "toolResults": {
+        "retryFirstTask": "Retry first task",
+        "firstTaskDenied": "Company policy blocks this task. Restore the required permission before retrying.",
+        "firstTaskApproval": "This task needs scoped authorization before retrying.",
+        "directCreationTitle": "Employee creation",
+        "directCreationAuthorization": "Authorized from your request using approved private defaults.",
+        "explicitFirstTask": "Your first task",
+        "firstTaskDispatched": "Task dispatched. Updates and results return to this work.",
+        "firstTaskRecovery": "Employee ready. The first task needs recovery; it has not been reported as started.",
+        "firstTaskWaiting": "The task will start once the employee is ready.",
         "blueprintPreviewTitle": "Agent Blueprint Preview",
         "unnamedAgent": "Unnamed digital employee",
         "handoffTitle": "Creation request handed off",

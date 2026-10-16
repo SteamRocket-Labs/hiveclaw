@@ -6,13 +6,13 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent
 from app.models.hr_creation import HrCreationDraft
 from app.models.runtime_task import RuntimeTask
-from app.services.hr_creation_service import HR_CREATION_PREVIEW_TTL
+from app.services.hr_creation_service import HR_CREATION_PREVIEW_TTL, has_creation_authorization
 from app.services.hr_provisioning_runtime import build_hr_provisioning_runtime_task
 
 
@@ -70,6 +70,8 @@ def _candidate_statement(statement, *, now: datetime, limit: int, tenant_id: uui
                 and_(
                     HrCreationDraft.status.in_(_ACTIVE_DRAFT_STATUSES),
                     or_(HrCreationDraft.confirmed_by_user_id.is_(None), HrCreationDraft.confirmed_at.is_(None)),
+                    func.coalesce(HrCreationDraft.preview_json["creation_authorization"]["schema"].astext, "")
+                    != "hive.employee_creation_authorization.v1",
                 ),
                 and_(
                     HrCreationDraft.status.in_(("confirmed", "creating", "provisioning")),
@@ -297,7 +299,7 @@ async def reconcile_hr_creation_drafts_once(
                 summary["expired"] += int(await _expire_preview(db, draft, now=now))
             elif draft.status not in _ACTIVE_DRAFT_STATUSES:
                 continue
-            elif draft.confirmed_by_user_id is None or draft.confirmed_at is None:
+            elif not has_creation_authorization(draft):
                 await _block_missing_authority(db, draft, task, now=now)
                 summary["authority_blocked"] += 1
             elif task is None:

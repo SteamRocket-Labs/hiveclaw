@@ -24,6 +24,8 @@ from app.services.hr_creation_service import (
     HrCreationConflict,
     canonical_hr_blueprint_hash,
     canonical_hr_blueprint_payload_hash,
+    direct_creation_authorization,
+    has_creation_authorization,
 )
 from app.services.runtime_task_fence import assert_runtime_task_fence, renew_current_runtime_task_lease
 from app.services.hr_creation_source import CREATION_PRECLAIM_BLOCKS
@@ -57,20 +59,21 @@ def _config_snapshot(draft: HrCreationDraft) -> dict[str, Any]:
 
 
 def _policy_snapshot(draft: HrCreationDraft) -> dict[str, Any]:
-    return {
+    snapshot = {
         "tenant_id": str(draft.tenant_id),
         "requested_by_user_id": str(draft.requested_by_user_id),
         "confirmed_by_user_id": str(draft.confirmed_by_user_id) if draft.confirmed_by_user_id else None,
         "confirmed_at": draft.confirmed_at.isoformat() if draft.confirmed_at else None,
     }
+    if direct_creation_authorization(draft):
+        snapshot["creation_authorization"] = direct_creation_authorization(draft)
+    return snapshot
 
 
 def _assert_authenticated_confirmation(draft: HrCreationDraft) -> None:
     if (
         draft.status not in _AUTHORIZED_DRAFT_STATUSES
-        or draft.confirmed_by_user_id is None
-        or draft.confirmed_at is None
-        or draft.confirmed_by_user_id != draft.requested_by_user_id
+        or not has_creation_authorization(draft)
     ):
         raise ValueError("HR provisioning requires authenticated confirmation evidence from the requesting user")
     blueprint = dict(draft.blueprint_json or {})
@@ -78,15 +81,13 @@ def _assert_authenticated_confirmation(draft: HrCreationDraft) -> None:
         raise ValueError("HR provisioning requires canonical blueprint content matching its persisted digest")
 
 
-def _runtime_authority_issues(task: RuntimeTask, draft: HrCreationDraft) -> list[str]:
+def _runtime_authority_issues(task: RuntimeTask, draft: HrCreationDraft, *, allow_completed: bool = False) -> list[str]:
     issues: list[str] = []
     if draft.provisioning_task_id != task.id:
         issues.append("draft_link_mismatch")
     if (
-        draft.status not in _AUTHORIZED_DRAFT_STATUSES
-        or draft.confirmed_by_user_id is None
-        or draft.confirmed_at is None
-        or draft.confirmed_by_user_id != draft.requested_by_user_id
+        (draft.status not in _AUTHORIZED_DRAFT_STATUSES and not (allow_completed and draft.status == "completed"))
+        or not has_creation_authorization(draft)
     ):
         issues.append("missing_confirmation_evidence")
     if task.task_type != "hr_provisioning":
@@ -263,7 +264,7 @@ async def _mark_runtime_authority_blocked(
         **dict(task.metadata_json or {}),
         "phase": "terminal",
         "terminal_at": now.isoformat(),
-        "side_effect_risk": "not_started",
+        "side_effect_risk": "journaled" if draft.created_agent_id else "not_started",
         "automatic_retry_allowed": False,
         "needs_reconciliation": True,
         "reconciliation_reason": "hr_runtime_authority_mismatch",
@@ -336,6 +337,13 @@ async def _prepare_hr_provisioning(
             task.metadata_json = metadata
             return "needs_reconciliation", task, None
         if draft.status == "completed":
+            from app.services.employee_first_task import needs_first_task_dispatch
+
+            if needs_first_task_dispatch(draft) and task.status == "running":
+                issues = _runtime_authority_issues(task, draft, allow_completed=True)
+                if issues:
+                    return await _mark_runtime_authority_blocked(db, task=task, draft=draft, issues=issues), task, draft
+                return "dispatch_first_task", task, draft
             return _mark_task_completed(task, draft), task, draft
         if draft.status in {"rejected", "superseded", "expired"}:
             task.status = "skipped" if draft.status != "rejected" else "killed"
@@ -475,6 +483,9 @@ async def _converge_hr_provisioning(
             message = runner_error or "Employee creation requires restored authority before retry."
             mark_hr_creation_failed_record(draft, code=code, message=message)
             result = _mark_task_failed(task, draft, reason=message)
+            from app.services.employee_first_task import enqueue_creation_receipt
+
+            await enqueue_creation_receipt(db, draft, task)
             task.metadata_json = {
                 **dict(task.metadata_json or {}),
                 "automatic_retry_allowed": False,
@@ -492,9 +503,20 @@ async def _converge_hr_provisioning(
                 issues=authority_issues,
             )
         if draft.status == "completed":
-            return _mark_task_completed(task, draft)
+            from app.services.employee_first_task import dispatch_first_task, enqueue_creation_receipt
+
+            if not await dispatch_first_task(db, draft):
+                result = _mark_task_failed(task, draft, reason="Employee ready; explicit first task needs recovery.")
+            else:
+                result = _mark_task_completed(task, draft)
+            await enqueue_creation_receipt(db, draft, task)
+            return result
         if draft.status == "failed":
-            return _mark_task_failed(task, draft, reason=runner_error or runner_result or "Provisioning failed.")
+            from app.services.employee_first_task import enqueue_creation_receipt
+
+            result = _mark_task_failed(task, draft, reason=runner_error or runner_result or "Provisioning failed.")
+            await enqueue_creation_receipt(db, draft, task)
+            return result
         live_claim = bool(draft.claim_token and draft.claim_expires_at and draft.claim_expires_at > _utcnow())
         if draft.status in {"creating", "provisioning"} and live_claim:
             return _schedule_for_draft_claim(
@@ -532,7 +554,7 @@ async def execute_claimed_hr_provisioning(task_id: uuid.UUID) -> str:
         logger.error("[HRProvisioning] RuntimeTask {} has no tenant authority", task_id)
         return "missing_tenant"
     disposition, task, draft = await _prepare_hr_provisioning(task_id, tenant_id)
-    if disposition != "execute":
+    if disposition not in {"execute", "dispatch_first_task"}:
         return disposition
     if task is None or draft is None:
         return "needs_reconciliation"
@@ -541,7 +563,8 @@ async def execute_claimed_hr_provisioning(task_id: uuid.UUID) -> str:
     error: str | None = None
     authority_issues: list[str] = []
     try:
-        result = await _run_domain_provisioning(task=task, draft=draft)
+        if disposition == "execute":
+            result = await _run_domain_provisioning(task=task, draft=draft)
     except HrCreationConflict as exc:
         error = f"{type(exc).__name__}: {exc}"
         if exc.code in ({

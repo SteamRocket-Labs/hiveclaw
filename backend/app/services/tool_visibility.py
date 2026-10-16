@@ -37,6 +37,9 @@ def is_tool_allowed_for_agent(tool: Any, agent: Any | None) -> bool:
             getattr(agent, "agent_type", None) == "native"
             and getattr(agent, "agent_class", None) == "internal_tenant"
         )
+    if name == "create_employee_from_request":
+        return (getattr(agent, "agent_type", None) == "native"
+                and getattr(agent, "agent_class", None) == "internal_tenant")
     if name in REGULAR_AGENT_ONLY_TOOL_NAMES:
         return not is_hr_agent(agent)
     return True

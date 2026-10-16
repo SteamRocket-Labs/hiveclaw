@@ -101,7 +101,10 @@ export default function HrCreationRecoveryPanel() {
       <div className="hr-recovery-list">
         {drafts.map((draft) => {
           const recovery = draft.recovery;
-          const failure = draftFailure(draft);
+          const firstTaskRecovery = draft.draft_status === 'completed' && Boolean(draft.provisioning?.first_task);
+          const failure = firstTaskRecovery
+            ? t('employees.hrRecovery.firstTaskPending', 'The employee is ready; its first task needs recovery.')
+            : draftFailure(draft);
           return (
             <article className="hr-recovery-item" key={draft.blueprint_id} data-status={draft.draft_status}>
               <div>
@@ -132,7 +135,9 @@ export default function HrCreationRecoveryPanel() {
                     disabled={retryMutation.isPending}
                     onClick={() => retryMutation.mutate(draft)}
                   >
-                    {t('employees.hrRecovery.retry', 'Retry provisioning')}
+                    {firstTaskRecovery
+                      ? t('agent.chat.toolResults.retryFirstTask', 'Retry first task')
+                      : t('employees.hrRecovery.retry', 'Retry provisioning')}
                   </button>
                 )}
                 {recovery?.can_abandon && (

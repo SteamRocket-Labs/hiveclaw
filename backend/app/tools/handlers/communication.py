@@ -335,8 +335,9 @@ async def delegate_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
         work_amplifying=True,
         description=(
             "Hand an authenticated user's digital-employee creation request from this direct Session to the "
-            "company's governed HR Agent. Use this when the user asks you to create, hire, or set up another "
-            "persistent digital employee. Submit the complete brief once; do not use ordinary A2A or Agent Team "
+            "company's governed HR Agent when custom configuration needs HR guidance. Prefer "
+            "create_employee_from_request for an explicit request using approved private defaults. "
+            "Submit the complete brief once; do not use ordinary A2A or Agent Team "
             "for this handoff. This tool does not create an employee and does not confirm anything: HR Agent owns "
             "the blueprint, and the user must review and confirm the exact HR preview before provisioning."
         ),

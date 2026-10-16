@@ -3254,6 +3254,10 @@
       "ownerRequired": "Ask the account owner to reconnect, or choose another authorized account.",
       "employeePermissionRequired": "An employee manager must enable this connection and its tools before it can be used."
     },
+    "apiAccounts": {
+      "title": "HTTP/API accounts",
+      "confirm": "Use this API account for the original work"
+    },
     "mailboxAccounts": {
       "title": "Mailboxes and use",
       "confirm": "Use this mailbox for this work"

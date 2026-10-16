@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, urljoin, urlparse
 
+from fastapi import HTTPException
 from sqlalchemy import select
 
 from app.database import tenant_scoped_session
@@ -396,7 +397,7 @@ async def execute_prepared_custom_api_request(tool_name: str, prepared: Prepared
     return f"Custom API `{tool_name}` HTTP {response.status_code}\n\n{body}"
 
 
-async def execute_custom_api_tool(tool_name: str, arguments: dict, *, agent_id: uuid.UUID | None) -> str:
+async def execute_custom_api_tool(tool_name: str, arguments: dict, *, agent_id: uuid.UUID | None, execution_context=None) -> str:
     if agent_id is None:
         return f"Unknown tool: {tool_name}"
     try:
@@ -420,7 +421,12 @@ async def execute_custom_api_tool(tool_name: str, arguments: dict, *, agent_id: 
                 return f"❌ Custom API tool {tool_name} denied by this agent's tool assignment"
             if assignment is None and not bool(getattr(tool, "is_default", False)):
                 return f"Unknown tool: {tool_name}"
-            runtime_config = await resolve_tool_config(tool_name, tenant_id, agent_id=agent_id, db=db)
+            if execution_context is None:
+                runtime_config = await resolve_tool_config(tool_name, tenant_id, agent_id=agent_id, db=db)
+            else:
+                from app.services.custom_api_accounts import resolve_account_config
+
+                runtime_config = await resolve_account_config(db, tool=tool, agent_id=agent_id, context=execution_context)
         secret_config = {
             key: str(runtime_config.get(key) or "") for key in _SECRET_CONFIG_KEYS if runtime_config.get(key)
         }
@@ -430,7 +436,16 @@ async def execute_custom_api_tool(tool_name: str, arguments: dict, *, agent_id: 
             secret_config=secret_config,
             arguments=arguments,
         )
+        if execution_context is not None:
+            from app.services.exact_secret_boundary import ExactSecretBoundary
+
+            execution_context.exact_secret_boundary = ExactSecretBoundary.combine(execution_context.exact_secret_boundary,
+                ExactSecretBoundary.from_pairs((f"custom-api-account://{tool.id}", value) for value in prepared.secret_values))
         return await execute_prepared_custom_api_request(tool_name, prepared)
+    except HTTPException as exc:
+        error_class = "custom_api_account_denied" if exc.status_code == 403 else "custom_api_account_unavailable" if exc.status_code == 404 else "custom_api_account_review_required"
+        return render_tool_error(tool_name=tool_name, error_class=error_class, message=str(exc.detail),
+            provider="custom_api", retryable=False, actionable_hint="Review the account and authorization in the original work or employee profile.")
     except CustomApiConnectorError as exc:
         return render_tool_error(
             tool_name=tool_name,

@@ -12,7 +12,7 @@ import { toolsApi, type AgentTool } from '../../api/domains/tools';
 import { showAppToast } from '../../components/AppDialogs';
 import ToolIcon from '../../components/ToolIcon';
 import ToolConfigurationForm from './ToolConfigurationForm';
-import MailboxAccounts from './MailboxAccounts';
+import ToolAccounts from './ToolAccounts';
 import { McpToolTrustBadge } from './McpToolTrustBadge';
 import './ToolsManager.css';
 
@@ -264,7 +264,7 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
   return (
     <>
       <div className="tools-manager-sections">
-        {tools.filter((tool) => tool.name === 'send_email').map((tool) => <MailboxAccounts key={`${agentId}:${tool.id}`}
+        {tools.filter((tool) => tool.name === 'send_email' || tool.type === 'custom_api' && !!tool.config_schema?.fields?.length).map((tool) => <ToolAccounts key={`${agentId}:${tool.id}`}
           agentId={agentId} tool={tool} canManageCompany={canManage} onSaveCompany={async (config) => {
             const saved = await toolsApi.updateToolConfig(agentId, tool.id, config);
             if (activeView.current === sourceView) setTools((previous) => previous.map((current) => current.id === saved.tool.id ? saved.tool : current));

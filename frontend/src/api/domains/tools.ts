@@ -80,10 +80,14 @@ export interface SessionToolConfiguration {
   replayed?: boolean;
   tool: AgentTool;
   can_manage_company_mailbox?: boolean;
+  can_manage_company_api_account?: boolean;
+  api_account_selection?: SessionToolConfiguration['mailbox_selection'];
   mailbox_selection?: { account_id: string | null; account_version?: number | null; grant_version?: number | null } | null;
 }
 
-export interface MailboxAccount {
+export interface ToolAccount {
+  connection_revision?: string;
+  connection?: { base_url: string; method: string; path: string };
   id: string | null;
   owner_user_id: string | null;
   name: string;
@@ -180,15 +184,27 @@ export const toolsApi = {
   /** Per-tool config */
   updateToolConfig: (agentId: string, toolId: string, config: Record<string, unknown>) =>
     put<{ ok: boolean; tool: AgentTool }>(`/tools/agents/${agentId}/tool-config/${toolId}`, { config }),
-  listMailboxes: (agentId: string) => get<MailboxAccount[]>(`/agents/${agentId}/email-accounts`),
-  createMailbox: (agentId: string, id: string, name: string) => post<MailboxAccount>(`/agents/${agentId}/email-accounts`, { id, name }),
-  getMailbox: (id: string) => get<MailboxAccount>(`/email-accounts/${id}`),
+  listApiAccounts: (agentId: string, toolId: string) => get<ToolAccount[]>(`/agents/${agentId}/custom-api-connectors/${toolId}/accounts`),
+  createApiAccount: (agentId: string, toolId: string, id: string, name: string) => post<ToolAccount>(`/agents/${agentId}/custom-api-connectors/${toolId}/accounts`, { id, name }),
+  getApiAccount: (id: string) => get<ToolAccount>(`/custom-api-accounts/${id}`),
+  saveApiAccount: (id: string, expectedVersion: number, config: Record<string, unknown>, connectionRevision: string) =>
+    put<ToolAccount>(`/custom-api-accounts/${id}`, { expected_version: expectedVersion, config, connection_revision: connectionRevision }),
+  setApiAccountGrant: (id: string, agentId: string, requesterId: string, enabled: boolean, expectedVersion: number) =>
+    put<{ enabled: boolean; version: number }>(`/custom-api-accounts/${id}/grants/${agentId}/${requesterId}`, { enabled, expected_version: expectedVersion }),
+  revokeApiAccount: (id: string, expectedVersion: number) => post<ToolAccount>(`/custom-api-accounts/${id}/revoke`, { expected_version: expectedVersion }),
+  confirmSessionApiAccount: (agentId: string, sessionId: string, questionId: string, account: ToolAccount) =>
+    post<SessionToolConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/configuration/api-account`, {
+      account_id: account.id, account_version: account.version, grant_version: account.grant_version || undefined, company_revision: account.revision,
+    }),
+  listMailboxes: (agentId: string) => get<ToolAccount[]>(`/agents/${agentId}/email-accounts`),
+  createMailbox: (agentId: string, id: string, name: string) => post<ToolAccount>(`/agents/${agentId}/email-accounts`, { id, name }),
+  getMailbox: (id: string) => get<ToolAccount>(`/email-accounts/${id}`),
   saveMailbox: (id: string, expectedVersion: number, config: Record<string, unknown>, sourceAgentId: string) =>
-    put<MailboxAccount>(`/email-accounts/${id}`, { expected_version: expectedVersion, config, source_agent_id: sourceAgentId }),
+    put<ToolAccount>(`/email-accounts/${id}`, { expected_version: expectedVersion, config, source_agent_id: sourceAgentId }),
   setMailboxGrant: (id: string, agentId: string, requesterId: string, enabled: boolean, expectedVersion: number) =>
     put<{ enabled: boolean; version: number }>(`/email-accounts/${id}/grants/${agentId}/${requesterId}`, { enabled, expected_version: expectedVersion }),
-  revokeMailbox: (id: string, expectedVersion: number) => post<MailboxAccount>(`/email-accounts/${id}/revoke`, { expected_version: expectedVersion }),
-  confirmSessionMailbox: (agentId: string, sessionId: string, questionId: string, account: MailboxAccount) =>
+  revokeMailbox: (id: string, expectedVersion: number) => post<ToolAccount>(`/email-accounts/${id}/revoke`, { expected_version: expectedVersion }),
+  confirmSessionMailbox: (agentId: string, sessionId: string, questionId: string, account: ToolAccount) =>
     post<SessionToolConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/configuration/mailbox`, {
       account_id: account.id, account_version: account.version, grant_version: account.grant_version || undefined, company_revision: account.revision,
     }),

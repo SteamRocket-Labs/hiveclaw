@@ -78,6 +78,10 @@ async def validate_configuration_answer(db, question, content_parts, *, user=Non
         from app.services.email_accounts import validate_configuration_answer as validate_mailbox
 
         await validate_mailbox(db, question=question, payload=payload, user=user)
+    if content_parts == saved and str(payload["configuration_request"].get("tool_name") or "").startswith("custom_api__"):
+        from app.services.custom_api_accounts import validate_configuration_answer as validate_api_account
+
+        await validate_api_account(db, question=question, payload=payload, user=user)
 
 
 async def load_answer_question(db, *, authority, item_id):

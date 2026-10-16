@@ -2,7 +2,7 @@
 import React from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
-import MailboxAccounts from './MailboxAccounts';
+import ToolAccounts from './ToolAccounts';
 import InlineToolConfigurationCard from './InlineToolConfigurationCard';
 
 vi.mock('react-i18next', () => {
@@ -14,7 +14,8 @@ vi.mock('../../stores', () => {
   return { useAuthStore: Object.assign((selector: (value: typeof state) => unknown) => selector(state), { getState: () => state }) };
 });
 const api = vi.hoisted(() => ({ listMailboxes: vi.fn(), createMailbox: vi.fn(), getMailbox: vi.fn(), saveMailbox: vi.fn(),
-  setMailboxGrant: vi.fn(), revokeMailbox: vi.fn(), getSessionToolConfiguration: vi.fn(), confirmSessionMailbox: vi.fn(), saveSessionToolConfiguration: vi.fn() }));
+  setMailboxGrant: vi.fn(), revokeMailbox: vi.fn(), getSessionToolConfiguration: vi.fn(), confirmSessionMailbox: vi.fn(), saveSessionToolConfiguration: vi.fn(),
+  listApiAccounts: vi.fn(), createApiAccount: vi.fn(), getApiAccount: vi.fn(), saveApiAccount: vi.fn(), setApiAccountGrant: vi.fn(), revokeApiAccount: vi.fn(), confirmSessionApiAccount: vi.fn() }));
 vi.mock('../../api/domains/tools', () => ({ toolsApi: api }));
 const company = { id: null, owner_user_id: null, name: 'Company mailbox', is_configured: true, account_use_enabled: true, revision: 'company-revision' };
 const personal = { id: 'personal', owner_user_id: 'requester', name: 'My mailbox', is_configured: true, account_use_enabled: true, version: 2, grant_version: 1 };
@@ -22,13 +23,55 @@ const tool = { id: 'email', name: 'send_email', display_name: 'Email', agent_con
   config_schema: { fields: [{ key: 'email_address', label: 'Email address' }, { key: 'auth_code', label: 'App password', type: 'password' }] } };
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 
+it('uses the API account editor and preserves its reviewed connector revision', async () => {
+  const account = { ...personal, connection_revision: 'reviewed-connector', connection: { base_url: 'https://crm.fixture.test', method: 'GET', path: '/contacts' } };
+  const apiTool = { ...tool, id: 'crm', name: 'custom_api__crm__read', type: 'custom_api', config_schema: { fields: [{ key: 'bearer_token', label: 'Bearer Token', type: 'password' }] } };
+  api.listApiAccounts.mockResolvedValue([company, account]);
+  api.getApiAccount.mockResolvedValue({ ...account, connection_revision: 'reviewed-editor-connector',
+    connection: { ...account.connection, base_url: 'https://updated.crm.fixture.test' }, config: { bearer_token: '__HIVE_SECRET_SET__' } });
+  api.saveApiAccount.mockResolvedValue({});
+  render(<ToolAccounts agentId="employee" tool={apiTool as any} canManageCompany={false} initialAccountId="personal" onSaveCompany={vi.fn()} />);
+  await screen.findByText('GET · https://crm.fixture.test/contacts');
+  fireEvent.click(screen.getByRole('button', { name: 'common.edit' }));
+  await screen.findByText('GET · https://updated.crm.fixture.test/contacts');
+  fireEvent.change(await screen.findByLabelText('Bearer Token'), { target: { value: 'synthetic-private-api-key' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.saveApiAccount).toHaveBeenCalledWith('personal', 2, { bearer_token: 'synthetic-private-api-key' }, 'reviewed-editor-connector'));
+  expect(api.listApiAccounts).toHaveBeenCalledWith('employee', 'crm');
+  expect(api.saveMailbox).not.toHaveBeenCalled();
+});
+
+it('restores the original API selection and requires confirmation after a changed choice', async () => {
+  const apiTool = { ...tool, id: 'crm', name: 'custom_api__crm__read', type: 'custom_api' };
+  const response = { state: 'saved', target_agent_id: 'employee', target_agent_name: 'Analyst', tool: apiTool,
+    can_manage_company_api_account: false, api_account_selection: { account_id: 'personal' } };
+  api.getSessionToolConfiguration.mockResolvedValue(response);
+  api.listApiAccounts.mockResolvedValue([company, personal]);
+  api.confirmSessionApiAccount.mockResolvedValue(response);
+  const answer = vi.fn().mockRejectedValueOnce(new Error('Unknown continuation receipt')).mockResolvedValue({});
+  render(<InlineToolConfigurationCard agentId="source" sessionId="work" questionId="question" question="Choose CRM" onAnswer={answer} />);
+  await screen.findByRole('option', { name: /My mailbox/ });
+  expect((screen.getByLabelText('agent.mcpAccounts.choose') as HTMLSelectElement).value).toBe('personal');
+  fireEvent.change(screen.getByLabelText('agent.mcpAccounts.choose'), { target: { value: 'company' } });
+  expect((screen.getByRole('button', { name: 'Continue original work' }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: 'agent.apiAccounts.confirm' }));
+  await waitFor(() => expect(api.confirmSessionApiAccount).toHaveBeenCalledWith('source', 'work', 'question', company));
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Continue original work' }) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(screen.getByRole('button', { name: 'Continue original work' }));
+  await screen.findByText('Unknown continuation receipt');
+  fireEvent.click(screen.getByRole('button', { name: 'Continue original work' }));
+  await waitFor(() => expect(answer).toHaveBeenCalledTimes(2));
+  expect(api.confirmSessionApiAccount).toHaveBeenCalledTimes(1);
+  expect(api.saveApiAccount).not.toHaveBeenCalled();
+});
+
 it('saves an owned mailbox without confirming or continuing and retains a failed credential draft', async () => {
   api.listMailboxes.mockResolvedValue([company, personal]);
   api.getMailbox.mockResolvedValue({ ...personal, config: { email_address: 'private@fixture.test', auth_code: '__HIVE_SECRET_SET__' } });
   let failSave: (error: Error) => void;
   api.saveMailbox.mockReturnValueOnce(new Promise((_resolve, reject) => { failSave = reject; })).mockResolvedValue({});
   const confirm = vi.fn(), saveCompany = vi.fn();
-  render(<MailboxAccounts agentId="employee" tool={tool as any} canManageCompany={false} onSaveCompany={saveCompany} onConfirm={confirm} />);
+  render(<ToolAccounts agentId="employee" tool={tool as any} canManageCompany={false} onSaveCompany={saveCompany} onConfirm={confirm} />);
   await screen.findByRole('option', { name: /My mailbox/ });
   fireEvent.change(screen.getByLabelText('agent.mcpAccounts.choose'), { target: { value: 'personal' } });
   fireEvent.click(await screen.findByRole('button', { name: 'common.edit' }));
@@ -86,7 +129,7 @@ it('restores the saved personal selection and requires review after choosing a d
 it('deactivates only the reviewed mailbox version', async () => {
   api.listMailboxes.mockResolvedValue([company, personal]);
   api.revokeMailbox.mockResolvedValue({ ...personal, is_configured: false, version: 3 });
-  render(<MailboxAccounts agentId="employee" tool={tool as any} initialAccountId="personal" canManageCompany={false} onSaveCompany={vi.fn()} />);
+  render(<ToolAccounts agentId="employee" tool={tool as any} initialAccountId="personal" canManageCompany={false} onSaveCompany={vi.fn()} />);
   await screen.findByRole('option', { name: /My mailbox/ });
   fireEvent.click(screen.getByRole('button', { name: 'agent.mcpAccounts.revoke' }));
   fireEvent.click(screen.getByRole('button', { name: 'agent.mcpAccounts.confirmRevoke' }));

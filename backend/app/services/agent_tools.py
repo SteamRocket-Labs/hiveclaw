@@ -187,7 +187,7 @@ def _get_tool_runtime_service() -> ToolRuntimeService:
         if tool_name.startswith("custom_api__"):
             from app.services.custom_api_connectors import execute_custom_api_tool
 
-            return await execute_custom_api_tool(tool_name, arguments, agent_id=context.agent_id)
+            return await execute_custom_api_tool(tool_name, arguments, agent_id=context.agent_id, execution_context=context)
         return await _execute_mcp_tool(tool_name, arguments, agent_id=context.agent_id, execution_context=context)
 
     async def _direct_fallback_execute(tool_name: str, arguments: dict, context) -> str:
@@ -197,7 +197,7 @@ def _get_tool_runtime_service() -> ToolRuntimeService:
         if tool_name.startswith("custom_api__"):
             from app.services.custom_api_connectors import execute_custom_api_tool
 
-            return await execute_custom_api_tool(tool_name, arguments, agent_id=context.agent_id)
+            return await execute_custom_api_tool(tool_name, arguments, agent_id=context.agent_id, execution_context=context)
         return await _execute_mcp_tool(tool_name, arguments, agent_id=context.agent_id, execution_context=context)
 
     async def _log_activity(*args, **kwargs) -> None:

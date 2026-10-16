@@ -58,7 +58,8 @@ async def test_execute_tool_inner_prefers_tool_execution_registry(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_inner_falls_back_to_mcp_executor(monkeypatch):
+@pytest.mark.parametrize("tool_name", ["custom_remote_tool", "custom_api__crm__read"])
+async def test_execute_tool_inner_preserves_remote_execution_context(monkeypatch, tool_name):
     from app.services import agent_tools as agent_tools_module
     from app.tools.runtime import ToolExecutionContext
 
@@ -69,29 +70,30 @@ async def test_execute_tool_inner_falls_back_to_mcp_executor(monkeypatch):
     async def fake_try_execute(_request):
         return None
 
-    async def fake_execute_mcp_tool(tool_name, arguments, agent_id=None):
+    async def fake_execute_mcp_tool(tool_name, arguments, agent_id=None, execution_context=None):
         captured["tool_name"] = tool_name
         captured["arguments"] = arguments
         captured["agent_id"] = agent_id
+        captured["execution_context"] = execution_context
         return "FROM_MCP"
 
     monkeypatch.setattr(agent_tools_module._TOOL_EXECUTION_REGISTRY, "try_execute", fake_try_execute)
-    monkeypatch.setattr(agent_tools_module, "_execute_mcp_tool", fake_execute_mcp_tool)
+    if tool_name.startswith("custom_api__"):
+        monkeypatch.setattr("app.services.custom_api_connectors.execute_custom_api_tool", fake_execute_mcp_tool)
+    else:
+        monkeypatch.setattr(agent_tools_module, "_execute_mcp_tool", fake_execute_mcp_tool)
 
+    context = ToolExecutionContext(agent_id=agent_id, user_id=user_id, tenant_id="tenant-1", workspace=Path("/tmp/ws"))
     result = await agent_tools_module._execute_tool_inner(
-        "custom_remote_tool",
+        tool_name,
         {"query": "agent"},
-        ToolExecutionContext(
-            agent_id=agent_id,
-            user_id=user_id,
-            tenant_id="tenant-1",
-            workspace=Path("/tmp/ws"),
-        ),
+        context,
     )
 
     assert result == "FROM_MCP"
     assert captured == {
-        "tool_name": "custom_remote_tool",
+        "tool_name": tool_name,
         "arguments": {"query": "agent"},
         "agent_id": agent_id,
+        "execution_context": context,
     }

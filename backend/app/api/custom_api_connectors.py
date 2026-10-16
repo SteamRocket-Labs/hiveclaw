@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import get_current_admin
+from app.core.security import get_current_admin, get_current_user
 from app.database import get_db
 from app.models.tool import AgentTool, Tool
 from app.models.agent import Agent
@@ -32,6 +32,141 @@ from app.services.tool_config_service import (
 )
 
 router = APIRouter(tags=["custom-api-connectors"])
+
+
+class ApiAccountCreateIn(BaseModel):
+    id: uuid.UUID
+    name: str = Field(min_length=1, max_length=200)
+
+
+class ApiAccountSaveIn(BaseModel):
+    expected_version: int = Field(ge=1)
+    connection_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    config: dict
+
+
+class ApiAccountGrantIn(BaseModel):
+    expected_version: int = Field(ge=0)
+    enabled: bool
+
+
+class ApiAccountRevokeIn(BaseModel):
+    expected_version: int = Field(ge=1)
+
+
+async def _account_connector(db, user, agent_id, tool_id):
+    from app.core.permissions import require_agent_execution_access
+    from app.api.tools import _get_visible_agent_tool
+
+    agent, _access = await require_agent_execution_access(db, user, agent_id)
+    tool = await _get_visible_agent_tool(db, agent, tool_id)
+    if tool is None or tool.type != "custom_api" or tool.tenant_id != agent.tenant_id:
+        raise HTTPException(404, "Approved API connector not found")
+    return agent, tool
+
+
+async def _owned_api_account(db, user, account_id):
+    from app.core.tenant_scope import resolve_and_pin_tenant_scope
+    from app.services.custom_api_accounts import owned_account
+
+    tenant_id = await resolve_and_pin_tenant_scope(db, user)
+    return await owned_account(db, user=user, tenant_id=tenant_id, account_id=account_id)
+
+
+@router.get("/agents/{agent_id}/custom-api-connectors/{tool_id}/accounts")
+async def list_api_accounts(agent_id: uuid.UUID, tool_id: uuid.UUID,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.custom_api_accounts import list_accounts
+
+    agent, tool = await _account_connector(db, current_user, agent_id, tool_id)
+    return await list_accounts(db, user=current_user, agent=agent, tool=tool)
+
+
+@router.post("/agents/{agent_id}/custom-api-connectors/{tool_id}/accounts")
+async def create_api_account(agent_id: uuid.UUID, tool_id: uuid.UUID, data: ApiAccountCreateIn,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from sqlalchemy.exc import IntegrityError
+    from app.models.custom_api_account import CustomApiAccount
+    from app.services.custom_api_accounts import account_public, active_user, credential_schema
+
+    agent, tool = await _account_connector(db, current_user, agent_id, tool_id)
+    await active_user(db, current_user.id, agent.tenant_id)
+    name = data.name.strip()
+    if not name or not credential_schema(tool)["fields"]:
+        raise HTTPException(422, "A name and a connector requiring credentials are needed")
+    account = await db.get(CustomApiAccount, data.id)
+    if account is None:
+        try:
+            async with db.begin_nested():
+                account = CustomApiAccount(id=data.id, tenant_id=agent.tenant_id, owner_user_id=current_user.id,
+                    tool_id=tool.id, name=name, config={})
+                db.add(account)
+                await db.flush()
+        except IntegrityError as exc:
+            account = await db.get(CustomApiAccount, data.id)
+            if account is None:
+                raise HTTPException(409, "API account creation conflicts; read back before retrying") from exc
+    if (account.tenant_id, account.owner_user_id, account.tool_id, account.name) != (agent.tenant_id, current_user.id, tool.id, name):
+        raise HTTPException(409, "API account creation identity has different inputs")
+    await db.commit()
+    return account_public(account, tool)
+
+
+@router.get("/custom-api-accounts/{account_id}")
+async def get_api_account(account_id: uuid.UUID, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.custom_api_accounts import account_public, credential_schema, load_connector
+    from app.services.tool_config_service import mask_agent_tool_config_secrets
+
+    account = await _owned_api_account(db, current_user, account_id)
+    tool = await load_connector(db, tenant_id=account.tenant_id, tool_id=account.tool_id)
+    schema = credential_schema(tool)
+    return {**account_public(account, tool), "config": mask_agent_tool_config_secrets(account.config, schema), "config_schema": schema}
+
+
+@router.put("/custom-api-accounts/{account_id}")
+async def save_api_account(account_id: uuid.UUID, data: ApiAccountSaveIn,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.custom_api_accounts import load_connector, save_account
+
+    account = await _owned_api_account(db, current_user, account_id)
+    tool = await load_connector(db, tenant_id=account.tenant_id, tool_id=account.tool_id)
+    result = await save_account(db, account=account, tool=tool, config=data.config, expected_version=data.expected_version,
+        connection_revision=data.connection_revision)
+    await db.commit()
+    return result
+
+
+@router.put("/custom-api-accounts/{account_id}/grants/{agent_id}/{requester_id}")
+async def grant_api_account(account_id: uuid.UUID, agent_id: uuid.UUID, requester_id: uuid.UUID, data: ApiAccountGrantIn,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.custom_api_accounts import set_grant
+
+    account = await _owned_api_account(db, current_user, account_id)
+    await _account_connector(db, current_user, agent_id, account.tool_id)
+    result = await set_grant(db, account=account, agent_id=agent_id, requester_id=requester_id,
+        enabled=data.enabled, expected_version=data.expected_version)
+    await db.commit()
+    return result
+
+
+@router.post("/custom-api-accounts/{account_id}/revoke")
+async def revoke_api_account(account_id: uuid.UUID, data: ApiAccountRevokeIn,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.models.custom_api_account import CustomApiAccountGrant
+
+    account = await _owned_api_account(db, current_user, account_id)
+    grants = (await db.scalars(select(CustomApiAccountGrant).where(CustomApiAccountGrant.account_id == account.id))).all()
+    if data.expected_version != account.version:
+        if data.expected_version + 1 == account.version and not account.config and not any(grant.enabled for grant in grants):
+            return {"id": str(account.id), "version": account.version, "is_configured": False}
+        raise HTTPException(409, "API account changed; review its current version before deactivating it")
+    account.config = {}
+    account.version += 1
+    for grant in grants:
+        grant.enabled = False
+        grant.version += 1
+    await db.commit()
+    return {"id": str(account.id), "version": account.version, "is_configured": False}
 
 
 class CustomApiConnectorIn(BaseModel):
@@ -286,6 +421,11 @@ async def delete_custom_api_connector(
 ):
     tenant_id = _require_tenant(current_user)
     tool = await _get_connector_or_404(db, tenant_id, tool_id)
+    from app.models.custom_api_account import CustomApiAccount, CustomApiWorkAccountBinding
+
+    if (await db.scalar(select(CustomApiAccount.id).where(CustomApiAccount.tool_id == tool.id).limit(1))
+        or await db.scalar(select(CustomApiWorkAccountBinding.id).where(CustomApiWorkAccountBinding.tool_id == tool.id).limit(1))):
+        raise HTTPException(409, "Disable this connector or reconcile its private accounts before deleting it")
     await db.execute(delete(AgentTool).where(AgentTool.tool_id == tool.id))
     await db.delete(tool)
     await db.commit()

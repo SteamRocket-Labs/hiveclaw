@@ -227,8 +227,9 @@ async def test_original_work_freezes_mailbox_and_all_native_email_tools_recheck_
             assert not (await db.scalars(select(model))).all()
 
 
-async def test_native_question_and_successor_consume_the_chosen_mailbox_in_original_work(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+@pytest.mark.parametrize("connection", ["mailbox", "custom_api"])
+async def test_native_question_and_successor_consume_the_chosen_account_in_original_work(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, connection,
 ):
     import asyncio
     import json
@@ -251,16 +252,24 @@ async def test_native_question_and_successor_consume_the_chosen_mailbox_in_origi
     from tests.integration.test_web_chat_worker_restart_kernel_recovery import ScriptedLLMClient, _seed_run, _patch_runtime_seams, _patch_invoker_seams
     from tests.integration.test_web_chat_worker_restart_end_to_end_recovery import _patch_runtime_settings, _patch_environment_seams
 
-    seed = await _seed_run(owner_sessionmaker, tmp_path, prompt="Read my inbox using the mailbox I choose, and report here.")
+    is_api = connection == "custom_api"
+    seed = await _seed_run(owner_sessionmaker, tmp_path, prompt="Read my CRM contacts using the API account I choose, and report here." if is_api else "Read my inbox using the mailbox I choose, and report here.")
     async with owner_sessionmaker() as db:
         user = await db.get(User, seed["user_id"])
         user.role = "member"
         tool = Tool(id=uuid.uuid4(), tenant_id=seed["tenant_id"], name="send_email", display_name="Email",
             config_schema={"fields": [{"key": "auth_code", "type": "password"}]})
         reader = Tool(id=uuid.uuid4(), tenant_id=seed["tenant_id"], name="read_emails", display_name="Read email")
-        db.add_all([tool, reader])
+        if is_api:
+            from app.services.custom_api_connectors import build_custom_api_tool_payload
+
+            payload = build_custom_api_tool_payload(connector_name="Fixture CRM", action_name="Read", description="Read CRM",
+                base_url="https://crm.fixture.test", method="GET", path="/contacts", auth_scheme="bearer")
+            tool = reader = Tool(id=uuid.uuid4(), tenant_id=seed["tenant_id"], name=payload.tool_name,
+                display_name=payload.display_name, type="custom_api", config=payload.tool_config, config_schema=payload.config_schema)
+        db.add_all(list({item.id: item for item in (tool, reader)}.values()))
         await db.flush()
-        db.add_all([AgentTool(agent_id=seed["agent_id"], tenant_id=seed["tenant_id"], tool_id=item.id, enabled=True) for item in (tool, reader)])
+        db.add_all([AgentTool(agent_id=seed["agent_id"], tenant_id=seed["tenant_id"], tool_id=item.id, enabled=True) for item in {item.id: item for item in (tool, reader)}.values()])
         await db.commit()
 
     @asynccontextmanager
@@ -292,8 +301,8 @@ async def test_native_question_and_successor_consume_the_chosen_mailbox_in_origi
     _patch_runtime_settings(monkeypatch, seed)
     _patch_environment_seams(monkeypatch, scoped)
     ask = {"id": "choose-mailbox", "type": "function", "function": {"name": "ask_user_question", "arguments": json.dumps({
-        "questions": [{"question": "Choose the mailbox for this work.", "options": []}], "configuration": {"tool_name": "send_email"}})}}
-    read = {"id": "read-chosen-mailbox", "type": "function", "function": {"name": "read_emails", "arguments": "{}"}}
+        "questions": [{"question": "Choose the mailbox for this work.", "options": []}], "configuration": {"tool_name": tool.name}})}}
+    read = {"id": "read-chosen-mailbox", "type": "function", "function": {"name": reader.name, "arguments": "{}"}}
     model = ScriptedLLMClient([{"tool_calls": [ask], "finish_reason": "tool_calls"},
         {"tool_calls": [read], "finish_reason": "tool_calls"},
         {"content": "MAILBOX_RESULT_23_7_161", "finish_reason": "stop"}])
@@ -301,7 +310,7 @@ async def test_native_question_and_successor_consume_the_chosen_mailbox_in_origi
     monkeypatch.setattr(invoker, "build_agent_context", build_agent_context)
     monkeypatch.setattr(invoker, "execute_tool", agent_tools.execute_tool)
     monkeypatch.setattr(invoker, "get_agent_tools_for_llm", lambda *a, **k: [{"type": "function", "function": {
-        "name": name, "parameters": {"type": "object"}}} for name in ("ask_user_question", "read_emails")])
+        "name": name, "parameters": {"type": "object"}}} for name in ("ask_user_question", reader.name)])
     monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", real_resolve)
     monkeypatch.setattr(tenant_resolver, "async_session", app_user_sessionmaker)
     for module in (resolver, governance_resolver, runtime_task_worker):
@@ -317,6 +326,15 @@ async def test_native_question_and_successor_consume_the_chosen_mailbox_in_origi
         received.append(kwargs["config"]["auth_code"])
         return "MAILBOX_RESULT_23_7_161"
     monkeypatch.setattr(email_service, "read_emails", read_provider)
+    if is_api:
+        from app.services import custom_api_connectors
+        from app.api.custom_api_connectors import router as api_router
+
+        async def api_provider(_name, prepared):
+            assert prepared.url == "https://crm.fixture.test/contacts"
+            received.append(prepared.headers["Authorization"].removeprefix("Bearer "))
+            return "MAILBOX_RESULT_23_7_161"
+        monkeypatch.setattr(custom_api_connectors, "execute_prepared_custom_api_request", api_provider)
     await asyncio.wait_for(web_chat_runtime.execute_web_chat_run(seed["run_id"]), 20)
     assert len(model.requests) == 1
     async with owner_sessionmaker() as db:
@@ -332,18 +350,22 @@ async def test_native_question_and_successor_consume_the_chosen_mailbox_in_origi
             yield db
             await db.commit()
     app = FastAPI()
-    for api in (router, tools_router, chat_router):
+    for api in (router, tools_router, chat_router, *([api_router] if is_api else [])):
         app.include_router(api, prefix="/api")
     app.dependency_overrides[get_current_user] = lambda: user
     app.dependency_overrides[get_db] = database
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://mailbox.test") as http:
-        account = (await http.post(f"/api/agents/{seed['agent_id']}/email-accounts", json={"id": str(uuid.uuid4()), "name": "Chosen mailbox"})).json()
-        saved = await http.put(f"/api/email-accounts/{account['id']}", json={"expected_version": account["version"],
-            "config": {"email_provider": "gmail", "email_address": "chosen@fixture.test", "auth_code": "synthetic-chosen-worker-mailbox"}})
+        account_list = f"/api/agents/{seed['agent_id']}/custom-api-connectors/{tool.id}/accounts" if is_api else f"/api/agents/{seed['agent_id']}/email-accounts"
+        account = (await http.post(account_list, json={"id": str(uuid.uuid4()), "name": "Chosen account"})).json()
+        account_path = f"/api/custom-api-accounts/{account['id']}" if is_api else f"/api/email-accounts/{account['id']}"
+        credentials = {"bearer_token": "synthetic-chosen-worker-mailbox"} if is_api else {
+            "email_provider": "gmail", "email_address": "chosen@fixture.test", "auth_code": "synthetic-chosen-worker-mailbox"}
+        saved = await http.put(account_path, json={"expected_version": account["version"], "config": credentials,
+            **({"connection_revision": account["connection_revision"]} if is_api else {})})
         assert saved.status_code == 200, saved.text
-        grant = await http.put(f"/api/email-accounts/{account['id']}/grants/{seed['agent_id']}/{user.id}", json={"enabled": True, "expected_version": 0})
+        grant = await http.put(f"{account_path}/grants/{seed['agent_id']}/{user.id}", json={"enabled": True, "expected_version": 0})
         assert grant.status_code == 200, grant.text
-        source = f"/api/tools/agents/{seed['agent_id']}/sessions/{seed['session_id']}/questions/{question}/configuration/mailbox"
+        source = f"/api/tools/agents/{seed['agent_id']}/sessions/{seed['session_id']}/questions/{question}/configuration/{'api-account' if is_api else 'mailbox'}"
         confirmed = await http.post(source, json={"account_id": account["id"], "account_version": saved.json()["version"], "grant_version": grant.json()["version"]})
         assert confirmed.status_code == 200 and received == [], confirmed.text
         input_id = uuid.uuid4()

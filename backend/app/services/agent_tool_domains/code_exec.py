@@ -18,6 +18,7 @@ from app.services.external_capabilities.skill_source_adapter import (
 from app.services.subprocess_env import build_agent_subprocess_env
 from app.services.workspace_resource_authority import (
     WorkspaceAuthorityError,
+    delete_workspace_path,
     is_recovery_manifest_storage_path,
     open_workspace_file,
     resolve_workspace_storage_path,
@@ -167,10 +168,8 @@ def authorized_execution_workspace(canonical_workspace: Path, authority_scope):
                 )
 
         for rel in sorted(deleted):
-            target = canonical_work / rel
-            if target.exists() and target.is_file():
-                target.unlink()
-                mutated = True
+            delete_workspace_path(canonical_workspace, f"workspace/{rel}")
+            mutated = True
         for rel in sorted(changed):
             _copy_workspace_resource(isolated, canonical_workspace, f"workspace/{rel}")
             mutated = True

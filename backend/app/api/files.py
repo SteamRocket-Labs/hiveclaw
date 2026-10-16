@@ -1269,6 +1269,7 @@ async def delete_file(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 
         resource_decisions = []
+        is_directory = target.is_dir()
         if _is_user_workspace_path(path):
             from app.services.workspace_resource_authority import authorize_workspace_path
 
@@ -1278,10 +1279,10 @@ async def delete_file(
                     for item in target.rglob("*")
                     if item.is_file()
                 ]
-                if target.is_dir()
+                if is_directory
                 else [path]
             )
-            if not candidate_paths and target.is_dir():
+            if not candidate_paths and is_directory:
                 raise HTTPException(
                     status_code=403,
                     detail={
@@ -1311,12 +1312,18 @@ async def delete_file(
                 except Exception as exc:
                     raise _workspace_authority_http_error(exc) from exc
 
-        if target.is_dir():
-            import shutil
+        from app.services.workspace_resource_authority import WorkspaceAuthorityError, delete_workspace_path
 
-            shutil.rmtree(target)
-        else:
-            target.unlink()
+        try:
+            await asyncio.to_thread(delete_workspace_path, _agent_base_dir(agent_id), path, directory=is_directory)
+        except WorkspaceAuthorityError as exc:
+            error = _workspace_authority_http_error(exc)
+            error.detail.update({
+                "outcome": "denied" if error.status_code == 403 else "unknown",
+                "retryable": False,
+                "actionable_hint": "Refresh and reconcile the canonical resource before another deletion.",
+            })
+            raise error from exc
 
         from app.services.workspace_resource_authority import mark_workspace_path_deleted
 

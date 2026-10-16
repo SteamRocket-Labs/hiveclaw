@@ -17,6 +17,7 @@ from app.services.managed_capability_guard import sanitize_managed_credential_gu
 from app.services.workspace_resource_authority import (
     WorkspaceAuthorityError,
     authorize_workspace_tool_path,
+    delete_workspace_path,
     is_recovery_manifest_storage_path,
     resolve_workspace_storage_path,
     open_workspace_file,
@@ -1553,7 +1554,8 @@ def _delete_file(ws: Path, rel_path: str, tool_name: str = "delete_file", author
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
     if not file_path.exists():
         return _workspace_error(tool_name, "not_found", f"File not found: {rel_path}")
-    if file_path.is_dir():
+    is_directory = file_path.is_dir()
+    if is_directory:
         unauthorized = any(
             not _authority_allows_path(authority_scope, item.relative_to(ws).as_posix(), action="delete")
             for item in file_path.rglob("*")
@@ -1565,10 +1567,11 @@ def _delete_file(ws: Path, rel_path: str, tool_name: str = "delete_file", author
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
 
     try:
-        if file_path.is_dir():
-            shutil.rmtree(file_path)
+        delete_workspace_path(ws, rel_path, directory=is_directory)
+        if is_directory:
             return f"✅ Deleted directory {rel_path}"
-        file_path.unlink()
         return f"✅ Deleted {rel_path}"
+    except WorkspaceAuthorityError as exc:
+        return _workspace_storage_error(tool_name, exc, mutation=True)
     except Exception as e:
         return _workspace_error(tool_name, "operation_failed", f"Delete failed: {e}")

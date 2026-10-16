@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import os
+import shutil
 import stat
 import uuid
 from contextlib import contextmanager
@@ -96,12 +97,7 @@ def resolve_workspace_storage_path(workspace: Path, path: str) -> Path:
 
 
 @contextmanager
-def open_workspace_file(workspace: Path, path: str, *, mode: str = "rb"):
-    """Pin every directory and validate the opened inode before reading or truncating."""
-    if mode not in {"rb", "wb", "r+b"}:
-        raise ValueError("Unsupported workspace file mode")
-    create = mode == "wb"
-    write = mode != "rb"
+def _workspace_parent_descriptor(workspace: Path, path: str, *, create: bool = False):
     if os.open not in os.supports_dir_fd or not hasattr(os, "O_NOFOLLOW"):
         raise WorkspaceAuthorityError("workspace_storage_unavailable", "Safe workspace file access is unavailable on this host.")
     target = resolve_workspace_storage_path(workspace, path)
@@ -111,7 +107,7 @@ def open_workspace_file(workspace: Path, path: str, *, mode: str = "rb"):
         raise WorkspaceAuthorityError("workspace_resource_changed", "The Agent directory changed; reconcile it before retrying.") from exc
     if not parts:
         raise WorkspaceAuthorityError("workspace_resource_changed", "The requested resource is not a regular file.")
-    directory = descriptor = None
+    directory = None
     try:
         directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
         if create:
@@ -126,38 +122,85 @@ def open_workspace_file(workspace: Path, path: str, *, mode: str = "rb"):
             child = os.open(part, directory_flags, dir_fd=directory)
             os.close(directory)
             directory = child
-        flags = {"rb": os.O_RDONLY, "wb": os.O_WRONLY | os.O_CREAT, "r+b": os.O_RDWR}[mode]
-        descriptor = os.open(parts[-1], flags | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o600, dir_fd=directory)
-        opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
-            raise WorkspaceAuthorityError("workspace_resource_changed", "The file changed or has shared ownership; reconcile it before retrying.")
-        if create:
-            os.ftruncate(descriptor, 0)
-        handle = os.fdopen(descriptor, mode)
-        descriptor = None
-        with handle:
-            yield handle
-            if write:
-                handle.flush()
-                os.fsync(handle.fileno())
-            try:
-                current = resolve_workspace_storage_path(workspace, path).stat()
-            except WorkspaceAuthorityError as exc:
-                if write:
-                    raise WorkspaceAuthorityError("workspace_resource_changed", "The path changed after writing; reconcile the file before a new mutation.") from exc
-                raise
-            if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
-                raise WorkspaceAuthorityError("workspace_resource_changed", "The file moved during access; reconcile it before retrying.")
+        parent_info = os.fstat(directory)
+        yield directory, parts[-1]
+        parent_path = Path(*parts[:-1]).as_posix() if parts[:-1] else ""
+        try:
+            current = resolve_workspace_storage_path(workspace, parent_path).stat()
+        except WorkspaceAuthorityError as exc:
+            raise WorkspaceAuthorityError("workspace_resource_changed", "The parent directory changed during access; reconcile before retrying.") from exc
+        if (current.st_dev, current.st_ino) != (parent_info.st_dev, parent_info.st_ino):
+            raise WorkspaceAuthorityError("workspace_resource_changed", "The parent directory moved during access; reconcile before retrying.")
     except OSError as exc:
         import errno
 
         code = "workspace_resource_changed" if exc.errno in {errno.ENOENT, errno.ENOTDIR, errno.ELOOP, errno.EISDIR, errno.EEXIST} else "workspace_storage_unavailable"
         raise WorkspaceAuthorityError(code, "Workspace file access changed or is unavailable; reconcile the path and retry.") from exc
     finally:
-        if descriptor is not None:
-            os.close(descriptor)
         if directory is not None:
             os.close(directory)
+
+
+@contextmanager
+def open_workspace_file(workspace: Path, path: str, *, mode: str = "rb"):
+    """Pin every directory and validate the opened inode before reading or truncating."""
+    if mode not in {"rb", "wb", "r+b"}:
+        raise ValueError("Unsupported workspace file mode")
+    create = mode == "wb"
+    write = mode != "rb"
+    descriptor = None
+    try:
+        with _workspace_parent_descriptor(workspace, path, create=create) as (directory, name):
+            flags = {"rb": os.O_RDONLY, "wb": os.O_WRONLY | os.O_CREAT, "r+b": os.O_RDWR}[mode]
+            descriptor = os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o600, dir_fd=directory)
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+                raise WorkspaceAuthorityError("workspace_resource_changed", "The file changed or has shared ownership; reconcile it before retrying.")
+            if create:
+                os.ftruncate(descriptor, 0)
+            handle = os.fdopen(descriptor, mode)
+            descriptor = None
+            with handle:
+                yield handle
+                if write:
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                try:
+                    current = resolve_workspace_storage_path(workspace, path).stat()
+                except WorkspaceAuthorityError as exc:
+                    if write:
+                        raise WorkspaceAuthorityError("workspace_resource_changed", "The path changed after writing; reconcile the file before a new mutation.") from exc
+                    raise
+                if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+                    raise WorkspaceAuthorityError("workspace_resource_changed", "The file moved during access; reconcile it before retrying.")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def delete_workspace_path(workspace: Path, path: str, *, directory: bool = False) -> None:
+    if os.unlink not in os.supports_dir_fd or os.stat not in os.supports_dir_fd:
+        raise WorkspaceAuthorityError("workspace_storage_unavailable", "Safe workspace deletion is unavailable on this host.")
+    with _workspace_parent_descriptor(workspace, path) as (parent, name):
+        info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if stat.S_ISLNK(info.st_mode) or (stat.S_ISREG(info.st_mode) and info.st_nlink != 1):
+            raise WorkspaceAuthorityError("workspace_resource_alias_forbidden", "Use an independent canonical resource before deleting.")
+        if directory:
+            if not stat.S_ISDIR(info.st_mode):
+                raise WorkspaceAuthorityError("workspace_resource_changed", "The resource is no longer a directory; reconcile before deleting.")
+            if not shutil.rmtree.avoids_symlink_attacks:
+                raise WorkspaceAuthorityError("workspace_storage_unavailable", "Safe recursive deletion is unavailable on this host.")
+            shutil.rmtree(name, dir_fd=parent)
+        else:
+            if not stat.S_ISREG(info.st_mode):
+                raise WorkspaceAuthorityError("workspace_resource_changed", "The resource is no longer a regular file; reconcile before deleting.")
+            os.unlink(name, dir_fd=parent)
+        try:
+            os.stat(name, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise WorkspaceAuthorityError("workspace_resource_changed", "The path was recreated during deletion; reconcile before retrying.")
 
 
 def write_workspace_file(workspace: Path, path: str, content: bytes) -> None:

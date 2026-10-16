@@ -44,6 +44,26 @@ class _SequenceDB:
         pass
 
 
+@pytest.mark.asyncio
+async def test_file_ingress_waits_for_its_upload_receipt(monkeypatch):
+    import app.api.feishu as feishu_api
+
+    started, finish = asyncio.Event(), asyncio.Event()
+    async def upload(*args):
+        started.set()
+        await finish.wait()
+    monkeypatch.setattr(feishu_api, "_handle_feishu_file", upload)
+    task = asyncio.create_task(feishu_api.process_feishu_event(uuid4(), {
+        "header": {"event_type": "im.message.receive_v1"}, "event": {"message": {"message_type": "file"}}},
+        _SequenceDB([]), tenant_channel_config=SimpleNamespace(app_id="fixture", app_secret="synthetic")))
+    try:
+        await asyncio.wait_for(started.wait(), 3)
+        assert not task.done()
+    finally:
+        finish.set()
+    assert await task == {"code": 0, "msg": "ok"}
+
+
 def _principal_resolution(*, platform_user_id, display_name="张三"):
     principal_id = uuid4()
     actor = SimpleNamespace(
@@ -320,7 +340,12 @@ async def test_process_feishu_event_text_binds_execution_identity_and_session_co
         captured["llm_kwargs"] = kwargs
         captured["runtime_delivery_target"] = channel_delivery_target.get()
         captured["execution_identity"] = get_execution_identity()
+        captured["llm_text"] = _user_text
         return "feishu reply"
+
+    async def fake_upload_references(_db, *, actor, session, limit):
+        assert actor is principal_resolution.actor and session.id == session_id and limit == 10
+        return ["workspace/uploads/fixture-owned.txt"]
 
     async def fake_send_message(*_args, **_kwargs):
         return {"data": {"message_id": "msg_1"}}
@@ -350,6 +375,7 @@ async def test_process_feishu_event_text_binds_execution_identity_and_session_co
         "app.services.channel_session.find_or_create_channel_session", fake_find_or_create_channel_session
     )
     monkeypatch.setattr(feishu_api, "call_agent_llm", fake_call_agent_llm)
+    monkeypatch.setattr("app.services.feishu_uploads.session_upload_references", fake_upload_references)
     monkeypatch.setattr(feishu_api.feishu_service, "send_message", fake_send_message)
     monkeypatch.setattr(feishu_api.feishu_service, "patch_message", fake_patch_message)
     monkeypatch.setattr(feishu_api.feishu_service, "create_card_entity", fake_create_card_entity)
@@ -386,6 +412,7 @@ async def test_process_feishu_event_text_binds_execution_identity_and_session_co
     assert captured["session_kwargs"]["user_id"] == platform_user_id
     assert captured["session_kwargs"]["external_principal_id"] == principal_resolution.principal.id
     assert captured["llm_kwargs"]["durable_user"] is principal_resolution.actor
+    assert "workspace/uploads/fixture-owned.txt" in captured["llm_text"]
     assert captured["llm_kwargs"]["session_id"] == str(session_id)
     assert captured["llm_kwargs"]["session_source"] == "feishu"
     assert captured["llm_kwargs"]["session_channel"] == "feishu"

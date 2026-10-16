@@ -1302,7 +1302,9 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
 
         logger.info(f"[Feishu] Received {msg_type} message, chat_type={chat_type}, from={sender_open_id}")
 
-        # ── Normalize post (rich text) → extract text + schedule image downloads ──
+        _post_uploads = []
+
+        # ── Normalize post (rich text) while retaining attachment bytes for the verified sender ──
         if msg_type == "post":
             import json as _json_post
 
@@ -1341,12 +1343,6 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 import base64 as _b64
 
                 _msg_id = message.get("message_id", "")
-                from pathlib import Path as _PostPath
-                from app.config import get_settings as _post_gs
-
-                _post_settings = _post_gs()
-                _upload_dir = _PostPath(_post_settings.AGENT_DATA_DIR) / str(agent_id) / "workspace" / "uploads"
-                _upload_dir.mkdir(parents=True, exist_ok=True)
                 for _ik in _post_image_keys:
                     try:
                         _img_bytes = await feishu_service.download_message_resource(
@@ -1357,10 +1353,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                             "image",
                             extra_config=_feishu_platform_extra(config),
                         )
-                        # Save to workspace
-                        _save_path = _upload_dir / f"image_{_ik[-8:]}.jpg"
-                        _save_path.write_bytes(_img_bytes)
-                        logger.info(f"[Feishu] Saved post image to {_save_path} ({len(_img_bytes)} bytes)")
+                        _post_uploads.append((_ik, _img_bytes))
                         # Embed as base64 marker for vision models
                         _b64_data = _b64.b64encode(_img_bytes).decode("ascii")
                         _image_markers.append(f"[image_data:data:image/jpeg;base64,{_b64_data}]")
@@ -1378,20 +1371,8 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             logger.info(f"[Feishu] Normalized post → text='{_extracted_text[:100]}', images={len(_image_markers)}")
 
         if msg_type in ("file", "image"):
-            import asyncio as _asyncio
-
-            _asyncio.create_task(
-                _handle_feishu_file(
-                    db,
-                    agent_id,
-                    config,
-                    message,
-                    sender_open_id,
-                    sender_user_id_from_event,
-                    chat_type,
-                    chat_id,
-                )
-            )
+            await _handle_feishu_file(db, agent_id, config, message, sender_open_id,
+                sender_user_id_from_event, chat_type, chat_id)
             return {"code": 0, "msg": "ok"}
 
         if msg_type == "text":
@@ -1600,6 +1581,11 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             delivery_target["session_id"] = session_conv_id
             _sess.delivery_target_json = delivery_target
 
+            from app.services.feishu_uploads import save_feishu_upload
+
+            for key, content in _post_uploads:
+                await save_feishu_upload(db, actor=runtime_actor, session=_sess,
+                    message_id=message.get("message_id"), resource_key=key, filename=f"image_{key[-8:]}.jpg", content=content)
             # Save user message
             db.add(
                 ChatMessage(
@@ -1622,40 +1608,11 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 sender_id=sender_user_id_feishu,
             )
 
-            # ── Inject recent uploaded file context ──────────────────────────
-            # Check the uploads directory for recently modified files (within 30 min).
-            # This is more reliable than scanning DB history, because the file save
-            # to disk always succeeds even if the DB transaction fails.
-            try:
-                import time as _time
-                import pathlib as _pl
-                from app.config import get_settings as _gs
+            from app.services.feishu_uploads import session_upload_references
 
-                _upload_dir = _pl.Path(_gs().AGENT_DATA_DIR) / str(agent_id) / "workspace" / "uploads"
-                _recent_file_path = None
-                if _upload_dir.exists() and "uploads/" not in user_text and "workspace/" not in user_text:
-                    _now = _time.time()
-                    _candidates = sorted(
-                        _upload_dir.iterdir(),
-                        key=lambda p: p.stat().st_mtime,
-                        reverse=True,
-                    )
-                    for _fp in _candidates:
-                        if _fp.is_file() and (_now - _fp.stat().st_mtime) < 1800:  # 30 min
-                            _recent_file_path = f"uploads/{_fp.name}"
-                            break
-                if _recent_file_path:
-                    # _recent_file_path is relative to uploads dir; agent workspace root is
-                    # AGENT_DATA_DIR/{agent_id}/, so the correct relative path is workspace/uploads/
-                    _ws_rel_path = f"workspace/{_recent_file_path}"
-                    llm_user_text = (
-                        llm_user_text + f"\n\n[系统提示：用户刚上传了文件，路径为工作区 `{_ws_rel_path}`。"
-                        f"如果用户的指令涉及这篇文章、这个文件、这份文档等，"
-                        f'请立即调用 read_document(path="{_ws_rel_path}") 读取内容，不要先用 list_files 验证，直接读取即可。]'
-                    )
-                    logger.info(f"[Feishu] Injected recent file hint: {_ws_rel_path}")
-            except Exception as _fe:
-                logger.error(f"[Feishu] File injection error: {_fe}")
+            upload_refs = await session_upload_references(db, actor=runtime_actor, session=_sess, limit=_hist_limit)
+            if upload_refs:
+                llm_user_text += "\n\nAttachments registered for this work (authorized references; choose as needed):\n" + "\n".join(upload_refs)
 
             # Set sender open_id contextvar so calendar tool can auto-invite the requester
             from app.services.agent_tools import channel_feishu_sender_open_id as _cfso
@@ -2172,8 +2129,6 @@ async def _handle_feishu_file(
     import asyncio
     import random
     import json
-    from pathlib import Path
-    from app.config import get_settings
     from app.models.audit import ChatMessage
     from app.models.agent import Agent as AgentModel
     from app.services.channel_session import find_or_create_channel_session
@@ -2205,54 +2160,7 @@ async def _handle_feishu_file(
         logger.warning(f"[Feishu] No file_key in {msg_type} message")
         return
 
-    # Resolve workspace upload dir
-    settings = get_settings()
-    upload_dir = Path(settings.AGENT_DATA_DIR) / str(agent_id) / "workspace" / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    save_path = upload_dir / filename
-
-    # Download the file
-    try:
-        file_bytes = await feishu_service.download_message_resource(
-            config.app_id,
-            config.app_secret,
-            message_id,
-            file_key,
-            res_type,
-            extra_config=_feishu_platform_extra(config),
-        )
-        save_path.write_bytes(file_bytes)
-        logger.info(f"[Feishu] Saved {msg_type} to {save_path} ({len(file_bytes)} bytes)")
-    except Exception as e:
-        logger.error(f"[Feishu] Failed to download {msg_type}: {e}")
-        err_tip = "抱歉，文件下载失败。可能原因：机器人缺少 `im:resource` 权限（文件读取）。\n请在飞书开放平台 → 权限管理 → 批量导入权限 JSON → 重新发布机器人版本后重试。"
-        try:
-            import json as _j
-
-            if chat_type == "group" and chat_id:
-                await feishu_service.send_message(
-                    config.app_id,
-                    config.app_secret,
-                    chat_id,
-                    "text",
-                    _j.dumps({"text": err_tip}),
-                    receive_id_type="chat_id",
-                    extra_config=_feishu_platform_extra(config),
-                )
-            else:
-                await feishu_service.send_message(
-                    config.app_id,
-                    config.app_secret,
-                    sender_open_id,
-                    "text",
-                    _j.dumps({"text": err_tip}),
-                    extra_config=_feishu_platform_extra(config),
-                )
-        except Exception as e2:
-            logger.error(f"[Feishu] Also failed to send error tip: {e2}")
-        return
-
-    # Resolve platform user and session using a fresh db session
+    # Resolve the sender and original work before accessing provider resources.
     async with _tenant_scoped_session(_feishu_tenant_id) as db:
         agent_r = await db.execute(_select(AgentModel).where(AgentModel.id == agent_id))
         agent_obj = agent_r.scalar_one_or_none()
@@ -2341,6 +2249,55 @@ async def _handle_feishu_file(
         delivery_target["session_id"] = session_conv_id
         _sess.delivery_target_json = delivery_target
 
+        from app.services.session_v2_persistence import resolve_session_mutation_authority
+
+        await resolve_session_mutation_authority(db, user=runtime_actor, agent_id=agent_id,
+            session_id=_sess.id, action="mutate_session_input")
+
+        # Download the file
+        try:
+            file_bytes = await feishu_service.download_message_resource(
+                config.app_id,
+                config.app_secret,
+                message_id,
+                file_key,
+                res_type,
+                extra_config=_feishu_platform_extra(config),
+            )
+        except Exception as e:
+            logger.error(f"[Feishu] Failed to download {msg_type}: {e}")
+            err_tip = "抱歉，文件下载失败。可能原因：机器人缺少 `im:resource` 权限（文件读取）。\n请在飞书开放平台 → 权限管理 → 批量导入权限 JSON → 重新发布机器人版本后重试。"
+            try:
+                import json as _j
+
+                if chat_type == "group" and chat_id:
+                    await feishu_service.send_message(
+                        config.app_id,
+                        config.app_secret,
+                        chat_id,
+                        "text",
+                        _j.dumps({"text": err_tip}),
+                        receive_id_type="chat_id",
+                        extra_config=_feishu_platform_extra(config),
+                    )
+                else:
+                    await feishu_service.send_message(
+                        config.app_id,
+                        config.app_secret,
+                        sender_open_id,
+                        "text",
+                        _j.dumps({"text": err_tip}),
+                        extra_config=_feishu_platform_extra(config),
+                    )
+            except Exception as e2:
+                logger.error(f"[Feishu] Also failed to send error tip: {e2}")
+            return
+
+        from app.services.feishu_uploads import save_feishu_upload
+
+        upload_path = await save_feishu_upload(db, actor=runtime_actor, session=_sess,
+            message_id=message_id, resource_key=file_key, filename=filename, content=file_bytes)
+
         # Store user message — include base64 marker for images so LLM can see them
         if msg_type == "image":
             import base64 as _b64_img
@@ -2349,18 +2306,18 @@ async def _handle_feishu_file(
             _image_marker = f"[image_data:data:image/jpeg;base64,{_b64_data}]"
             user_msg_content = f"[用户发送了图片]\n{_image_marker}"
         else:
-            user_msg_content = f"[file:{filename}]"
-        db.add(
-            ChatMessage(
-                agent_id=agent_id,
-                tenant_id=_feishu_tenant_id,
-                user_id=platform_user_id,
-                external_principal_id=external_principal_id,
-                role="user",
-                content=user_msg_content if msg_type != "image" else f"[file:{filename}]",
-                conversation_id=session_conv_id,
-            )
-        )
+            user_msg_content = f"[file:{upload_path}]"
+        saved_content = user_msg_content if msg_type != "image" else f"[file:{upload_path}]"
+        input_id = uuid.uuid5(external_principal_id, upload_path)
+        previous_input = await db.get(ChatMessage, input_id)
+        if previous_input is not None:
+            if (previous_input.tenant_id, previous_input.agent_id, previous_input.user_id, previous_input.external_principal_id,
+                previous_input.conversation_id, previous_input.content) != (
+                _feishu_tenant_id, agent_id, platform_user_id, external_principal_id, session_conv_id, saved_content):
+                raise HTTPException(409, "Upload message identity conflicts with its original input; reconcile before retrying")
+        else:
+            db.add(ChatMessage(id=input_id, agent_id=agent_id, tenant_id=_feishu_tenant_id, user_id=platform_user_id,
+                external_principal_id=external_principal_id, role="user", content=saved_content, conversation_id=session_conv_id))
         _sess.last_message_at = _dt.now(_tz.utc)
 
         # Load conversation history for LLM context
@@ -2541,29 +2498,3 @@ async def _handle_feishu_file(
 
     # Provider receipt only: never place platform-authored ACK text in the
     # model-visible assistant history.
-
-
-async def _download_post_images(agent_id, config, message_id, image_keys):
-    """Download images embedded in a Feishu post message to the agent's workspace."""
-    from pathlib import Path
-    from app.config import get_settings
-
-    settings = get_settings()
-    upload_dir = Path(settings.AGENT_DATA_DIR) / str(agent_id) / "workspace" / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-
-    for ik in image_keys:
-        try:
-            file_bytes = await feishu_service.download_message_resource(
-                config.app_id,
-                config.app_secret,
-                message_id,
-                ik,
-                "image",
-                extra_config=_feishu_platform_extra(config),
-            )
-            save_path = upload_dir / f"image_{ik[-8:]}.jpg"
-            save_path.write_bytes(file_bytes)
-            logger.info(f"[Feishu] Saved post image to {save_path} ({len(file_bytes)} bytes)")
-        except Exception as e:
-            logger.error(f"[Feishu] Failed to download post image {ik}: {e}")

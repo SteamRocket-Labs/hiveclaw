@@ -1,3 +1,4 @@
+import { parseUserAttachment } from './agent-detail/chatAttachments';
 import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -1520,7 +1521,6 @@ function AgentDetailInner() {
     }, [id]);
 
     // Load chat history + connect websocket when chat tab is active
-    const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'];
     const normalizeToolCallMessage = (msg: AgentChatMessage): AgentChatMessage => {
         if (msg.role !== 'tool_call' || !msg.toolName) {
             return msg;
@@ -1542,31 +1542,7 @@ function AgentDetailInner() {
         if (runtimeEvent) return runtimeEvent;
         if (msg.role === 'tool_call') return normalizeToolCallMessage(msg);
         if (msg.role !== 'user') return msg;
-        let parsed = { ...msg };
-        // Standard web chat format: [file:name.pdf]\ncontent
-        const newFmt = msg.content.match(/^\[file:([^\]]+)\]\n?/);
-        if (newFmt) { parsed = { ...msg, fileName: newFmt[1], content: msg.content.slice(newFmt[0].length).trim() }; }
-        // Feishu/Slack channel format: [文件已上传: workspace/uploads/name]
-        const chanFmt = !newFmt && msg.content.match(/^\[\u6587\u4ef6\u5df2\u4e0a\u4f20: (?:workspace\/uploads\/)?([^\]\n]+)\]/);
-        if (chanFmt) {
-            const raw = chanFmt[1]; const fileName = raw.split('/').pop() || raw;
-            parsed = { ...msg, fileName, content: msg.content.slice(chanFmt[0].length).trim() };
-        }
-        // Old format: [File: name.pdf]\nFile location:...\nQuestion: user_msg
-        const oldFmt = !newFmt && !chanFmt && msg.content.match(/^\[File: ([^\]]+)\]/);
-        if (oldFmt) {
-            const fileName = oldFmt[1];
-            const qMatch = msg.content.match(/\nQuestion: ([\s\S]+)$/);
-            parsed = { ...msg, fileName, content: qMatch ? qMatch[1].trim() : '' };
-        }
-        // If file is an image and no imageUrl yet, build download URL for preview
-        if (parsed.fileName && !parsed.imageUrl && id) {
-            const ext = parsed.fileName.split('.').pop()?.toLowerCase() || '';
-            if (IMAGE_EXTS.includes(ext)) {
-                parsed.imageUrl = `/api/agents/${id}/files/download?path=workspace/uploads/${encodeURIComponent(parsed.fileName)}`;
-            }
-        }
-        return parsed;
+        return parseUserAttachment(msg, id);
     };
 
 

@@ -7,6 +7,15 @@ import {
   parsePreviewAgentBlueprintResult,
 } from './toolResultEnvelope';
 
+it('recognizes only a confirmed recorded first-task receipt', () => {
+  const receipt = { ok: true, status: 'queued', first_task_draft_id: 'draft', runtime_task_id: 'same-child' };
+  expect(normalizeToolCallResult('delegate_to_agent', receipt).toolMeta).toEqual({
+    kind: 'employee_first_task', blueprintId: 'draft', runtimeTaskId: 'same-child',
+  });
+  expect(normalizeToolCallResult('delegate_to_agent', { ...receipt, ok: false }).toolMeta).toBeNull();
+  expect(normalizeToolCallResult('delegate_to_agent', { ok: true, status: 'queued' }).toolMeta).toBeNull();
+});
+
 it('projects direct creation as a recoverable creation card for live and restored results', () => {
   const result = JSON.stringify({ status: 'preview', blueprint_id: 'direct-draft', draft_status: 'confirmed',
     blueprint: { name: 'Research colleague', first_task_autostart: false, permission_scope: 'self' },

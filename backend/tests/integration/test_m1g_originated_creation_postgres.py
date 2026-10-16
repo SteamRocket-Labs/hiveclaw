@@ -234,6 +234,245 @@ async def test_first_task_recovery_cannot_replace_the_accepted_request(direct_or
         assert task.metadata_json["side_effect_risk"] == "journaled"
 
 
+@pytest.mark.parametrize("policy_kind", ["capability", "guard", "session"])
+async def test_first_task_resumes_through_real_scoped_approval_and_the_same_child(
+    direct_origin, owner_sessionmaker, app_user_sessionmaker, monkeypatch, policy_kind,
+):
+    from app.core.execution_context import ExecutionIdentity
+    from app.models.audit import ApprovalRequest
+    from app.models.capability_policy import CapabilityPolicy
+    from app.models.guard_policy import GuardPolicy
+    from app.services import agent_tools
+    from app.services.approval_service import approval_service
+    from app.services.approval_execution_runtime import execute_claimed_approval_execution
+    from app.services.hr_provisioning_runtime import execute_claimed_hr_provisioning
+    from app.services.runtime_task_claim_service import RuntimeTaskClaimService
+    from app.services.runtime_task_fence import run_claimed_runtime_task
+
+    user, context, _, _ = direct_origin
+    message = "Draft a sourced comparison"
+    initial = await _direct_call(context, first_task=message)
+    job_id = uuid.UUID(initial["provisioning_task_id"])
+    async with owner_sessionmaker() as db:
+        if policy_kind == "capability":
+            policy = await db.scalar(select(CapabilityPolicy).where(CapabilityPolicy.tenant_id == user.tenant_id,
+                                                                   CapabilityPolicy.capability == "agent.message.send"))
+            policy.requires_approval = True
+        elif policy_kind == "guard":
+            db.add(GuardPolicy(tenant_id=user.tenant_id, zone_guard={"tool_rules": [
+                {"tools": ["delegate_to_agent"], "decision": "require_approval"},
+            ]}))
+        else:
+            policy = await db.scalar(select(CapabilityPolicy).where(CapabilityPolicy.tenant_id == user.tenant_id,
+                                                                   CapabilityPolicy.capability == "agent.message.send"))
+            await db.delete(policy)
+        job = await db.get(RuntimeTask, job_id)
+        job.status = "running"
+        reviewer = User(id=uuid.uuid4(), tenant_id=user.tenant_id, username=f"review-{uuid.uuid4().hex}",
+                        email=f"{uuid.uuid4().hex}@review.test", password_hash="synthetic", display_name="Synthetic reviewer",
+                        role="org_admin", is_active=True)
+        db.add(reviewer)
+        await db.commit()
+
+    async def no_refinement(*_args, **_kwargs):
+        return None, "synthetic_transport"
+
+    monkeypatch.setattr("app.tools.handlers.hr._resolve_employee_refinement_model", no_refinement)
+    assert await execute_claimed_hr_provisioning(job_id) == "failed"
+    async with owner_sessionmaker() as db:
+        draft = await db.get(HrCreationDraft, uuid.UUID(initial["blueprint_id"]))
+        employee = await db.get(Agent, draft.created_agent_id)
+        assert draft.status == "completed" and draft.provisioning_json["first_task"]["error"] == "approval_required"
+    monkeypatch.setattr("app.tools.resolver.async_session", app_user_sessionmaker)
+    monkeypatch.setattr("app.tools.governance_resolver.async_session", app_user_sessionmaker)
+    monkeypatch.setattr(agent_tools, "_TOOL_RUNTIME_SERVICE", None)
+    service = agent_tools._get_tool_runtime_service()
+    arguments = {"first_task_draft_id": str(draft.id), "agent_name": employee.name,
+                 "target_agent_id": str(employee.id), "message": message}
+    if policy_kind == "capability":
+        from dataclasses import replace
+        from app.services.employee_first_task import resume_first_task_from_tool
+        from app.tools.service import _extract_tool_error_payload
+
+        for source, values, error in [
+            (context, {**arguments, "message": "An unrecorded task"}, "first_task_arguments_mismatch"),
+            (context, {**arguments, "tool_profile": "research_readonly"}, "first_task_arguments_mismatch"),
+            (context, {**arguments, "target_agent_id": str(uuid.uuid4())}, "first_task_arguments_mismatch"),
+            (replace(context, session_id=str(uuid.uuid4())), arguments, "not_found"),
+            (replace(context, user_id=reviewer.id), arguments, "not_found"),
+        ]:
+            outcome = _extract_tool_error_payload(await resume_first_task_from_tool(source, values))
+            assert outcome["error_class"] == error
+    if policy_kind == "session":
+        await _execute_with_session_permission(context, arguments, service, app_user_sessionmaker, monkeypatch)
+        async with owner_sessionmaker() as db:
+            draft = await db.get(HrCreationDraft, draft.id)
+            child = await db.get(RuntimeTask, uuid.uuid5(draft.id, "explicit-first-task.v1"))
+            assert draft.provisioning_json["first_task"]["status"] == "dispatched"
+            assert draft.provisioning_json["first_task"]["authorization"]["session_grant_input_hash"]
+            assert child.root_user_id == user.id and child.parent_session_id == context.session_id
+            assert len((await db.scalars(select(RuntimeTask).where(RuntimeTask.tenant_id == user.tenant_id,
+                                                                  RuntimeTask.task_type == "delegation"))).all()) == 1
+        return
+    blocked = await service.execute("delegate_to_agent", arguments, agent_id=context.agent_id, user_id=user.id,
+                                    session_id=context.session_id, runtime_task_id=context.runtime_task_id,
+                                    execution_identity=ExecutionIdentity("delegated_user", user.id, "Synthetic owner"),
+                                    emit_runtime_hooks=False)
+    assert json.loads(str(blocked))["status"] == "approval_required", str(blocked)
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, user.tenant_id)
+        approvals = (await db.scalars(select(ApprovalRequest).where(ApprovalRequest.agent_id == context.agent_id))).all()
+        assert len(approvals) == 1
+        approval_id = approvals[0].id
+        assert approvals[0].requested_by == user.id and approvals[0].consumed_at is None
+        assert (await db.scalars(select(RuntimeTask).where(RuntimeTask.tenant_id == user.tenant_id,
+                                                         RuntimeTask.task_type == "delegation"))).all() == []
+        resolved = await approval_service.resolve_approval(db, approval_id, reviewer, "approve")
+        execution_job_id = resolved.execution_task_id
+        await db.commit()
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, user.tenant_id)
+        claims = await RuntimeTaskClaimService(db=db, worker_id="first-task-approval", task_types=("approval_execution",)).claim_available()
+    assert [row.id for row in claims] == [execution_job_id]
+    assert await run_claimed_runtime_task(execute_claimed_approval_execution(execution_job_id),
+                                          task_id=execution_job_id, claim_version=claims[0].claim_version,
+                                          worker_id="first-task-approval", lease_seconds=180) == "succeeded"
+    assert await execute_claimed_approval_execution(execution_job_id) == "succeeded"
+    async with owner_sessionmaker() as db:
+        approval = await db.get(ApprovalRequest, approval_id)
+        assert approval.consumed_at is not None and approval.execution_status == "succeeded", approval.execution_result
+        assert (await db.get(RuntimeTask, execution_job_id)).status == "completed"
+        draft = await db.get(HrCreationDraft, draft.id)
+        first = draft.provisioning_json["first_task"]
+        assert first["status"] == "dispatched" and first["authorization"]["approval_id"] == str(approval_id)
+        child = await db.get(RuntimeTask, uuid.uuid5(draft.id, "explicit-first-task.v1"))
+        assert child.root_user_id == user.id and child.root_user_id != reviewer.id
+        assert child.child_agent_id == employee.id and child.parent_session_id == context.session_id
+        assert len((await db.scalars(select(RuntimeTask).where(RuntimeTask.tenant_id == user.tenant_id,
+                                                              RuntimeTask.task_type == "delegation"))).all()) == 1
+        assert len((await db.scalars(select(Agent).where(Agent.tenant_id == user.tenant_id))).all()) == 2
+    from app.services.employee_first_task import resume_first_task_from_tool
+
+    replay = json.loads(await resume_first_task_from_tool(context, arguments))
+    assert replay["runtime_task_id"] == str(child.id) and replay["first_task_draft_id"] == str(draft.id)
+    async with owner_sessionmaker() as db:
+        draft = await db.get(HrCreationDraft, draft.id)
+        assert draft.provisioning_json["first_task"]["authorization"]["approval_id"] == str(approval_id)
+
+
+async def _execute_with_session_permission(context, arguments, service, sessionmaker, monkeypatch, tool_name="delegate_to_agent"):
+    from app.services import agent_tools
+    from app.models.session_v2 import SessionToolInvocation
+    from app.services.session_model_round import prepare_model_request, seal_model_response, commit_sealed_model_round
+    from app.services.session_permission_runtime import _execution_evidence, resolve_session_tool_permission
+    from app.services.session_tool_runtime import prepare_tool_invocation, complete_tool_invocation
+    from app.services.session_v2_persistence import resolve_session_mutation_authority
+
+    tenant_id, session_id, run_id = (uuid.UUID(str(value)) for value in (
+        context.tenant_id, context.session_id, context.runtime_task_id,
+    ))
+    turn_id, call_id = f"turn-{run_id.hex}", f"first-task-{run_id.hex}"
+    async with sessionmaker() as db:
+        await pin_rls_tenant_context(db, tenant_id)
+        wire = {"messages": [{"role": "user", "content": "Resume the recorded first task"}],
+                "tools": [{"type": "function", "function": {"name": tool_name}}], "max_tokens": 8192}
+        request_id = await prepare_model_request(
+            db, tenant_id=tenant_id, agent_id=context.agent_id, session_id=session_id, run_id=run_id,
+            turn_id=turn_id, round_index=1, continuation_index=0, messages=wire["messages"], tools=wire["tools"],
+            provider="openai", model="synthetic-no-network", wire_request=wire, attempt_owner="first-task-test",
+        )
+        await seal_model_response(db, tenant_id=tenant_id, agent_id=context.agent_id, session_id=session_id,
+                                  run_id=run_id, turn_id=turn_id, round_index=1, provider_request_id=request_id,
+                                  response={"content": None, "tool_calls": [{"id": call_id, "type": "function", "function": {
+                                      "name": tool_name, "arguments": json.dumps(arguments),
+                                  }}], "finish_reason": "tool_calls", "usage": {"prompt_tokens": 20, "completion_tokens": 5}})
+        await commit_sealed_model_round(db, tenant_id=tenant_id, agent_id=context.agent_id, session_id=session_id,
+                                       run_id=run_id, turn_id=turn_id, round_index=1, provider_request_id=request_id)
+        invocation = await prepare_tool_invocation(db, tenant_id=tenant_id, agent_id=context.agent_id, session_id=session_id,
+                                                   run_id=run_id, provider_request_id=request_id, provider_tool_use_id=call_id,
+                                                   tool_name=tool_name, arguments=arguments)
+        await db.commit()
+        trace = {}
+        result = await service.execute(tool_name, arguments, agent_id=context.agent_id, user_id=context.user_id,
+                                       session_id=context.session_id, runtime_task_id=context.runtime_task_id,
+                                       turn_id=turn_id, tool_call_id=call_id, emit_runtime_hooks=False, trace_metadata_sink=trace)
+        assert json.loads(str(result))["status"] == "session_permission_required", str(result)
+        await complete_tool_invocation(db, tenant_id=tenant_id, agent_id=context.agent_id, session_id=session_id,
+                                       invocation_id=invocation.id, provider_result_content=str(result),
+                                       execution_evidence=_execution_evidence(trace), effective_arguments=trace["effective_arguments"])
+        await db.flush()
+        await db.refresh(invocation)
+        assert invocation.permission_item_id is not None, json.dumps(trace, default=str)
+        task = await db.get(RuntimeTask, run_id)
+        task.status = "suspended"
+        task.metadata_json = {**task.metadata_json, "turn_id": turn_id, "interactive_pause": {
+            "schema": "hive.tool_permission_wait.v1", "invocation_ids": [str(invocation.id)],
+        }}
+        await db.commit()
+        user = await db.get(User, context.user_id)
+        authority = await resolve_session_mutation_authority(db, user=user, agent_id=context.agent_id,
+                                                             session_id=session_id, action="respond_tool_permission")
+        original_executor = agent_tools.execute_session_permission_tool
+        observed = []
+
+        async def observe(*args, **kwargs):
+            result = await original_executor(*args, **kwargs)
+            observed.append({"result": str(result), "trace": kwargs["trace_metadata_sink"]})
+            return result
+
+        monkeypatch.setattr(agent_tools, "execute_session_permission_tool", observe)
+        first = await resolve_session_tool_permission(db, authority=authority,
+                                                      permission_request_id=invocation.permission_item_id, decision="allow_once")
+        replay = await resolve_session_tool_permission(db, authority=authority,
+                                                       permission_request_id=invocation.permission_item_id, decision="allow_once")
+        await db.refresh(invocation)
+        await db.refresh(task)
+        assert first.status == replay.status == "resolved"
+        assert first.result_event_id == replay.result_event_id and first.run_id == str(run_id)
+        assert invocation.effect_state == "effect_committed" and invocation.result_event_id is not None, json.dumps(observed, default=str)
+        assert len(observed) == 1
+        assert task.status == "resumable"
+        assert await db.get(SessionToolInvocation, invocation.id) is not None
+
+
+async def test_direct_creation_consumes_real_once_permission_and_worker_reuses_authorization(
+    direct_origin, owner_sessionmaker, app_user_sessionmaker, monkeypatch,
+):
+    from app.models.capability_policy import CapabilityPolicy
+    from app.services import agent_tools
+    from app.services.hr_provisioning_runtime import execute_claimed_hr_provisioning
+
+    user, context, _, _ = direct_origin
+    async with owner_sessionmaker() as db:
+        policy = await db.scalar(select(CapabilityPolicy).where(CapabilityPolicy.tenant_id == user.tenant_id,
+                                                               CapabilityPolicy.capability == "agent.employee.create"))
+        await db.delete(policy)
+        await db.commit()
+    monkeypatch.setattr("app.tools.resolver.async_session", app_user_sessionmaker)
+    monkeypatch.setattr("app.tools.governance_resolver.async_session", app_user_sessionmaker)
+    monkeypatch.setattr(agent_tools, "_TOOL_RUNTIME_SERVICE", None)
+    await _execute_with_session_permission(context, _direct_arguments(), agent_tools._get_tool_runtime_service(),
+                                           app_user_sessionmaker, monkeypatch, "create_employee_from_request")
+    async with owner_sessionmaker() as db:
+        drafts = (await db.scalars(select(HrCreationDraft).where(HrCreationDraft.tenant_id == user.tenant_id))).all()
+        assert len(drafts) == 1 and drafts[0].confirmed_by_user_id is None
+        job_id = drafts[0].provisioning_task_id
+        job = await db.get(RuntimeTask, job_id)
+        job.status = "running"
+        await db.commit()
+
+    async def no_refinement(*_args, **_kwargs):
+        return None, "synthetic_transport"
+
+    monkeypatch.setattr("app.tools.handlers.hr._resolve_employee_refinement_model", no_refinement)
+    assert await execute_claimed_hr_provisioning(job_id) == "completed"
+    assert await execute_claimed_hr_provisioning(job_id) == "completed"
+    async with owner_sessionmaker() as db:
+        draft = await db.get(HrCreationDraft, drafts[0].id)
+        assert draft.status == "completed" and draft.created_agent_id is not None
+        assert len((await db.scalars(select(Agent).where(Agent.tenant_id == user.tenant_id))).all()) == 2
+
+
 @pytest.mark.parametrize("first_task_mode", ["none", "requested", "denied", "unapproved", "question"])
 async def test_direct_worker_pins_model_and_creates_native_employee_without_boot(
     direct_origin, owner_sessionmaker, app_user_sessionmaker, monkeypatch, first_task_mode,

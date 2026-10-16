@@ -403,10 +403,12 @@ def _session_no_policy_action(context: ToolGovernanceContext) -> str:
     """
     if context.tool_name in SAFE_TOOLS:
         return "allow"
+    if _has_exact_session_grant(context):
+        return "allow"
 
     profile = context.permission_profile
     if _detect_destructive_delete(context.tool_name, context.arguments):
-        return "allow" if _has_exact_session_grant(context) else "ask"
+        return "ask"
     allowed_tools = set(getattr(profile, "allowed_tools", ()) or ()) if profile is not None else set()
     if context.tool_name in allowed_tools:
         return "allow"
@@ -450,8 +452,10 @@ def _session_explicit_policy_action(context: ToolGovernanceContext) -> str:
     confirmations that are still resolved inside the current session.
     """
     profile = context.permission_profile
+    if _has_exact_session_grant(context):
+        return "allow"
     if _detect_destructive_delete(context.tool_name, context.arguments):
-        return "allow" if _has_exact_session_grant(context) else "ask"
+        return "ask"
     allowed_tools = set(getattr(profile, "allowed_tools", ()) or ()) if profile is not None else set()
     if context.tool_name in allowed_tools:
         return "allow"

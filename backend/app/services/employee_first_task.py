@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import uuid
 import logging
+import json
+from dataclasses import asdict
 
 from app.models.agent import Agent
 from app.models.llm import LLMModel
@@ -19,16 +21,91 @@ def needs_first_task_dispatch(draft) -> bool:
                 and (draft.provisioning_json or {}).get("first_task", {}).get("status") != "dispatched")
 
 
-async def dispatch_first_task(db, draft) -> bool:
+async def resume_first_task_from_tool(context, arguments) -> str:
+    from fastapi import HTTPException
+    from sqlalchemy import select
+    from app.database import tenant_scoped_session
+    from app.models.hr_creation import HrCreationDraft
+    from app.services.a2a_outcome import A2AOutcome
+    from app.services.hr_creation_service import load_hr_creation_draft
+    from app.services.hr_creation_source import load_creation_requester, load_creation_source_agent
+    from app.services.hr_provisioning_runtime import _mark_task_completed, _runtime_authority_issues
+    from app.tools.result_envelope import render_tool_error
+
+    try:
+        if context is None:
+            raise HrCreationConflict("first_task_authority_required", "Resume the first task from its original governed work.")
+        tenant_id, session_id, draft_id = (uuid.UUID(str(value)) for value in (
+            context.tenant_id, context.session_id, arguments.get("first_task_draft_id"),
+        ))
+        async with tenant_scoped_session(tenant_id) as db:
+            requester = await load_creation_requester(db, context.user_id)
+            if requester is None:
+                raise HrCreationConflict("source_execute_denied", "The first-task requester is unavailable.")
+            await load_creation_source_agent(db, requester, context.agent_id, require_execute=True)
+            candidate = await db.scalar(select(HrCreationDraft).where(
+                HrCreationDraft.id == draft_id, HrCreationDraft.tenant_id == tenant_id,
+                HrCreationDraft.hr_agent_id == context.agent_id, HrCreationDraft.session_id == session_id,
+                HrCreationDraft.requested_by_user_id == context.user_id,
+            ))
+            if candidate is None or candidate.provisioning_task_id is None:
+                raise HrCreationConflict("not_found", "No first-task creation exists in this original work.")
+            job = await db.get(RuntimeTask, candidate.provisioning_task_id, with_for_update=True)
+            draft = await load_hr_creation_draft(db, draft_id=draft_id, tenant_id=tenant_id,
+                                                 hr_agent_id=context.agent_id, requested_by_user_id=context.user_id,
+                                                 session_id=session_id, for_update=True)
+            evidence = direct_creation_authorization(draft)
+            if draft.status != "completed" or not evidence or not evidence.get("first_task"):
+                raise HrCreationConflict("employee_not_ready", "The recorded employee must be ready before first-task dispatch.")
+            if job is None or _runtime_authority_issues(job, draft, allow_completed=True) or job.status == "needs_reconciliation":
+                raise HrCreationConflict("runtime_authority_mismatch", "Reconcile the immutable first-task binding before resuming.")
+            if job.status not in {"failed", "killed", "resumable", "completed"}:
+                raise HrCreationConflict("creation_in_progress", "The existing provisioning worker is still handling this first task.")
+            target = await db.get(Agent, draft.created_agent_id)
+            allowed = {"first_task_draft_id", "agent_name", "target_agent_id", "message", "parent_session_id"}
+            if (target is None or arguments.get("message") != evidence["first_task"]
+                    or arguments.get("agent_name") != target.name
+                    or str(arguments.get("target_agent_id") or target.id) != str(target.id)
+                    or any(key not in allowed and not key.startswith("_") for key in arguments)):
+                raise HrCreationConflict("first_task_arguments_mismatch", "Use the exact recorded employee and first task, without worker overrides.")
+            sent = await dispatch_first_task(db, draft, execution_context=context, arguments=arguments)
+            receipt = (draft.provisioning_json or {}).get("first_task") or {}
+            if sent:
+                _mark_task_completed(job, draft)
+                await enqueue_creation_receipt(db, draft, job)
+            await db.commit()
+            if not sent:
+                return render_tool_error(tool_name="delegate_to_agent", error_class=receipt.get("error") or "first_task_not_dispatched",
+                                         retryable=receipt.get("status") == "unknown",
+                                         message="The first task was not confirmed dispatched; recover its existing intent.",
+                                         extra={"first_task_draft_id": str(draft.id), **receipt})
+            return A2AOutcome.success(operation="delegate", payload={
+                "task_id": uuid.UUID(receipt["runtime_task_id"]).hex, "runtime_task_id": receipt["runtime_task_id"],
+                "session_id": receipt["session_id"], "child_session_id": receipt["session_id"],
+                "status": receipt.get("runtime_status") or "queued", "target_agent": target.name,
+                "target_agent_id": str(target.id), "first_task_draft_id": str(draft.id),
+                "continuation_tool": "send_agent_session_message",
+            }).to_tool_result()
+    except (HrCreationConflict, HTTPException, ValueError, TypeError) as exc:
+        code = getattr(exc, "code", "first_task_authority_required")
+        return render_tool_error(tool_name="delegate_to_agent", error_class=code, retryable=False,
+                                 message=getattr(exc, "message", "The first task cannot be resumed from this work."))
+
+
+async def dispatch_first_task(db, draft, *, execution_context=None, arguments=None) -> bool:
     from app.agents.orchestrator import OrchestrationPolicy, delegate_async
     from app.core.execution_context import ExecutionPrincipal
     from app.kernel.contracts import ExecutionIdentityRef
     from app.core.permissions import check_agent_access
     from app.services.capability_gate import check_capability
     from app.services.approval_ticket import build_live_approval_policy_snapshot
+    from app.services.approval_ticket import ApprovalDecisionSet, hash_tool_input
+    from app.runtime.ccplus_contracts import permission_profile_snapshot
     from app.tools.guard_policy import evaluate_guard_policy
     from app.services.direct_employee_creation import _approval_valid, require_local_write, validate_direct_creation
     from app.services.hr_creation_source import load_creation_requester
+    from app.services.owner_action_policy import load_owner_action_policy
+    from app.tools.governance import ToolGovernanceContext, _has_exact_session_grant
 
     evidence = direct_creation_authorization(draft)
     if not evidence or not evidence.get("first_task"):
@@ -36,6 +113,9 @@ async def dispatch_first_task(db, draft) -> bool:
     task_id = uuid.uuid5(draft.id, "explicit-first-task.v1")
     session_id = str(uuid.uuid5(task_id, "session"))
     receipt = {"runtime_task_id": str(task_id), "session_id": session_id}
+    prior_authorization = ((draft.provisioning_json or {}).get("first_task") or {}).get("authorization")
+    if isinstance(prior_authorization, dict):
+        receipt["authorization"] = dict(prior_authorization)
     existing = await db.get(RuntimeTask, task_id)
     if existing is not None:
         if (existing.task_type != "delegation" or existing.tenant_id != draft.tenant_id
@@ -49,30 +129,53 @@ async def dispatch_first_task(db, draft) -> bool:
     else:
         try:
             await validate_direct_creation(db, draft, check_creation_policy=False)
-            approved = await _approval_valid(db, evidence.get("approval"), tenant_id=draft.tenant_id,
+            user = await load_creation_requester(db, draft.requested_by_user_id)
+            target, access = await check_agent_access(db, user, draft.created_agent_id)
+            policy_evidence = evidence
+            tool_name = "create_employee_from_request"
+            session_granted = False
+            delegate_arguments = {"agent_name": target.name,
+                                  "target_agent_id": str(draft.created_agent_id), "message": evidence["first_task"],
+                                  "first_task_draft_id": str(draft.id)}
+            if execution_context is not None:
+                approval = execution_context.approval_decision
+                owner_policy = await load_owner_action_policy(db, tenant_id=draft.tenant_id,
+                                                              agent_id=draft.hr_agent_id, create_default=False)
+                policy_evidence = {
+                    **evidence, "tool_input_hash": hash_tool_input("delegate_to_agent", arguments),
+                    "permission_profile": permission_profile_snapshot(execution_context.permission_profile),
+                    "owner_policy_hash": owner_policy.content_hash,
+                    "approval": asdict(approval) if isinstance(approval, ApprovalDecisionSet) else None,
+                }
+                delegate_arguments = arguments
+                tool_name = "delegate_to_agent"
+                session_granted = _has_exact_session_grant(ToolGovernanceContext(
+                    agent_id=execution_context.agent_id, user_id=execution_context.user_id,
+                    tenant_id=execution_context.tenant_id, tool_name=tool_name, arguments=arguments,
+                    permission_profile=execution_context.permission_profile,
+                ))
+            approved = await _approval_valid(db, policy_evidence.get("approval"), tenant_id=draft.tenant_id,
                                             agent_id=draft.hr_agent_id, user_id=draft.requested_by_user_id,
-                                            input_hash=evidence["tool_input_hash"])
-            await require_local_write(db, evidence, approved=approved)
+                                            input_hash=policy_evidence["tool_input_hash"], tool_name=tool_name)
+            await require_local_write(db, policy_evidence, approved=approved or session_granted)
             capability = await check_capability(db, draft.tenant_id, draft.hr_agent_id, "delegate_to_agent")
             if capability.denied:
                 raise HrCreationConflict("capability_denied", "Company policy denies the first task delegation.")
-            if capability.policy_found and capability.escalate_to_l3:
+            if capability.policy_found and capability.escalate_to_l3 and not (approved and tool_name == "delegate_to_agent"):
                 raise HrCreationConflict("approval_required", "The first task delegation requires approval.")
-            profile = evidence.get("permission_profile") or {}
+            profile = policy_evidence.get("permission_profile") or {}
             if not capability.policy_found and not capability.allowed and not (
-                approved or profile.get("mode") == "bypass_permissions" or "delegate_to_agent" in profile.get("allowed_tools", [])
+                approved or session_granted or profile.get("mode") == "bypass_permissions" or "delegate_to_agent" in profile.get("allowed_tools", [])
             ):
                 raise HrCreationConflict("approval_required", "The first task delegation needs scoped authorization.")
             live = await build_live_approval_policy_snapshot(db=db, tenant_id=draft.tenant_id,
                                                            agent_id=draft.hr_agent_id, tool_name="delegate_to_agent")
             guard = evaluate_guard_policy(tool_name="delegate_to_agent",
-                                          arguments={"target_agent_id": str(draft.created_agent_id), "message": evidence["first_task"]},
+                                          arguments=delegate_arguments,
                                           external_visible=False, snapshot=live["guard_policy"])
-            if guard.decision != "allow":
+            if guard.decision == "deny" or (guard.decision == "require_approval" and not (approved and tool_name == "delegate_to_agent")):
                 code = "capability_denied" if guard.decision == "deny" else "approval_required"
                 raise HrCreationConflict(code, "Company GuardPolicy blocks the first task delegation.")
-            user = await load_creation_requester(db, draft.requested_by_user_id)
-            target, access = await check_agent_access(db, user, draft.created_agent_id)
             source = await db.get(Agent, draft.hr_agent_id)
             model = await db.get(LLMModel, target.primary_model_id) if target.primary_model_id else None
             if (access not in {"use", "manage"} or target.deactivated_at is not None
@@ -95,10 +198,17 @@ async def dispatch_first_task(db, draft) -> bool:
                 execution_identity=ExecutionIdentityRef("delegated_user", draft.requested_by_user_id, "Explicit employee first task"),
                 policy=OrchestrationPolicy(tool_profile="peer_agent"), runtime_task_id=task_id,
                 trace_id=f"employee-first-task:{draft.id}", budget_run_id=source_run.budget_run_id,
-                permission_profile=evidence["permission_profile"],
+                permission_profile=policy_evidence["permission_profile"],
             )
             if handle.task_id == task_id.hex:
                 receipt.update(status="dispatched", runtime_status=handle.status)
+                if execution_context is not None:
+                    receipt["authorization"] = {
+                        "tool_name": tool_name, "input_hash": policy_evidence["tool_input_hash"],
+                        "approval_id": str(execution_context.approval_decision.approval_id) if approved else None,
+                        "runtime_task_id": str(execution_context.runtime_task_id),
+                        "session_grant_input_hash": policy_evidence["tool_input_hash"] if session_granted else None,
+                    }
             else:
                 receipt.update(status="blocked", error=handle.status)
         except HrCreationConflict as exc:
@@ -122,6 +232,14 @@ async def enqueue_creation_receipt(db, draft, task):
                f"first_task={first.get('status', 'not_requested')}; first_task_error={first.get('error', 'none')}; "
                f"creation_error={draft.failure_code or 'none'}; draft_id={draft.id}. "
                "Creation readiness is not evidence of task completion. Continue this original work from these facts.")
+    if draft.created_agent_id and first.get("status") in {"blocked", "unknown"}:
+        target = await db.get(Agent, draft.created_agent_id)
+        summary += "\nRecorded first-task recovery request: " + json.dumps({
+            "tool_name": "delegate_to_agent", "arguments": {
+                "first_task_draft_id": str(draft.id), "agent_name": target.name if target else None,
+                "target_agent_id": str(draft.created_agent_id), "message": evidence["first_task"],
+            },
+        }, ensure_ascii=False)
     await enqueue_completion_notification(db, CompletionNotification(
         tenant_id=draft.tenant_id, source_kind="employee_creation", source_run_id=str(task.id),
         parent_session_id=str(draft.session_id), parent_agent_id=draft.hr_agent_id,

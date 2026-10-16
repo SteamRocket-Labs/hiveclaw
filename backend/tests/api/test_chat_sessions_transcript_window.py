@@ -437,3 +437,15 @@ def test_transcript_projection_still_caps_generic_success_tool_payloads():
 
     assert payload["metadata"]["_payload_truncated"] is True
     assert len(payload["content"]) <= api._TRANSCRIPT_CONTENT_CHAR_LIMIT + len("...[truncated]")
+
+
+def test_transcript_preserves_exact_recorded_first_task_receipt():
+    import app.api.chat_sessions as api
+
+    receipt = {"ok": True, "status": "queued", "first_task_draft_id": "same-draft", "runtime_task_id": "same-child"}
+    event = SimpleNamespace(event_type="tool_result", metadata_json={"tool_name": "delegate_to_agent"})
+    payload = {"name": "delegate_to_agent", "status": "done", "result": json.dumps(receipt), "reasoning_content": "private"}
+    projected = json.loads(api._project_interactive_tool_card_content(event, json.dumps(payload)))
+    assert json.loads(projected["result"]) == receipt and "reasoning_content" not in projected
+    payload["result"] = json.dumps({**receipt, "ok": False})
+    assert api._project_interactive_tool_card_content(event, json.dumps(payload)) is None

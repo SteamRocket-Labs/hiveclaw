@@ -184,12 +184,19 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
             "- For cross-workspace artifact work, pass `target_artifacts` (or `target_artifact_path` shorthand) "
             "so the worker updates/delivers the exact target path instead of inventing a replacement artifact.\n"
             "- The result includes session_id/child_session_id. Continue through `send_agent_session_message`; use `check_async_task` only as a fallback status inspection.\n"
+            "- To authorize or resume an employee's recorded first task, pass first_task_draft_id and its exact employee/message. "
+            "The existing creation receipt supplies these values; do not rewrite the task or supply worker overrides. "
+            "Approval and retries resume the same durable task.\n"
             "- Do NOT use this for quick back-and-forth questions — use `send_message_to_agent` for synchronous collaboration.\n"
             "- Do NOT use this for session-local worker fan-out, context isolation, or independent verification inside the same session — use `spawn_subagent` for To Session Worker."
         ),
         parameters={
             "type": "object",
             "properties": {
+                "first_task_draft_id": {
+                    "type": "string", "format": "uuid",
+                    "description": "Canonical creation draft whose exact first task should be authorized or resumed in this original work.",
+                },
                 "agent_name": {
                     "type": "string",
                     "description": "Target digital employee's name",
@@ -317,11 +324,17 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
         adapter="agent_args",
     )
 )
-async def delegate_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
+async def delegate_to_agent(agent_id: uuid.UUID, arguments: dict, *, execution_context=None) -> str:
     from app.services.agent_tool_domains.messaging import _normalize_messaging_result
     from app.services.agent_tools import _delegate_to_agent_async
 
-    return _normalize_messaging_result("delegate_to_agent", await _delegate_to_agent_async(agent_id, arguments))
+    if "first_task_draft_id" in arguments:
+        from app.services.employee_first_task import resume_first_task_from_tool
+
+        result = await resume_first_task_from_tool(execution_context, arguments)
+    else:
+        result = await _delegate_to_agent_async(agent_id, arguments)
+    return _normalize_messaging_result("delegate_to_agent", result)
 
 
 # -- start_hr_agent_handoff -------------------------------------------------

@@ -1,5 +1,5 @@
-import { lazy, Suspense } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { lazy, Suspense, useEffect } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import AskUserQuestionCard from './AskUserQuestionCard';
@@ -337,6 +337,16 @@ export function DynamicWorkflowProposalCard({
   );
 }
 
+function EmployeeFirstTaskReceipt({ agentId, blueprintId }: { agentId?: string; blueprintId: string }) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (agentId) void queryClient.invalidateQueries({ queryKey: ['hr-creation-draft', agentId, blueprintId] });
+    void queryClient.invalidateQueries({ queryKey: ['hr-recoverable-drafts'] });
+  }, [queryClient, agentId, blueprintId]);
+  return <p>{t('agent.chat.toolResults.firstTaskDispatched', 'Task dispatched. Updates and results return to this work.')}</p>;
+}
+
 export function StructuredToolResultBody({
   toolName,
   toolMeta,
@@ -353,6 +363,9 @@ export function StructuredToolResultBody({
 
   if (!toolMeta) {
     return toolResult ? <RawToolResultBlock text={toolResult} /> : null;
+  }
+  if (toolMeta.kind === 'employee_first_task') {
+    return <EmployeeFirstTaskReceipt agentId={agentId} blueprintId={toolMeta.blueprintId} />;
   }
 
   if (toolMeta.kind === 'user_clarification') {

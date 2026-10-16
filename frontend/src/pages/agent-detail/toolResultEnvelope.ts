@@ -134,6 +134,7 @@ export interface RuntimeStepToolMeta {
 }
 
 export type ToolCallMeta =
+  | { kind: 'employee_first_task'; blueprintId: string; runtimeTaskId: string }
   | HrPreviewToolResult
   | HrCreationHandoffToolMeta
   | CreateEmployeeSuccessToolMeta
@@ -504,6 +505,13 @@ function buildPlanModeRequestDisplayResult(meta: PlanModeRequestToolMeta): strin
 
 export function normalizeToolCallResult(toolName: string | undefined, rawResult: unknown): NormalizedToolCallResult {
   const raw = coerceToolResultToString(rawResult);
+  if (toolName === 'delegate_to_agent') {
+    const result = parseStructuredToolPayload(rawResult);
+    if (result?.ok === true && typeof result.first_task_draft_id === 'string' && typeof result.runtime_task_id === 'string') {
+      return { displayResult: 'Recorded first task dispatched.', createdAgentId: null, raw,
+        toolMeta: { kind: 'employee_first_task', blueprintId: result.first_task_draft_id, runtimeTaskId: result.runtime_task_id } };
+    }
+  }
 
   if (toolName === 'start_hr_agent_handoff' && raw.trim()) {
     return { displayResult: '', createdAgentId: null, raw, toolMeta: { kind: 'hr_creation_handoff' } };

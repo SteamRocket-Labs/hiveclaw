@@ -268,8 +268,24 @@ def _inject_runtime_context_arguments(
     enriched["_execution_principal"] = principal.to_evidence()
 
     profile_payload = _permission_profile_payload(runtime_context.permission_profile)
-    if profile_payload and "_permission_profile" not in enriched:
+    from app.tools.governance import ToolGovernanceContext, _has_exact_session_grant
+
+    exact_replay = _has_exact_session_grant(ToolGovernanceContext(
+        agent_id=runtime_context.agent_id, user_id=runtime_context.user_id, tenant_id=runtime_context.tenant_id,
+        tool_name=tool_name, arguments=enriched, permission_profile=runtime_context.permission_profile,
+    ))
+    approval = runtime_context.approval_decision
+    approved_replay = (isinstance(approval, ApprovalDecisionSet) and approval.tool_name == tool_name
+                       and str(approval.tenant_id) == str(runtime_context.tenant_id)
+                       and approval.requested_by_user_id == runtime_context.user_id
+                       and approval.input_hash == hash_tool_input(tool_name, enriched))
+    if exact_replay or approved_replay:
+        # A server grant binds the persisted profile, including its absence, byte-for-byte.
+        return enriched
+    if profile_payload:
         enriched["_permission_profile"] = profile_payload
+    else:
+        enriched.pop("_permission_profile", None)
     return enriched
 
 

@@ -814,7 +814,10 @@ def _project_interactive_tool_card_content(event: ChatTranscriptEvent, content: 
         if isinstance(metadata_tool_name, str) and metadata_tool_name
         else ""
     )
-    if not _interactive_tool_result_status_allowed(tool_name, result_payload.get("status")):
+    first_task_receipt = (tool_name == "delegate_to_agent" and result_payload.get("ok") is True
+                          and isinstance(result_payload.get("first_task_draft_id"), str)
+                          and isinstance(result_payload.get("runtime_task_id"), str))
+    if not first_task_receipt and not _interactive_tool_result_status_allowed(tool_name, result_payload.get("status")):
         return None
 
     projected: dict[str, Any] = {}

@@ -20,6 +20,7 @@ def _trusted_context_kwargs(fn: Callable[..., Any], request: ToolExecutionReques
         "user_id": request.context.user_id,
         "session_id": request.context.session_id,
         "authority_scope": request.context.workspace_authority_scope,
+        "execution_context": request.context,
     }
     return {name: value for name, value in values.items() if name in signature.parameters}
 

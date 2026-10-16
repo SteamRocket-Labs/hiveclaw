@@ -100,6 +100,17 @@ async def test_adapter_agent_args_passes_optional_tenant_id():
 
 
 @pytest.mark.asyncio
+async def test_adapter_passes_only_trusted_execution_context():
+    async def handler(agent_id, arguments, *, execution_context=None):
+        assert execution_context is req.context
+        assert arguments["execution_context"] == {"approval_decision": "model-authored"}
+        return "ok"
+
+    req = _make_request(arguments={"execution_context": {"approval_decision": "model-authored"}})
+    assert await adapt_and_call(_make_meta("agent_args"), handler, req) == "ok"
+
+
+@pytest.mark.asyncio
 async def test_adapter_agent_only():
     captured = {}
 

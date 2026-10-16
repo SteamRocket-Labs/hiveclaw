@@ -91,7 +91,7 @@ async def _human_request(db, *, tenant_id, user_id, agent_id, session_id, run_id
     _refused("direct_human_input_required", "Relayed briefs and background work cannot authorize direct creation.")
 
 
-async def _approval_valid(db, evidence, *, tenant_id, agent_id, user_id, input_hash):
+async def _approval_valid(db, evidence, *, tenant_id, agent_id, user_id, input_hash, tool_name=TOOL_NAME):
     if not isinstance(evidence, dict):
         return False
     try:
@@ -100,17 +100,19 @@ async def _approval_valid(db, evidence, *, tenant_id, agent_id, user_id, input_h
         return False
     if (approval is None or approval.status != "approved" or approval.consumed_at is None
             or approval.tenant_id != tenant_id or approval.agent_id != agent_id or approval.requested_by != user_id
-            or approval.tool_name != TOOL_NAME or approval.input_hash != input_hash
+            or approval.tool_name != tool_name or approval.input_hash != input_hash
             or approval.decision_id != evidence.get("decision_id")
             or approval.execution_envelope_hash != evidence.get("envelope_hash")):
         return False
-    live = await build_live_approval_policy_snapshot(db=db, tenant_id=tenant_id, agent_id=agent_id, tool_name=TOOL_NAME)
+    live = await build_live_approval_policy_snapshot(db=db, tenant_id=tenant_id, agent_id=agent_id, tool_name=tool_name)
     return hash_policy_snapshot(live) == approval.policy_snapshot_hash == evidence.get("policy_snapshot_hash")
 
 
 async def _require_policy(db, evidence):
     from app.services.capability_gate import check_capability
     from app.tools.guard_policy import evaluate_guard_policy
+    from app.tools.governance import ToolGovernanceContext, _has_exact_session_grant
+    from app.runtime.ccplus_contracts import build_permission_profile
 
     tenant_id, agent_id, user_id = (uuid.UUID(evidence[key]) for key in (
         "tenant_id", "source_agent_id", "requester_user_id",
@@ -128,12 +130,16 @@ async def _require_policy(db, evidence):
     if capability.denied:
         _refused("capability_denied", "Company policy denies employee creation.")
     profile = evidence.get("permission_profile") or {}
-    session_grant = TOOL_NAME in profile.get("allowed_tools", []) or profile.get("mode") == "bypass_permissions"
+    exact_grant = _has_exact_session_grant(ToolGovernanceContext(
+        agent_id=agent_id, user_id=user_id, tenant_id=str(tenant_id), tool_name=TOOL_NAME,
+        arguments=evidence["tool_arguments"], permission_profile=build_permission_profile(profile),
+    ))
+    session_grant = exact_grant or TOOL_NAME in profile.get("allowed_tools", []) or profile.get("mode") == "bypass_permissions"
     if not approved and (capability.escalate_to_l3 or not capability.allowed) and not (
         not capability.policy_found and session_grant
     ):
         _refused("approval_required", "Scoped authorization is required before employee creation.")
-    await require_local_write(db, evidence, approved=approved)
+    await require_local_write(db, evidence, approved=approved or exact_grant)
 
 
 async def require_local_write(db, evidence, *, approved: bool):

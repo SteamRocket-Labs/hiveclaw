@@ -13,6 +13,7 @@ const HrCreationHandoffCard = lazy(() => import('./HrCreationHandoffCard'));
 const InlineApprovalCard = lazy(() => import('./InlineApprovalCard'));
 const InlineToolConfigurationCard = lazy(() => import('./InlineToolConfigurationCard'));
 const InlineMcpConfigurationCard = lazy(() => import('./InlineMcpConfigurationCard'));
+const InlineRoleConfigurationCard = lazy(() => import('./InlineRoleConfigurationCard'));
 const InlineChannelConfigurationCard = lazy(() => import('./InlineChannelConfigurationCard'));
 const HrBlueprintPreviewCard = lazy(() => (
   import('./HrBlueprintPreviewCard').then((module) => ({ default: module.HrBlueprintPreviewCard }))
@@ -387,6 +388,13 @@ export function StructuredToolResultBody({
   if (toolMeta.kind === 'user_clarification') {
     const requestItemId = toolMeta.requestItemId || questionItemId;
     if (toolMeta.configurationRequest) {
+      if (toolMeta.configurationRequest.employeeSetting === 'role') {
+        return agentId && sessionId && requestItemId ? <Suspense fallback={null}>
+          <InlineRoleConfigurationCard key={`${agentId}:${sessionId}:${requestItemId}`}
+            agentId={agentId} sessionId={sessionId} questionId={requestItemId}
+            question={toolMeta.questions[0]?.question || ''} answered={submitted || toolMeta.answered} onAnswer={onAnswerQuestion} />
+        </Suspense> : <p>{toolMeta.questions[0]?.question}</p>;
+      }
       if (toolMeta.configurationRequest.mcpServerId) {
         return agentId && sessionId && requestItemId ? <Suspense fallback={null}>
           <InlineMcpConfigurationCard key={`${agentId}:${sessionId}:${requestItemId}`}

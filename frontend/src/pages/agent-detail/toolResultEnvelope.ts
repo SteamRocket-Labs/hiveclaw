@@ -117,7 +117,7 @@ export interface UserClarificationToolMeta {
   answeredByEventId?: string | null;
   answerText?: string | null;
   answeredAt?: string | null;
-  configurationRequest?: { targetAgentId: string; toolName?: string; channelType?: string; mcpServerId?: string };
+  configurationRequest?: { targetAgentId: string; toolName?: string; channelType?: string; mcpServerId?: string; employeeSetting?: 'role' };
 }
 
 export interface PlanModeRequestToolMeta {
@@ -481,6 +481,8 @@ function parseUserClarificationResult(rawResult: unknown): UserClarificationTool
       ? { configurationRequest: { targetAgentId: configuration.target_agent_id, toolName: configuration.tool_name } }
       : typeof configuration?.target_agent_id === 'string' && typeof configuration.mcp_server_id === 'string'
         ? { configurationRequest: { targetAgentId: configuration.target_agent_id, mcpServerId: configuration.mcp_server_id } }
+      : typeof configuration?.target_agent_id === 'string' && configuration.employee_setting === 'role'
+        ? { configurationRequest: { targetAgentId: configuration.target_agent_id, employeeSetting: 'role' as const } }
       : typeof configuration?.target_agent_id === 'string' && typeof configuration.channel_type === 'string'
         ? { configurationRequest: { targetAgentId: configuration.target_agent_id, channelType: configuration.channel_type } } : {}),
   };

@@ -1232,6 +1232,17 @@
     "toolFailuresSampled": "最新有限样本"
   },
   "agent": {
+    "roleSettings": {
+      "title": "员工职责",
+      "scope": "描述这位员工应该完成的工作。应用访问和操作权限需单独授权，新职责将用于后续工作。",
+      "read": "回读当前职责",
+      "current": "当前保存的职责",
+      "useCurrent": "使用当前内容",
+      "failed": "职责保存失败，你的草稿已保留。",
+      "unavailable": "暂时无法核对职责版本，请回读当前设置后再保存。",
+      "ready": "已核查当前职责，可以继续原工作。",
+      "saveAndReview": "保存并核查职责"
+    },
     "configuration": {
       "editChannel": "编辑渠道配置",
       "channelTitle": "为当前工作配置渠道",

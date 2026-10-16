@@ -538,7 +538,7 @@ async def build_agent_runtime_context(
 async def build_agent_context(
     agent_id: uuid.UUID,
     agent_name: str,
-    role_description: str = "",
+    role_description: str | None = None,
     current_user_name: str | None = None,
     *,
     include_memory_file: bool = True,  # deprecated: memory flows via 4-layer retriever

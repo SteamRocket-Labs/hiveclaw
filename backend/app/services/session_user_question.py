@@ -37,6 +37,16 @@ async def validate_configuration_answer(db, question, content_parts, *, user=Non
     payload = question_payload(question)
     if not payload.get("configuration_request"):
         return
+    if payload["configuration_request"].get("employee_setting") == "role":
+        if content_parts == [{"type": "text", "text": "Continue without changing configuration."}]:
+            return
+        if content_parts != [{"type": "text", "text": "Continue with the reviewed responsibilities."}]:
+            raise HTTPException(status_code=422, detail={"code": "configuration_answer_action_required",
+                "message": "Use the responsibilities card to continue this work."})
+        from app.services.agent_role_settings import validate_role_configuration_answer
+
+        await validate_role_configuration_answer(db, payload=payload, user=user, tenant_id=question.tenant_id)
+        return
     if payload["configuration_request"].get("mcp_server_id"):
         if content_parts == [{"type": "text", "text": "Continue without changing configuration."}]:
             return

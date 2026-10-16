@@ -24,6 +24,7 @@ export interface AgentCleanupPending {
 export interface AgentUpdateParams {
   name?: string;
   role_description?: string;
+  expected_role_revision?: string;
   bio?: string;
   primary_model_id?: string;
   fallback_model_id?: string;
@@ -33,6 +34,11 @@ export interface AgentUpdateParams {
   timezone?: string;
   security_zone?: string;
   default_session_permission_mode?: 'default' | 'auto' | 'bypassPermissions';
+}
+
+export interface EmployeeRoleSettings {
+  role_description: string;
+  role_revision: string;
 }
 
 export interface AgentPermissions {

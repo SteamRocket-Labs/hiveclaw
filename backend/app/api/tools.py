@@ -1186,6 +1186,71 @@ class ChannelConfigurationConfirmIn(BaseModel):
     updated_at: str
 
 
+class RoleConfigurationConfirmIn(BaseModel):
+    role_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+def _role_configuration_response(question, target, *, replayed=False):
+    from app.services.agent_role_settings import role_snapshot
+    from app.services.session_user_question import question_payload
+
+    snapshot = role_snapshot(target)
+    ready = question_payload(question).get("configuration_ready") or {}
+    current = ready.get("role_revision") == snapshot["role_revision"]
+    return {**snapshot, "state": "ready" if current else "waiting",
+        "receipt_ref": ready.get("receipt_ref") if current else None, "replayed": replayed}
+
+
+async def _session_role_context(db, current_user, agent_id, session_id, question_id):
+    context = await _configuration_question_context(db, current_user, agent_id, session_id, question_id)
+    if context[3].get("employee_setting") != "role":
+        raise HTTPException(status_code=409, detail="Use the requested employee settings")
+    return context
+
+
+@router.get("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/role")
+async def get_session_role_configuration(
+    agent_id: uuid.UUID, session_id: uuid.UUID, question_id: uuid.UUID,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+):
+    _authority, question, target, _descriptor = await _session_role_context(
+        db, current_user, agent_id, session_id, question_id)
+    return _role_configuration_response(question, target)
+
+
+@router.post("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/role/confirm")
+async def confirm_session_role_configuration(
+    agent_id: uuid.UUID, session_id: uuid.UUID, question_id: uuid.UUID, data: RoleConfigurationConfirmIn,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+):
+    from app.services.agent_role_settings import role_revision
+    from app.services.session_user_question import question_payload
+    from app.services.session_v2_persistence import SessionEventDraft, append_session_events
+
+    authority, question, target, _descriptor = await _session_role_context(
+        db, current_user, agent_id, session_id, question_id)
+    if question.lifecycle not in {"created", "waiting"}:
+        raise HTTPException(status_code=409, detail="Configuration request is no longer waiting")
+    target = await db.scalar(select(Agent).where(Agent.id == target.id, Agent.tenant_id == authority.tenant_id)
+        .with_for_update().execution_options(populate_existing=True))
+    if target is None or role_revision(target.role_description) != data.role_revision:
+        raise HTTPException(status_code=409, detail={"code": "role_configuration_changed",
+            "message": "Responsibilities changed. Review the current settings before continuing."})
+    await _require_manage_access(db, current_user, target.id)
+    payload = question_payload(question)
+    if (payload.get("configuration_ready") or {}).get("role_revision") == data.role_revision:
+        return _role_configuration_response(question, target, replayed=True)
+    events = await append_session_events(db, tenant_id=authority.tenant_id, agent_id=agent_id,
+        session_id=session_id, drafts=[SessionEventDraft(item_id=question.item_id, item_kind="user_question",
+            lifecycle="waiting", scope=question.scope_json, actor=authority.event_actor(),
+            invocation_id=question.invocation_id, result_id=question.result_id,
+            provider_tool_use_id=question.provider_tool_use_id, payload={**payload, "configuration_ready": {
+                "receipt_ref": f"role-configuration:{uuid.uuid4()}", "target_agent_id": str(target.id),
+                "role_revision": data.role_revision}})])
+    await db.commit()
+    return _role_configuration_response(events[0], target)
+
+
 async def _session_channel_configuration_context(db, current_user, agent_id, session_id, question_id):
     authority, question, target, descriptor = await _configuration_question_context(
         db, current_user, agent_id, session_id, question_id)

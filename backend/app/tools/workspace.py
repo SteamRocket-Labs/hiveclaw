@@ -396,21 +396,9 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
                         role_desc = agent.role_description or role_desc
         except Exception as exc:
             logger.warning("[Workspace] Failed to load agent for soul.md: %s", exc)
-        soul_content = f"""# Soul — {agent_name}
+        from app.services.bootstrap_soul import build_bootstrap_soul
 
-## Identity
-- Name: {agent_name}
-- Role: {role_desc}
-
-## Personality
-- Diligent and detail-oriented
-- Proactively reports work progress
-- Asks for confirmation when encountering uncertain information
-
-## Boundaries
-- Follows company confidentiality policies
-- Sensitive operations require creator approval
-"""
+        soul_content = build_bootstrap_soul(agent_name, role_desc)
         # Atomic write-if-not-exists to prevent race condition (ME-07)
         try:
             with open(soul_path, "x", encoding="utf-8") as f:

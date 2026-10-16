@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 
 import { agentApi } from '../../api/domains/agents';
 import { isLocalAgentRuntimeType } from './agentDetailPolicy';
+import EmployeeRoleEditor from '../../components/EmployeeRoleEditor';
 
 interface AgentDetailHeaderProps {
   agent: any;
@@ -45,7 +46,6 @@ export default function AgentDetailHeader({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [editingRole, setEditingRole] = React.useState(false);
-  const [roleInput, setRoleInput] = React.useState('');
   const [editingName, setEditingName] = React.useState(false);
   const [nameInput, setNameInput] = React.useState('');
   const invalidateAgent = () => queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
@@ -67,6 +67,7 @@ export default function AgentDetailHeader({
   }
 
   return (
+    <>
     <div className="page-header">
       <div className="agent-detail-header-main">
         <div className="agent-detail-avatar">
@@ -112,48 +113,21 @@ export default function AgentDetailHeader({
           <p className="page-subtitle agent-detail-status-line">
             <span className={`status-dot ${statusKey}`} />
             {t(`agent.status.${statusKey}`)}
-            {canManage && editingRole ? (
-              <textarea
-                autoFocus
-                value={roleInput}
-                onChange={(event) => setRoleInput(event.target.value)}
-                onBlur={async () => {
-                  setEditingRole(false);
-                  if (roleInput !== agent.role_description) {
-                    await agentApi.update(agentId, { role_description: roleInput } as any);
-                    await invalidateAgent();
-                  }
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' && !event.shiftKey) {
-                    event.preventDefault();
-                    (event.target as HTMLTextAreaElement).blur();
-                  }
-                  if (event.key === 'Escape') {
-                    setEditingRole(false);
-                    setRoleInput(agent.role_description || '');
-                  }
-                }}
-                rows={2}
-                className="agent-detail-role-input"
-              />
-            ) : (
-              <span
-                title={canManage ? (agent.role_description || 'Click to edit') : (agent.role_description || '')}
-                onClick={() => {
-                  if (!canManage) return;
-                  setRoleInput(agent.role_description || '');
-                  setEditingRole(true);
-                }}
-                className={`agent-detail-role${canManage ? ' is-editable' : ''}`}
-              >
-                {agent.role_description
-                  ? `· ${agent.role_description}`
-                  : canManage
-                    ? <span className="agent-detail-role-placeholder">· {t('agent.fields.role', 'Click to add a description...')}</span>
-                    : null}
-              </span>
-            )}
+            <span
+              title={agent.role_description || t('agent.roleSettings.title')}
+              onClick={() => { if (canManage) setEditingRole(true); }}
+              role={canManage ? 'button' : undefined}
+              tabIndex={canManage ? 0 : undefined}
+              onKeyDown={(event) => {
+                if (canManage && (event.key === 'Enter' || event.key === ' ')) {
+                  event.preventDefault(); setEditingRole(true);
+                }
+              }}
+              className={`agent-detail-role${canManage ? ' is-editable' : ''}`}
+            >
+              {agent.role_description ? `· ${agent.role_description}` : canManage
+                ? <span className="agent-detail-role-placeholder">· {t('agent.fields.role', 'Click to add a description...')}</span> : null}
+            </span>
             {agent.is_expired && (
               <span className="agent-detail-expired-badge">{t('agent.settings.expiry.expired', 'Expired')}</span>
             )}
@@ -177,6 +151,7 @@ export default function AgentDetailHeader({
               </button>
             )}
           </p>
+
         </div>
       </div>
       {!isOperatorOnly && (
@@ -204,5 +179,14 @@ export default function AgentDetailHeader({
         </div>
       )}
     </div>
+    {canManage && editingRole && <div className="card">
+      <EmployeeRoleEditor key={agentId} agentId={agentId}
+            value={{ role_description: agent.role_description || '', role_revision: agent.role_revision || '' }}
+            onSaved={(saved) => {
+              queryClient.setQueryData(['agent', agentId], (current: any) => current ? { ...current, ...saved } : current);
+              setEditingRole(false); return invalidateAgent();
+            }} onCancel={() => setEditingRole(false)} />
+    </div>}
+    </>
   );
 }

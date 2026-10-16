@@ -6,6 +6,15 @@
 
 import { get, put, post, del } from '../core';
 import type { McpAccount } from './extensions';
+import type { EmployeeRoleSettings } from './agents';
+
+export interface SessionRoleConfiguration extends EmployeeRoleSettings {
+  target_agent_id: string;
+  target_agent_name: string;
+  state: 'waiting' | 'ready';
+  receipt_ref?: string | null;
+  replayed?: boolean;
+}
 
 export interface ToolProviderAuth {
   mode?: 'no_key_default' | 'optional_key' | 'key_required' | string;
@@ -158,6 +167,10 @@ export const toolsApi = {
     put<{ ok: boolean; tool: AgentTool }>(`/tools/agents/${agentId}/tool-config/${toolId}`, { config }),
   getSessionToolConfiguration: (agentId: string, sessionId: string, questionId: string) =>
     get<SessionToolConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/configuration`),
+  getSessionRoleConfiguration: (agentId: string, sessionId: string, questionId: string) =>
+    get<SessionRoleConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/role`),
+  confirmSessionRoleConfiguration: (agentId: string, sessionId: string, questionId: string, roleRevision: string) =>
+    post<SessionRoleConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/role/confirm`, { role_revision: roleRevision }),
   saveSessionToolConfiguration: (agentId: string, sessionId: string, questionId: string, config: Record<string, unknown>) =>
     put<SessionToolConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/configuration`, { config }),
   getSessionMcpConfiguration: (agentId: string, sessionId: string, questionId: string, accountId?: string) =>

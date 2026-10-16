@@ -1232,6 +1232,17 @@
     "toolFailuresSampled": "latest bounded sample"
   },
   "agent": {
+    "roleSettings": {
+      "title": "Employee responsibilities",
+      "scope": "Describe the work this employee should do. Application access and action permissions are authorized separately. Changes apply to subsequent work.",
+      "read": "Read current responsibilities",
+      "current": "Currently saved responsibilities",
+      "useCurrent": "Use current content",
+      "failed": "Responsibilities could not be saved. Your draft is preserved.",
+      "unavailable": "Versioned responsibilities are unavailable. Read the current settings before saving.",
+      "ready": "Current responsibilities reviewed. Continue the original work when ready.",
+      "saveAndReview": "Save and review responsibilities"
+    },
     "configuration": {
       "editChannel": "Edit channel configuration",
       "channelTitle": "Configure channel for this work",

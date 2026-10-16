@@ -132,7 +132,10 @@ async def _lazy_reset_token_counters(agent: Agent, db: AsyncSession) -> bool:
 
 
 def _agent_out(agent: Agent) -> AgentOut:
+    from app.services.agent_role_settings import role_revision
+
     out = AgentOut.model_validate(agent)
+    out.role_revision = role_revision(agent.role_description)
     for field, value in normalize_agent_heartbeat_output({}).items():
         setattr(out, field, value)
     return out
@@ -1730,6 +1733,26 @@ async def update_agent(
         )
 
     update_data = data.model_dump(exclude_unset=True)
+
+    expected_role_revision = update_data.pop("expected_role_revision", None)
+    if expected_role_revision is not None:
+        from app.services.agent_role_settings import role_revision
+
+        if set(update_data) != {"role_description"} or update_data["role_description"] is None:
+            raise HTTPException(status_code=422, detail="A role revision guards only a responsibilities update")
+        # Role writes do not change keys; existing hook/audit FK readers may continue.
+        agent = await db.scalar(select(Agent).where(Agent.id == agent_id, Agent.tenant_id == agent.tenant_id)
+            .with_for_update(key_share=True).execution_options(populate_existing=True))
+        if agent is None:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        agent, access = await check_agent_access(db, current_user, agent_id)
+        if access != "manage":
+            raise HTTPException(status_code=403, detail="Employee management access required")
+        if agent.role_description == update_data["role_description"]:
+            return _agent_out_dict(agent)
+        if role_revision(agent.role_description) != expected_role_revision:
+            raise HTTPException(status_code=409, detail={"code": "role_configuration_changed",
+                "message": "Responsibilities changed. Read the current settings before saving your draft."})
 
     clamped_fields = []  # track fields adjusted by tenant floor
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.services.bootstrap_soul import project_bootstrap_soul_role
+
 
 _IDENTITY_BY_MODE = {
     "coordinator": (
@@ -29,7 +31,7 @@ _DEFAULT_IDENTITY = (
 
 def build_identity_section(
     agent_name: str,
-    role_description: str = "",
+    role_description: str | None = None,
     invocation_scope: str = "conversation",
     soul_text: str = "",
 ) -> str:
@@ -50,6 +52,8 @@ def build_identity_section(
         parts.append(f"### Role\n{role_description}")
 
     if soul_text and soul_text not in ("_描述你的角色和职责。_", "_Describe your role and responsibilities._"):
+        if role_description is not None:
+            soul_text = project_bootstrap_soul_role(soul_text, role_description)
         parts.append(f"### Personality\n{soul_text}")
 
     return "\n\n".join(parts)

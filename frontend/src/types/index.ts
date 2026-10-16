@@ -21,6 +21,7 @@ export interface Agent {
     name: string;
     avatar_url?: string;
     role_description: string;
+    role_revision?: string;
     bio?: string;
     status: 'creating' | 'running' | 'idle' | 'stopped' | 'error';
     creator_id: string;

@@ -475,14 +475,15 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
                 },
                 "configuration": {
                     "type": "object",
-                    "description": "Request employee tool settings, without saving or granting access.",
+                    "description": "Request employee responsibilities or tool/connection settings, without saving, granting access or resuming work.",
                     "properties": {
                         "tool_name": {"type": "string", "description": "Exact configuration tool name."},
+                        "employee_setting": {"type": "string", "enum": ["role"], "description": "Ask the authenticated manager to review or edit this employee's responsibilities."},
                         "mcp_server_id": {"type": "string", "description": "Exact company MCP connection UUID from list_mcp_tools; requests OAuth configuration, never grants employee use."},
                         "target_agent_id": {"type": "string", "description": "Employee receiving the settings."},
                         "channel_type": {"type": "string", "enum": ["feishu", "slack", "discord", "microsoft_teams", "wecom", "dingtalk", "telegram", "wechat_personal"]},
                     },
-                    "oneOf": [{"required": ["tool_name"]}, {"required": ["channel_type"]}, {"required": ["mcp_server_id"]}],
+                    "oneOf": [{"required": ["tool_name"]}, {"required": ["channel_type"]}, {"required": ["mcp_server_id"]}, {"required": ["employee_setting"]}],
                     "additionalProperties": False,
                 },
             },
@@ -512,18 +513,21 @@ async def ask_user_question(request: ToolExecutionRequest) -> str:
     if "configuration" in args:
         raw = args["configuration"]
         try:
-            if not isinstance(raw, dict) or set(raw) - {"target_agent_id", "tool_name", "channel_type", "mcp_server_id"}:
+            if not isinstance(raw, dict) or set(raw) - {"target_agent_id", "tool_name", "channel_type", "mcp_server_id", "employee_setting"}:
                 raise ValueError("invalid configuration target")
             target = uuid.UUID(str(raw.get("target_agent_id") or request.context.agent_id))
             tool_name = str(raw.get("tool_name") or "").strip()
             channel_type = str(raw.get("channel_type") or "").strip()
             mcp_server_id = str(raw.get("mcp_server_id") or "").strip()
-            if sum(bool(value) for value in (tool_name, channel_type, mcp_server_id)) != 1:
+            employee_setting = str(raw.get("employee_setting") or "").strip()
+            if employee_setting and employee_setting != "role":
+                raise ValueError("invalid employee setting")
+            if sum(bool(value) for value in (tool_name, channel_type, mcp_server_id, employee_setting)) != 1:
                 raise ValueError("missing configuration tool")
             tool_name = {"read_emails": "send_email", "reply_email": "send_email"}.get(tool_name, tool_name)
             if channel_type and channel_type not in {"feishu", "slack", "discord", "microsoft_teams", "wecom", "dingtalk", "telegram", "wechat_personal"}:
                 raise ValueError("invalid channel type")
-            connection = {"mcp_server_id": str(uuid.UUID(mcp_server_id))} if mcp_server_id else {"channel_type": channel_type} if channel_type else {"tool_name": tool_name}
+            connection = {"employee_setting": employee_setting} if employee_setting else {"mcp_server_id": str(uuid.UUID(mcp_server_id))} if mcp_server_id else {"channel_type": channel_type} if channel_type else {"tool_name": tool_name}
             configuration = {"target_agent_id": str(target), **connection}
         except (ValueError, TypeError, AttributeError):
             return json.dumps({"status": "error", "error_code": "invalid_configuration_request",

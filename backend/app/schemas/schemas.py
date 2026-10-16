@@ -124,6 +124,7 @@ class AgentOut(BaseModel):
     name: str
     avatar_url: str | None = None
     role_description: str
+    role_revision: str = ""
     bio: str | None = None
     welcome_message: str | None = None
     status: str
@@ -168,6 +169,7 @@ class AgentOut(BaseModel):
 class AgentUpdate(BaseModel):
     name: str | None = None
     role_description: str | None = Field(default=None, max_length=AGENT_ROLE_DESCRIPTION_MAX_CHARS)
+    expected_role_revision: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     bio: str | None = None
     welcome_message: str | None = None
     avatar_url: str | None = None

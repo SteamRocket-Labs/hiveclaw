@@ -181,3 +181,33 @@ async def test_refresh_keeps_prior_refresh_token_when_omitted(monkeypatch):
     assert tok.access_token == "new-at"
     assert tok.refresh_token == "orig-rt"  # provider omitted it → prior kept
     assert AUTH_CONFIGURED == "configured"
+
+
+def test_oauth_new_secret_writes_require_real_encryption(monkeypatch):
+    from app.services.secrets_provider import NoopSecretsProvider
+
+    for unavailable in (None, NoopSecretsProvider()):
+        monkeypatch.setattr(mcp_oauth, "_secrets_provider", lambda: unavailable)
+        with pytest.raises(OAuthError):
+            encrypt_value("private-client-secret")
+        with pytest.raises(OAuthError):
+            encrypt_token_set(OAuthTokenSet("private-access"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"access_token": True},
+        {"access_token": "at", "expires_in": "invalid"},
+        {"access_token": "at", "expires_in": float("inf")},
+        {"access_token": "at", "token_type": "MAC"},
+    ],
+)
+async def test_unusable_token_response_preserves_unknown(monkeypatch, payload):
+    monkeypatch.setattr(mcp_oauth.httpx, "AsyncClient", lambda *a, **k: _FakeAsyncClient(_FakeResponse(200, payload)))
+    with pytest.raises(OAuthError) as error:
+        await exchange_code_for_token(
+            token_endpoint="https://t", client_id="c", code="x", redirect_uri="https://cb", code_verifier="v"
+        )
+    assert error.value.outcome == "unknown"

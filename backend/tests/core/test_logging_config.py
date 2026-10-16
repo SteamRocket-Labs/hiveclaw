@@ -117,3 +117,22 @@ def test_loguru_filter_redacts_channel_credentials_before_serialization(monkeypa
 
     payload = json.loads(sink.getvalue().strip())
     assert payload["record"]["message"] == ("request failed at https://api.telegram.org/bot<redacted>/sendMessage")
+
+
+def test_mcp_oauth_callback_query_is_redacted_without_hiding_other_request_fields(monkeypatch) -> None:
+    from loguru import logger
+
+    from app.core.logging_config import configure_logging, sanitize_standard_log_message
+
+    raw = "GET https://hive.test/api/enterprise/mcp/oauth/callback?state=private-state&code=private-code&error_description=private-detail HTTP/1.1 400"
+    safe = sanitize_standard_log_message(raw)
+    assert safe == "GET https://hive.test/api/enterprise/mcp/oauth/callback?<redacted> HTTP/1.1 400"
+    assert (
+        sanitize_standard_log_message("GET /report?code=public-category HTTP/1.1 200")
+        == "GET /report?code=public-category HTTP/1.1 200"
+    )
+    monkeypatch.delenv("HIVE_LOG_FORMAT", raising=False)
+    sink = StringIO()
+    configure_logging(sink=sink, enqueue=False)
+    logger.error(raw)
+    assert json.loads(sink.getvalue().strip())["record"]["message"] == safe

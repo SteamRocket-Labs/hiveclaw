@@ -2353,7 +2353,7 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
             # here so the agent never sees it. Fail-closed when expired/unrefreshable.
             _server_url = getattr(tool, "mcp_server_url", None) if tool else None
             if _server_url:
-                oauth_bearer, oauth_error = await resolve_mcp_oauth_bearer(db, tid, _server_url)
+                oauth_bearer, oauth_error = await resolve_mcp_oauth_bearer(db, tid, _server_url, tool_id=tool.id)
                 if oauth_error:
                     return render_tool_error(
                         tool_name=tool_name,

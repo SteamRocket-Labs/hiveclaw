@@ -15,9 +15,9 @@ Governance (守 mcp_authz):
   challenge is stored) → ``configured`` (callback exchanged a token) →
   ``expired`` (refresh failed / token past expiry with no refresh) / ``error``.
 
-Honesty boundary: the interactive end-to-end flow is unit-verified (PKCE, URL
-build, exchange/refresh with mocked transport, encrypt/decrypt round-trip). It is
-not live-verified against a real OAuth MCP server — and an MCP server with a
+Honesty boundary: callback/RLS, replay, encrypted migration and runtime bearer
+consumption are checked locally with PostgreSQL and synthetic provider transport.
+They are not live-verified against a real OAuth MCP server. An MCP server with a
 pending/expired OAuth status is **fail-closed** (calls return "authorization
 required", never an unauthenticated request).
 """
@@ -27,6 +27,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -112,11 +113,30 @@ class OAuthTokenSet:
 
     @classmethod
     def from_token_response(cls, data: dict, *, now: float) -> "OAuthTokenSet":
+        access_token = data.get("access_token")
+        token_type = data.get("token_type", "Bearer")
+        if (
+            not isinstance(access_token, str)
+            or not access_token
+            or not isinstance(token_type, str)
+            or token_type.lower() != "bearer"
+        ):
+            raise OAuthError("OAuth token response is unusable")
+        if data.get("refresh_token") is not None and not isinstance(data["refresh_token"], str):
+            raise OAuthError("OAuth refresh token response is unusable")
         expires_in = data.get("expires_in")
-        expires_at = (now + float(expires_in)) if isinstance(expires_in, (int, float)) else None
+        expires_at = None
+        if expires_in is not None:
+            try:
+                seconds = float(expires_in)
+                if isinstance(expires_in, bool) or not math.isfinite(seconds) or seconds < 0:
+                    raise ValueError
+                expires_at = now + seconds
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise OAuthError("OAuth token expiry response is unusable") from exc
         return cls(
-            access_token=str(data.get("access_token", "")),
-            token_type=str(data.get("token_type", "Bearer")) or "Bearer",
+            access_token=access_token,
+            token_type=token_type,
             refresh_token=data.get("refresh_token"),
             expires_at=expires_at,
             scope=data.get("scope"),
@@ -127,9 +147,7 @@ class OAuthTokenSet:
 
 
 def _secrets_provider():
-    """The shared secrets provider, or None when none is configured (dev / no
-    master key / not yet initialized) — in which case storage is plaintext, the
-    same zero-migration no-op behavior as ``tool_config_service``."""
+    """The shared provider; absence must never permit a new plaintext write."""
     try:
         from app.services.secrets_provider import get_secrets_provider
 
@@ -140,31 +158,24 @@ def _secrets_provider():
 
 def encrypt_token_set(token: OAuthTokenSet) -> str:
     """Serialize + encrypt a token set for storage in ``MCPServer.config_json``."""
-    plaintext = json.dumps(token.to_dict(), ensure_ascii=False)
-    provider = _secrets_provider()
-    if provider is None:
-        return plaintext
-    ciphertext = provider.encrypt(plaintext)
-    if ciphertext == plaintext:  # no-op provider (dev / no master key)
-        return plaintext
-    return _ENCRYPTED_SECRET_PREFIX + ciphertext
+    return encrypt_value(json.dumps(token.to_dict(), ensure_ascii=False))
 
 
 def decrypt_token_set(blob: str | None) -> OAuthTokenSet | None:
     """Inverse of :func:`encrypt_token_set`. Returns None on missing/garbage."""
     if not blob or not isinstance(blob, str):
         return None
-    raw = blob
-    if blob.startswith(_ENCRYPTED_SECRET_PREFIX):
-        provider = _secrets_provider()
-        if provider is None:
-            return None  # tagged ciphertext but no provider → unusable, fail-closed
-        raw = provider.decrypt(blob[len(_ENCRYPTED_SECRET_PREFIX) :])
+    raw = decrypt_value(blob)
     try:
         data = json.loads(raw)
     except (TypeError, ValueError):
         return None
-    if not isinstance(data, dict) or not data.get("access_token"):
+    if not isinstance(data, dict) or not isinstance(data.get("access_token"), str) or not data["access_token"]:
+        return None
+    expiry = data.get("expires_at")
+    if expiry is not None and (not isinstance(expiry, (float, int)) or not math.isfinite(expiry)):
+        return None
+    if data.get("refresh_token") is not None and not isinstance(data["refresh_token"], str):
         return None
     return OAuthTokenSet(
         access_token=str(data["access_token"]),
@@ -180,11 +191,11 @@ def encrypt_value(value: str) -> str:
     if not value:
         return value
     provider = _secrets_provider()
-    if provider is None:
-        return value
+    if provider is None or provider.key_id == "development-noop":
+        raise OAuthError("OAuth encrypted storage is unavailable", outcome="unavailable")
     ciphertext = provider.encrypt(value)
-    if ciphertext == value:  # no-op provider
-        return value
+    if not ciphertext or ciphertext == value:
+        raise OAuthError("OAuth encrypted storage is unavailable", outcome="unavailable")
     return _ENCRYPTED_SECRET_PREFIX + ciphertext
 
 
@@ -194,9 +205,47 @@ def decrypt_value(value: str | None) -> str | None:
     if not value.startswith(_ENCRYPTED_SECRET_PREFIX):
         return value
     provider = _secrets_provider()
-    if provider is None:
+    if provider is None or provider.key_id == "development-noop":
         return None  # tagged but no provider → cannot recover, fail-closed
-    return provider.decrypt(value[len(_ENCRYPTED_SECRET_PREFIX) :])
+    from cryptography.fernet import InvalidToken
+
+    try:
+        return provider.decrypt_strict(value[len(_ENCRYPTED_SECRET_PREFIX) :])
+    except (InvalidToken, ValueError, UnicodeError):
+        return None
+
+
+def encrypt_legacy_oauth_config(config: dict, provider) -> dict:
+    """Encrypt known legacy fields without hiding the nonsecret JSON control state."""
+    oauth = config.get("oauth")
+    if not oauth:
+        return config
+    if not isinstance(oauth, dict):
+        raise ValueError("Malformed MCP OAuth configuration blocks secret migration")
+    oauth = dict(oauth)
+    pending = oauth.get("pending")
+    if pending is not None and not isinstance(pending, dict):
+        raise ValueError("Malformed MCP OAuth attempt blocks secret migration")
+    containers = [(oauth, ("token", "client_secret"))]
+    if pending:
+        pending = dict(pending)
+        oauth["pending"] = pending
+        containers.append((pending, ("code_verifier", "client_secret")))
+    for container, keys in containers:
+        for key in keys:
+            value = container.get(key)
+            if value in (None, ""):
+                continue
+            if not isinstance(value, str):
+                raise ValueError("Malformed MCP OAuth secret blocks migration")
+            if value.startswith(_ENCRYPTED_SECRET_PREFIX):
+                provider.decrypt_strict(value[len(_ENCRYPTED_SECRET_PREFIX) :])
+                continue
+            encrypted = provider.encrypt(value)
+            if encrypted == value or not encrypted:
+                raise ValueError("MCP OAuth migration requires encrypted storage")
+            container[key] = _ENCRYPTED_SECRET_PREFIX + encrypted
+    return {**config, "oauth": oauth}
 
 
 # ── Token endpoint calls (network) ────────────────────────────────────────────
@@ -207,9 +256,21 @@ class OAuthError(Exception):
     message: str
     status_code: int = 0
     details: dict = field(default_factory=dict)
+    outcome: str = "unknown"
 
-    def __str__(self) -> str:  # pragma: no cover - trivial
+    def __str__(self) -> str:
         return self.message
+
+
+class OAuthFlowError(ValueError):
+    def __init__(self, code: str, outcome: str, status_code: int = 400):
+        self.status_code = status_code
+        self.detail = {
+            "code": code,
+            "outcome": outcome,
+            "recovery": "Check authorization status or start a new authorization.",
+        }
+        super().__init__(code)
 
 
 async def exchange_code_for_token(
@@ -274,17 +335,29 @@ async def _post_token(token_endpoint: str, payload: dict, *, now: float | None) 
                 headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
             )
     except httpx.HTTPError as exc:
-        raise OAuthError(message=f"OAuth token request failed: {exc}") from exc
+        raise OAuthError(message="OAuth token request outcome is unknown") from exc
     if resp.status_code >= 400:
+        try:
+            error = resp.json().get("error")
+        except (TypeError, ValueError, AttributeError):
+            error = None
+        rejected = resp.status_code in (400, 401) and error in {
+            "invalid_grant",
+            "invalid_client",
+            "unauthorized_client",
+            "invalid_request",
+            "unsupported_grant_type",
+            "invalid_scope",
+        }
         raise OAuthError(
             message=f"OAuth token endpoint returned {resp.status_code}",
             status_code=resp.status_code,
-            details={"body": resp.text},
+            outcome="failed" if rejected else "unknown",
         )
     try:
         data = resp.json()
     except (TypeError, ValueError) as exc:
         raise OAuthError(message="OAuth token endpoint returned non-JSON body") from exc
     if not isinstance(data, dict) or not data.get("access_token"):
-        raise OAuthError(message="OAuth token response missing access_token", details={"body": str(data)})
+        raise OAuthError(message="OAuth token response missing access_token")
     return OAuthTokenSet.from_token_response(data, now=stamp)

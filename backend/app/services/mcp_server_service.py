@@ -10,6 +10,8 @@ server identity. See docs/agent-extension-surface-skill-mcp.md §7.2–7.4, §8.
 from __future__ import annotations
 
 import logging
+import hashlib
+import time
 import uuid
 from types import SimpleNamespace
 from typing import Any
@@ -17,6 +19,7 @@ from typing import Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import pin_rls_tenant_context
 from app.models.agent import Agent
 from app.models.audit import AuditLog
 from app.models.capability_install import AgentCapabilityInstall
@@ -1205,6 +1208,53 @@ async def import_mcp_for_agent_and_register(
 # never sees or supplies them (守 mcp_authz). auth_status drives fail-closed.
 
 
+_OAUTH_PENDING_SECONDS = 600
+
+
+async def _locked_oauth_server(db: AsyncSession, tenant_id: uuid.UUID, server_id: uuid.UUID) -> MCPServer:
+    result = await db.execute(
+        select(MCPServer)
+        .where(MCPServer.id == server_id, MCPServer.tenant_id == tenant_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    server = result.scalar_one_or_none()
+    if server is None:
+        raise mcp_oauth.OAuthFlowError("oauth_server_not_found", "unavailable", 404)
+    return server
+
+
+def _store_oauth(server: MCPServer, oauth: dict) -> None:
+    server.config_json = {**(server.config_json or {}), "oauth": oauth}
+
+
+def _attempt_result(server: MCPServer, attempt: dict) -> dict:
+    outcome = attempt["outcome"]
+    if outcome != "configured":
+        raise mcp_oauth.OAuthFlowError(attempt["code"], outcome, 409 if outcome == "unknown" else 400)
+    return {"server_id": str(server.id), "auth_status": "configured", "attempt_id": attempt["id"]}
+
+
+async def get_mcp_oauth_status(db: AsyncSession, tenant_id: uuid.UUID, server_id: uuid.UUID) -> dict:
+    server = await _require_tenant_server(db, tenant_id, server_id)
+    oauth = (server.config_json or {}).get("oauth") or {}
+    pending = oauth.get("pending") or {}
+    attempt = oauth.get("last_attempt")
+    if pending:
+        outcome = "unknown" if pending.get("status") == "exchanging" else "pending"
+        if outcome == "pending" and pending.get("expires_at", 0) <= time.time():
+            outcome = "expired"
+        attempt = {"id": pending.get("id"), "outcome": outcome, "expires_at": pending.get("expires_at")}
+    if attempt:
+        attempt = {key: attempt.get(key) for key in ("id", "outcome", "expires_at", "code")}
+    return {
+        "server_id": str(server.id),
+        "auth_status": server.auth_status,
+        "attempt": attempt,
+        "refresh_outcome": (oauth.get("refresh") or {}).get("status"),
+    }
+
+
 async def start_mcp_oauth(
     db: AsyncSession,
     tenant_id: uuid.UUID,
@@ -1216,26 +1266,34 @@ async def start_mcp_oauth(
     redirect_uri: str,
     scope: str | None = None,
     client_secret: str | None = None,
+    requester_id: uuid.UUID,
 ) -> dict:
-    """Begin the authorization-code + PKCE flow: store a pending challenge and
-    return the authorization URL for the operator to visit."""
-    server = await _require_tenant_server(db, tenant_id, server_id)
+    server = await _locked_oauth_server(db, tenant_id, server_id)
     verifier, challenge = mcp_oauth.generate_pkce_pair()
-    state = mcp_oauth.generate_state()
-    config = dict(server.config_json or {})
-    oauth = dict(config.get("oauth") or {})
+    # The locator only chooses an RLS scope; the exact stored random-state digest authorizes the callback.
+    state = f"mcp1.{tenant_id.hex}.{server_id.hex}.{mcp_oauth.generate_state()}"
+    expires_at = time.time() + _OAUTH_PENDING_SECONDS
+    attempt_id = str(uuid.uuid4())
+    oauth = dict((server.config_json or {}).get("oauth") or {})
+    try:
+        encrypted_verifier = mcp_oauth.encrypt_value(verifier)
+        encrypted_secret = mcp_oauth.encrypt_value(client_secret) if client_secret else None
+    except mcp_oauth.OAuthError as exc:
+        raise mcp_oauth.OAuthFlowError("oauth_encryption_unavailable", "unavailable", 503) from exc
     oauth["pending"] = {
-        "state": state,
-        "code_verifier": mcp_oauth.encrypt_value(verifier),
-        "authorization_endpoint": authorization_endpoint,
+        "id": attempt_id,
+        "state_sha256": hashlib.sha256(state.encode()).hexdigest(),
+        "status": "pending",
+        "expires_at": expires_at,
+        "requester_id": str(requester_id),
+        "code_verifier": encrypted_verifier,
         "token_endpoint": token_endpoint,
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "scope": scope,
-        "client_secret": mcp_oauth.encrypt_value(client_secret) if client_secret else None,
+        "client_secret": encrypted_secret,
     }
-    config["oauth"] = oauth
-    server.config_json = config
+    _store_oauth(server, oauth)
     await db.commit()
     url = mcp_oauth.build_authorization_url(
         authorization_endpoint=authorization_endpoint,
@@ -1245,24 +1303,62 @@ async def start_mcp_oauth(
         code_challenge=challenge,
         scope=scope,
     )
-    return {"authorization_url": url, "state": state, "server_id": str(server_id)}
+    return {
+        "authorization_url": url,
+        "state": state,
+        "server_id": str(server_id),
+        "attempt_id": attempt_id,
+        "expires_at": expires_at,
+    }
 
 
-async def complete_mcp_oauth(db: AsyncSession, state: str, code: str) -> dict:
-    """Finish the flow from the OAuth redirect: look the server up by the
-    unguessable ``state`` (callback is unauthenticated), exchange the code, and
-    store the encrypted token. Cross-tenant lookup is safe — state is a secret."""
-    if not state or not code:
-        raise ValueError("state and code are required")
-    result = await db.execute(
-        select(MCPServer).where(MCPServer.config_json["oauth"]["pending"]["state"].astext == state)
-    )
-    server = result.scalars().first()
-    if server is None:
-        raise ValueError("No MCP server has a pending OAuth flow for this state")
-    pending = dict((server.config_json or {}).get("oauth", {}).get("pending") or {})
-    verifier = mcp_oauth.decrypt_value(pending.get("code_verifier")) or ""
+async def complete_mcp_oauth(db: AsyncSession, state: str, code: str, error: str = "") -> dict:
+    try:
+        version, tenant, server_key, nonce = state.split(".")
+        if version != "mcp1" or len(nonce) < 40:
+            raise ValueError
+        tenant_id, server_id = uuid.UUID(hex=tenant), uuid.UUID(hex=server_key)
+    except (ValueError, AttributeError) as exc:
+        raise mcp_oauth.OAuthFlowError("oauth_state_invalid", "unavailable") from exc
+    await pin_rls_tenant_context(db, tenant_id)
+    try:
+        server = await _locked_oauth_server(db, tenant_id, server_id)
+    except mcp_oauth.OAuthFlowError as exc:
+        raise mcp_oauth.OAuthFlowError("oauth_state_invalid_or_superseded", "unavailable") from exc
+    oauth = dict((server.config_json or {}).get("oauth") or {})
+    digest = hashlib.sha256(state.encode()).hexdigest()
+    previous = oauth.get("last_attempt") or {}
+    if previous.get("state_sha256") == digest:
+        return _attempt_result(server, previous)
+    pending = dict(oauth.get("pending") or {})
+    if pending.get("state_sha256") != digest:
+        raise mcp_oauth.OAuthFlowError("oauth_state_invalid_or_superseded", "unavailable")
+    if pending.get("status") == "exchanging":
+        raise mcp_oauth.OAuthFlowError("oauth_exchange_in_progress_or_unknown", "unknown", 409)
+    receipt = {
+        "id": pending["id"],
+        "state_sha256": digest,
+        "expires_at": pending["expires_at"],
+        "requester_id": pending["requester_id"],
+    }
+    if pending["expires_at"] <= time.time():
+        receipt.update(outcome="expired", code="oauth_attempt_expired")
+    elif error:
+        receipt.update(outcome="cancelled" if error == "access_denied" else "failed", code="oauth_provider_denied")
+    elif not code:
+        raise mcp_oauth.OAuthFlowError("oauth_code_required", "pending")
+    verifier = mcp_oauth.decrypt_value(pending.get("code_verifier"))
     client_secret = mcp_oauth.decrypt_value(pending.get("client_secret"))
+    if "outcome" not in receipt and (not verifier or (pending.get("client_secret") and not client_secret)):
+        raise mcp_oauth.OAuthFlowError("oauth_encryption_unavailable", "unavailable", 503)
+    if "outcome" in receipt:
+        _store_oauth(server, {**oauth, "pending": None, "last_attempt": receipt})
+        await db.commit()
+        return _attempt_result(server, receipt)
+    # Commit the claim before a code can be redeemed. A crash cannot authorize a second redemption.
+    _store_oauth(server, {**oauth, "pending": {**pending, "status": "exchanging"}})
+    await db.commit()
+    token_blob = None
     try:
         token = await mcp_oauth.exchange_code_for_token(
             token_endpoint=pending["token_endpoint"],
@@ -1272,50 +1368,76 @@ async def complete_mcp_oauth(db: AsyncSession, state: str, code: str) -> dict:
             code_verifier=verifier,
             client_secret=client_secret,
         )
+        token_blob = mcp_oauth.encrypt_token_set(token)
+        receipt.update(outcome="configured", code="oauth_configured")
     except mcp_oauth.OAuthError as exc:
-        config = dict(server.config_json or {})
-        config["oauth"] = {**config.get("oauth", {}), "pending": None}
-        server.config_json = config
+        outcome = "failed" if exc.outcome == "failed" else "unknown"
+        receipt.update(outcome=outcome, code=f"oauth_exchange_{outcome}")
+    try:
+        server = await _locked_oauth_server(db, tenant_id, server_id)
+    except mcp_oauth.OAuthFlowError as exc:
+        raise mcp_oauth.OAuthFlowError("oauth_attempt_superseded", "unknown", 409) from exc
+    oauth = dict((server.config_json or {}).get("oauth") or {})
+    if (oauth.get("pending") or {}).get("id") != pending["id"]:
+        raise mcp_oauth.OAuthFlowError("oauth_attempt_superseded", "unknown", 409)
+    oauth.update(pending=None, last_attempt=receipt)
+    if token_blob:
+        oauth.update(
+            token=token_blob,
+            token_endpoint=pending["token_endpoint"],
+            client_id=pending["client_id"],
+            client_secret=pending.get("client_secret"),
+            refresh=None,
+        )
+        server.auth_status = mcp_oauth.AUTH_CONFIGURED
+        if server.status == "needs_auth":
+            server.status = "connected"
+    elif not mcp_oauth.decrypt_token_set(oauth.get("token")):
         server.auth_status = mcp_oauth.AUTH_ERROR
-        await db.commit()
-        raise ValueError(f"OAuth token exchange failed: {exc.message}") from exc
-    config = dict(server.config_json or {})
-    config["oauth"] = {
-        "token": mcp_oauth.encrypt_token_set(token),
-        "token_endpoint": pending["token_endpoint"],
-        "client_id": pending["client_id"],
-        "client_secret": pending.get("client_secret"),  # already encrypted
-        "pending": None,
-    }
-    server.config_json = config
-    server.auth_status = mcp_oauth.AUTH_CONFIGURED
-    if server.status == "needs_auth":
-        server.status = "connected"
+    _store_oauth(server, oauth)
     await db.commit()
-    return {"server_id": str(server.id), "auth_status": server.auth_status}
+    return _attempt_result(server, receipt)
 
 
 async def resolve_mcp_oauth_bearer(
-    db: AsyncSession, tenant_id: uuid.UUID | None, server_url: str
+    db: AsyncSession, tenant_id: uuid.UUID | None, server_url: str, *, tool_id: uuid.UUID | None = None
 ) -> tuple[str | None, str | None]:
-    """Resolve a valid OAuth bearer for a server URL, refreshing if needed.
-
-    Returns ``(bearer, error)``: ``(token, None)`` when authorized; ``(None,
-    None)`` when the server has no OAuth configured (caller falls back to its
-    api_key); ``(None, message)`` fail-closed when OAuth is configured but the
-    token is expired and cannot be refreshed.
-    """
-    import time
-
+    """No OAuth falls back to API-key auth; configured but unusable OAuth fails locally."""
     result = await db.execute(
-        select(MCPServer).where(MCPServer.tenant_id == tenant_id, MCPServer.server_url == server_url)
+        select(MCPServer)
+        .where(MCPServer.tenant_id == tenant_id, MCPServer.server_url == server_url)
+        .order_by(MCPServer.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
-    server = result.scalars().first()
-    if server is None:
+    servers = list(result.scalars().all())
+    if not servers:
         return None, None
+    if all(
+        not (server.config_json or {}).get("oauth") and server.auth_status == mcp_oauth.AUTH_NONE for server in servers
+    ):
+        return None, None
+    if len(servers) > 1 and tool_id is not None:
+        linked_ids = set(
+            (
+                await db.execute(
+                    select(MCPServerTool.mcp_server_id).where(
+                        MCPServerTool.tool_id == tool_id, MCPServerTool.tenant_id == tenant_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        servers = [server for server in servers if server.id in linked_ids]
+    if len(servers) != 1:
+        return None, "MCP connection is ambiguous; select one server assignment before authorizing this tool."
+    server = servers[0]
     oauth = (server.config_json or {}).get("oauth") or {}
     token = mcp_oauth.decrypt_token_set(oauth.get("token"))
     if token is None:
+        if oauth or server.auth_status != mcp_oauth.AUTH_NONE:
+            return None, "MCP OAuth authorization is missing or unreadable; re-authorize the server."
         return None, None
     if not token.is_expired(time.time()):
         return token.access_token, None
@@ -1323,20 +1445,45 @@ async def resolve_mcp_oauth_bearer(
         server.auth_status = mcp_oauth.AUTH_EXPIRED
         await db.commit()
         return None, "MCP OAuth token expired and has no refresh token; re-authorize the server."
+    if oauth.get("refresh"):
+        return None, "MCP OAuth refresh is in progress or its outcome is unknown; check status or re-authorize."
+    client_secret = mcp_oauth.decrypt_value(oauth.get("client_secret"))
+    if (
+        not oauth.get("token_endpoint")
+        or not oauth.get("client_id")
+        or (oauth.get("client_secret") and not client_secret)
+    ):
+        return None, "MCP OAuth refresh configuration is unavailable; re-authorize the server."
+    try:
+        mcp_oauth.encrypt_value("oauth-storage-probe")
+    except mcp_oauth.OAuthError:
+        return None, "MCP OAuth encrypted storage is unavailable; restore it before refreshing."
+    claim = str(uuid.uuid4())
+    _store_oauth(server, {**oauth, "refresh": {"id": claim, "status": "exchanging"}})
+    server_id = server.id
+    await db.commit()
+    refreshed_blob = None
     try:
         refreshed = await mcp_oauth.refresh_access_token(
             token_endpoint=oauth["token_endpoint"],
             client_id=oauth["client_id"],
             refresh_token=token.refresh_token,
-            client_secret=mcp_oauth.decrypt_value(oauth.get("client_secret")),
+            client_secret=client_secret,
         )
-    except mcp_oauth.OAuthError:
-        server.auth_status = mcp_oauth.AUTH_EXPIRED
-        await db.commit()
-        return None, "MCP OAuth token refresh failed; re-authorize the server."
-    config = dict(server.config_json or {})
-    config["oauth"] = {**config.get("oauth", {}), "token": mcp_oauth.encrypt_token_set(refreshed)}
-    server.config_json = config
-    server.auth_status = mcp_oauth.AUTH_CONFIGURED
+        refreshed_blob = mcp_oauth.encrypt_token_set(refreshed)
+        outcome = "configured"
+    except mcp_oauth.OAuthError as exc:
+        outcome = "failed" if exc.outcome == "failed" else "unknown"
+    server = await _locked_oauth_server(db, tenant_id, server_id)
+    current = dict((server.config_json or {}).get("oauth") or {})
+    if (current.get("refresh") or {}).get("id") != claim or current.get("token") != oauth.get("token"):
+        return None, "MCP OAuth authorization changed during refresh; read the current authorization again."
+    current["refresh"] = None if refreshed_blob else {"id": claim, "status": outcome}
+    if refreshed_blob:
+        current["token"] = refreshed_blob
+    server.auth_status = mcp_oauth.AUTH_CONFIGURED if refreshed_blob else mcp_oauth.AUTH_EXPIRED
+    _store_oauth(server, current)
     await db.commit()
+    if not refreshed_blob:
+        return None, "MCP OAuth refresh failed or its outcome is unknown; re-authorize the server."
     return refreshed.access_token, None

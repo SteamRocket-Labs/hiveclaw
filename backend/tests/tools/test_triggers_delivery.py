@@ -189,7 +189,7 @@ async def test_handle_set_trigger_persists_same_session_delivery(monkeypatch):
     session_id = str(uuid4())
     agent_obj = SimpleNamespace(id=agent_id, max_triggers=None)
 
-    session = _FakeScopedSession([_Result(agent_obj), _Result(0), _Result(None)])
+    session = _FakeScopedSession([_Result(agent_obj), _Result(session_id), _Result(0), _Result(None)])
     monkeypatch.setattr(triggers_domain, "tenant_scoped_session", lambda *a, **k: session)
 
     async def _fake_resolve_tenant(_agent_id, *_a, **_k):

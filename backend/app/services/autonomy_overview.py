@@ -218,6 +218,8 @@ def _attention_from_last_attempt(task: Any | None) -> tuple[str | None, str | No
         "model_pin_not_found",
     }:
         return "missing_model", _skip_reason_to_text(skip_reason), "configure_model"
+    if status == "skipped" and skip_reason == "plan_required":
+        return "waiting_approval", "Review the current routine authorization before running it.", "review_wake_plan"
     if status == "skipped":
         return "failed_recently", _skip_reason_to_text(skip_reason), "inspect_or_fix_blocker"
     if status == "failed":
@@ -292,7 +294,7 @@ def build_trigger_view(
         next_action = "request_retry"
     else:
         attempt_state, attempt_reason, attempt_action = _attention_from_last_attempt(latest_attempt)
-        if attempt_state in {"missing_model", "failed_recently", "needs_reconciliation"}:
+        if attempt_state in {"missing_model", "failed_recently", "needs_reconciliation", "waiting_approval"}:
             attention_state = attempt_state
             attention_reason = attempt_reason
             next_action = attempt_action

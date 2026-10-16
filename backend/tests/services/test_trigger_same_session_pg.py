@@ -15,16 +15,21 @@ from tests.services.test_trigger_daemon_loop import _loop_trigger
 async def test_trigger_input_reaches_provider_once_after_idle_or_restart(owner_sessionmaker, monkeypatch, busy):
     from app.models.runtime_task import RuntimeTask
     from app.models.session_v2 import SessionTurnInput
+    from app.models.trigger import AgentTrigger
     from app.services import trigger_daemon, web_chat_runtime
     from app.services.runtime_budget_failover import not_applicable_runtime_budget_root_binding
     from app.services.runtime_task_worker import recover_session_input_dispatches_once
     from app.services.session_model_round import bind_round_inputs
 
-    tenant_id, _, agent_id, session_id, active_id = await _seed_session(owner_sessionmaker, active_run=busy)
+    tenant_id, requester_id, agent_id, session_id, active_id = await _seed_session(owner_sessionmaker, active_run=busy)
     wrapper_id = uuid.uuid4()
-    trigger = _loop_trigger(source_session_id=session_id, agent_id=agent_id)
+    trigger = _loop_trigger(source_session_id=session_id, agent_id=agent_id, created_by=requester_id)
     trigger.reason = "Compute 23*7 for CURRENT_TRIGGER, never resume the old employee assignment."
     expected, _ = trigger_daemon._build_trigger_context([trigger])
+    async with owner_sessionmaker() as db:
+        db.add(AgentTrigger(id=trigger.id, agent_id=agent_id, tenant_id=tenant_id, name=trigger.name,
+            type=trigger.type, config=trigger.config, reason=trigger.reason, is_enabled=True))
+        await db.commit()
 
     @asynccontextmanager
     async def scoped(actual_tenant):

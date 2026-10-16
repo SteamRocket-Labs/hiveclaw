@@ -5,6 +5,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate, stamp_plan_gate_decision
@@ -25,6 +26,7 @@ from app.services.plan_mode_recommendation_service import (
 from app.services.agent_tool_domains.triggers import (
     VALID_TRIGGER_TYPES,
     _coerce_int,
+    _apply_trigger_delivery,
     _parse_expires_at,
     _resolve_trigger_class,
     _validate_trigger_config,
@@ -40,9 +42,11 @@ from app.services.trigger_resource_authority import (
     lock_trigger_for_update,
     preserve_trigger_authority,
     require_trigger_not_fire_inflight,
+    require_trigger_source_scope,
     stamp_trigger_authority,
-    strip_trigger_runtime_config,
+    strip_trigger_untrusted_config,
     trigger_authority_state,
+    trigger_owner_user_id,
 )
 
 router = APIRouter(prefix="/agents", tags=["triggers"])
@@ -79,6 +83,7 @@ class TriggerCreate(BaseModel):
     type: str
     config: dict
     reason: str
+    is_enabled: bool = True
     trigger_class: str | None = None
     max_fires: int | None = None
     cooldown_seconds: int | None = None
@@ -170,6 +175,20 @@ def _raise_trigger_validation_error(error: str | None) -> None:
         raise HTTPException(status_code=400, detail=error)
 
 
+async def _read_matching_paused_draft(db, *, draft, user_id):
+    current = await db.scalar(select(AgentTrigger).where(
+        AgentTrigger.agent_id == draft.agent_id, AgentTrigger.name == draft.name,
+    ).with_for_update().execution_options(populate_existing=True))
+    if current is None:
+        return None
+    if (not current.is_enabled and trigger_owner_user_id(current) == user_id
+        and all(getattr(current, key) == getattr(draft, key)
+            for key in ("type", "config", "reason", "max_fires", "cooldown_seconds", "expires_at"))):
+        return current
+    raise HTTPException(status_code=409, detail={"code": "trigger_name_conflict",
+        "message": "This routine name is already in use. Read the current routines before saving."})
+
+
 @router.get("/{agent_id}/triggers", response_model=list[TriggerResponse])
 async def list_agent_triggers(
     agent_id: uuid.UUID,
@@ -241,11 +260,16 @@ async def create_trigger(
     if trigger_type not in VALID_TRIGGER_TYPES:
         raise HTTPException(status_code=400, detail=f"Invalid trigger type: {trigger_type}")
 
-    config = strip_trigger_runtime_config(body.config)
+    config = strip_trigger_untrusted_config(body.config)
     if body.trigger_class is not None:
         config["trigger_class"] = body.trigger_class
 
     _raise_trigger_validation_error(_validate_trigger_config("create_trigger", trigger_type, config))
+    _raise_trigger_validation_error(_apply_trigger_delivery("create_trigger", config, {}))
+    source_session_id = await require_trigger_source_scope(
+        db, agent_id=agent_id, owner_user_id=current_user.id, config=config,
+        root_session_id=body.confirmed_plan_session_id if body.is_enabled else None,
+    )
     _trigger_class, error = _resolve_trigger_class(
         "create_trigger",
         {"trigger_class": body.trigger_class},
@@ -280,9 +304,7 @@ async def create_trigger(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid expires_at: {body.expires_at}") from exc
 
-    # Plan Mode early intercept (§9.3): this endpoint creates an enabled
-    # autonomous trigger. A confirmed plan is required unless the caller carries
-    # an explicit user opt-out bound to a declined recommendation row.
+    # Paused drafts have no autonomous effects; enabling still requires its own decision.
     user_declined_plan_mode = plan_mode_user_declined(body.plan_mode_decision)
     plan_decision = None
     evidence_id = f"trigger-create:{uuid.uuid4()}"
@@ -296,7 +318,7 @@ async def create_trigger(
         "cooldown_seconds": body.cooldown_seconds,
         "expires_at": body.expires_at,
     }
-    if not user_declined_plan_mode:
+    if body.is_enabled and not user_declined_plan_mode:
         plan_decision = await enforce_plan_gate(
             db,
             agent_id=agent_id,
@@ -321,7 +343,7 @@ async def create_trigger(
             session_id=body.confirmed_plan_session_id,
             evidence_id=evidence_id,
         )
-    else:
+    elif body.is_enabled:
         try:
             recommendation = await require_declined_plan_recommendation(
                 db,
@@ -337,7 +359,7 @@ async def create_trigger(
     config = stamp_trigger_authority(
         config,
         owner_user_id=current_user.id,
-        root_session_id=body.confirmed_plan_session_id,
+        root_session_id=source_session_id,
     )
 
     trigger = AgentTrigger(
@@ -347,12 +369,26 @@ async def create_trigger(
         type=trigger_type,
         config=config,
         reason=reason,
-        is_enabled=True,
+        is_enabled=body.is_enabled,
         max_fires=_coerce_int(body.max_fires),
         cooldown_seconds=_coerce_int(body.cooldown_seconds) or 60,
         expires_at=expires_at,
     )
-    db.add(trigger)
+    if not body.is_enabled:
+        existing = await _read_matching_paused_draft(db, draft=trigger, user_id=current_user.id)
+        if existing is not None:
+            return _trigger_response(existing, authority_source="resource_owner")
+        try:
+            async with db.begin_nested():
+                db.add(trigger)
+                await db.flush()
+        except IntegrityError as exc:
+            existing = await _read_matching_paused_draft(db, draft=trigger, user_id=current_user.id)
+            if existing is None:
+                raise exc
+            return _trigger_response(existing, authority_source="resource_owner")
+    else:
+        db.add(trigger)
     await db.commit()
     if hasattr(db, "refresh"):
         await db.refresh(trigger)
@@ -435,8 +471,12 @@ async def update_trigger(
     trigger = await lock_trigger_for_update(db, agent_id=agent_id, trigger_id=trigger_id)
     if trigger is None:
         raise HTTPException(404, "Trigger not found")
+    decision = await authorize_trigger_action(
+        db, current_user, agent_id=agent_id, trigger=trigger, action="write",
+        agent_access=agent_access, operator_view=use_operator_view, operator_reason=normalized_operator_reason,
+    )
     if body.config is not None:
-        trigger.config = preserve_trigger_authority(trigger, body.config)
+        trigger.config = preserve_trigger_authority(trigger, strip_trigger_untrusted_config(body.config))
     if body.is_enabled is True:
         if user_declined_plan_mode:
             trigger.config = _stamp_recommendation_exemption(trigger.config, recommendation.id)
@@ -463,9 +503,15 @@ async def update_trigger(
         from datetime import datetime
 
         trigger.expires_at = datetime.fromisoformat(body.expires_at)
-    if body.trigger_class is not None:
+    if body.config is not None or body.trigger_class is not None:
         config = dict(trigger.config or {})
-        config["trigger_class"] = body.trigger_class
+        if body.trigger_class is not None:
+            config["trigger_class"] = body.trigger_class
+        _raise_trigger_validation_error(_validate_trigger_config("update_trigger", trigger.type, config))
+        _raise_trigger_validation_error(_apply_trigger_delivery("update_trigger", config, {}))
+        await require_trigger_source_scope(
+            db, agent_id=agent_id, owner_user_id=trigger_owner_user_id(trigger), config=config,
+        )
         _trigger_class, error = _resolve_trigger_class(
             "update_trigger",
             {"trigger_class": body.trigger_class},
@@ -481,6 +527,13 @@ async def update_trigger(
                 {"max_fires": trigger.max_fires, "expires_at": trigger.expires_at},
             )
         )
+        if isinstance(config.get("workflow_ref"), dict):
+            from app.services.workflow_trigger import validate_workflow_ref_for_trigger
+
+            ref_error = await validate_workflow_ref_for_trigger(
+                tenant_id=agent_access[0].tenant_id, agent_id=agent_id, ref=config["workflow_ref"])
+            if ref_error:
+                raise HTTPException(status_code=400, detail=f"Invalid workflow_ref: {ref_error}")
         trigger.config = config
 
     await db.commit()

@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.inspection import inspect as sqlalchemy_inspect
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.core.resource_authority import authorize_resource_action, filter_authorized_resources
+from app.core.resource_authority import _root_session_owned_by_user, authorize_resource_action, filter_authorized_resources
 from app.models.trigger import AgentTrigger
 from app.models.user import User
 
@@ -50,6 +50,49 @@ def strip_trigger_runtime_config(candidate_config: dict | None) -> dict:
     """Drop platform-owned runtime keys from an external config candidate."""
 
     return {key: value for key, value in dict(candidate_config or {}).items() if not _runtime_config_key(key)}
+
+
+def strip_trigger_untrusted_config(candidate_config: dict | None) -> dict:
+    """Caller settings cannot manufacture plan decisions or consumed leases."""
+    config = strip_trigger_runtime_config(candidate_config)
+    for key in ("plan_id", "plan_version", "plan_hash", "plan_authorization", "confirmed_plan_session_id", *_PRIVATE_AUTHORITY_METADATA_KEYS):
+        config.pop(key, None)
+    for key in ("metadata", "metadata_json"):
+        if isinstance(config.get(key), dict):
+            metadata = {name: value for name, value in config[key].items() if name not in _PRIVATE_AUTHORITY_METADATA_KEYS}
+            if metadata:
+                config[key] = metadata
+            else:
+                config.pop(key)
+    return config
+
+
+async def require_trigger_source_scope(
+    db: AsyncSession,
+    *,
+    agent_id: uuid.UUID,
+    owner_user_id: uuid.UUID | None,
+    config: dict,
+    root_session_id: str | None = None,
+) -> uuid.UUID | None:
+    """A delivery setting cannot grant private work to another requester."""
+    source = config.get("source_session_id")
+    if source and config.get("delivery") != "same_session":
+        raise HTTPException(400, "source_session_id requires delivery=same_session")
+    verified_root = None
+    for raw in (source, root_session_id):
+        if not raw:
+            continue
+        try:
+            session_id = uuid.UUID(str(raw))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, "Invalid trigger source session") from exc
+        if owner_user_id is None or not await _root_session_owned_by_user(
+            db, root_session_id=session_id, agent_id=agent_id, user_id=owner_user_id,
+        ):
+            raise HTTPException(403, "Trigger source must belong to its requester on this employee")
+        verified_root = session_id
+    return verified_root
 
 
 def _uuid_value(config: dict, *keys: str) -> uuid.UUID | None:
@@ -121,6 +164,12 @@ def preserve_trigger_authority(current: AgentTrigger, candidate_config: dict | N
             candidate[key] = current_config[key]
         else:
             candidate.pop(key, None)
+    # A schedule replacement keeps its destination unless delivery changes explicitly.
+    for key in ("delivery", "source_session_id"):
+        if key not in candidate and key in current_config:
+            candidate[key] = current_config[key]
+    if candidate.get("delivery") == "new_invocation":
+        candidate.pop("source_session_id", None)
     return candidate
 
 
@@ -139,7 +188,7 @@ async def lock_trigger_for_update(
     )
     if trigger_type is not None:
         statement = statement.where(AgentTrigger.type == trigger_type)
-    return (await db.execute(statement.with_for_update())).scalar_one_or_none()
+    return (await db.execute(statement.with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
 
 
 def require_trigger_not_fire_inflight(trigger: AgentTrigger) -> None:

@@ -136,6 +136,11 @@ export default function AgentAwareSection({
     workflowArgsText: '{}',
   });
   const [wakeError, setWakeError] = React.useState('');
+  const [wakeSaving, setWakeSaving] = React.useState(false);
+  const [savedWakeDraft, setSavedWakeDraft] = React.useState<{ agentId: string; id: string } | null>(null);
+  const [wakeSavedNotice, setWakeSavedNotice] = React.useState('');
+  const wakeCreateScope = React.useRef<string | null>(agentId);
+  wakeCreateScope.current = agentId;
   const [reclaimError, setReclaimError] = React.useState('');
   const [enableTriggerId, setEnableTriggerId] = React.useState<string | null>(null);
   const [enableError, setEnableError] = React.useState('');
@@ -152,7 +157,10 @@ export default function AgentAwareSection({
   });
 
   React.useEffect(() => {
+    wakeCreateScope.current = agentId;
     setSelectedWakeAgentId(agentId);
+    setSavedWakeDraft(null); setWakeSaving(false); setWakeError(''); setWakeSavedNotice('');
+    return () => { wakeCreateScope.current = null; };
   }, [agentId]);
 
   const triggerToHuman = (trigger: any): string => {
@@ -222,6 +230,7 @@ export default function AgentAwareSection({
 
   const openEnableDecision = (triggerId: string) => {
     setEnableError('');
+    setWakeSavedNotice('');
     setEnableTriggerId(triggerId);
   };
 
@@ -328,6 +337,7 @@ export default function AgentAwareSection({
     const code = String(state || '');
     const known: Record<string, string> = {
       paused: t('agent.aware.reasonPaused', 'Autonomous wake is paused.'),
+      waiting_approval: t('agent.aware.reasonPlanRequired'),
       authority_revoked: t('agent.aware.reasonAuthorityRevoked', 'Trigger authority was revoked. Restore it before this wake can run.'),
       expired: t('agent.aware.reasonExpired', 'This wake policy has expired.'),
       max_fires_reached: t('agent.aware.reasonMaxFires', 'This wake policy reached its run limit.'),
@@ -435,6 +445,7 @@ export default function AgentAwareSection({
   };
 
   const createWakePolicy = async () => {
+    if (wakeSaving) return;
     const selectedWorkflow = workflowDefinitionFromKey(wakeForm.workflowDefinitionKey, workflowDefinitions);
     let payload: Record<string, unknown>;
     try {
@@ -451,15 +462,35 @@ export default function AgentAwareSection({
       return;
     }
     const targetAgentId = selectedWakeAgentId || agentId;
-    await triggerApi.create(targetAgentId, payload);
-    setShowCreateWake(false);
-    if (targetAgentId === agentId) {
-      await refreshAutonomy();
+    // Reuse this identity when a save response is lost; the server reads an identical paused draft back.
+    if (!wakeForm.name || !wakeForm.reason) setWakeForm((current) => ({ ...current, name: String(payload.name), reason: String(payload.reason) }));
+    setWakeSaving(true); setWakeSavedNotice('');
+    const scope = agentId;
+    try {
+      let saved = savedWakeDraft;
+      if (!saved) {
+        const result = await triggerApi.create(targetAgentId, { ...payload, is_enabled: false });
+        if (wakeCreateScope.current !== scope) return;
+        if (!result.id || result.is_enabled !== false) throw new Error(t('agent.aware.draftReadbackFailed'));
+        saved = { agentId: targetAgentId, id: String(result.id) };
+        setSavedWakeDraft(saved);
+      }
+      const current = (await triggerApi.list(saved.agentId)).find((row) => String(row.id) === saved.id);
+      if (wakeCreateScope.current !== scope) return;
+      if (!current || current.is_enabled !== false) throw new Error(t('agent.aware.draftReadbackFailed'));
+      if (saved.agentId === agentId) await refreshAutonomy();
+      if (wakeCreateScope.current !== scope) return;
+      setShowCreateWake(false); setSavedWakeDraft(null);
+      setWakeSavedNotice(t('agent.aware.draftSaved'));
+    } catch (error) {
+      if (wakeCreateScope.current === scope) setWakeError(error instanceof Error ? error.message : t('agent.aware.draftSaveFailed'));
+    } finally {
+      if (wakeCreateScope.current === scope) setWakeSaving(false);
     }
   };
 
   const renderCreateWakeForm = () => {
-    if (!showCreateWake) return null;
+    if (!showCreateWake) return wakeSavedNotice ? <p role="status">{wakeSavedNotice}</p> : null;
     const activeWorkflowDefinitions = workflowDefinitions.filter((record) => record.status === 'active');
     const agents = Array.isArray(agentOptions) && agentOptions.length > 0
       ? agentOptions
@@ -485,16 +516,19 @@ export default function AgentAwareSection({
         >
           <div className="agent-aware-wake-head">
             <input
+              disabled={wakeSaving || !!savedWakeDraft}
               className="form-input agent-aware-wake-title-input"
               value={wakeForm.name}
               onChange={(event) => setWakeForm({ ...wakeForm, name: event.target.value })}
               placeholder={t('agent.aware.automationTitle', 'Automation title')}
             />
-            <button className="btn btn-ghost" onClick={() => setShowCreateWake(false)} aria-label={t('common.close', 'Close')}>
+            <button className="btn btn-ghost" onClick={() => setShowCreateWake(false)} disabled={wakeSaving} aria-label={t('common.close', 'Close')}>
               x
             </button>
           </div>
+          <p>{t('agent.aware.pausedDraftHint')}</p>
           <textarea
+            disabled={wakeSaving || !!savedWakeDraft}
             className="form-input agent-aware-wake-prompt-input"
             value={wakeForm.reason}
             onChange={(event) => setWakeForm({ ...wakeForm, reason: event.target.value })}
@@ -503,6 +537,7 @@ export default function AgentAwareSection({
           />
           {wakeForm.workflowDefinitionKey && (
             <textarea
+              disabled={wakeSaving || !!savedWakeDraft}
               className="form-input"
               data-testid="wake-workflow-ref-args"
               value={wakeForm.workflowArgsText}
@@ -515,6 +550,7 @@ export default function AgentAwareSection({
             <label className="agent-aware-wake-label">
               <span>{t('agent.aware.selectAgent', 'Select agent')}</span>
               <select
+                disabled={wakeSaving || !!savedWakeDraft}
                 className="form-input agent-aware-wake-agent-select"
                 value={selectedWakeAgentId}
                 onChange={(event) => setSelectedWakeAgentId(event.target.value)}
@@ -527,6 +563,7 @@ export default function AgentAwareSection({
               </select>
             </label>
             <select
+              disabled={wakeSaving || !!savedWakeDraft}
               className="form-input agent-aware-wake-ref-select"
               data-testid="wake-workflow-ref-select"
               value={wakeForm.workflowDefinitionKey}
@@ -540,6 +577,7 @@ export default function AgentAwareSection({
               ))}
             </select>
             <select
+              disabled={wakeSaving || !!savedWakeDraft}
               className="form-input agent-aware-wake-preset-select"
               value={schedulePreset}
               onChange={(event) =>
@@ -557,6 +595,7 @@ export default function AgentAwareSection({
             </select>
             {schedulePreset === 'daily' && (
               <select
+                disabled={wakeSaving || !!savedWakeDraft}
                 className="form-input agent-aware-wake-time-select"
                 value={wakeForm.dailyTime || '09:00'}
                 onChange={(event) => setWakeForm({ ...wakeForm, dailyTime: event.target.value })}
@@ -571,6 +610,7 @@ export default function AgentAwareSection({
             {schedulePreset === 'weekly' && (
               <>
                 <select
+                  disabled={wakeSaving || !!savedWakeDraft}
                   className="form-input agent-aware-wake-day-select"
                   value={wakeForm.weeklyDay || '1'}
                   onChange={(event) => setWakeForm({ ...wakeForm, weeklyDay: event.target.value })}
@@ -582,6 +622,7 @@ export default function AgentAwareSection({
                   ))}
                 </select>
                 <select
+                  disabled={wakeSaving || !!savedWakeDraft}
                   className="form-input agent-aware-wake-time-select"
                   value={wakeForm.weeklyTime || '09:00'}
                   onChange={(event) => setWakeForm({ ...wakeForm, weeklyTime: event.target.value })}
@@ -596,6 +637,7 @@ export default function AgentAwareSection({
             )}
             {schedulePreset === 'custom' && (
               <input
+                disabled={wakeSaving || !!savedWakeDraft}
                 className="form-input agent-aware-wake-cron-input"
                 value={wakeForm.cronExpr}
                 onChange={(event) => setWakeForm({ ...wakeForm, cronExpr: event.target.value })}
@@ -603,12 +645,12 @@ export default function AgentAwareSection({
               />
             )}
             <div className="agent-aware-wake-submit">
-              {wakeError && <span className="agent-aware-wake-error">{wakeError}</span>}
-              <button className="btn btn-ghost" onClick={() => setShowCreateWake(false)}>
+              {wakeError && <span className="agent-aware-wake-error" role="alert">{wakeError}</span>}
+              <button className="btn btn-ghost" disabled={wakeSaving} onClick={() => setShowCreateWake(false)}>
                 {t('common.cancel', 'Cancel')}
               </button>
-              <button className="btn btn-primary" onClick={createWakePolicy}>
-                {t('common.create', 'Create')}
+              <button className="btn btn-primary" disabled={wakeSaving} onClick={createWakePolicy}>
+                {wakeSaving ? t('common.loading') : t(savedWakeDraft ? 'agent.aware.readSavedDraft' : 'agent.aware.savePausedDraft')}
               </button>
             </div>
           </div>
@@ -679,9 +721,9 @@ export default function AgentAwareSection({
                   <div className="agent-aware-trigger-actions">
                     {trigger.attention_state === 'authority_revoked' || trigger.next_action === 'reclaim_trigger_authority' ? (
                       <button className="btn btn-ghost btn-sm" onClick={() => reclaimTriggerAuthority(trigger)}>{t('agent.aware.reclaimAuthority', 'Restore authority')}</button>
-                    ) : trigger.attention_state === 'paused' ? (
+                    ) : trigger.attention_state === 'paused' || trigger.next_action === 'review_wake_plan' ? (
                       <>
-                        <button className="btn btn-ghost btn-sm" onClick={() => openEnableDecision(trigger.id)}>{t('agent.aware.enable')}</button>
+                        <button className="btn btn-ghost btn-sm" onClick={() => openEnableDecision(trigger.id)}>{t(trigger.next_action === 'review_wake_plan' ? 'agent.aware.reviewRoutineAuthorization' : 'agent.aware.enable')}</button>
                         {renderEnableDecision(trigger)}
                       </>
                     ) : (

@@ -26,8 +26,9 @@ from app.services.trigger_resource_authority import (
     lock_trigger_for_update,
     load_trigger_requester,
     preserve_trigger_authority,
+    require_trigger_source_scope,
     stamp_trigger_authority,
-    strip_trigger_runtime_config,
+    strip_trigger_untrusted_config,
     trigger_authority_state,
     trigger_owner_user_id,
 )
@@ -417,7 +418,7 @@ async def _handle_set_trigger(
 
     name = arguments.get("name", "").strip()
     ttype = arguments.get("type", "").strip()
-    config = strip_trigger_runtime_config(arguments.get("config"))
+    config = strip_trigger_untrusted_config(arguments.get("config"))
     reason = arguments.get("reason", "").strip()
 
     if not name:
@@ -519,6 +520,10 @@ async def _handle_set_trigger(
             _a_result = await db.execute(select(_AgentModel).where(_AgentModel.id == agent_id))
             _agent_obj = _a_result.scalar_one_or_none()
             agent_max_triggers = (_agent_obj.max_triggers if _agent_obj else None) or MAX_TRIGGERS_PER_AGENT
+            try:
+                await require_trigger_source_scope(db, agent_id=agent_id, owner_user_id=user_id, config=config)
+            except HTTPException as exc:
+                return _trigger_error("set_trigger", "auth_or_permission" if exc.status_code == 403 else "bad_arguments", str(exc.detail))
 
             # Check max triggers
             from sqlalchemy import func as sa_func
@@ -555,6 +560,17 @@ async def _handle_set_trigger(
                         "auth_or_permission",
                         "Trigger ownership could not be resolved for this runtime requester.",
                     )
+                existing = await lock_trigger_for_update(
+                    db,
+                    agent_id=agent_id,
+                    trigger_id=existing.id,
+                )
+                if existing is None:
+                    return _trigger_error(
+                        "set_trigger",
+                        "not_found",
+                        f"Trigger '{name}' no longer exists.",
+                    )
                 try:
                     await authorize_trigger_action(
                         db,
@@ -569,17 +585,6 @@ async def _handle_set_trigger(
                         "set_trigger",
                         "auth_or_permission",
                         "A trigger with this name exists outside the requester authority.",
-                    )
-                existing = await lock_trigger_for_update(
-                    db,
-                    agent_id=agent_id,
-                    trigger_id=existing.id,
-                )
-                if existing is None:
-                    return _trigger_error(
-                        "set_trigger",
-                        "not_found",
-                        f"Trigger '{name}' no longer exists.",
                     )
                 if existing.is_enabled:
                     return _trigger_error(
@@ -749,6 +754,14 @@ async def _handle_update_trigger(
                     "auth_or_permission",
                     "Trigger ownership could not be resolved for this runtime requester.",
                 )
+            trigger = await lock_trigger_for_update(
+                db,
+                agent_id=agent_id,
+                trigger_id=trigger.id,
+            )
+            if trigger is None:
+                return _trigger_error("update_trigger", "not_found", f"Trigger '{name}' no longer exists.")
+
             try:
                 await authorize_trigger_action(
                     db,
@@ -763,21 +776,13 @@ async def _handle_update_trigger(
                     "auth_or_permission",
                     "The trigger belongs to a different requester.",
                 )
-            trigger = await lock_trigger_for_update(
-                db,
-                agent_id=agent_id,
-                trigger_id=trigger.id,
-            )
-            if trigger is None:
-                return _trigger_error("update_trigger", "not_found", f"Trigger '{name}' no longer exists.")
-
             changes = []
             final_config = dict(trigger.config or {})
             if new_config is not None:
                 validation_error = _validate_trigger_config("update_trigger", trigger.type, new_config)
                 if validation_error:
                     return validation_error
-                final_config = dict(new_config)
+                final_config = strip_trigger_untrusted_config(new_config)
             if arguments.get("trigger_class") is not None:
                 final_config["trigger_class"] = arguments.get("trigger_class")
             final_config = stamp_confirmed_plan_provenance(
@@ -787,6 +792,16 @@ async def _handle_update_trigger(
             )
             final_config = _stamp_user_declined_plan_mode(final_config)
             final_config = preserve_trigger_authority(trigger, final_config)
+            delivery_error = _apply_trigger_delivery("update_trigger", final_config, {})
+            if delivery_error:
+                return delivery_error
+
+            try:
+                await require_trigger_source_scope(
+                    db, agent_id=agent_id, owner_user_id=trigger_owner_user_id(trigger), config=final_config,
+                )
+            except HTTPException as exc:
+                return _trigger_error("update_trigger", "auth_or_permission" if exc.status_code == 403 else "bad_arguments", str(exc.detail))
 
             _trigger_class, binding_error = _resolve_trigger_class(
                 "update_trigger",

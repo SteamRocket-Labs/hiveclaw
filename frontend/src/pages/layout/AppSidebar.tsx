@@ -52,6 +52,7 @@ type SidebarNavItem = {
 
 const workspaceNavItems: SidebarNavItem[] = [
   { to: '/home', labelKey: 'nav.home', fallback: 'Home', icon: <IconHome size={15} stroke={1.6} />, end: true },
+  { to: '/assistant', labelKey: 'nav.myAssistant', fallback: 'My Assistant', icon: <IconUser size={15} stroke={1.6} /> },
   { to: '/plaza', labelKey: 'nav.plaza', fallback: 'Agent Circle', icon: <IconSitemap size={15} stroke={1.6} /> },
   { to: '/automations', labelKey: 'nav.tasksAutomation', fallback: 'Automation', icon: <IconCheckbox size={15} stroke={1.6} /> },
   { to: '/knowledge', labelKey: 'nav.knowledge', fallback: 'Knowledge', icon: <IconDatabase size={15} stroke={1.6} /> },

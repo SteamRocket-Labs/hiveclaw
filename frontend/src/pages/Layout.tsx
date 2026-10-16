@@ -9,6 +9,7 @@ import { notificationsApi } from '../api/domains/notifications';
 import { systemApi } from '../api/domains/system';
 import { adminApi } from '../api/domains/admin';
 import { isChineseLanguage, nextInterfaceLanguage } from '../i18n/language';
+import AssistantRecoveryStrip from './assistant/AssistantRecoveryStrip';
 import AppSidebar, {
     COMPACT_SIDEBAR_MAX_WIDTH,
     isCompactSidebarViewport,
@@ -306,6 +307,7 @@ export default function Layout() {
         localStorage.setItem('current_tenant_id', tenantId);
         window.dispatchEvent(new StorageEvent('storage', { key: 'current_tenant_id', newValue: tenantId }));
         queryClient.invalidateQueries({ queryKey: ['agents'] });
+        queryClient.invalidateQueries({ queryKey: ['assistant'] });
     };
 
     // Same-window company selections (e.g. the platform-admin company picker
@@ -403,6 +405,7 @@ export default function Layout() {
             />
 
             <main className="main-content">
+                <AssistantRecoveryStrip userId={user?.id} tenantId={currentTenant} />
                 <Outlet />
             </main>
 

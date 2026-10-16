@@ -33,6 +33,7 @@ const AgentCreate = lazy(() => import('./pages/AgentCreate'));
 const LocalAgents = lazy(() => import('./pages/LocalAgents'));
 const Chat = lazy(() => import('./pages/Chat'));
 const Messages = lazy(() => import('./pages/Messages'));
+const AssistantEntry = lazy(() => import('./pages/assistant/AssistantEntry'));
 const ControlPlane = lazy(() => import('./pages/ControlPlane'));
 const AdminCompanies = lazy(() => import('./pages/AdminCompanies'));
 const AppLayout = lazy(() => import('./surfaces/app/AppLayout'));
@@ -175,7 +176,8 @@ export default function App() {
                     {/* ─── App surface ─── */}
                     <Route path="/" element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
 
-                        <Route index element={<Navigate to="/home" replace />} />
+                        <Route index element={<AssistantEntry mode="entry" />} />
+                        <Route path="assistant" element={<AssistantEntry mode="assistant" />} />
                         <Route path="home" element={<Dashboard />} />
                         <Route path="dashboard" element={<Navigate to="/home" replace />} />
                         <Route path="agents" element={<DigitalEmployees />} />

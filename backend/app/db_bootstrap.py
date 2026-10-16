@@ -123,6 +123,7 @@ RLS_TENANT_TABLES: tuple[str, ...] = (
     "business_team_memberships",
     "identity_cutover_journal",
     "content_input_receipts",
+    "user_assistant_bindings",
 )
 
 # Additional table families that also need FORCE ROW LEVEL SECURITY. The
@@ -369,6 +370,7 @@ STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
     "business_team_memberships",
     "identity_cutover_journal",
     "content_input_receipts",
+    "user_assistant_bindings",
 )
 
 OPERATOR_NULLABLE_TENANT_TABLES: tuple[str, ...] = ("audit_logs", "users")

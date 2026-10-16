@@ -383,6 +383,7 @@ interface AgentChatSectionProps {
   onBranchMessage?: (message: AgentChatMessage, mode: ConversationBranchMode, content?: string) => void | Promise<unknown>;
   /** Sends an explicit message (not from the composer) — used by inline cards. */
   onSendMessage?: (text: string) => void | Promise<unknown>;
+  onAnswerQuestion?: (itemId: string, text: string) => Promise<unknown>;
   /**
    * Approves a Plan Mode entry request: sends the given reason as a message
    * carrying `plan_mode_requested=true` so the existing entry path activates
@@ -419,20 +420,7 @@ export function extractPlanIdFromPlanModeMessage(content: string | null | undefi
 export function isClarificationCardAnsweredByLaterUserMessage(messages: AgentChatMessage[], index: number): boolean {
   const message = messages[index];
   if (message?.role !== 'tool_call' || message.toolMeta?.kind !== 'user_clarification') return false;
-  if (message.toolMeta.answered) return true;
-  const hasLaterVisibleAnswer = messages
-    .slice(index + 1)
-    .some((candidate) => candidate.role === 'user' && String(candidate.content || '').trim().length > 0);
-  if (hasLaterVisibleAnswer) return true;
-
-  // Reconciliation may temporarily place an older card after its answer; event time remains authoritative.
-  const clarificationTime = Date.parse(String(message.timestamp || ''));
-  if (!Number.isFinite(clarificationTime)) return false;
-  return messages.some((candidate) => {
-    if (candidate.role !== 'user' || !String(candidate.content || '').trim()) return false;
-    const candidateTime = Date.parse(String(candidate.timestamp || ''));
-    return Number.isFinite(candidateTime) && candidateTime > clarificationTime;
-  });
+  return message.toolMeta.answered === true;
 }
 
 export function isInlineToolCardMessage(message: AgentChatMessage): boolean {
@@ -1157,6 +1145,7 @@ function AgentChatSection({
   onSendChatMsg,
   onBranchMessage,
   onSendMessage,
+  onAnswerQuestion,
   onEnterPlanMode,
   planModeRequested = false,
   onTogglePlanMode,
@@ -1457,6 +1446,8 @@ function AgentChatSection({
         agentId={canMutateSession ? effectiveAgentId ?? undefined : undefined}
         agentName={agent?.name}
         submitted={isClarificationCardAnsweredByLaterUserMessage(visibleTimeline, index)}
+        questionItemId={msg.transcriptEventId || undefined}
+        onAnswerQuestion={canMutateSession ? onAnswerQuestion : undefined}
         onSendMessage={canMutateSession ? onSendMessage : undefined}
         onEnterPlanMode={canMutateSession ? onEnterPlanMode : undefined}
       />

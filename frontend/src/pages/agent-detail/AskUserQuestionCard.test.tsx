@@ -170,7 +170,7 @@ describe('AskUserQuestionCard rendering', () => {
     expect(markup).toContain('aria-label="Previous question"');
     expect(markup).toContain('aria-label="Next question"');
     // Only the active question owns an "Other" input.
-    expect(markup.match(/id="clarify-\d+-other"/g)?.length).toBe(1);
+    expect(markup.match(/id="[^"]*clarify-\d+-other"/g)?.length).toBe(1);
     // Multi-select question renders checkboxes; single-select renders radios.
     expect(markup).toContain('type="checkbox"');
     expect(markup).not.toContain('type="radio"');

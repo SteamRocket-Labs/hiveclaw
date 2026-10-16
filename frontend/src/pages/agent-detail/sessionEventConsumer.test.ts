@@ -77,6 +77,41 @@ function replay(events: SessionEventV2[]): SessionEventStore {
 }
 
 describe('canonical Session event consumer', () => {
+  it('keeps a question open until its exact canonical answer survives live delivery and reload', () => {
+    const tool: SessionEventV2 = { ...event(1, 'started'), item_id: 'call', item_kind: 'tool_call', kind: 'tool_call.started',
+      ordinal: undefined, invocation_id: 'inv', payload_schema: 'hive.session.payload.tool_call.started.v2',
+      payload: { tool_name: 'ask_user_question' } };
+    const result: SessionEventV2 = { ...event(2, 'completed'), item_id: 'result', item_kind: 'tool_result', kind: 'tool_result.completed',
+      ordinal: undefined, invocation_id: 'inv', payload_schema: 'hive.session.payload.tool_result.completed.v2',
+      payload: { content: JSON.stringify({ status: 'awaiting_user_clarification', blocking: true,
+        questions: [{ question: 'Which audience?', options: [{ label: 'Team' }] }] }) } };
+    const question: SessionEventV2 = { ...event(3, 'started'), item_id: 'question', item_kind: 'user_question', kind: 'user_question.waiting',
+      lifecycle: 'waiting', ordinal: undefined, invocation_id: 'inv', payload_schema: 'hive.session.payload.user_question.waiting.v2', payload: {} };
+    expect(projectSessionEventStoreToMessages(replay([tool, result, question]))[0].toolMeta).toMatchObject({
+      kind: 'user_clarification', requestItemId: 'question', answered: false,
+    });
+    const answered: SessionEventV2 = { ...question, sequence: 4, event_id: 'answer-event', kind: 'user_question.completed',
+      lifecycle: 'completed', payload_schema: 'hive.session.payload.user_question.completed.v2', payload: { answer_text: 'Audience: Team' } };
+    const restored = projectSessionEventStoreToMessages(replay([tool, result, question, answered]));
+    expect(restored).toHaveLength(1);
+    expect(restored[0].toolMeta).toMatchObject({ requestItemId: 'question', answered: true, answerText: 'Audience: Team' });
+    const reopened = { ...question, sequence: 5, event_id: 'reopened-event', item_id: 'reopened-question' };
+    expect(projectSessionEventStoreToMessages(replay([tool, result, question, answered, reopened]))[0].toolMeta)
+      .toMatchObject({ requestItemId: 'reopened-question', answered: false });
+  });
+  it('projects old concrete tool records with the current exact question binding after reopen', () => {
+    const question: SessionEventV2 = { ...event(1, 'completed'), item_id: 'old-question', item_kind: 'user_question',
+      kind: 'user_question.completed', payload_schema: 'hive.session.payload.user_question.completed.v2', ordinal: undefined,
+      payload: { status: 'awaiting_user_clarification', legacy_event_id: 'original-tool-event',
+        questions: [{ question: 'Which audience?', options: [{ label: 'Team' }] }], answer_text: 'Team' } };
+    const reopened: SessionEventV2 = { ...question, sequence: 2, event_id: 'reopened', item_id: 'new-question',
+      lifecycle: 'waiting', kind: 'user_question.waiting', payload_schema: 'hive.session.payload.user_question.waiting.v2' };
+    const messages = projectSessionEventStoreToMessages(replay([question, reopened]));
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ id: 'original-tool-event', toolMeta: {
+      kind: 'user_clarification', requestItemId: 'new-question', answered: false,
+    } });
+  });
   it('seals the already-visible live process with the canonical final without rebuilding gapped history', () => {
     const user: AgentChatMessage = {
       id: 'input-live-1',

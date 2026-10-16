@@ -1831,7 +1831,7 @@
       "singleUse": "单次使用"
     },
     "clarification": {
-      "badge": "需要你的确认",
+      "badge": "需要你补充信息",
       "multiSelect": "可多选",
       "progress": "问题 {{current}} / {{total}}",
       "answeredProgress": "已答 {{answered}}/{{total}}",
@@ -1840,7 +1840,8 @@
       "other": "其他",
       "otherPlaceholder": "输入你自己的答案…",
       "submit": "提交答复",
-      "sent": "你的答复已发送。"
+      "sent": "你的答复已发送。",
+      "notApplied": "答复已保存，但尚未应用。请重试或检查当前工作。"
     },
     "soul": {
       "title": "Soul — 人格与行为指令",

@@ -1,6 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 describe('chat API adapter', () => {
+  it('binds an answer to the exact question using the durable input endpoint', async () => {
+    vi.doMock('../core', () => ({ post: vi.fn().mockResolvedValue({ status: 'queued', admission_state: 'admitted' }) }));
+    const { chatApi } = await import('./chat');
+    const { post } = await import('../core');
+    await chatApi.answerQuestion('agent', 'work', 'question', 'Audience: Team', 'stable-input');
+    expect(post).toHaveBeenCalledWith('/agents/agent/sessions/work/inputs', {
+      kind: 'answer_request', input_id: 'stable-input', idempotency_key: 'question-answer:stable-input',
+      request_item_id: 'question', content_parts: [{ type: 'text', text: 'Audience: Team' }], terminal_fallback: 'queue_next_turn',
+    });
+  });
   beforeEach(() => {
     vi.resetModules();
   });

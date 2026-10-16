@@ -30,6 +30,7 @@ interface AskUserQuestionCardProps {
   dense?: boolean;
   /** Marks the card as already answered (post-submit, disabled state). */
   submitted?: boolean;
+  readOnly?: boolean;
 }
 
 export interface QuestionAnswerState {
@@ -137,6 +138,7 @@ export default function AskUserQuestionCard({
   onSubmit,
   dense = false,
   submitted = false,
+  readOnly = false,
 }: AskUserQuestionCardProps) {
   const { t } = useTranslation();
   const questionsFingerprint = React.useMemo(
@@ -155,6 +157,8 @@ export default function AskUserQuestionCard({
   const [activeQuestionIndex, setActiveQuestionIndex] = React.useState(0);
   const [busy, setBusy] = React.useState(false);
   const [done, setDone] = React.useState(submitted);
+  const [error, setError] = React.useState<string | null>(null);
+  const questionCardId = React.useId();
 
   React.useEffect(() => {
     setAnswers(makeInitialState(questions));
@@ -176,7 +180,7 @@ export default function AskUserQuestionCard({
 
   // Blocking cards require every question answered; the helper is pure so the
   // gating logic is unit-tested directly.
-  const canSubmit = !done && !busy && canSubmitClarification(questions, answers, blocking);
+  const canSubmit = !readOnly && !done && !busy && canSubmitClarification(questions, answers, blocking);
   const questionCount = questions.length;
   const safeActiveQuestionIndex = Math.min(activeQuestionIndex, Math.max(questionCount - 1, 0));
   const activeQuestion = questions[safeActiveQuestionIndex];
@@ -192,9 +196,12 @@ export default function AskUserQuestionCard({
     const answerText = formatClarificationAnswer(questions, answers);
     if (!answerText.trim()) return;
     setBusy(true);
+    setError(null);
     try {
       await onSubmit(answerText);
       setDone(true);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setBusy(false);
     }
@@ -204,7 +211,7 @@ export default function AskUserQuestionCard({
     return null;
   }
 
-  const otherFieldId = `clarify-${safeActiveQuestionIndex}-other`;
+  const otherFieldId = `${questionCardId}-clarify-${safeActiveQuestionIndex}-other`;
   const progressText = t('agent.clarification.progress', 'Question {{current}} of {{total}}', {
     current: safeActiveQuestionIndex + 1,
     total: questionCount,
@@ -241,8 +248,8 @@ export default function AskUserQuestionCard({
           {activeQuestion.options.map((option, optionIndex) => {
             const checked = activeState.selected.includes(optionIndex);
             const inputName = activeQuestion.multiSelect
-              ? `clarify-${safeActiveQuestionIndex}-${optionIndex}`
-              : `clarify-${safeActiveQuestionIndex}`;
+              ? `${questionCardId}-clarify-${safeActiveQuestionIndex}-${optionIndex}`
+              : `${questionCardId}-clarify-${safeActiveQuestionIndex}`;
             return (
               <label
                 key={optionIndex}
@@ -252,7 +259,7 @@ export default function AskUserQuestionCard({
                   type={activeQuestion.multiSelect ? 'checkbox' : 'radio'}
                   name={inputName}
                   checked={checked}
-                  disabled={done || busy}
+                  disabled={readOnly || done || busy}
                   onChange={() => toggleOption(safeActiveQuestionIndex, optionIndex, activeQuestion.multiSelect)}
                   className="ask-question-option-input"
                 />
@@ -277,7 +284,7 @@ export default function AskUserQuestionCard({
               id={otherFieldId}
               type="text"
               value={activeState.other}
-              disabled={done || busy}
+              disabled={readOnly || done || busy}
               placeholder={t('agent.clarification.otherPlaceholder', 'Type your own answer…')}
               onChange={(event) => setOther(safeActiveQuestionIndex, event.target.value, activeQuestion.multiSelect)}
               className="ask-question-input"
@@ -300,11 +307,12 @@ export default function AskUserQuestionCard({
         })}
       </div>
 
+      {error && <p role="alert">{error}</p>}
       {done ? (
         <div role="status" className="ask-question-sent">
           {t('agent.clarification.sent', 'Your answer was sent.')}
         </div>
-      ) : (
+      ) : readOnly ? null : (
         <div className="ask-question-footer">
           <div className="ask-question-nav">
             <button

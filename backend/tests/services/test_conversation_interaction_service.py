@@ -58,6 +58,7 @@ async def test_marks_latest_clarification_event_answered_durably():
         db=db,
         agent_id=agent_id,
         session_id=session_id,
+        question_item_id=clarification_event.id,
         answer_event_id=answer_event_id,
         answer_text="Scope: Mine",
     )
@@ -124,6 +125,7 @@ async def test_elicitation_result_hook_can_replace_answer_before_model_consumes_
         db=_FakeDB(clarification_event),
         agent_id=agent_id,
         session_id=session_id,
+        question_item_id=clarification_event.id,
         answer_event_id=answer_event_id,
         answer_text="Mine",
         answer_event=answer_event,

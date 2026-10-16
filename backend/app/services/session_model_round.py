@@ -344,7 +344,9 @@ async def bind_round_inputs(
             round_id=round_id,
             snapshot_ref=ref,
         )
-    return [*input_parts_to_runtime_messages(rows), *carry_messages]
+    from app.services.session_user_question import answer_projections
+
+    return [*input_parts_to_runtime_messages(rows, answer_projections=await answer_projections(db, rows)), *carry_messages]
 
 
 def _unsettled_effect_states() -> tuple[str, ...]:

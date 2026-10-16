@@ -838,6 +838,19 @@ async def complete_tool_invocation(
     else:
         receipt_ref = f"tool-decision:{decision_id}"
     drafts: list[SessionEventDraft] = []
+    if invocation.tool_name == "ask_user_question" and outcome == "success":
+        try:
+            question = json.loads(content)
+        except (ValueError, TypeError):
+            question = None
+        if isinstance(question, dict) and question.get("status") == "awaiting_user_clarification" and question.get("questions"):
+            task = await db.get(RuntimeTask, invocation.run_id)
+            drafts.append(SessionEventDraft(
+                item_id=uuid.uuid5(invocation.id, "user-question"), item_kind="user_question", lifecycle="waiting",
+                scope=_scope(result), actor={"type": "assistant"}, result_id=result.id,
+                invocation_id=invocation.id, provider_tool_use_id=invocation.provider_tool_use_id,
+                payload={**question, "requested_by_user_id": str(task.root_user_id) if task and task.root_user_id else None},
+            ))
     if permission_resolution is not None:
         permission_decision = str(permission_resolution.get("decision") or "")
         permission_lifecycle = "denied" if permission_decision == "deny" else "completed"

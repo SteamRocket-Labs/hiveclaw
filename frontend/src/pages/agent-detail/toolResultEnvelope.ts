@@ -109,6 +109,7 @@ export interface ClarificationQuestion {
 
 export interface UserClarificationToolMeta {
   kind: 'user_clarification';
+  requestItemId?: string;
   questions: ClarificationQuestion[];
   blocking: boolean;
   nextAction: string | null;

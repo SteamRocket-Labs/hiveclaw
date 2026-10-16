@@ -25,6 +25,8 @@ interface StructuredToolResultBodyProps {
   agentName?: string | null;
   submitted?: boolean;
   onSendMessage?: (text: string) => void | Promise<unknown>;
+  questionItemId?: string;
+  onAnswerQuestion?: (itemId: string, text: string) => Promise<unknown>;
   onEnterPlanMode?: (reason: string) => void | Promise<unknown>;
 }
 
@@ -355,6 +357,8 @@ export function StructuredToolResultBody({
   agentId,
   agentName,
   submitted = false,
+  questionItemId,
+  onAnswerQuestion,
   onSendMessage,
   onEnterPlanMode,
 }: StructuredToolResultBodyProps) {
@@ -369,7 +373,8 @@ export function StructuredToolResultBody({
   }
 
   if (toolMeta.kind === 'user_clarification') {
-    if (!onSendMessage) {
+    const requestItemId = toolMeta.requestItemId || questionItemId;
+    if (!onAnswerQuestion || !requestItemId) {
       // No send path available (e.g. read-only history view) — fall back to a
       // static rendering with the questions but no interactive submit.
       return (
@@ -378,7 +383,8 @@ export function StructuredToolResultBody({
           blocking={toolMeta.blocking}
           nextAction={toolMeta.nextAction}
           onSubmit={() => undefined}
-          submitted
+          submitted={submitted || toolMeta.answered}
+          readOnly
           dense
         />
       );
@@ -388,7 +394,7 @@ export function StructuredToolResultBody({
         questions={toolMeta.questions}
         blocking={toolMeta.blocking}
         nextAction={toolMeta.nextAction}
-        onSubmit={(answerText) => onSendMessage(answerText)}
+        onSubmit={(answerText) => onAnswerQuestion(requestItemId, answerText)}
         submitted={submitted}
         dense
       />

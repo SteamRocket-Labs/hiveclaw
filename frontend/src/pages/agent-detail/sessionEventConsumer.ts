@@ -293,7 +293,19 @@ function projectCanonicalItem(
   item: SessionItemV2,
   store: SessionEventStore,
   toolResultByCall: ReadonlyMap<string, SessionItemV2>,
+  questionsByInvocation: ReadonlyMap<string, SessionItemV2>,
 ): AgentChatMessage | null {
+  if (item.kind === 'user_question') {
+    const legacyId = item.payload.legacy_event_id;
+    if (item.invocationId || typeof legacyId !== 'string' || questionsByInvocation.get(`legacy:${legacyId}`)?.id !== item.id) return null;
+    const normalized = normalizeToolCallResult('ask_user_question', item.payload);
+    return { role: 'tool_call', id: legacyId, transcriptEventId: legacyId, content: '',
+      toolName: 'ask_user_question', toolStatus: 'done', timestamp: item.occurredAt, sessionItem: item,
+      toolResult: normalized.displayResult, toolRawResult: normalized.raw,
+      toolMeta: normalized.toolMeta?.kind === 'user_clarification' ? { ...normalized.toolMeta,
+        requestItemId: item.id, answered: item.lifecycle === 'completed',
+        answerText: typeof item.payload.answer_text === 'string' ? item.payload.answer_text : null } : normalized.toolMeta };
+  }
   if (item.kind === 'tool_permission') {
     const request = recordValue(item.payload.permission_request);
     return {
@@ -379,6 +391,12 @@ function projectCanonicalItem(
     // envelope normalizer runs; a reload-only parseChatMsg pass left the
     // reconciled tail as a meta-less row the chat surface renders as nothing.
     const normalized = normalizeToolCallResult(toolName, toolResult);
+    const question = item.invocationId ? questionsByInvocation.get(item.invocationId) : undefined;
+    if (normalized.toolMeta?.kind === 'user_clarification' && question) {
+      normalized.toolMeta = { ...normalized.toolMeta, requestItemId: question.id,
+        answered: question.lifecycle === 'completed',
+        answerText: typeof question.payload.answer_text === 'string' ? question.payload.answer_text : null };
+    }
     const messageId = pairedResult?.messageId ?? item.messageId;
     return {
       role: 'tool_call',
@@ -487,6 +505,11 @@ export function projectSessionEventStoreToMessages(store: SessionEventStore): Ag
       .map((item) => item.invocationId as string),
   );
   const toolResultByCall = new Map<string, SessionItemV2>();
+  const questionsByInvocation = new Map<string, SessionItemV2>();
+  Object.values(store.items).filter((item) => item.kind === 'user_question').forEach((item) => {
+    const source = item.invocationId || (typeof item.payload.legacy_event_id === 'string' ? `legacy:${item.payload.legacy_event_id}` : null);
+    if (source && (questionsByInvocation.get(source)?.last_sequence || 0) < item.last_sequence) questionsByInvocation.set(source, item);
+  });
   Object.values(store.items).filter((item) => item.kind === 'tool_result').forEach((item) => {
     if (item.parentItemId) toolResultByCall.set(item.parentItemId, item);
     if (item.invocationId) toolResultByCall.set(item.invocationId, item);
@@ -497,7 +520,7 @@ export function projectSessionEventStoreToMessages(store: SessionEventStore): Ag
     .filter((item) => item.kind !== 'tool_result'
       || !((item.parentItemId && toolCallIds.has(item.parentItemId))
         || (item.invocationId && toolCallInvocations.has(item.invocationId))))
-    .map((item) => projectCanonicalItem(item, store, toolResultByCall))
+    .map((item) => projectCanonicalItem(item, store, toolResultByCall, questionsByInvocation))
     .filter((message): message is AgentChatMessage => message !== null);
 }
 

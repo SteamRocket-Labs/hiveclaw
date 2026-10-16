@@ -2052,7 +2052,9 @@ async def _session_restart_resume_history(
                 )
             ).scalars()
         )
-        messages.extend(input_parts_to_runtime_messages(bound_inputs))
+        from app.services.session_user_question import answer_projections
+
+        messages.extend(input_parts_to_runtime_messages(bound_inputs, answer_projections=await answer_projections(db, bound_inputs)))
         assistant_message, tool_messages = await _sealed_round_runtime_messages(db, row)
         messages.append(assistant_message)
         messages.extend(tool_messages)
@@ -3150,7 +3152,7 @@ async def start_web_chat_run(
                 or admission is None
                 or command is None
                 or admission.state != "admitted"
-                or input_row.intent != "steer_current_turn"
+                or input_row.intent not in {"steer_current_turn", "answer_request"}
                 or input_row.status != "rolled_over"
                 or input_row.rolled_over_to_turn_id != turn_id
                 or input_row.target_turn_id != turn_id

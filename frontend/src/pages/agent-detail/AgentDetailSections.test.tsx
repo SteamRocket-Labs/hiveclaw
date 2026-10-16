@@ -6798,7 +6798,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('proposal-1');
   });
 
-  it('treats a persisted clarification card as answered when a later user message exists', () => {
+  it('keeps a clarification open when a later user message is not explicitly bound', () => {
     const messages = [
       {
         role: 'tool_call' as const,
@@ -6818,11 +6818,11 @@ describe('AgentDetail extracted sections', () => {
       },
     ];
 
-    expect(isClarificationCardAnsweredByLaterUserMessage(messages, 0)).toBe(true);
+    expect(isClarificationCardAnsweredByLaterUserMessage(messages, 0)).toBe(false);
     expect(isClarificationCardAnsweredByLaterUserMessage(messages, 1)).toBe(false);
   });
 
-  it('keeps a submitted clarification locked while transcript reconciliation temporarily reorders it after the answer', () => {
+  it('does not infer a submitted clarification from reordered message timestamps', () => {
     const messages = [
       {
         role: 'user' as const,
@@ -6844,7 +6844,7 @@ describe('AgentDetail extracted sections', () => {
       },
     ];
 
-    expect(isClarificationCardAnsweredByLaterUserMessage(messages, 1)).toBe(true);
+    expect(isClarificationCardAnsweredByLaterUserMessage(messages, 1)).toBe(false);
   });
 
   it('does not lock a clarification from an older user message', () => {

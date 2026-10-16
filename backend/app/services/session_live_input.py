@@ -247,6 +247,17 @@ async def submit_live_human_input(
             session_id=session.id,
             action="mutate_session_input",
         )
+    if requested_kind == "answer_request":
+        from fastapi import HTTPException
+        from app.services.chat_transcript import lock_transcript_session
+        from app.services.session_user_question import load_answer_question
+
+        await lock_transcript_session(db, session_id=session.id)
+        question = await load_answer_question(db, authority=authority, item_id=_input_id(request_item_id)) if request_item_id else None
+        if question is None:
+            raise HTTPException(status_code=409, detail={"code": "user_question_not_found",
+                "message": "The requested question is unavailable in this work."})
+        request_item_id = question.item_id
     if runtime_result_page_id is None:
         # Ordinary owner/peer lanes: exactly one idempotency lookup AFTER
         # authority resolution.  The runtime result lane already performed
@@ -321,7 +332,8 @@ async def submit_live_human_input(
         "content_parts": content_parts,
         **({"expected_turn_id": target_turn_id} if target_turn_id is not None else {}),
         **({"expected_run_id": str(target_run_id)} if target_run_id is not None else {}),
-        **({"terminal_fallback": terminal_fallback} if kind == "steer_current_turn" else {}),
+        **({"terminal_fallback": terminal_fallback} if kind in {"steer_current_turn", "answer_request"}
+           and not (existing_row is not None and "terminal_fallback" not in (existing_command.target_json or {})) else {}),
         **({"request_item_id": str(request_item_id)} if request_item_id is not None else {}),
         **({"fork_after_sequence": fork_after_sequence} if fork_after_sequence is not None else {}),
         **({"runtime_metadata": dict(runtime_metadata)} if runtime_metadata else {}),

@@ -1840,7 +1840,8 @@
       "other": "Other",
       "otherPlaceholder": "Type your own answer…",
       "submit": "Submit answer",
-      "sent": "Your answer was sent."
+      "sent": "Your answer was sent.",
+      "notApplied": "The answer is stored but could not be applied. Retry or review this work."
     },
     "soul": {
       "title": "Soul — Personality & Instructions",

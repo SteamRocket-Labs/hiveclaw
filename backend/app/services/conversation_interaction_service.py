@@ -19,10 +19,11 @@ def _is_pending_clarification_event(event: Any) -> bool:
     metadata = getattr(event, "metadata_json", None) or {}
     if metadata.get("answered") is True:
         return False
+    if getattr(event, "item_kind", None) == "user_question":
+        return getattr(event, "lifecycle", None) in {"created", "waiting"}
     if metadata.get("tool_name") == "ask_user_question":
         return True
-    content = str(getattr(event, "content", "") or "")
-    return "ask_user_question" in content or "awaiting_user_clarification" in content
+    return False
 
 
 async def mark_latest_pending_clarification_answered(
@@ -34,6 +35,8 @@ async def mark_latest_pending_clarification_answered(
     answer_text: str,
     answered_at: datetime | None = None,
     answer_event: Any | None = None,
+    question_item_id: uuid.UUID | str | None = None,
+    answer_revision: int = 1,
 ) -> bool:
     """Durably mark the latest pending user clarification card as answered.
 
@@ -41,19 +44,24 @@ async def mark_latest_pending_clarification_answered(
     only the durable UI acknowledgement that prevents replayed ask_user_question
     cards from becoming interactive again after refresh.
     """
+    if question_item_id is None:
+        return False
     result = await db.execute(
         select(ChatTranscriptEvent)
         .where(
             ChatTranscriptEvent.agent_id == _uuid(agent_id),
             ChatTranscriptEvent.session_id == _uuid(session_id),
             ChatTranscriptEvent.listed_surface == "chat",
-            ChatTranscriptEvent.event_type.in_(("tool_call", "tool_result")),
+            ChatTranscriptEvent.item_id == _uuid(question_item_id),
         )
         .order_by(ChatTranscriptEvent.sequence.desc())
         .limit(1)
     )
     event = result.scalar_one_or_none()
-    if event is None or not _is_pending_clarification_event(event):
+    payload = ((event.metadata_json or {}).get("v2_payload") or {}) if event is not None else {}
+    revision = (payload.get("answer_input_id") == str(answer_event_id)
+                and int(payload.get("answer_input_revision") or 1) < answer_revision)
+    if event is None or not (_is_pending_clarification_event(event) or revision):
         return False
 
     metadata = dict(getattr(event, "metadata_json", None) or {})
@@ -64,8 +72,9 @@ async def mark_latest_pending_clarification_answered(
     hook_metadata = {
         "tenant_id": str(getattr(event, "tenant_id", "") or "") or None,
         "answer_event_id": str(answer_event_id),
+        "answer_revision": answer_revision,
         "clarification_event_id": str(getattr(event, "id", "") or "") or None,
-        "questions": metadata.get("questions") or [],
+        "questions": metadata.get("questions") or metadata.get("v2_payload", {}).get("questions") or [],
         "original_answer_present": bool(answer_text),
     }
     hook_result = await emit_hook(

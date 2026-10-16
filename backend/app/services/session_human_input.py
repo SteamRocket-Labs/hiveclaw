@@ -11,7 +11,6 @@ from typing import Any, Iterable
 from sqlalchemy import and_, case, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import (
     SessionCommand,
@@ -317,6 +316,10 @@ async def cancel_unbound_human_input(
     command.status = "rejected"
     command.rejection_json = {"reason_code": "cancelled_before_bind"}
     command.receipt_ref = row.settlement_ref
+    if row.intent == "answer_request":
+        from app.services.session_user_question import reopen_cancelled_answer
+
+        await reopen_cancelled_answer(db, authority=authority, row=row)
     drafts = [
         SessionEventDraft(
             item_id=row.id,
@@ -446,7 +449,7 @@ async def queue_admitted_human_input(
         # every other settled row stays a pure replay.
         if (
             row.status == "queued"
-            and row.intent == "steer_current_turn"
+            and row.intent in {"steer_current_turn", "answer_request"}
             and row.terminal_fallback == "queue_next_turn"
             and row.target_run_id is not None
             and row.bound_round_id is None
@@ -524,16 +527,13 @@ async def queue_admitted_human_input(
 
     if row.intent in {"steer_current_turn", "answer_request"}:
         if row.intent == "answer_request":
-            question = await db.scalar(
-                select(ChatTranscriptEvent)
-                .where(
-                    ChatTranscriptEvent.session_id == authority.session_id,
-                    ChatTranscriptEvent.item_id == row.request_item_id,
-                    ChatTranscriptEvent.item_kind == "user_question",
-                )
-                .order_by(ChatTranscriptEvent.sequence.desc())
-            )
-            if question is None or question.lifecycle not in {"created", "waiting"}:
+            from app.services.session_user_question import load_answer_question
+
+            question = await load_answer_question(db, authority=authority, item_id=row.request_item_id)
+            payload = (question.metadata_json or {}).get("v2_payload") or {} if question is not None else {}
+            revising_answer = (question is not None and question.input_id == row.id
+                               and int(payload.get("answer_input_revision") or 1) < row.revision)
+            if question is None or (question.lifecycle not in {"created", "waiting"} and not revising_answer):
                 return await _reject_admitted_input(
                     db,
                     authority=authority,
@@ -576,6 +576,21 @@ async def queue_admitted_human_input(
         active_turn_id = (
             str((task.metadata_json or {}).get("turn_id") or f"turn-{task.id.hex}") if task is not None else None
         )
+        if row.intent == "answer_request" and task is not None and is_executable_chat_task_type(task.task_type):
+            from app.services.session_user_question import question_payload, record_question_answer
+
+            requester = question_payload(question).get("requested_by_user_id") or str(task.root_user_id)
+            if (authority.principal_type != "user" or requester != str(authority.principal_id)
+                    or task.root_user_id != authority.principal_id):
+                return await _reject_admitted_input(db, authority=authority, row=row, command=command,
+                                                    reason_code="user_question_requester_mismatch")
+            if active_turn_id == row.target_turn_id and (
+                task.status in SESSION_TARGETABLE_RUN_STATUSES
+                or (task.status in TERMINAL_SETTLEMENT_STATUSES and row.terminal_fallback == "queue_next_turn")
+            ):
+                await record_question_answer(db, authority=authority, row=row, question=question)
+                if task.status in TERMINAL_SETTLEMENT_STATUSES:
+                    return await rollover_terminal_steer(db, authority=authority, row=row, command=command)
         # Target validity is the authoritative session-occupancy contract:
         # executable-chat task type AND active-like status AND exact turn.
         # Both steer (explicit expected_run_id/expected_turn_id) and answer
@@ -643,7 +658,7 @@ async def rollover_terminal_steer(
     row: SessionTurnInput,
     command: SessionCommand,
 ) -> InputMailboxReceipt:
-    if row.intent != "steer_current_turn" or row.terminal_fallback != "queue_next_turn":
+    if row.intent not in {"steer_current_turn", "answer_request"} or row.terminal_fallback != "queue_next_turn":
         raise ValueError("terminal rollover is not allowed for this input")
     if row.status == "rolled_over":
         return _receipt(row, reason_code="target_run_terminal", replayed=True)
@@ -881,7 +896,7 @@ async def mark_bound_inputs_applied(
     return rows
 
 
-def input_parts_to_runtime_messages(rows: Iterable[SessionTurnInput]) -> list[dict[str, Any]]:
+def input_parts_to_runtime_messages(rows: Iterable[SessionTurnInput], *, answer_projections: dict[str, str] | None = None) -> list[dict[str, Any]]:
     """Losslessly expose already-bound input parts to the model boundary."""
 
     messages: list[dict[str, Any]] = []
@@ -893,7 +908,7 @@ def input_parts_to_runtime_messages(rows: Iterable[SessionTurnInput]) -> list[di
             if candidate_role in {"user", "system"}:
                 role = candidate_role
         if len(parts) == 1 and isinstance(parts[0], dict) and isinstance(parts[0].get("text"), str):
-            content: Any = parts[0]["text"]
+            content: Any = (answer_projections or {}).get(str(row.id), parts[0]["text"])
         else:
             content = parts
         messages.append(

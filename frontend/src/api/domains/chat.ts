@@ -265,6 +265,13 @@ export interface SessionRun {
 }
 
 export const chatApi = {
+  answerQuestion: (agentId: string, sessionId: string, questionItemId: string, text: string, inputId: string) =>
+    post<{ status: string; admission_state: string; reason_code?: string; dispatch?: { reason_code?: string }; }>(
+      `/agents/${agentId}/sessions/${sessionId}/inputs`, {
+        kind: 'answer_request', input_id: inputId, idempotency_key: `question-answer:${inputId}`,
+        request_item_id: questionItemId, content_parts: [{ type: 'text', text }], terminal_fallback: 'queue_next_turn',
+      },
+    ),
   getHistory: (agentId: string, conversationId?: string) => {
     const qs = conversationId ? `?conversation_id=${conversationId}` : '';
     return get<ChatMessage[]>(`/chat/${agentId}/history${qs}`);

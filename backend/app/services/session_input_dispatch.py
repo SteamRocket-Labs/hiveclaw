@@ -305,13 +305,23 @@ async def _start_input_runtime(
     plan_mode_requested = bool(metadata.pop("plan_mode_requested", False))
     rolled_over = (
         successor
-        and row.intent == "steer_current_turn"
+        and row.intent in {"steer_current_turn", "answer_request"}
         and row.status == "rolled_over"
         and row.rolled_over_to_turn_id == turn_id
     )
     input_metadata = (
         {"session_v2_rolled_over_input_id": str(row.id)} if rolled_over else {"session_v2_input_id": str(row.id)}
     )
+    content = _runtime_content(row)
+    if row.intent == "answer_request":
+        from app.services.session_user_question import answer_projection
+
+        projected = await answer_projection(db, row)
+        if projected is not None and projected != content:
+            input_metadata.update(elicitation_original_prompt=content, elicitation_effective_prompt=projected,
+                                  latest_user_prompt_overrides_history=True)
+            content = projected
+        input_metadata["session_v2_question_item_id"] = str(row.request_item_id)
     if runtime_task_type == "web_chat_turn" and not metadata.get("goal_id"):
         active_goal_id = await db.scalar(
             select(AgentSessionGoal.id).where(
@@ -328,7 +338,7 @@ async def _start_input_runtime(
         agent=agent,
         user=user,
         session=session,
-        content=_runtime_content(row),
+        content=content,
         display_content="",
         plan_mode_requested=plan_mode_requested,
         append_user_message=False,
@@ -428,7 +438,7 @@ async def _start_fifo_successor_if_ready(
             SessionTurnInput.target_run_id.is_(None),
             or_(
                 (SessionTurnInput.intent == "queue_next_turn") & (SessionTurnInput.status == "queued"),
-                (SessionTurnInput.intent == "steer_current_turn")
+                (SessionTurnInput.intent.in_(("steer_current_turn", "answer_request")))
                 & (SessionTurnInput.status == "rolled_over")
                 & SessionTurnInput.rolled_over_to_turn_id.is_not(None),
             ),
@@ -881,7 +891,7 @@ def _terminal_steer_candidate_statement(
             SessionInputAdmission.input_revision == SessionTurnInput.revision,
             SessionInputAdmission.state == "admitted",
             SessionInputAdmission.dispatch_state == "dispatched",
-            SessionTurnInput.intent == "steer_current_turn",
+            SessionTurnInput.intent.in_(("steer_current_turn", "answer_request")),
             SessionTurnInput.status == "queued",
             SessionTurnInput.terminal_fallback == "queue_next_turn",
             SessionTurnInput.target_run_id.is_not(None),

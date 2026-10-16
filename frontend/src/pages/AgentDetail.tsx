@@ -2112,6 +2112,24 @@ function AgentDetailInner() {
         }
     };
 
+    const questionAnswerRequests = useRef(new Map<string, { text: string; inputId: string }>());
+    const answerSessionQuestion = async (itemId: string, text: string) => {
+        if (!id || !activeSession?.id) throw new Error('Original work is unavailable');
+        const agentId = id;
+        const sessionId = String(activeSession.id);
+        const key = `${agentId}:${sessionId}:${itemId}`;
+        const previous = questionAnswerRequests.current.get(key);
+        const attempt = previous?.text === text ? previous : { text, inputId: globalThis.crypto.randomUUID() };
+        questionAnswerRequests.current.set(key, attempt);
+        const response = await chatApi.answerQuestion(agentId, sessionId, itemId, text, attempt.inputId);
+        invalidateSessionRuntimeQueries(agentId, sessionId);
+        if (response.admission_state !== 'admitted' || ['rejected', 'needs_reconciliation', 'cancelled'].includes(response.status)) {
+            throw new Error(response.reason_code || response.dispatch?.reason_code || t('agent.clarification.notApplied', 'The answer is stored but could not be applied. Retry or review this work.'));
+        }
+        if (activeSessionIdRef.current === sessionId) await selectSession(activeSession);
+        return response;
+    };
+
     const resolveSessionPermission = async (
         request: SessionPermissionRequest,
         action: 'allow_once' | 'allow_session' | 'deny',
@@ -2696,6 +2714,7 @@ function AgentDetailInner() {
                             onDismissSessionCommandControl={handleDismissSessionCommandControl}
                             onRunSessionCommand={handleRunSessionCommandFromUi}
                             onResolveSessionPermission={resolveSessionPermission}
+                            onAnswerQuestion={answerSessionQuestion}
 
                             chatEndRef={chatEndRef}
                             showScrollBtn={showScrollBtn}

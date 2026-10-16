@@ -307,6 +307,7 @@ function projectCanonicalItem(
         answerText: typeof item.payload.answer_text === 'string' ? item.payload.answer_text : null } : normalized.toolMeta };
   }
   if (item.kind === 'tool_permission') {
+    if (item.lifecycle === 'cancelled' && item.payload.enterprise_approval_id) return null;
     const request = recordValue(item.payload.permission_request);
     return {
       role: 'event',

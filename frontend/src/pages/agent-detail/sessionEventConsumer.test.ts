@@ -77,6 +77,30 @@ function replay(events: SessionEventV2[]): SessionEventStore {
 }
 
 describe('canonical Session event consumer', () => {
+  it('replaces a cancelled legacy local permission with the real enterprise ticket on live replay and reload', () => {
+    const call: SessionEventV2 = { ...event(1, 'started'), ordinal: undefined, invocation_id: 'inv', item_id: 'call',
+      item_kind: 'tool_call', kind: 'tool_call.started', payload_schema: 'hive.session.payload.tool_call.started.v2',
+      payload: { tool_name: 'read_file' } };
+    const waiting: SessionEventV2 = { ...event(2, 'started'), ordinal: undefined, invocation_id: 'inv', item_id: 'ticket',
+      item_kind: 'tool_permission', kind: 'tool_permission.waiting', lifecycle: 'waiting',
+      payload_schema: 'hive.session.payload.tool_permission.waiting.v2',
+      payload: { permission_request: { permission_request_id: 'ticket', tool_name: 'read_file' } } };
+    const converted: SessionEventV2 = { ...waiting, event_id: 'recovered', sequence: 3, lifecycle: 'cancelled',
+      kind: 'tool_permission.cancelled', payload_schema: 'hive.session.payload.tool_permission.cancelled.v2',
+      payload: { enterprise_approval_id: 'ticket', reason_code: 'enterprise_ticket_owns_execution' } };
+    const completed: SessionEventV2 = { ...call, event_id: 'completed', sequence: 4, lifecycle: 'completed',
+      kind: 'tool_call.completed', payload_schema: 'hive.session.payload.tool_call.completed.v2' };
+    const result: SessionEventV2 = { ...completed, event_id: 'result', sequence: 5, item_id: 'result',
+      item_kind: 'tool_result', kind: 'tool_result.completed', payload_schema: 'hive.session.payload.tool_result.completed.v2',
+      payload: { content: JSON.stringify({ status: 'approval_required', approval_id: 'ticket', execution_status: 'succeeded' }) } };
+    expect(projectSessionEventStoreToMessages(replay([call, waiting])).some((m) => m.sessionPermissionRequest)).toBe(true);
+    const live = replay([call, waiting, converted, completed, result]);
+    const messages = projectSessionEventStoreToMessages(live);
+    expect(messages).toHaveLength(1);
+    expect(messages[0].toolMeta).toEqual({ kind: 'enterprise_approval', approvalId: 'ticket' });
+    expect(live.items.ticket.lifecycle).toBe('cancelled');
+    expect(projectSessionEventStoreToMessages(JSON.parse(JSON.stringify(live)))).toEqual(messages);
+  });
   it('keeps a question open until its exact canonical answer survives live delivery and reload', () => {
     const tool: SessionEventV2 = { ...event(1, 'started'), item_id: 'call', item_kind: 'tool_call', kind: 'tool_call.started',
       ordinal: undefined, invocation_id: 'inv', payload_schema: 'hive.session.payload.tool_call.started.v2',

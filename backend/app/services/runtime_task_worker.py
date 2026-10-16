@@ -96,6 +96,7 @@ _STATE: dict[str, Any] = {
     "session_controls_signalled": 0,
     "session_controls_settled": 0,
     "session_permissions_expired": 0,
+    "session_enterprise_permissions_recovered": 0,
     "session_model_rounds_committed": 0,
     "session_model_rounds_needs_reconciliation": 0,
     "session_terminal_outcomes_committed": 0,
@@ -656,16 +657,21 @@ async def expire_session_permission_requests_once(
     """Settle expired permission waits while the runtime remains online."""
 
     from app.services.session_permission_runtime import expire_stale_session_permission_requests
+    from app.services.session_approval import recover_enterprise_permission_waits
 
     async with (
         session_factory() as db,
         enter_rls_bypass(
             db,
-            reason="runtime task worker expire Session V2 permission requests",
+            reason="runtime task worker recover and expire Session V2 permission requests",
             actor_id=worker_id,
         ),
     ):
+        recovered = await recover_enterprise_permission_waits(db)
         expired = await expire_stale_session_permission_requests(db=db)
+    _STATE["session_enterprise_permissions_recovered"] = (
+        int(_STATE.get("session_enterprise_permissions_recovered") or 0) + recovered
+    )
     _STATE["session_permissions_expired"] = int(_STATE.get("session_permissions_expired") or 0) + expired
     return expired
 

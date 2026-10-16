@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat_session import ChatSession
@@ -403,8 +403,17 @@ async def expire_stale_session_permission_requests(
     """
 
     from app.services.session_tool_runtime import complete_tool_invocation
+    from app.models.audit import ApprovalRequest
+    from app.services.enterprise_approval_visibility import enterprise_visible_approval_filter
 
     current = now or datetime.now(timezone.utc)
+    # Local expiry cannot prove that a separate enterprise job never executed.
+    enterprise_ticket = select(ApprovalRequest.id).where(
+        ApprovalRequest.id == SessionToolInvocation.permission_item_id,
+        ApprovalRequest.tenant_id == SessionToolInvocation.tenant_id,
+        ApprovalRequest.tool_name.is_not(None),
+        func.coalesce(enterprise_visible_approval_filter(ApprovalRequest), True),
+    ).exists()
     candidate_ids = list(
         (
             await db.execute(
@@ -414,6 +423,7 @@ async def expire_stale_session_permission_requests(
                     SessionToolInvocation.effect_state == "prepared_not_started",
                     SessionToolInvocation.permission_expires_at.is_not(None),
                     SessionToolInvocation.permission_expires_at <= current,
+                    ~enterprise_ticket,
                 )
                 .order_by(SessionToolInvocation.permission_expires_at, SessionToolInvocation.id)
                 .limit(max(1, int(limit)))
@@ -430,6 +440,7 @@ async def expire_stale_session_permission_requests(
                     SessionToolInvocation.permission_state == "waiting",
                     SessionToolInvocation.effect_state == "prepared_not_started",
                     SessionToolInvocation.permission_expires_at <= current,
+                    ~enterprise_ticket,
                 )
                 .with_for_update(skip_locked=True)
             )

@@ -848,6 +848,17 @@ async def complete_tool_invocation(
     else:
         receipt_ref = f"tool-decision:{decision_id}"
     drafts: list[SessionEventDraft] = []
+    if enterprise_approval is not None and invocation.permission_state == "waiting":
+        receipt_ref = f"enterprise-approval:{enterprise_approval.id}:handoff"
+        drafts.append(SessionEventDraft(
+            item_id=invocation.permission_item_id, item_kind="tool_permission", lifecycle="cancelled",
+            scope=_scope(result), actor={"type": "runtime"}, result_id=result.id,
+            invocation_id=invocation.id, provider_tool_use_id=invocation.provider_tool_use_id,
+            payload={"invocation_id": str(invocation.id), "enterprise_approval_id": str(enterprise_approval.id),
+                "reason_code": "enterprise_ticket_owns_execution", "receipt_ref": receipt_ref},
+        ))
+        invocation.permission_state = "cancelled"
+        invocation.permission_receipt_ref = receipt_ref
     if invocation.tool_name == "ask_user_question" and outcome == "success":
         try:
             question = json.loads(content)

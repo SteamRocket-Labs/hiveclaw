@@ -6,7 +6,7 @@ import ToolsManager from './ToolsManager';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, value: unknown) => typeof value === 'string' ? value : key }) }));
 const api = vi.hoisted(() => ({ listWithConfig: vi.fn(), updateToolConfig: vi.fn(),
-  getAgentExtensions: vi.fn(), getAgentMcpServerTools: vi.fn() }));
+  getAgentExtensions: vi.fn(), getAgentMcpServerTools: vi.fn(), listMcpAccounts: vi.fn() }));
 vi.mock('../../api/domains/tools', () => ({ toolsApi: api }));
 vi.mock('../../api/domains/extensions', () => ({ extensionsApi: api }));
 const tool = { id: 'tool', tool_id: 'tool', name: 'lookup', display_name: 'Lookup', type: 'mcp', category: 'mcp',
@@ -65,4 +65,25 @@ it.each(['second', 'first'])('does not apply a late save to a new settings view 
   await act(async () => { settle({ ok: true, tool: { ...tool, agent_config: { timeout: 111 } } }); });
   await waitFor(() => expect((screen.getByDisplayValue('9') as HTMLInputElement).value).toBe('9'));
   expect(screen.queryByDisplayValue('111')).toBeNull();
+});
+
+it('loads the real account controls on demand for an employee user without company-management authority', async () => {
+  setup();
+  api.listMcpAccounts.mockResolvedValue([
+    { id: 'server', name: 'Shared connector', owner_user_id: null, can_authorize: false },
+    { id: 'owned', name: 'My documents', owner_user_id: 'requester', can_authorize: false,
+      can_grant_account: true, account_use_enabled: true, grant_version: 3 },
+  ]);
+  const view = render(<ToolsManager agentId="employee" canManage={false} />);
+  const summary = await screen.findByText('agent.mcpAccounts.title');
+  expect(api.listMcpAccounts).not.toHaveBeenCalled();
+  const details = summary.closest('details')!;
+  details.open = true;
+  fireEvent(details, new Event('toggle'));
+  await screen.findByRole('option', { name: /My documents/ });
+  expect(api.listMcpAccounts).toHaveBeenCalledWith('employee', 'server');
+  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'owned' } });
+  expect(await screen.findByRole('button', { name: 'agent.mcpAccounts.removeUse' })).toBeTruthy();
+  view.rerender(<ToolsManager agentId="another-employee" canManage={false} />);
+  await waitFor(() => expect(screen.queryByRole('combobox')).toBeNull());
 });

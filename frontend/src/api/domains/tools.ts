@@ -5,6 +5,7 @@
  */
 
 import { get, put, post, del } from '../core';
+import type { McpAccount } from './extensions';
 
 export interface ToolProviderAuth {
   mode?: 'no_key_default' | 'optional_key' | 'key_required' | string;
@@ -92,6 +93,13 @@ export interface SessionMcpConfiguration {
   usage: { enabled: boolean; default_tool_mode: string; always_load: boolean };
   usable_tool_count: number;
   can_authorize: boolean;
+  account?: McpAccount;
+  accounts?: McpAccount[];
+  account_use_enabled?: boolean;
+  can_grant_account?: boolean;
+  can_manage_employee?: boolean;
+  selection_unavailable?: boolean;
+  permitted_tool_count?: number;
 }
 
 export interface CategoryConfig {
@@ -152,9 +160,11 @@ export const toolsApi = {
     get<SessionToolConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/configuration`),
   saveSessionToolConfiguration: (agentId: string, sessionId: string, questionId: string, config: Record<string, unknown>) =>
     put<SessionToolConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/configuration`, { config }),
-  getSessionMcpConfiguration: (agentId: string, sessionId: string, questionId: string) =>
-    get<SessionMcpConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/mcp`),
-  confirmSessionMcpConfiguration: (agentId: string, sessionId: string, questionId: string, data: { revision: string }) =>
+  getSessionMcpConfiguration: (agentId: string, sessionId: string, questionId: string, accountId?: string) =>
+    get<SessionMcpConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/mcp${accountId ? `?account_id=${encodeURIComponent(accountId)}` : ''}`),
+  selectSessionMcpAccount: (agentId: string, sessionId: string, questionId: string, accountId: string) =>
+    post<SessionMcpConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/mcp/select`, { account_id: accountId }),
+  confirmSessionMcpConfiguration: (agentId: string, sessionId: string, questionId: string, data: { revision: string; account_id?: string }) =>
     post<SessionMcpConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/mcp/confirm`, data),
   getSessionChannelConfiguration: (agentId: string, sessionId: string, questionId: string) =>
     get<SessionChannelConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/channel`),

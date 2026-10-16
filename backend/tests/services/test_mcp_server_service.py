@@ -430,7 +430,7 @@ async def test_set_agent_mcp_assignment_creates_row():
     server_id = uuid4()
     db = _SpyDB(
         [
-            _Result(scalar=SimpleNamespace(id=server_id)),  # server ownership
+            _Result(scalar=SimpleNamespace(id=server_id, owner_user_id=None)),  # server ownership
             _Result(scalar=None),  # no existing assignment → create
             _Result(rows=[]),  # no linked tools in this unit fixture
         ]
@@ -502,7 +502,7 @@ async def test_set_agent_mcp_assignment_updates_existing_row():
     existing.id = uuid4()
     db = _SpyDB(
         [
-            _Result(scalar=SimpleNamespace(id=server_id)),  # server ownership
+            _Result(scalar=SimpleNamespace(id=server_id, owner_user_id=None)),  # server ownership
             _Result(scalar=existing),
         ]
     )
@@ -546,7 +546,7 @@ async def test_list_agent_mcp_server_tools_returns_effective_modes():
     runtime_tool = _approved_tool(tenant_id=tenant_id, tool_id=tool_id)
     db = _SpyDB(
         [
-            _Result(scalar=SimpleNamespace(id=server_id)),  # server ownership
+            _Result(scalar=SimpleNamespace(id=server_id, owner_user_id=None)),  # server ownership
             _Result(scalar=assignment),
             _Result(rows=[(server_tool, runtime_tool)]),
             _Result(scalars=[override]),
@@ -589,7 +589,7 @@ async def test_set_agent_mcp_tool_policy_upserts_override():
     runtime_tool = _approved_tool(tenant_id=tenant_id, tool_id=server_tool.tool_id)
     db = _SpyDB(
         [
-            _Result(scalar=SimpleNamespace(id=server_id)),  # server ownership
+            _Result(scalar=SimpleNamespace(id=server_id, owner_user_id=None)),  # server ownership
             _Result(scalar=assignment),
             _Result(scalar=server_tool),
             _Result(scalar=runtime_tool),

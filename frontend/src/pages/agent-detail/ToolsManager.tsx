@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -14,6 +14,8 @@ import ToolIcon from '../../components/ToolIcon';
 import ToolConfigurationForm from './ToolConfigurationForm';
 import { McpToolTrustBadge } from './McpToolTrustBadge';
 import './ToolsManager.css';
+
+const McpAccounts = lazy(() => import('../../components/McpAccounts'));
 
 type ToolsManagerProps = {
   agentId: string;
@@ -52,6 +54,7 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
   const [savingPluginKey, setSavingPluginKey] = useState<string | null>(null);
   // MCP servers whose "Advanced tool controls" drawer is expanded (hidden by default).
   const [openAdvanced, setOpenAdvanced] = useState<Set<string>>(new Set());
+  const [openAccounts, setOpenAccounts] = useState<Set<string>>(new Set());
   const [serverToolsById, setServerToolsById] = useState<Record<string, AgentMcpServerTool[]>>({});
   const [loadingServerTools, setLoadingServerTools] = useState<Set<string>>(new Set());
   const [savingToolKey, setSavingToolKey] = useState<string | null>(null);
@@ -78,6 +81,7 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
     setLoading(true);
     setConfigTool(null);
     setOpenAdvanced(new Set());
+    setOpenAccounts(new Set());
     setServerToolsById({});
     void Promise.all([loadTools(), loadExtensions()]).finally(() => {
       if (activeView.current === sourceView) setLoading(false);
@@ -385,6 +389,14 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
                         />
                       </div>
                     )}
+
+                    <details className="tools-manager-advanced" onToggle={(event) => {
+                      const opened = event.currentTarget.open;
+                      setOpenAccounts((current) => { const next = new Set(current); if (opened) next.add(server.id); else next.delete(server.id); return next; });
+                    }}>
+                      <summary>{t('agent.mcpAccounts.title')}</summary>
+                      {openAccounts.has(server.id) && <Suspense fallback={null}><McpAccounts key={`${agentId}:${server.id}`} agentId={agentId} serverId={server.id} /></Suspense>}
+                    </details>
 
                     {server.tool_count > 0 && (
                       <div className="tools-manager-advanced">

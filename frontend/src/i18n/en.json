@@ -3210,6 +3210,30 @@
       "authorizedAgents": "Employees with connection-use permission ({{count}})",
       "noAuthorizedAgents": "No employee has connection-use permission yet.",
       "encryptionUnavailable": "Encrypted storage is unavailable. Ask the platform administrator to restore it before authorizing this connection."
+    },
+    "mcpAccounts": {
+      "title": "Application accounts and use",
+      "choose": "Choose the account to use",
+      "personal": "Personal account",
+      "company": "Company account",
+      "add": "Connect my account",
+      "name": "Account label",
+      "create": "Continue connecting",
+      "grantUse": "Allow this employee to use it for my work",
+      "removeUse": "Remove use for my work",
+      "granted": "The account owner allows this employee to use it for work you request. Tool permissions are checked separately.",
+      "notGranted": "This account is not yet allowed for this employee and your requests.",
+      "revoke": "Deactivate this account",
+      "confirmRevoke": "Clear login and remove all use grants",
+      "revokeNotice": "Clear the login stored in Hive and remove every employee use grant for this account. Manage the external application’s own authorization in that application. You can reconnect later.",
+      "failed": "Could not read or save the account. Review the current records before retrying.",
+      "profileNotice": "Manage your accounts and use grants here. Each work session confirms which account to use.",
+      "personalScope": "This is your personal account. Only explicitly authorized requester and employee combinations may use it; each work session confirms its account.",
+      "registration": "Use the application registration configured by an administrator. Complete your own login; credentials stay on the server.",
+      "registrationUnavailable": "The approved application registration is missing or changed. Read its current settings, or ask a company administrator to configure the connection.",
+      "selectionUnavailable": "The previous account selection is unavailable. Choose an available account and confirm it for this work.",
+      "ownerRequired": "Ask the account owner to reconnect, or choose another authorized account.",
+      "employeePermissionRequired": "An employee manager must enable this connection and its tools before it can be used."
     }
   },
   "wizard": {

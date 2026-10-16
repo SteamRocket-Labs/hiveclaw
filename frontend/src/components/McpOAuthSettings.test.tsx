@@ -59,3 +59,20 @@ describe('shared MCP OAuth editor', () => {
     expect(screen.queryByRole('link')).toBeNull();
   });
 });
+
+it('uses owner-account OAuth routes and the approved read-only registration without exposing an application secret field', async () => {
+  const calls: string[] = []; const posts: unknown[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+    calls.push(String(url));
+    if (init?.method === 'POST') { posts.push(JSON.parse(String(init.body))); return response({ authorization_url: 'https://auth.test/authorize?state=personal', attempt_id: 'personal' }); }
+    return response(stored);
+  });
+  render(<McpOAuthSettings serverId="personal" personal />);
+  await waitFor(() => expect((screen.getByLabelText('Client ID') as HTMLInputElement).value).toBe('client'));
+  expect((screen.getByLabelText('Token endpoint') as HTMLInputElement).readOnly).toBe(true);
+  expect(screen.queryByLabelText('Client secret (if required)')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Create authorization link' }));
+  await screen.findByRole('link', { name: 'Authorize with the application' });
+  expect(calls).toEqual(['/api/mcp-accounts/personal/oauth', '/api/mcp-accounts/personal/oauth/start']);
+  expect(posts).toEqual([registration]);
+});

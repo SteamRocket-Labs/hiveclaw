@@ -3210,6 +3210,30 @@
       "authorizedAgents": "已有连接使用授权的员工（{{count}}）",
       "noAuthorizedAgents": "目前尚无员工获得此连接的使用授权。",
       "encryptionUnavailable": "加密存储不可用。请由平台管理员恢复后再授权此连接。"
+    },
+    "mcpAccounts": {
+      "title": "应用账号与使用范围",
+      "choose": "选择使用的账号",
+      "personal": "个人账号",
+      "company": "公司账号",
+      "add": "连接我的账号",
+      "name": "账号备注",
+      "create": "继续连接",
+      "grantUse": "允许此员工在我发起的工作中使用",
+      "removeUse": "撤回我发起的工作的使用授权",
+      "granted": "账号持有人已授权此员工在你发起的工作中使用。工具权限仍单独检查。",
+      "notGranted": "此账号尚未授权给此员工在你发起的工作中使用。",
+      "revoke": "停用此账号",
+      "confirmRevoke": "清除登录态并撤回全部使用授权",
+      "revokeNotice": "清除 Hive 保存的登录态，并撤回此账号的所有员工使用授权。第三方应用自身的授权请在应用中管理。之后可以重新连接。",
+      "failed": "无法读取或保存账号。请先核查当前记录，再重试。",
+      "profileNotice": "在这里管理自己的账号与使用范围。每件工作会单独确认使用哪个账号。",
+      "personalScope": "这是你的个人账号。只有明确获准的请求人与员工组合可以使用，每件工作会确认所选账号。",
+      "registration": "使用管理员已配置的应用注册。由你完成自己的登录，凭据保存在服务器中。",
+      "registrationUnavailable": "已批准的应用注册缺失或已变更。请回读当前设置，或请公司管理员配置此连接。",
+      "selectionUnavailable": "之前选择的账号已不可用。请选择可用账号，再为此工作确认。",
+      "ownerRequired": "请账号持有人重新连接，或选择另一个已获准的账号。",
+      "employeePermissionRequired": "请员工管理者先开通此连接及工具权限，再继续使用。"
     }
   },
   "wizard": {

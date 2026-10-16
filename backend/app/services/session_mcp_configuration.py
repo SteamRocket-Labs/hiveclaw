@@ -14,14 +14,21 @@ from app.services import mcp_oauth
 from app.services.mcp_metadata_trust import current_mcp_fingerprint, is_mcp_metadata_runtime_approved
 
 
-async def mcp_configuration_snapshot(db, *, target, server_id):
+async def mcp_configuration_snapshot(db, *, target, server_id, user=None, account_id=None):
     server = await db.scalar(
         select(MCPServer)
-        .where(MCPServer.id == server_id, MCPServer.tenant_id == target.tenant_id)
+        .where(MCPServer.id == server_id, MCPServer.tenant_id == target.tenant_id, MCPServer.owner_user_id.is_(None))
         .execution_options(populate_existing=True)
     )
     if server is None:
         raise HTTPException(status_code=404, detail="MCP connection not found")
+    from app.services.mcp_accounts import account_access, account_public, list_work_accounts
+
+    account, grant = (
+        await account_access(db, server=server, account_id=account_id or server.id, agent_id=target.id, user=user)
+        if user
+        else (server, None)
+    )
     assignment = await db.scalar(
         select(AgentMCPServerAssignment)
         .where(
@@ -70,7 +77,10 @@ async def mcp_configuration_snapshot(db, *, target, server_id):
         if usage["enabled"]
         else 0
     )
-    oauth = (server.config_json or {}).get("oauth") or {}
+    permitted_tool_count = usable
+    if account.owner_user_id and not (grant and grant.enabled):
+        usable = 0
+    oauth = (account.config_json or {}).get("oauth") or {}
     token = mcp_oauth.decrypt_token_set(oauth.get("token"))
     refreshable = bool(
         token
@@ -95,6 +105,9 @@ async def mcp_configuration_snapshot(db, *, target, server_id):
             {
                 "server": str(server.id),
                 "updated_at": server.updated_at.isoformat(),
+                "account": str(account.id),
+                "account_updated_at": account.updated_at.isoformat(),
+                "grant": [str(grant.id), grant.version, grant.enabled] if grant else None,
                 "credential": hashlib.sha256(str(oauth.get("token") or "").encode()).hexdigest(),
                 "authorization": authorization,
                 "usage": usage,
@@ -109,10 +122,25 @@ async def mcp_configuration_snapshot(db, *, target, server_id):
         "authorization": authorization,
         "usage": usage,
         "usable_tool_count": usable,
+        "permitted_tool_count": permitted_tool_count,
+        "account": {**account_public(account), "grant_version": grant.version if grant else 0},
+        "accounts": await list_work_accounts(db, server=server, agent_id=target.id, user=user)
+        if user
+        else [account_public(server)],
+        "account_use_enabled": not account.owner_user_id or bool(grant and grant.enabled),
+        "can_grant_account": bool(user and account.owner_user_id == user.id),
+        "can_authorize": bool(
+            user
+            and (
+                account.owner_user_id == user.id
+                if account.owner_user_id
+                else user.role in {"platform_admin", "org_admin"}
+            )
+        ),
     }
 
 
-async def validate_mcp_configuration_answer(db, *, payload, user):
+async def validate_mcp_configuration_answer(db, *, payload, user, session_id):
     descriptor = payload["configuration_request"]
     from app.core.permissions import check_agent_access
 
@@ -130,11 +158,29 @@ async def validate_mcp_configuration_answer(db, *, payload, user):
                 "message": "Review the MCP authorization and employee use permission before continuing.",
             },
         )
-    current = await mcp_configuration_snapshot(db, target=target, server_id=uuid.UUID(descriptor["mcp_server_id"]))
+    current = await mcp_configuration_snapshot(
+        db,
+        target=target,
+        server_id=uuid.UUID(descriptor["mcp_server_id"]),
+        user=user,
+        account_id=uuid.UUID(ready["account_id"]) if ready.get("account_id") else None,
+    )
+    from app.services.mcp_accounts import work_binding_matches
+
+    matches = await work_binding_matches(
+        db,
+        ready=ready,
+        tenant_id=target.tenant_id,
+        agent_id=target.id,
+        session_id=session_id,
+        user_id=user.id,
+        account_id=current["account"]["id"],
+    )
     if (
         current["revision"] != ready.get("revision")
         or not current["usable_tool_count"]
         or current["authorization"] != "configured"
+        or not matches
     ):
         raise HTTPException(
             status_code=409,

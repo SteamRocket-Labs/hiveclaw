@@ -117,7 +117,7 @@ def _effective_tool_mode(*, assignment: AgentMCPServerAssignment, override_mode:
 
 async def list_tenant_servers(db: AsyncSession, tenant_id: uuid.UUID) -> list[dict]:
     """List a tenant's MCP servers, server-first, with tool/agent rollups."""
-    server_result = await db.execute(select(MCPServer).where(MCPServer.tenant_id == tenant_id).order_by(MCPServer.name))
+    server_result = await db.execute(select(MCPServer).where(MCPServer.tenant_id == tenant_id, MCPServer.owner_user_id.is_(None)).order_by(MCPServer.name))
     servers = server_result.scalars().all()
     if not servers:
         return []
@@ -178,7 +178,7 @@ async def get_agent_mcp_servers(db: AsyncSession, agent_id: uuid.UUID) -> list[d
             AgentMCPServerAssignment.always_load,
         )
         .join(AgentMCPServerAssignment, AgentMCPServerAssignment.mcp_server_id == MCPServer.id)
-        .where(AgentMCPServerAssignment.agent_id == agent_id)
+        .where(AgentMCPServerAssignment.agent_id == agent_id, MCPServer.owner_user_id.is_(None))
         .order_by(MCPServer.name)
     )
     rows = result.all()
@@ -387,7 +387,9 @@ async def set_agent_mcp_assignment(
 ) -> dict:
     """Upsert one agent↔MCP server assignment (unique per tenant+agent+server)."""
     default_tool_mode = _validate_tool_mode(default_tool_mode, field_name="default_tool_mode")
-    await _require_tenant_server(db, tenant_id, server_id, for_update=True)
+    server = await _require_tenant_server(db, tenant_id, server_id, for_update=True)
+    if server.owner_user_id is not None:
+        raise ValueError("Personal accounts use owner-issued grants; assign the company connection separately")
     result = await db.execute(
         select(AgentMCPServerAssignment).where(
             AgentMCPServerAssignment.tenant_id == tenant_id,
@@ -807,7 +809,9 @@ async def delete_tenant_server(db: AsyncSession, tenant_id: uuid.UUID, server_id
     this tenant — matching what ``mcp_registry_service.delete_tenant_mcp_server``
     did, but keyed off the stable ``MCPServer.id`` instead of a pack-derived key.
     """
-    server_row = await db.execute(select(MCPServer).where(MCPServer.id == server_id, MCPServer.tenant_id == tenant_id))
+    server_row = await db.execute(select(MCPServer).where(
+        MCPServer.id == server_id, MCPServer.tenant_id == tenant_id, MCPServer.owner_user_id.is_(None)
+    ))
     server = server_row.scalar_one_or_none()
     if server is None:
         raise ValueError("MCP server not found")
@@ -1250,7 +1254,7 @@ def _attempt_result(server: MCPServer, attempt: dict) -> dict:
     outcome = attempt["outcome"]
     if outcome != "configured":
         raise mcp_oauth.OAuthFlowError(attempt["code"], outcome, 409 if outcome == "unknown" else 400)
-    return {"server_id": str(server.id), "auth_status": "configured", "attempt_id": attempt["id"]}
+    return {"server_id": str(server.id), "auth_status": server.auth_status, "attempt_id": attempt["id"]}
 
 
 async def get_mcp_oauth_status(db: AsyncSession, tenant_id: uuid.UUID, server_id: uuid.UUID) -> dict:
@@ -1269,6 +1273,14 @@ async def get_mcp_oauth_status(db: AsyncSession, tenant_id: uuid.UUID, server_id
         .where(AgentMCPServerAssignment.tenant_id == tenant_id, AgentMCPServerAssignment.mcp_server_id == server_id,
                AgentMCPServerAssignment.enabled.is_(True), Agent.deleted_at.is_(None)).order_by(Agent.name, Agent.id))).all()
     registration = pending or oauth
+    if server.owner_user_id is not None:
+        from app.models.mcp_server import MCPAccountGrant
+        parent = await db.get(MCPServer, server.parent_server_id) if server.parent_server_id else None
+        registered = ((parent.config_json or {}).get("oauth") or {}) if parent else {}
+        registration = registered.get("pending") or registered
+        granted = (await db.execute(select(Agent.id, Agent.name).distinct().join(MCPAccountGrant, MCPAccountGrant.agent_id == Agent.id)
+            .where(MCPAccountGrant.account_id == server.id, MCPAccountGrant.enabled.is_(True), Agent.deleted_at.is_(None))
+            .order_by(Agent.name, Agent.id))).all()
     return {
         "server_id": str(server.id),
         "auth_status": server.auth_status,
@@ -1301,6 +1313,28 @@ async def start_mcp_oauth(
         except ValueError as exc:
             raise mcp_oauth.OAuthFlowError("oauth_endpoint_invalid", "unavailable", 422) from exc
     server = await _locked_oauth_server(db, tenant_id, server_id)
+    if server.owner_user_id is not None:
+        from app.services.mcp_accounts import REGISTRATION_FIELDS, _active_in_tenant
+        from app.models.user import User
+        owner = await db.get(User, requester_id)
+        if requester_id != server.owner_user_id or not _active_in_tenant(owner, tenant_id):
+            raise mcp_oauth.OAuthFlowError("mcp_account_owner_required", "unavailable", 403)
+        parent = await db.get(MCPServer, server.parent_server_id) if server.parent_server_id else None
+        if parent is None or parent.tenant_id != tenant_id or parent.owner_user_id is not None:
+            raise mcp_oauth.OAuthFlowError("mcp_account_definition_unavailable", "unavailable", 409)
+        approved_oauth = (parent.config_json or {}).get("oauth") or {}
+        approved = approved_oauth.get("pending") or approved_oauth
+        requested = dict(authorization_endpoint=authorization_endpoint, token_endpoint=token_endpoint,
+            client_id=client_id, redirect_uri=redirect_uri, scope=scope)
+        if not all(approved.get(key) for key in REGISTRATION_FIELDS[:4]) or any(
+            (requested.get(key) or "") != (approved.get(key) or "") for key in REGISTRATION_FIELDS
+        ):
+            raise mcp_oauth.OAuthFlowError("mcp_account_registration_changed", "unavailable", 409)
+        if client_secret is None:
+            client_secret = mcp_oauth.decrypt_value(approved.get("client_secret"))
+            if approved.get("client_secret") and client_secret is None:
+                raise mcp_oauth.OAuthFlowError("oauth_encryption_unavailable", "unavailable", 503)
+            client_secret = client_secret or ""
     verifier, challenge = mcp_oauth.generate_pkce_pair()
     # The locator only chooses an RLS scope; the exact stored random-state digest authorizes the callback.
     state = f"mcp1.{tenant_id.hex}.{server_id.hex}.{mcp_oauth.generate_state()}"
@@ -1327,6 +1361,7 @@ async def start_mcp_oauth(
         "expires_at": expires_at,
         "requester_id": str(requester_id),
         "code_verifier": encrypted_verifier,
+        **({"account_server_url": parent.server_url, "account_transport": parent.transport} if server.owner_user_id is not None else {}),
         "authorization_endpoint": authorization_endpoint,
         "token_endpoint": token_endpoint,
         "client_id": client_id,
@@ -1423,8 +1458,12 @@ async def complete_mcp_oauth(db: AsyncSession, state: str, code: str, error: str
         raise mcp_oauth.OAuthFlowError("oauth_attempt_superseded", "unknown", 409)
     oauth.update(pending=None, last_attempt=receipt)
     if token_blob:
+        if server.owner_user_id is not None:
+            server.server_url = pending.get("account_server_url", server.server_url)
+            server.transport = pending.get("account_transport", server.transport)
         oauth.update(
             token=token_blob,
+            authorization_id=pending["id"],
             authorization_endpoint=pending.get("authorization_endpoint"),
             redirect_uri=pending["redirect_uri"],
             scope=pending.get("scope"),
@@ -1444,12 +1483,13 @@ async def complete_mcp_oauth(db: AsyncSession, state: str, code: str, error: str
 
 
 async def resolve_mcp_oauth_bearer(
-    db: AsyncSession, tenant_id: uuid.UUID | None, server_url: str, *, tool_id: uuid.UUID | None = None, server_id: uuid.UUID | None = None
+    db: AsyncSession, tenant_id: uuid.UUID | None, server_url: str, *, tool_id: uuid.UUID | None = None, server_id: uuid.UUID | None = None,
+    agent_id: uuid.UUID | None = None, execution_context=None,
 ) -> tuple[str | None, str | None]:
     """No OAuth falls back to API-key auth; configured but unusable OAuth fails locally."""
     result = await db.execute(
         select(MCPServer)
-        .where(MCPServer.tenant_id == tenant_id, MCPServer.server_url == server_url)
+        .where(MCPServer.tenant_id == tenant_id, MCPServer.server_url == server_url, MCPServer.owner_user_id.is_(None))
         .order_by(MCPServer.id)
         .with_for_update()
         .execution_options(populate_existing=True)
@@ -1461,7 +1501,7 @@ async def resolve_mcp_oauth_bearer(
             return None, "MCP connection changed; review the current authorization."
     if not servers:
         return None, None
-    if all(
+    if execution_context is None and all(
         not (server.config_json or {}).get("oauth") and server.auth_status == mcp_oauth.AUTH_NONE for server in servers
     ):
         return None, None
@@ -1480,15 +1520,37 @@ async def resolve_mcp_oauth_bearer(
         servers = [server for server in servers if server.id in linked_ids]
     if len(servers) != 1:
         return None, "MCP connection is ambiguous; select one server assignment before authorizing this tool."
-    server = servers[0]
+    from app.services.mcp_accounts import protect_account_credentials, resolve_work_account
+    server, binding = await resolve_work_account(db, server=servers[0], agent_id=agent_id, context=execution_context)
+    if server.server_url != server_url:
+        return None, "MCP account endpoint changed; re-authorize and select the account again."
+
+    async def resolved(token, *, recheck_authority=False):
+        if recheck_authority and binding is not None:
+            from fastapi import HTTPException
+            current_account, current_binding = await resolve_work_account(db, server=servers[0], agent_id=agent_id, context=execution_context)
+            if current_binding is None or current_account.id != server.id:
+                raise HTTPException(status_code=409, detail="MCP work account changed during refresh; review its selection")
+        protect_account_credentials(execution_context, account=server, token=token)
+        if binding is not None:
+            db.add(AuditLog(tenant_id=tenant_id, user_id=binding.requester_user_id, agent_id=binding.agent_id,
+                action="mcp.account.credentials_resolved", details={"account_id": str(server.id),
+                    "server_id": str(binding.server_id), "binding_id": str(binding.id),
+                    "grant_id": str(binding.grant_id) if binding.grant_id else None,
+                    "grant_version": binding.grant_version, "session_id": str(binding.session_id),
+                    "runtime_task_id": str(getattr(execution_context, "runtime_task_id", None) or "") or None,
+                    "status": "credential_resolved; external_execution_not_asserted"}))
+            await db.commit()
+        return token.access_token, None
+
     oauth = (server.config_json or {}).get("oauth") or {}
     token = mcp_oauth.decrypt_token_set(oauth.get("token"))
     if token is None:
-        if oauth or server.auth_status != mcp_oauth.AUTH_NONE:
+        if oauth or server.auth_status != mcp_oauth.AUTH_NONE or server.owner_user_id is not None:
             return None, "MCP OAuth authorization is missing or unreadable; re-authorize the server."
         return None, None
     if not token.is_expired(time.time()):
-        return token.access_token, None
+        return await resolved(token)
     if not token.refresh_token:
         server.auth_status = mcp_oauth.AUTH_EXPIRED
         await db.commit()
@@ -1534,4 +1596,4 @@ async def resolve_mcp_oauth_bearer(
     await db.commit()
     if not refreshed_blob:
         return None, "MCP OAuth refresh failed or its outcome is unknown; re-authorize the server."
-    return refreshed.access_token, None
+    return await resolved(refreshed, recheck_authority=True)

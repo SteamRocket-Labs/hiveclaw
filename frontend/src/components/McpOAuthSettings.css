@@ -16,3 +16,18 @@
   gap: var(--space-2);
   margin-top: var(--space-3);
 }
+
+.mcp-oauth-fields .input,
+.mcp-account-controls .input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.mcp-account-controls label {
+  display: block;
+  margin-bottom: var(--space-1);
+}
+.mcp-account-controls form {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}

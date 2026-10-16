@@ -95,4 +95,4 @@ async def oauth_callback(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail, headers=_CALLBACK_HEADERS) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid OAuth callback", headers=_CALLBACK_HEADERS) from exc
-    return {"status": "ok", **result, "message": "MCP server authorized. You may close this window."}
+    return {"status": "ok", **result, "message": "Authorization result recorded. Close this window and review the connection in your work."}

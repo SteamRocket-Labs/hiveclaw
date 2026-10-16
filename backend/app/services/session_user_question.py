@@ -44,7 +44,7 @@ async def validate_configuration_answer(db, question, content_parts, *, user=Non
             raise HTTPException(status_code=422, detail={"code": "configuration_answer_action_required", "message": "Use the MCP configuration card; never send credentials as an answer."})
         from app.services.session_mcp_configuration import validate_mcp_configuration_answer
 
-        await validate_mcp_configuration_answer(db, payload=payload, user=user)
+        await validate_mcp_configuration_answer(db, payload=payload, user=user, session_id=question.session_id)
         return
     if payload["configuration_request"].get("channel_type"):
         if content_parts == [{"type": "text", "text": "Continue without changing configuration."}]:

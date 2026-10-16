@@ -18,8 +18,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import check_agent_access
+from app.core.permissions import check_agent_access, reject_non_executing_agent_access
 from app.core.security import get_current_admin, get_current_user
+from app.api.mcp_oauth import McpOAuthStartIn
 from app.database import get_db
 from app.models.user import User
 from app.services.external_capabilities.mcp_source_adapter import stage_external_mcp_server_review
@@ -37,6 +38,86 @@ from app.services.mcp_server_service import (
 )
 
 router = APIRouter(tags=["mcp-servers"])
+
+
+class PersonalMcpAccountIn(BaseModel):
+    id: uuid.UUID
+    name: str = Field(min_length=1, max_length=200)
+
+
+class McpAccountGrantIn(BaseModel):
+    enabled: bool
+    expected_version: int = Field(ge=0)
+
+
+@router.post("/agents/{agent_id}/mcp-servers/{server_id}/accounts")
+async def create_mcp_account(agent_id: uuid.UUID, server_id: uuid.UUID, body: PersonalMcpAccountIn,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.mcp_accounts import create_personal_account
+    agent, access = await check_agent_access(db, current_user, agent_id)
+    reject_non_executing_agent_access(access)
+    if not body.name.strip():
+        raise HTTPException(status_code=422, detail="Account name required")
+    return await create_personal_account(db, user=current_user, tenant_id=agent.tenant_id, server_id=server_id,
+        account_id=body.id, name=body.name.strip())
+
+
+@router.get("/agents/{agent_id}/mcp-servers/{server_id}/accounts")
+async def get_mcp_accounts(agent_id: uuid.UUID, server_id: uuid.UUID,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import select
+    from app.models.mcp_server import MCPServer
+    from app.services.mcp_accounts import list_work_accounts
+    agent, _ = await check_agent_access(db, current_user, agent_id)
+    server = await db.scalar(select(MCPServer).where(MCPServer.id == server_id,
+        MCPServer.tenant_id == agent.tenant_id, MCPServer.owner_user_id.is_(None)))
+    if server is None:
+        raise HTTPException(status_code=404, detail="Company connection definition not found")
+    return await list_work_accounts(db, server=server, agent_id=agent_id, user=current_user)
+
+
+@router.put("/mcp-accounts/{account_id}/grants/{agent_id}/{requester_id}")
+async def update_mcp_account_grant(account_id: uuid.UUID, agent_id: uuid.UUID, requester_id: uuid.UUID,
+    body: McpAccountGrantIn, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.mcp_accounts import account_owner, set_account_grant
+    agent, access = await check_agent_access(db, current_user, agent_id)
+    reject_non_executing_agent_access(access)
+    account = await account_owner(db, current_user, account_id, tenant_id=agent.tenant_id)
+    return await set_account_grant(db, account=account, agent_id=agent_id, requester_id=requester_id, enabled=body.enabled, expected_version=body.expected_version)
+
+
+@router.post("/mcp-accounts/{account_id}/revoke")
+async def revoke_mcp_account(account_id: uuid.UUID, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.core.tenant_scope import resolve_and_pin_tenant_scope
+    from app.services.mcp_accounts import account_owner, revoke_account
+    tenant = await resolve_and_pin_tenant_scope(db, current_user)
+    account = await account_owner(db, current_user, account_id, tenant_id=tenant)
+    return await revoke_account(db, account=account)
+
+
+@router.get("/mcp-accounts/{account_id}/oauth")
+async def personal_mcp_oauth_status(account_id: uuid.UUID, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.core.tenant_scope import resolve_and_pin_tenant_scope
+    from app.services.mcp_accounts import account_owner
+    from app.services.mcp_server_service import get_mcp_oauth_status
+    tenant = await resolve_and_pin_tenant_scope(db, current_user)
+    await account_owner(db, current_user, account_id, tenant_id=tenant)
+    return await get_mcp_oauth_status(db, tenant, account_id)
+
+
+@router.post("/mcp-accounts/{account_id}/oauth/start")
+async def start_personal_mcp_oauth(account_id: uuid.UUID, body: McpOAuthStartIn,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.core.tenant_scope import resolve_and_pin_tenant_scope
+    from app.services.mcp_accounts import account_owner
+    from app.services.mcp_oauth import OAuthFlowError
+    from app.services.mcp_server_service import start_mcp_oauth
+    tenant = await resolve_and_pin_tenant_scope(db, current_user)
+    await account_owner(db, current_user, account_id, tenant_id=tenant)
+    try:
+        return await start_mcp_oauth(db, tenant, account_id, **body.model_dump(), requester_id=current_user.id)
+    except OAuthFlowError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 class AgentMcpAssignmentIn(BaseModel):

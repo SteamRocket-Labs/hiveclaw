@@ -188,7 +188,7 @@ def _get_tool_runtime_service() -> ToolRuntimeService:
             from app.services.custom_api_connectors import execute_custom_api_tool
 
             return await execute_custom_api_tool(tool_name, arguments, agent_id=context.agent_id)
-        return await _execute_mcp_tool(tool_name, arguments, agent_id=context.agent_id)
+        return await _execute_mcp_tool(tool_name, arguments, agent_id=context.agent_id, execution_context=context)
 
     async def _direct_fallback_execute(tool_name: str, arguments: dict, context) -> str:
         # Approved/direct fallback is not a second implementation of first-class tools.
@@ -198,7 +198,7 @@ def _get_tool_runtime_service() -> ToolRuntimeService:
             from app.services.custom_api_connectors import execute_custom_api_tool
 
             return await execute_custom_api_tool(tool_name, arguments, agent_id=context.agent_id)
-        return await _execute_mcp_tool(tool_name, arguments, agent_id=context.agent_id)
+        return await _execute_mcp_tool(tool_name, arguments, agent_id=context.agent_id, execution_context=context)
 
     async def _log_activity(*args, **kwargs) -> None:
         from app.services.activity_logger import log_activity

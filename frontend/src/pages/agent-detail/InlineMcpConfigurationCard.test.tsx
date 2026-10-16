@@ -7,10 +7,10 @@ import InlineMcpConfigurationCard from './InlineMcpConfigurationCard';
 import { StructuredToolResultBody } from './StructuredToolResult';
 import { normalizeToolCallResult } from './toolResultEnvelope';
 
-const mocks = vi.hoisted(() => ({ get: vi.fn(), confirm: vi.fn(), grant: vi.fn() }));
+const mocks = vi.hoisted(() => ({ get: vi.fn(), confirm: vi.fn(), grant: vi.fn(), select: vi.fn() }));
 const translate = (key: string, fallback?: string) => translateFromCatalog(en, key, fallback);
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: translate }) }));
-vi.mock('../../api/domains/tools', () => ({ toolsApi: { getSessionMcpConfiguration: mocks.get, confirmSessionMcpConfiguration: mocks.confirm } }));
+vi.mock('../../api/domains/tools', () => ({ toolsApi: { getSessionMcpConfiguration: mocks.get, selectSessionMcpAccount: mocks.select, confirmSessionMcpConfiguration: mocks.confirm } }));
 vi.mock('../../api/domains/extensions', () => ({ extensionsApi: { setAgentMcpAssignment: mocks.grant } }));
 const configured = { state: 'waiting', target_agent_id: 'target', target_agent_name: 'Research colleague', server: { id: 'server', name: 'Documents' },
   authorization: 'configured', usage: { enabled: true, default_tool_mode: 'auto', always_load: false }, revision: 'revision-1', usable_tool_count: 1, can_authorize: false };
@@ -71,4 +71,22 @@ it('routes the native MCP question through its exact source session and item, in
   view.unmount(); mocks.get.mockClear();
   render(<StructuredToolResultBody agentId="source" sessionId="work" questionItemId="question" toolMeta={value.toolMeta} onSendMessage={send} />);
   expect(screen.queryByRole('button')).toBeNull(); expect(mocks.get).not.toHaveBeenCalled();
+});
+
+it('saves an exact account choice without granting use or continuing, then confirms that account on the original question', async () => {
+  const company = { id: 'server', name: 'Company login', owner_user_id: null, parent_server_id: null, auth_status: 'configured' };
+  const personal = { id: 'personal', name: 'Granted account', owner_user_id: 'account-owner', parent_server_id: 'server', auth_status: 'configured', account_use_enabled: true };
+  const base = { ...configured, account: company, accounts: [company, personal], permitted_tool_count: 1, can_manage_employee: false };
+  const chosen = { ...base, account: personal, revision: 'personal-revision' };
+  mocks.get.mockImplementation((_agent, _session, _question, account) => Promise.resolve(account === 'personal' ? chosen : base));
+  mocks.select.mockResolvedValue(chosen); mocks.confirm.mockResolvedValue({ ...chosen, state: 'ready' });
+  const answer = vi.fn().mockResolvedValue({});
+  render(<InlineMcpConfigurationCard {...props} onAnswer={answer} />);
+  fireEvent.change(await screen.findByLabelText('Choose the account to use'), { target: { value: 'personal' } });
+  await waitFor(() => expect(mocks.select).toHaveBeenCalledExactlyOnceWith('source', 'work', 'question', 'personal'));
+  await waitFor(() => expect(mocks.get).toHaveBeenLastCalledWith('source', 'work', 'question', 'personal'));
+  expect(answer).not.toHaveBeenCalled(); expect(mocks.confirm).not.toHaveBeenCalled(); expect(mocks.grant).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Continue original work' }));
+  await waitFor(() => expect(answer).toHaveBeenCalledTimes(1));
+  expect(mocks.confirm).toHaveBeenCalledExactlyOnceWith('source', 'work', 'question', { revision: 'personal-revision', account_id: 'personal' });
 });

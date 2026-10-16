@@ -2271,7 +2271,7 @@ async def _search_bing(query: str, api_key: str, max_results: int, language: str
     return f'🔍 Bing search for "{query}" ({len(results)} items):\n\n' + "\n\n---\n\n".join(results)
 
 
-async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUID | None" = None) -> str:
+async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUID | None" = None, *, execution_context=None) -> str:
     try:
         from app.models.agent import Agent
         from app.models.tool import AgentTool, Tool
@@ -2353,7 +2353,14 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
             # here so the agent never sees it. Fail-closed when expired/unrefreshable.
             _server_url = getattr(tool, "mcp_server_url", None) if tool else None
             if _server_url:
-                oauth_bearer, oauth_error = await resolve_mcp_oauth_bearer(db, tid, _server_url, tool_id=tool.id)
+                from fastapi import HTTPException
+                try:
+                    oauth_bearer, oauth_error = await resolve_mcp_oauth_bearer(db, tid, _server_url, tool_id=tool.id,
+                        agent_id=agent_id, execution_context=execution_context)
+                except HTTPException as exc:
+                    return render_tool_error(tool_name=tool_name, error_class="forbidden" if exc.status_code == 403 else "configuration_required",
+                        message=str(exc.detail), provider="mcp", retryable=False,
+                        actionable_hint="Review the account, requester and employee use grant in the original work.")
                 if oauth_error:
                     return render_tool_error(
                         tool_name=tool_name,

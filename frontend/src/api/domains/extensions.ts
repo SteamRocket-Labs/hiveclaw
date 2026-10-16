@@ -124,6 +124,18 @@ export interface McpOAuthRegistration {
   client_secret?: string;
 }
 
+export interface McpAccount {
+  id: string;
+  name: string;
+  owner_user_id: string | null;
+  parent_server_id: string | null;
+  auth_status: string;
+  account_use_enabled?: boolean;
+  grant_version?: number;
+  can_grant_account?: boolean;
+  can_authorize?: boolean;
+}
+
 export interface McpOAuthStatus {
   server_id: string;
   auth_status: string;
@@ -415,9 +427,15 @@ export const extensionsApi = {
   /** Company admin: tenant MCP server records, server-first with stable identity. */
   listEnterpriseMcpServers: () => get<McpServerRecord[]>('/enterprise/mcp-servers'),
 
-  getMcpOAuthStatus: (serverId: string) => get<McpOAuthStatus>(`/enterprise/mcp/${serverId}/oauth`),
-  startMcpOAuth: (serverId: string, data: McpOAuthRegistration) =>
-    post<{ authorization_url: string; attempt_id: string; expires_at: number }>(`/enterprise/mcp/${serverId}/oauth/start`, data),
+  listMcpAccounts: (agentId: string, serverId: string) => get<McpAccount[]>(`/agents/${agentId}/mcp-servers/${serverId}/accounts`),
+  createMcpAccount: (agentId: string, serverId: string, data: { id: string; name: string }) =>
+    post<McpAccount>(`/agents/${agentId}/mcp-servers/${serverId}/accounts`, data),
+  setMcpAccountGrant: (accountId: string, agentId: string, requesterId: string, enabled: boolean, expectedVersion: number) =>
+    put<{ enabled: boolean; version: number }>(`/mcp-accounts/${accountId}/grants/${agentId}/${requesterId}`, { enabled, expected_version: expectedVersion }),
+  revokeMcpAccount: (accountId: string) => post<McpAccount>(`/mcp-accounts/${accountId}/revoke`),
+  getMcpOAuthStatus: (serverId: string, personal = false) => get<McpOAuthStatus>(`${personal ? '/mcp-accounts' : '/enterprise/mcp'}/${serverId}/oauth`),
+  startMcpOAuth: (serverId: string, data: McpOAuthRegistration, personal = false) =>
+    post<{ authorization_url: string; attempt_id: string; expires_at: number }>(`${personal ? '/mcp-accounts' : '/enterprise/mcp'}/${serverId}/oauth/start`, data),
 
   /** Company admin: raw evidence plus canonical metadata review state for one MCP server. */
   listEnterpriseMcpServerTools: (serverId: string) =>

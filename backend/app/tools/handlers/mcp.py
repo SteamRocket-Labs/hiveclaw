@@ -321,7 +321,7 @@ async def import_mcp_server(agent_id: uuid.UUID, arguments: dict) -> str:
         adapter="agent_args",
     )
 )
-async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
+async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict, *, execution_context=None) -> str:
     from sqlalchemy import select
 
     from app.database import tenant_scoped_session
@@ -423,7 +423,14 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
         remote_name = row.mcp_tool_name or row.name
         from app.services.mcp_server_service import resolve_mcp_oauth_bearer
 
-        bearer, auth_error = await resolve_mcp_oauth_bearer(db, tid, server_url, tool_id=row.id)
+        from fastapi import HTTPException
+        try:
+            bearer, auth_error = await resolve_mcp_oauth_bearer(db, tid, server_url, tool_id=row.id,
+                agent_id=agent_id, execution_context=execution_context)
+        except HTTPException as exc:
+            return render_tool_error(tool_name="call_mcp_tool", error_class="forbidden" if exc.status_code == 403 else "configuration_required",
+                message=str(exc.detail), provider="mcp", retryable=False,
+                actionable_hint="Review the account and its use grant in the original work.")
         if auth_error:
             return render_tool_error(tool_name="call_mcp_tool", error_class="auth_required", message=auth_error,
                 provider="mcp", retryable=False, actionable_hint="Request MCP OAuth configuration in the original work.")
@@ -458,6 +465,7 @@ async def _resolve_agent_mcp_server(
     *,
     tool_name: str = "mcp_list_resources",
     resolve_oauth: bool = True,
+    execution_context=None,
 ) -> tuple[str, str | None, str] | str:
     """Resolve (server_url, api_key) for one MCP server the agent may reach.
 
@@ -558,7 +566,15 @@ async def _resolve_agent_mcp_server(
             return url, api_key, name
         from app.services.mcp_server_service import resolve_mcp_oauth_bearer
 
-        bearer, auth_error = await resolve_mcp_oauth_bearer(db, tid, url, tool_id=row.id, server_id=uuid.UUID(connection_id) if connection_id in ids_by_tool.get(row.id, []) else None)
+        from fastapi import HTTPException
+        try:
+            bearer, auth_error = await resolve_mcp_oauth_bearer(db, tid, url, tool_id=row.id,
+                server_id=uuid.UUID(connection_id) if connection_id in ids_by_tool.get(row.id, []) else None,
+                agent_id=agent_id, execution_context=execution_context)
+        except HTTPException as exc:
+            return render_tool_error(tool_name=tool_name, error_class="forbidden" if exc.status_code == 403 else "configuration_required",
+                message=str(exc.detail), provider="mcp", retryable=False,
+                actionable_hint="Review the account and its use grant in the original work.")
         if auth_error:
             return render_tool_error(tool_name=tool_name, error_class="auth_required", message=auth_error,
                 provider="mcp", retryable=False, actionable_hint="Request MCP OAuth configuration in the original work.")
@@ -588,10 +604,10 @@ async def _resolve_agent_mcp_server(
         adapter="agent_args",
     )
 )
-async def mcp_list_resources(agent_id: uuid.UUID, arguments: dict) -> str:
+async def mcp_list_resources(agent_id: uuid.UUID, arguments: dict, *, execution_context=None) -> str:
     from app.services.mcp_client import MCPClient
 
-    resolved = await _resolve_agent_mcp_server(agent_id, arguments.get("server"))
+    resolved = await _resolve_agent_mcp_server(agent_id, arguments.get("server"), execution_context=execution_context)
     if isinstance(resolved, str):
         return resolved
     server_url, api_key = resolved[:2]
@@ -641,7 +657,7 @@ async def mcp_list_resources(agent_id: uuid.UUID, arguments: dict) -> str:
         adapter="agent_args",
     )
 )
-async def mcp_read_resource(agent_id: uuid.UUID, arguments: dict) -> str:
+async def mcp_read_resource(agent_id: uuid.UUID, arguments: dict, *, execution_context=None) -> str:
     from app.services.mcp_client import MCPClient
 
     uri = arguments.get("uri", "")
@@ -654,7 +670,7 @@ async def mcp_read_resource(agent_id: uuid.UUID, arguments: dict) -> str:
             retryable=False,
             actionable_hint="Call mcp_list_resources first, then pass one of the returned URIs.",
         )
-    resolved = await _resolve_agent_mcp_server(agent_id, arguments.get("server"))
+    resolved = await _resolve_agent_mcp_server(agent_id, arguments.get("server"), execution_context=execution_context)
     if isinstance(resolved, str):
         return resolved
     server_url, api_key = resolved[:2]
@@ -694,10 +710,10 @@ async def mcp_read_resource(agent_id: uuid.UUID, arguments: dict) -> str:
         adapter="agent_args",
     )
 )
-async def mcp_list_prompts(agent_id: uuid.UUID, arguments: dict) -> str:
+async def mcp_list_prompts(agent_id: uuid.UUID, arguments: dict, *, execution_context=None) -> str:
     from app.services.mcp_client import MCPClient
 
-    resolved = await _resolve_agent_mcp_server(agent_id, arguments.get("server"), tool_name="mcp_list_prompts")
+    resolved = await _resolve_agent_mcp_server(agent_id, arguments.get("server"), tool_name="mcp_list_prompts", execution_context=execution_context)
     if isinstance(resolved, str):
         return resolved
     server_url, api_key = resolved[:2]
@@ -767,7 +783,7 @@ async def mcp_list_prompts(agent_id: uuid.UUID, arguments: dict) -> str:
         adapter="agent_args",
     )
 )
-async def mcp_get_prompt(agent_id: uuid.UUID, arguments: dict) -> str:
+async def mcp_get_prompt(agent_id: uuid.UUID, arguments: dict, *, execution_context=None) -> str:
     from app.services.mcp_client import MCPClient
     from app.services.mcp_prompt_trust import render_mcp_prompt_context, stage_mcp_prompt_as_skill_review
 
@@ -791,7 +807,7 @@ async def mcp_get_prompt(agent_id: uuid.UUID, arguments: dict) -> str:
             retryable=False,
             actionable_hint="Pass prompt arguments as a JSON object.",
         )
-    resolved = await _resolve_agent_mcp_server(agent_id, arguments.get("server"), tool_name="mcp_get_prompt")
+    resolved = await _resolve_agent_mcp_server(agent_id, arguments.get("server"), tool_name="mcp_get_prompt", execution_context=execution_context)
     if isinstance(resolved, str):
         return resolved
     server_url, api_key, server_name = resolved

@@ -16,7 +16,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate, stamp_plan_gate_decision
-from app.core.permissions import authorize_session_action, check_agent_access
+from app.core.permissions import (
+    authorize_session_action,
+    check_agent_access,
+    reject_non_executing_agent_access,
+)
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent_session_goal import AgentSessionGoal
@@ -86,6 +90,18 @@ _TEAM_COMMANDS = frozenset({"team_create", "team_delete"})
 _SCHEDULE_COMMANDS = frozenset({"schedule_create", "schedule_once"})
 _LOOP_COMMANDS = frozenset({"loop"})
 _METADATA_COMMANDS = frozenset({"permissions", "config"})
+_RUN_PRODUCING_COMMANDS = frozenset(
+    {
+        "loop",
+        "steer",
+        "turn_steer",
+        "task_create",
+        "advanced_plan",
+        "start_workflow",
+        "load_skill",
+        "goal_start",
+    }
+)
 _EXTERNAL_PACK_COMMANDS = frozenset(CODING_PACK_COMMAND_NAMES)
 _MCP_ACTION_TO_TOOL = {
     "list_tools": "list_mcp_tools",
@@ -1397,6 +1413,13 @@ async def execute_agent_command(
             raise HTTPException(status_code=404, detail="Command not found") from exc
     _enforce_command_origin_safety(command, body.origin)
     _enforce_web_user_command_surface(command, command_name, body.origin)
+    mcp_action = str(body.arguments.get("action") or "") if command.name == "mcp" else ""
+    if (
+        command.name in _RUN_PRODUCING_COMMANDS
+        or str(getattr(command, "handler_ref", "")).startswith("skill:")
+        or mcp_action == "call_tool"
+    ):
+        reject_non_executing_agent_access(access_level)
 
     if body.session_id:
         try:

@@ -119,6 +119,7 @@ async def start(
         session_id=payload.session_id,
         action="a2a_workflow_start",
         require_writable=True,
+        require_execution=True,
     )
     if payload.definition_hash != payload.definition.definition_hash:
         raise HTTPException(409, "definition_hash_mismatch")

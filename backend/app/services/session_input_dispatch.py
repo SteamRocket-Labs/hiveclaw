@@ -28,6 +28,8 @@ from app.services.chat_transcript import lock_transcript_session
 from app.services.runtime_terminal_settlement import TERMINAL_SETTLEMENT_STATUSES
 from app.services.session_human_input import SESSION_TARGETABLE_RUN_STATUSES
 from app.services.session_v2_persistence import (
+    A2A_DELEGATION_PEER_AUTHORITY_SOURCE,
+    RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE,
     AuthenticatedSessionAuthority,
     SessionEventDraft,
     append_session_events,
@@ -63,6 +65,12 @@ def _json_receipt(value: Any) -> Any:
 _TOOL_EFFECT_RECONCILIATION_CODE = "tool_effect_reconciliation_required"
 _TOOL_EFFECT_DISPATCH_RECOVERY_OWNER = "platform_admin:tool_effect_reconciliation"
 _TERMINAL_BOUNDARY_ACK_PENDING_CODE = "terminal_boundary_ack_pending"
+_EXECUTION_DENIED_CODE = "agent_execute_denied"
+_DISPATCH_EXECUTION_EXEMPT_SOURCES = frozenset({
+    "external_principal_session",
+    A2A_DELEGATION_PEER_AUTHORITY_SOURCE,
+    RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE,
+})
 
 
 async def _terminal_boundary_dispatch_hold(
@@ -443,6 +451,46 @@ async def _start_fifo_successor_if_ready(
     )
 
 
+async def _execution_denial_receipt(
+    db: AsyncSession,
+    *,
+    authority: AuthenticatedSessionAuthority,
+    agent: Agent,
+    actor: Any,
+    row: SessionTurnInput,
+) -> dict[str, Any] | None:
+    """Refuse a durable effect when ordinary user execution authority is gone.
+
+    The session-owner mutation lane still accepts a read-only agent grant.
+    External installations and server-derived delegation lanes keep their
+    existing contracts. The admitted input, its intent, and its bytes stay.
+    """
+
+    if authority.principal_type != "user" or authority.authority_source in _DISPATCH_EXECUTION_EXEMPT_SOURCES:
+        return None
+    from app.core.permissions import check_agent_access, reject_non_executing_agent_access
+
+    try:
+        _loaded, access_level = await check_agent_access(db, actor, agent.id)
+        reject_non_executing_agent_access(access_level)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        message = detail.get("message") if isinstance(detail, dict) else None
+        if not message:
+            message = exc.detail if isinstance(exc.detail, str) else "execution denied"
+        return {
+            "kind": "execution_denied",
+            "code": _EXECUTION_DENIED_CODE,
+            "status": "not_executed",
+            "retryable": False,
+            "replay_allowed": False,
+            "input_id": str(row.id),
+            "session_id": str(authority.session_id),
+            "message": str(message),
+        }
+    return None
+
+
 async def _dispatch_one(
     db: AsyncSession,
     *,
@@ -452,6 +500,15 @@ async def _dispatch_one(
         db,
         admission_id=admission_id,
     )
+    denial = await _execution_denial_receipt(
+        db,
+        authority=authority,
+        agent=agent,
+        actor=user,
+        row=row,
+    )
+    if denial is not None:
+        return denial, True
     if row.intent == "start_turn":
         await lock_transcript_session(db, session_id=session.id)
         terminal_boundary_hold = await _terminal_boundary_dispatch_hold(
@@ -668,6 +725,10 @@ def _admitted_input_candidate_statement(
 ):
     receipt_boundary_id = SessionInputAdmission.dispatch_receipt_json["terminal_boundary_id"].as_string()
     receipt_boundary_status = SessionInputAdmission.dispatch_receipt_json["terminal_boundary_status"].as_string()
+    execution_denied_hold = (
+        func.coalesce(SessionInputAdmission.dispatch_receipt_json["code"].as_string(), "")
+        == _EXECUTION_DENIED_CODE
+    )
     unchanged_terminal_boundary_hold = (
         select(RuntimeTerminalBoundaryOutbox.id)
         .where(
@@ -694,6 +755,7 @@ def _admitted_input_candidate_statement(
                 (SessionInputAdmission.dispatch_state == "dispatching")
                 & (SessionInputAdmission.lease_expires_at <= now),
             ),
+            ~execution_denied_hold,
             ~unchanged_terminal_boundary_hold,
         )
         .order_by(SessionTurnInput.queue_ordinal, SessionInputAdmission.id)

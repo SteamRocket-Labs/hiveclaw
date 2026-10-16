@@ -70,6 +70,7 @@ from app.api.organization import router as org_router
 from app.api.plans import router as plans_router
 from app.api.plaza import router as plaza_router
 from app.api.agent_teams import router as agent_teams_router
+from app.api.business_teams import router as business_teams_router
 from app.api.advanced_plan import router as advanced_plan_router
 from app.api.role_templates import router as role_templates_router
 from app.api.runtime_budgets import router as runtime_budgets_router
@@ -879,6 +880,7 @@ _api_routers = [
     commands_router,
     session_goals_router,
     agent_teams_router,
+    business_teams_router,
     advanced_plan_router,
     hooks_router,
     hr_creation_router,

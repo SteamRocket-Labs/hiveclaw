@@ -17,6 +17,7 @@ from app.core.permissions import (
     authorize_session_action,
     check_agent_access,
     check_agent_operator_reachability,
+    reject_non_executing_agent_access,
 )
 from app.core.security import get_current_user
 from app.database import get_db
@@ -611,7 +612,8 @@ async def start_agent_team_member_run(
     db: AsyncSession = Depends(get_db),
     admin_override_reason: AdminOverrideReason = None,
 ) -> dict:
-    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    reject_non_executing_agent_access(access_level)
     team = await _load_team_or_404(db, agent_id=agent_id, team_id=team_id)
     await _authorize_team_action(
         db,
@@ -708,7 +710,8 @@ async def message_agent_team_member(
     db: AsyncSession = Depends(get_db),
     admin_override_reason: AdminOverrideReason = None,
 ) -> dict:
-    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    reject_non_executing_agent_access(access_level)
     team = await _load_team_or_404(db, agent_id=agent_id, team_id=team_id)
     await _authorize_team_action(
         db,

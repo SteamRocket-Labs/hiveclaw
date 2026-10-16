@@ -28,6 +28,7 @@ async def test_advanced_plan_api_starts_advanced_plan_runtime(monkeypatch):
             "session_id": session_id,
             "action": "advanced_plan:start",
             "require_writable": True,
+            "require_execution": True,
         }
         return SimpleNamespace(agent=agent, session=session)
 
@@ -77,6 +78,7 @@ async def test_advanced_plan_api_rejects_cross_user_session_before_start(monkeyp
             "session_id": session_id,
             "action": "advanced_plan:start",
             "require_writable": True,
+            "require_execution": True,
         }
         raise HTTPException(status_code=403, detail="This session belongs to a different user")
 

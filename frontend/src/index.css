@@ -4576,6 +4576,77 @@
   white-space: nowrap;
 }
 
+.business-team-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3, 12px);
+  margin-bottom: var(--space-4, 16px);
+  padding: var(--space-4, 16px);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md, 12px);
+  background: var(--bg-secondary);
+}
+
+.business-team-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  gap: var(--space-4, 16px);
+  align-items: start;
+}
+
+.business-team-column,
+.business-team-detail,
+.business-team-form,
+.business-team-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+  min-width: 0;
+}
+
+.business-team-list,
+.business-team-members,
+.business-team-employees {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.business-team-list button,
+.business-team-members li,
+.business-team-employees li {
+  text-align: left;
+  min-width: 0;
+}
+
+.business-team-list small,
+.business-team-members small,
+.business-team-employees small {
+  display: block;
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.business-team-error,
+.business-team-pending {
+  margin: 0;
+}
+
+.business-team-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+}
+
+@media (max-width: 720px) {
+  .business-team-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
 .workbench-aggregate-list {
   display: grid;
   gap: 8px;

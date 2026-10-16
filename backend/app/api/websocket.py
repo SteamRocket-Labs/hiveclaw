@@ -9,7 +9,12 @@ from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconn
 from loguru import logger
 from sqlalchemy import select
 
-from app.core.permissions import authorize_loaded_session_access, check_agent_access, is_agent_expired
+from app.core.permissions import (
+    authorize_loaded_session_access,
+    check_agent_access,
+    is_agent_expired,
+    require_agent_execution_access,
+)
 from app.core.security import decode_access_token
 from app.database import tenant_scoped_session
 from app.kernel.contracts import ExecutionIdentityRef
@@ -531,6 +536,15 @@ async def websocket_chat(
                     run_session = session_result.scalar_one_or_none()
                     if not run_session:
                         await send_control_error("session_not_found", retryable=False)
+                        continue
+                    fresh_user = await run_db.get(User, user.id)
+                    if fresh_user is None:
+                        await send_control_error("session_forbidden", retryable=False)
+                        continue
+                    try:
+                        await require_agent_execution_access(run_db, fresh_user, agent_id)
+                    except HTTPException:
+                        await send_control_error("session_forbidden", retryable=False)
                         continue
                     receipt = await submit_live_human_input(
                         db=run_db,

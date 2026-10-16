@@ -29,6 +29,7 @@ from app.core.permissions import (
     is_agent_operator_inspection_grant,
     is_scoped_business_admin,
     load_agent_operator_inspection_ids,
+    resource_agent_access_levels,
     require_agent_manage_access,
     require_agent_owner_or_admin,
 )
@@ -467,6 +468,36 @@ async def list_agents(
                 can_operator_inspect=row["id"] in operator_agent_ids,
             )
         )
+    discovered = await resource_agent_access_levels(db, current_user, user_tenant)
+    missing = [agent_id for agent_id in discovered if agent_id not in {row["id"] for row in rows}]
+    if missing:
+        extra_rows = (
+            await db.execute(
+                _agent_list_summary_stmt()
+                .where(
+                    Agent.id.in_(missing),
+                    Agent.tenant_id == user_tenant,
+                    Agent.agent_class != "internal_system",
+                    agent_lifecycle_active_clause(),
+                )
+                .order_by(Agent.created_at.desc())
+            )
+        ).mappings().all()
+        for row in extra_rows:
+            try:
+                _agent, access_level = await check_agent_access(db, current_user, row["id"])
+            except HTTPException:
+                continue
+            effective_owner = row["owner_user_id"] or row["creator_id"]
+            output.append(
+                _agent_list_out_from_mapping(
+                    row,
+                    access_level=access_level,
+                    current_user_id=current_user.id,
+                    can_manage_permissions=effective_owner == current_user.id,
+                    can_operator_inspect=row["id"] in operator_agent_ids,
+                )
+            )
     return output
 
 

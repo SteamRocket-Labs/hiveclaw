@@ -34,7 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import authorize_session_action, check_agent_access
+from app.core.permissions import authorize_session_action, check_agent_access, reject_non_executing_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.chat_session import ChatSession
@@ -469,7 +469,8 @@ async def start_workflow_endpoint(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    agent, _access = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    reject_non_executing_agent_access(access_level)
     request_id = str(getattr(request.state, "request_id", None) or request.headers.get("X-Request-ID") or uuid.uuid4())
     try:
         claim = await _claim_workflow_preview_artifact(

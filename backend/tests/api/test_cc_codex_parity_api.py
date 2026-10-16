@@ -1665,7 +1665,7 @@ async def test_goals_api_transitions_are_semantic_and_recoverable(
     calls = {"cancel": 0, "continue": 0, "event": 0}
 
     async def fake_authorize(_db, _user, **_kwargs):
-        return SimpleNamespace(agent=agent, session=session)
+        return SimpleNamespace(agent=agent, session=session, access_level="use")
 
     async def fake_cancel(**_kwargs):
         calls["cancel"] += 1
@@ -1697,6 +1697,73 @@ async def test_goals_api_transitions_are_semantic_and_recoverable(
     assert calls["continue"] == int(expects_continue)
     assert calls["event"] == 1
     assert bool(result.get("continuation")) is expects_continue
+
+
+@pytest.mark.asyncio
+async def test_goal_resume_denies_read_access_while_pause_stays_available(monkeypatch):
+    import app.api.session_goals as goals_api
+    from fastapi import HTTPException
+    from app.models.agent_session_goal import AgentSessionGoal
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    goal_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    agent = SimpleNamespace(id=agent_id, tenant_id=uuid4())
+    session = SimpleNamespace(id=session_id)
+    goal = AgentSessionGoal(
+        id=goal_id,
+        tenant_id=agent.tenant_id,
+        agent_id=agent_id,
+        chat_session_id=session_id,
+        objective="Ship the report",
+        status="active",
+        metadata_json={"last_continuation_run_id": str(uuid4())},
+    )
+    calls = {"cancel": 0, "continue": 0}
+
+    async def fake_authorize(_db, _user, **_kwargs):
+        return SimpleNamespace(agent=agent, session=session, access_level="read")
+
+    async def fake_cancel(**_kwargs):
+        calls["cancel"] += 1
+        return {"status": "killed"}
+
+    async def fake_continue(**_kwargs):
+        calls["continue"] += 1
+        return {"ok": True, "run": {"run_id": "run-resumed"}}
+
+    async def fake_event(**_kwargs):
+        return None
+
+    monkeypatch.setattr(goals_api, "authorize_session_action", fake_authorize)
+    monkeypatch.setattr(goals_api, "submit_live_cancel_input", fake_cancel)
+    monkeypatch.setattr(goals_api, "continue_session_goal", fake_continue)
+    monkeypatch.setattr(goals_api, "_append_goal_transition_event", fake_event)
+
+    paused = await goals_api.transition_goal(
+        agent_id=agent_id,
+        session_id=session_id,
+        goal_id=goal_id,
+        body=goals_api.GoalTransitionIn(action="pause"),
+        current_user=current_user,
+        db=_ExecuteDB(goal, goal),
+    )
+    assert paused["status"] == "paused"
+    assert calls == {"cancel": 1, "continue": 0}
+
+    with pytest.raises(HTTPException) as denied:
+        await goals_api.transition_goal(
+            agent_id=agent_id,
+            session_id=session_id,
+            goal_id=goal_id,
+            body=goals_api.GoalTransitionIn(action="resume"),
+            current_user=current_user,
+            db=_ExecuteDB(goal),
+        )
+    assert denied.value.status_code == 403
+    assert denied.value.detail["code"] == "agent_execute_denied"
+    assert calls == {"cancel": 1, "continue": 0}
 
 
 @pytest.mark.asyncio

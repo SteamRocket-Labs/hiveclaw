@@ -10,10 +10,11 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.policy import check_permission
+from app.core.policy import check_permission, classify_permission, permission_effect_applies
 from app.database import enter_rls_bypass, get_current_tenant_id, pin_rls_tenant_context
 from app.models.agent import Agent, AgentPermission
 from app.models.chat_session import ChatSession
+from app.models.organization_identity import BusinessTeam, BusinessTeamMembership
 from app.models.security_audit import ResourcePermission
 from app.models.tenant import Tenant
 from app.models.user import User
@@ -209,6 +210,186 @@ def is_scoped_business_admin(user, *, resource_tenant_id) -> bool:
     return False
 
 
+async def load_effective_business_team_ids(
+    db: AsyncSession,
+    user: User,
+    tenant_id: uuid.UUID | None,
+) -> list[uuid.UUID]:
+    """Active team ids whose active registered member is this same-tenant user.
+
+    A directory-only membership, a suspended or left row, a suspended team, or
+    an inactive user contributes nothing. The query runs on every check so a
+    revoked membership cannot survive in process state.
+    """
+
+    if tenant_id is None or getattr(user, "id", None) is None:
+        return []
+    if getattr(user, "is_active", True) is not True:
+        return []
+    if getattr(user, "tenant_id", None) is None or str(user.tenant_id) != str(tenant_id):
+        return []
+    try:
+        rows = (
+            await db.execute(
+                select(BusinessTeamMembership.business_team_id)
+                .join(BusinessTeam, BusinessTeam.id == BusinessTeamMembership.business_team_id)
+                .join(User, User.id == BusinessTeamMembership.user_id)
+                .where(
+                    BusinessTeamMembership.user_id == user.id,
+                    BusinessTeamMembership.status == "active",
+                    BusinessTeamMembership.tenant_id == tenant_id,
+                    BusinessTeam.status == "active",
+                    BusinessTeam.tenant_id == tenant_id,
+                    User.is_active.is_(True),
+                    User.tenant_id == tenant_id,
+                )
+            )
+        ).scalars().all()
+    except Exception:
+        return []
+    return list(dict.fromkeys(rows))
+
+
+def _resource_effect(permission: ResourcePermission) -> str:
+    return str(getattr(permission, "effect", "allow") or "allow")
+
+
+def decide_resource_agent_access(
+    permissions: list[ResourcePermission],
+    *,
+    user_id: uuid.UUID,
+    department_id: uuid.UUID | None,
+    team_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, str]:
+    """Map agent ids to manage, use, or read from already loaded grant rows.
+
+    Team principals are ignored for manage. An execute deny stays read-only
+    when a read allow is the only remaining grant.
+    """
+
+    grouped: dict[uuid.UUID, list[ResourcePermission]] = {}
+    for permission in permissions:
+        resource_id = getattr(permission, "resource_id", None)
+        if resource_id is not None:
+            grouped.setdefault(resource_id, []).append(permission)
+    base = {("user", user_id)}
+    if department_id is not None:
+        base.add(("department", department_id))
+    use_principals = set(base)
+    use_principals.update(("business_team", team_id) for team_id in team_ids)
+
+    def decision(rows: list[ResourcePermission], action: str, principals: set[tuple[str, uuid.UUID]]) -> str:
+        applicable = [
+            row
+            for row in rows
+            if (getattr(row, "principal_type", None), getattr(row, "principal_id", None)) in principals
+            and permission_effect_applies(row, action=action)
+        ]
+        if any(_resource_effect(row) == "deny" for row in applicable):
+            return "deny"
+        if any(_resource_effect(row) == "allow" for row in applicable):
+            return "allow"
+        return "absent"
+
+    resolved: dict[uuid.UUID, str] = {}
+    for agent_id, rows in grouped.items():
+        if decision(rows, "manage", base) == "allow":
+            resolved[agent_id] = "manage"
+            continue
+        execute_decision = decision(rows, "execute", use_principals)
+        if execute_decision == "allow":
+            resolved[agent_id] = "use"
+            continue
+        if decision(rows, "read", use_principals) == "allow":
+            resolved[agent_id] = "read" if execute_decision == "deny" else "use"
+    return resolved
+
+
+async def resource_agent_access_levels(
+    db: AsyncSession,
+    user: User,
+    tenant_id: uuid.UUID | None,
+) -> dict[uuid.UUID, str]:
+    """Discover agent resource grants for list consumers. Fail closed."""
+
+    if tenant_id is None or getattr(user, "id", None) is None:
+        return {}
+    team_ids = await load_effective_business_team_ids(db, user, tenant_id)
+    principal_filters = [
+        and_(ResourcePermission.principal_type == "user", ResourcePermission.principal_id == user.id)
+    ]
+    if getattr(user, "role", None) != "platform_admin" and getattr(user, "department_id", None):
+        principal_filters.append(
+            and_(
+                ResourcePermission.principal_type == "department",
+                ResourcePermission.principal_id == user.department_id,
+            )
+        )
+    if team_ids:
+        principal_filters.append(
+            and_(
+                ResourcePermission.principal_type == "business_team",
+                ResourcePermission.principal_id.in_(team_ids),
+            )
+        )
+    try:
+        rows = list(
+            (
+                await db.execute(
+                    select(ResourcePermission).where(
+                        ResourcePermission.tenant_id == tenant_id,
+                        ResourcePermission.resource_type == "agent",
+                        ResourcePermission.resource_id.is_not(None),
+                        or_(*principal_filters),
+                    )
+                )
+            ).scalars().all()
+        )
+    except Exception:
+        return {}
+    return decide_resource_agent_access(
+        rows,
+        user_id=user.id,
+        department_id=getattr(user, "department_id", None) if getattr(user, "role", None) != "platform_admin" else None,
+        team_ids=team_ids,
+    )
+
+
+def agent_access_allows_execution(access_level: str) -> bool:
+    """Read-only resource access can discover an employee and cannot run one."""
+
+    return access_level in {"manage", "use"}
+
+
+def reject_non_executing_agent_access(access_level: str) -> None:
+    """Stop a run, dispatch, or task start when the caller can only read."""
+
+    if agent_access_allows_execution(access_level):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "code": "agent_execute_denied",
+            "message": (
+                "You can see this employee, but execution is denied. "
+                "Ask the owner or a company administrator to restore use access."
+            ),
+        },
+    )
+
+
+async def require_agent_execution_access(
+    db: AsyncSession,
+    user: User,
+    agent_id: uuid.UUID,
+) -> Tuple[Agent, str]:
+    """Authorize a real work-session entry or turn. An execute deny stops here."""
+
+    agent, access_level = await check_agent_access(db, user, agent_id)
+    reject_non_executing_agent_access(access_level)
+    return agent, access_level
+
+
 async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) -> Tuple[Agent, str]:
     """Check whether a user may use or manage a specific Agent.
 
@@ -253,27 +434,60 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
             if perm.scope_id == user.department_id:
                 return agent, perm.access_level or "use"
 
-    resource_principals: list[tuple[str, uuid.UUID]] = [("user", user.id)]
+    # Resource grants are evaluated after owner and company AgentPermission.
+    # Business-team principals join only this branch. They never produce
+    # manage, and an execute deny must not fall through to a read allow.
+    base_principals: list[tuple[str, uuid.UUID]] = [("user", user.id)]
     if user.role != "platform_admin" and user.department_id:
-        resource_principals.append(("department", user.department_id))
+        base_principals.append(("department", user.department_id))
+    team_principals = [
+        ("business_team", team_id)
+        for team_id in await load_effective_business_team_ids(db, user, agent.tenant_id)
+    ]
+    use_principals = [*base_principals, *team_principals]
+    context = {"tenant_id": str(agent.tenant_id)} if agent.tenant_id else None
 
-    primary_principal, *additional_principals = resource_principals
-    for action, access_level in (("manage", "manage"), ("execute", "use"), ("read", "use")):
+    async def _allowed(principals: list[tuple[str, uuid.UUID]], action: str) -> bool:
+        primary, *additional = principals
         try:
-            allowed = await check_permission(
+            return await check_permission(
                 db,
-                principal_type=primary_principal[0],
-                principal_id=primary_principal[1],
-                additional_principals=additional_principals,
+                principal_type=primary[0],
+                principal_id=primary[1],
+                additional_principals=additional,
                 resource_type="agent",
                 resource_id=agent_id,
                 action=action,
-                context={"tenant_id": str(user.tenant_id) if user.tenant_id else None},
+                context=context,
             )
         except Exception:
-            allowed = False
-        if allowed:
-            return agent, access_level
+            return False
+
+    async def _execute_decision() -> str:
+        primary, *additional = use_principals
+        try:
+            return await classify_permission(
+                db,
+                principal_type=primary[0],
+                principal_id=primary[1],
+                additional_principals=additional,
+                resource_type="agent",
+                resource_id=agent_id,
+                action="execute",
+                context=context,
+            )
+        except Exception:
+            return "absent"
+
+    if await _allowed(base_principals, "manage"):
+        return agent, "manage"
+    if await _allowed(use_principals, "execute"):
+        return agent, "use"
+    execute_decision = await _execute_decision()
+    if await _allowed(use_principals, "read"):
+        if execute_decision == "deny":
+            return agent, "read"
+        return agent, "use"
 
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this agent")
 
@@ -663,6 +877,7 @@ async def authorize_session_action(
     allow_manager_override: bool = False,
     manager_override_reason: str | None = None,
     require_writable: bool = False,
+    require_execution: bool = False,
     audit: bool = True,
 ) -> SessionActionDecision:
     """Bind an action to both Agent authority and the session's user.
@@ -700,6 +915,8 @@ async def authorize_session_action(
         require_writable=require_writable,
         audit=audit,
     )
+    if require_execution:
+        reject_non_executing_agent_access(access_level)
     return SessionActionDecision(
         agent=agent,
         session=session,

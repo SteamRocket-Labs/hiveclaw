@@ -43,6 +43,7 @@ async def start_advanced_plan(
         session_id=session_id,
         action="advanced_plan:start",
         require_writable=True,
+        require_execution=True,
     )
 
     prompt = (

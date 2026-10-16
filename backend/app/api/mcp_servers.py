@@ -190,7 +190,9 @@ async def update_agent_mcp_server(
     db: AsyncSession = Depends(get_db),
 ):
     """Assign or update one agent's connection to an MCP server."""
-    agent, _ = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level != "manage":
+        raise HTTPException(status_code=403, detail="Manage access required")
     try:
         return await set_agent_mcp_assignment(
             db,
@@ -230,7 +232,9 @@ async def update_agent_mcp_server_tool_policy(
     db: AsyncSession = Depends(get_db),
 ):
     """Set an advanced per-tool policy override for one assigned MCP server."""
-    agent, _ = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level != "manage":
+        raise HTTPException(status_code=403, detail="Manage access required")
     try:
         return await set_agent_mcp_tool_policy(
             db,

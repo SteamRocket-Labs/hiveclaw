@@ -22,6 +22,7 @@ import { triggerApi } from '../api/domains/triggers';
 import { autonomyApi } from '../api/domains/autonomy';
 import { listWorkflowDefinitions, type WorkflowDefinitionRecord } from '../api/domains/workflows';
 import type { Agent } from '../types';
+import { WorkspaceBusinessTeams } from './workspace/WorkspaceBusinessTeams';
 import { useAuthStore } from '../stores';
 import {
   buildWakePolicyPayload,
@@ -1121,6 +1122,7 @@ export default function WorkspaceFeatureHub({ kind, initialAutomationCreateOpen 
               <p>{t('featureHub.teamTopologyDesc', 'Session-local teams are entered from the conversation; durable org delegation and reusable workers stay attached to each employee and the control plane.')}</p>
             </div>
           </div>
+          <WorkspaceBusinessTeams agents={Array.isArray(agents) ? agents : []} />
           <div className="workbench-grid three">
             <Link to={primaryAgent ? `/agents/${primaryAgent.id}#chat` : '/agents'} className="workbench-data-card">
               <strong>{t('featureHub.sessionLocalTeam', 'Session-local team')}</strong>

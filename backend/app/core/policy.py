@@ -143,8 +143,37 @@ async def check_permission(
     """Check if a principal has permission to perform an action on a resource.
 
     Evaluates live matching allow/deny rows; any applicable deny wins.
-    Returns True if allowed, False if denied.
+    Returns True if allowed, False if denied or absent.
     """
+    return await classify_permission(
+        db,
+        principal_type=principal_type,
+        principal_id=principal_id,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        action=action,
+        context=context,
+        additional_principals=additional_principals,
+    ) == "allow"
+
+
+async def classify_permission(
+    db: AsyncSession,
+    *,
+    principal_type: str,
+    principal_id: uuid.UUID,
+    resource_type: str,
+    resource_id: uuid.UUID,
+    action: str,
+    context: dict | None = None,
+    additional_principals: list[tuple[str, uuid.UUID]] | None = None,
+) -> str:
+    """Return ``allow``, ``deny``, or ``absent`` for one action.
+
+    An applicable deny wins over an allow. Absence is not a deny, so a caller
+    can refuse an execute denial without treating a missing execute row as one.
+    """
+
     principals = [(principal_type, principal_id), *(additional_principals or [])]
     statement = select(ResourcePermission).where(
         or_(
@@ -164,18 +193,19 @@ async def check_permission(
         try:
             statement = statement.where(ResourcePermission.tenant_id == uuid.UUID(str(tenant_id)))
         except (TypeError, ValueError):
-            return False
+            return "absent"
     result = await db.execute(statement)
     permissions = result.scalars().all()
-
     applicable = [
         permission
         for permission in permissions
         if permission_effect_applies(permission, action=action, context=context)
     ]
     if any(str(getattr(permission, "effect", "allow") or "allow") == "deny" for permission in applicable):
-        return False
-    return any(str(getattr(permission, "effect", "allow") or "allow") == "allow" for permission in applicable)
+        return "deny"
+    if any(str(getattr(permission, "effect", "allow") or "allow") == "allow" for permission in applicable):
+        return "allow"
+    return "absent"
 
 
 def permission_effect_applies(

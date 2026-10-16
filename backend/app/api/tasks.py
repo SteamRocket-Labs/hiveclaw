@@ -10,7 +10,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate, stamp_plan_gate_decision
-from app.core.permissions import check_agent_access, check_agent_operator_reachability
+from app.core.permissions import (
+    check_agent_access,
+    check_agent_operator_reachability,
+    reject_non_executing_agent_access,
+)
 from app.core.resource_authority import authorize_resource_action, filter_authorized_resources
 from app.core.security import get_current_user
 from app.database import get_db
@@ -321,7 +325,8 @@ async def create_task(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new task for an agent."""
-    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    reject_non_executing_agent_access(access_level)
     if agent.tenant_id is None:
         raise HTTPException(status_code=409, detail="Agent tenant is required for task execution")
     # Plan Mode early intercept (§9.3): a todo task auto-executes in the
@@ -700,7 +705,8 @@ async def _trigger_task_run(
     """Manually trigger a task execution (for testing)."""
     from app.core.permissions import is_agent_expired
 
-    agent, _access = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    reject_non_executing_agent_access(access_level)
     if agent.tenant_id is None:
         raise HTTPException(status_code=409, detail="Agent tenant is required for task execution")
     if is_agent_expired(agent):
@@ -716,7 +722,7 @@ async def _trigger_task_run(
         agent_id=agent_id,
         task=task,
         action="execute",
-        agent_access=(agent, _access),
+        agent_access=(agent, access_level),
         operator_view=operator_view,
         operator_reason=operator_reason,
     )

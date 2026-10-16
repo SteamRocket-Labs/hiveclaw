@@ -21,6 +21,7 @@ from app.core.permissions import (
     check_agent_access,
     check_agent_operator_reachability,
     is_scoped_business_admin,
+    reject_non_executing_agent_access,
 )
 from app.core.security import get_current_user
 from app.database import get_db
@@ -576,6 +577,9 @@ async def _validated_exact_session_scope(
     return normalized_tools, [root]
 
 
+_EXECUTING_BRANCH_MODES = {"edit", "insert_before", "insert_after", "reply", "side_question", "regenerate"}
+
+
 class BranchSessionIn(BaseModel):
     mode: Literal[
         "fork",
@@ -997,6 +1001,7 @@ async def _get_run_session_and_agent(
     operator_view: bool = False,
     operator_reason: str | None = None,
     require_writable: bool = False,
+    require_execution: bool = False,
 ) -> tuple[ChatSession, Agent, str]:
     result = await db.execute(select(ChatSession).where(ChatSession.id == session_id, ChatSession.agent_id == agent_id))
     session = result.scalar_one_or_none()
@@ -1008,6 +1013,8 @@ async def _get_run_session_and_agent(
         if operator_view and not require_writable
         else check_agent_access(db, current_user, agent_id)
     )
+    if require_execution:
+        reject_non_executing_agent_access(access_level)
     authority_source = await _authorize_loaded_session(
         db=db,
         session=session,
@@ -1273,7 +1280,8 @@ async def create_session(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new chat session for the current user."""
-    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    reject_non_executing_agent_access(access_level)
     exact_scope = await _validated_exact_session_scope(
         agent_id=agent_id,
         allowed_tools=body.allowed_tools,
@@ -1546,7 +1554,8 @@ async def create_session_run(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new human web session and start its first durable run atomically."""
-    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    reject_non_executing_agent_access(access_level)
 
     now = datetime.now(tz.utc)
     session = ChatSession(
@@ -1621,6 +1630,7 @@ async def start_session_run(
         current_user=current_user,
         action="start_session_run",
         require_writable=True,
+        require_execution=True,
     )
     try:
         receipt = await submit_live_human_input(
@@ -1672,6 +1682,7 @@ async def branch_session(
         current_user=current_user,
         action="branch_session",
         require_writable=True,
+        require_execution=bool(body.start_run and body.mode in _EXECUTING_BRANCH_MODES),
     )
     branch_result = await create_conversation_branch(
         db=db,
@@ -2054,6 +2065,7 @@ async def _submit_session_human_input(
         current_user=current_user,
         action="submit_session_human_input",
         require_writable=True,
+        require_execution=True,
     )
     try:
         receipt = await submit_live_human_input(
@@ -2134,7 +2146,15 @@ async def revise_session_human_input(
     from app.services.session_input_dispatch import dispatch_admitted_input_fast_path
     from app.services.session_v2_persistence import resolve_session_mutation_authority
 
-    await _get_run_session_and_agent(db=db, agent_id=agent_id, session_id=session_id, current_user=current_user)
+    await _get_run_session_and_agent(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+        action="mutate_session_input",
+        require_writable=True,
+        require_execution=True,
+    )
     authority = await resolve_session_mutation_authority(
         db,
         user=current_user,
@@ -2159,6 +2179,8 @@ async def revise_session_human_input(
         )
         dispatch = None
         if admission.state == "admitted":
+            _agent, revision_access = await check_agent_access(db, current_user, agent_id)
+            reject_non_executing_agent_access(revision_access)
             dispatch = await dispatch_admitted_input_fast_path(
                 db,
                 admission_id=admission.admission_id,

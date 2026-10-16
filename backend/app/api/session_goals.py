@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import authorize_session_action
+from app.core.permissions import authorize_session_action, reject_non_executing_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent import Agent
@@ -195,6 +195,7 @@ async def start_session_goal(
         session_id=session_id,
         action="goal:start",
         require_writable=True,
+        require_execution=bool(body.start_immediately),
     )
     agent = decision.agent
     goal, created = await _create_or_load_goal(
@@ -319,6 +320,7 @@ async def continue_goal(
         session_id=session_id,
         action="goal:continue",
         require_writable=True,
+        require_execution=True,
     )
     agent = decision.agent
     goal = await _load_goal(db, agent_id=agent_id, session_id=session_id, goal_id=goal_id)
@@ -400,6 +402,7 @@ async def transition_goal(
     await db.refresh(goal)
 
     if body.action == "resume":
+        reject_non_executing_agent_access(decision.access_level)
         continuation = await continue_session_goal(
             db=db,
             agent=decision.agent,

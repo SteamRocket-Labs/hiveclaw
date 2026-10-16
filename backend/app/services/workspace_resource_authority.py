@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import stat
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -85,6 +87,67 @@ def resolve_workspace_storage_path(workspace: Path, path: str) -> Path:
             "workspace_resource_alias_forbidden",
             "Use an independent file at its canonical workspace path; filesystem aliases cannot prove resource ownership.",
         ) from exc
+
+
+@contextmanager
+def open_workspace_file(workspace: Path, path: str, *, write: bool = False):
+    """Pin every directory and validate the opened inode before reading or truncating."""
+    if os.open not in os.supports_dir_fd or not hasattr(os, "O_NOFOLLOW"):
+        raise WorkspaceAuthorityError("workspace_storage_unavailable", "Safe workspace file access is unavailable on this host.")
+    target = resolve_workspace_storage_path(workspace, path)
+    try:
+        parts = target.relative_to(workspace.resolve()).parts
+    except ValueError as exc:
+        raise WorkspaceAuthorityError("workspace_resource_changed", "The Agent directory changed; reconcile it before retrying.") from exc
+    if not parts:
+        raise WorkspaceAuthorityError("workspace_resource_changed", "The requested resource is not a regular file.")
+    directory = descriptor = None
+    try:
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        if write:
+            workspace.mkdir(parents=True, exist_ok=True)
+        directory = os.open(workspace, directory_flags)
+        for part in parts[:-1]:
+            if write:
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=directory)
+                except FileExistsError:
+                    pass
+            child = os.open(part, directory_flags, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        flags = os.O_WRONLY | os.O_CREAT if write else os.O_RDONLY
+        descriptor = os.open(parts[-1], flags | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o600, dir_fd=directory)
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+            raise WorkspaceAuthorityError("workspace_resource_changed", "The file changed or has shared ownership; reconcile it before retrying.")
+        if write:
+            os.ftruncate(descriptor, 0)
+        handle = os.fdopen(descriptor, "wb" if write else "rb")
+        descriptor = None
+        with handle:
+            yield handle
+            if write:
+                handle.flush()
+                os.fsync(handle.fileno())
+            current = resolve_workspace_storage_path(workspace, path).stat()
+            if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+                raise WorkspaceAuthorityError("workspace_resource_changed", "The file moved during access; reconcile it before retrying.")
+    except OSError as exc:
+        import errno
+
+        code = "workspace_resource_changed" if exc.errno in {errno.ENOENT, errno.ENOTDIR, errno.ELOOP, errno.EISDIR, errno.EEXIST} else "workspace_storage_unavailable"
+        raise WorkspaceAuthorityError(code, "Workspace file access changed or is unavailable; reconcile the path and retry.") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if directory is not None:
+            os.close(directory)
+
+
+def write_workspace_file(workspace: Path, path: str, content: bytes) -> None:
+    with open_workspace_file(workspace, path, write=True) as output:
+        output.write(content)
 
 
 @dataclass(frozen=True)

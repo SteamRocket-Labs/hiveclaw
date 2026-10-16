@@ -1,11 +1,13 @@
 """File management API routes for agent workspaces."""
 
 import asyncio
+import io
+import os
+import tempfile
 import uuid
 from pathlib import Path
 from urllib.parse import quote
 
-import aiofiles
 from fastapi import (
     APIRouter,
     Depends,
@@ -197,7 +199,11 @@ def _workspace_authority_http_error(exc: Exception) -> HTTPException:
 
     if not isinstance(exc, WorkspaceAuthorityError):
         return HTTPException(status_code=403, detail=str(exc))
-    status_code = 404 if exc.code == "workspace_resource_not_found" else 403
+    status_code = {
+        "workspace_resource_not_found": 404,
+        "workspace_resource_changed": 409,
+        "workspace_storage_unavailable": 503,
+    }.get(exc.code, 403)
     return HTTPException(
         status_code=status_code,
         detail={"code": exc.code, "message": exc.message},
@@ -566,24 +572,25 @@ async def read_file(
         ".pyc",
         ".pyo",
     }
-    if target.suffix.lower() in _BINARY_EXTS:
-        return FileContent(
-            path=path,
-            content=f"[二进制文件: {target.name}, {target.stat().st_size} bytes]",
-            authority_source=resource_decision.authority_source if resource_decision else None,
-            operator_view=bool(resource_decision and resource_decision.operator_view),
-        )
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
+
+    def read_content():
+        with open_workspace_file(_agent_base_dir(agent_id), path) as source:
+            size = os.fstat(source.fileno()).st_size
+            if target.suffix.lower() not in _BINARY_EXTS:
+                reader = io.TextIOWrapper(source, encoding="utf-8")
+                try:
+                    return reader.read()
+                except (UnicodeDecodeError, ValueError):
+                    pass
+                finally:
+                    reader.detach()
+            return f"[二进制文件: {target.name}, {size} bytes]"
 
     try:
-        async with aiofiles.open(target, "r", encoding="utf-8") as f:
-            content = await f.read()
-    except (UnicodeDecodeError, ValueError):
-        return FileContent(
-            path=path,
-            content=f"[二进制文件: {target.name}, {target.stat().st_size} bytes]",
-            authority_source=resource_decision.authority_source if resource_decision else None,
-            operator_view=bool(resource_decision and resource_decision.operator_view),
-        )
+        content = await asyncio.to_thread(read_content)
+    except WorkspaceAuthorityError as exc:
+        raise _workspace_authority_http_error(exc) from exc
     return FileContent(
         path=path,
         content=content,
@@ -1200,9 +1207,12 @@ async def write_file(
                 )
             except Exception as exc:
                 raise _workspace_authority_http_error(exc) from exc
-        target.parent.mkdir(parents=True, exist_ok=True)
-        async with aiofiles.open(target, "w", encoding="utf-8") as f:
-            await f.write(data.content)
+        from app.services.workspace_resource_authority import WorkspaceAuthorityError, write_workspace_file
+
+        try:
+            await asyncio.to_thread(write_workspace_file, _agent_base_dir(agent_id), path, data.content.encode("utf-8"))
+        except WorkspaceAuthorityError as exc:
+            raise _workspace_authority_http_error(exc) from exc
         if resource_decision is not None:
             import hashlib
 
@@ -1448,8 +1458,35 @@ async def upload_file_to_workspace(
             )
         except Exception as exc:
             raise _workspace_authority_http_error(exc) from exc
-        target_dir.mkdir(parents=True, exist_ok=True)
-        save_path.write_bytes(content)
+        from app.services.workspace_resource_authority import WorkspaceAuthorityError, write_workspace_file
+
+        extracted_path = extracted_content = companion_decision = None
+        from app.services.text_extractor import needs_extraction, save_extracted_text
+
+        if needs_extraction(filename):
+            # Conversion consumes the just-uploaded bytes, never a later path replacement.
+            def extract_uploaded_text():
+                with tempfile.TemporaryDirectory(prefix="hive-upload-extraction-") as staging:
+                    source = Path(staging) / filename
+                    source.write_bytes(content)
+                    result = save_extracted_text(source, content, filename)
+                    return result.read_bytes() if result else None
+
+            extracted_content = await asyncio.to_thread(extract_uploaded_text)
+            if extracted_content is not None:
+                extracted_path = Path(relative_save_path).with_suffix(".txt").as_posix()
+                try:
+                    companion_decision = await authorize_workspace_path(
+                        db, current_user, agent_id=agent_id, path=extracted_path, action="write",
+                        path_exists=(base / extracted_path).exists(), for_update=True, agent_access=(agent, _access),
+                    )
+                except WorkspaceAuthorityError as exc:
+                    raise _workspace_authority_http_error(exc) from exc
+
+        try:
+            await asyncio.to_thread(write_workspace_file, base, relative_save_path, content)
+        except WorkspaceAuthorityError as exc:
+            raise _workspace_authority_http_error(exc) from exc
 
         import hashlib
 
@@ -1465,27 +1502,22 @@ async def upload_file_to_workspace(
             allow_owner_rebind=resource_decision.operator_view and resource_decision.manifest is None,
         )
 
-        # Auto-extract text from non-text files
-        extracted_path = None
-        from app.services.text_extractor import needs_extraction, save_extracted_text
-
-        if needs_extraction(filename):
-            txt_file = save_extracted_text(save_path, content, filename)
-            if txt_file:
-                base_abs = base.resolve()
-                extracted_path = str(txt_file.resolve().relative_to(base_abs))
-                extracted_content = txt_file.read_bytes()
-                await register_workspace_path(
-                    db,
-                    tenant_id=agent.tenant_id,
-                    agent_id=agent_id,
-                    path=extracted_path,
-                    owner_user_id=resource_decision.owner_user_id or current_user.id,
-                    root_session_id=resource_decision.root_session_id,
-                    source="workspace_api_extraction",
-                    content_hash=hashlib.sha256(extracted_content).hexdigest(),
-                    allow_owner_rebind=False,
-                )
+        if companion_decision is not None:
+            try:
+                await asyncio.to_thread(write_workspace_file, base, extracted_path, extracted_content)
+            except WorkspaceAuthorityError as exc:
+                raise _workspace_authority_http_error(exc) from exc
+            await register_workspace_path(
+                db,
+                tenant_id=agent.tenant_id,
+                agent_id=agent_id,
+                path=extracted_path,
+                owner_user_id=companion_decision.owner_user_id or current_user.id,
+                root_session_id=companion_decision.root_session_id,
+                source="workspace_api_extraction",
+                content_hash=hashlib.sha256(extracted_content).hexdigest(),
+                allow_owner_rebind=False,
+            )
 
     return {
         "status": "ok",

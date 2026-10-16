@@ -7,6 +7,73 @@ import pytest
 from fastapi import HTTPException
 
 
+@pytest.mark.parametrize("alias", ["symlink", "hardlink", "parent_symlink"])
+@pytest.mark.parametrize("write", [False, True])
+def test_opened_file_is_checked_before_read_or_truncate(tmp_path, monkeypatch, alias, write):
+    import os
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
+
+    mine, theirs = tmp_path / "workspace/mine/report.txt", tmp_path / "workspace/theirs/report.txt"
+    for path in (mine, theirs):
+        path.parent.mkdir(parents=True)
+    mine.write_text("Owned bytes")
+    theirs.write_text("Private bytes must survive")
+    original_open = os.open
+    replaced = False
+
+    def replace_at_open(path, flags, *args, **kwargs):
+        nonlocal replaced
+        if not replaced and path == ("mine" if alias == "parent_symlink" else "report.txt"):
+            replaced = True
+            mine.unlink()
+            if alias == "symlink":
+                mine.symlink_to(theirs)
+            elif alias == "hardlink":
+                os.link(theirs, mine)
+            else:
+                mine.parent.rmdir()
+                mine.parent.symlink_to(theirs.parent, target_is_directory=True)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", replace_at_open)
+    monkeypatch.setattr(os, "supports_dir_fd", os.supports_dir_fd | {replace_at_open})
+    with pytest.raises(WorkspaceAuthorityError) as denied:
+        with open_workspace_file(tmp_path, "workspace/mine/report.txt", write=write) as handle:
+            handle.write(b"Unauthorized replacement") if write else handle.read()
+    assert replaced
+    assert denied.value.code == "workspace_resource_changed"
+    assert theirs.read_text() == "Private bytes must survive"
+
+
+def test_workspace_file_can_initialize_independent_agent_storage(tmp_path):
+    from app.services.workspace_resource_authority import open_workspace_file, write_workspace_file
+
+    root = tmp_path / "new-agent"
+    write_workspace_file(root, "workspace/new/report.txt", "Owned UTF-8: 你好".encode())
+    with open_workspace_file(root, "workspace/new/report.txt") as source:
+        assert source.read().decode() == "Owned UTF-8: 你好"
+
+
+@pytest.mark.parametrize("write", [False, True])
+def test_open_file_keeps_original_inode_and_reports_a_rebound_path(tmp_path, write):
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
+
+    mine, theirs = tmp_path / "workspace/mine.txt", tmp_path / "workspace/theirs.txt"
+    mine.parent.mkdir()
+    mine.write_bytes(b"Owned bytes")
+    theirs.write_bytes(b"Private bytes must survive")
+    with pytest.raises(WorkspaceAuthorityError) as denied:
+        with open_workspace_file(tmp_path, "workspace/mine.txt", write=write) as handle:
+            mine.unlink()
+            mine.symlink_to(theirs)
+            if write:
+                handle.write(b"Owned revision")
+            else:
+                assert handle.read() == b"Owned bytes"
+    assert denied.value.code == "workspace_resource_alias_forbidden"
+    assert theirs.read_bytes() == b"Private bytes must survive"
+
+
 def test_workspace_scope_filters_only_workspace_resources_and_preserves_agent_system_paths():
     from app.services.workspace_resource_authority import WorkspaceAuthorityScope
 

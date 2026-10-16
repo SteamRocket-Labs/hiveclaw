@@ -1202,7 +1202,18 @@ async def test_populated_legacy_rows_survive_upgrade_and_downgrade_is_not_a_rest
                 "path": f"workspace/{tag}.md", "authority_state": "owned", "source": "workspace_api",
             })
             db.add(OrgDepartment(id=department_id, tenant_id=tenant_id, name="Legacy", feishu_id=feishu_department))
-            db.add(OrgMember(id=member_id, tenant_id=tenant_id, name="Legacy Person", feishu_open_id=open_id))
+            await db.flush()
+            # The downgraded table has no observation column. Insert the historical
+            # row through the reflected schema instead of the current ORM metadata.
+            await _insert_reflected(db, "org_members", {
+                "id": member_id,
+                "tenant_id": tenant_id,
+                "name": "Legacy Person",
+                "feishu_open_id": open_id,
+                "title": "",
+                "department_path": "",
+                "status": "active",
+            })
             await db.commit()
 
         _alembic_upgrade(url, "head")

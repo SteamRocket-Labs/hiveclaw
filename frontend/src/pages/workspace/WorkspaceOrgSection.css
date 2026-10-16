@@ -28,6 +28,38 @@
   margin-bottom: var(--space-3);
 }
 
+.ws-org-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  max-width: 100%;
+  min-width: 0;
+  margin-bottom: var(--space-3);
+}
+
+.ws-org-choice input {
+  flex: 0 0 auto;
+  margin-top: 0.2rem;
+}
+
+.ws-org-choice span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ws-org-sync-assignments {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.ws-org-sync-assignments select {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
 .ws-org-field {
   flex: 1;
 }
@@ -46,25 +78,40 @@
 }
 
 .ws-org-identity-repair,
+.ws-org-cutover,
 .ws-org-identity-repair .ws-org-form-row,
+.ws-org-cutover .ws-org-form-row,
 .ws-org-identity-repair .ws-org-field,
-.ws-org-identity-repair .ws-org-actions {
+.ws-org-cutover .ws-org-field,
+.ws-org-identity-repair .ws-org-actions,
+.ws-org-cutover .ws-org-actions {
   min-width: 0;
   max-width: 100%;
 }
 
-.ws-org-identity-repair select {
+.ws-org-identity-repair select,
+.ws-org-cutover select {
   display: block;
   width: 100%;
   min-width: 0;
   max-width: 100%;
 }
 
-.ws-org-identity-repair .ws-org-actions {
+.ws-org-identity-repair .ws-org-actions,
+.ws-org-cutover .ws-org-actions,
+.ws-org-cutover .ws-org-form-row {
   flex-wrap: wrap;
 }
 
-.ws-org-identity-repair .ws-org-card-desc {
+@media (min-width: 721px) {
+  .ws-org-cutover .ws-org-form-row select {
+    flex: 1 1 12rem;
+    width: auto;
+  }
+}
+
+.ws-org-identity-repair .ws-org-card-desc,
+.ws-org-cutover .ws-org-card-desc {
   overflow-wrap: anywhere;
 }
 

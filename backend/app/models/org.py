@@ -3,8 +3,8 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -33,6 +33,14 @@ class OrgMember(Base):
     """Person from Feishu org structure."""
 
     __tablename__ = "org_members"
+    __table_args__ = (
+        CheckConstraint(
+            "observed_directory_department_ids IS NULL OR ("
+            "jsonb_typeof(observed_directory_department_ids) = 'array' "
+            "AND jsonb_array_length(observed_directory_department_ids) >= 1)",
+            name="ck_org_members_observed_directory_departments",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     provider_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("identity_providers.id"))
@@ -46,6 +54,12 @@ class OrgMember(Base):
     avatar_url: Mapped[str | None] = mapped_column(String(500))
     title: Mapped[str] = mapped_column(String(200), default="")
     department_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("org_departments.id"))
+    # NULL means no current observation. One id replaces ambiguity. Several ids
+    # remain authoritative until a new observation or an explicit repair.
+    observed_directory_department_ids: Mapped[list | None] = mapped_column(
+        JSONB(none_as_null=True),
+        nullable=True,
+    )
     department_path: Mapped[str] = mapped_column(String(500), default="")
     phone: Mapped[str | None] = mapped_column(String(50))
     status: Mapped[str] = mapped_column(String(20), default="active")

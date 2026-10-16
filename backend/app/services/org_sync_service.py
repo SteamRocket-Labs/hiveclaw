@@ -66,6 +66,20 @@ def _sync_unavailable(code: str, message: str) -> dict:
     }
 
 
+def observed_directory_department_ids(item: dict) -> list[str]:
+    """Every department id on one provider person, including a single-object list."""
+
+    found: list[str] = []
+    for field in ("department_id", "open_department_ids", "department_ids"):
+        raw = item.get(field)
+        values = raw if isinstance(raw, list) else [raw]
+        for value in values:
+            text = str(value or "").strip()
+            if text and text not in found:
+                found.append(text)
+    return found
+
+
 def _index_snapshot_people(members: list[dict]) -> dict[tuple[str, str], dict]:
     index: dict[tuple[str, str], dict] = {}
     for item in members:
@@ -93,9 +107,9 @@ def _index_snapshot_people(members: list[dict]) -> dict[tuple[str, str], dict]:
             value = str(item.get(field) or "").strip()
             if value and value not in person[bucket]:
                 person[bucket].append(value)
-        department_id = str(item.get("department_id") or "").strip()
-        if department_id and department_id not in person["department_ids"]:
-            person["department_ids"].append(department_id)
+        for department_id in observed_directory_department_ids(item):
+            if department_id not in person["department_ids"]:
+                person["department_ids"].append(department_id)
         for field in ("name", "email", "avatar_url", "title", "phone"):
             value = str(item.get(field) or "").strip()
             if value and not person[field]:
@@ -191,11 +205,18 @@ def _fill_member(
     member.feishu_user_id = _keep_subject(member.feishu_user_id, user_id)
     member.external_id = _keep_subject(member.external_id, user_id)
     member.unionid = _keep_subject(member.unionid, union_id)
-    real_departments = [value for value in department_ids if value and value != "0"]
+    real_departments: list[str] = []
+    for value in department_ids:
+        text = str(value or "").strip()
+        if text and text != "0" and text not in real_departments:
+            real_departments.append(text)
     if len(real_departments) == 1 and real_departments[0] in departments:
         department = departments[real_departments[0]]
         member.department_id = department.id
         member.department_path = (department.path or department.name or "")[:500]
+        member.observed_directory_department_ids = list(real_departments)
+    elif len(real_departments) > 1:
+        member.observed_directory_department_ids = list(real_departments)
     member.synced_at = now
 
 
@@ -392,6 +413,27 @@ class OrgSyncService:
                 created += 1 if created_user else 0
                 outcome["applied"] = True
                 outcomes.append(outcome)
+            from app.services.identity_cutover import apply_user_department_cutover
+
+            withheld: dict[uuid.UUID, str | None] = {}
+            for row in report["rows"]:
+                if row.get("object_kind") != "org_member" or row.get("disposition") != "department_conflict":
+                    continue
+                if row.get("reason") != "multiple_directory_departments":
+                    continue
+                try:
+                    member_id = uuid.UUID(str(row.get("object_id")))
+                except (TypeError, ValueError):
+                    continue
+                user_ref = row.get("user_id")
+                withheld[member_id] = str(user_ref) if user_ref else None
+            assignment = await apply_user_department_cutover(
+                db,
+                tenant_id=tenant_id,
+                actor_id=actor_id,
+                org_member_ids=None,
+                withheld_members=withheld,
+            )
             await self._mark_synced(db, tenant_id, now)
             await commit_deferred_identity_audit(db)
             return {
@@ -402,6 +444,9 @@ class OrgSyncService:
                 "skipped": skipped,
                 "conflicts": conflicts,
                 "users_created": created,
+                "user_assignments": assignment["counts"]["user_assignments"]["changed"],
+                "assignment_counts": assignment["counts"]["user_assignments"],
+                "assignment_rows": assignment["rows"],
                 "synced_at": now.isoformat(),
                 "rows": outcomes,
             }

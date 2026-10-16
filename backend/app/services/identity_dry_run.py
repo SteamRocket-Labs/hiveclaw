@@ -19,12 +19,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import enter_rls_bypass
 from app.models.identity import ExternalIdentity, IdentityProvider
 from app.models.org import OrgDepartment, OrgMember
-from app.models.organization_identity import OrgMemberUserLink
+from app.models.organization_identity import DepartmentDirectoryLink, OrgMemberUserLink
 from app.models.runtime_task import RuntimeTask
 from app.models.user import Department, User
 from app.services.company_knowledge_identity import explicit_subject_matches
 from app.services.identity_links import _Binding, recheck_stored_link
-from app.services.org_sync_service import DirectoryFetchError, INCOMPLETE_MESSAGE
+from app.services.org_sync_service import DirectoryFetchError, INCOMPLETE_MESSAGE, observed_directory_department_ids
 
 SCHEMA = "hive.identity_dry_run.v1"
 COUNT_KEYS = (
@@ -288,6 +288,22 @@ async def build_identity_dry_run_report(
         )
         for identity in identities
     ]
+    directory_links = list(
+        (
+            await db.execute(
+                select(DepartmentDirectoryLink).where(
+                    DepartmentDirectoryLink.tenant_id == tenant_id,
+                    DepartmentDirectoryLink.status == "active",
+                )
+            )
+        ).scalars().all()
+    )
+    mapped_org_ids = {str(link.org_department_id) for link in directory_links if link.department_id}
+    mapped_by_provider_department = {
+        link.provider_department_id: link.department_id
+        for link in directory_links
+        if link.provider_department_id and link.department_id
+    }
     active_links: list[OrgMemberUserLink] = []
     if proven is not None:
         active_links = list(
@@ -330,6 +346,7 @@ async def build_identity_dry_run_report(
                 blocked=blocked,
                 observed=observed,
                 proposals=proposals,
+                mapped_org_ids=mapped_org_ids,
             )
         )
     for record in member_records:
@@ -347,6 +364,7 @@ async def build_identity_dry_run_report(
                 members_by_id=members_by_id,
                 users_by_id=users_by_id,
                 bindings=bindings,
+                mapped_by_provider_department=mapped_by_provider_department,
             )
         )
     active_user_ids = {user.id for user in users if user.is_active}
@@ -396,12 +414,14 @@ def _incoming_department(item: object) -> dict | None:
 def _incoming_member(item: object) -> dict | None:
     if not isinstance(item, dict):
         return None
+    department_ids = observed_directory_department_ids(item)
     return {
         "open_id": _text(item.get("open_id")),
         "user_id": _text(item.get("user_id")),
         "union_id": _text(item.get("union_id")),
         "email": _text(item.get("email")),
-        "department_id": _text(item.get("department_id")),
+        "department_id": department_ids[0] if len(department_ids) == 1 else "",
+        "department_ids": department_ids,
     }
 
 
@@ -502,13 +522,32 @@ def _merge_members(stored, incoming, org_departments_by_id, incoming_departments
     return records
 
 
+def _directory_observation(member) -> list[str] | None:
+    """Current provider department ids, or None when this member has no observation."""
+
+    raw = getattr(member, "observed_directory_department_ids", None) if member is not None else None
+    if not isinstance(raw, list):
+        return None
+    found: list[str] = []
+    for item in raw:
+        text = str(item or "").strip()
+        if text and text != "0" and text not in found:
+            found.append(text)
+    return found or None
+
+
 def _member_record(member, overlays, org_departments_by_id, incoming_department_names, *, origin, object_id) -> dict:
     open_ids = {value for value in (_text(getattr(member, "feishu_open_id", None)), _text(getattr(member, "open_id", None))) if value}
     user_ids = {value for value in (_text(getattr(member, "feishu_user_id", None)), _text(getattr(member, "external_id", None))) if value}
     union_ids = {value for value in (_text(getattr(member, "unionid", None)),) if value}
     emails = {value for value in (_text(getattr(member, "email", None)),) if value}
     department_ids = []
-    if member is not None and member.department_id and member.department_id in org_departments_by_id:
+    observation = _directory_observation(member)
+    # A stored multi-department observation is the fact when this request has
+    # no new department overlay. An overlay replaces it; do not union the old set.
+    if not overlays and observation is not None and len(observation) > 1:
+        department_ids.extend(observation)
+    elif member is not None and member.department_id and member.department_id in org_departments_by_id:
         department_ids.append(org_departments_by_id[member.department_id].feishu_id)
     for item in overlays:
         for field, bucket in (("open_id", open_ids), ("user_id", user_ids), ("union_id", union_ids)):
@@ -519,6 +558,9 @@ def _member_record(member, overlays, org_departments_by_id, incoming_department_
             emails.add(item["email"])
         if item.get("department_id"):
             department_ids.append(item["department_id"])
+        for department_id in item.get("department_ids") or []:
+            if department_id:
+                department_ids.append(str(department_id))
     names = []
     for department_id in department_ids:
         if department_id and department_id in incoming_department_names:
@@ -555,8 +597,10 @@ def _probe_values(departments: list[dict], members: list[dict], provider_id: str
     }
 
 
-def _department_rows(record, *, names, blocked, observed, proposals) -> list[dict]:
+def _department_rows(record, *, names, blocked, observed, proposals, mapped_org_ids: set[str] | None = None) -> list[dict]:
     feishu_id = record.get("feishu_id")
+    if record.get("origin") != "incoming" and str(record.get("object_id")) in (mapped_org_ids or set()):
+        return []
     blocked_id = bool(feishu_id and ("dept", feishu_id) in blocked)
     name = _text(record.get("name"))
     provenance = {
@@ -670,6 +714,7 @@ def _member_rows(
     members_by_id=None,
     users_by_id=None,
     bindings=None,
+    mapped_by_provider_department=None,
 ) -> list[dict]:
     namespaces = []
     for open_id in record["open_ids"]:
@@ -805,6 +850,7 @@ def _member_rows(
             matched_users[0],
             departments_by_id,
             observed,
+            mapped_by_provider_department or {},
         )
         if extra:
             rows.append(extra)
@@ -847,7 +893,9 @@ def _foreign_identity(record, blocked) -> bool:
     return any((kind, value) in blocked for kind, values in pairs for value in values)
 
 
-def _department_conflict_row(record, user, departments_by_id, observed) -> dict | None:
+def _department_conflict_row(record, user, departments_by_id, observed, mapped_by_provider_department) -> dict | None:
+    """Report a department mismatch from the active mapping, not from equal names."""
+
     if len(record["department_ids"]) > 1 or len(record["department_names"]) > 1:
         reason = "multiple_directory_departments"
     elif user.department_id is None:
@@ -855,11 +903,17 @@ def _department_conflict_row(record, user, departments_by_id, observed) -> dict 
     elif user.department_id not in departments_by_id:
         reason = "department_id_missing"
     else:
-        current_name = departments_by_id[user.department_id].name
-        directory_name = record.get("department_name")
-        if not directory_name or current_name == directory_name:
+        mapped = []
+        for department_id in record["department_ids"]:
+            target = mapped_by_provider_department.get(department_id)
+            if target is not None and target not in mapped:
+                mapped.append(target)
+        if len(mapped) > 1:
+            reason = "multiple_directory_departments"
+        elif len(mapped) != 1 or user.department_id == mapped[0]:
             return None
-        reason = "department_id_points_elsewhere"
+        else:
+            reason = "department_id_points_elsewhere"
     return _row(
         object_kind="org_member",
         object_id=record["object_id"],

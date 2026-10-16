@@ -413,7 +413,6 @@ async def test_identity_dry_run_assesses_two_tenants_without_writing(
             found = {(row["object_id"], row["disposition"], row["reason"]): row for row in body["rows"]}
             expected = {
                 (str(stored["ada_member"]), "trusted", "provider_open_id"),
-                (str(stored["ada_member"]), "department_conflict", "department_id_points_elsewhere"),
                 (str(stored["amb_member"]), "conflict", "ambiguous_identity"),
                 (str(stored["email_member"]), "email_only_candidate", "email_only_candidate"),
                 (str(stored["inactive_member"]), "inactive_user", "authenticated_user_inactive"),
@@ -433,6 +432,7 @@ async def test_identity_dry_run_assesses_two_tenants_without_writing(
                 (str(stored["dangling"]), "conflict", "dangling_root_user_id"),
             }
             assert set(found) == expected
+            assert not any(row["disposition"] == "department_conflict" for row in body["rows"])
             assert body["counts"] == {
                 key: sum(1 for row in body["rows"] if row["disposition"] == key) for key in COUNT_KEYS
             }

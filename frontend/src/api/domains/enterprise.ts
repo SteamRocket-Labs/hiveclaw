@@ -172,6 +172,87 @@ export interface IdentityLinkResult {
   link: IdentityLinkRecord | null;
 }
 
+export interface IdentityBackfillRow {
+  org_member_id: string;
+  disposition: string;
+  reason: string;
+  user_id: string | null;
+  subject_kinds: string[];
+  selectable: boolean;
+}
+
+export interface IdentityBackfillPreview {
+  schema: string;
+  tenant_id: string;
+  applied: boolean;
+  counts: Record<string, number>;
+  rows: IdentityBackfillRow[];
+}
+
+export interface CutoverCountGroup {
+  applied?: number;
+  created?: number;
+  mapped?: number;
+  revoked?: number;
+  changed?: number;
+  noop: number;
+  skipped: number;
+  conflict: number;
+  unavailable: number;
+}
+
+export interface IdentityCutoverResult {
+  schema: string;
+  tenant_id: string;
+  status: string;
+  applied: boolean;
+  counts: {
+    link_backfill: CutoverCountGroup;
+    department_mappings: CutoverCountGroup;
+    user_assignments: CutoverCountGroup;
+  };
+  rows: Array<Record<string, unknown>>;
+}
+
+export interface DepartmentDirectoryReport {
+  schema: string;
+  tenant_id: string;
+  applied: boolean;
+  org_departments: Array<{
+    org_department_id: string;
+    name: string;
+    provider_department_id: string | null;
+    link: { id: string; department_id: string | null; status: string } | null;
+    proposal: { action: string; selectable: boolean; reason: string } | null;
+    same_name_department_ids: string[];
+  }>;
+  departments: Array<{ id: string; name: string; parent_id: string | null }>;
+  links: Array<{ id: string; org_department_id: string; department_id: string | null; status: string }>;
+}
+
+export interface DepartmentLinkSelection {
+  org_department_id?: string;
+  action: 'create' | 'link' | 'repair' | 'revoke';
+  department_id?: string;
+  link_id?: string;
+}
+
+export interface CutoverJournalReport {
+  schema: string;
+  tenant_id: string;
+  applied: boolean;
+  rows: Array<{
+    id: string;
+    object_kind: string;
+    object_id: string;
+    before: Record<string, unknown> | null;
+    after: Record<string, unknown> | null;
+    applied_at: string | null;
+    actor_id?: string | null;
+    actor_label?: string | null;
+  }>;
+}
+
 export interface IdentityLinkCreateBody {
   org_member_id: string;
   user_id: string;
@@ -369,6 +450,31 @@ export const enterpriseApi = {
     `/enterprise/org/identity-links/${linkId}/replace${tenantQuerySuffix(tenantId)}`,
     body,
   ),
+  previewIdentityBackfill: (tenantId?: string) =>
+    post<IdentityBackfillPreview>(`/enterprise/org/identity-links/backfill/preview${tenantQuerySuffix(tenantId)}`),
+  applyIdentityBackfill: (orgMemberIds: string[], tenantId?: string) =>
+    post<IdentityCutoverResult>(
+      `/enterprise/org/identity-links/backfill${tenantQuerySuffix(tenantId)}`,
+      { org_member_ids: orgMemberIds },
+    ),
+  listDepartmentLinks: (tenantId?: string) =>
+    get<DepartmentDirectoryReport>(`/enterprise/org/department-links${tenantQuerySuffix(tenantId)}`),
+  applyDepartmentLinks: (selections: DepartmentLinkSelection[], tenantId?: string) =>
+    post<IdentityCutoverResult>(`/enterprise/org/department-links${tenantQuerySuffix(tenantId)}`, { selections }),
+  applyDepartmentCutover: (orgMemberIds: string[], tenantId?: string) =>
+    post<IdentityCutoverResult>(`/enterprise/org/department-cutover${tenantQuerySuffix(tenantId)}`, { org_member_ids: orgMemberIds }),
+  repairDepartmentAssignment: (userId: string, departmentId: string, tenantId?: string) =>
+    post<IdentityCutoverResult>(
+      `/enterprise/org/department-assignments/repair${tenantQuerySuffix(tenantId)}`,
+      { user_id: userId, department_id: departmentId },
+    ),
+  listCutoverJournal: (tenantId?: string) =>
+    get<CutoverJournalReport>(`/enterprise/org/cutover-journal${tenantQuerySuffix(tenantId)}`),
+  rollbackCutover: (journalIds: string[], tenantId?: string) =>
+    post<IdentityCutoverResult>(
+      `/enterprise/org/cutover-journal/rollback${tenantQuerySuffix(tenantId)}`,
+      { journal_ids: journalIds },
+    ),
 
   /** Approvals */
   listApprovals: (tenantId?: string) => get<unknown[]>(`/enterprise/approvals${tenantId ? `?tenant_id=${tenantId}` : ''}`),

@@ -403,6 +403,12 @@ def discard_deferred_identity_audit(session: AsyncSession) -> None:
     session.info.pop(_IDENTITY_AUDIT_GATE, None)
 
 
+def _with_journal_ids(details: dict, journals: list[IdentityCutoverJournal]) -> dict:
+    """Copy details and cite the journal rows written in this same transaction."""
+
+    return {**details, "journal_ids": [str(row.id) for row in journals]}
+
+
 async def _record_identity_audit(session: AsyncSession, **kwargs: Any) -> None:
     gate = session.info.get(_IDENTITY_AUDIT_GATE)
     if isinstance(gate, list):
@@ -664,32 +670,33 @@ async def _write_link(
         created_by_user_id=actor_id,
     )
     try:
+        journal_rows: list[IdentityCutoverJournal] = []
         async with session.begin_nested():
             if previous is not None:
                 before = _snapshot(previous)
                 previous.status = "revoked"
-                session.add(
-                    IdentityCutoverJournal(
-                        tenant_id=tenant_id,
-                        object_kind="org_member_user_link",
-                        object_id=previous.id,
-                        before_json=before,
-                        after_json=_snapshot(previous),
-                        applied_at=now,
-                    )
-                )
-                await session.flush()
-            session.add(link)
-            session.add(
-                IdentityCutoverJournal(
+                previous_journal = IdentityCutoverJournal(
                     tenant_id=tenant_id,
                     object_kind="org_member_user_link",
-                    object_id=link.id,
-                    before_json=None,
-                    after_json=_snapshot(link),
+                    object_id=previous.id,
+                    before_json=before,
+                    after_json=_snapshot(previous),
                     applied_at=now,
                 )
+                session.add(previous_journal)
+                journal_rows.append(previous_journal)
+                await session.flush()
+            session.add(link)
+            link_journal = IdentityCutoverJournal(
+                tenant_id=tenant_id,
+                object_kind="org_member_user_link",
+                object_id=link.id,
+                before_json=None,
+                after_json=_snapshot(link),
+                applied_at=now,
             )
+            session.add(link_journal)
+            journal_rows.append(link_journal)
             await session.flush()
             await _record_identity_audit(
                 session,
@@ -700,14 +707,17 @@ async def _write_link(
                 action=action,
                 resource_type="org_member_user_link",
                 resource_id=link.id,
-                details={
-                    "org_member_id": str(link.org_member_id),
-                    "user_id": str(link.user_id),
-                    "provider_id": str(link.provider_id) if link.provider_id else None,
-                    "subject_kind": link.subject_kind,
-                    "status": link.status,
-                    **({"previous_link_id": str(previous.id)} if previous is not None else {}),
-                },
+                details=_with_journal_ids(
+                    {
+                        "org_member_id": str(link.org_member_id),
+                        "user_id": str(link.user_id),
+                        "provider_id": str(link.provider_id) if link.provider_id else None,
+                        "subject_kind": link.subject_kind,
+                        "status": link.status,
+                        **({"previous_link_id": str(previous.id)} if previous is not None else {}),
+                    },
+                    journal_rows,
+                ),
             )
     except IntegrityError:
         _reject(
@@ -967,16 +977,15 @@ async def _attach_proven_identity(
     evidence["observed_at"] = now.isoformat()
     link.external_identity_id = requested[0].id
     link.evidence_json = evidence
-    session.add(
-        IdentityCutoverJournal(
-            tenant_id=link.tenant_id,
-            object_kind="org_member_user_link",
-            object_id=link.id,
-            before_json=before,
-            after_json=_snapshot(link),
-            applied_at=now,
-        )
+    journal = IdentityCutoverJournal(
+        tenant_id=link.tenant_id,
+        object_kind="org_member_user_link",
+        object_id=link.id,
+        before_json=before,
+        after_json=_snapshot(link),
+        applied_at=now,
     )
+    session.add(journal)
     await session.flush()
     await _record_identity_audit(
         session,
@@ -987,13 +996,16 @@ async def _attach_proven_identity(
         action="identity_link.identity_reference",
         resource_type="org_member_user_link",
         resource_id=link.id,
-        details={
-            "org_member_id": str(link.org_member_id),
-            "user_id": str(link.user_id),
-            "provider_id": str(link.provider_id),
-            "subject_kind": link.subject_kind,
-            "status": link.status,
-        },
+        details=_with_journal_ids(
+            {
+                "org_member_id": str(link.org_member_id),
+                "user_id": str(link.user_id),
+                "provider_id": str(link.provider_id),
+                "subject_kind": link.subject_kind,
+                "status": link.status,
+            },
+            [journal],
+        ),
     )
     return IdentityLinkOutcome(
         True,
@@ -1058,7 +1070,7 @@ async def apply_observed_subject_link(
     source: str,
     after_lock: Callable[[], Awaitable[None]] | None = None,
 ) -> IdentityLinkOutcome:
-    """Write one org_sync or sso link using the manual repair locks and journal.
+    """Write one org_sync, sso, or stored-person backfill link using the manual repair locks and journal.
 
     An identical active row is unchanged and does not add another journal entry.
     A revoked or conflicting row for any current subject of this person is not
@@ -1070,8 +1082,8 @@ async def apply_observed_subject_link(
     outer transaction commits and deadlock the next member.
     """
 
-    if source not in {"org_sync", "sso"}:
-        _reject("subject_kind", "An automatic link must come from organization sync or SSO.")
+    if source not in {"org_sync", "sso", "dry_run"}:
+        _reject("subject_kind", "An automatic link must come from organization sync, SSO, or stored-person backfill.")
     if subject_kind not in SUBJECT_KINDS:
         _reject("subject_kind", "The subject kind is not one of the stored provider subjects.")
     subjects = member_subject_map(member)
@@ -1338,16 +1350,15 @@ async def revoke_identity_link(
     now = datetime.now(timezone.utc)
     try:
         async with session.begin_nested():
-            session.add(
-                IdentityCutoverJournal(
-                    tenant_id=tenant_id,
-                    object_kind="org_member_user_link",
-                    object_id=link.id,
-                    before_json=before,
-                    after_json=_snapshot(link),
-                    applied_at=now,
-                )
+            journal = IdentityCutoverJournal(
+                tenant_id=tenant_id,
+                object_kind="org_member_user_link",
+                object_id=link.id,
+                before_json=before,
+                after_json=_snapshot(link),
+                applied_at=now,
             )
+            session.add(journal)
             await session.flush()
             await _record_identity_audit(
                 session,
@@ -1358,13 +1369,16 @@ async def revoke_identity_link(
                 action="identity_link.revoke",
                 resource_type="org_member_user_link",
                 resource_id=link.id,
-                details={
-                    "org_member_id": str(link.org_member_id),
-                    "user_id": str(link.user_id),
-                    "provider_id": str(link.provider_id) if link.provider_id else None,
-                    "subject_kind": link.subject_kind,
-                    "status": link.status,
-                },
+                details=_with_journal_ids(
+                    {
+                        "org_member_id": str(link.org_member_id),
+                        "user_id": str(link.user_id),
+                        "provider_id": str(link.provider_id) if link.provider_id else None,
+                        "subject_kind": link.subject_kind,
+                        "status": link.status,
+                    },
+                    [journal],
+                ),
             )
     except IntegrityError:
         _reject("active_link_conflict", "The link could not be revoked. Reload and retry.", retryable=True)

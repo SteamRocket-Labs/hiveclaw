@@ -12,6 +12,7 @@ import {
 } from '../../api/domains/enterprise';
 import { toolsApi, type FeishuRuntimeStatus } from '../../api/domains/tools';
 import FeishuRuntimeStatusCard from '../../components/FeishuRuntimeStatusCard';
+import WorkspaceOrgCutoverCard from './WorkspaceOrgCutoverCard';
 
 import './WorkspaceOrgSection.css';
 
@@ -232,6 +233,55 @@ function syncRowReason(reason: string, t: (key: string, fallback: string) => str
     return t('enterprise.org.reason.missing_provider_subject', 'The directory person has no provider subject.');
   }
   return t('enterprise.org.syncRowSkipped', 'This directory row was skipped. No account was changed.');
+}
+
+function assignmentReason(reason: string, t: (key: string, fallback: string) => string): string {
+  if (reason === 'department_id_points_elsewhere') {
+    return t('enterprise.org.reason.department_id_points_elsewhere', "The user's department is not the department mapped from the directory.");
+  }
+  if (reason === 'multiple_directory_departments') {
+    return t('enterprise.org.reason.multiple_directory_departments', 'The directory person is in more than one department.');
+  }
+  if (reason === 'active_link_conflict') {
+    return t('enterprise.org.reason.active_link_conflict', 'An active link already uses this directory person or subject.');
+  }
+  if (reason === 'already_mapped') {
+    return t('enterprise.org.reason.already_mapped', 'This department is already mapped.');
+  }
+  if (reason === 'stale_preview') {
+    return t('enterprise.org.reason.stale_preview', 'The stored facts changed. Review them again before applying.');
+  }
+  if (reason === 'department_not_in_tenant') {
+    return t('enterprise.org.reason.department_not_in_tenant', 'That department is not in this company.');
+  }
+  return syncRowReason(reason, t);
+}
+
+function assignmentToken(value: string): string {
+  const compact = value.replace(/-/g, '');
+  return (compact || value).slice(0, 8);
+}
+
+interface SyncAssignmentRow {
+  object_kind?: string;
+  object_id?: string;
+  org_member_id?: string;
+  user_id?: string | null;
+  person_label?: string | null;
+  outcome?: string;
+  reason?: string;
+  department_id?: string | null;
+  department_name?: string | null;
+  mapped_department_id?: string | null;
+  mapped_department_name?: string | null;
+}
+
+interface SyncAssignmentCounts {
+  changed?: number;
+  noop?: number;
+  skipped?: number;
+  conflict?: number;
+  unavailable?: number;
 }
 
 function statusLabel(status: string, t: (key: string, fallback: string) => string): string {
@@ -748,11 +798,19 @@ export default function WorkspaceOrgSection({
     applied?: number;
     skipped?: number;
     conflicts?: number;
+    user_assignments?: number;
+    assignment_counts?: SyncAssignmentCounts;
+    assignment_rows?: SyncAssignmentRow[];
     rows?: Array<{ object_id?: string; reason?: string; disposition?: string; applied?: boolean }>;
   } | null>(null);
+  const [assignmentChoice, setAssignmentChoice] = useState<Record<string, string>>({});
+  const [assignmentRepaired, setAssignmentRepaired] = useState<Record<string, string>>({});
+  const [assignmentError, setAssignmentError] = useState<string | null>(null);
+  const [directoryRevision, setDirectoryRevision] = useState(0);
   const syncRequest = useRef(0);
   const selectedTenantRef = useRef(selectedTenantId);
   selectedTenantRef.current = selectedTenantId;
+  const assignmentMounted = useRef(true);
   const [memberSearch, setMemberSearch] = useState('');
   const [selectedDept, setSelectedDept] = useState<string | null>(null);
 
@@ -780,6 +838,12 @@ export default function WorkspaceOrgSection({
     queryKey: ['feishu-runtime-status'],
     queryFn: () => toolsApi.getFeishuRuntimeStatus(),
   });
+  const assignmentConflicts = (syncResult?.assignment_rows ?? []).filter((row) => row.outcome === 'conflict');
+  const { data: syncRepairDirectory } = useQuery({
+    queryKey: ['org-department-links', selectedTenantId, 'sync-repair'],
+    queryFn: () => enterpriseApi.listDepartmentLinks(selectedTenantId || undefined),
+    enabled: assignmentConflicts.length > 0,
+  });
 
   useEffect(() => {
     if (config?.value?.app_id) {
@@ -788,9 +852,19 @@ export default function WorkspaceOrgSection({
   }, [config]);
 
   useEffect(() => {
+    assignmentMounted.current = true;
+    return () => {
+      assignmentMounted.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
     syncRequest.current += 1;
     setSyncResult(null);
     setSyncing(false);
+    setAssignmentChoice({});
+    setAssignmentRepaired({});
+    setAssignmentError(null);
   }, [selectedTenantId]);
 
   const saveConfig = async () => {
@@ -821,22 +895,36 @@ export default function WorkspaceOrgSection({
         applied?: number;
         skipped?: number;
         conflicts?: number;
+        user_assignments?: number;
+        assignment_counts?: SyncAssignmentCounts;
+        assignment_rows?: SyncAssignmentRow[];
         rows?: Array<{ object_id?: string; reason?: string; disposition?: string; applied?: boolean }>;
       };
       if (requestId !== syncRequest.current || tenantId !== selectedTenantRef.current) return;
+      setAssignmentChoice({});
+      setAssignmentRepaired({});
+      setAssignmentError(null);
       const failed = result.status === 'unavailable' || Boolean(result.error);
+      if (result.status === 'complete' && !result.error) {
+        setDirectoryRevision((current) => current + 1);
+      }
       setSyncResult(failed
         ? { ...result, error: result.error || t('enterprise.org.syncUnavailable', 'The directory snapshot did not finish. Nothing was saved.') }
         : result);
       if (result.status === 'complete' && !result.error) {
-        queryClient.invalidateQueries({ queryKey: ['org-departments'] });
-        queryClient.invalidateQueries({ queryKey: ['org-members'] });
+        queryClient.invalidateQueries({ queryKey: ['org-departments', tenantId] });
+        queryClient.invalidateQueries({
+          predicate: (query) => query.queryKey[0] === 'org-members' && query.queryKey.includes(tenantId),
+        });
         queryClient.invalidateQueries({ queryKey: ['feishu-runtime-status'] });
         queryClient.invalidateQueries({ queryKey: ['org-identity-links', tenantId] });
         queryClient.invalidateQueries({ queryKey: ['company-knowledge-grant-identities'] });
       }
     } catch (error: any) {
       if (requestId !== syncRequest.current || tenantId !== selectedTenantRef.current) return;
+      setAssignmentChoice({});
+      setAssignmentRepaired({});
+      setAssignmentError(null);
       setSyncResult({
         status: 'unavailable',
         error: error.message || t('enterprise.org.syncUnavailable', 'The directory snapshot did not finish. Nothing was saved.'),
@@ -844,6 +932,53 @@ export default function WorkspaceOrgSection({
     }
     if (requestId === syncRequest.current) setSyncing(false);
   };
+
+  const correctAssignment = async (userId: string) => {
+    const departmentId = assignmentChoice[userId];
+    if (!departmentId) return;
+    const requestId = syncRequest.current;
+    const tenantId = selectedTenantId;
+    const current = () => (
+      assignmentMounted.current
+      && requestId === syncRequest.current
+      && tenantId === selectedTenantRef.current
+    );
+    try {
+      const result = await enterpriseApi.repairDepartmentAssignment(userId, departmentId, tenantId || undefined);
+      if (!current()) return;
+      const rows = Array.isArray(result?.rows) ? result.rows : [];
+      const row = rows.find((item) => String(item.object_id || '') === userId) ?? rows[0];
+      const outcome = String(row?.outcome || '');
+      if (outcome === 'changed' || outcome === 'noop') {
+        const returned = row?.department_id;
+        const appliedDepartment = typeof returned === 'string' && returned ? returned : departmentId;
+        setAssignmentRepaired((currentMap) => ({ ...currentMap, [userId]: appliedDepartment }));
+        setAssignmentError(null);
+        setDirectoryRevision((revision) => revision + 1);
+        await queryClient.invalidateQueries({ queryKey: ['org-departments', tenantId] });
+        await queryClient.invalidateQueries({ queryKey: ['org-department-links', tenantId] });
+        await queryClient.invalidateQueries({ queryKey: ['org-identity-links', tenantId] });
+        await queryClient.invalidateQueries({ queryKey: ['org-cutover-journal', tenantId] });
+        await queryClient.invalidateQueries({
+          predicate: (query) => query.queryKey[0] === 'org-members' && query.queryKey.includes(tenantId),
+        });
+        await queryClient.invalidateQueries({ queryKey: ['company-knowledge-grant-identities'] });
+      } else {
+        setAssignmentError(assignmentReason(String(row?.reason || ''), t));
+      }
+    } catch (error: unknown) {
+      if (!current()) return;
+      const message = error instanceof Error ? error.message : '';
+      setAssignmentError(message || t('enterprise.org.cutoverUnavailable'));
+    }
+  };
+
+  const assignmentNames = assignmentConflicts.map((row) => row.person_label
+    || identityLinks?.members.find((member) => member.org_member_id === row.org_member_id)?.label
+    || '');
+  const repeatedAssignments = new Set(
+    assignmentNames.filter((name) => name && assignmentNames.filter((item) => item === name).length > 1),
+  );
 
   return (
     <div>
@@ -884,7 +1019,7 @@ export default function WorkspaceOrgSection({
           ) : null}
         </div>
         {syncResult ? (
-          <div className={`ws-org-sync-result ${syncResult.error ? 'is-error' : ((syncResult.skipped || 0) > 0 || (syncResult.conflicts || 0) > 0) ? 'is-attention' : 'is-ok'}`}>
+          <div className={`ws-org-sync-result ${syncResult.error ? 'is-error' : ((syncResult.skipped || 0) > 0 || (syncResult.conflicts || 0) > 0 || (syncResult.assignment_counts?.conflict || 0) > 0) ? 'is-attention' : 'is-ok'}`}>
             {syncResult.error
               ? syncResult.error
               : (syncResult.applied ?? 0) > 0
@@ -895,6 +1030,79 @@ export default function WorkspaceOrgSection({
                 : t('enterprise.org.syncFinishedWithoutImport', {
                     applied: syncResult.applied ?? 0,
                   })}
+            {!syncResult.error && (syncResult.user_assignments ?? 0) > 0 ? (
+              <div>{t('enterprise.org.syncUserAssignments', { count: syncResult.user_assignments ?? 0 })}</div>
+            ) : null}
+            {!syncResult.error && syncResult.assignment_counts ? (
+              <div>
+                {t('enterprise.org.cutoverCountsAssignments', {
+                  changed: syncResult.assignment_counts.changed ?? 0,
+                  noop: syncResult.assignment_counts.noop ?? 0,
+                  skipped: syncResult.assignment_counts.skipped ?? 0,
+                  conflict: syncResult.assignment_counts.conflict ?? 0,
+                  unavailable: syncResult.assignment_counts.unavailable ?? 0,
+                })}
+              </div>
+            ) : null}
+            {!syncResult.error && assignmentConflicts.length > 0 ? (
+              <div className="ws-org-sync-assignments">
+                {assignmentConflicts.map((row, index) => {
+                  const userId = row.user_id || (row.object_kind === 'user' ? row.object_id : '') || '';
+                  const memberId = row.org_member_id || '';
+                  const stored = identityLinks?.members.find((member) => member.org_member_id === memberId)?.label || '';
+                  const name = row.person_label || stored || '';
+                  const identity = !name || repeatedAssignments.has(name)
+                    ? t('enterprise.org.cutoverShortId', {
+                      name: name || t('enterprise.org.identityKindMember'),
+                      id: assignmentToken(userId || memberId || row.object_id || String(index)),
+                    })
+                    : name;
+                  const current = row.department_name || t('enterprise.org.cutoverNoDepartment');
+                  const target = row.mapped_department_name || '';
+                  const selectId = `sync-repair-${userId || index}`;
+                  const repaired = userId ? assignmentRepaired[userId] : '';
+                  const repairedName = syncRepairDirectory?.departments.find((department) => department.id === repaired)?.name || '';
+                  return (
+                    <div key={`${userId || memberId || row.reason || 'assignment'}-${index}`}>
+                      <div>{identity}</div>
+                      <div>{t('enterprise.org.syncAssignmentConflict')}</div>
+                      <div>{assignmentReason(row.reason || '', t)}</div>
+                      <div>{t('enterprise.org.cutoverCurrentDepartment', { department: current })}</div>
+                      {target ? <div>{t('enterprise.org.cutoverTargetDepartment', { department: target })}</div> : null}
+                      <a href="#org-department-cutover">{t('enterprise.org.syncAssignmentRepair')}</a>
+                      {userId && !repaired ? (
+                        <div>
+                          <label className="ws-org-label" htmlFor={selectId}>{t('enterprise.org.cutoverChooseDepartment')}</label>
+                          <select
+                            id={selectId}
+                            aria-label={t('enterprise.org.cutoverChooseDepartment')}
+                            value={assignmentChoice[userId] || ''}
+                            onChange={(event) => setAssignmentChoice({ ...assignmentChoice, [userId]: event.target.value })}
+                          >
+                            <option value="">{t('enterprise.org.cutoverChooseDepartment')}</option>
+                            {(syncRepairDirectory?.departments ?? []).map((department) => (
+                              <option key={department.id} value={department.id}>{department.name}</option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            className="btn btn-secondary"
+                            disabled={!assignmentChoice[userId]}
+                            onClick={() => correctAssignment(userId)}
+                          >
+                            {t('enterprise.org.cutoverCorrect')}
+                          </button>
+                        </div>
+                      ) : null}
+                      {repairedName ? (
+                        <div>{t('enterprise.org.cutoverTargetDepartment', { department: repairedName })}</div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+                {assignmentError ? <div>{assignmentError}</div> : null}
+              </div>
+            ) : null}
             {!syncResult.error && ((syncResult.skipped || 0) > 0 || (syncResult.conflicts || 0) > 0) ? (
               <div>
                 {t('enterprise.org.syncSkipped', {
@@ -932,6 +1140,11 @@ export default function WorkspaceOrgSection({
 
       <IdentityCheckCard key={selectedTenantId} tenantId={selectedTenantId} />
       <IdentityRepairCard key={`repair-${selectedTenantId}`} tenantId={selectedTenantId} />
+      <WorkspaceOrgCutoverCard
+        key={`cutover-${selectedTenantId}`}
+        tenantId={selectedTenantId}
+        revision={directoryRevision}
+      />
 
       {feishuRuntimeStatus ? (
         <FeishuRuntimeStatusCard status={feishuRuntimeStatus} isAdmin />

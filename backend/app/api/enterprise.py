@@ -1504,6 +1504,211 @@ async def replace_org_identity_link(
     return outcome.as_dict()
 
 
+class IdentityBackfillApply(BaseModel):
+    org_member_ids: list[uuid.UUID]
+
+    model_config = {"extra": "forbid"}
+
+
+class DepartmentLinkSelection(BaseModel):
+    org_department_id: uuid.UUID | None = None
+    action: Literal["create", "link", "repair", "revoke"]
+    department_id: uuid.UUID | None = None
+    link_id: uuid.UUID | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class DepartmentLinkApply(BaseModel):
+    selections: list[DepartmentLinkSelection]
+
+    model_config = {"extra": "forbid"}
+
+
+class DepartmentCutoverApply(BaseModel):
+    org_member_ids: list[uuid.UUID]
+
+    model_config = {"extra": "forbid"}
+
+
+class DepartmentAssignmentRepair(BaseModel):
+    user_id: uuid.UUID
+    department_id: uuid.UUID
+
+    model_config = {"extra": "forbid"}
+
+
+class CutoverRollback(BaseModel):
+    journal_ids: list[uuid.UUID]
+
+    model_config = {"extra": "forbid"}
+
+
+def _department_selection(item: DepartmentLinkSelection) -> dict:
+    if item.action in {"create", "link"} and item.org_department_id is None:
+        raise HTTPException(status_code=422, detail="A department choice needs the stored directory department.")
+    if item.action == "link" and item.department_id is None:
+        raise HTTPException(status_code=422, detail="Linking a department needs the chosen department.")
+    if item.action == "create" and item.department_id is not None:
+        raise HTTPException(status_code=422, detail="Creating a department does not accept a chosen department.")
+    if item.action in {"repair", "revoke"} and item.link_id is None:
+        raise HTTPException(status_code=422, detail="Repair or revoke needs the stored department mapping.")
+    if item.action == "repair" and item.department_id is None:
+        raise HTTPException(status_code=422, detail="Repair needs the chosen department.")
+    return item.model_dump()
+
+
+@router.post("/org/identity-links/backfill/preview")
+async def preview_identity_backfill(
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Recompute stored people who can be linked. This route writes nothing."""
+
+    _require_org_admin(current_user)
+    from app.services.identity_cutover import preview_stored_backfill
+
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    return await preview_stored_backfill(db, tenant_id=target, actor_id=current_user.id)
+
+
+@router.post("/org/identity-links/backfill")
+async def apply_identity_backfill(
+    body: IdentityBackfillApply,
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Link the selected stored people when they are still uniquely trusted."""
+
+    _require_org_admin(current_user)
+    from app.services.identity_cutover import apply_stored_backfill
+
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    return await apply_stored_backfill(
+        db,
+        tenant_id=target,
+        actor_id=current_user.id,
+        org_member_ids=body.org_member_ids,
+    )
+
+
+@router.get("/org/department-links")
+async def list_department_links(
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """List stored directory departments and explicit mapping choices."""
+
+    _require_org_admin(current_user)
+    from app.services.identity_cutover import list_department_directory
+
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    return await list_department_directory(db, tenant_id=target, actor_id=current_user.id)
+
+
+@router.post("/org/department-links")
+async def apply_department_links(
+    body: DepartmentLinkApply,
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create, link, repair, or revoke explicit department mappings."""
+
+    _require_org_admin(current_user)
+    from app.services.identity_cutover import apply_department_selections
+
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    return await apply_department_selections(
+        db,
+        tenant_id=target,
+        actor_id=current_user.id,
+        selections=[_department_selection(item) for item in body.selections],
+    )
+
+
+@router.post("/org/department-cutover")
+async def apply_department_cutover(
+    body: DepartmentCutoverApply,
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Assign mapped departments to selected linked users when that assignment is safe."""
+
+    _require_org_admin(current_user)
+    from app.services.identity_cutover import apply_user_department_cutover
+
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    return await apply_user_department_cutover(
+        db,
+        tenant_id=target,
+        actor_id=current_user.id,
+        org_member_ids=body.org_member_ids,
+    )
+
+
+@router.post("/org/department-assignments/repair")
+async def repair_department_assignment(
+    body: DepartmentAssignmentRepair,
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Record an explicit department correction for one user."""
+
+    _require_org_admin(current_user)
+    from app.services.identity_cutover import repair_user_department
+
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    return await repair_user_department(
+        db,
+        tenant_id=target,
+        actor_id=current_user.id,
+        user_id=body.user_id,
+        department_id=body.department_id,
+    )
+
+
+@router.get("/org/cutover-journal")
+async def get_cutover_journal(
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """List cutover journal rows for this company."""
+
+    _require_org_admin(current_user)
+    from app.services.identity_cutover import list_cutover_journal
+
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    return await list_cutover_journal(db, tenant_id=target, actor_id=current_user.id)
+
+
+@router.post("/org/cutover-journal/rollback")
+async def rollback_cutover_journal(
+    body: CutoverRollback,
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Restore selected journal rows when the current fields still match."""
+
+    _require_org_admin(current_user)
+    from app.services.identity_cutover import rollback_cutover
+
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    return await rollback_cutover(
+        db,
+        tenant_id=target,
+        actor_id=current_user.id,
+        journal_ids=body.journal_ids,
+    )
+
+
 # ─── Invitation Codes ───────────────────────────────────
 
 

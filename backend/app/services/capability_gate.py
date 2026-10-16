@@ -340,8 +340,8 @@ async def check_capability(
     """Check if a tool call is allowed by capability policy.
 
     Lookup order:
-    1. Agent-specific policy (tenant_id + agent_id + capability)
-    2. Tenant default policy (tenant_id + agent_id=NULL + capability)
+    1. Agent-specific and company policy: either denial wins; either approval requirement remains.
+    2. Employee settings may narrow company authority, never widen it.
     3. No explicit policy but tenant/global tool switch exists → honor that switch
     4. No policy on core read/discovery tools → allow (explicit policies still win)
     5. No policy on all other mapped tools → mark as session-permission required.
@@ -395,8 +395,8 @@ async def check_capability(
     )
     policy = result.scalar_one_or_none()
 
-    # Fall back to tenant default
-    if not policy:
+    # A local denial is already final; an allowance still needs the company ceiling.
+    if policy is None or policy.allowed:
         result = await db.execute(
             select(CapabilityPolicy).where(
                 CapabilityPolicy.tenant_id == tenant_id,
@@ -404,7 +404,11 @@ async def check_capability(
                 CapabilityPolicy.capability == capability,
             )
         )
-        policy = result.scalar_one_or_none()
+        company_policy = result.scalar_one_or_none()
+        if policy is None or (
+            company_policy is not None and (not company_policy.allowed or company_policy.requires_approval)
+        ):
+            policy = company_policy
 
     if not policy:
         if await _is_hr_system_agent_default_capability(

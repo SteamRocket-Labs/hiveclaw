@@ -1233,6 +1233,14 @@
   },
   "agent": {
     "configuration": {
+      "editChannel": "Edit channel configuration",
+      "channelTitle": "Configure channel for this work",
+      "companyChannel": "Existing company channel",
+      "employeeChannel": "Employee channel",
+      "channelPrivate": "Channel credentials stay in connection settings. Configuration readback does not verify external delivery or grant additional permissions.",
+      "review": "Review current configuration",
+      "useChannel": "Use this configuration and continue",
+      "channelMissing": "Configure the channel, then review its saved settings.",
       "title": "Configure for this work",
       "private": "Save account settings here. Credentials are not sent to the conversation.",
       "saveContinue": "Save and continue",

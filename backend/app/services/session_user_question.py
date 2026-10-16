@@ -31,11 +31,21 @@ async def load_configuration_question(db, *, authority, item_id):
     return question
 
 
-def validate_configuration_answer(question, content_parts):
+async def validate_configuration_answer(db, question, content_parts):
     from fastapi import HTTPException
 
     payload = question_payload(question)
     if not payload.get("configuration_request"):
+        return
+    if payload["configuration_request"].get("channel_type"):
+        if content_parts == [{"type": "text", "text": "Continue without changing configuration."}]:
+            return
+        if content_parts != [{"type": "text", "text": "Continue with the configured channel."}]:
+            raise HTTPException(status_code=422, detail={"code": "configuration_answer_action_required",
+                "message": "Use the channel configuration card; never send credentials as an answer."})
+        from app.services.session_channel_configuration import validate_channel_configuration_answer
+
+        await validate_channel_configuration_answer(db, payload=payload)
         return
     saved = [{"type": "text", "text": "Continue after saving configuration."}]
     skipped = [{"type": "text", "text": "Continue without changing configuration."}]

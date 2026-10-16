@@ -35,6 +35,11 @@ def test_channel_config_safe_masks_nested_wecom_bot_secret_and_verification_toke
 
     safe = config.to_safe()
 
+    serialized = config.model_dump_json()
+    assert "corp-secret-1234" not in serialized and "encoding-key-5678" not in serialized
+    assert "verification-token-9012" not in serialized and "nested-client-secret-4567" not in serialized
+    assert config.model_dump()["extra_config"]["bot_secret"] == "****9999"
+
     assert safe.app_secret == "****1234"
     assert safe.encrypt_key == "****5678"
     assert safe.verification_token == "****9012"

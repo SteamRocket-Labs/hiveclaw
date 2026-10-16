@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   operatorCap: false,
   agentError: null as unknown,
   userRole: 'platform_admin' as string,
+  projectActiveTimeline: false,
 }));
 
 vi.mock('react-i18next', () => ({
@@ -146,16 +147,20 @@ vi.mock('./agent-detail/LocalAgentChatSection', () => ({
   default: () => <div data-testid="local-agent-chat">Local mutable chat</div>,
 }));
 vi.mock('./agent-detail/AgentChatSection', () => ({
-  default: ({ activeSession, chatMessages, historyMsgs, allSessions }: {
+  default: ({ activeSession, chatMessages, historyMsgs, allSessions, chatMessagesSessionId, historyMessagesSessionId }: {
     activeSession?: any;
     chatMessages?: Array<{ content?: string }>;
     historyMsgs?: Array<{ content?: string }>;
     allSessions?: Array<{ id?: string; title?: string }>;
+    chatMessagesSessionId?: string | null;
+    historyMessagesSessionId?: string | null;
   }) => (
     <div data-testid="fabricated-session-shell">
       {activeSession?.operator_view ? <strong>Operator View</strong> : activeSession?.read_only ? 'Read-only · User' : null}
-      {(chatMessages || []).map((message, index) => <span key={`chat-${index}`}>{message.content}</span>)}
-      {(historyMsgs || []).map((message, index) => <span key={index}>{message.content}</span>)}
+      {(!mocks.projectActiveTimeline || (!activeSession?.read_only && chatMessagesSessionId === activeSession?.id) ? chatMessages || [] : [])
+        .map((message, index) => <span key={`chat-${index}`}>{message.content}</span>)}
+      {(!mocks.projectActiveTimeline || (activeSession?.read_only && historyMessagesSessionId === activeSession?.id) ? historyMsgs || [] : [])
+        .map((message, index) => <span key={index}>{message.content}</span>)}
       {(allSessions || []).map((session) => <span key={session.id}>{session.title}</span>)}
     </div>
   ),
@@ -186,6 +191,7 @@ beforeEach(() => {
   mocks.operatorCap = false;
   mocks.agentError = null;
   mocks.userRole = 'platform_admin';
+  mocks.projectActiveTimeline = false;
   mocks.executedActivityQueries.clear();
   mocks.activityList.mockResolvedValue([]);
   mocks.toolFailures.mockResolvedValue(undefined);
@@ -445,6 +451,8 @@ describe('AgentDetail direct-session authority presentation', () => {
   });
 
   it('opens a managed employee session for a scoped administrator without an operator reason', async () => {
+    // Privacy cases expose all buffers; this presentation case follows the real active timeline.
+    mocks.projectActiveTimeline = true;
     // PDEC-013: platform_admin + server manage projection = normal audited
     // business lane (authority_source=scoped_business_admin, operator_view=false).
     // The requested Session id arrives by direct URL / reload.
@@ -483,8 +491,10 @@ describe('AgentDetail direct-session authority presentation', () => {
     // The employee session opens as a writable business view: no
     // operator params on any read, no Operator View banner, the real sender's
     // content is shown.
-    expect(await screen.findByText('EMPLOYEE-AUTHORED-TEXT')).toBeTruthy();
-    expect(screen.queryByText('Read-only · User')).toBeNull();
+    await waitFor(() => {
+      expect(screen.getByText('EMPLOYEE-AUTHORED-TEXT')).toBeTruthy();
+      expect(screen.queryByText('Read-only · User')).toBeNull();
+    });
     expect(screen.queryByText('Operator View')).toBeNull();
     const transcriptCalls = mocks.getSessionTranscript.mock.calls;
     expect(transcriptCalls.length).toBeGreaterThan(0);

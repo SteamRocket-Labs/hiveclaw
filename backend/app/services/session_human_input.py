@@ -189,7 +189,7 @@ async def revise_unbound_human_input(
 
         question = await load_answer_question(db, authority=authority, item_id=row.request_item_id)
         if question is not None:
-            validate_configuration_answer(question, content_parts)
+            await validate_configuration_answer(db, question, content_parts)
     previous_hash = row.content_hash
     previous_revision = int(row.revision)
     row.content_parts_json = list(content_parts)

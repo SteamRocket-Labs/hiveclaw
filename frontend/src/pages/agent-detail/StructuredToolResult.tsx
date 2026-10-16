@@ -12,6 +12,7 @@ import type { ToolCallMeta, WorkflowPreviewToolMeta } from './toolResultEnvelope
 const HrCreationHandoffCard = lazy(() => import('./HrCreationHandoffCard'));
 const InlineApprovalCard = lazy(() => import('./InlineApprovalCard'));
 const InlineToolConfigurationCard = lazy(() => import('./InlineToolConfigurationCard'));
+const InlineChannelConfigurationCard = lazy(() => import('./InlineChannelConfigurationCard'));
 const HrBlueprintPreviewCard = lazy(() => (
   import('./HrBlueprintPreviewCard').then((module) => ({ default: module.HrBlueprintPreviewCard }))
 ));
@@ -385,6 +386,14 @@ export function StructuredToolResultBody({
   if (toolMeta.kind === 'user_clarification') {
     const requestItemId = toolMeta.requestItemId || questionItemId;
     if (toolMeta.configurationRequest) {
+      if (toolMeta.configurationRequest.channelType) {
+        return agentId && sessionId && requestItemId ? <Suspense fallback={null}>
+          <InlineChannelConfigurationCard key={`${agentId}:${sessionId}:${requestItemId}`}
+            agentId={agentId} sessionId={sessionId} questionId={requestItemId}
+            channelType={toolMeta.configurationRequest.channelType} question={toolMeta.questions[0]?.question || ''}
+            answered={submitted || toolMeta.answered} onAnswer={onAnswerQuestion} />
+        </Suspense> : <p>{toolMeta.questions[0]?.question}</p>;
+      }
       return agentId && sessionId && requestItemId ? <Suspense fallback={null}>
         <InlineToolConfigurationCard key={`${agentId}:${sessionId}:${requestItemId}`}
           agentId={agentId} sessionId={sessionId} questionId={requestItemId}

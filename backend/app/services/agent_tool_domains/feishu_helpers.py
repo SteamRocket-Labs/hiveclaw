@@ -27,41 +27,44 @@ def _format_feishu_token_error(status: dict) -> str:
 
 async def _get_feishu_app_credentials(agent_id: uuid.UUID) -> tuple[str, str] | None:
     """Get (app_id, app_secret) from agent channel config or tenant-level bot config."""
+    tid = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tid) as db:
+        config = await load_feishu_channel_configuration(db, agent_id=agent_id)
+        return (config.app_id, config.app_secret) if config else None
+
+
+async def load_feishu_channel_configuration(db, *, agent_id):
+    """Resolve the actual employee/company configuration used by Feishu tools."""
     from app.models.agent import Agent
     from app.models.channel_config import ChannelConfig
     from app.models.tenant_channel_config import TenantChannelConfig
 
-    # RLS 阶段1: reads the policy-bearing `agents` row (plus the agent's channel
-    # config and tenant bot config) — scope to the agent's tenant (audited
-    # single-row bypass to resolve it).
-    tid = await resolve_tenant_for_agent(agent_id)
-    async with tenant_scoped_session(tid) as db:
-        result = await db.execute(
-            select(ChannelConfig).where(
-                ChannelConfig.agent_id == agent_id,
-                ChannelConfig.channel_type == "feishu",
-                ChannelConfig.is_configured,
-            )
+    result = await db.execute(
+        select(ChannelConfig).where(
+            ChannelConfig.agent_id == agent_id,
+            ChannelConfig.channel_type == "feishu",
+            ChannelConfig.is_configured,
         )
-        config = result.scalar_one_or_none()
-        if config and config.app_id and config.app_secret:
-            return config.app_id, config.app_secret
+    )
+    config = result.scalar_one_or_none()
+    if config and config.app_id and config.app_secret:
+        return config
 
-        agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
-        agent = agent_result.scalar_one_or_none()
-        if not agent or not agent.tenant_id:
-            return None
+    agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    agent = agent_result.scalar_one_or_none()
+    if not agent or not agent.tenant_id:
+        return None
 
-        tenant_result = await db.execute(
-            select(TenantChannelConfig).where(
-                TenantChannelConfig.tenant_id == agent.tenant_id,
-                TenantChannelConfig.channel_type == "feishu",
-                TenantChannelConfig.is_active.is_(True),
-            )
+    tenant_result = await db.execute(
+        select(TenantChannelConfig).where(
+            TenantChannelConfig.tenant_id == agent.tenant_id,
+            TenantChannelConfig.channel_type == "feishu",
+            TenantChannelConfig.is_active.is_(True),
         )
-        tenant_config = tenant_result.scalar_one_or_none()
-        if tenant_config and tenant_config.app_id and tenant_config.app_secret:
-            return tenant_config.app_id, tenant_config.app_secret
+    )
+    tenant_config = tenant_result.scalar_one_or_none()
+    if tenant_config and tenant_config.app_id and tenant_config.app_secret:
+        return tenant_config
     return None
 
 

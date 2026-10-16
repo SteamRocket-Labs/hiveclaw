@@ -1233,6 +1233,14 @@
   },
   "agent": {
     "configuration": {
+      "editChannel": "编辑渠道配置",
+      "channelTitle": "为当前工作配置渠道",
+      "companyChannel": "已有公司渠道",
+      "employeeChannel": "员工专属渠道",
+      "channelPrivate": "渠道凭据保存在连接设置中。配置读回不代表已验证外部投递，也不会增加使用权限。",
+      "review": "重新核查配置",
+      "useChannel": "使用此配置并继续",
+      "channelMissing": "请先配置渠道，再核查已保存的结果。",
       "title": "为当前工作配置",
       "private": "请在此保存账号配置，凭据不会发送到会话中。",
       "saveContinue": "保存并继续",

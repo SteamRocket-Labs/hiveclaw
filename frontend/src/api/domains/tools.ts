@@ -71,6 +71,15 @@ export interface SessionToolConfiguration {
   tool: AgentTool;
 }
 
+export interface SessionChannelConfiguration {
+  state: 'waiting' | 'ready';
+  receipt_ref?: string | null;
+  replayed?: boolean;
+  target_agent_id: string;
+  target_agent_name: string;
+  configuration: { id: string; updated_at: string; channel_type: string; scope: 'employee' | 'company' } | null;
+}
+
 export interface CategoryConfig {
   [key: string]: unknown;
 }
@@ -129,6 +138,10 @@ export const toolsApi = {
     get<SessionToolConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/configuration`),
   saveSessionToolConfiguration: (agentId: string, sessionId: string, questionId: string, config: Record<string, unknown>) =>
     put<SessionToolConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/configuration`, { config }),
+  getSessionChannelConfiguration: (agentId: string, sessionId: string, questionId: string) =>
+    get<SessionChannelConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/channel`),
+  confirmSessionChannelConfiguration: (agentId: string, sessionId: string, questionId: string, data: { config_id: string; updated_at: string }) =>
+    post<SessionChannelConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/channel/confirm`, data),
 
   /** Single tool detail */
   getDetail: (toolId: string) => get<ToolDetail>(`/tools/agent-tool/${toolId}`),

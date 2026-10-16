@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, EmailStr, Field, model_validator
+from pydantic import BaseModel, EmailStr, Field, field_serializer, model_validator
 
 from app.services.llm_client import ABSOLUTE_MAX_OUTPUT_TOKENS
 
@@ -454,6 +454,16 @@ class ChannelConfigOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_serializer("app_secret", "encrypt_key", "verification_token")
+    def serialize_secret(self, value: str | None) -> str | None:
+        return _mask_secret(value)
+
+    @field_serializer("extra_config")
+    def serialize_extra_config(self, value: dict | None) -> dict | None:
+        from app.services.channel_secret_storage import redact_channel_extra_config
+
+        return redact_channel_extra_config(value, reveal_suffix=True) if value else value
 
     def to_safe(self) -> "ChannelConfigOut":
         """Return a copy with secrets masked for non-admin users."""

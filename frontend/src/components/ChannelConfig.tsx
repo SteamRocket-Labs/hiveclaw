@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useId, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -19,6 +19,9 @@ interface ChannelConfigProps {
     canManage?: boolean;       // edit mode: whether current user can manage
     values?: Record<string, string>;
     onChange?: (values: Record<string, string>) => void;
+    channelType?: string;
+    onConfigured?: () => void;
+    onBusyChange?: (busy: boolean) => void;
 }
 
 interface ChannelField {
@@ -330,14 +333,16 @@ function CopyBtn({ url }: { url: string }) {
 }
 
 // ─── Main Component ─────────────────────────────────────
-export default function ChannelConfig({ mode, agentId, canManage = true, values, onChange }: ChannelConfigProps) {
+export default function ChannelConfig({ mode, agentId, canManage = true, values, onChange, channelType, onConfigured, onBusyChange }: ChannelConfigProps) {
     const { t } = useTranslation();
     const queryClient = useQueryClient();
+    const formId = useId();
+    const onlyChannel = channelType === 'microsoft_teams' ? 'teams' : channelType;
 
     // Collapsible state per channel
     const [openChannels, setOpenChannels] = useState<Record<string, boolean>>((): Record<string, boolean> => {
         if (mode === 'edit') {
-            return { feishu: true };
+            return { [onlyChannel || 'feishu']: true };
         }
         return { feishu: true };
     });
@@ -376,11 +381,12 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
 
     // ─── Edit mode: queries for each channel ────────────
     const enabled = mode === 'edit' && !!agentId;
+    const queryEnabled = (channel: string) => enabled && (!onlyChannel || onlyChannel === channel);
 
     const { data: feishuConfig } = useQuery({
         queryKey: ['channel', agentId],
         queryFn: () => channelApi.get(agentId!),
-        enabled: enabled,
+        enabled: queryEnabled('feishu'),
         refetchInterval: (query) => {
             if (feishuQrOpen) return 2000;
             const channel = query.state.data as AgentChannelConfig | null | undefined;
@@ -394,77 +400,77 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
     const { data: feishuWebhook } = useQuery({
         queryKey: ['webhook-url', agentId],
         queryFn: () => channelApi.webhookUrl(agentId!),
-        enabled: enabled,
+        enabled: queryEnabled('feishu'),
     });
     const { data: slackConfig } = useQuery({
         queryKey: ['slack-channel', agentId],
         queryFn: () => channelApi.getChannelConfig(agentId!, 'slack-channel'),
-        enabled: enabled,
+        enabled: queryEnabled('slack'),
     });
     const { data: slackWebhook } = useQuery({
         queryKey: ['slack-webhook-url', agentId],
         queryFn: () => channelApi.getChannelWebhook(agentId!, 'slack-channel'),
-        enabled: enabled,
+        enabled: queryEnabled('slack'),
     });
     const { data: discordConfig } = useQuery({
         queryKey: ['discord-channel', agentId],
         queryFn: () => channelApi.getChannelConfig(agentId!, 'discord-channel'),
-        enabled: enabled,
+        enabled: queryEnabled('discord'),
     });
     const { data: discordWebhook } = useQuery({
         queryKey: ['discord-webhook-url', agentId],
         queryFn: () => channelApi.getChannelWebhook(agentId!, 'discord-channel'),
-        enabled: enabled,
+        enabled: queryEnabled('discord'),
     });
     const { data: teamsConfig } = useQuery({
         queryKey: ['teams-channel', agentId],
         queryFn: () => channelApi.getChannelConfig(agentId!, 'teams-channel'),
-        enabled: enabled,
+        enabled: queryEnabled('teams'),
     });
     const { data: teamsWebhook } = useQuery({
         queryKey: ['teams-webhook-url', agentId],
         queryFn: () => channelApi.getChannelWebhook(agentId!, 'teams-channel'),
-        enabled: enabled,
+        enabled: queryEnabled('teams'),
     });
     const { data: dingtalkConfig } = useQuery({
         queryKey: ['dingtalk-channel', agentId],
         queryFn: () => channelApi.getChannelConfig(agentId!, 'dingtalk-channel'),
-        enabled: enabled,
+        enabled: queryEnabled('dingtalk'),
     });
     const { data: wecomConfig } = useQuery({
         queryKey: ['wecom-channel', agentId],
         queryFn: () => channelApi.getChannelConfig(agentId!, 'wecom-channel'),
-        enabled: enabled,
+        enabled: queryEnabled('wecom'),
     });
     const { data: wecomWebhook } = useQuery({
         queryKey: ['wecom-webhook-url', agentId],
         queryFn: () => channelApi.getChannelWebhook(agentId!, 'wecom-channel'),
-        enabled: enabled,
+        enabled: queryEnabled('wecom'),
     });
     const { data: agentbayConfig } = useQuery({
         queryKey: ['agentbay-channel', agentId],
         queryFn: () => channelApi.getChannelConfig(agentId!, 'agentbay-channel'),
-        enabled: enabled,
+        enabled: queryEnabled('agentbay'),
     });
     const { data: telegramConfig } = useQuery({
         queryKey: ['telegram-channel', agentId],
         queryFn: () => channelApi.getChannelConfig(agentId!, 'telegram-channel'),
-        enabled: enabled,
+        enabled: queryEnabled('telegram'),
     });
     const { data: telegramWebhook } = useQuery({
         queryKey: ['telegram-webhook-url', agentId],
         queryFn: () => channelApi.getChannelWebhook(agentId!, 'telegram-channel'),
-        enabled: enabled,
+        enabled: queryEnabled('telegram'),
     });
     const { data: wechatPersonalStatus } = useQuery({
         queryKey: ['wechat-personal-status', agentId],
         queryFn: () => channelApi.wechatPersonalStatus(agentId!),
-        enabled: enabled,
+        enabled: queryEnabled('wechat_personal'),
     });
     const { data: feishuRuntimeStatus } = useQuery<FeishuRuntimeStatus | null>({
         queryKey: ['feishu-runtime-status', agentId],
         queryFn: () => toolsApi.getAgentFeishuRuntimeStatus(agentId!),
-        enabled: enabled,
+        enabled: queryEnabled('feishu'),
     });
 
     useEffect(() => {
@@ -508,6 +514,8 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
 
     // ─── Edit mode: mutations ───────────────────────────
     const saveMutation = useMutation({
+        onMutate: () => onBusyChange?.(true),
+        onSettled: () => onBusyChange?.(false),
         mutationFn: ({ ch, data }: { ch: ChannelDef; data: any }) => {
             if (ch.useChannelApi) {
                 return channelApi.create(agentId!, data);
@@ -522,10 +530,13 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
             // Reset form
             setForms(prev => ({ ...prev, [ch.id]: {} }));
             setEditing(ch.id, false);
+            onConfigured?.();
         },
     });
 
     const deleteMutation = useMutation({
+        onMutate: () => onBusyChange?.(true),
+        onSettled: () => onBusyChange?.(false),
         mutationFn: ({ ch }: { ch: ChannelDef }) => {
             if (ch.useChannelApi) {
                 return channelApi.delete(agentId!);
@@ -538,6 +549,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                 : [[`${ch.apiSlug}`, agentId]];
             keys.forEach(k => queryClient.invalidateQueries({ queryKey: k }));
             if (ch.id === 'agentbay') setAgentbayTestResult(null);
+            onConfigured?.();
         },
     });
 
@@ -647,18 +659,20 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
     // ─── Render a password field with toggle ─────────────
     const renderField = (field: ChannelField, channelId: string, fieldValue: string, onFieldChange: (val: string) => void) => {
         const fieldId = `${channelId}_${field.key}`;
+        const inputId = `${formId}-${fieldId}`;
         const isSecret = field.type === 'password';
         const labelText = field.label.startsWith('channelGuide.') ? t(field.label) : field.label;
         const placeholderText = field.placeholder?.startsWith('channelGuide.') ? t(field.placeholder) : field.placeholder;
 
         return (
             <div key={field.key}>
-                <label className="channel-config-field-label">
+                <label className="channel-config-field-label" htmlFor={inputId}>
                     {labelText} {field.required && '*'}
                     {!field.required && <span className="channel-config-field-optional"> (Optional)</span>}
                 </label>
                 <div className="channel-config-field-input-wrap">
                     <input
+                        id={inputId}
                         className={mode === 'edit'
                             ? `input channel-config-field-input${isSecret ? ' channel-config-field-input-secret' : ''}`
                             : 'form-input'}
@@ -924,6 +938,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                 agentId={agentId!}
                                 onConnected={() => {
                                     queryClient.invalidateQueries({ queryKey: ['wechat-personal-status', agentId] });
+                                    onConfigured?.();
                                 }}
                             />
                         ) : ch.id === 'feishu' && !isEditing && (!isConfigured || feishuQrOpen) ? (
@@ -937,6 +952,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                     onConnected={() => {
                                         queryClient.invalidateQueries({ queryKey: ['channel', agentId] });
                                         setFeishuQrOpen(false);
+                                        onConfigured?.();
                                     }}
                                     onManualConfigure={() => {
                                         setFeishuQrOpen(false);
@@ -1227,7 +1243,9 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                     <FeishuRuntimeStatusCard status={feishuRuntimeStatus} />
                 </div>
             ) : null}
-            {VISIBLE_CHANNELS.map(renderEditChannel)}
+            {(onlyChannel ? CHANNEL_REGISTRY.filter(ch => ch.id === onlyChannel) : VISIBLE_CHANNELS).map(renderEditChannel)}
+            {saveMutation.error && <p role="alert" className="channel-config-error">{saveMutation.error.message}</p>}
+            {deleteMutation.error && <p role="alert" className="channel-config-error">{deleteMutation.error.message}</p>}
         </div>
     );
 }

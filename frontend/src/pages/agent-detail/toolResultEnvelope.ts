@@ -117,7 +117,7 @@ export interface UserClarificationToolMeta {
   answeredByEventId?: string | null;
   answerText?: string | null;
   answeredAt?: string | null;
-  configurationRequest?: { targetAgentId: string; toolName: string };
+  configurationRequest?: { targetAgentId: string; toolName?: string; channelType?: string };
 }
 
 export interface PlanModeRequestToolMeta {
@@ -478,7 +478,9 @@ function parseUserClarificationResult(rawResult: unknown): UserClarificationTool
     blocking: parsed.blocking !== false,
     nextAction: typeof parsed.next_action === 'string' ? parsed.next_action : null,
     ...(typeof configuration?.target_agent_id === 'string' && typeof configuration.tool_name === 'string'
-      ? { configurationRequest: { targetAgentId: configuration.target_agent_id, toolName: configuration.tool_name } } : {}),
+      ? { configurationRequest: { targetAgentId: configuration.target_agent_id, toolName: configuration.tool_name } }
+      : typeof configuration?.target_agent_id === 'string' && typeof configuration.channel_type === 'string'
+        ? { configurationRequest: { targetAgentId: configuration.target_agent_id, channelType: configuration.channel_type } } : {}),
   };
 }
 

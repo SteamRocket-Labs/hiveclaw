@@ -431,8 +431,9 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
             "configuration with the actual configuration tool_name and target_agent_id (defaults to "
             "this employee). This opens a secure settings form in the same work; NEVER ask for or "
             "include credentials in questions, options or tool arguments. Reuse existing authorized "
-            "connections when sufficient. Email read/reply share send_email settings. Channel/OAuth "
-            "connections use their existing connection settings, not this tool configuration form."
+            "connections when sufficient. Email read/reply share send_email settings. For an IM "
+            "channel, supply channel_type instead of tool_name; this uses its existing secure "
+            "channel settings. OAuth connections use their existing authorization flow."
         ),
         parameters={
             "type": "object",
@@ -478,8 +479,9 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
                     "properties": {
                         "tool_name": {"type": "string", "description": "Exact configuration tool name."},
                         "target_agent_id": {"type": "string", "description": "Employee receiving the settings."},
+                        "channel_type": {"type": "string", "enum": ["feishu", "slack", "discord", "microsoft_teams", "wecom", "dingtalk", "telegram", "wechat_personal"]},
                     },
-                    "required": ["tool_name"],
+                    "oneOf": [{"required": ["tool_name"]}, {"required": ["channel_type"]}],
                     "additionalProperties": False,
                 },
             },
@@ -509,14 +511,17 @@ async def ask_user_question(request: ToolExecutionRequest) -> str:
     if "configuration" in args:
         raw = args["configuration"]
         try:
-            if not isinstance(raw, dict) or set(raw) - {"target_agent_id", "tool_name"}:
+            if not isinstance(raw, dict) or set(raw) - {"target_agent_id", "tool_name", "channel_type"}:
                 raise ValueError("invalid configuration target")
             target = uuid.UUID(str(raw.get("target_agent_id") or request.context.agent_id))
             tool_name = str(raw.get("tool_name") or "").strip()
-            if not tool_name:
+            channel_type = str(raw.get("channel_type") or "").strip()
+            if bool(tool_name) == bool(channel_type):
                 raise ValueError("missing configuration tool")
             tool_name = {"read_emails": "send_email", "reply_email": "send_email"}.get(tool_name, tool_name)
-            configuration = {"target_agent_id": str(target), "tool_name": tool_name}
+            if channel_type and channel_type not in {"feishu", "slack", "discord", "microsoft_teams", "wecom", "dingtalk", "telegram", "wechat_personal"}:
+                raise ValueError("invalid channel type")
+            configuration = {"target_agent_id": str(target), **({"channel_type": channel_type} if channel_type else {"tool_name": tool_name})}
         except (ValueError, TypeError, AttributeError):
             return json.dumps({"status": "error", "error_code": "invalid_configuration_request",
                                "message": "Specify an employee and exact tool name; never include configuration values."})

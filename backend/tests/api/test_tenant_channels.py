@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from uuid import uuid4
+from copy import deepcopy
+import hashlib
+import json
+
+import pytest
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -41,12 +46,26 @@ _EXISTING_CONFIG = SimpleNamespace(
 )
 
 
+@pytest.fixture(autouse=True)
+def restore_config_fixture():
+    original = deepcopy(vars(_EXISTING_CONFIG))
+    yield
+    vars(_EXISTING_CONFIG).clear()
+    vars(_EXISTING_CONFIG).update(original)
+
+
 class _SingleScalar:
     def __init__(self, value):
         self._v = value
 
     def scalar_one_or_none(self):
         return self._v
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return [] if self._v is None else [self._v]
 
 
 class _ListScalars:
@@ -319,7 +338,12 @@ def test_webhook_unknown_sender_not_routed():
     }
 
     client = TestClient(app, raise_server_exceptions=False)
-    resp = client.post(f"/channel/feishu/tenant/{_TENANT_ID}/webhook", json=feishu_event)
+    body = json.dumps(feishu_event, separators=(",", ":"))
+    timestamp, nonce = "1700000000", "unknown-sender-test"
+    signature = hashlib.sha256((timestamp + nonce + _EXISTING_CONFIG.encrypt_key + body).encode()).hexdigest()
+    resp = client.post(f"/channel/feishu/tenant/{_TENANT_ID}/webhook", content=body,
+        headers={"Content-Type": "application/json", "X-Lark-Request-Timestamp": timestamp,
+                 "X-Lark-Request-Nonce": nonce, "X-Lark-Signature": signature})
     assert resp.status_code == 200
     assert resp.json()["routed"] is False
 

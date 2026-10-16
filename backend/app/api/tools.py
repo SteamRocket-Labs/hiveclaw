@@ -1093,7 +1093,7 @@ async def _write_agent_tool_config(db, *, agent_id, tool, config):
     return assignment
 
 
-async def _configuration_request_context(db, current_user, agent_id, session_id, question_id):
+async def _configuration_question_context(db, current_user, agent_id, session_id, question_id):
     from app.services.chat_transcript import lock_transcript_session
     from app.services.session_user_question import load_configuration_question, question_payload
     from app.services.session_v2_persistence import resolve_session_mutation_authority
@@ -1106,6 +1106,14 @@ async def _configuration_request_context(db, current_user, agent_id, session_id,
     target = await _require_manage_access(db, current_user, uuid.UUID(descriptor["target_agent_id"]))
     if target.tenant_id != authority.tenant_id:
         raise HTTPException(status_code=404, detail="Configuration target not found")
+    return authority, question, target, descriptor
+
+
+async def _configuration_request_context(db, current_user, agent_id, session_id, question_id):
+    authority, question, target, descriptor = await _configuration_question_context(
+        db, current_user, agent_id, session_id, question_id)
+    if not descriptor.get("tool_name"):
+        raise HTTPException(status_code=409, detail="Use the requested connection settings")
     # Match the runtime's platform-first lookup, then apply the existing visibility gate.
     tool_id = await db.scalar(select(Tool.id).where(Tool.name == descriptor["tool_name"],
         or_(Tool.tenant_id.is_(None), Tool.tenant_id == target.tenant_id))
@@ -1166,6 +1174,73 @@ async def save_session_tool_configuration(
         )])
     await db.commit()
     return await _configuration_request_response(db, question=events[0], target=target, tool=tool)
+
+
+class ChannelConfigurationConfirmIn(BaseModel):
+    config_id: uuid.UUID
+    updated_at: str
+
+
+async def _session_channel_configuration_context(db, current_user, agent_id, session_id, question_id):
+    authority, question, target, descriptor = await _configuration_question_context(
+        db, current_user, agent_id, session_id, question_id)
+    channel_type = descriptor.get("channel_type")
+    if not channel_type:
+        raise HTTPException(status_code=409, detail="Use the requested tool settings")
+    from app.services.session_channel_configuration import channel_configuration_snapshot
+
+    snapshot = await channel_configuration_snapshot(db, agent_id=target.id, channel_type=channel_type)
+    return authority, question, target, snapshot
+
+
+def _session_channel_configuration_response(question, target, snapshot, *, replayed=False):
+    from app.services.session_user_question import question_payload
+
+    ready = question_payload(question).get("configuration_ready") or {}
+    matches = snapshot is not None and ready.get("configuration") == snapshot
+    return {"state": "ready" if matches else "waiting", "receipt_ref": ready.get("receipt_ref") if matches else None,
+        "configuration": snapshot, "target_agent_id": str(target.id), "target_agent_name": target.name,
+        "replayed": replayed}
+
+
+@router.get("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/channel")
+async def get_session_channel_configuration(
+    agent_id: uuid.UUID, session_id: uuid.UUID, question_id: uuid.UUID,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+):
+    _authority, question, target, snapshot = await _session_channel_configuration_context(
+        db, current_user, agent_id, session_id, question_id)
+    return _session_channel_configuration_response(question, target, snapshot)
+
+
+@router.post("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/channel/confirm")
+async def confirm_session_channel_configuration(
+    agent_id: uuid.UUID, session_id: uuid.UUID, question_id: uuid.UUID, data: ChannelConfigurationConfirmIn,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+):
+    from app.services.session_user_question import question_payload
+    from app.services.session_v2_persistence import SessionEventDraft, append_session_events
+
+    authority, question, target, snapshot = await _session_channel_configuration_context(
+        db, current_user, agent_id, session_id, question_id)
+    if snapshot is None or snapshot["id"] != str(data.config_id) or snapshot["updated_at"] != data.updated_at:
+        raise HTTPException(status_code=409, detail={"code": "channel_configuration_changed",
+            "message": "Reload the channel settings and review the current configuration."})
+    payload = question_payload(question)
+    if (payload.get("configuration_ready") or {}).get("configuration") == snapshot:
+        return _session_channel_configuration_response(question, target, snapshot, replayed=True)
+    if question.lifecycle not in {"created", "waiting"}:
+        raise HTTPException(status_code=409, detail="Configuration request is no longer waiting")
+    events = await append_session_events(db, tenant_id=authority.tenant_id, agent_id=agent_id,
+        session_id=session_id, drafts=[SessionEventDraft(
+            item_id=question.item_id, item_kind="user_question", lifecycle="waiting", scope=question.scope_json,
+            actor=authority.event_actor(), invocation_id=question.invocation_id, result_id=question.result_id,
+            provider_tool_use_id=question.provider_tool_use_id,
+            payload={**payload, "configuration_ready": {"receipt_ref": f"channel-configuration:{uuid.uuid4()}",
+                "target_agent_id": str(target.id), "configuration": snapshot}},
+        )])
+    await db.commit()
+    return _session_channel_configuration_response(events[0], target, snapshot)
 
 
 @router.get("/tools/agent-tool/{tool_id}")

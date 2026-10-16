@@ -19,6 +19,8 @@ def _scope(known_paths=frozenset()):
         operator_view=False,
         authority_source="resource_owner",
         known_paths=frozenset(known_paths),
+        action_permissions=frozenset((path, action) for path in {"workspace/mine/report.md", "workspace/mine/data.csv"}
+            for action in ("write", "delete", "create", "deliver")),
     )
 
 

@@ -97,7 +97,7 @@ def authorized_execution_workspace(canonical_workspace: Path, authority_scope):
     """Materialize and merge a least-authority code-execution workspace."""
 
     canonical_workspace = canonical_workspace.resolve()
-    if authority_scope is None or authority_scope.operator_view:
+    if authority_scope is None:
         yield canonical_workspace
         return
 
@@ -106,7 +106,11 @@ def authorized_execution_workspace(canonical_workspace: Path, authority_scope):
     isolated_work.mkdir(parents=True, exist_ok=True)
     canonical_work = canonical_workspace / "workspace"
     try:
-        for allowed_path in sorted(authority_scope.allowed_paths):
+        readable_paths = set(authority_scope.allowed_paths)
+        if authority_scope.operator_view and canonical_work.exists():
+            readable_paths.update(path.relative_to(canonical_workspace).as_posix()
+                for path in canonical_work.rglob("*") if path.is_file())
+        for allowed_path in sorted(readable_paths):
             if not allowed_path.startswith("workspace/"):
                 continue
             if is_recovery_manifest_storage_path(allowed_path):
@@ -134,14 +138,14 @@ def authorized_execution_workspace(canonical_workspace: Path, authority_scope):
                     f"Code execution output escapes workspace/: {resource_path}",
                 )
             if (
-                resource_path in authority_scope.known_paths and resource_path not in authority_scope.allowed_paths
-            ) or (canonical_target.exists() and resource_path not in authority_scope.allowed_paths):
+                resource_path in authority_scope.known_paths and not authority_scope.can_perform(resource_path, "write")
+            ) or (canonical_target.exists() and not authority_scope.can_perform(resource_path, "write")):
                 raise WorkspaceExecutionAuthorityError(
                     "workspace_resource_collision",
                     f"Code execution attempted to overwrite another owner's resource: {resource_path}",
                 )
         for rel in deleted:
-            if f"workspace/{rel}" not in authority_scope.allowed_paths:
+            if not authority_scope.can_perform(f"workspace/{rel}", "delete"):
                 raise WorkspaceExecutionAuthorityError(
                     "workspace_resource_delete_forbidden",
                     f"Code execution attempted to delete another owner's resource: workspace/{rel}",

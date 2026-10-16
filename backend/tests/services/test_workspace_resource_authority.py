@@ -7,6 +7,17 @@ import pytest
 from fastapi import HTTPException
 
 
+@pytest.mark.parametrize("operator_view", [False, True])
+def test_read_scope_labels_and_inspection_do_not_create_effect_authority(operator_view):
+    from app.services.workspace_resource_authority import WorkspaceAuthorityScope
+
+    path = "workspace/borrowed.txt"
+    scope = WorkspaceAuthorityScope(agent_id=uuid4(), user_id=uuid4(), root_session_id=None,
+        allowed_paths=frozenset({path}), operator_view=operator_view, authority_source="resource_owner")
+    assert scope.can_read(path)
+    assert all(not scope.can_perform(path, action) for action in ("write", "delete", "create", "deliver"))
+
+
 @pytest.mark.parametrize("alias", ["symlink", "hardlink", "parent_symlink"])
 @pytest.mark.parametrize("write", [False, True])
 def test_opened_file_is_checked_before_read_or_truncate(tmp_path, monkeypatch, alias, write):

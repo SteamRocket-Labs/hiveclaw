@@ -25,6 +25,7 @@ from app.core.resource_authority import (
     OWNED_AUTHORITY_STATE,
     QUARANTINED_AUTHORITY_STATE,
     authorize_resource_action,
+    load_explicit_resource_grant_ids,
     normalize_workspace_resource_path,
     workspace_resource_id,
 )
@@ -42,6 +43,9 @@ class WorkspaceAuthorityError(RuntimeError):
 
 def _is_workspace_path(path: str) -> bool:
     return path == "workspace" or path.startswith("workspace/")
+
+
+_WORKSPACE_EFFECT_ACTIONS = ("write", "delete", "create", "deliver")
 
 
 def is_recovery_manifest_storage_path(path: str) -> bool:
@@ -196,6 +200,23 @@ class WorkspaceAuthorityScope:
     operator_view: bool
     authority_source: str
     known_paths: frozenset[str] = frozenset()
+    action_permissions: frozenset[tuple[str, str]] = frozenset()
+    collection_actions: frozenset[str] = frozenset()
+
+    def can_perform(self, path: str, action: str) -> bool:
+        normalized = normalize_workspace_resource_path(path)
+        if is_recovery_manifest_storage_path(normalized):
+            return False
+        if action == "read":
+            return self.can_read(normalized)
+        if not _is_workspace_path(normalized):
+            return True
+        if action in self.collection_actions:
+            return True
+        return (normalized, action) in self.action_permissions or any(
+            permitted_action == action and permitted_path.startswith(f"{normalized}/")
+            for permitted_path, permitted_action in self.action_permissions
+        )
 
     def can_read(self, path: str) -> bool:
         if is_recovery_manifest_storage_path(path):
@@ -283,8 +304,8 @@ def authorize_workspace_tool_path(
         )
     if authority_scope is None or not _is_workspace_path(normalized):
         return normalized
-    if (normalized in authority_scope.known_paths and not authority_scope.can_read(normalized)) or (
-        target.exists() and not authority_scope.can_read(normalized)
+    if (normalized in authority_scope.known_paths and not authority_scope.can_perform(normalized, action)) or (
+        target.exists() and not authority_scope.can_perform(normalized, action)
     ):
         raise WorkspaceAuthorityError(
             "workspace_resource_forbidden",
@@ -562,6 +583,8 @@ async def load_workspace_authority_scope(
         if operator_view
         else check_agent_access(db, user, agent_id)
     )
+    if str(resolved_agent_access[0].id) != str(agent_id):
+        raise HTTPException(status_code=403, detail="Agent authority context mismatch")
     canonical_root = await _canonical_root_session(
         db,
         agent_id=agent_id,
@@ -581,32 +604,38 @@ async def load_workspace_authority_scope(
         .all()
     )
 
-    if operator_view:
-        collection_id = uuid.uuid5(agent_id, "workspace-resource-collection")
-        decision = await authorize_resource_action(
+    collection_decision = None
+    try:
+        collection_decision = await authorize_resource_action(
             db,
             user,
             agent_id=agent_id,
             resource_kind="workspace_collection",
-            resource_id=collection_id,
+            resource_id=uuid.uuid5(agent_id, "workspace-resource-collection"),
             action="read",
             authority_state=QUARANTINED_AUTHORITY_STATE,
-            allow_manager_override=True,
+            allow_manager_override=operator_view,
             manager_override_reason=operator_reason,
             agent_access=resolved_agent_access,
+            audit=operator_view,
         )
+    except HTTPException:
+        if operator_view:
+            raise
+
+    if operator_view and collection_decision.full_control:
         return WorkspaceAuthorityScope(
-            agent_id=agent_id,
-            user_id=user.id,
-            root_session_id=canonical_root,
-            allowed_paths=frozenset(manifest.path for manifest in manifests),
-            operator_view=True,
-            authority_source=decision.authority_source,
+            agent_id=agent_id, user_id=user.id, root_session_id=canonical_root,
+            allowed_paths=frozenset(manifest.path for manifest in manifests), operator_view=True,
+            authority_source=collection_decision.authority_source,
             known_paths=frozenset(manifest.path for manifest in manifests),
+            collection_actions=frozenset(_WORKSPACE_EFFECT_ACTIONS),
         )
 
-    allowed: set[str] = set()
+    allowed: set[str] = {manifest.path for manifest in manifests} if operator_view else set()
     authority_sources: set[str] = set()
+    full_control_paths: set[str] = set()
+    action_permissions: set[tuple[str, str]] = set()
     for manifest in manifests:
         try:
             decision = await authorize_resource_action(
@@ -623,16 +652,30 @@ async def load_workspace_authority_scope(
             )
         except HTTPException:
             continue
-        allowed.add(manifest.path)
-        authority_sources.add(decision.authority_source)
+        if not operator_view:
+            allowed.add(manifest.path)
+            authority_sources.add(decision.authority_source)
+        if decision.full_control:
+            full_control_paths.add(manifest.path)
+            action_permissions.update((manifest.path, action) for action in _WORKSPACE_EFFECT_ACTIONS)
+    grant_candidates = [manifest for manifest in manifests
+        if manifest.path not in full_control_paths and manifest.authority_state == OWNED_AUTHORITY_STATE]
+    if grant_candidates:
+        for action in _WORKSPACE_EFFECT_ACTIONS:
+            resource_ids = await load_explicit_resource_grant_ids(db, user=user, resource_kind="workspace_file", action=action)
+            action_permissions.update((manifest.path, action) for manifest in grant_candidates
+                if workspace_resource_id(agent_id, manifest.path) in resource_ids)
     return WorkspaceAuthorityScope(
         agent_id=agent_id,
         user_id=user.id,
         root_session_id=canonical_root,
         allowed_paths=frozenset(allowed),
-        operator_view=False,
-        authority_source=(next(iter(authority_sources)) if len(authority_sources) == 1 else "resource_scope"),
+        operator_view=operator_view,
+        authority_source=(collection_decision.authority_source if operator_view else
+            next(iter(authority_sources)) if len(authority_sources) == 1 else "resource_scope"),
         known_paths=frozenset(manifest.path for manifest in manifests),
+        action_permissions=frozenset(action_permissions),
+        collection_actions=frozenset(_WORKSPACE_EFFECT_ACTIONS) if collection_decision and collection_decision.full_control else frozenset(),
     )
 
 

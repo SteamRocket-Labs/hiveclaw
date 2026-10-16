@@ -146,11 +146,13 @@ def _append_workspace_provenance_hint(
     return f"{result}\n\n{hint}" if hint else result
 
 
-def _authority_allows_path(authority_scope, rel_path: str, *, directory: bool = False) -> bool:
+def _authority_allows_path(authority_scope, rel_path: str, *, directory: bool = False, action: str = "read") -> bool:
     if is_recovery_manifest_storage_path(rel_path):
         return False
     if authority_scope is None:
         return True
+    if action != "read":
+        return authority_scope.can_perform(rel_path, action)
     normalized = str(rel_path or "").replace("\\", "/").strip().lstrip("/")
     if not (normalized == "workspace" or normalized.startswith("workspace/")):
         return True
@@ -1196,7 +1198,7 @@ def _write_file(
     file_path = _resolved_workspace_path(ws, rel_path, permission_profile)
     if file_path is None:
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
-    if file_path.exists() and not _authority_allows_path(authority_scope, rel_path):
+    if file_path.exists() and not _authority_allows_path(authority_scope, rel_path, action="write"):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
 
     try:
@@ -1553,13 +1555,13 @@ def _delete_file(ws: Path, rel_path: str, tool_name: str = "delete_file", author
         return _workspace_error(tool_name, "not_found", f"File not found: {rel_path}")
     if file_path.is_dir():
         unauthorized = any(
-            not _authority_allows_path(authority_scope, item.relative_to(ws).as_posix())
+            not _authority_allows_path(authority_scope, item.relative_to(ws).as_posix(), action="delete")
             for item in file_path.rglob("*")
             if item.is_file()
         )
         if unauthorized:
             return _workspace_error(tool_name, "auth_or_permission", "Directory contains another owner's resources.")
-    elif not _authority_allows_path(authority_scope, rel_path):
+    elif not _authority_allows_path(authority_scope, rel_path, action="delete"):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
 
     try:

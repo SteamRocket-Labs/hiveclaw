@@ -24,6 +24,7 @@ def test_combined_openai_tools_matches_registered_builtin_surface():
         "advanced_plan",
         "cancel_trigger",
         "create_digital_employee",
+        "create_employee_from_request",
         "delete_file",
         "discover_resources",
         "delegate_to_agent",
@@ -211,6 +212,7 @@ def test_governance_sets_include_canonical_metadata_without_runtime_init():
     assert "feishu_base_record_upsert" in SENSITIVE_TOOLS
     assert "delete_file" in SENSITIVE_TOOLS
     assert "create_digital_employee" in SENSITIVE_TOOLS
+    assert "create_employee_from_request" in SENSITIVE_TOOLS
 
 
 def test_read_only_and_parallel_safe_sets_include_canonical_metadata_without_runtime_init():

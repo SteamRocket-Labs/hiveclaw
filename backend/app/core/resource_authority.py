@@ -66,6 +66,8 @@ class ResourceAuthorityDecision:
     action: str
     authority_source: str
     operator_view: bool = False
+    # Set only by canonical ownership/administrator decisions, never by a read grant.
+    full_control: bool = False
 
 
 async def _root_session_owned_by_user(
@@ -249,6 +251,7 @@ async def authorize_resource_action(
                 resource_id=resource_id,
                 action=action,
                 authority_source="resource_owner",
+                full_control=True,
             )
         if await _root_session_owned_by_user(
             db,
@@ -263,6 +266,7 @@ async def authorize_resource_action(
                 resource_id=resource_id,
                 action=action,
                 authority_source="root_session_owner",
+                full_control=True,
             )
 
     # Scoped business administrators (PDEC-013) manage every business resource
@@ -295,6 +299,7 @@ async def authorize_resource_action(
             resource_id=resource_id,
             action=action,
             authority_source=SCOPED_BUSINESS_ADMIN_AUTHORITY_SOURCE,
+            full_control=True,
         )
 
     if state == OWNED_AUTHORITY_STATE and await _has_explicit_resource_grant(

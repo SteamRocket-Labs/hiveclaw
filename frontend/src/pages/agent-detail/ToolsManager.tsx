@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -41,6 +41,9 @@ export function externalActivationComponentSummary(componentTypes?: Record<strin
 
 export default function ToolsManager({ agentId, canManage = false }: ToolsManagerProps) {
   const { t } = useTranslation();
+  const activeView = useRef({ agentId });
+  if (activeView.current.agentId !== agentId) activeView.current = { agentId };
+  const sourceView = activeView.current;
   const [tools, setTools] = useState<AgentTool[]>([]);
   const [extensions, setExtensions] = useState<AgentExtensions | null>(null);
   const [loading, setLoading] = useState(true);
@@ -59,7 +62,7 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
   const loadTools = async () => {
     try {
       const data = await toolsApi.listWithConfig(agentId).catch(() => toolsApi.list(agentId));
-      setTools(data);
+      if (activeView.current === sourceView) setTools(data);
     } catch (error) {
       console.error(error);
     }
@@ -68,7 +71,7 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
   const loadExtensions = async () => {
     try {
       const data = await extensionsApi.getAgentExtensions(agentId);
-      setExtensions(data);
+      if (activeView.current === sourceView) setExtensions(data);
     } catch (error) {
       console.error(error);
     }
@@ -76,9 +79,15 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
 
   useEffect(() => {
     setLoading(true);
+    setConfigTool(null);
+    setConfigData({});
+    setConfigJson('');
+    setConfigSaving(false);
     setOpenAdvanced(new Set());
     setServerToolsById({});
-    void Promise.all([loadTools(), loadExtensions()]).finally(() => setLoading(false));
+    void Promise.all([loadTools(), loadExtensions()]).finally(() => {
+      if (activeView.current === sourceView) setLoading(false);
+    });
   }, [agentId]);
 
   const toggleServer = async (server: AgentMcpServer, enabled: boolean) => {
@@ -198,14 +207,21 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
     setConfigSaving(true);
     try {
       const hasSchema = configTool.config_schema?.fields?.length > 0;
-      const payload = hasSchema ? configData : JSON.parse(configJson || '{}');
-      await toolsApi.updateToolConfig(agentId, configTool.id, payload);
+      const payload = hasSchema ? { ...(configTool.agent_config || {}) } : JSON.parse(configJson || '{}');
+      if (hasSchema) {
+        const inherited = { ...(configTool.global_config || {}), ...(configTool.agent_config || {}) };
+        for (const [key, value] of Object.entries(configData)) {
+          if (!Object.is(value, inherited[key])) payload[key] = value;
+        }
+      }
+      const saved = await toolsApi.updateToolConfig(agentId, configTool.id, payload);
+      if (activeView.current !== sourceView) return;
+      setTools((previous) => previous.map((tool) => tool.id === saved.tool.id ? saved.tool : tool));
       setConfigTool(null);
-      await loadTools();
     } catch (error) {
-      showAppToast(`Save failed: ${error}`, 'error');
+      if (activeView.current === sourceView) showAppToast(`Save failed: ${error}`, 'error');
     }
-    setConfigSaving(false);
+    if (activeView.current === sourceView) setConfigSaving(false);
   };
 
   if (loading) {

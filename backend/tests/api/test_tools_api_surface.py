@@ -280,6 +280,7 @@ async def test_list_agent_tools_with_config_surfaces_only_agent_declared_pack_to
             _ScalarResult(agent),  # check_agent_access
             _ListResult([]),  # existing AgentTool rows
             _ListResult([default_tool, office_tool, undeclared_builtin, unassigned_mcp]),  # visible catalog
+            _ListResult([]),  # no company config overrides
         ]
     )
 
@@ -323,6 +324,7 @@ async def test_list_agent_tools_with_config_surfaces_agent_base_tools_without_sk
             _ScalarResult(agent),  # check_agent_access
             _ListResult([]),  # existing AgentTool rows
             _ListResult([office_tool, undeclared_builtin]),  # visible catalog
+            _ListResult([]),  # no company config overrides
         ]
     )
 
@@ -373,6 +375,7 @@ async def test_list_agent_tools_with_config_hides_hr_only_tool_from_regular_agen
             _ScalarResult(agent),  # check_agent_access
             _ListResult([assignment]),  # legacy AgentTool row exists
             _ListResult([default_tool, hr_tool]),  # visible tenant catalog
+            _ListResult([]),  # no company config overrides
         ]
     )
 

@@ -17,6 +17,7 @@ from app.models.agent import Agent
 from app.models.channel_config import ChannelConfig
 from app.models.tenant_channel_config import TenantChannelConfig
 from app.models.tenant_setting import TenantSetting
+from app.models.tenant_tool_config import TenantToolConfig
 from app.models.tool import AgentTool, Tool
 from app.models.user import User
 from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
@@ -529,17 +530,18 @@ async def _get_agent_skill_declared_tool_names(agent_id: uuid.UUID) -> set[str]:
     return tool_names
 
 
-def _serialize_agent_tool_row(tool: Tool, agent_tool: AgentTool | None) -> dict:
+def _serialize_agent_tool_row(tool: Tool, agent_tool: AgentTool | None, *, base_config: dict | None = None) -> dict:
     agent_config = agent_tool.config if agent_tool else {}
+    defaults = (tool.config or {}) if base_config is None else base_config
     return {
         **_serialize_tool(
             tool,
             enabled=agent_tool.enabled if agent_tool else bool(tool.is_default),
-            config={**(tool.config or {}), **(agent_config or {})},
+            config={**defaults, **(agent_config or {})},
         ),
         "agent_tool_id": str(agent_tool.id) if agent_tool else None,
         "source": agent_tool.source if agent_tool else "system",
-        "global_config": mask_agent_tool_config_secrets(tool.config or {}, tool.config_schema or {}),
+        "global_config": mask_agent_tool_config_secrets(defaults, tool.config_schema or {}),
         "agent_config": mask_agent_tool_config_secrets(agent_config or {}, tool.config_schema or {}),
     }
 
@@ -898,7 +900,15 @@ async def list_agent_tools_with_config(
             or is_agent_base_tool(str(tool.name))
         )
     ]
-    return [_serialize_agent_tool_row(tool, assignments.get(tool.id)) for tool in tool_rows]
+    tenant_defaults = {}
+    if agent.tenant_id and tool_rows:
+        overrides = await db.execute(select(TenantToolConfig).where(
+            TenantToolConfig.tenant_id == agent.tenant_id,
+            TenantToolConfig.tool_id.in_([tool.id for tool in tool_rows]),
+        ))
+        tenant_defaults = {row.tool_id: row.config or {} for row in overrides.scalars().all()}
+    return [_serialize_agent_tool_row(tool, assignments.get(tool.id),
+        base_config={**(tool.config or {}), **tenant_defaults.get(tool.id, {})}) for tool in tool_rows]
 
 
 @router.get("/tools/agents/{agent_id}")
@@ -1074,7 +1084,8 @@ async def update_tool_config(
         tool.config_schema or {},
     )
     await db.commit()
-    return {"ok": True}
+    defaults, _enabled = await resolve_tool_config_for_tenant_display(db, tool, agent.tenant_id)
+    return {"ok": True, "tool": _serialize_agent_tool_row(tool, assignment, base_config=defaults)}
 
 
 @router.get("/tools/agent-tool/{tool_id}")

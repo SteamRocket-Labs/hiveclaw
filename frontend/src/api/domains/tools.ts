@@ -115,7 +115,7 @@ export const toolsApi = {
 
   /** Per-tool config */
   updateToolConfig: (agentId: string, toolId: string, config: Record<string, unknown>) =>
-    put<void>(`/tools/agents/${agentId}/tool-config/${toolId}`, { config }),
+    put<{ ok: boolean; tool: AgentTool }>(`/tools/agents/${agentId}/tool-config/${toolId}`, { config }),
 
   /** Single tool detail */
   getDetail: (toolId: string) => get<ToolDetail>(`/tools/agent-tool/${toolId}`),

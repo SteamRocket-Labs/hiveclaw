@@ -173,6 +173,7 @@ async def revise_unbound_human_input(
     input_id: uuid.UUID | str,
     expected_revision: int,
     content_parts: list[dict[str, Any]],
+    user=None,
 ) -> InputMailboxReceipt:
     input_uuid = input_id if isinstance(input_id, uuid.UUID) else uuid.UUID(str(input_id))
     row, admission, _command = await _locked_input(db, authority=authority, input_id=input_uuid)
@@ -189,7 +190,7 @@ async def revise_unbound_human_input(
 
         question = await load_answer_question(db, authority=authority, item_id=row.request_item_id)
         if question is not None:
-            await validate_configuration_answer(db, question, content_parts)
+            await validate_configuration_answer(db, question, content_parts, user=user)
     previous_hash = row.content_hash
     previous_revision = int(row.revision)
     row.content_parts_json = list(content_parts)

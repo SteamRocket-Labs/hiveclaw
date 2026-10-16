@@ -95,6 +95,13 @@ async def list_mcp_tools(agent_id: uuid.UUID, arguments: dict) -> str:
             if not tools:
                 return "No MCP resources found for this agent. Use import_mcp_server to add one."
 
+            from app.models.mcp_server import MCPServerTool
+
+            links = (await db.execute(select(MCPServerTool.tool_id, MCPServerTool.mcp_server_id).where(
+                MCPServerTool.tenant_id == tid, MCPServerTool.tool_id.in_([item.id for item in tools])))).all()
+            connection_ids = {}
+            for tool_id, server_id in links:
+                connection_ids.setdefault(tool_id, []).append(str(server_id))
             lines = [f"## MCP Resources ({len(tools)} tools)\n"]
             by_server: dict[str, list] = {}
             for t in tools:
@@ -106,6 +113,8 @@ async def list_mcp_tools(agent_id: uuid.UUID, arguments: dict) -> str:
                 for t in server_tools:
                     marker = " [approval required]" if t.name in approval_names else ""
                     lines.append(f"- **{t.name}**{marker} ({t.display_name}): {t.description}")
+                    for connection_id in connection_ids.get(t.id, []):
+                        lines.append(f"  - mcp_server_id: {connection_id}")
                 lines.append("")
 
             return "\n".join(lines)
@@ -412,6 +421,14 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
         api_key = (row.config or {}).get("api_key") if isinstance(row.config, dict) else None
         transport = (row.config or {}).get("transport") if isinstance(row.config, dict) else None
         remote_name = row.mcp_tool_name or row.name
+        from app.services.mcp_server_service import resolve_mcp_oauth_bearer
+
+        bearer, auth_error = await resolve_mcp_oauth_bearer(db, tid, server_url, tool_id=row.id)
+        if auth_error:
+            return render_tool_error(tool_name="call_mcp_tool", error_class="auth_required", message=auth_error,
+                provider="mcp", retryable=False, actionable_hint="Request MCP OAuth configuration in the original work.")
+        if bearer:
+            api_key = bearer
 
     try:
         assert_mcp_cloud_transport_allowed(server_url=server_url, transport=transport)
@@ -440,6 +457,7 @@ async def _resolve_agent_mcp_server(
     server: str | None,
     *,
     tool_name: str = "mcp_list_resources",
+    resolve_oauth: bool = True,
 ) -> tuple[str, str | None, str] | str:
     """Resolve (server_url, api_key) for one MCP server the agent may reach.
 
@@ -453,6 +471,7 @@ async def _resolve_agent_mcp_server(
 
     from app.database import tenant_scoped_session
     from app.models.tool import AgentTool, Tool
+    from app.models.mcp_server import MCPServerTool
     from app.services.mcp_authz import MCPAuthzError, assert_mcp_cloud_transport_allowed
     from app.services.mcp_metadata_trust import is_mcp_metadata_runtime_approved
     from app.services.mcp_server_service import resolve_agent_mcp_tool_mode
@@ -476,6 +495,11 @@ async def _resolve_agent_mcp_server(
             .scalars()
             .all()
         )
+        links = (await db.execute(select(MCPServerTool.tool_id, MCPServerTool.mcp_server_id).where(
+            MCPServerTool.tenant_id == tid, MCPServerTool.tool_id.in_([row.id for row in rows])))).all()
+        ids_by_tool = {}
+        for tool_id, connection_id in links:
+            ids_by_tool.setdefault(tool_id, []).append(str(connection_id))
         by_server: dict[str, tuple[str, Tool, str]] = {}
         for row in rows:
             if not is_mcp_metadata_runtime_approved(row):
@@ -483,50 +507,62 @@ async def _resolve_agent_mcp_server(
             url = row.mcp_server_url
             if not url:
                 continue
-            if await resolve_agent_mcp_tool_mode(db, agent_id, row) == "deny":
-                continue
             name = row.mcp_server_name or url
-            by_server.setdefault(name, (url, row, name))
+            for connection_id in ids_by_tool.get(row.id, [url]):
+                mode = (await resolve_agent_mcp_tool_mode(db, agent_id, row, server_id=uuid.UUID(connection_id))
+                        if connection_id in ids_by_tool.get(row.id, [])
+                        else await resolve_agent_mcp_tool_mode(db, agent_id, row))
+                if mode != "deny":
+                    by_server.setdefault(connection_id, (url, row, name))
 
-    if not by_server:
-        return render_tool_error(
-            tool_name=tool_name,
-            error_class="not_found",
-            message="This agent has no reachable MCP server.",
-            provider="mcp",
-            retryable=False,
-            actionable_hint="Import an MCP server with import_mcp_server first.",
-        )
-    if server:
-        chosen = by_server.get(server)
-        if chosen is None:
+        if not by_server:
             return render_tool_error(
                 tool_name=tool_name,
                 error_class="not_found",
-                message=f"No reachable MCP server named '{server}'.",
+                message="This agent has no reachable MCP server.",
                 provider="mcp",
                 retryable=False,
-                actionable_hint=f"Available servers: {', '.join(sorted(by_server))}.",
+                actionable_hint="Import an MCP server with import_mcp_server first.",
             )
-    elif len(by_server) == 1:
-        chosen = next(iter(by_server.values()))
-    else:
-        return render_tool_error(
-            tool_name=tool_name,
-            error_class="bad_arguments",
-            message="Multiple MCP servers are available; specify which one.",
-            provider="mcp",
-            retryable=False,
-            actionable_hint=f"Pass server=one of: {', '.join(sorted(by_server))}.",
-        )
-    url, row, name = chosen
-    transport = (row.config or {}).get("transport") if isinstance(row.config, dict) else None
-    try:
-        assert_mcp_cloud_transport_allowed(server_url=url, transport=transport)
-    except MCPAuthzError as exc:
-        return _render_mcp_authz_error(tool_name, exc)
-    api_key = (row.config or {}).get("api_key") if isinstance(row.config, dict) else None
-    return url, api_key, name
+        if server:
+            matches = [(key, value) for key, value in by_server.items() if server in (key, value[0], value[2])]
+            if len(matches) != 1:
+                return render_tool_error(
+                    tool_name=tool_name,
+                    error_class="not_found",
+                    message=f"MCP server '{server}' is missing or ambiguous; specify its exact connection id.",
+                    provider="mcp",
+                    retryable=False,
+                    actionable_hint=f"Available servers: {', '.join(sorted(by_server))}.",
+                )
+            connection_id, chosen = matches[0]
+        elif len(by_server) == 1:
+            connection_id, chosen = next(iter(by_server.items()))
+        else:
+            return render_tool_error(
+                tool_name=tool_name,
+                error_class="bad_arguments",
+                message="Multiple MCP servers are available; specify which one.",
+                provider="mcp",
+                retryable=False,
+                actionable_hint=f"Pass server=one of: {', '.join(sorted(by_server))}.",
+            )
+        url, row, name = chosen
+        transport = (row.config or {}).get("transport") if isinstance(row.config, dict) else None
+        try:
+            assert_mcp_cloud_transport_allowed(server_url=url, transport=transport)
+        except MCPAuthzError as exc:
+            return _render_mcp_authz_error(tool_name, exc)
+        api_key = (row.config or {}).get("api_key") if isinstance(row.config, dict) else None
+        if not resolve_oauth:
+            return url, api_key, name
+        from app.services.mcp_server_service import resolve_mcp_oauth_bearer
+
+        bearer, auth_error = await resolve_mcp_oauth_bearer(db, tid, url, tool_id=row.id, server_id=uuid.UUID(connection_id) if connection_id in ids_by_tool.get(row.id, []) else None)
+        if auth_error:
+            return render_tool_error(tool_name=tool_name, error_class="auth_required", message=auth_error,
+                provider="mcp", retryable=False, actionable_hint="Request MCP OAuth configuration in the original work.")
+        return url, bearer or api_key, name
 
 
 @tool(
@@ -834,7 +870,7 @@ async def mcp_get_prompt(agent_id: uuid.UUID, arguments: dict) -> str:
     )
 )
 async def mcp_auth_status(agent_id: uuid.UUID, arguments: dict) -> str:
-    resolved = await _resolve_agent_mcp_server(agent_id, arguments.get("server"), tool_name="mcp_auth_status")
+    resolved = await _resolve_agent_mcp_server(agent_id, arguments.get("server"), tool_name="mcp_auth_status", resolve_oauth=False)
     if isinstance(resolved, str):
         return resolved
     server_url, api_key, server_name = resolved

@@ -432,6 +432,7 @@ async def test_set_agent_mcp_assignment_creates_row():
         [
             _Result(scalar=SimpleNamespace(id=server_id)),  # server ownership
             _Result(scalar=None),  # no existing assignment → create
+            _Result(rows=[]),  # no linked tools in this unit fixture
         ]
     )
 
@@ -937,6 +938,8 @@ async def test_server_review_rejects_stale_activation_and_accepts_the_live_candi
 
     class _CallSession:
         async def execute(self, _stmt):
+            if _stmt.column_descriptions[0].get("entity") is MCPServer:
+                return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: []))
             return SimpleNamespace(scalar_one_or_none=lambda: runtime_tool)
 
     @contextlib.asynccontextmanager

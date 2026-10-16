@@ -428,7 +428,7 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
             "multiSelect questions allow multiple picks. This is NOT approval: do not use it to ask "
             "'is this plan OK?' (exit_plan_mode is the approval request). After calling it, end your "
             "turn; the user's answers arrive as the next message. For tool account settings, supply "
-            "configuration with the actual configuration tool_name and target_agent_id (defaults to "
+            "configuration with the actual tool_name, channel_type or mcp_server_id and target_agent_id (defaults to "
             "this employee). This opens a secure settings form in the same work; NEVER ask for or "
             "include credentials in questions, options or tool arguments. Reuse existing authorized "
             "connections when sufficient. Email read/reply share send_email settings. For an IM "
@@ -478,10 +478,11 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
                     "description": "Request employee tool settings, without saving or granting access.",
                     "properties": {
                         "tool_name": {"type": "string", "description": "Exact configuration tool name."},
+                        "mcp_server_id": {"type": "string", "description": "Exact company MCP connection UUID from list_mcp_tools; requests OAuth configuration, never grants employee use."},
                         "target_agent_id": {"type": "string", "description": "Employee receiving the settings."},
                         "channel_type": {"type": "string", "enum": ["feishu", "slack", "discord", "microsoft_teams", "wecom", "dingtalk", "telegram", "wechat_personal"]},
                     },
-                    "oneOf": [{"required": ["tool_name"]}, {"required": ["channel_type"]}],
+                    "oneOf": [{"required": ["tool_name"]}, {"required": ["channel_type"]}, {"required": ["mcp_server_id"]}],
                     "additionalProperties": False,
                 },
             },
@@ -511,20 +512,22 @@ async def ask_user_question(request: ToolExecutionRequest) -> str:
     if "configuration" in args:
         raw = args["configuration"]
         try:
-            if not isinstance(raw, dict) or set(raw) - {"target_agent_id", "tool_name", "channel_type"}:
+            if not isinstance(raw, dict) or set(raw) - {"target_agent_id", "tool_name", "channel_type", "mcp_server_id"}:
                 raise ValueError("invalid configuration target")
             target = uuid.UUID(str(raw.get("target_agent_id") or request.context.agent_id))
             tool_name = str(raw.get("tool_name") or "").strip()
             channel_type = str(raw.get("channel_type") or "").strip()
-            if bool(tool_name) == bool(channel_type):
+            mcp_server_id = str(raw.get("mcp_server_id") or "").strip()
+            if sum(bool(value) for value in (tool_name, channel_type, mcp_server_id)) != 1:
                 raise ValueError("missing configuration tool")
             tool_name = {"read_emails": "send_email", "reply_email": "send_email"}.get(tool_name, tool_name)
             if channel_type and channel_type not in {"feishu", "slack", "discord", "microsoft_teams", "wecom", "dingtalk", "telegram", "wechat_personal"}:
                 raise ValueError("invalid channel type")
-            configuration = {"target_agent_id": str(target), **({"channel_type": channel_type} if channel_type else {"tool_name": tool_name})}
+            connection = {"mcp_server_id": str(uuid.UUID(mcp_server_id))} if mcp_server_id else {"channel_type": channel_type} if channel_type else {"tool_name": tool_name}
+            configuration = {"target_agent_id": str(target), **connection}
         except (ValueError, TypeError, AttributeError):
             return json.dumps({"status": "error", "error_code": "invalid_configuration_request",
-                               "message": "Specify an employee and exact tool name; never include configuration values."})
+                               "message": "Specify an employee and one exact tool, channel or MCP connection; never include configuration values."})
     raw_questions = args.get("questions")
     # Back-compat: accept a single {question, options, multiSelect} shorthand.
     if not isinstance(raw_questions, list) or not raw_questions:

@@ -90,7 +90,7 @@ class ScriptedLLMClient:
         )
 
 
-async def _seed_run(owner_sessionmaker, tmp_path: Path) -> dict:
+async def _seed_run(owner_sessionmaker, tmp_path: Path, *, prompt: str = "write the marker file, read it back, and report") -> dict:
     from app.models.agent import Agent
     from app.models.chat_session import ChatSession
     from app.models.llm import LLMModel
@@ -155,7 +155,7 @@ async def _seed_run(owner_sessionmaker, tmp_path: Path) -> dict:
                 root_user_id=user_id,
                 root_session_id=str(session_id),
                 root_runtime_task_id=run_id,
-                prompt="write the marker file, read it back, and report",
+                prompt=prompt,
                 claimed_by="kernel-worker-1",
                 claim_expires_at=datetime.now(UTC) + timedelta(minutes=10),
                 claim_version=1,
@@ -206,7 +206,7 @@ async def _seed_run(owner_sessionmaker, tmp_path: Path) -> dict:
                 "input_id": str(input_id),
                 "idempotency_key": f"input:{input_id}",
                 "session_id": str(session_id),
-                "content_parts": [{"type": "text", "text": "write the marker file, read it back, and report"}],
+                "content_parts": [{"type": "text", "text": prompt}],
                 "expected_turn_id": turn_id,
                 "expected_run_id": str(run_id),
                 "terminal_fallback": "queue_next_turn",

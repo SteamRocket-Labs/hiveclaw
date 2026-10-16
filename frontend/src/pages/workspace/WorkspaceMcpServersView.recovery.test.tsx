@@ -10,6 +10,8 @@ import WorkspaceMcpServersView from './WorkspaceMcpServersView';
 
 const mocks = vi.hoisted(() => ({
   listEnterpriseMcpServers: vi.fn(),
+  getMcpOAuthStatus: vi.fn(),
+  startMcpOAuth: vi.fn(),
   listEnterpriseMcpServerTools: vi.fn(),
   reviewEnterpriseMcpServerToolMetadata: vi.fn(),
 }));
@@ -24,6 +26,8 @@ vi.mock('react-i18next', () => ({
 vi.mock('../../api/domains/extensions', () => ({
   extensionsApi: {
     listEnterpriseMcpServers: mocks.listEnterpriseMcpServers,
+    getMcpOAuthStatus: mocks.getMcpOAuthStatus,
+    startMcpOAuth: mocks.startMcpOAuth,
     listEnterpriseMcpServerTools: mocks.listEnterpriseMcpServerTools,
     reviewEnterpriseMcpServerToolMetadata: mocks.reviewEnterpriseMcpServerToolMetadata,
   },
@@ -135,4 +139,25 @@ describe('MCP metadata review recovery', () => {
     });
     expect(screen.getByRole('button', { name: '拒绝' })).toBeTruthy();
   });
+});
+
+it('keeps the workspace OAuth draft and pending link through manual status and server readback', async () => {
+  mocks.listEnterpriseMcpServers.mockResolvedValue([{ id: 'server-1', name: 'Company documents', server_key: 'docs',
+    status: 'needs_auth', auth_status: 'none', transport: 'sse', tool_count: 1, agent_count: 0, agents: [] }]);
+  mocks.getMcpOAuthStatus.mockResolvedValue({ auth_status: 'none', attempt: { id: 'pending', outcome: 'pending' },
+    registration: { authorization_endpoint: 'https://auth.test/authorize', token_endpoint: 'https://auth.test/token', client_id: 'client', redirect_uri: 'https://hive.test/callback' } });
+  mocks.startMcpOAuth.mockResolvedValue({ authorization_url: 'https://auth.test/authorize?state=pending', attempt_id: 'pending' });
+  const view = render(<WorkspaceMcpServersView selectedTenantId="tenant-1" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'OAuth 授权' }));
+  await waitFor(() => expect((screen.getByLabelText('客户端 ID') as HTMLInputElement).value).toBe('client'));
+  fireEvent.change(screen.getByLabelText('请求范围（可选）'), { target: { value: 'documents:read' } });
+  fireEvent.click(screen.getByRole('button', { name: '生成授权链接' }));
+  await screen.findByRole('link', { name: '前往应用授权' });
+  const before = mocks.listEnterpriseMcpServers.mock.calls.length;
+  fireEvent.click(screen.getByRole('button', { name: '回读授权状态' }));
+  await waitFor(() => expect(mocks.listEnterpriseMcpServers.mock.calls.length).toBeGreaterThan(before));
+  expect(screen.getByRole('link', { name: '前往应用授权' })).toBeTruthy();
+  expect((screen.getByLabelText('请求范围（可选）') as HTMLInputElement).value).toBe('documents:read');
+  view.rerender(<WorkspaceMcpServersView selectedTenantId="tenant-2" />);
+  await waitFor(() => expect(screen.queryByLabelText('客户端 ID')).toBeNull());
 });

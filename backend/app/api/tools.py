@@ -1278,3 +1278,61 @@ async def remove_agent_tool(
             await db.delete(tool)
     await db.commit()
     return {"status": "deleted", "agent_tool_id": str(agent_tool_id)}
+
+
+class McpConfigurationConfirmIn(BaseModel):
+    revision: str
+
+
+async def _session_mcp_configuration_context(db, current_user, agent_id, session_id, question_id):
+    from app.services.session_mcp_configuration import mcp_configuration_snapshot
+
+    authority, question, target, descriptor = await _configuration_question_context(
+        db, current_user, agent_id, session_id, question_id)
+    if not descriptor.get("mcp_server_id"):
+        raise HTTPException(status_code=409, detail="Use the requested configuration settings")
+    snapshot = await mcp_configuration_snapshot(db, target=target, server_id=uuid.UUID(descriptor["mcp_server_id"]))
+    return authority, question, target, snapshot
+
+
+def _session_mcp_configuration_response(question, target, snapshot, user, *, replayed=False):
+    from app.services.session_user_question import question_payload
+
+    ready = question_payload(question).get("configuration_ready") or {}
+    matches = ready.get("revision") == snapshot["revision"] and snapshot["usable_tool_count"] > 0 and snapshot["authorization"] == "configured"
+    return {**snapshot, "state": "ready" if matches else "waiting", "receipt_ref": ready.get("receipt_ref") if matches else None,
+        "target_agent_id": str(target.id), "target_agent_name": target.name, "can_authorize": user.role in {"platform_admin", "org_admin"}, "replayed": replayed}
+
+
+@router.get("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/mcp")
+async def get_session_mcp_configuration(
+    agent_id: uuid.UUID, session_id: uuid.UUID, question_id: uuid.UUID,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+):
+    _authority, question, target, snapshot = await _session_mcp_configuration_context(db, current_user, agent_id, session_id, question_id)
+    return _session_mcp_configuration_response(question, target, snapshot, current_user)
+
+
+@router.post("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/mcp/confirm")
+async def confirm_session_mcp_configuration(
+    agent_id: uuid.UUID, session_id: uuid.UUID, question_id: uuid.UUID, data: McpConfigurationConfirmIn,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+):
+    from app.services.session_user_question import question_payload
+    from app.services.session_v2_persistence import SessionEventDraft, append_session_events
+
+    authority, question, target, snapshot = await _session_mcp_configuration_context(db, current_user, agent_id, session_id, question_id)
+    if snapshot["revision"] != data.revision or snapshot["authorization"] != "configured" or not snapshot["usable_tool_count"]:
+        raise HTTPException(status_code=409, detail={"code": "mcp_configuration_not_ready", "message": "Review the current authorization, employee use permission and approved tools before continuing."})
+    payload = question_payload(question)
+    if (payload.get("configuration_ready") or {}).get("revision") == snapshot["revision"]:
+        return _session_mcp_configuration_response(question, target, snapshot, current_user, replayed=True)
+    if question.lifecycle not in {"created", "waiting"}:
+        raise HTTPException(status_code=409, detail="Configuration request is no longer waiting")
+    events = await append_session_events(db, tenant_id=authority.tenant_id, agent_id=agent_id, session_id=session_id,
+        drafts=[SessionEventDraft(item_id=question.item_id, item_kind="user_question", lifecycle="waiting", scope=question.scope_json,
+            actor=authority.event_actor(), invocation_id=question.invocation_id, result_id=question.result_id, provider_tool_use_id=question.provider_tool_use_id,
+            payload={**payload, "configuration_ready": {"receipt_ref": f"mcp-configuration:{uuid.uuid4()}",
+                "target_agent_id": str(target.id), "mcp_server_id": snapshot["server"]["id"], "revision": snapshot["revision"]}})])
+    await db.commit()
+    return _session_mcp_configuration_response(events[0], target, snapshot, current_user)

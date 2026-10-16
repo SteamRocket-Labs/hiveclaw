@@ -15,6 +15,7 @@ import time
 import uuid
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urlsplit
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -95,8 +96,11 @@ def _validate_tool_mode(value: str, *, field_name: str = "mode") -> str:
     return mode
 
 
-async def _require_tenant_server(db: AsyncSession, tenant_id: uuid.UUID, server_id: uuid.UUID) -> MCPServer:
-    result = await db.execute(select(MCPServer).where(MCPServer.id == server_id, MCPServer.tenant_id == tenant_id))
+async def _require_tenant_server(db: AsyncSession, tenant_id: uuid.UUID, server_id: uuid.UUID, *, for_update: bool = False) -> MCPServer:
+    statement = select(MCPServer).where(MCPServer.id == server_id, MCPServer.tenant_id == tenant_id)
+    if for_update:
+        statement = statement.with_for_update().execution_options(populate_existing=True)
+    result = await db.execute(statement)
     server = result.scalar_one_or_none()
     if server is None:
         raise ValueError("MCP server not found")
@@ -383,7 +387,7 @@ async def set_agent_mcp_assignment(
 ) -> dict:
     """Upsert one agent↔MCP server assignment (unique per tenant+agent+server)."""
     default_tool_mode = _validate_tool_mode(default_tool_mode, field_name="default_tool_mode")
-    await _require_tenant_server(db, tenant_id, server_id)
+    await _require_tenant_server(db, tenant_id, server_id, for_update=True)
     result = await db.execute(
         select(AgentMCPServerAssignment).where(
             AgentMCPServerAssignment.tenant_id == tenant_id,
@@ -406,6 +410,15 @@ async def set_agent_mcp_assignment(
         assignment.enabled = enabled
         assignment.default_tool_mode = default_tool_mode
         assignment.always_load = always_load
+    if enabled:
+        rows = (await db.execute(select(Tool, AgentTool).join(MCPServerTool, MCPServerTool.tool_id == Tool.id)
+            .outerjoin(AgentTool, (AgentTool.tool_id == Tool.id) & (AgentTool.agent_id == agent_id))
+            .where(MCPServerTool.tenant_id == tenant_id, MCPServerTool.mcp_server_id == server_id))).all()
+        for tool, existing in rows:
+            if existing is None:
+                approved = is_mcp_metadata_runtime_approved(tool)
+                db.add(AgentTool(tenant_id=tenant_id, agent_id=agent_id, tool_id=tool.id, enabled=approved,
+                    mcp_trust_requested_enabled=None if approved else True, source="system", config={}))
     await db.commit()
     return {
         "id": str(assignment.id),
@@ -731,7 +744,9 @@ async def set_agent_mcp_tool_policy(
     }
 
 
-async def resolve_agent_mcp_tool_mode(db: AsyncSession, agent_id: uuid.UUID, tool) -> str | None:
+async def resolve_agent_mcp_tool_mode(
+    db: AsyncSession, agent_id: uuid.UUID, tool, *, server_id: uuid.UUID | None = None
+) -> str | None:
     """Return the effective MCP mode for a concrete runtime Tool row.
 
     ``None`` means no new MCP server record links this tool yet, so callers may
@@ -744,10 +759,13 @@ async def resolve_agent_mcp_tool_mode(db: AsyncSession, agent_id: uuid.UUID, too
     if not is_mcp_metadata_runtime_approved(tool):
         return "deny"
 
-    server_tools_result = await db.execute(select(MCPServerTool).where(MCPServerTool.tool_id == tool_id))
+    query = select(MCPServerTool).where(MCPServerTool.tool_id == tool_id)
+    if server_id is not None:
+        query = query.where(MCPServerTool.mcp_server_id == server_id)
+    server_tools_result = await db.execute(query)
     server_tools = list(server_tools_result.scalars().all())
     if not server_tools:
-        return None
+        return "deny" if server_id is not None else None
 
     for server_tool in server_tools:
         assignment_result = await db.execute(
@@ -1247,11 +1265,18 @@ async def get_mcp_oauth_status(db: AsyncSession, tenant_id: uuid.UUID, server_id
         attempt = {"id": pending.get("id"), "outcome": outcome, "expires_at": pending.get("expires_at")}
     if attempt:
         attempt = {key: attempt.get(key) for key in ("id", "outcome", "expires_at", "code")}
+    granted = (await db.execute(select(Agent.id, Agent.name).join(AgentMCPServerAssignment, AgentMCPServerAssignment.agent_id == Agent.id)
+        .where(AgentMCPServerAssignment.tenant_id == tenant_id, AgentMCPServerAssignment.mcp_server_id == server_id,
+               AgentMCPServerAssignment.enabled.is_(True), Agent.deleted_at.is_(None)).order_by(Agent.name, Agent.id))).all()
+    registration = pending or oauth
     return {
         "server_id": str(server.id),
         "auth_status": server.auth_status,
         "attempt": attempt,
         "refresh_outcome": (oauth.get("refresh") or {}).get("status"),
+        "registration": {key: registration.get(key) for key in ("authorization_endpoint", "token_endpoint", "client_id", "redirect_uri", "scope")},
+        "client_secret_configured": bool(registration.get("client_secret")),
+        "authorized_agents": [{"id": str(agent_id), "name": name} for agent_id, name in granted],
     }
 
 
@@ -1268,6 +1293,13 @@ async def start_mcp_oauth(
     client_secret: str | None = None,
     requester_id: uuid.UUID,
 ) -> dict:
+    for endpoint in (authorization_endpoint, token_endpoint):
+        try:
+            parsed = urlsplit(endpoint)
+            if parsed.scheme not in {"https", "http"} or not parsed.hostname or parsed.username or parsed.password:
+                raise ValueError
+        except ValueError as exc:
+            raise mcp_oauth.OAuthFlowError("oauth_endpoint_invalid", "unavailable", 422) from exc
     server = await _locked_oauth_server(db, tenant_id, server_id)
     verifier, challenge = mcp_oauth.generate_pkce_pair()
     # The locator only chooses an RLS scope; the exact stored random-state digest authorizes the callback.
@@ -1277,6 +1309,14 @@ async def start_mcp_oauth(
     oauth = dict((server.config_json or {}).get("oauth") or {})
     try:
         encrypted_verifier = mcp_oauth.encrypt_value(verifier)
+        previous = oauth
+        pending = oauth.get("pending") or {}
+        if pending.get("client_id") == client_id and pending.get("token_endpoint") == token_endpoint:
+            previous = pending
+        if client_secret is None and previous.get("client_id") == client_id and previous.get("token_endpoint") == token_endpoint:
+            client_secret = mcp_oauth.decrypt_value(previous.get("client_secret"))
+            if previous.get("client_secret") and client_secret is None:
+                raise mcp_oauth.OAuthError("OAuth encrypted storage is unavailable")
         encrypted_secret = mcp_oauth.encrypt_value(client_secret) if client_secret else None
     except mcp_oauth.OAuthError as exc:
         raise mcp_oauth.OAuthFlowError("oauth_encryption_unavailable", "unavailable", 503) from exc
@@ -1287,6 +1327,7 @@ async def start_mcp_oauth(
         "expires_at": expires_at,
         "requester_id": str(requester_id),
         "code_verifier": encrypted_verifier,
+        "authorization_endpoint": authorization_endpoint,
         "token_endpoint": token_endpoint,
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -1384,6 +1425,9 @@ async def complete_mcp_oauth(db: AsyncSession, state: str, code: str, error: str
     if token_blob:
         oauth.update(
             token=token_blob,
+            authorization_endpoint=pending.get("authorization_endpoint"),
+            redirect_uri=pending["redirect_uri"],
+            scope=pending.get("scope"),
             token_endpoint=pending["token_endpoint"],
             client_id=pending["client_id"],
             client_secret=pending.get("client_secret"),
@@ -1400,7 +1444,7 @@ async def complete_mcp_oauth(db: AsyncSession, state: str, code: str, error: str
 
 
 async def resolve_mcp_oauth_bearer(
-    db: AsyncSession, tenant_id: uuid.UUID | None, server_url: str, *, tool_id: uuid.UUID | None = None
+    db: AsyncSession, tenant_id: uuid.UUID | None, server_url: str, *, tool_id: uuid.UUID | None = None, server_id: uuid.UUID | None = None
 ) -> tuple[str | None, str | None]:
     """No OAuth falls back to API-key auth; configured but unusable OAuth fails locally."""
     result = await db.execute(
@@ -1411,6 +1455,10 @@ async def resolve_mcp_oauth_bearer(
         .execution_options(populate_existing=True)
     )
     servers = list(result.scalars().all())
+    if server_id is not None:
+        servers = [server for server in servers if server.id == server_id]
+        if not servers:
+            return None, "MCP connection changed; review the current authorization."
     if not servers:
         return None, None
     if all(

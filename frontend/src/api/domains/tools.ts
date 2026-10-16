@@ -80,6 +80,20 @@ export interface SessionChannelConfiguration {
   configuration: { id: string; updated_at: string; channel_type: string; scope: 'employee' | 'company' } | null;
 }
 
+export interface SessionMcpConfiguration {
+  state: 'waiting' | 'ready';
+  receipt_ref?: string | null;
+  replayed?: boolean;
+  target_agent_id: string;
+  target_agent_name: string;
+  server: { id: string; name: string };
+  revision: string;
+  authorization: 'configured' | 'pending' | 'unknown' | 'required';
+  usage: { enabled: boolean; default_tool_mode: string; always_load: boolean };
+  usable_tool_count: number;
+  can_authorize: boolean;
+}
+
 export interface CategoryConfig {
   [key: string]: unknown;
 }
@@ -138,6 +152,10 @@ export const toolsApi = {
     get<SessionToolConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/configuration`),
   saveSessionToolConfiguration: (agentId: string, sessionId: string, questionId: string, config: Record<string, unknown>) =>
     put<SessionToolConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/configuration`, { config }),
+  getSessionMcpConfiguration: (agentId: string, sessionId: string, questionId: string) =>
+    get<SessionMcpConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/mcp`),
+  confirmSessionMcpConfiguration: (agentId: string, sessionId: string, questionId: string, data: { revision: string }) =>
+    post<SessionMcpConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/mcp/confirm`, data),
   getSessionChannelConfiguration: (agentId: string, sessionId: string, questionId: string) =>
     get<SessionChannelConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/channel`),
   confirmSessionChannelConfiguration: (agentId: string, sessionId: string, questionId: string, data: { config_id: string; updated_at: string }) =>

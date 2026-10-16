@@ -1252,7 +1252,6 @@
       "saveFailed": "无法保存配置，请重试。",
       "resumeFailed": "暂时无法继续工作，请重试续接。"
     },
-
     "operator": {
       "reason": "操作员检查原因",
       "reasonPlaceholder": "检查其他用户的数据前，请填写事故或审查原因",
@@ -3163,7 +3162,55 @@
       "pendingCount": "{{count}} 项待审批",
       "reject": "拒绝"
     },
-    "details": "详情"
+    "details": "详情",
+    "mcpOAuth": {
+      "workTitle": "授权此工作的 MCP 连接",
+      "title": "OAuth 授权",
+      "companyScope": "此授权保存为公司连接凭据。已有及之后明确获准的员工会使用这份凭据。",
+      "status": "最近授权记录：{{status}}",
+      "loadFailed": "无法读取授权状态。请重试。",
+      "startFailed": "未能取得授权链接。请回读状态并检查连接信息后重试。",
+      "keepSecret": "客户端及令牌地址不变时，留空会保留已保存的密钥。",
+      "clearSecret": "本次授权不使用已保存的客户端密钥",
+      "start": "生成授权链接",
+      "open": "前往应用授权",
+      "return": "完成授权后返回这里回读状态，再继续原工作。",
+      "review": "回读授权状态",
+      "authorization": "连接授权：{{status}}",
+      "usageEnabled": "员工已获准使用此连接；具体工具仍遵循审核及执行策略。",
+      "usageMissing": "员工尚未获准使用此连接。完成登录不会自动授予权限。",
+      "adminRequired": "请公司管理员完成连接授权，然后回读状态。",
+      "reauthorize": "重新授权连接",
+      "executionMode": "员工执行方式",
+      "approval": "执行前审批",
+      "auto": "按现有工具策略执行",
+      "grantUse": "授予此员工使用权限",
+      "grantFailed": "未能保存员工使用权限。请回读后重试。",
+      "noTools": "当前没有可用工具。请核查工具审核及员工工具策略，或先跳过配置。",
+      "fields": {
+        "authorization_endpoint": "授权地址",
+        "token_endpoint": "令牌地址",
+        "client_id": "客户端 ID",
+        "redirect_uri": "回调地址",
+        "scope": "请求范围（可选）",
+        "client_secret": "客户端密钥（如应用要求）"
+      },
+      "states": {
+        "none": "未授权",
+        "required": "需要授权",
+        "configured": "已保存授权",
+        "pending": "等待应用授权",
+        "unknown": "结果待确认",
+        "expired": "已过期",
+        "failed": "授权失败",
+        "cancelled": "已取消",
+        "error": "授权错误"
+      },
+      "close": "收起 OAuth 授权",
+      "authorizedAgents": "已有连接使用授权的员工（{{count}}）",
+      "noAuthorizedAgents": "目前尚无员工获得此连接的使用授权。",
+      "encryptionUnavailable": "加密存储不可用。请由平台管理员恢复后再授权此连接。"
+    }
   },
   "wizard": {
     "steps": {

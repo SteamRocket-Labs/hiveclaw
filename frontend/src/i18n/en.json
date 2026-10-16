@@ -1252,7 +1252,6 @@
       "saveFailed": "Could not save configuration.",
       "resumeFailed": "Could not continue the work. Retry continuation."
     },
-
     "operator": {
       "reason": "Operator inspection reason",
       "reasonPlaceholder": "Enter the incident or review reason before inspecting another user’s data",
@@ -3163,7 +3162,55 @@
       "pendingCount": "{{count}} pending approvals",
       "reject": "Reject"
     },
-    "details": "Details"
+    "details": "Details",
+    "mcpOAuth": {
+      "workTitle": "Authorize MCP for this work",
+      "title": "OAuth authorization",
+      "companyScope": "Authorization stores company connection credentials. Existing and future explicitly authorized employees use these credentials.",
+      "status": "Latest authorization record: {{status}}",
+      "loadFailed": "Could not read authorization status. Retry.",
+      "startFailed": "Could not obtain an authorization link. Read the status and check connection details before retrying.",
+      "keepSecret": "Leave blank to keep the stored secret when the client and token endpoint are unchanged.",
+      "clearSecret": "Do not use the stored client secret for this authorization",
+      "start": "Create authorization link",
+      "open": "Authorize with the application",
+      "return": "After authorization, return here to read the status before continuing the original work.",
+      "review": "Read authorization status",
+      "authorization": "Connection authorization: {{status}}",
+      "usageEnabled": "Employee use is enabled; each tool still follows its review and execution policy.",
+      "usageMissing": "Employee use is not enabled. Logging in does not grant permission.",
+      "adminRequired": "Ask a company administrator to authorize the connection, then read the status.",
+      "reauthorize": "Authorize the connection again",
+      "executionMode": "Employee execution mode",
+      "approval": "Approval before execution",
+      "auto": "Execute under existing tool policies",
+      "grantUse": "Grant use to this employee",
+      "grantFailed": "Could not save employee use permission. Read the current state and retry.",
+      "noTools": "No tools are currently usable. Review metadata and employee tool policies, or continue without configuration.",
+      "fields": {
+        "authorization_endpoint": "Authorization endpoint",
+        "token_endpoint": "Token endpoint",
+        "client_id": "Client ID",
+        "redirect_uri": "Redirect URI",
+        "scope": "Requested scopes (optional)",
+        "client_secret": "Client secret (if required)"
+      },
+      "states": {
+        "none": "Not authorized",
+        "required": "Authorization required",
+        "configured": "Authorization stored",
+        "pending": "Waiting for application authorization",
+        "unknown": "Outcome needs review",
+        "expired": "Expired",
+        "failed": "Authorization failed",
+        "cancelled": "Cancelled",
+        "error": "Authorization error"
+      },
+      "close": "Close OAuth authorization",
+      "authorizedAgents": "Employees with connection-use permission ({{count}})",
+      "noAuthorizedAgents": "No employee has connection-use permission yet.",
+      "encryptionUnavailable": "Encrypted storage is unavailable. Ask the platform administrator to restore it before authorizing this connection."
+    }
   },
   "wizard": {
     "templates": {

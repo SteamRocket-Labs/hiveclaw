@@ -2169,6 +2169,7 @@ async def revise_session_human_input(
         receipt = await revise_unbound_human_input(
             db,
             authority=authority,
+            user=current_user,
             input_id=input_id,
             expected_revision=_if_match_revision(if_match),
             content_parts=body.content_parts,

@@ -115,6 +115,25 @@ export interface McpServerRecord {
   agents: Array<{ id: string; name: string; enabled: boolean }>;
 }
 
+export interface McpOAuthRegistration {
+  authorization_endpoint: string;
+  token_endpoint: string;
+  client_id: string;
+  redirect_uri: string;
+  scope?: string;
+  client_secret?: string;
+}
+
+export interface McpOAuthStatus {
+  server_id: string;
+  auth_status: string;
+  attempt: { id: string | null; outcome: string; expires_at?: number | null; code?: string | null } | null;
+  refresh_outcome?: string | null;
+  registration?: Partial<McpOAuthRegistration>;
+  client_secret_configured?: boolean;
+  authorized_agents?: Array<{ id: string; name: string }>;
+}
+
 export interface McpAssignmentResult {
   id: string;
   agent_id: string;
@@ -395,6 +414,10 @@ export const extensionsApi = {
 
   /** Company admin: tenant MCP server records, server-first with stable identity. */
   listEnterpriseMcpServers: () => get<McpServerRecord[]>('/enterprise/mcp-servers'),
+
+  getMcpOAuthStatus: (serverId: string) => get<McpOAuthStatus>(`/enterprise/mcp/${serverId}/oauth`),
+  startMcpOAuth: (serverId: string, data: McpOAuthRegistration) =>
+    post<{ authorization_url: string; attempt_id: string; expires_at: number }>(`/enterprise/mcp/${serverId}/oauth/start`, data),
 
   /** Company admin: raw evidence plus canonical metadata review state for one MCP server. */
   listEnterpriseMcpServerTools: (serverId: string) =>

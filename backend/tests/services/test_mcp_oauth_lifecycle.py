@@ -517,11 +517,69 @@ async def test_same_url_credentials_require_concrete_server_tool_identity(
     monkeypatch.setattr("app.services.mcp_client.MCPClient", MCPTransport)
     assert await web_mcp._execute_mcp_tool(tool.name, {"record": "test"}, agent_id) == "Synthetic MCP record"
     assert received == [(oauth_server.server_url, "authorized-second-account")]
+    # A shared runtime tool must not borrow a different connection's use grant.
+    async with owner_sessionmaker() as db:
+        db.add(
+            MCPServerTool(
+                tenant_id=oauth_server.tenant_id,
+                mcp_server_id=oauth_server.server_id,
+                tool_id=tool_id,
+                mcp_tool_name="lookup",
+            )
+        )
+        await db.commit()
+    from app.tools.handlers import mcp
+
+    monkeypatch.setattr("app.database.async_session", app_user_sessionmaker)
+    assert isinstance(await mcp._resolve_agent_mcp_server(agent_id, str(oauth_server.server_id)), str)
+    selected = await mcp._resolve_agent_mcp_server(agent_id, str(other_id))
+    assert selected[:2] == (oauth_server.server_url, "authorized-second-account")
+    assert (await mcp._resolve_agent_mcp_server(agent_id, oauth_server.server_url))[:2] == selected[:2]
+
+    async def no_refresh(*args, **kwargs):
+        pytest.fail("Observation-only auth status must not resolve or refresh credentials")
+
+    monkeypatch.setattr("app.services.mcp_server_service.resolve_mcp_oauth_bearer", no_refresh)
+    assert "server_side_only" in await mcp.mcp_auth_status(agent_id, {"server": str(other_id)})
     async with owner_sessionmaker() as db:
         assignment = (
             await db.execute(select(AgentMCPServerAssignment).where(AgentMCPServerAssignment.agent_id == agent_id))
         ).scalar_one()
         assignment.enabled = False
         await db.commit()
+    monkeypatch.setattr("app.services.mcp_server_service.resolve_mcp_oauth_bearer", resolve_mcp_oauth_bearer)
     assert "denied" in await web_mcp._execute_mcp_tool(tool.name, {"record": "test"}, agent_id)
     assert len(received) == 1
+
+
+@pytest.mark.asyncio
+async def test_restarting_pending_authorization_keeps_only_the_matching_stored_client_secret(
+    app_user_sessionmaker, oauth_server, monkeypatch
+):
+    calls = []
+
+    async def exchange(**kwargs):
+        calls.append(kwargs)
+        return mcp_oauth.OAuthTokenSet("pending-restart-access")
+
+    monkeypatch.setattr(mcp_oauth, "exchange_code_for_token", exchange)
+    async with _client(app_user_sessionmaker, oauth_server) as client:
+        initial = await _start(client, oauth_server)
+        readback = await client.get(f"/enterprise/mcp/{oauth_server.server_id}/oauth")
+        assert readback.json()["client_secret_configured"] and "client-secret" not in readback.text
+        body = {
+            "authorization_endpoint": "https://auth.example.test/authorize",
+            "token_endpoint": "https://auth.example.test/token",
+            "client_id": "test-client",
+            "redirect_uri": "https://hive.test/enterprise/mcp/oauth/callback",
+        }
+        restarted = await client.post(f"/enterprise/mcp/{oauth_server.server_id}/oauth/start", json=body)
+        assert restarted.status_code == 200
+        assert (await _callback(client, initial)).status_code == 400
+        assert (await _callback(client, restarted.json())).status_code == 200
+        assert calls[-1]["client_secret"] == "client-secret"
+        changed = await client.post(
+            f"/enterprise/mcp/{oauth_server.server_id}/oauth/start", json={**body, "client_id": "different-client"}
+        )
+        assert (await _callback(client, changed.json())).status_code == 200
+        assert calls[-1]["client_secret"] is None and len(calls) == 2

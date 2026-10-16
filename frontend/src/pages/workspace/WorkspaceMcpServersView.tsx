@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -8,6 +8,8 @@ import {
 } from '../../api/domains/extensions';
 import { McpMetadataReviewPanel } from './WorkspaceMcpMetadataReview';
 import type { WorkspaceToolsViewProps } from './workspaceToolsModel';
+
+const McpOAuthSettings = lazy(() => import('../../components/McpOAuthSettings'));
 
 const MCP_STATUS_COLORS: Record<string, string> = {
   connected: 'var(--success)',
@@ -20,6 +22,7 @@ const MCP_STATUS_COLORS: Record<string, string> = {
 
 export default function WorkspaceMcpServersView({ selectedTenantId }: WorkspaceToolsViewProps) {
   const { t } = useTranslation();
+  const [oauthServerId, setOauthServerId] = useState<string | null>(null);
   const [servers, setServers] = useState<McpServerRecord[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [openServerId, setOpenServerId] = useState<string | null>(null);
@@ -32,7 +35,6 @@ export default function WorkspaceMcpServersView({ selectedTenantId }: WorkspaceT
 
   const load = useCallback(async () => {
     const version = ++requestVersion.current;
-    setLoaded(false);
     try {
       const data = await extensionsApi.listEnterpriseMcpServers();
       if (version === requestVersion.current) setServers(data);
@@ -44,6 +46,8 @@ export default function WorkspaceMcpServersView({ selectedTenantId }: WorkspaceT
   }, [selectedTenantId]);
 
   useEffect(() => {
+    setOauthServerId(null);
+    setLoaded(false);
     void load();
     return () => {
       requestVersion.current += 1;
@@ -140,12 +144,16 @@ export default function WorkspaceMcpServersView({ selectedTenantId }: WorkspaceT
                 </div>
               ) : null}
               <div className="ws-mcp-server-actions">
+                <button type="button" className="btn btn-secondary btn-sm" aria-expanded={oauthServerId === server.id} onClick={() => setOauthServerId(oauthServerId === server.id ? null : server.id)}>
+                  {oauthServerId === server.id ? t('agent.mcpOAuth.close') : t('agent.mcpOAuth.title')}
+                </button>
                 <button type="button" className="btn btn-secondary btn-sm" onClick={() => void toggleMetadata(server.id)}>
                   {openServerId === server.id
                     ? t('common.close', 'Close')
                     : t('enterprise.tools.reviewMcpMetadata', 'Review metadata')}
                 </button>
               </div>
+              {oauthServerId === server.id && <Suspense fallback={null}><McpOAuthSettings key={`${selectedTenantId}:${server.id}`} serverId={server.id} onReviewed={() => void load()} /></Suspense>}
               {openServerId === server.id ? (
                 metadataLoading ? (
                   <div className="ws-tools-empty">{t('common.loading', 'Loading...')}</div>

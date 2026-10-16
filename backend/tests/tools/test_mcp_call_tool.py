@@ -95,6 +95,7 @@ def _compiled_sql(stmt) -> str:
 def _approved_mcp_row(**values):
     from app.services.mcp_metadata_trust import current_mcp_fingerprint, live_mcp_activation
 
+    values.setdefault("id", uuid.uuid4())
     tool_type = values.pop("type", "mcp")
     supplied_fingerprint = values.pop("mcp_metadata_fingerprint", None)
     review_supplied = "mcp_reviewed_fingerprint" in values
@@ -463,7 +464,7 @@ async def test_rediscovered_permission_change_blocks_the_call_until_exact_review
         raw_description="Write one reviewed entry",
         raw_schema={"type": "object", "properties": {}},
     )
-    tool = SimpleNamespace(type="mcp", config={}, name="mcp__review__write", enabled=False)
+    tool = SimpleNamespace(id=uuid.uuid4(), type="mcp", config={}, name="mcp__review__write", enabled=False)
     initial = prepare_mcp_metadata_candidate(**metadata, permissions=["ledger:read"])
     apply_mcp_metadata_candidate(tool, initial)
     review_mcp_metadata(tool, decision="approve", reviewer_id=uuid.uuid4(), expected_fingerprint=initial.fingerprint)

@@ -260,7 +260,7 @@ async def submit_live_human_input(
         request_item_id = question.item_id
         from app.services.session_user_question import validate_configuration_answer
 
-        await validate_configuration_answer(db, question, content_parts)
+        await validate_configuration_answer(db, question, content_parts, user=user)
     if runtime_result_page_id is None:
         # Ordinary owner/peer lanes: exactly one idempotency lookup AFTER
         # authority resolution.  The runtime result lane already performed

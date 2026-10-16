@@ -38,7 +38,7 @@ def test_opened_file_is_checked_before_read_or_truncate(tmp_path, monkeypatch, a
     monkeypatch.setattr(os, "open", replace_at_open)
     monkeypatch.setattr(os, "supports_dir_fd", os.supports_dir_fd | {replace_at_open})
     with pytest.raises(WorkspaceAuthorityError) as denied:
-        with open_workspace_file(tmp_path, "workspace/mine/report.txt", write=write) as handle:
+        with open_workspace_file(tmp_path, "workspace/mine/report.txt", mode="wb" if write else "rb") as handle:
             handle.write(b"Unauthorized replacement") if write else handle.read()
     assert replaced
     assert denied.value.code == "workspace_resource_changed"
@@ -63,14 +63,14 @@ def test_open_file_keeps_original_inode_and_reports_a_rebound_path(tmp_path, wri
     mine.write_bytes(b"Owned bytes")
     theirs.write_bytes(b"Private bytes must survive")
     with pytest.raises(WorkspaceAuthorityError) as denied:
-        with open_workspace_file(tmp_path, "workspace/mine.txt", write=write) as handle:
+        with open_workspace_file(tmp_path, "workspace/mine.txt", mode="wb" if write else "rb") as handle:
             mine.unlink()
             mine.symlink_to(theirs)
             if write:
                 handle.write(b"Owned revision")
             else:
                 assert handle.read() == b"Owned bytes"
-    assert denied.value.code == "workspace_resource_alias_forbidden"
+    assert denied.value.code == ("workspace_resource_changed" if write else "workspace_resource_alias_forbidden")
     assert theirs.read_bytes() == b"Private bytes must survive"
 
 

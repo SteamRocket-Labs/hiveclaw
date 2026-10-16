@@ -92,8 +92,12 @@ def resolve_workspace_storage_path(workspace: Path, path: str) -> Path:
 
 
 @contextmanager
-def open_workspace_file(workspace: Path, path: str, *, write: bool = False):
+def open_workspace_file(workspace: Path, path: str, *, mode: str = "rb"):
     """Pin every directory and validate the opened inode before reading or truncating."""
+    if mode not in {"rb", "wb", "r+b"}:
+        raise ValueError("Unsupported workspace file mode")
+    create = mode == "wb"
+    write = mode != "rb"
     if os.open not in os.supports_dir_fd or not hasattr(os, "O_NOFOLLOW"):
         raise WorkspaceAuthorityError("workspace_storage_unavailable", "Safe workspace file access is unavailable on this host.")
     target = resolve_workspace_storage_path(workspace, path)
@@ -106,11 +110,11 @@ def open_workspace_file(workspace: Path, path: str, *, write: bool = False):
     directory = descriptor = None
     try:
         directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-        if write:
+        if create:
             workspace.mkdir(parents=True, exist_ok=True)
         directory = os.open(workspace, directory_flags)
         for part in parts[:-1]:
-            if write:
+            if create:
                 try:
                     os.mkdir(part, mode=0o700, dir_fd=directory)
                 except FileExistsError:
@@ -118,21 +122,26 @@ def open_workspace_file(workspace: Path, path: str, *, write: bool = False):
             child = os.open(part, directory_flags, dir_fd=directory)
             os.close(directory)
             directory = child
-        flags = os.O_WRONLY | os.O_CREAT if write else os.O_RDONLY
+        flags = {"rb": os.O_RDONLY, "wb": os.O_WRONLY | os.O_CREAT, "r+b": os.O_RDWR}[mode]
         descriptor = os.open(parts[-1], flags | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o600, dir_fd=directory)
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
             raise WorkspaceAuthorityError("workspace_resource_changed", "The file changed or has shared ownership; reconcile it before retrying.")
-        if write:
+        if create:
             os.ftruncate(descriptor, 0)
-        handle = os.fdopen(descriptor, "wb" if write else "rb")
+        handle = os.fdopen(descriptor, mode)
         descriptor = None
         with handle:
             yield handle
             if write:
                 handle.flush()
                 os.fsync(handle.fileno())
-            current = resolve_workspace_storage_path(workspace, path).stat()
+            try:
+                current = resolve_workspace_storage_path(workspace, path).stat()
+            except WorkspaceAuthorityError as exc:
+                if write:
+                    raise WorkspaceAuthorityError("workspace_resource_changed", "The path changed after writing; reconcile the file before a new mutation.") from exc
+                raise
             if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
                 raise WorkspaceAuthorityError("workspace_resource_changed", "The file moved during access; reconcile it before retrying.")
     except OSError as exc:
@@ -148,7 +157,7 @@ def open_workspace_file(workspace: Path, path: str, *, write: bool = False):
 
 
 def write_workspace_file(workspace: Path, path: str, content: bytes) -> None:
-    with open_workspace_file(workspace, path, write=True) as output:
+    with open_workspace_file(workspace, path, mode="wb") as output:
         output.write(content)
 
 

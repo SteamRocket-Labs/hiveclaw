@@ -22,6 +22,40 @@ def _scope(known_paths=frozenset()):
     )
 
 
+def test_edit_file_preserves_match_errors_and_truncates_utf8_revisions(tmp_path):
+    from app.services.agent_tool_domains.workspace import _edit_file
+
+    target = tmp_path / "workspace/mine/report.md"
+    target.parent.mkdir(parents=True)
+    original = "start 你好\r\nlong tail remains".encode()
+    target.write_bytes(original)
+    assert "bad_arguments" in _edit_file(tmp_path, "workspace/mine/report.md", "absent", "revision", authority_scope=_scope())
+    assert target.read_bytes() == original
+    assert "Updated" in _edit_file(tmp_path, "workspace/mine/report.md", "你好", "a", authority_scope=_scope())
+    assert target.read_bytes() == b"start a\nlong tail remains"
+
+
+def test_native_write_flush_failure_reports_unknown_without_automatic_replay(tmp_path, monkeypatch):
+    import errno
+    from app.services.agent_tool_domains.workspace import _write_file
+
+    target = tmp_path / "workspace/mine/report.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("Original content")
+    calls = []
+
+    def fail_after_flush(fd):
+        calls.append(fd)
+        raise OSError(errno.EIO, "fixture fsync failed after write")
+
+    monkeypatch.setattr(os, "fsync", fail_after_flush)
+    result = _write_file(tmp_path, "workspace/mine/report.md", "Owned revision", authority_scope=_scope())
+    payload = json.loads(result.split("<tool_error>", 1)[1].split("</tool_error>", 1)[0])
+    assert calls and target.read_text() == "Owned revision"
+    assert payload["http_status"] == 503 and payload["outcome"] == "unknown"
+    assert payload["retryable"] is False and payload["actionable_hint"]
+
+
 @pytest.mark.parametrize("alias", ["symlink", "hardlink"])
 def test_workspace_alias_cannot_launder_foreign_bytes_through_owned_or_system_path(tmp_path, alias):
     from app.services.agent_tool_domains.workspace import (

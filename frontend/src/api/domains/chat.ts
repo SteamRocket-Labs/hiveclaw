@@ -51,6 +51,17 @@ export interface SessionOperatorOptions {
   operatorReason?: string;
 }
 
+export interface SessionApproval {
+  id: string;
+  status: string;
+  action_type?: string;
+  tool_name?: string | null;
+  details?: Record<string, unknown>;
+  execution_status?: string | null;
+  execution_receipt?: { continuation_status?: string | null };
+  can_resolve: boolean;
+}
+
 export type SessionReadOptions = RequestOptions & SessionOperatorOptions;
 
 export function withSessionOperatorQuery(
@@ -369,6 +380,10 @@ export const chatApi = {
   },
   cancelSessionRun: (agentId: string, sessionId: string, runId: string) =>
     post<SessionRun>(`/agents/${agentId}/sessions/${sessionId}/runs/${runId}/cancel`, {}),
+  getApproval: (agentId: string, sessionId: string, approvalId: string) =>
+    get<SessionApproval>(`/agents/${agentId}/sessions/${sessionId}/approvals/${approvalId}`),
+  resolveApproval: (agentId: string, sessionId: string, approvalId: string, action: 'approve' | 'reject') =>
+    post<SessionApproval>(`/agents/${agentId}/sessions/${sessionId}/approvals/${approvalId}/resolve`, { action }),
   resolveSessionPermission: (
     agentId: string,
     sessionId: string,

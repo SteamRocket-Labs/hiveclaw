@@ -5019,6 +5019,9 @@ def _interactive_pause_summary_for_tool_call(data: dict[str, Any]) -> str | None
     evidence = data.get("tool_execution_evidence")
     decision = evidence.get("tool_decision") if isinstance(evidence, dict) else None
     if isinstance(decision, dict) and decision.get("outcome") == "require_approval":
+        payload = _tool_result_payload_from_runtime_event(data)
+        if isinstance(payload, dict) and payload.get("status") == "approval_required" and payload.get("approval_id"):
+            return "awaiting_company_approval"
         return "awaiting_session_permission"
     tool_name = str(data.get("name") or "")
     payload = _tool_result_payload_from_runtime_event(data)

@@ -1009,6 +1009,28 @@ async def test_typed_permission_batch_suspends_original_run_with_non_json_displa
 
 
 @pytest.mark.asyncio
+async def test_company_approval_waits_for_all_provider_results_before_terminal_pause(monkeypatch):
+    from unittest.mock import AsyncMock
+    from app.services import web_chat_run_orchestrator as orchestrator
+    from app.services.web_chat_runtime import _interactive_pause_summary_for_tool_call
+
+    state = SimpleNamespace(interactive_pause_summary=None, ports=SimpleNamespace(
+        events=SimpleNamespace(runtime_action_from_tool_result=lambda _data: None, stream_batcher_type=_NoopStreamBatcher,
+            terminal_signal_type=RuntimeError),
+        runtime=SimpleNamespace(interactive_pause_summary=_interactive_pause_summary_for_tool_call),
+        context=SimpleNamespace(is_web_origin_turn=lambda *_args: True),
+    ))
+    callbacks = orchestrator._WebChatCallbacks(state)
+    finalize = AsyncMock()
+    monkeypatch.setattr(orchestrator._WebChatCallbacks, "finalize_terminal_card", finalize)
+    await callbacks._consume_completed_tool({"name": "read_file", "status": "done",
+        "result": {"status": "approval_required", "approval_id": str(uuid4())},
+        "tool_execution_evidence": {"tool_decision": {"outcome": "require_approval"}}})
+    assert state.interactive_pause_summary == "awaiting_company_approval"
+    finalize.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_turn_token_budget_terminal_reason_is_persisted_as_failed_without_rewriting_content(monkeypatch):
     from app.kernel.contracts import TerminalReason
     from app.services import web_chat_run_orchestrator as orchestrator

@@ -613,11 +613,11 @@ class _WebChatCallbacks:
         if not pause:
             return
         state.interactive_pause_summary = pause
-        if pause == "awaiting_session_permission":
+        if pause in {"awaiting_session_permission", "awaiting_company_approval"}:
             # The kernel must finish persisting every matching result in the
             # current Provider tool batch before the Run may suspend. Raising
             # here used to strand already-executed parallel siblings.
-            if not state.ports.context.is_web_origin_turn(
+            if pause == "awaiting_session_permission" and not state.ports.context.is_web_origin_turn(
                 state.metadata,
                 state.runtime_session_context,
             ):

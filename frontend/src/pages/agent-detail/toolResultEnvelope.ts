@@ -135,6 +135,7 @@ export interface RuntimeStepToolMeta {
 }
 
 export type ToolCallMeta =
+  | { kind: 'enterprise_approval'; approvalId: string }
   | { kind: 'employee_first_task'; blueprintId: string; runtimeTaskId: string }
   | HrPreviewToolResult
   | HrCreationHandoffToolMeta
@@ -506,6 +507,11 @@ function buildPlanModeRequestDisplayResult(meta: PlanModeRequestToolMeta): strin
 
 export function normalizeToolCallResult(toolName: string | undefined, rawResult: unknown): NormalizedToolCallResult {
   const raw = coerceToolResultToString(rawResult);
+  const approval = parseStructuredToolPayload(rawResult);
+  if (approval?.status === 'approval_required' && typeof approval.approval_id === 'string' && approval.approval_id) {
+    return { displayResult: '', createdAgentId: null, raw,
+      toolMeta: { kind: 'enterprise_approval', approvalId: approval.approval_id } };
+  }
   if (toolName === 'delegate_to_agent') {
     const result = parseStructuredToolPayload(rawResult);
     if (result?.ok === true && typeof result.first_task_draft_id === 'string' && typeof result.runtime_task_id === 'string') {

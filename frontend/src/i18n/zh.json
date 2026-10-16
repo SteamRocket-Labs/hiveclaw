@@ -596,7 +596,7 @@
       "removeConfirm": "移除 {{name}} 并停止其未完成的创建流程？审计历史会保留。",
       "removeTitle": "移除未完成员工",
       "resume": "回到原工作",
-        "sourceMissing": "无法确认原员工，请刷新后重试。",
+      "sourceMissing": "无法确认原员工，请刷新后重试。",
       "retry": "重试创建",
       "title": "中断的创建任务"
     }
@@ -2526,6 +2526,11 @@
         "title": "工作流已可运行",
         "tokenBudget": "Token 预算 {{count}}",
         "workUnits": "计划 {{count}} 个工作单元"
+      },
+      "approval": {
+        "title": "企业审批",
+        "loadFailed": "暂时无法读取审批状态。",
+        "waiting": "等待当前负责人审批。"
       }
     },
     "activityLog": {

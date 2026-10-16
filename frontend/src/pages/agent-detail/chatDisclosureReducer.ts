@@ -197,6 +197,8 @@ export const FOLDABLE_RETRIEVAL_TOOL_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 const DEDICATED_TOOL_CARD_META_KINDS = new Set([
+  'enterprise_approval',
+  'employee_first_task',
   'create_employee_success',
   'dynamic_workflow_proposal',
   'hr_creation_handoff',

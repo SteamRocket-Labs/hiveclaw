@@ -150,11 +150,11 @@ async def _resolve_origin_session(
     db: AsyncSession,
     *,
     approval: ApprovalRequest,
-    task: RuntimeTask,
+    task: RuntimeTask | None,
 ) -> tuple[ChatSession | None, str | None]:
     details = dict(approval.details or {})
     session_key = str(
-        details.get("session_id") or details.get("conversation_id") or task.parent_session_id or ""
+        details.get("session_id") or details.get("conversation_id") or (task.parent_session_id if task else None) or ""
     ).strip()
     if not session_key:
         return None, None
@@ -174,11 +174,11 @@ async def _enqueue_origin_continuation(
     db: AsyncSession,
     *,
     approval: ApprovalRequest,
-    task: RuntimeTask,
+    task: RuntimeTask | None,
     approval_status: str,
     execution_result: str | None,
 ) -> uuid.UUID | None:
-    """Atomically bridge a terminal approved action back to its source session."""
+    """Atomically bridge an approval decision or execution back to its source session."""
     session, session_key = await _resolve_origin_session(db, approval=approval, task=task)
     receipt = dict(approval.execution_receipt or {})
     if session_key is None:
@@ -194,16 +194,17 @@ async def _enqueue_origin_continuation(
             }
         )
         approval.execution_receipt = receipt
-        metadata = dict(task.metadata_json or {})
-        metadata["continuation_status"] = "needs_reconciliation"
-        metadata["continuation_reason"] = "origin_session_authority_unresolved"
-        task.metadata_json = metadata
+        if task is not None:
+            metadata = dict(task.metadata_json or {})
+            metadata["continuation_status"] = "needs_reconciliation"
+            metadata["continuation_reason"] = "origin_session_authority_unresolved"
+            task.metadata_json = metadata
         return None
 
     from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
 
     tool_name = str(approval.tool_name or approval.action_type or "approved_action")
-    result_text = str(execution_result or task.result_summary or "")
+    result_text = str(execution_result or (task.result_summary if task else None) or "")
     model_context = (
         "[Approval tool result]\n"
         f"Approval: {approval.id}\n"
@@ -217,18 +218,19 @@ async def _enqueue_origin_continuation(
         "failed": "failed",
         "needs_reapproval": "blocked",
         "needs_reconciliation": "needs_reconciliation",
+        "rejected": "blocked",
     }.get(approval_status, approval_status)
     outbox_id = await enqueue_completion_notification(
         db,
         CompletionNotification(
             tenant_id=approval.tenant_id,
             source_kind="approval",
-            source_run_id=str(task.id),
+            source_run_id=str(task.id if task else approval.id),
             parent_session_id=session.id,
             parent_agent_id=approval.agent_id,
             parent_user_id=session.user_id,
             terminal_status=terminal_status,
-            task_type="approval_execution",
+            task_type="approval_execution" if task else "approval_decision",
             summary=result_text or f"Approval execution {approval_status}.",
             delivery_mode="parent_continuation",
             metadata={
@@ -249,17 +251,18 @@ async def _enqueue_origin_continuation(
         }
     )
     approval.execution_receipt = receipt
-    metadata = dict(task.metadata_json or {})
-    metadata.update(
-        {
-            "completion_outbox_id": str(outbox_id),
-            "continuation_status": "queued",
-            "origin_session_id": str(session.id),
-            "approval_id": str(approval.id),
-            "tool_name": tool_name,
-        }
-    )
-    task.metadata_json = metadata
+    if task is not None:
+        metadata = dict(task.metadata_json or {})
+        metadata.update(
+            {
+                "completion_outbox_id": str(outbox_id),
+                "continuation_status": "queued",
+                "origin_session_id": str(session.id),
+                "approval_id": str(approval.id),
+                "tool_name": tool_name,
+            }
+        )
+        task.metadata_json = metadata
     return outbox_id
 
 

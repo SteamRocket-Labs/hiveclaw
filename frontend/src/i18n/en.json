@@ -621,7 +621,7 @@
       "removeConfirm": "Remove {{name}} and stop its unfinished provisioning? Audit history is preserved.",
       "removeTitle": "Remove unfinished employee",
       "resume": "Resume original work",
-        "sourceMissing": "The original employee could not be identified. Reload before retrying.",
+      "sourceMissing": "The original employee could not be identified. Reload before retrying.",
       "retry": "Retry provisioning",
       "title": "Interrupted creations"
     }
@@ -2526,6 +2526,11 @@
         "title": "Workflow ready to run",
         "tokenBudget": "Token budget {{count}}",
         "workUnits": "{{count}} planned work units"
+      },
+      "approval": {
+        "title": "Company approval",
+        "loadFailed": "Approval status could not load.",
+        "waiting": "Waiting for the responsible approver."
       }
     },
     "activityLog": {

@@ -373,6 +373,14 @@ class ApprovalService:
         except Exception:
             logger.warning("Audit write failed for approval.resolved", exc_info=True)
 
+        if approval.tool_name and approval.execution_status in {"rejected", "needs_reapproval"}:
+            from app.services.approval_execution_runtime import _enqueue_origin_continuation
+
+            await _enqueue_origin_continuation(
+                db, approval=approval, task=None, approval_status=approval.execution_status,
+                execution_result=approval.execution_result or "The responsible approver rejected the action. The tool was not executed.",
+            )
+
         # Release the approval/audit transaction before running any approved
         # external action. write_audit_event takes a per-tenant advisory
         # transaction lock; holding that lock while executing tools can block

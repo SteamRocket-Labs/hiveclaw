@@ -1444,6 +1444,7 @@ function AgentChatSection({
         toolResult={msg.toolResult}
         toolRawResult={msg.toolRawResult}
         agentId={canMutateSession ? effectiveAgentId ?? undefined : undefined}
+        sessionId={activeSession?.id}
         agentName={agent?.name}
         submitted={isClarificationCardAnsweredByLaterUserMessage(visibleTimeline, index)}
         questionItemId={msg.transcriptEventId || undefined}

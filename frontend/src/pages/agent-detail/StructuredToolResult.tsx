@@ -10,6 +10,7 @@ import { getWorkflowPreview, previewWorkflowCandidate, startWorkflow } from '../
 import type { ToolCallMeta, WorkflowPreviewToolMeta } from './toolResultEnvelope';
 
 const HrCreationHandoffCard = lazy(() => import('./HrCreationHandoffCard'));
+const InlineApprovalCard = lazy(() => import('./InlineApprovalCard'));
 const HrBlueprintPreviewCard = lazy(() => (
   import('./HrBlueprintPreviewCard').then((module) => ({ default: module.HrBlueprintPreviewCard }))
 ));
@@ -22,6 +23,7 @@ interface StructuredToolResultBodyProps {
   toolResult?: string;
   toolRawResult?: string;
   agentId?: string;
+  sessionId?: string;
   agentName?: string | null;
   submitted?: boolean;
   onSendMessage?: (text: string) => void | Promise<unknown>;
@@ -355,6 +357,7 @@ export function StructuredToolResultBody({
   toolResult,
   toolRawResult,
   agentId,
+  sessionId,
   agentName,
   submitted = false,
   questionItemId,
@@ -367,6 +370,12 @@ export function StructuredToolResultBody({
 
   if (!toolMeta) {
     return toolResult ? <RawToolResultBlock text={toolResult} /> : null;
+  }
+  if (toolMeta.kind === 'enterprise_approval') {
+    return agentId && sessionId ? <Suspense fallback={null}>
+      <InlineApprovalCard key={`${agentId}:${sessionId}:${toolMeta.approvalId}`}
+        agentId={agentId} sessionId={sessionId} approvalId={toolMeta.approvalId} />
+    </Suspense> : <p>{t('agent.chat.approval.title', 'Company approval')}</p>;
   }
   if (toolMeta.kind === 'employee_first_task') {
     return <EmployeeFirstTaskReceipt agentId={agentId} blueprintId={toolMeta.blueprintId} />;

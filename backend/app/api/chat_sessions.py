@@ -2297,6 +2297,55 @@ async def steer_session_turn(
     }
 
 
+class ResolveSessionApprovalIn(BaseModel):
+    action: Literal["approve", "reject"]
+
+
+@router.get("/{agent_id}/sessions/{session_id}/approvals/{approval_id}")
+async def get_session_approval(
+    agent_id: uuid.UUID, session_id: uuid.UUID, approval_id: uuid.UUID,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+):
+    from app.services.session_approval import load_session_approval, session_approval_projection
+
+    session, agent, _authority = await _get_run_session_and_agent(
+        db=db, agent_id=agent_id, session_id=session_id, current_user=current_user,
+    )
+    approval = await load_session_approval(db, session=session, approval_id=approval_id)
+    if approval is None:
+        raise HTTPException(status_code=404, detail="Approval not found in this work")
+    return session_approval_projection(approval, agent=agent, user=current_user)
+
+
+@router.post("/{agent_id}/sessions/{session_id}/approvals/{approval_id}/resolve")
+async def resolve_session_approval(
+    agent_id: uuid.UUID, session_id: uuid.UUID, approval_id: uuid.UUID, body: ResolveSessionApprovalIn,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+):
+    from app.services.approval_service import _can_resolve_agent_approval, approval_service
+    from app.services.session_approval import load_session_approval, session_approval_projection
+
+    session, agent, _authority = await _get_run_session_and_agent(
+        db=db, agent_id=agent_id, session_id=session_id, current_user=current_user,
+    )
+    approval = await load_session_approval(db, session=session, approval_id=approval_id, for_update=True)
+    if approval is None:
+        raise HTTPException(status_code=404, detail="Approval not found in this work")
+    if not _can_resolve_agent_approval(agent, current_user):
+        raise HTTPException(status_code=403, detail="Only the responsible approver can decide this action")
+    if approval.status != "pending":
+        expected = "approved" if body.action == "approve" else "rejected"
+        if approval.status != expected or approval.resolved_by != current_user.id:
+            raise HTTPException(status_code=409, detail="Approval already resolved")
+    else:
+        try:
+            approval = await approval_service.resolve_approval(db, approval_id, current_user, body.action)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await db.commit()
+    return session_approval_projection(approval, agent=agent, user=current_user)
+
+
 @router.post("/{agent_id}/sessions/{session_id}/permissions/{permission_request_id}/resolve")
 async def resolve_session_permission(
     agent_id: uuid.UUID,

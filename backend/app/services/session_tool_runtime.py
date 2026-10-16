@@ -646,7 +646,17 @@ async def complete_tool_invocation(
 
     lifecycle, outcome, retryable, decision = settlement
     decision_id = str(decision.get("decision_id") or "")
-    if str(decision.get("outcome") or "") == "require_approval":
+    enterprise_approval = None
+    if decision.get("outcome") == "require_approval" and invocation.effect_state == "prepared_not_started":
+        from app.services.session_approval import invocation_enterprise_approval
+
+        enterprise_approval = await invocation_enterprise_approval(
+            db, invocation=invocation, agent_id=agent_id, decision=decision, input_hash=effective_hash,
+        )
+        if enterprise_approval is not None:
+            # The ticket owns execution; the original invocation only reports its pre-effect handoff.
+            lifecycle = "completed"
+    if str(decision.get("outcome") or "") == "require_approval" and enterprise_approval is None:
         existing_waiting = await _waiting_events_for_invocation(db, invocation.id)
         if existing_waiting:
             return existing_waiting

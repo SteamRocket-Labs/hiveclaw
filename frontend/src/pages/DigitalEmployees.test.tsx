@@ -15,6 +15,7 @@ vi.mock('@tanstack/react-query', () => ({
     if (queryKey[0] === 'hr-recoverable-drafts') return {
       data: [{
         blueprint_id: 'draft-1',
+        hr_agent_id: 'hr-agent-1',
         blueprint_version: 1,
         blueprint_hash: 'sha256:draft',
         draft_status: 'failed',

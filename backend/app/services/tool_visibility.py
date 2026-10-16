@@ -6,7 +6,7 @@ from typing import Any
 
 HR_AGENT_NAME = "__system_hr__"
 HR_AGENT_CLASS = "internal_system"
-HR_ONLY_TOOL_NAMES = frozenset({"create_digital_employee", "preview_agent_blueprint"})
+HR_ONLY_TOOL_NAMES = frozenset({"create_digital_employee"})
 REGULAR_AGENT_ONLY_TOOL_NAMES = frozenset({"start_hr_agent_handoff"})
 
 
@@ -32,6 +32,11 @@ def is_tool_allowed_for_agent(tool: Any, agent: Any | None) -> bool:
     name = _tool_name(tool)
     if name in HR_ONLY_TOOL_NAMES:
         return is_hr_agent(agent)
+    if name == "preview_agent_blueprint":
+        return is_hr_agent(agent) or (
+            getattr(agent, "agent_type", None) == "native"
+            and getattr(agent, "agent_class", None) == "internal_tenant"
+        )
     if name in REGULAR_AGENT_ONLY_TOOL_NAMES:
         return not is_hr_agent(agent)
     return True

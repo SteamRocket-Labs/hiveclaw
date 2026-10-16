@@ -61,6 +61,7 @@ function draftPath(agentId: string, draftId: string): string {
 }
 
 export const hrCreationApi = {
+  listMine: () => get<HrCreationDraft[]>('/agents/hr-creation-drafts/mine'),
   get: (agentId: string, draftId: string) => get<HrCreationDraft>(draftPath(agentId, draftId)),
   confirm: (agentId: string, draftId: string, input: HrCreationConfirmInput) => (
     post<HrCreationDraft>(`${draftPath(agentId, draftId)}/confirm`, input)

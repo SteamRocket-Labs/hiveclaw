@@ -159,7 +159,6 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
     from app.database import tenant_scoped_session
     from app.models.agent import Agent, AgentPermission
     from app.models.skill import Skill
-    from app.models.user import User
     from app.services.agent_identity_lifecycle import ensure_agent_identity
     from app.services.agent_manager import agent_manager
     from app.services.capability_install_service import (
@@ -199,8 +198,9 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
         # self-service creation), so the User read below is still scoped.
         async with tenant_scoped_session(scope_tenant_id) as db:
             # Look up the calling user
-            user_result = await db.execute(select(User).where(User.id == user_id))
-            user = user_result.scalar_one_or_none()
+            from app.services.hr_creation_source import load_creation_requester
+
+            user = await load_creation_requester(db, user_id)
             if not user:
                 raise HrCreationConflict("requester_missing", "Could not identify the requesting user.")
 

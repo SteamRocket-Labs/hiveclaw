@@ -1500,6 +1500,17 @@ async def _claim_canonical_hr_blueprint(
             session_id=session_id,
             for_update=True,
         )
+        from fastapi import HTTPException
+        from app.models.user import User
+        from app.services.hr_creation_source import load_creation_requester, load_creation_source_agent
+
+        requester = await load_creation_requester(db, user_id)
+        if requester is None:
+            raise HrCreationConflict("requester_missing", "The creation requester is unavailable.")
+        try:
+            await load_creation_source_agent(db, requester, hr_agent_id, require_execute=True)
+        except HTTPException as exc:
+            raise HrCreationConflict("source_execute_denied", "The creation source no longer permits execution.") from exc
         if draft.confirmed_by_user_id != user_id or draft.confirmed_at is None:
             raise HrCreationConflict(
                 "missing_confirmation_evidence",
@@ -1588,7 +1599,8 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
         name="preview_agent_blueprint",
         description=(
             "Preview a structured digital-employee blueprint before creation. "
-            "Use this after clarifying mission, users, outputs, boundaries, and first objective. "
+            "Use this in the requesting user's current employee session; no HR session switch is required. "
+            "Carry explicit mission, users, outputs, boundaries, and first objective forward; ask only for missing decisions. "
             "Prefer identity-first, install-later previews; only plan installs when capability gaps are mandatory on day one."
         ),
         parameters={
@@ -1755,15 +1767,39 @@ async def preview_agent_blueprint(request: ToolExecutionRequest) -> str:
                 ChatSession.user_id == user_id,
             )
         )
-        if not is_hr_agent(hr_agent) or session_result.scalar_one_or_none() is None:
+        source_session = session_result.scalar_one_or_none()
+        if hr_agent is None or source_session is None:
             return json.dumps(
                 {
                     "status": "error",
                     "error": "authority_mismatch",
-                    "message": "HR preview must be created by System HR inside the requesting user's session.",
+                    "message": "Creation preview requires the requesting user's original session.",
                 },
                 ensure_ascii=False,
             )
+        if not is_hr_agent(hr_agent):
+            from fastapi import HTTPException
+            from app.models.runtime_task import RuntimeTask
+            from app.models.user import User
+            from app.services.hr_creation_handoff_service import HrCreationHandoffError, _verify_source_authority
+            from app.services.hr_creation_source import load_creation_requester, load_creation_source_agent
+            from app.services.session_human_input import SESSION_TARGETABLE_RUN_STATUSES
+
+            try:
+                source_run_id = uuid.UUID(str(request.context.runtime_task_id or ""))
+                source_task = await db.get(RuntimeTask, source_run_id)
+                requester = await load_creation_requester(db, user_id)
+                _verify_source_authority(
+                    tenant_id=tenant_id, requester_user_id=user_id, source_agent_id=hr_agent_id,
+                    source_session_id=session_id, source_runtime_task_id=source_run_id,
+                    user=requester, source_agent=hr_agent, source_session=source_session, source_task=source_task,
+                )
+                await load_creation_source_agent(db, requester, hr_agent_id, require_execute=True)
+                if source_task.status not in SESSION_TARGETABLE_RUN_STATUSES:
+                    raise HrCreationHandoffError("source_run_not_active", "The originating turn has ended.")
+            except (ValueError, HrCreationHandoffError, HTTPException) as exc:
+                return json.dumps({"status": "error", "error": getattr(exc, "reason_code", "authority_mismatch"),
+                                   "message": "Creation preview requires a current authorized user turn."})
         from app.tools.handlers.knowledge import _company_kb_runtime_principal
 
         preview_arguments = dict(request.arguments)

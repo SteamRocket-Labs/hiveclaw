@@ -2,9 +2,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 
-import { agentApi } from '../../api/domains/agents';
 import { hrCreationApi, type HrCreationDraft } from '../../api/domains/hrCreation';
 import { requestAppConfirm, showAppToast } from '../../components/AppDialogs';
+import { useAuthStore } from '../../stores';
+import { useAssistantTenant } from '../assistant/assistantScope';
+import { blueprintStatusLabel } from '../agent-detail/hrCreationStatus';
 
 import './HrCreationRecoveryPanel.css';
 
@@ -25,16 +27,13 @@ function draftFailure(draft: HrCreationDraft): string | null {
 export default function HrCreationRecoveryPanel() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const { data: hrAgent } = useQuery({
-    queryKey: ['hr-agent'],
-    queryFn: () => agentApi.getHrAgent(),
-    retry: 1,
-  });
-  const queryKey = ['hr-recoverable-drafts', hrAgent?.id] as const;
+  const user = useAuthStore((state) => state.user);
+  const tenantId = useAssistantTenant(user?.tenant_id ?? null);
+  const queryKey = ['hr-recoverable-drafts', user?.id, tenantId, user?.role] as const;
   const { data: drafts = [], error: draftsError, refetch: reloadDrafts } = useQuery({
     queryKey,
-    queryFn: () => hrCreationApi.listRecoverable(hrAgent!.id),
-    enabled: Boolean(hrAgent?.id),
+    queryFn: () => hrCreationApi.listMine(),
+    enabled: Boolean(user?.id && tenantId),
     refetchInterval: (query) => (
       ((query.state.data as HrCreationDraft[] | undefined) || []).some((draft) => ACTIVE_DRAFT_STATUSES.has(draft.draft_status))
         ? 3_000
@@ -47,13 +46,17 @@ export default function HrCreationRecoveryPanel() {
       queryClient.invalidateQueries({ queryKey: ['agents'] }),
     ]);
   };
+  const sourceAgentId = (draft: HrCreationDraft) => {
+    if (!draft.hr_agent_id) throw new Error(t('employees.hrRecovery.sourceMissing', 'The original employee could not be identified. Reload before retrying.'));
+    return draft.hr_agent_id;
+  };
   const retryMutation = useMutation({
-    mutationFn: (draftId: string) => hrCreationApi.retry(hrAgent!.id, draftId),
+    mutationFn: (draft: HrCreationDraft) => hrCreationApi.retry(sourceAgentId(draft), draft.blueprint_id),
     onSuccess: refresh,
     onError: (error: Error) => showAppToast(error.message, 'error'),
   });
   const abandonMutation = useMutation({
-    mutationFn: (draftId: string) => hrCreationApi.abandon(hrAgent!.id, draftId),
+    mutationFn: (draft: HrCreationDraft) => hrCreationApi.abandon(sourceAgentId(draft), draft.blueprint_id),
     onSettled: refresh,
     onError: (error: Error) => showAppToast(error.message, 'error'),
   });
@@ -66,11 +69,11 @@ export default function HrCreationRecoveryPanel() {
       </button>
     </section>
   );
-  if (!hrAgent?.id || drafts.length === 0) return null;
+  if (drafts.length === 0) return null;
 
   const abandon = async (draft: HrCreationDraft) => {
     if (draft.recovery?.cleanup_pending) {
-      abandonMutation.mutate(draft.blueprint_id);
+      abandonMutation.mutate(draft);
       return;
     }
     const confirmed = await requestAppConfirm({
@@ -83,17 +86,17 @@ export default function HrCreationRecoveryPanel() {
       confirmLabel: t('employees.hrRecovery.remove', 'Remove unfinished employee'),
       danger: true,
     });
-    if (confirmed) abandonMutation.mutate(draft.blueprint_id);
+    if (confirmed) abandonMutation.mutate(draft);
   };
 
   return (
     <section className="hr-recovery-panel" aria-label={t('employees.hrRecovery.title', 'Interrupted creations')}>
       <div className="hr-recovery-heading">
         <div>
-          <span>{t('employees.hrRecovery.eyebrow', 'HR recovery')}</span>
+          <span>{t('employees.hrRecovery.eyebrow', 'Creation recovery')}</span>
           <h2>{t('employees.hrRecovery.title', 'Interrupted creations')}</h2>
         </div>
-        <p>{t('employees.hrRecovery.description', 'Resume the original HR session or recover provisioning directly—no model restatement required.')}</p>
+        <p>{t('employees.hrRecovery.description', 'Resume the original work or recover provisioning directly, without restating the request.')}</p>
       </div>
       <div className="hr-recovery-list">
         {drafts.map((draft) => {
@@ -106,7 +109,7 @@ export default function HrCreationRecoveryPanel() {
                   <h3>{draftName(draft)}</h3>
                   <span>{recovery?.cleanup_pending
                     ? t('employees.hrRecovery.cleanupStatus', 'File cleanup pending')
-                    : draft.draft_status.replace(/_/g, ' ')}</span>
+                    : blueprintStatusLabel(draft.draft_status, t)}</span>
                 </div>
                 {recovery?.cleanup_pending && (
                   <p>{t('employees.hrRecovery.cleanupPending', 'Removal is committed. Retry only the remaining file archival; the employee will not be removed again.')}</p>
@@ -117,9 +120,9 @@ export default function HrCreationRecoveryPanel() {
                 )}
               </div>
               <div className="hr-recovery-actions">
-                {recovery?.can_resume && draft.session_id && (
-                  <Link to={`/agents/${hrAgent.id}?session_id=${encodeURIComponent(draft.session_id)}#chat`}>
-                    {t('employees.hrRecovery.resume', 'Resume HR session')}
+                {recovery?.can_resume && draft.session_id && draft.hr_agent_id && (
+                  <Link to={`/agents/${encodeURIComponent(draft.hr_agent_id)}?session_id=${encodeURIComponent(draft.session_id)}#chat`}>
+                    {t('employees.hrRecovery.resume', 'Resume original work')}
                   </Link>
                 )}
                 {recovery?.can_retry && (
@@ -127,7 +130,7 @@ export default function HrCreationRecoveryPanel() {
                     type="button"
                     className="btn btn-secondary"
                     disabled={retryMutation.isPending}
-                    onClick={() => retryMutation.mutate(draft.blueprint_id)}
+                    onClick={() => retryMutation.mutate(draft)}
                   >
                     {t('employees.hrRecovery.retry', 'Retry provisioning')}
                   </button>

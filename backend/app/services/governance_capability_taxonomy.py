@@ -68,6 +68,7 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "send_message_to_agent",
         "send_agent_session_message",
         "start_hr_agent_handoff",
+        "preview_agent_blueprint",
         "delegate_to_agent",
         "check_async_task",
         "cancel_async_task",

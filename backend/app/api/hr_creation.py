@@ -11,12 +11,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.hr_creation import HrCreationDraft
 from app.models.runtime_task import RuntimeTask
 from app.models.user import User
+from app.services.hr_creation_source import load_creation_source_agent
 from app.services.hr_creation_service import (
     HrCreationConflict,
     confirm_hr_creation_draft_record,
@@ -73,7 +73,9 @@ async def _load_for_user(
     draft_id: uuid.UUID,
     for_update: bool,
 ):
-    agent = await _load_hr_agent_for_user(db=db, current_user=current_user, agent_id=agent_id)
+    agent = await _load_hr_agent_for_user(
+        db=db, current_user=current_user, agent_id=agent_id, require_execute=for_update,
+    )
     try:
         return await load_hr_creation_draft(
             db,
@@ -88,11 +90,10 @@ async def _load_for_user(
         raise HTTPException(status_code=status_code, detail={"error": exc.code, "message": exc.message}) from exc
 
 
-async def _load_hr_agent_for_user(*, db: AsyncSession, current_user: User, agent_id: uuid.UUID):
-    agent, _access = await check_agent_access(db, current_user, agent_id)
-    if agent.agent_class != "internal_system" or agent.name != "__system_hr__":
-        raise HTTPException(status_code=404, detail="HR creation draft not found")
-    return agent
+async def _load_hr_agent_for_user(
+    *, db: AsyncSession, current_user: User, agent_id: uuid.UUID, require_execute: bool = False,
+):
+    return await load_creation_source_agent(db, current_user, agent_id, require_execute=require_execute)
 
 
 async def _linked_provisioning_task_or_none(
@@ -123,7 +124,9 @@ async def _load_hr_draft_and_task_for_mutation(
 ) -> tuple[HrCreationDraft, RuntimeTask | None]:
     """Lock one HR mutation in the global RuntimeTask -> draft order."""
 
-    agent = await _load_hr_agent_for_user(db=db, current_user=current_user, agent_id=agent_id)
+    agent = await _load_hr_agent_for_user(
+        db=db, current_user=current_user, agent_id=agent_id, require_execute=True,
+    )
     try:
         candidate = await load_hr_creation_draft(
             db,
@@ -173,6 +176,18 @@ async def _load_hr_draft_and_task_for_mutation(
         raise HTTPException(status_code=status_code, detail={"error": exc.code, "message": exc.message}) from exc
 
 
+@router.get("/hr-creation-drafts/mine", response_model=list[HrCreationDraftOut])
+async def list_my_hr_creation_drafts(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    limit: int = 50,
+):
+    from app.core.tenant_scope import resolve_and_pin_tenant_scope
+
+    tenant_id = await resolve_and_pin_tenant_scope(db, current_user, None)
+    return await _list_creation_drafts(db, current_user, tenant_id=tenant_id, agent_id=None, limit=limit)
+
+
 @router.get("/{agent_id}/hr-creation-drafts", response_model=list[HrCreationDraftOut])
 async def list_hr_creation_drafts(
     agent_id: uuid.UUID,
@@ -181,15 +196,20 @@ async def list_hr_creation_drafts(
     limit: int = 50,
 ):
     agent = await _load_hr_agent_for_user(db=db, current_user=current_user, agent_id=agent_id)
+    return await _list_creation_drafts(db, current_user, tenant_id=agent.tenant_id, agent_id=agent_id, limit=limit)
+
+
+async def _list_creation_drafts(db, current_user, *, tenant_id, agent_id, limit):
+    scope = [HrCreationDraft.tenant_id == tenant_id, HrCreationDraft.requested_by_user_id == current_user.id]
+    if agent_id is not None:
+        scope.append(HrCreationDraft.hr_agent_id == agent_id)
     drafts = list(
         (
             await db.execute(
                 select(HrCreationDraft)
                 .options(selectinload(HrCreationDraft.provisioning_steps))
                 .where(
-                    HrCreationDraft.tenant_id == agent.tenant_id,
-                    HrCreationDraft.hr_agent_id == agent_id,
-                    HrCreationDraft.requested_by_user_id == current_user.id,
+                    *scope,
                     HrCreationDraft.status.in_(
                         ("awaiting_confirmation", "confirmed", "creating", "provisioning", "failed")
                     ),
@@ -226,12 +246,10 @@ async def list_hr_creation_drafts(
                 .options(selectinload(HrCreationDraft.provisioning_steps))
                 .join(Agent, Agent.id == HrCreationDraft.created_agent_id)
                 .where(
-                    HrCreationDraft.tenant_id == agent.tenant_id,
-                    HrCreationDraft.hr_agent_id == agent_id,
-                    HrCreationDraft.requested_by_user_id == current_user.id,
+                    *scope,
                     HrCreationDraft.status == "superseded",
                     HrCreationDraft.failure_code == "abandoned_by_requester",
-                    Agent.tenant_id == agent.tenant_id,
+                    Agent.tenant_id == tenant_id,
                     Agent.deleted_at.is_not(None),
                 )
                 .order_by(HrCreationDraft.updated_at, HrCreationDraft.id)
@@ -249,7 +267,19 @@ async def list_hr_creation_drafts(
         pending.append(_out(payload))
         if len(pending) >= max(1, min(int(limit), 100)):
             break
-    return [*pending, *output][: max(1, min(int(limit), 100))]
+    combined = [*pending, *output][: max(1, min(int(limit), 100))]
+    if agent_id is not None:
+        return combined
+    visible = []
+    for payload in combined:
+        try:
+            await load_creation_source_agent(db, current_user, uuid.UUID(payload.hr_agent_id))
+        except HTTPException as exc:
+            if exc.status_code not in {403, 404, 410}:
+                raise
+            continue
+        visible.append(payload)
+    return visible
 
 
 @router.get("/{agent_id}/hr-creation-drafts/{draft_id}", response_model=HrCreationDraftOut)

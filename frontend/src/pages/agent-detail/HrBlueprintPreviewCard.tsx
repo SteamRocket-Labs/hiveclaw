@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { hrCreationApi, type HrCreationDraft } from '../../api/domains/hrCreation';
 import { parsePreviewAgentBlueprintResult, type HrPreviewToolResult } from './toolResultEnvelope';
 import './HrBlueprintPreviewCard.css';
+import { blueprintStatusLabel } from './hrCreationStatus';
 
 interface HrBlueprintPreviewCardProps {
   agentId?: string;
@@ -91,29 +92,6 @@ function SourceAttributionList({ items, t }: { items: Record<string, unknown>[];
   );
 }
 
-function blueprintStatusLabel(status: string, t: Translate): string {
-  switch (status) {
-    case 'awaiting_confirmation':
-      return t('agent.chat.toolResults.statusNeedsConfirmation', 'Needs confirmation');
-    case 'confirmed':
-      return t('agent.chat.toolResults.statusConfirmed', 'Confirmed');
-    case 'creating':
-    case 'provisioning':
-      return t('agent.chat.toolResults.statusProvisioning', 'Creating');
-    case 'completed':
-      return t('agent.chat.toolResults.statusCompleted', 'Created');
-    case 'failed':
-      return t('agent.chat.toolResults.statusFailed', 'Needs attention');
-    case 'rejected':
-      return t('agent.chat.toolResults.statusRejected', 'Rejected');
-    case 'superseded':
-      return t('agent.chat.toolResults.statusSuperseded', 'Revised');
-    case 'expired':
-      return t('agent.chat.toolResults.statusExpired', 'Expired');
-    default:
-      return t('agent.chat.toolResults.statusUnavailable', 'Status unavailable');
-  }
-}
 
 function permissionScopeLabel(scope: string | null, t: Translate): string | null {
   if (!scope) return null;

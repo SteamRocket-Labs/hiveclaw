@@ -588,13 +588,14 @@
       "cleanupStatus": "文件待清理",
       "cleanupPending": "移除已提交。重试只会完成剩余文件归档，不会再次移除员工。",
       "retryCleanup": "重试文件清理",
-      "description": "恢复原 HR 会话或直接恢复创建流程，无需模型重新表述。",
-      "eyebrow": "HR 恢复",
+      "description": "回到原工作，或直接恢复开通，无需重新描述需求。",
+      "eyebrow": "开通恢复",
       "operatorRequired": "重试前需要运营人员完成核查。",
       "remove": "移除未完成员工",
       "removeConfirm": "移除 {{name}} 并停止其未完成的创建流程？审计历史会保留。",
       "removeTitle": "移除未完成员工",
-      "resume": "恢复 HR 会话",
+      "resume": "回到原工作",
+        "sourceMissing": "无法确认原员工，请刷新后重试。",
       "retry": "重试创建",
       "title": "中断的创建任务"
     }

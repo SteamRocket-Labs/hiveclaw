@@ -15,6 +15,7 @@ from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import SessionTurnInput
 from app.models.user import User
+from app.database import get_current_tenant_id
 from app.runtime.ccplus_contracts import permission_profile_snapshot
 from app.services.session_human_input import SESSION_TARGETABLE_RUN_STATUSES
 from app.services.session_live_input import submit_live_human_input
@@ -196,7 +197,10 @@ def _verify_source_authority(
     source_session: ChatSession | None,
     source_task: RuntimeTask | None,
 ) -> None:
-    if user is None or user.tenant_id != tenant_id or not bool(user.is_active):
+    requester_tenant = (
+        get_current_tenant_id() if user is not None and user.role == "platform_admin" else getattr(user, "tenant_id", None)
+    )
+    if user is None or str(requester_tenant) != str(tenant_id) or not bool(user.is_active):
         raise HrCreationHandoffError(
             "requester_unavailable",
             "The authenticated requester is no longer available in this company.",

@@ -4,6 +4,7 @@ import hashlib
 import json
 import mimetypes
 import re
+from tempfile import TemporaryDirectory
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -14,6 +15,8 @@ from typing import Literal, TypeVar
 import anyio
 from anyio import to_process
 from loguru import logger
+
+from app.services.workspace_resource_authority import open_workspace_file
 
 _T = TypeVar("_T")
 
@@ -110,9 +113,15 @@ class DocumentConversionService:
 
     def convert(self, request: DocumentConversionRequest) -> DocumentConversionResult:
         workspace_root = request.workspace_root.resolve()
-        source_path = request.source_path.resolve()
+        source_path = request.source_path.absolute()
         self._ensure_inside_workspace(source_path, workspace_root)
-        data = source_path.read_bytes()
+        try:
+            relative_path = source_path.relative_to(request.workspace_root.absolute()).as_posix()
+        except ValueError:
+            relative_path = source_path.relative_to(workspace_root).as_posix()
+        with open_workspace_file(request.workspace_root, relative_path) as source:
+            data = source.read()
+        source_path = workspace_root / relative_path
         return self._convert_data(
             data=data,
             source_path=source_path,
@@ -262,7 +271,7 @@ class DocumentConversionService:
         warnings: list[str] = []
         is_pdf = _is_pdf_source(source_path, data, source_mime_type)
         try:
-            markdown = self._convert_with_markitdown(source_path)
+            markdown = self._convert_with_markitdown(source_path, data)
             stripped_markdown = markdown.strip()
             if is_pdf and _looks_like_raw_pdf_markdown(stripped_markdown):
                 warnings.append("local_markitdown_unreadable_pdf")
@@ -278,7 +287,7 @@ class DocumentConversionService:
         legacy = self._convert_with_legacy_extractors(source_path, data, source_mime_type, source_uri)
         return legacy, "legacy_python_extractors", warnings
 
-    def _convert_with_markitdown(self, source_path: Path) -> str:
+    def _convert_with_markitdown(self, source_path: Path, data: bytes) -> str:
         from markitdown import MarkItDown
 
         try:
@@ -286,11 +295,14 @@ class DocumentConversionService:
         except TypeError:
             converter = MarkItDown()
 
-        if hasattr(converter, "convert_local"):
-            result = converter.convert_local(str(source_path))
-        else:
-            result = converter.convert(str(source_path))
-        return str(getattr(result, "text_content", "") or "")
+        with TemporaryDirectory(prefix="hive-document-input-") as directory:
+            snapshot = Path(directory) / source_path.name
+            snapshot.write_bytes(data)
+            if hasattr(converter, "convert_local"):
+                result = converter.convert_local(str(snapshot))
+            else:
+                result = converter.convert(str(snapshot))
+            return str(getattr(result, "text_content", "") or "")
 
     def _convert_with_legacy_extractors(
         self, source_path: Path, data: bytes, source_mime_type: str, source_uri: str | None

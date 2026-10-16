@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 
 def test_grep_search_terminates_rg_options_before_untrusted_pattern(monkeypatch, tmp_path):
     from app.services.agent_tool_domains import workspace
@@ -16,7 +18,7 @@ def test_grep_search_terminates_rg_options_before_untrusted_pattern(monkeypatch,
         return workspace.subprocess.CompletedProcess(
             command,
             0,
-            stdout=f"{target}:1:--files\n",
+            stdout=f"{command[-1]}:1:--files\n",
             stderr="",
         )
 
@@ -27,18 +29,22 @@ def test_grep_search_terminates_rg_options_before_untrusted_pattern(monkeypatch,
 
     assert captured["command"] == [
         "rg",
+        "--with-filename",
         "--line-number",
         "--color",
         "never",
         "--",
         "--files",
-        str(search_root.resolve()),
+        captured["command"][-1],
     ]
-    assert captured["kwargs"] == {"capture_output": True, "text": True, "check": False}
+    descriptor = captured["kwargs"]["pass_fds"]
+    assert len(descriptor) == 1 and captured["command"][-1] == f"/dev/fd/{descriptor[0]}"
+    assert captured["kwargs"] == {"pass_fds": descriptor, "capture_output": True, "text": True, "check": False}
     assert "workspace/record.txt:1:--files" in result
 
 
-def test_grep_search_fallback_treats_pattern_as_regex(monkeypatch, tmp_path):
+@pytest.mark.parametrize("native", [False, True])
+def test_grep_search_treats_pattern_as_regex(monkeypatch, tmp_path, native):
     from app.services.agent_tool_domains import workspace
 
     data_dir = tmp_path / "workspace" / "tool_results"
@@ -57,7 +63,10 @@ def test_grep_search_fallback_treats_pattern_as_regex(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(workspace.shutil, "which", lambda _name: None)
+    if native:
+        assert workspace.shutil.which("rg")
+    else:
+        monkeypatch.setattr(workspace.shutil, "which", lambda _name: None)
 
     result = workspace._grep_search(
         tmp_path,
@@ -68,6 +77,8 @@ def test_grep_search_fallback_treats_pattern_as_regex(monkeypatch, tmp_path):
     assert "records.txt:6" in result
     assert "净利润: -20000000" in result
     assert "No matches" not in result
+    if native:
+        assert "records.txt:2" in workspace._grep_search(tmp_path, r"\p{Han}+", root="workspace/tool_results/records.txt")
 
 
 def test_glob_search_preserves_more_than_one_hundred_matches(tmp_path):
@@ -84,14 +95,18 @@ def test_glob_search_preserves_more_than_one_hundred_matches(tmp_path):
     assert "record-124.md" in result
 
 
-def test_grep_search_defaults_to_complete_results_and_honors_explicit_limit(monkeypatch, tmp_path):
+@pytest.mark.parametrize("native", [False, True])
+def test_grep_search_defaults_to_complete_results_and_honors_explicit_limit(monkeypatch, tmp_path, native):
     from app.services.agent_tool_domains import workspace
 
     root = tmp_path / "workspace"
     root.mkdir()
     for index in range(75):
         (root / f"record-{index:03d}.txt").write_text(f"needle {index}\n", encoding="utf-8")
-    monkeypatch.setattr(workspace.shutil, "which", lambda _name: None)
+    if native:
+        assert workspace.shutil.which("rg")
+    else:
+        monkeypatch.setattr(workspace.shutil, "which", lambda _name: None)
 
     complete = workspace._grep_search(tmp_path, "needle", root="workspace")
     explicit = workspace._grep_search(tmp_path, "needle", root="workspace", max_results=7)
@@ -100,3 +115,6 @@ def test_grep_search_defaults_to_complete_results_and_honors_explicit_limit(monk
     assert "record-074.txt" in complete
     assert "7 match(es)" in explicit
     assert "record-007.txt" not in explicit
+    assert "/dev/fd/" not in complete
+    single = workspace._grep_search(tmp_path, "needle", root="workspace/record-074.txt")
+    assert "1 match(es)" in single and "record-074.txt:1:needle 74" in single

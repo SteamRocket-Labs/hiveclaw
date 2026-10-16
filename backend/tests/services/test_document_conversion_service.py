@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -14,7 +15,7 @@ def _install_fake_markitdown(monkeypatch, calls: list[dict], output: str = "# Co
             calls.append({"kind": "init", "args": args, "kwargs": kwargs})
 
         def convert_local(self, source: str):
-            calls.append({"kind": "convert_local", "source": source})
+            calls.append({"kind": "convert_local", "source": source, "data": Path(source).read_bytes()})
             return SimpleNamespace(text_content=output)
 
     monkeypatch.setitem(sys.modules, "markitdown", SimpleNamespace(MarkItDown=_FakeMarkItDown))
@@ -87,7 +88,10 @@ def test_document_conversion_uses_markitdown_local_file_and_writes_artifacts(mon
     assert metadata["artifact_markdown_path"] == result.artifact_markdown_path
 
     convert_calls = [call for call in calls if call["kind"] == "convert_local"]
-    assert convert_calls == [{"kind": "convert_local", "source": str(source)}]
+    assert len(convert_calls) == 1
+    snapshot = Path(convert_calls[0]["source"])
+    assert snapshot != source and snapshot.name == source.name and not snapshot.exists()
+    assert convert_calls[0]["data"] == source.read_bytes()
 
 
 def test_document_conversion_reuses_cached_artifact_without_reinvoking_engine(monkeypatch, tmp_path):

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import logging
 import io
-import os
 import re
 import shutil
 import subprocess
 import uuid
 import json
+from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -1011,6 +1011,8 @@ async def _read_document(
                 f"Metadata: {result.artifact_metadata_path}"
             )
         return render_conversion_preview(result, max_chars=max_chars)
+    except WorkspaceAuthorityError as exc:
+        return _workspace_storage_error(tool_name, exc)
     except ImportError as e:
         return _workspace_error(
             tool_name,
@@ -1355,44 +1357,9 @@ def _grep_search(
     explicit_limit = max(1, int(max_results)) if max_results is not None else None
     matches: list[str] = []
 
-    if shutil.which("rg"):
-        try:
-            command = ["rg", "--line-number", "--color", "never"]
-            if explicit_limit is not None:
-                command.extend(("--max-count", str(explicit_limit)))
-            # The model-authored pattern is data, never an rg option (for
-            # example ``--pre`` or ``--files``).
-            command.extend(("--", pattern, str(search_root)))
-            proc = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if proc.stdout.strip():
-                for line in proc.stdout.splitlines():
-                    normalized = line.replace(str(ws.resolve()) + os.sep, "")
-                    result_path, separator, match = normalized.partition(":")
-                    result_path = result_path.replace("\\", "/")
-                    resolved = _resolved_workspace_path(ws, result_path, permission_profile)
-                    if resolved is None:
-                        continue
-                    safe_path = resolved.relative_to(ws.resolve()).as_posix()
-                    if not _authority_allows_path(authority_scope, safe_path):
-                        continue
-                    matches.append(f"{safe_path}{separator}{match}")
-                    if explicit_limit is not None and len(matches) >= explicit_limit:
-                        break
-            elif proc.returncode not in (0, 1):
-                return _workspace_error(
-                    tool_name,
-                    "operation_failed",
-                    f"Grep search failed: {proc.stderr.strip()}",
-                    retryable=True,
-                )
-        except Exception as e:
-            return _workspace_error(tool_name, "operation_failed", f"Grep search failed: {e}", retryable=True)
-    else:
+    native_rg = shutil.which("rg")
+    compiled = None
+    if not native_rg:
         try:
             compiled = re.compile(pattern)
         except re.error as regex_err:
@@ -1401,30 +1368,63 @@ def _grep_search(
                 "bad_arguments",
                 f"Invalid regex pattern: {regex_err}",
             )
-        try:
-            for path in sorted(search_root.rglob("*")):
+    try:
+        candidates = [search_root] if search_root.is_file() else sorted(search_root.rglob("*"))
+        paths = []
+        for path in candidates:
+            if not path.is_file():
+                continue
+            rel_path = path.relative_to(ws.resolve()).as_posix()
+            if _resolved_workspace_path(ws, rel_path, permission_profile) is not None and _authority_allows_path(authority_scope, rel_path):
+                paths.append(rel_path)
+        if native_rg:
+            # Bound open descriptors, never the authorized search coverage.
+            for offset in range(0, len(paths), 32):
                 if explicit_limit is not None and len(matches) >= explicit_limit:
                     break
-                if not path.is_file():
-                    continue
-                rel_path = path.relative_to(ws.resolve()).as_posix()
-                resolved = _resolved_workspace_path(ws, rel_path, permission_profile)
-                if resolved is None:
-                    continue
-                if not _authority_allows_path(authority_scope, rel_path):
-                    continue
+                with ExitStack() as inputs:
+                    descriptors = {}
+                    for rel_path in paths[offset : offset + 32]:
+                        source = inputs.enter_context(open_workspace_file(ws, rel_path))
+                        descriptors[f"/dev/fd/{source.fileno()}"] = (rel_path, source.fileno())
+                    command = ["rg", "--with-filename", "--line-number", "--color", "never"]
+                    if explicit_limit is not None:
+                        command.extend(("--max-count", str(explicit_limit)))
+                    # The model-authored pattern remains data, never an rg option.
+                    command.extend(("--", pattern, *descriptors))
+                    proc = subprocess.run(command, pass_fds=tuple(fd for _, fd in descriptors.values()),
+                        capture_output=True, text=True, check=False)
+                if proc.returncode not in (0, 1):
+                    return _workspace_error(tool_name, "operation_failed", f"Grep search failed: {proc.stderr.strip()}", retryable=True)
+                batch_matches = []
+                for line in proc.stdout.splitlines():
+                    descriptor, separator, match = line.partition(":")
+                    if descriptor in descriptors:
+                        batch_matches.append((descriptors[descriptor][0], int(match.partition(":")[0]), match))
+                for rel_path, _line_number, match in sorted(batch_matches):
+                    matches.append(f"{rel_path}:{match}")
+                    if explicit_limit is not None and len(matches) >= explicit_limit:
+                        break
+        else:
+            for rel_path in paths:
+                if explicit_limit is not None and len(matches) >= explicit_limit:
+                    break
                 try:
-                    with resolved.open("r", encoding="utf-8", errors="replace") as handle:
+                    with open_workspace_file(ws, rel_path) as source, io.TextIOWrapper(source, encoding="utf-8", errors="replace") as handle:
                         for idx, line in enumerate(handle, start=1):
                             if compiled.search(line):
                                 matches.append(f"{rel_path}:{idx}:{line.strip()}")
                                 if explicit_limit is not None and len(matches) >= explicit_limit:
                                     break
+                except WorkspaceAuthorityError:
+                    raise
                 except Exception as _read_err:
-                    logger.debug("[Workspace] grep: skipped file %s: %s", path, _read_err)
+                    logger.debug("[Workspace] grep: skipped file %s: %s", rel_path, _read_err)
                     continue
-        except Exception as e:
-            return _workspace_error(tool_name, "operation_failed", f"Grep search failed: {e}", retryable=True)
+    except WorkspaceAuthorityError as exc:
+        return _workspace_storage_error(tool_name, exc)
+    except Exception as e:
+        return _workspace_error(tool_name, "operation_failed", f"Grep search failed: {e}", retryable=True)
 
     if not matches:
         return f"🔎 No matches for '{pattern}'"

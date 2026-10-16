@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
-import hmac
-from pathlib import Path
 import re
-from tempfile import TemporaryDirectory
 import uuid
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
@@ -26,10 +22,6 @@ class NotChannelFileDownloadToken(Exception):
 
 class InvalidChannelFileDownloadToken(Exception):
     """Raised when a channel file token is invalid for the requested file."""
-
-
-class ChannelFileContentChanged(Exception):
-    """Raised when a path no longer contains the bytes authorized by a token."""
 
 
 def _expiry(expires_delta: timedelta | None = None) -> datetime:
@@ -90,36 +82,6 @@ def verify_channel_file_download_token(
     if content_sha256 is not None and not _SHA256_RE.fullmatch(str(content_sha256)):
         raise InvalidChannelFileDownloadToken("Channel file token has an invalid content binding")
     return payload
-
-
-def snapshot_channel_file_content(
-    *,
-    path: str | Path,
-    payload: dict,
-) -> tuple[TemporaryDirectory[str] | None, Path]:
-    """Copy, verify, and return the exact bytes authorized by a channel token."""
-
-    expected = payload.get("content_sha256")
-    if expected is None:
-        return None, Path(path)
-    source_path = Path(path)
-    snapshot_dir: TemporaryDirectory[str] = TemporaryDirectory(
-        prefix="hive-channel-download-",
-    )
-    snapshot_path = Path(snapshot_dir.name) / source_path.name
-    digest = hashlib.sha256()
-    try:
-        with source_path.open("rb") as source, snapshot_path.open("xb") as snapshot:
-            while chunk := source.read(64 * 1024):
-                digest.update(chunk)
-                snapshot.write(chunk)
-    except BaseException:
-        snapshot_dir.cleanup()
-        raise
-    if not hmac.compare_digest(digest.hexdigest(), str(expected)):
-        snapshot_dir.cleanup()
-        raise ChannelFileContentChanged
-    return snapshot_dir, snapshot_path
 
 
 def build_channel_file_download_url(

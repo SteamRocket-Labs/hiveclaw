@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from email.utils import formatdate
 import hashlib
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
@@ -18,6 +20,80 @@ def _settings(tmp_path):
         JWT_SECRET_KEY="jwt-secret",
         JWT_ALGORITHM="HS256",
     )
+
+
+async def _send_download(response, *, method="GET", headers=(), disconnect=False):
+    messages = []
+
+    async def send(message):
+        if disconnect and message["type"] == "http.response.body":
+            raise OSError("fixture client disconnected")
+        messages.append(message)
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    await response({"type": "http", "method": method, "headers": list(headers)}, receive, send)
+    start = next(message for message in messages if message["type"] == "http.response.start")
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
+    return start["status"], body
+
+
+@pytest.mark.parametrize("mode", ["get", "head", "range", "invalid_range", "disconnect"])
+async def test_download_copy_is_delivered_and_cleaned_for_every_response_exit(tmp_path, monkeypatch, mode):
+    import app.api.files as files_api
+    import app.services.file_download_tokens as tokens
+
+    settings = _settings(tmp_path)
+    monkeypatch.setattr(files_api, "settings", settings)
+    monkeypatch.setattr(tokens, "get_settings", lambda: settings)
+    agent_id = uuid4()
+    source = tmp_path / str(agent_id) / "workspace/report.md"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"safe report")
+    token = tokens.make_channel_file_download_token(agent_id=agent_id, path="workspace/report.md",
+        content_sha256=hashlib.sha256(b"safe report").hexdigest())
+    response = await files_api.download_file(agent_id=agent_id, path="workspace/report.md", token=token,
+        credentials=None, db=object())
+    copied = Path(response.path)
+    assert copied != source and copied.read_bytes() == b"safe report"
+    source.write_bytes(b"Changed after response creation")
+    if mode == "disconnect":
+        with pytest.raises(OSError, match="fixture client disconnected"):
+            await _send_download(response, disconnect=True)
+    else:
+        headers = ((b"range", b"bytes=0-3" if mode == "range" else b"bytes=9999-"),) if "range" in mode else ()
+        status, body = await _send_download(response, method="HEAD" if mode == "head" else "GET", headers=headers)
+        assert status == (206 if mode == "range" else 416 if mode == "invalid_range" else 200)
+        assert body == (b"safe" if mode == "range" else b"" if mode in {"head", "invalid_range"} else b"safe report")
+    assert not copied.exists()
+    assert source.read_bytes() == b"Changed after response creation"
+
+
+async def test_unchanged_download_keeps_source_metadata_for_conditional_range_resume(tmp_path, monkeypatch):
+    import app.api.files as files_api
+    import app.services.file_download_tokens as tokens
+
+    settings = _settings(tmp_path)
+    monkeypatch.setattr(files_api, "settings", settings)
+    monkeypatch.setattr(tokens, "get_settings", lambda: settings)
+    agent_id = uuid4()
+    source = tmp_path / str(agent_id) / "workspace/report.md"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"safe report")
+    os.utime(source, (1000, 1000))
+    token = tokens.make_channel_file_download_token(agent_id=agent_id, path="workspace/report.md")
+
+    async def download():
+        return await files_api.download_file(agent_id=agent_id, path="workspace/report.md", token=token,
+            credentials=None, db=object())
+
+    first = await download()
+    assert await _send_download(first) == (200, b"safe report")
+    assert first.headers["last-modified"] == formatdate(source.stat().st_mtime, usegmt=True)
+    second = await download()
+    assert await _send_download(second, headers=((b"range", b"bytes=0-3"),
+        (b"if-range", first.headers["etag"].encode()))) == (206, b"safe")
 
 
 @pytest.mark.asyncio
@@ -49,8 +125,11 @@ async def test_channel_file_download_token_allows_external_file_download(tmp_pat
         db=object(),
     )
 
-    assert response.path == str(target)
+    served = Path(response.path)
+    assert served != target
     assert response.filename == "report.md"
+    assert await _send_download(response) == (200, b"hello")
+    assert not served.exists()
 
 
 @pytest.mark.asyncio
@@ -274,9 +353,12 @@ async def test_workspace_download_query_jwt_pins_token_tenant_before_user_lookup
         db=db,
     )
 
-    assert response.path == str(target)
+    served = Path(response.path)
+    assert served != target
     assert response.filename == "report.md"
     assert db.pinned_tenants == [tenant_id]
+    assert await _send_download(response) == (200, b"hello")
+    assert not served.exists()
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ import hashlib
 import io
 import os
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -18,17 +19,22 @@ pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 @pytest.mark.parametrize(("operation", "replace_after_authorize"), [
     ("read", False), ("write", False), ("upload", False), ("office", False),
     ("read", True), ("write", True), ("upload", True),
+    ("download", False), ("download", True),
+    ("jwt_send", False), ("channel_send", False), ("bound_send", False),
 ])
 async def test_workspace_alias_cannot_cross_file_ownership(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, alias, operation, replace_after_authorize,
 ):
-    from app.api.files import FileWrite, read_file, upload_file_to_workspace, write_file
+    from app.api.files import FileWrite, download_file, read_file, upload_file_to_workspace, write_file
     from app.api.office import _authorize_office_request_path
     from starlette.datastructures import UploadFile
     from app.config import get_settings
     from app.models.agent import AgentPermission
     from app.models.user import User
     from app.services import workspace_resource_authority as authority
+    from app.core.security import create_access_token
+    from app.services.file_download_tokens import make_channel_file_download_token
+    from tests.api.test_files_channel_download_token import _send_download
 
     tenant, user_id, agent, session, _run = await _seed_session(owner_sessionmaker)
     monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path))
@@ -66,6 +72,15 @@ async def test_workspace_alias_cannot_cross_file_ownership(
             mine.parent.rmdir()
             mine.parent.symlink_to(theirs.parent, target_is_directory=True)
 
+    async def download(db, scheme="jwt"):
+        if scheme == "jwt":
+            token = create_access_token(str(user.id), user.role, str(tenant))
+        else:
+            token = make_channel_file_download_token(agent_id=agent, path="workspace/mine/report.txt",
+                content_sha256=hashlib.sha256(b"My original content").hexdigest() if scheme == "bound" else None)
+        return await download_file(agent_id=agent, path="workspace/mine/report.txt", token=token,
+            request=SimpleNamespace(headers={}), credentials=None, db=db)
+
     if replace_after_authorize:
         original = authority.authorize_workspace_path
 
@@ -75,10 +90,19 @@ async def test_workspace_alias_cannot_cross_file_ownership(
             return decision
 
         monkeypatch.setattr(authority, "authorize_workspace_path", authorize_then_replace)
-    else:
+    elif not operation.endswith("_send"):
         replace_path()
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, tenant)
+        if operation.endswith("_send"):
+            response = await download(db, operation.removesuffix("_send"))
+            replace_path()
+            status, body = await _send_download(response)
+            assert status == 200 and body == b"My original content"
+            assert response.filename == "report.txt"
+            assert not os.path.exists(response.path)
+            assert theirs.read_text() == "Other requester's private content"
+            return
         with pytest.raises(HTTPException) as indirect:
             if operation == "read":
                 await read_file(agent_id=agent, path="workspace/mine/report.txt", current_user=user, db=db)
@@ -86,6 +110,10 @@ async def test_workspace_alias_cannot_cross_file_ownership(
                 await write_file(agent_id=agent, path="workspace/mine/report.txt", data=FileWrite(content="Unauthorized replacement"), current_user=user, db=db)
             elif operation == "upload":
                 await upload_file_to_workspace(agent_id=agent, path="workspace/mine", file=UploadFile(io.BytesIO(b"Unauthorized replacement"), filename="report.txt"), operator_view=False, operator_reason=None, current_user=user, db=db)
+            elif operation == "download":
+                response = await download(db)
+                _status, body = await _send_download(response)
+                assert b"Other requester's private content" not in body
             else:
                 await _authorize_office_request_path(db, user, agent_id=agent, path="workspace/mine/report.txt", action="read")
         assert indirect.value.status_code in {403, 409}

@@ -41,10 +41,8 @@ from app.services.chat_artifact_delivery import (
     resolve_chat_artifact_file,
 )
 from app.services.file_download_tokens import (
-    ChannelFileContentChanged,
     InvalidChannelFileDownloadToken,
     NotChannelFileDownloadToken,
-    snapshot_channel_file_content,
     verify_channel_file_download_token,
 )
 from app.services.external_capabilities.skill_source_adapter import stage_remote_external_skill_source_review
@@ -208,6 +206,31 @@ def _workspace_authority_http_error(exc: Exception) -> HTTPException:
         status_code=status_code,
         detail={"code": exc.code, "message": exc.message},
     )
+
+
+class _WorkspaceDownloadResponse(FileResponse):
+    def __init__(self, snapshot_dir, path: Path, filename: str):
+        self._snapshot_dir = snapshot_dir
+        super().__init__(str(path), filename=filename, background=BackgroundTask(snapshot_dir.cleanup))
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # FileResponse skips background cleanup on send failure and invalid ranges.
+            self._snapshot_dir.cleanup()
+
+
+async def _workspace_download_response(agent_id, path, filename, expected_sha256=None):
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError, snapshot_workspace_file
+
+    try:
+        snapshot_dir, delivery_path = await asyncio.to_thread(
+            snapshot_workspace_file, _agent_base_dir(agent_id), path, expected_sha256,
+        )
+    except WorkspaceAuthorityError as exc:
+        raise _workspace_authority_http_error(exc) from exc
+    return _WorkspaceDownloadResponse(snapshot_dir, delivery_path, filename)
 
 
 def _managed_system_path_message(path: str) -> str | None:
@@ -1064,20 +1087,8 @@ async def download_file(
             target = _safe_path(agent_id, path)
             if not target.exists() or not target.is_file():
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-            try:
-                snapshot_dir, delivery_path = snapshot_channel_file_content(
-                    path=target,
-                    payload=channel_token,
-                )
-            except (ChannelFileContentChanged, OSError) as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="File changed after channel delivery authorization",
-                ) from exc
-            return FileResponse(
-                path=str(delivery_path),
-                filename=target.name,
-                background=(BackgroundTask(snapshot_dir.cleanup) if snapshot_dir is not None else None),
+            return await _workspace_download_response(
+                agent_id, path, target.name, channel_token.get("content_sha256"),
             )
 
     # Resolve JWT token from either Bearer header or query param
@@ -1120,7 +1131,7 @@ async def download_file(
             raise _workspace_authority_http_error(exc) from exc
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-    return FileResponse(path=str(target), filename=target.name)
+    return await _workspace_download_response(agent_id, path, target.name)
 
 
 @router.get("/artifacts/{artifact_id}/download")

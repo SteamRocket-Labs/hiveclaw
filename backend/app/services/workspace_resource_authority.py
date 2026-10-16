@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import stat
@@ -11,6 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from fastapi import HTTPException
@@ -148,6 +150,32 @@ def open_workspace_file(workspace: Path, path: str, *, write: bool = False):
 def write_workspace_file(workspace: Path, path: str, content: bytes) -> None:
     with open_workspace_file(workspace, path, write=True) as output:
         output.write(content)
+
+
+def snapshot_workspace_file(
+    workspace: Path, path: str, expected_sha256: str | None = None,
+) -> tuple[TemporaryDirectory[str], Path]:
+    """Keep a private copy of descriptor-validated bytes through response delivery."""
+    snapshot_dir = None
+    try:
+        snapshot_dir = TemporaryDirectory(prefix="hive-workspace-download-")
+        snapshot_path = Path(snapshot_dir.name) / Path(path).name
+        digest = hashlib.sha256()
+        with open_workspace_file(workspace, path) as source, snapshot_path.open("xb") as snapshot:
+            source_info = os.fstat(source.fileno())
+            while chunk := source.read(64 * 1024):
+                digest.update(chunk)
+                snapshot.write(chunk)
+        if expected_sha256 is not None and not hmac.compare_digest(digest.hexdigest(), expected_sha256):
+            raise WorkspaceAuthorityError("workspace_resource_changed", "File contents changed after delivery authorization.")
+        os.utime(snapshot_path, ns=(source_info.st_atime_ns, source_info.st_mtime_ns))
+        return snapshot_dir, snapshot_path
+    except BaseException as exc:
+        if snapshot_dir is not None:
+            snapshot_dir.cleanup()
+        if isinstance(exc, OSError):
+            raise WorkspaceAuthorityError("workspace_storage_unavailable", "Download storage is unavailable; retry the request.") from exc
+        raise
 
 
 @dataclass(frozen=True)

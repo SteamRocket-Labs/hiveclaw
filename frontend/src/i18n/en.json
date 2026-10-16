@@ -1232,6 +1232,19 @@
     "toolFailuresSampled": "latest bounded sample"
   },
   "agent": {
+    "configuration": {
+      "title": "Configure for this work",
+      "private": "Save account settings here. Credentials are not sent to the conversation.",
+      "saveContinue": "Save and continue",
+      "saved": "Configuration saved. Connection will be verified when the employee uses it.",
+      "continue": "Continue original work",
+      "skip": "Continue without configuration",
+      "recorded": "Configuration request recorded",
+      "loadFailed": "Could not load configuration.",
+      "saveFailed": "Could not save configuration.",
+      "resumeFailed": "Could not continue the work. Retry continuation."
+    },
+
     "operator": {
       "reason": "Operator inspection reason",
       "reasonPlaceholder": "Enter the incident or review reason before inspecting another user’s data",

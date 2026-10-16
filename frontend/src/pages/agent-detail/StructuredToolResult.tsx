@@ -11,6 +11,7 @@ import type { ToolCallMeta, WorkflowPreviewToolMeta } from './toolResultEnvelope
 
 const HrCreationHandoffCard = lazy(() => import('./HrCreationHandoffCard'));
 const InlineApprovalCard = lazy(() => import('./InlineApprovalCard'));
+const InlineToolConfigurationCard = lazy(() => import('./InlineToolConfigurationCard'));
 const HrBlueprintPreviewCard = lazy(() => (
   import('./HrBlueprintPreviewCard').then((module) => ({ default: module.HrBlueprintPreviewCard }))
 ));
@@ -383,6 +384,14 @@ export function StructuredToolResultBody({
 
   if (toolMeta.kind === 'user_clarification') {
     const requestItemId = toolMeta.requestItemId || questionItemId;
+    if (toolMeta.configurationRequest) {
+      return agentId && sessionId && requestItemId ? <Suspense fallback={null}>
+        <InlineToolConfigurationCard key={`${agentId}:${sessionId}:${requestItemId}`}
+          agentId={agentId} sessionId={sessionId} questionId={requestItemId}
+          question={toolMeta.questions[0]?.question || ''} answered={submitted || toolMeta.answered}
+          onAnswer={onAnswerQuestion} />
+      </Suspense> : <p>{toolMeta.questions[0]?.question}</p>;
+    }
     if (!onAnswerQuestion || !requestItemId) {
       // No send path available (e.g. read-only history view) — fall back to a
       // static rendering with the questions but no interactive submit.

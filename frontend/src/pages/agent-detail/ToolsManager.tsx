@@ -11,7 +11,7 @@ import {
 import { toolsApi, type AgentTool } from '../../api/domains/tools';
 import { showAppToast } from '../../components/AppDialogs';
 import ToolIcon from '../../components/ToolIcon';
-import { useAuthStore } from '../../stores';
+import ToolConfigurationForm from './ToolConfigurationForm';
 import { McpToolTrustBadge } from './McpToolTrustBadge';
 import './ToolsManager.css';
 
@@ -47,10 +47,7 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
   const [tools, setTools] = useState<AgentTool[]>([]);
   const [extensions, setExtensions] = useState<AgentExtensions | null>(null);
   const [loading, setLoading] = useState(true);
-  const [configTool, setConfigTool] = useState<any | null>(null);
-  const [configData, setConfigData] = useState<Record<string, any>>({});
-  const [configJson, setConfigJson] = useState('');
-  const [configSaving, setConfigSaving] = useState(false);
+  const [configTool, setConfigTool] = useState<AgentTool | null>(null);
   const [savingServerId, setSavingServerId] = useState<string | null>(null);
   const [savingPluginKey, setSavingPluginKey] = useState<string | null>(null);
   // MCP servers whose "Advanced tool controls" drawer is expanded (hidden by default).
@@ -80,9 +77,6 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
   useEffect(() => {
     setLoading(true);
     setConfigTool(null);
-    setConfigData({});
-    setConfigJson('');
-    setConfigSaving(false);
     setOpenAdvanced(new Set());
     setServerToolsById({});
     void Promise.all([loadTools(), loadExtensions()]).finally(() => {
@@ -195,33 +189,19 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
     }
   };
 
-  const openConfig = (tool: any) => {
-    setConfigTool(tool);
-    const merged = { ...(tool.global_config || {}), ...(tool.agent_config || {}) };
-    setConfigData(merged);
-    setConfigJson(JSON.stringify(tool.agent_config || {}, null, 2));
-  };
+  const openConfig = (tool: AgentTool) => setConfigTool(tool);
 
-  const saveConfig = async () => {
+  const saveConfig = async (config: Record<string, unknown>) => {
     if (!configTool) return;
-    setConfigSaving(true);
     try {
-      const hasSchema = configTool.config_schema?.fields?.length > 0;
-      const payload = hasSchema ? { ...(configTool.agent_config || {}) } : JSON.parse(configJson || '{}');
-      if (hasSchema) {
-        const inherited = { ...(configTool.global_config || {}), ...(configTool.agent_config || {}) };
-        for (const [key, value] of Object.entries(configData)) {
-          if (!Object.is(value, inherited[key])) payload[key] = value;
-        }
-      }
-      const saved = await toolsApi.updateToolConfig(agentId, configTool.id, payload);
+      const saved = await toolsApi.updateToolConfig(agentId, configTool.id, config);
       if (activeView.current !== sourceView) return;
       setTools((previous) => previous.map((tool) => tool.id === saved.tool.id ? saved.tool : tool));
       setConfigTool(null);
     } catch (error) {
       if (activeView.current === sourceView) showAppToast(`Save failed: ${error}`, 'error');
+      throw error;
     }
-    if (activeView.current === sourceView) setConfigSaving(false);
   };
 
   if (loading) {
@@ -517,83 +497,8 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
               <button onClick={() => setConfigTool(null)} className="tools-manager-modal-close">✕</button>
             </div>
 
-            {configTool.config_schema?.fields?.length > 0 ? (
-              <div className="tools-manager-fields">
-                {(configTool.config_schema.fields as any[])
-                  .filter((field: any) => {
-                    if (!field.depends_on) return true;
-                    return Object.entries(field.depends_on).every(([dependencyKey, dependencyValues]: [string, any]) =>
-                      (dependencyValues as string[]).includes(configData[dependencyKey] ?? ''),
-                    );
-                  })
-                  .map((field: any) => {
-                    const userFromStore = useAuthStore.getState().user;
-                    const currentUserRole = userFromStore?.role;
-                    const isReadOnly = field.read_only_for_roles?.includes(currentUserRole);
-                    return (
-                      <div key={field.key}>
-                        <label className="tools-manager-field-label">
-                          {field.label}
-                          {isReadOnly && <span className="tools-manager-field-note">(Admin only)</span>}
-                        </label>
-                        {field.type === 'password' ? (
-                          <input
-                            type="password"
-                            autoComplete="new-password"
-                            className="form-input"
-                            value={configData[field.key] ?? ''}
-                            placeholder={field.placeholder || 'Leave blank to use global default'}
-                            onChange={(event) => setConfigData((previous) => ({ ...previous, [field.key]: event.target.value }))}
-                          />
-                        ) : field.type === 'select' ? (
-                          <select className="form-input" value={configData[field.key] ?? field.default ?? ''} onChange={(event) => setConfigData((previous) => ({ ...previous, [field.key]: event.target.value }))}>
-                            {(field.options || []).map((option: any) => (
-                              <option key={option.value} value={option.value}>
-                                {option.label}
-                              </option>
-                            ))}
-                          </select>
-                        ) : field.type === 'number' ? (
-                          <input
-                            type="number"
-                            className="form-input"
-                            value={configData[field.key] ?? field.default ?? ''}
-                            placeholder={field.placeholder || ''}
-                            min={field.min}
-                            max={field.max}
-                            onChange={(event) => setConfigData((previous) => ({ ...previous, [field.key]: event.target.value ? Number(event.target.value) : '' }))}
-                          />
-                        ) : (
-                          <input
-                            type="text"
-                            className="form-input"
-                            value={configData[field.key] ?? ''}
-                            placeholder={field.placeholder || 'Leave blank to use global default'}
-                            onChange={(event) => setConfigData((previous) => ({ ...previous, [field.key]: event.target.value }))}
-                          />
-                        )}
-                      </div>
-                    );
-                  })}
-              </div>
-            ) : (
-              <div>
-                <label className="tools-manager-field-label">Config JSON (Agent Override)</label>
-                <textarea
-                  className="form-input tools-manager-json-input"
-                  value={configJson}
-                  onChange={(event) => setConfigJson(event.target.value)}
-                  placeholder="{}"
-                />
-              </div>
-            )}
-
-            <div className="tools-manager-modal-footer">
-              <button className="btn btn-secondary" onClick={() => setConfigTool(null)}>{t('common.cancel', 'Cancel')}</button>
-              <button className="btn btn-primary" onClick={() => void saveConfig()} disabled={configSaving}>
-                {configSaving ? t('common.saving', 'Saving…') : t('common.save', 'Save')}
-              </button>
-            </div>
+            <ToolConfigurationForm key={`${agentId}:${configTool.id}`} tool={configTool}
+              onSave={saveConfig} onCancel={() => setConfigTool(null)} />
           </div>
         </div>
       )}

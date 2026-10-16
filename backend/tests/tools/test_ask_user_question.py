@@ -63,6 +63,28 @@ def test_ask_user_question_excluded_from_subagents():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("requested,configuration_tool", [("exa_search", "exa_search"), ("read_emails", "send_email")])
+async def test_configuration_question_uses_current_employee_without_hook_inventing_a_save(tmp_path, monkeypatch, requested, configuration_tool):
+    from app.runtime.hooks import HookResult
+    from app.tools.handlers.plan_mode import ask_user_question
+
+    async def auto_accept(*_args, **_kwargs):
+        return HookResult(elicitation_action="accept", elicitation_content="Configuration saved")
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", auto_accept)
+    request = _request(tmp_path, {"questions": [{"question": "Connect search?", "options": []}],
+        "configuration": {"tool_name": requested}, "blocking": False})
+    payload = json.loads(await ask_user_question(request))
+    assert payload["status"] == "awaiting_user_clarification" and payload["blocking"] is False
+    assert payload["configuration_request"] == {"target_agent_id": str(request.context.agent_id), "tool_name": configuration_tool}
+    assert "configuration_saved" not in payload
+    request.arguments["configuration"]["api_key"] = "synthetic-invalid-credential"
+    invalid = await ask_user_question(request)
+    assert json.loads(invalid)["error_code"] == "invalid_configuration_request"
+    assert "synthetic-invalid-credential" not in invalid
+
+
+@pytest.mark.asyncio
 async def test_ask_user_question_returns_cc_shaped_envelope(tmp_path: Path):
     """CC-shaped: questions[] each with header + options(label/description) + multiSelect."""
     from app.tools.handlers.plan_mode import ask_user_question

@@ -17,6 +17,36 @@ def question_payload(event):
     return dict((event.metadata_json or {}).get("v2_payload") or {})
 
 
+async def load_configuration_question(db, *, authority, item_id):
+    from fastapi import HTTPException
+
+    question = await load_answer_question(db, authority=authority, item_id=item_id)
+    payload = question_payload(question) if question is not None else {}
+    task = await db.get(RuntimeTask, question.run_id) if question is not None and question.run_id else None
+    if not payload.get("configuration_request") or task is None:
+        raise HTTPException(status_code=404, detail="Configuration request not found")
+    if (authority.principal_type != "user" or task.root_user_id != authority.principal_id
+            or payload.get("requested_by_user_id") != str(authority.principal_id)):
+        raise HTTPException(status_code=403, detail="Original requester required")
+    return question
+
+
+def validate_configuration_answer(question, content_parts):
+    from fastapi import HTTPException
+
+    payload = question_payload(question)
+    if not payload.get("configuration_request"):
+        return
+    saved = [{"type": "text", "text": "Continue after saving configuration."}]
+    skipped = [{"type": "text", "text": "Continue without changing configuration."}]
+    if content_parts not in (saved, skipped):
+        raise HTTPException(status_code=422, detail={"code": "configuration_answer_action_required",
+            "message": "Use the configuration card; do not send credentials as an answer."})
+    if content_parts == saved and not payload.get("configuration_saved"):
+        raise HTTPException(status_code=409, detail={"code": "configuration_not_saved",
+            "message": "Save the configuration before continuing, or continue without changing it."})
+
+
 async def load_answer_question(db, *, authority, item_id):
     question = await db.scalar(select(ChatTranscriptEvent).where(
         ChatTranscriptEvent.tenant_id == authority.tenant_id,

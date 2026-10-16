@@ -9,6 +9,7 @@ and read by write_audit_event() to populate execution_identity_* columns.
 """
 
 import uuid
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Mapping
@@ -175,6 +176,22 @@ def set_agent_bot_identity(agent_id: uuid.UUID, agent_name: str, source: str = "
 
 # ContextVar — current tenant for tool config isolation
 _current_tool_tenant_id: ContextVar[uuid.UUID | None] = ContextVar("tool_tenant_id", default=None)
+_current_tool_agent_id: ContextVar[uuid.UUID | None] = ContextVar("tool_agent_id", default=None)
+
+
+@contextmanager
+def tool_configuration_context(*, tenant_id: uuid.UUID | None, agent_id: uuid.UUID):
+    tenant_token = _current_tool_tenant_id.set(tenant_id)
+    agent_token = _current_tool_agent_id.set(agent_id)
+    try:
+        yield
+    finally:
+        _current_tool_agent_id.reset(agent_token)
+        _current_tool_tenant_id.reset(tenant_token)
+
+
+def get_tool_agent_id() -> uuid.UUID | None:
+    return _current_tool_agent_id.get()
 
 
 def set_tool_tenant_id(tenant_id: uuid.UUID | None) -> None:

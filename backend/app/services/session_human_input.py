@@ -184,6 +184,12 @@ async def revise_unbound_human_input(
         raise InputRevisionConflict(current_revision=row.revision)
     if not isinstance(content_parts, list):
         raise ValueError("content_parts must be an array")
+    if row.intent == "answer_request" and row.request_item_id is not None:
+        from app.services.session_user_question import load_answer_question, validate_configuration_answer
+
+        question = await load_answer_question(db, authority=authority, item_id=row.request_item_id)
+        if question is not None:
+            validate_configuration_answer(question, content_parts)
     previous_hash = row.content_hash
     previous_revision = int(row.revision)
     row.content_parts_json = list(content_parts)

@@ -427,7 +427,12 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
             "(label + description); the user can always pick 'Other' to type a free answer, and "
             "multiSelect questions allow multiple picks. This is NOT approval: do not use it to ask "
             "'is this plan OK?' (exit_plan_mode is the approval request). After calling it, end your "
-            "turn; the user's answers arrive as the next message."
+            "turn; the user's answers arrive as the next message. For tool account settings, supply "
+            "configuration with the actual configuration tool_name and target_agent_id (defaults to "
+            "this employee). This opens a secure settings form in the same work; NEVER ask for or "
+            "include credentials in questions, options or tool arguments. Reuse existing authorized "
+            "connections when sufficient. Email read/reply share send_email settings. Channel/OAuth "
+            "connections use their existing connection settings, not this tool configuration form."
         ),
         parameters={
             "type": "object",
@@ -467,6 +472,16 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
                     "type": "boolean",
                     "description": "Whether planning cannot proceed until answered (default true).",
                 },
+                "configuration": {
+                    "type": "object",
+                    "description": "Request employee tool settings, without saving or granting access.",
+                    "properties": {
+                        "tool_name": {"type": "string", "description": "Exact configuration tool name."},
+                        "target_agent_id": {"type": "string", "description": "Employee receiving the settings."},
+                    },
+                    "required": ["tool_name"],
+                    "additionalProperties": False,
+                },
             },
             "required": ["questions"],
         },
@@ -490,6 +505,21 @@ async def ask_user_question(request: ToolExecutionRequest) -> str:
     description) + multiSelect; 'Other' free-text is always available client-side.
     """
     args = dict(request.arguments or {})
+    configuration = None
+    if "configuration" in args:
+        raw = args["configuration"]
+        try:
+            if not isinstance(raw, dict) or set(raw) - {"target_agent_id", "tool_name"}:
+                raise ValueError("invalid configuration target")
+            target = uuid.UUID(str(raw.get("target_agent_id") or request.context.agent_id))
+            tool_name = str(raw.get("tool_name") or "").strip()
+            if not tool_name:
+                raise ValueError("missing configuration tool")
+            tool_name = {"read_emails": "send_email", "reply_email": "send_email"}.get(tool_name, tool_name)
+            configuration = {"target_agent_id": str(target), "tool_name": tool_name}
+        except (ValueError, TypeError, AttributeError):
+            return json.dumps({"status": "error", "error_code": "invalid_configuration_request",
+                               "message": "Specify an employee and exact tool name; never include configuration values."})
     raw_questions = args.get("questions")
     # Back-compat: accept a single {question, options, multiSelect} shorthand.
     if not isinstance(raw_questions, list) or not raw_questions:
@@ -577,7 +607,8 @@ async def ask_user_question(request: ToolExecutionRequest) -> str:
             },
             ensure_ascii=False,
         )
-    if hook_result and hook_result.elicitation_action == "accept" and hook_result.elicitation_content is not None:
+    # A hook answer is not evidence that account settings were saved.
+    if not configuration and hook_result and hook_result.elicitation_action == "accept" and hook_result.elicitation_content is not None:
         return json.dumps(
             {
                 "status": "elicitation_auto_resolved",
@@ -592,6 +623,7 @@ async def ask_user_question(request: ToolExecutionRequest) -> str:
         "status": "awaiting_user_clarification",
         "questions": normalized,
         "blocking": bool(args.get("blocking", True)),
+        **({"configuration_request": configuration} if configuration else {}),
         "next_action": (
             "END your turn now — the question card is shown to the user. They pick options (or 'Other' "
             "free text); their answers arrive as the next message. Do NOT assume answers or call "

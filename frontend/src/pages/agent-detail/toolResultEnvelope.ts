@@ -117,6 +117,7 @@ export interface UserClarificationToolMeta {
   answeredByEventId?: string | null;
   answerText?: string | null;
   answeredAt?: string | null;
+  configurationRequest?: { targetAgentId: string; toolName: string };
 }
 
 export interface PlanModeRequestToolMeta {
@@ -470,11 +471,14 @@ function parseUserClarificationResult(rawResult: unknown): UserClarificationTool
   if (questions.length === 0) {
     return null;
   }
+  const configuration = parseStructuredToolPayload(parsed.configuration_request);
   return {
     kind: 'user_clarification',
     questions,
     blocking: parsed.blocking !== false,
     nextAction: typeof parsed.next_action === 'string' ? parsed.next_action : null,
+    ...(typeof configuration?.target_agent_id === 'string' && typeof configuration.tool_name === 'string'
+      ? { configurationRequest: { targetAgentId: configuration.target_agent_id, toolName: configuration.tool_name } } : {}),
   };
 }
 

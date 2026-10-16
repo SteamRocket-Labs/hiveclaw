@@ -1069,23 +1069,103 @@ async def update_tool_config(
     tool = await _get_visible_agent_tool(db, agent, tool_id)
     if not tool:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found")
+    assignment = await _write_agent_tool_config(db, agent_id=agent_id, tool=tool, config=data.config)
+    await db.commit()
+    defaults, _enabled = await resolve_tool_config_for_tenant_display(db, tool, agent.tenant_id)
+    return {"ok": True, "tool": _serialize_agent_tool_row(tool, assignment, base_config=defaults)}
+
+
+async def _write_agent_tool_config(db, *, agent_id, tool, config):
     assignment, _ = await ensure_agent_tool_assignment(
         db,
         agent_id=agent_id,
-        tool_id=tool_id,
+        tool_id=tool.id,
         enabled=True,
         config=None,
         source="system",
         merge_config=False,
     )
     assignment.config = merge_agent_tool_config_secrets(
-        data.config,
+        config,
         assignment.config,
         tool.config_schema or {},
     )
+    return assignment
+
+
+async def _configuration_request_context(db, current_user, agent_id, session_id, question_id):
+    from app.services.chat_transcript import lock_transcript_session
+    from app.services.session_user_question import load_configuration_question, question_payload
+    from app.services.session_v2_persistence import resolve_session_mutation_authority
+
+    authority = await resolve_session_mutation_authority(db, user=current_user, agent_id=agent_id,
+        session_id=session_id, action="mutate_session_input")
+    await lock_transcript_session(db, session_id=session_id)
+    question = await load_configuration_question(db, authority=authority, item_id=question_id)
+    descriptor = question_payload(question)["configuration_request"]
+    target = await _require_manage_access(db, current_user, uuid.UUID(descriptor["target_agent_id"]))
+    if target.tenant_id != authority.tenant_id:
+        raise HTTPException(status_code=404, detail="Configuration target not found")
+    # Match the runtime's platform-first lookup, then apply the existing visibility gate.
+    tool_id = await db.scalar(select(Tool.id).where(Tool.name == descriptor["tool_name"],
+        or_(Tool.tenant_id.is_(None), Tool.tenant_id == target.tenant_id))
+        .order_by(Tool.tenant_id.is_not(None)).limit(1))
+    tool = await _get_visible_agent_tool(db, target, tool_id) if tool_id else None
+    if tool is None:
+        raise HTTPException(status_code=404, detail="Configuration tool not found")
+    if tool.type == "mcp" or (not (tool.config_schema or {}).get("fields") and tool.name != "send_email"):
+        raise HTTPException(status_code=409, detail={"code": "configuration_uses_connection_settings",
+            "message": "Use the existing connection settings for this capability; this form only saves employee tool settings."})
+    return authority, question, target, tool
+
+
+async def _configuration_request_response(db, *, question, target, tool, replayed=False):
+    from app.services.session_user_question import question_payload
+
+    saved = question_payload(question).get("configuration_saved") or {}
+    assignment = await _get_agent_tool(db, target.id, tool.id)
+    defaults, _enabled = await resolve_tool_config_for_tenant_display(db, tool, target.tenant_id)
+    return {"state": "saved" if saved else "waiting", "receipt_ref": saved.get("receipt_ref"),
+        "replayed": replayed, "target_agent_id": str(target.id), "target_agent_name": target.name,
+        "tool": _serialize_agent_tool_row(tool, assignment, base_config=defaults)}
+
+
+@router.get("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/configuration")
+async def get_session_tool_configuration(
+    agent_id: uuid.UUID, session_id: uuid.UUID, question_id: uuid.UUID,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+):
+    _authority, question, target, tool = await _configuration_request_context(
+        db, current_user, agent_id, session_id, question_id)
+    return await _configuration_request_response(db, question=question, target=target, tool=tool)
+
+
+@router.put("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/configuration")
+async def save_session_tool_configuration(
+    agent_id: uuid.UUID, session_id: uuid.UUID, question_id: uuid.UUID, data: CategoryConfigIn,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+):
+    from app.services.session_user_question import question_payload
+    from app.services.session_v2_persistence import SessionEventDraft, append_session_events
+
+    authority, question, target, tool = await _configuration_request_context(
+        db, current_user, agent_id, session_id, question_id)
+    payload = question_payload(question)
+    if payload.get("configuration_saved"):
+        return await _configuration_request_response(db, question=question, target=target, tool=tool, replayed=True)
+    if question.lifecycle not in {"created", "waiting"}:
+        raise HTTPException(status_code=409, detail="Configuration request is no longer waiting")
+    await _write_agent_tool_config(db, agent_id=target.id, tool=tool, config=data.config)
+    events = await append_session_events(db, tenant_id=authority.tenant_id, agent_id=agent_id,
+        session_id=session_id, drafts=[SessionEventDraft(
+            item_id=question.item_id, item_kind="user_question", lifecycle="waiting", scope=question.scope_json,
+            actor=authority.event_actor(), invocation_id=question.invocation_id, result_id=question.result_id,
+            provider_tool_use_id=question.provider_tool_use_id,
+            payload={**payload, "configuration_saved": {"receipt_ref": f"tool-configuration:{uuid.uuid4()}",
+                "target_agent_id": str(target.id), "tool_id": str(tool.id)}},
+        )])
     await db.commit()
-    defaults, _enabled = await resolve_tool_config_for_tenant_display(db, tool, agent.tenant_id)
-    return {"ok": True, "tool": _serialize_agent_tool_row(tool, assignment, base_config=defaults)}
+    return await _configuration_request_response(db, question=events[0], target=target, tool=tool)
 
 
 @router.get("/tools/agent-tool/{tool_id}")

@@ -1009,7 +1009,8 @@ async def test_typed_permission_batch_suspends_original_run_with_non_json_displa
 
 
 @pytest.mark.asyncio
-async def test_company_approval_waits_for_all_provider_results_before_terminal_pause(monkeypatch):
+@pytest.mark.parametrize("interaction", ["company_approval", "configuration"])
+async def test_company_approval_waits_for_all_provider_results_before_terminal_pause(monkeypatch, interaction):
     from unittest.mock import AsyncMock
     from app.services import web_chat_run_orchestrator as orchestrator
     from app.services.web_chat_runtime import _interactive_pause_summary_for_tool_call
@@ -1023,10 +1024,15 @@ async def test_company_approval_waits_for_all_provider_results_before_terminal_p
     callbacks = orchestrator._WebChatCallbacks(state)
     finalize = AsyncMock()
     monkeypatch.setattr(orchestrator._WebChatCallbacks, "finalize_terminal_card", finalize)
-    await callbacks._consume_completed_tool({"name": "read_file", "status": "done",
+    data = {"name": "read_file", "status": "done",
         "result": {"status": "approval_required", "approval_id": str(uuid4())},
-        "tool_execution_evidence": {"tool_decision": {"outcome": "require_approval"}}})
-    assert state.interactive_pause_summary == "awaiting_company_approval"
+        "tool_execution_evidence": {"tool_decision": {"outcome": "require_approval"}}}
+    if interaction == "configuration":
+        data = {"name": "ask_user_question", "status": "done", "result": {
+            "status": "awaiting_user_clarification", "blocking": True,
+            "configuration_request": {"target_agent_id": str(uuid4()), "tool_name": "send_email"}}}
+    await callbacks._consume_completed_tool(data)
+    assert state.interactive_pause_summary == ("awaiting_company_approval" if interaction == "company_approval" else "awaiting_user_clarification")
     finalize.assert_not_awaited()
 
 

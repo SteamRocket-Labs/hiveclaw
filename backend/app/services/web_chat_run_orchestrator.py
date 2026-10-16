@@ -613,7 +613,7 @@ class _WebChatCallbacks:
         if not pause:
             return
         state.interactive_pause_summary = pause
-        if pause in {"awaiting_session_permission", "awaiting_company_approval"}:
+        if pause in {"awaiting_session_permission", "awaiting_company_approval", "awaiting_user_clarification"}:
             # The kernel must finish persisting every matching result in the
             # current Provider tool batch before the Run may suspend. Raising
             # here used to strand already-executed parallel siblings.

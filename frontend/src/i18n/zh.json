@@ -1232,6 +1232,19 @@
     "toolFailuresSampled": "最新有限样本"
   },
   "agent": {
+    "configuration": {
+      "title": "为当前工作配置",
+      "private": "请在此保存账号配置，凭据不会发送到会话中。",
+      "saveContinue": "保存并继续",
+      "saved": "配置已保存，连接是否可用将在员工实际使用时验证。",
+      "continue": "继续原工作",
+      "skip": "暂不配置，继续工作",
+      "recorded": "配置请求已记录",
+      "loadFailed": "无法读取配置，请重试。",
+      "saveFailed": "无法保存配置，请重试。",
+      "resumeFailed": "暂时无法继续工作，请重试续接。"
+    },
+
     "operator": {
       "reason": "操作员检查原因",
       "reasonPlaceholder": "检查其他用户的数据前，请填写事故或审查原因",

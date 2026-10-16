@@ -94,14 +94,14 @@ class ToolExecutionRegistry:
             return None
 
         # Set tenant context for tool config isolation (read by resolve_tool_config)
-        from app.core.execution_context import set_tool_tenant_id
+        from app.core.execution_context import tool_configuration_context
 
         _tenant_id = getattr(request.context, "tenant_id", None) if request.context else None
-        set_tool_tenant_id(uuid.UUID(_tenant_id) if isinstance(_tenant_id, str) else _tenant_id)
-        try:
+        with tool_configuration_context(
+            tenant_id=uuid.UUID(_tenant_id) if isinstance(_tenant_id, str) else _tenant_id,
+            agent_id=request.context.agent_id,
+        ):
             result = executor(request)
             if inspect.isawaitable(result):
                 return await result
             return result
-        finally:
-            set_tool_tenant_id(None)

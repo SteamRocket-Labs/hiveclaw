@@ -258,6 +258,9 @@ async def submit_live_human_input(
             raise HTTPException(status_code=409, detail={"code": "user_question_not_found",
                 "message": "The requested question is unavailable in this work."})
         request_item_id = question.item_id
+        from app.services.session_user_question import validate_configuration_answer
+
+        validate_configuration_answer(question, content_parts)
     if runtime_result_page_id is None:
         # Ordinary owner/peer lanes: exactly one idempotency lookup AFTER
         # authority resolution.  The runtime result lane already performed

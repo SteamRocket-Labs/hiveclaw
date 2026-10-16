@@ -62,6 +62,15 @@ export interface ToolDetail {
   provider_auth?: ToolProviderAuth | null;
 }
 
+export interface SessionToolConfiguration {
+  state: 'waiting' | 'saved';
+  receipt_ref: string | null;
+  target_agent_id: string;
+  target_agent_name: string;
+  replayed?: boolean;
+  tool: AgentTool;
+}
+
 export interface CategoryConfig {
   [key: string]: unknown;
 }
@@ -116,6 +125,10 @@ export const toolsApi = {
   /** Per-tool config */
   updateToolConfig: (agentId: string, toolId: string, config: Record<string, unknown>) =>
     put<{ ok: boolean; tool: AgentTool }>(`/tools/agents/${agentId}/tool-config/${toolId}`, { config }),
+  getSessionToolConfiguration: (agentId: string, sessionId: string, questionId: string) =>
+    get<SessionToolConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/configuration`),
+  saveSessionToolConfiguration: (agentId: string, sessionId: string, questionId: string, config: Record<string, unknown>) =>
+    put<SessionToolConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/configuration`, { config }),
 
   /** Single tool detail */
   getDetail: (toolId: string) => get<ToolDetail>(`/tools/agent-tool/${toolId}`),

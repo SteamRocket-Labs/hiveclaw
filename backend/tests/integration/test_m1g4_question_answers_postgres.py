@@ -15,13 +15,13 @@ from tests.services.test_session_input_control_v2 import _mark_web_terminal_boun
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
-async def _ask(db, *, tenant_id, agent_id, session_id, run_id, service, user_id):
+async def _ask(db, *, tenant_id, agent_id, session_id, run_id, service, user_id, arguments=None):
     from app.services.session_model_round import prepare_model_request, seal_model_response, commit_sealed_model_round
     from app.services.session_tool_runtime import prepare_tool_invocation, complete_tool_invocation
     from app.services.session_permission_runtime import _execution_evidence
 
     turn_id, call_id = f"turn-{run_id.hex}", f"question-{run_id.hex}"
-    arguments = {"questions": [{"question": "Which audience?", "header": "Audience",
+    arguments = arguments or {"questions": [{"question": "Which audience?", "header": "Audience",
                                "options": [{"label": "Team"}, {"label": "Personal"}]}]}
     wire = {"messages": [{"role": "user", "content": "Prepare a comparison"}],
             "tools": [{"type": "function", "function": {"name": "ask_user_question"}}], "max_tokens": 8192}

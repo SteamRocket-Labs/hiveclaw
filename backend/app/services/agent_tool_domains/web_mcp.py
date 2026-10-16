@@ -599,19 +599,24 @@ async def _anysearch_extract(arguments: dict) -> str:
 
 
 async def _get_tool_config(tool_name: str) -> dict:
-    """Resolve tool config with tenant isolation via ContextVar.
+    """Resolve platform, company and employee config from the governed tool context.
 
     Reads the current tenant_id from the execution context (set by
     ToolExecutionRegistry.try_execute) and merges:
-    Tool.config (platform default) → TenantToolConfig.config (tenant override).
+    Tool.config → TenantToolConfig.config → AgentTool.config.
     """
+    from app.core.execution_context import get_tool_agent_id, get_tool_tenant_id
+
     try:
-        from app.core.execution_context import get_tool_tenant_id
         from app.services.tool_config_service import resolve_tool_config
 
         tenant_id = get_tool_tenant_id()
-        return await resolve_tool_config(tool_name, tenant_id)
+        agent_id = get_tool_agent_id()
+        return await resolve_tool_config(tool_name, tenant_id, **({"agent_id": agent_id} if agent_id else {}))
     except Exception as e:
+        # A failed scoped read cannot authorize a different account's fallback credentials.
+        if get_tool_tenant_id() is not None or get_tool_agent_id() is not None:
+            raise
         logger.debug("Suppressed: %s", e)
 
     try:

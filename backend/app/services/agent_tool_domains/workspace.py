@@ -163,7 +163,7 @@ def _authority_allows_path(authority_scope, rel_path: str, *, directory: bool = 
         return authority_scope.can_perform(rel_path, action)
     normalized = str(rel_path or "").replace("\\", "/").strip().lstrip("/")
     if not (normalized == "workspace" or normalized.startswith("workspace/")):
-        return True
+        return authority_scope.can_read(normalized)
     if directory:
         return authority_scope.can_read(normalized)
     return normalized in authority_scope.allowed_paths or authority_scope.operator_view
@@ -172,6 +172,7 @@ def _authority_allows_path(authority_scope, rel_path: str, *, directory: bool = 
 def _authority_known_foreign_path(authority_scope, rel_path: str) -> bool:
     """Known-but-unreadable workspace manifests deny BEFORE any existence probe.
 
+    Native session sources also deny from the trusted database scope first.
     Mirrors ``authorize_workspace_tool_path``: the trusted manifest registry
     (``known_paths``) decides foreign ownership first, so filesystem existence
     never becomes an oracle distinguishing a foreign manifest that happens to be
@@ -181,6 +182,8 @@ def _authority_known_foreign_path(authority_scope, rel_path: str) -> bool:
     if authority_scope is None:
         return False
     normalized = str(rel_path or "").replace("\\", "/").strip().lstrip("/")
+    if authority_scope.can_read_session_source(normalized) is False:
+        return True
     if not normalized.startswith("workspace/"):
         return False
     return normalized in authority_scope.known_paths and not authority_scope.can_read(normalized)
@@ -218,6 +221,8 @@ def _list_files(
     tool_name: str = "list_files",
     authority_scope=None,
 ) -> str:
+    if _authority_known_foreign_path(authority_scope, rel_path):
+        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     enterprise_context = bool(rel_path and rel_path.startswith("enterprise_info"))
     if enterprise_context:
         if not company_context_path_allowed(rel_path, directory=True):
@@ -234,6 +239,9 @@ def _list_files(
         target = _resolved_workspace_path(ws, rel_path)
         if target is None:
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
+        rel_path = target.relative_to(ws.resolve()).as_posix() if target != ws.resolve() else ""
+        if _authority_known_foreign_path(authority_scope, rel_path):
+            return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
 
     if not target.exists():
         return _workspace_error(
@@ -242,6 +250,8 @@ def _list_files(
             f"Directory not found: {rel_path or '/'}",
             actionable_hint="Check the directory path and list the parent directory first if needed.",
         )
+    if not _authority_allows_path(authority_scope, rel_path, directory=True):
+        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
 
     items = []
     if not rel_path:
@@ -254,22 +264,29 @@ def _list_files(
 
     dir_count = 0
     file_count = 0
-    for p in sorted(target.iterdir()):
+
+    def visible(p):
         if p.name.startswith("."):
-            continue
+            return False
         if enterprise_context and p.name not in COMPANY_CONTEXT_FILENAMES:
-            continue
-        if not enterprise_context and _resolved_workspace_path(ws, p.relative_to(ws.resolve()).as_posix()) is None:
-            continue
-        if authority_scope is not None and not authority_scope.visible_child(
-            rel_path,
-            p.name,
-            is_dir=p.is_dir(),
-        ):
+            return False
+        if not enterprise_context:
+            relative = p.relative_to(ws.resolve()).as_posix()
+            resolved = _resolved_workspace_path(ws, relative)
+            if resolved is None or not _authority_allows_path(authority_scope,
+                resolved.relative_to(ws.resolve()).as_posix(), directory=p.is_dir()):
+                return False
+            parent = p.parent.relative_to(ws.resolve()).as_posix()
+        else:
+            parent = rel_path
+        return authority_scope is None or authority_scope.visible_child(parent, p.name, is_dir=p.is_dir())
+
+    for p in sorted(target.iterdir()):
+        if not visible(p):
             continue
         if p.is_dir():
             dir_count += 1
-            child_count = len([c for c in p.iterdir() if not c.name.startswith(".")])
+            child_count = sum(1 for c in p.iterdir() if visible(c))
             items.append(f"  📁 {p.name}/ ({child_count} items)")
         elif p.is_file():
             file_count += 1
@@ -342,6 +359,9 @@ def _read_file(
         if file_path is None:
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
 
+    authority_path = file_path.relative_to(ws.resolve()).as_posix() if _is_within_path(file_path, ws) else rel_path
+    if _authority_known_foreign_path(authority_scope, authority_path):
+        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     if not file_path.exists():
         return _workspace_error(
             tool_name,
@@ -349,9 +369,8 @@ def _read_file(
             f"File not found: {rel_path}",
             actionable_hint="Check the path or use glob_search/list_files to discover the correct file first.",
         )
-    if not _authority_allows_path(authority_scope, rel_path):
+    if not _authority_allows_path(authority_scope, authority_path):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
-
     # Image files → typed image block (CC Read parity): vision-capable models see
     # the image natively; the text fallback names the file for text-only providers.
     image_media = _IMAGE_MEDIA_TYPES.get(file_path.suffix.lower())
@@ -990,9 +1009,12 @@ async def _read_document(
         if file_path is None:
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
 
+    authority_path = file_path.relative_to(ws.resolve()).as_posix() if _is_within_path(file_path, ws) else rel_path
+    if _authority_known_foreign_path(authority_scope, authority_path):
+        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     if not file_path.exists():
         return _workspace_error(tool_name, "not_found", f"File not found: {rel_path}")
-    if not _authority_allows_path(authority_scope, rel_path):
+    if not _authority_allows_path(authority_scope, authority_path):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
 
     try:
@@ -1339,11 +1361,17 @@ def _glob_search(
     authority_scope=None,
     permission_profile=None,
 ) -> str:
+    if _authority_known_foreign_path(authority_scope, root):
+        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     search_root = _resolved_workspace_path(ws, root, permission_profile)
     if search_root is None:
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
+    if _authority_known_foreign_path(authority_scope, search_root.relative_to(ws.resolve()).as_posix()):
+        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     if not search_root.exists():
         return _workspace_error(tool_name, "not_found", f"Directory not found: {root or '/'}")
+    if not _authority_allows_path(authority_scope, search_root.relative_to(ws.resolve()).as_posix(), directory=True):
+        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
 
     matches: list[str] = []
     try:
@@ -1375,11 +1403,17 @@ def _grep_search(
     authority_scope=None,
     permission_profile=None,
 ) -> str:
+    if _authority_known_foreign_path(authority_scope, root):
+        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     search_root = _resolved_workspace_path(ws, root, permission_profile)
     if search_root is None:
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
+    if _authority_known_foreign_path(authority_scope, search_root.relative_to(ws.resolve()).as_posix()):
+        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     if not search_root.exists():
         return _workspace_error(tool_name, "not_found", f"Directory not found: {root or '/'}")
+    if not _authority_allows_path(authority_scope, search_root.relative_to(ws.resolve()).as_posix(), directory=True):
+        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
 
     explicit_limit = max(1, int(max_results)) if max_results is not None else None
     matches: list[str] = []
@@ -1402,7 +1436,8 @@ def _grep_search(
             if not path.is_file():
                 continue
             rel_path = path.relative_to(ws.resolve()).as_posix()
-            if _resolved_workspace_path(ws, rel_path, permission_profile) is not None and _authority_allows_path(authority_scope, rel_path):
+            resolved = _resolved_workspace_path(ws, rel_path, permission_profile)
+            if resolved is not None and _authority_allows_path(authority_scope, resolved.relative_to(ws.resolve()).as_posix()):
                 paths.append(rel_path)
         if native_rg:
             # Bound open descriptors, never the authorized search coverage.

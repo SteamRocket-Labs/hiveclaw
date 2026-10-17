@@ -1284,7 +1284,10 @@ async def write_file(
             await lock_workspace_receipt_write(db, agent.tenant_id, agent_id, path)
             previous_receipt = await latest_workspace_receipt(db, agent.tenant_id, agent_id, path)
             if target.exists():
-                verified_base = await asyncio.to_thread(_workspace_content_hash, agent_id, path)
+                try:
+                    verified_base = await asyncio.to_thread(_workspace_content_hash, agent_id, path)
+                except WorkspaceAuthorityError as exc:
+                    raise _workspace_authority_http_error(exc) from exc
                 if previous_receipt is not None and previous_receipt.content_sha256 != verified_base:
                     if resource_decision.manifest is not None:
                         resource_decision.manifest.authority_state = "quarantined"

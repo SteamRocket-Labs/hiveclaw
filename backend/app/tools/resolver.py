@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import replace
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.core.execution_context import get_execution_identity
 from app.database import async_session, tenant_scoped_session
+from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
 from app.models.user import User
 from app.runtime.tenant_admission import RuntimeTenantPreconditionError
@@ -229,7 +231,7 @@ async def _load_workspace_authority_scope(
         require_tenant=True,
         source="tool_workspace_resource_authority",
     ) as authority_db:
-        user = (await authority_db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+        user = (await authority_db.execute(select(User).where(User.id == user_id, User.is_active.is_(True)))).scalar_one_or_none()
         if user is None:
             raise RuntimeTenantPreconditionError(
                 reason_code="tool_requester_not_found",
@@ -239,9 +241,17 @@ async def _load_workspace_authority_scope(
             )
         from app.services.workspace_resource_authority import load_workspace_authority_scope
 
-        return await load_workspace_authority_scope(
+        scope = await load_workspace_authority_scope(
             authority_db,
             user,
             agent_id=agent_id,
             session_id=session_id,
         )
+        private_sessions = select(ChatSession.id).where(
+            ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id, ChatSession.user_id == user_id,
+            or_(ChatSession.audience_kind.is_(None), ChatSession.audience_kind == "private"),
+        )
+        worker = await authority_db.scalar(private_sessions.where(ChatSession.id == session_id)) if session_id else None
+        sources = await authority_db.scalars(private_sessions) if worker is not None else ()
+        # Native execution never borrows browser administrator inspection rights.
+        return replace(scope, session_source_ids=frozenset(str(value) for value in sources))

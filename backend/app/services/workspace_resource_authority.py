@@ -46,6 +46,11 @@ def _is_workspace_path(path: str) -> bool:
     return path == "workspace" or path.startswith("workspace/")
 
 
+def _is_session_source_path(path: str) -> bool:
+    return any(path == root or path.startswith(f"{root}/")
+        for root in ("memory/t0/sessions", "memory/t2/sessions", "memory/sessions", "logs"))
+
+
 _WORKSPACE_EFFECT_ACTIONS = ("write", "delete", "create", "deliver")
 
 
@@ -76,6 +81,7 @@ def resolve_workspace_storage_path(workspace: Path, path: str) -> Path:
         from app.services.chat_artifact_delivery import is_chat_artifact_snapshot_storage_path
 
         if (_is_workspace_path(requested) or _is_workspace_path(resolved)
+            or _is_session_source_path(requested) or _is_session_source_path(resolved)
             or is_chat_artifact_snapshot_storage_path(requested) or is_chat_artifact_snapshot_storage_path(resolved)):
             # Configured parent roots may be OS aliases; resource paths may not be.
             current = root
@@ -336,6 +342,22 @@ class WorkspaceAuthorityScope:
     collection_actions: frozenset[str] = frozenset()
     input_reads: tuple[WorkspaceInputRead, ...] = ()
     output_writes: tuple[WorkspaceOutputWrite, ...] = ()
+    session_source_ids: frozenset[str] | None = None
+
+    def can_read_session_source(self, path: str) -> bool | None:
+        if self.session_source_ids is None:
+            return None
+        try:
+            normalized = normalize_workspace_resource_path(path)
+        except ValueError:
+            return False
+        # Legacy log headers and filenames are not authenticated source bindings.
+        if normalized == "logs" or normalized.startswith("logs/"):
+            return False
+        for prefix in ("memory/t0/sessions/", "memory/t2/sessions/", "memory/sessions/"):
+            if normalized.startswith(prefix):
+                return normalized[len(prefix):].split("/", 1)[0] in self.session_source_ids
+        return None
 
     def output_write(self, path: str) -> WorkspaceOutputWrite | None:
         normalized = normalize_workspace_resource_path(path)
@@ -363,6 +385,9 @@ class WorkspaceAuthorityScope:
     def can_read(self, path: str) -> bool:
         if is_recovery_manifest_storage_path(path):
             return False
+        source_access = self.can_read_session_source(path)
+        if source_access is not None:
+            return source_access
         if self.operator_view:
             return True
         normalized = normalize_workspace_resource_path(path)
@@ -383,6 +408,9 @@ class WorkspaceAuthorityScope:
             return False
         if is_chat_artifact_snapshot_storage_path(raw_child):
             return False
+        source_access = self.can_read_session_source(raw_child)
+        if source_access is not None:
+            return source_access
         if self.operator_view:
             return True
         parent_path = normalize_workspace_resource_path(parent)

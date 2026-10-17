@@ -27,6 +27,7 @@ async def delivered(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_
     from app.models.audit import ChatMessage
     from app.models.user import User
     from app.services.chat_artifact_delivery import create_chat_artifacts_for_message
+    from app.services.content_input_receipts import latest_workspace_receipt, record_workspace_receipt
     from app.services.workspace_resource_authority import register_workspace_path
 
     tenant, user_id, agent, session, run = await _seed_session(owner_sessionmaker, active_run=True)
@@ -35,6 +36,7 @@ async def delivered(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_
     target.parent.mkdir(parents=True)
     target.write_bytes(b"AAAA")
     monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("app.database.async_session", app_user_sessionmaker)
     async with owner_sessionmaker() as db:
         user = await db.get(User, user_id)
         user.role = "member"
@@ -46,6 +48,12 @@ async def delivered(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_
     async def publish():
         async with app_user_sessionmaker() as db:
             await pin_rls_tenant_context(db, tenant)
+            # These exact fixture originals have known authorship before snapshot capture.
+            body = target.read_bytes()
+            assert body in {b"AAAA", b"BBBB"}
+            record_workspace_receipt(db, tenant, agent, "workspace/report.txt", hashlib.sha256(body).hexdigest(),
+                await latest_workspace_receipt(db, tenant, agent, "workspace/report.txt"))
+            await db.flush()
             message = ChatMessage(id=uuid.uuid4(), tenant_id=tenant, agent_id=agent, user_id=user_id,
                 role="assistant", content="Delivered", conversation_id=str(session))
             db.add(message)
@@ -113,6 +121,31 @@ async def test_reopen_download_and_a2a_consume_distinct_same_stat_versions(deliv
         assert all(row.owner_user_id == d.user.id and row.root_session_id == d.session for row in rows)
         assert all(row.authority_state == "owned" for row in rows)
     assert d.target.read_bytes() == b"BBBB"
+
+
+async def test_rejected_existing_snapshot_does_not_move_its_message(delivered, app_user_sessionmaker):
+    from app.models.audit import ChatMessage
+    from app.services.chat_artifact_delivery import create_chat_artifacts_for_message
+
+    d = delivered
+    original_message_id = d.first.message_id
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, d.tenant)
+        existing = await db.get(ChatArtifact, d.first.id)
+        existing.snapshot_json = {key: value for key, value in existing.snapshot_json.items() if key != "content_input_receipt_id"}
+        message = ChatMessage(tenant_id=d.tenant, agent_id=d.agent, user_id=d.user.id,
+            role="assistant", content="Reopen the existing report", conversation_id=str(d.session))
+        db.add(message)
+        await db.flush()
+        errors = []
+        parts = await create_chat_artifacts_for_message(db=db, tenant_id=d.tenant, agent_id=d.agent,
+            session_id=d.session, runtime_task_id=d.run, message_id=message.id,
+            paths=["workspace/report.txt"], workspace_root=d.root, rebind_existing_to_message=True, publication_errors=errors)
+        assert parts == [] and errors[0]["reason_code"] == "workspace_content_unverified", (parts, errors)
+        await db.commit()
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, d.tenant)
+        assert (await db.get(ChatArtifact, d.first.id)).message_id == original_message_id
 
 
 async def test_corrupt_snapshot_is_neither_reopened_nor_downloaded(delivered):

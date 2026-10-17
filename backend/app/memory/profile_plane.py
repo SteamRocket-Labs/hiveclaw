@@ -20,6 +20,8 @@ intentionally NOT duplicated here.
 from __future__ import annotations
 
 import json
+import hashlib
+import io
 import logging
 import re
 import uuid
@@ -56,6 +58,7 @@ class ResidentMemory:
     sections: tuple[str, ...]
     active_failure_modes: str
     read_errors: tuple[str, ...] = ()
+    source_refs: tuple[dict[str, str], ...] = ()
 
 
 def load_resident_memory(
@@ -66,38 +69,56 @@ def load_resident_memory(
     include_overlay: bool = True,
 ) -> ResidentMemory:
     """Load the resident profile plane whole. Zero LLM, zero trimming."""
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
 
-    mem_dir = Path(data_root) / str(agent_id) / "memory"
+    agent_root = Path(data_root) / str(agent_id)
+    mem_dir = agent_root / "memory"
     sections: list[str] = []
     blocks: list[str] = []
     active_failures = ""
     read_errors: list[str] = []
+    source_refs: list[dict[str, str]] = []
 
     for section_name, rel_path in RESIDENT_SECTION_FILES:
         path = mem_dir / rel_path
         if not path.exists():
             continue
         try:
-            content = path.read_text(encoding="utf-8", errors="replace").strip()
-        except OSError as exc:
+            with open_workspace_file(agent_root, f"memory/{rel_path}") as reader:
+                body = reader.read()
+            with io.TextIOWrapper(io.BytesIO(body), encoding="utf-8", errors="replace") as reader:
+                content = reader.read().strip()
+        except (OSError, ValueError, WorkspaceAuthorityError) as exc:
             logger.warning("Resident memory skipped unreadable %s: %s", path, exc)
             read_errors.append(section_name)
             continue
         if not content:
             continue
         sections.append(section_name)
+        source_refs.append({"source_kind": "agent_resident_memory",
+            "source_id": f"{agent_id}\nmemory/{rel_path}", "source_version": hashlib.sha256(body).hexdigest()})
         if section_name == "self":
             active_failures = extract_active_failure_modes(content)
         blocks.append(f"### {section_name} ({rel_path})\n{content}")
 
     if include_overlay:
+        overlay_sources: list[dict[str, str]] = []
+
+        def observe_overlay(path, digest):
+            overlay_sources.append({"source_kind": "agent_memory_file", "source_id": f"{agent_id}\n{path}",
+                "source_version": digest})
+
         try:
-            overlay_index = _render_resident_explicit_index(load_explicit_overlay_entries(Path(data_root), agent_id))
+            overlay_index = _render_resident_explicit_index(
+                load_explicit_overlay_entries(Path(data_root), agent_id, source_observer=observe_overlay),
+                source_observer=lambda entry: observe_overlay(f"memory/explicit/entries/{entry.entry_id}.md", entry.source_sha256),
+            )
         except Exception as exc:  # explicit overlay is governed but not identity-critical
             logger.warning("Resident explicit overlay unavailable for %s: %s", agent_id, exc)
             read_errors.append("explicit_overlay")
             overlay_index = ""
         if overlay_index:
+            source_refs.extend(overlay_sources)
             sections.append("explicit_overlay")
             blocks.append("### Explicit Memory Index (active)\n" + overlay_index)
 
@@ -125,10 +146,11 @@ def load_resident_memory(
         sections=tuple(sections),
         active_failure_modes=active_failures,
         read_errors=tuple(read_errors),
+        source_refs=tuple(source_refs),
     )
 
 
-def _render_resident_explicit_index(entries) -> str:
+def _render_resident_explicit_index(entries, *, source_observer=None) -> str:
     """Render the CC-style resident index without leaking sensitive previews."""
 
     active = [
@@ -153,6 +175,8 @@ def _render_resident_explicit_index(entries) -> str:
         if len(lines) + 2 > RESIDENT_INDEX_MAX_LINES or len(candidate.encode("utf-8")) > RESIDENT_INDEX_MAX_BYTES:
             break
         lines.append(line)
+        if source_observer is not None:
+            source_observer(entry)
         shown += 1
     lines.append(f"Showing {shown} of {len(active)} active entries; search_memory covers the remainder.")
     rendered = "\n".join(lines)

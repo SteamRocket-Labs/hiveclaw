@@ -29,7 +29,7 @@ class InvocationPorts:
     resolve_eviction_dir: Callable[..., Any]
     resolve_kernel: Callable[..., Any]
     skill_ranking_inputs: Callable[..., Any]
-    build_skill_catalog: Callable[..., str]
+    build_skill_catalog: Callable[..., Any]
     combined_tools: Callable[..., Any]
     load_secret_boundary: Callable[..., Any]
     record_skill_usage: Callable[..., Any]
@@ -113,7 +113,7 @@ async def _assemble_invocation_state(
                 type(exc).__name__,
             )
     execution_identity = _resolve_execution_identity(request, ports)
-    skill_catalog = _build_skill_catalog(request, ports)
+    skill_catalog = await _build_skill_catalog(request, ports)
     exact_secret_boundary = _model_secret_boundary(route)
     if request.tenant_id is not None and request.agent_id is not None:
         try:
@@ -302,12 +302,12 @@ def _resolve_execution_identity(request: AgentInvocationRequest, ports: Invocati
     return None
 
 
-def _build_skill_catalog(request: AgentInvocationRequest, ports: InvocationPorts) -> str:
+async def _build_skill_catalog(request: AgentInvocationRequest, ports: InvocationPorts) -> str:
     if request.agent_id is None or (request.standalone_system_prompt or "").strip():
         return ""
     ranking_inputs = ports.skill_ranking_inputs(request)
     ranking: list[dict[str, Any]] = []
-    catalog = ports.build_skill_catalog(
+    catalog = await ports.maybe_await(ports.build_skill_catalog(
         request.agent_id,
         budget_profile=ports.resolve_context_budget(request),
         scenario_text=ranking_inputs["scenario_text"],
@@ -319,7 +319,7 @@ def _build_skill_catalog(request: AgentInvocationRequest, ports: InvocationPorts
         active_skill_names=ranking_inputs["active_skill_names"],
         path_triggered_skill_names=ranking_inputs["path_triggered_skill_names"],
         ranking_manifest=ranking,
-    )
+    ))
     if request.session_context is not None:
         from app.runtime.context import ensure_runtime_assembly_state
 

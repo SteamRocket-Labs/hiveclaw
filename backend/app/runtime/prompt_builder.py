@@ -80,6 +80,7 @@ class ContextSectionCandidate:
     budget_key: str | None = None
     budget_chars: int | None = None
     source_payload: str | None = None
+    platform_constant: bool = False
 
 
 def _context_section_source_hash(text: str) -> str:
@@ -125,6 +126,7 @@ def _append_context_section_decision(
             "rendered_chars": rendered_chars,
             "rendered_tokens": estimate_tokens_from_text(rendered_content or ""),
             "source_hash": _context_section_source_hash(source_payload or ""),
+            "platform_constant": candidate.platform_constant,
         }
     )
 
@@ -506,6 +508,7 @@ def build_dynamic_prompt_suffix(
         source_ref: str = "runtime.prompt_builder",
         reason: str = "context_section_present",
         source_payload: str | None = None,
+        platform_constant: bool = False,
     ) -> None:
         section_candidates.append(
             ContextSectionCandidate(
@@ -520,6 +523,7 @@ def build_dynamic_prompt_suffix(
                 budget_key=budget_key,
                 budget_chars=budget_chars,
                 source_payload=source_payload,
+                platform_constant=platform_constant,
             )
         )
 
@@ -530,6 +534,7 @@ def build_dynamic_prompt_suffix(
             kind="runtime_guidance",
             name="autonomous_work",
             content=_AUTONOMOUS_WORK_SECTION.format(source=source),
+            platform_constant=True,
         )
 
     # § When to Suggest Planning First (A) — interactive surfaces only. The agent
@@ -545,6 +550,7 @@ def build_dynamic_prompt_suffix(
             kind="runtime_guidance",
             name="plan_mode_guidance",
             content=build_plan_mode_guidance_section(),
+            platform_constant=True,
         )
 
     memory_budget_chars = getattr(budget_profile, "memory_budget_chars", _DEFAULT_MEMORY_SNAPSHOT_BUDGET)
@@ -620,6 +626,7 @@ def build_dynamic_prompt_suffix(
         kind="scenario",
         name="task_profile",
         content=scenario_section,
+        platform_constant=True,
     )
 
     tool_groups_section = _render_active_tool_groups(active_tool_groups or [], budget_chars=tool_groups_budget)

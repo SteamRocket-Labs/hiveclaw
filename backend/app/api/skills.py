@@ -784,13 +784,19 @@ async def create_skill(
         from app.services.ai_asset_adapters import project_skill
         from app.services.ai_assets import register_projection
 
+        projection = project_skill(skill, owner_user_id=current_user.id)
         await register_projection(
             db,
-            project_skill(skill, owner_user_id=current_user.id),
+            projection,
             change_source="create",
             actor_user_id=current_user.id,
             change_message="Skill created",
         )
+        from app.services.config_versioning import save_revision
+
+        await save_revision(db, entity_type="registry_skill_original", entity_id=skill.id, tenant_id=tenant_id,
+            content=projection.content, change_source="create", changed_by_user_id=current_user.id,
+            change_message="Original registry Skill form captured")
         await db.commit()
         return {"id": str(skill.id), "name": skill.name}
 

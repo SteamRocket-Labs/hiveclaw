@@ -62,12 +62,20 @@ async def _validate_input_dependencies(db, tenant_id: uuid.UUID, dependencies: l
     ):
         raise ContentInputReceiptError("content_source_unavailable", "The source receipt is invalid.", 503)
     for dependency in dependencies:
-        if dependency["source_kind"] == "agent_context_resource":
+        if dependency["source_kind"] in {"agent_skill_file", "agent_platform_skill_file"}:
+            from app.services.skill_source_receipts import validate_skill_file_dependency
+
+            await validate_skill_file_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
+            continue
+        if dependency["source_kind"] in {"agent_context_resource", "agent_resident_memory", "agent_identity", "owner_action_policy"}:
             await _validate_agent_context_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
             continue
         if dependency["source_kind"] == "workspace_artifact":
             await _validate_workspace_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request,
                 active_receipts=active_workspace_receipts)
+            continue
+        if dependency["source_kind"] == "session_actor_identity":
+            await _validate_session_actor_identity(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
             continue
         if dependency["source_kind"] in {"session_command", "session_tool_invocation"}:
             await _validate_session_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
@@ -88,13 +96,7 @@ async def _validate_input_dependencies(db, tenant_id: uuid.UUID, dependencies: l
             raise ContentInputReceiptError("content_source_changed", "A source is missing or has changed. Regenerate from current authorized inputs.", 403)
         if document.scope_type == "person":
             if runtime_request is not None:
-                from app.tools.handlers.knowledge import _personal_kb_runtime_principal
-
-                try:
-                    principal = _personal_kb_runtime_principal(runtime_request)
-                except ValueError as exc:
-                    raise ContentInputReceiptError("content_source_access_denied",
-                        "The runtime source authority is invalid.", 403) from exc
+                principal, _requester = await _runtime_input_actor(db, tenant_id, runtime_request)
             else:
                 principal = HumanBrowserPrincipal(user_id=user.id, role=user.role, home_tenant_id=tenant_id)
             result = await PersonalKnowledgeService().get_personal_document_with_authority(db,
@@ -129,7 +131,12 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
     try:
         raw_agent_id, ref = dependency["source_id"].split("\n")
         agent_id = uuid.UUID(raw_agent_id)
-        if ref != "channels":
+        resident = dependency["source_kind"] == "agent_resident_memory"
+        identity = dependency["source_kind"] == "agent_identity"
+        policy_source = dependency["source_kind"] == "owner_action_policy"
+        if policy_source:
+            policy_id = uuid.UUID(ref)
+        elif ref not in ({"identity"} if identity else {"memory/self/self.md"} if resident else {"channels", "soul", "a2a-collaborators"}):
             raise ValueError("unsupported_context_source")
     except ValueError as exc:
         raise ContentInputReceiptError("content_source_unavailable", "The context source receipt is unsupported.", 503) from exc
@@ -146,16 +153,156 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
             await check_agent_access(db, user, agent_id)
     except (HTTPException, ValueError) as exc:
         raise ContentInputReceiptError("content_source_access_denied", "The context source is no longer authorized.", 403) from exc
-    resource = await load_agent_context_resource(agent_id=agent_id, tenant_id=tenant_id, resource_ref=ref)
-    if resource.status != "ok":
-        raise ContentInputReceiptError("content_source_unavailable", "The current context source could not be read. Retry later.", 503)
-    if resource.sha256 != dependency["source_version"]:
-        raise ContentInputReceiptError("content_source_changed", "The context source has changed. Regenerate from current authorized inputs.", 403)
+    if policy_source:
+        from app.models.config_revision import ConfigRevision
+        from app.services.config_versioning import canonical_content_hash
+        from app.services.owner_action_policy import OWNER_ACTION_POLICY_ENTITY_TYPE, _policy_from_revision, render_owner_action_policy_prompt_section
+
+        revision = await db.get(ConfigRevision, policy_id, populate_existing=True)
+        if (revision is None or revision.tenant_id != tenant_id or revision.entity_id != agent_id
+            or revision.entity_type != OWNER_ACTION_POLICY_ENTITY_TYPE or revision.changed_by_agent_id is not None
+            or canonical_content_hash(revision.content) != revision.content_hash):
+            raise ContentInputReceiptError("content_source_changed", "The exact Owner policy source is unavailable or invalid.", 403)
+        policy = _policy_from_revision(agent_id=agent_id, tenant_id=tenant_id, revision=revision)
+        rendered = render_owner_action_policy_prompt_section(policy)
+        if not policy.valid or hashlib.sha256(rendered.encode("utf-8")).hexdigest() != dependency["source_version"]:
+            raise ContentInputReceiptError("content_source_changed", "The observed Owner policy no longer matches its receipt.", 403)
+        return
+    if not resident and not identity and ref == "a2a-collaborators":
+        from app.runtime.prompt_sections.a2a_collaborators import build_a2a_collaborators_section
+
+        empty = build_a2a_collaborators_section(
+            {"same_owner_agents": [], "public_agents": [], "collaboration_groups": []}, max_chars=None)
+        if hashlib.sha256(empty.encode("utf-8")).hexdigest() != dependency["source_version"]:
+            raise ContentInputReceiptError("content_source_unavailable",
+                "Nonempty collaborator metadata requires its original source and audience receipts.", 503)
+        # The empty-directory guidance is application text, independent of later roster changes.
+        return
+    if not resident and not identity:
+        resource = await load_agent_context_resource(agent_id=agent_id, tenant_id=tenant_id, resource_ref=ref)
+        if resource.status != "ok":
+            raise ContentInputReceiptError("content_source_unavailable", "The current context source could not be read. Retry later.", 503)
+        if resource.sha256 != dependency["source_version"]:
+            raise ContentInputReceiptError("content_source_changed", "The context source has changed. Regenerate from current authorized inputs.", 403)
+    if resident or identity or ref == "soul":
+        from app.models.config_revision import ConfigRevision
+        from app.services.config_versioning import canonical_content_hash
+
+        revision = await db.scalar(select(ConfigRevision).where(ConfigRevision.tenant_id == tenant_id,
+            ConfigRevision.entity_type == "agent_bootstrap", ConfigRevision.entity_id == agent_id,
+            ConfigRevision.version == 1, ConfigRevision.is_active.is_(True)).execution_options(populate_existing=True))
+        source = await db.scalar(select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id)
+            .execution_options(populate_existing=True))
+        content = revision.content if revision is not None and isinstance(revision.content, dict) else {}
+        if (revision is None or source is None or content.get("schema") != "hive.agent_bootstrap.v1"
+            or canonical_content_hash(content) != revision.content_hash or revision.change_source != "user"
+            or revision.changed_by_agent_id is not None or revision.changed_by_user_id != source.creator_id):
+            raise ContentInputReceiptError("content_source_unavailable", "The identity source lacks an original creation witness.", 503)
+        from app.config import get_settings
+
+        if identity:
+            from app.services.agent_context import agent_identity_content
+
+            current = agent_identity_content(source.name, source.role_description)
+            if canonical_content_hash(current) != dependency["source_version"]:
+                raise ContentInputReceiptError("content_source_changed", "The employee identity has changed since observation.", 403)
+            if content.get("identity") != current:
+                raise ContentInputReceiptError("content_source_unavailable", "The identity labels lack an exact original witness.", 503)
+            return
+        if resident:
+            sources = content.get("resident_sources", {})
+            version = sources.get(ref) if isinstance(sources, dict) else None
+            if version != dependency["source_version"]:
+                raise ContentInputReceiptError("content_source_unavailable", "The resident source lacks an exact bootstrap witness.", 503)
+            _validate_source_bytes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / ref, version)
+            return
+        soul = content.get("soul", {})
+        if (not isinstance(soul, dict) or soul.get("resource_sha256") != resource.sha256
+            or not soul.get("content_sha256")):
+            raise ContentInputReceiptError("content_source_unavailable", "The identity source lacks an exact bootstrap witness.", 503)
+        _validate_source_bytes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "soul.md", soul["content_sha256"])
+
+
+async def record_session_actor_identity(db, *, tenant_id, agent_id, session_id, user_id, display_name, timezone_name=None):
+    """Witness only the SQL actor/session facts used by the runtime header."""
+    from datetime import datetime, timezone
+    from sqlalchemy.dialects.postgresql import insert
+    from app.models.chat_session import ChatSession
+    from app.models.agent import Agent
+    from app.models.invocation_span import InvocationSpan
+    from app.models.tenant import Tenant
+    from app.models.user import User
+    from app.services.session_model_inputs import _hash
+
+    session_id = uuid.UUID(str(session_id))
+    row = (await db.execute(select(User, ChatSession).join(ChatSession, ChatSession.user_id == User.id)
+        .join(Agent, Agent.id == ChatSession.agent_id).where(
+        User.id == user_id, User.tenant_id == tenant_id, User.is_active.is_(True),
+        ChatSession.id == session_id, ChatSession.agent_id == agent_id, ChatSession.tenant_id == tenant_id,
+        Agent.tenant_id == tenant_id, Agent.deleted_at.is_(None),
+    ).execution_options(populate_existing=True))).first()
+    if row is None or (display_name is not None and display_name != (row[0].display_name or row[0].username)):
+        raise ContentInputReceiptError("context_actor_identity_unavailable", "The observed actor does not match the current session.", 403)
+    actor, session = row
+    if timezone_name is not None:
+        zones = (await db.execute(select(Agent.timezone, Tenant.timezone).join(Tenant, Tenant.id == Agent.tenant_id)
+            .where(Agent.id == agent_id, Agent.tenant_id == tenant_id))).one()
+        if timezone_name != (zones[0] or zones[1] or "UTC"):
+            raise ContentInputReceiptError("context_timezone_changed", "The observed timezone changed before capture.", 409)
+    payload = {"schema": "hive.session_actor_identity.v1", "tenant_id": str(tenant_id), "agent_id": str(agent_id),
+        "session_id": str(session.id), "user_id": str(actor.id), "display_name": display_name,
+        "channel": str(session.source_channel or ""), "timezone": timezone_name}
+    version = _hash(payload)
+    source_id = uuid.uuid5(session.id, f"session-actor:{version}")
+    await db.execute(insert(InvocationSpan).values(id=source_id, tenant_id=tenant_id, agent_id=agent_id,
+        user_id=actor.id, session_id=str(session.id), runtime_task_id=session.runtime_task_id,
+        trace_id=f"session-context:{session.id}", span_id=f"actor-source:{source_id}",
+        span_type="session_actor_identity", name="session.actor.identity", status="captured", duration_ms=0,
+        started_at=datetime.now(timezone.utc), metadata_json={"session_actor_identity": payload}).on_conflict_do_nothing(index_elements=["id"]))
+    captured = await db.get(InvocationSpan, source_id, populate_existing=True)
+    if (captured is None or captured.tenant_id != tenant_id or captured.agent_id != agent_id or captured.user_id != actor.id
+        or captured.session_id != str(session.id) or captured.span_type != "session_actor_identity"
+        or captured.name != "session.actor.identity" or captured.status != "captured"
+        or captured.metadata_json != {"session_actor_identity": payload}):
+        raise ContentInputReceiptError("context_actor_identity_unavailable", "The retained actor observation cannot be rebound.", 503)
+    return {"source_kind": "session_actor_identity", "source_id": str(source_id), "source_version": version}, payload
+
+
+async def _validate_session_actor_identity(db, tenant_id, dependency, *, user, runtime_request):
+    from app.models.chat_session import ChatSession
+    from app.models.invocation_span import InvocationSpan
+    from app.services.session_model_inputs import _hash
+
+    try:
+        source_id = uuid.UUID(dependency["source_id"])
+        row = await db.get(InvocationSpan, source_id, populate_existing=True)
+        payload = (row.metadata_json or {}).get("session_actor_identity") if row is not None else None
+        if (not isinstance(payload, dict) or set(payload) != {"schema", "tenant_id", "agent_id", "session_id", "user_id", "display_name", "channel", "timezone"}
+            or payload["schema"] != "hive.session_actor_identity.v1"
+            or (payload["display_name"] is not None and not isinstance(payload["display_name"], str))
+            or not isinstance(payload["channel"], str)):
+            raise ValueError("actor_source_shape_invalid")
+        if payload["timezone"] is not None:
+            from zoneinfo import ZoneInfo
+
+            ZoneInfo(payload["timezone"])
+        scope = {key: uuid.UUID(payload[key]) for key in ("tenant_id", "agent_id", "session_id", "user_id")}
+        if (scope["tenant_id"] != tenant_id or row.tenant_id != tenant_id or row.agent_id != scope["agent_id"]
+            or row.user_id != scope["user_id"] or row.session_id != str(scope["session_id"])
+            or row.span_type != "session_actor_identity" or row.name != "session.actor.identity" or row.status != "captured"
+            or _hash(payload) != dependency["source_version"]
+            or source_id != uuid.uuid5(scope["session_id"], f"session-actor:{_hash(payload)}")):
+            raise ValueError("actor_source_binding_invalid")
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        raise ContentInputReceiptError("content_source_unavailable", "The actor observation is invalid or unavailable.", 503) from exc
+    session = await db.scalar(select(ChatSession).where(ChatSession.id == scope["session_id"],
+        ChatSession.agent_id == scope["agent_id"], ChatSession.tenant_id == tenant_id).execution_options(populate_existing=True))
+    if session is None:
+        raise ContentInputReceiptError("content_source_changed", "The actor's source session is unavailable.", 403)
+    await _authorize_session_input_source(db, tenant_id, session, user=user, runtime_request=runtime_request)
 
 
 async def _validate_session_dependency(db, tenant_id, dependency, *, user, runtime_request):
-    from fastapi import HTTPException
-    from app.core.permissions import authorize_session_action
     from app.models.chat_session import ChatSession
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.session_v2 import SessionCommand, SessionToolInvocation
@@ -187,6 +334,13 @@ async def _validate_session_dependency(db, tenant_id, dependency, *, user, runti
         valid = isinstance(content, str) and version == _hash(content)
     if not valid or version != dependency["source_version"]:
         raise ContentInputReceiptError("content_source_changed", "The session source no longer matches its receipt.", 403)
+    await _authorize_session_input_source(db, tenant_id, session, user=user, runtime_request=runtime_request)
+
+
+async def _authorize_session_input_source(db, tenant_id, session, *, user, runtime_request):
+    from fastapi import HTTPException
+    from app.core.permissions import authorize_session_action
+
     if session.audience_kind not in {None, "private"}:
         raise ContentInputReceiptError("content_source_unavailable", "This session source requires its live shared-audience reader.", 503)
     try:
@@ -207,10 +361,11 @@ async def _runtime_input_actor(db, tenant_id, request):
     from app.models.agent import Agent
     from app.models.chat_session import ChatSession
     from app.models.user import User
+    from app.services.personal_knowledge_access import AgentRuntimePrincipal
     from app.tools.handlers.knowledge import _personal_kb_runtime_principal
 
     try:
-        principal = _personal_kb_runtime_principal(request)
+        principal = request if isinstance(request, AgentRuntimePrincipal) else _personal_kb_runtime_principal(request)
         requester = await db.scalar(select(User).where(User.id == principal.requester_user_id,
             User.tenant_id == tenant_id, User.is_active.is_(True)).execution_options(populate_existing=True))
         if requester is None:
@@ -221,8 +376,10 @@ async def _runtime_input_actor(db, tenant_id, request):
         if current_session is None:
             raise ValueError("runtime_session_actor_mismatch")
         # Refresh the current employee owner before the shared Agent access check.
-        await db.scalar(select(Agent).where(Agent.id == principal.agent_id, Agent.tenant_id == tenant_id)
+        agent = await db.scalar(select(Agent).where(Agent.id == principal.agent_id, Agent.tenant_id == tenant_id)
             .execution_options(populate_existing=True))
+        if agent is None:
+            raise ValueError("runtime_agent_tenant_mismatch")
         await check_agent_access(db, requester, principal.agent_id)
         return principal, requester
     except (HTTPException, ValueError) as exc:
@@ -262,10 +419,11 @@ async def _validate_company_publication_dependency(db, tenant_id, dependency, *,
     if publication is None or publication.content_hash != dependency["source_version"]:
         raise ContentInputReceiptError("content_source_changed", "The exact publication is unavailable or has changed.", 403)
     if runtime_request is not None:
-        from app.tools.handlers.knowledge import _company_kb_runtime_principal
+        from app.tools.handlers.knowledge import company_kb_principal_for_runtime
 
         try:
-            principal = await _company_kb_runtime_principal(db, runtime_request)
+            runtime, _requester = await _runtime_input_actor(db, tenant_id, runtime_request)
+            principal = await company_kb_principal_for_runtime(db, runtime, tenant_id)
         except ValueError as exc:
             raise ContentInputReceiptError("content_source_access_denied", "The runtime source authority is invalid.", 403) from exc
     else:
@@ -459,7 +617,7 @@ async def latest_workspace_receipt(db, tenant_id: uuid.UUID, agent_id: uuid.UUID
     return await db.scalar(select(ContentInputReceipt).where(
         ContentInputReceipt.tenant_id == tenant_id, ContentInputReceipt.carrier_kind == "workspace_artifact",
         ContentInputReceipt.carrier_ref == workspace_artifact_ref(agent_id, path),
-    ).order_by(ContentInputReceipt.revision.desc()).limit(1))
+    ).order_by(ContentInputReceipt.revision.desc()).limit(1).execution_options(populate_existing=True))
 
 
 async def validate_browser_workspace_receipt(db, tenant_id: uuid.UUID, user, receipt, content_sha256: str) -> None:
@@ -475,6 +633,25 @@ async def validate_browser_workspace_receipt(db, tenant_id: uuid.UUID, user, rec
     await validate_browser_input_dependencies(db, tenant_id, user, dependencies)
 
 
+async def validate_artifact_content_receipt(db, tenant_id, user, artifact, *, runtime_principal=None):
+    """Recheck the captured version's sources without borrowing a later version's audience."""
+    snapshot = artifact.snapshot_json or {}
+    try:
+        receipt_id = uuid.UUID(snapshot["content_input_receipt_id"])
+    except (KeyError, ValueError, TypeError, AttributeError) as exc:
+        raise ContentInputReceiptError("workspace_content_unverified",
+            "The artifact has no pinned source receipt. Preserve it and reconcile its original inputs.") from exc
+    receipt = await db.get(ContentInputReceipt, receipt_id, populate_existing=True)
+    if (receipt is None or receipt.tenant_id != tenant_id or receipt.carrier_kind != "workspace_artifact"
+        or receipt.carrier_ref != workspace_artifact_ref(artifact.agent_id, artifact.path)
+        or receipt.content_sha256 != snapshot.get("content_hash")):
+        raise ContentInputReceiptError("workspace_content_unverified", "The artifact's source receipt does not match its captured bytes.")
+    if runtime_principal is not None:
+        await _runtime_input_actor(db, tenant_id, runtime_principal)
+    await _validate_input_dependencies(db, tenant_id, receipt.dependencies_json, user=user,
+        runtime_request=runtime_principal, active_workspace_receipts=frozenset({receipt.id}))
+
+
 def record_workspace_receipt(db, tenant_id: uuid.UUID, agent_id: uuid.UUID, path: str, content_sha256: str, previous):
     # Authenticated human input adds no authority to the previous source audience.
     dependencies = previous.dependencies_json if previous is not None else []
@@ -488,7 +665,7 @@ def record_workspace_receipt(db, tenant_id: uuid.UUID, agent_id: uuid.UUID, path
 
 
 async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_id, arguments, result, states, lineage, errors,
-    input_read=None, descriptor_writes=None):
+    input_read=None, descriptor_writes=None, skill_read=None):
     """Persist mechanical executor facts; this is not an input-authority receipt."""
     from datetime import datetime, timezone
     from app.database import tenant_scoped_session
@@ -538,18 +715,34 @@ async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_
                     dependencies_hash=input_read.dependencies_hash, observed_sha256=input_read.observed_sha256)
                 channel, metadata_key = "workspace-input", "workspace_input_evidence"
             evidence_id = uuid.uuid5(invocation.id, f"{channel}-evidence")
+            if skill_read is not None:
+                from app.services.skill_source_receipts import SkillInputCapture
+
+                if not isinstance(skill_read, SkillInputCapture) or skill_read.agent_id != context.agent_id:
+                    raise ContentInputReceiptError("skill_input_scope_mismatch", "The selected Skill read scope does not match.")
+                proof = {key: value for key, value in proof.items() if key not in {"states", "lineage", "errors", "descriptor_writes"}}
+                proof.update(schema="hive.skill_input_evidence.v1", **skill_read.snapshot())
+                proof["source_hash"] = _sha256(proof)
+                channel, metadata_key = "skill-input", "skill_input_evidence"
+                evidence_id = uuid.uuid5(invocation.id, f"skill-input:{proof['source_hash']}")
             existing = await db.get(InvocationSpan, evidence_id)
             if existing is not None:
                 if existing.metadata_json.get(metadata_key) != proof:
                     raise ContentInputReceiptError("workspace_execution_evidence_changed", "Executor evidence is immutable.")
             else:
-                db.add(InvocationSpan(id=evidence_id, tenant_id=tenant_id, agent_id=context.agent_id,
+                existing = InvocationSpan(id=evidence_id, tenant_id=tenant_id, agent_id=context.agent_id,
                     user_id=context.user_id, runtime_task_id=run_id, session_id=str(session_id),
                     trace_id=f"session-tool:{invocation.id}", span_id=f"{channel}:{invocation.id}",
                     span_type=channel.replace("-", "_"), name=tool_name, status="captured", duration_ms=0,
                     started_at=datetime.now(timezone.utc), input_hash=args_hash,
-                    metadata_json={metadata_key: proof}))
-                await db.commit()
+                    metadata_json={metadata_key: proof})
+                db.add(existing)
+            await db.flush()
+            if channel == "workspace-output":
+                status = await record_native_workspace_receipts(db, context=context, invocation=invocation,
+                    model=model, arguments=arguments, content_hash=proof["tool_result_hash"])
+                existing.metadata_json = {**existing.metadata_json, "native_content_receipts": status}
+            await db.commit()
             return {"status": "captured", "receipt_ref": f"{channel}:{evidence_id}"}
     except ContentInputReceiptError as exc:
         return {"status": "unavailable", "reason_code": exc.code}
@@ -559,6 +752,127 @@ async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_
         logging.getLogger(__name__).warning("Workspace execution evidence unavailable (%s)", type(exc).__name__)
         # A failed evidence write cannot undo a file effect or authorize its replay.
         return {"status": "unavailable", "reason_code": "workspace_execution_evidence_unavailable"}
+
+
+async def record_native_workspace_receipts(db, *, context, invocation, model, arguments, content_hash):
+    """Bind executor-observed output to complete inputs under the actual runtime principal."""
+    from app.config import get_settings
+    from app.models.invocation_span import InvocationSpan
+    from app.services.session_model_inputs import _model_dependencies, _stored_dependencies, _unique_dependencies
+    from app.services.skill_source_receipts import SkillInputCapture
+    from app.tools.runtime import ToolExecutionRequest
+
+    dependencies, complete = _model_dependencies(model)
+    if not complete:
+        return {"status": "unavailable", "reason_code": "model_input_inventory_incomplete", "receipts": {}}
+    if invocation.tool_name not in {"write_file", "fs_write", "run_skill_tool"}:
+        return {"status": "unavailable", "reason_code": "runtime_output_producer_unavailable", "receipts": {}}
+    request = ToolExecutionRequest(tool_name=invocation.tool_name, arguments=arguments, context=context)
+    try:
+        try:
+            context_scope = tuple(uuid.UUID(str(value)) for value in (
+                context.tenant_id, context.session_id, context.runtime_task_id))
+        except (TypeError, ValueError) as exc:
+            raise ContentInputReceiptError("workspace_execution_scope_mismatch", "The output execution scope is invalid.") from exc
+        if (context_scope != (invocation.tenant_id, invocation.session_id, invocation.run_id) or model.tenant_id != invocation.tenant_id
+            or model.session_id != invocation.session_id or model.run_id != invocation.run_id
+            or model.provider_request_id != invocation.provider_request_id):
+            raise ContentInputReceiptError("workspace_execution_scope_mismatch", "The output execution scope does not match.")
+        await _runtime_input_actor(db, invocation.tenant_id, request)
+        if Path(context.workspace).resolve() != (Path(get_settings().AGENT_DATA_DIR) / str(context.agent_id)).resolve():
+            raise ContentInputReceiptError("workspace_execution_scope_mismatch", "The output workspace cannot be rebound.")
+        if invocation.tool_name == "run_skill_tool":
+            capture = getattr(context.workspace_authority_scope, "skill_inputs", None)
+            if not isinstance(capture, SkillInputCapture) or capture.agent_id != context.agent_id:
+                raise ContentInputReceiptError("skill_input_unverified", "The actual Skill input inventory is missing.")
+            selected = capture.snapshot()
+            if selected["unbound"] or not selected["sources"]:
+                raise ContentInputReceiptError("skill_input_unverified", "The actual Skill input inventory is incomplete.")
+            dependencies = _unique_dependencies([*dependencies, *selected["sources"]])
+        retained = await db.get(InvocationSpan, uuid.uuid5(invocation.id, "workspace-output-evidence"), populate_existing=True)
+        _ref, outputs = await load_workspace_execution_evidence(db, agent_id=context.agent_id, invocation=invocation,
+            model_result=model, arguments=arguments, content_hash=content_hash)
+        proof = retained.metadata_json["workspace_execution_evidence"]
+    except ContentInputReceiptError as exc:
+        return {"status": "denied" if exc.status_code == 403 else "unavailable", "reason_code": exc.code, "receipts": {}}
+    if not outputs:
+        return {"status": "unavailable", "reason_code": "workspace_output_not_observed", "receipts": {}}
+    receipts, failures = {}, {}
+    predecessors = {item["path"]: item["before_state"] for item in proof["lineage"]
+        if isinstance(item, dict) and isinstance(item.get("before_state"), dict) and isinstance(item.get("path"), str)}
+    for path, digest in outputs.items():
+        try:
+            async with db.begin_nested():
+                await lock_workspace_receipt_write(db, invocation.tenant_id, context.agent_id, path)
+                previous = await latest_workspace_receipt(db, invocation.tenant_id, context.agent_id, path)
+                receipt_id = uuid.uuid5(invocation.id, f"workspace-content:{path}")
+                existing = await db.get(ContentInputReceipt, receipt_id, populate_existing=True)
+                before = predecessors.get(path, {})
+                if existing is None and ((previous is None and before.get("exists") is not False)
+                    or (previous is not None and before.get("exists") is True and before.get("sha256") != previous.content_sha256)):
+                    raise ContentInputReceiptError("workspace_predecessor_unverified", "The previous bytes lack an exact source receipt.")
+                inherited = previous.dependencies_json if previous is not None else []
+                if _stored_dependencies(inherited) is None:
+                    raise ContentInputReceiptError("workspace_content_unverified", "The inherited source inventory is invalid.")
+                combined = _unique_dependencies([*dependencies, *inherited])
+                if existing is None:
+                    existing = ContentInputReceipt(id=receipt_id, tenant_id=invocation.tenant_id,
+                        carrier_kind="workspace_artifact", carrier_ref=workspace_artifact_ref(context.agent_id, path),
+                        revision=previous.revision + 1 if previous else 1, content_sha256=digest, dependencies_json=combined)
+                    db.add(existing)
+                elif (existing.tenant_id != invocation.tenant_id or existing.carrier_kind != "workspace_artifact"
+                    or existing.carrier_ref != workspace_artifact_ref(context.agent_id, path) or existing.content_sha256 != digest
+                    or _stored_dependencies(existing.dependencies_json) != combined):
+                    raise ContentInputReceiptError("workspace_content_unverified", "The captured receipt cannot be rewritten.")
+                await db.flush()
+                # The tentative successor permits historical inputs from this same path;
+                # failed authority checks roll it back without losing execution evidence.
+                await validate_runtime_input_dependencies(db, request, [{"source_kind": "workspace_artifact",
+                    "source_id": str(receipt_id), "source_version": digest}])
+            receipts[path] = str(receipt_id)
+        except ContentInputReceiptError as exc:
+            failures[path] = {"status": "denied" if exc.status_code == 403 else "unavailable", "reason_code": exc.code}
+    return {"status": "captured" if receipts and not failures else "unavailable", "receipts": receipts, "failures": failures}
+
+
+async def load_skill_input_evidence(db, *, agent_id, invocation, model_result, arguments, content_hash, capture):
+    from app.models.invocation_span import InvocationSpan
+    from app.services.session_tool_runtime import _sha256
+
+    if capture is None:
+        return None
+    if not isinstance(capture, dict) or capture.get("status") != "captured":
+        return {"status": "unavailable", "reason_code": "skill_input_capture_unavailable"}
+    try:
+        channel, raw_id = capture["receipt_ref"].split(":", 1)
+        evidence_id = uuid.UUID(raw_id)
+        if channel != "skill-input":
+            raise ValueError("invalid_skill_input_channel")
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ContentInputReceiptError("skill_input_unverified", "The Skill read capture is invalid.") from exc
+    row = await db.get(InvocationSpan, evidence_id, populate_existing=True)
+    proof = (row.metadata_json or {}).get("skill_input_evidence") if row is not None else None
+    if (not isinstance(proof, dict) or row.tenant_id != invocation.tenant_id or row.agent_id != agent_id
+        or row.session_id != str(invocation.session_id) or row.runtime_task_id != invocation.run_id
+        or row.span_type != "skill_input" or row.status != "captured" or row.name != invocation.tool_name
+        or invocation.tool_name not in {"load_skill", "run_skill_tool"}
+        or proof.get("schema") != "hive.skill_input_evidence.v1"
+        or proof.get("invocation_id") != str(invocation.id) or proof.get("model_result_id") != str(model_result.id)
+        or proof.get("model_request_hash") != model_result.model_request_hash
+        or _sha256(model_result.model_request_snapshot_json) != model_result.model_request_hash
+        or proof.get("authority_snapshot_hash") != invocation.authority_snapshot_hash
+        or proof.get("effective_args_hash") != _sha256({"tool_name": invocation.tool_name, "arguments": arguments})
+        or proof.get("tool_result_hash") != content_hash
+        or proof.get("source_hash") != _sha256({key: value for key, value in proof.items() if key != "source_hash"})
+        or evidence_id != uuid.uuid5(invocation.id, f"skill-input:{proof.get('source_hash')}")):
+        raise ContentInputReceiptError("skill_input_unverified", "The selected Skill bytes cannot be bound to this invocation.")
+    sources, unbound = proof.get("sources"), proof.get("unbound")
+    if (not isinstance(sources, list) or not isinstance(unbound, list) or any(not isinstance(value, str) for value in unbound)
+        or any(not isinstance(source, dict) or set(source) != {"source_kind", "source_id", "source_version"}
+            or any(not isinstance(value, str) or not value for value in source.values())
+            or source["source_kind"] not in {"agent_skill_file", "agent_platform_skill_file", "workspace_artifact"} for source in sources)):
+        raise ContentInputReceiptError("skill_input_unverified", "The captured Skill source inventory is invalid.")
+    return {"status": "verified", "evidence_ref": f"skill-input:{evidence_id}", "sources": sources, "unbound": unbound}
 
 
 async def settle_workspace_receipt_read(*, request, read, tool_call_id, result):

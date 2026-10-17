@@ -938,6 +938,7 @@ async def create_agent(
             agent,
             personality=data.personality,
             boundaries=data.boundaries,
+            original_author_id=current_user.id,
         )
 
         # Copy selected skills + mandatory default skills into agent workspace

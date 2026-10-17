@@ -37,3 +37,4 @@ class ParsedSkill:
     body: str
     file_path: Path
     relative_path: str
+    source_sha256: str | None = None

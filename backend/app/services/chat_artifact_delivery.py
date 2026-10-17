@@ -957,6 +957,10 @@ async def create_chat_artifacts_for_message(
     tool_invocation_id: uuid.UUID | None = None,
 ) -> list[dict[str, Any]]:
     """Create artifact rows for safe candidate paths and return message parts."""
+    from app.database import tenant_scoped_session
+    from app.services.content_input_receipts import (
+        ContentInputReceiptError, validate_artifact_content_receipt, validate_browser_workspace_receipt,
+    )
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
 
     parts: list[dict[str, Any]] = []
@@ -985,6 +989,11 @@ async def create_chat_artifacts_for_message(
             if authority_user is not None and authority_user.tenant_id != tenant_id:
                 authority_user = None
     authority_state = "owned" if owner_user_id is not None else "quarantined"
+
+    def record_source_error(path, exc):
+        if publication_errors is not None:
+            publication_errors.append({"path": path, "status": "denied" if exc.status_code == 403 else "unavailable",
+                "reason_code": exc.code, "retryable": False, "recovery_action": "reconcile_artifact_sources"})
 
     async def _register_path(candidate: dict[str, Any]) -> None:
         if not isinstance(db, AsyncSession) or tenant_id is None:
@@ -1033,11 +1042,16 @@ async def create_chat_artifacts_for_message(
             if handled:
                 if native_artifact is not None:
                     try:
+                        async with tenant_scoped_session(tenant_id) as source_db:
+                            await validate_artifact_content_receipt(source_db, tenant_id, authority_user, native_artifact)
                         with captured_chat_artifact_file(native_artifact, workspace_root) as (captured, _source):
                             if captured is None:
                                 native_artifact = None
                     except (OSError, WorkspaceAuthorityError):
                         native_artifact = None
+                    except ContentInputReceiptError as exc:
+                        record_source_error(path, exc)
+                        continue
                 if native_artifact is not None:
                     native_artifact.message_id = message_id
                     parts.append(artifact_part_from_model(native_artifact))
@@ -1075,6 +1089,28 @@ async def create_chat_artifacts_for_message(
             continue
         if not candidate:
             continue
+        if isinstance(db, AsyncSession):
+            from app.models.organization_identity import ContentInputReceipt
+            from app.services.content_input_receipts import latest_workspace_receipt, workspace_artifact_ref
+
+            # Native outputs bind only their executor's receipt, never a later same-byte write.
+            receipt = None
+            if tool_invocation_id:
+                receipt = await db.get(ContentInputReceipt,
+                    uuid.uuid5(uuid.UUID(str(tool_invocation_id)), f"workspace-content:{candidate['path']}"), populate_existing=True)
+            elif candidate["path"].startswith("workspace/"):
+                receipt = await latest_workspace_receipt(db, tenant_id, agent_id, candidate["path"])
+            candidate["snapshot"]["content_input_receipt_id"] = str(receipt.id) if (
+                receipt is not None and receipt.tenant_id == tenant_id and receipt.carrier_kind == "workspace_artifact"
+                and receipt.carrier_ref == workspace_artifact_ref(agent_id, candidate["path"])
+                and receipt.content_sha256 == candidate["content_hash"]) else None
+            try:
+                async with tenant_scoped_session(tenant_id) as source_db:
+                    await validate_browser_workspace_receipt(source_db, tenant_id, authority_user,
+                        receipt if candidate["snapshot"]["content_input_receipt_id"] is not None else None, candidate["content_hash"])
+            except ContentInputReceiptError as exc:
+                record_source_error(path, exc)
+                continue
         dedupe_key = (candidate["path"], candidate["snapshot_hash"])
         if dedupe_key in seen:
             continue
@@ -1128,11 +1164,15 @@ async def create_chat_artifacts_for_message(
                 )
                 db.add(existing)
                 await db.flush()
-            elif rebind_existing_to_message and existing.message_id != message_id:
-                # A code-execution artifact is first attached to its tool result
-                # for immediate Workspace visibility. Once the model selects it
-                # as a final deliverable, move the canonical row to the final
-                # assistant message instead of creating a second fact source.
+            if isinstance(db, AsyncSession):
+                try:
+                    async with tenant_scoped_session(tenant_id) as source_db:
+                        await validate_artifact_content_receipt(source_db, tenant_id, authority_user, existing)
+                except ContentInputReceiptError as exc:
+                    record_source_error(path, exc)
+                    continue
+            if rebind_existing_to_message and existing.message_id != message_id:
+                # Move only after the captured version's sources have passed revalidation.
                 existing.message_id = message_id
             part = artifact_part_from_model(existing)
             await _register_path(candidate)

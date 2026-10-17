@@ -139,8 +139,10 @@ async def test_deferred_tool_candidates_project_activation_keys(monkeypatch):
         fake_available_deferred_tool_names_for_agent,
     )
 
-    candidates = await available_deferred_tool_candidates_for_agent(uuid4())
+    unknowns = []
+    candidates = await available_deferred_tool_candidates_for_agent(uuid4(), source_unbound=unknowns)
 
+    assert unknowns == []
     assert len(candidates) == 1
     keys = candidates[0]["activation_keys"]
     assert keys["schema_version"] == "runtime.metadata_activation_keys.20260705"
@@ -151,6 +153,20 @@ async def test_deferred_tool_candidates_project_activation_keys(monkeypatch):
     assert keys["key_features"]["risk"] == ["side_effect_governed"]
     assert keys["value_pointer"]["loader"] == "tool_search"
     assert keys["value_pointer"]["selector"] == "select:team_create"
+
+
+@pytest.mark.parametrize("external_name", ["mcp_external_tool", "unclassified_extension"])
+async def test_deferred_external_names_remain_visible_and_require_their_own_sources(monkeypatch, external_name):
+    from app.services import agent_tools
+
+    async def names(_agent_id, **_kwargs):
+        return ["team_create", external_name]
+
+    monkeypatch.setattr(agent_tools, "available_deferred_tool_names_for_agent", names)
+    unknowns = []
+    candidates = await agent_tools.available_deferred_tool_candidates_for_agent(uuid4(), source_unbound=unknowns)
+    assert {candidate["name"] for candidate in candidates} == {"team_create", external_name}
+    assert unknowns == ["deferred_catalog_external_sources_unbound"]
 
 
 @pytest.mark.asyncio

@@ -29,6 +29,85 @@ def _hash(value: Any) -> str:
         separators=(",", ":")).encode()).hexdigest()
 
 
+async def capture_context_message_origins(db, *, tenant_id, agent_id, session_id, run_id, result_id, messages) -> None:
+    """Persist only compiler-created origins, without declaring their leaves authorized."""
+    from datetime import datetime, timezone
+    from app.models.invocation_span import InvocationSpan
+    from app.runtime.context_candidates import ContextMessageOrigin
+    from app.services.llm_client import LLMMessage
+    from app.services.session_model_round import ModelRoundNeedsReconciliation
+
+    if not any(isinstance(message, LLMMessage) and isinstance(message.context_origin, ContextMessageOrigin)
+        for message in messages):
+        return
+    owner_id = await db.scalar(select(ChatSession.user_id).where(ChatSession.id == session_id,
+        ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id))
+    if owner_id is None:
+        return
+    for index, message in enumerate(messages):
+        origin = message.context_origin if isinstance(message, LLMMessage) else None
+        if not isinstance(origin, ContextMessageOrigin) or message.role not in {"system", "user"}:
+            continue
+        snapshot = message_snapshot(message)
+        if _hash(snapshot) != origin.message_sha256:
+            continue
+        proof = {"schema": "hive.kernel_context_origin.v2", "tenant_id": str(tenant_id),
+            "agent_id": str(agent_id), "session_id": str(session_id), "run_id": str(run_id),
+            "model_result_id": str(result_id), "message_index": index, "kind": origin.kind,
+            "message": snapshot, "sections": list(origin.sections), "dependencies": list(origin.sources),
+            "dependency_coverage": {"complete": not origin.unbound, "unbound": list(origin.unbound)}}
+        proof["source_hash"] = _hash(proof)
+        source_id = uuid.uuid5(result_id, f"kernel-context:{index}:{proof['source_hash']}")
+        row = await db.get(InvocationSpan, source_id, populate_existing=True)
+        if row is not None:
+            if row.tenant_id != tenant_id or row.agent_id != agent_id or row.session_id != str(session_id) or (
+                row.metadata_json or {}).get("context_origin") != proof:
+                raise ModelRoundNeedsReconciliation("The captured context origin changed; reconcile before resuming.")
+        else:
+            db.add(InvocationSpan(id=source_id, tenant_id=tenant_id, agent_id=agent_id, user_id=owner_id,
+                session_id=str(session_id), runtime_task_id=run_id, trace_id=f"session-model:{result_id}",
+                span_id=f"kernel-context:{source_id}", span_type="kernel_context", name=origin.kind,
+                status="captured", duration_ms=0, started_at=datetime.now(timezone.utc),
+                metadata_json={"context_origin": proof}))
+        message.source_ref = f"session-kernel-context:{source_id}"
+    await db.flush()
+
+
+async def load_context_message_origin(db, *, tenant_id, agent_id, source_id, session_id=None):
+    from app.models.invocation_span import InvocationSpan
+
+    row = await db.get(InvocationSpan, source_id, populate_existing=True)
+    proof = (row.metadata_json or {}).get("context_origin") if row is not None else None
+    if row is None or row.tenant_id != tenant_id or row.agent_id != agent_id or row.span_type != "kernel_context" or row.status != "captured" or (
+        session_id is not None and row.session_id != str(session_id)) or not isinstance(proof, dict):
+        return None
+    payload = {key: value for key, value in proof.items() if key != "source_hash"}
+    coverage = proof.get("dependency_coverage")
+    if proof.get("schema") == "hive.kernel_context_origin.v1":
+        coverage_valid = coverage == {"complete": False, "reason_code": "context_sources_unbound"}
+    elif proof.get("schema") == "hive.kernel_context_origin.v2" and isinstance(coverage, dict):
+        missing = coverage.get("unbound")
+        coverage_valid = (set(coverage) == {"complete", "unbound"} and isinstance(missing, list)
+            and all(isinstance(value, str) and value for value in missing) and coverage.get("complete") is (not missing))
+    else:
+        coverage_valid = False
+    if not coverage_valid or proof.get("tenant_id") != str(tenant_id) or (
+        proof.get("agent_id") != str(agent_id) or proof.get("session_id") != row.session_id
+        or proof.get("run_id") != str(row.runtime_task_id) or _hash(payload) != proof.get("source_hash")):
+        return None
+    message = proof.get("message")
+    if not isinstance(message, dict) or set(message) != {"role", "content"} or message["role"] not in {"system", "user"} or not isinstance(message["content"], str):
+        return None
+    try:
+        result_id = uuid.UUID(proof["model_result_id"])
+        expected_id = uuid.uuid5(result_id, f"kernel-context:{proof['message_index']}:{proof['source_hash']}")
+    except (KeyError, TypeError, ValueError):
+        return None
+    if row.id != expected_id or row.trace_id != f"session-model:{result_id}" or row.name != proof.get("kind"):
+        return None
+    return proof
+
+
 async def build_model_input_bindings(
     db: AsyncSession, *, tenant_id: uuid.UUID, agent_id: uuid.UUID, session_id: uuid.UUID,
     messages: list[Any], wire_messages: list[dict[str, Any]],
@@ -71,6 +150,17 @@ async def build_model_input_bindings(
         if message.thinking_signature is not None:
             value["reasoning_signature"] = message.thinking_signature
         canonical[message.id] = message_snapshot(value)
+
+    for ref in refs:
+        if isinstance(ref, str) and ref.startswith("session-kernel-context:"):
+            try:
+                source_id = uuid.UUID(ref.split(":", 1)[1])
+            except ValueError:
+                continue
+            origin = await load_context_message_origin(db, tenant_id=tenant_id, agent_id=agent_id,
+                session_id=session_id, source_id=source_id)
+            if origin is not None:
+                canonical[ref] = origin["message"]
 
     for ref in refs:
         if isinstance(ref, str) and ref.startswith("session-compaction:"):
@@ -214,6 +304,11 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
         source_id = uuid.UUID(raw_id)
     except (ValueError, TypeError):
         return [], False
+    if kind == "session-kernel-context":
+        # Complete inventory is separate from the live leaf-authority readers.
+        origin = await load_context_message_origin(db, tenant_id=tenant_id, agent_id=agent_id, source_id=source_id)
+        dependencies = _stored_dependencies(origin.get("dependencies")) if origin is not None else None
+        return dependencies or [], dependencies is not None and origin["dependency_coverage"]["complete"] is True
     if kind == "session-compaction":
         source = await load_compaction_source(db, tenant_id=tenant_id, agent_id=agent_id, source_id=source_id)
         catalog = source.get("input_bindings") if source is not None else None
@@ -270,6 +365,21 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
     metadata = payload.get("metadata")
     if not isinstance(metadata, dict):
         return _unique_dependencies(dependencies), False
+    if invocation.tool_name in {"load_skill", "run_skill_tool"}:
+        from app.services.content_input_receipts import load_skill_input_evidence
+
+        pointer = metadata.get("skill_input_receipt")
+        if not isinstance(pointer, dict) or pointer.get("status") != "verified":
+            return _unique_dependencies(dependencies), False
+        try:
+            bound = await load_skill_input_evidence(db, agent_id=agent_id, invocation=invocation, model_result=model,
+                arguments=invocation.effective_arguments_json or invocation.provider_arguments_json,
+                content_hash=payload["content_hash"], capture={"status": "captured", "receipt_ref": pointer.get("evidence_ref")})
+            if bound != pointer:
+                return _unique_dependencies(dependencies), False
+            return _unique_dependencies([*dependencies, *bound["sources"]]), inherited_complete and bool(bound["sources"]) and not bound["unbound"]
+        except (ContentInputReceiptError, ValueError, TypeError):
+            return _unique_dependencies(dependencies), False
     pointer = metadata.get("workspace_input_receipt")
     if isinstance(pointer, dict):
         if pointer.get("status") != "verified":

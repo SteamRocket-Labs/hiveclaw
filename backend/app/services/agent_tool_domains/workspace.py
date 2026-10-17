@@ -312,6 +312,9 @@ def _read_receipted_workspace_bytes(read_root: Path, read_path: str, authority_s
     read = authority_scope.input_read(authority_path) if hasattr(authority_scope, "input_read") else None
     if read is not None:
         read.verify(raw)
+    capture = getattr(authority_scope, "skill_inputs", None)
+    if capture is not None:
+        capture.observe_file(authority_path, hashlib.sha256(raw).hexdigest())
     return raw
 
 
@@ -451,7 +454,7 @@ def _skill_scope_guidance(metadata) -> str:
     )
 
 
-def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, session_id: str | None = None) -> str:
+def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, session_id: str | None = None, authority_scope=None) -> str:
     requested = (skill_name or "").strip()
     if not requested:
         return _workspace_error(tool_name, "bad_arguments", "Skill name cannot be empty.")
@@ -486,8 +489,12 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, ses
         ):
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this skill path.")
         try:
-            content = path.read_text(encoding="utf-8", errors="replace")
             relative_path = path.relative_to(workspace_root).as_posix()
+            if not _authority_allows_path(authority_scope, relative_path):
+                return _workspace_error(tool_name, "auth_or_permission", "Access denied for this skill source.")
+            raw = _read_receipted_workspace_bytes(workspace_root, relative_path, authority_scope, relative_path)
+            with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8", errors="replace") as reader:
+                content = reader.read()
             return _apply_trial_state(sanitize_managed_credential_guidance(content), relative_path)
         except Exception as e:
             return _workspace_error(tool_name, "operation_failed", f"Read failed: {e}")
@@ -523,6 +530,15 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, ses
         # lives), unlike the explicit path which returns the raw file. A missing
         # skill raises KeyError and falls through to the tool-pack check below.
         skill = registry.resolve(requested)
+        relative_path = skill.file_path.resolve().relative_to(workspace_root).as_posix()
+        if not _authority_allows_path(authority_scope, relative_path):
+            return _workspace_error(tool_name, "auth_or_permission", "Access denied for this skill source.")
+        raw = _read_receipted_workspace_bytes(workspace_root, relative_path, authority_scope, relative_path)
+        from app.skills.parser import SkillParser
+
+        with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8", errors="replace") as reader:
+            skill = SkillParser().parse_content(reader.read(), path=skill.file_path, relative_path=skill.relative_path,
+                default_name=skill.file_path.parent.name if skill.file_path.name.lower() == "skill.md" else skill.file_path.stem)
         body = sanitize_managed_credential_guidance(skill.body)
         body += _skill_scope_guidance(skill.metadata)
         body = _apply_trial_state(body, skill.relative_path or requested)

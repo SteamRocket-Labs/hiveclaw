@@ -73,6 +73,8 @@ def _execution_evidence(trace: dict[str, Any]) -> dict[str, Any]:
         "effect_idempotency_key": trace.get("idempotency_key"),
         "workspace_input_evidence": dict(trace["workspace_input_evidence"])
         if isinstance(trace.get("workspace_input_evidence"), dict) else None,
+        "skill_input_evidence": dict(trace["skill_input_evidence"])
+        if isinstance(trace.get("skill_input_evidence"), dict) else None,
     }
 
 

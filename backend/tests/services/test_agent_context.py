@@ -108,6 +108,35 @@ class _FakeSession:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("source_case", ["trigger", "team", "invalid_timezone"])
+async def test_runtime_metadata_keeps_unverified_contributors_visible_and_unbound(monkeypatch, source_case):
+    from app.services import agent_context
+
+    async def zone(_agent_id):
+        return "UNVERIFIED_TIMEZONE" if source_case == "invalid_timezone" else "UTC"
+
+    async def tenant(_agent_id):
+        return uuid4()
+
+    async def team(**_kwargs):
+        return "UNVERIFIED_TEAM" if source_case == "team" else ""
+
+    triggers = [SimpleNamespace(name="UNVERIFIED_TRIGGER", type="cron", config={"cron": "* * * * *"},
+        reason="Unverified trigger source")] if source_case == "trigger" else []
+    monkeypatch.setattr("app.services.timezone_utils.get_agent_timezone", zone)
+    monkeypatch.setattr("app.services.tenant_resolver.resolve_tenant_for_agent", tenant)
+    monkeypatch.setattr("app.database.tenant_scoped_session", lambda *_args, **_kwargs: _FakeSession([triggers]))
+    monkeypatch.setattr(agent_context, "build_prompt_facing_team_context", team)
+    unbound, facts = [], {}
+    rendered = await agent_context.build_agent_runtime_context(uuid4(), source_unbound=unbound, runtime_facts=facts)
+    expected = {"trigger": "runtime_trigger_sources_unbound", "team": "runtime_team_sources_unbound",
+        "invalid_timezone": "runtime_timezone_source_unverified"}[source_case]
+    assert unbound == [expected]
+    assert "UNVERIFIED_" + {"trigger": "TRIGGER", "team": "TEAM", "invalid_timezone": "TIMEZONE"}[source_case] in rendered
+    assert facts["timezone"] == await zone(None)
+
+
+@pytest.mark.asyncio
 async def test_build_agent_context_limits_confirmation_rule_to_conversation_mode(monkeypatch, tmp_path):
     from app.services.agent_context import build_agent_context
 

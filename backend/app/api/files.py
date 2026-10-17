@@ -1562,7 +1562,7 @@ async def import_skill_to_agent(
     Copies all files from the global skill registry into
     <agent_workspace>/skills/<folder_name>/.
     """
-    await require_agent_manage_access(db, current_user, agent_id)
+    agent = await require_agent_manage_access(db, current_user, agent_id)
 
     from sqlalchemy.orm import selectinload
     from app.models.skill import Skill
@@ -1579,16 +1579,11 @@ async def import_skill_to_agent(
         raise HTTPException(status_code=400, detail="Skill has no files")
 
     base = _agent_base_dir(agent_id)
-    from app.services.skill_installation import install_active_skill_package
+    from app.services.skill_source_receipts import install_registry_skill_with_sources
 
     try:
-        install_result = install_active_skill_package(
-            workspace=base,
-            folder_name=skill.folder_name,
-            files=[{"path": f.path, "content": f.content} for f in skill.files],
-            source=f"registry_skill:{skill.id}",
-            overwrite=True,
-        )
+        install_result = await install_registry_skill_with_sources(db, workspace=base, agent=agent,
+            skill=skill, actor=current_user)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1599,6 +1594,7 @@ async def import_skill_to_agent(
         "files_written": install_result["files_written"],
         "files": install_result["files"],
         "skill_guard": install_result["skill_guard"],
+        "source_receipt": install_result["source_receipt"],
     }
 
 

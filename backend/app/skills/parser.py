@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import hashlib
+import io
 import re
 import threading
 from pathlib import Path
@@ -20,13 +22,21 @@ class SkillParser:
     FRONTMATTER_PATTERN = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
 
     def parse_file(self, path: Path, *, relative_path: str, default_name: str | None = None) -> ParsedSkill:
-        content = path.read_text(encoding="utf-8", errors="replace")
-        return self.parse_content(
+        from app.services.workspace_resource_authority import open_workspace_file
+
+        selected = path.resolve()
+        with open_workspace_file(selected.parent, selected.name) as source:
+            raw = source.read()
+        with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8", errors="replace") as reader:
+            content = reader.read()
+        parsed = self.parse_content(
             content,
             path=path,
             relative_path=relative_path,
             default_name=default_name,
         )
+        parsed.source_sha256 = hashlib.sha256(raw).hexdigest()
+        return parsed
 
     def parse_content(
         self,

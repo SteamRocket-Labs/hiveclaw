@@ -746,6 +746,7 @@ def _tool_result_exits_plan_mode(data: dict[str, Any]) -> bool:
 
 async def _prepare_pending_suffix(state: _WebChatRunState) -> str:
     suffix = ""
+    source_unbound = []
     try:
         async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
             suffix = await state.ports.context.claim_pending_reply_suffix(
@@ -753,25 +754,41 @@ async def _prepare_pending_suffix(state: _WebChatRunState) -> str:
                 agent_id=state.agent.id,
                 session_id=state.session_id,
             )
+        if suffix:
+            source_unbound.append("pending_reply_sources_unbound")
     except Exception as exc:
+        source_unbound.append("pending_reply_sources_unavailable")
         state.ports.runtime.logger.warning("[WebChatRun] Pending reply injection failed (non-fatal): {}", exc)
     if state.internal_runtime_context_turn and state.prompt:
+        source_unbound.append("runtime_continuation_sources_unbound")
         suffix = _join_suffix(
             suffix,
             f"Runtime continuation context (system generated, not a user message):\n{state.prompt}",
         )
     restart = state.metadata.get("restart_resume_context")
     if isinstance(restart, dict) and str(restart.get("resume_prompt") or "").strip():
+        source_unbound.append("restart_context_sources_unbound")
         suffix = _join_suffix(
             suffix,
             "Restart recovery context: this run was active before the worker restarted. "
             "Use the following durable resume context to continue from the saved artifacts instead of "
             f"starting over.\n{str(restart.get('resume_prompt')).strip()}",
         )
+    from app.services.web_chat_runtime import (
+        _channel_delivery_prompt_suffix_for_turn,
+        _terminal_artifact_prompt_suffix_for_turn,
+    )
+
+    if (state.channel_delivery_suffix and state.channel_delivery_suffix !=
+        _channel_delivery_prompt_suffix_for_turn(state.metadata, state.runtime_session_context)):
+        source_unbound.append("channel_delivery_guidance_sources_unbound")
+    artifact_suffix = state.ports.artifacts.prompt_suffix()
+    if artifact_suffix and artifact_suffix != _terminal_artifact_prompt_suffix_for_turn():
+        source_unbound.append("artifact_guidance_sources_unbound")
     suffix = _join_suffix(
         suffix,
         state.channel_delivery_suffix,
-        state.ports.artifacts.prompt_suffix(),
+        artifact_suffix,
         runtime_budget_model_notice(state.metadata),
     )
     trusted_decline = await _bind_trusted_decline(state)
@@ -784,6 +801,10 @@ async def _prepare_pending_suffix(state: _WebChatRunState) -> str:
             "not use this opt-out for long tasks, delegation, or other high-risk actions.",
         )
     _configure_turn_policy(state, trusted_decline)
+    from app.runtime.context import ensure_runtime_assembly_state
+
+    ensure_runtime_assembly_state(state.runtime_session_context).record_context_sources(
+        agent_id=state.agent.id, content=suffix, sources=(), unbound=source_unbound)
     return suffix
 
 

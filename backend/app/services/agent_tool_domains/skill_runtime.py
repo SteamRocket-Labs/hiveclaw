@@ -134,6 +134,9 @@ async def run_skill_tool(
 
     work_dir, safe_env = _prepare_execution_environment(workspace, canonical_workspace=canonical_workspace)
     before = _workspace_file_state(work_dir)
+    capture = getattr(authority_scope, "skill_inputs", None)
+    if capture is not None:
+        capture.observe_workspace(before, authority_scope)
     slug = _normalize_slug(skill_dir.name)
     relative_script = source_script.relative_to((skill_dir / "scripts").resolve())
     sandbox_script = work_dir / "_skill_tools" / slug / relative_script

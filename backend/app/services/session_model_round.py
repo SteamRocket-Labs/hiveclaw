@@ -455,7 +455,7 @@ async def prepare_model_request(
 
     round_id = _round_id(run_id, round_index, continuation_index)
     result_id = _result_id(run_id, round_id)
-    from app.services.session_model_inputs import build_model_input_bindings, message_snapshot
+    from app.services.session_model_inputs import build_model_input_bindings, capture_context_message_origins, message_snapshot
 
     messages = list(messages)
     rows = await _bound_rows(
@@ -609,6 +609,8 @@ async def prepare_model_request(
         candidate_provider_request_id = result.provider_request_id
     else:
         candidate_provider_request_id = f"hive:{run_id}:{request_lane}:attempt:1"
+    await capture_context_message_origins(db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id,
+        run_id=run_id, result_id=result_id, messages=messages)
     input_bindings = await build_model_input_bindings(db, tenant_id=tenant_id, agent_id=agent_id,
         session_id=session_id, messages=messages, wire_messages=list(canonical_wire_request.get("messages") or []))
     snapshot = {

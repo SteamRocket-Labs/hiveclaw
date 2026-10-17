@@ -36,11 +36,11 @@ class WorkspaceSkillLoader:
     def __init__(self, parser: SkillParser | None = None) -> None:
         self.parser = parser or SkillParser()
 
-    def load_from_workspace(self, workspace: Path, *, session_id: object | None = None) -> list[ParsedSkill]:
+    def load_from_workspace(self, workspace: Path, *, session_id: object | None = None, source_authorizer=None) -> list[ParsedSkill]:
         skills: list[ParsedSkill] = []
         workspace_root = workspace.resolve()
         for skills_dir in self._discover_skill_dirs(workspace_root, session_id=session_id):
-            skills.extend(self._load_from_skills_dir(workspace_root, skills_dir))
+            skills.extend(self._load_from_skills_dir(workspace_root, skills_dir, source_authorizer=source_authorizer))
 
         return skills
 
@@ -189,7 +189,15 @@ class WorkspaceSkillLoader:
 
         return tuple(discovered)
 
-    def _load_from_skills_dir(self, workspace_root: Path, skills_dir: Path) -> list[ParsedSkill]:
+    def _parse_file(self, path: Path, *, relative_path: str, default_name: str) -> ParsedSkill | None:
+        from app.services.workspace_resource_authority import WorkspaceAuthorityError
+
+        try:
+            return self.parser.parse_file(path, relative_path=relative_path, default_name=default_name)
+        except (OSError, ValueError, WorkspaceAuthorityError):
+            return None
+
+    def _load_from_skills_dir(self, workspace_root: Path, skills_dir: Path, *, source_authorizer=None) -> list[ParsedSkill]:
         if not skills_dir.exists():
             return []
 
@@ -206,35 +214,30 @@ class WorkspaceSkillLoader:
                     if (
                         skill_file.exists()
                         and self._is_inside_workspace(skill_file.resolve(), workspace_root)
+                        and (source_authorizer is None or source_authorizer(skill_file))
                         and is_skill_runtime_loadable(
                             workspace_root,
                             skill_file.resolve().relative_to(workspace_root).as_posix(),
                         )
                     ):
-                        skills.append(
-                            self.parser.parse_file(
-                                skill_file,
-                                relative_path=skill_file.resolve().relative_to(workspace_root).as_posix(),
-                                default_name=entry.name,
-                            )
-                        )
+                        parsed = self._parse_file(skill_file, relative_path=skill_file.resolve().relative_to(workspace_root).as_posix(),
+                            default_name=entry.name)
+                        if parsed is not None:
+                            skills.append(parsed)
                         break
             elif (
                 entry.is_file()
                 and entry.suffix == ".md"
                 and self._is_inside_workspace(entry.resolve(), workspace_root)
+                and (source_authorizer is None or source_authorizer(entry))
                 and is_skill_runtime_loadable(
                     workspace_root,
                     entry.resolve().relative_to(workspace_root).as_posix(),
                 )
             ):
-                skills.append(
-                    self.parser.parse_file(
-                        entry,
-                        relative_path=entry.resolve().relative_to(workspace_root).as_posix(),
-                        default_name=entry.stem,
-                    )
-                )
+                parsed = self._parse_file(entry, relative_path=entry.resolve().relative_to(workspace_root).as_posix(), default_name=entry.stem)
+                if parsed is not None:
+                    skills.append(parsed)
         return skills
 
     @staticmethod

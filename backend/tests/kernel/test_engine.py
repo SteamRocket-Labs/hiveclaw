@@ -186,6 +186,21 @@ def test_model_authored_error_prefix_remains_memory_eligible() -> None:
     assert persisted[-1] == {"role": "assistant", "content": authored}
 
 
+def test_default_permissions_are_compiler_constants() -> None:
+    from app.kernel import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import _build_permissions_context
+    from app.runtime.context import ensure_runtime_assembly_state
+    from app.runtime.session import SessionContext
+
+    request = InvocationRequest(model=SimpleNamespace(), messages=[], agent_name="agent", role_description="role",
+        agent_id=uuid4(), session_context=SessionContext(session_id="default-permissions"))
+    prompt = _build_permissions_context(request, RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3))
+    state = ensure_runtime_assembly_state(request.session_context)
+    assert state.context_unbound_for(agent_id=request.agent_id, content=prompt) == ()
+    assert state.context_sources_for(agent_id=request.agent_id, content=prompt) == ()
+    assert "approval_policy: platform_gate" in prompt and "network_access: governed" in prompt
+
+
 def test_permissions_context_exposes_plan_mode_plan_file_as_writable_root() -> None:
     from app.kernel import InvocationRequest, RuntimeConfig
     from app.kernel.engine import _build_permissions_context
@@ -212,6 +227,10 @@ def test_permissions_context_exposes_plan_mode_plan_file_as_writable_root() -> N
 
     assert "writable_roots:" in prompt
     assert "- workspace/plans/session-1.plan.md" in prompt
+    from app.runtime.context import ensure_runtime_assembly_state
+
+    assert ensure_runtime_assembly_state(request.session_context).context_unbound_for(
+        agent_id=request.agent_id, content=prompt) == ("permission_configuration_sources_unbound",)
 
 
 def test_permissions_context_consumes_skill_execution_plans() -> None:
@@ -255,6 +274,10 @@ def test_permissions_context_consumes_skill_execution_plans() -> None:
     assert "spawn_subagent" in prompt
     assert "Research" in prompt
     assert session.metadata["permission_profile"]["allowed_tools"] == ["web_search", "read_file"]
+    from app.runtime.context import ensure_runtime_assembly_state
+
+    assert ensure_runtime_assembly_state(session).context_unbound_for(
+        agent_id=request.agent_id, content=prompt) == ("permission_configuration_sources_unbound",)
 
 
 def test_exact_session_permission_profile_cannot_be_widened_by_skill_plan() -> None:
@@ -3277,6 +3300,7 @@ async def test_execute_tool_with_hooks_records_runtime_failure_policy_on_hook_bl
 async def test_agent_kernel_handles_tool_round_and_collects_parts(with_origins):
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
+    from app.runtime.session import SessionContext
 
     agent_id = uuid4()
     user_id = uuid4()
@@ -3379,12 +3403,20 @@ async def test_agent_kernel_handles_tool_round_and_collects_parts(with_origins):
             agent_id=agent_id,
             user_id=user_id,
             model_request_prepare=prepare_request if with_origins else None,
+            session_context=SessionContext(discovered_tools=["external_unbound_tool"]) if with_origins else None,
         )
     )
 
     assert result.content == "final answer"
     if with_origins:
         assert len(prepared_requests) == 2
+        dynamic = [message.context_origin for message in prepared_requests[0]["messages"]
+            if message.context_origin is not None and message.context_origin.kind == "dynamic_prompt"]
+        assert len(dynamic) == 1 and "dynamic_section_sources_unbound:system_prompt_suffix" in dynamic[0].unbound
+        suffixes = [section for section in dynamic[0].sections
+            if section.get("selected") and section["name"] == "system_prompt_suffix"]
+        assert dynamic[0].unbound.count("dynamic_section_sources_unbound:system_prompt_suffix") == len(suffixes), (
+            suffixes, dynamic[0].unbound)
         assert prepared_requests[0]["messages"][1].source_ref == input_origin
         assistants = [m for m in prepared_requests[1]["messages"] if m.role == "assistant" and m.tool_calls]
         tools = [m for m in prepared_requests[1]["messages"] if m.role == "tool" and m.tool_call_id == "call_1"]

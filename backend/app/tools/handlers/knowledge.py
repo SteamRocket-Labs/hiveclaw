@@ -175,6 +175,13 @@ async def _company_kb_runtime_principal(
     tenant_id = _coerce_uuid(request.context.tenant_id)
     if tenant_id is None:
         raise ValueError("tenant_id_required")
+    return await company_kb_principal_for_runtime(db, runtime_principal, tenant_id)
+
+
+async def company_kb_principal_for_runtime(db: Any, runtime_principal: AgentRuntimePrincipal,
+    tenant_id: uuid.UUID) -> CompanyKnowledgePrincipal:
+    if not isinstance(runtime_principal, AgentRuntimePrincipal):
+        raise ValueError("agent_runtime_principal_required")
     requester_user_id = runtime_principal.requester_user_id
     if requester_user_id is None:
         raise ValueError("accountable_user_required")
@@ -191,7 +198,7 @@ async def _company_kb_runtime_principal(
         raise ValueError("accountable_user_not_found")
 
     team_ids: tuple[uuid.UUID, ...] = ()
-    session_id = str(request.context.session_id or "").strip()
+    session_id = str(runtime_principal.session_id or "").strip()
     session_uuid = _coerce_uuid(session_id)
     if session_uuid is not None:
         lead_ids = (
@@ -199,7 +206,7 @@ async def _company_kb_runtime_principal(
                 await db.execute(
                     select(AgentTeam.id).where(
                         AgentTeam.tenant_id == tenant_id,
-                        AgentTeam.lead_agent_id == request.context.agent_id,
+                        AgentTeam.lead_agent_id == runtime_principal.agent_id,
                         AgentTeam.parent_session_id == session_uuid,
                         AgentTeam.status == "active",
                     )
@@ -235,7 +242,7 @@ async def _company_kb_runtime_principal(
         accountable_user_id=uuid.UUID(str(user.id)),
         accountable_role=str(user.role),
         actor_type="agent",
-        actor_id=request.context.agent_id,
+        actor_id=runtime_principal.agent_id,
         department_id=_coerce_uuid(user.department_id),
         team_ids=team_ids,
         purpose=runtime_principal.purpose,

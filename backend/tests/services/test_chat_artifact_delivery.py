@@ -491,6 +491,7 @@ async def test_terminal_delivery_rebinds_existing_tool_artifact_to_final_message
 @pytest.mark.usefixtures("migrated_pg_url")
 @pytest.mark.asyncio
 async def test_chat_artifact_delivery_real_pg_concurrent_idempotency(owner_sessionmaker, tmp_path, monkeypatch):
+    monkeypatch.setattr("app.database.async_session", owner_sessionmaker)
     from app.database import tenant_scoped_session
     from app.models.agent import Agent
     from app.models.audit import ChatMessage
@@ -501,6 +502,7 @@ async def test_chat_artifact_delivery_real_pg_concurrent_idempotency(owner_sessi
     from app.models.tenant import Tenant
     from app.models.user import User
     from app.services.chat_artifact_delivery import create_chat_artifacts_for_message
+    from app.services.content_input_receipts import record_workspace_receipt
 
     tenant_id = uuid4()
     user_id = uuid4()
@@ -584,6 +586,8 @@ async def test_chat_artifact_delivery_real_pg_concurrent_idempotency(owner_sessi
         await register_workspace_path(db, tenant_id=tenant_id, agent_id=agent_id, path="workspace/report.md",
             owner_user_id=user_id, root_session_id=session_id, source="fixture",
             content_hash=hashlib.sha256(report.read_bytes()).hexdigest())
+        record_workspace_receipt(db, tenant_id, agent_id, "workspace/report.md",
+            hashlib.sha256(b"# Concurrent Report\n").hexdigest(), None)
 
     async def deliver(message_id):
         async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as db:

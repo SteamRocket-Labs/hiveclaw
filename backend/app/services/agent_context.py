@@ -34,6 +34,10 @@ AGENT_CONTEXT_RESOURCE_REFS: tuple[str, ...] = (
 _AGENT_CONTEXT_CONTENT_RESOURCE_REFS = AGENT_CONTEXT_RESOURCE_REFS[1:]
 
 
+def agent_identity_content(agent_name: str, role_description: str | None) -> dict[str, str]:
+    return {"name": agent_name, "role_description": role_description or ""}
+
+
 @dataclass(frozen=True, slots=True)
 class AgentContextResource:
     """One governed, agent-bound source that may be previewed in the prompt.
@@ -172,6 +176,8 @@ def _load_skills_index(
     active_skill_names: tuple[str, ...] = (),
     path_triggered_skill_names: tuple[str, ...] = (),
     ranking_manifest: list[dict] | None = None,
+    source_observer=None,
+    source_authorizer=None,
 ) -> str:
     """Load skill index (name + description) from skills/ directory.
 
@@ -188,7 +194,7 @@ def _load_skills_index(
     loaded_skills = []
 
     for ws_root in [TOOL_WORKSPACE / str(agent_id), PERSISTENT_DATA / str(agent_id)]:
-        loaded_skills.extend(loader.load_from_workspace(ws_root, session_id=session_id))
+        loaded_skills.extend(loader.load_from_workspace(ws_root, session_id=session_id, source_authorizer=source_authorizer))
 
     rank_workspace = PERSISTENT_DATA / str(agent_id)
     if not rank_workspace.exists():
@@ -216,9 +222,13 @@ def _load_skills_index(
             for index, decision in enumerate(ranked, start=1)
         ]
 
-    catalog = registry.render_catalog(budget_chars=budget_chars)
+    catalog = registry.render_catalog(budget_chars=budget_chars, source_observer=source_observer)
     provisional_names = [decision.skill.metadata.name for decision in ranked if decision.state == "provisional"]
     if provisional_names:
+        if source_observer is not None:
+            for decision in ranked:
+                if decision.state == "provisional":
+                    source_observer(decision.skill)
         catalog += (
             "\n\n**Skills on provisional trial:** "
             + ", ".join(provisional_names)
@@ -237,6 +247,8 @@ def build_skill_catalog_section_for_agent(
     active_skill_names: tuple[str, ...] = (),
     path_triggered_skill_names: tuple[str, ...] = (),
     ranking_manifest: list[dict] | None = None,
+    source_observer=None,
+    source_authorizer=None,
 ) -> str:
     """Render the ## Skills catalog section for an agent's workspace.
 
@@ -260,6 +272,8 @@ def build_skill_catalog_section_for_agent(
         active_skill_names=active_skill_names,
         path_triggered_skill_names=path_triggered_skill_names,
         ranking_manifest=ranking_manifest,
+        source_observer=source_observer,
+        source_authorizer=source_authorizer,
     )
     return build_skills_catalog_section(skills_text, budget_chars=skill_budget)
 
@@ -269,12 +283,23 @@ async def _build_runtime_metadata_sections(
     *,
     current_user_name: str | None = None,
     triggers_budget_chars: int = 3000,
+    source_unbound: list[str] | None = None,
+    runtime_facts: dict[str, str] | None = None,
 ) -> list[str]:
     parts: list[str] = []
 
     from app.services.timezone_utils import get_agent_timezone, now_in_timezone
 
     agent_tz_name = await get_agent_timezone(agent_id)
+    if runtime_facts is not None:
+        runtime_facts["timezone"] = agent_tz_name
+    if source_unbound is not None:
+        from zoneinfo import ZoneInfo
+
+        try:
+            ZoneInfo(agent_tz_name)
+        except (ValueError, KeyError, TypeError):
+            source_unbound.append("runtime_timezone_source_unverified")
     agent_local_now = now_in_timezone(agent_tz_name)
     now_str = agent_local_now.strftime(f"%Y-%m-%d %H:%M:%S ({agent_tz_name})")
     parts.append(f"\n## Current Time\n{now_str}")
@@ -314,6 +339,8 @@ async def _build_runtime_metadata_sections(
                 ]
                 trigger_section = build_triggers_section(trigger_rows, budget_chars=triggers_budget_chars)
                 if trigger_section:
+                    if source_unbound is not None:
+                        source_unbound.append("runtime_trigger_sources_unbound")
                     parts.append("\n" + trigger_section)
     except Exception as exc:
         logger.debug("Failed to load active triggers for agent {}: {}", agent_id, exc)
@@ -519,6 +546,8 @@ async def build_agent_runtime_context(
     budget_profile: ContextBudget | None = None,
     tenant_id: uuid.UUID | str | None = None,
     session_id: uuid.UUID | str | None = None,
+    source_unbound: list[str] | None = None,
+    runtime_facts: dict[str, str] | None = None,
 ) -> str:
     """Build volatile runtime context that should be refreshed every round."""
     triggers_budget = budget_profile.runtime_triggers_budget_chars if budget_profile else 3000
@@ -526,6 +555,8 @@ async def build_agent_runtime_context(
         agent_id,
         current_user_name=current_user_name,
         triggers_budget_chars=triggers_budget,
+        source_unbound=source_unbound,
+        runtime_facts=runtime_facts,
     )
     try:
         team_context = await build_prompt_facing_team_context(
@@ -534,6 +565,8 @@ async def build_agent_runtime_context(
             session_id=session_id,
         )
         if team_context:
+            if source_unbound is not None:
+                source_unbound.append("runtime_team_sources_unbound")
             sections.append("\n" + team_context)
     except Exception as exc:
         logger.debug("Failed to build team context for agent {}: {}", agent_id, exc)
@@ -554,6 +587,8 @@ async def build_agent_context(
     invocation_scope: str = "conversation",
     tenant_id: uuid.UUID | str | None = None,
     owner_action_policy_section: str = "",
+    source_refs: list[dict[str, str]] | None = None,
+    source_unbound: list[str] | None = None,
 ) -> str:
     """Build a rich system prompt incorporating agent's full context.
 
@@ -662,10 +697,13 @@ async def build_agent_context(
 
     # Operating contract via modular section
     operating_contract = build_executing_actions_section(invocation_scope)
-    subagent_listing = build_subagent_listing_section(agent_id=agent_id, tenant_id=_agent_tenant_id)
+    subagent_listing = build_subagent_listing_section(agent_id=agent_id, tenant_id=_agent_tenant_id,
+        source_unbound=source_unbound)
     tone_style = build_tone_style_section()
 
     if include_runtime_metadata:
+        if source_unbound is not None:
+            source_unbound.append("inline_runtime_metadata_sources_unbound")
         context_parts.extend(
             await _build_runtime_metadata_sections(
                 agent_id,
@@ -686,9 +724,20 @@ async def build_agent_context(
     rendered_parts.append("## Context Material\n\n" + context_block)
     # Skills catalog
     if skills_section:
+        if source_unbound is not None:
+            source_unbound.append("inline_skill_catalog_sources_unbound")
         rendered_parts.append(skills_section)
     # A2A collaborators
     if a2a_section:
         rendered_parts.append(a2a_section)
 
+    if source_refs is not None:
+        from app.services.config_versioning import canonical_content_hash
+
+        source_refs.append({"source_kind": "agent_identity", "source_id": f"{agent_id}\nidentity",
+            "source_version": canonical_content_hash(agent_identity_content(agent_name, role_description))})
+        for resource in (soul_resource, channels_resource, company_resource, organization_resource, a2a_resource):
+            if resource.status == "ok" and resource.content.strip():
+                source_refs.append({"source_kind": "agent_context_resource",
+                    "source_id": f"{agent_id}\n{resource.ref}", "source_version": resource.sha256})
     return "\n\n".join(part.strip() for part in rendered_parts if part and part.strip())

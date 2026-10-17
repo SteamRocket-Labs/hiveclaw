@@ -8,7 +8,9 @@ from pathlib import Path
 def test_subagent_listing_section_renders_builtin_types_and_when_to_use() -> None:
     from app.runtime.prompt_sections.subagent_listing import build_subagent_listing_section
 
-    section = build_subagent_listing_section()
+    unbound = []
+    section = build_subagent_listing_section(source_unbound=unbound)
+    assert unbound == []
 
     assert "## Session Worker Types" in section
     assert "spawn_subagent" in section
@@ -66,7 +68,10 @@ def test_subagent_listing_section_includes_custom_definitions_in_same_spawn_path
         )
     )
 
-    section = build_subagent_listing_section(agent_id=agent_id, tenant_id=tenant_id, agent_data_dir=tmp_path)
+    unbound = []
+    section = build_subagent_listing_section(agent_id=agent_id, tenant_id=tenant_id, agent_data_dir=tmp_path,
+        source_unbound=unbound)
+    assert unbound == ["custom_worker_definition_sources_unbound"]
 
     assert "### Custom Session Worker Definitions" in section
     assert "setting `definition_name`" in section

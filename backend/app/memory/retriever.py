@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -379,13 +380,7 @@ class MemoryRetriever:
             ).hexdigest()[:20]
             candidate_id = f"memory_candidate:{item.kind.value}:{index}:{digest}"
             prepared.append(
-                MemoryItem(
-                    kind=item.kind,
-                    content=item.content,
-                    score=item.score,
-                    source=item.source,
-                    metadata={**item.metadata, "selection_candidate_id": candidate_id},
-                )
+                replace(item, metadata={**item.metadata, "selection_candidate_id": candidate_id})
             )
         return prepared
 
@@ -405,13 +400,7 @@ class MemoryRetriever:
             if error:
                 metadata["semantic_selection_error"] = error
             annotated.append(
-                MemoryItem(
-                    kind=item.kind,
-                    content=item.content,
-                    score=item.score,
-                    source=item.source,
-                    metadata=metadata,
-                )
+                replace(item, metadata=metadata)
             )
         return annotated
 
@@ -589,13 +578,7 @@ class MemoryRetriever:
                 "activation_score_trace": decision.score_trace,
             }
             activated.append(
-                MemoryItem(
-                    kind=item.kind,
-                    content=item.content,
-                    score=decision.score,
-                    source=item.source,
-                    metadata=metadata,
-                )
+                replace(item, score=decision.score, metadata=metadata)
             )
         # Rank on the unclamped score: the display score saturates at 1.0,
         # which would erase ordering between highly-relevant items.
@@ -651,13 +634,7 @@ class MemoryRetriever:
                 joined.append(item)
                 continue
             joined.append(
-                MemoryItem(
-                    kind=item.kind,
-                    content=item.content,
-                    score=item.score,
-                    source=item.source,
-                    metadata={**item.metadata, "context_boost": round(factor, 6)},
-                )
+                replace(item, metadata={**item.metadata, "context_boost": round(factor, 6)})
             )
         return joined
 
@@ -687,19 +664,19 @@ class MemoryRetriever:
                 joined.append(item)
                 continue
             joined.append(
-                MemoryItem(
-                    kind=item.kind,
-                    content=item.content,
-                    score=item.score,
-                    source=item.source,
-                    metadata={**item.metadata, **record},
-                )
+                replace(item, metadata={**item.metadata, **record})
             )
         return joined
 
     def _retrieve_explicit_overlay(self, agent_id: uuid.UUID, *, query: str = "") -> list[MemoryItem]:
         items: list[MemoryItem] = []
-        for fact in search_explicit_overlay_entries(self.data_root, agent_id, query, limit=None):
+        sources = {}
+
+        def observed(entry_id, refs):
+            sources[entry_id] = refs
+
+        for fact in search_explicit_overlay_entries(self.data_root, agent_id, query, limit=None,
+            source_observer=observed):
             metadata = {
                 **(fact.get("metadata") or {}),
                 "entry_id": fact.get("id", ""),
@@ -719,6 +696,7 @@ class MemoryRetriever:
                     score=0.98,
                     source=str(fact.get("source", "")),
                     metadata=metadata,
+                    source_refs=sources.get(fact.get("id"), ()),
                 )
             )
         return items

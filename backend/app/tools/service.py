@@ -1336,6 +1336,7 @@ class ToolRuntimeService:
 
                 if trace_metadata_sink is not None:
                     trace_metadata_sink.pop("workspace_input_evidence", None)
+                    trace_metadata_sink.pop("skill_input_evidence", None)
                     if workspace_mutating:
                         for key in ("workspace_mutation_evidence_captured", "workspace_mutation_states",
                             "workspace_mutation_state_errors", "workspace_mutation_lineage", "workspace_execution_evidence"):
@@ -1352,7 +1353,7 @@ class ToolRuntimeService:
 
                 scope = context.workspace_authority_scope
                 if isinstance(scope, WorkspaceAuthorityScope):
-                    context.workspace_authority_scope = replace(scope, output_writes=())
+                    context.workspace_authority_scope = replace(scope, output_writes=(), skill_inputs=None)
                     text_write = tool_name in {"write_file", "edit_file"} or (
                         tool_name == "fs_write" and str(arguments.get("mode") or "write").strip().lower() in {"write", "edit"})
                     if text_write:
@@ -1368,7 +1369,10 @@ class ToolRuntimeService:
                                     message="The write predecessor cannot be verified. Reconcile the file before retrying.",
                                     provider="workspace", http_status=503, retryable=False,
                                     extra={"reason_code": exc.code, "outcome": "unavailable"})
-                            context.workspace_authority_scope = replace(scope, output_writes=(observation,))
+                            context.workspace_authority_scope = replace(scope, output_writes=(observation,), skill_inputs=None)
+                from app.services.skill_source_receipts import prepare_skill_input_capture
+
+                await prepare_skill_input_capture(request)
                 before_states: dict[str, dict[str, Any]] = {}
                 before_errors: dict[str, str] = {}
                 if workspace_mutating and trace_metadata_sink is not None:
@@ -1406,6 +1410,13 @@ class ToolRuntimeService:
                         trace_metadata_sink["workspace_input_evidence"] = input_evidence
                     if receipt_block is not None:
                         return receipt_block
+                skill_read = getattr(context.workspace_authority_scope, "skill_inputs", None)
+                if skill_read is not None and trace_metadata_sink is not None:
+                    from app.services.content_input_receipts import persist_workspace_execution_evidence
+
+                    trace_metadata_sink["skill_input_evidence"] = await persist_workspace_execution_evidence(
+                        context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
+                        result=value, states={}, lineage=[], errors={}, skill_read=skill_read)
                 if context.workspace_authority_scope is not None:
                     from app.services.workspace_resource_authority import record_workspace_tool_mutations
 
@@ -1439,7 +1450,7 @@ class ToolRuntimeService:
                     )
                 return value
 
-            if workspace_mutating:
+            if workspace_mutating or tool_name == "load_skill":
                 async with async_agent_workspace_lock(context.agent_id):
                     result = await _execute_backend()
             else:

@@ -90,7 +90,7 @@ class SkillRegistry:
         append_skill(name)
         return "\n\n".join(part for part in parts if part)
 
-    def render_catalog(self, *, budget_chars: int = 8000) -> str:
+    def render_catalog(self, *, budget_chars: int = 8000, source_observer=None) -> str:
         """Render every model-visible skill with its complete description.
 
         ``budget_chars`` is retained as an advisory compatibility argument.
@@ -101,6 +101,9 @@ class SkillRegistry:
         visible_skills = [skill for skill in self._skills.values() if _model_catalog_visible(skill)]
         if not visible_skills:
             return ""
+        if source_observer is not None:
+            for skill in visible_skills:
+                source_observer(skill)
 
         header = (
             "You have the following skills available. "

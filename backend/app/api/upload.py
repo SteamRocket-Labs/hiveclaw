@@ -276,6 +276,20 @@ async def save_upload_for_agent(
                 content_hash=hashlib.sha256(content).hexdigest(),
                 allow_owner_rebind=False,
             )
+            if isinstance(db, AsyncSession):
+                from app.services.content_input_receipts import (
+                    latest_workspace_receipt, lock_workspace_receipt_write, record_workspace_receipt,
+                    validate_browser_input_dependencies,
+                )
+
+                await lock_workspace_receipt_write(db, tenant_id, agent_id, workspace_path)
+                previous = await latest_workspace_receipt(db, tenant_id, agent_id, workspace_path)
+                if previous is not None:
+                    reader = await db.get(User, user_id)
+                    await validate_browser_input_dependencies(db, tenant_id, reader, previous.dependencies_json)
+                record_workspace_receipt(db, tenant_id, agent_id, workspace_path,
+                    hashlib.sha256(content).hexdigest(), previous)
+                await db.flush()
         except Exception:
             save_path.unlink(missing_ok=True)
             raise

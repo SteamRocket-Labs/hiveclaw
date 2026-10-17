@@ -1,5 +1,6 @@
 """Agent lifecycle manager for Hive digital employees."""
 
+import hashlib
 import shutil
 import uuid
 from datetime import datetime, timezone
@@ -259,6 +260,7 @@ class AgentManager:
         boundaries: str = "",
         blueprint: dict | None = None,
         repair_existing: bool = False,
+        original_author_id: uuid.UUID | None = None,
     ) -> None:
         """Copy template files and customize for this agent."""
         agent_dir = self._agent_dir(agent.id)
@@ -320,12 +322,35 @@ class AgentManager:
         # Two-plane bootstrap (spec §6.3 C7): soul stays 应然; the self-model
         # starts as an empty skeleton that experience fills through the gate.
         self_path = agent_dir / "memory" / "self" / "self.md"
+        self_content = None
         if not self_path.exists():
             self_path.parent.mkdir(parents=True, exist_ok=True)
-            self_path.write_text(
-                "# Self — 我对自己的认识\n\n## 能力\n\n## 方法\n\n## 失败模式\n\n## 风格\n",
-                encoding="utf-8",
-            )
+            self_content = "# Self — 我对自己的认识\n\n## 能力\n\n## 方法\n\n## 失败模式\n\n## 风格\n"
+            self_path.write_text(self_content, encoding="utf-8")
+        # Only the authenticated original-form writer may attest genesis, never repairs or model blueprints.
+        if original_author_id is not None and not repair_existing and blueprint is None and agent.tenant_id is not None:
+            from app.models.config_revision import ConfigRevision
+            from app.services.agent_context import _strip_primary_heading, agent_identity_content
+            from app.services.config_versioning import save_revision
+            from app.services.skill_source_receipts import original_platform_skill_hashes
+
+            author = await db.get(User, original_author_id, populate_existing=True)
+            prior = await db.scalar(select(ConfigRevision.id).where(
+                ConfigRevision.tenant_id == agent.tenant_id, ConfigRevision.entity_type == "agent_bootstrap",
+                ConfigRevision.entity_id == agent.id).limit(1))
+            if (prior is None and author is not None and author.is_active and author.id == agent.creator_id
+                and (author.tenant_id == agent.tenant_id or author.role == "platform_admin")):
+                await save_revision(db, entity_type="agent_bootstrap", entity_id=agent.id, tenant_id=agent.tenant_id,
+                    content={"schema": "hive.agent_bootstrap.v1",
+                        "identity": agent_identity_content(agent.name, agent.role_description), "soul": {
+                        "content_sha256": hashlib.sha256(soul_content.encode("utf-8")).hexdigest(),
+                        "resource_sha256": hashlib.sha256(_strip_primary_heading(soul_content.strip()).strip()
+                            .encode("utf-8")).hexdigest()},
+                        "resident_sources": {"memory/self/self.md": hashlib.sha256(self_content.encode("utf-8")).hexdigest()}
+                            if self_content is not None else {},
+                        "platform_skill_sources": original_platform_skill_hashes(agent_dir)},
+                    change_source="user", changed_by_user_id=author.id,
+                    change_message="Original owner-authored identity initialized")
         rebuild_index(Path(settings.AGENT_DATA_DIR), agent.id)
 
         # Ensure HEARTBEAT.md exists — copy from central template

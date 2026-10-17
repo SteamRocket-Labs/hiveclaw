@@ -702,11 +702,15 @@ async def _build_system_prompt(
     tenant_id: uuid.UUID | None,
     resolved_memory_context: str,
     current_user_name: str | None = None,
+    *, source_refs: list[dict[str, str]] | None = None,
+    source_unbound: list[str] | None = None,
 ) -> str:
     # CC subagent semantics: a standalone prompt IS the whole frozen prefix —
     # the spawned agent is a clean specialist, not the host plus a suffix.
     standalone = (request.standalone_system_prompt or "").strip()
     if standalone:
+        if source_unbound is not None:
+            source_unbound.append("standalone_system_prompt_sources_unbound")
         return standalone
     if current_user_name is None:
         current_user_name = await _resolve_current_user_name(request.user_id)
@@ -717,6 +721,8 @@ async def _build_system_prompt(
     owner_action_policy_section = await resolve_owner_action_policy_prompt_section(
         agent_id=request.agent_id,
         tenant_id=tenant_id,
+        source_refs=source_refs,
+        source_unbound=source_unbound,
     )
     agent_context = await build_agent_context(
         agent_id=request.agent_id,
@@ -731,6 +737,8 @@ async def _build_system_prompt(
         invocation_scope=request.invocation_scope or "conversation",
         tenant_id=tenant_id,
         owner_action_policy_section=owner_action_policy_section,
+        source_refs=source_refs,
+        source_unbound=source_unbound,
     )
     return build_frozen_prompt_prefix(
         agent_context=agent_context,
@@ -775,6 +783,8 @@ async def _resolve_memory_context(
     if (request.standalone_system_prompt or "").strip():
         return ""
     parts: list[str] = []
+    source_refs: list[dict[str, str]] = []
+    source_unbound: list[str] = []
     session_id = request.memory_session_id
     if not session_id and request.session_context:
         session_id = request.session_context.session_id
@@ -825,7 +835,9 @@ async def _resolve_memory_context(
             duration_ms=memory_duration_ms,
         )
         runtime_memory_context = runtime_memory_result.content
+        source_unbound.extend(runtime_memory_result.source_unbound)
         if runtime_memory_context:
+            source_refs.extend(runtime_memory_result.source_refs)
             parts.append(
                 _context_engine().inject(
                     request.session_context,
@@ -859,6 +871,7 @@ async def _resolve_memory_context(
             )
 
     if request.memory_context:
+        source_unbound.append("request_memory_context_unbound")
         parts.append(
             _context_engine().inject(
                 request.session_context,
@@ -878,6 +891,7 @@ async def _resolve_memory_context(
                 session_id=str(session_id),
             )
             if session_learning:
+                source_unbound.append("session_learning_sources_unbound")
                 parts.append(
                     _context_engine().inject(
                         request.session_context,
@@ -899,6 +913,7 @@ async def _resolve_memory_context(
 
             skill_digest = render_skill_evolution_digest(Path(get_settings().AGENT_DATA_DIR) / str(request.agent_id))
             if skill_digest:
+                source_unbound.append("skill_evolution_digest_sources_unbound")
                 parts.append(
                     _context_engine().inject(
                         request.session_context,
@@ -910,7 +925,12 @@ async def _resolve_memory_context(
         except Exception as exc:
             logger.debug("[SkillEvolution] digest skipped for %s: %s", request.agent_id, exc)
 
-    return "\n\n".join(parts)
+    content = "\n\n".join(parts)
+    from app.runtime.context import ensure_runtime_assembly_state
+
+    ensure_runtime_assembly_state(request.session_context).record_context_sources(
+        agent_id=request.agent_id, content=content, sources=source_refs, unbound=source_unbound)
+    return content
 
 
 async def _consume_memory_context_status(
@@ -1009,6 +1029,15 @@ async def _resolve_runtime_metadata_context(
     current_user_name = await _resolve_current_user_name(request.user_id) if request.user_id else None
     _runtime_kwargs = {"current_user_name": current_user_name}
     _runtime_sig = inspect.signature(build_agent_runtime_context).parameters
+    source_refs, source_unbound = [], ["runtime_metadata_source_inventory_missing"]
+    if "source_unbound" in _runtime_sig:
+        source_unbound = []
+        _runtime_kwargs["source_unbound"] = source_unbound
+    runtime_facts = {}
+    if "runtime_facts" in _runtime_sig:
+        _runtime_kwargs["runtime_facts"] = runtime_facts
+    else:
+        source_unbound.append("runtime_timezone_source_unobserved")
     if "budget_profile" in _runtime_sig:
         _runtime_kwargs["budget_profile"] = budget_profile
     if "tenant_id" in _runtime_sig:
@@ -1018,12 +1047,38 @@ async def _resolve_runtime_metadata_context(
     runtime_context = await build_agent_runtime_context(request.agent_id, **_runtime_kwargs)
     if not runtime_context:
         return ""
-    return _context_engine().inject(
+    actor_unbound = []
+    channel_unbound = []
+    try:
+        from app.services.content_input_receipts import record_session_actor_identity
+
+        async with tenant_scoped_session(tenant_id, require_tenant=True) as db:
+            actor_ref, actor = await record_session_actor_identity(db, tenant_id=tenant_id, agent_id=request.agent_id,
+                session_id=request.session_context.session_id if request.session_context is not None else None,
+                user_id=request.user_id, display_name=current_user_name, timezone_name=runtime_facts.get("timezone"))
+        source_refs.append(actor_ref)
+        channel = request.session_context.channel if request.session_context is not None else ""
+        if channel and channel != actor["channel"]:
+            channel_unbound.append("runtime_channel_identity_mismatch")
+    except Exception as exc:
+        actor_unbound.append("runtime_actor_identity_unavailable")
+        logger.debug("[Invoker] actor source capture unavailable: %s", type(exc).__name__)
+    from app.runtime.context import ensure_runtime_assembly_state
+    from app.runtime.prompt_sections.environment import build_environment_section
+
+    state = ensure_runtime_assembly_state(request.session_context)
+    state.record_context_sources(agent_id=request.agent_id, content=build_environment_section(
+        user_name=current_user_name or "", channel=request.session_context.channel if request.session_context else "",
+        agent_name=request.agent_name, include_time=False), sources=source_refs, unbound=(*actor_unbound, *channel_unbound))
+    source_unbound.extend(actor_unbound)
+    content = _context_engine().inject(
         request.session_context,
         kind="agent_runtime_context",
         source="runtime_context:agent",
         content=runtime_context,
     )
+    state.record_context_sources(agent_id=request.agent_id, content=content, sources=source_refs, unbound=source_unbound)
+    return content
 
 
 async def _resolve_retrieval_context(
@@ -1387,12 +1442,16 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
         resolved_memory_context: str,
         current_user_name: str | None,
     ) -> str:
+        source_refs: list[dict[str, str]] = []
+        source_unbound: list[str] = []
         try:
             prompt = await _build_system_prompt(
                 request,  # type: ignore[arg-type]
                 tenant_id,
                 resolved_memory_context,
                 current_user_name=current_user_name,
+                source_refs=source_refs,
+                source_unbound=source_unbound,
             )
         except ContextDependencyUnavailable as exc:
             if request.agent_id is not None and tenant_id is not None:
@@ -1440,6 +1499,10 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
             )
         except Exception as exc:  # observe-only evidence must not starve the model
             logger.warning("[Invoker] INSTRUCTIONS_LOADED hook failed: %s", exc)
+        from app.runtime.context import ensure_runtime_assembly_state
+
+        ensure_runtime_assembly_state(request.session_context).record_context_sources(
+            agent_id=request.agent_id, content=prompt, sources=source_refs, unbound=source_unbound)
         return prompt
 
     async def _kernel_resolve_memory_context(
@@ -1735,6 +1798,65 @@ def _resolve_effective_turn_route(
     }
 
 
+async def _build_native_skill_catalog(request: AgentInvocationRequest, agent_id, **kwargs) -> str:
+    from app.core.execution_context import get_execution_identity
+    from app.database import tenant_scoped_session
+    from app.models.user import User
+    from app.services import agent_context
+    from app.services.personal_knowledge_access import AgentRuntimePrincipal
+    from app.services.session_workspace_snapshot import async_agent_workspace_lock
+    from app.services.skill_source_receipts import SkillInputCapture, load_skill_input_snapshot
+    from app.services.workspace_resource_authority import load_workspace_authority_scope
+    from app.runtime.context import ensure_runtime_assembly_state
+
+    root = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+    capture = SkillInputCapture(agent_id)
+    scope = None
+    if request.user_id is not None and request.tenant_id is not None:
+        try:
+            async with tenant_scoped_session(request.tenant_id) as db:
+                user = await db.get(User, request.user_id, populate_existing=True)
+                if user is not None and user.is_active:
+                    identity = request.execution_identity or get_execution_identity()
+                    autonomous = getattr(identity, "identity_type", None) == "agent_bot"
+                    delegation_id = getattr(request.delegation_token, "delegation_id", None)
+                    principal = AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=user.id,
+                        session_id=str(kwargs.get("session_id")) if kwargs.get("session_id") else None,
+                        purpose="autonomous_agent" if autonomous else "a2a_delegation" if delegation_id else "interactive_session",
+                        autonomous=autonomous, delegation_id=str(delegation_id) if delegation_id else None)
+                    scope = await load_workspace_authority_scope(db, user, agent_id=agent_id,
+                        session_id=uuid.UUID(principal.session_id) if principal.session_id else None, runtime_principal=principal)
+        except Exception:
+            capture.unbound.append("skill_catalog_authority_unavailable")
+
+    def allowed(path):
+        path = path.resolve()
+        for candidate in (root, agent_context.TOOL_WORKSPACE / str(agent_id)):
+            try:
+                relative = path.relative_to(candidate.resolve()).as_posix()
+            except ValueError:
+                continue
+            if relative.startswith("workspace/"):
+                return candidate.resolve() == root.resolve() and scope is not None and scope.can_read(relative)
+            return True
+        return False
+
+    def observed(skill):
+        try:
+            relative = skill.file_path.resolve().relative_to(root.resolve()).as_posix()
+        except ValueError:
+            capture.unbound.append("skill_catalog_workspace_unverified")
+            return
+        capture.observe_file(relative, skill.source_sha256)
+
+    async with async_agent_workspace_lock(agent_id, data_root=root.parent):
+        await load_skill_input_snapshot(capture, request.tenant_id)
+        catalog = build_skill_catalog_section_for_agent(agent_id, **kwargs, source_observer=observed, source_authorizer=allowed)
+    ensure_runtime_assembly_state(request.session_context).record_context_sources(
+        agent_id=agent_id, content=catalog, sources=capture.snapshot()["sources"], unbound=capture.snapshot()["unbound"])
+    return catalog
+
+
 async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult:
     """Delegate to the single run_agent_invocation lifecycle owner."""
     from app.runtime.invocation_orchestrator import InvocationPorts, run_agent_invocation
@@ -1758,7 +1880,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
             resolve_eviction_dir=_resolve_eviction_dir,
             resolve_kernel=_resolve_kernel_for_request,
             skill_ranking_inputs=_skill_catalog_ranking_inputs,
-            build_skill_catalog=build_skill_catalog_section_for_agent,
+            build_skill_catalog=lambda agent_id, **kwargs: _build_native_skill_catalog(request, agent_id, **kwargs),
             combined_tools=get_combined_openai_tools,
             load_secret_boundary=_load_invocation_secret_boundary,
             record_skill_usage=record_skill_runtime_usage_for_invocation,

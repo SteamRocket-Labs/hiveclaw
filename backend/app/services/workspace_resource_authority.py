@@ -10,7 +10,7 @@ import shutil
 import stat
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -388,6 +388,7 @@ class WorkspaceAuthorityScope:
     input_reads: tuple[WorkspaceInputRead, ...] = ()
     output_writes: tuple[WorkspaceOutputWrite, ...] = ()
     session_source_ids: frozenset[str] | None = None
+    skill_inputs: Any | None = field(default=None, repr=False)
 
     def can_read_session_source(self, path: str) -> bool | None:
         if self.session_source_ids is None:

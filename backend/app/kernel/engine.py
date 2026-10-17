@@ -313,11 +313,22 @@ def _split_system_prompt_for_api(prompt: str) -> tuple[str, str]:
     return frozen.rstrip(), dynamic.strip()
 
 
-def _dynamic_suffix_notice(dynamic_suffix: str) -> LLMMessage | None:
+def _context_message(*, role: str, content: str, kind: str, sections=(), sources=(), unbound=("context_sources_unbound",)) -> LLMMessage:
+    from app.runtime.context_candidates import ContextMessageOrigin
+
+    return LLMMessage(role=role, content=content, context_origin=ContextMessageOrigin.capture(
+        kind=kind, role=role, content=content, sections=sections, sources=sources, unbound=unbound))
+
+
+def _dynamic_suffix_notice(dynamic_suffix: str, *, sections=(), sources=(), unbound=("context_sources_unbound",)) -> LLMMessage | None:
     if not dynamic_suffix.strip():
         return None
-    return LLMMessage(
+    return _context_message(
         role="user",
+        kind="dynamic_prompt",
+        sections=sections,
+        sources=sources,
+        unbound=unbound,
         content=(
             "[System Notice]\n"
             "The following runtime context applies only to this request. "
@@ -1251,11 +1262,13 @@ def _build_permissions_context(request: InvocationRequest, runtime_config: Runti
     if (request.standalone_system_prompt or "").strip():
         return ""
     metadata = _span_session_metadata(request)
+    source_unbound = []
     try:
         from app.services.skill_execution_adapter import apply_skill_execution_plans_to_metadata
 
         apply_skill_execution_plans_to_metadata(metadata)
     except Exception as exc:
+        source_unbound.append("permission_plan_sources_unavailable")
         logger.debug("[Kernel] skill execution plan metadata consumption failed: %s", exc)
     policy = metadata.get("permission_profile")
     policy_dict = dict(policy) if isinstance(policy, dict) else {}
@@ -1300,7 +1313,17 @@ def _build_permissions_context(request: InvocationRequest, runtime_config: Runti
     )
     handoff_context = _render_pending_skill_handoffs(metadata)
     if handoff_context:
-        return permissions_prompt + "\n" + handoff_context
+        permissions_prompt += "\n" + handoff_context
+    contributor_keys = ("permission_profile", "approval_policy", "permission_mode", "network_access",
+        "network_policy", "allowed_tools", "writable_roots", "denied_reads", "denied_actions",
+        "request_permission_tool_enabled", "plan_mode", "skill_execution_plans", "pending_skill_handoffs")
+    if (any(metadata.get(key) for key in contributor_keys) or request.allowed_tool_names
+        or getattr(runtime_config, "tenant_resolution_error", None)):
+        source_unbound.append("permission_configuration_sources_unbound")
+    from app.runtime.context import ensure_runtime_assembly_state
+
+    ensure_runtime_assembly_state(request.session_context).record_context_sources(
+        agent_id=request.agent_id, content=permissions_prompt, sources=(), unbound=source_unbound)
     return permissions_prompt
 
 
@@ -1704,6 +1727,8 @@ def _tool_execution_evidence(
         "pre_effect_fence_ref": pre_effect_fence_ref,
         "workspace_input_evidence": dict(trace["workspace_input_evidence"])
         if isinstance(trace.get("workspace_input_evidence"), dict) else None,
+        "skill_input_evidence": dict(trace["skill_input_evidence"])
+        if isinstance(trace.get("skill_input_evidence"), dict) else None,
     }
 
 
@@ -2889,6 +2914,7 @@ def _clone_api_messages(messages: list[LLMMessage]) -> list[LLMMessage]:
             reasoning_content=message.reasoning_content,
             reasoning_signature=message.reasoning_signature,
             source_ref=message.source_ref,
+            context_origin=message.context_origin,
         )
         for message in messages
     ]

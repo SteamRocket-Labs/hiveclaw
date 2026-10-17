@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -118,6 +119,7 @@ async def test_create_skill_scopes_custom_skill_to_current_tenant(monkeypatch):
         registered.append((projection, kwargs))
 
     monkeypatch.setattr("app.services.ai_assets.register_projection", _register)
+    monkeypatch.setattr("app.services.config_versioning.save_revision", AsyncMock())
 
     result = await skills_api.create_skill(
         skills_api.SkillCreateIn(

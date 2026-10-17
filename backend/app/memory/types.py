@@ -75,6 +75,8 @@ class MemoryItem:
     score: float = 0.0
     source: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Reader witnesses stay separate from model-facing metadata.
+    source_refs: tuple[dict[str, str], ...] = field(default=(), repr=False)
 
     def __post_init__(self):
         self.score = max(0.0, min(self.score, 1.0))

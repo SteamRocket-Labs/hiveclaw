@@ -243,11 +243,15 @@ async def resolve_owner_action_policy_prompt_section(
     *,
     agent_id: uuid.UUID,
     tenant_id: uuid.UUID | str | None,
+    source_refs: list[dict[str, str]] | None = None,
+    source_unbound: list[str] | None = None,
 ) -> str:
     """Load/backfill policy for the live model-input path without hiding outages."""
     try:
         resolved_tenant_id = uuid.UUID(str(tenant_id))
     except (TypeError, ValueError, AttributeError):
+        if source_unbound is not None:
+            source_unbound.append("owner_action_policy_tenant_unavailable")
         return _unavailable_owner_action_policy_prompt_section("tenant_unavailable")
 
     try:
@@ -265,8 +269,20 @@ async def resolve_owner_action_policy_prompt_section(
                 tenant_id=resolved_tenant_id,
                 create_default=True,
             )
-        return render_owner_action_policy_prompt_section(policy)
+        rendered = render_owner_action_policy_prompt_section(policy)
+        if policy.valid and policy.revision_id is not None:
+            if source_refs is not None:
+                import hashlib
+
+                source_refs.append({"source_kind": "owner_action_policy",
+                    "source_id": f"{agent_id}\n{policy.revision_id}",
+                    "source_version": hashlib.sha256(rendered.encode("utf-8")).hexdigest()})
+        elif source_unbound is not None:
+            source_unbound.append("owner_action_policy_revision_unverified")
+        return rendered
     except Exception as exc:
+        if source_unbound is not None:
+            source_unbound.append("owner_action_policy_unavailable")
         logger.warning(
             "Owner action policy unavailable for prompt assembly (agent=%s, tenant=%s): %s",
             agent_id,

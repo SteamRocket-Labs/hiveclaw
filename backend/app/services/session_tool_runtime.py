@@ -892,6 +892,17 @@ async def complete_tool_invocation(
                 knowledge_metadata["workspace_input_receipt"] = input_evidence
         except ContentInputReceiptError as exc:
             knowledge_metadata["workspace_input_receipt"] = {"status": "unavailable", "reason_code": exc.code}
+    if invocation.tool_name in {"load_skill", "run_skill_tool"}:
+        from app.services.content_input_receipts import ContentInputReceiptError, load_skill_input_evidence
+
+        try:
+            skill_evidence = await load_skill_input_evidence(db, agent_id=agent_id, invocation=invocation,
+                model_result=result, arguments=effective_payload, content_hash=content_hash,
+                capture=(execution_evidence or {}).get("skill_input_evidence"))
+            if skill_evidence is not None:
+                knowledge_metadata["skill_input_receipt"] = skill_evidence
+        except ContentInputReceiptError as exc:
+            knowledge_metadata["skill_input_receipt"] = {"status": "unavailable", "reason_code": exc.code}
     if publication_errors:
         knowledge_metadata["artifact_delivery"] = {
             "status": "partial" if parts else publication_errors[0]["status"], "files": publication_errors,

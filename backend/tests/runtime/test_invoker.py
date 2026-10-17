@@ -978,6 +978,8 @@ async def test_build_system_prompt_uses_static_agent_context_only(monkeypatch):
     assert captured["policy_kwargs"] == {
         "agent_id": request.agent_id,
         "tenant_id": captured["kwargs"]["tenant_id"],
+        "source_refs": None,
+        "source_unbound": None,
     }
 
 

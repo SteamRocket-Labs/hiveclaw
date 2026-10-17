@@ -1,0 +1,318 @@
+"""Exact registry Skill installation inputs, separate from runtime reconciliation."""
+
+import hashlib
+import uuid
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+
+from sqlalchemy import select, text
+from sqlalchemy.orm import selectinload
+
+from app.models.ai_asset import AIAssetRecord
+from app.models.config_revision import ConfigRevision
+from app.models.skill import Skill
+from app.services.config_versioning import canonical_content_hash, save_revision
+from app.services.skill_installation import _safe_folder_name, install_active_skill_package
+
+
+@dataclass
+class SkillInputCapture:
+    agent_id: uuid.UUID
+    files: dict[str, tuple[str, str]] = field(default_factory=dict)
+    platform_files: dict[str, tuple[str, str]] = field(default_factory=dict)
+    sources: list[dict[str, str]] = field(default_factory=list)
+    unbound: list[str] = field(default_factory=list)
+    unverified: set[str] = field(default_factory=set)
+
+    def observe_file(self, path, digest):
+        selected = self.files.get(path)
+        source_kind = "agent_skill_file"
+        if selected is None:
+            selected = self.platform_files.get(path)
+            source_kind = "agent_platform_skill_file"
+        if selected is None or selected[1] != digest:
+            self.unbound.append(f"skill_file_unbound:{path}")
+            return
+        self.sources.append({"source_kind": source_kind, "source_id": f"{self.agent_id}\n{path}\n{selected[0]}",
+            "source_version": digest})
+        if path in self.unverified:
+            self.unbound.append(f"skill_installation_unverified:{path}")
+
+    def observe_workspace(self, states, scope):
+        for state in states.values():
+            path = state["path"]
+            read = scope.input_read(path)
+            digest = state.get("sha256")
+            if read is None or not digest or read.observed_sha256 != digest or read.content_sha256 != digest:
+                self.unbound.append(f"workspace_file_unbound:{path}")
+                continue
+            self.sources.append({"source_kind": "workspace_artifact", "source_id": str(read.receipt_id), "source_version": digest})
+
+    def snapshot(self):
+        sources = sorted({(row["source_kind"], row["source_id"], row["source_version"]) for row in self.sources})
+        return {"sources": [dict(zip(("source_kind", "source_id", "source_version"), row)) for row in sources],
+            "unbound": sorted(set(self.unbound or ([] if sources else ["skill_source_not_observed"])))}
+
+
+async def prepare_skill_input_capture(request):
+    from app.config import get_settings
+    from app.services.workspace_resource_authority import WorkspaceAuthorityScope
+
+    context = request.context
+    scope = context.workspace_authority_scope
+    if request.tool_name not in {"load_skill", "run_skill_tool"} or not isinstance(scope, WorkspaceAuthorityScope):
+        return
+    capture = SkillInputCapture(context.agent_id)
+    context.workspace_authority_scope = replace(scope, skill_inputs=capture)
+    if Path(context.workspace).resolve() != (Path(get_settings().AGENT_DATA_DIR) / str(context.agent_id)).resolve():
+        capture.unbound.append("skill_workspace_source_unverified")
+        return
+    await load_skill_input_snapshot(capture, context.tenant_id)
+
+
+async def load_skill_input_snapshot(capture, tenant_id):
+    from app.database import tenant_scoped_session
+
+    try:
+        tenant_id = uuid.UUID(str(tenant_id))
+        async with tenant_scoped_session(tenant_id) as db:
+            locked = await db.scalar(text("SELECT pg_try_advisory_xact_lock(hashtextextended(:key, 0))"),
+                {"key": f"registry-skill-install:{tenant_id}:{capture.agent_id}"})
+            if not locked:
+                capture.unbound.append("skill_installation_in_progress")
+                return
+            rows = (await db.scalars(select(ConfigRevision).where(ConfigRevision.tenant_id == tenant_id,
+                ConfigRevision.entity_type == "agent_skill_install", ConfigRevision.is_active.is_(True),
+                ConfigRevision.content["agent_id"].astext == str(capture.agent_id)))).all()
+            for row in rows:
+                content = row.content
+                if (not isinstance(content, dict) or canonical_content_hash(content) != row.content_hash
+                    or content.get("schema") != "hive.skill_installation_inputs.v1"
+                    or not isinstance(content.get("files"), dict) or row.entity_id != _installation_id(capture.agent_id, content["folder_name"])):
+                    continue
+                if content.get("unverified_inputs") != []:
+                    capture.unverified.update(content["files"])
+                capture.files.update({path: (str(row.id), digest) for path, digest in content["files"].items()})
+            capture.platform_files.update(await _platform_skill_sources(db, tenant_id, capture.agent_id))
+    except Exception:
+        capture.unbound.append("skill_installation_snapshot_unavailable")
+
+
+def original_platform_skill_hashes(workspace):
+    """Witness only bytes supplied by the application package, never a configured custom template."""
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
+
+    bundled = Path(__file__).resolve().parents[2] / "agent_template"
+    hashes = {}
+    for source in sorted((bundled / "skills").rglob("*")):
+        if not source.is_file():
+            continue
+        path = source.relative_to(bundled).as_posix()
+        try:
+            with open_workspace_file(bundled, path) as reader:
+                digest = hashlib.file_digest(reader, "sha256").hexdigest()
+            with open_workspace_file(workspace, path) as reader:
+                if hashlib.file_digest(reader, "sha256").hexdigest() == digest:
+                    hashes[path] = digest
+        except (OSError, ValueError, WorkspaceAuthorityError):
+            continue
+    return hashes
+
+
+async def _platform_skill_sources(db, tenant_id, agent_id):
+    from app.models.agent import Agent
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
+
+    revision = await db.scalar(select(ConfigRevision).where(ConfigRevision.tenant_id == tenant_id,
+        ConfigRevision.entity_type == "agent_bootstrap", ConfigRevision.entity_id == agent_id,
+        ConfigRevision.version == 1, ConfigRevision.is_active.is_(True)).execution_options(populate_existing=True))
+    agent = await db.get(Agent, agent_id, populate_existing=True)
+    content = revision.content if revision is not None and isinstance(revision.content, dict) else {}
+    if (agent is None or agent.tenant_id != tenant_id or revision is None
+        or content.get("schema") != "hive.agent_bootstrap.v1" or canonical_content_hash(content) != revision.content_hash
+        or revision.change_source != "user" or revision.changed_by_agent_id is not None
+        or revision.changed_by_user_id != agent.creator_id or not isinstance(content.get("platform_skill_sources"), dict)):
+        return {}
+    sources = {}
+    bundled = Path(__file__).resolve().parents[2] / "agent_template"
+    for path, digest in content["platform_skill_sources"].items():
+        parts = Path(path).parts
+        if len(parts) < 3 or parts[0] != "skills" or any(p in {".", ".."} for p in parts) or path != Path(path).as_posix():
+            continue
+        # A later registry installation keeps its own lineage even when bytes match the bundle.
+        superseded = await db.scalar(select(ConfigRevision.id).where(ConfigRevision.tenant_id == tenant_id,
+            ConfigRevision.entity_type == "agent_skill_install", ConfigRevision.entity_id == _installation_id(agent_id, parts[1])).limit(1))
+        if superseded is not None:
+            continue
+        try:
+            with open_workspace_file(bundled, path) as reader:
+                if hashlib.file_digest(reader, "sha256").hexdigest() == digest:
+                    sources[path] = (str(revision.id), digest)
+        except (OSError, ValueError, WorkspaceAuthorityError):
+            continue
+    return sources
+
+
+def _installation_id(agent_id, folder):
+    return uuid.uuid5(agent_id, f"registry-skill-installation:{folder}")
+
+
+def _package_hashes(workspace, folder):
+    from app.services.workspace_resource_authority import open_workspace_file
+
+    hashes = {}
+    for path in sorted((workspace / "skills" / folder).rglob("*")):
+        if path.is_file():
+            relative = path.relative_to(workspace).as_posix()
+            with open_workspace_file(workspace, relative) as source:
+                hashes[relative] = hashlib.file_digest(source, "sha256").hexdigest()
+    return hashes
+
+
+async def _original_registry_source(db, *, tenant_id, revision_id=None, skill_id=None, version=None):
+    revision = await db.get(ConfigRevision, revision_id, populate_existing=True) if revision_id else None
+    if revision_id and revision is None:
+        return None
+    if revision is not None:
+        skill_id = revision.entity_id
+    query = select(AIAssetRecord).where(AIAssetRecord.tenant_id == tenant_id, AIAssetRecord.asset_type == "skill")
+    query = query.where(AIAssetRecord.native_key == f"skill:{skill_id}")
+    asset = await db.scalar(query.execution_options(populate_existing=True))
+    if asset is None or asset.lifecycle_status != "active":
+        return None
+    if revision is None:
+        revision = await db.scalar(select(ConfigRevision).where(ConfigRevision.tenant_id == tenant_id,
+            ConfigRevision.entity_type == "registry_skill_original", ConfigRevision.entity_id == asset.native_entity_id,
+            ConfigRevision.version == 1).execution_options(populate_existing=True))
+    if revision is None:
+        return None
+    content = revision.content if isinstance(revision.content, dict) else {}
+    if (revision.tenant_id != tenant_id or revision.entity_type != "registry_skill_original" or revision.entity_id != asset.native_entity_id
+        or revision.version != 1 or not revision.is_active
+        or revision.change_source != "create" or revision.changed_by_user_id is None or revision.changed_by_agent_id is not None
+        or content.get("schema") != "hive.ai_asset.skill.v1" or canonical_content_hash(content) != revision.content_hash
+        or (version is not None and version != revision.content_hash)):
+        return None
+    skill = await db.scalar(select(Skill).where(Skill.id == asset.native_entity_id, Skill.tenant_id == tenant_id)
+        .options(selectinload(Skill.files)).execution_options(populate_existing=True))
+    current_files = sorted([{"path": f.path, "content": str(f.content or "")} for f in skill.files], key=lambda row: row["path"]) if skill else None
+    if skill is None or asset.native_key != f"skill:{skill.id}" or current_files != content.get("files"):
+        return None
+    return {"source_kind": "registry_skill_revision", "source_id": str(revision.id), "source_version": revision.content_hash}
+
+
+async def install_registry_skill_with_sources(db, *, workspace, agent, skill, actor):
+    from app.services.agent_asset_transaction import AgentAssetTransaction
+    from app.services.session_workspace_snapshot import async_agent_workspace_lock
+
+    workspace = Path(workspace)
+    agent_id, tenant_id = agent.id, agent.tenant_id
+    folder = _safe_folder_name(skill.folder_name)
+    if tenant_id is None:
+        result = install_active_skill_package(workspace=workspace, folder_name=folder,
+            files=[{"path": f.path, "content": f.content} for f in skill.files], source=f"registry_skill:{skill.id}", overwrite=True)
+        result["source_receipt"] = {"status": "unavailable", "reason_code": "skill_source_tenant_missing"}
+        return result
+    entity_id = _installation_id(agent_id, folder)
+    await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"registry-skill-install:{tenant_id}:{agent_id}"})
+    previous = await db.scalar(select(ConfigRevision).where(ConfigRevision.tenant_id == tenant_id,
+        ConfigRevision.entity_type == "agent_skill_install", ConfigRevision.entity_id == entity_id,
+        ConfigRevision.is_active.is_(True)).execution_options(populate_existing=True))
+    source = await _original_registry_source(db, tenant_id=tenant_id, skill_id=skill.id)
+    async with async_agent_workspace_lock(agent_id, data_root=workspace.parent):
+        with AgentAssetTransaction(workspace, operation="registry_skill_install", evidence_refs=(f"registry-skill:{skill.id}",)) as transaction:
+            before = _package_hashes(workspace, folder)
+            prior = previous.content if previous is not None and isinstance(previous.content, dict) else {}
+            valid_prior = (previous is not None and canonical_content_hash(prior) == previous.content_hash
+                and previous.change_source == "install" and previous.changed_by_user_id is not None and previous.changed_by_agent_id is None
+                and prior.get("schema") == "hive.skill_installation_inputs.v1" and prior.get("agent_id") == str(agent_id)
+                and prior.get("folder_name") == folder)
+            unknown = list(prior.get("unverified_inputs", [])) if valid_prior else (["predecessor_unverified"] if before or previous else [])
+            sources = list(prior.get("origins", [])) if valid_prior else []
+            if valid_prior and prior.get("files") != before:
+                unknown.append("predecessor_unverified")
+            if source is None:
+                unknown.append("registry_origin_unavailable")
+            else:
+                sources.append(source)
+            result = install_active_skill_package(workspace=workspace, folder_name=folder,
+                files=[{"path": f.path, "content": f.content} for f in skill.files], source=f"registry_skill:{skill.id}",
+                overwrite=True, transaction=transaction)
+            if transaction.has_changes:
+                transaction.commit()
+            after = _package_hashes(workspace, folder)
+            expected = {f"skills/{folder}/{f.path}": hashlib.sha256(str(f.content or "").encode()).hexdigest() for f in skill.files}
+            if after != expected:
+                unknown.append("installation_bytes_unverified")
+        origins = sorted({(row["source_kind"], row["source_id"], row["source_version"]) for row in sources})
+        for kind, source_id, version in origins:
+            current = await _original_registry_source(db, tenant_id=tenant_id,
+                revision_id=uuid.UUID(source_id), version=version)
+            if current != {"source_kind": kind, "source_id": source_id, "source_version": version}:
+                unknown.append("registry_source_unavailable")
+        revision = await save_revision(db, entity_type="agent_skill_install", entity_id=entity_id, tenant_id=tenant_id,
+            content={"schema": "hive.skill_installation_inputs.v1", "agent_id": str(agent_id), "folder_name": folder,
+                "files": after, "unverified_inputs": sorted(set(unknown)),
+                "origins": [dict(zip(("source_kind", "source_id", "source_version"), row)) for row in origins]},
+            change_source="install", changed_by_user_id=actor.id, change_message="Registry Skill installation inputs captured")
+        result["source_receipt"] = {"status": "captured", "source_status": "unverified" if unknown else "verified",
+            "ref": f"skill-installation:{revision.id}"}
+        return result
+
+
+async def validate_skill_file_dependency(db, tenant_id, dependency, *, user, runtime_request):
+    from fastapi import HTTPException
+    from app.config import get_settings
+    from app.core.permissions import check_agent_access
+    from app.services.content_input_receipts import ContentInputReceiptError, _runtime_input_actor, _validate_source_bytes
+
+    try:
+        raw_agent, path, raw_revision = dependency["source_id"].split("\n")
+        agent_id = uuid.UUID(raw_agent)
+        revision_id = uuid.UUID(raw_revision)
+        parts = Path(path).parts
+        if len(parts) < 3 or parts[0] != "skills" or path != Path(path).as_posix() or any(p in {".", ".."} for p in parts):
+            raise ValueError("skill_source_path_invalid")
+        folder = _safe_folder_name(parts[1])
+        if runtime_request is not None:
+            principal, user = await _runtime_input_actor(db, tenant_id, runtime_request)
+            if principal.agent_id != agent_id:
+                raise ValueError("skill_source_actor_mismatch")
+        else:
+            agent, _level = await check_agent_access(db, user, agent_id)
+            if agent.tenant_id != tenant_id:
+                raise ValueError("skill_source_tenant_mismatch")
+    except (ValueError, HTTPException) as exc:
+        raise ContentInputReceiptError("content_source_access_denied", "The Skill source reader is not authorized.", 403) from exc
+    if dependency["source_kind"] == "agent_platform_skill_file":
+        sources = await _platform_skill_sources(db, tenant_id, agent_id)
+        if sources.get(path) != (str(revision_id), dependency["source_version"]):
+            raise ContentInputReceiptError("content_source_unavailable", "The platform Skill lacks an original package witness.", 503)
+        _validate_source_bytes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / path, dependency["source_version"])
+        return
+    latest = await db.scalar(select(ConfigRevision).where(ConfigRevision.tenant_id == tenant_id,
+        ConfigRevision.entity_type == "agent_skill_install", ConfigRevision.entity_id == _installation_id(agent_id, folder),
+        ConfigRevision.is_active.is_(True)).execution_options(populate_existing=True))
+    revision = await db.get(ConfigRevision, revision_id, populate_existing=True)
+    content = revision.content if revision is not None and isinstance(revision.content, dict) else {}
+    current = latest.content if latest is not None and isinstance(latest.content, dict) else {}
+    if (revision is None or revision.tenant_id != tenant_id or revision.entity_type != "agent_skill_install"
+        or revision.entity_id != _installation_id(agent_id, folder) or canonical_content_hash(content) != revision.content_hash
+        or latest is None or canonical_content_hash(current) != latest.content_hash or current.get("unverified_inputs") != []
+        or not isinstance(current.get("files"), dict) or current["files"].get(path) != dependency["source_version"]
+        or revision.change_source != "install" or revision.changed_by_user_id is None or revision.changed_by_agent_id is not None
+        or content.get("schema") != "hive.skill_installation_inputs.v1" or content.get("agent_id") != str(agent_id)
+        or content.get("folder_name") != folder or content.get("unverified_inputs") != []
+        or not isinstance(content.get("origins"), list) or not content["origins"]
+        or not isinstance(content.get("files"), dict) or content["files"].get(path) != dependency["source_version"]):
+        raise ContentInputReceiptError("content_source_unavailable", "The Skill bytes lack complete installation sources.", 503)
+    for origin in content["origins"]:
+        try:
+            source = await _original_registry_source(db, tenant_id=tenant_id, revision_id=uuid.UUID(origin["source_id"]),
+                version=origin["source_version"])
+        except (ValueError, TypeError, KeyError):
+            source = None
+        if source is None or source != origin:
+            raise ContentInputReceiptError("content_source_access_denied", "An installed Skill source is no longer available.", 403)
+    _validate_source_bytes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / path, dependency["source_version"])

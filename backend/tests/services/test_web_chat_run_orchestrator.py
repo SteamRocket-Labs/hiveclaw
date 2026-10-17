@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -21,6 +22,43 @@ class _NoopStreamBatcher:
 
 async def _noop_terminal_hook(**_kwargs):
     return None
+
+
+@pytest.mark.parametrize("contributor,reason", [
+    ("public", None), ("pending", "pending_reply_sources_unbound"),
+    ("continuation", "runtime_continuation_sources_unbound"), ("restart", "restart_context_sources_unbound"),
+    ("artifact", "artifact_guidance_sources_unbound"), ("channel", "channel_delivery_guidance_sources_unbound"),
+])
+async def test_pending_suffix_observes_each_contributor_without_certifying_external_text(monkeypatch, contributor, reason):
+    from app.runtime.context import ensure_runtime_assembly_state
+    from app.runtime.session import SessionContext
+    from app.services import web_chat_run_orchestrator as orchestrator, web_chat_runtime as runtime
+
+    @asynccontextmanager
+    async def scoped_session(_tenant_id):
+        yield None
+
+    async def pending(_db, **_kwargs):
+        return "EXTERNAL_CONTEXT" if contributor == "pending" else ""
+
+    async def no_decline(_state):
+        return None
+
+    monkeypatch.setattr(orchestrator, "_bind_trusted_decline", no_decline)
+    monkeypatch.setattr(orchestrator, "_configure_turn_policy", lambda *_args: None)
+    session = SessionContext(session_id=str(uuid4()), channel="web")
+    state = SimpleNamespace(agent=SimpleNamespace(id=uuid4(), tenant_id=uuid4()), session_id=session.session_id,
+        runtime_session_context=session, internal_runtime_context_turn=contributor == "continuation",
+        prompt="EXTERNAL_CONTEXT", metadata={"restart_resume_context": {"resume_prompt": "EXTERNAL_CONTEXT"}}
+        if contributor == "restart" else {}, channel_delivery_suffix="EXTERNAL_CONTEXT" if contributor == "channel"
+        else runtime._channel_delivery_prompt_suffix_for_turn({}, session), ports=SimpleNamespace(
+            runtime=SimpleNamespace(tenant_scoped_session=scoped_session), context=SimpleNamespace(claim_pending_reply_suffix=pending),
+            artifacts=SimpleNamespace(prompt_suffix=lambda: "EXTERNAL_CONTEXT" if contributor == "artifact"
+                else runtime._terminal_artifact_prompt_suffix_for_turn())))
+    suffix = await orchestrator._prepare_pending_suffix(state)
+    assert ensure_runtime_assembly_state(session).context_unbound_for(agent_id=state.agent.id, content=suffix) == (
+        (reason,) if reason else ())
+    assert ("EXTERNAL_CONTEXT" in suffix) == (reason is not None)
 
 
 @pytest.mark.asyncio

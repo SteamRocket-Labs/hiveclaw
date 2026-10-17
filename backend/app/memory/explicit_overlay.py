@@ -7,7 +7,9 @@ accepted T3 truth until the T3 consolidation loop absorbs them.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import logging
 import re
 import uuid
 from dataclasses import dataclass, replace
@@ -21,6 +23,7 @@ from app.memory.write_gate import prepare_memory_write_with_llm
 from app.services.agent_asset_transaction import AgentAssetTransaction
 
 _SEARCH_PREVIEW_CHARS = 180
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +50,7 @@ class ExplicitMemoryOverlayEntry:
     path: Path
     created_at: str
     metadata: dict[str, str]
+    source_sha256: str | None = None
 
 
 async def write_explicit_memory_overlay(
@@ -190,18 +194,27 @@ def load_explicit_overlay_entries(
     agent_id: uuid.UUID | str,
     *,
     transaction: AgentAssetTransaction | None = None,
+    source_observer=None,
 ) -> list[ExplicitMemoryOverlayEntry]:
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
+
+    agent_root = Path(data_root) / str(agent_id)
     overlay_dir = explicit_overlay_dir(Path(data_root), agent_id)
     manifest_path = overlay_dir / "manifest.jsonl"
-    manifest_text = (
-        transaction.read_text("memory/explicit/manifest.jsonl")
-        if transaction is not None
-        else manifest_path.read_text(encoding="utf-8", errors="replace")
-        if manifest_path.exists()
-        else None
-    )
-    if manifest_text is None:
-        return []
+    if transaction is not None:
+        manifest_bytes = transaction.read_bytes("memory/explicit/manifest.jsonl")
+        if manifest_bytes is None:
+            return []
+        manifest_text = manifest_bytes.decode("utf-8")
+    else:
+        if not manifest_path.exists():
+            return []
+        with open_workspace_file(agent_root, "memory/explicit/manifest.jsonl") as reader:
+            manifest_bytes = reader.read()
+        with io.TextIOWrapper(io.BytesIO(manifest_bytes), encoding="utf-8", errors="replace") as reader:
+            manifest_text = reader.read()
+    if source_observer is not None:
+        source_observer("memory/explicit/manifest.jsonl", hashlib.sha256(manifest_bytes).hexdigest())
     latest: dict[str, dict[str, str]] = {}
     for line in manifest_text.splitlines():
         if not line.strip():
@@ -216,10 +229,19 @@ def load_explicit_overlay_entries(
 
     entries: list[ExplicitMemoryOverlayEntry] = []
     for entry_id, metadata in latest.items():
+        if Path(entry_id).name != entry_id or entry_id in {".", ".."}:
+            continue
         path = overlay_dir / "entries" / f"{entry_id}.md"
         if not path.exists():
             continue
-        content = _extract_tag(path.read_text(encoding="utf-8", errors="replace"), "normalized_memory")
+        try:
+            with open_workspace_file(agent_root, f"memory/explicit/entries/{entry_id}.md") as reader:
+                body = reader.read()
+            with io.TextIOWrapper(io.BytesIO(body), encoding="utf-8", errors="replace") as reader:
+                content = _extract_tag(reader.read(), "normalized_memory")
+        except (OSError, ValueError, WorkspaceAuthorityError):
+            logger.warning("Explicit memory entry could not be read safely: %s", entry_id)
+            continue
         refs = tuple(ref for ref in metadata.get("source_refs", "").split(",") if ref)
         entries.append(
             ExplicitMemoryOverlayEntry(
@@ -233,6 +255,7 @@ def load_explicit_overlay_entries(
                 path=path,
                 created_at=metadata.get("created_at", ""),
                 metadata=metadata,
+                source_sha256=hashlib.sha256(body).hexdigest(),
             )
         )
     return entries
@@ -255,9 +278,13 @@ def search_explicit_overlay_entries(
     query: str,
     *,
     limit: int | None = None,
+    source_observer=None,
 ) -> list[dict]:
     needle = (query or "").strip()
-    entries = [entry for entry in load_explicit_overlay_entries(data_root, agent_id) if entry.status == "active"]
+    manifest_sources = []
+    entries = [entry for entry in load_explicit_overlay_entries(data_root, agent_id,
+        source_observer=lambda path, digest: manifest_sources.append({"source_kind": "agent_memory_file",
+            "source_id": f"{agent_id}\n{path}", "source_version": digest})) if entry.status == "active"]
     scored = [
         (
             _simple_score(needle, f"{entry.category} {entry.target_hint} {entry.content}") if needle else 0.0,
@@ -267,6 +294,10 @@ def search_explicit_overlay_entries(
     ]
     scored.sort(key=lambda item: item[0], reverse=True)
     visible = scored if limit is None else scored[: max(0, limit)]
+    if source_observer is not None:
+        for _score, entry in visible:
+            source_observer(entry.entry_id, (*manifest_sources, {"source_kind": "agent_memory_file",
+                "source_id": f"{agent_id}\nmemory/explicit/entries/{entry.entry_id}.md", "source_version": entry.source_sha256}))
     return [
         {
             "id": entry.entry_id,

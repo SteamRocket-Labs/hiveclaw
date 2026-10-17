@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from app.database import pin_rls_tenant_context
-from tests.integration.test_m1g24_workspace_artifact_authority_postgres import native_workspace, _prepare_write  # noqa: F401
+from tests.integration.test_m1g24_workspace_artifact_authority_postgres import native_workspace, _admitted_write_messages, _prepare_write  # noqa: F401
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
@@ -17,12 +17,16 @@ pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 async def execute_write(db, n):
     from app.core.resource_authority import workspace_resource_id
     from app.models.security_audit import ResourcePermission
+    from app.services.content_input_receipts import record_workspace_receipt
 
+    assert n.target.read_bytes() == b"PRIVATE_FOREIGN_FILE_BODY"
+    record_workspace_receipt(db, n.tenant, n.agent, n.path,
+        hashlib.sha256(b"PRIVATE_FOREIGN_FILE_BODY").hexdigest(), None)
     db.add(ResourcePermission(tenant_id=n.tenant, principal_type="user", principal_id=n.user,
         resource_type="workspace_file", resource_id=workspace_resource_id(n.agent, n.path),
         actions=["read", "write"], conditions={}))
     await db.commit()
-    invocation, arguments, turn = await _prepare_write(db, n)
+    invocation, arguments, turn = await _prepare_write(db, n, messages=await _admitted_write_messages(db, n))
     before = hashlib.sha256(n.target.read_bytes()).hexdigest()
     trace = {}
     raw = await n.service.execute("write_file", arguments, agent_id=n.agent, user_id=n.user,

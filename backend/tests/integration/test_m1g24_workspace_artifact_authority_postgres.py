@@ -76,7 +76,7 @@ async def native_workspace(owner_sessionmaker, app_user_sessionmaker, monkeypatc
             path=path, root=root, target=target, foreign=foreign, service=agent_tools._get_tool_runtime_service(), client=client)
 
 
-async def _prepare_write(db, n):
+async def _prepare_write(db, n, *, messages=None):
     from app.services.session_model_round import prepare_model_request, seal_model_response, commit_sealed_model_round
     from app.services.session_tool_runtime import prepare_tool_invocation
 
@@ -84,7 +84,7 @@ async def _prepare_write(db, n):
     tools = [{"type": "function", "function": {"name": "write_file"}}]
     turn, call = f"turn-{n.run.hex}", f"write-{n.run.hex}"
     request_id = await prepare_model_request(db, tenant_id=n.tenant, agent_id=n.agent, session_id=n.session,
-        run_id=n.run, turn_id=turn, round_index=1, messages=[{"role": "user", "content": "Write the report"}],
+        run_id=n.run, turn_id=turn, round_index=1, messages=messages if messages is not None else [{"role": "user", "content": "Write the report"}],
         tools=tools, provider="openai", model="synthetic-no-provider")
     await seal_model_response(db, tenant_id=n.tenant, agent_id=n.agent, session_id=n.session,
         run_id=n.run, turn_id=turn, round_index=1, provider_request_id=request_id,
@@ -97,6 +97,28 @@ async def _prepare_write(db, n):
         run_id=n.run, provider_request_id=request_id, provider_tool_use_id=call, tool_name="write_file", arguments=arguments)
     await db.commit()
     return invocation, arguments, turn
+
+
+async def _admitted_write_messages(db, n):
+    from app.kernel.engine import _mid_run_items_to_user_messages
+    from app.runtime.hooks import HookResult
+    from app.services.session_human_input import queue_admitted_human_input
+    from app.services.session_input_admission import run_user_prompt_admission
+    from app.services.session_model_round import bind_round_inputs
+    from tests.services.test_session_input_control_v2 import _accepted_input, _authority
+
+    async def allow(**_kwargs):
+        return HookResult()
+
+    authority = await _authority(db, user_id=n.user, agent_id=n.agent, session_id=n.session)
+    admitted = await _accepted_input(db, authority=authority, session_id=n.session, run_id=n.run,
+        kind="steer_current_turn", content="Write the report")
+    await run_user_prompt_admission(db, authority=authority, input_id=admitted.input_id,
+        worker_id="native-output-control", hook_executor=allow)
+    await queue_admitted_human_input(db, authority=authority, input_id=admitted.input_id)
+    bound = await bind_round_inputs(db, tenant_id=n.tenant, agent_id=n.agent, session_id=n.session,
+        run_id=n.run, turn_id=f"turn-{n.run.hex}", round_index=1)
+    return _mid_run_items_to_user_messages(bound)
 
 
 @pytest.mark.parametrize("actions,publication_case", [
@@ -122,7 +144,13 @@ async def test_native_callback_only_publishes_authorized_successful_file_version
                 actions=actions, conditions={})
             db.add(grant)
             await db.commit()
-        invocation, arguments, turn = await _prepare_write(db, n)
+        if "read" in actions:
+            from app.services.content_input_receipts import record_workspace_receipt
+
+            assert n.target.read_bytes() == b"PRIVATE_FOREIGN_FILE_BODY"
+            record_workspace_receipt(db, n.tenant, n.agent, n.path,
+                hashlib.sha256(b"PRIVATE_FOREIGN_FILE_BODY").hexdigest(), None)
+        invocation, arguments, turn = await _prepare_write(db, n, messages=await _admitted_write_messages(db, n))
         trace = {}
         raw = await n.service.execute("write_file", arguments, agent_id=n.agent, user_id=n.user,
             session_id=str(n.session), runtime_task_id=str(n.run), turn_id=turn,

@@ -120,6 +120,92 @@ def test_explicit_resident_index_is_bounded_to_cc_index_limits(tmp_path: Path) -
     assert "search_memory" in index
 
 
+def test_explicit_index_sources_bind_actual_manifest_and_visible_entry_bytes(tmp_path: Path) -> None:
+    import hashlib
+    from app.memory.profile_plane import load_resident_memory
+
+    agent_id = uuid4()
+    for name, status in [("visible", "active"), ("inactive", "absorbed")]:
+        _write_overlay_entry(tmp_path, agent_id, entry_id=name, status=status)
+    overlay = _mem_dir(tmp_path, agent_id) / "explicit"
+    raw = b"<normalized_memory>SELECTED_INDEX_BODY\r\n</normalized_memory>"
+    (overlay / "entries/visible.md").write_bytes(raw)
+    manifest = (overlay / "manifest.jsonl").read_bytes()
+    resident = load_resident_memory(agent_id=agent_id, data_root=tmp_path)
+    refs = {ref["source_id"].split("\n")[1]: ref["source_version"] for ref in resident.source_refs}
+    assert "SELECTED_INDEX_BODY" in resident.text
+    assert refs == {"memory/explicit/manifest.jsonl": hashlib.sha256(manifest).hexdigest(),
+        "memory/explicit/entries/visible.md": hashlib.sha256(raw).hexdigest()}
+    (overlay / "entries/visible.md").write_text("REPLACED_AFTER_SELECTION")
+    assert resident.source_refs and refs["memory/explicit/entries/visible.md"] == hashlib.sha256(raw).hexdigest()
+
+
+def test_explicit_recall_keeps_reader_sources_through_selection_and_rendering(tmp_path: Path) -> None:
+    import hashlib
+    from app.memory.assembler import MemoryAssembler
+    from app.memory.retriever import MemoryRetriever
+
+    agent_id = uuid4()
+    _write_overlay_entry(tmp_path, agent_id, entry_id="visible")
+    root = tmp_path / str(agent_id)
+    items = MemoryRetriever(data_root=tmp_path)._retrieve_explicit_overlay(agent_id)
+    expected = {f"{agent_id}\n{p}": hashlib.sha256((root / p).read_bytes()).hexdigest() for p in
+        ["memory/explicit/manifest.jsonl", "memory/explicit/entries/visible.md"]}
+    items[0].metadata["source_refs"] = [{"source_id": "FORGED_METADATA_ORIGIN"}]
+    items = MemoryRetriever._annotate_selection(MemoryRetriever._attach_selection_candidate_ids(items), status="model_selected")
+    assert {ref["source_id"]: ref["source_version"] for ref in items[0].source_refs} == expected
+    (root / "memory/explicit/entries/visible.md").write_text("REPLACED_AFTER_READ")
+    observed = []
+    assert "周报永远用中文" in MemoryAssembler().assemble(items, source_observer=observed.append)
+    assert observed == items
+    assert {ref["source_id"]: ref["source_version"] for ref in observed[0].source_refs} == expected
+    observed.clear()
+    assert MemoryAssembler().assemble(items, budget_chars=0, source_observer=observed.append) == ""
+    assert observed == []
+
+
+@pytest.mark.parametrize("alias", ["symlink", "hardlink"])
+def test_explicit_index_denies_aliased_entry_locally(tmp_path: Path, alias: str) -> None:
+    from app.memory.profile_plane import load_resident_memory
+
+    agent_id = uuid4()
+    _write_resident_files(tmp_path, agent_id)
+    _write_overlay_entry(tmp_path, agent_id, entry_id="visible")
+    _write_overlay_entry(tmp_path, agent_id, entry_id="private-alias")
+    target = tmp_path / "foreign-private.md"
+    target.write_text("<normalized_memory>FOREIGN_PRIVATE_MEMORY</normalized_memory>")
+    entry = _mem_dir(tmp_path, agent_id) / "explicit/entries/private-alias.md"
+    entry.unlink()
+    if alias == "symlink":
+        entry.symlink_to(target)
+    else:
+        entry.hardlink_to(target)
+    resident = load_resident_memory(agent_id=agent_id, data_root=tmp_path)
+    assert "FOREIGN_PRIVATE_MEMORY" not in resident.text
+    assert 'load_memory(ids=["visible"])' in resident.text and "深度研究" in resident.text
+
+
+@pytest.mark.parametrize("path", ["self/self.md", "profiles/domain.md"])
+@pytest.mark.parametrize("alias", ["symlink", "hardlink"])
+def test_resident_profile_denies_aliased_bytes_locally(tmp_path: Path, path: str, alias: str) -> None:
+    from app.memory.profile_plane import load_resident_memory
+
+    agent_id = uuid4()
+    _write_resident_files(tmp_path, agent_id)
+    target = tmp_path / "foreign-profile.md"
+    target.write_text("FOREIGN_PRIVATE_PROFILE")
+    entry = _mem_dir(tmp_path, agent_id) / path
+    entry.unlink()
+    if alias == "symlink":
+        entry.symlink_to(target)
+    else:
+        entry.hardlink_to(target)
+    resident = load_resident_memory(agent_id=agent_id, data_root=tmp_path)
+    assert "FOREIGN_PRIVATE_PROFILE" not in resident.text
+    assert "偏好简洁中文汇报" in resident.text and resident.read_errors
+    assert all(not ref["source_id"].endswith(f"memory/{path}") for ref in resident.source_refs)
+
+
 def test_resident_memory_empty_for_new_agent(tmp_path: Path) -> None:
     from app.memory.profile_plane import load_resident_memory
 
@@ -132,19 +218,20 @@ def test_resident_memory_empty_for_new_agent(tmp_path: Path) -> None:
 
 def test_resident_reader_reports_unreadable_identity_section(monkeypatch, tmp_path: Path) -> None:
     from app.memory.profile_plane import load_resident_memory
+    from app.services import workspace_resource_authority
 
     agent_id = uuid4()
     owner_path = _mem_dir(tmp_path, agent_id) / "profiles" / "owner.md"
     owner_path.parent.mkdir(parents=True)
     owner_path.write_text("owner", encoding="utf-8")
-    original_read_text = Path.read_text
+    original_open = workspace_resource_authority.open_workspace_file
 
-    def guarded_read_text(path: Path, *args, **kwargs):
-        if path == owner_path:
+    def guarded_open(root, path, *args, **kwargs):
+        if root / path == owner_path:
             raise OSError("permission denied")
-        return original_read_text(path, *args, **kwargs)
+        return original_open(root, path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_text", guarded_read_text)
+    monkeypatch.setattr(workspace_resource_authority, "open_workspace_file", guarded_open)
 
     resident = load_resident_memory(agent_id=agent_id, data_root=tmp_path)
 

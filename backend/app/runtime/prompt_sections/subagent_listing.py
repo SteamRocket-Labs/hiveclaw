@@ -21,6 +21,7 @@ def _render_custom_definition_rows(
     agent_id: Any | None,
     tenant_id: Any | None,
     agent_data_dir: Path | str | None,
+    source_unbound: list[str] | None = None,
 ) -> list[str]:
     if agent_id is None and tenant_id is None:
         return []
@@ -31,6 +32,8 @@ def _render_custom_definition_rows(
     ]
     if not rows:
         return []
+    if source_unbound is not None:
+        source_unbound.append("custom_worker_definition_sources_unbound")
     lines = [
         "",
         "### Custom Session Worker Definitions",
@@ -159,6 +162,7 @@ def build_subagent_listing_section(
     tenant_id: Any | None = None,
     agent_data_dir: Path | str | None = None,
     activation_key_manifest: list[dict[str, Any]] | None = None,
+    source_unbound: list[str] | None = None,
 ) -> str:
     """Render the always-visible session worker type list.
 
@@ -200,6 +204,7 @@ def build_subagent_listing_section(
             agent_id=agent_id,
             tenant_id=tenant_id,
             agent_data_dir=agent_data_dir,
+            source_unbound=source_unbound,
         )
     )
     return "\n".join(lines)

@@ -3,10 +3,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import deepcopy
 import hashlib
 import json
 import re
 from typing import Any, Iterable, Mapping
+
+
+@dataclass(frozen=True, slots=True)
+class ContextMessageOrigin:
+    """Compiler evidence for an actual message, never an upstream authority grant."""
+
+    kind: str
+    message_sha256: str
+    sections: tuple[dict[str, Any], ...] = ()
+    sources: tuple[dict[str, str], ...] = ()
+    unbound: tuple[str, ...] = ("context_sources_unbound",)
+
+    @classmethod
+    def capture(cls, *, kind: str, role: str, content: str, sections=(), sources=(), unbound=("context_sources_unbound",)):
+        payload = json.dumps({"role": role, "content": content}, ensure_ascii=False,
+            sort_keys=True, separators=(",", ":")).encode()
+        return cls(kind, hashlib.sha256(payload).hexdigest(), tuple(deepcopy(sections)), tuple(deepcopy(sources)), tuple(unbound))
 
 
 _REF_PART_RE = re.compile(r"[^a-z0-9_.-]+")

@@ -223,6 +223,15 @@ async def _start_effect(
             states={path: after}, lineage=[{"path": path, "before_state": before, "after_state": after}], errors={},
         )
         assert proof["status"] == "captured", proof
+        from app.models.organization_identity import ContentInputReceipt
+        from app.services.content_input_receipts import workspace_artifact_ref
+        import hashlib
+
+        # Known fixture original; receipt production is covered by the native integration tests.
+        db.add(ContentInputReceipt(id=uuid.uuid5(invocation.id, f"workspace-content:{path}"), tenant_id=tenant_id,
+            carrier_kind="workspace_artifact", carrier_ref=workspace_artifact_ref(agent_id, path), revision=1,
+            content_sha256=hashlib.sha256(b"production-shaped artifact\n").hexdigest(), dependencies_json=[]))
+        await db.commit()
         return base, invocation.id, invocation.args_hash
 
 
@@ -449,10 +458,14 @@ async def test_legacy_tool_result_materializes_artifact_owner_before_fk_insert(
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("legacy projection artifact\n", encoding="utf-8")
     from app.services.workspace_resource_authority import register_workspace_path
+    from app.services.content_input_receipts import record_workspace_receipt
+    import hashlib
 
     async with owner_sessionmaker() as db:
         await register_workspace_path(db, tenant_id=tenant_id, agent_id=agent_id, path=rel_path,
             owner_user_id=user_id, root_session_id=session_id, source="fixture")
+        record_workspace_receipt(db, tenant_id, agent_id, rel_path,
+            hashlib.sha256(b"legacy projection artifact\n").hexdigest(), None)
         await db.commit()
 
     result = await runtime._persist_legacy_tool_call(

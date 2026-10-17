@@ -250,6 +250,8 @@ async def authorize_resource_action(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent authority context mismatch")
     if resource_kind == "chat_artifact" and action in {"read", "download", "deliver"}:
         from app.models.chat_artifact import ChatArtifact
+        from app.database import tenant_scoped_session
+        from app.services.content_input_receipts import ContentInputReceiptError, validate_artifact_content_receipt
         from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
 
         artifact = await db.get(ChatArtifact, resource_id)
@@ -263,8 +265,14 @@ async def authorize_resource_action(
                 agent_access=(agent, access_level),
                 runtime_principal=runtime_principal,
             )
+            # Source readers must not inherit an administrator's ambient RLS bypass.
+            async with tenant_scoped_session(agent.tenant_id) as source_db:
+                await validate_artifact_content_receipt(source_db, agent.tenant_id, user, artifact,
+                    runtime_principal=runtime_principal)
         except WorkspaceAuthorityError as exc:
             raise HTTPException(status_code=403, detail={"code": exc.code, "message": exc.message}) from exc
+        except ContentInputReceiptError as exc:
+            raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
     state = str(authority_state or QUARANTINED_AUTHORITY_STATE).strip().lower()
 
     if state == OWNED_AUTHORITY_STATE:

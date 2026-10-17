@@ -932,6 +932,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
     _continue_after_output_cap = support._continue_after_output_cap
     _dicts_to_llm_messages = support._dicts_to_llm_messages
     _dynamic_suffix_notice = support._dynamic_suffix_notice
+    _context_message = support._context_message
     _event_to_part = support._event_to_part
     _execute_recovered_pending_tool_frames = support._execute_recovered_pending_tool_frames
     _execute_tool_with_hooks = support._execute_tool_with_hooks
@@ -1103,12 +1104,18 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         budget_profile = session_ctx.metadata.get("context_budget") if session_ctx else None
         latest_user_query = _latest_user_query(request.messages)
         available_deferred_tools: list[dict[str, Any]] = []
+        deferred_source_unbound = ["deferred_catalog_source_inventory_missing"]
         if request.agent_id:
             try:
                 from app.services.agent_tools import available_deferred_tool_candidates_for_agent
                 from app.runtime.context import ensure_runtime_assembly_state
+                import inspect
 
-                available_deferred_tools = await available_deferred_tool_candidates_for_agent(request.agent_id)
+                deferred_kwargs = {}
+                if "source_unbound" in inspect.signature(available_deferred_tool_candidates_for_agent).parameters:
+                    deferred_source_unbound = []
+                    deferred_kwargs["source_unbound"] = deferred_source_unbound
+                available_deferred_tools = await available_deferred_tool_candidates_for_agent(request.agent_id, **deferred_kwargs)
                 if session_ctx is not None:
                     ensure_runtime_assembly_state(session_ctx).record_deferred_tools(available_deferred_tools)
             except Exception as exc:
@@ -1137,6 +1144,47 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             _invalidate_prompt_prefix_cache(session_ctx, reason="frozen_context_rebuild_failed")
             raise
         _frozen_context_manifest = build_frozen_context_dependency_manifest(_fresh_prompt_prefix)
+        from app.runtime.context import ensure_runtime_assembly_state
+
+        _frozen_source_refs = ensure_runtime_assembly_state(session_ctx).context_sources_for(
+            agent_id=request.agent_id, content=_fresh_prompt_prefix)
+        _frozen_source_unbound = ensure_runtime_assembly_state(session_ctx).context_unbound_for(
+            agent_id=request.agent_id, content=_fresh_prompt_prefix)
+        from app.runtime.prompt_sections.environment import build_environment_section
+
+        source_inputs = {"memory_snapshot": resolved_memory_context, "skill_catalog": request.skill_catalog,
+            "permissions_context": resolved_permissions_context,
+            "runtime_metadata_context": resolved_runtime_metadata_context,
+            "environment": build_environment_section(user_name=current_user_name or "",
+                channel=session_ctx.channel if session_ctx else "", agent_name=request.agent_name, include_time=False)}
+        if request.system_prompt_suffix:
+            source_inputs["dynamic:suffix:system_prompt_suffix:0"] = request.system_prompt_suffix
+        state = ensure_runtime_assembly_state(session_ctx)
+        dynamic_sources = {name: state.context_sources_for(agent_id=request.agent_id, content=content)
+            for name, content in source_inputs.items()}
+        dynamic_unbound = {name: state.context_unbound_for(agent_id=request.agent_id, content=content)
+            for name, content in source_inputs.items()}
+        dynamic_sources["available_deferred_tools"] = ()
+        dynamic_unbound["available_deferred_tools"] = tuple(deferred_source_unbound)
+
+        def _dynamic_source_refs():
+            from app.services.session_model_inputs import _unique_dependencies
+
+            selected = [section for section in dynamic_context_section_ledger if section.get("selected")]
+            refs = [ref for section in selected for ref in dynamic_sources.get(_dynamic_source_key(section), ())]
+            if any(section["name"] == "environment" for section in selected):
+                refs.extend(ref for ref in _frozen_source_refs if ref["source_kind"] == "agent_identity")
+            return tuple(_unique_dependencies(refs))
+
+        def _dynamic_source_key(section):
+            return section["candidate_id"] if section["name"] == "system_prompt_suffix" else section["name"]
+
+        def _dynamic_source_unbound():
+            selected = [section for section in dynamic_context_section_ledger if section.get("selected")]
+            if not selected:
+                return ("dynamic_section_inventory_missing",)
+            return tuple(reason for section in selected if section.get("platform_constant") is not True
+                for reason in dynamic_unbound.get(_dynamic_source_key(section), (f"dynamic_section_sources_unbound:{section['name']}",)))
         if session_ctx is not None:
             session_ctx.metadata["frozen_context_dependency_manifest"] = _frozen_context_manifest
         _prompt_cache_key = _build_frozen_prompt_cache_key(
@@ -1285,7 +1333,8 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             from app.runtime.context import ensure_runtime_assembly_state
             from app.runtime.context_engine import record_prompt_manifest_context_artifacts
 
-            dynamic_notice = _dynamic_suffix_notice(dynamic_prompt_suffix)
+            dynamic_notice = _dynamic_suffix_notice(dynamic_prompt_suffix, sources=_dynamic_source_refs(),
+                unbound=_dynamic_source_unbound())
             hook_added_context = []
             if "## Hook Additional Context" in _system_prompt_suffix:
                 hook_added_context.append("user_prompt_submit")
@@ -1757,7 +1806,8 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             user_id=request.user_id,
         )
 
-        api_messages = [LLMMessage(role="system", content=system_prompt)]
+        api_messages = [_context_message(role="system", content=system_prompt, kind="frozen_prompt",
+            sections=_frozen_context_manifest.get("sections", ()), sources=_frozen_source_refs, unbound=_frozen_source_unbound)]
         for msg in messages:
             api_messages.append(
                 LLMMessage(
@@ -1781,9 +1831,10 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         )
         if recovered_tool_results:
             api_messages.append(
-                LLMMessage(
+                _context_message(
                     role="system",
                     content="## Recovered Tool Results\n" + recovered_tool_results,
+                    kind="recovered_tool_results",
                 )
             )
 
@@ -1941,9 +1992,10 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     stream_messages = _clone_api_messages(api_messages)
                     if _transient_reminders:
                         stream_messages = stream_messages + [
-                            LLMMessage(role="system", content=text) for text in _transient_reminders
+                            _context_message(role="system", content=text, kind="runtime_reminder") for text in _transient_reminders
                         ]
-                    dynamic_notice = _dynamic_suffix_notice(dynamic_prompt_suffix)
+                    dynamic_notice = _dynamic_suffix_notice(dynamic_prompt_suffix, sections=dynamic_context_section_ledger,
+                        sources=_dynamic_source_refs(), unbound=_dynamic_source_unbound())
                     if dynamic_notice is not None:
                         stream_messages = stream_messages + [dynamic_notice]
                     if self._deps.apply_vision_transform:
@@ -2159,7 +2211,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                         budget_profile=budget_profile,
                                     )
                                     _ptl_system, dynamic_prompt_suffix = _split_system_prompt_for_api(_ptl_combined)
-                                    api_messages = [LLMMessage(role="system", content=_ptl_system)] + (
+                                    api_messages = [_context_message(role="system", content=_ptl_system, kind="context_recovery", sources=_frozen_source_refs)] + (
                                         _dicts_to_llm_messages(compressed)
                                     )
                                     await _emit_event(
@@ -2263,7 +2315,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                         budget_profile=budget_profile,
                                     )
                                     _ptl_system, dynamic_prompt_suffix = _split_system_prompt_for_api(_ptl_combined)
-                                    api_messages = [LLMMessage(role="system", content=_ptl_system)] + _truncated
+                                    api_messages = [_context_message(role="system", content=_ptl_system, kind="context_recovery", sources=_frozen_source_refs)] + _truncated
                                     await _emit_event(
                                         {
                                             "type": "session_compact",
@@ -2352,7 +2404,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                         )
                                         _ptl_system, dynamic_prompt_suffix = _split_system_prompt_for_api(_ptl_combined)
                                         api_messages = [
-                                            LLMMessage(role="system", content=_ptl_system)
+                                            _context_message(role="system", content=_ptl_system, kind="context_recovery", sources=_frozen_source_refs)
                                         ] + _dicts_to_llm_messages(compressed)
                                         logger.info(
                                             "[Kernel] PTL full compress: %d→%d chars, %d→%d msgs (attempt %d/%d)",
@@ -2584,7 +2636,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 api_messages.append(
                     LLMMessage(
                         role="assistant",
-                        content=response.content or None,
+                        content=response.content,
                         tool_calls=_sanitize_tool_calls_for_history(expanded_tool_calls),
                         reasoning_content=response.reasoning_content,
                         reasoning_signature=getattr(response, "reasoning_signature", None),
@@ -2640,7 +2692,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 ) -> None:
                     # Shared deferred-tool expansion for sequential and parallel
                     # batches: only executed expansion-trigger tools may load schemas.
-                    nonlocal tools_for_llm, full_toolset, system_prompt, dynamic_prompt_suffix
+                    nonlocal tools_for_llm, full_toolset, system_prompt, dynamic_prompt_suffix, _frozen_source_refs
                     if request.expand_tools and request.agent_id:
                         if executed and _should_expand_tools(trigger_tool_name, tool_args):
                             expansion_payload: ToolExpansionResult | list[dict] | None = None
@@ -2700,6 +2752,10 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                         from app.runtime.context import ensure_runtime_assembly_state
 
                                         assembly_state = ensure_runtime_assembly_state(session_context)
+                                        _frozen_source_refs = assembly_state.context_sources_for(
+                                            agent_id=request.agent_id, content=prompt_prefix)
+                                        _frozen_source_unbound = assembly_state.context_unbound_for(
+                                            agent_id=request.agent_id, content=prompt_prefix)
                                         refreshed_prompt_manifest = dict(assembly_state.prompt_assembly_manifest)
                                         refreshed_prompt_manifest["frozen_context_dependency_manifest"] = (
                                             current_manifest
@@ -2747,7 +2803,8 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                         budget_profile=budget_profile,
                                     )
                                     system_prompt, dynamic_prompt_suffix = _split_system_prompt_for_api(combined_prompt)
-                                    api_messages[0] = LLMMessage(role="system", content=system_prompt)
+                                    api_messages[0] = _context_message(role="system", content=system_prompt, kind="frozen_prompt",
+                                        sources=_frozen_source_refs, unbound=_frozen_source_unbound)
                             elif isinstance(expansion_payload, list):
                                 full_toolset = expansion_payload
                             if full_toolset is not None:
@@ -3243,8 +3300,9 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         **_loop_guard_terminal_decision.trace_event,
                     }
                     api_messages.append(
-                        LLMMessage(
+                        _context_message(
                             role="system",
+                            kind="runtime_reminder",
                             content=(
                                 "<loop_guard_terminal_evidence>"
                                 + json.dumps(_terminal_evidence, ensure_ascii=False, sort_keys=True)
@@ -3399,7 +3457,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         if _restored:
                             # Insert restoration context right after the summary, before recent messages
                             restored_msgs.insert(
-                                1 if len(restored_msgs) > 1 else 0, LLMMessage(role="system", content=_restored)
+                                1 if len(restored_msgs) > 1 else 0, _context_message(role="system", content=_restored, kind="context_recovery")
                             )
                         api_messages = [api_messages[0]] + restored_msgs
                         # Compaction re-arm (T-G1, M8): fire-once reminders

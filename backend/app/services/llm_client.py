@@ -21,6 +21,7 @@ from loguru import logger
 
 from app.services.anthropic_content import to_anthropic_content_blocks
 from app.services.token_tracker import record_autonomous_llm_token_usage
+from app.runtime.context_candidates import ContextMessageOrigin
 
 STREAM_RETRY_TOMBSTONE = "[[HIVE_STREAM_RETRY_TOMBSTONE]]"
 ANTHROPIC_INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
@@ -87,6 +88,7 @@ class LLMMessage:
     created_at: float = field(default_factory=time.time)
     # Backend origin coordinate; never part of a provider message or an authority grant.
     source_ref: str | None = None
+    context_origin: ContextMessageOrigin | None = None
 
     def to_openai_format(self) -> dict:
         """Convert to OpenAI format."""

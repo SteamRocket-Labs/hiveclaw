@@ -53,10 +53,11 @@ def load_skill(
     tenant_id: str | None = None,
     *,
     session_id: str | None = None,
+    authority_scope=None,
 ) -> str:
     from app.services.agent_tool_domains.workspace import _load_skill
 
-    return _load_skill(workspace, arguments.get("name", ""), session_id=session_id)
+    return _load_skill(workspace, arguments.get("name", ""), session_id=session_id, authority_scope=authority_scope)
 
 
 # -- run_skill_tool -----------------------------------------------------------

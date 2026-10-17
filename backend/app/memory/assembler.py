@@ -52,7 +52,7 @@ def _activation_suffix(item: MemoryItem) -> str:
 class MemoryAssembler:
     """Assemble retrieved memory items into a prompt section."""
 
-    def assemble(self, items: list[MemoryItem], budget_chars: int = 20000) -> str:
+    def assemble(self, items: list[MemoryItem], budget_chars: int = 20000, *, source_observer=None) -> str:
         """Render model-selected items as bounded, recoverable excerpts.
 
         The model owns which items were selected.  This presentation layer only
@@ -106,6 +106,8 @@ class MemoryAssembler:
                     lines.append(excerpt)
                     body_budget -= len(excerpt.encode("utf-8"))
                 lines.append(reference)
+                if source_observer is not None:
+                    source_observer(item)
                 remaining_items -= 1
             sections.append("\n".join(lines))
 

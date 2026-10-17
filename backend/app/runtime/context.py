@@ -80,6 +80,9 @@ class RuntimeAssemblyState:
     """
 
     session: SessionContext | None = field(default=None, repr=False, compare=False)
+    # Transient compiler output: never hydrate source claims from session metadata.
+    compiled_context_sources: dict[str, tuple[dict[str, str], ...]] = field(default_factory=dict, repr=False)
+    compiled_context_unbound: dict[str, tuple[str, ...]] = field(default_factory=dict, repr=False)
     prompt_assembly_manifest: dict[str, Any] = field(default_factory=dict)
     context_usage_ledger: dict[str, Any] = field(default_factory=dict)
     dynamic_context_section_ledger: dict[str, Any] = field(default_factory=dict)
@@ -94,6 +97,29 @@ class RuntimeAssemblyState:
     available_deferred_tools: list[str] = field(default_factory=list)
     skill_catalog_ranking: list[dict[str, Any]] = field(default_factory=list)
     skill_catalog_ranking_inputs: dict[str, Any] = field(default_factory=dict)
+
+    def record_context_sources(self, *, agent_id: Any, content: str, sources, unbound=("context_source_inventory_missing",)) -> None:
+        import hashlib
+        from copy import deepcopy
+
+        key = f"{agent_id}:{hashlib.sha256(content.encode()).hexdigest()}"
+        self.compiled_context_sources[key] = tuple(deepcopy(sources))
+        self.compiled_context_unbound[key] = tuple(unbound)
+
+    def context_unbound_for(self, *, agent_id: Any, content: str):
+        import hashlib
+
+        if not content:
+            return ()
+        key = f"{agent_id}:{hashlib.sha256(content.encode()).hexdigest()}"
+        return self.compiled_context_unbound.get(key, ("context_source_inventory_missing",))
+
+    def context_sources_for(self, *, agent_id: Any, content: str):
+        import hashlib
+        from copy import deepcopy
+
+        key = f"{agent_id}:{hashlib.sha256(content.encode()).hexdigest()}"
+        return deepcopy(self.compiled_context_sources.get(key, ()))
 
     @classmethod
     def from_metadata(

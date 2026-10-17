@@ -64,6 +64,8 @@ class MemoryContextResult:
     auto_surface_remaining_bytes: int = SESSION_AUTO_SURFACE_BUDGET_BYTES
     auto_surface_selected_count: int = 0
     selection_receipt: str | None = None
+    source_refs: tuple[dict[str, str], ...] = ()
+    source_unbound: tuple[str, ...] = ("memory_source_inventory_missing",)
 
 
 # ============================================================================
@@ -288,6 +290,8 @@ async def _build_memory_context_result(
             error_class="ResidentReadError",
         )
     degraded_components.extend(resident.read_errors)
+    resident_unbound = tuple(f"resident_source_unverified:{ref['source_id']}" for ref in resident.source_refs
+        if ref["source_kind"] != "agent_resident_memory" or ref["source_id"] != f"{agent_id}\nmemory/self/self.md")
 
     try:
         await check_resident_budget(agent_id=agent_id, data_root=data_root, resident=resident)
@@ -341,6 +345,8 @@ async def _build_memory_context_result(
             attempts=attempts,
             degraded_components=tuple(dict.fromkeys((*degraded_components, "semantic_retrieval"))),
             error_class=type(retrieval_error).__name__ if retrieval_error else None,
+            source_refs=resident.source_refs,
+            source_unbound=resident_unbound,
         )
 
     selection_status = str(getattr(retriever, "last_selection_status", "not_reported"))
@@ -376,11 +382,15 @@ async def _build_memory_context_result(
     try:
         assembler = MemoryAssembler()
         retrieval_budget = max(0, int(retrieval_profile.memory_budget_chars - resident.chars))
+        assembled_sources = []
 
         def _render_selected_memory(remaining_session_bytes: int) -> str:
             assemble_kwargs = {}
-            if "budget_chars" in inspect.signature(assembler.assemble).parameters:
+            parameters = inspect.signature(assembler.assemble).parameters
+            if "budget_chars" in parameters:
                 assemble_kwargs["budget_chars"] = min(retrieval_budget, max(0, remaining_session_bytes))
+            if "source_observer" in parameters:
+                assemble_kwargs["source_observer"] = lambda item: assembled_sources.extend(item.source_refs)
             return assembler.assemble(items, **assemble_kwargs) or ""
 
         surfacing = surface_with_session_budget(
@@ -407,6 +417,8 @@ async def _build_memory_context_result(
             error_class=type(exc).__name__,
             auto_surface_selected_count=len(items),
             selection_receipt=selection_receipt,
+            source_refs=resident.source_refs,
+            source_unbound=resident_unbound,
         )
 
     content = f"{resident.text}\n\n{assembled}" if resident.text and assembled else (resident.text or assembled)
@@ -416,6 +428,8 @@ async def _build_memory_context_result(
         "auto_surface_remaining_bytes": surfacing.remaining_bytes,
         "auto_surface_selected_count": len(items),
         "selection_receipt": selection_receipt,
+        "source_refs": (*resident.source_refs, *assembled_sources),
+        "source_unbound": (*resident_unbound, *(("recalled_memory_sources_unbound",) if assembled else ())),
     }
     if selection_status in {"model_unavailable", "failed"}:
         return MemoryContextResult(

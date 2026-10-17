@@ -638,6 +638,7 @@ def test_personal_knowledge_replay_projection_keeps_references_not_content() -> 
                         "segment_id": segment_id,
                         "title": "PRIVATE-TITLE",
                         "snippet": "PRIVATE-SNIPPET",
+                        "source_version": "c" * 64,
                         "source_ref": source_ref,
                         "score_trace": {"secret": "PRIVATE-TRACE"},
                     }
@@ -660,6 +661,7 @@ def test_personal_knowledge_replay_projection_keeps_references_not_content() -> 
                 "document_id": document_id,
                 "segment_id": segment_id,
                 "source_ref": source_ref,
+                "source_version": "c" * 64,
             }
         ],
         "content_omitted": True,
@@ -701,6 +703,16 @@ def test_personal_knowledge_read_replay_projection_omits_segment_body() -> None:
     assert payload["references"] == [{"document_id": document_id, "segment_id": segment_id, "source_ref": source_ref}]
     assert "PRIVATE-TITLE" not in projection
     assert "PRIVATE-BODY" not in projection
+
+
+def test_knowledge_replay_keeps_distinct_versions_of_the_same_reference() -> None:
+    from app.services.web_chat_runtime import _knowledge_tool_replay_projection
+
+    document, segment = str(uuid4()), str(uuid4())
+    rows = [{"document_id": document, "segment_id": segment, "source_version": version}
+        for version in ("a" * 64, "b" * 64)]
+    projection = _knowledge_tool_replay_projection(tool_name="search_personal_kb", args={}, raw_result={"results": rows})
+    assert json.loads(projection)["references"] == rows
 
 
 def test_company_knowledge_replay_projection_keeps_publication_references_not_content() -> None:

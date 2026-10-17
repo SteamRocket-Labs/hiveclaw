@@ -1399,6 +1399,7 @@ def _knowledge_tool_replay_projection(*, tool_name: str, args: dict[str, Any], r
         rows = result_rows if isinstance(result_rows, list) else []
     default_document_id = str(payload.get("document_id") or "").strip()
     default_publication_id = str(payload.get("publication_id") or "").strip()
+    default_source_version = str(payload.get("source_version") or "").strip()
     references: list[dict[str, str]] = []
     seen_references: set[tuple[str, ...]] = set()
     for row in rows:
@@ -1407,6 +1408,7 @@ def _knowledge_tool_replay_projection(*, tool_name: str, args: dict[str, Any], r
         reference = {
             "publication_id": str(row.get("publication_id") or default_publication_id).strip(),
             "document_id": str(row.get("document_id") or default_document_id).strip(),
+            "source_version": str(row.get("source_version") or default_source_version).strip(),
             "segment_id": str(row.get("segment_id") or "").strip(),
             "release_id": str(row.get("release_id") or "").strip(),
             "object_id": str(row.get("object_id") or "").strip(),
@@ -1422,6 +1424,7 @@ def _knowledge_tool_replay_projection(*, tool_name: str, args: dict[str, Any], r
         key = (
             reference.get("publication_id", ""),
             reference.get("document_id", ""),
+            reference.get("source_version", ""),
             reference.get("segment_id", ""),
             reference.get("release_id", ""),
             reference.get("object_id", ""),

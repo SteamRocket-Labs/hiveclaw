@@ -269,6 +269,7 @@ def build_knowledge_provenance(tool_name: str, raw_result: Any) -> dict[str, Any
     default_document_id = _source_value(payload, "document_id")
     default_publication_id = _source_value(payload, "publication_id")
     default_source_ref = _source_value(payload, "source_ref")
+    default_source_version = _source_value(payload, "source_version")
     default_sensitivity = payload.get("sensitivity")
     warnings: list[str] = []
     sources: list[dict[str, Any]] = []
@@ -312,6 +313,7 @@ def build_knowledge_provenance(tool_name: str, raw_result: Any) -> dict[str, Any
             "document_id": document_id,
             "segment_id": segment_id,
             "source_ref": source_ref,
+            "source_version": _source_value(row, "source_version", default_source_version),
             "sensitivity": sensitivity.value,
         }
         for identifier_key in ("release_id", "object_id", "assertion_id", "link_id"):
@@ -587,7 +589,7 @@ async def load_transcript_knowledge_provenance(
         ChatTranscriptEvent.tenant_id == tenant_id,
         ChatTranscriptEvent.agent_id == agent_id,
         ChatTranscriptEvent.session_id == session_id,
-        ChatTranscriptEvent.event_type.in_(("tool_result", "knowledge_provenance_repair")),
+        ChatTranscriptEvent.event_type.in_(("tool_result", "tool_result.completed", "knowledge_provenance_repair")),
     ]
     if run_id is not None:
         filters.append(ChatTranscriptEvent.run_id == run_id)

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+from app.services.knowledge_provenance import enrich_knowledge_event_metadata
 from app.services.session_v2_persistence import SessionEventDraft, append_session_events
 
 
@@ -847,6 +848,9 @@ async def complete_tool_invocation(
         receipt_ref = str((execution_evidence or {})["pre_effect_fence_ref"])
     else:
         receipt_ref = f"tool-decision:{decision_id}"
+    knowledge_metadata = enrich_knowledge_event_metadata(
+        event_type="tool_result", content={"name": invocation.tool_name, "result": content}, metadata={},
+    )
     drafts: list[SessionEventDraft] = []
     if enterprise_approval is not None and invocation.permission_state == "waiting":
         receipt_ref = f"enterprise-approval:{enterprise_approval.id}:handoff"
@@ -936,6 +940,7 @@ async def complete_tool_invocation(
                     "retryable": retryable,
                     "content": content,
                     "content_hash": content_hash,
+                    **({"metadata": knowledge_metadata} if knowledge_metadata else {}),
                     # Bounded provider projection for session replay into model
                     # context; absent means the durable content is the projection.
                     **({"model_visible_content": model_visible_content} if model_visible_content is not None else {}),

@@ -1064,6 +1064,7 @@ async def test_list_personal_documents_maps_document_summary_rows(tmp_path: Path
         source_kind="paste",
         source_uri="clipboard://taste",
         source_sha256="a" * 64,
+        canonical_md_sha256="b" * 64,
         canonical_md_path="persons/owner/kb/doc.md",
         status="ready",
         sensitivity="internal",
@@ -1086,6 +1087,7 @@ async def test_list_personal_documents_maps_document_summary_rows(tmp_path: Path
     assert len(summaries) == 1
     assert summaries[0].document_id == document.id
     assert summaries[0].title == "Taste notes"
+    assert getattr(summaries[0], "canonical_md_sha256", None) == "b" * 64
     assert summaries[0].segment_count == 3
     assert summaries[0].source_ref == f"kb://person/{owner_id}/documents/{document.id}"
 
@@ -1118,7 +1120,7 @@ async def test_get_personal_document_maps_segments_under_same_acl(tmp_path: Path
         content="Use source refs and ACL before context injection.",
         token_count=8,
     )
-    session = _QueuedSession(results=[[(document, 1)], [segment]])
+    session = _QueuedSession(results=[[(document, segment)]])
     service = PersonalKnowledgeService(data_root=tmp_path)
 
     detail = await service.get_personal_document(
@@ -1146,6 +1148,7 @@ async def test_search_personal_maps_rows_to_source_ref_hits(tmp_path: Path) -> N
         id=uuid.uuid4(),
         title="Retrieval notes",
         source_sha256="b" * 64,
+        canonical_md_sha256="c" * 64,
         canonical_md_path="persons/owner/kb/doc.md",
         sensitivity="internal",
     )
@@ -1170,6 +1173,7 @@ async def test_search_personal_maps_rows_to_source_ref_hits(tmp_path: Path) -> N
     assert hits[0].document_id == document.id
     assert hits[0].segment_id == segment.id
     assert hits[0].title == "Retrieval notes"
+    assert hits[0].source_version == "c" * 64
     assert hits[0].source_ref == f"kb://person/{owner_id}/documents/{document.id}#segment={segment.id}"
     assert hits[0].score > 0
     assert hits[0].score_trace["channels"]["text"]["raw_score"] == pytest.approx(0.87)
@@ -1322,6 +1326,7 @@ async def test_search_personal_fuses_optional_vector_provider_after_acl_fetch(tm
         id=uuid.uuid4(),
         title="Open Notebook comparison",
         source_sha256="f" * 64,
+        canonical_md_sha256="a" * 64,
         canonical_md_path="persons/owner/kb/vector.md",
         sensitivity="internal",
         doc_metadata_json={},
@@ -1337,7 +1342,16 @@ async def test_search_personal_fuses_optional_vector_provider_after_acl_fetch(tm
             }
         ]
     )
-    session = _QueuedSession([[], [], [(vector_segment, document)]])
+    text_segment = SimpleNamespace(id=uuid.uuid4(), heading_path_json=["Earlier"], content="Earlier text input")
+    search = provider.search_personal_segments
+
+    async def advance_source(**kwargs):
+        document.canonical_md_sha256 = "b" * 64
+        document.sensitivity = "PL3_sensitive"
+        return await search(**kwargs)
+
+    provider.search_personal_segments = advance_source
+    session = _QueuedSession([[(text_segment, document, 0.1)], [], [(vector_segment, document)]])
     service = PersonalKnowledgeService(data_root=tmp_path, vector_provider=provider)
 
     hits = await service.search_personal(
@@ -1349,7 +1363,9 @@ async def test_search_personal_fuses_optional_vector_provider_after_acl_fetch(tm
         limit=3,
     )
 
-    assert [hit.segment_id for hit in hits] == [vector_segment.id]
+    assert [hit.segment_id for hit in hits] == [vector_segment.id, text_segment.id]
+    assert [hit.source_version for hit in hits] == ["b" * 64, "a" * 64]
+    assert [hit.sensitivity for hit in hits] == ["PL3_sensitive", "PL1_public"]
     assert provider.search_calls[0]["query"] == "notebook source grounded imports"
     vector_trace = hits[0].score_trace["channels"]["optional_vector"]
     assert vector_trace["rank"] == 1

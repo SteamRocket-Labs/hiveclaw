@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlparse
 
-from sqlalchemy import Text, cast, delete, func, or_, select, update
+from sqlalchemy import Text, and_, cast, delete, func, or_, select, update
 
 from app.config import get_settings
 from app.models.agent import Agent
@@ -136,6 +136,7 @@ class PersonalKnowledgeDocumentSummary:
     created_at: Any
     updated_at: Any
     metadata: dict[str, Any]
+    canonical_md_sha256: str | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -172,6 +173,7 @@ class KnowledgeSearchHit:
     metadata: dict[str, Any]
     score_trace: dict[str, Any] = field(default_factory=dict)
     credential_reference: str | None = None
+    source_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -528,6 +530,7 @@ class PersonalKnowledgeService:
             source_sha256=str(document.source_sha256 or ""),
             source_ref=f"kb://person/{owner_user_id}/documents/{document_id}",
             canonical_md_path=str(document.canonical_md_path or ""),
+            canonical_md_sha256=getattr(document, "canonical_md_sha256", None),
             status=str(document.status or "unknown"),
             sensitivity=str(document.sensitivity or "internal"),
             agent_searchable=bool(document.agent_searchable),
@@ -566,6 +569,7 @@ class PersonalKnowledgeService:
         document_id: uuid.UUID,
         principal: PersonalKnowledgePrincipal,
     ) -> PersonalKnowledgeDocumentDetail | None:
+        """Bind the authorized source version and segments in one database snapshot."""
         statement = build_personal_knowledge_document_list_statement(
             tenant_id=tenant_id,
             owner_user_id=owner_user_id,
@@ -573,33 +577,32 @@ class PersonalKnowledgeService:
             limit=1,
             document_id=document_id,
         )
+        permitted = statement.with_only_columns(KnowledgeDocument.id).subquery()
+        statement = (
+            select(KnowledgeDocument, KnowledgeSegment)
+            .join(permitted, permitted.c.id == KnowledgeDocument.id)
+            .outerjoin(KnowledgeSegment, and_(
+                KnowledgeSegment.document_id == KnowledgeDocument.id,
+                KnowledgeSegment.tenant_id == tenant_id,
+                KnowledgeSegment.scope_type == "person",
+                KnowledgeSegment.scope_id == owner_user_id,
+            ))
+            .order_by(KnowledgeSegment.position.asc())
+            .execution_options(populate_existing=True)
+        )
         rows = (await session.execute(statement)).all()
         if not rows:
             return None
-        document, segment_count = rows[0][0], rows[0][1]
+        document = rows[0][0]
         try:
             if canonicalize_sensitivity(document.sensitivity) == SensitivityLevel.PL4_CREDENTIAL:
                 return None
         except ValueError:
             return None
-        segment_rows = (
-            await session.execute(
-                select(KnowledgeSegment)
-                .where(
-                    KnowledgeSegment.tenant_id == tenant_id,
-                    KnowledgeSegment.document_id == document.id,
-                    KnowledgeSegment.scope_type == "person",
-                    KnowledgeSegment.scope_id == owner_user_id,
-                )
-                .order_by(KnowledgeSegment.position.asc())
-            )
-        ).all()
         segments: list[PersonalKnowledgeDocumentSegment] = []
-        for row in segment_rows:
-            try:
-                segment = row[0]
-            except (TypeError, KeyError):
-                segment = row
+        for _document, segment in rows:
+            if segment is None:
+                continue
             segments.append(
                 PersonalKnowledgeDocumentSegment(
                     segment_id=segment.id,
@@ -609,7 +612,7 @@ class PersonalKnowledgeService:
                     token_count=int(segment.token_count or 0),
                 )
             )
-        summary = self._document_summary(owner_user_id=owner_user_id, document=document, segment_count=segment_count)
+        summary = self._document_summary(owner_user_id=owner_user_id, document=document, segment_count=len(segments))
         return PersonalKnowledgeDocumentDetail(**summary.__dict__, segments=segments)
 
     async def get_personal_document_with_authority(
@@ -730,9 +733,13 @@ class PersonalKnowledgeService:
                 authority=replace(decision, retryable=True),
                 warnings=["authority_or_document_changed_during_read"],
             )
+        decision = await resolve_personal_knowledge_permission(
+            session, tenant_id=tenant_id, owner_user_id=owner_user_id, principal=principal,
+            action="read", document_id=document_id, document_sensitivity=document.sensitivity,
+        )
         return PersonalKnowledgeDocumentReadResult(
-            status="ok",
-            document=document,
+            status="ok" if decision.allowed else "denied",
+            document=document if decision.allowed else None,
             credential_reference=None,
             authority=decision,
         )
@@ -4124,8 +4131,13 @@ class PersonalKnowledgeService:
             entry = candidates.setdefault(
                 segment_id,
                 {
-                    "segment": segment,
-                    "document": document,
+                    "segment": SimpleNamespace(id=segment.id, content=str(segment.content or ""),
+                        heading_path_json=list(segment.heading_path_json or [])),
+                    "document": SimpleNamespace(id=document.id, title=document.title,
+                        source_sha256=document.source_sha256, canonical_md_path=document.canonical_md_path,
+                        canonical_md_sha256=getattr(document, "canonical_md_sha256", None),
+                        sensitivity=getattr(document, "sensitivity", None), doc_metadata_json=document_metadata,
+                        status=getattr(document, "status", "ready")),
                     "source_ref": source_ref,
                     "channels": {},
                     "rrf": 0.0,
@@ -4149,7 +4161,7 @@ class PersonalKnowledgeService:
             principal=principal,
             limit=candidate_limit,
         )
-        text_rows = (await session.execute(text_statement)).all()
+        text_rows = (await session.execute(text_statement.execution_options(populate_existing=True))).all()
         for rank, row in enumerate(text_rows, start=1):
             segment, document, score = row[0], row[1], row[2]
             add_candidate(segment=segment, document=document, channel="text", rank=rank, raw_score=float(score or 0.0))
@@ -4355,6 +4367,7 @@ class PersonalKnowledgeService:
                             principal=principal,
                         ),
                     )
+                    .execution_options(populate_existing=True)
                 )
             ).all()
             entity_rank_by_segment = {segment_id: rank for rank, segment_id in enumerate(entity_segment_ids, start=1)}
@@ -4458,6 +4471,8 @@ class PersonalKnowledgeService:
                         "document_metadata": safe_document_metadata,
                     },
                     credential_reference=credential_reference,
+                    source_version=getattr(document, "canonical_md_sha256", None)
+                    if sensitivity != SensitivityLevel.PL4_CREDENTIAL else None,
                 )
             )
         return hits

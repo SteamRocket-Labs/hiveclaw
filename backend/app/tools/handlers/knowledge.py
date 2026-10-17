@@ -1157,6 +1157,7 @@ async def search_personal_kb(request: ToolExecutionRequest) -> str:
                 "heading_path": hit.heading_path,
                 "sensitivity": hit.sensitivity,
                 "metadata": hit.metadata,
+                "source_version": hit.source_version,
                 "score_trace": hit.score_trace,
             }
         )
@@ -1393,6 +1394,7 @@ async def read_personal_kb(request: ToolExecutionRequest) -> str:
             "document_id": str(detail.document_id),
             "title": detail.title,
             "source_ref": detail.source_ref,
+            "source_version": getattr(detail, "canonical_md_sha256", None),
             "sensitivity": detail.sensitivity,
             "segments": rendered_segments,
             "truncated": truncated,

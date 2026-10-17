@@ -231,6 +231,7 @@ async def test_search_personal_kb_tool_uses_agent_owner_and_returns_json(monkeyp
         heading_path=["Retrieval"],
         sensitivity="internal",
         metadata={"source_sha256": "d" * 64},
+        source_version="c" * 64,
         score_trace={"channels": {"text": {"rank": 1, "raw_score": 0.91}}, "rrf": 0.016, "final": 0.91},
     )
     service = _FakeSearchService(hit)
@@ -272,6 +273,7 @@ async def test_search_personal_kb_tool_uses_agent_owner_and_returns_json(monkeyp
     assert payload["results"][0]["document_id"] == str(document_id)
     assert payload["results"][0]["segment_id"] == str(segment_id)
     assert payload["results"][0]["source_ref"] == hit.source_ref
+    assert payload["results"][0]["source_version"] == "c" * 64
     assert payload["results"][0]["score_trace"]["channels"]["text"]["rank"] == 1
     assert service.calls[0]["owner_user_id"] == owner_id
     assert service.calls[0]["principal"].evidence() == {
@@ -353,12 +355,13 @@ async def test_read_personal_kb_tool_uses_same_owner_acl_and_honors_only_explici
     second_segment_id = uuid.uuid4()
     decisive_tail = "PERSONAL_KB_DECISIVE_TAIL"
     complete_second_segment = "SECOND-SECRET-CONTENT" + (" context" * 1_200) + decisive_tail
-    detail = PersonalKnowledgeDocumentDetail(
+    detail = SimpleNamespace(
         document_id=document_id,
         title="Private operating notes",
         source_kind="markdown",
         source_uri=None,
         source_sha256="d" * 64,
+        canonical_md_sha256="c" * 64,
         source_ref=f"kb://person/{owner_id}/documents/{document_id}",
         canonical_md_path="personal/documents/private-operating-notes.md",
         status="ready",
@@ -415,6 +418,7 @@ async def test_read_personal_kb_tool_uses_same_owner_acl_and_honors_only_explici
     assert payload["authority"]["allowed"] is True
     assert payload["document_id"] == str(document_id)
     assert payload["title"] == "Private operating notes"
+    assert payload.get("source_version") == "c" * 64
     assert payload["segments"] == [
         {
             "segment_id": str(second_segment_id),

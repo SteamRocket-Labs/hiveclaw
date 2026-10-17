@@ -87,6 +87,7 @@ def test_read_result_applies_document_sensitivity_to_every_segment() -> None:
         "status": "ok",
         "document_id": document_id,
         "source_ref": f"kb://person/alice/documents/{document_id}",
+        "source_version": "c" * 64,
         "sensitivity": "PL2_pii",
         "authority": _authority(action="read"),
         "segments": [
@@ -103,6 +104,11 @@ def test_read_result_applies_document_sensitivity_to_every_segment() -> None:
     assert provenance["coverage"] == {"result_count": 2, "source_count": 2, "complete": True}
     assert {source["segment_id"] for source in provenance["sources"]} == {first_segment, second_segment}
     assert {source["sensitivity"] for source in provenance["sources"]} == {"PL2_pii"}
+    assert {source.get("source_version") for source in provenance["sources"]} == {"c" * 64}
+    payload.pop("source_version")
+    payload["metadata"] = {"source_version": "untrusted-document-metadata"}
+    legacy = build_knowledge_provenance("read_personal_kb", payload)
+    assert all("source_version" not in source for source in legacy["sources"])
 
 
 def test_company_read_provenance_preserves_publication_authority_reference() -> None:

@@ -48,6 +48,7 @@ class SandboxBuildSpec:
     profile: SandboxProfile = SandboxProfile.WORKSPACE_WRITE
     network_access: bool = False
     writable_roots: tuple[str, ...] = ()
+    protected_roots: tuple[str, ...] = ()
 
 
 # Legacy default for callers that pass no spec — preserves the historical
@@ -74,7 +75,10 @@ def _allow_unsandboxed_code_exec() -> bool:
     return os.environ.get("HIVE_ALLOW_UNSANDBOXED_CODE_EXEC", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _sandbox_unavailable_message(mode: str) -> str:
+def _sandbox_unavailable_message(mode: str, *, protected: bool = False) -> str:
+    if protected:
+        return (f"❌ Execution sandbox unavailable (mode={mode}). Protected session sources require an OS sandbox; "
+            "an unsandboxed development bypass cannot enforce their authority.")
     return (
         "❌ Execution sandbox unavailable "
         f"(mode={mode}). Configure Linux bubblewrap (`bwrap`) or macOS `sandbox-exec`, "
@@ -139,6 +143,19 @@ def _darwin_sandbox_command(
         lines.append("(deny file-write*)")
         for root in writable:
             lines.append(f'(allow file-write* (subpath "{_escape_sandbox_string(str(root))}"))')
+    for root in spec.protected_roots:
+        lines.append(f'(deny file-read* file-write* (subpath "{_escape_sandbox_string(str(Path(root).resolve()))}"))')
+    if spec.protected_roots:
+        for root in (work_dir, home):
+            lines.append(f'(allow file-read* (subpath "{_escape_sandbox_string(str(root))}"))')
+        # Runtimes canonicalize their entrypoint through known ancestor directories.
+        ancestors = {parent for root in (work_dir, home) for parent in root.parents
+            if any(parent == Path(protected).resolve() or parent.is_relative_to(Path(protected).resolve())
+                for protected in spec.protected_roots)}
+        for parent in sorted(ancestors):
+            lines.append(f'(allow file-read-metadata (literal "{_escape_sandbox_string(str(parent))}"))')
+        for root in writable:
+            lines.append(f'(allow file-write* (subpath "{_escape_sandbox_string(str(root))}"))')
     profile = "\n".join(lines) + "\n"
     profile_path.write_text(profile, encoding="utf-8")
     return [sandbox_exec, "-f", str(profile_path), *command], [profile_path]
@@ -185,6 +202,11 @@ def _linux_bwrap_command(
     for path in ("/bin", "/usr", "/lib", "/lib64", "/opt/homebrew"):
         if Path(path).exists():
             args.extend(["--ro-bind", path, path])
+    if spec.protected_roots:
+        for root in spec.protected_roots:
+            args += ["--tmpfs", str(Path(root).resolve())]
+        for root in dict.fromkeys((*writable, work_dir, home)):
+            args += ["--bind" if str(root) in writable_set else "--ro-bind", str(root), str(root)]
     return [*args, *command], []
 
 
@@ -198,9 +220,9 @@ def build_sandboxed_agent_command(
     resolved_spec = spec if spec is not None else _LEGACY_SANDBOX_SPEC
     mode = os.environ.get("HIVE_CODE_SANDBOX_MODE", "auto").strip().lower() or "auto"
     if mode in {"none", "off", "disabled"}:
-        if _allow_unsandboxed_code_exec():
+        if _allow_unsandboxed_code_exec() and not resolved_spec.protected_roots:
             return AgentSandboxCommand(command=command)
-        return AgentSandboxCommand(command=None, error=_sandbox_unavailable_message(mode))
+        return AgentSandboxCommand(command=None, error=_sandbox_unavailable_message(mode, protected=bool(resolved_spec.protected_roots)))
 
     home = Path(env["HOME"]).resolve()
     if mode in {"auto", "darwin", "sandbox-exec"} and platform.system() == "Darwin":
@@ -208,18 +230,18 @@ def build_sandboxed_agent_command(
         if sandboxed:
             return AgentSandboxCommand(command=sandboxed, cleanup_paths=cleanup)
         if mode != "auto":
-            return AgentSandboxCommand(command=None, error=_sandbox_unavailable_message(mode))
+            return AgentSandboxCommand(command=None, error=_sandbox_unavailable_message(mode, protected=bool(resolved_spec.protected_roots)))
 
     if mode in {"auto", "bwrap", "bubblewrap", "linux"}:
         sandboxed, cleanup = _linux_bwrap_command(command, work_dir=work_dir, home=home, spec=resolved_spec)
         if sandboxed:
             return AgentSandboxCommand(command=sandboxed, cleanup_paths=cleanup)
         if mode != "auto":
-            return AgentSandboxCommand(command=None, error=_sandbox_unavailable_message(mode))
+            return AgentSandboxCommand(command=None, error=_sandbox_unavailable_message(mode, protected=bool(resolved_spec.protected_roots)))
 
-    if _allow_unsandboxed_code_exec():
+    if _allow_unsandboxed_code_exec() and not resolved_spec.protected_roots:
         return AgentSandboxCommand(command=command)
-    return AgentSandboxCommand(command=None, error=_sandbox_unavailable_message(mode))
+    return AgentSandboxCommand(command=None, error=_sandbox_unavailable_message(mode, protected=bool(resolved_spec.protected_roots)))
 
 
 @lru_cache(maxsize=1)

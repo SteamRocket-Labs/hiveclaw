@@ -10,12 +10,14 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from app.runtime.ccplus_contracts import SandboxProfile
 from app.services.code_execution.contracts import CodeExecutionResult, render_command_result
 from app.services.code_execution.service import execute_agent_command
 from app.services.external_capabilities.skill_source_adapter import (
     stage_external_skill_package_review_for_agent_workspace,
 )
 from app.services.subprocess_env import build_agent_subprocess_env
+from app.services.subprocess_sandbox import SandboxBuildSpec
 from app.services.workspace_resource_authority import (
     WorkspaceAuthorityError,
     delete_workspace_path,
@@ -72,14 +74,27 @@ def _check_command_safety(command: str) -> str | None:
     return None
 
 
-def _prepare_execution_environment(ws: Path) -> tuple[Path, dict[str, str]]:
+def _prepare_execution_environment(ws: Path, *, canonical_workspace: Path | None = None) -> tuple[Path, dict[str, str]]:
     work_dir = (ws / "workspace").resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    exec_home = Path(f"/tmp/exec_home_{ws.name}")
+    private_job = canonical_workspace is not None and ws.resolve() != canonical_workspace.resolve()
+    exec_home = ws / ".exec-home" if private_job else Path(f"/tmp/exec_home_{ws.name}")
     exec_home.mkdir(parents=True, exist_ok=True)
     safe_env = build_agent_subprocess_env(home=exec_home)
+    if private_job:
+        scratch = exec_home / "tmp"
+        scratch.mkdir(exist_ok=True)
+        safe_env["TMPDIR"] = str(scratch)
     return work_dir, safe_env
+
+
+def _execution_source_spec(ws: Path, canonical_workspace: Path | None) -> SandboxBuildSpec | None:
+    if canonical_workspace is None or ws.resolve() == canonical_workspace.resolve():
+        return None
+    roots = (canonical_workspace.resolve().parent, Path(tempfile.gettempdir()), Path("/tmp"), Path("/var/tmp"))
+    return SandboxBuildSpec(profile=SandboxProfile.FULL_ACCESS_LOCAL_ONLY,
+        protected_roots=tuple(dict.fromkeys(str(root.resolve()) for root in roots if root.is_dir())))
 
 
 def _workspace_state_changed(before: dict[str, Any] | None, after: dict[str, Any]) -> bool:
@@ -343,7 +358,7 @@ async def _execute_code(
     if safety_error:
         return safety_error
 
-    work_dir, safe_env = _prepare_execution_environment(ws)
+    work_dir, safe_env = _prepare_execution_environment(ws, canonical_workspace=canonical_workspace)
     workspace_before = _workspace_file_state(work_dir)
 
     # Determine command and file extension
@@ -370,6 +385,7 @@ async def _execute_code(
             env=safe_env,
             timeout=timeout,
             runtime="node24" if language == "node" else "python3.13",
+            sandbox_spec=_execution_source_spec(ws, canonical_workspace),
         )
         _promote_nested_workspace_artifacts(work_dir)
         artifacts = _workspace_artifact_manifest(work_dir, workspace_before, source="execute_code")
@@ -434,7 +450,7 @@ async def _execute_code(
             logger.debug("Suppressed: %s", e)
 
 
-async def _run_command(ws: Path, arguments: dict) -> str | ToolContentEnvelope:
+async def _run_command(ws: Path, arguments: dict, *, canonical_workspace: Path | None = None) -> str | ToolContentEnvelope:
     """Execute a shell command inside the agent workspace."""
     command = arguments.get("command", "").strip()
     timeout = min(int(arguments.get("timeout", 60)), 120)
@@ -446,7 +462,7 @@ async def _run_command(ws: Path, arguments: dict) -> str | ToolContentEnvelope:
     if safety_error:
         return safety_error
 
-    work_dir, safe_env = _prepare_execution_environment(ws)
+    work_dir, safe_env = _prepare_execution_environment(ws, canonical_workspace=canonical_workspace)
     workspace_before = _workspace_file_state(work_dir)
     result = await execute_agent_command(
         ["bash", "-lc", command],
@@ -454,6 +470,7 @@ async def _run_command(ws: Path, arguments: dict) -> str | ToolContentEnvelope:
         env=safe_env,
         timeout=timeout,
         runtime=os.environ.get("HIVE_VERCEL_SANDBOX_RUNTIME", "python3.13"),
+        sandbox_spec=_execution_source_spec(ws, canonical_workspace),
     )
     _promote_nested_workspace_artifacts(work_dir)
     artifacts = _workspace_artifact_manifest(work_dir, workspace_before, source="run_command")

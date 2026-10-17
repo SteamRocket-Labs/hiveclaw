@@ -580,6 +580,8 @@ async def run_command(workspace: Path, arguments: dict, tenant_id: str | None = 
 
     try:
         with authorized_execution_workspace(workspace, authority_scope) as execution_workspace:
+            if authority_scope is not None:
+                return await _run_command(execution_workspace, arguments, canonical_workspace=workspace)
             return await _run_command(execution_workspace, arguments)
     except WorkspaceAuthorityError as exc:
         return _workspace_storage_error("run_command", exc, mutation=True)

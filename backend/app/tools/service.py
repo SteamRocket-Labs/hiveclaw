@@ -10,7 +10,7 @@ import json as _json
 import re
 import traceback
 import uuid
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
@@ -331,6 +331,7 @@ def _capture_workspace_mutation_evidence(
     result: str | ToolContentEnvelope,
     workspace: Path,
     before_states: dict[str, dict[str, Any]] | None = None,
+    descriptor_writes: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str], list[dict[str, Any]]]:
     """Capture exact post-tool file states while the workspace lock is held."""
     from app.services.chat_artifact_delivery import tool_session_write_paths
@@ -350,6 +351,7 @@ def _capture_workspace_mutation_evidence(
     errors: dict[str, str] = {}
     lineage: list[dict[str, Any]] = []
     before_states = dict(before_states or {})
+    descriptor_by_path = {row["path"]: row for row in descriptor_writes or () if row.get("verified") is True}
     artifact_by_path = {
         str(item.get("path") or ""): item for item in artifacts or () if isinstance(item, dict) and item.get("path")
     }
@@ -377,7 +379,14 @@ def _capture_workspace_mutation_evidence(
                     )
                 )
             )
-            if before_verifiable:
+            descriptor = descriptor_by_path.get(str(state["path"]))
+            if descriptor is not None and (
+                state.get("exists") is not True or state.get("sha256") != descriptor.get("observed_output_sha256")
+                or (before_verifiable and (before_state.get("exists") != descriptor.get("expected_exists")
+                    or before_state.get("sha256") != descriptor.get("observed_predecessor_sha256")))
+            ):
+                errors[str(state["path"])] = "workspace_descriptor_state_mismatch"
+            elif before_verifiable:
                 lineage.append(
                     {
                         "path": state["path"],
@@ -1325,11 +1334,38 @@ class ToolRuntimeService:
 
                 if trace_metadata_sink is not None:
                     trace_metadata_sink.pop("workspace_input_evidence", None)
+                    if workspace_mutating:
+                        for key in ("workspace_mutation_evidence_captured", "workspace_mutation_states",
+                            "workspace_mutation_state_errors", "workspace_mutation_lineage", "workspace_execution_evidence"):
+                            trace_metadata_sink.pop(key, None)
                 input_read = await authorize_workspace_receipt_read(request)
                 if isinstance(input_read, str):
                     if trace_metadata_sink is not None:
                         trace_metadata_sink["workspace_input_evidence"] = {"status": "unavailable"}
                     return input_read
+                from app.services.workspace_resource_authority import (
+                    WorkspaceAuthorityError, WorkspaceAuthorityScope, WorkspaceOutputWrite, authorize_workspace_tool_path,
+                )
+
+                scope = context.workspace_authority_scope
+                if isinstance(scope, WorkspaceAuthorityScope):
+                    context.workspace_authority_scope = replace(scope, output_writes=())
+                    text_write = tool_name in {"write_file", "edit_file"} or (
+                        tool_name == "fs_write" and str(arguments.get("mode") or "write").strip().lower() in {"write", "edit"})
+                    if text_write:
+                        try:
+                            path = authorize_workspace_tool_path(context.workspace, scope, str(arguments.get("path") or ""), action="write")
+                        except WorkspaceAuthorityError:
+                            path = ""  # Preserve the backend's existing path/permission denial.
+                        if path.startswith("workspace/"):
+                            try:
+                                observation = WorkspaceOutputWrite.capture(context.workspace, path)
+                            except WorkspaceAuthorityError as exc:
+                                return render_tool_error(tool_name=tool_name, error_class="provider_unavailable",
+                                    message="The write predecessor cannot be verified. Reconcile the file before retrying.",
+                                    provider="workspace", http_status=503, retryable=False,
+                                    extra={"reason_code": exc.code, "outcome": "unavailable"})
+                            context.workspace_authority_scope = replace(scope, output_writes=(observation,))
                 before_states: dict[str, dict[str, Any]] = {}
                 before_errors: dict[str, str] = {}
                 if workspace_mutating and trace_metadata_sink is not None:
@@ -1368,6 +1404,8 @@ class ToolRuntimeService:
                         result=value,
                         workspace=context.workspace,
                         before_states=before_states,
+                        descriptor_writes=[write.as_dict() for write in context.workspace_authority_scope.output_writes]
+                            if isinstance(context.workspace_authority_scope, WorkspaceAuthorityScope) else [],
                     )
                     trace_metadata_sink["workspace_mutation_evidence_captured"] = True
                     trace_metadata_sink["workspace_mutation_states"] = states
@@ -1378,6 +1416,8 @@ class ToolRuntimeService:
                     trace_metadata_sink["workspace_execution_evidence"] = await persist_workspace_execution_evidence(
                         context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
                         result=value, states=states, lineage=lineage, errors={**before_errors, **errors},
+                        descriptor_writes=[write.as_dict() for write in context.workspace_authority_scope.output_writes]
+                            if isinstance(context.workspace_authority_scope, WorkspaceAuthorityScope) else [],
                     )
                 return value
 

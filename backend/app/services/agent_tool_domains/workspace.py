@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import io
+import os
+import hashlib
 import re
 import shutil
 import subprocess
@@ -17,6 +19,7 @@ from app.services.legacy_company_files import COMPANY_CONTEXT_FILENAMES, company
 from app.services.managed_capability_guard import sanitize_managed_credential_guidance
 from app.services.workspace_resource_authority import (
     WorkspaceAuthorityError,
+    WorkspaceAuthorityScope,
     authorize_workspace_tool_path,
     delete_workspace_path,
     is_recovery_manifest_storage_path,
@@ -63,7 +66,8 @@ def _workspace_error(
 
 
 def _workspace_storage_error(tool_name: str, exc: WorkspaceAuthorityError, *, mutation: bool = False) -> str:
-    status = 503 if exc.code == "workspace_storage_unavailable" else 409 if exc.code == "workspace_resource_changed" else 403
+    conflict = exc.code == "workspace_predecessor_changed"
+    status = 503 if exc.code == "workspace_storage_unavailable" else 409 if conflict or exc.code == "workspace_resource_changed" else 403
     return render_tool_error(
         tool_name=tool_name,
         error_class="auth_or_permission" if status == 403 else "provider_unavailable" if status == 503 else "operation_failed",
@@ -72,7 +76,7 @@ def _workspace_storage_error(tool_name: str, exc: WorkspaceAuthorityError, *, mu
         http_status=status,
         retryable=status != 403 and not mutation,
         actionable_hint="Use an independent canonical file; refresh and reconcile the path before retrying.",
-        extra={"reason_code": exc.code, "outcome": "denied" if status == 403 else "unknown" if mutation else "unavailable" if status == 503 else "failed"},
+        extra={"reason_code": exc.code, "outcome": "failed" if conflict else "denied" if status == 403 else "unknown" if mutation else "unavailable" if status == 503 else "failed"},
     )
 
 
@@ -1222,7 +1226,8 @@ def _write_file(
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
 
     try:
-        write_workspace_file(ws, rel_path, content.encode("utf-8"))
+        observation = authority_scope.output_write(rel_path) if isinstance(authority_scope, WorkspaceAuthorityScope) else None
+        write_workspace_file(ws, rel_path, content.encode("utf-8"), observation=observation)
         return f"✅ Written to {rel_path} ({len(content)} chars)"
     except WorkspaceAuthorityError as exc:
         return _workspace_storage_error(tool_name, exc, mutation=True)
@@ -1290,30 +1295,34 @@ def _edit_file(
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
 
     try:
-        with open_workspace_file(ws, rel_path, mode="r+b") as source:
-            text = io.TextIOWrapper(source, encoding="utf-8", errors="replace")
-            try:
+        observation = authority_scope.output_write(rel_path) if isinstance(authority_scope, WorkspaceAuthorityScope) else None
+        with open_workspace_file(ws, rel_path, mode="r+b", write_observation=observation) as source:
+            raw = source.read()
+            if observation is not None:
+                observation.verify_predecessor(raw)
+            with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8", errors="replace") as text:
                 original = text.read()
-                occurrences = original.count(old_text)
-                if occurrences == 0:
-                    return _workspace_error(
-                        tool_name,
-                        "bad_arguments",
-                        f"Could not find the target text in {rel_path}.",
-                        actionable_hint="Read the file first and provide a unique exact old_text match.",
-                    )
-                if not replace_all and occurrences != 1:
-                    return _workspace_error(
-                        tool_name,
-                        "bad_arguments",
-                        f"Found {occurrences} matches in {rel_path}. Refine old_text or set replace_all=true.",
-                    )
-                updated = original.replace(old_text, new_text, -1 if replace_all else 1)
-                text.seek(0)
-                text.write(updated)
-                text.truncate()
-            finally:
-                text.detach()
+            occurrences = original.count(old_text)
+            if occurrences == 0:
+                return _workspace_error(
+                    tool_name,
+                    "bad_arguments",
+                    f"Could not find the target text in {rel_path}.",
+                    actionable_hint="Read the file first and provide a unique exact old_text match.",
+                )
+            if not replace_all and occurrences != 1:
+                return _workspace_error(
+                    tool_name,
+                    "bad_arguments",
+                    f"Found {occurrences} matches in {rel_path}. Refine old_text or set replace_all=true.",
+                )
+            updated = original.replace(old_text, new_text, -1 if replace_all else 1)
+            output = updated.replace("\n", os.linesep).encode("utf-8")
+            if observation is not None:
+                observation.expected_output_sha256 = hashlib.sha256(output).hexdigest()
+            source.seek(0)
+            source.write(output)
+            source.truncate()
         replaced = occurrences if replace_all else 1
         return f"✅ Updated {rel_path} ({replaced} replacement{'s' if replaced != 1 else ''})"
     except WorkspaceAuthorityError as exc:

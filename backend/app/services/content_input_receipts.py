@@ -408,7 +408,8 @@ def record_workspace_receipt(db, tenant_id: uuid.UUID, agent_id: uuid.UUID, path
     return receipt
 
 
-async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_id, arguments, result, states, lineage, errors, input_read=None):
+async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_id, arguments, result, states, lineage, errors,
+    input_read=None, descriptor_writes=None):
     """Persist mechanical executor facts; this is not an input-authority receipt."""
     from datetime import datetime, timezone
     from app.database import tenant_scoped_session
@@ -444,6 +445,8 @@ async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_
                 "model_result_id": str(model.id), "model_request_hash": model.model_request_hash,
                 "effective_args_hash": args_hash, "authority_snapshot_hash": invocation.authority_snapshot_hash,
                 "tool_result_hash": _sha256(str(result)), "states": states, "lineage": lineage, "errors": errors}
+            if descriptor_writes is not None:
+                proof["descriptor_writes"] = descriptor_writes
             channel, metadata_key = "workspace-output", "workspace_execution_evidence"
             if input_read is not None:
                 proof.pop("states")

@@ -145,29 +145,64 @@ def _workspace_parent_descriptor(workspace: Path, path: str, *, create: bool = F
 
 
 @contextmanager
-def open_workspace_file(workspace: Path, path: str, *, mode: str = "rb"):
+def open_workspace_file(workspace: Path, path: str, *, mode: str = "rb", write_observation=None):
     """Pin every directory and validate the opened inode before reading or truncating."""
     if mode not in {"rb", "wb", "xb", "r+b"}:
         raise ValueError("Unsupported workspace file mode")
     create = mode in {"wb", "xb"}
     write = mode != "rb"
+    if write_observation is not None:
+        write_observation.verified = False
+        write_observation.observed_predecessor_sha256 = None
+        write_observation.observed_output_sha256 = None
+        write_observation.descriptor = None
+        if mode not in {"wb", "r+b"} or write_observation.path != normalize_workspace_resource_path(path):
+            raise WorkspaceAuthorityError("workspace_resource_changed", "The writer descriptor binding does not match.")
+        create = not write_observation.expected_exists
     descriptor = None
     try:
         with _workspace_parent_descriptor(workspace, path, create=create) as (directory, name):
             flags = {"rb": os.O_RDONLY, "wb": os.O_WRONLY | os.O_CREAT, "xb": os.O_WRONLY | os.O_CREAT | os.O_EXCL, "r+b": os.O_RDWR}[mode]
-            descriptor = os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o600, dir_fd=directory)
+            if write_observation is not None:
+                flags = os.O_RDWR | (os.O_CREAT | os.O_EXCL if create else 0)
+            try:
+                descriptor = os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o600, dir_fd=directory)
+            except (FileExistsError, FileNotFoundError) as exc:
+                if write_observation is not None:
+                    raise WorkspaceAuthorityError("workspace_predecessor_changed", "The predecessor changed before writing. Read the current file and revise the write.") from exc
+                raise
             opened = os.fstat(descriptor)
             if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
                 raise WorkspaceAuthorityError("workspace_resource_changed", "The file changed or has shared ownership; reconcile it before retrying.")
-            if create:
+            if create and write_observation is None:
                 os.ftruncate(descriptor, 0)
-            handle = os.fdopen(descriptor, mode)
+            handle = os.fdopen(descriptor, "r+b" if write_observation is not None else mode)
             descriptor = None
             with handle:
+                if write_observation is not None:
+                    write_observation.descriptor = {"device": opened.st_dev, "inode": opened.st_ino}
+                    if write_observation.expected_exists:
+                        write_observation.observed_predecessor_sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
+                        if write_observation.observed_predecessor_sha256 != write_observation.expected_predecessor_sha256:
+                            raise WorkspaceAuthorityError("workspace_predecessor_changed", "The predecessor bytes changed before writing. Read the current file and revise the write.")
+                    handle.seek(0)
+                    if mode == "wb":
+                        handle.truncate(0)
                 yield handle
                 if write:
                     handle.flush()
                     os.fsync(handle.fileno())
+                if write_observation is not None:
+                    handle.seek(0)
+                    write_observation.observed_output_sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
+                    final = os.fstat(handle.fileno())
+                    if not stat.S_ISREG(final.st_mode) or final.st_nlink != 1 or (
+                        (final.st_dev, final.st_ino) != (opened.st_dev, opened.st_ino)
+                    ) or (
+                        write_observation.expected_output_sha256 is not None
+                        and write_observation.observed_output_sha256 != write_observation.expected_output_sha256
+                    ):
+                        raise WorkspaceAuthorityError("workspace_resource_changed", "The writer descriptor bytes changed after writing; reconcile the output before retrying.")
                 try:
                     current = resolve_workspace_storage_path(workspace, path).stat()
                 except WorkspaceAuthorityError as exc:
@@ -176,6 +211,8 @@ def open_workspace_file(workspace: Path, path: str, *, mode: str = "rb"):
                     raise
                 if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
                     raise WorkspaceAuthorityError("workspace_resource_changed", "The file moved during access; reconcile it before retrying.")
+        if write_observation is not None and write_observation.expected_output_sha256 is not None:
+            write_observation.verified = True
     finally:
         if descriptor is not None:
             os.close(descriptor)
@@ -206,8 +243,10 @@ def delete_workspace_path(workspace: Path, path: str, *, directory: bool = False
             raise WorkspaceAuthorityError("workspace_resource_changed", "The path was recreated during deletion; reconcile before retrying.")
 
 
-def write_workspace_file(workspace: Path, path: str, content: bytes) -> None:
-    with open_workspace_file(workspace, path, mode="wb") as output:
+def write_workspace_file(workspace: Path, path: str, content: bytes, *, observation=None) -> None:
+    if observation is not None:
+        observation.expected_output_sha256 = hashlib.sha256(content).hexdigest()
+    with open_workspace_file(workspace, path, mode="wb", write_observation=observation) as output:
         output.write(content)
 
 
@@ -253,6 +292,37 @@ class WorkspaceInputRead:
                 "The file bytes no longer match the verified input receipt. Regenerate from authorized inputs.")
 
 
+@dataclass(slots=True)
+class WorkspaceOutputWrite:
+    path: str
+    expected_exists: bool
+    expected_predecessor_sha256: str | None
+    expected_output_sha256: str | None = None
+    observed_predecessor_sha256: str | None = None
+    observed_output_sha256: str | None = None
+    descriptor: dict | None = None
+    verified: bool = False
+
+    @classmethod
+    def capture(cls, workspace: Path, path: str):
+        try:
+            with open_workspace_file(workspace, path) as source:
+                digest = hashlib.file_digest(source, "sha256").hexdigest()
+            return cls(path=path, expected_exists=True, expected_predecessor_sha256=digest)
+        except WorkspaceAuthorityError as exc:
+            if not isinstance(exc.__cause__, FileNotFoundError):
+                raise
+            return cls(path=path, expected_exists=False, expected_predecessor_sha256=None)
+
+    def as_dict(self):
+        return {key: getattr(self, key) for key in self.__slots__}
+
+    def verify_predecessor(self, data: bytes) -> None:
+        self.observed_predecessor_sha256 = hashlib.sha256(data).hexdigest()
+        if not self.expected_exists or self.observed_predecessor_sha256 != self.expected_predecessor_sha256:
+            raise WorkspaceAuthorityError("workspace_predecessor_changed", "The bytes used by the edit changed after preflight. Read the current file and revise the edit.")
+
+
 @dataclass(frozen=True)
 class WorkspaceAuthorityScope:
     agent_id: uuid.UUID
@@ -265,6 +335,11 @@ class WorkspaceAuthorityScope:
     action_permissions: frozenset[tuple[str, str]] = frozenset()
     collection_actions: frozenset[str] = frozenset()
     input_reads: tuple[WorkspaceInputRead, ...] = ()
+    output_writes: tuple[WorkspaceOutputWrite, ...] = ()
+
+    def output_write(self, path: str) -> WorkspaceOutputWrite | None:
+        normalized = normalize_workspace_resource_path(path)
+        return next((write for write in self.output_writes if write.path == normalized), None)
 
     def input_read(self, path: str) -> WorkspaceInputRead | None:
         normalized = normalize_workspace_resource_path(path)

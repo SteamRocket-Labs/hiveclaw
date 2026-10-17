@@ -8,7 +8,8 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import String as SaString, cast as sa_cast, or_, select
+from sqlalchemy import String as SaString, any_, cast as sa_cast, or_, select
+from sqlalchemy.dialects.postgresql import ARRAY, UUID as PgUUID
 
 from app.config import get_settings
 from app.database import tenant_scoped_session
@@ -20,6 +21,40 @@ _FALLBACK_HEADLINE = "回顾到与查询相关的历史会话"
 _EXCLUDED_CHANNELS = {"agent", "heartbeat", "trigger", "task", "dream"}
 _EXCLUDED_ROLES = {"system", "tool_call"}
 _QUERY_SPLIT_RE = re.compile(r"\s+")
+
+
+class SessionRecallError(ValueError):
+    def __init__(self, code: str, message: str, *, status: str = "unavailable"):
+        super().__init__(message)
+        self.code = code
+        self.status = status
+        self.retryable = status == "unavailable"
+
+
+async def _authorized_recall_session_ids(agent_id, tenant_id, runtime_request) -> set[str]:
+    from app.services.content_input_receipts import ContentInputReceiptError, _runtime_input_actor
+
+    if runtime_request is None or tenant_id is None:
+        raise SessionRecallError("session_recall_authority_unavailable", "Current runtime reader authority is required for session recall.")
+    context = runtime_request.context
+    if context.agent_id != agent_id or str(context.tenant_id) != str(tenant_id):
+        raise SessionRecallError("session_recall_access_denied", "The recall reader does not match this runtime.", status="denied")
+    async with tenant_scoped_session(tenant_id, require_tenant=True, source="session_recall_source_authority") as db:
+        try:
+            principal, requester = await _runtime_input_actor(db, tenant_id, runtime_request)
+        except ContentInputReceiptError as exc:
+            raise SessionRecallError("session_recall_access_denied", "Current session recall access is denied.", status="denied") from exc
+        audience = await db.scalar(select(ChatSession.audience_kind).where(
+            ChatSession.id == uuid.UUID(str(principal.session_id)), ChatSession.tenant_id == tenant_id,
+            ChatSession.agent_id == agent_id, ChatSession.user_id == requester.id))
+        if audience not in {None, "private"}:
+            raise SessionRecallError("session_recall_shared_audience_unavailable", "Shared-work recall requires its live source-audience reader.")
+        # Browser administrator inspection never supplies another requester's private history to an Agent.
+        rows = await db.scalars(select(ChatSession.id).where(ChatSession.tenant_id == tenant_id,
+            ChatSession.agent_id == agent_id, ChatSession.user_id == requester.id,
+            or_(ChatSession.audience_kind.is_(None), ChatSession.audience_kind == "private"),
+            ChatSession.listed_surface == "chat", ChatSession.source_channel.notin_(_EXCLUDED_CHANNELS)))
+        return {str(value) for value in rows.all()}
 
 
 def _normalize_text(value: str) -> str:
@@ -335,6 +370,7 @@ def _search_t0_session_ledger(
     *,
     limit: int | None,
     snippet_limit: int,
+    authorized_session_ids: set[str] | None = None,
 ) -> list[dict]:
     sessions_root = _t0_session_root(agent_id)
     if not sessions_root.exists():
@@ -346,6 +382,8 @@ def _search_t0_session_ledger(
 
     for session_dir in sorted((path for path in sessions_root.iterdir() if path.is_dir()), reverse=True):
         session_id = session_dir.name
+        if authorized_session_ids is not None and session_id not in authorized_session_ids:
+            continue
         events = [
             event
             for event in replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=data_root)
@@ -396,6 +434,7 @@ def _search_t0_chat_logs(
     *,
     limit: int | None,
     snippet_limit: int,
+    authorized_session_ids: set[str] | None = None,
 ) -> list[dict]:
     """Search legacy chat logs after the new session ledger misses."""
     logs_root = _t0_log_root(agent_id)
@@ -413,13 +452,15 @@ def _search_t0_chat_logs(
         metadata, body = _split_frontmatter(raw)
         if metadata.get("type") != "chat":
             continue
+        session_key = metadata.get("session_id") or path.stem
+        if authorized_session_ids is not None and session_key not in authorized_session_ids:
+            continue
 
         body_score = _match_score(body, terms)
         headline_score = _match_score(metadata.get("session_id", ""), terms)
         if max(body_score, headline_score) <= 0:
             continue
 
-        session_key = metadata.get("session_id") or path.stem
         group = grouped.setdefault(
             session_key,
             {
@@ -461,6 +502,7 @@ async def _search_session_history_db(
     limit: int | None,
     snippet_limit: int,
     tenant_id: uuid.UUID | None = None,
+    authorized_session_ids: set[str] | None = None,
 ) -> list[dict]:
     needle = (query or "").strip()
     if not needle:
@@ -495,8 +537,11 @@ async def _search_session_history_db(
     )
     if fetch_limit is not None:
         stmt = stmt.limit(fetch_limit)
+    if authorized_session_ids is not None:
+        stmt = stmt.where(ChatSession.id == any_(sa_cast([uuid.UUID(value) for value in authorized_session_ids], ARRAY(PgUUID(as_uuid=True)))),
+            ChatSession.tenant_id == tenant_id, ChatMessage.tenant_id == tenant_id)
 
-    async with tenant_scoped_session(tenant_id) as db:
+    async with tenant_scoped_session(tenant_id, require_tenant=True, source="session_recall_db_evidence") as db:
         rows = (await db.execute(stmt)).all()
         if not rows:
             return []
@@ -588,35 +633,29 @@ async def search_session_history(
     limit: int | None = None,
     snippet_limit: int = 3,
     tenant_id: uuid.UUID | None = None,
+    runtime_request=None,
 ) -> list[dict]:
     """Search past sessions, preferring the canonical T0 session ledger."""
     needle = (query or "").strip()
     if not needle:
         return []
 
-    ledger_hits = _search_t0_session_ledger(
-        agent_id,
-        needle,
-        limit=limit,
-        snippet_limit=snippet_limit,
-    )
-    if ledger_hits:
-        return ledger_hits
-
-    legacy_log_hits = _search_t0_chat_logs(
-        agent_id,
-        needle,
-        limit=limit,
-        snippet_limit=snippet_limit,
-    )
-    if legacy_log_hits:
-        return legacy_log_hits
-
-    db_hits = await _search_session_history_db(
-        agent_id,
-        needle,
-        limit=limit,
-        snippet_limit=snippet_limit,
-        tenant_id=tenant_id,
-    )
-    return db_hits
+    try:
+        allowed = await _authorized_recall_session_ids(agent_id, tenant_id, runtime_request)
+        if not allowed:
+            return []
+        hits = _search_t0_session_ledger(agent_id, needle, limit=limit, snippet_limit=snippet_limit,
+            authorized_session_ids=allowed)
+        if not hits:
+            hits = _search_t0_chat_logs(agent_id, needle, limit=limit, snippet_limit=snippet_limit,
+                authorized_session_ids=allowed)
+        if not hits:
+            hits = await _search_session_history_db(agent_id, needle, limit=limit,
+                snippet_limit=snippet_limit, tenant_id=tenant_id, authorized_session_ids=allowed)
+        current = await _authorized_recall_session_ids(agent_id, tenant_id, runtime_request)
+        return hits if all(hit.get("session_id") in current for hit in hits) else [
+            hit for hit in hits if hit.get("session_id") in current]
+    except SessionRecallError:
+        raise
+    except Exception as exc:
+        raise SessionRecallError("session_recall_authority_unavailable", "Session recall authority or evidence is temporarily unavailable. Retry later.") from exc

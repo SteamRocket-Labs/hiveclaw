@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-from app.services.session_recall import search_session_history
+from app.services.session_recall import SessionRecallError, search_session_history
 from app.tools.decorator import ToolMeta, tool
 
 
@@ -736,11 +736,16 @@ def load_memory(agent_id: uuid.UUID, arguments: dict) -> str:
         adapter="agent_args",
     )
 )
-async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | None = None) -> str:
+async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | None = None, *, execution_context=None) -> str:
+    import json
     from pathlib import Path
 
     from app.config import get_settings
 
+    if set(arguments) - {"query", "scope", "limit", "date_from", "date_to"}:
+        return json.dumps({"schema": "hive.session_recall_error.v1", "status": "invalid_arguments",
+            "code": "session_recall_arguments_invalid", "retryable": False,
+            "message": "Unsupported fields cannot select the memory reader."})
     query = (arguments.get("query") or "").strip()
     if not query:
         return "[Error] query is required."
@@ -822,6 +827,8 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
     # --- Cross-session recall ---
     if scope in ("sessions", "all"):
         try:
+            from app.tools.runtime import ToolExecutionRequest
+
             tenant_uuid = uuid.UUID(str(tenant_id)) if tenant_id else None
             recalled = await search_session_history(
                 agent_id,
@@ -829,6 +836,8 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
                 limit=limit,
                 snippet_limit=3,
                 tenant_id=tenant_uuid,
+                runtime_request=ToolExecutionRequest(tool_name="search_memory", arguments=arguments,
+                    context=execution_context) if execution_context is not None else None,
             )
             if recalled:
                 results.append("## Session Recall")
@@ -868,8 +877,13 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
                         display_snippets = hit.get("context_snippets") or hit.get("snippets", [])
                         for snippet in display_snippets:
                             results.append(f"  - {snippet}")
-        except Exception as exc:
-            results.append(f"## Session Recall\n- [Search error: {exc}]")
+        except SessionRecallError as exc:
+            results.append("## Session Recall\n" + json.dumps({"schema": "hive.session_recall_error.v1",
+                "status": exc.status, "code": exc.code, "retryable": exc.retryable, "message": str(exc)}))
+        except Exception:
+            results.append("## Session Recall\n" + json.dumps({"schema": "hive.session_recall_error.v1",
+                "status": "unavailable", "code": "session_recall_authority_unavailable", "retryable": True,
+                "message": "Session recall is temporarily unavailable. Retry later."}))
 
     if not results:
         return (

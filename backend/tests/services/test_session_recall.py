@@ -17,6 +17,16 @@ class _FakeResult:
         return list(self._rows)
 
 
+@pytest.fixture
+def allow_recall_sessions(monkeypatch):
+    # Projection tests stub the authorization seam; native scope has real PostgreSQL coverage.
+    def allow(*session_ids):
+        async def authorized(*_args, **_kwargs):
+            return {str(value) for value in session_ids}
+        monkeypatch.setattr("app.services.session_recall._authorized_recall_session_ids", authorized)
+    return allow
+
+
 def test_t0_recall_excludes_runtime_roles_without_losing_conversation(monkeypatch, tmp_path):
     from app.services import session_recall
 
@@ -48,11 +58,13 @@ def test_t0_recall_excludes_runtime_roles_without_losing_conversation(monkeypatc
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("source", ["t0", "legacy", "db"])
-async def test_recall_returns_retrieved_evidence_without_waiting_for_summary_provider(monkeypatch, source):
+async def test_recall_returns_retrieved_evidence_without_waiting_for_summary_provider(monkeypatch, source, allow_recall_sessions):
     from app.services import session_recall
 
     tail = "SAVED_CONTINUATION_EVIDENCE"
-    hits = [{"headline": "Prior feedback", "transcript": "User: " + tail}]
+    source_session = str(uuid.uuid4())
+    allow_recall_sessions(source_session)
+    hits = [{"session_id": source_session, "headline": "Prior feedback", "transcript": "User: " + tail}]
     tenant_id = uuid.uuid4()
     agent_id = uuid.uuid4()
 
@@ -96,12 +108,13 @@ class _FakeSession:
 
 
 @pytest.mark.asyncio
-async def test_search_session_history_groups_matches_into_recall_hits(monkeypatch) -> None:
+async def test_search_session_history_groups_matches_into_recall_hits(monkeypatch, allow_recall_sessions) -> None:
     from app.services.session_recall import search_session_history
 
     agent_id = uuid.uuid4()
     session_one = uuid.uuid4()
     session_two = uuid.uuid4()
+    allow_recall_sessions(session_one, session_two)
     rows = [
         (
             session_one,
@@ -148,10 +161,11 @@ async def test_search_session_history_groups_matches_into_recall_hits(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_search_session_history_returns_empty_when_no_match(monkeypatch) -> None:
+async def test_search_session_history_returns_empty_when_no_match(monkeypatch, allow_recall_sessions) -> None:
     from app.services.session_recall import search_session_history
 
     agent_id = uuid.uuid4()
+    allow_recall_sessions(uuid.uuid4())
     monkeypatch.setattr("app.services.session_recall.tenant_scoped_session", lambda *a, **k: _FakeSession([]))
 
     hits = await search_session_history(agent_id, "memory", limit=5)
@@ -160,11 +174,12 @@ async def test_search_session_history_returns_empty_when_no_match(monkeypatch) -
 
 
 @pytest.mark.asyncio
-async def test_search_session_history_prefers_t0_session_ledger(monkeypatch, tmp_path: Path) -> None:
+async def test_search_session_history_prefers_t0_session_ledger(monkeypatch, tmp_path: Path, allow_recall_sessions) -> None:
     from app.memory.t0.ledger import append_t0_session_event, seal_t0_session_segment
     from app.services.session_recall import search_session_history
 
     agent_id = uuid.uuid4()
+    allow_recall_sessions("sess-ledger-1")
     append_t0_session_event(
         agent_id=agent_id,
         session_id="sess-ledger-1",
@@ -214,11 +229,12 @@ async def test_search_session_history_prefers_t0_session_ledger(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
-async def test_search_session_history_has_no_hidden_default_result_cap(monkeypatch, tmp_path: Path) -> None:
+async def test_search_session_history_has_no_hidden_default_result_cap(monkeypatch, tmp_path: Path, allow_recall_sessions) -> None:
     from app.memory.t0.ledger import append_t0_session_event
     from app.services.session_recall import search_session_history
 
     agent_id = uuid.uuid4()
+    allow_recall_sessions(*(f"sess-full-{index}" for index in range(4)))
     for index in range(4):
         append_t0_session_event(
             agent_id=agent_id,
@@ -247,10 +263,11 @@ async def test_search_session_history_has_no_hidden_default_result_cap(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_search_session_history_prefers_t0_chat_logs(monkeypatch, tmp_path: Path) -> None:
+async def test_search_session_history_prefers_t0_chat_logs(monkeypatch, tmp_path: Path, allow_recall_sessions) -> None:
     from app.services.session_recall import search_session_history
 
     agent_id = uuid.uuid4()
+    allow_recall_sessions("sess-1")
     logs_dir = tmp_path / str(agent_id) / "logs" / "2026-04-09"
     logs_dir.mkdir(parents=True)
     (logs_dir / "chat-0900-abcd.md").write_text(
@@ -295,10 +312,11 @@ tools: []
 
 
 @pytest.mark.asyncio
-async def test_search_session_history_t0_summary_keeps_adjacent_resolution(monkeypatch, tmp_path: Path) -> None:
+async def test_search_session_history_t0_summary_keeps_adjacent_resolution(monkeypatch, tmp_path: Path, allow_recall_sessions) -> None:
     from app.services.session_recall import search_session_history
 
     agent_id = uuid.uuid4()
+    allow_recall_sessions("sess-2")
     logs_dir = tmp_path / str(agent_id) / "logs" / "2026-04-09"
     logs_dir.mkdir(parents=True)
     (logs_dir / "chat-1030-efgh.md").write_text(
@@ -334,11 +352,12 @@ tools: []
 
 
 @pytest.mark.asyncio
-async def test_search_session_history_db_summary_keeps_adjacent_resolution(monkeypatch) -> None:
+async def test_search_session_history_db_summary_keeps_adjacent_resolution(monkeypatch, allow_recall_sessions) -> None:
     from app.services.session_recall import search_session_history
 
     agent_id = uuid.uuid4()
     session_one = uuid.uuid4()
+    allow_recall_sessions(session_one)
     rows = [
         (
             session_one,
@@ -390,10 +409,11 @@ async def test_search_session_history_db_summary_keeps_adjacent_resolution(monke
 
 
 @pytest.mark.asyncio
-async def test_search_session_history_builds_transcript_focused_recap(monkeypatch, tmp_path: Path) -> None:
+async def test_search_session_history_builds_transcript_focused_recap(monkeypatch, tmp_path: Path, allow_recall_sessions) -> None:
     from app.services.session_recall import search_session_history
 
     agent_id = uuid.uuid4()
+    allow_recall_sessions("sess-3")
     logs_dir = tmp_path / str(agent_id) / "logs" / "2026-04-09"
     logs_dir.mkdir(parents=True)
     (logs_dir / "chat-1500-ijkl.md").write_text(

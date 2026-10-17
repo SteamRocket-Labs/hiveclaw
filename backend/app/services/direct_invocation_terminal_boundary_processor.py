@@ -274,8 +274,9 @@ async def _latest_run_event(
     return await db.scalar(statement)
 
 
-def _validate_response_payload(
+async def _validate_response_payload(
     *,
+    db: AsyncSession,
     task: RuntimeTask,
     agent_id: uuid.UUID,
     session_id: str,
@@ -292,10 +293,38 @@ def _validate_response_payload(
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
     if str(metadata.get("tenant_id") or "") != str(task.tenant_id):
         raise TerminalBoundaryCanonicalMismatch("direct response tenant authority mismatch")
-    if str(metadata.get("final_response") or "") != str(terminal_event.content or ""):
-        raise TerminalBoundaryCanonicalMismatch("direct response does not match assistant transcript")
     if not isinstance(payload.get("messages"), list):
         raise TerminalBoundaryCanonicalMismatch("direct response messages are missing")
+    if task.task_type == "delegation" and terminal_event.event_type == "result_commit.round_committed":
+        from app.models.session_v2 import SessionModelResult
+        from app.services.session_model_round import _sha256 as model_hash
+
+        result = await db.scalar(select(SessionModelResult).where(SessionModelResult.tenant_id == task.tenant_id,
+            SessionModelResult.session_id == terminal_event.session_id, SessionModelResult.run_id == task.id,
+            SessionModelResult.round_committed_event_id == terminal_event.id, SessionModelResult.state == "round_committed"))
+        seal = result.seal_json if result and isinstance(result.seal_json, dict) else {}
+        response = seal.get("response") or {}
+        continuation = seal.get("continuation") or {}
+        committed = (terminal_event.metadata_json or {}).get("v2_payload") or {}
+        if not all(isinstance(value, dict) for value in (response, continuation, committed)):
+            raise TerminalBoundaryCanonicalMismatch("direct delegated final seal is invalid")
+        if (result is None or terminal_event.actor_type != "runtime"
+            or result.model_request_hash != model_hash(result.model_request_snapshot_json)
+            or seal.get("result_id") != str(result.id) or seal.get("run_id") != str(task.id)
+            or seal.get("round_id") != result.round_id or seal.get("provider_request_id") != result.provider_request_id
+            or seal.get("provider_response_ref") != f"provider-response:{result.provider_request_id}:{model_hash(response)}"
+            or seal.get("logical_round_complete") is not True or response.get("tool_calls")
+            or continuation.get("verdict") != "terminal_candidate" or continuation.get("pending_obligations") != []
+            or committed.get("provider_request_id") != result.provider_request_id
+            or committed.get("provider_response_ref") != seal.get("provider_response_ref")
+            or committed.get("continuation_verdict") != "terminal_candidate"
+            or seal.get("semantic_content") != response.get("content")
+            or seal.get("content_hash") != model_hash(str(response.get("content") or ""))
+            or str(metadata.get("final_response") or "") != str(response.get("content") or "")):
+            raise TerminalBoundaryCanonicalMismatch("direct response does not match its canonical delegated final")
+        return
+    if str(metadata.get("final_response") or "") != str(terminal_event.content or ""):
+        raise TerminalBoundaryCanonicalMismatch("direct response does not match assistant transcript")
     event_metadata = dict(terminal_event.metadata_json or {})
     if terminal_event.actor_type != "assistant" or terminal_event.event_type != "assistant_message":
         raise TerminalBoundaryCanonicalMismatch("direct completion frontier is not assistant-final")
@@ -338,7 +367,8 @@ async def _build_direct_terminal_spec(
             raise DirectInvocationTerminalBoundaryPending(
                 "completed direct invocation has no committed response receipt"
             )
-        _validate_response_payload(
+        await _validate_response_payload(
+            db=db,
             task=task,
             agent_id=agent_id,
             session_id=session_id,

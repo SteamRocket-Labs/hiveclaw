@@ -480,6 +480,27 @@ def _read_preview_snapshot(path: Path, preview_kind: str) -> tuple[str | None, b
     return content, truncated
 
 
+def legacy_artifact_preview(workspace_root: Path, path: str) -> dict[str, Any]:
+    """Retain an unversioned preview without minting a delivery identity or source pin."""
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError, snapshot_workspace_file
+
+    relative = _safe_workspace_relative_path(path)
+    if relative is None:
+        return {}
+    try:
+        directory, captured = snapshot_workspace_file(workspace_root, relative.as_posix())
+    except (OSError, ValueError, WorkspaceAuthorityError):
+        return {}
+    try:
+        kind = _preview_kind_for_path(relative)
+        content, truncated = _read_preview_snapshot(captured, kind)
+        return {"name": relative.name, "preview_kind": kind, "size": captured.stat().st_size,
+            "mime_type": mimetypes.guess_type(relative.name)[0], "preview_snapshot_content": content,
+            "preview_snapshot_truncated": truncated, "legacy_current_file_fallback": True}
+    finally:
+        directory.cleanup()
+
+
 def _read_text_or_binary_marker(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8")

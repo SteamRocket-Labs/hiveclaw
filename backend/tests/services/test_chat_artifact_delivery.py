@@ -709,6 +709,8 @@ def test_a2a_delivery_projects_child_artifact_ref_without_copying_parent_workspa
     assert projected[0]["source"] == "a2a_delivery_ref"
     assert projected[0]["source_artifact_id"] == "child-artifact-1"
     assert projected[0]["preview_snapshot_content"] == "# Chapter 9\n"
+    assert projected[0]["artifact_id"] == "child-artifact-1" and projected[0]["revision_id"] is None
+    assert projected[0]["legacy_current_file_fallback"] is True and projected[0]["snapshot_storage_path"] is None
 
 
 def test_a2a_delivery_projects_latest_duplicate_child_artifact_ref_only(tmp_path):
@@ -746,6 +748,7 @@ def test_a2a_delivery_projects_latest_duplicate_child_artifact_ref_only(tmp_path
     assert projected[0]["source_artifact_id"] == "latest-artifact"
     assert projected[0]["download_agent_id"] == str(child_agent_id)
     assert projected[0]["preview_snapshot_content"] == "# Latest Chapter 9\n"
+    assert projected[0]["artifact_id"] == "latest-artifact" and projected[0]["revision_id"] is None
     assert not (tmp_path / str(parent_agent_id) / "workspace" / "chapter9.md").exists()
 
 

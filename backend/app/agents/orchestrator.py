@@ -2479,6 +2479,7 @@ async def _collect_delegation_child_artifact_parts(
         seen: set[tuple[str | None, str | None]] = set()
         for artifact in result.scalars().all():
             part = artifact_part_from_model(artifact)
+            part["source_session_id"] = str(artifact.session_id)
             if delivery_agent_id is not None:
                 part["delivery_agent_id"] = str(delivery_agent_id)
             key = (part.get("artifact_id"), part.get("path"))
@@ -2507,8 +2508,6 @@ def _project_a2a_artifact_refs_to_parent_session(
     if not artifact_parts:
         return []
 
-    from app.services.chat_artifact_delivery import build_artifact_candidate
-
     latest_by_path: dict[str, dict[str, Any]] = {}
     for part in artifact_parts:
         path = str(part.get("path") or "").strip()
@@ -2522,17 +2521,11 @@ def _project_a2a_artifact_refs_to_parent_session(
             source_agent_id = uuid.UUID(str(source_agent_raw))
         except (TypeError, ValueError, AttributeError):
             continue
-        source_root = data_root / str(source_agent_id)
-        source_candidate = build_artifact_candidate(
-            agent_id=source_agent_id,
-            session_id=parent_session_id,
-            runtime_task_id=runtime_task_id,
-            path=path,
-            workspace_root=source_root,
-            source=str(part.get("source") or "a2a_workspace_write"),
-        )
-        if not source_candidate:
-            continue
+        source_candidate = part
+        if not part.get("revision_id"):
+            from app.services.chat_artifact_delivery import legacy_artifact_preview
+
+            source_candidate = {**legacy_artifact_preview(data_root / str(source_agent_id), path), **part}
         projected_part = {
             "type": "artifact",
             "artifact_id": str(source_candidate.get("artifact_id") or source_candidate.get("id")),
@@ -2550,6 +2543,9 @@ def _project_a2a_artifact_refs_to_parent_session(
             "delivery_agent_id": str(parent_agent_id),
             "created_at": source_candidate.get("created_at"),
             "revision_id": source_candidate.get("revision_id"),
+            "content_hash": source_candidate.get("content_hash"),
+            "snapshot_storage_path": source_candidate.get("snapshot_storage_path"),
+            "legacy_current_file_fallback": source_candidate.get("legacy_current_file_fallback", False),
             "action": "delivered",
             "tool_call_id": source_candidate.get("tool_call_id"),
             "diff_summary": source_candidate.get("diff_summary"),

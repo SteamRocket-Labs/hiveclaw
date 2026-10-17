@@ -13,7 +13,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
     reason="Native macOS context gate; Linux delivery is deferred.")]
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case,
 ):
@@ -164,6 +164,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
 
         creation = json.loads(str(result))
         assert creation.get("draft_status") == "confirmed", creation
+        if input_case == "first_task_delivery":
+            await _persist_tool_call(agent_id=seed["agent_id"], user_id=seed["user_id"], session_id=str(seed["session_id"]),
+                data={**event, "status": "done", "result": str(result)})
         job_id = UUID(creation["provisioning_task_id"])
         async with owner_sessionmaker() as db:
             job = await db.get(RuntimeTask, job_id)
@@ -429,3 +432,104 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fixture.local") as browser:
         response = await browser.get(f"/agents/{receiver}/files/artifacts/{artifact_id}/content")
         assert response.status_code == 200 and "DELEGATED_REPORT" in response.text, response.text
+    if input_case != "first_task_delivery":
+        return
+    from app.services.direct_invocation_terminal_boundary_processor import DirectInvocationTerminalBoundaryProcessor
+    from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
+    from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService
+    from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+
+    marker = seed["data_root"] / str(receiver) / report_path
+    marker.write_text("A later local edit must not replace the delivered version.")
+    written_at = marker.stat().st_mtime_ns
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.services.direct_invocation_terminal_boundary_processor import _validate_response_payload
+    from app.services.runtime_terminal_boundary_outbox import TerminalBoundaryCanonicalMismatch
+
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, seed["tenant_id"])
+        child = await db.get(RuntimeTask, task_id)
+        frontier = await db.scalar(select(ChatTranscriptEvent).where(ChatTranscriptEvent.run_id == task_id)
+            .order_by(ChatTranscriptEvent.sequence.desc()).limit(1))
+        with pytest.raises(TerminalBoundaryCanonicalMismatch):
+            await _validate_response_payload(db=db, task=child, agent_id=receiver, session_id=request.session_id,
+                source="agent", terminal_event=frontier, payload={**result.response_complete_payload,
+                    "metadata": {**result.response_complete_payload["metadata"], "final_response": "Forged final."}})
+    fence = set_runtime_task_fence(task_id=task_id, worker_id="origin-worker", claim_version=1)
+    try:
+        assert await orchestrator.dispatch_persisted_async_delegation(task_id.hex, wait_for_completion=True)
+    finally:
+        reset_runtime_task_fence(fence)
+    assert len(client.requests) == 2 and marker.stat().st_mtime_ns == written_at
+    processor = DirectInvocationTerminalBoundaryProcessor(session_factory=app_user_sessionmaker, data_root=seed["data_root"])
+    boundaries = await RuntimeTerminalBoundaryOutboxService(session_factory=app_user_sessionmaker).drain_once(
+        tenant_id=seed["tenant_id"], worker_id="native-first-task-terminal", canonical_validator=processor.validate,
+        process_callback=processor, task_types=("delegation",))
+    assert boundaries["delivered"] == 1, boundaries
+    async with owner_sessionmaker() as db:
+        child = await db.get(RuntimeTask, task_id)
+        assert child.status == "completed", child.result_summary
+        source_run = await db.get(RuntimeTask, seed["run_id"])
+        source_run.status = "completed"
+        await db.commit()
+    service = RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker)
+    claimed = await service.claim_batch(worker_id="native-first-task-return", limit=100)
+    pages = await service.prepare_integration_pages(worker_id="native-first-task-return",
+        claimed=[item for item in claimed if item.tenant_id == seed["tenant_id"]])
+    assert pages
+    for page in pages:
+        delivered_page = await service._deliver_page(page)
+        assert delivered_page.get("ok") is True
+        repeated_page = await service._deliver_page(page)
+        assert repeated_page["status"] == "already_delivered" and repeated_page["deduplicated"] is True
+        assert repeated_page["event_id"] == delivered_page["event_id"]
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, seed["tenant_id"])
+        notification = await db.scalar(select(RuntimeNotificationOutbox).where(RuntimeNotificationOutbox.source_run_id == str(task_id),
+            RuntimeNotificationOutbox.source_kind == "a2a_delegation"))
+        assert notification is not None and notification.parent_session_id == seed["session_id"]
+        returns = list(await db.scalars(select(RuntimeTask).where(RuntimeTask.parent_agent_id == seed["agent_id"],
+            RuntimeTask.metadata_json["integration_page_id"].astext.in_([str(page.id) for page in pages]))))
+        assert len(returns) == 1 and returns[0].parent_session_id == str(seed["session_id"])
+        return_id = returns[0].id
+        result_ref = notification.result_ref
+        from app.services.session_semantic_history import load_session_semantic_history
+
+        history = await load_session_semantic_history(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
+            session_id=seed["session_id"], current_run_id=return_id)
+        assert "DELEGATED_REPORT" not in json.dumps([item.content for item in history.messages])
+    async def read_return():
+        return json.loads(str(await agent_tools.execute_tool("read_runtime_result", {"result_ref": result_ref},
+            agent_id=seed["agent_id"], user_id=seed["user_id"], session_id=str(seed["session_id"]),
+            runtime_task_id=str(return_id), permission_profile=permission_profile_snapshot(None), emit_runtime_hooks=False)))
+    delivered = await read_return()
+    (tmp_path / "native-parent-result-read.json").write_text(json.dumps(delivered, indent=2))
+    assert delivered["status"] == "ok" and "DELEGATED_REPORT" in delivered["content"], delivered
+    assert "A later local edit" not in delivered["content"] and delivered["dependency_coverage"]["complete"] is True
+    returned_artifact = json.loads(delivered["content"])["artifacts"][0]
+    assert returned_artifact["artifact_id"] == str(artifact_id) and not returned_artifact["legacy_current_file_fallback"]
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fixture.local") as browser:
+        returned = await browser.get(f"/agents/{returned_artifact['download_agent_id']}/files/artifacts/{returned_artifact['artifact_id']}/content")
+        assert returned.status_code == 200 and "DELEGATED_REPORT" in returned.text and "A later local edit" not in returned.text
+    from app.models.hr_creation import HrCreationDraft
+    from copy import deepcopy
+
+    async with owner_sessionmaker() as db:
+        draft = await db.get(HrCreationDraft, UUID(creation["blueprint_id"]))
+        accepted = deepcopy(draft.preview_json)
+        changed = deepcopy(accepted)
+        changed["creation_authorization"]["creation_origin"]["source_hash"] = "0" * 64
+        draft.preview_json = changed
+        await db.commit()
+    altered_binding = await read_return()
+    assert altered_binding["status"] == "source_unavailable" and "DELEGATED_REPORT" not in json.dumps(altered_binding)
+    async with owner_sessionmaker() as db:
+        draft = await db.get(HrCreationDraft, UUID(creation["blueprint_id"]))
+        draft.preview_json = accepted
+        await db.commit()
+    assert (await read_return())["status"] == "ok"
+    soul = seed["data_root"] / str(receiver) / "soul.md"
+    soul.write_text(soul.read_text() + "\nChanged after first-task delivery.\n")
+    stale = await read_return()
+    assert stale["status"] == "source_access_denied" and stale["reason_code"] == "content_source_changed", stale
+    assert "DELEGATED_REPORT" not in json.dumps(stale) and len(client.requests) == 2

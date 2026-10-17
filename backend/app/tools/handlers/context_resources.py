@@ -404,6 +404,18 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
                 }
             )
         payload_bytes = bytes(result_object.payload_bytes)
+        if hashlib.sha256(payload_bytes).hexdigest() == ref_sha256 and len(payload_bytes) == int(result_object.size_bytes):
+            from app.services.content_input_receipts import ContentInputReceiptError
+            from app.services.runtime_result_sources import validate_runtime_result_sources
+
+            try:
+                source_complete = await validate_runtime_result_sources(db, request, result_object)
+            except ContentInputReceiptError as exc:
+                return _json({"schema": schema, "status": "source_access_denied" if exc.status_code == 403 else "source_unavailable",
+                    "reason_code": exc.code, "result_ref": result_ref, "retryable": False,
+                    "recovery_action": "reconcile_result_sources"})
+        else:
+            source_complete = False
 
     actual_sha256 = hashlib.sha256(payload_bytes).hexdigest()
     if actual_sha256 != ref_sha256 or len(payload_bytes) != int(result_object.size_bytes):
@@ -457,5 +469,6 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
             "total_chars": len(payload_text),
             "total_bytes": len(payload_bytes),
             "content": content,
+            "dependency_coverage": {"complete": source_complete},
         }
     )

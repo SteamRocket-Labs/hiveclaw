@@ -362,6 +362,16 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
         dependency = _channel_context_dependency(agent_id, content,
             invocation.effective_arguments_json or invocation.provider_arguments_json)
         return _unique_dependencies([*dependencies, *([dependency] if dependency else [])]), bool(dependency) and inherited_complete
+    if invocation.tool_name in {"write_file", "fs_write"}:
+        from app.services.content_input_receipts import load_workspace_execution_evidence
+
+        arguments = invocation.effective_arguments_json or invocation.provider_arguments_json
+        try:
+            _ref, hashes = await load_workspace_execution_evidence(db, agent_id=agent_id, invocation=invocation,
+                model_result=model, arguments=arguments, content_hash=payload["content_hash"])
+            return _unique_dependencies(dependencies), inherited_complete and arguments.get("path") in hashes
+        except (ContentInputReceiptError, ValueError, TypeError):
+            return _unique_dependencies(dependencies), False
     metadata = payload.get("metadata")
     if not isinstance(metadata, dict):
         return _unique_dependencies(dependencies), False

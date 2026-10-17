@@ -1330,7 +1330,9 @@ class ToolRuntimeService:
             workspace_mutating = context.agent_id is not None and is_workspace_mutating_tool(tool_name)
 
             async def _execute_backend() -> str | ToolContentEnvelope:
-                from app.services.content_input_receipts import authorize_workspace_receipt_read, settle_workspace_receipt_read
+                from app.services.content_input_receipts import (
+                    authorize_workspace_execution_inputs, authorize_workspace_receipt_read, settle_workspace_receipt_read,
+                )
 
                 if trace_metadata_sink is not None:
                     trace_metadata_sink.pop("workspace_input_evidence", None)
@@ -1343,6 +1345,7 @@ class ToolRuntimeService:
                     if trace_metadata_sink is not None:
                         trace_metadata_sink["workspace_input_evidence"] = {"status": "unavailable"}
                     return input_read
+                input_denials = await authorize_workspace_execution_inputs(request)
                 from app.services.workspace_resource_authority import (
                     WorkspaceAuthorityError, WorkspaceAuthorityScope, WorkspaceOutputWrite, authorize_workspace_tool_path,
                 )
@@ -1375,6 +1378,21 @@ class ToolRuntimeService:
                         workspace=context.workspace,
                     )
                 value = await self.backend.execute(request, _execute_request)
+                if tool_name in {"execute_code", "run_command", "run_skill_tool"}:
+                    for read in getattr(context.workspace_authority_scope, "input_reads", ()):
+                        if read.observed_sha256 is not None and read.observed_sha256 != read.content_sha256:
+                            _block, evidence = await settle_workspace_receipt_read(
+                                request=request, read=read, tool_call_id=tool_call_id, result=value)
+                            input_denials.append({"path": read.path, "reason_code": "workspace_content_unverified",
+                                "status": "denied", "retryable": False, "quarantine": evidence.get("quarantine", "unknown")})
+                if input_denials:
+                    for denial in input_denials:
+                        denial["actionable_hint"] = "Restore the scoped source grant or regenerate this file from current authorized inputs."
+                    notice = "\n\n<workspace_input_denials>" + _json.dumps(input_denials) + "</workspace_input_denials>"
+                    value = replace(value, text=value.text + notice,
+                        model_visible_text=value.model_visible_text + notice if value.model_visible_text is not None else None,
+                        metadata={**value.metadata, "workspace_input_denials": input_denials}) if isinstance(value, ToolContentEnvelope) else (
+                        ToolContentEnvelope(text=str(value) + notice, metadata={"workspace_input_denials": input_denials}))
                 value, _redaction = self._redact_runtime_egress(
                     value,
                     context=context,

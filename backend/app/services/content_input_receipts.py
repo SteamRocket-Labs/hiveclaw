@@ -335,6 +335,49 @@ async def _validate_workspace_dependency(db, tenant_id, dependency, *, user, run
         active_workspace_receipts=active_receipts | {receipt_id})
 
 
+async def authorize_workspace_execution_inputs(request) -> list[dict]:
+    """Exclude unavailable receipted inputs, preserving other process capabilities."""
+    from dataclasses import replace
+    from sqlalchemy.exc import SQLAlchemyError
+    from app.database import tenant_scoped_session
+    from app.services.session_tool_runtime import _sha256
+    from app.services.workspace_resource_authority import WorkspaceAuthorityScope, WorkspaceInputRead
+
+    context = request.context
+    scope = context.workspace_authority_scope
+    if request.tool_name not in {"execute_code", "run_command", "run_skill_tool"} or not isinstance(scope, WorkspaceAuthorityScope):
+        return []
+    paths = {path for path in scope.allowed_paths if path.startswith("workspace/")}
+    reads, denied = [], []
+    try:
+        tenant_id = uuid.UUID(str(context.tenant_id))
+        if scope.agent_id != context.agent_id or scope.user_id != context.user_id or scope.operator_view:
+            raise ContentInputReceiptError("content_source_access_denied", "The execution input scope does not match.", 403)
+        async with tenant_scoped_session(tenant_id) as db:
+            await _runtime_input_actor(db, tenant_id, request)
+            for path in sorted(paths):
+                receipt = await latest_workspace_receipt(db, tenant_id, context.agent_id, path)
+                if receipt is None:
+                    continue  # Do not invent receipts for unmigrated legacy carriers.
+                try:
+                    await validate_runtime_input_dependencies(db, request, receipt.dependencies_json)
+                except ContentInputReceiptError as exc:
+                    denied.append({"path": path, "reason_code": exc.code,
+                        "status": "denied" if exc.status_code == 403 else "unavailable", "retryable": exc.status_code == 503})
+                    continue
+                reads.append(WorkspaceInputRead(path=path, receipt_id=receipt.id, revision=receipt.revision,
+                    content_sha256=receipt.content_sha256, dependencies_hash=_sha256(receipt.dependencies_json)))
+    except (ContentInputReceiptError, OSError, ValueError, SQLAlchemyError) as exc:
+        code = exc.code if isinstance(exc, ContentInputReceiptError) else "content_source_unavailable"
+        status = exc.status_code if isinstance(exc, ContentInputReceiptError) else 503
+        reads = []
+        denied = [{"path": path, "reason_code": code, "status": "denied" if status == 403 else "unavailable",
+            "retryable": status == 503} for path in sorted(paths)]
+    context.workspace_authority_scope = replace(scope,
+        allowed_paths=scope.allowed_paths - {row["path"] for row in denied}, input_reads=tuple(reads))
+    return denied
+
+
 async def authorize_workspace_receipt_read(request):
     """Recheck known receipt dependencies under the actual native Agent principal."""
     from dataclasses import replace

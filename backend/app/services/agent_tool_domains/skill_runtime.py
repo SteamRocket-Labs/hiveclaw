@@ -15,10 +15,9 @@ from app.services.agent_tool_domains.code_exec import (
     _workspace_file_state,
     _with_code_execution_evidence,
 )
-from app.services.agent_tool_domains.workspace import _authority_allows_path
+from app.services.agent_tool_domains.workspace import _authority_allows_path, _read_receipted_workspace_bytes
 from app.services.code_execution.contracts import CodeExecutionResult, render_command_result
 from app.services.code_execution.service import execute_agent_command
-from app.services.workspace_resource_authority import open_workspace_file
 from app.skills.loader import WorkspaceSkillLoader
 from app.tools.result_envelope import ToolContentEnvelope
 
@@ -108,7 +107,8 @@ async def run_skill_tool(
             return _workspace_error("run_skill_tool", "auth_or_permission", "Skill script must stay inside the Agent directory.")
         if not _authority_allows_path(authority_scope, source_path):
             return _workspace_error("run_skill_tool", "auth_or_permission", "Access denied for this skill source owner.")
-        with open_workspace_file(source_workspace, source_path) as source, io.TextIOWrapper(source, encoding="utf-8", errors="replace") as text:
+        raw = _read_receipted_workspace_bytes(source_workspace, source_path, authority_scope, source_path)
+        with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8", errors="replace") as text:
             source_text = text.read()
     else:
         source_text = source_script.read_text(encoding="utf-8", errors="replace")

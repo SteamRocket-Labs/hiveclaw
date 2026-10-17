@@ -334,7 +334,10 @@ class WorkspaceInputRead:
     observed_sha256: str | None = None
 
     def verify(self, data: bytes) -> None:
-        self.observed_sha256 = hashlib.sha256(data).hexdigest()
+        self.verify_digest(hashlib.sha256(data).hexdigest())
+
+    def verify_digest(self, digest: str) -> None:
+        self.observed_sha256 = digest
         if self.observed_sha256 != self.content_sha256:
             raise WorkspaceAuthorityError("workspace_content_unverified",
                 "The file bytes no longer match the verified input receipt. Regenerate from authorized inputs.")

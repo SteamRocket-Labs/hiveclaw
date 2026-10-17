@@ -114,19 +114,26 @@ def _workspace_state_changed(before: dict[str, Any] | None, after: dict[str, Any
     return any(before.get(key) != after.get(key) for key in ("size", "mtime_ns", "sha256"))
 
 
-def _copy_workspace_resource(source_workspace: Path, destination_workspace: Path, path: str) -> None:
+def _copy_workspace_resource(source_workspace: Path, destination_workspace: Path, path: str, *, input_read=None) -> None:
     written = False
     try:
         with open_workspace_file(source_workspace, path) as source:
             source_info = os.fstat(source.fileno())
             with open_workspace_file(destination_workspace, path, mode="wb") as destination:
                 written = True
-                shutil.copyfileobj(source, destination, length=64 * 1024)
+                if input_read is None:
+                    shutil.copyfileobj(source, destination, length=64 * 1024)
+                else:
+                    digest = hashlib.sha256()
+                    while block := source.read(64 * 1024):
+                        destination.write(block)
+                        digest.update(block)
+                    input_read.verify_digest(digest.hexdigest())
                 destination.flush()
                 os.fchmod(destination.fileno(), stat.S_IMODE(source_info.st_mode))
                 os.utime(destination.fileno(), ns=(source_info.st_atime_ns, source_info.st_mtime_ns))
     except WorkspaceAuthorityError as exc:
-        if written and exc.code not in {"workspace_resource_changed", "workspace_storage_unavailable"}:
+        if written and exc.code not in {"workspace_resource_changed", "workspace_storage_unavailable", "workspace_content_unverified"}:
             raise WorkspaceAuthorityError("workspace_resource_changed", "File copy may have changed the destination; reconcile before retrying.") from exc
         raise
 
@@ -157,7 +164,17 @@ def authorized_execution_workspace(canonical_workspace: Path, authority_scope):
             source = resolve_workspace_storage_path(canonical_workspace, allowed_path)
             if not source.is_file():
                 continue
-            _copy_workspace_resource(canonical_workspace, isolated, allowed_path)
+            read = authority_scope.input_read(allowed_path)
+            try:
+                if read is None:
+                    _copy_workspace_resource(canonical_workspace, isolated, allowed_path)
+                else:
+                    _copy_workspace_resource(canonical_workspace, isolated, allowed_path, input_read=read)
+            except WorkspaceAuthorityError as exc:
+                if read is None or exc.code != "workspace_content_unverified":
+                    raise
+                # The rejected bytes never become available to the process.
+                delete_workspace_path(isolated, allowed_path)
         before = _workspace_file_state(isolated_work)
         yield isolated
         after = _workspace_file_state(isolated_work)

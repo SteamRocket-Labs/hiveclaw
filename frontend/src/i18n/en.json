@@ -2186,6 +2186,18 @@
       "cancel": "Cancel",
       "showingFiles": "Showing {{visible}} of {{total}} files",
       "showMoreFiles": "Show more",
+      "fileSave": {
+        "unknown": "The save could not be confirmed. Your draft is kept. Load the current version before saving again.",
+        "conflict": "The file has changed. Your draft is kept. Load the current version to compare before saving again.",
+        "loadCurrent": "Load current version",
+        "loadFailed": "The file could not be read. Check your access and try again.",
+        "compareHint": "Compare both versions, edit your draft as needed, then save explicitly. Another change will be checked again.",
+        "currentVersion": "Current saved version",
+        "yourDraft": "Your draft",
+        "saved": "Saved",
+        "newerDraft": "Saved the submitted version. Your newer edits are still unsaved.",
+        "failed": "Save failed. Your draft is kept. {{message}}"
+      },
       "fileHistory": {
         "title": "Version history",
         "available": "Available",

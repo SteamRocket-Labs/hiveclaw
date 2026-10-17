@@ -14,6 +14,15 @@ vi.mock('../core/upload-progress', () => ({
 }));
 
 describe('fileApi artifact snapshot adapter', () => {
+  it('binds a conditional save to the exact path and previously read hash', async () => {
+    const { put } = await import('../core');
+    const { fileApi } = await import('./files');
+    await fileApi.writeIfUnchanged('agent-1', 'workspace/报告.md', 'Merged', 'a'.repeat(64));
+    expect(vi.mocked(put).mock.calls.at(-1)).toEqual([
+      '/agents/agent-1/files/content?path=workspace%2F%E6%8A%A5%E5%91%8A.md',
+      { content: 'Merged', expected_current_hash: 'a'.repeat(64) },
+    ]);
+  });
   it('reads and downloads delivered artifacts by artifact id instead of mutable workspace path', async () => {
     const { get, getBlob } = await import('../core');
     const { fileApi } = await import('./files');

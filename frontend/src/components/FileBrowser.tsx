@@ -17,6 +17,7 @@ import { saveBlob } from '../utils/authenticatedResource';
 import { buildNewSkillFilePath } from './fileBrowserPaths';
 import { FILE_LIST_PAGE_SIZE, visibleFileWindow } from './fileBrowserWindow';
 import { useFileVersionHistory } from './useFileVersionHistory';
+import { ApiError } from '../api/core/errors';
 import './FileBrowser.css';
 
 // ─── Types ─────────────────────────────────────────────
@@ -30,8 +31,9 @@ export interface FileItem {
 
 export interface FileBrowserApi {
     list: (path: string) => Promise<FileItem[]>;
-    read: (path: string) => Promise<{ content: string }>;
+    read: (path: string) => Promise<{ content: string; content_hash?: string | null }>;
     write: (path: string, content: string) => Promise<any>;
+    writeIfUnchanged?: (path: string, content: string, expectedHash: string) => Promise<{ content_hash: string }>;
     delete: (path: string) => Promise<any>;
     upload?: (file: File, path: string, onProgress?: (pct: number) => void) => Promise<any>;
     download?: (path: string) => Promise<Blob>;
@@ -116,8 +118,18 @@ export default function FileBrowser({
     const [viewing, setViewing] = useState<string | null>(singleFile || null);
     const [viewRevision, setViewRevision] = useState(0);
     const [content, setContent] = useState('');
+    const [contentHash, setContentHash] = useState<string | null>(null);
+    const [readError, setReadError] = useState(false);
     const [editing, setEditing] = useState(false);
     const [editContent, setEditContent] = useState('');
+    const draftRef = useRef('');
+    const [editBaseHash, setEditBaseHash] = useState<string | null>(null);
+    const [conflict, setConflict] = useState(false);
+    const [saveUnknown, setSaveUnknown] = useState(false);
+    const [currentVersion, setCurrentVersion] = useState<string | null>(null);
+    const [loadingCurrent, setLoadingCurrent] = useState(false);
+    const contentRequest = useRef(0);
+    const editOnLoad = useRef<string | null>(null);
     const [saving, setSaving] = useState(false);
     const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
     const [deleteTarget, setDeleteTarget] = useState<{ path: string; name: string } | null>(null);
@@ -147,14 +159,6 @@ export default function FileBrowser({
 
     const reload = useCallback(async () => {
         if (singleFile) {
-            // Single-file mode: just load the content
-            try {
-                const data = await api.read(singleFile);
-                setContent(data.content || '');
-            } catch {
-                setContent('');
-            }
-            setContentLoaded(true);
             return;
         }
         setLoading(true);
@@ -176,10 +180,35 @@ export default function FileBrowser({
     // ─── Load file content when viewing ───────────────
 
     useEffect(() => {
-        if (!viewing || singleFile) return;
-        api.read(viewing).then(data => {
+        const target = singleFile || viewing;
+        const request = ++contentRequest.current;
+        setContentLoaded(false);
+        setReadError(false);
+        setContent('');
+        setContentHash(null);
+        setEditing(false);
+        setConflict(false);
+        setSaveUnknown(false);
+        setCurrentVersion(null);
+        setLoadingCurrent(false);
+        setSaving(false);
+        if (!target) return;
+        api.read(target).then(data => {
+            if (request !== contentRequest.current) return;
             setContent(data.content || '');
-        }).catch(() => setContent(''));
+            setContentHash(data.content_hash ?? null);
+            setContentLoaded(true);
+            if (editOnLoad.current === target) {
+                editOnLoad.current = null;
+                draftRef.current = data.content;
+                setEditContent(data.content);
+                setEditBaseHash(data.content_hash ?? null);
+                setEditing(true);
+            }
+        }).catch(() => {
+            if (request === contentRequest.current) setReadError(true);
+        });
+        return () => { contentRequest.current++; };
     }, [viewing, api, singleFile, viewRevision]);
 
     useEffect(() => {
@@ -232,20 +261,68 @@ export default function FileBrowser({
 
     // ─── Actions ──────────────────────────────────────
 
+    const beginEditing = () => {
+        draftRef.current = content;
+        setEditContent(content);
+        setEditBaseHash(contentHash);
+        setConflict(false);
+        setSaveUnknown(false);
+        setCurrentVersion(null);
+        setEditing(true);
+    };
+    const saveDisabled = saving || loadingCurrent || conflict || !contentLoaded || Boolean(api.writeIfUnchanged && !editBaseHash);
+    const editDisabled = !contentLoaded || Boolean(api.writeIfUnchanged && !contentHash);
+
+    const loadCurrentVersion = async () => {
+        const target = singleFile || viewing;
+        if (!target || loadingCurrent) return;
+        const request = contentRequest.current;
+        setLoadingCurrent(true);
+        try {
+            const data = await api.read(target);
+            if (request !== contentRequest.current) return;
+            if (!data.content_hash) throw new Error('Current version is unavailable');
+            setCurrentVersion(data.content);
+            setEditBaseHash(data.content_hash);
+            setConflict(false);
+        } catch {
+            if (request === contentRequest.current) showToast(t('agent.workspace.fileSave.loadFailed'), 'error');
+        } finally {
+            if (request === contentRequest.current) setLoadingCurrent(false);
+        }
+    };
+
     const handleSave = async () => {
         const target = singleFile || viewing;
-        if (!target) return;
+        if (!target || saveDisabled) return;
+        const submitted = editContent;
+        const request = contentRequest.current;
         setSaving(true);
         try {
-            await api.write(target, editContent);
-            setContent(editContent);
-            setEditing(false);
-            showToast('Saved');
+            const result = api.writeIfUnchanged && editBaseHash
+                ? await api.writeIfUnchanged(target, submitted, editBaseHash)
+                : await api.write(target, submitted);
+            if (request !== contentRequest.current) return;
+            setContent(submitted);
+            setContentHash(result?.content_hash ?? null);
+            setEditBaseHash(result?.content_hash ?? null);
+            setCurrentVersion(null);
+            setEditing(draftRef.current !== submitted);
+            showToast(t(draftRef.current === submitted ? 'agent.workspace.fileSave.saved' : 'agent.workspace.fileSave.newerDraft'));
             onRefresh?.();
         } catch (err: any) {
-            showToast('Save failed: ' + (err.message || ''), 'error');
+            if (request !== contentRequest.current) return;
+            const unknownOutcome = err instanceof ApiError && (err.data as { outcome?: string } | null)?.outcome === 'unknown';
+            if (err instanceof ApiError && (err.status === 409 || unknownOutcome)) {
+                setConflict(true);
+                setSaveUnknown(unknownOutcome);
+                setCurrentVersion(null);
+            } else {
+                showToast(t('agent.workspace.fileSave.failed', { message: err.message || '' }), 'error');
+            }
+        } finally {
+            if (request === contentRequest.current) setSaving(false);
         }
-        setSaving(false);
     };
 
     const handleDelete = async () => {
@@ -305,16 +382,14 @@ export default function FileBrowser({
             } else if (action === 'newFile') {
                 const filePath = currentPath ? `${currentPath}/${value}` : value;
                 await api.write(filePath, '');
+                editOnLoad.current = filePath;
                 setViewing(filePath);
-                setEditContent('');
-                setEditing(true);
             } else if (action === 'newSkill') {
                 const template = `# ${value}\n\n## Description\n_Describe the purpose and triggers_\n\n## Input\n- Param1: Description\n\n## Steps\n1. Step one\n2. Step two\n\n## Output\n_Describe the output format_\n`;
                 const filePath = buildNewSkillFilePath(currentPath, value);
                 await api.write(filePath, template);
+                editOnLoad.current = filePath;
                 setViewing(filePath);
-                setEditContent(template);
-                setEditing(true);
             }
             reload();
             onRefresh?.();
@@ -415,6 +490,40 @@ export default function FileBrowser({
     // ═══════════════════════════════════════════════════
     // SINGLE FILE MODE (Soul-style)
     // ═══════════════════════════════════════════════════
+    const renderEditor = () => (
+        <>
+            {conflict && (
+                <div className="file-browser-save-conflict" role="alert">
+                    <p>{t(saveUnknown ? 'agent.workspace.fileSave.unknown' : 'agent.workspace.fileSave.conflict')}</p>
+                    <button className="btn btn-secondary" disabled={loadingCurrent} onClick={() => void loadCurrentVersion()}>
+                        {t(loadingCurrent ? 'common.loading' : 'agent.workspace.fileSave.loadCurrent')}
+                    </button>
+                </div>
+            )}
+            {currentVersion !== null && <p role="status">{t('agent.workspace.fileSave.compareHint')}</p>}
+            <div className={currentVersion !== null ? 'file-browser-save-comparison' : undefined}>
+                {currentVersion !== null && (
+                    <section aria-label={t('agent.workspace.fileSave.currentVersion')}>
+                        <h4>{t('agent.workspace.fileSave.currentVersion')}</h4>
+                        <pre className="file-browser-pre">{currentVersion}</pre>
+                    </section>
+                )}
+                <section>
+                    {currentVersion !== null && <h4>{t('agent.workspace.fileSave.yourDraft')}</h4>}
+                    <textarea ref={textareaRef} aria-label={t('agent.workspace.fileSave.yourDraft')}
+                        className="form-textarea file-browser-editor" value={editContent}
+                        onChange={e => { draftRef.current = e.target.value; setEditContent(e.target.value); }} />
+                </section>
+            </div>
+        </>
+    );
+    const renderReadError = () => (
+        <div role="alert">
+            <p>{t('agent.workspace.fileSave.loadFailed')}</p>
+            <button className="btn btn-secondary" onClick={() => setViewRevision(value => value + 1)}>{t('common.retry')}</button>
+        </div>
+    );
+
     if (singleFile) {
         return (
             <div className="card">
@@ -422,11 +531,11 @@ export default function FileBrowser({
                     {title ? <h3>{title}</h3> : <div />}
                     {edit && (
                         !editing ? (
-                            <button className="btn btn-secondary" onClick={() => { setEditContent(content); setEditing(true); }}>{t('agent.soul.editButton')}</button>
+                            <button className="btn btn-secondary" disabled={editDisabled} onClick={beginEditing}>{t('agent.soul.editButton')}</button>
                         ) : (
                             <div className="file-browser-btn-row">
-                                <button className="btn btn-secondary" onClick={() => setEditing(false)}>{t('common.cancel')}</button>
-                                <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+                                <button className="btn btn-secondary" disabled={saving || loadingCurrent} onClick={() => setEditing(false)}>{t('common.cancel')}</button>
+                                <button className="btn btn-primary" onClick={handleSave} disabled={saveDisabled}>
                                     {saving ? t('agent.soul.saving') : t('agent.soul.saveButton')}
                                 </button>
                             </div>
@@ -434,8 +543,8 @@ export default function FileBrowser({
                     )}
                 </div>
                 {editing ? (
-                    <textarea ref={textareaRef} className="form-textarea file-browser-editor" value={editContent} onChange={e => setEditContent(e.target.value)} />
-                ) : !contentLoaded ? (
+                    renderEditor()
+                ) : readError ? renderReadError() : !contentLoaded ? (
                     <div className="file-browser-loading">{t('common.loading')}</div>
                 ) : content ? (
                     singleFile?.endsWith('.md') ? (
@@ -469,13 +578,13 @@ export default function FileBrowser({
                     {isText && edit && (
                         !editing ? (
                             <button className="btn btn-secondary"
-                                onClick={() => { setEditContent(content); setEditing(true); }}>✏️ {t('agent.soul.editButton')}</button>
+                                disabled={editDisabled} onClick={beginEditing}>✏️ {t('agent.soul.editButton')}</button>
                         ) : (
                             <div className="file-browser-btn-row-sm">
                                 <button className="btn btn-secondary"
-                                    onClick={() => setEditing(false)}>{t('common.cancel')}</button>
+                                    disabled={saving || loadingCurrent} onClick={() => setEditing(false)}>{t('common.cancel')}</button>
                                 <button className="btn btn-primary"
-                                    disabled={saving} onClick={handleSave}>{saving ? 'Saving...' : t('common.save')}</button>
+                                    disabled={saveDisabled} onClick={handleSave}>{saving ? t('agent.soul.saving') : t('common.save')}</button>
                             </div>
                         )
                     )}
@@ -497,7 +606,9 @@ export default function FileBrowser({
                 <div className="card">
                     {isText ? (
                         editing ? (
-                            <textarea ref={textareaRef} className="form-textarea file-browser-editor file-browser-editor-sm" value={editContent} onChange={e => setEditContent(e.target.value)} />
+                            renderEditor()
+                        ) : readError ? renderReadError() : !contentLoaded ? (
+                            <div className="file-browser-loading">{t('common.loading')}</div>
                         ) : viewing?.endsWith('.md') ? (
                             <MarkdownRenderer content={content || ''} className="file-browser-md-sm" />
                         ) : (

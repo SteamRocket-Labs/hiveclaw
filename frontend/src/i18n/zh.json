@@ -2186,6 +2186,18 @@
       "cancel": "取消",
       "showingFiles": "正在显示 {{visible}} / {{total}} 个文件",
       "showMoreFiles": "显示更多",
+      "fileSave": {
+        "unknown": "无法确认此次保存结果，草稿已保留。请先加载当前版本，再决定是否保存。",
+        "conflict": "文件已有新修改，你的草稿已保留。请加载当前版本，对照后再保存。",
+        "loadCurrent": "加载当前版本",
+        "loadFailed": "无法读取文件，请检查访问权限后重试。",
+        "compareHint": "请对照两份内容，按需修改草稿后主动保存；保存时会再次检查是否有新修改。",
+        "currentVersion": "当前已保存版本",
+        "yourDraft": "你的草稿",
+        "saved": "已保存",
+        "newerDraft": "已保存提交的版本，你之后输入的修改仍未保存。",
+        "failed": "保存失败，草稿已保留。{{message}}"
+      },
       "fileHistory": {
         "title": "版本历史",
         "available": "可用",

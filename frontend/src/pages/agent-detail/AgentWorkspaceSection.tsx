@@ -61,6 +61,9 @@ export default function AgentWorkspaceSection({
       write: (path, content) => operatorView
         ? Promise.reject(new Error('Operator View is read-only'))
         : fileApi.write(agentId, path, content),
+      writeIfUnchanged: (path, content, expectedHash) => operatorView
+        ? Promise.reject(new Error('Operator View is read-only'))
+        : fileApi.writeIfUnchanged(agentId, path, content, expectedHash),
       delete: (path) => operatorView
         ? Promise.reject(new Error('Operator View is read-only'))
         : fileApi.delete(agentId, path),

@@ -1,6 +1,7 @@
 """File management API routes for agent workspaces."""
 
 import asyncio
+import hashlib
 import io
 import os
 import tempfile
@@ -77,6 +78,7 @@ class FileContent(BaseModel):
 
 class FileWrite(BaseModel):
     content: str
+    expected_current_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class FileVersionCurrentState(BaseModel):
@@ -601,22 +603,22 @@ async def read_file(
         with open_workspace_file(_agent_base_dir(agent_id), path) as source:
             size = os.fstat(source.fileno()).st_size
             if target.suffix.lower() not in _BINARY_EXTS:
-                reader = io.TextIOWrapper(source, encoding="utf-8")
+                raw = source.read()
                 try:
-                    return reader.read()
-                except (UnicodeDecodeError, ValueError):
+                    with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8") as reader:
+                        return reader.read(), hashlib.sha256(raw).hexdigest()
+                except UnicodeDecodeError:
                     pass
-                finally:
-                    reader.detach()
-            return f"[二进制文件: {target.name}, {size} bytes]"
+            return f"[二进制文件: {target.name}, {size} bytes]", None
 
     try:
-        content = await asyncio.to_thread(read_content)
+        content, content_hash = await asyncio.to_thread(read_content)
     except WorkspaceAuthorityError as exc:
         raise _workspace_authority_http_error(exc) from exc
     return FileContent(
         path=path,
         content=content,
+        content_hash=content_hash,
         authority_source=resource_decision.authority_source if resource_decision else None,
         operator_view=bool(resource_decision and resource_decision.operator_view),
     )
@@ -1218,32 +1220,72 @@ async def write_file(
                 )
             except Exception as exc:
                 raise _workspace_authority_http_error(exc) from exc
-        from app.services.workspace_resource_authority import WorkspaceAuthorityError, write_workspace_file
+        from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
+
+        raw = data.content.encode("utf-8")
+        content_hash = hashlib.sha256(raw).hexdigest()
+        write_started = False
+
+        def save_content():
+            nonlocal write_started
+            if data.expected_current_hash is None:
+                with open_workspace_file(_agent_base_dir(agent_id), path, mode="wb") as output:
+                    write_started = True
+                    output.write(raw)
+                return
+            with open_workspace_file(_agent_base_dir(agent_id), path, mode="r+b") as output:
+                if hashlib.file_digest(output, "sha256").hexdigest() != data.expected_current_hash:
+                    raise HTTPException(status_code=409, detail={
+                        "code": "workspace_content_conflict",
+                        "message": "The file changed since it was read. Keep your draft and read the current version before saving again.",
+                        "outcome": "conflict",
+                        "retryable": False,
+                    })
+                output.seek(0)
+                write_started = True
+                output.write(raw)
+                output.truncate()
 
         try:
-            await asyncio.to_thread(write_workspace_file, _agent_base_dir(agent_id), path, data.content.encode("utf-8"))
+            await asyncio.to_thread(save_content)
         except WorkspaceAuthorityError as exc:
+            if write_started:
+                raise HTTPException(status_code=503, detail={
+                    "code": "workspace_save_unknown",
+                    "message": "The save could not be confirmed. Keep your draft and read the file before another save.",
+                    "outcome": "unknown",
+                    "retryable": False,
+                }) from exc
             raise _workspace_authority_http_error(exc) from exc
         if resource_decision is not None:
-            import hashlib
-
             from app.services.workspace_resource_authority import register_workspace_path
 
-            await register_workspace_path(
-                db,
-                tenant_id=agent.tenant_id,
-                agent_id=agent_id,
-                path=path,
-                owner_user_id=resource_decision.owner_user_id or current_user.id,
-                root_session_id=resource_decision.root_session_id,
-                source="workspace_api_write",
-                content_hash=hashlib.sha256(data.content.encode("utf-8")).hexdigest(),
-                allow_owner_rebind=resource_decision.operator_view and resource_decision.manifest is None,
-            )
+            try:
+                await register_workspace_path(
+                    db,
+                    tenant_id=agent.tenant_id,
+                    agent_id=agent_id,
+                    path=path,
+                    owner_user_id=resource_decision.owner_user_id or current_user.id,
+                    root_session_id=resource_decision.root_session_id,
+                    source="workspace_api_write",
+                    content_hash=content_hash,
+                    allow_owner_rebind=resource_decision.operator_view and resource_decision.manifest is None,
+                )
+                await db.commit()
+            except Exception as exc:
+                await db.rollback()
+                raise HTTPException(status_code=503, detail={
+                    "code": "workspace_save_unknown",
+                    "message": "The saved file could not be registered. Keep your draft and reconcile before another save.",
+                    "outcome": "unknown",
+                    "retryable": False,
+                }) from exc
 
     return {
         "status": "ok",
         "path": path,
+        "content_hash": content_hash,
         "authority_source": resource_decision.authority_source if resource_decision else None,
         "operator_view": bool(resource_decision and resource_decision.operator_view),
     }

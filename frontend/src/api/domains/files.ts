@@ -156,6 +156,10 @@ export const fileApi = {
     )),
   write: (agentId: string, path: string, content: string, authority?: ResourceAuthorityOptions) =>
     put<void>(withAuthority(`/agents/${agentId}/files/content?path=${encodeURIComponent(path)}`, authority), { content }),
+  writeIfUnchanged: (agentId: string, path: string, content: string, expectedHash: string) =>
+    put<{ content_hash: string }>(`/agents/${agentId}/files/content?path=${encodeURIComponent(path)}`, {
+      content, expected_current_hash: expectedHash,
+    }),
   remove: (agentId: string, path: string, authority?: ResourceAuthorityOptions) =>
     del(withAuthority(`/agents/${agentId}/files/content?path=${encodeURIComponent(path)}`, authority)),
   delete: (agentId: string, path: string, authority?: ResourceAuthorityOptions) =>

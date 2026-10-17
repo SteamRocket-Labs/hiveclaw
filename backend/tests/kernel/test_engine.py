@@ -105,6 +105,49 @@ def test_llm_message_dict_round_trip_preserves_reasoning_signature() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("blocked_round", [1, 2])
+async def test_source_authority_loss_before_provider_never_falls_back_or_resends(blocked_round) -> None:
+    from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
+    from app.kernel.contracts import ContextDependencyUnavailable, TerminalReason
+
+    primary = SimpleNamespace(provider="openai", model="selected", api_key="synthetic", base_url=None)
+    fallback = SimpleNamespace(provider="openai", model="fallback", api_key="synthetic", base_url=None)
+    client = _FakeClient([SimpleNamespace(content="", tool_calls=[{"id": "source-check", "type": "function",
+        "function": {"name": "read_file", "arguments": '{"path":"workspace/report.md"}'}}],
+        reasoning_content=None, reasoning_signature=None, finish_reason="tool_calls", usage={"total_tokens": 5})])
+    prepared, created, executed = [], [], []
+
+    def create(model):
+        created.append(model.model)
+        return client
+
+    async def prepare(**payload):
+        prepared.append(payload["round_index"])
+        if len(prepared) == blocked_round:
+            raise ContextDependencyUnavailable(dependency="a2a_artifact_inputs", code="a2a_artifact_input_authority_changed",
+                user_message="Restore the source grant and retry this step.")
+
+    async def execute(*args, **_kwargs):
+        executed.append(args)
+        return "AUTHORIZED_TOOL_RESULT"
+
+    kernel = AgentKernel(KernelDependencies(resolve_runtime_config=lambda *_a: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
+        resolve_current_user_name=lambda *_a: "Owner", build_system_prompt=lambda *_a: "PROMPT",
+        resolve_memory_context=lambda *_a: "", get_tools=lambda *_a, **_k: [],
+        maybe_compress_messages=lambda messages, **_k: messages, create_client=create, execute_tool=execute,
+        persist_memory=lambda **_k: None, record_token_usage=lambda *_a, **_k: None,
+        get_max_tokens=lambda *_a, **_k: 2048, extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+        estimate_tokens_from_chars=lambda chars: chars // 4))
+    result = await kernel.handle(InvocationRequest(model=primary, fallback_model=fallback,
+        messages=[{"role": "user", "content": "Use the scoped inputs"}], agent_name="Receiver", role_description="",
+        model_request_prepare=prepare))
+    assert result.terminal_reason == TerminalReason.MEMORY_UNAVAILABLE
+    assert result.failure_code == "a2a_artifact_input_authority_changed"
+    assert len(client.calls) == blocked_round - 1 and len(executed) == blocked_round - 1
+    assert created == ["selected"]
+
+
+@pytest.mark.asyncio
 async def test_empty_provider_response_is_typed_failure_without_platform_assistant_prose() -> None:
     from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
     from app.kernel.contracts import TerminalReason

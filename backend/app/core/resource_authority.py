@@ -234,13 +234,24 @@ async def authorize_resource_action(
     ``operator.inspect`` grant plus a reason.
     """
 
+    cross_agent_input = False
     if runtime_principal is not None:
         from app.services.personal_knowledge_access import AgentRuntimePrincipal
 
-        if not isinstance(runtime_principal, AgentRuntimePrincipal) or (
-            runtime_principal.agent_id != agent_id or runtime_principal.requester_user_id != user.id
-        ):
+        if not isinstance(runtime_principal, AgentRuntimePrincipal) or runtime_principal.requester_user_id != user.id:
             raise HTTPException(status_code=403, detail="Runtime resource authority context mismatch")
+        if runtime_principal.agent_id != agent_id:
+            cross_agent_input = (resource_kind in {"chat_artifact", "workspace_file"} and action == "read"
+                and runtime_principal.purpose == "a2a_delegation" and not runtime_principal.autonomous
+                and bool(runtime_principal.session_id) and bool(runtime_principal.delegation_id))
+            if not cross_agent_input:
+                raise HTTPException(status_code=403, detail="Runtime resource authority context mismatch")
+            from app.services.content_input_receipts import ContentInputReceiptError, _runtime_input_actor
+
+            try:
+                _principal, user = await _runtime_input_actor(db, user.tenant_id, runtime_principal)
+            except ContentInputReceiptError as exc:
+                raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
     agent, access_level = agent_access or await (
         check_agent_operator_reachability(db, user, agent_id)
         if runtime_principal is None and allow_manager_override and action == "read"
@@ -248,6 +259,8 @@ async def authorize_resource_action(
     )
     if str(agent.id) != str(agent_id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent authority context mismatch")
+    if cross_agent_input and agent.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=403, detail="Cross-company artifact input is not authorized")
     if resource_kind == "chat_artifact" and action in {"read", "download", "deliver"}:
         from app.models.chat_artifact import ChatArtifact
         from app.database import tenant_scoped_session

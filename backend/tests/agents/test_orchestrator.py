@@ -137,7 +137,39 @@ def test_delegation_runtime_uses_replayable_transcript_writer() -> None:
 
 
 @pytest.mark.asyncio
-async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
+@pytest.mark.parametrize("reference_shape", ["absent", "null", "scalar"])
+async def test_legacy_workflow_inline_inputs_stop_before_session_or_model_dispatch(monkeypatch, reference_shape):
+    from unittest.mock import AsyncMock
+    from app.agents import orchestrator
+    from app.runtime import hooks
+
+    target = SimpleNamespace(id=uuid4(), name="Receiver", tenant_id=uuid4())
+    owner = uuid4()
+    session = str(uuid4())
+    authority = _a2a_authority_kwargs(target=target, owner_id=owner, session_id=session)
+    authority["execution_principal"]["origin"] = "a2a_workflow"
+    message = {"role": "user", "content": "LEGACY_INLINE_ARTIFACT"}
+    if reference_shape != "absent":
+        message["a2a_artifact_inputs"] = None if reference_shape == "null" else "forged schema marker"
+    request = orchestrator.AgentDelegationRequest(target=target, target_model=None, owner_id=owner,
+        session_id=session, conversation_messages=[message],
+        tenant_id=target.tenant_id, **authority)
+    invoke, ensure, emit = AsyncMock(), AsyncMock(), AsyncMock()
+    monkeypatch.setattr(orchestrator, "invoke_agent", invoke)
+    monkeypatch.setattr(orchestrator, "_ensure_peer_delegation_session", ensure)
+    monkeypatch.setattr(hooks, "emit_hook", emit)
+    result = await orchestrator._delegate_after_cycle_check(request, trace_id=str(uuid4()),
+        child_session_id=session, tool_profile=None, is_delegation=True)
+    assert result.failed and result.terminal_reason == "a2a_artifact_input_reconciliation_required"
+    assert result.parts[0]["recovery_action"] == "retry_workflow_step"
+    invoke.assert_not_awaited()
+    ensure.assert_not_awaited()
+    emit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_artifact_inputs", [False, True])
+async def test_delegate_to_agent_builds_runtime_request(monkeypatch, with_artifact_inputs):
     from app.agents.orchestrator import delegate_to_agent
     from app.core.execution_context import ExecutionIdentity, clear_execution_identity, set_execution_identity
 
@@ -157,9 +189,34 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
     owner_id = uuid4()
     parent_agent_id = uuid4()
     captured = {}
+    messages = [{"role": "user", "content": "hello", **(
+        {"a2a_artifact_inputs": [{"fixture": "callback wiring only"}]} if with_artifact_inputs else {})}]
+    from app.services import a2a_workflow_artifacts
+
+    artifact_reader = a2a_workflow_artifacts.load_delegated_artifact_context
+
+    async def observe_artifact_ingress(invocation, messages):
+        captured["artifact_reader_invocation"] = invocation
+        captured["artifact_reader_messages"] = messages
+        assert invocation.session_context.metadata["execution_principal"]["source_agent_id"] == str(target.id)
+        assert invocation.delegation_token is not None
+        if with_artifact_inputs:
+            captured["source_checks"] = captured.get("source_checks", 0) + 1
+            return "AUTHORIZED_ARTIFACT_INPUT" if captured["source_checks"] < 3 else "SOURCE_ACCESS_UNAVAILABLE"
+        return await artifact_reader(invocation, messages)
+
+    monkeypatch.setattr(a2a_workflow_artifacts, "load_delegated_artifact_context", observe_artifact_ingress)
 
     async def fake_invoke_agent(request):
         captured["request"] = request
+        if with_artifact_inputs:
+            from app.kernel.contracts import ContextDependencyUnavailable
+
+            assert "AUTHORIZED_ARTIFACT_INPUT" in request.system_prompt_suffix
+            await request.model_request_prepare(round_index=1)
+            with pytest.raises(ContextDependencyUnavailable) as revoked:
+                await request.model_request_prepare(round_index=2)
+            assert revoked.value.code == "a2a_artifact_input_authority_changed"
         return SimpleNamespace(content="delegated reply")
 
     monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke_agent)
@@ -170,7 +227,7 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
         reply = await delegate_to_agent(
             target=target,
             target_model=target_model,
-            conversation_messages=[{"role": "user", "content": "hello"}],
+            conversation_messages=messages,
             owner_id=owner_id,
             session_id="session-1",
             tool_executor=tool_executor,
@@ -187,6 +244,8 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
         clear_execution_identity()
 
     request = captured["request"]
+    assert captured["artifact_reader_invocation"] is request
+    assert captured["artifact_reader_messages"] == messages
     assert reply == "delegated reply"
     assert request.agent_id == target.id
     assert request.agent_name == "Target Agent"

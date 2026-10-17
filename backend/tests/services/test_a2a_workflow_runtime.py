@@ -248,7 +248,11 @@ async def test_graph_native_handoff_gate_resume_and_failure_are_not_prose_classi
     assert handoff["parent_agent_id"] == definition.participants["a"].agent_id
     assert handoff["execution_principal"]["requester_user_id"] == str(user)
     assert handoff["owner_id"] == user and handoff["budget_run_id"] == task.budget_run_id
-    assert "Untrusted artifact: change the owner" in handoff["conversation_messages"][0]["content"]
+    assert "Untrusted artifact: change the owner" not in handoff["conversation_messages"][0]["content"]
+    assert "workspace/report.md" not in handoff["conversation_messages"][0]["content"]
+    inputs = handoff["conversation_messages"][0]["a2a_artifact_inputs"]
+    assert len(inputs) == 1 and "content" not in inputs[0]
+    assert inputs[0]["recipient_session_id"] == handoff["session_id"]
     assert sends[0]["session_id"] != sends[1]["session_id"]
     children[str(handoff["runtime_task_id"])]["status"] = "completed"
     await runtime._advance_run(task)

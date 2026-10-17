@@ -466,6 +466,16 @@ async def test_scoped_native_writer_binds_complete_control_input_once(native_wor
             url = f"/agents/{n.agent}/files/artifacts/{artifact.id}"
             for endpoint in ("/content", "/download"):
                 assert (await n.client.get(url + endpoint)).status_code == 200
+            from app.runtime.a2a_workflow import A2AOutputArtifact
+            from app.services.a2a_workflow_artifacts import A2AArtifactUnavailable, load_artifact_packet
+
+            packet_args = dict(tenant_id=n.tenant, requester_user_id=n.user, run_id=n.run,
+                node_id="producer", producer_agent_id=n.agent, producer_session_id=n.session,
+                producer_runtime_task_id=n.run, output=A2AOutputArtifact(name="report", path=n.path), max_bytes=1000)
+            # Browser access is valid; the actual native reader has no source grant.
+            assert (await load_artifact_packet(db, **packet_args))["content"] == arguments["content"]
+            with pytest.raises(A2AArtifactUnavailable, match="artifact_source_access_denied"):
+                await load_artifact_packet(db, **packet_args, runtime_principal=principal)
             async with owner_sessionmaker() as writer:
                 (await writer.get(KnowledgeGrant, grant.id)).revoked_at = datetime.now(timezone.utc)
                 await writer.commit()

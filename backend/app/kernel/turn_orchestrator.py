@@ -2067,6 +2067,10 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         if cost_loop_decision:
                             await _inject_loop_guard_warning(cost_loop_decision)
                         break
+                    except ContextDependencyUnavailable as exc:
+                        await _record_new_token_usage()
+                        return _build_error_result(exc.user_message, tokens_used=accumulated_tokens,
+                            terminal_reason=TerminalReason.MEMORY_UNAVAILABLE, failure_code=exc.code)
                     except _KernelCancelledError:
                         provider_request_id = provider_attempt_state.get("provider_request_id")
                         llm_started_ms = int(provider_attempt_state["llm_started_ms"])

@@ -1820,6 +1820,15 @@ async def _delegate_after_cycle_check(
         request,
         child_principal=child_execution_principal,
     )
+    reference_only_input = (len(request.conversation_messages) == 1
+        and isinstance(request.conversation_messages[0], dict)
+        and isinstance(request.conversation_messages[0].get("a2a_artifact_inputs"), list))
+    if (request.execution_principal or {}).get("origin") == "a2a_workflow" and not reference_only_input:
+        return AgentDelegationResult(content="This legacy workflow input needs reconciliation before dispatch. Retry the workflow step to rebuild scoped artifact references.",
+            child_session_id=child_session_id, trace_id=trace_id, depth=request.depth, failed=True,
+            terminal_reason="a2a_artifact_input_reconciliation_required", parts=({"type": "runtime_status",
+                "status": "unavailable", "error_code": "a2a_artifact_input_reconciliation_required",
+                "recovery_action": "retry_workflow_step"},))
     if is_delegation:
         try:
             from app.runtime.hooks import HookEvent, emit_hook
@@ -2141,6 +2150,20 @@ async def _delegate_after_cycle_check(
     _delegation_status = "success"
 
     try:
+        from app.services.a2a_workflow_artifacts import load_delegated_artifact_context
+
+        artifact_inputs = await load_delegated_artifact_context(invocation, request.conversation_messages)
+        if artifact_inputs:
+            invocation.system_prompt_suffix = "\n\n".join([invocation.system_prompt_suffix or "", artifact_inputs])
+            async def revalidate_artifact_inputs(**_payload):
+                from app.kernel.contracts import ContextDependencyUnavailable
+
+                current = await load_delegated_artifact_context(invocation, request.conversation_messages)
+                if current != artifact_inputs:
+                    raise ContextDependencyUnavailable(dependency="a2a_artifact_inputs",
+                        code="a2a_artifact_input_authority_changed",
+                        user_message="Referenced artifact access changed. Retry this workflow step to reload authorized inputs.")
+            invocation.model_request_prepare = revalidate_artifact_inputs
         result = await asyncio.wait_for(
             invoke_agent(invocation),
             timeout=max(request.policy.timeout_seconds, 0.01),

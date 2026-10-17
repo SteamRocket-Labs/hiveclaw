@@ -61,6 +61,9 @@ async def _validate_input_dependencies(db, tenant_id: uuid.UUID, dependencies: l
     ):
         raise ContentInputReceiptError("content_source_unavailable", "The source receipt is invalid.", 503)
     for dependency in dependencies:
+        if dependency["source_kind"] in {"session_command", "session_tool_invocation"}:
+            await _validate_session_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
+            continue
         if dependency["source_kind"] == "company_knowledge_publication":
             await _validate_company_publication_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
             continue
@@ -107,6 +110,69 @@ async def _validate_input_dependencies(db, tenant_id: uuid.UUID, dependencies: l
         if result.status != "ok" or getattr(result, "credential_reference", None):
             raise ContentInputReceiptError("content_source_access_denied", "A required source is no longer authorized for this reader.", 403)
         _validate_canonical_source_bytes(document, dependency["source_version"])
+
+
+async def _validate_session_dependency(db, tenant_id, dependency, *, user, runtime_request):
+    from fastapi import HTTPException
+    from app.core.permissions import authorize_session_action, check_agent_access
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.session_v2 import SessionCommand, SessionToolInvocation
+    from app.models.user import User
+    from app.services.session_model_inputs import _hash
+    from app.services.session_semantic_history import _event_payload
+
+    try:
+        source_id = uuid.UUID(dependency["source_id"])
+    except ValueError as exc:
+        raise ContentInputReceiptError("content_source_unavailable", "The session source receipt is invalid.", 503) from exc
+    model = SessionCommand if dependency["source_kind"] == "session_command" else SessionToolInvocation
+    row = (await db.execute(select(model, ChatSession).join(ChatSession, ChatSession.id == model.session_id).where(
+        model.id == source_id, model.tenant_id == tenant_id, ChatSession.tenant_id == tenant_id,
+    ).execution_options(populate_existing=True))).first()
+    if row is None:
+        raise ContentInputReceiptError("content_source_changed", "The exact session source is unavailable.", 403)
+    source, session = row
+    if model is SessionCommand:
+        version = source.request_hash
+        valid = version == _hash({"command_kind": source.command_kind, "request": source.request_json}) and source.target_hash == _hash(source.target_json)
+    else:
+        event = await db.scalar(select(ChatTranscriptEvent).where(
+            ChatTranscriptEvent.id == source.result_event_id, ChatTranscriptEvent.tenant_id == tenant_id,
+            ChatTranscriptEvent.agent_id == session.agent_id, ChatTranscriptEvent.session_id == session.id,
+            ChatTranscriptEvent.run_id == source.run_id, ChatTranscriptEvent.invocation_id == source.id,
+        ).execution_options(populate_existing=True))
+        payload = _event_payload(event) if event is not None else {}
+        content, version = payload.get("content"), payload.get("content_hash")
+        valid = isinstance(content, str) and version == _hash(content)
+    if not valid or version != dependency["source_version"]:
+        raise ContentInputReceiptError("content_source_changed", "The session source no longer matches its receipt.", 403)
+    if session.audience_kind not in {None, "private"}:
+        raise ContentInputReceiptError("content_source_unavailable", "This session source requires its live shared-audience reader.", 503)
+    try:
+        if runtime_request is None:
+            await authorize_session_action(db, user, agent_id=session.agent_id, session_id=session.id,
+                action="read_content_input_source")
+            return
+        from app.tools.handlers.knowledge import _personal_kb_runtime_principal
+
+        principal = _personal_kb_runtime_principal(runtime_request)
+        requester = await db.scalar(select(User).where(User.id == principal.requester_user_id,
+            User.tenant_id == tenant_id, User.is_active.is_(True)).execution_options(populate_existing=True))
+        if requester is None or session.user_id != requester.id or session.agent_id != principal.agent_id:
+            raise ValueError("session_source_actor_mismatch")
+        current_session = await db.scalar(select(ChatSession.id).where(
+            ChatSession.id == uuid.UUID(str(principal.session_id)), ChatSession.tenant_id == tenant_id,
+            ChatSession.agent_id == principal.agent_id, ChatSession.user_id == requester.id))
+        if current_session is None:
+            raise ValueError("runtime_session_actor_mismatch")
+        # Refresh the current employee owner before the shared Agent access check.
+        await db.scalar(select(Agent).where(Agent.id == principal.agent_id, Agent.tenant_id == tenant_id)
+            .execution_options(populate_existing=True))
+        await check_agent_access(db, requester, principal.agent_id)
+    except (HTTPException, ValueError) as exc:
+        raise ContentInputReceiptError("content_source_access_denied", "The session source is no longer authorized for this reader.", 403) from exc
 
 
 def _validate_canonical_source_bytes(document, version: str) -> None:

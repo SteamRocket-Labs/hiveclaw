@@ -15,8 +15,7 @@ const api = vi.hoisted(() => ({
   list: vi.fn(),
   listPendingCleanup: vi.fn(),
   remove: vi.fn(),
-  getHrAgent: vi.fn(),
-  listRecoverable: vi.fn(),
+  listMine: vi.fn(),
   abandon: vi.fn(),
   confirm: vi.fn(),
   toast: vi.fn(),
@@ -57,10 +56,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   api.role = 'org_admin';
   api.confirm.mockResolvedValue(true);
-  api.getHrAgent.mockResolvedValue({ id: 'hr-1', name: '__system_hr__' });
   api.list.mockResolvedValue([]);
   api.listPendingCleanup.mockResolvedValue([]);
-  api.listRecoverable.mockResolvedValue([]);
+  api.listMine.mockResolvedValue([]);
 });
 afterEach(() => {
   cleanup();
@@ -99,14 +97,15 @@ describe.each(['en', 'zh'] as const)('committed deletion recovery (%s)', (locale
 
   it('keeps an abandoned HR draft recoverable after reload without repeating abandonment confirmation', async () => {
     const draft = {
-      blueprint_id: 'draft-1', draft_status: 'failed', blueprint: { name: 'Recovery employee' },
+      blueprint_id: 'draft-1', hr_agent_id: 'original-employee', session_id: 'original-work',
+      requested_by_user_id: 'admin', draft_status: 'failed', blueprint: { name: 'Recovery employee' },
       recovery: { can_abandon: true, can_retry: false, can_resume: false, requires_operator: false },
     };
-    api.listRecoverable.mockResolvedValue([draft]);
+    api.listMine.mockResolvedValue([draft]);
     api.abandon.mockImplementationOnce(async () => {
-      api.listRecoverable.mockResolvedValue([{ ...draft, draft_status: 'superseded', recovery: { ...draft.recovery, cleanup_pending: true } }]);
+      api.listMine.mockResolvedValue([{ ...draft, draft_status: 'superseded', recovery: { ...draft.recovery, cleanup_pending: true } }]);
       throw new ApiError(503, 'Removal committed', { code: 'hr_abandon_cleanup_pending' });
-    }).mockImplementationOnce(async () => { api.listRecoverable.mockResolvedValue([]); });
+    }).mockImplementationOnce(async () => { api.listMine.mockResolvedValue([]); });
 
     const first = await mount('hr', locale);
     fireEvent.click(await screen.findByRole('button', { name: words.employees.hrRecovery.remove }));
@@ -120,7 +119,7 @@ describe.each(['en', 'zh'] as const)('committed deletion recovery (%s)', (locale
     expect(screen.queryByRole('button', { name: words.employees.hrRecovery.retry })).toBeNull();
     fireEvent.click(retry);
     await waitFor(() => expect(screen.queryByText('Recovery employee')).toBeNull());
-    expect(api.abandon.mock.calls).toEqual([['hr-1', 'draft-1'], ['hr-1', 'draft-1']]);
+    expect(api.abandon.mock.calls).toEqual([['original-employee', 'draft-1'], ['original-employee', 'draft-1']]);
     expect(api.confirm).toHaveBeenCalledTimes(1);
   });
 });

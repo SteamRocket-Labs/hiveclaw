@@ -6,12 +6,12 @@ from dataclasses import asdict
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_admin, get_current_user
-from app.core.tenant_scope import resolve_and_pin_tenant_scope, resolve_tenant_scope
+from app.core.tenant_scope import resolve_and_pin_tenant_scope
 from app.database import async_session, get_db, tenant_scoped_session
 from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
@@ -31,6 +31,8 @@ class MemoryConfigUpdate(BaseModel):
 
 
 class TeamMemoryUpsert(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     workspace_key: str
     key: str
     title: str
@@ -46,6 +48,30 @@ DEFAULT_MEMORY_CONFIG = {
     "compress_threshold": 70,
     "keep_recent": 10,
 }
+
+
+def _content_receipt_http_error(exc) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail={
+        "code": exc.code, "message": str(exc), "retryable": False,
+    })
+
+
+async def _verified_team_memory_entries(db, tenant_id, user, workspace_key, entries):
+    from app.services.content_input_receipts import (
+        ContentInputReceiptError, latest_team_memory_receipts, validate_team_memory_receipt,
+    )
+
+    receipts = await latest_team_memory_receipts(db, tenant_id, workspace_key, entries)
+    verified = []
+    for entry in entries:
+        try:
+            await validate_team_memory_receipt(db, tenant_id, user, workspace_key, entry, receipts)
+        except ContentInputReceiptError as exc:
+            if exc.status_code == 503:
+                raise _content_receipt_http_error(exc) from exc
+            continue
+        verified.append(asdict(entry))
+    return verified
 
 
 def _team_memory_conflict_detail(exc) -> dict:
@@ -260,16 +286,15 @@ async def list_team_memory(
     include_deleted: bool = False,
     tenant_id: str | None = None,
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """List shared team-memory entries for the current tenant/workspace."""
     from app.services.team_memory import TeamMemoryStore
 
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     store = TeamMemoryStore()
-    return [
-        asdict(entry)
-        for entry in store.list_entries(str(target_tenant_id), workspace_key, include_deleted=include_deleted)
-    ]
+    entries = store.list_entries(str(target_tenant_id), workspace_key, include_deleted=include_deleted)
+    return await _verified_team_memory_entries(db, target_tenant_id, current_user, workspace_key, entries)
 
 
 @router.get("/shared/search")
@@ -279,16 +304,15 @@ async def search_team_memory(
     include_deleted: bool = False,
     tenant_id: str | None = None,
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Search shared team-memory entries for the current tenant/workspace."""
     from app.services.team_memory import TeamMemoryStore
 
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     store = TeamMemoryStore()
-    return [
-        asdict(entry)
-        for entry in store.search_entries(str(target_tenant_id), workspace_key, query, include_deleted=include_deleted)
-    ]
+    entries = store.search_entries(str(target_tenant_id), workspace_key, query, include_deleted=include_deleted)
+    return await _verified_team_memory_entries(db, target_tenant_id, current_user, workspace_key, entries)
 
 
 @router.get("/shared/{entry_key}")
@@ -298,15 +322,25 @@ async def get_team_memory_entry(
     include_deleted: bool = False,
     tenant_id: str | None = None,
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Fetch a single shared team-memory entry with full content."""
     from app.services.team_memory import TeamMemoryStore
 
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     store = TeamMemoryStore()
     entry = store.get_entry(str(target_tenant_id), workspace_key, entry_key, include_deleted=include_deleted)
     if entry is None:
         raise HTTPException(status_code=404, detail="Shared memory entry not found")
+    from app.services.content_input_receipts import (
+        ContentInputReceiptError, latest_team_memory_receipts, validate_team_memory_receipt,
+    )
+
+    receipts = await latest_team_memory_receipts(db, target_tenant_id, workspace_key, [entry])
+    try:
+        await validate_team_memory_receipt(db, target_tenant_id, current_user, workspace_key, entry, receipts)
+    except ContentInputReceiptError as exc:
+        raise _content_receipt_http_error(exc) from exc
     return asdict(entry)
 
 
@@ -315,18 +349,25 @@ async def upsert_team_memory(
     data: TeamMemoryUpsert,
     tenant_id: str | None = None,
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Create or update a shared team-memory entry for the current tenant/workspace."""
     from app.services.team_memory import (
         InvalidTeamMemoryModeError,
         SecretScanError,
+        TeamMemoryBaseChangedError,
         TeamMemoryConflictError,
         TeamMemoryStore,
         TeamMemoryWriteHeldError,
         TeamMemoryWriteRejectedError,
     )
 
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    from app.services.content_input_receipts import (
+        ContentInputReceiptError, latest_team_memory_receipts, lock_team_memory_write,
+        record_team_memory_receipt, validate_team_memory_receipt,
+    )
+
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     try:
         exact_secret_boundary = await _load_team_memory_secret_boundary(target_tenant_id)
     except Exception as exc:
@@ -345,6 +386,13 @@ async def upsert_team_memory(
         ) from exc
     store = TeamMemoryStore(exact_secret_boundary=exact_secret_boundary)
     try:
+        await lock_team_memory_write(db, target_tenant_id, data.workspace_key, data.key)
+        previous = store.get_entry(str(target_tenant_id), data.workspace_key, data.key, include_deleted=True)
+        dependencies = []
+        if previous is not None:
+            receipts = await latest_team_memory_receipts(db, target_tenant_id, data.workspace_key, [previous])
+            receipt = await validate_team_memory_receipt(db, target_tenant_id, current_user, data.workspace_key, previous, receipts)
+            dependencies = receipt.dependencies_json
         entry = await store.upsert_entry_async(
             tenant_id=str(target_tenant_id),
             workspace_key=data.workspace_key,
@@ -355,6 +403,7 @@ async def upsert_team_memory(
             updated_by=str(current_user.id),
             base_revision=data.base_revision,
             sync_token=data.sync_token,
+            verified_base=(previous.revision, previous.checksum) if previous else (0, ""),
         )
     except SecretScanError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -368,7 +417,34 @@ async def upsert_team_memory(
     except InvalidTeamMemoryModeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except TeamMemoryConflictError as exc:
+        try:
+            from app.services.content_input_receipts import validate_browser_input_dependencies
+
+            await validate_browser_input_dependencies(db, target_tenant_id, current_user, dependencies)
+        except ContentInputReceiptError as source_exc:
+            raise _content_receipt_http_error(source_exc) from source_exc
         raise HTTPException(status_code=409, detail=_team_memory_conflict_detail(exc)) from exc
+    except TeamMemoryBaseChangedError as exc:
+        raise HTTPException(status_code=409, detail={"code": "team_memory_unverified", "message": str(exc), "retryable": False}) from exc
+    except ContentInputReceiptError as exc:
+        raise _content_receipt_http_error(exc) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail={
+            "code": "team_memory_save_unknown", "outcome": "unknown", "retryable": False,
+            "message": "The file save could not be confirmed. Keep the draft and reconcile before saving again.",
+        }) from exc
+    try:
+        from app.services.content_input_receipts import validate_browser_input_dependencies
+
+        await validate_browser_input_dependencies(db, target_tenant_id, current_user, dependencies)
+        record_team_memory_receipt(db, target_tenant_id, data.workspace_key, entry, dependencies)
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail={
+            "code": "team_memory_save_unknown", "outcome": "unknown", "retryable": False,
+            "message": "The file may be saved but its receipt could not be committed. Keep the draft and reconcile before saving again.",
+        }) from exc
     return asdict(entry)
 
 
@@ -380,13 +456,25 @@ async def delete_team_memory(
     sync_token: str | None = None,
     tenant_id: str | None = None,
     current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
 ):
     """Delete a shared team-memory entry for the current tenant/workspace."""
     from app.services.team_memory import TeamMemoryConflictError, TeamMemoryStore
 
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    from app.services.content_input_receipts import (
+        ContentInputReceiptError, latest_team_memory_receipts, lock_team_memory_write,
+        record_team_memory_receipt, validate_team_memory_receipt,
+    )
+
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     store = TeamMemoryStore()
     try:
+        await lock_team_memory_write(db, target_tenant_id, workspace_key, entry_key)
+        previous = store.get_entry(str(target_tenant_id), workspace_key, entry_key, include_deleted=True)
+        receipt = None
+        if previous is not None:
+            receipts = await latest_team_memory_receipts(db, target_tenant_id, workspace_key, [previous])
+            receipt = await validate_team_memory_receipt(db, target_tenant_id, current_user, workspace_key, previous, receipts)
         deleted = store.delete_entry(
             str(target_tenant_id),
             workspace_key,
@@ -397,4 +485,22 @@ async def delete_team_memory(
         )
     except TeamMemoryConflictError as exc:
         raise HTTPException(status_code=409, detail=_team_memory_conflict_detail(exc)) from exc
+    except ContentInputReceiptError as exc:
+        raise _content_receipt_http_error(exc) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail={
+            "code": "team_memory_save_unknown", "outcome": "unknown", "retryable": False,
+            "message": "Deletion could not be confirmed. Reconcile before retrying.",
+        }) from exc
+    try:
+        if deleted:
+            tombstone = store.get_entry(str(target_tenant_id), workspace_key, entry_key, include_deleted=True)
+            record_team_memory_receipt(db, target_tenant_id, workspace_key, tombstone, receipt.dependencies_json)
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail={
+            "code": "team_memory_save_unknown", "outcome": "unknown", "retryable": False,
+            "message": "Deletion could not be confirmed. Reconcile before retrying.",
+        }) from exc
     return {"deleted": deleted, "key": entry_key, "workspace_key": workspace_key}

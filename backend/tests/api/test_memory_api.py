@@ -9,6 +9,26 @@ from fastapi.testclient import TestClient
 
 from app.api.memory import router
 from app.core.security import get_current_admin, get_current_user
+from app.database import get_db
+
+
+class MemoryReceiptSession:
+    """HTTP unit seam; PostgreSQL/RLS receipts are covered by the M1-G21 integration."""
+    def __init__(self):
+        self.info = {}
+        self.rows = []
+
+    def add(self, row):
+        self.rows.append(row)
+
+    async def execute(self, *_args, **_kwargs):
+        return None
+
+    async def commit(self):
+        pass
+
+    async def rollback(self):
+        pass
 
 
 @pytest.fixture(autouse=True)
@@ -41,6 +61,29 @@ def _review_team_memory_semantics(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.api.memory._load_team_memory_secret_boundary", empty_secret_boundary)
 
 
+@pytest.fixture(autouse=True)
+def _unit_receipt_database(monkeypatch):
+    receipts = MemoryReceiptSession()
+
+    async def database():
+        yield receipts
+
+    async def latest(db, tenant_id, workspace_key, entries):
+        from pathlib import Path
+        from app.services.content_input_receipts import team_memory_ref
+
+        refs = {team_memory_ref(workspace_key, Path(entry.path).stem) for entry in entries}
+        return {row.carrier_ref: row for row in sorted(db.rows, key=lambda row: row.revision)
+            if row.tenant_id == tenant_id and row.carrier_ref in refs}
+
+    monkeypatch.setattr("app.services.content_input_receipts.latest_team_memory_receipts", latest)
+    monkeypatch.setattr("tests.api.test_memory_api._receipt_database", database)
+
+
+async def _receipt_database():
+    raise AssertionError("The HTTP unit receipt dependency was not initialized")
+
+
 def _build_client(*, role: str, tmp_path):
     app = FastAPI()
     app.include_router(router)
@@ -57,6 +100,7 @@ def _build_client(*, role: str, tmp_path):
 
     app.dependency_overrides[get_current_user] = override_user
     app.dependency_overrides[get_current_admin] = override_admin
+    app.dependency_overrides[get_db] = _receipt_database
     return TestClient(app, raise_server_exceptions=False), user
 
 

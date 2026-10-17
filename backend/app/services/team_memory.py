@@ -37,6 +37,10 @@ class InvalidTeamMemoryModeError(ValueError):
     """Raised when a team-memory write mode is not supported."""
 
 
+class TeamMemoryBaseChangedError(ValueError):
+    """The file no longer matches the trusted base verified before review."""
+
+
 class TeamMemoryConflictError(ValueError):
     """Raised when a client writes against a stale team-memory revision."""
 
@@ -155,16 +159,17 @@ class TeamMemoryStore:
         self._root = Path(data_root) if data_root is not None else Path(get_settings().AGENT_DATA_DIR)
         self._exact_secret_boundary = exact_secret_boundary or ExactSecretBoundary.empty()
 
-    def _workspace_dir(self, tenant_id: str, workspace_key: str) -> Path:
+    def _workspace_dir(self, tenant_id: str, workspace_key: str, *, create: bool = True) -> Path:
         base = (self._root / "shared_memory").resolve()
         path = (base / _safe_component(tenant_id) / _safe_component(workspace_key)).resolve()
         if not path.is_relative_to(base):
             raise ValueError("Unsafe workspace_key for team memory storage.")
-        path.mkdir(parents=True, exist_ok=True)
+        if create:
+            path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def _entry_path(self, tenant_id: str, workspace_key: str, key: str) -> Path:
-        workspace_dir = self._workspace_dir(tenant_id, workspace_key).resolve()
+    def _entry_path(self, tenant_id: str, workspace_key: str, key: str, *, create: bool = True) -> Path:
+        workspace_dir = self._workspace_dir(tenant_id, workspace_key, create=create).resolve()
         path = (workspace_dir / f"{_slugify(key)}.md").resolve()
         if not path.is_relative_to(workspace_dir):
             raise ValueError("Unsafe key for team memory storage.")
@@ -288,6 +293,7 @@ class TeamMemoryStore:
         updated_by: str = "system",
         base_revision: int | None = None,
         sync_token: str | None = None,
+        verified_base: tuple[int, str] | None = None,
     ) -> TeamMemoryEntry:
         if mode not in {"replace", "append"}:
             raise InvalidTeamMemoryModeError(f"Unsupported team memory mode: {mode}")
@@ -309,6 +315,7 @@ class TeamMemoryStore:
             updated_by=updated_by,
             base_revision=base_revision,
             sync_token=sync_token,
+            verified_base=verified_base,
         )
 
     def _upsert_prepared_entry(
@@ -323,6 +330,7 @@ class TeamMemoryStore:
         updated_by: str,
         base_revision: int | None,
         sync_token: str | None,
+        verified_base: tuple[int, str] | None = None,
     ) -> TeamMemoryEntry:
         path = self._entry_path(tenant_id, workspace_key, key)
         existing_body = ""
@@ -332,6 +340,11 @@ class TeamMemoryStore:
             existing_metadata, existing_body = _parse_entry_markdown(path)
             current_entry = self._entry_from_path(path, include_content=True, include_deleted=True)
         existing_revision = _coerce_revision(existing_metadata)
+        actual_base = (existing_revision, _compute_checksum(existing_body)) if current_entry else (0, "")
+        if verified_base is not None and (
+            actual_base != verified_base or (current_entry is not None and (current_entry.revision, current_entry.checksum) != verified_base)
+        ):
+            raise TeamMemoryBaseChangedError("Team memory changed after its input receipt was verified. Preserve the file and regenerate from authorized inputs.")
         sync_conflict = bool(sync_token and current_entry and sync_token != current_entry.sync_token)
         revision_conflict = bool(base_revision is not None and path.exists() and base_revision != existing_revision)
         if revision_conflict or sync_conflict:
@@ -377,7 +390,10 @@ class TeamMemoryStore:
             ),
             encoding="utf-8",
         )
-        return self._entry_from_path(path, include_content=True)  # type: ignore[return-value]
+        entry = self._entry_from_path(path, include_content=True)
+        if entry is None or entry.revision != revision or entry.checksum != checksum:
+            raise OSError("Team memory changed during persistence; reconcile before retrying.")
+        return entry
 
     def _entry_from_path(
         self,
@@ -398,7 +414,7 @@ class TeamMemoryStore:
             title=metadata.get("title", path.stem),
             updated_at=metadata.get("updated_at", ""),
             revision=_coerce_revision(metadata),
-            checksum=metadata.get("checksum", ""),
+            checksum=_compute_checksum(body),
             updated_by=metadata.get("updated_by", ""),
             path=str(path),
             absolute_path=str(path.resolve()),
@@ -407,7 +423,7 @@ class TeamMemoryStore:
             deleted=deleted,
             sync_token=_compute_sync_token(
                 revision=_coerce_revision(metadata),
-                checksum=metadata.get("checksum", ""),
+                checksum=_compute_checksum(body),
                 deleted=deleted,
             ),
         )
@@ -437,19 +453,20 @@ class TeamMemoryStore:
             return self.list_entries(tenant_id, workspace_key, include_deleted=include_deleted)
         matches: list[TeamMemoryEntry] = []
         for path in sorted(self._workspace_dir(tenant_id, workspace_key).glob("*.md")):
-            metadata, body = _parse_entry_markdown(path)
-            if _coerce_deleted(metadata) and not include_deleted:
+            entry = self._entry_from_path(path, include_content=True, include_deleted=include_deleted)
+            if entry is None:
                 continue
-            haystack = "\n".join([metadata.get("title", ""), body]).lower()
+            body = entry.content or ""
+            haystack = "\n".join([entry.title, body]).lower()
             if normalized_query not in haystack:
                 continue
             snippet_source = next(
                 (line.strip() for line in body.splitlines() if normalized_query in line.lower()),
                 body.strip(),
             )
-            entry = self._entry_from_path(path, snippet=snippet_source[:200], include_deleted=include_deleted)
-            if entry is not None:
-                matches.append(entry)
+            entry.snippet = snippet_source[:200]
+            entry.content = None
+            matches.append(entry)
         matches.sort(key=lambda entry: entry.updated_at, reverse=True)
         return matches
 
@@ -461,7 +478,7 @@ class TeamMemoryStore:
         *,
         include_deleted: bool = False,
     ) -> TeamMemoryEntry | None:
-        path = self._entry_path(tenant_id, workspace_key, key)
+        path = self._entry_path(tenant_id, workspace_key, key, create=False)
         if not path.exists():
             return None
         return self._entry_from_path(path, include_content=True, include_deleted=include_deleted)
@@ -476,7 +493,7 @@ class TeamMemoryStore:
         base_revision: int | None = None,
         sync_token: str | None = None,
     ) -> bool:
-        path = self._entry_path(tenant_id, workspace_key, key)
+        path = self._entry_path(tenant_id, workspace_key, key, create=False)
         if not path.exists():
             return False
         metadata, body = _parse_entry_markdown(path)
@@ -506,4 +523,7 @@ class TeamMemoryStore:
             ),
             encoding="utf-8",
         )
+        persisted = self._entry_from_path(path, include_deleted=True)
+        if persisted is None or persisted.revision != existing_revision + 1 or persisted.checksum != _compute_checksum(tombstone_body):
+            raise OSError("Team memory changed during deletion; reconcile before retrying.")
         return True

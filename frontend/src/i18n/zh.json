@@ -2186,6 +2186,7 @@
       "cancel": "取消",
       "showingFiles": "正在显示 {{visible}} / {{total}} 个文件",
       "showMoreFiles": "显示更多",
+      "sharedMemoryAccessUnavailable": "当前无法核验此条目的访问权限或来源，已停止展示缓存正文。请核对来源权限后重试，或用授权资料重新生成。",
       "fileSave": {
         "unknown": "无法确认此次保存结果，草稿已保留。请先加载当前版本，再决定是否保存。",
         "conflict": "文件已有新修改，你的草稿已保留。请加载当前版本，对照后再保存。",

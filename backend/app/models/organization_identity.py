@@ -260,7 +260,7 @@ class IdentityCutoverJournal(Base):
 
 
 class ContentInputReceipt(Base):
-    """Receipt for one verified team-memory or workspace-artifact write. Schema only in this batch."""
+    """Receipt for one verified team-memory or workspace-artifact write."""
 
     __tablename__ = "content_input_receipts"
     __table_args__ = (

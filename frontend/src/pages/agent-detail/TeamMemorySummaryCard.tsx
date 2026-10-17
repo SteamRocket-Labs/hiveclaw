@@ -76,11 +76,12 @@ export default function TeamMemorySummaryCard({ agentId, section }: TeamMemorySu
   const isWorkspaceSection = section === 'workspace';
   const [errorMessage, setErrorMessage] = React.useState('');
   const [syncStatus, setSyncStatus] = React.useState<'idle' | 'synced' | 'conflict' | 'error'>('idle');
-  const { data: entries = [] } = useQuery({
+  const memoryQuery = useQuery({
     queryKey: buildTeamMemoryQueryKey(TEAM_MEMORY_WORKSPACE_KEY),
     queryFn: () => memoryApi.listShared(TEAM_MEMORY_WORKSPACE_KEY),
     enabled: !!agentId,
   });
+  const entries = memoryQuery.isError || memoryQuery.isFetching ? [] : memoryQuery.data ?? [];
 
   const [searchValue, setSearchValue] = React.useState('');
   const [selectedKey, setSelectedKey] = React.useState(entries[0]?.key ?? '');
@@ -91,11 +92,28 @@ export default function TeamMemorySummaryCard({ agentId, section }: TeamMemorySu
   });
   const selectedEntryKey = selectedKey || filteredEntries[0]?.key || entries[0]?.key || '';
 
-  const { data: selectedEntry } = useQuery({
+  const entryQuery = useQuery({
     queryKey: buildTeamMemoryEntryQueryKey(TEAM_MEMORY_WORKSPACE_KEY, selectedEntryKey),
     queryFn: () => memoryApi.getShared(selectedEntryKey, TEAM_MEMORY_WORKSPACE_KEY),
     enabled: !!agentId && !!selectedEntryKey,
   });
+  const accessUnavailable = memoryQuery.isError || entryQuery.isError;
+  const selectedEntry = !accessUnavailable && !entryQuery.isFetching && entries.some(entry => entry.key === selectedEntryKey)
+    ? entryQuery.data : undefined;
+  const visibleEntries = filteredEntries.filter(entry => entry.key !== selectedEntryKey || (!accessUnavailable && !entryQuery.isFetching));
+
+  React.useEffect(() => {
+    if (memoryQuery.isError && memoryQuery.data !== undefined) {
+      queryClient.getQueryCache().find({ queryKey: buildTeamMemoryQueryKey(TEAM_MEMORY_WORKSPACE_KEY), exact: true })?.setState({ data: undefined });
+    }
+    if (entryQuery.isError && selectedEntryKey) {
+      if (entryQuery.data !== undefined) {
+        queryClient.getQueryCache().find({ queryKey: buildTeamMemoryEntryQueryKey(TEAM_MEMORY_WORKSPACE_KEY, selectedEntryKey), exact: true })?.setState({ data: undefined });
+      }
+      queryClient.setQueryData<TeamMemoryEntry[]>(buildTeamMemoryQueryKey(TEAM_MEMORY_WORKSPACE_KEY), current =>
+        current?.some(entry => entry.key === selectedEntryKey) ? current.filter(entry => entry.key !== selectedEntryKey) : current);
+    }
+  }, [entryQuery.isError, entryQuery.data, memoryQuery.isError, memoryQuery.data, queryClient, selectedEntryKey]);
 
   const [draftKey, setDraftKey] = React.useState(selectedEntry?.key ?? '');
   const [draftTitle, setDraftTitle] = React.useState(selectedEntry?.title ?? '');
@@ -218,12 +236,12 @@ export default function TeamMemorySummaryCard({ agentId, section }: TeamMemorySu
 
       <div className={`team-memory-grid${isWorkspaceSection ? ' is-workspace' : ''}`}>
         <div className="team-memory-list">
-          {filteredEntries.length === 0 ? (
+          {visibleEntries.length === 0 ? (
             <div className="team-memory-empty">
               {t(emptyKey, 'No shared memory entries yet.')}
             </div>
           ) : (
-            filteredEntries.map((entry) => {
+            visibleEntries.map((entry) => {
               const isSelected = entry.key === selectedEntryKey;
               return (
                 <button
@@ -251,7 +269,7 @@ export default function TeamMemorySummaryCard({ agentId, section }: TeamMemorySu
                 <div className="team-memory-detail-label">
                   {t(detailKey, 'Entry Details')}
                 </div>
-                <div className="team-memory-detail-title">{selectedEntry?.title ?? filteredEntries[0]?.title ?? t(emptyKey, 'No shared memory entries yet.')}</div>
+                <div className="team-memory-detail-title">{selectedEntry?.title ?? visibleEntries[0]?.title ?? t(emptyKey, 'No shared memory entries yet.')}</div>
               </div>
               {selectedEntry?.updated_at && (
                 <span className="team-memory-detail-updated">
@@ -260,7 +278,17 @@ export default function TeamMemorySummaryCard({ agentId, section }: TeamMemorySu
               )}
             </div>
             <div className="team-memory-detail-content">
-              {selectedEntry?.content ?? selectedEntry?.snippet ?? filteredEntries[0]?.snippet ?? t(emptyKey, 'No shared memory entries yet.')}
+              {accessUnavailable ? (
+                <div role="alert">
+                  <p>{t('agent.workspace.sharedMemoryAccessUnavailable')}</p>
+                  <button type="button" className="btn btn-secondary" onClick={() => {
+                    void memoryQuery.refetch();
+                    void entryQuery.refetch();
+                  }}>{t('common.retry')}</button>
+                </div>
+              ) : entryQuery.isFetching || memoryQuery.isFetching ? t('common.loading') : (
+                selectedEntry?.content ?? selectedEntry?.snippet ?? visibleEntries[0]?.snippet ?? t(emptyKey, 'No shared memory entries yet.')
+              )}
             </div>
             {selectedEntry && (
               <div className="team-memory-detail-rev">
@@ -269,7 +297,7 @@ export default function TeamMemorySummaryCard({ agentId, section }: TeamMemorySu
             )}
           </div>
 
-          {isWorkspaceSection && (
+          {isWorkspaceSection && !accessUnavailable && !entryQuery.isFetching && !memoryQuery.isFetching && (
             <div className="team-memory-panel team-memory-editor">
               <input
                 value={draftKey}

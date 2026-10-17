@@ -73,6 +73,11 @@
   grid-template-columns: minmax(220px, 0.9fr) minmax(0, 1.1fr);
 }
 
+@media (max-width: 640px) {
+  .team-memory-grid,
+  .team-memory-grid.is-workspace { grid-template-columns: minmax(0, 1fr); }
+}
+
 .team-memory-list {
   display: flex;
   flex-direction: column;

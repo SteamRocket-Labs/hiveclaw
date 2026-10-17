@@ -98,6 +98,10 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    from app.config import get_settings
+    from app.services.content_input_receipts import ContentInputReceiptError, validate_browser_input_dependencies
+
+    monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path))
     tenant_id = uuid.uuid4()
     user_id = uuid.uuid4()
     denied_user_id = uuid.uuid4()
@@ -687,6 +691,9 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
         )
         assert read_result.citations == (f"company-evidence://{processed.evidence_id}",)
         assert str(document.canonical_md_path) not in read_result.as_json()
+        input_dependencies = [{"source_kind": "knowledge_document", "source_id": str(publication.document_id),
+            "source_version": publication.content_hash}]
+        await validate_browser_input_dependencies(db, tenant_id, await db.get(User, user_id), input_dependencies)
 
         explained = await gateway.explain_source(
             db,
@@ -826,6 +833,8 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
             ),
         )
         assert denied_after_revoke.status == "not_found_or_denied"
+        with pytest.raises(ContentInputReceiptError, match="no longer authorized"):
+            await validate_browser_input_dependencies(db, tenant_id, await db.get(User, denied_user_id), input_dependencies)
 
         permission = (
             await db.execute(
@@ -926,6 +935,8 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
         }
         assert retired_view["status"] == "retired"
         assert retired_view["available_action"] == "restore"
+        with pytest.raises(ContentInputReceiptError, match="no longer authorized"):
+            await validate_browser_input_dependencies(db, tenant_id, await db.get(User, user_id), input_dependencies)
         restored = await service.restore_publication(
             db,
             principal=principal,

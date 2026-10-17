@@ -21,7 +21,9 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import check_agent_access, check_agent_operator_reachability, is_scoped_business_admin
+from app.core.permissions import (
+    authorize_loaded_session_access, check_agent_access, check_agent_operator_reachability, is_scoped_business_admin,
+)
 from app.core.resource_authority import (
     OWNED_AUTHORITY_STATE,
     QUARANTINED_AUTHORITY_STATE,
@@ -49,6 +51,46 @@ def _is_workspace_path(path: str) -> bool:
 def _is_session_source_path(path: str) -> bool:
     return any(path == root or path.startswith(f"{root}/")
         for root in ("memory/t0/sessions", "memory/t2/sessions", "memory/sessions", "logs"))
+
+
+async def authorize_browser_session_source(
+    db: AsyncSession, user: User, *, agent_id: uuid.UUID, path: str,
+    operator_view: bool = False, operator_reason: str | None = None,
+) -> str | None:
+    normalized = normalize_workspace_resource_path(path)
+    source_id = None
+    for root in ("memory/t0/sessions/", "memory/t2/sessions/", "memory/sessions/"):
+        if normalized.startswith(root):
+            source_id = normalized[len(root):].split("/", 1)[0]
+            break
+    if source_id is None:
+        return None
+    agent, access = await (check_agent_operator_reachability(db, user, agent_id) if operator_view
+        else check_agent_access(db, user, agent_id))
+    try:
+        session_id = uuid.UUID(source_id)
+    except ValueError:
+        session_id = None
+    session = await db.scalar(select(ChatSession).where(ChatSession.id == session_id,
+        ChatSession.agent_id == agent_id, ChatSession.tenant_id == agent.tenant_id,
+    ).execution_options(populate_existing=True)) if session_id is not None else None
+    if session is not None:
+        authority = await authorize_loaded_session_access(db, user, agent=agent, session=session,
+            access_level=access, action="file_source:read", operator_view=operator_view, operator_reason=operator_reason)
+        if session.audience_kind in {None, "private"} or authority != "session_owner":
+            return authority
+        if not is_scoped_business_admin(user, resource_tenant_id=agent.tenant_id):
+            raise HTTPException(status_code=503, detail={"code": "session_source_audience_unavailable",
+                "message": "This source requires its live shared-audience reader. Administrator inspection remains available."})
+    # Unknown legacy files and shared-owner overrides require audited inspection authority.
+    if is_scoped_business_admin(user, resource_tenant_id=agent.tenant_id) or operator_view:
+        decision = await authorize_resource_action(db, user, agent_id=agent_id, resource_kind="workspace_file",
+            resource_id=workspace_resource_id(agent_id, normalized), action="read",
+            authority_state=QUARANTINED_AUTHORITY_STATE, allow_manager_override=operator_view,
+            manager_override_reason=operator_reason, agent_access=(agent, access))
+        return decision.authority_source
+    raise WorkspaceAuthorityError("session_source_unverified",
+        "This session source has no current authority binding. Preserve it and reconcile its provenance.")
 
 
 _WORKSPACE_EFFECT_ACTIONS = ("write", "delete", "create", "deliver")

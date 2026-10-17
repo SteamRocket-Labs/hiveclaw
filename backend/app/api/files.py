@@ -30,7 +30,7 @@ from app.core.permissions import (
     check_agent_operator_reachability,
     require_agent_manage_access,
 )
-from app.core.resource_authority import authorize_resource_action
+from app.core.resource_authority import authorize_resource_action, normalize_workspace_resource_path
 from app.core.security import get_current_user
 from app.database import _current_tenant_id, get_db, pin_rls_tenant_context
 from app.models.audit import AuditLog
@@ -180,7 +180,20 @@ def _safe_agent_relative_path(agent_id: uuid.UUID, rel_path: str) -> Path:
 
 
 def _normalized_rel_path(path: str) -> str:
-    return str(path or "").replace("\\", "/").strip().lstrip("/")
+    try:
+        return normalize_workspace_resource_path(path)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="File path escapes the Agent workspace") from exc
+
+
+async def _authorize_session_source(db, user, agent_id, path, operator_view, operator_reason):
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_browser_session_source
+
+    try:
+        return await authorize_browser_session_source(db, user, agent_id=agent_id, path=path,
+            operator_view=operator_view, operator_reason=operator_reason)
+    except WorkspaceAuthorityError as exc:
+        raise _workspace_authority_http_error(exc) from exc
 
 
 def _is_governed_memory_path(path: str) -> bool:
@@ -490,6 +503,7 @@ async def list_files(
     _raise_raw_system_read_guard(path, access_level=access_level)
     if access_level in {"use", "operator"} and _is_governed_memory_path(path):
         _raise_raw_memory_read_guard()
+    await _authorize_session_source(db, current_user, agent_id, path, operator_view, operator_reason)
     target = _safe_path(agent_id, path)
 
     scope = None
@@ -525,8 +539,12 @@ async def list_files(
         logical_rel = entry.relative_to(target).as_posix()
         logical_rel = f"{path.rstrip('/')}/{logical_rel}" if path else logical_rel
         try:
+            source_authority = await _authorize_session_source(db, current_user, agent_id, logical_rel,
+                operator_view, operator_reason)
             rel = _safe_path(agent_id, logical_rel).relative_to(base_abs).as_posix()
-        except HTTPException:
+        except HTTPException as exc:
+            if exc.status_code not in {403, 404}:
+                raise
             continue
         stat = entry.stat()
         items.append(
@@ -536,7 +554,7 @@ async def list_files(
                 is_dir=entry.is_dir(),
                 size=stat.st_size if entry.is_file() else 0,
                 modified_at=str(stat.st_mtime),
-                authority_source=scope.authority_source if scope is not None else None,
+                authority_source=scope.authority_source if scope is not None else source_authority,
                 operator_view=bool(scope and scope.operator_view),
             )
         )
@@ -561,6 +579,7 @@ async def read_file(
     _raise_raw_system_read_guard(path, access_level=access_level)
     if access_level in {"use", "operator"} and _is_governed_memory_path(path):
         _raise_raw_memory_read_guard()
+    source_authority = await _authorize_session_source(db, current_user, agent_id, path, operator_view, operator_reason)
     target = _safe_path(agent_id, path)
     resource_decision = None
     if _is_user_workspace_path(path):
@@ -636,6 +655,8 @@ async def read_file(
         content, content_hash = await asyncio.to_thread(read_content)
     except WorkspaceAuthorityError as exc:
         raise _workspace_authority_http_error(exc) from exc
+    if source_authority is not None:
+        await _authorize_session_source(db, current_user, agent_id, path, operator_view, operator_reason)
     receipt = None
     if resource_decision is not None:
         from app.services.content_input_receipts import (
@@ -656,7 +677,7 @@ async def read_file(
         content=content,
         content_hash=content_hash,
         content_revision=receipt.revision if receipt is not None else None,
-        authority_source=resource_decision.authority_source if resource_decision else None,
+        authority_source=resource_decision.authority_source if resource_decision else source_authority,
         operator_view=bool(resource_decision and resource_decision.operator_view),
     )
 
@@ -1155,6 +1176,7 @@ async def download_file(
     _raise_raw_system_read_guard(path, access_level=access_level)
     if access_level in {"use", "operator"} and _is_governed_memory_path(path):
         _raise_raw_memory_read_guard()
+    source_authority = await _authorize_session_source(db, user, agent_id, path, operator_view, operator_reason)
     target = _safe_path(agent_id, path)
     if _is_user_workspace_path(path):
         from app.services.workspace_resource_authority import authorize_workspace_path
@@ -1175,7 +1197,14 @@ async def download_file(
             raise _workspace_authority_http_error(exc) from exc
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-    return await _workspace_download_response(agent_id, path, target.name)
+    response = await _workspace_download_response(agent_id, path, target.name)
+    try:
+        if source_authority is not None:
+            await _authorize_session_source(db, user, agent_id, path, operator_view, operator_reason)
+    except BaseException:
+        response._snapshot_dir.cleanup()
+        raise
+    return response
 
 
 @router.get("/artifacts/{artifact_id}/download")

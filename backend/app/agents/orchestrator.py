@@ -20,7 +20,7 @@ from app.agents.delegation_token import DEFAULT_DELEGATION_TTL_SECONDS, issue_de
 from app.agents.tool_policies import DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
 from app.core.execution_context import A2A_TOOL_AUTHORITY_FRAME_SCHEMA, ExecutionPrincipal
 from app.kernel.contracts import (
-    ExecutionIdentityRef, ProviderRequestNeedsReconciliation, SessionRestartRecoveryRequired,
+    ContextDependencyUnavailable, ExecutionIdentityRef, ProviderRequestNeedsReconciliation, SessionRestartRecoveryRequired,
     TerminalReason, ToolLifecyclePersistenceError,
 )
 from app.runtime.ccplus_contracts import permission_profile_snapshot, permission_profile_snapshot_hash
@@ -1242,6 +1242,7 @@ def _build_runtime_task_metadata(request: AgentDelegationRequest, *, task_id: st
     authority_snapshot = _delegation_authority_snapshot(request)
     metadata: dict[str, Any] = {
         "message_count": len(request.conversation_messages),
+        "parent_agent_name": request.parent_agent_name,
         "system_prompt_suffix": request.system_prompt_suffix,
         "tool_profile": request.policy.tool_profile,
         "max_depth": request.policy.max_depth,
@@ -2166,6 +2167,16 @@ async def _delegate_after_cycle_check(
             if not transcript_enabled:
                 raise RuntimeError("delegation_session_runtime_scope_unavailable")
             canonical_runtime = await DelegationSessionRuntime.attach(invocation, request)
+            from app.services.delegation_input_origin import authorize_delegation_instruction
+
+            await authorize_delegation_instruction(invocation, request)
+            if any("a2a_instruction_origin" in message for message in request.conversation_messages):
+                await _ensure_peer_delegation_session(request, state="running", instruction_authorized=True)
+            prepare_session_request = invocation.model_request_prepare
+            async def prepare_delegated_request(**payload):
+                await authorize_delegation_instruction(invocation, request)
+                return await prepare_session_request(**payload)
+            invocation.model_request_prepare = prepare_delegated_request
         artifact_inputs = await load_delegated_artifact_context(invocation, request.conversation_messages)
         if artifact_inputs:
             invocation.system_prompt_suffix = "\n\n".join([invocation.system_prompt_suffix or "", artifact_inputs])
@@ -2218,6 +2229,12 @@ async def _delegate_after_cycle_check(
                 else None
             ),
         )
+    except ContextDependencyUnavailable as exc:
+        _delegation_status = "error"
+        delegation_result = AgentDelegationResult(content=exc.user_message, child_session_id=child_session_id,
+            trace_id=trace_id, depth=request.depth, failed=True, terminal_reason=exc.code,
+            parts=({"type": "runtime_status", "status": "denied" if exc.code == "delegation_instruction_source_access_denied" else "unavailable", "error_code": exc.code,
+                "retryable": False, "recovery_action": "revise_delegation_input"},))
     except asyncio.TimeoutError:
         _delegation_status = "timeout"
         delegation_result = AgentDelegationResult(
@@ -2286,6 +2303,7 @@ async def _ensure_peer_delegation_session(
     *,
     state: str,
     session_factory: Any | None = None,
+    instruction_authorized: bool = False,
 ) -> bool:
     """Admit one peer digital-employee A2A run onto its task-scoped Session.
 
@@ -2295,8 +2313,8 @@ async def _ensure_peer_delegation_session(
 
     The RuntimeTask must exist before this function is called, so
     ``runtime_task_id`` is a valid durable foreign key. The first instruction is
-    persisted once, before coordination publish, which makes blocked/failed
-    pre-dispatch attempts visible and keeps the read-only Session addressable.
+    persisted once after source authorization for reference-bearing inputs.
+    Pending inputs keep an addressable Session without disclosing their bytes.
     """
 
     if request.interaction_type != "delegation":
@@ -2398,7 +2416,9 @@ async def _ensure_peer_delegation_session(
             )
             instruction_persisted = prior.scalar_one_or_none() is not None
 
-        if not instruction_persisted:
+        source_pending = (any("a2a_instruction_origin" in message for message in request.conversation_messages)
+            and not instruction_authorized)
+        if not instruction_persisted and not source_pending:
             await append_session_event(
                 db=db,
                 agent_id=target_agent_id,
@@ -2430,7 +2450,7 @@ async def _ensure_peer_delegation_session(
                 },
             )
             session.last_message_at = datetime.now(timezone.utc)
-        if task_marker:
+        if task_marker and not source_pending:
             session_metadata["delegation_instruction_runtime_task_id"] = task_marker
         session.transcript_metadata_json = session_metadata
         await db.commit()

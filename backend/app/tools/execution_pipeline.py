@@ -177,6 +177,7 @@ async def _prepare_runtime_context(state: _ToolExecutionState) -> _Stop | None:
         round_state=request.round_state,
         t0_refs=request.t0_refs,
     )
+    state.runtime_context.tool_call_id = state.tool_call_id
     _configure_runtime_context(state)
     principal = state.runtime_context.execution_principal
     if (

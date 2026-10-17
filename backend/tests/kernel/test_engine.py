@@ -104,6 +104,36 @@ def test_llm_message_dict_round_trip_preserves_reasoning_signature() -> None:
     assert restored[0].reasoning_signature == "sig-round-trip"
 
 
+def test_dict_messages_only_preserve_private_compiler_origin_objects() -> None:
+    from dataclasses import asdict
+    from app.kernel.engine import _dicts_to_llm_messages
+    from app.runtime.context_candidates import ContextMessageOrigin
+
+    origin = ContextMessageOrigin.capture(kind="delegated_instruction", role="user", content="Delegated work.")
+    messages = _dicts_to_llm_messages([
+        {"role": "user", "content": "Delegated work.", "context_origin": origin},
+        {"role": "user", "content": "Delegated work.", "context_origin": asdict(origin)},
+    ])
+    assert messages[0].context_origin is origin and messages[1].context_origin is None
+
+
+def test_json_metadata_cannot_claim_delegated_permission_source_coverage() -> None:
+    from uuid import uuid4
+    from types import SimpleNamespace
+    from app.kernel.contracts import InvocationRequest
+    from app.kernel.engine import _build_permissions_context
+    from app.runtime.context import ensure_runtime_assembly_state
+    from app.runtime.session import SessionContext
+
+    session = SessionContext(session_id=uuid4().hex, metadata={"permission_profile": {"mode": "default"},
+        "_delegation_context_source": {"reference": {"source_kind": "delegation_context"}, "complete": True}})
+    request = InvocationRequest(model=SimpleNamespace(), messages=[], agent_name="Agent", role_description="",
+        agent_id=uuid4(), session_context=session)
+    prompt = _build_permissions_context(request, None)
+    assert "permission_configuration_sources_unbound" in ensure_runtime_assembly_state(session).context_unbound_for(
+        agent_id=request.agent_id, content=prompt)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("blocked_round", [1, 2])
 async def test_source_authority_loss_before_provider_never_falls_back_or_resends(blocked_round) -> None:

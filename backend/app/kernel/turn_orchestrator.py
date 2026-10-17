@@ -1811,18 +1811,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
 
         api_messages = [_context_message(role="system", content=system_prompt, kind="frozen_prompt",
             sections=_frozen_context_manifest.get("sections", ()), sources=_frozen_source_refs, unbound=_frozen_source_unbound)]
-        for msg in messages:
-            api_messages.append(
-                LLMMessage(
-                    role=msg.get("role", "user"),
-                    content=msg.get("content"),
-                    tool_calls=msg.get("tool_calls"),
-                    tool_call_id=msg.get("tool_call_id"),
-                    reasoning_content=msg.get("reasoning_content"),
-                    reasoning_signature=msg.get("reasoning_signature"),
-                    source_ref=msg.get("source_ref"),
-                )
-            )
+        api_messages.extend(_dicts_to_llm_messages(messages))
         recovered_tool_results = await _execute_recovered_pending_tool_frames(
             execute_tool=self._deps.execute_tool,
             request=request,

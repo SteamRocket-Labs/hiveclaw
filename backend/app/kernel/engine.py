@@ -1314,16 +1314,22 @@ def _build_permissions_context(request: InvocationRequest, runtime_config: Runti
     handoff_context = _render_pending_skill_handoffs(metadata)
     if handoff_context:
         permissions_prompt += "\n" + handoff_context
-    contributor_keys = ("permission_profile", "approval_policy", "permission_mode", "network_access",
-        "network_policy", "allowed_tools", "writable_roots", "denied_reads", "denied_actions",
-        "request_permission_tool_enabled", "plan_mode", "skill_execution_plans", "pending_skill_handoffs")
+    from app.services.delegation_context_sources import DelegationContextSource, PERMISSION_INPUT_KEYS
+
+    contributor_keys = PERMISSION_INPUT_KEYS
+    sources = ()
     if (any(metadata.get(key) for key in contributor_keys) or request.allowed_tool_names
         or getattr(runtime_config, "tenant_resolution_error", None)):
-        source_unbound.append("permission_configuration_sources_unbound")
+        source = metadata.get("_delegation_context_source")
+        if (isinstance(source, DelegationContextSource) and source.matches(metadata, request.allowed_tool_names)
+            and not getattr(runtime_config, "tenant_resolution_error", None)):
+            sources = (source.reference,)
+        else:
+            source_unbound.append("permission_configuration_sources_unbound")
     from app.runtime.context import ensure_runtime_assembly_state
 
     ensure_runtime_assembly_state(request.session_context).record_context_sources(
-        agent_id=request.agent_id, content=permissions_prompt, sources=(), unbound=source_unbound)
+        agent_id=request.agent_id, content=permissions_prompt, sources=sources, unbound=source_unbound)
     return permissions_prompt
 
 
@@ -3175,6 +3181,8 @@ def _merge_continuation_response(base: LLMResponse, continuation: LLMResponse) -
 
 def _dicts_to_llm_messages(dicts: list[dict]) -> list[LLMMessage]:
     """Convert plain dicts back to LLMMessage objects."""
+    from app.runtime.context_candidates import ContextMessageOrigin
+
     return [
         LLMMessage(
             role=d.get("role", "user"),
@@ -3184,6 +3192,7 @@ def _dicts_to_llm_messages(dicts: list[dict]) -> list[LLMMessage]:
             reasoning_content=d.get("reasoning_content"),
             reasoning_signature=d.get("reasoning_signature"),
             source_ref=d.get("source_ref"),
+            context_origin=d.get("context_origin") if isinstance(d.get("context_origin"), ContextMessageOrigin) else None,
         )
         for d in dicts
     ]

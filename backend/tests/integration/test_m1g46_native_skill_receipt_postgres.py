@@ -273,9 +273,9 @@ async def test_native_frozen_identity_and_policy_sources_revalidate_current_auth
         identity = next(ref for ref in sources if ref["source_kind"] == "agent_identity")
         policy = next(ref for ref in sources if ref["source_kind"] == "owner_action_policy")
         roster = next(ref for ref in frozen_sources if ref["source_id"].endswith("\na2a-collaborators"))
-        with pytest.raises(ContentInputReceiptError) as nonempty:
+        with pytest.raises(ContentInputReceiptError) as forged_roster:
             await validate_runtime_input_dependencies(db, request, [{**roster, "source_version": "f" * 64}])
-        assert nonempty.value.status_code == 503
+        assert forged_roster.value.status_code == 403 and forged_roster.value.code == "content_source_changed"
         async with owner_sessionmaker() as writer:
             agent = await writer.get(Agent, seed["agent_id"])
             original_name = agent.name

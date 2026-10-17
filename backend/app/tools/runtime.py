@@ -42,6 +42,7 @@ class ToolExecutionContext:
     delegation_token: Any | None = None
     turn_id: str | None = None
     runtime_task_id: str | None = None
+    tool_call_id: str | None = None
     budget_run_id: str | None = None
     origin_channel: str | None = None
     round_state: dict[str, Any] | None = None

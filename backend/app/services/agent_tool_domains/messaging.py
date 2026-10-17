@@ -1446,6 +1446,7 @@ async def _delegate_to_agent_async_outcome(
     args: dict,
     *,
     principal: ExecutionPrincipal | None = None,
+    execution_context=None,
 ) -> A2AOutcome:
     """Spawn an async subagent task and return a runtime handle."""
     agent_name = args.get("agent_name", "").strip()
@@ -1552,20 +1553,26 @@ async def _delegate_to_agent_async_outcome(
                 message=f"Delegation depth limit reached ({delegation_depth}/{delegation_max_depth})",
                 status="blocked",
             )
+        from app.services.delegation_input_origin import capture_delegation_instruction_origin
+
+        instruction = {"role": "user", "content": message_text}
+        origin = await capture_delegation_instruction_origin(execution_context, args, recipient_agent_id=target.id)
+        if origin is not None:
+            instruction["a2a_instruction_origin"] = origin
+        elif execution_context is not None:
+            return _a2a_failure("delegate", error_code="delegation_instruction_origin_unavailable",
+                message="The current instruction has no canonical parent source. Reconcile its source before retrying.",
+                status="unavailable", retryable=False)
         handle = await delegate_async(
             target=target,
             target_model=target_model,
-            conversation_messages=[
-                {
-                    "role": "user",
-                    "content": message_text,
-                }
-            ],
+            conversation_messages=[instruction],
             owner_id=requester_user_id,
             session_id=child_session_id,
             parent_agent_id=from_agent_id,
             parent_agent_name=source_agent.name,
-            parent_session_id=(principal.root_session_id if principal else None) or args.get("parent_session_id"),
+            parent_session_id=(getattr(execution_context, "session_id", None)
+                or (principal.root_session_id if principal else None) or args.get("parent_session_id")),
             trace_id=str(args.get("_a2a_trace_id") or "").strip() or None,
             depth=delegation_depth,
             max_tool_rounds=args.get("max_tool_rounds"),
@@ -1645,9 +1652,9 @@ async def _delegate_to_agent_async_outcome(
         )
 
 
-async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
+async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict, *, execution_context=None) -> str:
     """Compatibility renderer for the LLM tool surface."""
-    outcome = await _delegate_to_agent_async_outcome(from_agent_id, args)
+    outcome = await _delegate_to_agent_async_outcome(from_agent_id, args, execution_context=execution_context)
     return outcome.to_tool_result()
 
 

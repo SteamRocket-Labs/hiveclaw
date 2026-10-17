@@ -77,6 +77,11 @@ async def _validate_input_dependencies(db, tenant_id: uuid.UUID, dependencies: l
         if dependency["source_kind"] == "session_actor_identity":
             await _validate_session_actor_identity(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
             continue
+        if dependency["source_kind"] == "delegation_context":
+            from app.services.delegation_context_sources import validate_delegation_context_source
+
+            await validate_delegation_context_source(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
+            continue
         if dependency["source_kind"] in {"session_command", "session_tool_invocation"}:
             await _validate_session_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
             continue
@@ -173,10 +178,34 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
 
         empty = build_a2a_collaborators_section(
             {"same_owner_agents": [], "public_agents": [], "collaboration_groups": []}, max_chars=None)
-        if hashlib.sha256(empty.encode("utf-8")).hexdigest() != dependency["source_version"]:
+        if hashlib.sha256(empty.encode("utf-8")).hexdigest() == dependency["source_version"]:
+            return  # Constant empty-directory guidance has no roster data.
+        from app.models.config_revision import ConfigRevision
+        from app.services.a2a_collaboration_policy import build_a2a_collaboration_read_model
+        from app.services.agent_context import agent_identity_content
+        from app.services.config_versioning import canonical_content_hash
+
+        directory = await build_a2a_collaboration_read_model(db, agent_id)
+        if directory.get("public_agents") or directory.get("collaboration_groups"):
             raise ContentInputReceiptError("content_source_unavailable",
-                "Nonempty collaborator metadata requires its original source and audience receipts.", 503)
-        # The empty-directory guidance is application text, independent of later roster changes.
+                "Shared collaborator metadata requires its original publication and audience receipts.", 503)
+        for entry in directory.get("same_owner_agents") or []:
+            peer = await db.get(Agent, uuid.UUID(entry["id"]), populate_existing=True)
+            if peer is None or peer.tenant_id != tenant_id:
+                raise ContentInputReceiptError("content_source_changed", "The collaborator is unavailable.", 403)
+            witness = await db.scalar(select(ConfigRevision).where(ConfigRevision.tenant_id == tenant_id,
+                ConfigRevision.entity_type == "agent_bootstrap", ConfigRevision.entity_id == peer.id,
+                ConfigRevision.version == 1, ConfigRevision.is_active.is_(True)).execution_options(populate_existing=True))
+            content = witness.content if witness is not None and isinstance(witness.content, dict) else {}
+            if (witness is None or witness.change_source != "user" or witness.changed_by_agent_id is not None
+                or witness.changed_by_user_id != peer.creator_id or canonical_content_hash(content) != witness.content_hash
+                or content.get("schema") != "hive.agent_bootstrap.v1"
+                or content.get("identity") != agent_identity_content(peer.name, peer.role_description)):
+                raise ContentInputReceiptError("content_source_unavailable",
+                    "A collaborator label lacks an exact original creation witness.", 503)
+        rendered = build_a2a_collaborators_section(directory, max_chars=None)
+        if hashlib.sha256(rendered.encode("utf-8")).hexdigest() != dependency["source_version"]:
+            raise ContentInputReceiptError("content_source_changed", "The collaborator directory has changed.", 403)
         return
     if not resident and not identity:
         resource = await load_agent_context_resource(agent_id=agent_id, tenant_id=tenant_id, resource_ref=ref)
@@ -308,6 +337,7 @@ async def _validate_session_dependency(db, tenant_id, dependency, *, user, runti
     from app.models.session_v2 import SessionCommand, SessionToolInvocation
     from app.services.session_model_inputs import _hash
     from app.services.session_semantic_history import _event_payload
+    from app.services.session_v2_persistence import SESSION_COMMAND_AUTHORITY_STAMP_KEY
 
     try:
         source_id = uuid.UUID(dependency["source_id"])
@@ -334,10 +364,17 @@ async def _validate_session_dependency(db, tenant_id, dependency, *, user, runti
         valid = isinstance(content, str) and version == _hash(content)
     if not valid or version != dependency["source_version"]:
         raise ContentInputReceiptError("content_source_changed", "The session source no longer matches its receipt.", 403)
-    await _authorize_session_input_source(db, tenant_id, session, user=user, runtime_request=runtime_request)
+    from app.tools.runtime import ToolExecutionContext
+
+    context = getattr(runtime_request, "context", None)
+    await _authorize_session_input_source(db, tenant_id, session, user=user, runtime_request=runtime_request,
+        delegated_user_command=(model is SessionCommand and source.namespace == "human_input"
+            and source.principal_type == "user" and isinstance(context, ToolExecutionContext)
+            and source.principal_id == context.user_id
+            and SESSION_COMMAND_AUTHORITY_STAMP_KEY not in (source.target_json or {})))
 
 
-async def _authorize_session_input_source(db, tenant_id, session, *, user, runtime_request):
+async def _authorize_session_input_source(db, tenant_id, session, *, user, runtime_request, delegated_user_command=False):
     from fastapi import HTTPException
     from app.core.permissions import authorize_session_action
 
@@ -349,8 +386,34 @@ async def _authorize_session_input_source(db, tenant_id, session, *, user, runti
                 action="read_content_input_source")
             return
         principal, requester = await _runtime_input_actor(db, tenant_id, runtime_request)
-        if session.user_id != requester.id or session.agent_id != principal.agent_id:
+        if session.user_id != requester.id:
             raise ValueError("session_source_actor_mismatch")
+        if session.agent_id != principal.agent_id:
+            if not delegated_user_command:
+                raise ValueError("session_source_actor_mismatch")
+            from datetime import datetime, timezone
+            from sqlalchemy import func
+            from app.agents.delegation_token import DelegationToken, validate_delegation_token
+            from app.models.agent import Agent
+            from app.models.runtime_task import RuntimeTask
+
+            context = runtime_request.context
+            token = context.delegation_token
+            if (not delegated_user_command or principal.purpose != "a2a_delegation"
+                or not isinstance(token, DelegationToken)
+                or not validate_delegation_token(token, child_agent_id=context.agent_id).valid
+                or token.parent_agent_id != session.agent_id):
+                raise ValueError("session_source_actor_mismatch")
+            parent = await db.scalar(select(Agent).join(RuntimeTask, RuntimeTask.parent_agent_id == Agent.id).where(
+                RuntimeTask.id == uuid.UUID(str(context.runtime_task_id)), RuntimeTask.tenant_id == tenant_id,
+                RuntimeTask.task_type == "delegation", RuntimeTask.status == "running",
+                RuntimeTask.root_user_id == requester.id, RuntimeTask.child_agent_id == context.agent_id,
+                func.replace(func.lower(RuntimeTask.child_session_id), "-", "") == uuid.UUID(str(context.session_id)).hex,
+                RuntimeTask.claim_expires_at > datetime.now(timezone.utc), RuntimeTask.parent_agent_id == session.agent_id,
+                func.replace(func.lower(RuntimeTask.parent_session_id), "-", "") == session.id.hex,
+                Agent.tenant_id == tenant_id, Agent.deleted_at.is_(None), Agent.deactivated_at.is_(None)))
+            if parent is None or (parent.owner_user_id or parent.creator_id) != requester.id:
+                raise ValueError("session_source_actor_mismatch")
     except (HTTPException, ValueError) as exc:
         raise ContentInputReceiptError("content_source_access_denied", "The session source is no longer authorized for this reader.", 403) from exc
 

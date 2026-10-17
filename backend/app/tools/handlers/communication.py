@@ -333,7 +333,7 @@ async def delegate_to_agent(agent_id: uuid.UUID, arguments: dict, *, execution_c
 
         result = await resume_first_task_from_tool(execution_context, arguments)
     else:
-        result = await _delegate_to_agent_async(agent_id, arguments)
+        result = await _delegate_to_agent_async(agent_id, arguments, execution_context=execution_context)
     return _normalize_messaging_result("delegate_to_agent", result)
 
 

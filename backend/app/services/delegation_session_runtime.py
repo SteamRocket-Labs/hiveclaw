@@ -43,6 +43,16 @@ class DelegationSessionRuntime:
             if task is None:
                 raise RuntimeError("delegation_session_runtime_scope_unavailable")
             assert_runtime_task_fence(task)
+            from app.services.delegation_context_sources import bind_delegation_context_sources
+
+            await bind_delegation_context_sources(db, task=task, invocation=invocation)
+            from app.services.delegation_input_origin import load_delegation_instruction_origin
+
+            if (task.metadata_json or {}).get("conversation_messages") == request.conversation_messages:
+                origin = await load_delegation_instruction_origin(db, request=request,
+                    tenant_id=invocation.tenant_id, content=invocation.messages[0]["content"])
+                if origin is not None:
+                    invocation.messages[0]["context_origin"] = origin
             history, round_index, tokens, receipt = await _session_restart_resume_history(db, task)
             await db.commit()
             turn_id = str((task.metadata_json or {}).get("turn_id") or f"turn-{run_id.hex}")

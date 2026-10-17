@@ -13,7 +13,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
     reason="Native macOS context gate; Linux delivery is deferred.")]
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case,
 ):
@@ -32,7 +32,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.services.web_chat_runtime import _persist_tool_call
 
     first_task = input_case.startswith("first_task")
-    delivery_case = input_case in {"first_task_delivery", "first_task_parent_model"}
+    parent_model_case = input_case in {"first_task_parent_model", "first_task_refined_native"}
+    delivery_case = input_case == "first_task_delivery" or parent_model_case
+    native_refined = input_case == "first_task_refined_native"
     refined_input = input_case == "first_task_refined"
     unbound_input = input_case in {"unbound", "first_task_unbound"}
     revoked_input = input_case in {"revoked", "first_task_revoked"}
@@ -174,10 +176,10 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             job.status, job.claimed_by, job.claim_version = "running", "creation-origin-worker", 1
             await db.commit()
         async def no_refinement(*_args, **_kwargs):
-            if refined_input:
+            if refined_input or native_refined:
                 from types import SimpleNamespace
 
-                return SimpleNamespace(provider="openai", model="synthetic-refiner", api_key="synthetic", base_url=None), "synthetic_refiner"
+                return SimpleNamespace(provider="openai", model="synthetic-refiner", api_key="synthetic", base_url=None, max_output_tokens=17001), "synthetic_refiner"
             return None, "synthetic_transport"
         class SyntheticMemoryTransport:
             async def stream(self, **_kwargs):
@@ -193,13 +195,27 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             async def same_bytes_without_model_io(**kwargs):
                 return await _refine_soul_inputs(**{**kwargs, "model_config": {}})
             monkeypatch.setattr("app.tools.handlers.hr._refine_soul_inputs", same_bytes_without_model_io)
+        refinement_calls = []
+        if native_refined:
+            async def refinement_transport(**kwargs):
+                assert kwargs["usage_source"] == "hr_soul_refine"
+                refinement_calls.append(kwargs)
+                return {"choices": [{"message": {"content": json.dumps({
+                    "personality": "REFINED_CONTEXT: Analyze sources carefully and deliver referenced draft reports.",
+                    "quality_standards": ["Retain source references in each report."]})}}]}
+            monkeypatch.setattr("app.services.llm_client.chat_complete", refinement_transport)
         monkeypatch.setattr("app.services.llm_client.create_llm_client_from_config", lambda *_args: SyntheticMemoryTransport())
         assert await execute_claimed_hr_provisioning(job_id) == "completed"
         assert await execute_claimed_hr_provisioning(job_id) == "completed"
+        if native_refined:
+            assert len(refinement_calls) == 1 and "Prepare referenced reports" in refinement_calls[0]["messages"][0]["content"]
+            assert refinement_calls[0]["max_tokens"] == 17001
         async with owner_sessionmaker() as db:
             draft = await db.get(HrCreationDraft, UUID(creation["blueprint_id"]))
             receiver = draft.created_agent_id
             assert draft.preview_json["creation_authorization"]["creation_origin"]
+            if native_refined:
+                assert "REFINED_CONTEXT" in (seed["data_root"] / str(receiver) / "soul.md").read_text()
     assert queued, str(result)
     assert len(dispatches) == 1
     message = queued["conversation_messages"][0]
@@ -311,6 +327,10 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             assert genesis.changed_by_user_id is None and genesis.changed_by_agent_id == seed["agent_id"]
             assert genesis.content["dependencies"] == list(origin.sources)
             assert genesis.content["unbound"] == (["hr_refinement_sources_unbound"] if refined_input else [])
+            if native_refined:
+                captured = genesis.content["refinement"]["call"]
+                assert captured["request"] == {key: refinement_calls[0][key] for key in captured["request"]}
+                assert "REFINED_CONTEXT" in captured["response_content"] and "api_key" not in json.dumps(captured)
             assert not await db.scalar(select(ConfigRevision.id).where(ConfigRevision.entity_id == receiver,
                 ConfigRevision.entity_type == "agent_bootstrap"))
         child_model = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == task_id)
@@ -512,7 +532,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fixture.local") as browser:
         returned = await browser.get(f"/agents/{returned_artifact['download_agent_id']}/files/artifacts/{returned_artifact['artifact_id']}/content")
         assert returned.status_code == 200 and "DELEGATED_REPORT" in returned.text and "A later local edit" not in returned.text
-    if input_case == "first_task_parent_model":
+    if parent_model_case:
         from app.services.web_chat_runtime import execute_web_chat_run
 
         parent_path = "workspace/parent-review.md"
@@ -569,6 +589,27 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.models.hr_creation import HrCreationDraft
     from copy import deepcopy
 
+    if native_refined:
+        from app.models.hr_creation import HrProvisioningStep
+        from app.services.config_versioning import canonical_content_hash
+
+        async with owner_sessionmaker() as db:
+            step = await db.scalar(select(HrProvisioningStep).where(HrProvisioningStep.draft_id == UUID(creation["blueprint_id"]),
+                HrProvisioningStep.step_key == "model"))
+            original_receipt = deepcopy(step.receipt_json)
+            altered_receipt = deepcopy(original_receipt)
+            call = altered_receipt["refinement"]["call"]
+            call["request"]["messages"][0]["content"] += " Forged extra source."
+            call["sha256"] = canonical_content_hash({key: value for key, value in call.items() if key != "sha256"})
+            step.receipt_json = altered_receipt
+            await db.commit()
+        rejected_refinement = await read_return()
+        assert rejected_refinement["status"] == "source_unavailable" and "DELEGATED_REPORT" not in json.dumps(rejected_refinement)
+        async with owner_sessionmaker() as db:
+            step = await db.get(HrProvisioningStep, step.id)
+            step.receipt_json = original_receipt
+            await db.commit()
+        assert (await read_return())["status"] == "ok" and len(refinement_calls) == 1
     async with owner_sessionmaker() as db:
         draft = await db.get(HrCreationDraft, UUID(creation["blueprint_id"]))
         accepted = deepcopy(draft.preview_json)
@@ -588,7 +629,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     stale = await read_return()
     assert stale["status"] == "source_access_denied" and stale["reason_code"] == "content_source_changed", stale
     assert "DELEGATED_REPORT" not in json.dumps(stale) and len(client.requests) == 2
-    if input_case == "first_task_parent_model":
+    if parent_model_case:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fixture.local") as browser:
             stale_review = await browser.get(f"/agents/{seed['agent_id']}/files/artifacts/{parent_artifact_id}/content")
             assert stale_review.status_code == 403 and "DELEGATED_REPORT" not in stale_review.text

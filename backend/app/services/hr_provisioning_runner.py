@@ -352,6 +352,7 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                         "model": _llm_obj.model,
                         "api_key": _llm_obj.api_key,
                         "base_url": _llm_obj.base_url,
+                        "max_output_tokens": getattr(_llm_obj, "max_output_tokens", None),
                     }
                     if _llm_obj
                     else {}
@@ -362,6 +363,7 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                     _model_cfg.get("model", "?"),
                     _refine_model_source,
                 )
+                refinement_call = {}
                 _refined = await _refine_soul_inputs(
                     name=name,
                     role_description=role_description,
@@ -372,6 +374,7 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                     model_config=_model_cfg,
                     usage_agent_id=_hr_agent.id if _hr_agent else None,
                     usage_tenant_id=tenant_id,
+                    source_capture=refinement_call,
                 )
                 renew_hr_creation_claim_record(draft, claim=claim, lease_seconds=600)
                 transition_hr_provisioning_step_record(
@@ -383,6 +386,8 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                         "primary_model_id": str(primary_model_id),
                         "refinement_model_source": _refine_model_source,
                         "model_used": _llm_obj is not None,
+                        "refinement": {"draft_id": str(draft.id), "blueprint_hash": draft.blueprint_hash,
+                            "call": refinement_call} if refinement_call else None,
                     },
                 )
                 draft.provisioning_json = {
@@ -582,7 +587,8 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                     from app.services.employee_creation_sources import record_employee_creation_context
 
                     await record_employee_creation_context(db, draft=draft, agent=agent, workspace=agent_dir,
-                        template_dir=agent_manager._template_dir(), model_used=(model_step.receipt_json or {}).get("model_used"))
+                        template_dir=agent_manager._template_dir(), model_used=(model_step.receipt_json or {}).get("model_used"),
+                        refinement=(model_step.receipt_json or {}).get("refinement"))
                 renew_hr_creation_claim_record(draft, claim=claim, lease_seconds=600)
                 transition_hr_provisioning_step_record(
                     workspace_step,

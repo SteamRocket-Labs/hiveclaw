@@ -713,6 +713,7 @@ async def _refine_soul_inputs(
     model_config: dict,
     usage_agent_id: uuid.UUID | None = None,
     usage_tenant_id: uuid.UUID | None = None,
+    source_capture: dict | None = None,
 ) -> dict:
     """Use LLM to refine raw HR inputs into rich soul contract content.
 
@@ -747,24 +748,15 @@ async def _refine_soul_inputs(
     try:
         from app.services.llm_client import chat_complete, get_max_tokens
 
-        response = await chat_complete(
-            provider=model_config["provider"],
-            api_key=model_config["api_key"],
-            model=model_config["model"],
-            base_url=model_config.get("base_url"),
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.4,
-            max_tokens=get_max_tokens(
-                str(model_config.get("provider") or ""),
-                str(model_config.get("model") or ""),
-                model_config.get("max_output_tokens"),
-            ),
-            timeout=45.0,
-            usage_source="hr_soul_refine",
-            usage_agent_id=usage_agent_id,
-            usage_tenant_id=usage_tenant_id,
-        )
+        model_request = {"provider": model_config["provider"], "model": model_config["model"],
+            "messages": [{"role": "user", "content": prompt}], "temperature": 0.4,
+            "max_tokens": get_max_tokens(str(model_config.get("provider") or ""),
+                str(model_config.get("model") or ""), model_config.get("max_output_tokens"))}
+        response = await chat_complete(**model_request, api_key=model_config["api_key"],
+            base_url=model_config.get("base_url"), timeout=45.0, usage_source="hr_soul_refine",
+            usage_agent_id=usage_agent_id, usage_tenant_id=usage_tenant_id)
         content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+        response_content = content
         if not content or not content.strip():
             logger.warning(
                 "[HR] Soul refinement LLM returned empty content. Provider=%s model=%s response_keys=%s",
@@ -811,6 +803,14 @@ async def _refine_soul_inputs(
             len(result.get("boundaries", "")),
             len(result.get("quality_standards", [])),
         )
+        if source_capture is not None:
+            from app.services.config_versioning import canonical_content_hash
+
+            source_capture.update({"schema": "hive.hr_refinement_call.v1", "status": "completed",
+                "inputs": {"name": name, "role_description": role_description, "personality": personality,
+                    "boundaries": boundaries, "primary_users": primary_users, "core_outputs": core_outputs},
+                "request": model_request, "response_content": response_content, "output": result})
+            source_capture["sha256"] = canonical_content_hash(source_capture)
         return result
     except Exception as exc:
         logger.warning("[HR] Soul refinement failed (using raw inputs): %s", exc)

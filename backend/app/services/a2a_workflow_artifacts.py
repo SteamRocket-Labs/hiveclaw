@@ -12,6 +12,7 @@ from sqlalchemy import select
 from app.models.chat_artifact import ChatArtifact
 from app.runtime.a2a_workflow import A2AArtifactRef, A2AOutputArtifact
 from app.services.chat_artifact_delivery import resolve_chat_artifact_file
+from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
 
 
 class A2AArtifactUnavailable(ValueError):
@@ -42,11 +43,17 @@ def read_verified_artifact(
         or artifact.path != output.path
     ):
         raise A2AArtifactUnavailable("artifact_authority_mismatch")
-    path, source = resolve_chat_artifact_file(artifact, workspace_root)
+    try:
+        path, source = resolve_chat_artifact_file(artifact, workspace_root)
+    except WorkspaceAuthorityError as exc:
+        raise A2AArtifactUnavailable("immutable_artifact_snapshot_unavailable") from exc
     if path is None or source != "delivery_snapshot":
         raise A2AArtifactUnavailable("immutable_artifact_snapshot_unavailable")
-    with path.open("rb") as stream:
-        content = stream.read(max_bytes + 1)
+    try:
+        with open_workspace_file(workspace_root, artifact.snapshot_json["snapshot_storage_path"]) as stream:
+            content = stream.read(max_bytes + 1)
+    except WorkspaceAuthorityError as exc:
+        raise A2AArtifactUnavailable("immutable_artifact_snapshot_unavailable") from exc
     if len(content) > max_bytes:
         raise A2AArtifactUnavailable("artifact_resource_limit_exceeded")
     content_hash = hashlib.sha256(content).hexdigest()

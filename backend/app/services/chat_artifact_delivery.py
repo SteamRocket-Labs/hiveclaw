@@ -7,6 +7,7 @@ import json
 import mimetypes
 import shutil
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
@@ -243,8 +244,8 @@ def _preview_kind_for_path(path: PurePosixPath) -> str:
     return "download"
 
 
-def _snapshot_hash(*, rel_path: PurePosixPath, stat_data: Any | None) -> str:
-    payload = f"{rel_path.as_posix()}:{getattr(stat_data, 'st_size', '')}:{getattr(stat_data, 'st_mtime_ns', '')}"
+def _snapshot_hash(*, rel_path: PurePosixPath, stat_data: Any | None, content_hash: str | None = None) -> str:
+    payload = f"{rel_path.as_posix()}:sha256:{content_hash}" if content_hash else f"{rel_path.as_posix()}:{getattr(stat_data, 'st_size', '')}:{getattr(stat_data, 'st_mtime_ns', '')}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -444,6 +445,7 @@ def _write_content_snapshot(
     runtime_task_id: str | uuid.UUID | None,
     snapshot_hash: str,
     rel_path: PurePosixPath,
+    content_hash: str,
 ) -> str:
     storage_rel = _snapshot_storage_rel_path(
         session_id=session_id,
@@ -451,10 +453,17 @@ def _write_content_snapshot(
         snapshot_hash=snapshot_hash,
         rel_path=rel_path,
     )
-    target = workspace_root / storage_rel
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if not target.exists():
-        target.write_bytes(source_path.read_bytes())
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
+
+    try:
+        with open_workspace_file(workspace_root, storage_rel.as_posix(), mode="xb") as target, source_path.open("rb") as source:
+            shutil.copyfileobj(source, target)
+    except WorkspaceAuthorityError as exc:
+        if not isinstance(exc.__cause__, FileExistsError):
+            raise
+        with open_workspace_file(workspace_root, storage_rel.as_posix()) as existing:
+            if hashlib.file_digest(existing, "sha256").hexdigest() != content_hash:
+                raise WorkspaceAuthorityError("workspace_resource_changed", "The immutable artifact snapshot changed; regenerate the delivery before retrying.") from exc
     return storage_rel.as_posix()
 
 
@@ -488,9 +497,15 @@ def _workspace_changed(artifact: ChatArtifact, workspace_root: Path) -> bool | N
     current = workspace_root / rel.as_posix()
     if not current.exists() or not current.is_file():
         return True
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
+
     try:
+        expected = (artifact.snapshot_json or {}).get("content_hash")
+        if expected:
+            with open_workspace_file(workspace_root, rel.as_posix()) as source:
+                return hashlib.file_digest(source, "sha256").hexdigest() != expected
         current_hash = _snapshot_hash(rel_path=rel, stat_data=current.stat())
-    except OSError:
+    except (OSError, WorkspaceAuthorityError):
         return True
     return current_hash != getattr(artifact, "snapshot_hash", None)
 
@@ -503,6 +518,12 @@ ArtifactFileSource = Literal[
 ]
 
 
+def is_chat_artifact_snapshot_storage_path(path: str) -> bool:
+    normalized = PurePosixPath(str(path).replace("\\", "/").strip()).as_posix().strip("/")
+    return any(normalized == prefix or normalized.startswith(prefix + "/")
+        for prefix in (CHAT_ARTIFACT_SNAPSHOT_DIR.as_posix(), ".chat_artifact_snapshots"))
+
+
 def resolve_chat_artifact_file(
     artifact: ChatArtifact,
     workspace_root: Path,
@@ -510,12 +531,14 @@ def resolve_chat_artifact_file(
     """Resolve artifact bytes without substituting current data for a declared snapshot."""
 
     root = Path(workspace_root).resolve()
+    from app.services.workspace_resource_authority import resolve_workspace_storage_path
+
     snapshot = artifact.snapshot_json if isinstance(artifact.snapshot_json, dict) else {}
     storage_rel = str(snapshot.get("snapshot_storage_path") or "").replace("\\", "/").strip()
     if storage_rel:
         rel = PurePosixPath(storage_rel)
         if not rel.is_absolute() and not any(part in {"", ".", ".."} for part in rel.parts):
-            snapshot_path = (root / rel.as_posix()).resolve()
+            snapshot_path = resolve_workspace_storage_path(root, rel.as_posix())
             try:
                 snapshot_path.relative_to(root)
             except ValueError:
@@ -527,7 +550,7 @@ def resolve_chat_artifact_file(
 
     current_rel = _safe_workspace_relative_path(str(getattr(artifact, "path", "") or ""))
     if current_rel is not None:
-        current = (root / current_rel.as_posix()).resolve()
+        current = resolve_workspace_storage_path(root, current_rel.as_posix())
         try:
             current.relative_to(root)
         except ValueError:
@@ -538,22 +561,41 @@ def resolve_chat_artifact_file(
     return None, "missing_legacy_current_file"
 
 
+@contextmanager
+def captured_chat_artifact_file(artifact: ChatArtifact, workspace_root: Path):
+    """Lease a private, descriptor-checked copy through the complete consumer operation."""
+    from app.services.workspace_resource_authority import snapshot_workspace_file
+
+    target, source = resolve_chat_artifact_file(artifact, workspace_root)
+    if target is None:
+        yield None, source
+        return
+    snapshot = artifact.snapshot_json or {}
+    path = snapshot["snapshot_storage_path"] if source == "delivery_snapshot" else artifact.path
+    expected = snapshot.get("content_hash") if source == "delivery_snapshot" else None
+    directory, captured = snapshot_workspace_file(Path(workspace_root), path, expected)
+    try:
+        yield captured, source
+    finally:
+        directory.cleanup()
+
+
 def read_chat_artifact_snapshot_content(artifact: ChatArtifact, workspace_root: Path) -> dict[str, Any]:
     """Read the delivery-time artifact snapshot, falling back explicitly for legacy rows."""
     root = Path(workspace_root).resolve()
     snapshot = artifact.snapshot_json if isinstance(artifact.snapshot_json, dict) else {}
-    target, source = resolve_chat_artifact_file(artifact, root)
-    if target is not None:
-        uses_snapshot = source == "delivery_snapshot"
-        return {
-            "path": artifact.path,
-            "content": _read_text_or_binary_marker(target),
-            "uses_snapshot": uses_snapshot,
-            "legacy_current_file_fallback": source == "legacy_current_file_fallback",
-            "workspace_changed": _workspace_changed(artifact, root) if uses_snapshot else None,
-            "snapshot_hash": artifact.snapshot_hash,
-            "content_hash": snapshot.get("content_hash"),
-        }
+    with captured_chat_artifact_file(artifact, root) as (target, source):
+        if target is not None:
+            uses_snapshot = source == "delivery_snapshot"
+            return {
+                "path": artifact.path,
+                "content": _read_text_or_binary_marker(target),
+                "uses_snapshot": uses_snapshot,
+                "legacy_current_file_fallback": source == "legacy_current_file_fallback",
+                "workspace_changed": _workspace_changed(artifact, root) if uses_snapshot else None,
+                "snapshot_hash": artifact.snapshot_hash,
+                "content_hash": snapshot.get("content_hash"),
+            }
     return {
         "path": artifact.path,
         "content": "",
@@ -591,8 +633,10 @@ def build_artifact_candidate(
     if rel is None:
         return None
 
+    from app.services.workspace_resource_authority import resolve_workspace_storage_path, snapshot_workspace_file
+
     root = workspace_root.resolve()
-    absolute = (root / rel.as_posix()).resolve()
+    absolute = resolve_workspace_storage_path(root, rel.as_posix())
     try:
         absolute.relative_to(root)
     except ValueError:
@@ -600,21 +644,26 @@ def build_artifact_candidate(
     if not absolute.exists() or not absolute.is_file():
         return None
 
-    stat_data = absolute.stat()
-    mime_type, _encoding = mimetypes.guess_type(rel.name)
-    modified_at = datetime.fromtimestamp(stat_data.st_mtime, tz=timezone.utc).isoformat()
-    snapshot_hash = _snapshot_hash(rel_path=rel, stat_data=stat_data)
-    preview_kind = _preview_kind_for_path(rel)
-    preview_snapshot_content, preview_snapshot_truncated = _read_preview_snapshot(absolute, preview_kind)
-    content_hash = _content_hash(absolute)
-    snapshot_storage_path = _write_content_snapshot(
-        source_path=absolute,
-        workspace_root=root,
-        session_id=session_id,
-        runtime_task_id=runtime_task_id,
-        snapshot_hash=snapshot_hash,
-        rel_path=rel,
-    )
+    directory, captured = snapshot_workspace_file(root, rel.as_posix())
+    try:
+        stat_data = captured.stat()
+        mime_type, _encoding = mimetypes.guess_type(rel.name)
+        modified_at = datetime.fromtimestamp(stat_data.st_mtime, tz=timezone.utc).isoformat()
+        content_hash = _content_hash(captured)
+        snapshot_hash = _snapshot_hash(rel_path=rel, stat_data=stat_data, content_hash=content_hash)
+        preview_kind = _preview_kind_for_path(rel)
+        preview_snapshot_content, preview_snapshot_truncated = _read_preview_snapshot(captured, preview_kind)
+        snapshot_storage_path = _write_content_snapshot(
+            source_path=captured,
+            workspace_root=root,
+            session_id=session_id,
+            runtime_task_id=runtime_task_id,
+            snapshot_hash=snapshot_hash,
+            rel_path=rel,
+            content_hash=content_hash,
+        )
+    finally:
+        directory.cleanup()
     owner_agent = str(owner_agent_id or agent_id)
     source_agent = str(source_agent_id or owner_agent)
     download_agent = str(download_agent_id or owner_agent)

@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from app.config import get_settings
+from app.services.chat_artifact_delivery import is_chat_artifact_snapshot_storage_path
 from app.services.legacy_company_files import COMPANY_CONTEXT_FILENAMES, company_context_path_allowed
 from app.services.managed_capability_guard import sanitize_managed_credential_guidance
 from app.services.workspace_resource_authority import (
@@ -86,6 +87,8 @@ def _is_within_path(path: Path, root: Path) -> bool:
 def _resolved_workspace_path(ws: Path, rel_path: str, permission_profile: Any | None = None) -> Path | None:
     """Resolve a workspace path and enforce an exact session root at the final I/O boundary."""
 
+    if is_chat_artifact_snapshot_storage_path(rel_path):
+        return None
     workspace = ws.resolve()
     try:
         target = resolve_workspace_storage_path(ws, rel_path)
@@ -148,7 +151,7 @@ def _append_workspace_provenance_hint(
 
 
 def _authority_allows_path(authority_scope, rel_path: str, *, directory: bool = False, action: str = "read") -> bool:
-    if is_recovery_manifest_storage_path(rel_path):
+    if is_recovery_manifest_storage_path(rel_path) or is_chat_artifact_snapshot_storage_path(rel_path):
         return False
     if authority_scope is None:
         return True

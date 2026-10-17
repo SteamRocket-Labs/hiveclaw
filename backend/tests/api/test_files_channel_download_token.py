@@ -421,9 +421,12 @@ async def test_artifact_download_query_jwt_pins_token_tenant_before_user_lookup(
         db=db,
     )
 
-    assert response.path == str(target)
+    served = Path(response.path)
+    assert served != target
     assert response.filename == "artifact.md"
     assert db.pinned_tenants == [tenant_id]
+    assert await _send_download(response) == (200, b"artifact")
+    assert not served.exists() and target.read_bytes() == b"artifact"
 
 
 @pytest.mark.asyncio

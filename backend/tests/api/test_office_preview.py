@@ -135,9 +135,10 @@ async def test_artifact_office_preview_uses_delivery_snapshot_and_resource_autho
         captured["authority"] = kwargs
         return SimpleNamespace(authority_source="resource_owner", operator_view=False)
 
-    def fake_render(_service, target, *, cache_key):
+    def fake_render(_service, target, *, cache_dir):
         captured["target"] = target
-        captured["cache_key"] = cache_key
+        captured["bytes"] = target.read_bytes()
+        captured["cache_dir"] = cache_dir
         return _preview_result()
 
     async def fake_persist_span(**_kwargs):
@@ -146,7 +147,7 @@ async def test_artifact_office_preview_uses_delivery_snapshot_and_resource_autho
     monkeypatch.setattr(office_api, "check_agent_access", fake_access)
     monkeypatch.setattr(office_api, "authorize_resource_action", fake_authorize_resource)
     monkeypatch.setattr(office_api, "persist_invocation_span", fake_persist_span)
-    monkeypatch.setattr(office_api.OfficeDocumentService, "render_preview_target", fake_render)
+    monkeypatch.setattr(office_api.OfficeDocumentService, "_render_preview_target", fake_render)
 
     response = await office_api.preview_office_artifact(
         agent_id=agent_id,
@@ -158,8 +159,10 @@ async def test_artifact_office_preview_uses_delivery_snapshot_and_resource_autho
     )
 
     assert response.headers["x-office-artifact-source"] == "delivery_snapshot"
-    assert captured["target"] == snapshot
-    assert captured["cache_key"] == f"artifact:{artifact_id}"
+    assert captured["bytes"] == b"delivery-snapshot"
+    assert captured["target"] != snapshot and not captured["target"].exists()
+    assert snapshot.read_bytes() == b"delivery-snapshot"
+    assert captured["cache_dir"] == tmp_path / str(agent_id) / ".office_meta/artifacts" / str(artifact_id) / "preview"
     assert captured["authority"]["resource_kind"] == "chat_artifact"
     assert captured["authority"]["resource_id"] == artifact_id
 
@@ -228,7 +231,7 @@ async def test_artifact_office_preview_preserves_foreign_resource_denial(tmp_pat
     monkeypatch.setattr(office_api, "authorize_resource_action", deny)
     monkeypatch.setattr(
         office_api.OfficeDocumentService,
-        "render_preview_target",
+        "_render_preview_target",
         lambda *_args, **_kwargs: render_calls.append(True),
     )
 

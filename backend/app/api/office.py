@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -19,7 +20,7 @@ from app.core.security import get_current_user
 from app.database import get_db
 from app.models.chat_artifact import ChatArtifact
 from app.models.user import User
-from app.services.chat_artifact_delivery import resolve_chat_artifact_file
+from app.services.chat_artifact_delivery import captured_chat_artifact_file
 from app.services.invocation_trace import persist_invocation_span
 from app.services.office_document_service import (
     OFFICE_PREVIEW_CSP,
@@ -280,13 +281,14 @@ async def _render_with_evidence(
     return result, trace_id
 
 
-def _artifact_preview_target(service: OfficeDocumentService, artifact: ChatArtifact) -> tuple[Path, str]:
-    target, artifact_source = resolve_chat_artifact_file(artifact, service.workspace)
-    if target is not None:
-        return target, artifact_source
-    if artifact_source == "missing_delivery_snapshot":
-        raise OfficeDocumentNotFoundError("Artifact delivery snapshot is no longer available")
-    raise OfficeDocumentNotFoundError("Legacy artifact workspace file is no longer available")
+@contextmanager
+def _artifact_preview_target(service: OfficeDocumentService, artifact: ChatArtifact):
+    with captured_chat_artifact_file(artifact, service.workspace) as (target, artifact_source):
+        if target is None:
+            if artifact_source == "missing_delivery_snapshot":
+                raise OfficeDocumentNotFoundError("Artifact delivery snapshot is no longer available")
+            raise OfficeDocumentNotFoundError("Legacy artifact workspace file is no longer available")
+        yield target, artifact_source
 
 
 @router.post("/documents")
@@ -434,16 +436,18 @@ async def preview_office_artifact(
 
     service = OfficeDocumentService(_agent_workspace(agent_id))
     try:
-        target, artifact_source = _artifact_preview_target(service, artifact)
+        with _artifact_preview_target(service, artifact) as (target, artifact_source):
+            result, trace_id = await _render_with_evidence(
+                lambda: service.render_captured_artifact_preview(target, artifact_id=artifact.id),
+                tenant_id=getattr(agent_access[0], "tenant_id", None),
+                agent_id=agent_id,
+                user_id=current_user.id,
+                authority_source=decision.authority_source,
+                source_kind="artifact",
+                office_format=target.suffix.lower().lstrip("."),
+            )
     except OfficeDocumentError as exc:
         raise _preview_http_error(exc) from exc
-    result, trace_id = await _render_with_evidence(
-        lambda: service.render_preview_target(target, cache_key=f"artifact:{artifact.id}"),
-        tenant_id=getattr(agent_access[0], "tenant_id", None),
-        agent_id=agent_id,
-        user_id=current_user.id,
-        authority_source=decision.authority_source,
-        source_kind="artifact",
-        office_format=target.suffix.lower().lstrip("."),
-    )
+    except WorkspaceAuthorityError as exc:
+        raise _workspace_authority_http_error(exc) from exc
     return _preview_response(result, trace_id=trace_id, artifact_source=artifact_source)

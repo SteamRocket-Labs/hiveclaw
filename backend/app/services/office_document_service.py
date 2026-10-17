@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
+from uuid import UUID
 
 from app.config import get_settings
 from app.services.officecli_adapter import OfficeCLIAdapter
@@ -391,6 +392,12 @@ class OfficeDocumentService:
             digest = sha256(cache_key.encode("utf-8")).hexdigest()
             cache_dir = self.workspace / ".office_meta" / "previews" / digest / "preview"
         return self._render_preview_target(resolved, cache_dir=cache_dir)
+
+    def render_captured_artifact_preview(self, target: Path, *, artifact_id: UUID) -> OfficePreviewResult:
+        """Consume a private source held by the authorized artifact reader's lease."""
+        artifact_key = str(UUID(str(artifact_id)))
+        cache_dir = self.workspace / ".office_meta" / "artifacts" / artifact_key / "preview"
+        return self._render_preview_target(target, cache_dir=cache_dir)
 
     def _render_preview_target(self, target: Path, *, cache_dir: Path) -> OfficePreviewResult:
         if target.suffix.lower() not in SUPPORTED_OFFICE_SUFFIXES:

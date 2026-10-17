@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 from datetime import datetime, timezone
@@ -9,6 +10,84 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+
+
+def _g22_candidate(tmp_path):
+    from app.services.chat_artifact_delivery import build_artifact_candidate
+
+    report = tmp_path / "workspace/report.txt"
+    report.parent.mkdir(parents=True)
+    report.write_bytes(b"AAAA")
+    arguments = dict(agent_id=uuid4(), session_id=uuid4(), runtime_task_id=uuid4(),
+        path="workspace/report.txt", workspace_root=tmp_path)
+    return report, arguments, build_artifact_candidate(**arguments)
+
+
+def test_content_changes_with_preserved_stat_create_distinct_artifact_versions(tmp_path):
+    from app.services.chat_artifact_delivery import build_artifact_candidate
+
+    report, arguments, first = _g22_candidate(tmp_path)
+    stat = report.stat()
+    report.write_bytes(b"BBBB")
+    os.utime(report, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    second = build_artifact_candidate(**arguments)
+    assert first["snapshot_hash"] != second["snapshot_hash"]
+    assert first["snapshot"]["snapshot_storage_path"] != second["snapshot"]["snapshot_storage_path"]
+    assert (tmp_path / first["snapshot"]["snapshot_storage_path"]).read_bytes() == b"AAAA"
+    assert (tmp_path / second["snapshot"]["snapshot_storage_path"]).read_bytes() == b"BBBB"
+
+
+def test_artifact_preview_hash_and_download_bind_one_captured_byte_stream(tmp_path, monkeypatch):
+    from app.services import chat_artifact_delivery as delivery
+
+    report, arguments, _first = _g22_candidate(tmp_path)
+    original = delivery._read_preview_snapshot
+
+    def edit_after_preview(path, kind):
+        result = original(path, kind)
+        report.write_bytes(b"BBBB")
+        return result
+
+    monkeypatch.setattr(delivery, "_read_preview_snapshot", edit_after_preview)
+    candidate = delivery.build_artifact_candidate(**arguments)
+    saved = (tmp_path / candidate["snapshot"]["snapshot_storage_path"]).read_bytes()
+    assert candidate["preview_snapshot_content"] == saved.decode()
+    assert candidate["content_hash"] == hashlib.sha256(saved).hexdigest()
+
+
+def test_corrupt_existing_artifact_snapshot_is_not_reused_or_released(tmp_path):
+    from app.services.chat_artifact_delivery import build_artifact_candidate, read_chat_artifact_snapshot_content
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError
+
+    _report, arguments, candidate = _g22_candidate(tmp_path)
+    (tmp_path / candidate["snapshot"]["snapshot_storage_path"]).write_bytes(b"Untrusted cached bytes")
+    artifact = SimpleNamespace(path=candidate["path"], snapshot_json=candidate["snapshot"], snapshot_hash=candidate["snapshot_hash"])
+    with pytest.raises(WorkspaceAuthorityError):
+        read_chat_artifact_snapshot_content(artifact, tmp_path)
+    with pytest.raises(WorkspaceAuthorityError):
+        build_artifact_candidate(**arguments)
+
+
+@pytest.mark.parametrize("alias", ["symlink", "hardlink", "parent"])
+def test_artifact_capture_rejects_aliases_before_reading_private_bytes(tmp_path, alias):
+    from app.services.chat_artifact_delivery import build_artifact_candidate
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError
+
+    report, arguments, _candidate = _g22_candidate(tmp_path)
+    private = tmp_path / "private/report.txt"
+    private.parent.mkdir()
+    private.write_bytes(b"PRIVATE_FOREIGN_ARTIFACT")
+    report.unlink()
+    if alias == "parent":
+        report.parent.rmdir()
+        report.parent.symlink_to(private.parent, target_is_directory=True)
+    elif alias == "hardlink":
+        os.link(private, report)
+    else:
+        report.symlink_to(private)
+    with pytest.raises(WorkspaceAuthorityError):
+        candidate = build_artifact_candidate(**arguments)
+        assert "PRIVATE_FOREIGN_ARTIFACT" not in json.dumps(candidate)
 
 
 def test_artifact_policy_accepts_workspace_user_artifact(tmp_path):

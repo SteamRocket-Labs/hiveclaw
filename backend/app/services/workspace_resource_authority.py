@@ -73,7 +73,10 @@ def resolve_workspace_storage_path(workspace: Path, path: str) -> Path:
                 "recovery_manifest_raw_access_forbidden",
                 "Recovery Manifest storage is available only through its authority-bound context resource ref.",
             )
-        if _is_workspace_path(requested) or _is_workspace_path(resolved):
+        from app.services.chat_artifact_delivery import is_chat_artifact_snapshot_storage_path
+
+        if (_is_workspace_path(requested) or _is_workspace_path(resolved)
+            or is_chat_artifact_snapshot_storage_path(requested) or is_chat_artifact_snapshot_storage_path(resolved)):
             # Configured parent roots may be OS aliases; resource paths may not be.
             current = root
             for part in Path(requested).parts:
@@ -144,14 +147,14 @@ def _workspace_parent_descriptor(workspace: Path, path: str, *, create: bool = F
 @contextmanager
 def open_workspace_file(workspace: Path, path: str, *, mode: str = "rb"):
     """Pin every directory and validate the opened inode before reading or truncating."""
-    if mode not in {"rb", "wb", "r+b"}:
+    if mode not in {"rb", "wb", "xb", "r+b"}:
         raise ValueError("Unsupported workspace file mode")
-    create = mode == "wb"
+    create = mode in {"wb", "xb"}
     write = mode != "rb"
     descriptor = None
     try:
         with _workspace_parent_descriptor(workspace, path, create=create) as (directory, name):
-            flags = {"rb": os.O_RDONLY, "wb": os.O_WRONLY | os.O_CREAT, "r+b": os.O_RDWR}[mode]
+            flags = {"rb": os.O_RDONLY, "wb": os.O_WRONLY | os.O_CREAT, "xb": os.O_WRONLY | os.O_CREAT | os.O_EXCL, "r+b": os.O_RDWR}[mode]
             descriptor = os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o600, dir_fd=directory)
             opened = os.fstat(descriptor)
             if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
@@ -276,9 +279,13 @@ class WorkspaceAuthorityScope:
         )
 
     def visible_child(self, parent: str, child_name: str, *, is_dir: bool) -> bool:
+        from app.services.chat_artifact_delivery import is_chat_artifact_snapshot_storage_path
+
         raw_parent = str(parent or "").replace("\\", "/").strip().strip("/")
         raw_child = f"{raw_parent}/{child_name}" if raw_parent else child_name
         if is_recovery_manifest_storage_path(raw_child):
+            return False
+        if is_chat_artifact_snapshot_storage_path(raw_child):
             return False
         if self.operator_view:
             return True
@@ -331,6 +338,13 @@ def authorize_workspace_tool_path(
         raise WorkspaceAuthorityError(
             "recovery_manifest_raw_access_forbidden",
             "Recovery Manifest storage is available only through its authority-bound context resource ref.",
+        )
+    from app.services.chat_artifact_delivery import is_chat_artifact_snapshot_storage_path
+
+    if is_chat_artifact_snapshot_storage_path(requested_path):
+        raise WorkspaceAuthorityError(
+            "artifact_snapshot_raw_access_forbidden",
+            "Open the artifact by its authorized artifact id; edit its canonical workspace file.",
         )
     target = resolve_workspace_storage_path(workspace, requested_path)
     try:

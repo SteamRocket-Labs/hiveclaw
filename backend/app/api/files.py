@@ -38,6 +38,7 @@ from app.models.chat_artifact import ChatArtifact
 from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.services.chat_artifact_delivery import (
+    is_chat_artifact_snapshot_storage_path,
     read_chat_artifact_snapshot_content,
     resolve_chat_artifact_file,
 )
@@ -156,6 +157,11 @@ def _safe_path(agent_id: uuid.UUID, rel_path: str) -> Path:
     """Ensure the path is within the agent's directory (no path traversal)."""
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, resolve_workspace_storage_path
 
+    if is_chat_artifact_snapshot_storage_path(rel_path):
+        raise HTTPException(status_code=403, detail={
+            "code": "artifact_snapshot_raw_access_forbidden",
+            "message": "Open the artifact by its authorized artifact id; edit its canonical workspace file.",
+        })
     try:
         return resolve_workspace_storage_path(_agent_base_dir(agent_id), rel_path)
     except WorkspaceAuthorityError as exc:
@@ -1046,7 +1052,12 @@ async def read_artifact_content(
         manager_override_reason=operator_reason,
         agent_access=agent_access,
     )
-    content = read_chat_artifact_snapshot_content(artifact, _agent_base_dir(agent_id))
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError
+
+    try:
+        content = read_chat_artifact_snapshot_content(artifact, _agent_base_dir(agent_id))
+    except WorkspaceAuthorityError as exc:
+        raise _workspace_authority_http_error(exc) from exc
     content["authority_source"] = decision.authority_source
     content["operator_view"] = decision.operator_view
     return FileContent(**content)
@@ -1173,7 +1184,12 @@ async def download_artifact(
         manager_override_reason=operator_reason,
         agent_access=agent_access,
     )
-    target, artifact_source = resolve_chat_artifact_file(artifact, _agent_base_dir(agent_id))
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError
+
+    try:
+        target, artifact_source = resolve_chat_artifact_file(artifact, _agent_base_dir(agent_id))
+    except WorkspaceAuthorityError as exc:
+        raise _workspace_authority_http_error(exc) from exc
     if target is None:
         detail = (
             "Artifact delivery snapshot is no longer available"
@@ -1181,7 +1197,10 @@ async def download_artifact(
             else "Artifact file not found"
         )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
-    return FileResponse(path=str(target), filename=artifact.name or target.name)
+    snapshot = artifact.snapshot_json or {}
+    path = snapshot["snapshot_storage_path"] if artifact_source == "delivery_snapshot" else artifact.path
+    expected_hash = snapshot.get("content_hash") if artifact_source == "delivery_snapshot" else None
+    return await _workspace_download_response(agent_id, path, artifact.name or target.name, expected_hash)
 
 
 @router.put("/content")

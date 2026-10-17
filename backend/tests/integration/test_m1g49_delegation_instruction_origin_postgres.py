@@ -13,7 +13,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
     reason="Native macOS context gate; Linux delivery is deferred.")]
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case,
 ):
@@ -32,6 +32,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.services.web_chat_runtime import _persist_tool_call
 
     first_task = input_case.startswith("first_task")
+    delivery_case = input_case in {"first_task_delivery", "first_task_parent_model"}
     refined_input = input_case == "first_task_refined"
     unbound_input = input_case in {"unbound", "first_task_unbound"}
     revoked_input = input_case in {"revoked", "first_task_revoked"}
@@ -164,7 +165,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
 
         creation = json.loads(str(result))
         assert creation.get("draft_status") == "confirmed", creation
-        if input_case == "first_task_delivery":
+        if delivery_case:
             await _persist_tool_call(agent_id=seed["agent_id"], user_id=seed["user_id"], session_id=str(seed["session_id"]),
                 data={**event, "status": "done", "result": str(result)})
         job_id = UUID(creation["provisioning_task_id"])
@@ -432,7 +433,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fixture.local") as browser:
         response = await browser.get(f"/agents/{receiver}/files/artifacts/{artifact_id}/content")
         assert response.status_code == 200 and "DELEGATED_REPORT" in response.text, response.text
-    if input_case != "first_task_delivery":
+    if not delivery_case:
         return
     from app.services.direct_invocation_terminal_boundary_processor import DirectInvocationTerminalBoundaryProcessor
     from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
@@ -511,6 +512,60 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fixture.local") as browser:
         returned = await browser.get(f"/agents/{returned_artifact['download_agent_id']}/files/artifacts/{returned_artifact['artifact_id']}/content")
         assert returned.status_code == 200 and "DELEGATED_REPORT" in returned.text and "A later local edit" not in returned.text
+    if input_case == "first_task_parent_model":
+        from app.services.web_chat_runtime import execute_web_chat_run
+
+        parent_path = "workspace/parent-review.md"
+        parent_client = ScriptedLLMClient([
+            {"tool_calls": [{"id": "parent-read-return", "type": "function", "function": {
+                "name": "read_runtime_result", "arguments": json.dumps({"result_ref": result_ref})}}],
+                "finish_reason": "tool_calls"},
+            {"tool_calls": [{"id": "parent-write-review", "type": "function", "function": {
+                "name": "write_file", "arguments": json.dumps({"path": parent_path,
+                    "content": "ORIGINAL_WORK_REVIEW: DELEGATED_REPORT"})}}], "finish_reason": "tool_calls"},
+            {"content": "Reviewed the returned report.\nDELIVERABLE: workspace/parent-review.md", "finish_reason": "stop"},
+        ])
+        monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: parent_client)
+        async with owner_sessionmaker() as db:
+            continuation = await db.get(RuntimeTask, return_id)
+            continuation.status, continuation.claimed_by, continuation.claim_version = "running", "parent-return-worker", 1
+            continuation.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+            await db.commit()
+        parent_fence = set_runtime_task_fence(task_id=return_id, worker_id="parent-return-worker", claim_version=1)
+        try:
+            await execute_web_chat_run(return_id)
+        finally:
+            reset_runtime_task_fence(parent_fence)
+        (tmp_path / "native-parent-model-requests.json").write_text(json.dumps(parent_client.requests, default=str, indent=2))
+        assert len(parent_client.requests) == 3
+        second_request = json.dumps(parent_client.requests[1]["messages"])
+        assert "DELEGATED_REPORT" in second_request and "A later local edit" not in second_request
+        assert (seed["agent_root"] / parent_path).read_text() == "ORIGINAL_WORK_REVIEW: DELEGATED_REPORT"
+        assert observed["status"]["status"] == "captured", observed["status"]
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            continuation = await db.get(RuntimeTask, return_id)
+            assert continuation.status == "completed", continuation.result_summary
+            artifact = await db.scalar(select(ChatArtifact).where(ChatArtifact.agent_id == seed["agent_id"],
+                ChatArtifact.runtime_task_id == return_id, ChatArtifact.path == parent_path))
+            assert artifact is not None and artifact.snapshot_json.get("content_input_receipt_id"), artifact
+            parent_artifact_id = artifact.id
+            models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == return_id)))
+            assert len(models) == 3 and all(model.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for model in models)
+            parent_receipt = await db.get(ContentInputReceipt, UUID(artifact.snapshot_json["content_input_receipt_id"]))
+            source = next(ref for ref in parent_receipt.dependencies_json if ref["source_kind"] == "runtime_result")
+            await validate_runtime_input_dependencies(db, ToolExecutionRequest(tool_name="read_file", arguments={},
+                context=observed["context"]), [source])
+            for altered_source, altered_context in [({**source, "source_version": "0" * 64}, observed["context"]),
+                (source, replace(observed["context"], session_id=str(uuid4())))]:
+                with pytest.raises(ContentInputReceiptError) as denied:
+                    await validate_runtime_input_dependencies(db, ToolExecutionRequest(tool_name="read_file", arguments={},
+                        context=altered_context), [altered_source])
+                assert denied.value.status_code == 403
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fixture.local") as browser:
+            review = await browser.get(f"/agents/{seed['agent_id']}/files/artifacts/{parent_artifact_id}/content")
+            assert review.status_code == 200 and review.json()["content"] == "ORIGINAL_WORK_REVIEW: DELEGATED_REPORT" and review.json()["uses_snapshot"], review.text
+
     from app.models.hr_creation import HrCreationDraft
     from copy import deepcopy
 
@@ -533,3 +588,8 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     stale = await read_return()
     assert stale["status"] == "source_access_denied" and stale["reason_code"] == "content_source_changed", stale
     assert "DELEGATED_REPORT" not in json.dumps(stale) and len(client.requests) == 2
+    if input_case == "first_task_parent_model":
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fixture.local") as browser:
+            stale_review = await browser.get(f"/agents/{seed['agent_id']}/files/artifacts/{parent_artifact_id}/content")
+            assert stale_review.status_code == 403 and "DELEGATED_REPORT" not in stale_review.text
+        assert len(parent_client.requests) == 3

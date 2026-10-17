@@ -548,6 +548,7 @@ async def build_agent_runtime_context(
     session_id: uuid.UUID | str | None = None,
     source_unbound: list[str] | None = None,
     runtime_facts: dict[str, str] | None = None,
+    source_refs: list[dict[str, str]] | None = None,
 ) -> str:
     """Build volatile runtime context that should be refreshed every round."""
     triggers_budget = budget_profile.runtime_triggers_budget_chars if budget_profile else 3000
@@ -563,9 +564,11 @@ async def build_agent_runtime_context(
             agent_id=agent_id,
             tenant_id=tenant_id,
             session_id=session_id,
+            source_refs=source_refs,
+            source_unbound=source_unbound,
         )
         if team_context:
-            if source_unbound is not None:
+            if source_unbound is not None and source_refs is None:
                 source_unbound.append("runtime_team_sources_unbound")
             sections.append("\n" + team_context)
     except Exception as exc:

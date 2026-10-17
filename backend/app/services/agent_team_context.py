@@ -218,6 +218,8 @@ async def build_prompt_facing_team_context(
     session_id: str | uuid.UUID | None = None,
     task_limit: int = 8,
     signal_limit: int = 8,
+    source_refs: list[dict[str, str]] | None = None,
+    source_unbound: list[str] | None = None,
 ) -> str:
     """Build the CC-style team context/mailbox block for the current agent turn."""
 
@@ -321,9 +323,30 @@ async def build_prompt_facing_team_context(
                     continue
                 shared_tasks.append(item)
 
-    return render_team_context_block(
+    rendered = render_team_context_block(
         tasks=tasks,
         signals=signals,
         teams=teams,
         shared_tasks=shared_tasks,
     )
+
+    if rendered and source_refs is not None:
+        from app.services.runtime_result_sources import result_source_reference
+        from app.services.session_model_inputs import _hash
+
+        refs = []
+        complete = bool(session_uuid) and not (signals or teams or shared_tasks)
+        async with tenant_scoped_session(tenant_id) as db:
+            for task in tasks:
+                ref = await result_source_reference(db, tenant_id=tenant_id, agent_id=agent_id,
+                    session_id=session_uuid, task_id=task["id"]) if session_uuid else None
+                if task["task_type"] != "delegation" or task["status"] != "completed" or ref is None:
+                    complete = False
+                else:
+                    refs.append(ref)
+        if complete:
+            source_refs.extend([*refs, {"source_kind": "runtime_team_context",
+                "source_id": f"{agent_id}\n{session_uuid}", "source_version": _hash(rendered)}])
+        elif source_unbound is not None:
+            source_unbound.append("runtime_team_sources_unbound")
+    return rendered

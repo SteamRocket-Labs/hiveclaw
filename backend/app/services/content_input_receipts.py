@@ -85,6 +85,11 @@ async def _validate_input_dependencies(db, tenant_id: uuid.UUID, dependencies: l
         if dependency["source_kind"] in {"session_command", "session_tool_invocation"}:
             await _validate_session_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
             continue
+        if dependency["source_kind"] in {"runtime_result", "runtime_result_page", "runtime_team_context"}:
+            from app.services.runtime_result_sources import validate_runtime_return_dependency
+
+            await validate_runtime_return_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
+            continue
         if dependency["source_kind"] == "company_knowledge_publication":
             await _validate_company_publication_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
             continue
@@ -201,8 +206,13 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
                 or witness.changed_by_user_id != peer.creator_id or canonical_content_hash(content) != witness.content_hash
                 or content.get("schema") != "hive.agent_bootstrap.v1"
                 or content.get("identity") != agent_identity_content(peer.name, peer.role_description)):
-                raise ContentInputReceiptError("content_source_unavailable",
-                    "A collaborator label lacks an exact original creation witness.", 503)
+                from app.services.employee_creation_sources import load_employee_creation_context
+
+                content = await load_employee_creation_context(db, tenant_id=tenant_id, agent_id=peer.id,
+                    user=user, runtime_request=runtime_request)
+                if content.get("identity") != agent_identity_content(peer.name, peer.role_description):
+                    raise ContentInputReceiptError("content_source_unavailable",
+                        "A collaborator label lacks an exact original creation witness.", 503)
         rendered = build_a2a_collaborators_section(directory, max_chars=None)
         if hashlib.sha256(rendered.encode("utf-8")).hexdigest() != dependency["source_version"]:
             raise ContentInputReceiptError("content_source_changed", "The collaborator directory has changed.", 403)

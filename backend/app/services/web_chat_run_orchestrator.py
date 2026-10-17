@@ -746,7 +746,7 @@ def _tool_result_exits_plan_mode(data: dict[str, Any]) -> bool:
 
 async def _prepare_pending_suffix(state: _WebChatRunState) -> str:
     suffix = ""
-    source_unbound = []
+    source_refs, source_unbound = [], []
     try:
         async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
             suffix = await state.ports.context.claim_pending_reply_suffix(
@@ -760,7 +760,14 @@ async def _prepare_pending_suffix(state: _WebChatRunState) -> str:
         source_unbound.append("pending_reply_sources_unavailable")
         state.ports.runtime.logger.warning("[WebChatRun] Pending reply injection failed (non-fatal): {}", exc)
     if state.internal_runtime_context_turn and state.prompt:
-        source_unbound.append("runtime_continuation_sources_unbound")
+        from app.services.runtime_result_sources import continuation_page_source
+
+        async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
+            source = await continuation_page_source(db, task=getattr(state, "runtime_task", None), prompt=state.prompt)
+        if source is None:
+            source_unbound.append("runtime_continuation_sources_unbound")
+        else:
+            source_refs.append(source)
         suffix = _join_suffix(
             suffix,
             f"Runtime continuation context (system generated, not a user message):\n{state.prompt}",
@@ -804,7 +811,7 @@ async def _prepare_pending_suffix(state: _WebChatRunState) -> str:
     from app.runtime.context import ensure_runtime_assembly_state
 
     ensure_runtime_assembly_state(state.runtime_session_context).record_context_sources(
-        agent_id=state.agent.id, content=suffix, sources=(), unbound=source_unbound)
+        agent_id=state.agent.id, content=suffix, sources=source_refs, unbound=source_unbound)
     return suffix
 
 

@@ -362,6 +362,11 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
         dependency = _channel_context_dependency(agent_id, content,
             invocation.effective_arguments_json or invocation.provider_arguments_json)
         return _unique_dependencies([*dependencies, *([dependency] if dependency else [])]), bool(dependency) and inherited_complete
+    if invocation.tool_name == "read_runtime_result":
+        from app.services.runtime_result_sources import runtime_result_tool_sources
+
+        dependency = await runtime_result_tool_sources(db, agent_id=agent_id, invocation=invocation, content=content)
+        return _unique_dependencies([*dependencies, *([dependency] if dependency else [])]), bool(dependency) and inherited_complete
     if invocation.tool_name in {"write_file", "fs_write"}:
         from app.services.content_input_receipts import load_workspace_execution_evidence
 

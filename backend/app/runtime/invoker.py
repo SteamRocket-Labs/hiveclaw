@@ -1033,6 +1033,8 @@ async def _resolve_runtime_metadata_context(
     if "source_unbound" in _runtime_sig:
         source_unbound = []
         _runtime_kwargs["source_unbound"] = source_unbound
+    if "source_refs" in _runtime_sig:
+        _runtime_kwargs["source_refs"] = source_refs
     runtime_facts = {}
     if "runtime_facts" in _runtime_sig:
         _runtime_kwargs["runtime_facts"] = runtime_facts

@@ -13,7 +13,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
     reason="Native macOS context gate; Linux delivery is deferred.")]
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case,
 ):
@@ -32,10 +32,11 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.services.web_chat_runtime import _persist_tool_call
 
     first_task = input_case.startswith("first_task")
-    native_creation = input_case in {"first_task_native_creation", "first_task_fresh_employee"}
-    parent_model_case = input_case in {"first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee"}
+    saved_reopen = input_case == "first_task_saved_reopen"
+    native_creation = input_case in {"first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen"}
+    parent_model_case = input_case in {"first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen"}
     delivery_case = input_case == "first_task_delivery" or parent_model_case
-    native_refined = input_case in {"first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee"}
+    native_refined = input_case in {"first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen"}
     refined_input = input_case == "first_task_refined"
     unbound_input = input_case in {"unbound", "first_task_unbound"}
     revoked_input = input_case in {"revoked", "first_task_revoked"}
@@ -512,7 +513,8 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
 
     marker = seed["data_root"] / str(receiver) / report_path
-    marker.write_text("A later local edit must not replace the delivered version.")
+    if not saved_reopen:
+        marker.write_text("A later local edit must not replace the delivered version.")
     written_at = marker.stat().st_mtime_ns
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.services.direct_invocation_terminal_boundary_processor import _validate_response_payload
@@ -637,7 +639,16 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             review = await browser.get(f"/agents/{seed['agent_id']}/files/artifacts/{parent_artifact_id}/content")
             assert review.status_code == 200 and review.json()["content"] == "ORIGINAL_WORK_REVIEW: DELEGATED_REPORT" and review.json()["uses_snapshot"], review.text
 
-    if input_case == "first_task_fresh_employee":
+    if input_case in {"first_task_fresh_employee", "first_task_saved_reopen"}:
+        if saved_reopen:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fixture.local") as browser:
+                baseline = await browser.get(f"/agents/{receiver}/files/content", params={"path": report_path})
+                assert baseline.status_code == 200, baseline.text
+                saved = await browser.put(f"/agents/{receiver}/files/content", params={"path": report_path},
+                    json={"content": "USER_EDITED_SAVED_REPORT", "expected_current_hash": baseline.json()["content_hash"]})
+                assert saved.status_code == 200 and saved.json()["content_revision"] > 1, saved.text
+                original = await browser.get(f"/agents/{receiver}/files/artifacts/{artifact_id}/content")
+                assert original.status_code == 200 and original.json()["content"] == "DELEGATED_REPORT", original.text
         fresh_session_id, fresh_input_id = uuid4(), uuid4()
         async with app_user_sessionmaker() as db:
             await pin_rls_tenant_context(db, seed["tenant_id"])
@@ -663,6 +674,8 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             await db.commit()
         fresh_path = "workspace/fresh-report.md"
         fresh_client = ScriptedLLMClient([
+            *([{"tool_calls": [{"id": "fresh-employee-read", "type": "function", "function": {"name": "read_file",
+                "arguments": json.dumps({"path": report_path})}}], "finish_reason": "tool_calls"}] if saved_reopen else []),
             {"tool_calls": [{"id": "fresh-employee-write", "type": "function", "function": {"name": "write_file",
                 "arguments": json.dumps({"path": fresh_path, "content": "FRESH_EMPLOYEE_REPORT"})}}], "finish_reason": "tool_calls"},
             {"content": "Fresh report prepared.\nDELIVERABLE: workspace/fresh-report.md", "finish_reason": "stop"}])
@@ -673,7 +686,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         finally:
             reset_runtime_task_fence(fresh_fence)
         (tmp_path / "fresh-employee-model-requests.json").write_text(json.dumps(fresh_client.requests, default=str, indent=2))
-        assert len(fresh_client.requests) == 2 and "REFINED_CONTEXT" in json.dumps(fresh_client.requests[0]["messages"])
+        assert len(fresh_client.requests) == (3 if saved_reopen else 2) and "REFINED_CONTEXT" in json.dumps(fresh_client.requests[0]["messages"])
+        if saved_reopen:
+            assert "USER_EDITED_SAVED_REPORT" in json.dumps(fresh_client.requests[1]["messages"])
         assert observed["status"]["status"] == "captured", observed["status"]
         async with app_user_sessionmaker() as db:
             await pin_rls_tenant_context(db, seed["tenant_id"])
@@ -683,7 +698,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             assert fresh_artifact is not None and fresh_artifact.snapshot_json.get("content_input_receipt_id")
             fresh_artifact_id = fresh_artifact.id
             fresh_rounds = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == fresh_run_id)))
-            assert len(fresh_rounds) == 2 and all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in fresh_rounds)
+            assert len(fresh_rounds) == (3 if saved_reopen else 2) and all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in fresh_rounds)
             for upstream_source in [ref for ref in origin.sources if ref["source_kind"] in {"agent_identity", "session_command"}]:
                 with pytest.raises(ContentInputReceiptError) as denied:
                     await validate_runtime_input_dependencies(db, ToolExecutionRequest(tool_name="read_file", arguments={},
@@ -692,6 +707,23 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fixture.local") as browser:
             fresh_content = await browser.get(f"/agents/{receiver}/files/artifacts/{fresh_artifact_id}/content")
             assert fresh_content.status_code == 200 and fresh_content.json()["content"] == "FRESH_EMPLOYEE_REPORT", fresh_content.text
+        if saved_reopen:
+            saved_source = next(ref for row in fresh_rounds for ref in row.model_request_snapshot_json["input_bindings"]["dependencies"]
+                if ref["source_kind"] == "workspace_artifact")
+            async with owner_sessionmaker() as db:
+                original_artifact = await db.get(ChatArtifact, artifact_id)
+                original_snapshot = dict(original_artifact.snapshot_json)
+                original_artifact.snapshot_json = {**original_snapshot, "content_input_receipt_id": str(uuid4())}
+                await db.commit()
+            async with app_user_sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                with pytest.raises(ContentInputReceiptError) as unavailable:
+                    await validate_runtime_input_dependencies(db, ToolExecutionRequest(tool_name="read_file", arguments={},
+                        context=observed["context"]), [saved_source])
+                assert unavailable.value.status_code == 503
+            async with owner_sessionmaker() as db:
+                (await db.get(ChatArtifact, artifact_id)).snapshot_json = original_snapshot
+                await db.commit()
         async with owner_sessionmaker() as db:
             parent = await db.get(Agent, seed["agent_id"])
             parent.deactivated_at = datetime.now(timezone.utc)
@@ -704,6 +736,11 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 await validate_runtime_input_dependencies(db, ToolExecutionRequest(tool_name="read_file", arguments={},
                     context=observed["context"]), [profile_source])
             assert denied.value.status_code == 403
+            if saved_reopen:
+                with pytest.raises(ContentInputReceiptError) as denied:
+                    await validate_runtime_input_dependencies(db, ToolExecutionRequest(tool_name="read_file", arguments={},
+                        context=observed["context"]), [saved_source])
+                assert denied.value.status_code == 403
         async with owner_sessionmaker() as db:
             parent = await db.get(Agent, seed["agent_id"])
             parent.deactivated_at = None

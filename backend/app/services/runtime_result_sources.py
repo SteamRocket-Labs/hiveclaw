@@ -46,7 +46,7 @@ async def _published_first_task_seed(db, dependency, task):
     return False
 
 
-async def validate_runtime_result_sources(db, request, result_object, *, user=None, session=None):
+async def load_canonical_result_sources(db, result_object):
     if result_object.source_kind != "a2a_delegation":
         return False  # Legacy/non-model results retain unknown dependency coverage.
     try:
@@ -75,6 +75,9 @@ async def validate_runtime_result_sources(db, request, result_object, *, user=No
     dependencies, complete = _model_dependencies(model) if model else ([], False)
     if not complete or task.status != "completed":
         raise ContentInputReceiptError("runtime_result_sources_unbound", "The delegated result has incomplete input sources.", 503)
+    if (hashlib.sha256(bytes(result_object.payload_bytes)).hexdigest() != result_object.sha256
+        or len(result_object.payload_bytes) != result_object.size_bytes):
+        raise ContentInputReceiptError("content_source_changed", "The committed result bytes have changed.", 403)
     payload = json.loads(bytes(result_object.payload_bytes).decode(result_object.encoding))
     if payload.get("summary") != task.result_summary:
         raise ContentInputReceiptError("runtime_result_source_changed", "The result does not match its canonical completion.", 409)
@@ -88,7 +91,7 @@ async def validate_runtime_result_sources(db, request, result_object, *, user=No
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             raise ContentInputReceiptError("runtime_result_artifact_unverified", "Reconcile the original artifact source pin.", 503) from exc
         if (artifact is None or artifact.tenant_id != task.tenant_id or artifact.agent_id != task.child_agent_id
-            or artifact.runtime_task_id != task.id or artifact.path != part.get("path")
+            or artifact.runtime_task_id != task.id or artifact.session_id != uuid.UUID(task.child_session_id) or artifact.path != part.get("path")
             or artifact.snapshot_hash != part.get("revision_id") or snapshot.get("preview_content") != part.get("preview_snapshot_content")
             or receipt is None or receipt.tenant_id != task.tenant_id or receipt.carrier_kind != "workspace_artifact"
             or receipt.carrier_ref != f"{artifact.agent_id}\n{artifact.path}" or receipt.content_sha256 != snapshot.get("content_hash")):
@@ -98,6 +101,14 @@ async def validate_runtime_result_sources(db, request, result_object, *, user=No
     dependencies = _stored_dependencies(dependencies)
     if dependencies is None:
         raise ContentInputReceiptError("runtime_result_sources_unbound", "The result's input source inventory is invalid.", 503)
+    return task, dependencies, receipt_ids
+
+
+async def validate_runtime_result_sources(db, request, result_object, *, user=None, session=None):
+    canonical = await load_canonical_result_sources(db, result_object)
+    if not canonical:
+        return False
+    task, dependencies, receipt_ids = canonical
     if request is not None:
         principal, requester = await _runtime_input_actor(db, task.tenant_id, request)
         reader_agent, reader_session = principal.agent_id, uuid.UUID(str(principal.session_id))
@@ -131,6 +142,56 @@ async def validate_runtime_result_sources(db, request, result_object, *, user=No
         await _validate_input_dependencies(db, task.tenant_id, [dependency],
             user=requester if published else user, runtime_request=None if published else request,
             active_workspace_receipts=frozenset(receipt_ids))
+    return True
+
+
+async def validate_published_workspace_inputs(db, request, receipt, *, active_receipts):
+    """Reopen a published first-task carrier without granting its upstream raw sources."""
+    from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+    from app.models.runtime_result import RuntimeResultObject
+    from app.services.employee_creation_sources import load_employee_creation_context, validate_creation_publication_inputs
+    from app.services.hr_creation_service import direct_creation_authorization
+
+    principal, requester = await _runtime_input_actor(db, receipt.tenant_id, request)
+    draft = await db.scalar(select(HrCreationDraft).where(HrCreationDraft.tenant_id == receipt.tenant_id,
+        HrCreationDraft.created_agent_id == principal.agent_id, HrCreationDraft.requested_by_user_id == requester.id,
+        HrCreationDraft.status == "completed"))
+    if draft is None:
+        return False
+    task_id = uuid.uuid5(draft.id, "explicit-first-task.v1")
+    artifact = await db.scalar(select(ChatArtifact).where(ChatArtifact.tenant_id == receipt.tenant_id,
+        ChatArtifact.agent_id == principal.agent_id, ChatArtifact.runtime_task_id == task_id,
+        ChatArtifact.session_id == uuid.uuid5(task_id, "session"),
+        receipt.carrier_ref == str(principal.agent_id) + "\n" + ChatArtifact.path).order_by(ChatArtifact.created_at.desc()).limit(1))
+    if artifact is None:
+        return False
+    result = await db.scalar(select(RuntimeResultObject).join(RuntimeNotificationOutbox,
+        RuntimeNotificationOutbox.result_object_id == RuntimeResultObject.id).where(
+        RuntimeResultObject.tenant_id == receipt.tenant_id, RuntimeResultObject.source_kind == "a2a_delegation",
+        RuntimeResultObject.source_run_id == str(task_id), RuntimeNotificationOutbox.tenant_id == receipt.tenant_id,
+        RuntimeNotificationOutbox.parent_agent_id == draft.hr_agent_id,
+        RuntimeNotificationOutbox.parent_session_id == draft.session_id,
+        RuntimeNotificationOutbox.parent_user_id == requester.id).limit(1))
+    canonical = await load_canonical_result_sources(db, result) if result is not None else None
+    if not canonical:
+        raise ContentInputReceiptError("content_source_unavailable", "Reconcile the original first-task publication.", 503)
+    task, _dependencies, receipt_ids = canonical
+    evidence = direct_creation_authorization(draft)
+    try:
+        pin = await db.get(ContentInputReceipt, uuid.UUID(artifact.snapshot_json["content_input_receipt_id"]), populate_existing=True)
+    except (KeyError, ValueError, TypeError) as exc:
+        raise ContentInputReceiptError("content_source_unavailable", "The original artifact source pin is missing.", 503) from exc
+    if (not evidence or task.child_agent_id != principal.agent_id or task.parent_agent_id != draft.hr_agent_id
+        or task.root_user_id != requester.id or uuid.UUID(task.parent_session_id) != draft.session_id
+        or uuid.UUID(task.child_session_id) != uuid.uuid5(task_id, "session") or task.prompt != evidence["first_task"]
+        or str(task.root_runtime_task_id) != evidence["source_run_id"] or pin is None or pin.id not in receipt_ids
+        or pin.carrier_ref != receipt.carrier_ref or pin.revision > receipt.revision):
+        raise ContentInputReceiptError("content_source_unavailable", "The saved carrier lacks its exact first-task publication.", 503)
+    creation = await load_employee_creation_context(db, tenant_id=receipt.tenant_id, agent_id=principal.agent_id,
+        user=None, runtime_request=request)
+    await validate_creation_publication_inputs(db, draft=draft, dependencies=receipt.dependencies_json,
+        creation_dependencies=creation["dependencies"], user=None, runtime_request=request,
+        active_workspace_receipts=active_receipts)
     return True
 
 

@@ -71,7 +71,7 @@ async def load_employee_creation_context(db, *, tenant_id, agent_id, user, runti
         raise ContentInputReceiptError("content_source_unavailable", "The HR context lacks complete original creation sources.", 503)
     if content.get("refinement") is not None and not await _refinement_is_bound(db, draft=draft, refinement=content["refinement"]):
         raise ContentInputReceiptError("content_source_unavailable", "The original refinement call no longer matches its receipt.", 503)
-    await _validate_creation_profile_inputs(db, draft=draft, dependencies=inputs[0], user=user, runtime_request=runtime_request)
+    await validate_creation_publication_inputs(db, draft=draft, dependencies=inputs[0], user=user, runtime_request=runtime_request)
     return content
 
 
@@ -202,17 +202,20 @@ async def creation_tool_result_bound(db, *, tenant_id, agent_id, invocation, con
     return inputs is not None and inputs[1]
 
 
-async def _validate_creation_profile_inputs(db, *, draft, dependencies, user, runtime_request):
+async def validate_creation_publication_inputs(db, *, draft, dependencies, user, runtime_request,
+    creation_dependencies=None, active_workspace_receipts=frozenset()):
     from app.models.agent import Agent
     from app.models.session_v2 import SessionCommand
     from app.services.content_input_receipts import ContentInputReceiptError, _runtime_input_actor, _validate_input_dependencies
 
     if runtime_request is None:
-        await _validate_input_dependencies(db, draft.tenant_id, dependencies, user=user)
+        await _validate_input_dependencies(db, draft.tenant_id, dependencies, user=user,
+            active_workspace_receipts=active_workspace_receipts)
         return
     principal, requester = await _runtime_input_actor(db, draft.tenant_id, runtime_request)
     if principal.agent_id != draft.created_agent_id or requester.id != draft.requested_by_user_id:
-        await _validate_input_dependencies(db, draft.tenant_id, dependencies, runtime_request=runtime_request)
+        await _validate_input_dependencies(db, draft.tenant_id, dependencies, runtime_request=runtime_request,
+            active_workspace_receipts=active_workspace_receipts)
         return
     parent = await db.get(Agent, draft.hr_agent_id, populate_existing=True)
     child = await db.get(Agent, draft.created_agent_id, populate_existing=True)
@@ -221,8 +224,9 @@ async def _validate_creation_profile_inputs(db, *, draft, dependencies, user, ru
         or child.deleted_at is not None or child.deactivated_at is not None
         or (parent.owner_user_id or parent.creator_id) != requester.id or child.owner_user_id != requester.id):
         raise ContentInputReceiptError("content_source_access_denied", "The original employee profile is no longer authorized.", 403)
-    published = await _creation_seed_dependencies(db, draft=draft, parent=parent, dependencies=dependencies)
-    for dependency in dependencies:
+    creation_dependencies = dependencies if creation_dependencies is None else creation_dependencies
+    published = await _creation_seed_dependencies(db, draft=draft, parent=parent, dependencies=creation_dependencies)
+    for dependency in creation_dependencies:
         if dependency["source_kind"] == "session_command":
             try:
                 command_id = uuid.UUID(dependency["source_id"])
@@ -238,4 +242,5 @@ async def _validate_creation_profile_inputs(db, *, draft, dependencies, user, ru
     for dependency in dependencies:
         await _validate_input_dependencies(db, draft.tenant_id, [dependency],
             user=requester if dependency in published else None,
-            runtime_request=None if dependency in published else runtime_request)
+            runtime_request=None if dependency in published else runtime_request,
+            active_workspace_receipts=active_workspace_receipts)

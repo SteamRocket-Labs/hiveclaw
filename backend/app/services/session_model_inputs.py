@@ -414,9 +414,9 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
             inherited = _stored_dependencies(receipt.dependencies_json)
             if inherited is None:
                 return _unique_dependencies(dependencies), False
-            # Even an original carrier with [] dependencies retains its own current audience.
-            dependencies.extend([{"source_kind": "workspace_artifact", "source_id": str(receipt.id),
-                "source_version": receipt.content_sha256}, *inherited])
+            # Keep upstream refs behind their exact carrier's audience and recursive source reader.
+            dependencies.append({"source_kind": "workspace_artifact", "source_id": str(receipt.id),
+                "source_version": receipt.content_sha256})
             return _unique_dependencies(dependencies), inherited_complete
         except (ContentInputReceiptError, ValueError, TypeError, AttributeError):
             return _unique_dependencies(dependencies), False

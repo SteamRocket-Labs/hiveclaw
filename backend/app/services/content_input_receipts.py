@@ -574,8 +574,18 @@ async def _validate_workspace_dependency(db, tenant_id, dependency, *, user, run
         raise ContentInputReceiptError("content_source_changed", "The current workspace bytes have no matching receipt.", 403)
     _validate_source_bytes(Path(str(agent_id)) / path, latest.content_sha256)
     # A later write is not a source of the previously observed version.
-    await _validate_input_dependencies(db, tenant_id, receipt.dependencies_json, user=user, runtime_request=runtime_request,
-        active_workspace_receipts=active_receipts | {receipt_id})
+    await _validate_workspace_receipt_inputs(db, receipt, user=user, runtime_request=runtime_request,
+        active_receipts=active_receipts | {receipt_id})
+
+
+async def _validate_workspace_receipt_inputs(db, receipt, *, user=None, runtime_request=None, active_receipts=frozenset()):
+    if runtime_request is not None:
+        from app.services.runtime_result_sources import validate_published_workspace_inputs
+
+        if await validate_published_workspace_inputs(db, runtime_request, receipt, active_receipts=active_receipts):
+            return
+    await _validate_input_dependencies(db, receipt.tenant_id, receipt.dependencies_json, user=user,
+        runtime_request=runtime_request, active_workspace_receipts=active_receipts)
 
 
 async def authorize_workspace_execution_inputs(request) -> list[dict]:
@@ -603,7 +613,8 @@ async def authorize_workspace_execution_inputs(request) -> list[dict]:
                 if receipt is None:
                     continue  # Do not invent receipts for unmigrated legacy carriers.
                 try:
-                    await validate_runtime_input_dependencies(db, request, receipt.dependencies_json)
+                    await _validate_workspace_receipt_inputs(db, receipt, runtime_request=request,
+                        active_receipts=frozenset({receipt.id}))
                 except ContentInputReceiptError as exc:
                     denied.append({"path": path, "reason_code": exc.code,
                         "status": "denied" if exc.status_code == 403 else "unavailable", "retryable": exc.status_code == 503})
@@ -650,7 +661,8 @@ async def authorize_workspace_receipt_read(request):
                 return None  # Legacy carrier migration remains separate; no receipt is invented.
             if not isinstance(scope, WorkspaceAuthorityScope) or scope.agent_id != context.agent_id or scope.user_id != context.user_id:
                 raise ContentInputReceiptError("content_source_access_denied", "The runtime file scope does not match.", 403)
-            await validate_runtime_input_dependencies(db, request, receipt.dependencies_json)
+            await _validate_workspace_receipt_inputs(db, receipt, runtime_request=request,
+                active_receipts=frozenset({receipt.id}))
             # This hash is checked against the very bytes returned by the file reader.
             scope = context.workspace_authority_scope
             observed = WorkspaceInputRead(path=path, receipt_id=receipt.id, revision=receipt.revision,
@@ -733,8 +745,8 @@ async def validate_artifact_content_receipt(db, tenant_id, user, artifact, *, ru
         raise ContentInputReceiptError("workspace_content_unverified", "The artifact's source receipt does not match its captured bytes.")
     if runtime_principal is not None:
         await _runtime_input_actor(db, tenant_id, runtime_principal)
-    await _validate_input_dependencies(db, tenant_id, receipt.dependencies_json, user=user,
-        runtime_request=runtime_principal, active_workspace_receipts=frozenset({receipt.id}))
+    await _validate_workspace_receipt_inputs(db, receipt, user=user,
+        runtime_request=runtime_principal, active_receipts=frozenset({receipt.id}))
 
 
 def record_workspace_receipt(db, tenant_id: uuid.UUID, agent_id: uuid.UUID, path: str, content_sha256: str, previous):

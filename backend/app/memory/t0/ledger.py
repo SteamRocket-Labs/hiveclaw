@@ -42,6 +42,13 @@ INDEX_FILENAME = "index.json"
 _EVENT_BLOCK_RE = re.compile(r"<t0_event\b.*?</t0_event>", re.DOTALL)
 
 
+class T0LedgerIntegrityError(ValueError):
+    def __init__(self, code: str):
+        self.code = code
+        self.retryable = True
+        super().__init__(f"{code}: T0 history is unavailable. Restore or reconcile the original ledger before retrying.")
+
+
 @dataclass(frozen=True, slots=True)
 class T0AppendResult:
     path: Path
@@ -540,16 +547,48 @@ def import_legacy_t0_file(
     return LegacyImportResult(path=path, segment_id=segment_id, sequence=sequence, imported=True, jsonl_path=jsonl_path)
 
 
-def _replay_segment_events(*, session_dir: Path, segment: dict[str, Any]) -> list[T0SessionEvent]:
+def _replay_segment_events(*, session_dir: Path, segment: dict[str, Any], agent_id, session_id) -> list[T0SessionEvent]:
     segment_id = str(segment.get("segment_id") or "")
     rel_path = segment.get("path") or (Path("segments") / segment_id / SOURCE_FILENAME).as_posix()
     source_path = session_dir / str(rel_path)
     jsonl_path = session_dir / _segment_events_path(segment)
     if jsonl_path.exists():
-        return _parse_events_from_jsonl(path=jsonl_path, segment_id=segment_id, source_path=source_path)
+        return _parse_events_from_jsonl(path=jsonl_path, segment_id=segment_id, source_path=source_path,
+            agent_id=agent_id, session_id=session_id)
+    if segment.get("events_path"):
+        raise T0LedgerIntegrityError("t0_primary_missing")
     if source_path.exists():
         return _parse_events_from_source(path=source_path, segment_id=segment_id)
     return []
+
+
+def _validate_replay(events, *, index, agent_id, session_id, complete):
+    if index is not None and (index.get("agent_id") != str(agent_id) or index.get("session_id") != str(session_id)):
+        raise T0LedgerIntegrityError("t0_index_scope_mismatch")
+    ordered = sorted(events, key=lambda event: event.sequence)
+    previous = None
+    seen = set()
+    for event in ordered:
+        if event.record_schema_version == EVENT_RECORD_SCHEMA_VERSION:
+            if event.event_id in seen:
+                raise T0LedgerIntegrityError("t0_duplicate_event")
+            if previous is None and complete and (event.sequence != 1 or event.prev_event_hash is not None):
+                raise T0LedgerIntegrityError("t0_history_gap")
+            if previous is not None and previous.record_schema_version == EVENT_RECORD_SCHEMA_VERSION and (
+                event.sequence != previous.sequence + 1 or event.prev_event_hash != previous.event_hash
+            ):
+                raise T0LedgerIntegrityError("t0_hash_chain_mismatch")
+            seen.add(event.event_id)
+        previous = event
+    if index is not None:
+        if not ordered and index.get("last_event_hash"):
+            raise T0LedgerIntegrityError("t0_snapshot_changed")
+        if ordered and ordered[-1].record_schema_version == EVENT_RECORD_SCHEMA_VERSION and (
+            index.get("last_event_hash") != ordered[-1].event_hash
+            or index.get("next_sequence") != ordered[-1].sequence + 1
+        ):
+            raise T0LedgerIntegrityError("t0_snapshot_changed")
+    return ordered
 
 
 def replay_t0_session_events(
@@ -565,8 +604,8 @@ def replay_t0_session_events(
     segment_records = list(index.get("segments") or []) if index else _discover_segments(session_dir)
     events: list[T0SessionEvent] = []
     for segment in segment_records:
-        events.extend(_replay_segment_events(session_dir=session_dir, segment=segment))
-    return sorted(events, key=lambda event: event.sequence)
+        events.extend(_replay_segment_events(session_dir=session_dir, segment=segment, agent_id=agent_id, session_id=session_id))
+    return _validate_replay(events, index=index, agent_id=agent_id, session_id=session_id, complete=True)
 
 
 def replay_t0_session_events_tail(
@@ -593,11 +632,10 @@ def replay_t0_session_events_tail(
         return events[-limit:]
     collected: list[T0SessionEvent] = []
     for segment in reversed(list(index.get("segments") or [])):
-        collected.extend(_replay_segment_events(session_dir=session_dir, segment=segment))
+        collected.extend(_replay_segment_events(session_dir=session_dir, segment=segment, agent_id=agent_id, session_id=session_id))
         if len(collected) >= limit:
             break
-    collected.sort(key=lambda event: event.sequence)
-    return collected[-limit:]
+    return _validate_replay(collected, index=index, agent_id=agent_id, session_id=session_id, complete=False)[-limit:]
 
 
 def _session_dir(data_root: Path | str | None, agent_id: uuid.UUID | str, session_id: uuid.UUID | str) -> Path:
@@ -617,7 +655,11 @@ def _load_or_create_index(
 ) -> dict[str, Any]:
     existing = _read_index(session_dir)
     if existing:
+        if existing.get("agent_id") != str(agent_id) or existing.get("session_id") != str(session_id):
+            raise T0LedgerIntegrityError("t0_index_scope_mismatch")
         return existing
+    if _discover_segments(session_dir):
+        raise T0LedgerIntegrityError("t0_index_missing")
     session_dir.mkdir(parents=True, exist_ok=True)
     index = {
         "schema_version": SCHEMA_VERSION,
@@ -644,9 +686,11 @@ def _read_index(session_dir: Path) -> dict[str, Any] | None:
         return None
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return payload if isinstance(payload, dict) else None
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise T0LedgerIntegrityError("t0_index_unavailable") from exc
+    if not isinstance(payload, dict) or payload.get("schema_version") != SCHEMA_VERSION:
+        raise T0LedgerIntegrityError("t0_index_version_unavailable")
+    return payload
 
 
 def _write_index(session_dir: Path, index: dict[str, Any]) -> None:
@@ -858,11 +902,18 @@ def _ensure_open_segment(
                     incoming_runtime_task_id=runtime_task_id,
                     incoming_turn_id=turn_id,
                 )
-            if runtime_task_id and not active_runtime_task_id:
-                segment["runtime_task_id"] = runtime_task_id
-            if turn_id and not active_turn_id:
-                segment["turn_id"] = turn_id
-            return segment
+            legacy_primary = not segment.get("events_path") and index.get("truth_surface", "source.md") == "source.md"
+            if legacy_primary:
+                if active_runtime_task_id or active_turn_id:
+                    raise T0LedgerIntegrityError("t0_legacy_owner_reconciliation_required")
+                # A new JSONL file in this directory would hide the older Markdown events.
+                index["event_record_schema_version"] = EVENT_RECORD_SCHEMA_VERSION
+            else:
+                if runtime_task_id and not active_runtime_task_id:
+                    segment["runtime_task_id"] = runtime_task_id
+                if turn_id and not active_turn_id:
+                    segment["turn_id"] = turn_id
+                return segment
 
     segment_id = f"seg-{now.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
     segment = {
@@ -1126,21 +1177,24 @@ def _parse_events_from_source(*, path: Path, segment_id: str) -> list[T0SessionE
     return parsed
 
 
-def _parse_events_from_jsonl(*, path: Path, segment_id: str, source_path: Path) -> list[T0SessionEvent]:
+def _parse_events_from_jsonl(*, path: Path, segment_id: str, source_path: Path, agent_id, session_id) -> list[T0SessionEvent]:
     parsed: list[T0SessionEvent] = []
     offset = 0
     try:
         with path.open("rb") as fh:
             for raw_line in fh:
                 byte_length = len(raw_line)
+                if not raw_line.strip():
+                    offset += byte_length
+                    continue
+                if not raw_line.endswith(b"\n"):
+                    raise T0LedgerIntegrityError("t0_record_truncated")
                 try:
                     record = json.loads(raw_line.decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError):
-                    offset += byte_length
-                    continue
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise T0LedgerIntegrityError("t0_record_invalid") from exc
                 if not isinstance(record, dict):
-                    offset += byte_length
-                    continue
+                    raise T0LedgerIntegrityError("t0_record_invalid")
                 event = _event_from_record(
                     record=record,
                     jsonl_path=path,
@@ -1148,12 +1202,13 @@ def _parse_events_from_jsonl(*, path: Path, segment_id: str, source_path: Path) 
                     segment_id=segment_id,
                     byte_offset=offset,
                     byte_length=byte_length,
+                    agent_id=agent_id,
+                    session_id=session_id,
                 )
-                if event is not None:
-                    parsed.append(event)
+                parsed.append(event)
                 offset += byte_length
-    except OSError:
-        return []
+    except OSError as exc:
+        raise T0LedgerIntegrityError("t0_primary_unavailable") from exc
     return parsed
 
 
@@ -1165,10 +1220,21 @@ def _event_from_record(
     segment_id: str,
     byte_offset: int,
     byte_length: int,
-) -> T0SessionEvent | None:
+    agent_id,
+    session_id,
+) -> T0SessionEvent:
     schema = str(record.get("schema_version") or "")
     if schema != EVENT_RECORD_SCHEMA_VERSION:
-        return None
+        raise T0LedgerIntegrityError("t0_record_version_unavailable")
+    if (record.get("agent_id") != str(agent_id) or record.get("session_id") != str(session_id)
+        or record.get("segment_id") != segment_id):
+        raise T0LedgerIntegrityError("t0_record_scope_mismatch")
+    if (type(record.get("sequence")) is not int or record["sequence"] < 1
+        or not isinstance(record.get("event_id"), str) or not record["event_id"]
+        or not isinstance(record.get("content"), str)):
+        raise T0LedgerIntegrityError("t0_record_invalid")
+    if record.get("event_hash") != _record_hash(record):
+        raise T0LedgerIntegrityError("t0_record_hash_mismatch")
     metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
     projection = record.get("projection") if isinstance(record.get("projection"), dict) else {}
     projected_path = source_path
@@ -1214,7 +1280,8 @@ def _discover_segments(session_dir: Path) -> list[dict[str, Any]]:
         {
             "segment_id": segment_dir.name,
             "path": (Path("segments") / segment_dir.name / SOURCE_FILENAME).as_posix(),
-            "events_path": (Path("segments") / segment_dir.name / EVENTS_FILENAME).as_posix(),
+            **({"events_path": (Path("segments") / segment_dir.name / EVENTS_FILENAME).as_posix()}
+                if (segment_dir / EVENTS_FILENAME).exists() else {}),
         }
         for segment_dir in sorted(segments_dir.iterdir())
         if (segment_dir / SOURCE_FILENAME).exists() or (segment_dir / EVENTS_FILENAME).exists()

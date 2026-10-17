@@ -197,6 +197,14 @@ def test_replay_falls_back_to_markdown_projection_for_legacy_segments(tmp_path: 
         data_root=tmp_path,
     )
     result.jsonl_path.unlink()
+    index_path = result.jsonl_path.parents[2] / "index.json"
+    index = json.loads(index_path.read_text())
+    index["truth_surface"] = "source.md"
+    index.pop("event_record_schema_version", None)
+    index.pop("last_event_hash", None)
+    for segment in index["segments"]:
+        segment.pop("events_path", None)
+    index_path.write_text(json.dumps(index))
 
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
 
@@ -523,9 +531,10 @@ def test_tail_replay_skips_older_segments_when_tail_is_enough(monkeypatch, tmp_p
     parse_calls: list[str] = []
     real_parse = ledger_module._parse_events_from_jsonl
 
-    def counting_parse(*, path, segment_id, source_path):
+    def counting_parse(*, path, segment_id, source_path, agent_id, session_id):
         parse_calls.append(segment_id)
-        return real_parse(path=path, segment_id=segment_id, source_path=source_path)
+        return real_parse(path=path, segment_id=segment_id, source_path=source_path,
+            agent_id=agent_id, session_id=session_id)
 
     monkeypatch.setattr(ledger_module, "_parse_events_from_jsonl", counting_parse)
 

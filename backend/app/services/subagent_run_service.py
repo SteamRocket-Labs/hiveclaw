@@ -28,6 +28,7 @@ from app.agents.subagent_definition import SCOPE_AGENT
 from app.core.execution_context import ExecutionPrincipal
 from app.agents.subagent_memory import make_llm_how_distiller, memory_store_for_agent, memory_store_for_tenant
 from app.database import async_session, tenant_scoped_session
+from app.memory.t0.ledger import T0LedgerIntegrityError
 from app.models.agent import Agent
 from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -1290,6 +1291,8 @@ async def _load_subagent_resume_messages(
         from app.memory.t0.ledger import replay_t0_session_events
 
         events = replay_t0_session_events(agent_id=parent_agent_id, session_id=session_id)
+    except T0LedgerIntegrityError:
+        raise
     except Exception as exc:
         logger.info("[Subagent] no replayable child T0 transcript for %s: %s", session_id, exc)
         return []
@@ -1581,6 +1584,12 @@ async def dispatch_persisted_subagent_run(task_id: str) -> bool:
             requester_user_id=requester_user_id,
             context_window_tokens=metadata.get("context_window_tokens"),
         )
+    except T0LedgerIntegrityError as exc:
+        await _mark_subagent_run_needs_reconciliation(run_id=run_id, metadata=metadata,
+            blocker=f"child_history:{exc.code}",
+            summary="Child history is unavailable. Restore or reconcile its T0 ledger before resuming the preserved work.",
+            trace_id=trace_id, session_id=child_session_id or parent_session_id)
+        return True
     except RuntimeTaskRequesterUnavailable as exc:
         await _hold_subagent_requester_identity(
             run_id=run_id,
@@ -1839,12 +1848,20 @@ async def resume_persisted_subagent_runs(*, limit: int = 50) -> list[str]:
         except ValueError:
             parent_agent_id = None
         if parent_agent_id is not None:
-            resume_messages = await _load_subagent_resume_messages(
-                parent_agent_id=parent_agent_id,
-                child_session_id=child_session_id,
-                prompt=str(record.get("prompt") or ""),
-                context_window_tokens=metadata.get("context_window_tokens"),
-            )
+            try:
+                resume_messages = await _load_subagent_resume_messages(
+                    parent_agent_id=parent_agent_id,
+                    child_session_id=child_session_id,
+                    prompt=str(record.get("prompt") or ""),
+                    context_window_tokens=metadata.get("context_window_tokens"),
+                )
+            except T0LedgerIntegrityError as exc:
+                if record_status != "needs_reconciliation":
+                    await _mark_subagent_run_needs_reconciliation(run_id=run_id, metadata=metadata,
+                        blocker=f"child_history:{exc.code}",
+                        summary="Child history is unavailable. Restore or reconcile its T0 ledger before resuming the preserved work.",
+                        trace_id=trace_id, session_id=child_session_id or parent_session_id)
+                continue
         replay_blocker = None if resume_messages else _subagent_restart_replay_blocker(spec_type, metadata)
         if replay_blocker is not None:
             if record_status == "needs_reconciliation":

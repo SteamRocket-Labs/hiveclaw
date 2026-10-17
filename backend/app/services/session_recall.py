@@ -13,7 +13,7 @@ from sqlalchemy.dialects.postgresql import ARRAY, UUID as PgUUID
 
 from app.config import get_settings
 from app.database import tenant_scoped_session
-from app.memory.t0.ledger import replay_t0_session_events
+from app.memory.t0.ledger import T0LedgerIntegrityError, replay_t0_session_events
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 
@@ -657,5 +657,8 @@ async def search_session_history(
             hit for hit in hits if hit.get("session_id") in current]
     except SessionRecallError:
         raise
+    except T0LedgerIntegrityError as exc:
+        raise SessionRecallError("session_recall_evidence_unavailable",
+            f"T0 history failed integrity verification ({exc.code}). Restore or reconcile the original ledger before retrying.") from exc
     except Exception as exc:
         raise SessionRecallError("session_recall_authority_unavailable", "Session recall authority or evidence is temporarily unavailable. Retry later.") from exc

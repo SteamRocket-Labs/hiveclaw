@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import get_settings
-from app.memory.t0.ledger import replay_t0_session_events
+from app.memory.t0.ledger import T0LedgerIntegrityError, replay_t0_session_events
 from app.memory.t2.segment_package import run_t2_segment_package_job, select_t2_segment_events
 
 
@@ -164,7 +164,7 @@ def inventory_t0_to_t2_backfill(
                         session_id=session_id,
                         data_root=root,
                     )
-                except OSError:
+                except (OSError, T0LedgerIntegrityError):
                     session_events_unreadable = True
                 session_events_loaded = True
             if session_events_unreadable:

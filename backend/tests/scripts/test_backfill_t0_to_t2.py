@@ -18,8 +18,11 @@ def _write_t0_index(
     open_segments: tuple[str, ...] = (),
     no_semantic_content_segments: tuple[str, ...] = (),
 ) -> None:
+    from app.memory.t0.ledger import _record_hash
+
     session_dir = data_root / str(agent_id) / "memory" / "t0" / "sessions" / session_id
     segments: list[dict[str, object]] = []
+    last_hash = None
     for sequence, (segment_id, state) in enumerate(
         [
             *((segment_id, "sealed") for segment_id in sealed_segments),
@@ -53,6 +56,12 @@ def _write_t0_index(
             + "\n",
             encoding="utf-8",
         )
+        events_path = segment_dir / "events.jsonl"
+        record = json.loads(events_path.read_text())
+        record["prev_event_hash"] = last_hash
+        record["event_hash"] = _record_hash(record)
+        last_hash = record["event_hash"]
+        events_path.write_text(json.dumps(record) + "\n")
         (segment_dir / "source.md").write_text("<t0_session_segment />\n", encoding="utf-8")
         segments.append(
             {
@@ -70,6 +79,8 @@ def _write_t0_index(
                 "agent_id": str(agent_id),
                 "session_id": session_id,
                 "segments": segments,
+                "last_event_hash": last_hash,
+                "next_sequence": len(segments) + 1,
             }
         ),
         encoding="utf-8",

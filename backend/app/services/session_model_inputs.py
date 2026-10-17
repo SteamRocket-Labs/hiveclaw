@@ -358,6 +358,11 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
     # The call's own audience remains a source, including empty searches and private query arguments.
     dependencies = [*dependencies, {"source_kind": "session_tool_invocation", "source_id": str(invocation.id),
         "source_version": payload["content_hash"]}]
+    if invocation.tool_name == "create_employee_from_request":
+        from app.services.employee_creation_sources import creation_tool_result_bound
+
+        complete = await creation_tool_result_bound(db, tenant_id=tenant_id, agent_id=agent_id, invocation=invocation, content=content)
+        return _unique_dependencies(dependencies), inherited_complete and complete
     if invocation.tool_name == "read_context_resource":
         dependency = _channel_context_dependency(agent_id, content,
             invocation.effective_arguments_json or invocation.provider_arguments_json)

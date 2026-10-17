@@ -105,3 +105,93 @@ async def _refinement_is_bound(db, *, draft, refinement):
         HrProvisioningStep.step_kind == "model", HrProvisioningStep.status == "completed").execution_options(populate_existing=True))
     return (step is not None and step.input_hash == _step_input_hash(draft.blueprint_hash, "model")
         and (step.receipt_json or {}).get("model_used") is True and (step.receipt_json or {}).get("refinement") == refinement)
+
+
+async def published_creation_seed_sources(db, *, tenant_id, request):
+    """Read only original creation seed sources for its live explicit first task."""
+    from datetime import datetime, timezone
+    from app.agents.delegation_token import DelegationToken, validate_delegation_token
+    from app.models.agent import Agent
+    from app.models.invocation_span import InvocationSpan
+    from app.models.runtime_task import RuntimeTask
+    from app.services.content_input_receipts import _runtime_input_actor
+    from app.services.hr_creation_service import direct_creation_authorization
+
+    context = getattr(request, "context", None)
+    token = getattr(context, "delegation_token", None)
+    if not isinstance(token, DelegationToken) or not validate_delegation_token(token, child_agent_id=context.agent_id).valid:
+        return None, []
+    try:
+        task_id, session_id = uuid.UUID(str(context.runtime_task_id)), uuid.UUID(str(context.session_id))
+    except (ValueError, TypeError):
+        return None, []
+    task = await db.scalar(select(RuntimeTask).where(RuntimeTask.id == task_id, RuntimeTask.tenant_id == tenant_id,
+        RuntimeTask.task_type == "delegation", RuntimeTask.status == "running",
+        RuntimeTask.child_agent_id == context.agent_id, RuntimeTask.root_user_id == context.user_id,
+        RuntimeTask.claim_expires_at > datetime.now(timezone.utc)))
+    if (task is None or uuid.UUID(task.child_session_id) != session_id or token.parent_agent_id != task.parent_agent_id):
+        return None, []
+    principal, requester = await _runtime_input_actor(db, tenant_id, request)
+    if principal.purpose != "a2a_delegation":
+        return None, []
+    draft = await db.scalar(select(HrCreationDraft).where(HrCreationDraft.tenant_id == tenant_id,
+        HrCreationDraft.created_agent_id == task.child_agent_id, HrCreationDraft.hr_agent_id == task.parent_agent_id,
+        HrCreationDraft.session_id == uuid.UUID(task.parent_session_id), HrCreationDraft.status == "completed",
+        HrCreationDraft.requested_by_user_id == requester.id))
+    evidence = direct_creation_authorization(draft) if draft else None
+    parent = await db.get(Agent, task.parent_agent_id, populate_existing=True)
+    child = await db.get(Agent, task.child_agent_id, populate_existing=True)
+    if (draft is None or task.id != uuid.uuid5(draft.id, "explicit-first-task.v1")
+        or session_id != uuid.uuid5(task.id, "session") or not evidence or task.prompt != evidence["first_task"]
+        or str(task.root_runtime_task_id) != evidence["source_run_id"]
+        or parent is None or parent.tenant_id != tenant_id or parent.deleted_at is not None or parent.deactivated_at is not None
+        or (parent.owner_user_id or parent.creator_id) != requester.id or child is None or child.tenant_id != tenant_id
+        or child.deleted_at is not None or child.deactivated_at is not None or child.owner_user_id != requester.id):
+        return None, []
+    original = await load_employee_creation_dependencies(db, draft=draft)
+    if original is None or not original[1]:
+        return None, []
+    published = []
+    allowed = {"agent_identity": {"identity"}, "agent_context_resource": {"soul", "a2a-collaborators"},
+        "agent_resident_memory": {"memory/self/self.md"}}
+    for dependency in original[0]:
+        kind, source_id = dependency["source_kind"], dependency["source_id"]
+        parts = source_id.split("\n")
+        if (kind in {*allowed, "agent_platform_skill_file", "owner_action_policy"} and parts[0] == str(parent.id)
+            and len(parts) > 1 and (kind not in allowed or parts[1] in allowed[kind])):
+            published.append(dependency)
+        elif kind == "session_actor_identity":
+            try:
+                row = await db.get(InvocationSpan, uuid.UUID(source_id), populate_existing=True)
+            except ValueError:
+                continue
+            if (row is not None and row.tenant_id == tenant_id and row.agent_id == parent.id
+                and row.user_id == requester.id and row.session_id == str(draft.session_id)):
+                published.append(dependency)
+    return requester, published
+
+
+async def creation_tool_result_bound(db, *, tenant_id, agent_id, invocation, content):
+    """Bind the native creation transaction result, retaining its original Session audience."""
+    import json
+    from app.services.hr_creation_service import direct_creation_authorization
+
+    try:
+        output = json.loads(content)
+        draft = await db.get(HrCreationDraft, uuid.UUID(output["blueprint_id"]), populate_existing=True)
+    except (ValueError, KeyError, TypeError):
+        return False
+    if (draft is None or draft.tenant_id != tenant_id or draft.hr_agent_id != agent_id
+        or draft.session_id != invocation.session_id or output.get("blueprint_hash") != draft.blueprint_hash
+        or output.get("blueprint_version") != draft.blueprint_version or output.get("blueprint") != draft.blueprint_json
+        or output.get("hr_agent_id") != str(agent_id) or output.get("session_id") != str(invocation.session_id)
+        or output.get("requested_by_user_id") != str(draft.requested_by_user_id)
+        or output.get("provisioning_task_id") != str(draft.provisioning_task_id)):
+        return False
+    evidence = direct_creation_authorization(draft)
+    if (not evidence or evidence.get("source_run_id") != str(invocation.run_id)
+        or evidence.get("tool_arguments") != invocation.provider_arguments_json
+        or output.get("creation_authorization") != evidence):
+        return False
+    inputs = await load_employee_creation_dependencies(db, draft=draft)
+    return inputs is not None and inputs[1]

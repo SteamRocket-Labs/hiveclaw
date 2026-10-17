@@ -61,7 +61,16 @@ async def _validate_input_dependencies(db, tenant_id: uuid.UUID, dependencies: l
         or any(not isinstance(value, str) or not value for value in row.values()) for row in dependencies
     ):
         raise ContentInputReceiptError("content_source_unavailable", "The source receipt is invalid.", 503)
+    published_user, published = None, []
+    if runtime_request is not None:
+        from app.services.employee_creation_sources import published_creation_seed_sources
+
+        published_user, published = await published_creation_seed_sources(db, tenant_id=tenant_id, request=runtime_request)
     for dependency in dependencies:
+        if dependency in published:
+            await _validate_input_dependencies(db, tenant_id, [dependency], user=published_user,
+                active_workspace_receipts=active_workspace_receipts)
+            continue
         if dependency["source_kind"] in {"agent_skill_file", "agent_platform_skill_file"}:
             from app.services.skill_source_receipts import validate_skill_file_dependency
 

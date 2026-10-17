@@ -94,6 +94,7 @@ class MemoryRetriever:
         self.last_selection_error: str | None = None
         self.last_selection_receipt: str | None = None
         self.last_selection_coverage_path: str | None = None
+        self.last_episodic_source_status = "ready"
 
     async def retrieve(
         self,
@@ -116,6 +117,7 @@ class MemoryRetriever:
         search/load refs and the persisted coverage receipt.
         """
         del limit, retrieval_profile  # compatibility-only; never semantic cutoffs
+        self.last_episodic_source_status = "ready"
         items = await self._gather_authorized_candidates(
             agent_id,
             query,
@@ -123,13 +125,65 @@ class MemoryRetriever:
             tenant_id,
             activation_context=activation_context,
         )
-        return await self._select_candidates(
+        items = await self._filter_episodic_sources(items, agent_id=agent_id, tenant_id=tenant_id,
+            session_id=session_id, activation_context=activation_context)
+        selected = await self._select_candidates(
             items,
             agent_id=agent_id,
             tenant_id=tenant_id,
             query=query,
             model_config=rerank_model_config,
         )
+        # Selection can await a provider; recheck before releasing bodies to the main prompt.
+        return await self._filter_episodic_sources(selected, agent_id=agent_id, tenant_id=tenant_id,
+            session_id=session_id, activation_context=activation_context)
+
+    async def _filter_episodic_sources(self, items, *, agent_id, tenant_id, session_id, activation_context):
+        from sqlalchemy import or_, select
+        from app.core.permissions import check_agent_access
+        from app.database import tenant_scoped_session
+        from app.models.chat_session import ChatSession
+        from app.models.user import User
+
+        episodic = [item for item in items if item.kind == MemoryKind.EPISODIC]
+        if not episodic:
+            return items
+        other = [item for item in items if item.kind != MemoryKind.EPISODIC]
+        source_ids = {}
+        for item in episodic:
+            value = item.metadata.get("session_id")
+            try:
+                source_ids[value] = uuid.UUID(str(value))
+            except (ValueError, TypeError):
+                self.last_episodic_source_status = "unavailable"
+        try:
+            principal = activation_context.principal_stack.current_user if activation_context else None
+            requester_id = uuid.UUID(str(principal.id)) if principal else None
+            worker_id, tenant = uuid.UUID(str(session_id)), uuid.UUID(str(tenant_id))
+            async with tenant_scoped_session(tenant, require_tenant=True, source="memory_episodic_source_authority") as db:
+                requester = await db.scalar(select(User).where(User.id == requester_id,
+                    User.tenant_id == tenant, User.is_active.is_(True)))
+                worker = await db.scalar(select(ChatSession.id).where(ChatSession.id == worker_id,
+                    ChatSession.tenant_id == tenant, ChatSession.agent_id == agent_id,
+                    ChatSession.user_id == requester_id,
+                    or_(ChatSession.audience_kind.is_(None), ChatSession.audience_kind == "private")))
+                if requester is None or worker is None:
+                    self.last_episodic_source_status = "unavailable"
+                    return other
+                await check_agent_access(db, requester, agent_id)
+                # Shared-source recall needs a live audience reader; browser administration is not a native read grant.
+                sources = list((await db.scalars(select(ChatSession).where(
+                    ChatSession.id.in_(set(source_ids.values())), ChatSession.tenant_id == tenant,
+                    ChatSession.agent_id == agent_id, ChatSession.user_id == requester_id))).all())
+                allowed = {source.id for source in sources if source.audience_kind in {None, "private"}}
+                if len(allowed) != len(sources):
+                    self.last_episodic_source_status = "unavailable"
+        except Exception as exc:
+            logger.warning("Episodic source authority unavailable: %s", type(exc).__name__)
+            self.last_episodic_source_status = "unavailable"
+            return other
+        return [item for item in items if item.kind != MemoryKind.EPISODIC
+            or source_ids.get(item.metadata.get("session_id")) in allowed]
 
     async def _gather_authorized_candidates(
         self,

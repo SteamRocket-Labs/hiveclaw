@@ -345,6 +345,9 @@ async def _build_memory_context_result(
 
     selection_status = str(getattr(retriever, "last_selection_status", "not_reported"))
     selection_receipt = str(getattr(retriever, "last_selection_receipt", "") or "") or None
+    episodic_sources_unavailable = getattr(retriever, "last_episodic_source_status", "ready") != "ready"
+    if episodic_sources_unavailable:
+        degraded_components.append("episodic_source_authority")
     if selection_status in {"model_unavailable", "failed"}:
         degraded_components.append("memory_semantic_selection")
 
@@ -429,6 +432,11 @@ async def _build_memory_context_result(
             error_class=str(getattr(retriever, "last_selection_error", "") or "") or None,
             **common_surfacing,
         )
+    if episodic_sources_unavailable:
+        return MemoryContextResult(content=content, status="degraded", code="episodic_source_authority_unavailable",
+            user_message="Some session memory could not be authorized. Retry with current session authority; other available context remains active.",
+            retryable=True, attempts=attempts, degraded_components=tuple(dict.fromkeys(degraded_components)),
+            **common_surfacing)
     if surfacing.exhausted:
         degraded_components.append("memory_auto_surface_budget")
         return MemoryContextResult(

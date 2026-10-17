@@ -3441,6 +3441,7 @@ async def _build_delegation_request_from_runtime_record(record: dict[str, Any]) 
         system_prompt_suffix=str(metadata.get("system_prompt_suffix") or ""),
         max_tool_rounds=metadata.get("max_tool_rounds"),
         parent_agent_id=record.get("parent_agent_id"),
+        parent_agent_name=metadata.get("parent_agent_name"),
         parent_session_id=record.get("parent_session_id"),
         trace_id=str(record.get("trace_id") or uuid.uuid4().hex),
         depth=int(record.get("depth") or 1),

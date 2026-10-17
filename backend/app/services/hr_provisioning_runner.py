@@ -382,6 +382,7 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                     receipt={
                         "primary_model_id": str(primary_model_id),
                         "refinement_model_source": _refine_model_source,
+                        "model_used": _llm_obj is not None,
                     },
                 )
                 draft.provisioning_json = {
@@ -568,6 +569,7 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                 )
                 renew_hr_creation_claim_record(draft, claim=claim, lease_seconds=600)
                 await db.commit()
+                fresh_workspace = not agent_dir.exists()
                 await agent_manager.initialize_agent_files(
                     db,
                     agent,
@@ -576,6 +578,11 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                     blueprint=_bp,
                     repair_existing=True,
                 )
+                if fresh_workspace:
+                    from app.services.employee_creation_sources import record_employee_creation_context
+
+                    await record_employee_creation_context(db, draft=draft, agent=agent, workspace=agent_dir,
+                        template_dir=agent_manager._template_dir(), model_used=(model_step.receipt_json or {}).get("model_used"))
                 renew_hr_creation_claim_record(draft, claim=claim, lease_seconds=600)
                 transition_hr_provisioning_step_record(
                     workspace_step,

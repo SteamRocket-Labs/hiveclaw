@@ -13,7 +13,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
     reason="Native macOS context gate; Linux delivery is deferred.")]
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case,
 ):
@@ -31,8 +31,14 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.services.secrets_provider import get_secrets_provider
     from app.services.web_chat_runtime import _persist_tool_call
 
-    parent_complete = input_case != "unbound"
-    seed = await _seed_run(owner_sessionmaker, tmp_path, prompt="Delegate the authorized report to the worker.")
+    first_task = input_case.startswith("first_task")
+    refined_input = input_case == "first_task_refined"
+    unbound_input = input_case in {"unbound", "first_task_unbound"}
+    revoked_input = input_case in {"revoked", "first_task_revoked"}
+    parent_complete = not unbound_input
+    seed = await _seed_run(owner_sessionmaker, tmp_path, prompt=(
+        "Create a research employee and have it produce the authorized report." if first_task
+        else "Delegate the authorized report to the worker."))
     receiver = uuid4()
     monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(seed["data_root"]))
     (seed["agent_root"] / "workspace").rmdir()
@@ -44,8 +50,15 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         model = await db.get(LLMModel, parent.primary_model_id)
         model.api_key_encrypted = get_secrets_provider().encrypt("synthetic-local-provider-only")
         model.max_input_tokens = 256_000
-        db.add(Agent(id=receiver, tenant_id=seed["tenant_id"], name="Origin worker", creator_id=seed["user_id"],
-            owner_user_id=seed["user_id"], primary_model_id=model.id))
+        if first_task:
+            from app.models.tenant_setting import TenantSetting
+
+            db.add(TenantSetting(tenant_id=seed["tenant_id"], key="default_model_id", value={"model_id": str(model.id)}))
+            db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="agent.employee.create", allowed=True,
+                requires_approval=False))
+        else:
+            db.add(Agent(id=receiver, tenant_id=seed["tenant_id"], name="Origin worker", creator_id=seed["user_id"],
+                owner_user_id=seed["user_id"], primary_model_id=model.id))
         db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="agent.message.send", allowed=True,
             requires_approval=False))
         db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="workspace.file.write", allowed=True,
@@ -61,10 +74,46 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     monkeypatch.setattr(agent_tools, "WORKSPACE_ROOT", seed["data_root"])
     monkeypatch.setattr("app.tools.workspace.WORKSPACE_ROOT", seed["data_root"])
     monkeypatch.setattr(agent_tools, "_TOOL_RUNTIME_SERVICE", None)
-    arguments = {"agent_name": "Origin worker", "target_agent_id": str(receiver),
-        "message": "Produce the authorized report."}
+    if first_task:
+        from app.models.chat_session import ChatSession
+        from app.models.runtime_task import RuntimeTask
+        from app.models.session_v2 import SessionCommand, SessionTurnInput
+        from app.models.user import User
+        from app.services.session_input_admission import run_user_prompt_admission
+        from app.services.session_input_dispatch import _start_input_runtime
+        from app.services.session_v2_persistence import accept_human_input, resolve_session_mutation_authority
+
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            prior = await db.get(RuntimeTask, seed["run_id"])
+            prior.status = "completed"
+            user = await db.get(User, seed["user_id"])
+            authority = await resolve_session_mutation_authority(db, user=user, agent_id=seed["agent_id"],
+                session_id=seed["session_id"], action="mutate_session_input")
+            input_id = uuid4()
+            await accept_human_input(db, authority=authority, intent={"kind": "start_turn", "input_id": str(input_id),
+                "idempotency_key": str(input_id), "session_id": str(seed["session_id"]),
+                "content_parts": [{"type": "text", "text": "Create a research employee and request the authorized report."}],
+                "runtime_metadata": {"source": "session_input_api"}})
+            await run_user_prompt_admission(db, authority=authority, input_id=input_id, worker_id="creation-origin-admission")
+            row = await db.get(SessionTurnInput, input_id)
+            creation_command_id = row.command_id
+            started = await _start_input_runtime(db, row=row, command=await db.get(SessionCommand, row.command_id),
+                agent=await db.get(Agent, seed["agent_id"]), user=user,
+                session=await db.get(ChatSession, seed["session_id"]), successor=False)
+            from uuid import UUID
+
+            seed["run_id"], seed["turn_id"] = UUID(started["run_id"]), started["turn_id"]
+            run = await db.get(RuntimeTask, seed["run_id"])
+            run.status = "running"
+            await db.commit()
+    instruction = "Produce the authorized report."
+    tool_name = "create_employee_from_request" if first_task else "delegate_to_agent"
+    arguments = ({"name": "Origin worker", "role_description": "Prepare referenced reports",
+        "core_outputs": ["Report"], "boundaries": "Draft only; never send externally", "first_task": instruction}
+        if first_task else {"agent_name": "Origin worker", "target_agent_id": str(receiver), "message": instruction})
     scope = {"tenant_id": seed["tenant_id"], "agent_id": seed["agent_id"], "session_id": seed["session_id"],
-        "run_id": seed["run_id"], "turn_id": f"turn-{seed['run_id'].hex}", "round_index": 1}
+        "run_id": seed["run_id"], "turn_id": seed["turn_id"], "round_index": 1}
     call_id = "parent-delegation-call"
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, seed["tenant_id"])
@@ -77,32 +126,80 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             tools=[], provider="openai", model="fake-4.1")
         await session_model_round.seal_model_response(db, **scope, provider_request_id=provider_id,
             response={"content": "", "tool_calls": [{"id": call_id, "type": "function", "function": {
-                "name": "delegate_to_agent", "arguments": json.dumps(arguments)}}], "finish_reason": "tool_calls"})
+                "name": tool_name, "arguments": json.dumps(arguments)}}], "finish_reason": "tool_calls"})
         await session_model_round.commit_sealed_model_round(db, **scope, provider_request_id=provider_id)
         await db.commit()
-    event = {"name": "delegate_to_agent", "args": arguments, "tool_call_id": call_id,
+    event = {"name": tool_name, "args": arguments, "tool_call_id": call_id,
         "provider_request_id": provider_id, "runtime_task_id": str(seed["run_id"])}
     await _persist_tool_call(agent_id=seed["agent_id"], user_id=seed["user_id"], session_id=str(seed["session_id"]),
         data={**event, "status": "running"})
 
     queued = {}
+    dispatches = []
+    native_dispatch = orchestrator.delegate_async
     async def capture_dispatch(**kwargs):
+        dispatches.append(kwargs)
         queued.update(kwargs)
         queued["trace_id"] = kwargs.get("trace_id") or "origin-probe"
-        handle = orchestrator.AsyncDelegationHandle(task_id=uuid4().hex, trace_id="origin-probe", target_name="Origin worker", status="queued")
+        handle = (await native_dispatch(**kwargs) if first_task else orchestrator.AsyncDelegationHandle(
+            task_id=uuid4().hex, trace_id="origin-probe", target_name="Origin worker", status="queued"))
         queued["task_id"] = handle.task_id
         return handle
     monkeypatch.setattr(orchestrator, "delegate_async", capture_dispatch)
     async def pre_effect(_payload):
         await _persist_tool_call(agent_id=seed["agent_id"], user_id=seed["user_id"], session_id=str(seed["session_id"]),
             data={**event, "status": "effect_started"})
-    result = await agent_tools.execute_tool("delegate_to_agent", arguments, agent_id=seed["agent_id"],
+    async def no_wakeup(**_kwargs):
+        return None
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", no_wakeup)
+    result = await agent_tools.execute_tool(tool_name, arguments, agent_id=seed["agent_id"],
         user_id=seed["user_id"], session_id=str(seed["session_id"]), runtime_task_id=str(seed["run_id"]),
         turn_id=scope["turn_id"], tool_call_id=call_id, pre_effect_callback=pre_effect,
         permission_profile=permission_profile_snapshot(None), emit_runtime_hooks=False)
+    if first_task:
+        from uuid import UUID
+        from app.models.hr_creation import HrCreationDraft
+        from app.models.runtime_task import RuntimeTask
+        from app.services.hr_provisioning_runtime import execute_claimed_hr_provisioning
+
+        creation = json.loads(str(result))
+        assert creation.get("draft_status") == "confirmed", creation
+        job_id = UUID(creation["provisioning_task_id"])
+        async with owner_sessionmaker() as db:
+            job = await db.get(RuntimeTask, job_id)
+            job.status, job.claimed_by, job.claim_version = "running", "creation-origin-worker", 1
+            await db.commit()
+        async def no_refinement(*_args, **_kwargs):
+            if refined_input:
+                from types import SimpleNamespace
+
+                return SimpleNamespace(provider="openai", model="synthetic-refiner", api_key="synthetic", base_url=None), "synthetic_refiner"
+            return None, "synthetic_transport"
+        class SyntheticMemoryTransport:
+            async def stream(self, **_kwargs):
+                from types import SimpleNamespace
+
+                return SimpleNamespace(content=json.dumps({"summary": "Synthetic first-task session summary."}))
+            async def close(self):
+                pass
+        monkeypatch.setattr("app.tools.handlers.hr._resolve_employee_refinement_model", no_refinement)
+        if refined_input:
+            from app.tools.handlers.hr import _refine_soul_inputs
+
+            async def same_bytes_without_model_io(**kwargs):
+                return await _refine_soul_inputs(**{**kwargs, "model_config": {}})
+            monkeypatch.setattr("app.tools.handlers.hr._refine_soul_inputs", same_bytes_without_model_io)
+        monkeypatch.setattr("app.services.llm_client.create_llm_client_from_config", lambda *_args: SyntheticMemoryTransport())
+        assert await execute_claimed_hr_provisioning(job_id) == "completed"
+        assert await execute_claimed_hr_provisioning(job_id) == "completed"
+        async with owner_sessionmaker() as db:
+            draft = await db.get(HrCreationDraft, UUID(creation["blueprint_id"]))
+            receiver = draft.created_agent_id
+            assert draft.preview_json["creation_authorization"]["creation_origin"]
     assert queued, str(result)
+    assert len(dispatches) == 1
     message = queued["conversation_messages"][0]
-    assert message["content"] == arguments["message"]
+    assert message["content"] == instruction
     assert isinstance(message.get("a2a_instruction_origin"), dict), message
 
     from dataclasses import replace
@@ -123,21 +220,32 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     monkeypatch.setattr(agent_context, "TOOL_WORKSPACE", seed["data_root"])
     monkeypatch.setattr(agent_manager, "settings", get_settings())
     task_id = UUID(queued.pop("task_id"))
-    request = orchestrator.AgentDelegationRequest(**queued, runtime_task_id=str(task_id),
-        execution_identity=ExecutionIdentityRef(identity_type="delegated_user", identity_id=seed["user_id"]))
-    request.execution_receipt = orchestrator._build_delegation_execution_receipt(request,
-        task_id=str(task_id), trace_id="origin-probe", status="running")
+    if first_task:
+        from app.services.runtime_task_service import get_runtime_task_record
+
+        request = await orchestrator._build_delegation_request_from_runtime_record(await get_runtime_task_record(task_id.hex))
+        assert request is not None and request.conversation_messages == [message]
+    else:
+        request = orchestrator.AgentDelegationRequest(**queued, runtime_task_id=str(task_id),
+            execution_identity=ExecutionIdentityRef(identity_type="delegated_user", identity_id=seed["user_id"]))
+        request.execution_receipt = orchestrator._build_delegation_execution_receipt(request,
+            task_id=str(task_id), trace_id="origin-probe", status="running")
     async with owner_sessionmaker() as db:
         target = await db.get(Agent, receiver)
-        await AgentManager().initialize_agent_files(db, target, personality="NATIVE_RECEIVER_CONTEXT",
-            original_author_id=seed["user_id"])
-        db.add(RuntimeTask(id=task_id, task_type="delegation", status="running", tenant_id=seed["tenant_id"],
+        if first_task:
+            child = await db.get(RuntimeTask, task_id)
+            child.status, child.claimed_by, child.claim_version, child.attempt_count = "running", "origin-worker", 1, 1
+            child.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+        else:
+            await AgentManager().initialize_agent_files(db, target, personality="NATIVE_RECEIVER_CONTEXT",
+                original_author_id=seed["user_id"])
+            db.add(RuntimeTask(id=task_id, task_type="delegation", status="running", tenant_id=seed["tenant_id"],
             parent_agent_id=seed["agent_id"], child_agent_id=receiver, parent_session_id=str(seed["session_id"]),
             child_session_id=request.session_id, root_session_id=str(seed["session_id"]), root_user_id=seed["user_id"],
             root_runtime_task_id=seed["run_id"], claimed_by="origin-worker", claim_version=1, attempt_count=1,
             claim_expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
-            metadata_json=orchestrator._build_runtime_task_metadata(request, task_id=str(task_id))))
-        if input_case == "revoked":
+                metadata_json=orchestrator._build_runtime_task_metadata(request, task_id=str(task_id))))
+        if revoked_input:
             parent = await db.get(Agent, seed["agent_id"])
             parent.deactivated_at = datetime.now(timezone.utc)
         await db.commit()
@@ -162,10 +270,10 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             is_delegation=True)
     finally:
         reset_runtime_task_fence(token)
-    if input_case != "complete":
-        expected = "delegation_instruction_sources_unbound" if input_case == "unbound" else "delegation_instruction_source_access_denied"
+    if unbound_input or revoked_input:
+        expected = "delegation_instruction_sources_unbound" if unbound_input else "delegation_instruction_source_access_denied"
         assert result.failed and result.terminal_reason == expected, result
-        assert result.parts[0]["status"] == ("unavailable" if input_case == "unbound" else "denied")
+        assert result.parts[0]["status"] == ("unavailable" if unbound_input else "denied")
         assert not client.requests and not (seed["data_root"] / str(receiver) / report_path).exists()
         from app.models.chat_transcript_event import ChatTranscriptEvent
         async with app_user_sessionmaker() as db:
@@ -187,9 +295,20 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         origin = await load_delegation_instruction_origin(db, request=request, tenant_id=seed["tenant_id"],
             content=message["content"])
         assert origin is not None and bool(origin.unbound) is (not parent_complete)
-        command = await db.scalar(select(SessionCommand).where(SessionCommand.session_id == seed["session_id"]))
+        command = (await db.get(SessionCommand, creation_command_id) if first_task else
+            await db.scalar(select(SessionCommand).where(SessionCommand.session_id == seed["session_id"])))
         assert origin.sources == ({"source_kind": "session_command", "source_id": str(command.id),
             "source_version": command.request_hash},)
+        if first_task:
+            from app.models.config_revision import ConfigRevision
+
+            genesis = await db.scalar(select(ConfigRevision).where(ConfigRevision.entity_id == receiver,
+                ConfigRevision.entity_type == "agent_hr_bootstrap"))
+            assert genesis.changed_by_user_id is None and genesis.changed_by_agent_id == seed["agent_id"]
+            assert genesis.content["dependencies"] == list(origin.sources)
+            assert genesis.content["unbound"] == (["hr_refinement_sources_unbound"] if refined_input else [])
+            assert not await db.scalar(select(ConfigRevision.id).where(ConfigRevision.entity_id == receiver,
+                ConfigRevision.entity_type == "agent_bootstrap"))
         child_model = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == task_id)
             .order_by(SessionModelResult.round_id))
         bindings = child_model.model_request_snapshot_json["input_bindings"]
@@ -218,6 +337,10 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 except ContentInputReceiptError as exc:
                     errors.append({"source": dependency, "code": exc.code, "message": str(exc)})
         (tmp_path / "input-source-errors.json").write_text(json.dumps(errors, indent=2))
+        if refined_input:
+            assert receipt is None and errors and all(error["code"] == "content_source_unavailable" for error in errors)
+            assert observed["status"]["status"] == "unavailable"
+            return
         assert (receipt is not None) is parent_complete, (observed.get("status"), errors)
         if receipt is not None:
             assert dict(origin.sources[0]) in receipt.dependencies_json

@@ -241,6 +241,14 @@ async def create_from_request(db, request):
     preview["creation_authorization"] = evidence
     draft = await upsert_hr_creation_draft(db, tenant_id=tenant_id, hr_agent_id=agent_id, session_id=session_id,
                                          requested_by_user_id=user_id, preview_payload=preview)
+    if context.tool_call_id:
+        from app.services.delegation_input_origin import capture_employee_creation_origin
+
+        origin = await capture_employee_creation_origin(db, request=request, draft=draft)
+        if origin is None:
+            _refused("creation_source_unavailable", "Reconcile the creating model's original tool call before retrying this creation.")
+        evidence = {**evidence, "creation_origin": origin}
+        draft.preview_json = {**draft.preview_json, "creation_authorization": evidence}
     draft.status = "confirmed"
     draft.creation_idempotency_key = key
     task = build_hr_provisioning_runtime_task(draft)

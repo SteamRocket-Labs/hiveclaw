@@ -119,6 +119,16 @@ def original_platform_skill_hashes(workspace):
     return hashes
 
 
+async def record_original_platform_skill_sources(db, *, agent, workspace):
+    files = original_platform_skill_hashes(workspace)
+    prior = await db.scalar(select(ConfigRevision.id).where(ConfigRevision.tenant_id == agent.tenant_id,
+        ConfigRevision.entity_type == "agent_platform_skill_bootstrap", ConfigRevision.entity_id == agent.id).limit(1))
+    if files and prior is None:
+        await save_revision(db, entity_type="agent_platform_skill_bootstrap", entity_id=agent.id, tenant_id=agent.tenant_id,
+            content={"schema": "hive.agent_platform_skills.v1", "files": files}, change_source="platform_init",
+            change_message="Original application Skill package copied into a fresh employee workspace")
+
+
 async def _platform_skill_sources(db, tenant_id, agent_id):
     from app.models.agent import Agent
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
@@ -128,14 +138,26 @@ async def _platform_skill_sources(db, tenant_id, agent_id):
         ConfigRevision.version == 1, ConfigRevision.is_active.is_(True)).execution_options(populate_existing=True))
     agent = await db.get(Agent, agent_id, populate_existing=True)
     content = revision.content if revision is not None and isinstance(revision.content, dict) else {}
-    if (agent is None or agent.tenant_id != tenant_id or revision is None
-        or content.get("schema") != "hive.agent_bootstrap.v1" or canonical_content_hash(content) != revision.content_hash
+    if agent is None or agent.tenant_id != tenant_id:
+        return {}
+    if (revision is None or content.get("schema") != "hive.agent_bootstrap.v1" or canonical_content_hash(content) != revision.content_hash
         or revision.change_source != "user" or revision.changed_by_agent_id is not None
         or revision.changed_by_user_id != agent.creator_id or not isinstance(content.get("platform_skill_sources"), dict)):
-        return {}
+        revision = await db.scalar(select(ConfigRevision).where(ConfigRevision.tenant_id == tenant_id,
+            ConfigRevision.entity_type == "agent_platform_skill_bootstrap", ConfigRevision.entity_id == agent_id,
+            ConfigRevision.version == 1, ConfigRevision.is_active.is_(True)).execution_options(populate_existing=True))
+        content = revision.content if revision is not None and isinstance(revision.content, dict) else {}
+        if (revision is None or content.get("schema") != "hive.agent_platform_skills.v1"
+            or canonical_content_hash(content) != revision.content_hash or revision.change_source != "platform_init"
+            or revision.changed_by_user_id is not None or revision.changed_by_agent_id is not None
+            or not isinstance(content.get("files"), dict)):
+            return {}
+        files = content["files"]
+    else:
+        files = content["platform_skill_sources"]
     sources = {}
     bundled = Path(__file__).resolve().parents[2] / "agent_template"
-    for path, digest in content["platform_skill_sources"].items():
+    for path, digest in files.items():
         parts = Path(path).parts
         if len(parts) < 3 or parts[0] != "skills" or any(p in {".", ".."} for p in parts) or path != Path(path).as_posix():
             continue

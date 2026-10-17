@@ -189,8 +189,11 @@ async def dispatch_first_task(db, draft, *, execution_context=None, arguments=No
                 root_runtime_task_id=str(source_run.id), origin="explicit_employee_first_task",
                 delegation_chain=(f"agent:{draft.hr_agent_id}",),
             )
+            instruction = {"role": "user", "content": evidence["first_task"]}
+            if "creation_origin" in evidence:
+                instruction["a2a_instruction_origin"] = evidence["creation_origin"]
             handle = await delegate_async(
-                target=target, target_model=model, conversation_messages=[{"role": "user", "content": evidence["first_task"]}],
+                target=target, target_model=model, conversation_messages=[instruction],
                 owner_id=draft.requested_by_user_id, session_id=session_id,
                 parent_agent_id=draft.hr_agent_id, parent_agent_name=source.name,
                 parent_session_id=str(draft.session_id), tenant_id=draft.tenant_id,

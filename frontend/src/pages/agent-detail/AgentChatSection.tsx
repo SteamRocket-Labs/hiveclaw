@@ -2135,6 +2135,9 @@ function AgentChatSection({
             {operatorReadEnabled && artifactPreview && (
               <ArtifactPreviewPanel
                 preview={artifactPreview}
+                agentId={effectiveAgentId || undefined}
+                workspaceAuthority={resourceOperatorOptions}
+                onWorkspaceAuthorityDenied={onOperatorAuthorityDenied}
                 onClose={closeArtifactPreview}
                 onRetry={() => void openArtifact(artifactPreview.artifact)}
                 onDownload={() => void downloadArtifactFile(artifactPreview.artifact)}
@@ -2298,6 +2301,9 @@ function AgentChatSection({
               {operatorReadEnabled && artifactPreview && (
                 <ArtifactPreviewPanel
                   preview={artifactPreview}
+                  agentId={effectiveAgentId || undefined}
+                  workspaceAuthority={resourceOperatorOptions}
+                  onWorkspaceAuthorityDenied={onOperatorAuthorityDenied}
                   onClose={closeArtifactPreview}
                   onRetry={() => void openArtifact(artifactPreview.artifact)}
                   onDownload={() => void downloadArtifactFile(artifactPreview.artifact)}

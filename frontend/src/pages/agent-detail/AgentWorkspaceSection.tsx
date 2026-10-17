@@ -7,6 +7,7 @@ import './AgentWorkspaceSection.css';
 
 type AgentWorkspaceSectionProps = {
   agentId: string;
+  singleFile?: string;
   canUseOperatorView?: boolean;
   operatorOnly?: boolean;
   operatorReason?: string;
@@ -20,6 +21,7 @@ function isForbiddenOperatorResponse(error: unknown): boolean {
 
 export default function AgentWorkspaceSection({
   agentId,
+  singleFile,
   canUseOperatorView = false,
   operatorOnly = false,
   operatorReason,
@@ -116,9 +118,11 @@ export default function AgentWorkspaceSection({
         </div>
       ) : null}
       <FileBrowser
-        key={`${agentId}:${operatorView ? `operator:${normalizedOperatorReason}` : 'owner'}`}
+        key={`${agentId}:${singleFile || 'workspace'}:${operatorView ? `operator:${normalizedOperatorReason}` : 'owner'}`}
         api={adapter}
         rootPath="workspace"
+        singleFile={singleFile}
+        readOnly={operatorView}
         features={{
           upload: !operatorView,
           newFile: !operatorView,

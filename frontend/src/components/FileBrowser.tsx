@@ -241,15 +241,17 @@ export default function FileBrowser({
         }
     }, [api, showToast]);
 
+    const historyPath = singleFile || viewing;
     const fileHistory = useFileVersionHistory({
         api,
-        path: singleFile ? null : viewing,
+        path: historyPath,
         onRestored: (restoredContent) => {
             setContent(restoredContent);
             setEditing(false);
             setViewRevision((revision) => revision + 1);
         },
         onDeleted: () => {
+            setViewRevision((revision) => revision + 1);
             setViewing(null);
             setEditing(false);
             void reload();
@@ -524,11 +526,39 @@ export default function FileBrowser({
         </div>
     );
 
+    const renderFileHistory = () => historyPath && fileHistory.open ? (
+        <FileVersionHistoryPanel
+            path={historyPath}
+            readOnly={readOnly}
+            page={fileHistory.historyPage}
+            selected={fileHistory.selected}
+            selectedVersionId={fileHistory.selectedVersionId}
+            restoreCandidate={fileHistory.restoreCandidate}
+            loading={fileHistory.loading}
+            selectedLoading={fileHistory.selectedLoading}
+            restoring={fileHistory.restoring}
+            error={fileHistory.error}
+            onClose={fileHistory.close}
+            onRetry={fileHistory.retry}
+            onSelect={fileHistory.selectVersion}
+            onRequestRestore={fileHistory.requestRestore}
+            onConfirmRestore={fileHistory.confirmRestore}
+            onCancelRestore={fileHistory.cancelRestore}
+            onLoadMore={fileHistory.loadMore}
+            onDownload={fileHistory.downloadVersion}
+        />
+    ) : null;
+
     if (singleFile) {
         return (
             <div className="card">
                 <div className="file-browser-toolbar">
                     {title ? <h3>{title}</h3> : <div />}
+                    {fileHistory.available && !editing && (
+                        <button className="btn btn-secondary" onClick={fileHistory.openHistory}>
+                            {t('agent.workspace.fileHistory.title', 'Version history')}
+                        </button>
+                    )}
                     {edit && (
                         !editing ? (
                             <button className="btn btn-secondary" disabled={editDisabled} onClick={beginEditing}>{t('agent.soul.editButton')}</button>
@@ -559,6 +589,7 @@ export default function FileBrowser({
                         {t('common.noData', 'No content yet. Click Edit to add.')}
                     </div>
                 )}
+                {renderFileHistory()}
                 {renderToast()}
             </div>
         );
@@ -643,27 +674,7 @@ export default function FileBrowser({
                         </div>
                     )}
                 </div>
-                {fileHistory.open && (
-                    <FileVersionHistoryPanel
-                        path={viewing}
-                        page={fileHistory.historyPage}
-                        selected={fileHistory.selected}
-                        selectedVersionId={fileHistory.selectedVersionId}
-                        restoreCandidate={fileHistory.restoreCandidate}
-                        loading={fileHistory.loading}
-                        selectedLoading={fileHistory.selectedLoading}
-                        restoring={fileHistory.restoring}
-                        error={fileHistory.error}
-                        onClose={fileHistory.close}
-                        onRetry={fileHistory.retry}
-                        onSelect={fileHistory.selectVersion}
-                        onRequestRestore={fileHistory.requestRestore}
-                        onConfirmRestore={fileHistory.confirmRestore}
-                        onCancelRestore={fileHistory.cancelRestore}
-                        onLoadMore={fileHistory.loadMore}
-                        onDownload={fileHistory.downloadVersion}
-                    />
-                )}
+                {renderFileHistory()}
                 {renderDeleteModal()}
                 {renderToast()}
             </div>

@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { IconDownload, IconExternalLink, IconFileText, IconX } from '@tabler/icons-react';
 
@@ -7,6 +8,7 @@ import { officeApi } from '../../api/domains/office';
 import { saveBlob } from '../../utils/authenticatedResource';
 import { showAppToast } from '../../components/AppDialogs';
 import type { ChatArtifactPart } from './chatRuntime';
+import AgentWorkspaceSection from './AgentWorkspaceSection';
 
 type Translate = ReturnType<typeof useTranslation>['t'];
 
@@ -152,18 +154,30 @@ export function artifactContributorLabel(artifact: ChatArtifactPart, fallbackAge
 
 export function ArtifactPreviewPanel({
   preview,
+  agentId,
+  workspaceAuthority,
+  onWorkspaceAuthorityDenied,
   onClose,
   onRetry,
   onDownload,
   t,
 }: {
   preview: ArtifactPreviewState;
+  agentId?: string;
+  workspaceAuthority?: ResourceAuthorityOptions;
+  onWorkspaceAuthorityDenied?: (error: unknown) => void;
   onClose: () => void;
   onRetry?: () => void;
   onDownload?: () => void;
   t: Translate;
 }) {
   const previewKind = getEffectiveArtifactPreviewKind(preview.artifact);
+  const workspaceAgentId = artifactWorkspaceAgentId(preview.artifact, agentId);
+  const fileIdentity = `${workspaceAgentId}:${preview.artifact.path}:${workspaceAuthority?.operatorView ? workspaceAuthority.reason : 'owner'}`;
+  const [openedFile, setOpenedFile] = useState<string | null>(null);
+  const [showCurrent, setShowCurrent] = useState(false);
+  const currentFileOpen = openedFile === fileIdentity && showCurrent;
+  const canOpenCurrent = workspaceAgentId && preview.artifact.path.startsWith('workspace/') && ['markdown', 'text'].includes(previewKind);
   const showPendingEmptyPreview = isPendingEmptyArtifactPreview(
     preview.artifact,
     preview.content,
@@ -226,7 +240,9 @@ export function ArtifactPreviewPanel({
               {preview.artifact.name}
             </div>
             <div style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
-              {preview.usingSnapshot
+              {currentFileOpen
+                ? t('agent.chat.artifacts.currentFile', 'Current workspace file')
+                : preview.usingSnapshot
                 ? t('agent.chat.artifacts.snapshotPreview', 'Previewing saved session snapshot')
                 : preview.legacyCurrentFileFallback
                   ? t('agent.chat.artifacts.legacyCurrentFilePreview', 'Previewing current workspace file; no delivery snapshot exists')
@@ -245,7 +261,15 @@ export function ArtifactPreviewPanel({
               <IconExternalLink size={14} />
             </a>
           )}
-          {onDownload && (
+          {canOpenCurrent && (
+            <button type="button" className="btn btn-secondary btn-sm" aria-pressed={currentFileOpen}
+              onClick={() => { setOpenedFile(fileIdentity); setShowCurrent(!currentFileOpen); }}>
+              {currentFileOpen
+                ? t('agent.chat.artifacts.backToDelivery', 'Back to delivery')
+                : t('agent.chat.artifacts.openCurrentFile', 'Open current file')}
+            </button>
+          )}
+          {onDownload && !currentFileOpen && (
             <button
               type="button"
               onClick={onDownload}
@@ -287,6 +311,14 @@ export function ArtifactPreviewPanel({
           </button>
         </div>
         <div style={{ padding: '12px', overflow: 'auto', flex: 1, minHeight: 0 }}>
+          {openedFile === fileIdentity && workspaceAgentId && (
+            <div hidden={!currentFileOpen}>
+              <AgentWorkspaceSection agentId={workspaceAgentId} singleFile={preview.artifact.path}
+                canUseOperatorView={Boolean(workspaceAuthority?.operatorView)} operatorOnly={Boolean(workspaceAuthority?.operatorView)}
+                operatorReason={workspaceAuthority?.reason} onOperatorAuthorityDenied={onWorkspaceAuthorityDenied} />
+            </div>
+          )}
+          <div hidden={currentFileOpen}>
           {preview.loading ? (
             <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
               {t('common.loading', 'Loading')}
@@ -341,6 +373,7 @@ export function ArtifactPreviewPanel({
               ) : preview.content || ''}
             </pre>
           )}
+          </div>
         </div>
       </section>
     </div>

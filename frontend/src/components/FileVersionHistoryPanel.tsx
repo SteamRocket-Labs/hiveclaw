@@ -10,6 +10,7 @@ import './FileVersionHistoryPanel.css';
 
 type FileVersionHistoryPanelProps = {
   path: string;
+  readOnly?: boolean;
   page: FileVersionPage | null;
   selected?: FileVersionContent | null;
   selectedVersionId?: string | null;
@@ -52,6 +53,7 @@ function formatTimestamp(value: string): string {
 
 export default function FileVersionHistoryPanel({
   path,
+  readOnly = false,
   page,
   selected = null,
   selectedVersionId = null,
@@ -163,7 +165,7 @@ export default function FileVersionHistoryPanel({
                 {t('agent.workspace.fileHistory.selectVersion', 'Select a checkpoint to inspect its content.')}
               </div>
             )}
-            {selected && selectedSummary?.restorable ? (
+            {!readOnly && selected && selectedSummary?.restorable ? (
               <button
                 type="button"
                 className="btn btn-primary file-version-restore-action"
@@ -180,7 +182,7 @@ export default function FileVersionHistoryPanel({
         </div>
       )}
 
-      {restoreCandidate ? (
+      {!readOnly && restoreCandidate ? (
         <div className="ui-modal-overlay" role="presentation" onClick={onCancelRestore}>
           <div
             className="file-browser-modal file-browser-modal-sm"

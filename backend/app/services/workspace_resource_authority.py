@@ -803,7 +803,10 @@ async def load_workspace_authority_scope(
     operator_view: bool = False,
     operator_reason: str | None = None,
     agent_access: tuple[object, str] | None = None,
+    runtime_principal: Any | None = None,
 ) -> WorkspaceAuthorityScope:
+    if runtime_principal is not None and operator_view:
+        raise HTTPException(status_code=403, detail="Native workspace input cannot use browser inspection authority")
     resolved_agent_access = agent_access or await (
         check_agent_operator_reachability(db, user, agent_id)
         if operator_view
@@ -844,6 +847,7 @@ async def load_workspace_authority_scope(
             manager_override_reason=operator_reason,
             agent_access=resolved_agent_access,
             audit=operator_view,
+            runtime_principal=runtime_principal,
         )
     except HTTPException:
         if operator_view:
@@ -875,6 +879,7 @@ async def load_workspace_authority_scope(
                 root_session_id=manifest.root_session_id,
                 authority_state=manifest.authority_state,
                 agent_access=resolved_agent_access,
+                runtime_principal=runtime_principal,
             )
         except HTTPException:
             continue

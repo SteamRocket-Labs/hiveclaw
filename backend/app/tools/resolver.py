@@ -240,12 +240,15 @@ async def _load_workspace_authority_scope(
                 agent_id=agent_id,
             )
         from app.services.workspace_resource_authority import load_workspace_authority_scope
+        from app.services.personal_knowledge_access import AgentRuntimePrincipal
 
         scope = await load_workspace_authority_scope(
             authority_db,
             user,
             agent_id=agent_id,
             session_id=session_id,
+            runtime_principal=AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=user_id,
+                session_id=str(session_id) if session_id else None),
         )
         private_sessions = select(ChatSession.id).where(
             ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id, ChatSession.user_id == user_id,

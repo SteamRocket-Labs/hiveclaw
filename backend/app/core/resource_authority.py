@@ -219,6 +219,7 @@ async def authorize_resource_action(
     manager_override_reason: str | None = None,
     agent_access: tuple[Agent, str] | None = None,
     audit: bool = True,
+    runtime_principal: Any | None = None,
 ) -> ResourceAuthorityDecision:
     """Authorize a resource without widening generic Agent access.
 
@@ -233,9 +234,16 @@ async def authorize_resource_action(
     ``operator.inspect`` grant plus a reason.
     """
 
+    if runtime_principal is not None:
+        from app.services.personal_knowledge_access import AgentRuntimePrincipal
+
+        if not isinstance(runtime_principal, AgentRuntimePrincipal) or (
+            runtime_principal.agent_id != agent_id or runtime_principal.requester_user_id != user.id
+        ):
+            raise HTTPException(status_code=403, detail="Runtime resource authority context mismatch")
     agent, access_level = agent_access or await (
         check_agent_operator_reachability(db, user, agent_id)
-        if allow_manager_override and action == "read"
+        if runtime_principal is None and allow_manager_override and action == "read"
         else check_agent_access(db, user, agent_id)
     )
     if str(agent.id) != str(agent_id):
@@ -253,6 +261,7 @@ async def authorize_resource_action(
                 db, user, agent_id=agent_id, path=artifact.path, action="read", path_exists=True,
                 allow_manager_override=allow_manager_override, manager_override_reason=manager_override_reason,
                 agent_access=(agent, access_level),
+                runtime_principal=runtime_principal,
             )
         except WorkspaceAuthorityError as exc:
             raise HTTPException(status_code=403, detail={"code": exc.code, "message": exc.message}) from exc
@@ -295,7 +304,7 @@ async def authorize_resource_action(
     # projection (the same order as the session lane), so an explicitly
     # requested operator view is recorded as ignored evidence instead of
     # turning business access into a 403 or a grant requirement.
-    if is_scoped_business_admin(user, resource_tenant_id=getattr(agent, "tenant_id", None)):
+    if runtime_principal is None and is_scoped_business_admin(user, resource_tenant_id=getattr(agent, "tenant_id", None)):
         if audit:
             await _audit_scoped_business_admin_resource_access(
                 db,
@@ -334,7 +343,7 @@ async def authorize_resource_action(
             authority_source="resource_grant",
         )
 
-    if allow_manager_override and action == "read":
+    if runtime_principal is None and allow_manager_override and action == "read":
         authority_source = await authorize_agent_operator_inspection(
             db,
             user=user,

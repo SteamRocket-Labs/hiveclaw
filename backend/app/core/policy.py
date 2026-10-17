@@ -194,7 +194,7 @@ async def classify_permission(
             statement = statement.where(ResourcePermission.tenant_id == uuid.UUID(str(tenant_id)))
         except (TypeError, ValueError):
             return "absent"
-    result = await db.execute(statement)
+    result = await db.execute(statement.execution_options(populate_existing=True))
     permissions = result.scalars().all()
     applicable = [
         permission

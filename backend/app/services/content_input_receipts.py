@@ -50,7 +50,8 @@ async def validate_runtime_input_dependencies(db, request, dependencies: list) -
         runtime_request=request)
 
 
-async def _validate_input_dependencies(db, tenant_id: uuid.UUID, dependencies: list, *, user=None, runtime_request=None) -> None:
+async def _validate_input_dependencies(db, tenant_id: uuid.UUID, dependencies: list, *, user=None, runtime_request=None,
+    active_workspace_receipts: frozenset[uuid.UUID] = frozenset()) -> None:
     from app.models.knowledge import KnowledgeDocument
     from app.services.personal_knowledge_access import HumanBrowserPrincipal
     from app.services.personal_knowledge_service import PersonalKnowledgeService
@@ -61,6 +62,10 @@ async def _validate_input_dependencies(db, tenant_id: uuid.UUID, dependencies: l
     ):
         raise ContentInputReceiptError("content_source_unavailable", "The source receipt is invalid.", 503)
     for dependency in dependencies:
+        if dependency["source_kind"] == "workspace_artifact":
+            await _validate_workspace_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request,
+                active_receipts=active_workspace_receipts)
+            continue
         if dependency["source_kind"] in {"session_command", "session_tool_invocation"}:
             await _validate_session_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
             continue
@@ -109,17 +114,15 @@ async def _validate_input_dependencies(db, tenant_id: uuid.UUID, dependencies: l
             raise ContentInputReceiptError("content_source_unavailable", "This source requires its canonical audience reader.", 503)
         if result.status != "ok" or getattr(result, "credential_reference", None):
             raise ContentInputReceiptError("content_source_access_denied", "A required source is no longer authorized for this reader.", 403)
-        _validate_canonical_source_bytes(document, dependency["source_version"])
+        _validate_source_bytes(document.canonical_md_path, dependency["source_version"])
 
 
 async def _validate_session_dependency(db, tenant_id, dependency, *, user, runtime_request):
     from fastapi import HTTPException
-    from app.core.permissions import authorize_session_action, check_agent_access
-    from app.models.agent import Agent
+    from app.core.permissions import authorize_session_action
     from app.models.chat_session import ChatSession
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.session_v2 import SessionCommand, SessionToolInvocation
-    from app.models.user import User
     from app.services.session_model_inputs import _hash
     from app.services.session_semantic_history import _event_payload
 
@@ -155,13 +158,27 @@ async def _validate_session_dependency(db, tenant_id, dependency, *, user, runti
             await authorize_session_action(db, user, agent_id=session.agent_id, session_id=session.id,
                 action="read_content_input_source")
             return
-        from app.tools.handlers.knowledge import _personal_kb_runtime_principal
+        principal, requester = await _runtime_input_actor(db, tenant_id, runtime_request)
+        if session.user_id != requester.id or session.agent_id != principal.agent_id:
+            raise ValueError("session_source_actor_mismatch")
+    except (HTTPException, ValueError) as exc:
+        raise ContentInputReceiptError("content_source_access_denied", "The session source is no longer authorized for this reader.", 403) from exc
 
-        principal = _personal_kb_runtime_principal(runtime_request)
+
+async def _runtime_input_actor(db, tenant_id, request):
+    from fastapi import HTTPException
+    from app.core.permissions import check_agent_access
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.user import User
+    from app.tools.handlers.knowledge import _personal_kb_runtime_principal
+
+    try:
+        principal = _personal_kb_runtime_principal(request)
         requester = await db.scalar(select(User).where(User.id == principal.requester_user_id,
             User.tenant_id == tenant_id, User.is_active.is_(True)).execution_options(populate_existing=True))
-        if requester is None or session.user_id != requester.id or session.agent_id != principal.agent_id:
-            raise ValueError("session_source_actor_mismatch")
+        if requester is None:
+            raise ValueError("runtime_requester_unavailable")
         current_session = await db.scalar(select(ChatSession.id).where(
             ChatSession.id == uuid.UUID(str(principal.session_id)), ChatSession.tenant_id == tenant_id,
             ChatSession.agent_id == principal.agent_id, ChatSession.user_id == requester.id))
@@ -171,17 +188,18 @@ async def _validate_session_dependency(db, tenant_id, dependency, *, user, runti
         await db.scalar(select(Agent).where(Agent.id == principal.agent_id, Agent.tenant_id == tenant_id)
             .execution_options(populate_existing=True))
         await check_agent_access(db, requester, principal.agent_id)
+        return principal, requester
     except (HTTPException, ValueError) as exc:
-        raise ContentInputReceiptError("content_source_access_denied", "The session source is no longer authorized for this reader.", 403) from exc
+        raise ContentInputReceiptError("content_source_access_denied", "The runtime source reader is no longer authorized.", 403) from exc
 
 
-def _validate_canonical_source_bytes(document, version: str) -> None:
+def _validate_source_bytes(path, version: str) -> None:
     from app.config import get_settings
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
 
     try:
         root = Path(get_settings().AGENT_DATA_DIR).resolve()
-        path = Path(document.canonical_md_path)
+        path = Path(path)
         if path.is_absolute():
             path = path.relative_to(root)
         with open_workspace_file(root, path.as_posix()) as source:
@@ -228,7 +246,57 @@ async def _validate_company_publication_dependency(db, tenant_id, dependency, *,
     ).execution_options(populate_existing=True))
     if document is None or document.canonical_md_sha256 != dependency["source_version"]:
         raise ContentInputReceiptError("content_source_changed", "The publication's canonical source version has changed.", 403)
-    _validate_canonical_source_bytes(document, dependency["source_version"])
+    _validate_source_bytes(document.canonical_md_path, dependency["source_version"])
+
+
+async def _validate_workspace_dependency(db, tenant_id, dependency, *, user, runtime_request, active_receipts):
+    from fastapi import HTTPException
+    from app.models.workspace_resource import WorkspaceResourceManifest
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
+
+    try:
+        receipt_id = uuid.UUID(dependency["source_id"])
+    except ValueError as exc:
+        raise ContentInputReceiptError("content_source_unavailable", "The workspace source receipt is invalid.", 503) from exc
+    receipt = await db.scalar(select(ContentInputReceipt).where(ContentInputReceipt.id == receipt_id,
+        ContentInputReceipt.tenant_id == tenant_id, ContentInputReceipt.carrier_kind == "workspace_artifact",
+    ).execution_options(populate_existing=True))
+    if receipt is None or receipt.content_sha256 != dependency["source_version"]:
+        raise ContentInputReceiptError("content_source_changed", "The exact workspace source version is unavailable.", 403)
+    if receipt_id in active_receipts:
+        raise ContentInputReceiptError("content_source_unavailable", "The workspace source dependency chain is cyclic.", 503)
+    try:
+        raw_agent, path = receipt.carrier_ref.split("\n", 1)
+        agent_id = uuid.UUID(raw_agent)
+        if workspace_artifact_ref(agent_id, path) != receipt.carrier_ref or not path.startswith("workspace/"):
+            raise ValueError("workspace_source_binding_invalid")
+    except (ValueError, HTTPException) as exc:
+        raise ContentInputReceiptError("content_source_unavailable", "The workspace source binding is invalid.", 503) from exc
+    manifest = await db.scalar(select(WorkspaceResourceManifest).where(
+        WorkspaceResourceManifest.tenant_id == tenant_id, WorkspaceResourceManifest.agent_id == agent_id,
+        WorkspaceResourceManifest.path == path).execution_options(populate_existing=True))
+    if manifest is None or manifest.authority_state != "owned" or manifest.deleted_at is not None:
+        raise ContentInputReceiptError("content_source_access_denied", "The workspace source is unavailable or quarantined.", 403)
+    if manifest.audience_kind not in {None, "private"}:
+        raise ContentInputReceiptError("content_source_unavailable", "This workspace source requires its live shared-audience reader.", 503)
+    principal = None
+    if runtime_request is not None:
+        principal, user = await _runtime_input_actor(db, tenant_id, runtime_request)
+        if principal.agent_id != agent_id:
+            raise ContentInputReceiptError("content_source_access_denied", "The workspace source belongs to another employee.", 403)
+    try:
+        await authorize_workspace_path(db, user, agent_id=agent_id, path=path, action="read", path_exists=True,
+            session_id=uuid.UUID(principal.session_id) if principal is not None else None,
+            runtime_principal=principal)
+    except (HTTPException, WorkspaceAuthorityError) as exc:
+        raise ContentInputReceiptError("content_source_access_denied", "The workspace source is no longer authorized for this reader.", 403) from exc
+    latest = await latest_workspace_receipt(db, tenant_id, agent_id, path)
+    if latest is None or latest.revision < receipt.revision or manifest.content_hash != latest.content_sha256:
+        raise ContentInputReceiptError("content_source_changed", "The current workspace bytes have no matching receipt.", 403)
+    _validate_source_bytes(Path(str(agent_id)) / path, latest.content_sha256)
+    # A later write is not a source of the previously observed version.
+    await _validate_input_dependencies(db, tenant_id, receipt.dependencies_json, user=user, runtime_request=runtime_request,
+        active_workspace_receipts=active_receipts | {receipt_id})
 
 
 async def authorize_workspace_receipt_read(request):

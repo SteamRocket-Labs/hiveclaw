@@ -457,6 +457,7 @@ async def authorize_workspace_path(
     manager_override_reason: str | None = None,
     for_update: bool = False,
     agent_access: tuple[object, str] | None = None,
+    runtime_principal: Any | None = None,
 ) -> WorkspacePathDecision:
     normalized = normalize_workspace_resource_path(path)
     if not normalized.startswith("workspace/"):
@@ -466,7 +467,7 @@ async def authorize_workspace_path(
         )
     agent, access_level = agent_access or await (
         check_agent_operator_reachability(db, user, agent_id)
-        if allow_manager_override and action == "read"
+        if runtime_principal is None and allow_manager_override and action == "read"
         else check_agent_access(db, user, agent_id)
     )
     if agent.tenant_id is None:
@@ -497,6 +498,7 @@ async def authorize_workspace_path(
                     allow_manager_override=allow_manager_override,
                     manager_override_reason=manager_override_reason,
                     agent_access=(agent, access_level),
+                    runtime_principal=runtime_principal,
                 )
             except HTTPException as exc:
                 raise WorkspaceAuthorityError(
@@ -536,6 +538,7 @@ async def authorize_workspace_path(
             allow_manager_override=allow_manager_override,
             manager_override_reason=manager_override_reason,
             agent_access=(agent, access_level),
+            runtime_principal=runtime_principal,
         )
     except HTTPException as exc:
         raise WorkspaceAuthorityError("workspace_resource_forbidden", str(exc.detail)) from exc

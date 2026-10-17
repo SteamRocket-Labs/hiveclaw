@@ -1321,6 +1321,11 @@ class ToolRuntimeService:
             workspace_mutating = context.agent_id is not None and is_workspace_mutating_tool(tool_name)
 
             async def _execute_backend() -> str | ToolContentEnvelope:
+                from app.services.content_input_receipts import authorize_workspace_receipt_read
+
+                receipt_block = await authorize_workspace_receipt_read(request)
+                if receipt_block is not None:
+                    return receipt_block
                 before_states: dict[str, dict[str, Any]] = {}
                 before_errors: dict[str, str] = {}
                 if workspace_mutating and trace_metadata_sink is not None:

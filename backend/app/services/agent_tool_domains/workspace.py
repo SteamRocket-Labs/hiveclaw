@@ -285,6 +285,20 @@ def _list_files(
     return _append_workspace_provenance_hint(header + "\n".join(items), ws, rel_path, directory=True)
 
 
+def _read_receipted_workspace_bytes(read_root: Path, read_path: str, authority_scope, authority_path: str) -> bytes:
+    import hashlib
+    from app.core.resource_authority import normalize_workspace_resource_path
+
+    with open_workspace_file(read_root, read_path) as source:
+        raw = source.read()
+    expected = dict(getattr(authority_scope, "input_content_hashes", ())).get(
+        normalize_workspace_resource_path(authority_path))
+    if expected is not None and hashlib.sha256(raw).hexdigest() != expected:
+        raise WorkspaceAuthorityError("workspace_content_unverified",
+            "The file bytes no longer match the verified input receipt. Regenerate from authorized inputs.")
+    return raw
+
+
 def _read_file(
     ws: Path,
     rel_path: str,
@@ -346,8 +360,7 @@ def _read_file(
         try:
             import base64
 
-            with open_workspace_file(read_root, read_path) as source:
-                raw = source.read()
+            raw = _read_receipted_workspace_bytes(read_root, read_path, authority_scope, rel_path)
             if len(raw) > _MAX_IMAGE_BYTES:
                 return _workspace_error(
                     tool_name,
@@ -371,7 +384,8 @@ def _read_file(
             return _workspace_error(tool_name, "operation_failed", f"Image read failed: {e}")
 
     try:
-        with open_workspace_file(read_root, read_path) as source, io.TextIOWrapper(source, encoding="utf-8", errors="replace") as reader:
+        raw = _read_receipted_workspace_bytes(read_root, read_path, authority_scope, rel_path)
+        with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8", errors="replace") as reader:
             content = reader.read()
         if _is_skill_instruction_file(ws, file_path):
             content = sanitize_managed_credential_guidance(content)
@@ -988,6 +1002,7 @@ async def _read_document(
             DocumentConversionService,
             render_conversion_preview,
         )
+        from app.core.resource_authority import normalize_workspace_resource_path
 
         result = DocumentConversionService().convert(
             DocumentConversionRequest(
@@ -1001,11 +1016,15 @@ async def _read_document(
                 max_pages=max_pages,
                 max_output_chars=None,
                 force_refresh=force_refresh,
+                expected_source_sha256=dict(getattr(authority_scope, "input_content_hashes", ())).get(
+                    normalize_workspace_resource_path(rel_path)),
             )
         )
         if return_format == "markdown":
             return result.markdown
         if return_format == "metadata":
+            if getattr(result, "metadata_json", None) is not None:
+                return json.dumps(result.metadata_json, ensure_ascii=False, indent=2)
             metadata_path = workspace_root / result.artifact_metadata_path
             return metadata_path.read_text(encoding="utf-8", errors="replace")
         if return_format == "pages":

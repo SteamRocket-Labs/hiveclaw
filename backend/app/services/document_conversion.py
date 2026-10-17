@@ -61,6 +61,7 @@ class DocumentConversionRequest:
     max_pages: int | None = None
     max_output_chars: int | None = None
     force_refresh: bool = False
+    expected_source_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,7 @@ class DocumentConversionResult:
     artifact_markdown_path: str
     artifact_metadata_path: str
     warnings: tuple[str, ...]
+    metadata_json: dict | None = None
 
 
 class _HTMLTextExtractor(HTMLParser):
@@ -121,6 +123,11 @@ class DocumentConversionService:
             relative_path = source_path.relative_to(workspace_root).as_posix()
         with open_workspace_file(request.workspace_root, relative_path) as source:
             data = source.read()
+        if request.expected_source_sha256 is not None and _sha256_bytes(data) != request.expected_source_sha256:
+            from app.services.workspace_resource_authority import WorkspaceAuthorityError
+
+            raise WorkspaceAuthorityError("workspace_content_unverified",
+                "The document bytes no longer match the verified input receipt. Regenerate from authorized inputs.")
         source_path = workspace_root / relative_path
         return self._convert_data(
             data=data,
@@ -133,7 +140,8 @@ class DocumentConversionService:
             user_id=request.user_id,
             mode=request.mode,
             max_pages=request.max_pages,
-            force_refresh=request.force_refresh,
+            # Mutable conversion caches have no receipt binding their output yet.
+            force_refresh=request.force_refresh or request.expected_source_sha256 is not None,
         )
 
     def convert_bytes(
@@ -218,6 +226,7 @@ class DocumentConversionService:
                     artifact_markdown_path=markdown_rel,
                     artifact_metadata_path=metadata_rel,
                     warnings=tuple(metadata.get("warnings") or ()),
+                    metadata_json=dict(metadata),
                 )
 
         markdown, engine, warnings = self._convert_source(source_path, data, source_mime_type, source_uri)
@@ -263,6 +272,7 @@ class DocumentConversionService:
             artifact_markdown_path=markdown_rel,
             artifact_metadata_path=metadata_rel,
             warnings=tuple(warnings),
+            metadata_json=dict(metadata),
         )
 
     def _convert_source(

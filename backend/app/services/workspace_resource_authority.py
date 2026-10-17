@@ -248,6 +248,7 @@ class WorkspaceAuthorityScope:
     known_paths: frozenset[str] = frozenset()
     action_permissions: frozenset[tuple[str, str]] = frozenset()
     collection_actions: frozenset[str] = frozenset()
+    input_content_hashes: frozenset[tuple[str, str]] = frozenset()
 
     def can_perform(self, path: str, action: str) -> bool:
         normalized = normalize_workspace_resource_path(path)

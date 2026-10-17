@@ -42,12 +42,26 @@ async def latest_team_memory_receipts(db, tenant_id: uuid.UUID, workspace_key: s
 
 async def validate_browser_input_dependencies(db, tenant_id: uuid.UUID, user, dependencies: list) -> None:
     # Browser authority, including PDEC-013, must not authorize Agent prompt consumption.
+    await _validate_input_dependencies(db, tenant_id, dependencies, user=user)
+
+
+async def validate_runtime_input_dependencies(db, request, dependencies: list) -> None:
+    await _validate_input_dependencies(db, uuid.UUID(str(request.context.tenant_id)), dependencies,
+        runtime_request=request)
+
+
+async def _validate_input_dependencies(db, tenant_id: uuid.UUID, dependencies: list, *, user=None, runtime_request=None) -> None:
     from app.config import get_settings
     from app.models.knowledge import KnowledgeDocument
     from app.services.personal_knowledge_access import HumanBrowserPrincipal
     from app.services.personal_knowledge_service import PersonalKnowledgeService
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
 
+    if not isinstance(dependencies, list) or any(
+        not isinstance(row, dict) or set(row) != {"source_kind", "source_id", "source_version"}
+        or any(not isinstance(value, str) or not value for value in row.values()) for row in dependencies
+    ):
+        raise ContentInputReceiptError("content_source_unavailable", "The source receipt is invalid.", 503)
     for dependency in dependencies:
         if dependency["source_kind"] != "knowledge_document":
             raise ContentInputReceiptError("content_source_unavailable", "A source receipt cannot yet be revalidated. Regenerate from verifiable inputs.", 503)
@@ -57,14 +71,27 @@ async def validate_browser_input_dependencies(db, tenant_id: uuid.UUID, user, de
             raise ContentInputReceiptError("content_source_unavailable", "The source receipt is invalid.", 503) from exc
         document = (await db.scalars(select(KnowledgeDocument).where(
             KnowledgeDocument.tenant_id == tenant_id, KnowledgeDocument.id == source_id,
-        ))).one_or_none()
+        ).execution_options(populate_existing=True))).one_or_none()
         if document is None or document.canonical_md_sha256 != dependency["source_version"]:
             raise ContentInputReceiptError("content_source_changed", "A source is missing or has changed. Regenerate from current authorized inputs.", 403)
         if document.scope_type == "person":
+            if runtime_request is not None:
+                from app.tools.handlers.knowledge import _personal_kb_runtime_principal
+
+                try:
+                    principal = _personal_kb_runtime_principal(runtime_request)
+                except ValueError as exc:
+                    raise ContentInputReceiptError("content_source_access_denied",
+                        "The runtime source authority is invalid.", 403) from exc
+            else:
+                principal = HumanBrowserPrincipal(user_id=user.id, role=user.role, home_tenant_id=tenant_id)
             result = await PersonalKnowledgeService().get_personal_document_with_authority(db,
                 tenant_id=tenant_id, owner_user_id=document.scope_id, document_id=document.id,
-                principal=HumanBrowserPrincipal(user_id=user.id, role=user.role, home_tenant_id=tenant_id))
+                principal=principal)
         elif document.scope_type == "company":
+            if runtime_request is not None:
+                raise ContentInputReceiptError("content_source_unavailable",
+                    "This source requires its immutable Company Knowledge publication reader.", 503)
             from app.services.company_knowledge_gateway import CompanyKnowledgeGateway, CompanyKnowledgeReadRequest
             from app.services.company_knowledge_permissions import CompanyKnowledgePrincipal
 
@@ -89,6 +116,52 @@ async def validate_browser_input_dependencies(db, tenant_id: uuid.UUID, user, de
             raise ContentInputReceiptError("content_source_unavailable", "The canonical source bytes are unavailable.", 503) from exc
         if digest != dependency["source_version"]:
             raise ContentInputReceiptError("content_source_changed", "The canonical source bytes no longer match the receipt.", 403)
+
+
+async def authorize_workspace_receipt_read(request):
+    """Recheck known receipt dependencies under the actual native Agent principal."""
+    from dataclasses import replace
+    from sqlalchemy.exc import SQLAlchemyError
+    from app.core.resource_authority import normalize_workspace_resource_path
+    from app.database import tenant_scoped_session
+    from app.services.workspace_resource_authority import WorkspaceAuthorityScope
+    from app.tools.result_envelope import render_tool_error
+
+    if request.tool_name not in {"read_file", "read_document"} and not (
+        request.tool_name == "fs_read" and str(request.arguments.get("mode") or "text").strip().lower() in {"text", "document"}
+    ):
+        return None
+    context = request.context
+    try:
+        path = normalize_workspace_resource_path(str(request.arguments.get("path") or ""))
+        if not path.startswith("workspace/"):
+            return None
+        scope = context.workspace_authority_scope
+        if scope is not None and not scope.can_read(path):
+            return None  # The existing path boundary denies before body access.
+        tenant_id = uuid.UUID(str(context.tenant_id))
+        async with tenant_scoped_session(tenant_id) as db:
+            receipt = await latest_workspace_receipt(db, tenant_id, context.agent_id, path)
+            if receipt is None:
+                return None  # Legacy carrier migration remains separate; no receipt is invented.
+            if not isinstance(scope, WorkspaceAuthorityScope) or scope.agent_id != context.agent_id or scope.user_id != context.user_id:
+                raise ContentInputReceiptError("content_source_access_denied", "The runtime file scope does not match.", 403)
+            await validate_runtime_input_dependencies(db, request, receipt.dependencies_json)
+            # This hash is checked against the very bytes returned by the file reader.
+            scope = context.workspace_authority_scope
+            hashes = dict(scope.input_content_hashes)
+            hashes[path] = receipt.content_sha256
+            context.workspace_authority_scope = replace(scope, input_content_hashes=frozenset(hashes.items()))
+        return None
+    except (ContentInputReceiptError, OSError, ValueError, SQLAlchemyError) as exc:
+        status = exc.status_code if isinstance(exc, ContentInputReceiptError) else 503
+        code = exc.code if isinstance(exc, ContentInputReceiptError) else "content_source_unavailable"
+        return render_tool_error(tool_name=request.tool_name,
+            error_class="auth_or_permission" if status == 403 else "provider_unavailable",
+            message="This file's source receipt cannot authorize model consumption.", provider="content_input_receipt",
+            http_status=status, retryable=status == 503,
+            actionable_hint="Restore the scoped source grant or regenerate from current authorized inputs.",
+            extra={"reason_code": code, "outcome": "denied" if status == 403 else "unavailable"})
 
 
 async def validate_team_memory_receipt(db, tenant_id: uuid.UUID, user, workspace_key: str, entry, receipts: dict):

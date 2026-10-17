@@ -193,6 +193,7 @@ class CompanyKnowledgeSearchHit:
     sensitivity: str
     score: float
     score_trace: dict[str, Any]
+    source_version: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -208,6 +209,7 @@ class CompanyKnowledgeSearchHit:
             "sensitivity": self.sensitivity,
             "score": self.score,
             "score_trace": dict(self.score_trace),
+            **({"source_version": self.source_version} if self.source_version is not None else {}),
         }
 
 
@@ -268,6 +270,7 @@ class CompanyKnowledgeReadResult(_JsonResult):
     citations: tuple[str, ...] = ()
     truncated: bool = False
     warnings: tuple[str, ...] = ()
+    source_version: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -291,6 +294,7 @@ class CompanyKnowledgeReadResult(_JsonResult):
                     "publication_id": str(self.publication_id),
                     "document_id": str(self.document_id),
                     "version": self.version,
+                    **({"source_version": self.source_version} if self.source_version is not None else {}),
                     "title": self.title,
                     "namespace": self.namespace,
                     "sensitivity": self.sensitivity,
@@ -638,7 +642,8 @@ class CompanyKnowledgeGateway:
             )
         )
         statement = self._apply_filters(statement, filters)
-        rows = (await session.execute(statement)).all()
+        rows = (await session.execute(statement.execution_options(populate_existing=True))).all()
+        source_versions = {row[0].id: row[0].content_hash for row in rows}
         bundles = tuple(self._bundle_from_row(row) for row in rows)
         evidence_by_id = await self._load_evidence(session, bundles)
 
@@ -684,6 +689,7 @@ class CompanyKnowledgeGateway:
                     document_id=bundle.document.id,
                     segment_id=segment.id,
                     version=bundle.publication.version,
+                    source_version=source_versions[publication_id],
                     title=bundle.document.title,
                     namespace=bundle.publication.namespace,
                     snippet=_bounded_snippet(segment.content, query),
@@ -817,6 +823,7 @@ class CompanyKnowledgeGateway:
         if bundle is None:
             await self._record_not_found_read(session, principal=principal, request=request, trace_id=trace_id)
             return CompanyKnowledgeReadResult(status="not_found_or_denied")
+        source_version = bundle.publication.content_hash
         evidence_by_id = await self._load_evidence(session, (bundle,))
         for ordinal, action in enumerate(("read", "cite")):
             decision = await self._resolve(
@@ -841,7 +848,16 @@ class CompanyKnowledgeGateway:
 
         statement = (
             select(KnowledgeSegment)
+            .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeSegment.document_id)
+            .join(CompanyKnowledgePublication, CompanyKnowledgePublication.document_id == KnowledgeDocument.id)
+            .join(CompanyKnowledgeProposal, CompanyKnowledgeProposal.id == CompanyKnowledgePublication.proposal_id)
+            .join(CompanyKnowledgeSource, CompanyKnowledgeSource.id == CompanyKnowledgeProposal.source_id)
             .where(
+                *self._active_publication_predicates(tenant_id=principal.tenant_id, now=_utcnow()),
+                CompanyKnowledgePublication.id == bundle.publication.id,
+                CompanyKnowledgePublication.content_hash == source_version,
+                KnowledgeDocument.canonical_md_sha256 == source_version,
+                KnowledgeDocument.source_sha256 == source_version,
                 KnowledgeSegment.tenant_id == principal.tenant_id,
                 KnowledgeSegment.document_id == bundle.document.id,
                 KnowledgeSegment.scope_type == "company",
@@ -852,7 +868,7 @@ class CompanyKnowledgeGateway:
         segment_ids = tuple(dict.fromkeys(request.segment_ids))
         if segment_ids:
             statement = statement.where(KnowledgeSegment.id.in_(segment_ids))
-        segments = (await session.execute(statement)).scalars().all()
+        segments = (await session.execute(statement.execution_options(populate_existing=True))).scalars().all()
         rendered: list[CompanyKnowledgeReadSegment] = []
         remaining = max_chars
         truncated = False
@@ -920,6 +936,7 @@ class CompanyKnowledgeGateway:
             publication_id=bundle.publication.id,
             document_id=bundle.document.id,
             version=bundle.publication.version,
+            source_version=source_version,
             title=bundle.document.title,
             namespace=bundle.publication.namespace,
             sensitivity=bundle.publication.sensitivity,

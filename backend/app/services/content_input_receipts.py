@@ -51,11 +51,9 @@ async def validate_runtime_input_dependencies(db, request, dependencies: list) -
 
 
 async def _validate_input_dependencies(db, tenant_id: uuid.UUID, dependencies: list, *, user=None, runtime_request=None) -> None:
-    from app.config import get_settings
     from app.models.knowledge import KnowledgeDocument
     from app.services.personal_knowledge_access import HumanBrowserPrincipal
     from app.services.personal_knowledge_service import PersonalKnowledgeService
-    from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
 
     if not isinstance(dependencies, list) or any(
         not isinstance(row, dict) or set(row) != {"source_kind", "source_id", "source_version"}
@@ -63,6 +61,9 @@ async def _validate_input_dependencies(db, tenant_id: uuid.UUID, dependencies: l
     ):
         raise ContentInputReceiptError("content_source_unavailable", "The source receipt is invalid.", 503)
     for dependency in dependencies:
+        if dependency["source_kind"] == "company_knowledge_publication":
+            await _validate_company_publication_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
+            continue
         if dependency["source_kind"] != "knowledge_document":
             raise ContentInputReceiptError("content_source_unavailable", "A source receipt cannot yet be revalidated. Regenerate from verifiable inputs.", 503)
         try:
@@ -105,17 +106,63 @@ async def _validate_input_dependencies(db, tenant_id: uuid.UUID, dependencies: l
             raise ContentInputReceiptError("content_source_unavailable", "This source requires its canonical audience reader.", 503)
         if result.status != "ok" or getattr(result, "credential_reference", None):
             raise ContentInputReceiptError("content_source_access_denied", "A required source is no longer authorized for this reader.", 403)
+        _validate_canonical_source_bytes(document, dependency["source_version"])
+
+
+def _validate_canonical_source_bytes(document, version: str) -> None:
+    from app.config import get_settings
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
+
+    try:
+        root = Path(get_settings().AGENT_DATA_DIR).resolve()
+        path = Path(document.canonical_md_path)
+        if path.is_absolute():
+            path = path.relative_to(root)
+        with open_workspace_file(root, path.as_posix()) as source:
+            digest = hashlib.file_digest(source, "sha256").hexdigest()
+    except (OSError, ValueError, TypeError, WorkspaceAuthorityError) as exc:
+        raise ContentInputReceiptError("content_source_unavailable", "The canonical source bytes are unavailable.", 503) from exc
+    if digest != version:
+        raise ContentInputReceiptError("content_source_changed", "The canonical source bytes no longer match the receipt.", 403)
+
+
+async def _validate_company_publication_dependency(db, tenant_id, dependency, *, user, runtime_request):
+    from app.models.company_knowledge import CompanyKnowledgePublication
+    from app.models.knowledge import KnowledgeDocument
+    from app.services.company_knowledge_gateway import CompanyKnowledgeGateway, CompanyKnowledgeReadRequest
+    from app.services.company_knowledge_permissions import CompanyKnowledgePrincipal
+
+    try:
+        publication_id = uuid.UUID(dependency["source_id"])
+    except ValueError as exc:
+        raise ContentInputReceiptError("content_source_unavailable", "The publication receipt is invalid.", 503) from exc
+    publication = await db.scalar(select(CompanyKnowledgePublication).where(
+        CompanyKnowledgePublication.id == publication_id, CompanyKnowledgePublication.tenant_id == tenant_id,
+    ).execution_options(populate_existing=True))
+    if publication is None or publication.content_hash != dependency["source_version"]:
+        raise ContentInputReceiptError("content_source_changed", "The exact publication is unavailable or has changed.", 403)
+    if runtime_request is not None:
+        from app.tools.handlers.knowledge import _company_kb_runtime_principal
+
         try:
-            root = Path(get_settings().AGENT_DATA_DIR).resolve()
-            path = Path(document.canonical_md_path)
-            if path.is_absolute():
-                path = path.relative_to(root)
-            with open_workspace_file(root, path.as_posix()) as source:
-                digest = hashlib.file_digest(source, "sha256").hexdigest()
-        except (OSError, ValueError, WorkspaceAuthorityError) as exc:
-            raise ContentInputReceiptError("content_source_unavailable", "The canonical source bytes are unavailable.", 503) from exc
-        if digest != dependency["source_version"]:
-            raise ContentInputReceiptError("content_source_changed", "The canonical source bytes no longer match the receipt.", 403)
+            principal = await _company_kb_runtime_principal(db, runtime_request)
+        except ValueError as exc:
+            raise ContentInputReceiptError("content_source_access_denied", "The runtime source authority is invalid.", 403) from exc
+    else:
+        principal = CompanyKnowledgePrincipal(tenant_id=tenant_id, accountable_user_id=user.id,
+            accountable_role=user.role, actor_type="user", actor_id=user.id,
+            department_id=getattr(user, "department_id", None), purpose="interactive_session")
+    result = await CompanyKnowledgeGateway().read(db, principal=principal,
+        request=CompanyKnowledgeReadRequest(document_id=None, publication_id=publication_id, segment_ids=(),
+            max_chars=None, trace_id=f"content-input:{uuid.uuid4().hex}"))
+    if result.status != "ok" or result.publication_id != publication_id or result.source_version != dependency["source_version"]:
+        raise ContentInputReceiptError("content_source_access_denied", "The required publication is no longer authorized for this reader.", 403)
+    document = await db.scalar(select(KnowledgeDocument).where(KnowledgeDocument.id == result.document_id,
+        KnowledgeDocument.tenant_id == tenant_id, KnowledgeDocument.scope_type == "company", KnowledgeDocument.scope_id == tenant_id,
+    ).execution_options(populate_existing=True))
+    if document is None or document.canonical_md_sha256 != dependency["source_version"]:
+        raise ContentInputReceiptError("content_source_changed", "The publication's canonical source version has changed.", 403)
+    _validate_canonical_source_bytes(document, dependency["source_version"])
 
 
 async def authorize_workspace_receipt_read(request):

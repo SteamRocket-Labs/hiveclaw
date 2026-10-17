@@ -903,7 +903,10 @@ async def maybe_compress_messages(
                     )
                     if maybe_result is not None:
                         await maybe_result
-                return [_wrap_compressed_summary(summary)] + recent_messages
+                from app.runtime.compaction_trace import CompactedMessages
+
+                return CompactedMessages([_wrap_compressed_summary(summary)] + recent_messages,
+                    source_messages=[dict(row) for row in old_messages if _summarizer._serialize_message_for_summary(row)])
             # Empty LLM response counts as a failure for the breaker (CC: no-text-response = failure)
             if tenant_id is not None:
                 _summary_breaker_record_failure(tenant_id)

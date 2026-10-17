@@ -1340,7 +1340,7 @@ async def _compress_messages_with_trace(
     if trace_context is None or not getattr(trace_context, "enabled_flag", False):
         return await _maybe_await(compressor(messages, **kwargs))
 
-    from app.runtime.compaction_trace import CompactionRequest
+    from app.runtime.compaction_trace import CompactionRequest, CompactedMessages
 
     try:
         compressed = await _maybe_await(compressor(messages, **kwargs))
@@ -1360,8 +1360,21 @@ async def _compress_messages_with_trace(
         parallel_tool_calls=parallel_tool_calls,
     )
     attempt = await trace_context.start_attempt(request)
+    source = None
+    if isinstance(compressed, CompactedMessages):
+        from uuid import uuid4
+        from app.services.session_model_inputs import message_snapshot
+
+        source_id = uuid4()
+        summary = {**compressed[0], "source_ref": f"session-compaction:{source_id}"}
+        source = {"schema": "hive.compaction_source.v1", "source_id": str(source_id),
+            "message": message_snapshot(summary), "inputs": compressed.source_messages}
+        compressed = [summary, *compressed[1:]]
     await attempt.record_completed(output_items=list(compressed), status="completed")
-    await trace_context.record_installed(input_history=list(messages), replacement_history=list(compressed))
+    if source is not None:
+        await trace_context.record_installed(input_history=list(messages), replacement_history=list(compressed), source=source)
+    else:
+        await trace_context.record_installed(input_history=list(messages), replacement_history=list(compressed))
     return compressed
 
 

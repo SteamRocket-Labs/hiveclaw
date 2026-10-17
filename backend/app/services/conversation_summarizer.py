@@ -290,7 +290,6 @@ def _serialize_message_for_summary(msg: dict) -> list[str]:
             name = fn.get("name", "?")
             arguments = fn.get("arguments", "")
             lines.append(f"assistant: [called {name}({arguments})]")
-        return lines
 
     if role == "tool":
         if isinstance(content, str) and content.strip():
@@ -303,6 +302,8 @@ def _serialize_message_for_summary(msg: dict) -> list[str]:
         lines.append(f"user: {content}")
     elif role == "assistant" and not is_llm_error_message(content):
         lines.append(f"assistant: {content}")
+    elif role == "system":
+        lines.append(f"system_context: {content}")
     return lines
 
 

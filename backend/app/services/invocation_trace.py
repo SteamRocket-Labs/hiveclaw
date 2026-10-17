@@ -247,6 +247,23 @@ async def record_invocation_span(
     from app.models.invocation_span import InvocationSpan
 
     clean_metadata = dict(metadata or {})
+    source = clean_metadata.get("compaction_source")
+    if span_type == "compaction" and name == "compaction_checkpoint_installed" and isinstance(source, dict):
+        from app.services.session_model_inputs import build_model_input_bindings, message_snapshot, _hash
+
+        source = dict(source)
+        source.pop("input_bindings", None)
+        source.pop("source_hash", None)
+        clean_metadata["compaction_source"] = source
+        source_session = _coerce_uuid(session_id)
+        if source.get("schema") == "hive.compaction_source.v1" and source_session is not None and agent_id is not None and (
+            span_id == f"compaction-source:{source.get('source_id')}" and isinstance(source.get("inputs"), list)
+            and isinstance(source.get("message"), dict) and message_snapshot(source["message"]) == source["message"]
+        ):
+            catalog = await build_model_input_bindings(db, tenant_id=tenant_id, agent_id=agent_id, session_id=source_session,
+                messages=source["inputs"], wire_messages=[message_snapshot(row) for row in source["inputs"]])
+            source["input_bindings"] = catalog
+            source["source_hash"] = _hash({key: source[key] for key in ("message", "inputs", "input_bindings")})
     identity_metadata = clean_metadata.get("execution_identity")
     if isinstance(identity_metadata, dict):
         execution_identity_type = (

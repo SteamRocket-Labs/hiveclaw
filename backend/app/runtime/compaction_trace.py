@@ -12,6 +12,14 @@ from typing import Any
 FactRecorder = Callable[[dict[str, Any]], Awaitable[None] | None]
 
 
+class CompactedMessages(list[dict[str, Any]]):
+    """Carry the actual summary inputs internally, without adding provider fields."""
+
+    def __init__(self, messages, *, source_messages):
+        super().__init__(messages)
+        self.source_messages = source_messages
+
+
 async def _maybe_await(value: Any) -> Any:
     if asyncio.iscoroutine(value) or isinstance(value, Awaitable):
         return await value
@@ -145,6 +153,7 @@ class CompactionTraceContext:
         *,
         input_history: list[dict[str, Any]],
         replacement_history: list[dict[str, Any]],
+        source: dict[str, Any] | None = None,
     ) -> None:
         await self._record(
             {
@@ -157,5 +166,6 @@ class CompactionTraceContext:
                     "input_history": input_history,
                     "replacement_history": replacement_history,
                 },
+                **({"span_id": f"compaction-source:{source['source_id']}", "compaction_source": source} if source is not None else {}),
             }
         )

@@ -72,6 +72,17 @@ async def build_model_input_bindings(
             value["reasoning_signature"] = message.thinking_signature
         canonical[message.id] = message_snapshot(value)
 
+    for ref in refs:
+        if isinstance(ref, str) and ref.startswith("session-compaction:"):
+            try:
+                source_id = uuid.UUID(ref.split(":", 1)[1])
+            except ValueError:
+                continue
+            source = await load_compaction_source(db, tenant_id=tenant_id, agent_id=agent_id,
+                session_id=session_id, source_id=source_id)
+            if source is not None:
+                canonical[ref] = source["message"]
+
     input_ids = []
     for ref in refs:
         if isinstance(ref, str) and ref.startswith("session-input:"):
@@ -169,6 +180,27 @@ def _model_dependencies(result) -> tuple[list[dict[str, str]], bool]:
     return dependencies or [], dependencies is not None and isinstance(coverage, dict) and coverage.get("complete") is True
 
 
+async def load_compaction_source(db, *, tenant_id, agent_id, source_id, session_id=None):
+    from app.models.invocation_span import InvocationSpan
+
+    statement = select(InvocationSpan).where(InvocationSpan.tenant_id == tenant_id, InvocationSpan.agent_id == agent_id,
+        InvocationSpan.span_id == f"compaction-source:{source_id}", InvocationSpan.span_type == "compaction",
+        InvocationSpan.name == "compaction_checkpoint_installed", InvocationSpan.status == "ok")
+    if session_id is not None:
+        statement = statement.where(InvocationSpan.session_id == str(session_id))
+    rows = (await db.scalars(statement.limit(2).execution_options(populate_existing=True))).all()
+    if len(rows) != 1:
+        return None
+    source = (rows[0].metadata_json or {}).get("compaction_source")
+    if not isinstance(source, dict) or source.get("schema") != "hive.compaction_source.v1" or source.get("source_id") != str(source_id):
+        return None
+    if not all(key in source for key in ("message", "inputs", "input_bindings")) or (
+        source.get("source_hash") != _hash({key: source[key] for key in ("message", "inputs", "input_bindings")})
+    ):
+        return None
+    return source
+
+
 async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.organization_identity import ContentInputReceipt
@@ -182,6 +214,14 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
         source_id = uuid.UUID(raw_id)
     except (ValueError, TypeError):
         return [], False
+    if kind == "session-compaction":
+        source = await load_compaction_source(db, tenant_id=tenant_id, agent_id=agent_id, source_id=source_id)
+        catalog = source.get("input_bindings") if source is not None else None
+        if not isinstance(catalog, dict) or catalog.get("schema") != "hive.model_input_bindings.v1":
+            return [], False
+        dependencies = _stored_dependencies(catalog.get("dependencies"))
+        coverage = catalog.get("dependency_coverage")
+        return dependencies or [], dependencies is not None and isinstance(coverage, dict) and coverage.get("complete") is True
     if kind == "session-input":
         row = await db.scalar(select(SessionTurnInput).join(SessionCommand, SessionCommand.id == SessionTurnInput.command_id)
             .join(ChatSession, ChatSession.id == SessionTurnInput.session_id).where(

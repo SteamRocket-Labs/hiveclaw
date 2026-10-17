@@ -13,7 +13,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
     reason="Native macOS context gate; Linux delivery is deferred.")]
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case,
 ):
@@ -32,10 +32,10 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.services.web_chat_runtime import _persist_tool_call
 
     first_task = input_case.startswith("first_task")
-    native_creation = input_case == "first_task_native_creation"
-    parent_model_case = input_case in {"first_task_parent_model", "first_task_refined_native", "first_task_native_creation"}
+    native_creation = input_case in {"first_task_native_creation", "first_task_fresh_employee"}
+    parent_model_case = input_case in {"first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee"}
     delivery_case = input_case == "first_task_delivery" or parent_model_case
-    native_refined = input_case in {"first_task_refined_native", "first_task_native_creation"}
+    native_refined = input_case in {"first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee"}
     refined_input = input_case == "first_task_refined"
     unbound_input = input_case in {"unbound", "first_task_unbound"}
     revoked_input = input_case in {"revoked", "first_task_revoked"}
@@ -637,6 +637,78 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             review = await browser.get(f"/agents/{seed['agent_id']}/files/artifacts/{parent_artifact_id}/content")
             assert review.status_code == 200 and review.json()["content"] == "ORIGINAL_WORK_REVIEW: DELEGATED_REPORT" and review.json()["uses_snapshot"], review.text
 
+    if input_case == "first_task_fresh_employee":
+        fresh_session_id, fresh_input_id = uuid4(), uuid4()
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            fresh_session = ChatSession(id=fresh_session_id, tenant_id=seed["tenant_id"], agent_id=receiver,
+                user_id=seed["user_id"], source_channel="web")
+            db.add(fresh_session)
+            await db.flush()
+            user = await db.get(User, seed["user_id"])
+            authority = await resolve_session_mutation_authority(db, user=user, agent_id=receiver,
+                session_id=fresh_session_id, action="mutate_session_input")
+            await accept_human_input(db, authority=authority, intent={"kind": "start_turn", "input_id": str(fresh_input_id),
+                "idempotency_key": str(fresh_input_id), "session_id": str(fresh_session_id),
+                "content_parts": [{"type": "text", "text": "Create a new draft report in this session."}],
+                "runtime_metadata": {"source": "session_input_api"}})
+            await run_user_prompt_admission(db, authority=authority, input_id=fresh_input_id, worker_id="fresh-employee-admission")
+            admitted = await db.get(SessionTurnInput, fresh_input_id)
+            started = await _start_input_runtime(db, row=admitted, command=await db.get(SessionCommand, admitted.command_id),
+                agent=await db.get(Agent, receiver), user=user, session=fresh_session, successor=False)
+            fresh_run_id = UUID(started["run_id"])
+            fresh_run = await db.get(RuntimeTask, fresh_run_id)
+            fresh_run.status, fresh_run.claimed_by, fresh_run.claim_version = "running", "fresh-employee-worker", 1
+            fresh_run.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+            await db.commit()
+        fresh_path = "workspace/fresh-report.md"
+        fresh_client = ScriptedLLMClient([
+            {"tool_calls": [{"id": "fresh-employee-write", "type": "function", "function": {"name": "write_file",
+                "arguments": json.dumps({"path": fresh_path, "content": "FRESH_EMPLOYEE_REPORT"})}}], "finish_reason": "tool_calls"},
+            {"content": "Fresh report prepared.\nDELIVERABLE: workspace/fresh-report.md", "finish_reason": "stop"}])
+        monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: fresh_client)
+        fresh_fence = set_runtime_task_fence(task_id=fresh_run_id, worker_id="fresh-employee-worker", claim_version=1)
+        try:
+            await execute_web_chat_run(fresh_run_id)
+        finally:
+            reset_runtime_task_fence(fresh_fence)
+        (tmp_path / "fresh-employee-model-requests.json").write_text(json.dumps(fresh_client.requests, default=str, indent=2))
+        assert len(fresh_client.requests) == 2 and "REFINED_CONTEXT" in json.dumps(fresh_client.requests[0]["messages"])
+        assert observed["status"]["status"] == "captured", observed["status"]
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            assert (await db.get(RuntimeTask, fresh_run_id)).status == "completed"
+            fresh_artifact = await db.scalar(select(ChatArtifact).where(ChatArtifact.runtime_task_id == fresh_run_id,
+                ChatArtifact.agent_id == receiver, ChatArtifact.path == fresh_path))
+            assert fresh_artifact is not None and fresh_artifact.snapshot_json.get("content_input_receipt_id")
+            fresh_artifact_id = fresh_artifact.id
+            fresh_rounds = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == fresh_run_id)))
+            assert len(fresh_rounds) == 2 and all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in fresh_rounds)
+            for upstream_source in [ref for ref in origin.sources if ref["source_kind"] in {"agent_identity", "session_command"}]:
+                with pytest.raises(ContentInputReceiptError) as denied:
+                    await validate_runtime_input_dependencies(db, ToolExecutionRequest(tool_name="read_file", arguments={},
+                        context=observed["context"]), [upstream_source])
+                assert denied.value.status_code == 403
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fixture.local") as browser:
+            fresh_content = await browser.get(f"/agents/{receiver}/files/artifacts/{fresh_artifact_id}/content")
+            assert fresh_content.status_code == 200 and fresh_content.json()["content"] == "FRESH_EMPLOYEE_REPORT", fresh_content.text
+        async with owner_sessionmaker() as db:
+            parent = await db.get(Agent, seed["agent_id"])
+            parent.deactivated_at = datetime.now(timezone.utc)
+            await db.commit()
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            profile_source = next(ref for ref in fresh_rounds[0].model_request_snapshot_json["input_bindings"]["dependencies"]
+                if ref["source_kind"] == "agent_identity")
+            with pytest.raises(ContentInputReceiptError) as denied:
+                await validate_runtime_input_dependencies(db, ToolExecutionRequest(tool_name="read_file", arguments={},
+                    context=observed["context"]), [profile_source])
+            assert denied.value.status_code == 403
+        async with owner_sessionmaker() as db:
+            parent = await db.get(Agent, seed["agent_id"])
+            parent.deactivated_at = None
+            await db.commit()
+        assert len(dispatches) == 1 and len(refinement_calls) == 1 and len(client.requests) == 2
     from app.models.hr_creation import HrCreationDraft
     from copy import deepcopy
 

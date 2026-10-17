@@ -48,7 +48,7 @@ async def record_employee_creation_context(db, *, draft, agent, workspace, templ
 
 
 async def load_employee_creation_context(db, *, tenant_id, agent_id, user, runtime_request):
-    from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
+    from app.services.content_input_receipts import ContentInputReceiptError
     from app.services.hr_creation_service import direct_creation_authorization
 
     revision = await db.scalar(select(ConfigRevision).where(ConfigRevision.tenant_id == tenant_id,
@@ -71,7 +71,7 @@ async def load_employee_creation_context(db, *, tenant_id, agent_id, user, runti
         raise ContentInputReceiptError("content_source_unavailable", "The HR context lacks complete original creation sources.", 503)
     if content.get("refinement") is not None and not await _refinement_is_bound(db, draft=draft, refinement=content["refinement"]):
         raise ContentInputReceiptError("content_source_unavailable", "The original refinement call no longer matches its receipt.", 503)
-    await _validate_input_dependencies(db, tenant_id, inputs[0], user=user, runtime_request=runtime_request)
+    await _validate_creation_profile_inputs(db, draft=draft, dependencies=inputs[0], user=user, runtime_request=runtime_request)
     return content
 
 
@@ -112,7 +112,6 @@ async def published_creation_seed_sources(db, *, tenant_id, request):
     from datetime import datetime, timezone
     from app.agents.delegation_token import DelegationToken, validate_delegation_token
     from app.models.agent import Agent
-    from app.models.invocation_span import InvocationSpan
     from app.models.runtime_task import RuntimeTask
     from app.services.content_input_receipts import _runtime_input_actor
     from app.services.hr_creation_service import direct_creation_authorization
@@ -151,10 +150,16 @@ async def published_creation_seed_sources(db, *, tenant_id, request):
     original = await load_employee_creation_dependencies(db, draft=draft)
     if original is None or not original[1]:
         return None, []
+    return requester, await _creation_seed_dependencies(db, draft=draft, parent=parent, dependencies=original[0])
+
+
+async def _creation_seed_dependencies(db, *, draft, parent, dependencies):
+    from app.models.invocation_span import InvocationSpan
+
     published = []
     allowed = {"agent_identity": {"identity"}, "agent_context_resource": {"soul", "a2a-collaborators"},
         "agent_resident_memory": {"memory/self/self.md"}}
-    for dependency in original[0]:
+    for dependency in dependencies:
         kind, source_id = dependency["source_kind"], dependency["source_id"]
         parts = source_id.split("\n")
         if (kind in {*allowed, "agent_platform_skill_file", "owner_action_policy"} and parts[0] == str(parent.id)
@@ -165,10 +170,10 @@ async def published_creation_seed_sources(db, *, tenant_id, request):
                 row = await db.get(InvocationSpan, uuid.UUID(source_id), populate_existing=True)
             except ValueError:
                 continue
-            if (row is not None and row.tenant_id == tenant_id and row.agent_id == parent.id
-                and row.user_id == requester.id and row.session_id == str(draft.session_id)):
+            if (row is not None and row.tenant_id == draft.tenant_id and row.agent_id == parent.id
+                and row.user_id == draft.requested_by_user_id and row.session_id == str(draft.session_id)):
                 published.append(dependency)
-    return requester, published
+    return published
 
 
 async def creation_tool_result_bound(db, *, tenant_id, agent_id, invocation, content):
@@ -195,3 +200,42 @@ async def creation_tool_result_bound(db, *, tenant_id, agent_id, invocation, con
         return False
     inputs = await load_employee_creation_dependencies(db, draft=draft)
     return inputs is not None and inputs[1]
+
+
+async def _validate_creation_profile_inputs(db, *, draft, dependencies, user, runtime_request):
+    from app.models.agent import Agent
+    from app.models.session_v2 import SessionCommand
+    from app.services.content_input_receipts import ContentInputReceiptError, _runtime_input_actor, _validate_input_dependencies
+
+    if runtime_request is None:
+        await _validate_input_dependencies(db, draft.tenant_id, dependencies, user=user)
+        return
+    principal, requester = await _runtime_input_actor(db, draft.tenant_id, runtime_request)
+    if principal.agent_id != draft.created_agent_id or requester.id != draft.requested_by_user_id:
+        await _validate_input_dependencies(db, draft.tenant_id, dependencies, runtime_request=runtime_request)
+        return
+    parent = await db.get(Agent, draft.hr_agent_id, populate_existing=True)
+    child = await db.get(Agent, draft.created_agent_id, populate_existing=True)
+    if (parent is None or child is None or parent.tenant_id != draft.tenant_id or child.tenant_id != draft.tenant_id
+        or parent.deleted_at is not None or parent.deactivated_at is not None
+        or child.deleted_at is not None or child.deactivated_at is not None
+        or (parent.owner_user_id or parent.creator_id) != requester.id or child.owner_user_id != requester.id):
+        raise ContentInputReceiptError("content_source_access_denied", "The original employee profile is no longer authorized.", 403)
+    published = await _creation_seed_dependencies(db, draft=draft, parent=parent, dependencies=dependencies)
+    for dependency in dependencies:
+        if dependency["source_kind"] == "session_command":
+            try:
+                command_id = uuid.UUID(dependency["source_id"])
+            except ValueError:
+                continue
+            command = await db.scalar(select(SessionCommand.id).where(SessionCommand.id == command_id,
+                SessionCommand.tenant_id == draft.tenant_id, SessionCommand.session_id == draft.session_id,
+                SessionCommand.principal_type == "user", SessionCommand.principal_id == requester.id,
+                SessionCommand.namespace == "human_input"))
+            if command is not None:
+                published.append(dependency)
+    # The authenticated creation publishes its profile to this employee; it grants no upstream tool or KB access.
+    for dependency in dependencies:
+        await _validate_input_dependencies(db, draft.tenant_id, [dependency],
+            user=requester if dependency in published else None,
+            runtime_request=None if dependency in published else runtime_request)

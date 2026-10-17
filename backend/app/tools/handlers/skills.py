@@ -102,12 +102,26 @@ def load_skill(
         icon="\u25b6\ufe0f",
         governance="sensitive",
         adapter="workspace_args",
+        workspace_mutating=True,
     )
 )
-async def run_skill_tool(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+async def run_skill_tool(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None) -> str:
+    from app.services.agent_tool_domains.code_exec import WorkspaceExecutionAuthorityError, authorized_execution_workspace
     from app.services.agent_tool_domains.skill_runtime import run_skill_tool as _run_skill_tool
+    from app.services.agent_tool_domains.workspace import _workspace_storage_error
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError
+    from app.tools.result_envelope import render_tool_error
 
-    return await _run_skill_tool(workspace, arguments)
+    try:
+        with authorized_execution_workspace(workspace, authority_scope) as execution_workspace:
+            return await _run_skill_tool(execution_workspace, arguments,
+                canonical_workspace=workspace, authority_scope=authority_scope)
+    except WorkspaceAuthorityError as exc:
+        return _workspace_storage_error("run_skill_tool", exc, mutation=True)
+    except WorkspaceExecutionAuthorityError as exc:
+        return render_tool_error(tool_name="run_skill_tool", error_class=exc.code, message=exc.message,
+            provider="resource_authority", retryable=False,
+            actionable_hint="Use a new path in your workspace or request an explicit resource grant.")
 
 
 # -- save_skill ---------------------------------------------------------------

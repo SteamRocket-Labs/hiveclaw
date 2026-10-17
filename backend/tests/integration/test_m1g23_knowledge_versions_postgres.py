@@ -97,6 +97,20 @@ async def test_real_knowledge_tool_version_survives_native_settlement_and_replay
             session_id=session, run_id=run, before_sequence=sequence) is None
         assert await load_transcript_knowledge_provenance(db, tenant_id=tenant, agent_id=agent,
             session_id=session, run_id=uuid.uuid4()) is None
+        from app.models.session_v2 import SessionModelResult
+        from app.services.llm_client import LLMMessage
+        from sqlalchemy import select
+
+        next_request = await prepare_model_request(db, tenant_id=tenant, agent_id=agent, session_id=session,
+            run_id=run, turn_id=turn, round_index=2,
+            messages=[LLMMessage(role="tool", tool_call_id=call, content=replay,
+                source_ref=f"session-tool-result:{invocation.id}")], tools=[],
+            provider="openai", model="synthetic-no-provider")
+        next_model = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == next_request))
+        catalog = next_model.model_request_snapshot_json["input_bindings"]
+        assert {"source_kind": "knowledge_document", "source_id": str(document.id), "source_version": version} in catalog["dependencies"]
+        assert catalog["dependency_coverage"]["complete"] is False  # Original plain provider input is not a public source.
+        assert "forged-from-document-metadata" not in json.dumps(catalog)
         retried = await complete_tool_invocation(db, tenant_id=tenant, agent_id=agent, session_id=session,
             invocation_id=invocation.id, provider_result_content="Changed late result", execution_evidence=_execution_evidence(trace))
         await db.commit()

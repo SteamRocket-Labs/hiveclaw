@@ -43,7 +43,8 @@ async def build_model_input_bindings(
     entries = [{"message_index": i, "message_hash": _hash(message_snapshot(m)),
         "status": "unresolved", "code": "source_origin_missing"} for i, m in enumerate(wire_messages)]
     manifest = {"schema": "hive.model_input_bindings.v1", "status": "incomplete",
-        "source_authority": "not_evaluated", "messages": entries}
+        "source_authority": "not_evaluated", "messages": entries,
+        "dependencies": [], "dependency_coverage": {"complete": False}}
     if not any(isinstance(ref, str) and ref for ref in refs):
         return manifest
     session = await db.scalar(select(ChatSession.id).where(ChatSession.id == session_id,
@@ -121,4 +122,147 @@ async def build_model_input_bindings(
                 entry["command_ref"] = f"session-command:{input_commands[ref]}"
     if entries and len(messages) == len(entries) and all(e["status"] == "bound" for e in entries):
         manifest["status"] = "resolved"
+    resolved = {}
+    dependencies = []
+    for entry in entries:
+        if entry["status"] != "bound":
+            entry["dependency_status"] = "incomplete"
+            continue
+        ref = entry["source_ref"]
+        if ref not in resolved:
+            resolved[ref] = await _origin_dependencies(db, tenant_id=tenant_id, agent_id=agent_id,
+                ref=ref)
+        refs, complete = resolved[ref]
+        entry["dependencies"] = refs
+        entry["dependency_status"] = "resolved" if complete else "incomplete"
+        dependencies.extend(refs)
+    manifest["dependencies"] = _unique_dependencies(dependencies)
+    manifest["dependency_coverage"]["complete"] = bool(entries) and manifest["status"] == "resolved" and all(
+        entry.get("dependency_status") == "resolved" for entry in entries)
     return manifest
+
+
+def _unique_dependencies(values: list[dict[str, str]]) -> list[dict[str, str]]:
+    return [dict(zip(("source_kind", "source_id", "source_version"), row)) for row in sorted({
+        (v["source_kind"], v["source_id"], v["source_version"]) for v in values})]
+
+
+def _stored_dependencies(value: Any) -> list[dict[str, str]] | None:
+    if not isinstance(value, list) or any(not isinstance(row, dict)
+        or set(row) != {"source_kind", "source_id", "source_version"}
+        or any(not isinstance(v, str) or not v for v in row.values()) for row in value):
+        return None
+    return _unique_dependencies(value)
+
+
+def _model_dependencies(result) -> tuple[list[dict[str, str]], bool]:
+    if result is None or result.state not in {"sealed", "round_committed"}:
+        return [], False
+    snapshot = result.model_request_snapshot_json
+    if not isinstance(snapshot, dict) or _hash(snapshot) != result.model_request_hash:
+        return [], False
+    bindings = snapshot.get("input_bindings")
+    if not isinstance(bindings, dict) or bindings.get("schema") != "hive.model_input_bindings.v1":
+        return [], False
+    dependencies = _stored_dependencies(bindings.get("dependencies"))
+    coverage = bindings.get("dependency_coverage")
+    return dependencies or [], dependencies is not None and isinstance(coverage, dict) and coverage.get("complete") is True
+
+
+async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.organization_identity import ContentInputReceipt
+    from app.models.session_v2 import SessionCommand
+    from app.services.content_input_receipts import ContentInputReceiptError, load_workspace_input_evidence
+    from app.services.knowledge_provenance import KNOWLEDGE_TOOL_NAMES, build_knowledge_provenance
+    from app.services.session_semantic_history import _event_payload
+
+    try:
+        kind, raw_id = ref.split(":", 1)
+        source_id = uuid.UUID(raw_id)
+    except (ValueError, TypeError):
+        return [], False
+    if kind == "session-input":
+        row = await db.scalar(select(SessionTurnInput).join(SessionCommand, SessionCommand.id == SessionTurnInput.command_id)
+            .join(ChatSession, ChatSession.id == SessionTurnInput.session_id).where(
+                SessionTurnInput.tenant_id == tenant_id, SessionTurnInput.id == source_id,
+                SessionCommand.tenant_id == tenant_id, SessionCommand.session_id == SessionTurnInput.session_id,
+                ChatSession.tenant_id == tenant_id,
+                ChatSession.agent_id == agent_id))
+        command = await db.get(SessionCommand, row.command_id) if row is not None else None
+        if command is None or command.request_hash != _hash({"command_kind": command.command_kind, "request": command.request_json}) or (
+            command.target_hash != _hash(command.target_json)
+        ):
+            return [], False
+        return [{"source_kind": "session_command", "source_id": str(command.id), "source_version": command.request_hash}], True
+    if kind == "session-model-result":
+        result = await db.scalar(select(SessionModelResult).join(ChatSession, ChatSession.id == SessionModelResult.session_id)
+            .where(SessionModelResult.id == source_id, SessionModelResult.tenant_id == tenant_id,
+                ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id))
+        return _model_dependencies(result)
+    if kind != "session-tool-result":
+        return [], False
+    invocation = await db.scalar(select(SessionToolInvocation).join(ChatSession, ChatSession.id == SessionToolInvocation.session_id)
+        .where(SessionToolInvocation.id == source_id, SessionToolInvocation.tenant_id == tenant_id,
+            ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id))
+    if invocation is None or invocation.result_event_id is None:
+        return [], False
+    event = await db.scalar(select(ChatTranscriptEvent).where(ChatTranscriptEvent.id == invocation.result_event_id,
+        ChatTranscriptEvent.tenant_id == tenant_id, ChatTranscriptEvent.agent_id == agent_id,
+        ChatTranscriptEvent.session_id == invocation.session_id, ChatTranscriptEvent.run_id == invocation.run_id))
+    if event is None:
+        return [], False
+    payload = _event_payload(event)
+    content = payload.get("content")
+    if not isinstance(content, str) or payload.get("content_hash") != _hash(content):
+        return [], False
+    model = await db.scalar(select(SessionModelResult).where(SessionModelResult.tenant_id == tenant_id,
+        SessionModelResult.session_id == invocation.session_id, SessionModelResult.run_id == invocation.run_id,
+        SessionModelResult.provider_request_id == invocation.provider_request_id))
+    dependencies, inherited_complete = _model_dependencies(model)
+    # The call's own audience remains a source, including empty searches and private query arguments.
+    dependencies = [*dependencies, {"source_kind": "session_tool_invocation", "source_id": str(invocation.id),
+        "source_version": payload["content_hash"]}]
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, dict):
+        return _unique_dependencies(dependencies), False
+    pointer = metadata.get("workspace_input_receipt")
+    if isinstance(pointer, dict):
+        if pointer.get("status") != "verified":
+            return _unique_dependencies(dependencies), False
+        try:
+            bound = await load_workspace_input_evidence(db, agent_id=agent_id, invocation=invocation,
+                model_result=model, arguments=invocation.effective_arguments_json or invocation.provider_arguments_json,
+                content_hash=payload["content_hash"], capture={"status": "captured", "receipt_ref": pointer.get("evidence_ref")})
+            if bound != pointer:
+                return _unique_dependencies(dependencies), False
+            receipt = await db.get(ContentInputReceipt, uuid.UUID(bound["content_input_receipt_id"]))
+            inherited = _stored_dependencies(receipt.dependencies_json)
+            if inherited is None:
+                return _unique_dependencies(dependencies), False
+            # Even an original carrier with [] dependencies retains its own current audience.
+            dependencies.extend([{"source_kind": "workspace_artifact", "source_id": str(receipt.id),
+                "source_version": receipt.content_sha256}, *inherited])
+            return _unique_dependencies(dependencies), inherited_complete
+        except (ContentInputReceiptError, ValueError, TypeError, AttributeError):
+            return _unique_dependencies(dependencies), False
+    if invocation.tool_name not in KNOWLEDGE_TOOL_NAMES:
+        return _unique_dependencies(dependencies), False
+    provenance = build_knowledge_provenance(invocation.tool_name, content)
+    if not isinstance(provenance, dict) or metadata.get("knowledge_provenance") != provenance:
+        return _unique_dependencies(dependencies), False
+    complete = provenance.get("status") == "ok" and (provenance.get("coverage") or {}).get("complete") is True
+    for source in provenance.get("sources") or []:
+        version = source.get("source_version")
+        source_id = source.get("publication_id") or source.get("document_id")
+        if not source_id or not isinstance(version, str) or len(version) != 64 or any(c not in "0123456789abcdef" for c in version):
+            complete = False
+            continue
+        try:
+            source_id = str(uuid.UUID(str(source_id)))
+        except ValueError:
+            complete = False
+            continue
+        dependencies.append({"source_kind": "company_knowledge_publication" if source.get("publication_id") else "knowledge_document",
+            "source_id": source_id, "source_version": version})
+    return _unique_dependencies(dependencies), complete and inherited_complete

@@ -802,6 +802,8 @@ async def complete_tool_invocation(
     content = str(provider_result_content)
     content_hash = _sha256(content)
     publication_errors: list[dict[str, Any]] = []
+    workspace_execution_ref = None
+    expected_content_hashes: dict[str, str] = {}
     if outcome in {"success", "failed"} and not parts and message_id is None:
         from pathlib import Path
 
@@ -814,6 +816,25 @@ async def complete_tool_invocation(
             invocation.tool_name if outcome == "success" else "",
             effective_payload if outcome == "success" else {}, artifacts=execution_artifacts,
         )
+        if paths:
+            from app.core.resource_authority import normalize_workspace_resource_path
+            from app.services.content_input_receipts import ContentInputReceiptError, load_workspace_execution_evidence
+
+            try:
+                workspace_execution_ref, expected_content_hashes = await load_workspace_execution_evidence(
+                    db, agent_id=agent_id, invocation=invocation, model_result=result, arguments=effective_payload, content_hash=content_hash,
+                )
+            except ContentInputReceiptError:
+                expected_content_hashes = {}
+            verified_paths = []
+            for path in paths:
+                if normalize_workspace_resource_path(path) in expected_content_hashes:
+                    verified_paths.append(path)
+                else:
+                    publication_errors.append({"path": path, "status": "unknown",
+                        "reason_code": "workspace_execution_unverified", "retryable": False,
+                        "recovery_action": "reconcile_artifact_publication"})
+            paths = verified_paths
         if paths:
             session = await db.get(ChatSession, session_id)
             if session is None or session.tenant_id != tenant_id or session.agent_id != agent_id:
@@ -844,6 +865,9 @@ async def complete_tool_invocation(
                 source="workspace_write",
                 tool_call_id=invocation.provider_tool_use_id,
                 publication_errors=publication_errors,
+                expected_content_hashes=expected_content_hashes,
+                execution_evidence_ref=workspace_execution_ref,
+                tool_invocation_id=invocation.id,
             )
             if not parts:
                 await db.delete(anchor)

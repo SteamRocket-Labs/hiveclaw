@@ -12,7 +12,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -376,17 +377,29 @@ async def persist_invocation_span(
         )
 
     try:
-        async with asyncio.timeout(max(0.001, float(timeout_seconds))):
-            if db is not None:
-                # The savepoint isolates best-effort evidence failures from the
-                # caller's business transaction. Reusing the same connection is
-                # the critical invariant: an InvocationSpan FK can no longer
-                # wait on a RuntimeTask row locked by its own caller.
+        if db is not None:
+            # Task cancellation invalidates asyncpg's whole transaction; a server
+            # statement timeout can roll back just this evidence savepoint.
+            try:
                 async with db.begin_nested():
+                    previous_ms = int(await db.scalar(text("SELECT setting FROM pg_settings WHERE name = 'statement_timeout'")))
+                    remaining_ms = int((float(timeout_seconds) - (time.perf_counter() - started)) * 1000)
+                    if remaining_ms <= 0:
+                        raise TimeoutError
+                    limit_ms = min(previous_ms, remaining_ms) if previous_ms else remaining_ms
+                    await db.execute(text("SELECT set_config('statement_timeout', :value, true)"), {"value": str(limit_ms)})
                     await _write(db)
-            else:
-                from app.database import tenant_scoped_session
+                    if time.perf_counter() - started >= float(timeout_seconds):
+                        raise TimeoutError
+                    await db.execute(text("SELECT set_config('statement_timeout', :value, true)"), {"value": str(previous_ms)})
+            except DBAPIError as exc:
+                if getattr(exc.orig, "sqlstate", None) == "57014":
+                    raise TimeoutError from exc
+                raise
+        else:
+            from app.database import tenant_scoped_session
 
+            async with asyncio.timeout(max(0.001, float(timeout_seconds))):
                 async with tenant_scoped_session(coerced_tenant_id) as independent_db:
                     await _write(independent_db)
     except TimeoutError:

@@ -150,3 +150,104 @@ def record_workspace_receipt(db, tenant_id: uuid.UUID, agent_id: uuid.UUID, path
         dependencies_json=[dict(zip(("source_kind", "source_id", "source_version"), row)) for row in unique])
     db.add(receipt)
     return receipt
+
+
+async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_id, arguments, result, states, lineage, errors):
+    """Persist mechanical executor facts; this is not an input-authority receipt."""
+    from datetime import datetime, timezone
+    from app.database import tenant_scoped_session
+    from app.models.chat_session import ChatSession
+    from app.models.invocation_span import InvocationSpan
+    from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+    from app.services.session_tool_runtime import _sha256
+
+    if not all((context.tenant_id, context.session_id, context.runtime_task_id)):
+        return {"status": "unavailable", "reason_code": "workspace_execution_context_missing"}
+    try:
+        tenant_id, session_id, run_id = (uuid.UUID(str(value)) for value in (
+            context.tenant_id, context.session_id, context.runtime_task_id))
+        args_hash = _sha256({"tool_name": tool_name, "arguments": arguments})
+        async with tenant_scoped_session(tenant_id) as db:
+            session = await db.get(ChatSession, session_id)
+            if session is None or session.agent_id != context.agent_id or session.tenant_id != tenant_id:
+                raise ContentInputReceiptError("workspace_execution_scope_mismatch", "The executor session does not match.")
+            invocation = (await db.scalars(select(SessionToolInvocation).where(
+                SessionToolInvocation.tenant_id == tenant_id, SessionToolInvocation.session_id == session_id,
+                SessionToolInvocation.run_id == run_id, SessionToolInvocation.provider_tool_use_id == tool_call_id,
+                SessionToolInvocation.tool_name == tool_name, SessionToolInvocation.result_event_id.is_(None),
+            ))).one_or_none()
+            if invocation is None or (invocation.effective_args_hash or invocation.args_hash) != args_hash:
+                raise ContentInputReceiptError("workspace_execution_scope_mismatch", "The canonical invocation does not match.")
+            model = await db.scalar(select(SessionModelResult).where(
+                SessionModelResult.tenant_id == tenant_id, SessionModelResult.session_id == session_id,
+                SessionModelResult.run_id == run_id, SessionModelResult.provider_request_id == invocation.provider_request_id,
+            ))
+            if model is None:
+                raise ContentInputReceiptError("workspace_execution_scope_mismatch", "The canonical model request is missing.")
+            proof = {"schema": "hive.workspace_execution_evidence.v1", "invocation_id": str(invocation.id),
+                "model_result_id": str(model.id), "model_request_hash": model.model_request_hash,
+                "effective_args_hash": args_hash, "authority_snapshot_hash": invocation.authority_snapshot_hash,
+                "tool_result_hash": _sha256(str(result)), "states": states, "lineage": lineage, "errors": errors}
+            evidence_id = uuid.uuid5(invocation.id, "workspace-output-evidence")
+            existing = await db.get(InvocationSpan, evidence_id)
+            if existing is not None:
+                if existing.metadata_json.get("workspace_execution_evidence") != proof:
+                    raise ContentInputReceiptError("workspace_execution_evidence_changed", "Executor evidence is immutable.")
+            else:
+                db.add(InvocationSpan(id=evidence_id, tenant_id=tenant_id, agent_id=context.agent_id,
+                    user_id=context.user_id, runtime_task_id=run_id, session_id=str(session_id),
+                    trace_id=f"session-tool:{invocation.id}", span_id=f"workspace-output:{invocation.id}",
+                    span_type="workspace_output", name=tool_name, status="captured", duration_ms=0,
+                    started_at=datetime.now(timezone.utc), input_hash=args_hash,
+                    metadata_json={"workspace_execution_evidence": proof}))
+                await db.commit()
+            return {"status": "captured", "receipt_ref": f"workspace-output:{evidence_id}"}
+    except ContentInputReceiptError as exc:
+        return {"status": "unavailable", "reason_code": exc.code}
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("Workspace execution evidence unavailable (%s)", type(exc).__name__)
+        # A failed evidence write cannot undo a file effect or authorize its replay.
+        return {"status": "unavailable", "reason_code": "workspace_execution_evidence_unavailable"}
+
+
+async def load_workspace_execution_evidence(db, *, agent_id, invocation, model_result, arguments, content_hash):
+    from app.models.invocation_span import InvocationSpan
+    from app.services.session_tool_runtime import _sha256
+
+    evidence_id = uuid.uuid5(invocation.id, "workspace-output-evidence")
+    row = await db.get(InvocationSpan, evidence_id)
+    proof = (row.metadata_json or {}).get("workspace_execution_evidence") if row is not None else None
+    if not isinstance(proof, dict) or row.tenant_id != invocation.tenant_id or row.agent_id != agent_id or (
+        row.session_id != str(invocation.session_id) or row.runtime_task_id != invocation.run_id
+        or row.span_type != "workspace_output"
+        or proof.get("schema") != "hive.workspace_execution_evidence.v1"
+        or proof.get("invocation_id") != str(invocation.id)
+        or proof.get("model_result_id") != str(model_result.id)
+        or proof.get("model_request_hash") != model_result.model_request_hash
+        or _sha256(model_result.model_request_snapshot_json) != model_result.model_request_hash
+        or proof.get("authority_snapshot_hash") != invocation.authority_snapshot_hash
+        or proof.get("effective_args_hash") != _sha256({"tool_name": invocation.tool_name, "arguments": arguments})
+        or proof.get("tool_result_hash") != content_hash
+    ):
+        raise ContentInputReceiptError("workspace_execution_unverified", "The captured output cannot be bound to this invocation.")
+    states = proof.get("states")
+    lineage = proof.get("lineage")
+    errors = proof.get("errors")
+    if not isinstance(states, dict) or not isinstance(lineage, list) or not isinstance(errors, dict):
+        raise ContentInputReceiptError("workspace_execution_unverified", "The captured output evidence is invalid.")
+    hashes = {}
+    for item in lineage:
+        if not isinstance(item, dict):
+            continue
+        path, after = item.get("path"), item.get("after_state")
+        if not isinstance(path, str) or path in errors or not isinstance(after, dict) or after != states.get(path) or after.get("exists") is not True:
+            continue
+        digest = after.get("sha256")
+        if isinstance(digest, str) and len(digest) == 64 and all(c in "0123456789abcdef" for c in digest):
+            if invocation.tool_name in {"write_file", "fs_write"} and isinstance(arguments.get("content"), str):
+                if digest != hashlib.sha256(arguments["content"].encode()).hexdigest():
+                    continue
+            hashes[path] = digest
+    return f"workspace-output:{evidence_id}", hashes

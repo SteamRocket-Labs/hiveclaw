@@ -954,3 +954,18 @@ def test_build_session_artifact_parts_dedupes_identical_paths(tmp_path):
     )
 
     assert len(parts) == 1
+
+
+def test_native_execution_versions_do_not_rebind_identical_output_bytes(tmp_path):
+    from app.services.chat_artifact_delivery import build_artifact_candidate
+
+    _report, arguments, _unbound = _g22_candidate(tmp_path)
+    first_invocation, second_invocation = uuid4(), uuid4()
+    first = build_artifact_candidate(**arguments, tool_invocation_id=first_invocation,
+        execution_evidence_ref=f"workspace-output:{first_invocation}")
+    second = build_artifact_candidate(**arguments, tool_invocation_id=second_invocation,
+        execution_evidence_ref=f"workspace-output:{second_invocation}")
+    assert first["content_hash"] == second["content_hash"]
+    assert first["snapshot_hash"] != second["snapshot_hash"]
+    assert first["snapshot"]["tool_invocation_id"] == str(first_invocation)
+    assert second["snapshot"]["tool_invocation_id"] == str(second_invocation)

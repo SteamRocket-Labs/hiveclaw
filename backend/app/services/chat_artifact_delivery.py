@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -624,6 +624,9 @@ def build_artifact_candidate(
     source_agent_id: str | uuid.UUID | None = None,
     download_agent_id: str | uuid.UUID | None = None,
     delivery_agent_id: str | uuid.UUID | None = None,
+    expected_content_hash: str | None = None,
+    execution_evidence_ref: str | None = None,
+    tool_invocation_id: uuid.UUID | None = None,
 ) -> dict[str, Any] | None:
     """Return a durable artifact payload for a safe workspace file path.
 
@@ -645,13 +648,15 @@ def build_artifact_candidate(
     if not absolute.exists() or not absolute.is_file():
         return None
 
-    directory, captured = snapshot_workspace_file(root, rel.as_posix())
+    directory, captured = snapshot_workspace_file(root, rel.as_posix(), expected_content_hash)
     try:
         stat_data = captured.stat()
         mime_type, _encoding = mimetypes.guess_type(rel.name)
         modified_at = datetime.fromtimestamp(stat_data.st_mtime, tz=timezone.utc).isoformat()
         content_hash = _content_hash(captured)
         snapshot_hash = _snapshot_hash(rel_path=rel, stat_data=stat_data, content_hash=content_hash)
+        if execution_evidence_ref is not None:
+            snapshot_hash = hashlib.sha256(f"{snapshot_hash}\n{execution_evidence_ref}".encode()).hexdigest()
         preview_kind = _preview_kind_for_path(rel)
         preview_snapshot_content, preview_snapshot_truncated = _read_preview_snapshot(captured, preview_kind)
         snapshot_storage_path = _write_content_snapshot(
@@ -686,6 +691,9 @@ def build_artifact_candidate(
         "download_agent_id": download_agent,
         "delivery_agent_id": delivery_agent,
     }
+    if execution_evidence_ref is not None:
+        snapshot["execution_evidence_ref"] = execution_evidence_ref
+        snapshot["tool_invocation_id"] = str(tool_invocation_id)
     if preview_snapshot_content is not None:
         snapshot["preview_content"] = preview_snapshot_content
         snapshot["preview_content_truncated"] = preview_snapshot_truncated
@@ -889,6 +897,39 @@ async def _load_existing_chat_artifact(
     return result.scalar_one_or_none()
 
 
+async def _native_artifact_for_final_message(db, *, tenant_id, agent_id, session_id, runtime_task_id, path):
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+
+    event = await db.scalar(select(ChatTranscriptEvent).where(
+        ChatTranscriptEvent.tenant_id == tenant_id, ChatTranscriptEvent.agent_id == agent_id,
+        ChatTranscriptEvent.session_id == session_id, ChatTranscriptEvent.run_id == runtime_task_id,
+        ChatTranscriptEvent.item_kind == "tool_result", ChatTranscriptEvent.lifecycle == "completed",
+        or_(ChatTranscriptEvent.parts_json.contains([{"type": "artifact", "path": path}]),
+            ChatTranscriptEvent.metadata_json["v2_payload"]["metadata"]["artifact_delivery"]["files"].contains([{"path": path}])),
+    ).order_by(ChatTranscriptEvent.sequence.desc()).limit(1))
+    if event is None:
+        return False, None
+    parts = [part for part in event.parts_json or []
+        if isinstance(part, dict) and part.get("type") == "artifact" and part.get("path") == path]
+    if len(parts) != 1 or event.invocation_id is None:
+        return True, None
+    try:
+        artifact_id = uuid.UUID(str(parts[0].get("artifact_id")))
+    except ValueError:
+        return True, None
+    artifact = await db.get(ChatArtifact, artifact_id)
+    if artifact is None or (artifact.tenant_id, artifact.agent_id, artifact.session_id, artifact.runtime_task_id, artifact.path) != (
+        tenant_id, agent_id, session_id, runtime_task_id, path,
+    ):
+        return True, None
+    snapshot = artifact.snapshot_json or {}
+    if snapshot.get("tool_invocation_id") != str(event.invocation_id) or snapshot.get("execution_evidence_ref") != (
+        f"workspace-output:{uuid.uuid5(event.invocation_id, 'workspace-output-evidence')}"
+    ):
+        return True, None
+    return True, artifact
+
+
 async def create_chat_artifacts_for_message(
     *,
     db: AsyncSession,
@@ -911,6 +952,9 @@ async def create_chat_artifacts_for_message(
     owner_user_id: uuid.UUID | None = None,
     root_session_id: uuid.UUID | None = None,
     publication_errors: list[dict[str, Any]] | None = None,
+    expected_content_hashes: dict[str, str] | None = None,
+    execution_evidence_ref: str | None = None,
+    tool_invocation_id: uuid.UUID | None = None,
 ) -> list[dict[str, Any]]:
     """Create artifact rows for safe candidate paths and return message parts."""
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
@@ -981,6 +1025,27 @@ async def create_chat_artifacts_for_message(
                         "retryable": False, "recovery_action": "request_source_read_access" if denied else "retry_artifact_publication",
                     })
                 continue
+        if rebind_existing_to_message and runtime_uuid is not None and isinstance(db, AsyncSession):
+            handled, native_artifact = await _native_artifact_for_final_message(
+                db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_uuid,
+                runtime_task_id=runtime_uuid, path=_safe_workspace_relative_path(path).as_posix(),
+            )
+            if handled:
+                if native_artifact is not None:
+                    try:
+                        with captured_chat_artifact_file(native_artifact, workspace_root) as (captured, _source):
+                            if captured is None:
+                                native_artifact = None
+                    except (OSError, WorkspaceAuthorityError):
+                        native_artifact = None
+                if native_artifact is not None:
+                    native_artifact.message_id = message_id
+                    parts.append(artifact_part_from_model(native_artifact))
+                elif publication_errors is not None:
+                    publication_errors.append({"path": path, "status": "unknown",
+                        "reason_code": "workspace_execution_unverified", "retryable": False,
+                        "recovery_action": "reconcile_artifact_publication"})
+                continue
         try:
             candidate = build_artifact_candidate(
                 agent_id=agent_id,
@@ -996,6 +1061,9 @@ async def create_chat_artifacts_for_message(
                 source_agent_id=source_agent_id,
                 download_agent_id=download_agent_id,
                 delivery_agent_id=delivery_agent_id,
+                expected_content_hash=(expected_content_hashes or {}).get(_safe_workspace_relative_path(path).as_posix()),
+                execution_evidence_ref=execution_evidence_ref,
+                tool_invocation_id=tool_invocation_id,
             )
         except (OSError, WorkspaceAuthorityError):
             if publication_errors is None:

@@ -1357,6 +1357,12 @@ class ToolRuntimeService:
                     trace_metadata_sink["workspace_mutation_states"] = states
                     trace_metadata_sink["workspace_mutation_state_errors"] = {**before_errors, **errors}
                     trace_metadata_sink["workspace_mutation_lineage"] = lineage
+                    from app.services.content_input_receipts import persist_workspace_execution_evidence
+
+                    trace_metadata_sink["workspace_execution_evidence"] = await persist_workspace_execution_evidence(
+                        context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
+                        result=value, states=states, lineage=lineage, errors={**before_errors, **errors},
+                    )
                 return value
 
             if workspace_mutating:

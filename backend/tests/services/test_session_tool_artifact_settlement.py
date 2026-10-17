@@ -149,6 +149,7 @@ def _patch_runtime_database(monkeypatch, owner_sessionmaker, tenant_id):
         return tenant_id
 
     monkeypatch.setattr(runtime, "tenant_scoped_session", scoped_session)
+    monkeypatch.setattr("app.database.async_session", owner_sessionmaker)
     monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", resolve_tenant)
 
 
@@ -204,6 +205,24 @@ async def _start_effect(
             )
         )
         assert invocation is not None
+        from types import SimpleNamespace
+        from app.config import get_settings
+        from app.services.content_input_receipts import persist_workspace_execution_evidence
+        from app.services.session_workspace_snapshot import workspace_path_state
+
+        root = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+        before = workspace_path_state(workspace=root / "workspace", path=path)
+        target = root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("production-shaped artifact\n", encoding="utf-8")
+        after = workspace_path_state(workspace=root / "workspace", path=path)
+        proof = await persist_workspace_execution_evidence(
+            context=SimpleNamespace(tenant_id=tenant_id, agent_id=agent_id, user_id=user_id,
+                session_id=session_id, runtime_task_id=run_id), tool_name=tool_name,
+            tool_call_id=provider_tool_use_id, arguments=base["args"], result="Wrote workspace/report.md",
+            states={path: after}, lineage=[{"path": path, "before_state": before, "after_state": after}], errors={},
+        )
+        assert proof["status"] == "captured", proof
         return base, invocation.id, invocation.args_hash
 
 
@@ -235,8 +254,6 @@ async def test_write_file_artifact_and_v2_tool_result_commit_against_real_fk(
     _patch_runtime_database(monkeypatch, owner_sessionmaker, tenant_id)
     rel_path = "workspace/report.md"
     target = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / rel_path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text("production-shaped artifact\n", encoding="utf-8")
     provider_tool_use_id = "provider-write-artifact"
     base, invocation_id, args_hash = await _start_effect(
         owner_sessionmaker,

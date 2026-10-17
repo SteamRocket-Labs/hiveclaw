@@ -286,7 +286,8 @@ async def test_timed_out_caller_span_write_leaves_business_transaction_usable(
     owner_sessionmaker,
     monkeypatch,
 ) -> None:
-    from sqlalchemy import text
+    from sqlalchemy import select, text
+    from app.models.tenant import Tenant
 
     from app.services import invocation_trace
 
@@ -297,9 +298,13 @@ async def test_timed_out_caller_span_write_leaves_business_transaction_usable(
 
     async with owner_sessionmaker() as db:
         await db.begin()
+        tenant_id = uuid.uuid4()
+        db.add(Tenant(id=tenant_id, name="Caller business state", slug=f"caller-{tenant_id.hex}"))
+        await db.flush()
+        await db.execute(text("SELECT set_config('statement_timeout', '900', true)"))
         await invocation_trace.persist_invocation_span(
             db=db,
-            tenant_id=uuid.uuid4(),
+            tenant_id=tenant_id,
             trace_id="trace-caller-timeout",
             span_id="span-caller-timeout",
             parent_span_id=None,
@@ -317,4 +322,35 @@ async def test_timed_out_caller_span_write_leaves_business_transaction_usable(
         )
 
         assert (await db.execute(text("SELECT 1"))).scalar_one() == 1
+        assert await db.scalar(select(Tenant.name).where(Tenant.id == tenant_id)) == "Caller business state"
+        assert int(await db.scalar(text("SELECT setting FROM pg_settings WHERE name = 'statement_timeout'"))) == 900
         await db.rollback()
+
+
+async def test_caller_span_preserves_the_stricter_parent_statement_budget(owner_sessionmaker, monkeypatch):
+    from sqlalchemy import select, text
+    from app.models.tenant import Tenant
+    from app.models.invocation_span import InvocationSpan
+    from app.services import invocation_trace
+
+    original = invocation_trace.record_invocation_span
+
+    async def check_budget(db, **kwargs):
+        assert int(await db.scalar(text("SELECT setting FROM pg_settings WHERE name = 'statement_timeout'"))) <= 250
+        return await original(db, **kwargs)
+
+    monkeypatch.setattr(invocation_trace, "record_invocation_span", check_budget)
+    tenant_id = uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(Tenant(id=tenant_id, name="Caller uncommitted tenant", slug=f"budget-{tenant_id.hex}"))
+        await db.flush()
+        await db.execute(text("SELECT set_config('statement_timeout', '250', true)"))
+        await invocation_trace.persist_invocation_span(db=db, tenant_id=tenant_id,
+            trace_id="trace-caller-budget", span_id="caller-budget", parent_span_id=None, parent_trace_id=None,
+            span_type="hook", name="hook.budget", status="ok", duration_ms=0, agent_id=None, user_id=None,
+            runtime_task_id=None, session_id=None, request_id=None, timeout_seconds=0.5)
+        assert int(await db.scalar(text("SELECT setting FROM pg_settings WHERE name = 'statement_timeout'"))) == 250
+        assert (await db.scalar(select(InvocationSpan.id).where(InvocationSpan.tenant_id == tenant_id))) is not None
+        await db.rollback()
+    async with owner_sessionmaker() as db:
+        assert (await db.scalar(select(InvocationSpan.id).where(InvocationSpan.tenant_id == tenant_id))) is None

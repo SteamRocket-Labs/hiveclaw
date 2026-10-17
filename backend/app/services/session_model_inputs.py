@@ -263,6 +263,10 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
     # The call's own audience remains a source, including empty searches and private query arguments.
     dependencies = [*dependencies, {"source_kind": "session_tool_invocation", "source_id": str(invocation.id),
         "source_version": payload["content_hash"]}]
+    if invocation.tool_name == "read_context_resource":
+        dependency = _channel_context_dependency(agent_id, content,
+            invocation.effective_arguments_json or invocation.provider_arguments_json)
+        return _unique_dependencies([*dependencies, *([dependency] if dependency else [])]), bool(dependency) and inherited_complete
     metadata = payload.get("metadata")
     if not isinstance(metadata, dict):
         return _unique_dependencies(dependencies), False
@@ -306,3 +310,23 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
         dependencies.append({"source_kind": "company_knowledge_publication" if source.get("publication_id") else "knowledge_document",
             "source_id": source_id, "source_version": version})
     return _unique_dependencies(dependencies), complete and inherited_complete
+
+
+def _channel_context_dependency(agent_id, content, arguments):
+    # Other context resources still need their own upstream source and audience readers.
+    try:
+        page = json.loads(content)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(page, dict) or set(page) != {"schema", "status", "ref", "context_ref", "source_ref",
+        "sha256", "offset", "next_offset", "complete", "total_chars", "content"} or not isinstance(arguments, dict):
+        return None
+    body = page["content"]
+    if (arguments.get("ref") != "channels" or page["schema"] != "hive.agent_context_resource_page.v1"
+        or page["status"] != "ok" or page["ref"] != "channels" or page["complete"] is not True
+        or page["context_ref"] != "agent-context://channels" or page["source_ref"] != "agent-context://channels"
+        or not isinstance(body, str) or any(type(page[key]) is not int for key in ("offset", "next_offset", "total_chars"))
+        or page["offset"] != 0 or page["next_offset"] != len(body) or page["total_chars"] != len(body)
+        or page["sha256"] != hashlib.sha256(body.encode("utf-8")).hexdigest()):
+        return None
+    return {"source_kind": "agent_context_resource", "source_id": f"{agent_id}\nchannels", "source_version": page["sha256"]}

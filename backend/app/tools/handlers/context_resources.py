@@ -183,6 +183,9 @@ async def read_context_resource(request: ToolExecutionRequest) -> str:
         tenant_id=request.context.tenant_id,
         resource_ref=ref,
     )
+    if resource.status != "ok":
+        return _json({"schema": "hive.agent_context_resource_page.v1", "status": "unavailable",
+            "ref": resource.ref, "source_ref": resource.source_ref, "retryable": True})
     actual_sha256 = resource.sha256
     if expected_sha256 is not None and expected_sha256 != actual_sha256:
         return _json(

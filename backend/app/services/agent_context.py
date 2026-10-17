@@ -46,6 +46,7 @@ class AgentContextResource:
     ref: str
     source_ref: str
     content: str
+    status: str = "ok"
 
     @property
     def sha256(self) -> str:
@@ -354,9 +355,9 @@ async def _load_configured_channel_types(
     agent_id: uuid.UUID,
     *,
     tenant_id: uuid.UUID | str | None,
-) -> tuple[str, ...]:
+) -> tuple[str, ...] | None:
     if tenant_id is None:
-        return ()
+        return None
     try:
         from app.database import tenant_scoped_session
         from app.models.channel_config import ChannelConfig
@@ -384,7 +385,7 @@ async def _load_configured_channel_types(
             )
     except Exception as exc:
         logger.debug("Failed to query channel configs for agent {}: {}", agent_id, exc)
-        return ()
+        return None
 
 
 async def _load_company_intro(
@@ -477,7 +478,9 @@ async def load_agent_context_resource(
 
     if resource_ref == "channels":
         channels = await _load_configured_channel_types(agent_id, tenant_id=tenant_id)
-        return AgentContextResource(ref=resource_ref, source_ref=source_ref, content=", ".join(channels))
+        return AgentContextResource(ref=resource_ref, source_ref=source_ref,
+            content=", ".join(channels) if channels is not None else "",
+            status="ok" if channels is not None else "unavailable")
 
     if resource_ref == "a2a-collaborators":
         content = await _build_a2a_collaborators_context(
@@ -500,8 +503,10 @@ async def load_agent_context_resource(
         "Call read_context_resource with one ref and the listed sha256 when more detail is relevant.",
     ]
     lines.extend(
-        f"- {resource.ref}: available={bool(resource.content)}, chars={len(resource.content)}, "
-        f"sha256={resource.sha256}, source_ref={resource.source_ref}"
+        (f"- {resource.ref}: available={bool(resource.content)}, chars={len(resource.content)}, "
+         f"sha256={resource.sha256}, source_ref={resource.source_ref}")
+        if resource.status == "ok" else
+        f"- {resource.ref}: status=unavailable, retryable=True, source_ref={resource.source_ref}"
         for resource in resources
     )
     return AgentContextResource(ref=resource_ref, source_ref=source_ref, content="\n".join(lines))
@@ -613,7 +618,11 @@ async def build_agent_context(
         tenant_id=_agent_tenant_id,
         resource_ref="channels",
     )
-    if channels_resource.content:
+    if channels_resource.status != "ok":
+        context_parts.append("### Channel Integrations\n"
+            "Channel configuration is temporarily unavailable. Retry read_context_resource with ref=channels "
+            "before relying on configured integrations.")
+    elif channels_resource.content:
         context_parts.append(
             "### Channel Integrations\n"
             f"You have {channels_resource.content} channel(s) configured. "

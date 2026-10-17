@@ -62,6 +62,9 @@ async def _validate_input_dependencies(db, tenant_id: uuid.UUID, dependencies: l
     ):
         raise ContentInputReceiptError("content_source_unavailable", "The source receipt is invalid.", 503)
     for dependency in dependencies:
+        if dependency["source_kind"] == "agent_context_resource":
+            await _validate_agent_context_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
+            continue
         if dependency["source_kind"] == "workspace_artifact":
             await _validate_workspace_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request,
                 active_receipts=active_workspace_receipts)
@@ -115,6 +118,39 @@ async def _validate_input_dependencies(db, tenant_id: uuid.UUID, dependencies: l
         if result.status != "ok" or getattr(result, "credential_reference", None):
             raise ContentInputReceiptError("content_source_access_denied", "A required source is no longer authorized for this reader.", 403)
         _validate_source_bytes(document.canonical_md_path, dependency["source_version"])
+
+
+async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user, runtime_request):
+    from fastapi import HTTPException
+    from app.core.permissions import check_agent_access
+    from app.models.agent import Agent
+    from app.services.agent_context import load_agent_context_resource
+
+    try:
+        raw_agent_id, ref = dependency["source_id"].split("\n")
+        agent_id = uuid.UUID(raw_agent_id)
+        if ref != "channels":
+            raise ValueError("unsupported_context_source")
+    except ValueError as exc:
+        raise ContentInputReceiptError("content_source_unavailable", "The context source receipt is unsupported.", 503) from exc
+    try:
+        if runtime_request is not None:
+            principal, _requester = await _runtime_input_actor(db, tenant_id, runtime_request)
+            if principal.agent_id != agent_id:
+                raise ValueError("context_source_actor_mismatch")
+        else:
+            source = await db.scalar(select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id)
+                .execution_options(populate_existing=True))
+            if source is None:
+                raise ValueError("context_source_agent_unavailable")
+            await check_agent_access(db, user, agent_id)
+    except (HTTPException, ValueError) as exc:
+        raise ContentInputReceiptError("content_source_access_denied", "The context source is no longer authorized.", 403) from exc
+    resource = await load_agent_context_resource(agent_id=agent_id, tenant_id=tenant_id, resource_ref=ref)
+    if resource.status != "ok":
+        raise ContentInputReceiptError("content_source_unavailable", "The current context source could not be read. Retry later.", 503)
+    if resource.sha256 != dependency["source_version"]:
+        raise ContentInputReceiptError("content_source_changed", "The context source has changed. Regenerate from current authorized inputs.", 403)
 
 
 async def _validate_session_dependency(db, tenant_id, dependency, *, user, runtime_request):

@@ -3273,7 +3273,8 @@ async def test_execute_tool_with_hooks_records_runtime_failure_policy_on_hook_bl
 
 
 @pytest.mark.asyncio
-async def test_agent_kernel_handles_tool_round_and_collects_parts():
+@pytest.mark.parametrize("with_origins", [False, True])
+async def test_agent_kernel_handles_tool_round_and_collects_parts(with_origins):
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
 
@@ -3289,6 +3290,12 @@ async def test_agent_kernel_handles_tool_round_and_collects_parts():
 
     tool_load_calls: list[bool] = []
     persisted_payloads: list[dict] = []
+    prepared_requests: list[dict] = []
+    input_origin = f"session-input:{uuid4()}"
+
+    async def prepare_request(**payload):
+        prepared_requests.append(payload)
+        return f"provider-request:{payload['round_index']}"
 
     async def resolve_runtime_config(_agent_id):
         return RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=5, quota_message=None)
@@ -3366,15 +3373,26 @@ async def test_agent_kernel_handles_tool_round_and_collects_parts():
     result = await kernel.handle(
         InvocationRequest(
             model=model,
-            messages=[{"role": "user", "content": "帮我做调研"}],
+            messages=[{"role": "user", "content": "帮我做调研", **({"source_ref": input_origin} if with_origins else {})}],
             agent_name="Researcher",
             role_description="Research agent",
             agent_id=agent_id,
             user_id=user_id,
+            model_request_prepare=prepare_request if with_origins else None,
         )
     )
 
     assert result.content == "final answer"
+    if with_origins:
+        assert len(prepared_requests) == 2
+        assert prepared_requests[0]["messages"][1].source_ref == input_origin
+        assistants = [m for m in prepared_requests[1]["messages"] if m.role == "assistant" and m.tool_calls]
+        tools = [m for m in prepared_requests[1]["messages"] if m.role == "tool" and m.tool_call_id == "call_1"]
+        assert len(assistants) == len(tools) == 1
+        assert assistants[0].source_ref == "session-provider-result:provider-request:1"
+        assert tools[0].source_ref == "session-provider-tool-result:provider-request:1"
+        assert all("source_ref" not in message for request in prepared_requests
+            for message in request["wire_request"]["messages"])
     assert tool_load_calls == [True]
     assert fake_client.calls[0]["tools"][0]["function"]["name"] == "core_tool"
     assert fake_client.calls[1]["tools"][0]["function"]["name"] == "core_tool"

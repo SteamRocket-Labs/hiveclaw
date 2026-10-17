@@ -2873,6 +2873,7 @@ def _clone_api_messages(messages: list[LLMMessage]) -> list[LLMMessage]:
             tool_call_id=message.tool_call_id,
             reasoning_content=message.reasoning_content,
             reasoning_signature=message.reasoning_signature,
+            source_ref=message.source_ref,
         )
         for message in messages
     ]
@@ -3028,7 +3029,7 @@ def _seal_orphan_tool_uses(
     return len(missing)
 
 
-def _llm_messages_to_dicts(messages: list[LLMMessage]) -> list[dict]:
+def _llm_messages_to_dicts(messages: list[LLMMessage], *, include_source_refs: bool = False) -> list[dict]:
     """Convert LLMMessage list to plain dicts for compression."""
     result: list[dict] = []
     for m in messages:
@@ -3043,6 +3044,8 @@ def _llm_messages_to_dicts(messages: list[LLMMessage]) -> list[dict]:
             d["reasoning_content"] = m.reasoning_content
         if m.reasoning_signature:
             d["reasoning_signature"] = m.reasoning_signature
+        if include_source_refs and m.source_ref:
+            d["source_ref"] = m.source_ref
         result.append(d)
     return result
 
@@ -3053,13 +3056,18 @@ def _mid_run_items_to_user_messages(items: Any) -> list[LLMMessage]:
     messages: list[LLMMessage] = []
     for item in items:
         role = "user"
+        source_ref = None
         if isinstance(item, dict):
+            if item.get("session_input_id"):
+                source_ref = f"session-input:{item['session_input_id']}"
+            elif isinstance(item.get("source_ref"), str):
+                source_ref = item["source_ref"]
             raw_role = str(item.get("role") or "user").strip().lower()
             if raw_role in {"user", "system"}:
                 role = raw_role
             structured_parts = item.get("llm_parts") or item.get("parts")
             if isinstance(structured_parts, list) and structured_parts:
-                messages.append(LLMMessage(role=role, content=structured_parts))
+                messages.append(LLMMessage(role=role, content=structured_parts, source_ref=source_ref))
                 continue
             content: Any = item.get("llm_content") or item.get("content")
         else:
@@ -3069,7 +3077,7 @@ def _mid_run_items_to_user_messages(items: Any) -> list[LLMMessage]:
         text = str(content).strip()
         if not text:
             continue
-        messages.append(LLMMessage(role=role, content=text))
+        messages.append(LLMMessage(role=role, content=text, source_ref=source_ref))
     return messages
 
 
@@ -3134,6 +3142,7 @@ def _dicts_to_llm_messages(dicts: list[dict]) -> list[LLMMessage]:
             tool_call_id=d.get("tool_call_id"),
             reasoning_content=d.get("reasoning_content"),
             reasoning_signature=d.get("reasoning_signature"),
+            source_ref=d.get("source_ref"),
         )
         for d in dicts
     ]

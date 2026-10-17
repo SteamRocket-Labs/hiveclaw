@@ -1496,6 +1496,8 @@ def conversation_from_history_messages(history_messages) -> list[dict]:
                     entry["reasoning_content"] = msg["reasoning_content"]
                 if msg.get("reasoning_signature") is not None:
                     entry["reasoning_signature"] = msg["reasoning_signature"]
+                if isinstance(msg.get("source_ref"), str):
+                    entry["source_ref"] = msg["source_ref"]
                 conversation.append(entry)
             continue
 
@@ -1515,6 +1517,8 @@ def conversation_from_history_messages(history_messages) -> list[dict]:
                 entry["reasoning_content"] = msg.thinking
             if getattr(msg, "thinking_signature", None) is not None:
                 entry["reasoning_signature"] = msg.thinking_signature
+            if isinstance(getattr(msg, "id", None), str):
+                entry["source_ref"] = msg.id
             conversation.append(entry)
             continue
 

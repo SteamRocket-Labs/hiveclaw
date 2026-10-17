@@ -85,6 +85,8 @@ class LLMMessage:
     reasoning_content: str | None = None
     reasoning_signature: str | None = None
     created_at: float = field(default_factory=time.time)
+    # Backend origin coordinate; never part of a provider message or an authority grant.
+    source_ref: str | None = None
 
     def to_openai_format(self) -> dict:
         """Convert to OpenAI format."""

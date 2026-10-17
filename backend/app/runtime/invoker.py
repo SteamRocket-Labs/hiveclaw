@@ -670,7 +670,7 @@ def _apply_vision_transform(api_messages: list[LLMMessage], supports_vision: boo
                 parts.append({"type": "image_url", "image_url": {"url": image_url}})
             if text:
                 parts.append({"type": "text", "text": text})
-            api_messages[i] = LLMMessage(role=msg.role, content=parts)  # type: ignore[arg-type]
+            api_messages[i] = LLMMessage(role=msg.role, content=parts, source_ref=msg.source_ref)  # type: ignore[arg-type]
         return api_messages
 
     strip_pattern = r"\[image_data:data:image/[^;]+;base64,[A-Za-z0-9+/=]+\]"
@@ -684,7 +684,7 @@ def _apply_vision_transform(api_messages: list[LLMMessage], supports_vision: boo
                 f"\n[The user sent {image_count} image(s), but the current model does not support vision, "
                 "so the image content is unavailable.]"
             )
-        api_messages[i] = LLMMessage(role=msg.role, content=cleaned)
+        api_messages[i] = LLMMessage(role=msg.role, content=cleaned, source_ref=msg.source_ref)
     return api_messages
 
 

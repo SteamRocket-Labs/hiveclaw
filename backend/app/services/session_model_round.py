@@ -455,6 +455,9 @@ async def prepare_model_request(
 
     round_id = _round_id(run_id, round_index, continuation_index)
     result_id = _result_id(run_id, round_id)
+    from app.services.session_model_inputs import build_model_input_bindings, message_snapshot
+
+    messages = list(messages)
     rows = await _bound_rows(
         db,
         tenant_id=tenant_id,
@@ -478,7 +481,7 @@ async def prepare_model_request(
     canonical_wire_request = _canonical(
         wire_request
         or {
-            "messages": [_canonical(message) for message in messages],
+            "messages": [message_snapshot(message) for message in messages],
             "tools": _canonical(tools or []),
             "temperature": None,
             "max_tokens": None,
@@ -606,12 +609,15 @@ async def prepare_model_request(
         candidate_provider_request_id = result.provider_request_id
     else:
         candidate_provider_request_id = f"hive:{run_id}:{request_lane}:attempt:1"
+    input_bindings = await build_model_input_bindings(db, tenant_id=tenant_id, agent_id=agent_id,
+        session_id=session_id, messages=messages, wire_messages=list(canonical_wire_request.get("messages") or []))
     snapshot = {
         "provider": provider,
         "model": model,
         # The exact post-transform semantic request passed to the provider
         # adapter.  Top-level mirrors remain for compatibility readers.
         "wire_request": canonical_wire_request,
+        "input_bindings": input_bindings,
         "messages": list(canonical_wire_request.get("messages") or []),
         "tools": _canonical(canonical_wire_request.get("tools") or []),
         "temperature": canonical_wire_request.get("temperature"),

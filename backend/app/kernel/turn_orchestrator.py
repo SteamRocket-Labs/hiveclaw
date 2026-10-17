@@ -1767,6 +1767,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     tool_call_id=msg.get("tool_call_id"),
                     reasoning_content=msg.get("reasoning_content"),
                     reasoning_signature=msg.get("reasoning_signature"),
+                    source_ref=msg.get("source_ref"),
                 )
             )
         recovered_tool_results = await _execute_recovered_pending_tool_frames(
@@ -2105,7 +2106,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                     ptl_retries,
                                     _PTL_MAX_RETRIES,
                                 )
-                                conv_dicts = _llm_messages_to_dicts(api_messages[1:])
+                                conv_dicts = _llm_messages_to_dicts(api_messages[1:], include_source_refs=True)
                                 _before_chars = sum(len(d.get("content", "") or "") for d in conv_dicts)
                                 compressed = await _compress_messages_with_lifecycle_hooks(
                                     self._deps.maybe_compress_messages,
@@ -2222,8 +2223,8 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                     )
                                     _truncated = _dicts_to_llm_messages(
                                         await _apply_mechanical_compaction_with_lifecycle_hooks(
-                                            _llm_messages_to_dicts(api_messages[1:]),
-                                            compact=lambda _items: _llm_messages_to_dicts(_ptl_kept),
+                                            _llm_messages_to_dicts(api_messages[1:], include_source_refs=True),
+                                            compact=lambda _items: _llm_messages_to_dicts(_ptl_kept, include_source_refs=True),
                                             agent_id=request.agent_id,
                                             session_id=request.memory_session_id,
                                             trigger="prompt_too_long",
@@ -2295,7 +2296,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                         ptl_retries,
                                         _PTL_MAX_RETRIES,
                                     )
-                                    conv_dicts = _llm_messages_to_dicts(api_messages[1:])
+                                    conv_dicts = _llm_messages_to_dicts(api_messages[1:], include_source_refs=True)
                                     _before_chars = sum(len(d.get("content", "") or "") for d in conv_dicts)
                                     compressed = await _compress_messages_with_lifecycle_hooks(
                                         self._deps.maybe_compress_messages,
@@ -2587,6 +2588,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         tool_calls=_sanitize_tool_calls_for_history(expanded_tool_calls),
                         reasoning_content=response.reasoning_content,
                         reasoning_signature=getattr(response, "reasoning_signature", None),
+                        source_ref=f"session-provider-result:{provider_request_id}" if provider_request_id else None,
                     )
                 )
 
@@ -3010,6 +3012,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                 role="tool",
                                 tool_call_id=tc["id"],
                                 content=_tool_message_content(_content, result),
+                                source_ref=f"session-provider-tool-result:{provider_request_id}" if provider_request_id else None,
                             )
                         )
                         # D-08: capture the tool's side-effect channel on the REAL
@@ -3208,6 +3211,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                 role="tool",
                                 tool_call_id=tc["id"],
                                 content=_tool_message_content(_content, result),
+                                source_ref=f"session-provider-tool-result:{provider_request_id}" if provider_request_id else None,
                             )
                         )
                         # D-08: capture the tool's side-effect channel on the REAL
@@ -3350,7 +3354,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     # Note: system prompt tokens are NOT included in this compression
                     # because compress_threshold is relative to context_limit which
                     # already reserves space for the prompt via compute_history_limit.
-                    conv_dicts = _llm_messages_to_dicts(api_messages[1:])
+                    conv_dicts = _llm_messages_to_dicts(api_messages[1:], include_source_refs=True)
 
                     compressed = await _compress_messages_with_lifecycle_hooks(
                         self._deps.maybe_compress_messages,

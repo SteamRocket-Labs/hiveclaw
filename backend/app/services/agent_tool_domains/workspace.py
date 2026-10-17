@@ -286,16 +286,11 @@ def _list_files(
 
 
 def _read_receipted_workspace_bytes(read_root: Path, read_path: str, authority_scope, authority_path: str) -> bytes:
-    import hashlib
-    from app.core.resource_authority import normalize_workspace_resource_path
-
     with open_workspace_file(read_root, read_path) as source:
         raw = source.read()
-    expected = dict(getattr(authority_scope, "input_content_hashes", ())).get(
-        normalize_workspace_resource_path(authority_path))
-    if expected is not None and hashlib.sha256(raw).hexdigest() != expected:
-        raise WorkspaceAuthorityError("workspace_content_unverified",
-            "The file bytes no longer match the verified input receipt. Regenerate from authorized inputs.")
+    read = authority_scope.input_read(authority_path) if hasattr(authority_scope, "input_read") else None
+    if read is not None:
+        read.verify(raw)
     return raw
 
 
@@ -1002,7 +997,7 @@ async def _read_document(
             DocumentConversionService,
             render_conversion_preview,
         )
-        from app.core.resource_authority import normalize_workspace_resource_path
+        input_read = authority_scope.input_read(rel_path) if hasattr(authority_scope, "input_read") else None
 
         result = DocumentConversionService().convert(
             DocumentConversionRequest(
@@ -1016,8 +1011,8 @@ async def _read_document(
                 max_pages=max_pages,
                 max_output_chars=None,
                 force_refresh=force_refresh,
-                expected_source_sha256=dict(getattr(authority_scope, "input_content_hashes", ())).get(
-                    normalize_workspace_resource_path(rel_path)),
+                expected_source_sha256=input_read.content_sha256 if input_read is not None else None,
+                input_read=input_read,
             )
         )
         if return_format == "markdown":

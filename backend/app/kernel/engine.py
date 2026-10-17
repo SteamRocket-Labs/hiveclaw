@@ -1689,6 +1689,8 @@ def _tool_execution_evidence(
         "capability_snapshot_hash": trace.get("capability_snapshot_hash"),
         "effect_idempotency_key": trace.get("idempotency_key"),
         "pre_effect_fence_ref": pre_effect_fence_ref,
+        "workspace_input_evidence": dict(trace["workspace_input_evidence"])
+        if isinstance(trace.get("workspace_input_evidence"), dict) else None,
     }
 
 

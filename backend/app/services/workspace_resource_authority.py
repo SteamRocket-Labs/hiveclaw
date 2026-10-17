@@ -237,6 +237,22 @@ def snapshot_workspace_file(
         raise
 
 
+@dataclass(slots=True)
+class WorkspaceInputRead:
+    path: str
+    receipt_id: uuid.UUID
+    revision: int
+    content_sha256: str
+    dependencies_hash: str
+    observed_sha256: str | None = None
+
+    def verify(self, data: bytes) -> None:
+        self.observed_sha256 = hashlib.sha256(data).hexdigest()
+        if self.observed_sha256 != self.content_sha256:
+            raise WorkspaceAuthorityError("workspace_content_unverified",
+                "The file bytes no longer match the verified input receipt. Regenerate from authorized inputs.")
+
+
 @dataclass(frozen=True)
 class WorkspaceAuthorityScope:
     agent_id: uuid.UUID
@@ -248,7 +264,11 @@ class WorkspaceAuthorityScope:
     known_paths: frozenset[str] = frozenset()
     action_permissions: frozenset[tuple[str, str]] = frozenset()
     collection_actions: frozenset[str] = frozenset()
-    input_content_hashes: frozenset[tuple[str, str]] = frozenset()
+    input_reads: tuple[WorkspaceInputRead, ...] = ()
+
+    def input_read(self, path: str) -> WorkspaceInputRead | None:
+        normalized = normalize_workspace_resource_path(path)
+        return next((read for read in self.input_reads if read.path == normalized), None)
 
     def can_perform(self, path: str, action: str) -> bool:
         normalized = normalize_workspace_resource_path(path)

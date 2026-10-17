@@ -124,7 +124,8 @@ async def authorize_workspace_receipt_read(request):
     from sqlalchemy.exc import SQLAlchemyError
     from app.core.resource_authority import normalize_workspace_resource_path
     from app.database import tenant_scoped_session
-    from app.services.workspace_resource_authority import WorkspaceAuthorityScope
+    from app.services.workspace_resource_authority import WorkspaceAuthorityScope, WorkspaceInputRead
+    from app.services.session_tool_runtime import _sha256
     from app.tools.result_envelope import render_tool_error
 
     if request.tool_name not in {"read_file", "read_document"} and not (
@@ -149,10 +150,11 @@ async def authorize_workspace_receipt_read(request):
             await validate_runtime_input_dependencies(db, request, receipt.dependencies_json)
             # This hash is checked against the very bytes returned by the file reader.
             scope = context.workspace_authority_scope
-            hashes = dict(scope.input_content_hashes)
-            hashes[path] = receipt.content_sha256
-            context.workspace_authority_scope = replace(scope, input_content_hashes=frozenset(hashes.items()))
-        return None
+            observed = WorkspaceInputRead(path=path, receipt_id=receipt.id, revision=receipt.revision,
+                content_sha256=receipt.content_sha256, dependencies_hash=_sha256(receipt.dependencies_json))
+            context.workspace_authority_scope = replace(scope,
+                input_reads=tuple(read for read in scope.input_reads if read.path != path) + (observed,))
+        return observed
     except (ContentInputReceiptError, OSError, ValueError, SQLAlchemyError) as exc:
         status = exc.status_code if isinstance(exc, ContentInputReceiptError) else 503
         code = exc.code if isinstance(exc, ContentInputReceiptError) else "content_source_unavailable"
@@ -225,7 +227,7 @@ def record_workspace_receipt(db, tenant_id: uuid.UUID, agent_id: uuid.UUID, path
     return receipt
 
 
-async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_id, arguments, result, states, lineage, errors):
+async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_id, arguments, result, states, lineage, errors, input_read=None):
     """Persist mechanical executor facts; this is not an input-authority receipt."""
     from datetime import datetime, timezone
     from app.database import tenant_scoped_session
@@ -261,20 +263,31 @@ async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_
                 "model_result_id": str(model.id), "model_request_hash": model.model_request_hash,
                 "effective_args_hash": args_hash, "authority_snapshot_hash": invocation.authority_snapshot_hash,
                 "tool_result_hash": _sha256(str(result)), "states": states, "lineage": lineage, "errors": errors}
-            evidence_id = uuid.uuid5(invocation.id, "workspace-output-evidence")
+            channel, metadata_key = "workspace-output", "workspace_execution_evidence"
+            if input_read is not None:
+                proof.pop("states")
+                proof.pop("lineage")
+                proof.pop("errors")
+                proof.update(schema="hive.workspace_input_evidence.v1",
+                    content_input_receipt_id=str(input_read.receipt_id),
+                    carrier_ref=workspace_artifact_ref(context.agent_id, input_read.path),
+                    revision=input_read.revision, content_sha256=input_read.content_sha256,
+                    dependencies_hash=input_read.dependencies_hash, observed_sha256=input_read.observed_sha256)
+                channel, metadata_key = "workspace-input", "workspace_input_evidence"
+            evidence_id = uuid.uuid5(invocation.id, f"{channel}-evidence")
             existing = await db.get(InvocationSpan, evidence_id)
             if existing is not None:
-                if existing.metadata_json.get("workspace_execution_evidence") != proof:
+                if existing.metadata_json.get(metadata_key) != proof:
                     raise ContentInputReceiptError("workspace_execution_evidence_changed", "Executor evidence is immutable.")
             else:
                 db.add(InvocationSpan(id=evidence_id, tenant_id=tenant_id, agent_id=context.agent_id,
                     user_id=context.user_id, runtime_task_id=run_id, session_id=str(session_id),
-                    trace_id=f"session-tool:{invocation.id}", span_id=f"workspace-output:{invocation.id}",
-                    span_type="workspace_output", name=tool_name, status="captured", duration_ms=0,
+                    trace_id=f"session-tool:{invocation.id}", span_id=f"{channel}:{invocation.id}",
+                    span_type=channel.replace("-", "_"), name=tool_name, status="captured", duration_ms=0,
                     started_at=datetime.now(timezone.utc), input_hash=args_hash,
-                    metadata_json={"workspace_execution_evidence": proof}))
+                    metadata_json={metadata_key: proof}))
                 await db.commit()
-            return {"status": "captured", "receipt_ref": f"workspace-output:{evidence_id}"}
+            return {"status": "captured", "receipt_ref": f"{channel}:{evidence_id}"}
     except ContentInputReceiptError as exc:
         return {"status": "unavailable", "reason_code": exc.code}
     except Exception as exc:
@@ -283,6 +296,93 @@ async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_
         logging.getLogger(__name__).warning("Workspace execution evidence unavailable (%s)", type(exc).__name__)
         # A failed evidence write cannot undo a file effect or authorize its replay.
         return {"status": "unavailable", "reason_code": "workspace_execution_evidence_unavailable"}
+
+
+async def settle_workspace_receipt_read(*, request, read, tool_call_id, result):
+    from app.database import tenant_scoped_session
+    from app.models.workspace_resource import WorkspaceResourceManifest
+    from app.tools.result_envelope import render_tool_error
+
+    context = request.context
+    if read.observed_sha256 == read.content_sha256:
+        evidence = await persist_workspace_execution_evidence(context=context, tool_name=request.tool_name,
+            tool_call_id=tool_call_id, arguments=request.arguments, result=result,
+            states={}, lineage=[], errors={}, input_read=read)
+        return None, evidence
+    status, code, quarantine = 503, "workspace_input_read_unverified", "not_attempted"
+    if read.observed_sha256 is not None:
+        try:
+            tenant_id = uuid.UUID(str(context.tenant_id))
+            async with tenant_scoped_session(tenant_id) as db:
+                await lock_workspace_receipt_write(db, tenant_id, context.agent_id, read.path)
+                current = await latest_workspace_receipt(db, tenant_id, context.agent_id, read.path)
+                if current is not None and current.id == read.receipt_id:
+                    manifest = await db.scalar(select(WorkspaceResourceManifest).where(
+                        WorkspaceResourceManifest.tenant_id == tenant_id,
+                        WorkspaceResourceManifest.agent_id == context.agent_id,
+                        WorkspaceResourceManifest.path == read.path).with_for_update())
+                    if manifest is not None:
+                        manifest.authority_state = "quarantined"
+                        await db.commit()
+                        quarantine = "committed"
+                else:
+                    quarantine = "superseded_receipt"
+            status, code = ((409, "workspace_input_revision_changed") if quarantine == "superseded_receipt"
+                else (403, "workspace_content_unverified"))
+        except Exception:
+            code, quarantine = "workspace_input_quarantine_unavailable", "unknown"
+    return render_tool_error(tool_name=request.tool_name,
+        error_class="auth_or_permission" if status == 403 else "operation_failed" if status == 409 else "provider_unavailable",
+        message="The executor could not bind returned bytes to the selected content receipt.",
+        provider="content_input_receipt", http_status=status, retryable=status in {409, 503},
+        actionable_hint=("Read the latest revision after revalidating its sources." if status == 409
+            else "Reconcile the file or regenerate from current authorized inputs."),
+        extra={"reason_code": code, "outcome": "denied" if status == 403 else "failed" if status == 409 else "unavailable"}), {
+            "status": "denied" if status == 403 else "unavailable", "reason_code": code, "quarantine": quarantine}
+
+
+async def load_workspace_input_evidence(db, *, agent_id, invocation, model_result, arguments, content_hash, capture):
+    from app.models.invocation_span import InvocationSpan
+    from app.services.session_tool_runtime import _sha256
+
+    evidence_id = uuid.uuid5(invocation.id, "workspace-input-evidence")
+    if capture is None:
+        return None  # No current capture is never an empty dependency set.
+    if not isinstance(capture, dict) or capture.get("status") != "captured":
+        return {"status": "unavailable", "reason_code": "workspace_input_capture_unavailable"}
+    if capture.get("receipt_ref") != f"workspace-input:{evidence_id}":
+        raise ContentInputReceiptError("workspace_input_evidence_invalid", "The current read capture does not match.")
+    row = await db.get(InvocationSpan, evidence_id)
+    if row is None:
+        raise ContentInputReceiptError("workspace_input_evidence_invalid", "The current read evidence is missing.")
+    proof = (row.metadata_json or {}).get("workspace_input_evidence")
+    if not isinstance(proof, dict) or row.tenant_id != invocation.tenant_id or row.agent_id != agent_id or (
+        row.session_id != str(invocation.session_id) or row.runtime_task_id != invocation.run_id
+        or row.span_type != "workspace_input" or proof.get("schema") != "hive.workspace_input_evidence.v1"
+        or proof.get("invocation_id") != str(invocation.id) or proof.get("model_result_id") != str(model_result.id)
+        or proof.get("model_request_hash") != model_result.model_request_hash
+        or _sha256(model_result.model_request_snapshot_json) != model_result.model_request_hash
+        or proof.get("authority_snapshot_hash") != invocation.authority_snapshot_hash
+        or proof.get("effective_args_hash") != _sha256({"tool_name": invocation.tool_name, "arguments": arguments})
+        or proof.get("tool_result_hash") != content_hash
+        or proof.get("observed_sha256") != proof.get("content_sha256")
+    ):
+        raise ContentInputReceiptError("workspace_input_evidence_invalid", "The read evidence is not bound to this invocation.")
+    try:
+        receipt_id = uuid.UUID(proof["content_input_receipt_id"])
+        carrier_ref = workspace_artifact_ref(agent_id, arguments.get("path", ""))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ContentInputReceiptError("workspace_input_evidence_invalid", "The input receipt identity is invalid.") from exc
+    receipt = await db.scalar(select(ContentInputReceipt).where(ContentInputReceipt.id == receipt_id,
+        ContentInputReceipt.tenant_id == invocation.tenant_id, ContentInputReceipt.carrier_kind == "workspace_artifact",
+        ContentInputReceipt.carrier_ref == carrier_ref))
+    if receipt is None or proof.get("carrier_ref") != carrier_ref or (
+        receipt.revision != proof.get("revision") or receipt.content_sha256 != proof.get("content_sha256")
+        or _sha256(receipt.dependencies_json) != proof.get("dependencies_hash")
+    ):
+        raise ContentInputReceiptError("workspace_input_evidence_invalid", "The exact input receipt has changed or is unavailable.")
+    return {"status": "verified", "evidence_ref": f"workspace-input:{evidence_id}",
+        "content_input_receipt_id": str(receipt.id), "revision": receipt.revision}
 
 
 async def load_workspace_execution_evidence(db, *, agent_id, invocation, model_result, arguments, content_hash):

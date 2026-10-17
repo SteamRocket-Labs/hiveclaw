@@ -16,7 +16,7 @@ import anyio
 from anyio import to_process
 from loguru import logger
 
-from app.services.workspace_resource_authority import open_workspace_file
+from app.services.workspace_resource_authority import WorkspaceInputRead, open_workspace_file
 
 _T = TypeVar("_T")
 
@@ -62,6 +62,7 @@ class DocumentConversionRequest:
     max_output_chars: int | None = None
     force_refresh: bool = False
     expected_source_sha256: str | None = None
+    input_read: WorkspaceInputRead | None = None
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,8 @@ class DocumentConversionService:
             relative_path = source_path.relative_to(workspace_root).as_posix()
         with open_workspace_file(request.workspace_root, relative_path) as source:
             data = source.read()
+        if request.input_read is not None:
+            request.input_read.verify(data)
         if request.expected_source_sha256 is not None and _sha256_bytes(data) != request.expected_source_sha256:
             from app.services.workspace_resource_authority import WorkspaceAuthorityError
 

@@ -71,6 +71,8 @@ def _execution_evidence(trace: dict[str, Any]) -> dict[str, Any]:
         "policy_snapshot_hash": trace.get("policy_snapshot_hash"),
         "capability_snapshot_hash": trace.get("capability_snapshot_hash"),
         "effect_idempotency_key": trace.get("idempotency_key"),
+        "workspace_input_evidence": dict(trace["workspace_input_evidence"])
+        if isinstance(trace.get("workspace_input_evidence"), dict) else None,
     }
 
 

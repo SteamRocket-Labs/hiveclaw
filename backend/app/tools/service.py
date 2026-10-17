@@ -1321,11 +1321,15 @@ class ToolRuntimeService:
             workspace_mutating = context.agent_id is not None and is_workspace_mutating_tool(tool_name)
 
             async def _execute_backend() -> str | ToolContentEnvelope:
-                from app.services.content_input_receipts import authorize_workspace_receipt_read
+                from app.services.content_input_receipts import authorize_workspace_receipt_read, settle_workspace_receipt_read
 
-                receipt_block = await authorize_workspace_receipt_read(request)
-                if receipt_block is not None:
-                    return receipt_block
+                if trace_metadata_sink is not None:
+                    trace_metadata_sink.pop("workspace_input_evidence", None)
+                input_read = await authorize_workspace_receipt_read(request)
+                if isinstance(input_read, str):
+                    if trace_metadata_sink is not None:
+                        trace_metadata_sink["workspace_input_evidence"] = {"status": "unavailable"}
+                    return input_read
                 before_states: dict[str, dict[str, Any]] = {}
                 before_errors: dict[str, str] = {}
                 if workspace_mutating and trace_metadata_sink is not None:
@@ -1341,6 +1345,13 @@ class ToolRuntimeService:
                     surface="tool_result",
                     trace_metadata_sink=trace_metadata_sink,
                 )
+                if input_read is not None:
+                    receipt_block, input_evidence = await settle_workspace_receipt_read(
+                        request=request, read=input_read, tool_call_id=tool_call_id, result=value)
+                    if trace_metadata_sink is not None:
+                        trace_metadata_sink["workspace_input_evidence"] = input_evidence
+                    if receipt_block is not None:
+                        return receipt_block
                 if context.workspace_authority_scope is not None:
                     from app.services.workspace_resource_authority import record_workspace_tool_mutations
 

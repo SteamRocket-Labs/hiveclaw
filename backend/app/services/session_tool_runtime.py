@@ -881,6 +881,17 @@ async def complete_tool_invocation(
     knowledge_metadata = enrich_knowledge_event_metadata(
         event_type="tool_result", content={"name": invocation.tool_name, "result": content}, metadata={},
     )
+    if invocation.tool_name in {"read_file", "read_document", "fs_read"}:
+        from app.services.content_input_receipts import ContentInputReceiptError, load_workspace_input_evidence
+
+        try:
+            input_evidence = await load_workspace_input_evidence(db, agent_id=agent_id, invocation=invocation,
+                model_result=result, arguments=effective_payload, content_hash=content_hash,
+                capture=(execution_evidence or {}).get("workspace_input_evidence"))
+            if input_evidence is not None:
+                knowledge_metadata["workspace_input_receipt"] = input_evidence
+        except ContentInputReceiptError as exc:
+            knowledge_metadata["workspace_input_receipt"] = {"status": "unavailable", "reason_code": exc.code}
     if publication_errors:
         knowledge_metadata["artifact_delivery"] = {
             "status": "partial" if parts else publication_errors[0]["status"], "files": publication_errors,

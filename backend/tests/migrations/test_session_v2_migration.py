@@ -81,7 +81,7 @@ def test_session_v2_revision_snapshots_match_their_owned_live_contracts() -> Non
     from migration_snapshots.peer_a2a_session_authority_contract_0717 import (
         build_session_event_contract_function_sql as build_frozen_event_sql,
     )
-    from migration_snapshots.session_v2_admission_revision_contract_0716 import (
+    from migration_snapshots.delegation_session_rounds_1017 import (
         build_session_tenant_binding_function_sql as build_frozen_authority_sql,
     )
     from app.services.session_event_contract import (

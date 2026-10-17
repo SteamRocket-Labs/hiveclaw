@@ -1625,6 +1625,9 @@ async def test_async_delegation_terminal_learning_waits_for_committed_outbox(mon
     )
 
     monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke_agent)
+    async def attach_session_ports(_invocation, _request):
+        return SimpleNamespace(final_content=None)
+    monkeypatch.setattr("app.services.delegation_session_runtime.DelegationSessionRuntime.attach", attach_session_ports)
     monkeypatch.setattr("app.agents.orchestrator._ensure_peer_delegation_session", fake_ensure_session)
     monkeypatch.setattr("app.database.tenant_scoped_session", lambda *_args, **_kwargs: _TranscriptSession())
     monkeypatch.setattr("app.services.chat_transcript.append_session_event", fake_append_session_event)
@@ -3709,8 +3712,10 @@ async def test_delegate_async_persists_runtime_task_lifecycle(monkeypatch):
         assert tenant_id == target.tenant_id
         return target, model
 
-    async def fake_invoke(_invocation):
-        return SimpleNamespace(content="async result")
+    async def fake_delegate(request):
+        from app.agents.orchestrator import AgentDelegationResult
+        return AgentDelegationResult(content="async result", child_session_id=request.session_id,
+            trace_id=request.trace_id, depth=request.depth)
 
     async def fake_update_task(task_id_arg, **kwargs):
         updates.append((task_id_arg, kwargs))
@@ -3724,7 +3729,7 @@ async def test_delegate_async_persists_runtime_task_lifecycle(monkeypatch):
 
     monkeypatch.setattr("app.agents.orchestrator.get_runtime_task_record", fake_get_runtime_task_record)
     monkeypatch.setattr("app.agents.orchestrator._resolve_resumable_target_runtime", fake_resolve_target_runtime)
-    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke)
+    monkeypatch.setattr("app.agents.orchestrator._delegate", fake_delegate)
     monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_task)
     monkeypatch.setattr("app.agents.orchestrator.persist_invocation_span", fake_persist_span)
     monkeypatch.setattr("app.runtime.hooks.emit_hook", noop_hook)

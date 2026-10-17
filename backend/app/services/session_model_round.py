@@ -9,7 +9,7 @@ from dataclasses import asdict, is_dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -1461,8 +1461,9 @@ async def fail_model_request(
             .where(
                 RuntimeTask.id == run_id,
                 RuntimeTask.tenant_id == tenant_id,
-                RuntimeTask.parent_agent_id == agent_id,
-                RuntimeTask.parent_session_id == str(session_id),
+                or_(and_(RuntimeTask.parent_agent_id == agent_id, RuntimeTask.parent_session_id == str(session_id)),
+                    and_(RuntimeTask.task_type == "delegation", RuntimeTask.child_agent_id == agent_id,
+                        func.replace(func.lower(RuntimeTask.child_session_id), "-", "") == session_id.hex)),
             )
             .with_for_update()
         )
@@ -1570,7 +1571,8 @@ async def recover_sealed_model_rounds_once(
     committed = failed = 0
     for result in candidates:
         task = await db.get(RuntimeTask, result.run_id)
-        if task is None or task.parent_agent_id is None:
+        agent_id = (task.child_agent_id if task.task_type == "delegation" else task.parent_agent_id) if task else None
+        if agent_id is None:
             result.state = "needs_reconciliation"
             result.reconciliation_owner = f"{worker_id}:missing_runtime_task"
             result.version = int(result.version) + 1
@@ -1580,7 +1582,7 @@ async def recover_sealed_model_rounds_once(
             await commit_sealed_model_round(
                 db,
                 tenant_id=result.tenant_id,
-                agent_id=task.parent_agent_id,
+                agent_id=agent_id,
                 session_id=result.session_id,
                 run_id=result.run_id,
                 turn_id=result.turn_id,

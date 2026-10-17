@@ -1022,11 +1022,30 @@ _SESSION_V2_AUTHORITY_RULES: tuple[tuple[str, str], ...] = (
 SESSION_V2_AUTHORITY_TABLES = tuple(table_name for table_name, _rule in _SESSION_V2_AUTHORITY_RULES)
 
 
+_PARENT_RUN_BINDING = """            AND run.parent_session_id=NEW.session_id::text
+            AND run.parent_agent_id=bound_agent_id"""
+_PARENT_OR_DELEGATED_CHILD_RUN_BINDING = """            AND (
+              (run.parent_session_id=NEW.session_id::text AND run.parent_agent_id=bound_agent_id)
+              OR (run.task_type='delegation' AND replace(lower(run.child_session_id),'-','')=replace(NEW.session_id::text,'-','')
+                AND run.child_agent_id=bound_agent_id AND EXISTS (
+                  SELECT 1 FROM public.chat_sessions AS child
+                  WHERE child.id=NEW.session_id AND child.tenant_id=NEW.tenant_id
+                    AND child.agent_id=run.child_agent_id AND child.session_kind='delegation_run'
+                    AND child.runtime_task_id=run.id AND child.peer_agent_id=run.parent_agent_id
+                    AND child.user_id=run.root_user_id
+                    AND replace(child.parent_session_id::text,'-','')=replace(lower(run.parent_session_id),'-','')
+                ))
+            )"""
+
+
 def build_session_tenant_binding_function_sql() -> str:
     """Bind each Session V2 row and every typed reference to one authority frame."""
 
     branches = []
     for index, (table_name, condition) in enumerate(_SESSION_V2_AUTHORITY_RULES):
+        if table_name in {"session_turn_inputs", "session_model_results", "session_tool_invocations",
+            "session_round_obligations", "session_next_round_plans", "session_run_outcomes"}:
+            condition = condition.replace(_PARENT_RUN_BINDING, _PARENT_OR_DELEGATED_CHILD_RUN_BINDING, 1)
         keyword = "IF" if index == 0 else "ELSIF"
         branches.append(
             f"""          {keyword} TG_TABLE_NAME='{table_name}' THEN

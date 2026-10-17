@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from sqlalchemy import and_, case, exists, or_, select
+from sqlalchemy import and_, case, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.runtime_task import RuntimeTask
@@ -751,8 +751,9 @@ async def bind_admitted_inputs_to_round(
         .where(
             RuntimeTask.id == run_id,
             RuntimeTask.tenant_id == tenant_id,
-            RuntimeTask.parent_agent_id == agent_id,
-            RuntimeTask.parent_session_id == str(session_id),
+            or_(and_(RuntimeTask.parent_agent_id == agent_id, RuntimeTask.parent_session_id == str(session_id)),
+                and_(RuntimeTask.task_type == "delegation", RuntimeTask.child_agent_id == agent_id,
+                    func.replace(func.lower(RuntimeTask.child_session_id), "-", "") == session_id.hex)),
             RuntimeTask.status.in_(_PROVIDER_ROUND_BINDABLE_RUN_STATUSES),
         )
         .with_for_update()

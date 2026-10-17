@@ -19,7 +19,10 @@ from app.agents.coordination_wiring import gateway_scope
 from app.agents.delegation_token import DEFAULT_DELEGATION_TTL_SECONDS, issue_delegation_token
 from app.agents.tool_policies import DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
 from app.core.execution_context import A2A_TOOL_AUTHORITY_FRAME_SCHEMA, ExecutionPrincipal
-from app.kernel.contracts import ExecutionIdentityRef, TerminalReason
+from app.kernel.contracts import (
+    ExecutionIdentityRef, ProviderRequestNeedsReconciliation, SessionRestartRecoveryRequired,
+    TerminalReason, ToolLifecyclePersistenceError,
+)
 from app.runtime.ccplus_contracts import permission_profile_snapshot, permission_profile_snapshot_hash
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
@@ -2076,7 +2079,12 @@ async def _delegate_after_cycle_check(
             transcript_tenant_id,
         )
 
+    canonical_runtime = None
+
     async def _on_delegation_tool_call(data: dict[str, Any]) -> None:
+        if canonical_runtime is not None:
+            await canonical_runtime.tool_call(data)
+            return
         if not transcript_enabled:
             return
         from app.services.chat_artifact_delivery import tool_session_write_paths
@@ -2152,9 +2160,16 @@ async def _delegate_after_cycle_check(
     try:
         from app.services.a2a_workflow_artifacts import load_delegated_artifact_context
 
+        if is_delegation and request.runtime_task_id:
+            from app.services.delegation_session_runtime import DelegationSessionRuntime
+
+            if not transcript_enabled:
+                raise RuntimeError("delegation_session_runtime_scope_unavailable")
+            canonical_runtime = await DelegationSessionRuntime.attach(invocation, request)
         artifact_inputs = await load_delegated_artifact_context(invocation, request.conversation_messages)
         if artifact_inputs:
             invocation.system_prompt_suffix = "\n\n".join([invocation.system_prompt_suffix or "", artifact_inputs])
+            canonical_prepare = invocation.model_request_prepare
             async def revalidate_artifact_inputs(**_payload):
                 from app.kernel.contracts import ContextDependencyUnavailable
 
@@ -2163,6 +2178,8 @@ async def _delegate_after_cycle_check(
                     raise ContextDependencyUnavailable(dependency="a2a_artifact_inputs",
                         code="a2a_artifact_input_authority_changed",
                         user_message="Referenced artifact access changed. Retry this workflow step to reload authorized inputs.")
+                if canonical_prepare is not None:
+                    return await canonical_prepare(**_payload)
             invocation.model_request_prepare = revalidate_artifact_inputs
         result = await asyncio.wait_for(
             invoke_agent(invocation),
@@ -2213,6 +2230,8 @@ async def _delegate_after_cycle_check(
         )
     except Exception as exc:
         _delegation_status = "error"
+        reconciliation_required = isinstance(exc, (
+            ProviderRequestNeedsReconciliation, SessionRestartRecoveryRequired, ToolLifecyclePersistenceError))
         # Keep the full exception message available to the parent model; the stack remains server-side.
         logger.error(
             "[Orchestrator] Child agent %s failed (depth=%d, trace=%s): %s",
@@ -2231,9 +2250,15 @@ async def _delegate_after_cycle_check(
             trace_id=trace_id,
             depth=request.depth,
             failed=True,
+            terminal_reason="delegation_session_reconciliation_required" if reconciliation_required else None,
+            parts=({"type": "runtime_status", "status": "unknown", "retryable": False,
+                "recovery_action": "reconcile", "error_code": "delegation_session_reconciliation_required"},)
+                if reconciliation_required else (),
         )
 
-    delegation_result.transcript_committed = await _append_child_transcript_event(
+    canonical_final = (canonical_runtime is not None and not delegation_result.failed
+        and canonical_runtime.final_content == delegation_result.content)
+    delegation_result.transcript_committed = canonical_final or await _append_child_transcript_event(
         actor_type="assistant",
         event_type="assistant_message",
         role="assistant",
@@ -2380,7 +2405,7 @@ async def _ensure_peer_delegation_session(
                 tenant_id=tenant_id,
                 session_id=session_id,
                 run_id=runtime_task_id,
-                actor_type="user",
+                actor_type="agent",
                 event_type="user_message",
                 role="user",
                 user_id=request.owner_id,
@@ -2925,7 +2950,8 @@ def _spawn_async_delegation_task(
                 delegation_result.failed = True
             terminal_status = (
                 "needs_reconciliation"
-                if response_receipt_missing or transcript_commit_missing
+                if (response_receipt_missing or transcript_commit_missing
+                    or delegation_result.terminal_reason == "delegation_session_reconciliation_required")
                 else "failed"
                 if delegation_result.failed
                 else "completed"

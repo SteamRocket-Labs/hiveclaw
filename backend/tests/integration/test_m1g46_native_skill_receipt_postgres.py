@@ -16,7 +16,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
 
 
 async def _run_native_skill_task(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, *, load_skill_name="source-probe",
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, *, load_skill_name="source-probe", delegated=False, client_script=None, compact_session_ids=False,
 ):
     import app.database as database
     import app.runtime.invoker as invoker
@@ -66,11 +66,67 @@ async def _run_native_skill_task(
     monkeypatch.setattr(agent_tools, "_TOOL_RUNTIME_SERVICE", None)
     calls = [("load_skill", {"name": load_skill_name}),
         ("run_skill_tool", {"skill": "source-probe", "script": "scripts/probe.py"})]
-    client = ScriptedLLMClient([{"tool_calls": [{"id": f"native-{index}", "type": "function",
+    script = [{"tool_calls": [{"id": f"native-{index}", "type": "function",
         "function": {"name": tool, "arguments": json.dumps(args)}}], "finish_reason": "tool_calls"}
-        for index, (tool, args) in enumerate(calls)] + [{"content": "Generated native-report.md", "finish_reason": "stop"}])
+        for index, (tool, args) in enumerate(calls)] + [{"content": "Generated native-report.md", "finish_reason": "stop"}]
+    client = ScriptedLLMClient(script if client_script is None else client_script)
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
-    await asyncio.wait_for(web_chat_runtime.execute_web_chat_run(seed["run_id"]), timeout=90)
+    if delegated:
+        from datetime import datetime, timedelta, timezone
+        from uuid import uuid4
+        from app.agents import orchestrator
+        from app.core.execution_context import ExecutionPrincipal
+        from app.models.chat_session import ChatSession
+        from app.models.runtime_task import RuntimeTask
+        from app.kernel.contracts import ExecutionIdentityRef
+        from app.runtime.ccplus_contracts import permission_profile_snapshot
+        from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
+
+        parent_id, parent_session, child_session, run_id = (uuid4() for _ in range(4))
+        parent_key = parent_session.hex if compact_session_ids else str(parent_session)
+        child_key = child_session.hex if compact_session_ids else str(child_session)
+        async with owner_sessionmaker() as db:
+            child = await db.get(Agent, seed["agent_id"])
+            model = await db.get(LLMModel, child.primary_model_id)
+            db.add(Agent(id=parent_id, tenant_id=seed["tenant_id"], name="Delegating peer",
+                creator_id=seed["user_id"], owner_user_id=seed["user_id"], primary_model_id=model.id))
+            await db.flush()
+            db.add(ChatSession(id=parent_session, tenant_id=seed["tenant_id"], agent_id=parent_id,
+                user_id=seed["user_id"], source_channel="web"))
+            db.add(RuntimeTask(id=run_id, task_type="delegation", status="running", tenant_id=seed["tenant_id"],
+                parent_agent_id=parent_id, child_agent_id=child.id, parent_session_id=parent_key,
+                child_session_id=child_key, root_session_id=parent_key, root_user_id=seed["user_id"],
+                root_runtime_task_id=run_id, claimed_by="delegation-native-worker", claim_version=1,
+                claim_expires_at=datetime.now(timezone.utc) + timedelta(minutes=10), attempt_count=1, metadata_json={}))
+            await db.commit()
+        principal = ExecutionPrincipal(tenant_id=seed["tenant_id"], source_agent_id=parent_id,
+            requester_user_id=seed["user_id"], root_session_id=parent_key, root_runtime_task_id=str(run_id))
+        request = orchestrator.AgentDelegationRequest(target=child, target_model=model,
+            conversation_messages=[{"role": "user", "content": "Load source-probe and run scripts/probe.py."}],
+            owner_id=seed["user_id"], session_id=child_key, parent_agent_id=parent_id,
+            parent_session_id=parent_key, tenant_id=seed["tenant_id"], runtime_task_id=str(run_id),
+            root_runtime_task_id=str(run_id), trace_id="native-delegation",
+            execution_principal=principal.to_evidence(),
+            execution_identity=ExecutionIdentityRef(identity_type="delegated_user", identity_id=seed["user_id"]),
+            permission_profile=permission_profile_snapshot(None),
+            policy=orchestrator.OrchestrationPolicy(timeout_seconds=90))
+        request.execution_receipt = orchestrator._build_delegation_execution_receipt(request,
+            task_id=str(run_id), trace_id="native-delegation", status="running")
+        assert orchestrator._delegation_authority_receipt_failure(request, required=True) is None
+        async with owner_sessionmaker() as db:
+            task = await db.get(RuntimeTask, run_id)
+            task.metadata_json = orchestrator._build_runtime_task_metadata(request, task_id=str(run_id))
+            await db.commit()
+        token = set_runtime_task_fence(task_id=run_id, worker_id="delegation-native-worker", claim_version=1)
+        try:
+            seed["delegation_result"] = await orchestrator._delegate_after_cycle_check(request,
+                trace_id="native-delegation", child_session_id=child_key,
+                tool_profile=orchestrator._resolve_delegation_tool_profile("worker_safe"), is_delegation=True)
+        finally:
+            reset_runtime_task_fence(token)
+        seed.update(run_id=run_id, session_id=child_session, delegation_request=request)
+    else:
+        await asyncio.wait_for(web_chat_runtime.execute_web_chat_run(seed["run_id"]), timeout=90)
     return seed, client, bindings, imported
 
 

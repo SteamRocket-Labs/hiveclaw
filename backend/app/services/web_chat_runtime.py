@@ -1731,7 +1731,7 @@ async def _settle_committed_round_token_usage(
     from app.services.session_model_round import TOKEN_ACCOUNTING_VERSION
     from app.services.token_tracker import extract_usage_tokens, record_token_usage
 
-    agent_id = runtime_task.parent_agent_id
+    agent_id = runtime_task.child_agent_id if runtime_task.task_type == "delegation" else runtime_task.parent_agent_id
     if agent_id is None:
         return {
             "settled": 0,
@@ -1903,7 +1903,7 @@ async def _session_restart_resume_history(
         await commit_sealed_model_round(
             db,
             tenant_id=row.tenant_id,
-            agent_id=runtime_task.parent_agent_id,
+            agent_id=(runtime_task.child_agent_id if runtime_task.task_type == "delegation" else runtime_task.parent_agent_id),
             session_id=row.session_id,
             run_id=row.run_id,
             turn_id=row.turn_id,

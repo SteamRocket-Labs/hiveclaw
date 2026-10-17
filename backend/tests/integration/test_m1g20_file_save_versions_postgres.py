@@ -20,11 +20,13 @@ async def editor(read_granted_file, owner_sessionmaker, app_user_sessionmaker): 
     from app.core.security import get_current_user
     from app.database import get_db
     from app.models.security_audit import ResourcePermission
+    from app.services.content_input_receipts import record_workspace_receipt
 
     tenant, user, agent, _session, root, path, target, _scope, grant_id = read_granted_file
     target.write_bytes("Original 你好\r\nLast line\r\n".encode())
     async with owner_sessionmaker() as db:
         (await db.get(ResourcePermission, grant_id)).actions = ["read", "write"]
+        record_workspace_receipt(db, tenant, agent, path, hashlib.sha256(target.read_bytes()).hexdigest(), None)
         await db.commit()
 
     async def current_user():

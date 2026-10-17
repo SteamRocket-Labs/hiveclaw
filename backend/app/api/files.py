@@ -73,11 +73,14 @@ class FileContent(BaseModel):
     workspace_changed: bool | None = None
     snapshot_hash: str | None = None
     content_hash: str | None = None
+    content_revision: int | None = None
     authority_source: str | None = None
     operator_view: bool = False
 
 
 class FileWrite(BaseModel):
+    model_config = {"extra": "forbid"}
+
     content: str
     expected_current_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
@@ -198,6 +201,18 @@ def _require_workspace_file_path(path: str) -> str:
             detail={"code": "workspace_file_path_required", "message": "Choose one file below workspace/."},
         )
     return normalized
+
+
+def _content_receipt_http_error(exc) -> HTTPException:
+    return HTTPException(status_code=exc.status_code,
+        detail={"code": exc.code, "message": str(exc), "retryable": False})
+
+
+def _workspace_content_hash(agent_id: uuid.UUID, path: str) -> str:
+    from app.services.workspace_resource_authority import open_workspace_file
+
+    with open_workspace_file(_agent_base_dir(agent_id), path) as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
 
 
 def _workspace_authority_http_error(exc: Exception) -> HTTPException:
@@ -621,10 +636,26 @@ async def read_file(
         content, content_hash = await asyncio.to_thread(read_content)
     except WorkspaceAuthorityError as exc:
         raise _workspace_authority_http_error(exc) from exc
+    receipt = None
+    if resource_decision is not None:
+        from app.services.content_input_receipts import (
+            ContentInputReceiptError, latest_workspace_receipt, validate_browser_workspace_receipt,
+        )
+
+        receipt = await latest_workspace_receipt(db, _agent.tenant_id, agent_id, path)
+        if receipt is not None:
+            digest = content_hash
+            if digest is None:
+                digest = await asyncio.to_thread(_workspace_content_hash, agent_id, path)
+            try:
+                await validate_browser_workspace_receipt(db, _agent.tenant_id, current_user, receipt, digest)
+            except ContentInputReceiptError as exc:
+                raise _content_receipt_http_error(exc) from exc
     return FileContent(
         path=path,
         content=content,
         content_hash=content_hash,
+        content_revision=receipt.revision if receipt is not None else None,
         authority_source=resource_decision.authority_source if resource_decision else None,
         operator_view=bool(resource_decision and resource_decision.operator_view),
     )
@@ -1241,19 +1272,60 @@ async def write_file(
                 raise _workspace_authority_http_error(exc) from exc
         from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
 
+        previous_receipt = None
+        verified_base = None
+        receipt = None
+        if resource_decision is not None:
+            from app.services.content_input_receipts import (
+                ContentInputReceiptError, latest_workspace_receipt, lock_workspace_receipt_write,
+                record_workspace_receipt, validate_browser_workspace_receipt,
+            )
+
+            await lock_workspace_receipt_write(db, agent.tenant_id, agent_id, path)
+            previous_receipt = await latest_workspace_receipt(db, agent.tenant_id, agent_id, path)
+            if target.exists():
+                verified_base = await asyncio.to_thread(_workspace_content_hash, agent_id, path)
+                if previous_receipt is not None and previous_receipt.content_sha256 != verified_base:
+                    if resource_decision.manifest is not None:
+                        resource_decision.manifest.authority_state = "quarantined"
+                        await db.commit()
+                    raise _content_receipt_http_error(ContentInputReceiptError("workspace_content_unverified",
+                        "The file no longer matches its verified receipt. Preserve it and regenerate from authorized inputs."))
+                if data.expected_current_hash is not None and verified_base != data.expected_current_hash:
+                    raise HTTPException(status_code=409, detail={
+                        "code": "workspace_content_conflict", "retryable": False, "outcome": "conflict",
+                        "message": "The file changed since it was read. Keep your draft and read the current version before saving again.",
+                    })
+                try:
+                    await validate_browser_workspace_receipt(db, agent.tenant_id, current_user, previous_receipt, verified_base)
+                except ContentInputReceiptError as exc:
+                    raise _content_receipt_http_error(exc) from exc
+            elif data.expected_current_hash is not None:
+                raise HTTPException(status_code=409, detail={"code": "workspace_content_conflict", "retryable": False,
+                    "outcome": "conflict", "message": "The file is missing. Keep the draft and reconcile before saving again."})
+            elif previous_receipt is not None:
+                raise HTTPException(status_code=409, detail={"code": "workspace_content_unverified", "retryable": False,
+                    "message": "The previously receipted file is missing. Preserve its history and regenerate a new path."})
+
         raw = data.content.encode("utf-8")
         content_hash = hashlib.sha256(raw).hexdigest()
         write_started = False
 
         def save_content():
             nonlocal write_started
-            if data.expected_current_hash is None:
+            if resource_decision is not None and verified_base is None:
+                with open_workspace_file(_agent_base_dir(agent_id), path, mode="xb") as output:
+                    write_started = True
+                    output.write(raw)
+                return
+            expected = verified_base if resource_decision is not None else data.expected_current_hash
+            if expected is None:
                 with open_workspace_file(_agent_base_dir(agent_id), path, mode="wb") as output:
                     write_started = True
                     output.write(raw)
                 return
             with open_workspace_file(_agent_base_dir(agent_id), path, mode="r+b") as output:
-                if hashlib.file_digest(output, "sha256").hexdigest() != data.expected_current_hash:
+                if hashlib.file_digest(output, "sha256").hexdigest() != expected:
                     raise HTTPException(status_code=409, detail={
                         "code": "workspace_content_conflict",
                         "message": "The file changed since it was read. Keep your draft and read the current version before saving again.",
@@ -1267,6 +1339,11 @@ async def write_file(
 
         try:
             await asyncio.to_thread(save_content)
+        except HTTPException as exc:
+            if exc.status_code == 409 and verified_base is not None and resource_decision.manifest is not None:
+                resource_decision.manifest.authority_state = "quarantined"
+                await db.commit()
+            raise
         except WorkspaceAuthorityError as exc:
             if write_started:
                 raise HTTPException(status_code=503, detail={
@@ -1280,7 +1357,7 @@ async def write_file(
             from app.services.workspace_resource_authority import register_workspace_path
 
             try:
-                await register_workspace_path(
+                manifest = await register_workspace_path(
                     db,
                     tenant_id=agent.tenant_id,
                     agent_id=agent_id,
@@ -1291,6 +1368,16 @@ async def write_file(
                     content_hash=content_hash,
                     allow_owner_rebind=resource_decision.operator_view and resource_decision.manifest is None,
                 )
+                actual_hash = await asyncio.to_thread(_workspace_content_hash, agent_id, path)
+                if actual_hash != content_hash:
+                    manifest.authority_state = "quarantined"
+                    await db.commit()
+                    raise RuntimeError("workspace_content_changed_before_receipt")
+                if previous_receipt is not None:
+                    await validate_browser_workspace_receipt(
+                        db, agent.tenant_id, current_user, previous_receipt, verified_base,
+                    )
+                receipt = record_workspace_receipt(db, agent.tenant_id, agent_id, path, content_hash, previous_receipt)
                 await db.commit()
             except Exception as exc:
                 await db.rollback()
@@ -1305,6 +1392,7 @@ async def write_file(
         "status": "ok",
         "path": path,
         "content_hash": content_hash,
+        "content_revision": receipt.revision if receipt is not None else None,
         "authority_source": resource_decision.authority_source if resource_decision else None,
         "operator_view": bool(resource_decision and resource_decision.operator_view),
     }

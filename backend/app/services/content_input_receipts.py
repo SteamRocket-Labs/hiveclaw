@@ -104,3 +104,49 @@ def record_team_memory_receipt(db, tenant_id: uuid.UUID, workspace_key: str, ent
     db.add(ContentInputReceipt(tenant_id=tenant_id, carrier_kind="team_memory",
         carrier_ref=team_memory_ref(workspace_key, Path(entry.path).stem), revision=entry.revision,
         content_sha256=entry.checksum, dependencies_json=[dict(zip(("source_kind", "source_id", "source_version"), row)) for row in sorted(unique)]))
+
+
+def workspace_artifact_ref(agent_id: uuid.UUID, path: str) -> str:
+    from app.core.resource_authority import normalize_workspace_resource_path
+
+    normalized = normalize_workspace_resource_path(path)
+    if not normalized.startswith("workspace/"):
+        raise ContentInputReceiptError("workspace_content_unverified", "Only workspace files carry content receipts.")
+    return f"{agent_id}\n{normalized}"
+
+
+async def lock_workspace_receipt_write(db, tenant_id: uuid.UUID, agent_id: uuid.UUID, path: str) -> None:
+    await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"workspace-content:{tenant_id}:{workspace_artifact_ref(agent_id, path)}"})
+
+
+async def latest_workspace_receipt(db, tenant_id: uuid.UUID, agent_id: uuid.UUID, path: str):
+    return await db.scalar(select(ContentInputReceipt).where(
+        ContentInputReceipt.tenant_id == tenant_id, ContentInputReceipt.carrier_kind == "workspace_artifact",
+        ContentInputReceipt.carrier_ref == workspace_artifact_ref(agent_id, path),
+    ).order_by(ContentInputReceipt.revision.desc()).limit(1))
+
+
+async def validate_browser_workspace_receipt(db, tenant_id: uuid.UUID, user, receipt, content_sha256: str) -> None:
+    if receipt is None or receipt.content_sha256 != content_sha256:
+        raise ContentInputReceiptError("workspace_content_unverified",
+            "The file has no matching verified content receipt. Preserve it and regenerate a new file from authorized inputs.")
+    dependencies = receipt.dependencies_json
+    if not isinstance(dependencies, list) or any(
+        not isinstance(row, dict) or set(row) != {"source_kind", "source_id", "source_version"}
+        or any(not isinstance(value, str) or not value for value in row.values()) for row in dependencies
+    ):
+        raise ContentInputReceiptError("workspace_content_unverified", "The file's input receipt is invalid.")
+    await validate_browser_input_dependencies(db, tenant_id, user, dependencies)
+
+
+def record_workspace_receipt(db, tenant_id: uuid.UUID, agent_id: uuid.UUID, path: str, content_sha256: str, previous):
+    # Authenticated human input adds no authority to the previous source audience.
+    dependencies = previous.dependencies_json if previous is not None else []
+    unique = sorted({(row["source_kind"], row["source_id"], row["source_version"]) for row in dependencies})
+    receipt = ContentInputReceipt(tenant_id=tenant_id, carrier_kind="workspace_artifact",
+        carrier_ref=workspace_artifact_ref(agent_id, path), revision=previous.revision + 1 if previous else 1,
+        content_sha256=content_sha256,
+        dependencies_json=[dict(zip(("source_kind", "source_id", "source_version"), row)) for row in unique])
+    db.add(receipt)
+    return receipt

@@ -27,6 +27,7 @@ async def delivered(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_
     from app.models.audit import ChatMessage
     from app.models.user import User
     from app.services.chat_artifact_delivery import create_chat_artifacts_for_message
+    from app.services.workspace_resource_authority import register_workspace_path
 
     tenant, user_id, agent, session, run = await _seed_session(owner_sessionmaker, active_run=True)
     root = tmp_path / str(agent)
@@ -37,6 +38,9 @@ async def delivered(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_
     async with owner_sessionmaker() as db:
         user = await db.get(User, user_id)
         user.role = "member"
+        await register_workspace_path(db, tenant_id=tenant, agent_id=agent, path="workspace/report.txt",
+            owner_user_id=user_id, root_session_id=session, source="fixture",
+            content_hash=hashlib.sha256(target.read_bytes()).hexdigest())
         await db.commit()
 
     async def publish():

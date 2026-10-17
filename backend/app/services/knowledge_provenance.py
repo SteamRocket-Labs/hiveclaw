@@ -245,6 +245,7 @@ def build_knowledge_provenance(tool_name: str, raw_result: Any) -> dict[str, Any
     if payload is None:
         return None
 
+    metadata_only = False
     ontology_rows = ontology_result_source_rows(normalized_tool_name, payload)
     if ontology_rows is not None:
         rows, coverage_complete = ontology_rows
@@ -253,6 +254,11 @@ def build_knowledge_provenance(tool_name: str, raw_result: Any) -> dict[str, Any
         raw_rows = payload.get("results" if is_search else "segments")
         rows = list(raw_rows) if isinstance(raw_rows, list) else []
         coverage_complete = True
+        if not rows and normalized_tool_name in {"read_personal_kb", "read_company_kb"} and (
+            payload.get("status") == "ok" and payload.get("document_id") and not payload.get("credential_reference")
+        ):
+            metadata_only = True
+            rows = [{"result_kind": "knowledge_document_metadata"}]
         if not rows and payload.get("credential_reference"):
             rows = [
                 {
@@ -343,7 +349,7 @@ def build_knowledge_provenance(tool_name: str, raw_result: Any) -> dict[str, Any
         "authority": dict(authority) if authority is not None else None,
         "sources": sources,
         "coverage": {
-            "result_count": len(rows),
+            "result_count": 0 if metadata_only else len(rows),
             "source_count": len(sources),
             "complete": coverage_complete,
         },

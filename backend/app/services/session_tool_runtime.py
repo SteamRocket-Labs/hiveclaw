@@ -577,6 +577,7 @@ async def complete_tool_invocation(
     execution_evidence: Mapping[str, Any] | None,
     model_visible_content: str | None = None,
     effective_arguments: Mapping[str, Any] | None = None,
+    execution_artifacts: list[dict[str, Any]] | None = None,
     parts: list[dict[str, Any]] | None = None,
     message_id: uuid.UUID | None = None,
     permission_resolution: Mapping[str, Any] | None = None,
@@ -800,7 +801,8 @@ async def complete_tool_invocation(
 
     content = str(provider_result_content)
     content_hash = _sha256(content)
-    if outcome == "success" and not parts and message_id is None:
+    publication_errors: list[dict[str, Any]] = []
+    if outcome in {"success", "failed"} and not parts and message_id is None:
         from pathlib import Path
 
         from app.config import get_settings
@@ -808,7 +810,10 @@ async def complete_tool_invocation(
         from app.services.chat_artifact_delivery import create_chat_artifacts_for_message, tool_session_write_paths
         from app.services.web_chat_runtime import _ensure_tool_result_artifact_message, _tool_result_anchor_content
 
-        paths = tool_session_write_paths(invocation.tool_name, effective_payload)
+        paths = tool_session_write_paths(
+            invocation.tool_name if outcome == "success" else "",
+            effective_payload if outcome == "success" else {}, artifacts=execution_artifacts,
+        )
         if paths:
             session = await db.get(ChatSession, session_id)
             if session is None or session.tenant_id != tenant_id or session.agent_id != agent_id:
@@ -826,8 +831,7 @@ async def complete_tool_invocation(
                     {"name": invocation.tool_name, "tool_call_id": invocation.provider_tool_use_id}, content
                 ),
             )
-            # Approved continuations settle here without the web callback.
-            # Snapshot their successful writes before committing the result fence.
+            # Failed commands may still return captured artifacts; denied effects cannot.
             parts = await create_chat_artifacts_for_message(
                 db=db,
                 agent_id=agent_id,
@@ -838,6 +842,8 @@ async def complete_tool_invocation(
                 paths=paths,
                 workspace_root=Path(get_settings().AGENT_DATA_DIR) / str(agent_id),
                 source="workspace_write",
+                tool_call_id=invocation.provider_tool_use_id,
+                publication_errors=publication_errors,
             )
             if not parts:
                 await db.delete(anchor)
@@ -851,6 +857,10 @@ async def complete_tool_invocation(
     knowledge_metadata = enrich_knowledge_event_metadata(
         event_type="tool_result", content={"name": invocation.tool_name, "result": content}, metadata={},
     )
+    if publication_errors:
+        knowledge_metadata["artifact_delivery"] = {
+            "status": "partial" if parts else publication_errors[0]["status"], "files": publication_errors,
+        }
     drafts: list[SessionEventDraft] = []
     if enterprise_approval is not None and invocation.permission_state == "waiting":
         receipt_ref = f"enterprise-approval:{enterprise_approval.id}:handoff"

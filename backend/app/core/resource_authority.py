@@ -240,6 +240,22 @@ async def authorize_resource_action(
     )
     if str(agent.id) != str(agent_id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent authority context mismatch")
+    if resource_kind == "chat_artifact" and action in {"read", "download", "deliver"}:
+        from app.models.chat_artifact import ChatArtifact
+        from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
+
+        artifact = await db.get(ChatArtifact, resource_id)
+        if artifact is None or artifact.agent_id != agent_id or artifact.tenant_id != agent.tenant_id:
+            raise HTTPException(status_code=404, detail="Artifact not found")
+        try:
+            # A snapshot or a session owner cannot enlarge its source audience.
+            await authorize_workspace_path(
+                db, user, agent_id=agent_id, path=artifact.path, action="read", path_exists=True,
+                allow_manager_override=allow_manager_override, manager_override_reason=manager_override_reason,
+                agent_access=(agent, access_level),
+            )
+        except WorkspaceAuthorityError as exc:
+            raise HTTPException(status_code=403, detail={"code": exc.code, "message": exc.message}) from exc
     state = str(authority_state or QUARANTINED_AUTHORITY_STATE).strip().lower()
 
     if state == OWNED_AUTHORITY_STATE:

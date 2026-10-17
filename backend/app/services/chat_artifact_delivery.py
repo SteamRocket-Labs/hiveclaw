@@ -12,6 +12,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -909,24 +910,36 @@ async def create_chat_artifacts_for_message(
     rebind_existing_to_message: bool = False,
     owner_user_id: uuid.UUID | None = None,
     root_session_id: uuid.UUID | None = None,
+    publication_errors: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Create artifact rows for safe candidate paths and return message parts."""
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
+
     parts: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     session_uuid = uuid.UUID(str(session_id))
     runtime_uuid = uuid.UUID(str(runtime_task_id)) if runtime_task_id else None
-    if isinstance(db, AsyncSession) and (owner_user_id is None or root_session_id is None):
+    authority_user = None
+    if isinstance(db, AsyncSession):
+        from app.models.user import User
+
         authority_session = (
             await db.execute(
                 select(ChatSession).where(
                     ChatSession.id == session_uuid,
                     ChatSession.agent_id == agent_id,
+                    ChatSession.tenant_id == tenant_id,
                 )
             )
         ).scalar_one_or_none()
-        if authority_session is not None:
-            owner_user_id = owner_user_id or authority_session.user_id
-            root_session_id = root_session_id or authority_session.root_session_id or authority_session.id
+        owner_user_id = authority_session.user_id if authority_session is not None else None
+        root_session_id = (
+            authority_session.root_session_id or authority_session.id if authority_session is not None else None
+        )
+        if owner_user_id is not None:
+            authority_user = await db.get(User, owner_user_id)
+            if authority_user is not None and authority_user.tenant_id != tenant_id:
+                authority_user = None
     authority_state = "owned" if owner_user_id is not None else "quarantined"
 
     async def _register_path(candidate: dict[str, Any]) -> None:
@@ -947,21 +960,51 @@ async def create_chat_artifacts_for_message(
         )
 
     for path in paths:
-        candidate = build_artifact_candidate(
-            agent_id=agent_id,
-            session_id=session_uuid,
-            runtime_task_id=runtime_uuid,
-            path=path,
-            workspace_root=workspace_root,
-            source=source,
-            action=action,
-            tool_call_id=tool_call_id,
-            diff_summary=diff_summary,
-            owner_agent_id=owner_agent_id,
-            source_agent_id=source_agent_id,
-            download_agent_id=download_agent_id,
-            delivery_agent_id=delivery_agent_id,
-        )
+        if _safe_workspace_relative_path(path) is None:
+            continue
+        if isinstance(db, AsyncSession):
+            try:
+                if authority_user is None:
+                    raise WorkspaceAuthorityError(
+                        "artifact_source_principal_required", "Artifact publication requires the session's source reader.",
+                    )
+                await authorize_workspace_path(
+                    db, authority_user, agent_id=agent_id, path=path, action="read",
+                    path_exists=True, session_id=session_uuid,
+                )
+            except (WorkspaceAuthorityError, HTTPException) as exc:
+                if publication_errors is not None:
+                    denied = not isinstance(exc, HTTPException) or exc.status_code in {401, 403, 404}
+                    publication_errors.append({
+                        "path": path, "status": "denied" if denied else "unavailable",
+                        "reason_code": exc.code if isinstance(exc, WorkspaceAuthorityError) else "artifact_source_access_unavailable",
+                        "retryable": False, "recovery_action": "request_source_read_access" if denied else "retry_artifact_publication",
+                    })
+                continue
+        try:
+            candidate = build_artifact_candidate(
+                agent_id=agent_id,
+                session_id=session_uuid,
+                runtime_task_id=runtime_uuid,
+                path=path,
+                workspace_root=workspace_root,
+                source=source,
+                action=action,
+                tool_call_id=tool_call_id,
+                diff_summary=diff_summary,
+                owner_agent_id=owner_agent_id,
+                source_agent_id=source_agent_id,
+                download_agent_id=download_agent_id,
+                delivery_agent_id=delivery_agent_id,
+            )
+        except (OSError, WorkspaceAuthorityError):
+            if publication_errors is None:
+                raise
+            publication_errors.append({
+                "path": path, "status": "unknown", "reason_code": "artifact_capture_failed",
+                "retryable": False, "recovery_action": "reconcile_artifact_publication",
+            })
+            continue
         if not candidate:
             continue
         dedupe_key = (candidate["path"], candidate["snapshot_hash"])

@@ -1391,12 +1391,18 @@ def _knowledge_tool_replay_projection(*, tool_name: str, args: dict[str, Any], r
         except (TypeError, ValueError):
             payload = {}
 
+    metadata_only = False
     ontology_rows = ontology_result_source_rows(tool_name, payload)
     if ontology_rows is not None:
         rows = ontology_rows[0]
     else:
         result_rows = payload.get("results") if tool_name.startswith("search_") else payload.get("segments")
         rows = result_rows if isinstance(result_rows, list) else []
+        if not rows and tool_name in {"read_personal_kb", "read_company_kb"} and (
+            payload.get("status") == "ok" and payload.get("document_id") and not payload.get("credential_reference")
+        ):
+            metadata_only = True
+            rows = [{}]
     default_document_id = str(payload.get("document_id") or "").strip()
     default_publication_id = str(payload.get("publication_id") or "").strip()
     default_source_version = str(payload.get("source_version") or "").strip()
@@ -1414,7 +1420,7 @@ def _knowledge_tool_replay_projection(*, tool_name: str, args: dict[str, Any], r
             "object_id": str(row.get("object_id") or "").strip(),
             "assertion_id": str(row.get("assertion_id") or "").strip(),
             "link_id": str(row.get("link_id") or "").strip(),
-            "source_ref": str(row.get("source_ref") or "").strip(),
+            "source_ref": str(row.get("source_ref") or payload.get("source_ref") or "").strip(),
         }
         if scope != "company":
             reference.pop("publication_id", None)
@@ -1447,7 +1453,7 @@ def _knowledge_tool_replay_projection(*, tool_name: str, args: dict[str, Any], r
         projection["query"] = query
     projection.update(
         {
-            "result_count": len(rows),
+            "result_count": 0 if metadata_only else len(rows),
             "references": references,
             "content_omitted": True,
             "instruction": (
@@ -4704,42 +4710,6 @@ async def _persist_tool_call(
                         )
                     if provider_content is None:
                         provider_content = str(raw_result)
-                    artifact_parts: list[dict[str, Any]] = []
-                    artifact_message_id: uuid.UUID | None = None
-                    if invocation.result_event_id is None:
-                        artifact_paths = tool_session_write_paths(
-                            str(payload.get("name") or ""),
-                            payload.get("args") if isinstance(payload.get("args"), dict) else {},
-                            artifacts=(
-                                payload.get("artifacts") if isinstance(payload.get("artifacts"), list) else None
-                            ),
-                        )
-                        if artifact_paths:
-                            artifact_message_id = uuid.uuid5(invocation.id, "tool-result-artifact-message")
-                            artifact_message = await _ensure_tool_result_artifact_message(
-                                db,
-                                message_id=artifact_message_id,
-                                agent_id=agent_id,
-                                tenant_id=tenant_id,
-                                session_id=session_uuid,
-                                user_id=user_id,
-                                external_principal_id=external_principal_id,
-                                content=_tool_result_anchor_content(payload, provider_content),
-                            )
-                            artifact_parts = await create_chat_artifacts_for_message(
-                                db=db,
-                                agent_id=agent_id,
-                                tenant_id=tenant_id,
-                                session_id=session_id,
-                                message_id=artifact_message_id,
-                                runtime_task_id=run_id,
-                                paths=artifact_paths,
-                                workspace_root=Path(get_settings().AGENT_DATA_DIR) / str(agent_id),
-                                source="workspace_write",
-                            )
-                            if not artifact_parts:
-                                await db.delete(artifact_message)
-                                artifact_message_id = None
                     events = await complete_tool_invocation(
                         db,
                         tenant_id=tenant_id,
@@ -4760,8 +4730,7 @@ async def _persist_tool_call(
                             else None
                         ),
                         effective_arguments=_tool_settlement_arguments(payload),
-                        parts=artifact_parts,
-                        message_id=artifact_message_id,
+                        execution_artifacts=payload.get("artifacts") if isinstance(payload.get("artifacts"), list) else None,
                     )
                 else:
                     raise RuntimeError("unsupported canonical tool lifecycle")

@@ -127,6 +127,7 @@ async def save_bridge_upload(
         agent_id=context.agent_id,
         tenant_id=context.tenant_id,
         user_id=context.user_id,
+        db=db,
     )
     if context.agent_id is None:
         return {

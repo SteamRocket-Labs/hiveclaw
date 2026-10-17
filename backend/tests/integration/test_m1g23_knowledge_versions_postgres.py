@@ -11,9 +11,9 @@ from tests.services.test_session_input_control_v2 import _seed_session
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
-@pytest.mark.parametrize("tool", ["read_personal_kb", "search_personal_kb"])
+@pytest.mark.parametrize("tool, metadata_only", [("read_personal_kb", False), ("search_personal_kb", False), ("read_personal_kb", True)])
 async def test_real_knowledge_tool_version_survives_native_settlement_and_replay(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, tool,
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, tool, metadata_only,
 ):
     from app.config import get_settings
     from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -43,6 +43,8 @@ async def test_real_knowledge_tool_version_survives_native_settlement_and_replay
         version = document.canonical_md_sha256
         assert version and version != document.source_sha256
         arguments = {"document_id": str(document.id)} if tool == "read_personal_kb" else {"query": "VERSIONED_PRIVATE_INPUT"}
+        if metadata_only:
+            arguments["segment_ids"] = [str(uuid.uuid4())]
         turn, call = f"turn-{run.hex}", f"knowledge-{run.hex}"
         tools = [{"type": "function", "function": {"name": tool}}]
         messages = [{"role": "user", "content": "Read the authorized input"}]
@@ -66,7 +68,8 @@ async def test_real_knowledge_tool_version_survives_native_settlement_and_replay
         assert payload["status"] == "ok", payload
         seen_versions = [row["source_version"] for row in payload["results"]] if tool.startswith("search_") else [payload["source_version"]]
         assert seen_versions and set(seen_versions) == {version}
-        assert "VERSIONED_PRIVATE_INPUT" in str(raw)
+        assert ("VERSIONED_PRIVATE_INPUT" in str(raw)) is not metadata_only
+        assert not metadata_only or payload["title"] == "Versioned knowledge"
         document.canonical_md_sha256 = "f" * 64
         await db.commit()
         replay = _knowledge_tool_replay_projection(tool_name=tool, args=arguments, raw_result=str(raw))
@@ -84,6 +87,9 @@ async def test_real_knowledge_tool_version_survives_native_settlement_and_replay
         assert {source["source_version"] for source in provenance["sources"]} == {version}
         assert provenance["tool_name"] == tool and provenance["max_sensitivity"] == "PL3_sensitive"
         assert json.loads(event.metadata_json["v2_payload"]["model_visible_content"])["references"][0]["source_version"] == version
+        if metadata_only:
+            assert provenance["coverage"]["result_count"] == 0 and provenance["coverage"]["source_count"] == 1
+            assert json.loads(event.metadata_json["v2_payload"]["model_visible_content"])["result_count"] == 0
         aggregate = await load_transcript_knowledge_provenance(db, tenant_id=tenant, agent_id=agent,
             session_id=session, run_id=run)
         assert aggregate and aggregate["source_event_refs"] == [f"transcript://event/{event_id}"]

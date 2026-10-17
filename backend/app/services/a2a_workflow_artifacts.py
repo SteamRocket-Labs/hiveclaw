@@ -101,6 +101,21 @@ async def load_artifact_packet(
         if not output.required and reference is None:
             return None
         raise A2AArtifactUnavailable(f"required_artifact_missing:{node_id}.{output.name}")
+    from fastapi import HTTPException
+    from app.core.resource_authority import authorize_resource_action
+    from app.models.user import User
+
+    user = await db.get(User, requester_user_id)
+    if user is None or user.tenant_id != tenant_id:
+        raise A2AArtifactUnavailable("artifact_source_principal_unavailable")
+    try:
+        await authorize_resource_action(
+            db, user, agent_id=producer_agent_id, resource_kind="chat_artifact", resource_id=artifact.id,
+            action="read", owner_user_id=artifact.owner_user_id, root_session_id=artifact.root_session_id,
+            authority_state=artifact.authority_state,
+        )
+    except HTTPException as exc:
+        raise A2AArtifactUnavailable("artifact_source_access_denied") from exc
     content, content_hash = read_verified_artifact(
         artifact,
         Path(WORKSPACE_ROOT) / str(producer_agent_id),

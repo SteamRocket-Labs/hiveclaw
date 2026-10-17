@@ -766,6 +766,7 @@ async def resolve_session_tool_permission(
                 invocation_id=invocation.id,
                 provider_result_content=_result_text(tool_result),
                 execution_evidence=evidence,
+                execution_artifacts=list(getattr(tool_result, "artifacts", ()) or ()),
                 effective_arguments=(
                     evidence.get("effective_arguments")
                     if isinstance(evidence.get("effective_arguments"), dict)

@@ -490,7 +490,7 @@ async def test_terminal_delivery_rebinds_existing_tool_artifact_to_final_message
 
 @pytest.mark.usefixtures("migrated_pg_url")
 @pytest.mark.asyncio
-async def test_chat_artifact_delivery_real_pg_concurrent_idempotency(owner_sessionmaker, tmp_path):
+async def test_chat_artifact_delivery_real_pg_concurrent_idempotency(owner_sessionmaker, tmp_path, monkeypatch):
     from app.database import tenant_scoped_session
     from app.models.agent import Agent
     from app.models.audit import ChatMessage
@@ -509,7 +509,11 @@ async def test_chat_artifact_delivery_real_pg_concurrent_idempotency(owner_sessi
     session_id = uuid4()
     runtime_task_id = uuid4()
     message_ids = [uuid4(), uuid4()]
-    workspace = tmp_path / "agent"
+    from app.config import get_settings
+    from app.services.workspace_resource_authority import register_workspace_path
+
+    monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path))
+    workspace = tmp_path / str(agent_id)
     report = workspace / "workspace" / "report.md"
     report.parent.mkdir(parents=True)
     report.write_text("# Concurrent Report\n", encoding="utf-8")
@@ -575,6 +579,11 @@ async def test_chat_artifact_delivery_real_pg_concurrent_idempotency(owner_sessi
                     conversation_id=str(session_id),
                 )
             )
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as db:
+        await register_workspace_path(db, tenant_id=tenant_id, agent_id=agent_id, path="workspace/report.md",
+            owner_user_id=user_id, root_session_id=session_id, source="fixture",
+            content_hash=hashlib.sha256(report.read_bytes()).hexdigest())
 
     async def deliver(message_id):
         async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as db:

@@ -119,7 +119,7 @@ async def _prepare_live_round(
     return run_id, provider_request_id
 
 
-def _execution_evidence(args_hash: str, provider_tool_use_id: str) -> dict:
+def _execution_evidence(args_hash: str, provider_tool_use_id: str, frame_status="completed") -> dict:
     return {
         "schema": "hive.tool_execution_evidence.v1",
         "status": "settled",
@@ -132,7 +132,7 @@ def _execution_evidence(args_hash: str, provider_tool_use_id: str) -> dict:
             "policy_snapshot_hash": "a" * 64,
             "capability_snapshot_hash": "b" * 64,
         },
-        "execution_frame": {"status": "completed", "output_hash": "c" * 64},
+        "execution_frame": {"status": frame_status, "output_hash": "c" * 64},
     }
 
 
@@ -163,13 +163,22 @@ async def _start_effect(
     provider_request_id,
     provider_tool_use_id,
     path,
+    tool_name="write_file",
 ):
     from app.models.session_v2 import SessionToolInvocation
     from app.services import web_chat_runtime as runtime
+    from app.services.workspace_resource_authority import register_workspace_path
+
+    async with owner_sessionmaker() as db:
+        await register_workspace_path(db, tenant_id=tenant_id, agent_id=agent_id, path=path,
+            owner_user_id=user_id, root_session_id=session_id, source="fixture")
+        await db.commit()
 
     base = {
-        "name": "write_file",
-        "args": {"path": path, "content": "production-shaped artifact\n"},
+        "name": tool_name,
+        "args": ({"path": path, "content": "production-shaped artifact\n"}
+            if tool_name == "write_file" else {"language": "python", "code": "print(1)"}),
+        "artifacts": [{"path": path}] if tool_name == "execute_code" else [],
         "tool_call_id": provider_tool_use_id,
         "runtime_task_id": str(run_id),
         "provider_request_id": provider_request_id,
@@ -200,10 +209,13 @@ async def _start_effect(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("approved_continuation", [False, True])
+@pytest.mark.parametrize("tool_name,frame_status", [("write_file", "completed"), ("execute_code", "completed"), ("execute_code", "failed")])
 async def test_write_file_artifact_and_v2_tool_result_commit_against_real_fk(
     owner_sessionmaker,
     monkeypatch,
     approved_continuation,
+    tool_name,
+    frame_status,
 ) -> None:
     from app.config import get_settings
     from app.models.audit import ChatMessage
@@ -235,7 +247,7 @@ async def test_write_file_artifact_and_v2_tool_result_commit_against_real_fk(
         run_id=run_id,
         provider_request_id=provider_request_id,
         provider_tool_use_id=provider_tool_use_id,
-        path=rel_path,
+        path=rel_path, tool_name=tool_name,
     )
 
     if approved_continuation:
@@ -249,8 +261,9 @@ async def test_write_file_artifact_and_v2_tool_result_commit_against_real_fk(
                 session_id=session_id,
                 invocation_id=invocation_id,
                 provider_result_content="Wrote workspace/report.md",
-                execution_evidence=_execution_evidence(args_hash, provider_tool_use_id),
+                execution_evidence=_execution_evidence(args_hash, provider_tool_use_id, frame_status),
                 effective_arguments=base["args"],
+                execution_artifacts=base["artifacts"],
             )
             await db.commit()
 
@@ -262,7 +275,7 @@ async def test_write_file_artifact_and_v2_tool_result_commit_against_real_fk(
             **base,
             "status": "done",
             "result": "Wrote workspace/report.md",
-            "tool_execution_evidence": _execution_evidence(args_hash, provider_tool_use_id),
+            "tool_execution_evidence": _execution_evidence(args_hash, provider_tool_use_id, frame_status),
         },
     )
     target.unlink()
@@ -274,7 +287,7 @@ async def test_write_file_artifact_and_v2_tool_result_commit_against_real_fk(
             **base,
             "status": "done",
             "result": "Wrote workspace/report.md",
-            "tool_execution_evidence": _execution_evidence(args_hash, provider_tool_use_id),
+            "tool_execution_evidence": _execution_evidence(args_hash, provider_tool_use_id, frame_status),
         },
     )
 
@@ -314,7 +327,7 @@ async def test_write_file_artifact_and_v2_tool_result_commit_against_real_fk(
     assert anchor.role == "tool_call"
     assert anchor.conversation_id == str(session_id)
     assert artifact is not None
-    assert invocation.effect_state == "effect_committed"
+    assert invocation.effect_state == ("effect_committed" if frame_status == "completed" else "failed")
     assert invocation.result_event_id == result_event.id
     assert result_event.message_id == anchor_id
     assert len(result_event.parts_json) == 1
@@ -363,7 +376,7 @@ async def test_artifact_settlement_failure_quarantines_effect_for_reconciliation
     async def fail_artifact_insert(**_kwargs):
         raise RuntimeError("simulated artifact settlement failure")
 
-    monkeypatch.setattr(runtime, "create_chat_artifacts_for_message", fail_artifact_insert)
+    monkeypatch.setattr("app.services.chat_artifact_delivery.create_chat_artifacts_for_message", fail_artifact_insert)
     with pytest.raises(RuntimeError, match="simulated artifact settlement failure"):
         await runtime._persist_tool_call(
             agent_id=agent_id,
@@ -418,6 +431,12 @@ async def test_legacy_tool_result_materializes_artifact_owner_before_fk_insert(
     target = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / rel_path
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("legacy projection artifact\n", encoding="utf-8")
+    from app.services.workspace_resource_authority import register_workspace_path
+
+    async with owner_sessionmaker() as db:
+        await register_workspace_path(db, tenant_id=tenant_id, agent_id=agent_id, path=rel_path,
+            owner_user_id=user_id, root_session_id=session_id, source="fixture")
+        await db.commit()
 
     result = await runtime._persist_legacy_tool_call(
         agent_id=agent_id,

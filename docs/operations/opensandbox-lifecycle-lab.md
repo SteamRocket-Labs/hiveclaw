@@ -37,6 +37,26 @@ Also configure the pinned `runtime.execd_image` and `egress.image`, an isolated
 store, and an explicit host-path allowlist. This fragment is not a complete server
 configuration. See the [versioned configuration reference](https://github.com/opensandbox-group/OpenSandbox/blob/release-1.1.1/server/configuration.md).
 
+With the dedicated virtual environment activated, explicitly exclude loopback
+destinations from proxy discovery in the lifecycle server process:
+
+```sh
+opensandbox_lab_no_proxy="${no_proxy:-${NO_PROXY:-}}"
+opensandbox_lab_no_proxy="${opensandbox_lab_no_proxy:+${opensandbox_lab_no_proxy},}127.0.0.1,localhost,::1"
+no_proxy="$opensandbox_lab_no_proxy" NO_PROXY="$opensandbox_lab_no_proxy" \
+  opensandbox-server --config ./sandbox.toml
+```
+
+Keep any deployment-required exclusions. Configure any required outbound proxy
+explicitly in the trusted server environment; this setting does not change the
+workload's network policy or the machine's system settings. On macOS,
+[Python proxy discovery](https://docs.python.org/3.12/library/urllib.request.html#urllib.request.getproxies)
+can use System Configuration even when no proxy environment variables are set.
+The SDK's explicit transport and the server's default HTTP client can therefore
+take different routes: a working direct sandbox endpoint does not establish a
+working server proxy. Restart the owned server with the intended routing settings
+and verify the actual proxy execution path; do not relax workload egress policy.
+
 Set `HIVE_OPENSANDBOX_PROBE_API_KEY` in the trusted operator environment. Run the
 probe with the dedicated environment's Python:
 

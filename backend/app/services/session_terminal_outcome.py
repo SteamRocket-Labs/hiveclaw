@@ -30,6 +30,36 @@ class TerminalOutcomeNeedsReconciliation(RuntimeError):
     """A terminal transaction has an ambiguous durable outcome."""
 
 
+class TerminalReadArtifactSelectionNeedsReconciliation(TerminalOutcomeNeedsReconciliation):
+    """A sealed file read needs current source access before artifact publication."""
+
+
+def _read_selection_retry(task: RuntimeTask, result_id: uuid.UUID) -> bool:
+    hold = (task.metadata_json or {}).get("session_v2_reconciliation") or {}
+    return (task.status == "needs_reconciliation" and hold.get("reason") == "terminal_artifact_selection"
+        and hold.get("result_id") == str(result_id))
+
+
+async def _recover_read_artifact_selection(db: AsyncSession, *, task: RuntimeTask, result: SessionModelResult) -> None:
+    from app.services.chat_artifact_delivery import materialize_declared_read_artifacts
+    from app.services.web_chat_runtime import _declared_terminal_artifact_paths, _is_user_visible_terminal_artifact_path
+
+    metadata = dict(task.metadata_json or {})
+    if metadata.get("artifact_selection_result_id") == str(result.id):
+        return
+    paths = _declared_terminal_artifact_paths(str(result.seal_json.get("semantic_content") or ""))
+    parts = await materialize_declared_read_artifacts(db, task=task, model_result_id=result.id,
+        paths=[path for path in paths if _is_user_visible_terminal_artifact_path(path)])
+    by_path = {part["path"]: part for part in metadata.get("artifacts") or []}
+    by_path.update({part["path"]: part for part in parts})
+    if parts:
+        metadata.update({"declared_artifact_paths": paths, "artifacts": list(by_path.values()),
+            "artifact_paths": list(by_path), "artifact_ids": [part["artifact_id"] for part in by_path.values()],
+            "artifact_attachment_policy": "model_declared_verified_read_or_write"})
+    metadata["artifact_selection_result_id"] = str(result.id)
+    task.metadata_json = metadata
+
+
 async def _close_runtime_root_item(
     db: AsyncSession,
     *,
@@ -140,6 +170,7 @@ async def _declared_artifact_parts(
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
     run_id: uuid.UUID,
+    terminal_result_id: uuid.UUID,
 ) -> list[dict[str, Any]]:
     """Resolve only the run's already-governed terminal artifact selection."""
 
@@ -182,6 +213,9 @@ async def _declared_artifact_parts(
     by_id = {row.id: row for row in rows}
     if any(artifact_id not in by_id for artifact_id in artifact_ids):
         raise TerminalOutcomeNeedsReconciliation("terminal artifact selection is not authority-complete")
+    if any(row.source == "workspace_read" and (row.snapshot_json or {}).get("selection_model_result_id")
+        != str(terminal_result_id) for row in rows):
+        raise TerminalOutcomeNeedsReconciliation("terminal read artifact belongs to another model selection")
     return [artifact_part_from_model(by_id[artifact_id]) for artifact_id in artifact_ids]
 
 
@@ -248,7 +282,7 @@ async def prepare_and_seal_run_outcome(
         .with_for_update()
     )
     is_committed_retry = task.status == "completed" and outcome is not None and outcome.state == "terminal_committed"
-    if task.status not in {"running", "starting"} and not is_committed_retry:
+    if task.status not in {"running", "starting"} and not is_committed_retry and not _read_selection_retry(task, terminal_result_id):
         raise TerminalOutcomeIneligible(f"runtime task is not terminal-eligible: {task.status}")
     result = await _lock_terminal_result(
         db,
@@ -269,6 +303,8 @@ async def prepare_and_seal_run_outcome(
     if not source_blocks and isinstance(semantic_content, str) and semantic_content:
         raise TerminalOutcomeNeedsReconciliation("terminal content has no canonical source block")
     result_content_hash = _sha256([block["content_hash"] for block in source_blocks])
+    if not is_committed_retry:
+        await _recover_read_artifact_selection(db, task=task, result=result)
     artifact_parts = await _declared_artifact_parts(
         db,
         task=task,
@@ -276,6 +312,7 @@ async def prepare_and_seal_run_outcome(
         agent_id=agent_id,
         session_id=session_id,
         run_id=run_id,
+        terminal_result_id=result.id,
     )
     artifact_refs = [str(part["artifact_id"]) for part in artifact_parts]
     artifact_manifest_hash = _sha256(artifact_parts)
@@ -435,7 +472,7 @@ async def commit_terminal_outcome(
         raise TerminalOutcomeIneligible("run outcome is not sealed")
     eligibility = dict(outcome.seal_json.get("eligibility") or {})
     if not already_committed:
-        if task.status not in {"running", "starting"}:
+        if task.status not in {"running", "starting"} and not _read_selection_retry(task, outcome.terminal_result_id):
             raise TerminalOutcomeIneligible(f"runtime task changed before terminal commit: {task.status}")
         if int(task.claim_version or 0) != int(eligibility.get("task_claim_version") or 0):
             raise TerminalOutcomeIneligible("runtime task claim changed after outcome seal")
@@ -498,6 +535,7 @@ async def commit_terminal_outcome(
             agent_id=agent_id,
             session_id=session_id,
             run_id=run_id,
+            terminal_result_id=result.id,
         )
     except TerminalOutcomeNeedsReconciliation as exc:
         outcome.state = "needs_reconciliation"
@@ -576,10 +614,13 @@ async def commit_terminal_outcome(
             ),
         ],
     )
+    read_selection_recovered = _read_selection_retry(task, result.id)
     task.status = "completed"
     task.result_summary = semantic_content
     task.completed_at = datetime.now(timezone.utc)
     metadata = dict(task.metadata_json or {})
+    if read_selection_recovered:
+        metadata.pop("session_v2_reconciliation", None)
     metadata["session_v2_outcome"] = {
         "outcome_id": str(outcome.id),
         "terminal_result_id": str(result.id),
@@ -844,11 +885,12 @@ async def _record_terminal_outcome_recovery_hold(
     worker_id: str,
     now: datetime,
     reason: str,
+    read_selection_result_id: uuid.UUID | None = None,
 ) -> None:
     """Persist a retry lease without violating advisory -> task -> outcome order."""
 
     await lock_transcript_session(db, session_id=session_id)
-    await db.scalar(
+    task = await db.scalar(
         select(RuntimeTask).where(RuntimeTask.id == run_id, RuntimeTask.tenant_id == tenant_id).with_for_update()
     )
     outcome = await db.scalar(
@@ -867,6 +909,12 @@ async def _record_terminal_outcome_recovery_hold(
         outcome.reconciliation_owner = f"{worker_id}:{reason}"[:200]
         outcome.reconciliation_lease_expires_at = now + timedelta(minutes=5)
         outcome.version = int(outcome.version) + 1
+    if (read_selection_result_id is not None and task is not None and task.status in {"running", "starting", "needs_reconciliation"}
+        and (outcome is None or outcome.state != "terminal_committed")):
+        task.status = "needs_reconciliation"
+        task.result_summary = "Declared file read requires source reconciliation."
+        task.metadata_json = {**(task.metadata_json or {}), "session_v2_reconciliation": {
+            "reason": "terminal_artifact_selection", "result_id": str(read_selection_result_id), "error_class": reason}}
     await db.commit()
 
 
@@ -954,10 +1002,15 @@ async def recover_terminal_candidates_once(
             )
             await db.commit()
             completed += 1
+        except TerminalReadArtifactSelectionNeedsReconciliation as exc:
+            await db.rollback()
+            await _record_terminal_outcome_recovery_hold(db, tenant_id=tenant_id, session_id=session_id,
+                run_id=result_run_id, outcome_id=_outcome_id(result_run_id), worker_id=worker_id,
+                now=datetime.now(timezone.utc), reason=type(exc).__name__, read_selection_result_id=result_id)
+            held += 1
         except TerminalOutcomeIneligible:
             await db.rollback()
             held += 1
-    del worker_id  # reserved for structured recovery-owner telemetry
     return {"terminal_committed": completed, "held": held}
 
 

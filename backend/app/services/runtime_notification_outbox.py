@@ -693,7 +693,7 @@ def _claimed(row: RuntimeNotificationOutbox) -> ClaimedCompletionNotification:
     )
 
 
-def _result_descriptor(item: ClaimedCompletionNotification) -> RuntimeResultDescriptor:
+def _result_descriptor(item: ClaimedCompletionNotification | RuntimeNotificationOutbox) -> RuntimeResultDescriptor:
     return RuntimeResultDescriptor(
         outbox_id=item.id,
         mailbox_sequence=item.mailbox_sequence,

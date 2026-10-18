@@ -893,7 +893,7 @@ def _terminal_artifact_prompt_suffix_for_turn() -> str:
         "Terminal artifact contract: if your final response should attach workspace files as user-facing "
         "deliverables, include one explicit line per final deliverable in the form "
         "`DELIVERABLE: workspace/path.ext`. Do not declare scratch files, logs, plans, or intermediate drafts as "
-        "deliverables. Hive will attach only declared paths that were written during this active turn; every "
+        "deliverables. Hive attaches declared paths written this turn or read with a verified source receipt this turn; every "
         "workspace write is recorded separately as a File Changes runtime event."
     )
 

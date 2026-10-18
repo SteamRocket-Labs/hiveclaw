@@ -11,8 +11,7 @@ import uuid
 from sqlalchemy import select
 
 from app.database import async_session, tenant_scoped_session
-from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
-from app.models.runtime_result import RuntimeResultIntegrationPage, RuntimeResultObject
+from app.models.runtime_result import RuntimeResultObject
 from app.services.agent_context import AGENT_CONTEXT_RESOURCE_REFS, load_agent_context_resource
 from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
 from app.tools.runtime import ToolExecutionRequest
@@ -363,38 +362,17 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
                     "retryable": True,
                 }
             )
-        authority_binding = (
-            await db.execute(
-                select(RuntimeNotificationOutbox.id)
-                .where(
-                    RuntimeNotificationOutbox.tenant_id == tenant_id,
-                    RuntimeNotificationOutbox.result_object_id == result_id,
-                    RuntimeNotificationOutbox.result_ref == result_ref,
-                    RuntimeNotificationOutbox.parent_session_id == session_id,
-                    RuntimeNotificationOutbox.parent_agent_id == context.agent_id,
-                    RuntimeNotificationOutbox.parent_user_id == context.user_id,
-                )
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        if authority_binding is None:
-            # A higher-rank revision may move the current outbox binding while
-            # an earlier immutable page remains in the parent transcript.  The
-            # page itself is a durable principal-bound authorization record.
-            authority_binding = (
-                await db.execute(
-                    select(RuntimeResultIntegrationPage.id)
-                    .where(
-                        RuntimeResultIntegrationPage.tenant_id == tenant_id,
-                        RuntimeResultIntegrationPage.parent_session_id == session_id,
-                        RuntimeResultIntegrationPage.parent_agent_id == context.agent_id,
-                        RuntimeResultIntegrationPage.parent_user_id == context.user_id,
-                        RuntimeResultIntegrationPage.manifest_json["items"].contains([{"result_ref": result_ref}]),
-                    )
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-        if authority_binding is None:
+        from app.services.content_input_receipts import ContentInputReceiptError
+        from app.services.runtime_result_sources import runtime_result_publication_bound
+
+        try:
+            authority_binding = await runtime_result_publication_bound(db, result=result_object,
+                agent_id=context.agent_id, session_id=session_id, user_id=context.user_id)
+        except ContentInputReceiptError as exc:
+            return _json({"schema": schema, "status": "source_unavailable", "reason_code": exc.code,
+                "result_ref": result_ref, "retryable": exc.status_code == 503,
+                "recovery_action": "reconcile_result_sources"})
+        if not authority_binding:
             return _json(
                 {
                     "schema": schema,

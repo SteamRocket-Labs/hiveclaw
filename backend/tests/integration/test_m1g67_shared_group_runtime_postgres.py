@@ -17,7 +17,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
     reason="Native macOS context gate; Linux delivery is deferred.")]
 
 
-@pytest.mark.parametrize("mutation", [None, "forged_actor", "unlinked", "private_source", "private_recipient", "unknown_recipient", "queued_member", "same_sender", "explicit_other", "private_context", "shared_context", "web_member", "web_socket", "web_browser", "web_question", "web_question_browser", "web_cancel", "web_cancel_recovery", "web_cancel_unknown", "web_cancel_browser", "web_permission", "web_permission_session", "web_permission_deny", "web_permission_browser", "web_enterprise", "web_enterprise_reject", "web_enterprise_revoked", "web_enterprise_browser", "web_enterprise_private_source"])
+@pytest.mark.parametrize("mutation", [None, "forged_actor", "unlinked", "private_source", "private_recipient", "unknown_recipient", "queued_member", "same_sender", "explicit_other", "private_context", "shared_context", "web_member", "web_socket", "web_browser", "web_question", "web_question_browser", "web_cancel", "web_cancel_recovery", "web_cancel_unknown", "web_cancel_browser", "web_permission", "web_permission_session", "web_permission_deny", "web_permission_browser", "web_enterprise", "web_enterprise_reject", "web_enterprise_revoked", "web_enterprise_browser", "web_enterprise_private_source", "web_enterprise_source_revoked", "web_enterprise_private_selection", "web_enterprise_recovery", "web_enterprise_recovery_revoked", "web_enterprise_selection_reentry"])
 async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, mutation,
 ):
@@ -56,7 +56,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     from app.services.web_chat_runtime import execute_web_chat_run
 
     enterprise_case = mutation
-    web_enterprise = mutation in {"web_enterprise", "web_enterprise_reject", "web_enterprise_revoked", "web_enterprise_browser", "web_enterprise_private_source"}
+    web_enterprise = mutation in {"web_enterprise", "web_enterprise_reject", "web_enterprise_revoked", "web_enterprise_browser", "web_enterprise_private_source", "web_enterprise_source_revoked", "web_enterprise_private_selection", "web_enterprise_recovery", "web_enterprise_recovery_revoked", "web_enterprise_selection_reentry"}
     permission_decision = {"web_permission": "allow_once", "web_permission_session": "allow_session", "web_permission_deny": "deny", "web_permission_browser": "allow_once"}.get(mutation)
     permission_browser = mutation == "web_permission_browser"
     web_permission = permission_decision is not None
@@ -68,7 +68,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     cancel_browser = mutation == "web_cancel_browser"
     web_cancel = mutation in {"web_cancel", "web_cancel_recovery", "web_cancel_unknown", "web_cancel_browser"}
     if web_question or web_cancel or web_permission or web_enterprise:
-        mutation = "private_context" if enterprise_case == "web_enterprise_private_source" else None
+        mutation = "private_context" if enterprise_case in {"web_enterprise_private_source", "web_enterprise_source_revoked"} else None
     web_browser = mutation == "web_browser"
     web_socket = mutation in {"web_socket", "web_browser"}
     if web_requester or web_socket:
@@ -102,7 +102,12 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
             db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="workspace.file.write", allowed=True,
                 requires_approval=False))
         if web_enterprise:
+            from app.core.resource_authority import workspace_resource_id
             from app.models.guard_policy import GuardPolicy
+
+            db.add(ResourcePermission(tenant_id=seed["tenant_id"], principal_type="user", principal_id=seed["user_id"],
+                resource_type="workspace_file", resource_id=workspace_resource_id(agent.id, "workspace/shared-report.md"),
+                actions=["read"], effect="allow", conditions={}))
 
             db.add(GuardPolicy(tenant_id=seed["tenant_id"], zone_guard={"tool_rules": [
                 {"tools": ["write_file"], "decision": "require_approval"}]}))
@@ -127,7 +132,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
         shared = await find_or_create_shared_group_session(db, tenant_id=seed["tenant_id"], agent_id=agent.id,
             installation_ref=str(config.id), chat_id="oc_native_group", first_message_title="Shared report")
         shared_id, installation = shared.id, str(config.id)
-        if mutation in {"private_context", "shared_context"}:
+        if mutation in {"private_context", "shared_context"} or enterprise_case == "web_enterprise_private_selection":
             import hashlib
             from app.services.workspace_resource_authority import register_workspace_path
             notes = seed["agent_root"] / "workspace/private-notes.md"
@@ -138,7 +143,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
             from app.services.content_input_receipts import record_workspace_receipt
             record_workspace_receipt(db, seed["tenant_id"], agent.id, "workspace/private-notes.md",
                 hashlib.sha256(notes.read_bytes()).hexdigest(), None)
-            if mutation == "shared_context":
+            if mutation == "shared_context" or enterprise_case == "web_enterprise_source_revoked":
                 from app.core.resource_authority import workspace_resource_id
                 for path in ("workspace/private-notes.md", "workspace/shared-report.md"):
                     permission = ResourcePermission(id=uuid4(), tenant_id=seed["tenant_id"], principal_type="user",
@@ -425,7 +430,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     finally:
         reset_runtime_task_fence(fence)
     if web_enterprise:
-        await _exercise_group_enterprise(seed, shared_id, run_id, member.id, app_user_sessionmaker, monkeypatch, tmp_path, client, enterprise_case)
+        await _exercise_group_enterprise(seed, shared_id, run_id, member.id, app_user_sessionmaker, monkeypatch, tmp_path, client, enterprise_case, report_content=report_content, submit=submit, other_actor=other.actor)
         return
     if web_permission:
         await _exercise_group_permission(seed, shared_id, run_id, member.id, app_user_sessionmaker, monkeypatch, tmp_path,
@@ -1577,7 +1582,7 @@ async def _group_permission_browser(web, seed, session_id, permission_id, reques
     import uvicorn
     from fastapi.responses import FileResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
-    from app.api import agents, auth, chat_sessions, websocket as socket_api
+    from app.api import agents, auth, chat_sessions, files, websocket as socket_api
     from app.core.security import create_access_token
     from app.services.web_chat_broker import WebChatBroker
     import app.services.web_chat_runtime as runtime
@@ -1587,7 +1592,7 @@ async def _group_permission_browser(web, seed, session_id, permission_id, reques
     broker = WebChatBroker()
     monkeypatch.setattr(runtime, "web_chat_broker", broker)
     monkeypatch.setattr(socket_api, "manager", broker)
-    for router in (chat_sessions.router, agents.router, auth.router):
+    for router in (chat_sessions.router, agents.router, auth.router, files.router):
         web.include_router(router, prefix="/api")
     web.include_router(socket_api.router)
     web.mount("/assets", StaticFiles(directory=frontend / "dist/assets"), name="assets")
@@ -1643,16 +1648,17 @@ async def _group_permission_browser(web, seed, session_id, permission_id, reques
         listener.close()
 
 
-async def _exercise_group_enterprise(seed, session_id, run_id, requester_id, sessionmaker, monkeypatch, tmp_path, model_client, enterprise_case):
+async def _exercise_group_enterprise(seed, session_id, run_id, requester_id, sessionmaker, monkeypatch, tmp_path, model_client, enterprise_case, *, report_content, submit, other_actor):
     async with AsyncExitStack() as browsers:
         from fastapi import FastAPI
         from httpx import ASGITransport, AsyncClient
         from app import database
-        from app.api import chat_sessions
+        from app.api import chat_sessions, files
         from app.core.security import get_current_user
         from app.database import pin_rls_tenant_context
         from app.models.audit import ApprovalRequest
         from app.models.runtime_task import RuntimeTask
+        from app.models.security_audit import ResourcePermission
         from app.models.session_v2 import SessionToolInvocation
         from app.models.user import User
 
@@ -1690,6 +1696,7 @@ async def _exercise_group_enterprise(seed, session_id, run_id, requester_id, ses
                 yield db
         web = FastAPI()
         web.include_router(chat_sessions.router)
+        web.include_router(files.router)
         web.dependency_overrides[get_current_user] = current_user
         web.dependency_overrides[database.get_db] = scoped_db
         url = f"/agents/{seed['agent_id']}/sessions/{session_id}/approvals/{ticket_id}"
@@ -1788,8 +1795,18 @@ async def _exercise_group_enterprise(seed, session_id, run_id, requester_id, ses
                 assert evidence is not None and evidence.runtime_task_id == run_id
                 assert evidence.metadata_json["native_content_receipts"]["status"] == "captured", evidence.metadata_json
                 assert evidence.metadata_json["native_content_receipts"]["receipts"].get("workspace/shared-report.md")
-            assert (seed["agent_root"] / "workspace/shared-report.md").read_text() == "GROUP_REPORT"
+            assert (seed["agent_root"] / "workspace/shared-report.md").read_text() == report_content
             assert await execute_claimed_approval_execution(job_id) == "succeeded"
+        if enterprise_case == "web_enterprise_source_revoked":
+            from app.core.resource_authority import workspace_resource_id
+            async with sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                revoked = await db.scalar(select(ResourcePermission).where(ResourcePermission.tenant_id == seed["tenant_id"],
+                    ResourcePermission.principal_id == seed["user_id"], ResourcePermission.resource_type == "workspace_file",
+                    ResourcePermission.resource_id == workspace_resource_id(seed["agent_id"], "workspace/private-notes.md")))
+                assert revoked is not None
+                revoked_id, revoked.effect = revoked.id, "deny"
+                await db.commit()
         from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService
 
         service = RuntimeNotificationOutboxService(session_factory=sessionmaker)
@@ -1819,18 +1836,233 @@ async def _exercise_group_enterprise(seed, session_id, run_id, requester_id, ses
 
         result_ref = pages[0].manifest["items"][0]["result_ref"]
         model_client.script = [{"tool_calls": [{"id": "company-result", "type": "function", "function": {
-            "name": "read_runtime_result", "arguments": json.dumps({"result_ref": result_ref})}}], "finish_reason": "tool_calls"},
-            {"content": "The approved report is ready." if action == "approve" else "The action was rejected; no file was created."}]
-        await run_claimed_runtime_task(execute_web_chat_run(next_run), task_id=next_run,
-            claim_version=claim.claim_version, worker_id="enterprise-return", lease_seconds=600)
+            "name": "read_runtime_result", "arguments": json.dumps({"result_ref": result_ref})}}], "finish_reason": "tool_calls"}]
+        if action == "approve":
+            model_client.script.append({"tool_calls": [{"id": "read-approved-file", "type": "function", "function": {
+                "name": "read_file", "arguments": json.dumps({"path": "workspace/shared-report.md"})}}], "finish_reason": "tool_calls"})
+        if enterprise_case == "web_enterprise_private_selection":
+            model_client.script.append({"tool_calls": [{"id": "private-selection-input", "type": "function", "function": {
+                "name": "read_file", "arguments": json.dumps({"path": "workspace/private-notes.md"})}}], "finish_reason": "tool_calls"})
+        model_client.script.append({"content": "The approved report is ready.\n\nDELIVERABLE: workspace/shared-report.md\n\n[Open report](workspace/shared-report.md)"
+            if action == "approve" else "The action was rejected; no file was created."})
+        if enterprise_case in {"web_enterprise_recovery", "web_enterprise_recovery_revoked"}:
+            import app.services.web_chat_run_orchestrator as orchestrator
+            from app.services.session_terminal_outcome import recover_terminal_candidates_once
+
+            class SelectionCrash(BaseException):
+                pass
+            original_selection = orchestrator._record_canonical_terminal_artifact_selection
+            async def crash_before_selection(*_args, **_kwargs):
+                raise SelectionCrash()
+            monkeypatch.setattr(orchestrator, "_record_canonical_terminal_artifact_selection", crash_before_selection)
+            with pytest.raises(SelectionCrash):
+                await run_claimed_runtime_task(execute_web_chat_run(next_run), task_id=next_run,
+                    claim_version=claim.claim_version, worker_id="enterprise-return", lease_seconds=600)
+            monkeypatch.setattr(orchestrator, "_record_canonical_terminal_artifact_selection", original_selection)
+            observed_requests = len(model_client.requests)
+            from app.models.chat_artifact import ChatArtifact
+            from app.models.external_principal import ExternalPrincipal
+            async with sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                (await db.get(RuntimeTask, next_run)).claim_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+                principal = await db.scalar(select(ExternalPrincipal).where(ExternalPrincipal.tenant_id == seed["tenant_id"],
+                    ExternalPrincipal.linked_user_id == requester_id, ExternalPrincipal.subject_id == "ou_group_requester"))
+                assert principal is not None
+                principal_id = principal.id
+                if enterprise_case == "web_enterprise_recovery_revoked":
+                    principal.status = "revoked"
+                await db.commit()
+            if enterprise_case == "web_enterprise_recovery_revoked":
+                async with sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    held = await recover_terminal_candidates_once(db, worker_id="company-read-recovery", run_id=next_run,
+                        tenant_id=seed["tenant_id"])
+                    assert held == {"terminal_committed": 0, "held": 1}, held
+                    current = await db.get(RuntimeTask, next_run)
+                    assert current.status == "needs_reconciliation"
+                    assert current.metadata_json["session_v2_reconciliation"]["reason"] == "terminal_artifact_selection"
+                    assert not list(await db.scalars(select(ChatArtifact).where(ChatArtifact.runtime_task_id == next_run)))
+                    (await db.get(ExternalPrincipal, principal_id)).status = "active"
+                    await db.commit()
+                assert (seed["agent_root"] / "workspace/shared-report.md").read_text() == report_content
+            async with sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                recovered = await recover_terminal_candidates_once(db, worker_id="company-read-recovery", run_id=next_run,
+                    tenant_id=seed["tenant_id"])
+                assert recovered["terminal_committed"] == 1, recovered
+            assert len(model_client.requests) == observed_requests
+        else:
+            await run_claimed_runtime_task(execute_web_chat_run(next_run), task_id=next_run,
+                claim_version=claim.claim_version, worker_id="enterprise-return", lease_seconds=600)
         async with sessionmaker() as db:
             await pin_rls_tenant_context(db, seed["tenant_id"])
             successor = await db.get(RuntimeTask, next_run)
             assert successor.status == "completed", (successor.status, successor.result_summary, successor.metadata_json)
+            if enterprise_case == "web_enterprise_recovery_revoked":
+                assert "session_v2_reconciliation" not in (successor.metadata_json or {})
+            artifact_parts = (successor.metadata_json or {}).get("artifacts") or []
+            artifact_id = artifact_parts[0]["artifact_id"] if action == "approve" else None
         tool_messages = [message for request in model_client.requests for message in request["messages"]
             if message.get("role") == "tool" and message.get("tool_call_id") == "company-result"]
         assert tool_messages, model_client.requests
         result = json.loads(tool_messages[-1]["content"])
         assert result["status"] == "ok" and result["dependency_coverage"] == {"complete": True}, result
         assert ("shared-report.md" if action == "approve" else "rejected the action") in result["content"]
-        reader["id"] = requester_id
+        if action == "approve":
+            reads = [message for request in model_client.requests for message in request["messages"]
+                if message.get("role") == "tool" and message.get("tool_call_id") == "read-approved-file"]
+            assert reads and report_content in reads[-1]["content"], reads
+        expected = "The approved report is ready." if action == "approve" else "The action was rejected; no file was created."
+        async with AsyncClient(transport=ASGITransport(app=web), base_url="http://group.fixture") as client:
+            for user_id in (requester_id, seed["user_id"]):
+                reader["id"] = user_id
+                history = await client.get(url.rsplit("/approvals/", 1)[0] + "/transcript",
+                    params={"schema_version": 2, "limit": 1000})
+                assert history.status_code == 200, history.text
+                replies = [event for event in history.json() if event.get("result_id") and
+                    event.get("scope", {}).get("run_id") == str(next_run) and expected in json.dumps(event.get("payload", {}))]
+                if enterprise_case in {"web_enterprise_source_revoked", "web_enterprise_private_selection"} and user_id == seed["user_id"]:
+                    assert not replies and "PRIVATE_GROUP_NOTE_CANARY" not in history.text
+                    assert any(event.get("source_access_receipt", {}).get("status") == "denied" for event in history.json())
+                else:
+                    assert replies, (str(user_id), [{"kind": event.get("kind"), "receipt": event.get("source_access_receipt")}
+                        for event in history.json() if event.get("scope", {}).get("run_id") == str(next_run)])
+                if artifact_id:
+                    preview = await client.get(f"/agents/{seed['agent_id']}/files/artifacts/{artifact_id}/content")
+                    denied = enterprise_case in {"web_enterprise_source_revoked", "web_enterprise_private_selection"} and user_id == seed["user_id"]
+                    assert preview.status_code == (403 if denied else 200), preview.text
+                    if denied:
+                        assert "PRIVATE_GROUP_NOTE_CANARY" not in preview.text
+                    else:
+                        assert preview.json()["content"] == report_content
+            if enterprise_case == "web_enterprise":
+                from app.models.session_v2 import SessionRunOutcome
+
+                async with sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    published = await db.scalar(select(SessionRunOutcome).where(SessionRunOutcome.run_id == next_run))
+                    saved_seal, outcome_id = dict(published.seal_json), published.id
+                    published.seal_json = {**saved_seal, "parts": []}
+                    await db.commit()
+                preview = await client.get(f"/agents/{seed['agent_id']}/files/artifacts/{artifact_id}/content")
+                assert preview.status_code == 403 and report_content not in preview.text, preview.text
+                async with sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    (await db.get(SessionRunOutcome, outcome_id)).seal_json = saved_seal
+                    denied_artifact = ResourcePermission(id=uuid4(), tenant_id=seed["tenant_id"], principal_type="user",
+                        principal_id=seed["user_id"], resource_type="chat_artifact", resource_id=UUID(artifact_id),
+                        actions=["read"], effect="deny", conditions={})
+                    db.add(denied_artifact)
+                    denied_artifact_id = denied_artifact.id
+                    await db.commit()
+                preview = await client.get(f"/agents/{seed['agent_id']}/files/artifacts/{artifact_id}/content")
+                assert preview.status_code == 403 and report_content not in preview.text, preview.text
+                async with sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    await db.delete(await db.get(ResourcePermission, denied_artifact_id))
+                    await db.commit()
+        from app.models.channel_delivery_outbox import ChannelDeliveryOutbox
+        from app.services.channel_delivery_outbox import ChannelDeliveryOutboxService
+        from app.services.channel_delivery_service import DeliveryResult
+
+        async with sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            deliveries = list(await db.scalars(select(ChannelDeliveryOutbox).where(ChannelDeliveryOutbox.runtime_task_id == next_run)))
+            assert len(deliveries) == 1
+            deliveries[0].available_at = datetime(2000, 1, 1, tzinfo=timezone.utc)
+            delivery_id = deliveries[0].id
+            await db.commit()
+        sends = []
+        async def send(**kwargs):
+            sends.append(kwargs)
+            return DeliveryResult(ok=True, status="delivered", channel="feishu", message="Synthetic group result receipt.")
+        delivery_service = ChannelDeliveryOutboxService(session_factory=sessionmaker, text_sender=send, file_sender=send)
+        @asynccontextmanager
+        async def scoped_worker(_operation):
+            async with sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                yield db
+        monkeypatch.setattr(delivery_service, "_worker_session", scoped_worker)
+        outcome = await delivery_service.drain_once(worker_id="enterprise-group-delivery", limit=1)
+        if enterprise_case in {"web_enterprise_source_revoked", "web_enterprise_private_selection"}:
+            assert outcome["dead_lettered"] == 1 and not sends, outcome
+            async with sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                assert (await db.get(ChannelDeliveryOutbox, delivery_id)).status == "dead_letter"
+                if enterprise_case == "web_enterprise_source_revoked":
+                    (await db.get(ResourcePermission, revoked_id)).effect = "allow"
+                    await db.commit()
+            if enterprise_case == "web_enterprise_source_revoked":
+                reader["id"] = seed["user_id"]
+                async with AsyncClient(transport=ASGITransport(app=web), base_url="http://group.fixture") as client:
+                    restored = await client.get(url.rsplit("/approvals/", 1)[0] + "/transcript", params={"schema_version": 2, "limit": 1000})
+                    assert restored.status_code == 200 and expected in restored.text, restored.text
+            if enterprise_case == "web_enterprise_private_selection":
+                from app.models.chat_artifact import ChatArtifact
+                from app.services.content_input_receipts import ContentInputReceiptError, validate_artifact_content_receipt
+
+                async with sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    artifact = await db.scalar(select(ChatArtifact).where(ChatArtifact.runtime_task_id == next_run,
+                        ChatArtifact.path == "workspace/shared-report.md"))
+                    assert artifact is not None
+                    with pytest.raises(ContentInputReceiptError) as held_artifact:
+                        await validate_artifact_content_receipt(db, seed["tenant_id"], await db.get(User, seed["user_id"]), artifact)
+                    assert held_artifact.value.status_code == 403
+        else:
+            assert outcome["delivered"] == 1 and len(sends) == (2 if action == "approve" else 1), outcome
+            assert sends[0]["reply_target"]["receive_id"] == "oc_native_group" and expected in sends[0]["text"]
+            if action == "approve":
+                assert sends[1]["file_path"].read_text() == report_content and sends[1]["artifact_id"] is not None
+        if enterprise_case in {"web_enterprise", "web_enterprise_selection_reentry"}:
+            settled = await RuntimeTerminalBoundaryOutboxService(session_factory=sessionmaker).drain_once(
+                tenant_id=seed["tenant_id"], worker_id="enterprise-return-boundary", canonical_validator=processor.validate,
+                process_callback=processor, task_types=("web_chat_turn",))
+            assert settled["delivered"] == 1, settled
+            event, accepted = await submit(other_actor, "ou_group_creator", "Read the approved result again.", "enterprise-member-read")
+            async with sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                command_id = UUID(accepted["command_id"])
+                await recover_admitted_session_inputs_once(db, worker_id="enterprise-member-dispatch", tenant_id=seed["tenant_id"],
+                    admission_ids=(uuid5(command_id, "input-admission:revision:1"),))
+                other_run = await db.scalar(select(RuntimeTask).where(RuntimeTask.tenant_id == seed["tenant_id"],
+                    RuntimeTask.metadata_json["session_v2_input_id"].astext == str(event.event_id)))
+                assert other_run is not None and other_run.root_user_id == seed["user_id"] != requester_id
+                claims = await RuntimeTaskClaimService(db=db, worker_id="enterprise-member-reader").claim_available()
+                other_claim = next(row for row in claims if row.id == other_run.id)
+            model_client.script = [{"tool_calls": [{"id": "other-company-result", "type": "function", "function": {
+                "name": "read_runtime_result", "arguments": json.dumps({"result_ref": result_ref})}}], "finish_reason": "tool_calls"},
+                {"content": "The other authorized member read the same result."}]
+            if enterprise_case == "web_enterprise_selection_reentry":
+                import app.services.web_chat_run_orchestrator as orchestrator
+                from app.models.chat_artifact import ChatArtifact
+                from app.models.workspace_resource import WorkspaceResourceManifest
+
+                model_client.script.insert(1, {"tool_calls": [{"id": "other-approved-file", "type": "function", "function": {
+                    "name": "read_file", "arguments": json.dumps({"path": "workspace/shared-report.md"})}}], "finish_reason": "tool_calls"})
+                model_client.script[-1]["content"] += "\n\nDELIVERABLE: workspace/shared-report.md"
+                original_selection = orchestrator._record_canonical_terminal_artifact_selection
+                async def select_twice(state, response, **kwargs):
+                    assert state.ports.artifacts.file_change_paths(state.runtime_session_context) == []
+                    await original_selection(state, response, **kwargs)
+                    async with sessionmaker() as db:
+                        await pin_rls_tenant_context(db, seed["tenant_id"])
+                        first = dict((await db.get(RuntimeTask, state.run_uuid)).metadata_json)
+                    await original_selection(state, response, **kwargs)
+                    async with sessionmaker() as db:
+                        await pin_rls_tenant_context(db, seed["tenant_id"])
+                        second = dict((await db.get(RuntimeTask, state.run_uuid)).metadata_json)
+                        assert first["artifact_ids"] and first["artifact_ids"] == second["artifact_ids"]
+                        assert first["artifacts"] == second["artifacts"]
+                        artifacts = list(await db.scalars(select(ChatArtifact).where(ChatArtifact.runtime_task_id == state.run_uuid)))
+                        assert len(artifacts) == 1 and artifacts[0].owner_user_id == seed["user_id"]
+                        manifest = await db.scalar(select(WorkspaceResourceManifest).where(WorkspaceResourceManifest.agent_id == seed["agent_id"],
+                            WorkspaceResourceManifest.path == "workspace/shared-report.md"))
+                        assert manifest.owner_user_id == requester_id
+                monkeypatch.setattr(orchestrator, "_record_canonical_terminal_artifact_selection", select_twice)
+            await run_claimed_runtime_task(execute_web_chat_run(other_run.id), task_id=other_run.id,
+                claim_version=other_claim.claim_version, worker_id="enterprise-member-reader", lease_seconds=600)
+            observed = [message for request in model_client.requests for message in request["messages"]
+                if message.get("role") == "tool" and message.get("tool_call_id") == "other-company-result"]
+            assert observed and json.loads(observed[-1]["content"])["status"] == "ok", observed
+        reader["id"] = seed["user_id"]

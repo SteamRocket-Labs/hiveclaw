@@ -364,6 +364,11 @@ async def authorize_resource_action(
             authority_source="resource_grant",
         )
 
+    if (resource_kind == "chat_artifact" and action in {"read", "download"} and runtime_principal is None
+        and state == OWNED_AUTHORITY_STATE and await _published_group_artifact(db, user=user, artifact=artifact, action=action)):
+        return ResourceAuthorityDecision(agent=agent, access_level=access_level, resource_kind=resource_kind,
+            resource_id=resource_id, action=action, authority_source="shared_group_terminal_artifact")
+
     if runtime_principal is None and allow_manager_override and action == "read":
         authority_source = await authorize_agent_operator_inspection(
             db,
@@ -395,6 +400,36 @@ async def authorize_resource_action(
         else "This resource belongs to a different principal"
     )
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
+
+
+async def _published_group_artifact(db, *, user, artifact, action) -> bool:
+    from app.core.policy import classify_permission
+    from app.models.chat_session import ChatSession
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionRunOutcome
+    from app.services.chat_artifact_delivery import artifact_part_from_model
+    from app.services.shared_group_authority import require_current_group_member
+
+    session = await db.get(ChatSession, artifact.session_id)
+    if (session is None or session.audience_kind != "group" or session.tenant_id != artifact.tenant_id
+        or session.agent_id != artifact.agent_id or artifact.root_session_id != (session.root_session_id or session.id)):
+        return False
+    task = await db.get(RuntimeTask, artifact.runtime_task_id) if artifact.runtime_task_id else None
+    if (task is None or task.tenant_id != artifact.tenant_id or task.parent_agent_id != artifact.agent_id
+        or task.parent_session_id != str(session.id) or task.root_user_id != artifact.owner_user_id):
+        return False
+    outcome = await db.scalar(select(SessionRunOutcome).where(SessionRunOutcome.tenant_id == artifact.tenant_id,
+        SessionRunOutcome.session_id == session.id, SessionRunOutcome.run_id == task.id,
+        SessionRunOutcome.state == "terminal_committed"))
+    if outcome is None or artifact_part_from_model(artifact) not in (outcome.seal_json or {}).get("parts", []):
+        return False
+    additional = [("department", user.department_id)] if user.role != "platform_admin" and user.department_id else []
+    if await classify_permission(db, principal_type="user", principal_id=user.id, additional_principals=additional,
+        resource_type="chat_artifact", resource_id=artifact.id, action=action,
+        context={"tenant_id": str(user.tenant_id)}) == "deny":
+        raise HTTPException(403, detail="Artifact access is explicitly denied")
+    await require_current_group_member(db, session=session, user=user)
+    return True
 
 
 async def filter_authorized_resources(

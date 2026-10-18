@@ -176,6 +176,42 @@ async def _load_company_result_sources(db, result):
         raise ContentInputReceiptError("runtime_result_sources_unbound", "Reconcile the original company approval result.", 503) from exc
 
 
+async def _shared_company_result_published(db, *, result, agent_id, session_id):
+    if result.source_kind != "approval":
+        return False
+    canonical = await _load_company_result_sources(db, result)
+    if not canonical:
+        return False
+    task, _dependencies, _receipts = canonical
+    if task.parent_agent_id != agent_id or uuid.UUID(task.parent_session_id) != session_id:
+        return False
+    from app.services.runtime_result_store import decode_runtime_result_payload
+
+    payload = decode_runtime_result_payload(bytes(result.payload_bytes))
+    # Other tools need their post-execution source inventory before sharing new returned bytes.
+    if payload["metadata"]["tool_name"] not in {"write_file", "fs_write"}:
+        raise ContentInputReceiptError("runtime_result_sources_unbound", "Reconcile the approved tool's output sources before group disclosure.", 503)
+    return True
+
+
+async def runtime_result_publication_bound(db, *, result, agent_id, session_id, user_id):
+    """Prove the stored return route; callers must still authorize the current reader and every source."""
+    from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+    from app.models.runtime_result import RuntimeResultIntegrationPage
+
+    ref = f"runtime-result://{result.id}/{result.sha256}"
+    bound = await db.scalar(select(RuntimeNotificationOutbox.id).where(
+        RuntimeNotificationOutbox.tenant_id == result.tenant_id, RuntimeNotificationOutbox.result_object_id == result.id,
+        RuntimeNotificationOutbox.result_ref == ref, RuntimeNotificationOutbox.parent_agent_id == agent_id,
+        RuntimeNotificationOutbox.parent_session_id == session_id, RuntimeNotificationOutbox.parent_user_id == user_id).limit(1))
+    if bound is None:
+        bound = await db.scalar(select(RuntimeResultIntegrationPage.id).where(
+            RuntimeResultIntegrationPage.tenant_id == result.tenant_id, RuntimeResultIntegrationPage.parent_agent_id == agent_id,
+            RuntimeResultIntegrationPage.parent_session_id == session_id, RuntimeResultIntegrationPage.parent_user_id == user_id,
+            RuntimeResultIntegrationPage.manifest_json["items"].contains([{"result_ref": ref}])).limit(1))
+    return bound is not None or await _shared_company_result_published(db, result=result, agent_id=agent_id, session_id=session_id)
+
+
 async def validate_runtime_result_sources(db, request, result_object, *, user=None, session=None):
     canonical = await load_canonical_result_sources(db, result_object)
     if not canonical:
@@ -187,9 +223,18 @@ async def validate_runtime_result_sources(db, request, result_object, *, user=No
     else:
         requester = user
         reader_agent, reader_session = session.agent_id, session.id
-    if (reader_agent != task.parent_agent_id or requester.id != task.root_user_id
-        or reader_session != uuid.UUID(task.parent_session_id)):
+    if reader_agent != task.parent_agent_id or reader_session != uuid.UUID(task.parent_session_id):
         raise ContentInputReceiptError("content_source_access_denied", "The result belongs to another original work.", 403)
+    if requester.id != task.root_user_id:
+        from app.models.chat_session import ChatSession
+        from app.services.content_input_receipts import _authorize_session_input_source
+
+        if not await _shared_company_result_published(db, result=result_object, agent_id=reader_agent, session_id=reader_session):
+            raise ContentInputReceiptError("content_source_access_denied", "The result is not published to this reader's work.", 403)
+        source_session = await db.get(ChatSession, reader_session, populate_existing=True)
+        if source_session is None or source_session.tenant_id != task.tenant_id or source_session.agent_id != reader_agent:
+            raise ContentInputReceiptError("content_source_unavailable", "The result's original group work is unavailable.", 503)
+        await _authorize_session_input_source(db, task.tenant_id, source_session, user=user, runtime_request=request)
     draft = await db.scalar(select(HrCreationDraft).where(HrCreationDraft.tenant_id == task.tenant_id,
         HrCreationDraft.created_agent_id == task.child_agent_id, HrCreationDraft.hr_agent_id == task.parent_agent_id,
         HrCreationDraft.session_id == uuid.UUID(task.parent_session_id), HrCreationDraft.requested_by_user_id == task.root_user_id))
@@ -283,9 +328,32 @@ async def result_source_reference(db, *, tenant_id, agent_id, session_id, task_i
         "source_version": result.sha256}
 
 
+async def _validate_shared_company_page(db, *, page, session, user, runtime_request):
+    from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+    from app.models.runtime_result import RuntimeResultObject
+    from app.services.runtime_notification_outbox import _result_descriptor
+
+    items = (page.manifest_json or {}).get("items")
+    rows = list(await db.scalars(select(RuntimeNotificationOutbox).where(
+        RuntimeNotificationOutbox.tenant_id == page.tenant_id, RuntimeNotificationOutbox.integration_page_id == page.id,
+        RuntimeNotificationOutbox.parent_session_id == session.id, RuntimeNotificationOutbox.parent_agent_id == session.agent_id,
+        RuntimeNotificationOutbox.parent_user_id == page.parent_user_id)))
+    by_id = {str(row.id): row for row in rows}
+    if (session.audience_kind != "group" or page.delivery_mode != "parent_continuation"
+        or page.status not in {"processing", "delivered"} or not isinstance(items, list) or not items
+        or len(by_id) != len(items) or {item.get("outbox_id") for item in items if isinstance(item, dict)} != set(by_id)):
+        raise ContentInputReceiptError("runtime_result_sources_unbound", "The group return page lacks its exact published results.", 503)
+    for item in items:
+        row = by_id[item["outbox_id"]]
+        result = await db.get(RuntimeResultObject, row.result_object_id, populate_existing=True)
+        if (item != _result_descriptor(row).to_manifest_item() or result is None
+            or not await _shared_company_result_published(db, result=result, agent_id=session.agent_id, session_id=session.id)):
+            raise ContentInputReceiptError("runtime_result_sources_unbound", "The group return item does not match its committed result.", 503)
+        await validate_runtime_result_sources(db, runtime_request, result, user=user, session=session)
+
+
 async def validate_runtime_return_dependency(db, tenant_id, dependency, *, user, runtime_request):
     from app.models.chat_session import ChatSession
-    from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
     from app.models.runtime_result import RuntimeResultIntegrationPage, RuntimeResultObject
     from app.services.content_input_receipts import _authorize_session_input_source
     from app.services.session_model_inputs import _hash
@@ -314,9 +382,11 @@ async def validate_runtime_return_dependency(db, tenant_id, dependency, *, user,
         requester = user
     if kind == "runtime_result_page":
         manifest = page.manifest_json
-        if (page.parent_user_id != requester.id or _hash({k: v for k, v in manifest.items() if k != "manifest_sha256"}) != page.manifest_sha256
+        if (_hash({k: v for k, v in manifest.items() if k != "manifest_sha256"}) != page.manifest_sha256
             or manifest.get("manifest_sha256") != page.manifest_sha256 or page.manifest_sha256 != dependency["source_version"]):
             raise ContentInputReceiptError("content_source_changed", "The integration page no longer matches its source.", 403)
+        if page.parent_user_id != requester.id:
+            await _validate_shared_company_page(db, page=page, session=session, user=user, runtime_request=runtime_request)
         return
     if kind == "runtime_team_context":
         from app.services.agent_team_context import build_prompt_facing_team_context
@@ -334,15 +404,7 @@ async def validate_runtime_return_dependency(db, tenant_id, dependency, *, user,
     if (result is None or result.tenant_id != tenant_id or result.sha256 != dependency["source_version"]
         or hashlib.sha256(bytes(result.payload_bytes)).hexdigest() != result.sha256 or len(result.payload_bytes) != result.size_bytes):
         raise ContentInputReceiptError("content_source_changed", "The committed runtime result is unavailable.", 403)
-    bound = await db.scalar(select(RuntimeNotificationOutbox.id).where(RuntimeNotificationOutbox.tenant_id == tenant_id,
-        RuntimeNotificationOutbox.parent_agent_id == agent_id, RuntimeNotificationOutbox.parent_session_id == session_id,
-        RuntimeNotificationOutbox.parent_user_id == requester.id, RuntimeNotificationOutbox.result_object_id == result.id).limit(1))
-    if bound is None:
-        bound = await db.scalar(select(RuntimeResultIntegrationPage.id).where(RuntimeResultIntegrationPage.tenant_id == tenant_id,
-            RuntimeResultIntegrationPage.parent_agent_id == agent_id, RuntimeResultIntegrationPage.parent_session_id == session_id,
-            RuntimeResultIntegrationPage.parent_user_id == requester.id,
-            RuntimeResultIntegrationPage.manifest_json["items"].contains([{"result_ref": f"runtime-result://{result.id}/{result.sha256}"}])).limit(1))
-    if bound is None:
+    if not await runtime_result_publication_bound(db, result=result, agent_id=agent_id, session_id=session_id, user_id=requester.id):
         raise ContentInputReceiptError("content_source_access_denied", "The result is not published to this original work.", 403)
     if not await validate_runtime_result_sources(db, runtime_request, result, user=user, session=session):
         raise ContentInputReceiptError("content_source_unavailable", "The runtime result source inventory is incomplete.", 503)

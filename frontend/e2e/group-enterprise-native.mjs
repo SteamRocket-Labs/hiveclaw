@@ -75,6 +75,13 @@ try {
   await page.reload();
   await expect(page.getByText('The approved report is ready.', { exact: true })).toBeVisible({ timeout: 30000 });
   await expect(page.getByText('Runtime result integration page.', { exact: false })).toHaveCount(0);
+  const previewResponse = page.waitForResponse(response => response.url().includes('/files/artifacts/') && response.url().endsWith('/content'));
+  await page.getByTestId('chat-artifact-row-open').filter({ hasText: 'shared-report.md' }).last().click();
+  assert.equal((await previewResponse).status(), 200);
+  await expect(page.getByTestId('session-artifact-preview-inspector')).toContainText('GROUP_REPORT');
+  const downloaded = page.waitForEvent('download');
+  await page.getByTestId('session-artifact-preview-inspector').getByRole('button', { name: 'Download shared-report.md', exact: true }).click();
+  assert.equal(await readFile(await (await downloaded).path(), 'utf8'), 'GROUP_REPORT');
   await page.screenshot({ path: fixture.completedScreenshot, fullPage: true });
   assert.deepEqual(errors, []);
   await approver.close();

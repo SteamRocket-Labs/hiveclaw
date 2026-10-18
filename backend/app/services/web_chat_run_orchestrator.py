@@ -1448,13 +1448,14 @@ async def _commit_canonical_terminal_outcome(
     from app.services.session_terminal_outcome import (
         TerminalOutcomeIneligible,
         TerminalOutcomeNeedsReconciliation,
+        TerminalReadArtifactSelectionNeedsReconciliation,
         commit_terminal_outcome,
         prepare_and_seal_run_outcome,
     )
 
     result_id = uuid.UUID(str(model_receipt["result_id"]))
     try:
-        await _record_canonical_terminal_artifact_selection(state, response)
+        await _record_canonical_terminal_artifact_selection(state, response, terminal_result_id=result_id)
         async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
             outcome = await prepare_and_seal_run_outcome(
                 db,
@@ -1520,7 +1521,8 @@ async def _commit_canonical_terminal_outcome(
             result_summary="Canonical terminal outcome requires reconciliation.",
             metadata_json={
                 "session_v2_reconciliation": {
-                    "reason": "terminal_outcome_commit",
+                    "reason": ("terminal_artifact_selection" if isinstance(exc, TerminalReadArtifactSelectionNeedsReconciliation)
+                        else "terminal_outcome_commit"),
                     "result_id": str(result_id),
                     "error_class": type(exc).__name__,
                 }
@@ -1532,13 +1534,15 @@ async def _commit_canonical_terminal_outcome(
 async def _record_canonical_terminal_artifact_selection(
     state: _WebChatRunState,
     response: str,
+    *, terminal_result_id: uuid.UUID,
 ) -> None:
     """Bind model-declared, current-turn artifacts before the outcome seal."""
 
     from app.models.chat_artifact import ChatArtifact
     from app.models.runtime_task import RuntimeTask
-    from app.services.chat_artifact_delivery import artifact_part_from_model
+    from app.services.chat_artifact_delivery import artifact_part_from_model, materialize_declared_read_artifacts
     from app.services.session_terminal_outcome import TerminalOutcomeNeedsReconciliation
+    from app.services.web_chat_runtime import _is_user_visible_terminal_artifact_path
 
     selected_paths = state.ports.artifacts.artifact_paths(state.runtime_session_context, response)
     declared_paths = state.ports.artifacts.declared_paths(response)
@@ -1557,6 +1561,11 @@ async def _record_canonical_terminal_artifact_selection(
         )
         if task is None:
             raise TerminalOutcomeNeedsReconciliation("canonical terminal artifact selection has no RuntimeTask")
+        read_parts = await materialize_declared_read_artifacts(db, task=task, model_result_id=terminal_result_id,
+            paths=[path for path in declared_paths if _is_user_visible_terminal_artifact_path(path)])
+        read_paths = [part["path"] for part in read_parts]
+        selected_paths = list(dict.fromkeys([*selected_paths, *read_paths]))
+        rejected_paths = [path for path in rejected_paths if path not in read_paths]
         rows: list[ChatArtifact] = []
         if selected_paths:
             artifact_statement = select(ChatArtifact).where(
@@ -1597,7 +1606,9 @@ async def _record_canonical_terminal_artifact_selection(
                 "artifact_ids": [part["artifact_id"] for part in artifact_parts],
                 "artifact_paths": [part["path"] for part in artifact_parts],
                 "artifacts": artifact_parts,
-                "artifact_attachment_policy": "model_declared_current_turn_writes_only",
+                "artifact_selection_result_id": str(terminal_result_id),
+                "artifact_attachment_policy": ("model_declared_verified_read_or_write" if read_paths
+                    else "model_declared_current_turn_writes_only"),
             }
         )
         task.metadata_json = metadata

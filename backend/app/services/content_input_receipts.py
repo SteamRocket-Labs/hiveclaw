@@ -849,6 +849,20 @@ async def validate_artifact_content_receipt(db, tenant_id, user, artifact, *, ru
         raise ContentInputReceiptError("workspace_content_unverified", "The artifact's source receipt does not match its captured bytes.")
     if runtime_principal is not None:
         await _runtime_input_actor(db, tenant_id, runtime_principal)
+    if snapshot.get("selection_model_result_id") is not None:
+        from app.models.session_v2 import SessionModelResult
+        from app.services.session_model_inputs import _model_dependencies
+
+        try:
+            model_id = uuid.UUID(snapshot["selection_model_result_id"])
+        except (ValueError, TypeError) as exc:
+            raise ContentInputReceiptError("artifact_selection_unavailable", "The artifact selection source is invalid.", 503) from exc
+        model = await db.get(SessionModelResult, model_id, populate_existing=True)
+        dependencies, complete = _model_dependencies(model)
+        if not complete or (model.tenant_id, model.session_id, model.run_id) != (
+            artifact.tenant_id, artifact.session_id, artifact.runtime_task_id):
+            raise ContentInputReceiptError("artifact_selection_unavailable", "The exact artifact selection source is unavailable.", 503)
+        await _validate_input_dependencies(db, tenant_id, dependencies, user=user, runtime_request=runtime_principal)
     await _validate_workspace_receipt_inputs(db, receipt, user=user,
         runtime_request=runtime_principal, active_receipts=frozenset({receipt.id}))
 

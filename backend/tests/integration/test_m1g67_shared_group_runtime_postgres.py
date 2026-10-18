@@ -252,6 +252,8 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
         responses.insert(0, {"tool_calls": [{"id": "private-read", "type": "function", "function": {"name": "read_file",
             "arguments": json.dumps({"path": "workspace/private-notes.md"})}}], "finish_reason": "tool_calls"})
         responses[-1]["content"] = f"The private report says {private_canary}."
+    if mutation is None:
+        responses[-1]["content"] = "The [shared report](workspace/shared-report.md) is ready."
     client = ScriptedLLMClient(responses)
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
     fence = set_runtime_task_fence(task_id=run_id, worker_id="shared-worker", claim_version=1)
@@ -284,6 +286,36 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
         assert all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in results)
         assert (await db.get(SessionTurnInput, event.event_id)).status == "applied"
         assert (seed["agent_root"] / "workspace/shared-report.md").read_text() == report_content
+        from app.models.chat_artifact import ChatArtifact
+        from app.models.chat_transcript_event import ChatTranscriptEvent
+        from app.services.chat_artifact_delivery import captured_chat_artifact_file
+
+        artifacts = list(await db.scalars(select(ChatArtifact).where(ChatArtifact.runtime_task_id == run_id)))
+        assert len(artifacts) == 1, [(row.id, row.path) for row in artifacts]
+        artifact = artifacts[0]
+        assert artifact.owner_user_id == member.id and artifact.root_session_id == shared_id
+        assert artifact.snapshot_json["tool_invocation_id"] and artifact.snapshot_json["execution_evidence_ref"]
+        terminal_events = list(await db.scalars(select(ChatTranscriptEvent).where(ChatTranscriptEvent.run_id == run_id,
+            ChatTranscriptEvent.item_kind == "assistant_final", ChatTranscriptEvent.lifecycle == "completed")))
+        assert len(terminal_events) == 1 and str(artifact.id) in terminal_events[0].metadata_json["v2_payload"]["artifact_refs"]
+        with captured_chat_artifact_file(artifact, seed["agent_root"]) as (captured, _source):
+            assert captured is not None and captured.read_text() == report_content
+        tool_events = list(await db.scalars(select(ChatTranscriptEvent).where(ChatTranscriptEvent.run_id == run_id,
+            ChatTranscriptEvent.item_kind == "tool_result")))
+        assert any(part.get("artifact_id") == str(artifact.id) for row in tool_events for part in row.parts_json or [])
+        if mutation is None:
+            from app.api import files
+            from app.services.chat_artifact_delivery import create_chat_artifacts_for_message
+
+            monkeypatch.setattr(files, "settings", get_settings())
+            content = await files.read_artifact_content(agent_id=seed["agent_id"], artifact_id=artifact.id,
+                current_user=await db.get(User, member.id), db=db, operator_view=False, operator_reason=None)
+            assert content.content == report_content
+            errors = []
+            late = await create_chat_artifacts_for_message(db=db, agent_id=seed["agent_id"], tenant_id=seed["tenant_id"],
+                session_id=shared_id, message_id=artifact.message_id, runtime_task_id=run_id, paths=[artifact.path],
+                workspace_root=seed["agent_root"], owner_user_id=seed["user_id"], publication_errors=errors)
+            assert late == [] and errors[0]["reason_code"] == "artifact_source_principal_required"
         spans = list(await db.scalars(select(InvocationSpan).where(InvocationSpan.runtime_task_id == run_id,
             InvocationSpan.span_type == "kernel_context")))
         assert spans and all(span.user_id == member.id for span in spans)
@@ -317,7 +349,8 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
             assert outcome["retried"] == 1 and sends == [], outcome
             assert delivery.status == "pending" and "group_recipient_identity_unavailable" in delivery.last_error
         else:
-            assert outcome["delivered"] == 1 and len(sends) == 1, outcome
+            assert outcome["delivered"] == 1 and len(sends) == 2, outcome
+            assert sends[1]["artifact_id"] == artifact.id and sends[1]["file_path"].read_text() == report_content
             assert sends[0]["reply_target"]["receive_id"] == "oc_native_group"
             assert delivery.status == "delivered"
     if mutation in {"queued_member", "private_context", "shared_context"}:

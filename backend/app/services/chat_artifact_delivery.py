@@ -981,6 +981,7 @@ async def create_chat_artifacts_for_message(
     from app.database import tenant_scoped_session
     from app.services.content_input_receipts import (
         ContentInputReceiptError, validate_artifact_content_receipt, validate_browser_workspace_receipt,
+        validate_runtime_workspace_receipt,
     )
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
 
@@ -988,7 +989,7 @@ async def create_chat_artifacts_for_message(
     seen: set[tuple[str, str]] = set()
     session_uuid = uuid.UUID(str(session_id))
     runtime_uuid = uuid.UUID(str(runtime_task_id)) if runtime_task_id else None
-    authority_user = None
+    authority_user = runtime_principal = authority_error = None
     if isinstance(db, AsyncSession):
         from app.models.user import User
 
@@ -1005,6 +1006,22 @@ async def create_chat_artifacts_for_message(
         root_session_id = (
             authority_session.root_session_id or authority_session.id if authority_session is not None else None
         )
+        if authority_session is not None and authority_session.audience_kind == "group":
+            from app.models.runtime_task import RuntimeTask
+            from app.services.personal_knowledge_access import AgentRuntimePrincipal
+            from app.services.shared_group_authority import load_shared_group_runtime_actor
+
+            try:
+                actor = await load_shared_group_runtime_actor(db,
+                    task=await db.get(RuntimeTask, runtime_uuid) if runtime_uuid else None, session=authority_session)
+                owner_user_id = actor.id
+                if owner_user_id is not None:
+                    runtime_principal = AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=owner_user_id,
+                        session_id=str(session_uuid), runtime_task_id=str(runtime_uuid))
+            except HTTPException as exc:
+                authority_error = exc
+            except (PermissionError, ValueError):
+                owner_user_id = None
         if owner_user_id is not None:
             authority_user = await db.get(User, owner_user_id)
             if authority_user is not None and authority_user.tenant_id != tenant_id:
@@ -1038,13 +1055,15 @@ async def create_chat_artifacts_for_message(
             continue
         if isinstance(db, AsyncSession):
             try:
+                if authority_error is not None:
+                    raise authority_error
                 if authority_user is None:
                     raise WorkspaceAuthorityError(
                         "artifact_source_principal_required", "Artifact publication requires the session's source reader.",
                     )
                 await authorize_workspace_path(
                     db, authority_user, agent_id=agent_id, path=path, action="read",
-                    path_exists=True, session_id=session_uuid,
+                    path_exists=True, session_id=session_uuid, runtime_principal=runtime_principal,
                 )
             except (WorkspaceAuthorityError, HTTPException) as exc:
                 if publication_errors is not None:
@@ -1064,7 +1083,8 @@ async def create_chat_artifacts_for_message(
                 if native_artifact is not None:
                     try:
                         async with tenant_scoped_session(tenant_id) as source_db:
-                            await validate_artifact_content_receipt(source_db, tenant_id, authority_user, native_artifact)
+                            await validate_artifact_content_receipt(source_db, tenant_id, authority_user, native_artifact,
+                                runtime_principal=runtime_principal)
                         with captured_chat_artifact_file(native_artifact, workspace_root) as (captured, _source):
                             if captured is None:
                                 native_artifact = None
@@ -1127,8 +1147,13 @@ async def create_chat_artifacts_for_message(
                 and receipt.content_sha256 == candidate["content_hash"]) else None
             try:
                 async with tenant_scoped_session(tenant_id) as source_db:
-                    await validate_browser_workspace_receipt(source_db, tenant_id, authority_user,
-                        receipt if candidate["snapshot"]["content_input_receipt_id"] is not None else None, candidate["content_hash"])
+                    source_receipt = receipt if candidate["snapshot"]["content_input_receipt_id"] is not None else None
+                    if runtime_principal is not None:
+                        await validate_runtime_workspace_receipt(source_db, tenant_id, runtime_principal,
+                            source_receipt, candidate["content_hash"])
+                    else:
+                        await validate_browser_workspace_receipt(source_db, tenant_id, authority_user,
+                            source_receipt, candidate["content_hash"])
             except ContentInputReceiptError as exc:
                 record_source_error(path, exc)
                 continue
@@ -1188,7 +1213,8 @@ async def create_chat_artifacts_for_message(
             if isinstance(db, AsyncSession):
                 try:
                     async with tenant_scoped_session(tenant_id) as source_db:
-                        await validate_artifact_content_receipt(source_db, tenant_id, authority_user, existing)
+                        await validate_artifact_content_receipt(source_db, tenant_id, authority_user, existing,
+                            runtime_principal=runtime_principal)
                 except ContentInputReceiptError as exc:
                     record_source_error(path, exc)
                     continue

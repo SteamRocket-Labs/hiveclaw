@@ -792,6 +792,14 @@ async def validate_browser_workspace_receipt(db, tenant_id: uuid.UUID, user, rec
     await validate_browser_input_dependencies(db, tenant_id, user, dependencies)
 
 
+async def validate_runtime_workspace_receipt(db, tenant_id, principal, receipt, content_sha256):
+    if receipt is None or receipt.content_sha256 != content_sha256:
+        raise ContentInputReceiptError("workspace_content_unverified", "The file has no matching verified content receipt.")
+    await _runtime_input_actor(db, tenant_id, principal)
+    await _validate_workspace_receipt_inputs(db, receipt, runtime_request=principal,
+        active_receipts=frozenset({receipt.id}))
+
+
 async def validate_artifact_content_receipt(db, tenant_id, user, artifact, *, runtime_principal=None):
     """Recheck the captured version's sources without borrowing a later version's audience."""
     snapshot = artifact.snapshot_json or {}

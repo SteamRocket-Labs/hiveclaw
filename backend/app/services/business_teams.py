@@ -610,6 +610,12 @@ async def read_team(db: AsyncSession, caller: User, team_id: uuid.UUID) -> dict:
         for row in memberships
     ]
     summary["affiliations"] = await _affiliation_payloads(db, team, actor)
+    summary["home_employees"] = []
+    if summary["can_manage"] and team.status == "active":
+        home = await db.execute(select(Agent.id, Agent.name).where(
+            Agent.tenant_id == team.tenant_id, Agent.home_business_team_id == team.id,
+            Agent.deleted_at.is_(None)).order_by(Agent.name, Agent.id))
+        summary["home_employees"] = [{"id": str(row.id), "name": row.name} for row in home]
     summary["private_sessions"] = True
     summary["my_role"] = mine.role if mine is not None else None
     return summary

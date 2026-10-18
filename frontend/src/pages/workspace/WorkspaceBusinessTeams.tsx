@@ -9,6 +9,7 @@ import { useAuthStore } from '../../stores';
 import WorkspaceApprovalsSection from './WorkspaceApprovalsSection';
 import TeamRuntimeBudgets from './TeamRuntimeBudgets';
 import TeamBusinessTasks from './TeamBusinessTasks';
+import EmployeeReadinessControls from '../../components/EmployeeReadinessControls';
 
 type SignedInUser = {
   id?: string;
@@ -508,6 +509,13 @@ export function WorkspaceBusinessTeams({ agents }: { agents: Agent[] }) {
                 </button>
               </form>
             )}
+            {detail.can_manage && (detail.home_employees?.length ?? 0) > 0 && <>
+              <h4>{t('employeeReadiness.homeEmployees', 'Employees assigned to this team')}</h4>
+              <ul className="business-team-employees">{detail.home_employees?.map((employee) => <li key={employee.id}>
+                <strong>{employee.name}</strong>
+                <EmployeeReadinessControls key={`${scopeKey}:${employee.id}`} agentId={employee.id} teamId={detail.id} scopeKey={scopeKey} />
+              </li>)}</ul>
+            </>}
             <h4>{t('featureHub.businessTeams.employeesTitle', 'Employees this team can use')}</h4>
             {detail.affiliations.length === 0 && <p>{t('featureHub.businessTeams.noEmployees', 'No employee has been shared with this team.')}</p>}
             <ul className="business-team-employees">

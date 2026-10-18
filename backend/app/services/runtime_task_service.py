@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 _RESTART_RESUMABLE_TASK_TYPES = (
+    "readiness_probe",
     "workflow",
     "web_chat_turn",
     "team_member",

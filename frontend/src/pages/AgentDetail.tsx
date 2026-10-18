@@ -66,6 +66,7 @@ import { ccParityApi } from '../api/domains/ccParity';
 import { ApiError } from '../api/core';
 import { uploadFileWithProgress } from '../api/core/upload-progress';
 import { useAuthStore } from '../stores';
+import EmployeeReadinessControls from '../components/EmployeeReadinessControls';
 import { parseSlashCommandInput } from './agent-detail/slashCommand';
 import {
     commandResultRecord,
@@ -206,6 +207,13 @@ function AgentDetailInner() {
     }, [location.hash, routeSessionId]);
     const token = useAuthStore((s) => s.token);
     const currentUser = useAuthStore((s) => s.user);
+    const [readinessTenant, setReadinessTenant] = useState(() => localStorage.getItem('current_tenant_id') || '');
+    useEffect(() => {
+        const changed = (event: StorageEvent) => { if (event.key === 'current_tenant_id') setReadinessTenant(event.newValue || ''); };
+        window.addEventListener('storage', changed);
+        return () => window.removeEventListener('storage', changed);
+    }, []);
+    const readinessScopeKey = `${readinessTenant || currentUser?.tenant_id || ''}:${currentUser?.id || ''}`;
 
     const {
         agent,
@@ -2827,6 +2835,9 @@ function AgentDetailInner() {
                 {/* ── Settings Tab ── */}
                 {
                     activeTab === 'settings' && (
+                        <>
+                        {canManage && <EmployeeReadinessControls key={`${readinessScopeKey}:${id}`}
+                          agentId={id!} scopeKey={readinessScopeKey} />}
                         <AgentSettingsSection
                             agentId={id!}
                             agent={agent}
@@ -2850,6 +2861,7 @@ function AgentDetailInner() {
                             onSetWmDraft={setWmDraft}
                             onSetWmSaved={setWmSaved}
                         />
+                        </>
                     )
                 }
                 </Suspense>

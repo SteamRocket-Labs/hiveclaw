@@ -17,6 +17,7 @@ from app.models.tenant import Tenant
 
 CLAIMABLE_RUNTIME_TASK_STATUSES = ("pending", "resumable")
 LEASE_RECLAIMABLE_RUNTIME_TASK_TYPES = (
+    "readiness_probe",
     "web_chat_turn",
     "goal_continuation",
     "team_member",

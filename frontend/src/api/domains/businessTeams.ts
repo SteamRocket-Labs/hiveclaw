@@ -55,6 +55,7 @@ export interface BusinessTeamAffiliation {
 export interface BusinessTeamDetail extends BusinessTeamSummary {
   members: BusinessTeamMember[];
   affiliations: BusinessTeamAffiliation[];
+  home_employees?: Array<{ id: string; name: string }>;
   private_sessions: boolean;
   visible?: boolean;
   access?: string;

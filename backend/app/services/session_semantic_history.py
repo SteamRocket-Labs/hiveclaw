@@ -335,10 +335,12 @@ def _user_messages(
         content = user_checkpoint_content(view.source)
         if not content:
             continue
+        parts = _event_payload(view.source).get("content_parts") or []
+        role = "system" if parts and isinstance(parts[0], dict) and parts[0].get("role") == "system" else "user"
         messages.append(
             SessionSemanticMessage(
                 id=f"session-input:{input_id}",
-                role="user",
+                role=role,
                 content=content,
                 created_at=view.created_at,
                 sequence_start=view.sequence,

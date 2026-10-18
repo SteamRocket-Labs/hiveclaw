@@ -1,6 +1,7 @@
 """Trace a delegated instruction to its actual canonical parent tool call."""
 
 import json
+from contextlib import asynccontextmanager
 import platform
 import sys
 from uuid import uuid4, uuid5
@@ -497,6 +498,14 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 return {"data": {"message_id": "synthetic-question-notice"}}
             monkeypatch.setattr(FeishuService, "send_message", send_notice)
             notice_service = ChannelDeliveryOutboxService(session_factory=app_user_sessionmaker)
+            @asynccontextmanager
+            async def notice_session(_operation):
+                # This journey owns one tenant; unrelated fixtures keep their pending deliveries.
+                from app.database import tenant_scoped_session
+
+                async with tenant_scoped_session(seed["tenant_id"], session_factory=app_user_sessionmaker) as scoped:
+                    yield scoped
+            monkeypatch.setattr(notice_service, "_worker_session", notice_session)
             assert (await notice_service.drain_once(worker_id="question-notice"))["delivered"] >= 1
             assert (await notice_service.drain_once(worker_id="question-notice-replay"))["delivered"] == 0
             assert len(sent_notices) == 1 and sent_notices[0]["target"] == "ou_creation_owner"

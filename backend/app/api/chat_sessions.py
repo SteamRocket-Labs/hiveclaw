@@ -1019,7 +1019,7 @@ async def _get_run_session_and_agent(
     )
     if require_execution:
         reject_non_executing_agent_access(access_level)
-    if getattr(session, "audience_kind", None) == "group" and action == "read_active_run":
+    if getattr(session, "audience_kind", None) == "group" and action in {"read_active_run", "read_session_approval"}:
         from app.services.shared_group_history import authorize_group_history_reader
 
         authority_source = await authorize_group_history_reader(db, session=session, user=current_user)
@@ -2373,14 +2373,16 @@ async def get_session_approval(
     agent_id: uuid.UUID, session_id: uuid.UUID, approval_id: uuid.UUID,
     current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
 ):
-    from app.services.session_approval import load_session_approval, session_approval_projection
+    from app.services.session_approval import authorize_session_approval_reader, load_session_approval, session_approval_projection
 
     session, agent, _authority = await _get_run_session_and_agent(
         db=db, agent_id=agent_id, session_id=session_id, current_user=current_user,
+        action="read_session_approval",
     )
     approval = await load_session_approval(db, session=session, approval_id=approval_id)
     if approval is None:
         raise HTTPException(status_code=404, detail="Approval not found in this work")
+    await authorize_session_approval_reader(db, session=session, approval=approval, user=current_user)
     return session_approval_projection(approval, agent=agent, user=current_user)
 
 
@@ -2390,14 +2392,16 @@ async def resolve_session_approval(
     current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
 ):
     from app.services.approval_service import _can_resolve_agent_approval, approval_service
-    from app.services.session_approval import load_session_approval, session_approval_projection
+    from app.services.session_approval import authorize_session_approval_reader, load_session_approval, session_approval_projection
 
     session, agent, _authority = await _get_run_session_and_agent(
         db=db, agent_id=agent_id, session_id=session_id, current_user=current_user,
+        action="read_session_approval",
     )
     approval = await load_session_approval(db, session=session, approval_id=approval_id, for_update=True)
     if approval is None:
         raise HTTPException(status_code=404, detail="Approval not found in this work")
+    await authorize_session_approval_reader(db, session=session, approval=approval, user=current_user)
     if not _can_resolve_agent_approval(agent, current_user):
         raise HTTPException(status_code=403, detail="Only the responsible approver can decide this action")
     if approval.status != "pending":

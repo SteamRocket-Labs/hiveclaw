@@ -181,11 +181,20 @@ async def _enqueue_origin_continuation(
     """Atomically bridge an approval decision or execution back to its source session."""
     session, session_key = await _resolve_origin_session(db, approval=approval, task=task)
     receipt = dict(approval.execution_receipt or {})
+    parent_user_id = session.user_id if session else None
+    root_runtime_task_id = None
+    if session is not None and session.audience_kind == "group":
+        from app.services.session_approval import group_approval_requester
+
+        actor, invocation = await group_approval_requester(db, session=session, approval=approval)
+        parent_user_id = actor.id
+        original = await db.get(RuntimeTask, invocation.run_id)
+        root_runtime_task_id = original.root_runtime_task_id or original.id
     if session_key is None:
         receipt["continuation_status"] = "not_requested"
         approval.execution_receipt = receipt
         return None
-    if session is None or session.user_id is None or approval.tenant_id is None:
+    if session is None or parent_user_id is None or approval.tenant_id is None:
         receipt.update(
             {
                 "continuation_status": "needs_reconciliation",
@@ -228,7 +237,8 @@ async def _enqueue_origin_continuation(
             source_run_id=str(task.id if task else approval.id),
             parent_session_id=session.id,
             parent_agent_id=approval.agent_id,
-            parent_user_id=session.user_id,
+            parent_user_id=parent_user_id,
+            root_runtime_task_id=root_runtime_task_id,
             terminal_status=terminal_status,
             task_type="approval_execution" if task else "approval_decision",
             summary=result_text or f"Approval execution {approval_status}.",

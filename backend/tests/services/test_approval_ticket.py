@@ -187,6 +187,7 @@ async def test_approval_ticket_keeps_requester_authority_distinct_from_approver(
                 email=f"{approver_id.hex[:8]}@approval.test",
                 password_hash="x",
                 display_name="Approval Admin",
+                role="org_admin",
                 tenant_id=tenant_id,
             )
         )
@@ -463,3 +464,35 @@ async def test_reconcile_stuck_approval_ticket_marks_uncertain_without_replay(
         assert row.execution_receipt["side_effect_state"] == "unknown"
         assert row.execution_receipt["automatic_replay"] is False
         assert row.tenant_id == tenant_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active", [True, False])
+async def test_company_ticket_rechecks_cross_company_platform_approver(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, active,
+):
+    import app.database as database
+    from app.models.audit import ApprovalRequest
+    from app.models.tenant import Tenant
+    from app.models.user import User
+    from app.services.approval_ticket import ApprovalTicketError, consume_approval_ticket
+
+    _, _, agent_id, approval_id, _ = await _seed_approved_ticket(owner_sessionmaker)
+    home_id, approver_id = uuid.uuid4(), uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(Tenant(id=home_id, name="Platform home", slug=f"platform-{home_id.hex}"))
+        await db.flush()
+        db.add(User(id=approver_id, username=f"platform-{approver_id.hex}", email=f"{approver_id.hex}@approval.test",
+            password_hash="x", display_name="Platform Approver", role="platform_admin", tenant_id=home_id, is_active=active))
+        await db.flush()
+        (await db.get(ApprovalRequest, approval_id)).resolved_by = approver_id
+        await db.commit()
+    monkeypatch.setattr(database, "async_session", app_user_sessionmaker)
+    if active:
+        ticket = await consume_approval_ticket(approval_id=approval_id, expected_agent_id=agent_id, expected_user_id=approver_id)
+        assert ticket.approved_by_user_id == approver_id and ticket.requested_by_user_id != approver_id
+    else:
+        with pytest.raises(ApprovalTicketError, match="approver is no longer responsible"):
+            await consume_approval_ticket(approval_id=approval_id, expected_agent_id=agent_id, expected_user_id=approver_id)
+        async with owner_sessionmaker() as db:
+            assert (await db.get(ApprovalRequest, approval_id)).consumed_at is None

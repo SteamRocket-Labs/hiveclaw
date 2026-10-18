@@ -73,3 +73,11 @@ describe('approvalRequestPresentation', () => {
     });
   });
 });
+
+
+it('names the exact approved file without exposing its content or execution envelope', () => {
+  expect(approvalRequestPresentation({ tool_name: 'write_file', action_type: 'guard_policy:write_file',
+    details: { path: 'workspace/shared-report.md', args: { content: 'PRIVATE_BYTES' }, execution_envelope: { token: 'SECRET' } }
+  })).toEqual({ actionKey: 'writeFile', actionFallback: 'Write a workspace file', description: null,
+    fields: [{ key: 'path', value: 'workspace/shared-report.md', code: true }] });
+});

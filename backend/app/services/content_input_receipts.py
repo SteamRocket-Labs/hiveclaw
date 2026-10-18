@@ -889,10 +889,19 @@ async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_
             invocation = (await db.scalars(select(SessionToolInvocation).where(
                 SessionToolInvocation.tenant_id == tenant_id, SessionToolInvocation.session_id == session_id,
                 SessionToolInvocation.run_id == run_id, SessionToolInvocation.provider_tool_use_id == tool_call_id,
-                SessionToolInvocation.tool_name == tool_name, SessionToolInvocation.result_event_id.is_(None),
+                SessionToolInvocation.tool_name == tool_name,
             ))).one_or_none()
             if invocation is None or (invocation.effective_args_hash or invocation.args_hash) != args_hash:
                 raise ContentInputReceiptError("workspace_execution_scope_mismatch", "The canonical invocation does not match.")
+            if invocation.result_event_id is not None:
+                from app.models.runtime_task import RuntimeTask
+                from app.services.shared_group_authority import approval_execution_matches
+
+                task = await db.get(RuntimeTask, run_id)
+                if session.audience_kind != "group" or not await approval_execution_matches(
+                    db, task=task, session=session, invocation_id=invocation.id,
+                ):
+                    raise ContentInputReceiptError("workspace_execution_scope_mismatch", "The settled call has no claimed company execution.")
             model = await db.scalar(select(SessionModelResult).where(
                 SessionModelResult.tenant_id == tenant_id, SessionModelResult.session_id == session_id,
                 SessionModelResult.run_id == run_id, SessionModelResult.provider_request_id == invocation.provider_request_id,

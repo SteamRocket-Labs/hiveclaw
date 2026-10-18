@@ -347,6 +347,9 @@ function projectCanonicalItem(
     };
   }
   if (item.kind === 'human_input') {
+    const firstPart = Array.isArray(item.payload.content_parts) ? recordValue(item.payload.content_parts[0]) : undefined;
+    // Internal result inputs already have a dedicated runtime notification in the conversation.
+    if (firstPart?.role === 'system') return null;
     return {
       role: 'user',
       content: itemDisplayContent(item),

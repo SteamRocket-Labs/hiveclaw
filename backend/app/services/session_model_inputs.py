@@ -393,6 +393,22 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
     # The call's own audience remains a source, including empty searches and private query arguments.
     dependencies = [*dependencies, {"source_kind": "session_tool_invocation", "source_id": str(invocation.id),
         "source_version": payload["content_hash"]}]
+    try:
+        handoff = json.loads(content)
+    except (ValueError, TypeError):
+        handoff = None
+    if isinstance(handoff, dict) and handoff.get("status") == "approval_required":
+        from app.models.audit import ApprovalRequest
+        from app.services.session_approval import invocation_enterprise_approval
+
+        try:
+            ticket = await db.get(ApprovalRequest, uuid.UUID(str(handoff.get("approval_id"))))
+        except (ValueError, TypeError):
+            ticket = None
+        approval = await invocation_enterprise_approval(db, invocation=invocation, agent_id=agent_id,
+            decision={"approval_id": str(ticket.id), "decision_id": ticket.decision_id},
+            input_hash=invocation.effective_args_hash) if ticket else None
+        return _unique_dependencies(dependencies), inherited_complete and approval is not None
     if invocation.permission_state == "denied":
         from app.models.session_v2 import SessionControlInput
 

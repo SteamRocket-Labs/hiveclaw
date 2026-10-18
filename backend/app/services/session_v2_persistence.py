@@ -77,6 +77,7 @@ SESSION_COMMAND_AUTHORITY_STAMP_KEY = "session_command_authority"
 # Same stamp contract as above: the stamp only selects the recovery
 # revalidation lane; it never grants authority and carries no claim data.
 RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE = "runtime_result_integration"
+GROUP_APPROVAL_RESULT_AUTHORITY_SOURCE = "shared_group_approval_result"
 RUNTIME_RESULT_INTEGRATION_STAMP_SCHEMA = "hive.session_command_authority.runtime_result_integration.v1"
 _A2A_OUTBOX_SOURCE_KINDS = frozenset({"delegation", "a2a_delegation", "a2a_continuation"})
 SHARED_GROUP_INGRESS_STAMP_SCHEMA = "hive.session_command_authority.shared_group_ingress.v1"
@@ -470,7 +471,7 @@ async def resolve_a2a_delegation_peer_authority(
     )
 
 
-def runtime_result_integration_command_stamp(*, page_id: uuid.UUID) -> dict[str, str]:
+def runtime_result_integration_command_stamp(*, page_id: uuid.UUID, authority_source=RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE) -> dict[str, str]:
     """Server-minted typed marker for the runtime result integration lane.
 
     The stamp only selects the recovery revalidation lane.  It is not a
@@ -480,7 +481,7 @@ def runtime_result_integration_command_stamp(*, page_id: uuid.UUID) -> dict[str,
 
     return {
         "schema": RUNTIME_RESULT_INTEGRATION_STAMP_SCHEMA,
-        "authority_source": RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE,
+        "authority_source": authority_source,
         "integration_page_id": str(page_id),
     }
 
@@ -498,10 +499,9 @@ async def _validate_runtime_result_integration_binding(
 
     Two independent durable proofs, no message content and no metadata:
 
-    * the target session must itself be a genuine A2A delegation child,
-      revalidated through the same durable binding validator used by the
-      peer lane (peer agent, immediate parent route, chain root user,
-      exact ``task_type='delegation'`` task);
+    * the target is a genuine A2A delegation child (peer, immediate parent,
+      chain root user, exact delegation task), or a shared group whose exact
+      company ticket, original canonical call and current requester are proven;
     * the page must exactly bind tenant, parent session, parent agent and
       parent root user, be a ``parent_continuation`` page, and carry at
       least one linked outbox row whose parent route matches; A2A source
@@ -524,15 +524,15 @@ async def _validate_runtime_result_integration_binding(
     from app.models.runtime_result import RuntimeResultIntegrationPage
     from app.models.runtime_task import RuntimeTask
 
-    if session.peer_agent_id is None or session.runtime_task_id is None:
-        raise PermissionError("runtime_result_integration_target_not_delegation")
-    root_user, _delegation_task = await _validate_a2a_delegation_peer_binding(
-        db,
-        session=session,
-        agent=agent,
-        peer_agent_id=session.peer_agent_id,
-        delegation_runtime_task_id=session.runtime_task_id,
-    )
+    group_return = session.audience_kind == "group"
+    root_user = None
+    if not group_return:
+        if session.peer_agent_id is None or session.runtime_task_id is None:
+            raise PermissionError("runtime_result_integration_target_not_delegation")
+        root_user, _delegation_task = await _validate_a2a_delegation_peer_binding(
+            db, session=session, agent=agent, peer_agent_id=session.peer_agent_id,
+            delegation_runtime_task_id=session.runtime_task_id,
+        )
 
     if require_delivery_state:
         # Transaction-level claim fence: the exact page row is locked FOR
@@ -551,6 +551,12 @@ async def _validate_runtime_result_integration_binding(
         page = await db.get(RuntimeResultIntegrationPage, page_id)
     if page is None:
         raise PermissionError("runtime_result_integration_page_not_found")
+    if group_return:
+        from app.services.session_approval import group_approval_return_actor
+
+        source_rows = list(await db.scalars(select(RuntimeNotificationOutbox).where(
+            RuntimeNotificationOutbox.integration_page_id == page.id)))
+        root_user = await group_approval_return_actor(db, session=session, rows=source_rows)
     tenant_id = session.tenant_id
     if page.tenant_id != tenant_id:
         raise PermissionError("runtime_result_integration_tenant_mismatch")
@@ -668,10 +674,10 @@ async def resolve_runtime_result_integration_authority(
     return AuthenticatedSessionAuthority(
         tenant_id=session.tenant_id,
         agent_id=agent.id,
-        principal_type="user",
-        principal_id=root_user.id,
+        principal_type="external_principal" if getattr(root_user, "external_principal_id", None) else "user",
+        principal_id=getattr(root_user, "external_principal_id", None) or root_user.id,
         session_id=session.id,
-        authority_source=RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE,
+        authority_source=GROUP_APPROVAL_RESULT_AUTHORITY_SOURCE if session.audience_kind == "group" else RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE,
         action=action,
         _seal=_AUTHORITY_SEAL,
     )
@@ -725,7 +731,9 @@ async def resolve_session_command_authority(
         # stamp itself grants nothing.  Recovery revalidates only immutable
         # route and authority facts — a later page/task lifecycle state can
         # never strand an already-accepted command.
-        if command.principal_type != "user" or not isinstance(stamp, dict):
+        if (command.principal_type != "user" and not (session.audience_kind == "group"
+            and command.principal_type == "external_principal" and isinstance(stamp, dict)
+            and stamp.get("authority_source") == GROUP_APPROVAL_RESULT_AUTHORITY_SOURCE)) or not isinstance(stamp, dict):
             raise RuntimeError("session_command_authority_stamp_invalid")
         stamp_source = stamp.get("authority_source")
         stamp_schema = stamp.get("schema")
@@ -746,9 +754,11 @@ async def resolve_session_command_authority(
                 delegation_runtime_task_id=delegation_runtime_task_id,
             )
         elif (
-            stamp_source == RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE
+            stamp_source in {RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE, GROUP_APPROVAL_RESULT_AUTHORITY_SOURCE}
             and stamp_schema == RUNTIME_RESULT_INTEGRATION_STAMP_SCHEMA
         ):
+            if (stamp_source == GROUP_APPROVAL_RESULT_AUTHORITY_SOURCE) != (session.audience_kind == "group"):
+                raise RuntimeError("session_command_authority_stamp_invalid")
             try:
                 page_id = _uuid(stamp.get("integration_page_id"), "integration_page_id")
             except ValueError as exc:
@@ -762,13 +772,15 @@ async def resolve_session_command_authority(
             )
         else:
             raise RuntimeError("session_command_authority_stamp_invalid")
-        if command.principal_id != root_user.id:
+        principal_type = "external_principal" if getattr(root_user, "external_principal_id", None) else "user"
+        principal_id = getattr(root_user, "external_principal_id", None) or root_user.id
+        if command.principal_type != principal_type or command.principal_id != principal_id:
             raise RuntimeError("session_command_principal_authority_mismatch")
         authority = AuthenticatedSessionAuthority(
             tenant_id=command.tenant_id,
             agent_id=agent.id,
-            principal_type="user",
-            principal_id=root_user.id,
+            principal_type=principal_type,
+            principal_id=principal_id,
             session_id=session.id,
             authority_source=str(stamp_source),
             action=action,
@@ -974,11 +986,18 @@ async def register_session_command(
         # binding was validated by the resolver in the same transaction.
         if locked_session.user_id != principal_uuid or not _is_a2a_delegation_child_session(locked_session):
             raise ValueError("session_principal_mismatch")
-    if authority.authority_source == RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE:
-        # Same under-lock re-proof for the runtime result return lane: the
-        # lane only ever targets a genuine delegation child session owned by
-        # the same root user the page binds.
-        if locked_session.user_id != principal_uuid or not _is_a2a_delegation_child_session(locked_session):
+    if authority.authority_source in {RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE, GROUP_APPROVAL_RESULT_AUTHORITY_SOURCE}:
+        if locked_session.audience_kind == "group":
+            from app.models.agent import Agent
+
+            stamp = target_payload.get(SESSION_COMMAND_AUTHORITY_STAMP_KEY) or {}
+            actor, _page = await _validate_runtime_result_integration_binding(db, session=locked_session,
+                agent=await db.get(Agent, authority.agent_id), page_id=_uuid(stamp.get("integration_page_id"), "integration_page_id"),
+                require_delivery_state=False)
+            actor_principal = getattr(actor, "external_principal_id", None) or actor.id
+            if actor_principal != principal_uuid or namespace != "human_input":
+                raise ValueError("session_principal_mismatch")
+        elif locked_session.user_id != principal_uuid or not _is_a2a_delegation_child_session(locked_session):
             raise ValueError("session_principal_mismatch")
     if authority.authority_source == "shared_group_ingress":
         from app.services.channel_ingress_context import current_channel_ingress_context
@@ -993,7 +1012,7 @@ async def register_session_command(
             raise ValueError("shared_group_ingress_mismatch")
         target_payload = {**target_payload, SESSION_COMMAND_AUTHORITY_STAMP_KEY: {
             "schema": SHARED_GROUP_INGRESS_STAMP_SCHEMA, "ingress_event_id": str(ingress.event_id)}}
-    elif authority.principal_type == "external_principal":
+    elif authority.principal_type == "external_principal" and authority.authority_source != GROUP_APPROVAL_RESULT_AUTHORITY_SOURCE:
         if locked_session.external_principal_id != principal_uuid:
             raise ValueError("session_external_principal_mismatch")
     result = await db.execute(

@@ -43,11 +43,16 @@ async def load_session_approval(db, *, session, approval_id, for_update=False):
 def session_approval_projection(approval, *, agent, user):
     from app.services.approval_service import _can_resolve_agent_approval
 
-    details = approval.details or {}
+    details = {key: value for key, value in (approval.details or {}).items()
+        if key in {"reason", "summary", "command", "attachment_count"}}
+    if approval.tool_name in {"write_file", "fs_write"}:
+        path = (approval.normalized_arguments or {}).get("path")
+        if isinstance(path, str):
+            details["path"] = path
     return {
         "id": str(approval.id), "status": approval.status, "action_type": approval.action_type,
         "tool_name": approval.tool_name, "execution_status": approval.execution_status,
-        "details": {key: details[key] for key in ("reason", "summary", "command", "attachment_count") if key in details},
+        "details": details,
         "execution_receipt": {"continuation_status": (approval.execution_receipt or {}).get("continuation_status")},
         "can_resolve": approval.status == "pending" and _can_resolve_agent_approval(agent, user),
     }
@@ -55,6 +60,7 @@ def session_approval_projection(approval, *, agent, user):
 
 async def invocation_enterprise_approval(db, *, invocation, agent_id, decision, input_hash):
     from app.models.chat_session import ChatSession
+    from app.services.approval_ticket import hash_tool_input
 
     try:
         approval_id = uuid.UUID(str(decision.get("approval_id") or ""))
@@ -64,16 +70,113 @@ async def invocation_enterprise_approval(db, *, invocation, agent_id, decision, 
     if session is None or session.tenant_id != invocation.tenant_id or session.agent_id != agent_id:
         return None
     approval = await load_session_approval(db, session=session, approval_id=approval_id)
-    if approval is None or approval.tool_name != invocation.tool_name or approval.input_hash != input_hash:
+    if (approval is None or approval.tool_name != invocation.tool_name or approval.input_hash != input_hash
+        or not isinstance(approval.normalized_arguments, dict)
+        or hash_tool_input(approval.tool_name, approval.normalized_arguments) != approval.input_hash):
         return None
     envelope = approval.execution_envelope
+    try:
+        same_run = uuid.UUID(str(envelope.get("runtime_task_id") or "")) == invocation.run_id
+    except ValueError:
+        same_run = False
     if (
-        str(envelope.get("runtime_task_id") or "") != str(invocation.run_id)
+        not same_run
         or str(envelope.get("tool_call_id") or "") != invocation.provider_tool_use_id
         or approval.decision_id != decision.get("decision_id")
     ):
         return None
     return approval
+
+
+async def group_approval_origin(db, *, session, approval):
+    """Bind a company ticket to the original canonical call, never to approver resources."""
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionToolInvocation
+    from app.services.session_model_inputs import _hash
+    from app.services.session_semantic_history import _event_payload
+
+    try:
+        run_id = uuid.UUID(str(approval.execution_envelope.get("runtime_task_id")))
+    except (ValueError, TypeError) as exc:
+        raise ApprovalTicketError("approval group origin is unavailable") from exc
+    invocation = await db.scalar(select(SessionToolInvocation).where(
+        SessionToolInvocation.tenant_id == session.tenant_id, SessionToolInvocation.session_id == session.id,
+        SessionToolInvocation.run_id == run_id,
+        SessionToolInvocation.provider_tool_use_id == approval.execution_envelope.get("tool_call_id")))
+    task = await db.get(RuntimeTask, run_id)
+    if invocation is None or task is None or invocation.result_event_id is None:
+        raise ApprovalTicketError("approval group origin is unavailable")
+    bound = await invocation_enterprise_approval(db, invocation=invocation, agent_id=session.agent_id,
+        decision={"approval_id": str(approval.id), "decision_id": approval.decision_id}, input_hash=approval.input_hash)
+    event = await db.get(ChatTranscriptEvent, invocation.result_event_id)
+    payload = _event_payload(event) if event else {}
+    try:
+        result = json.loads(payload.get("content", ""))
+    except (ValueError, TypeError):
+        result = {}
+    if not isinstance(result, dict):
+        result = {}
+    if (bound is None or task.root_user_id != approval.requested_by or invocation.tool_name != approval.tool_name
+        or invocation.effective_args_hash != _hash({"tool_name": invocation.tool_name,
+            "arguments": invocation.effective_arguments_json})
+        or event is None or (event.tenant_id, event.agent_id, event.session_id, event.run_id) != (
+            session.tenant_id, session.agent_id, session.id, run_id)
+        or payload.get("content_hash") != _hash(payload.get("content"))
+        or result.get("status") != "approval_required" or result.get("approval_id") != str(approval.id)):
+        raise ApprovalTicketError("approval group origin does not match the canonical call")
+    return task, invocation, event
+
+
+async def group_approval_requester(db, *, session, approval):
+    from app.services.shared_group_authority import _load_shared_group_task_actor
+
+    task, invocation, _event = await group_approval_origin(db, session=session, approval=approval)
+    actor = await _load_shared_group_task_actor(db, task=task, session=session)
+    if actor.id != approval.requested_by or not actor.is_active or task.status == "killed":
+        raise ApprovalTicketError("approval group requester is no longer authorized")
+    return actor, invocation
+
+
+async def authorize_session_approval_reader(db, *, session, approval, user):
+    if getattr(session, "audience_kind", None) != "group":
+        return
+    from fastapi import HTTPException
+    from app.services.shared_group_history import group_event_access
+
+    try:
+        _task, _invocation, event = await group_approval_origin(db, session=session, approval=approval)
+    except ApprovalTicketError as exc:
+        raise HTTPException(503, detail={"code": "group_approval_sources_unavailable"}) from exc
+    receipt = (await group_event_access(db, session=session, events=[event], user=user))[event.id]
+    if receipt:
+        raise HTTPException(403 if receipt["status"] == "denied" else 503, detail=receipt)
+
+
+async def group_approval_return_actor(db, *, session, rows):
+    """A durable approval return preserves its requester's purpose and exact outbox route."""
+    requester = None
+    if not rows:
+        raise PermissionError("group_approval_return_source_missing")
+    for row in rows:
+        try:
+            approval_id = uuid.UUID(str((row.metadata_json or {}).get("approval_id")))
+        except (ValueError, TypeError) as exc:
+            raise PermissionError("group_approval_return_source_mismatch") from exc
+        approval = await load_session_approval(db, session=session, approval_id=approval_id)
+        if (approval is None or row.source_kind != "approval" or row.tenant_id != session.tenant_id
+            or row.parent_agent_id != session.agent_id or row.parent_session_id != session.id
+            or row.parent_user_id != approval.requested_by
+            or str(row.source_run_id) != str(approval.execution_task_id or approval.id)
+            or (approval.execution_receipt or {}).get("continuation_outbox_id") != str(row.id)):
+            raise PermissionError("group_approval_return_source_mismatch")
+        actor, _invocation = await group_approval_requester(db, session=session, approval=approval)
+        if requester is not None and requester.id != actor.id:
+            raise PermissionError("group_approval_return_requester_mismatch")
+        requester = actor
+    if requester is None or not requester.is_active:
+        raise PermissionError("group_approval_return_requester_unavailable")
+    return requester
 
 
 async def recover_enterprise_permission_waits(db, *, limit=500):

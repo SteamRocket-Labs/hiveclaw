@@ -1697,7 +1697,6 @@ class RuntimeNotificationOutboxService:
                     select(ChatSession).where(
                         ChatSession.id == page.parent_session_id,
                         ChatSession.agent_id == page.parent_agent_id,
-                        ChatSession.user_id == page.parent_user_id,
                         ChatSession.tenant_id == page.tenant_id,
                     )
                 )
@@ -1711,6 +1710,16 @@ class RuntimeNotificationOutboxService:
                 await db.execute(select(User).where(User.id == page.parent_user_id, User.tenant_id == page.tenant_id))
             ).scalar_one_or_none()
             if parent_session is None or parent_agent is None or owner is None:
+                raise RuntimeError("runtime result page target authority no longer resolves")
+            if parent_session.audience_kind == "group":
+                from app.services.session_approval import group_approval_return_actor
+
+                rows = list(await db.scalars(select(RuntimeNotificationOutbox).where(
+                    RuntimeNotificationOutbox.integration_page_id == page.id)))
+                requester = await group_approval_return_actor(db, session=parent_session, rows=rows)
+                if requester.id != owner.id:
+                    raise PermissionError("group_approval_return_requester_mismatch")
+            elif parent_session.user_id != owner.id:
                 raise RuntimeError("runtime result page target authority no longer resolves")
 
             receipt = await continue_parent_session_with_result_page(

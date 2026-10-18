@@ -148,14 +148,43 @@ def shared_group_command_channel(command, *, session):
 
 
 async def load_shared_group_runtime_actor(db, *, task, session):
-    """Require a live worker claim or one exact applied permission effect."""
+    """Require the original worker, an applied local decision, or its claimed company ticket."""
     from datetime import datetime, timezone
 
     claimed = (task is not None and task.status in {"pending", "running"} and task.claimed_by is not None
         and task.claim_expires_at is not None and task.claim_expires_at > datetime.now(timezone.utc))
-    if not claimed and not await _permission_execution_matches(db, task=task, session=session):
+    if not claimed and not await _permission_execution_matches(db, task=task, session=session) and not await approval_execution_matches(
+        db, task=task, session=session,
+    ):
         raise PermissionError("shared_group_runtime_origin_mismatch")
     return await _load_shared_group_task_actor(db, task=task, session=session)
+
+
+async def approval_execution_matches(db, *, task, session, invocation_id=None):
+    from app.models.audit import ApprovalRequest
+    from app.models.runtime_task import RuntimeTask
+    from app.services.approval_ticket import ApprovalTicketError
+    from app.services.runtime_task_fence import assert_runtime_task_fence, current_runtime_task_fence
+    from app.services.session_approval import group_approval_origin
+
+    fence = current_runtime_task_fence()
+    if fence is None or task is None or task.status == "killed":
+        return False
+    job = await db.get(RuntimeTask, fence.task_id, populate_existing=True)
+    if (job is None or job.task_type != "approval_execution" or job.tenant_id != session.tenant_id
+        or job.parent_agent_id != session.agent_id or job.parent_session_id != str(session.id)
+        or job.root_user_id != task.root_user_id):
+        return False
+    assert_runtime_task_fence(job)
+    try:
+        approval = await db.get(ApprovalRequest, uuid.UUID(str((job.metadata_json or {}).get("approval_id"))))
+        if (approval is None or approval.execution_task_id != job.id or approval.consumed_at is None
+            or approval.execution_status != "executing" or approval.requested_by != task.root_user_id):
+            return False
+        original, invocation, _event = await group_approval_origin(db, session=session, approval=approval)
+        return original.id == task.id and (invocation_id is None or invocation.id == invocation_id)
+    except (ApprovalTicketError, ValueError, TypeError):
+        return False
 
 
 async def _permission_execution_matches(db, *, task, session):

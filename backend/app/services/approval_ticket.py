@@ -390,6 +390,7 @@ async def validate_approval_execution_authority(
     *,
     db: AsyncSession,
     envelope: ApprovalExecutionEnvelope,
+    approval=None,
 ) -> None:
     """Recheck mutable resource/cancellation/budget authority at consume time."""
 
@@ -434,11 +435,27 @@ async def validate_approval_execution_authority(
                         ChatSession.id == session_uuid,
                         ChatSession.tenant_id == envelope.tenant_id,
                         ChatSession.agent_id == envelope.agent_id,
-                        ChatSession.user_id == envelope.requester_user_id,
                     )
                 )
             ).scalar_one_or_none()
             if session is None:
+                raise ApprovalTicketError("approval execution session authority no longer exists")
+            if session.audience_kind == "group":
+                from fastapi import HTTPException
+                from app.models.user import User
+                from app.services.session_approval import authorize_session_approval_reader, group_approval_requester
+
+                if approval is None or approval.execution_envelope_hash != hash_approval_execution_envelope(approval.execution_envelope):
+                    raise ApprovalTicketError("approval group ticket binding is unavailable")
+                actor, _invocation = await group_approval_requester(db, session=session, approval=approval)
+                requester = await db.get(User, actor.id, populate_existing=True)
+                try:
+                    await authorize_session_approval_reader(db, session=session, approval=approval, user=requester)
+                except HTTPException as exc:
+                    if exc.status_code != 403:
+                        raise
+                    raise ApprovalTicketError("approval group input sources are no longer authorized") from exc
+            elif session.user_id != envelope.requester_user_id:
                 raise ApprovalTicketError("approval execution session authority no longer exists")
 
     if envelope.runtime_task_id:
@@ -493,18 +510,21 @@ async def consume_approval_ticket(
     """Claim one approved ticket through locator -> tenant-scoped execution."""
     from app.database import async_session, enter_rls_bypass, tenant_scoped_session
     from app.models.audit import ApprovalRequest
+    from app.models.user import User
 
     async with async_session() as db:
         async with enter_rls_bypass(db, reason="approval ticket tenant locator") as locator_db:
             located = (
                 await locator_db.execute(
-                    select(ApprovalRequest.tenant_id, ApprovalRequest.agent_id).where(ApprovalRequest.id == approval_id)
+                    select(ApprovalRequest.tenant_id, ApprovalRequest.agent_id, ApprovalRequest.resolved_by,
+                        User.role, User.tenant_id, User.is_active).outerjoin(User, User.id == ApprovalRequest.resolved_by)
+                    .where(ApprovalRequest.id == approval_id)
                 )
             ).one_or_none()
         await db.rollback()
     if located is None:
         raise ApprovalTicketError("approval ticket not found")
-    tenant_id, agent_id = located
+    tenant_id, agent_id, approver_id, approver_role, approver_tenant_id, approver_active = located
     if tenant_id is None:
         raise ApprovalTicketError("approval ticket has no tenant")
     if expected_agent_id is not None and agent_id != expected_agent_id:
@@ -519,6 +539,19 @@ async def consume_approval_ticket(
             raise ApprovalTicketError("approval ticket approver mismatch")
         if approval.status != "approved":
             raise ApprovalTicketError(f"approval ticket is not approved: {approval.status}")
+        from app.models.agent import Agent
+        from app.models.user import User
+        from app.services.approval_service import _can_resolve_agent_approval
+
+        agent = await db.get(Agent, approval.agent_id, populate_existing=True)
+        approver = await db.get(User, approval.resolved_by, populate_existing=True) if approval.resolved_by else None
+        if approver is None and approval.resolved_by == approver_id and approver_role == "platform_admin":
+            from types import SimpleNamespace
+
+            # The exact ticket locator reads identity facts only; company scope remains pinned here.
+            approver = SimpleNamespace(id=approver_id, role=approver_role, tenant_id=approver_tenant_id, is_active=approver_active)
+        if agent is None or approver is None or not _can_resolve_agent_approval(agent, approver):
+            raise ApprovalTicketError("approval ticket approver is no longer responsible")
         now = datetime.now(timezone.utc)
         if approval.expires_at is None or approval.expires_at <= now:
             raise ApprovalTicketError("approval ticket expired")
@@ -564,7 +597,7 @@ async def consume_approval_ticket(
             or restored_envelope.requester_user_id != approval.requested_by
         ):
             raise ApprovalTicketError("approval execution envelope authority mismatch")
-        await validate_approval_execution_authority(db=db, envelope=restored_envelope)
+        await validate_approval_execution_authority(db=db, envelope=restored_envelope, approval=approval)
         if approval.requested_by is None or approval.resolved_by is None:
             raise ApprovalTicketError("approval ticket principal binding is incomplete")
         if not str(approval.decision_id or "").strip():

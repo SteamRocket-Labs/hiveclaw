@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 import uuid
 
 from sqlalchemy import select
@@ -67,6 +68,23 @@ async def _recovery_inputs(db, *, task, provider_request_id):
         settled = tool.effect_state == "effect_committed" or (permission and (
             (tool.effect_state == "prepared_not_started" and tool.permission_state == "waiting")
             or (tool.result_event_id is not None and tool.permission_state == "denied")))
+        if not settled and tool.effect_state == "prepared_not_started" and tool.result_event_id is not None:
+            from app.models.chat_transcript_event import ChatTranscriptEvent
+            from app.services.session_approval import invocation_enterprise_approval
+            from app.services.session_semantic_history import _event_payload
+
+            event = await db.get(ChatTranscriptEvent, tool.result_event_id)
+            try:
+                result = json.loads(_event_payload(event).get("content", "")) if event else {}
+                from app.models.audit import ApprovalRequest
+
+                approval = await db.get(ApprovalRequest, uuid.UUID(str(result.get("approval_id"))))
+                settled = result.get("status") == "approval_required" and approval is not None and await invocation_enterprise_approval(
+                    db, invocation=tool, agent_id=agent_id,
+                    decision={"approval_id": str(approval.id), "decision_id": approval.decision_id},
+                    input_hash=tool.effective_args_hash) is not None
+            except (ValueError, TypeError):
+                settled = False
         complete = complete and bound and settled
     return model, _unique_dependencies(sources), complete
 
@@ -111,6 +129,29 @@ async def bind_native_recovery_context(db, *, task, session):
     session.metadata.pop("_native_recovery_context_source", None)
     pointer = (task.metadata_json or {}).get("native_recovery_context_source")
     if not isinstance(pointer, dict):
+        if getattr(task, "task_type", "delegation") != "delegation" and (task.metadata_json or {}).get("integration_page_id"):
+            from app.models.audit import ApprovalRequest
+            from app.models.chat_session import ChatSession
+            from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+            from app.services.session_approval import group_approval_origin, group_approval_return_actor
+
+            group = await db.get(ChatSession, session_id)
+            if group is None or group.audience_kind != "group":
+                return
+            rows = list(await db.scalars(select(RuntimeNotificationOutbox).where(
+                RuntimeNotificationOutbox.integration_page_id == uuid.UUID(task.metadata_json["integration_page_id"]))))
+            actor = await group_approval_return_actor(db, session=group, rows=rows)
+            if actor.id != task.root_user_id:
+                return
+            originals = {}
+            for row in rows:
+                approval = await db.get(ApprovalRequest, uuid.UUID(row.metadata_json["approval_id"]))
+                original, _invocation, _event = await group_approval_origin(db, session=group, approval=approval)
+                originals[original.id] = original
+            if len(originals) == 1:
+                original = next(iter(originals.values()))
+                if (original.metadata_json or {}).get("native_recovery_context_source"):
+                    await bind_native_recovery_context(db, task=original, session=session)
         return
     try:
         source_id = uuid.UUID(pointer["id"])

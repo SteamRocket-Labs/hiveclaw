@@ -1,16 +1,17 @@
 export type ApprovalRequestLike = {
   action_type?: unknown;
+  tool_name?: unknown;
   details?: unknown;
 };
 
 export type ApprovalRequestField = {
-  key: 'command' | 'attachments';
+  key: 'command' | 'attachments' | 'path';
   value: string | number;
   code: boolean;
 };
 
 export type ApprovalRequestPresentation = {
-  actionKey: 'commandEscalation' | 'localAgentDispatch' | 'planAuthorization' | 'employeeAction';
+  actionKey: 'commandEscalation' | 'localAgentDispatch' | 'planAuthorization' | 'employeeAction' | 'writeFile';
   actionFallback: string;
   description: string | null;
   fields: ApprovalRequestField[];
@@ -45,7 +46,7 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function readText(details: Record<string, unknown>, key: 'reason' | 'summary' | 'command'): string | null {
+function readText(details: Record<string, unknown>, key: 'reason' | 'summary' | 'command' | 'path'): string | null {
   const value = details[key];
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
@@ -62,11 +63,16 @@ export function approvalRequestPresentation(
   approval: ApprovalRequestLike,
 ): ApprovalRequestPresentation {
   const actionType = typeof approval.action_type === 'string' ? approval.action_type.trim() : '';
-  const action = ACTION_PRESENTATIONS[actionType] || FALLBACK_ACTION;
+  const writeFile = approval.tool_name === 'write_file' || approval.tool_name === 'fs_write';
+  const action: Pick<ApprovalRequestPresentation, 'actionKey' | 'actionFallback'> = writeFile
+    ? { actionKey: 'writeFile', actionFallback: 'Write a workspace file' }
+    : ACTION_PRESENTATIONS[actionType] || FALLBACK_ACTION;
   const details = asRecord(approval.details);
   const description = readText(details, actionType === 'plan_authorization' ? 'summary' : 'reason')
     || readText(details, actionType === 'plan_authorization' ? 'reason' : 'summary');
   const fields: ApprovalRequestField[] = [];
+  const path = writeFile ? readText(details, 'path') : null;
+  if (path) fields.push({ key: 'path', value: path, code: true });
 
   if (actionType === 'workspace.command.escalation') {
     const command = readText(details, 'command');

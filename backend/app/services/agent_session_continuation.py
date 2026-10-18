@@ -11,6 +11,7 @@ from html import escape
 import uuid
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent
@@ -560,6 +561,32 @@ async def continue_parent_session_with_result_page(
                 else {}
             ),
         }
+    if getattr(session, "audience_kind", None) == "group":
+        from app.models.audit import ApprovalRequest
+        from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+        from app.services.session_approval import group_approval_origin
+        from app.services.session_live_input import submit_live_human_input
+
+        rows = list(await db.scalars(select(RuntimeNotificationOutbox).where(
+            RuntimeNotificationOutbox.integration_page_id == integration_page_id)))
+        roots = set()
+        for row in rows:
+            approval = await db.get(ApprovalRequest, uuid.UUID(row.metadata_json["approval_id"]))
+            original, _invocation, _event = await group_approval_origin(db, session=session, approval=approval)
+            roots.add(str((original.metadata_json or {}).get("root_runtime_task_id")
+                or (original.metadata_json or {}).get("runtime_task_id") or original.id))
+        if len(roots) != 1:
+            raise PermissionError("group_approval_return_root_mismatch")
+        metadata["root_runtime_task_id"] = roots.pop()
+        receipt = await submit_live_human_input(db=db, agent=agent, user=user, session=session,
+            content=runtime_context, display_content=display_content, role="system",
+            source="runtime_result_integration", input_id=uuid.uuid5(integration_page_id, "group-approval-return"),
+            idempotency_key=f"runtime-result-page:{integration_page_id}",
+            runtime_metadata=metadata, runtime_result_page_id=integration_page_id,
+            runtime_result_page_claim_token=page_claim_token)
+        await db.commit()
+        return {"ok": True, "status": receipt["status"], "integration_page_id": str(integration_page_id),
+            "consumer": "session_v2_round_input", "input_receipt": receipt}
     return await continue_agent_session_from_mailbox(
         db=db,
         agent=agent,

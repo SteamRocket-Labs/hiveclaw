@@ -74,6 +74,8 @@ async def _published_first_task_input(db, dependency, task):
 
 
 async def load_canonical_result_sources(db, result_object):
+    if result_object.source_kind == "approval":
+        return await _load_company_result_sources(db, result_object)
     if result_object.source_kind != "a2a_delegation":
         return False  # Legacy/non-model results retain unknown dependency coverage.
     try:
@@ -129,6 +131,49 @@ async def load_canonical_result_sources(db, result_object):
     if dependencies is None:
         raise ContentInputReceiptError("runtime_result_sources_unbound", "The result's input source inventory is invalid.", 503)
     return task, dependencies, receipt_ids
+
+
+async def _load_company_result_sources(db, result):
+    from app.models.audit import ApprovalRequest
+    from app.models.chat_session import ChatSession
+    from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+    from app.services.approval_ticket import ApprovalTicketError
+    from app.services.runtime_result_store import decode_runtime_result_payload, encode_runtime_result_payload
+    from app.services.session_approval import group_approval_origin
+    from app.services.session_model_inputs import _origin_dependencies
+
+    try:
+        payload = decode_runtime_result_payload(bytes(result.payload_bytes))
+        approval = await db.get(ApprovalRequest, uuid.UUID(str(payload["metadata"]["approval_id"])))
+        session = await db.get(ChatSession, uuid.UUID(str(payload["metadata"]["origin_session_id"])))
+        if session is None or session.audience_kind != "group":
+            return False
+        if approval is None or approval.tenant_id != result.tenant_id or session.tenant_id != result.tenant_id:
+            raise ValueError("ticket_scope_mismatch")
+        row = await db.get(RuntimeNotificationOutbox, uuid.UUID(approval.execution_receipt["continuation_outbox_id"]))
+        if (row is None or row.result_object_id != result.id or row.source_kind != "approval"
+            or row.source_run_id != result.source_run_id or row.parent_session_id != session.id
+            or row.parent_agent_id != approval.agent_id or row.parent_user_id != approval.requested_by
+            or row.source_run_id != str(approval.execution_task_id or approval.id)):
+            raise ValueError("ticket_return_mismatch")
+        encoded = encode_runtime_result_payload(summary=payload["summary"], artifacts=payload["artifacts"], metadata=payload["metadata"])
+        if (encoded.payload_bytes != bytes(result.payload_bytes) or encoded.sha256 != result.sha256 or encoded.size_bytes != result.size_bytes
+            or row.result_sha256 != result.sha256 or row.result_size_bytes != result.size_bytes
+            or payload["metadata"].get("approval_status") != approval.execution_status
+            or payload["metadata"].get("tool_name") != approval.tool_name):
+            raise ValueError("ticket_result_changed")
+        origin, invocation, _event = await group_approval_origin(db, session=session, approval=approval)
+        dependencies, complete = await _origin_dependencies(db, tenant_id=result.tenant_id,
+            agent_id=session.agent_id, ref=f"session-tool-result:{invocation.id}")
+        task = await db.get(RuntimeTask, approval.execution_task_id) if approval.execution_task_id else origin
+        if (not complete or task is None or task.root_user_id != approval.requested_by
+            or task.parent_session_id != str(session.id) or task.parent_agent_id != session.agent_id
+            or approval.execution_status not in {"succeeded", "failed", "needs_reapproval", "needs_reconciliation", "rejected"}
+            or payload["summary"] != str(approval.execution_result or task.result_summary or "")):
+            raise ValueError("ticket_execution_unresolved")
+        return task, dependencies, set()
+    except (ApprovalTicketError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise ContentInputReceiptError("runtime_result_sources_unbound", "Reconcile the original company approval result.", 503) from exc
 
 
 async def validate_runtime_result_sources(db, request, result_object, *, user=None, session=None):

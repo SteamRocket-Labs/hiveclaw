@@ -376,9 +376,10 @@ class ApprovalService:
         if approval.tool_name and approval.execution_status in {"rejected", "needs_reapproval"}:
             from app.services.approval_execution_runtime import _enqueue_origin_continuation
 
+            approval.execution_result = approval.execution_result or "The responsible approver rejected the action. The tool was not executed."
             await _enqueue_origin_continuation(
                 db, approval=approval, task=None, approval_status=approval.execution_status,
-                execution_result=approval.execution_result or "The responsible approver rejected the action. The tool was not executed.",
+                execution_result=approval.execution_result,
             )
 
         # Release the approval/audit transaction before running any approved

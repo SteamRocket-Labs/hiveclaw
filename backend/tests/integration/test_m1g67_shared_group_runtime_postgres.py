@@ -1,6 +1,7 @@
 """Run the real shared-work kernel with the original per-message principal."""
 
 import json
+from contextlib import AsyncExitStack, asynccontextmanager
 import platform
 import sys
 from datetime import datetime, timedelta, timezone
@@ -16,7 +17,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
     reason="Native macOS context gate; Linux delivery is deferred.")]
 
 
-@pytest.mark.parametrize("mutation", [None, "forged_actor", "unlinked", "private_source", "private_recipient", "unknown_recipient", "queued_member", "same_sender", "explicit_other", "private_context", "shared_context", "web_member", "web_socket", "web_browser", "web_question", "web_question_browser", "web_cancel", "web_cancel_recovery", "web_cancel_unknown", "web_cancel_browser", "web_permission", "web_permission_session", "web_permission_deny", "web_permission_browser"])
+@pytest.mark.parametrize("mutation", [None, "forged_actor", "unlinked", "private_source", "private_recipient", "unknown_recipient", "queued_member", "same_sender", "explicit_other", "private_context", "shared_context", "web_member", "web_socket", "web_browser", "web_question", "web_question_browser", "web_cancel", "web_cancel_recovery", "web_cancel_unknown", "web_cancel_browser", "web_permission", "web_permission_session", "web_permission_deny", "web_permission_browser", "web_enterprise", "web_enterprise_reject", "web_enterprise_revoked", "web_enterprise_browser", "web_enterprise_private_source"])
 async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, mutation,
 ):
@@ -54,6 +55,8 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     from app.services.session_input_dispatch import recover_admitted_session_inputs_once
     from app.services.web_chat_runtime import execute_web_chat_run
 
+    enterprise_case = mutation
+    web_enterprise = mutation in {"web_enterprise", "web_enterprise_reject", "web_enterprise_revoked", "web_enterprise_browser", "web_enterprise_private_source"}
     permission_decision = {"web_permission": "allow_once", "web_permission_session": "allow_session", "web_permission_deny": "deny", "web_permission_browser": "allow_once"}.get(mutation)
     permission_browser = mutation == "web_permission_browser"
     web_permission = permission_decision is not None
@@ -64,8 +67,8 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     cancel_unknown = mutation == "web_cancel_unknown"
     cancel_browser = mutation == "web_cancel_browser"
     web_cancel = mutation in {"web_cancel", "web_cancel_recovery", "web_cancel_unknown", "web_cancel_browser"}
-    if web_question or web_cancel or web_permission:
-        mutation = None
+    if web_question or web_cancel or web_permission or web_enterprise:
+        mutation = "private_context" if enterprise_case == "web_enterprise_private_source" else None
     web_browser = mutation == "web_browser"
     web_socket = mutation in {"web_socket", "web_browser"}
     if web_requester or web_socket:
@@ -98,6 +101,11 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
         if not web_permission:
             db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="workspace.file.write", allowed=True,
                 requires_approval=False))
+        if web_enterprise:
+            from app.models.guard_policy import GuardPolicy
+
+            db.add(GuardPolicy(tenant_id=seed["tenant_id"], zone_guard={"tool_rules": [
+                {"tools": ["write_file"], "decision": "require_approval"}]}))
         (await db.get(RuntimeTask, seed["run_id"])).status = "completed"
         member = User(id=uuid4(), tenant_id=seed["tenant_id"], username=f"group-{uuid4().hex}",
             email=f"{uuid4().hex}@group.test", password_hash="x", display_name="Group Requester")
@@ -112,7 +120,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
         bound = await bind_authenticated_self_channel_principal(db, tenant_id=seed["tenant_id"], config=config,
             provider_subject_id="ou_group_requester", user_id=member.id, actor_user_id=member.id)
         actor = bound.actor
-        if web_question or web_cancel or web_permission or mutation in {"private_recipient", "queued_member", "explicit_other", "private_context", "shared_context"}:
+        if web_question or web_cancel or web_permission or web_enterprise or mutation in {"private_recipient", "queued_member", "explicit_other", "private_context", "shared_context"}:
             other = await bind_authenticated_self_channel_principal(db, tenant_id=seed["tenant_id"], config=config,
                 provider_subject_id="ou_group_creator", user_id=seed["user_id"], actor_user_id=seed["user_id"])
         grant.actions = ["read", "execute"]
@@ -143,7 +151,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
 
     async def members(_self, *_args, **_kwargs):
         subjects = {"ou_group_requester"}
-        if web_question or web_cancel or web_permission or mutation in {"private_recipient", "unknown_recipient", "queued_member", "explicit_other", "private_context", "shared_context"}:
+        if web_question or web_cancel or web_permission or web_enterprise or mutation in {"private_recipient", "unknown_recipient", "queued_member", "explicit_other", "private_context", "shared_context"}:
             subjects.add("ou_group_unknown" if mutation == "unknown_recipient" else "ou_group_creator")
         return subjects
     monkeypatch.setattr(FeishuService, "get_chat_member_open_ids", members)
@@ -416,6 +424,9 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
         await execute_web_chat_run(run_id)
     finally:
         reset_runtime_task_fence(fence)
+    if web_enterprise:
+        await _exercise_group_enterprise(seed, shared_id, run_id, member.id, app_user_sessionmaker, monkeypatch, tmp_path, client, enterprise_case)
+        return
     if web_permission:
         await _exercise_group_permission(seed, shared_id, run_id, member.id, app_user_sessionmaker, monkeypatch, tmp_path,
             decision=permission_decision, model_client=client, submit=submit, actor=actor, other_actor=other.actor, browser_permission=permission_browser)
@@ -1389,7 +1400,7 @@ async def _exercise_group_permission(seed, session_id, run_id, requester_id, ses
     from app.database import pin_rls_tenant_context
     from app.models.chat_session import ChatSession
     from app.models.runtime_task import RuntimeTask
-    from app.models.session_v2 import SessionCommand, SessionControlInput, SessionToolInvocation
+    from app.models.session_v2 import SessionControlInput, SessionToolInvocation
     from app.models.user import User
     from app.services.feishu_service import FeishuService
     from app.services.runtime_task_claim_service import RuntimeTaskClaimService
@@ -1556,11 +1567,10 @@ async def _exercise_group_permission(seed, session_id, run_id, requester_id, ses
     (tmp_path / "group-permission-model-requests.json").write_text(json.dumps(model_client.requests, default=str, indent=2))
 
 
-from contextlib import asynccontextmanager
-
 
 @asynccontextmanager
-async def _group_permission_browser(web, seed, session_id, permission_id, requester_id, monkeypatch, tmp_path, requester_ready):
+async def _group_permission_browser(web, seed, session_id, permission_id, requester_id, monkeypatch, tmp_path, requester_ready,
+    script="group-permission-native.mjs", reverse_roles=False, await_completion=False):
     import asyncio
     import socket
     from pathlib import Path
@@ -1603,13 +1613,13 @@ async def _group_permission_browser(web, seed, session_id, permission_id, reques
         fixture_path = tmp_path / "permission-browser-fixture.json"
         fixture_path.write_text(json.dumps({"origin": f"http://127.0.0.1:{port}", "tenantId": str(seed["tenant_id"]),
             "agentId": str(seed["agent_id"]), "sessionId": str(session_id), "permissionId": str(permission_id),
-            "readerToken": create_access_token(str(seed["user_id"]), "user", str(seed["tenant_id"])),
-            "requesterToken": create_access_token(str(requester_id), "user", str(seed["tenant_id"])),
+            "readerToken": create_access_token(str(requester_id if reverse_roles else seed["user_id"]), "user", str(seed["tenant_id"])),
+            "requesterToken": create_access_token(str(seed["user_id"] if reverse_roles else requester_id), "user", str(seed["tenant_id"])),
             **{key: str(tmp_path / name) for key, name in {"readonlyScreenshot": "permission-readonly.png",
                 "unconfirmedScreenshot": "permission-unconfirmed.png", "completedScreenshot": "permission-applied.png",
                 "receiptPath": "permission-browser-receipt.json", "errorPath": "permission-browser-error.json",
                 "errorScreenshot": "permission-browser-error.png"}.items()}}))
-        process = await asyncio.create_subprocess_exec("node", str(frontend / "e2e/group-permission-native.mjs"), str(fixture_path),
+        process = await asyncio.create_subprocess_exec("node", str(frontend / "e2e" / script), str(fixture_path),
             cwd=frontend, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         line = await asyncio.wait_for(process.stdout.readline(), 60)
         assert line and json.loads(line)["event"] == "readonly_checked", line
@@ -1619,6 +1629,9 @@ async def _group_permission_browser(web, seed, session_id, permission_id, reques
         line = await asyncio.wait_for(process.stdout.readline(), 60)
         assert line and json.loads(line)["event"] == "permission_recorded", line
         yield json.loads((tmp_path / "permission-browser-receipt.json").read_text())
+        if await_completion:
+            process.stdin.write(json.dumps({"event": "work_returned"}).encode() + bytes([10]))
+            await process.stdin.drain()
         stdout, stderr = await asyncio.wait_for(process.communicate(), 60)
         assert process.returncode == 0, (stdout, stderr)
     finally:
@@ -1628,3 +1641,184 @@ async def _group_permission_browser(web, seed, session_id, permission_id, reques
         server.should_exit = True
         await asyncio.wait_for(server_task, 10)
         listener.close()
+
+
+async def _exercise_group_enterprise(seed, session_id, run_id, requester_id, sessionmaker, monkeypatch, tmp_path, model_client, enterprise_case):
+    async with AsyncExitStack() as browsers:
+        from fastapi import FastAPI
+        from httpx import ASGITransport, AsyncClient
+        from app import database
+        from app.api import chat_sessions
+        from app.core.security import get_current_user
+        from app.database import pin_rls_tenant_context
+        from app.models.audit import ApprovalRequest
+        from app.models.runtime_task import RuntimeTask
+        from app.models.session_v2 import SessionToolInvocation
+        from app.models.user import User
+
+        async with sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            task = await db.get(RuntimeTask, run_id)
+            assert task.status == "completed" and task.result_summary == "awaiting_company_approval", (task.status, task.result_summary)
+            invocation = await db.scalar(select(SessionToolInvocation).where(SessionToolInvocation.run_id == run_id,
+                SessionToolInvocation.tool_name == "write_file"))
+            assert invocation.result_event_id is not None and invocation.effect_state == "prepared_not_started"
+            invocation_id, handoff_event_id = invocation.id, invocation.result_event_id
+            assert invocation.permission_item_id is None and invocation.permission_state == "not_required"
+            tickets = list(await db.scalars(select(ApprovalRequest).where(ApprovalRequest.tenant_id == seed["tenant_id"],
+                ApprovalRequest.requested_by == requester_id, ApprovalRequest.tool_name == "write_file")))
+            assert len(tickets) == 1 and tickets[0].status == "pending" and tickets[0].consumed_at is None
+            ticket_id = tickets[0].id
+        assert not (seed["agent_root"] / "workspace/shared-report.md").exists()
+        from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
+        from app.services.web_terminal_boundary_processor import WebTerminalBoundaryProcessor
+
+        processor = WebTerminalBoundaryProcessor(session_factory=sessionmaker, data_root=seed["data_root"])
+        terminal = await RuntimeTerminalBoundaryOutboxService(session_factory=sessionmaker).drain_once(
+            tenant_id=seed["tenant_id"], worker_id="enterprise-terminal", canonical_validator=processor.validate,
+            process_callback=processor, task_types=("web_chat_turn",))
+        assert terminal["delivered"] == 1, terminal
+        action = "reject" if enterprise_case == "web_enterprise_reject" else "approve"
+        reader = {"id": seed["user_id"]}
+        async def current_user():
+            async with sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                return await db.get(User, reader["id"])
+        async def scoped_db():
+            async with sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                yield db
+        web = FastAPI()
+        web.include_router(chat_sessions.router)
+        web.dependency_overrides[get_current_user] = current_user
+        web.dependency_overrides[database.get_db] = scoped_db
+        url = f"/agents/{seed['agent_id']}/sessions/{session_id}/approvals/{ticket_id}"
+        async with AsyncClient(transport=ASGITransport(app=web), base_url="http://group.fixture") as client:
+            reader["id"] = requester_id
+            response = await client.get(url)
+            assert response.status_code == 200 and response.json()["can_resolve"] is False, response.text
+            response = await client.post(url + "/resolve", json={"action": "approve"})
+            assert response.status_code == 403, response.text
+            reader["id"] = seed["user_id"]
+            response = await client.get(url)
+            if enterprise_case == "web_enterprise_private_source":
+                assert "PRIVATE_GROUP_NOTE_CANARY" in json.dumps(model_client.requests)
+                assert response.status_code == 403 and "PRIVATE_GROUP_NOTE_CANARY" not in response.text, response.text
+                denied = await client.post(url + "/resolve", json={"action": "approve"})
+                assert denied.status_code == 403 and "PRIVATE_GROUP_NOTE_CANARY" not in denied.text, denied.text
+                async with sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    ticket = await db.get(ApprovalRequest, ticket_id)
+                    assert ticket.status == "pending" and ticket.consumed_at is None
+                assert not (seed["agent_root"] / "workspace/shared-report.md").exists()
+                return
+            (tmp_path / "group-enterprise-response.json").write_text(response.text)
+            assert response.status_code == 200, response.text
+            assert response.json()["can_resolve"] is True and response.json()["status"] == "pending"
+            assert response.json()["details"]["path"] == "workspace/shared-report.md" and "args" not in response.json()["details"]
+            if enterprise_case == "web_enterprise_browser":
+                reader["id"] = requester_id
+                async def approver_ready():
+                    reader["id"] = seed["user_id"]
+                recorded = await browsers.enter_async_context(_group_permission_browser(web, seed, session_id, ticket_id, requester_id, monkeypatch,
+                    tmp_path, approver_ready, script="group-enterprise-native.mjs", reverse_roles=True, await_completion=True))
+                assert recorded["status"] == "approved" and recorded["execution_status"] == "queued", recorded
+            else:
+                response = await client.post(url + "/resolve", json={"action": action})
+                assert response.status_code == 200 and response.json()["status"] == ("approved" if action == "approve" else "rejected"), response.text
+            replay = await client.post(url + "/resolve", json={"action": action})
+            assert replay.status_code == 200, replay.text
+        from app.services.approval_execution_runtime import execute_claimed_approval_execution
+        from app.services.runtime_task_claim_service import RuntimeTaskClaimService
+        from app.services.runtime_task_fence import run_claimed_runtime_task
+
+        if action == "reject":
+            async with sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                ticket = await db.get(ApprovalRequest, ticket_id)
+                assert ticket.execution_status == "rejected" and ticket.consumed_at is None
+                assert ticket.execution_receipt["continuation_status"] == "queued"
+            assert not (seed["agent_root"] / "workspace/shared-report.md").exists()
+        else:
+            if enterprise_case == "web_enterprise_revoked":
+                from app.models.agent import Agent
+
+                async with sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    (await db.get(Agent, seed["agent_id"])).owner_user_id = requester_id
+                    await db.commit()
+            async with sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                claims = await RuntimeTaskClaimService(db=db, worker_id="group-enterprise", task_types=("approval_execution",)).claim_available()
+                assert len(claims) == 1
+                job_id = claims[0].id
+            outcome = await run_claimed_runtime_task(execute_claimed_approval_execution(job_id), task_id=job_id,
+                claim_version=claims[0].claim_version, worker_id="group-enterprise", lease_seconds=180)
+            async with sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                ticket = await db.get(ApprovalRequest, ticket_id)
+                (tmp_path / "group-enterprise-ticket.json").write_text(json.dumps({"outcome": outcome,
+                    "status": ticket.execution_status, "result": ticket.execution_result,
+                    "receipt": ticket.execution_receipt}, default=str, indent=2))
+                if enterprise_case == "web_enterprise_revoked":
+                    assert outcome == "needs_reapproval" and ticket.consumed_at is None, (outcome, ticket.execution_result)
+                    assert ticket.execution_receipt["side_effect_state"] == "not_started"
+                    assert not (seed["agent_root"] / "workspace/shared-report.md").exists()
+                    return
+                assert outcome == "succeeded", (outcome, ticket.execution_result, ticket.execution_receipt)
+                assert ticket.consumed_at is not None and ticket.execution_status == "succeeded"
+                assert ticket.execution_receipt["continuation_status"] == "queued"
+                from app.models.invocation_span import InvocationSpan
+
+                origin = await db.get(SessionToolInvocation, invocation_id, populate_existing=True)
+                assert origin.result_event_id == handoff_event_id and origin.effect_state == "prepared_not_started"
+                evidence = await db.get(InvocationSpan, uuid5(invocation_id, "workspace-output-evidence"))
+                assert evidence is not None and evidence.runtime_task_id == run_id
+                assert evidence.metadata_json["native_content_receipts"]["status"] == "captured", evidence.metadata_json
+                assert evidence.metadata_json["native_content_receipts"]["receipts"].get("workspace/shared-report.md")
+            assert (seed["agent_root"] / "workspace/shared-report.md").read_text() == "GROUP_REPORT"
+            assert await execute_claimed_approval_execution(job_id) == "succeeded"
+        from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService
+
+        service = RuntimeNotificationOutboxService(session_factory=sessionmaker)
+        claimed = await service.claim_batch(worker_id="enterprise-result", limit=100)
+        pages = await service.prepare_integration_pages(worker_id="enterprise-result", claimed=[item for item in claimed if item.tenant_id == seed["tenant_id"]])
+        assert len(pages) == 1
+        receipt = await service._deliver_page(pages[0])
+        assert receipt.get("ok") is True, receipt
+        assert await service._mark_page_delivered(page=pages[0], worker_id="enterprise-result", receipt=receipt) == 1
+        from app.services.session_input_dispatch import recover_admitted_session_inputs_once
+
+        async with sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            command_id = UUID(receipt["input_receipt"]["command_id"])
+            await recover_admitted_session_inputs_once(db, worker_id="enterprise-dispatch", tenant_id=seed["tenant_id"],
+                admission_ids=(uuid5(command_id, "input-admission:revision:1"),))
+        async with sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            successors = list(await db.scalars(select(RuntimeTask).where(RuntimeTask.tenant_id == seed["tenant_id"],
+                RuntimeTask.metadata_json["integration_page_id"].astext == str(pages[0].id))))
+            assert len(successors) == 1 and successors[0].parent_session_id == str(session_id)
+            assert successors[0].root_user_id == requester_id and "runtime-result://" in successors[0].prompt
+            next_run = successors[0].id
+            claims = await RuntimeTaskClaimService(db=db, worker_id="enterprise-return").claim_available()
+            claim = next(row for row in claims if row.id == next_run)
+        from app.services.web_chat_runtime import execute_web_chat_run
+
+        result_ref = pages[0].manifest["items"][0]["result_ref"]
+        model_client.script = [{"tool_calls": [{"id": "company-result", "type": "function", "function": {
+            "name": "read_runtime_result", "arguments": json.dumps({"result_ref": result_ref})}}], "finish_reason": "tool_calls"},
+            {"content": "The approved report is ready." if action == "approve" else "The action was rejected; no file was created."}]
+        await run_claimed_runtime_task(execute_web_chat_run(next_run), task_id=next_run,
+            claim_version=claim.claim_version, worker_id="enterprise-return", lease_seconds=600)
+        async with sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            successor = await db.get(RuntimeTask, next_run)
+            assert successor.status == "completed", (successor.status, successor.result_summary, successor.metadata_json)
+        tool_messages = [message for request in model_client.requests for message in request["messages"]
+            if message.get("role") == "tool" and message.get("tool_call_id") == "company-result"]
+        assert tool_messages, model_client.requests
+        result = json.loads(tool_messages[-1]["content"])
+        assert result["status"] == "ok" and result["dependency_coverage"] == {"complete": True}, result
+        assert ("shared-report.md" if action == "approve" else "rejected the action") in result["content"]
+        reader["id"] = requester_id

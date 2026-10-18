@@ -80,10 +80,10 @@ async def test_resolve_approval_commits_decision_and_job_in_one_real_postgres_tr
         assert reason == "approval_execution_queued"
         wakeups.append(str(runtime_task_id))
 
-    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
     monkeypatch.setattr("app.core.policy.write_audit_event", no_audit)
     monkeypatch.setattr("app.services.notification_service.send_notification", no_notification)
     monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", capture_wakeup)
+    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
 
     async with owner_sessionmaker() as db:
         user = await db.get(User, user_id)
@@ -120,7 +120,6 @@ async def test_approval_execution_job_consumes_once_and_recovers_terminal_withou
     from app.services.approval_ticket import complete_approval_ticket, consume_approval_ticket
 
     tenant_id, user_id, agent_id, approval_id, task_id = await _seed_execution_job(owner_sessionmaker)
-    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
     calls: list[str] = []
 
     async def fake_execute_approved_tool(*, approval_id, expected_agent_id, approved_by_user_id):
@@ -140,6 +139,7 @@ async def test_approval_execution_job_consumes_once_and_recovers_terminal_withou
         return "approved side effect"
 
     monkeypatch.setattr("app.services.agent_tools.execute_approved_tool", fake_execute_approved_tool)
+    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
 
     assert await execute_claimed_approval_execution(task_id) == "succeeded"
     assert await execute_claimed_approval_execution(task_id) == "succeeded"
@@ -200,7 +200,6 @@ async def test_terminal_approval_atomically_enqueues_one_origin_continuation(
             )
         )
         await db.commit()
-    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
 
     async def fake_execute_approved_tool(*, approval_id, expected_agent_id, approved_by_user_id):
         ticket = await consume_approval_ticket(
@@ -218,6 +217,7 @@ async def test_terminal_approval_atomically_enqueues_one_origin_continuation(
         return "wrote workspace/report.md"
 
     monkeypatch.setattr("app.services.agent_tools.execute_approved_tool", fake_execute_approved_tool)
+    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
 
     assert await execute_claimed_approval_execution(task_id) == "succeeded"
     assert await execute_claimed_approval_execution(task_id) == "succeeded"
@@ -280,12 +280,12 @@ async def test_reclaimed_executing_approval_is_quarantined_without_side_effect_r
         assert approval is not None
         approval.consumed_at = datetime.now(timezone.utc) - timedelta(minutes=10)
         await db.commit()
-    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
 
     async def forbidden_execute(**_kwargs):
         raise AssertionError("unknown side effects must never be replayed")
 
     monkeypatch.setattr("app.services.agent_tools.execute_approved_tool", forbidden_execute)
+    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
 
     assert await execute_claimed_approval_execution(task_id) == "needs_reconciliation"
 

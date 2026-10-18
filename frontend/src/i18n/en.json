@@ -831,12 +831,14 @@
   },
   "approvalRequest": {
     "actions": {
+      "writeFile": "Write a workspace file",
       "commandEscalation": "Run one workspace command",
       "localAgentDispatch": "Send work to a connected local employee",
       "planAuthorization": "Use a confirmed plan authorization",
       "employeeAction": "Review an employee action"
     },
     "fields": {
+      "path": "File",
       "command": "Command",
       "attachments": "Attachments"
     }

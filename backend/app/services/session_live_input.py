@@ -226,7 +226,7 @@ async def submit_live_human_input(
             require_delivery_state=existing_row is None,
             expected_claim_token=runtime_result_page_claim_token,
         )
-        command_authority_stamp = runtime_result_integration_command_stamp(page_id=page_uuid)
+        command_authority_stamp = runtime_result_integration_command_stamp(page_id=page_uuid, authority_source=authority.authority_source)
     elif a2a_peer_agent_id is not None:
         # Narrow server-derived A2A delegation peer lane: never the user
         # writable gate, always the full durable binding revalidation.

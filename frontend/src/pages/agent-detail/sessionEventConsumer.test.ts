@@ -1872,3 +1872,19 @@ describe('consecutive rewind boundary composition (Codex REQUEST_CHANGES #4 find
       .toEqual(['m-1', 'm-2', 'm-5']);
   });
 });
+
+
+it('keeps internal result inputs in canonical state without presenting them as user instructions', () => {
+  const input: SessionEventV2 = {
+    ...event(1, 'completed'), ordinal: undefined, item_id: 'result-input', item_kind: 'human_input',
+    kind: 'human_input.accepted', lifecycle: 'accepted', payload_schema: 'hive.session.payload.human_input.accepted.v2',
+    scope: { level: 'session', session_id: 'session-1', thread_id: 'session-1' },
+    actor: { type: 'user', id: 'requester' },
+    payload: { intent: 'start_turn', content_parts: [{ type: 'text', role: 'system', text: 'INTERNAL_RESULT_CONTEXT' }] },
+  };
+  const store = replay([input]);
+  expect(store.items['result-input'].content).toBe('INTERNAL_RESULT_CONTEXT');
+  expect(projectSessionEventStoreToMessages(store)).toEqual([]);
+  const userStore = replay([{ ...input, payload: { ...input.payload, content_parts: [{ type: 'text', text: 'INTERNAL_RESULT_CONTEXT' }] } }]);
+  expect(projectSessionEventStoreToMessages(userStore)).toEqual([expect.objectContaining({ role: 'user', content: 'INTERNAL_RESULT_CONTEXT' })]);
+});

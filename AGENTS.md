@@ -180,6 +180,24 @@ changes, and destructive cleanup require explicit authorization.
 Setup, development, and test commands live in `README.md`. Module-specific details
 belong near their code or in nested instructions when a real consumer needs them.
 
+## Local disk hygiene
+
+- Before closing a development or validation batch, inspect its disk usage in the
+  checkout and project-owned temporary directories. Remove disposable build/cache
+  output, test databases, and redundant candidate trees or archives when no longer
+  needed; stopping services alone does not reclaim their retained data.
+- Routine deletion of verified disposable project-generated files is owner-authorized.
+  Verify exact paths, ownership, active processes/references, and regeneration or
+  recovery evidence first. Stop only owned temporary services; never delete broadly
+  by directory prefix or follow dependency symlinks into shared installations.
+- Preserve active environments, source and uncommitted work, production/runtime data,
+  and necessary frozen inputs, failure reproductions, logs, screenshots and hashes.
+  Keep evidence recoverable without retaining every full test environment indefinitely.
+  Leave uncertain items intact and explain the uncertainty.
+- Record removed paths, measured space reclaimed, and retained items with reasons in
+  the existing task record. Verify remaining temporary usage and available disk space
+  before claiming cleanup complete; do not rerun valid tests solely for cleanup.
+
 ## Canonical references
 
 Read only those relevant to the task:

@@ -13,6 +13,8 @@ import { AGENT_DETAIL_TABS, AGENT_WORKBENCH_AREAS } from './agentDetailPolicy';
 
 const queryData = vi.hoisted(() => ({ tasks: [] as Task[], plans: [] as PlanRequest[] }));
 
+vi.mock('../../stores', () => ({ useAuthStore: (select: (state: unknown) => unknown) => select({ user: { id: 'owner' } }) }));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (_key: string, fallback: string) => fallback,

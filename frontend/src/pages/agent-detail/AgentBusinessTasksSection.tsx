@@ -15,6 +15,8 @@ import {
 } from '../../api/domains/plans';
 import type { Task } from '../../types';
 import MarkdownRenderer from '../../components/MarkdownRenderer';
+import TaskTeamSharingControls from '../../components/TaskTeamSharingControls';
+import { useAuthStore } from '../../stores';
 import './AgentBusinessTasksSection.css';
 
 type BusinessTaskAction =
@@ -175,6 +177,14 @@ function errorMessage(error: unknown, fallback: string): string {
 export default function AgentBusinessTasksSection({ agentId }: { agentId: string }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const userId = useAuthStore((state) => state.user?.id);
+  const [tenantId, setTenantId] = React.useState(() => typeof localStorage === 'undefined' ? '' : localStorage.getItem('current_tenant_id') || '');
+  React.useEffect(() => {
+    const changed = (event: StorageEvent) => { if (event.key === 'current_tenant_id') setTenantId(event.newValue || ''); };
+    window.addEventListener('storage', changed);
+    return () => window.removeEventListener('storage', changed);
+  }, []);
+  const scopeKey = `${tenantId}:${userId || ''}`;
   const [selectedTaskId, setSelectedTaskId] = React.useState<string | null>(null);
   const [title, setTitle] = React.useState('');
   const [description, setDescription] = React.useState('');
@@ -184,31 +194,31 @@ export default function AgentBusinessTasksSection({ agentId }: { agentId: string
   const [error, setError] = React.useState<string | null>(null);
 
   const tasksQuery = useQuery({
-    queryKey: ['business-tasks', agentId],
+    queryKey: ['business-tasks', agentId, scopeKey],
     queryFn: () => taskApi.list(agentId),
     refetchInterval: (query) =>
       (query.state.data || []).some((task) => task.actions?.can_cancel) ? 5_000 : false,
     refetchOnWindowFocus: true,
   });
   const plansQuery = useQuery({
-    queryKey: ['business-task-plans', agentId],
+    queryKey: ['business-task-plans', agentId, scopeKey],
     queryFn: () => planApi.list(agentId),
     refetchInterval: (query) =>
       (query.state.data || []).some((plan) => ['draft', 'planning'].includes(plan.status)) ? 4_000 : false,
     refetchOnWindowFocus: true,
   });
   const detailQuery = useQuery({
-    queryKey: ['business-task-detail', agentId, selectedTaskId],
+    queryKey: ['business-task-detail', agentId, selectedTaskId, scopeKey],
     queryFn: () => taskApi.get(agentId, selectedTaskId as string),
     enabled: Boolean(selectedTaskId),
     refetchInterval: selectedTaskId ? 5_000 : false,
   });
 
-  const tasks = tasksQuery.data || [];
+  const tasks = tasksQuery.isError ? [] : tasksQuery.data || [];
   const consumedRequests = new Set(
     tasks.flatMap((task) => [task.request_id, task.runtime_request_id].filter(Boolean) as string[]),
   );
-  const actionPlans = (plansQuery.data || [])
+  const actionPlans = (plansQuery.isError ? [] : plansQuery.data || [])
     .map((plan) => ({ plan, action: readBusinessTaskActionPlan(plan) }))
     .filter(
       (item): item is { plan: PlanRequest; action: BusinessTaskAction } =>
@@ -463,6 +473,8 @@ export default function AgentBusinessTasksSection({ agentId }: { agentId: string
                   <div className="business-task-recovery">{task.recovery_message}</div>
                 )}
                 <div className="business-task-actions">
+                  {task.can_manage_team_sharing && <TaskTeamSharingControls key={`${scopeKey}:${task.id}`}
+                    task={task} scopeKey={scopeKey} onChanged={refresh} />}
                   {task.actions?.can_retry && (
                     <button type="button" className="btn btn-secondary" disabled={busyKey !== null} onClick={() => prepareRetryPlan(task)}>
                       {t('agent.businessTasks.prepareRetryPlan', 'Prepare retry plan')}

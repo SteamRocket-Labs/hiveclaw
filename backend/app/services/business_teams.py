@@ -78,8 +78,8 @@ def _acting_tenant_id(actor: User) -> uuid.UUID:
     return actor.tenant_id
 
 
-async def _live_user(db: AsyncSession, user: User) -> User:
-    row = await db.get(User, user.id)
+async def _live_user(db: AsyncSession, user: User, *, fresh: bool = False) -> User:
+    row = await db.get(User, user.id, **({"populate_existing": True} if fresh else {}))
     if row is None and getattr(user, "role", None) == "platform_admin":
         # The selected-company pin hides a platform administrator whose home
         # company is different. Reload that one identity through the existing
@@ -89,7 +89,7 @@ async def _live_user(db: AsyncSession, user: User) -> User:
             reason="reload platform administrator before business team action",
             actor_id=str(getattr(user, "id", "") or ""),
         ) as bypass_db:
-            row = await bypass_db.get(User, user.id)
+            row = await bypass_db.get(User, user.id, **({"populate_existing": True} if fresh else {}))
     if row is None or not row.is_active:
         _fail(401, "inactive_user", "Sign in with an active company account.")
     _acting_tenant_id(row)
@@ -319,13 +319,14 @@ async def _teams_for(db: AsyncSession, actor: User, tenant_id: uuid.UUID) -> lis
     return list(rows.scalars().all())
 
 
-async def _memberships(db: AsyncSession, team_ids: list[uuid.UUID]) -> list[BusinessTeamMembership]:
+async def _memberships(db: AsyncSession, team_ids: list[uuid.UUID], *, fresh: bool = False) -> list[BusinessTeamMembership]:
     if not team_ids:
         return []
     rows = await db.execute(
         select(BusinessTeamMembership)
         .where(BusinessTeamMembership.business_team_id.in_(team_ids))
         .order_by(BusinessTeamMembership.joined_at.asc(), BusinessTeamMembership.id.asc())
+        .execution_options(populate_existing=fresh)
     )
     return list(rows.scalars().all())
 
@@ -481,12 +482,12 @@ async def list_teams(db: AsyncSession, caller: User) -> dict:
     }
 
 
-async def _visible_team(db: AsyncSession, actor: User, team_id: uuid.UUID) -> tuple[BusinessTeam, BusinessTeamMembership | None]:
+async def _visible_team(db: AsyncSession, actor: User, team_id: uuid.UUID, *, fresh: bool = False) -> tuple[BusinessTeam, BusinessTeamMembership | None]:
     tenant_id = _acting_tenant_id(actor)
-    team = await db.get(BusinessTeam, team_id)
+    team = await db.get(BusinessTeam, team_id, **({"populate_existing": True} if fresh else {}))
     if team is None or team.tenant_id != tenant_id:
         _fail(404, "team_not_found", "That business team is not available in this company.")
-    memberships = await _memberships(db, [team.id])
+    memberships = await _memberships(db, [team.id], fresh=fresh)
     mine = _my_membership(memberships, actor.id)
     if mine is None and not _is_admin(actor, team.tenant_id):
         _fail(404, "team_not_found", "That business team is not available in this company.")
@@ -645,9 +646,9 @@ async def update_team(
     return await _team_after_write(db, actor, team)
 
 
-async def _require_manage(db: AsyncSession, caller: User, team_id: uuid.UUID) -> tuple[User, BusinessTeam]:
-    actor = await _live_user(db, caller)
-    team, mine = await _visible_team(db, actor, team_id)
+async def _require_manage(db: AsyncSession, caller: User, team_id: uuid.UUID, *, fresh: bool = False) -> tuple[User, BusinessTeam]:
+    actor = await _live_user(db, caller, fresh=fresh)
+    team, mine = await _visible_team(db, actor, team_id, fresh=fresh)
     if not _can_manage(actor, team, mine):
         _fail(403, "team_manage_forbidden", "Only this team's lead or a company administrator can change its members.")
     return actor, team

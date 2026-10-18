@@ -5272,5 +5272,31 @@
     "approveMinimum": "仅批准当前工作所需额度",
     "newLimits": "申请的新上限",
     "limitsHint": "填写每项需要增加的上限，其他项留空。"
+  },
+  "teamTasks": {
+    "updateShared": "审阅并更新共享资料",
+    "share": "将任务共享给团队",
+    "makePrivate": "改为私有并将责任交还创建人",
+    "disclosure": "仅共享本次审阅的标题和目标、状态及责任人。私有对话、日志、结果和文件保留各自权限；后续目标修改需要再次明确共享。",
+    "routines": "变更责任人会暂停前任在该员工上绑定的例行任务，等待审阅。不会重新执行工作或转移前任权限。",
+    "team": "团队",
+    "chooseTeam": "选择团队",
+    "responsible": "责任成员",
+    "chooseMember": "选择有效成员",
+    "reason": "理由",
+    "unknown": "无法确认此次变更。请刷新检查当前任务；可安全地重试同一请求。",
+    "confirmShare": "共享已审阅的任务资料",
+    "confirmPrivate": "确认改为私有并交还创建人",
+    "reviewLatest": "关闭并审阅最新任务",
+    "title": "团队共享任务",
+    "boundary": "负责人可查看明确共享的任务；成员可查看分配给自己的任务。继续工作时使用本人获准的员工会话。",
+    "paused": "{{count}} 项例行任务已暂停待审阅。",
+    "responsibility": "责任人：{{name}} · 创建人：{{creator}}",
+    "myWork": "打开我自己的工作",
+    "handover": "交接责任",
+    "newResponsible": "新责任成员",
+    "confirmHandover": "确认交接责任",
+    "more": "更多任务",
+    "previous": "上一页任务"
   }
 }

@@ -14,6 +14,7 @@ from app.core.permissions import _platform_admin_selected_tenant_id
 from app.core.security import get_current_user
 from app.database import get_db, pin_rls_tenant_context
 from app.models.user import User
+from app.schemas.schemas import TaskHandoverIn
 from app.services.business_teams import (
     BusinessTeamError,
     add_member,
@@ -266,6 +267,30 @@ async def get_team_runtime_budgets(team_id: uuid.UUID, limit: int = Query(defaul
     await _bind(db, current_user)
     try:
         return await list_team_budget_runs(db, user=current_user, team_id=team_id, limit=limit, offset=offset)
+    except BusinessTeamError as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/business-teams/{team_id}/tasks")
+async def get_team_tasks(team_id: uuid.UUID, limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0), current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.team_business_tasks import list_team_tasks
+
+    await _bind(db, current_user)
+    try:
+        return await list_team_tasks(db, user=current_user, team_id=team_id, limit=limit, offset=offset)
+    except BusinessTeamError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/business-teams/{team_id}/tasks/{task_id}/handover")
+async def post_team_task_handover(team_id: uuid.UUID, task_id: uuid.UUID, body: TaskHandoverIn,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.team_business_tasks import handover_team_task
+
+    await _bind(db, current_user)
+    try:
+        return await handover_team_task(db, user=current_user, team_id=team_id, task_id=task_id, body=body)
     except BusinessTeamError as exc:
         raise _http(exc) from exc
 

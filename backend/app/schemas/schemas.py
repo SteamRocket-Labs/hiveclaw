@@ -244,6 +244,10 @@ class TaskOut(BaseModel):
     priority: str
     assignee: str
     created_by: uuid.UUID
+    business_team_id: uuid.UUID | None = None
+    responsible_user_id: uuid.UUID | None = None
+    audience_kind: str | None = None
+    can_manage_team_sharing: bool = False
     root_session_id: uuid.UUID | None = None
     authority_state: str = "owned"
     authority_source: str | None = None
@@ -286,6 +290,19 @@ class TaskUpdate(BaseModel):
     due_date: datetime | None = None
 
     model_config = {"extra": "forbid"}
+
+
+class TaskHandoverIn(BaseModel):
+    request_id: uuid.UUID
+    responsible_user_id: uuid.UUID
+    expected_updated_at: datetime
+    reason: str = Field(min_length=1, max_length=1000)
+    model_config = {"extra": "forbid"}
+
+
+class TaskTeamSharingIn(TaskHandoverIn):
+    business_team_id: uuid.UUID | None = None
+    responsible_user_id: uuid.UUID | None = None
 
 
 class TaskLogCreate(BaseModel):

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate, stamp_plan_gate_decision
 from app.core.permissions import (
+    SCOPED_BUSINESS_ADMIN_AUTHORITY_SOURCE,
     check_agent_access,
     check_agent_operator_reachability,
     reject_non_executing_agent_access,
@@ -23,6 +24,7 @@ from app.models.runtime_task import RuntimeTask
 from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.schemas.schemas import BusinessTaskDetailOut, TaskCreate, TaskLogCreate, TaskLogOut, TaskOut, TaskUpdate
+from app.schemas.schemas import TaskTeamSharingIn
 from app.services.business_task_runtime import (
     BusinessTaskInvariantError,
     apply_business_task_cancellation,
@@ -195,6 +197,7 @@ async def _business_task_detail(task: Task, db: AsyncSession) -> BusinessTaskDet
 def _stamp_task_authority(out: TaskOut, decision) -> TaskOut:
     out.authority_source = decision.authority_source
     out.operator_view = decision.operator_view
+    out.can_manage_team_sharing = decision.authority_source in {"resource_owner", SCOPED_BUSINESS_ADMIN_AUTHORITY_SOURCE}
     return out
 
 
@@ -593,6 +596,21 @@ async def reconcile_business_task_state(
     detail = await _business_task_detail(task, db)
     _stamp_task_authority(detail.task, decision)
     return detail
+
+
+@router.post("/{task_id}/team-sharing")
+async def set_task_team_sharing(agent_id: uuid.UUID, task_id: uuid.UUID, body: TaskTeamSharingIn,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.api.business_teams import _http
+    from app.services.business_teams import BusinessTeamError
+    from app.services.team_business_tasks import change_task_team_sharing
+
+    task, _decision = await _load_authorized_task(db, current_user, agent_id=agent_id, task_id=task_id,
+        action="write", operator_view=False, operator_reason=None, for_update=True)
+    try:
+        return await change_task_team_sharing(db, user=current_user, task=task, body=body)
+    except BusinessTeamError as exc:
+        raise _http(exc) from exc
 
 
 @router.patch("/{task_id}", response_model=TaskOut)

@@ -280,8 +280,9 @@ async def quarantine_transferred_trigger_authority(
     *,
     agent_id: uuid.UUID,
     previous_owner_id: uuid.UUID | None,
+    reason: str = "agent_owner_transferred",
 ) -> list[uuid.UUID]:
-    """Disable triggers bound to the owner who just lost the agent.
+    """Disable triggers bound to the previous responsible principal.
 
     Historical ``created_by`` stays in place. Triggers with no ``created_by``,
     and triggers bound to someone else, are left untouched.
@@ -305,7 +306,7 @@ async def quarantine_transferred_trigger_authority(
         if str(config.get("authority_state") or "").strip().lower() == "quarantined":
             continue
         config["authority_state"] = "quarantined"
-        config["authority_revoked_reason"] = "agent_owner_transferred"
+        config["authority_revoked_reason"] = reason
         _assign_trigger_config(trigger, config)
         trigger.is_enabled = False
         quarantined.append(trigger.id)

@@ -5272,5 +5272,31 @@
     "approveMinimum": "Approve only the required capacity",
     "newLimits": "Requested new limits",
     "limitsHint": "Enter each limit that needs an increase. Leave other limits blank."
+  },
+  "teamTasks": {
+    "updateShared": "Review and update shared details",
+    "share": "Share task with a team",
+    "makePrivate": "Make private and return responsibility to the creator",
+    "disclosure": "Share only this reviewed title and goal, status and responsibility. Private conversations, logs, results and files keep their own permissions. Later goal edits require another explicit share.",
+    "routines": "Changing responsibility pauses the previous person’s routines on this employee for review. It does not rerun work or transfer their permissions.",
+    "team": "Team",
+    "chooseTeam": "Choose a team",
+    "responsible": "Responsible member",
+    "chooseMember": "Choose an active member",
+    "reason": "Reason",
+    "unknown": "Could not confirm the change. Refresh to inspect the current task; an exact retry is safe.",
+    "confirmShare": "Share reviewed task details",
+    "confirmPrivate": "Confirm private work and creator responsibility",
+    "reviewLatest": "Close and review the latest task",
+    "title": "Shared team tasks",
+    "boundary": "Leads see explicitly shared tasks; members see tasks assigned to them. Continuing work uses your own authorized employee session.",
+    "paused": "{{count}} routines paused for review.",
+    "responsibility": "Responsible: {{name}} · Created by {{creator}}",
+    "myWork": "Open my own work",
+    "handover": "Hand over responsibility",
+    "newResponsible": "New responsible member",
+    "confirmHandover": "Confirm responsibility handover",
+    "previous": "Previous tasks",
+    "more": "More tasks"
   }
 }

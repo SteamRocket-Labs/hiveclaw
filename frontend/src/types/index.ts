@@ -67,6 +67,10 @@ export interface Task {
     priority: 'low' | 'medium' | 'high' | 'urgent';
     assignee: string;
     created_by: string;
+    business_team_id?: string | null;
+    responsible_user_id?: string | null;
+    audience_kind?: string | null;
+    can_manage_team_sharing?: boolean;
     request_id: string;
     request_hash: string;
     active_runtime_task_id?: string;

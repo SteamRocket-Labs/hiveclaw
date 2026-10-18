@@ -8,6 +8,7 @@ import type { Agent } from '../../types';
 import { useAuthStore } from '../../stores';
 import WorkspaceApprovalsSection from './WorkspaceApprovalsSection';
 import TeamRuntimeBudgets from './TeamRuntimeBudgets';
+import TeamBusinessTasks from './TeamBusinessTasks';
 
 type SignedInUser = {
   id?: string;
@@ -127,6 +128,7 @@ export function WorkspaceBusinessTeams({ agents }: { agents: Agent[] }) {
   const [detail, setDetail] = useState<BusinessTeamDetail | null>(null);
   const [approvalTeamId, setApprovalTeamId] = useState<string | null>(null);
   const [budgetTeamId, setBudgetTeamId] = useState<string | null>(null);
+  const [taskTeamId, setTaskTeamId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [stale, setStale] = useState(false);
@@ -406,6 +408,12 @@ export function WorkspaceBusinessTeams({ agents }: { agents: Agent[] }) {
               {' · '}
               {t('featureHub.businessTeams.createdBy', 'Created by {{name}}', { name: detail.created_by_display_name })}
             </p>
+            <button type="button" className="btn btn-ghost" aria-expanded={taskTeamId === detail.id}
+              onClick={() => setTaskTeamId(taskTeamId === detail.id ? null : detail.id)}>
+              {t('teamTasks.title', 'Shared team tasks')}
+            </button>
+            {taskTeamId === detail.id && <TeamBusinessTasks key={`${scopeKey}:${detail.id}`}
+              teamId={detail.id} scopeKey={scopeKey} />}
             {detail.can_manage && (
               <div>
                 <button type="button" className="btn btn-ghost" aria-expanded={approvalTeamId === detail.id}

@@ -4,6 +4,7 @@ the platform force switches (CC managed-policy parity)."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import uuid
 from types import SimpleNamespace
 
@@ -79,7 +80,9 @@ async def test_json_verdict_translates(sandbox):
     assert sandbox["argv"][0] == "bash"
     assert "python check.py <" in sandbox["argv"][2]
     assert sandbox["kwargs"]["network_policy"] == "deny"
-    assert sandbox["kwargs"]["env"] == {}
+    env = sandbox["kwargs"]["env"]
+    assert env["HOME"] and not Path(env["HOME"]).exists()
+    assert "DATABASE_URL" not in env and "OPENAI_API_KEY" not in env
 
 
 @pytest.mark.asyncio

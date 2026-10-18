@@ -332,3 +332,18 @@ async def test_vercel_provider_missing_credentials_fails_closed_without_local_fa
 
     assert "Vercel Sandbox unavailable" in result
     assert "HIVE_ALLOW_UNSANDBOXED_CODE_EXEC" not in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("policy,network_access,expected", [("deny", True, "deny-all"), ("allow", False, "deny-all"), ("allow", True, "allow-all")])
+async def test_service_preserves_explicit_network_denial_for_vercel(tmp_path, monkeypatch, fake_vercel, policy, network_access, expected):
+    from app.runtime.ccplus_contracts import SandboxProfile
+    from app.services.code_execution.service import execute_agent_command
+    from app.services.subprocess_sandbox import SandboxBuildSpec
+
+    _set_vercel_env(monkeypatch)
+    result = await execute_agent_command(["bash", "-lc", "printf network-policy"], work_dir=tmp_path, env={}, timeout=5,
+        network_policy=policy, sandbox_spec=SandboxBuildSpec(profile=SandboxProfile.WORKSPACE_WRITE, network_access=network_access))
+    assert result.error is None
+    assert fake_vercel.created[0]["network_policy"] == expected
+    assert result.evidence["network_policy"] == expected

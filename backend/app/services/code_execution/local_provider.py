@@ -66,6 +66,7 @@ async def execute_local_sandboxed_command(
     env: dict[str, str],
     timeout: int,
     spec: SandboxBuildSpec | None = None,
+    require_network_denial: bool = False,
 ) -> CodeExecutionResult:
     effective_spec = spec or SandboxBuildSpec(profile=SandboxProfile.FULL_ACCESS_LOCAL_ONLY)
     safe_env, env_policy = sanitize_agent_execution_env(env, require_home=True)
@@ -82,6 +83,9 @@ async def execute_local_sandboxed_command(
         return CodeExecutionResult(error=sandbox.error, evidence=evidence)
 
     try:
+        if require_network_denial and isolation == "unsandboxed_dev_bypass":
+            return CodeExecutionResult(error="❌ Network denial requires an enforcing OS sandbox; development bypass cannot provide it.",
+                evidence={**evidence, "status": "unsupported", "reason_code": "network_isolation_unavailable", "retryable": False})
         launch = asyncio.create_task(asyncio.create_subprocess_exec(
             *(sandbox.command or []),
             cwd=str(work_dir),

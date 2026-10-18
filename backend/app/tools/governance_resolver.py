@@ -12,6 +12,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from sqlalchemy import select
@@ -432,6 +433,7 @@ async def run_sandboxed_governance_hook(spec: GovernanceHookSpec, payload: dict[
     - any other exit code, timeout, or provider error = deny (fail-closed).
     """
     from app.services.code_execution.service import execute_agent_command
+    from app.services.subprocess_env import build_agent_subprocess_env
     from app.tools.workspace import ensure_workspace
 
     agent_id_raw = payload.get("agent_id")
@@ -453,14 +455,15 @@ async def run_sandboxed_governance_hook(spec: GovernanceHookSpec, payload: dict[
     payload_path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
     command = f"{spec.command} < {shlex.quote(str(payload_path))}"
     try:
-        result = await execute_agent_command(
-            ["bash", "-lc", command],
-            work_dir=Path(work_dir),
-            env={},
-            timeout=spec.timeout_seconds,
-            runtime="governance_hook",
-            network_policy="deny",
-        )
+        with TemporaryDirectory(prefix="hive-governance-hook-") as home:
+            result = await execute_agent_command(
+                ["bash", "-lc", command],
+                work_dir=Path(work_dir),
+                env=build_agent_subprocess_env(home=Path(home)),
+                timeout=spec.timeout_seconds,
+                runtime="governance_hook",
+                network_policy="deny",
+            )
     except Exception as exc:  # noqa: BLE001 - D1 fail-closed
         return HookVerdict(
             decision="deny",

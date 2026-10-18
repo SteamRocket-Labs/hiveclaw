@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import asyncio
 import tarfile
 from uuid import uuid4
 
@@ -347,3 +348,48 @@ async def test_service_preserves_explicit_network_denial_for_vercel(tmp_path, mo
     assert result.error is None
     assert fake_vercel.created[0]["network_policy"] == expected
     assert result.evidence["network_policy"] == expected
+
+
+@pytest.mark.asyncio
+async def test_stop_failure_retains_command_result_and_unknown_resource_receipt(tmp_path, monkeypatch, fake_vercel):
+    from app.services.code_execution.vercel_provider import execute_vercel_sandbox_command
+    from app.services import execution_environments
+
+    _set_vercel_env(monkeypatch)
+    states = []
+    monkeypatch.setattr(execution_environments, "record_environment_resource_state", states.append)
+    async def failed_stop(self):
+        raise ConnectionError("synthetic-stop-unavailable")
+    monkeypatch.setattr(fake_vercel, "stop", failed_stop)
+    result = await execute_vercel_sandbox_command(["bash", "-lc", "printf hi"], work_dir=tmp_path, env={}, timeout=5)
+    assert result.stdout == "hi" and result.exit_code == 0
+    assert result.evidence["resource_cleanup"]["status"] == "unknown"
+    assert states[-1] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_joins_remote_stop_before_returning(tmp_path, monkeypatch, fake_vercel):
+    from app.services.code_execution.vercel_provider import execute_vercel_sandbox_command
+
+    _set_vercel_env(monkeypatch)
+    stopping, release = asyncio.Event(), asyncio.Event()
+    async def stop(self):
+        stopping.set()
+        await release.wait()
+        self.stopped = True
+    monkeypatch.setattr(fake_vercel, "stop", stop)
+    task = asyncio.create_task(execute_vercel_sandbox_command(["bash", "-lc", "printf hi"], work_dir=tmp_path, env={}, timeout=5))
+    try:
+        await asyncio.wait_for(stopping.wait(), 3)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done() and not fake_vercel.instances[0].stopped
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert fake_vercel.instances[0].stopped
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)

@@ -1450,11 +1450,17 @@ class ToolRuntimeService:
                     )
                 return value
 
+            async def _execute_in_environment_scope():
+                from app.services.execution_environments import environment_command_scope
+
+                async with environment_command_scope(context, tool_call_id):
+                    return await _execute_backend()
+
             if workspace_mutating or tool_name == "load_skill":
                 async with async_agent_workspace_lock(context.agent_id):
-                    result = await _execute_backend()
+                    result = await _execute_in_environment_scope()
             else:
-                result = await _execute_backend()
+                result = await _execute_in_environment_scope()
         except Exception as exc:
             safe_error, error_redaction = self._redact_runtime_egress(
                 f"{type(exc).__name__}: {exc}",

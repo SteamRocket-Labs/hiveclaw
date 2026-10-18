@@ -47,7 +47,7 @@ async def test_enterprise_identity_migration_preserves_qr_and_refuses_lossy_down
             "VALUES (:id,:tenant,'feishu',:installation,:config,'ou_legacy','Legacy member',:user,'feishu_qr',now(),now())"),
             {"id": principal_id, "tenant": seed["tenant_id"], "installation": str(config_id), "config": config_id, "user": seed["user_id"]})
         await db.commit()
-    upgraded = migrate(["upgrade", "head"])
+    upgraded = migrate(["upgrade", "tenant_channel_principal_1018"])
     assert upgraded.returncode == 0, upgraded.stderr
     async with owner_sessionmaker() as db:
         legacy = await db.get(ExternalPrincipal, principal_id)
@@ -65,6 +65,7 @@ async def test_enterprise_identity_migration_preserves_qr_and_refuses_lossy_down
     async with owner_sessionmaker() as db:
         assert (await db.execute(text("SELECT version_num FROM alembic_version"))).scalar_one() == "tenant_channel_principal_1018"
         assert (await db.get(ExternalPrincipal, principal_id)).binding_method == "feishu_qr"
+    assert migrate(["upgrade", "head"]).returncode == 0
 
 
 async def test_enterprise_installation_normal_text_file_and_original_work_delivery(

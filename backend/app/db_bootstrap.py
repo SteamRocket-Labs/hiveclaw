@@ -59,6 +59,8 @@ COMPANY_KNOWLEDGE_TENANT_TABLES: tuple[str, ...] = (
 # migration is immutable, so the bootstrap path keeps its own copy; keep the
 # two lists in sync when adding tenant tables.
 RLS_TENANT_TABLES: tuple[str, ...] = (
+    "execution_environments",
+    "environment_leases",
     "agents",
     "users",
     "llm_models",

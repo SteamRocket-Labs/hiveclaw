@@ -72,6 +72,7 @@ from app.api.plaza import router as plaza_router
 from app.api.agent_teams import router as agent_teams_router
 from app.api.business_teams import router as business_teams_router
 from app.api.employee_readiness import router as employee_readiness_router
+from app.api.environments import router as environments_router
 from app.api.assistant import router as assistant_router
 from app.api.advanced_plan import router as advanced_plan_router
 from app.api.role_templates import router as role_templates_router
@@ -887,6 +888,7 @@ _api_routers = [
     agent_teams_router,
     business_teams_router,
     employee_readiness_router,
+    environments_router,
     assistant_router,
     advanced_plan_router,
     hooks_router,

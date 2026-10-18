@@ -82,10 +82,13 @@ async def execute_local_sandboxed_command(
     if sandbox.error:
         return CodeExecutionResult(error=sandbox.error, evidence=evidence)
 
+    from app.services.execution_environments import record_environment_resource_state
+
     try:
         if require_network_denial and isolation == "unsandboxed_dev_bypass":
             return CodeExecutionResult(error="❌ Network denial requires an enforcing OS sandbox; development bypass cannot provide it.",
                 evidence={**evidence, "status": "unsupported", "reason_code": "network_isolation_unavailable", "retryable": False})
+        record_environment_resource_state("starting")
         launch = asyncio.create_task(asyncio.create_subprocess_exec(
             *(sandbox.command or []),
             cwd=str(work_dir),
@@ -97,6 +100,7 @@ async def execute_local_sandboxed_command(
         try:
             # Keep the spawn receipt reachable if cancellation races OS process creation.
             proc = await asyncio.shield(launch)
+            record_environment_resource_state("running")
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
             interruption = exc
@@ -107,6 +111,7 @@ async def execute_local_sandboxed_command(
                 except asyncio.CancelledError as repeated:
                     interruption = repeated
             cleanup.result()
+            record_environment_resource_state("stopped")
             if isinstance(interruption, asyncio.CancelledError):
                 raise interruption
             return CodeExecutionResult(
@@ -121,6 +126,7 @@ async def execute_local_sandboxed_command(
             except Exception as e:
                 logger.debug("Suppressed sandbox cleanup error: %s", e)
 
+    record_environment_resource_state("command_completed")
     return CodeExecutionResult(
         stdout=stdout.decode("utf-8", errors="replace"),
         stderr=stderr.decode("utf-8", errors="replace"),

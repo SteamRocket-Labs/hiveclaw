@@ -9,6 +9,7 @@ import { planApi, type PlanRecommendationCreateInput } from '../../api/domains/p
 import { triggerApi } from '../../api/domains/triggers';
 import AgentActionPolicyCard from './AgentActionPolicyCard';
 import './AgentSettingsSection.css';
+import CommandEnvironment from '../../components/CommandEnvironment';
 
 type AgentSettingsForm = {
   primary_model_id: string;
@@ -496,6 +497,7 @@ export default function AgentSettingsSection({
 
   return (
     <div>
+      <CommandEnvironment agentId={agentId} />
       <div className="agent-settings-header">
         <h3 className="agent-settings-title">{t('agent.settings.title')}</h3>
         <div className="agent-settings-header-actions">

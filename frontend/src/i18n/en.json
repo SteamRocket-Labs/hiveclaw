@@ -5418,5 +5418,21 @@
       "add": "Add a group route",
       "save": "Save group routes",
       "confirmed": "Company group routes saved."
+  },
+  "commandEnvironment": {
+      "title": "Command environment",
+      "scope": "Controls running commands. This profile does not provide a persistent computer, background service management or browser control. Saved work remains in the employee workspace.",
+      "ready": "Ready for supervised commands",
+      "stopping": "Stopping: waiting for active commands and work settlement",
+      "stopped": "Stopped",
+      "lost": "Resource completion is unknown. Inspect the original work or ask an administrator before resuming.",
+      "failed": "The command resource is unavailable. Review its configuration before retrying.",
+      "notStarted": "The first authorized command creates this private logical environment.",
+      "unknown": "Could not confirm the current resource state. Refresh before trying another action.",
+      "provider": "Provider",
+      "generation": "Generation",
+      "active": "Active commands",
+      "stop": "Stop supervised commands",
+      "resume": "Resume command environment"
   }
 }

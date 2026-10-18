@@ -205,7 +205,8 @@ async def _exercise_dom_bridge(web, seed, tmp_path, *, entry_file="e2e/tenant-fe
         assert server.started
         env = {key: os.environ[key] for key in ("PATH", "HOME", "TMPDIR") if key in os.environ}
         env.update(NODE_OPTIONS="--no-experimental-webstorage", HIVE_G90_NATIVE_URL=f"http://127.0.0.1:{port}",
-            HIVE_G90_USER_ID=str(seed["user_id"]), HIVE_G90_TENANT_ID=str(seed["tenant_id"]))
+            HIVE_G90_USER_ID=str(seed["user_id"]), HIVE_G90_TENANT_ID=str(seed["tenant_id"]),
+            HIVE_G90_AGENT_ID=str(seed["agent_id"]))
         process = await asyncio.create_subprocess_exec("node", str(root / "node_modules/vitest/vitest.mjs"), "run",
             "--config", str(config), cwd=root, env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
         output, _ = await asyncio.wait_for(process.communicate(), 90)

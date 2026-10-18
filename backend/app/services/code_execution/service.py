@@ -27,7 +27,19 @@ async def execute_agent_command(
     network_policy: str | None = None,
     sandbox_spec: SandboxBuildSpec | None = None,
 ) -> CodeExecutionResult:
+    from app.services.execution_environments import current_environment_scope
+
     provider = configured_code_execution_provider()
+    scope = current_environment_scope()
+    async def operation():
+        return await _execute_selected_command(command, provider=provider, work_dir=work_dir, env=env, timeout=timeout,
+            runtime=runtime, network_policy=network_policy, sandbox_spec=sandbox_spec)
+    if scope is not None:
+        return await scope.execute(operation, provider=provider, timeout=timeout)
+    return await operation()
+
+
+async def _execute_selected_command(command, *, provider, work_dir, env, timeout, runtime, network_policy, sandbox_spec):
     policy = network_policy or os.environ.get("HIVE_CODE_EXEC_NETWORK_POLICY")
     if policy is not None:
         policy = policy.strip() or "deny-all"

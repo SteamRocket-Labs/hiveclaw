@@ -75,9 +75,11 @@ def _vercel_evidence(
     credential_broker: dict | None = None,
     remote_env_keys: list[str] | None = None,
     configured: bool = True,
+    resource_cleanup: dict | None = None,
 ) -> dict:
     return {
         "provider": "vercel_sandbox",
+        "resource_cleanup": resource_cleanup if resource_cleanup is not None else {"status": "not_created"},
         "configured": configured,
         "isolation": "vercel_microvm",
         "network_policy": network_policy,
@@ -142,6 +144,9 @@ async def execute_vercel_sandbox_command(
     runtime: str | None = None,
     network_policy: str | None = None,
 ) -> CodeExecutionResult:
+    from app.services.execution_environments import record_environment_resource_state
+
+    resource_cleanup = {"status": "not_created"}
     policy = (network_policy or os.environ.get("HIVE_CODE_EXEC_NETWORK_POLICY", "deny-all")).strip() or "deny-all"
     safe_env, env_policy = sanitize_agent_execution_env(env, require_home=False)
     brokered_handles, broker_evidence = _brokered_credentials(env)
@@ -155,6 +160,7 @@ async def execute_vercel_sandbox_command(
             ),
             evidence=_vercel_evidence(
                 network_policy=policy,
+                resource_cleanup=resource_cleanup,
                 env_policy=env_policy,
                 credential_broker=broker_evidence,
                 configured=False,
@@ -167,6 +173,8 @@ async def execute_vercel_sandbox_command(
     sandbox = None
     exec_env: dict[str, str] = {}
     try:
+        resource_cleanup["status"] = "creation_unknown"
+        record_environment_resource_state("creation_unknown")
         sandbox = await AsyncSandbox.create(
             team_id=os.environ["VERCEL_TEAM_ID"],
             project_id=os.environ["VERCEL_PROJECT_ID"],
@@ -181,6 +189,7 @@ async def execute_vercel_sandbox_command(
                 f"{key}={handle}" for key, handle in sorted(brokered_handles.items())
             )
         exec_env["HOME"] = _REMOTE_HOME
+        record_environment_resource_state("running")
         await sandbox.run_command("mkdir", ["-p", _REMOTE_WORKSPACE, _REMOTE_HOME])
         await sandbox.write_files([WriteFile(path=_INPUT_ARCHIVE, content=_create_workspace_archive(work_dir))])
         await sandbox.run_command("tar", ["-xzf", f"{_REMOTE_ROOT}/{_INPUT_ARCHIVE}", "-C", _REMOTE_WORKSPACE])
@@ -211,6 +220,7 @@ async def execute_vercel_sandbox_command(
             exit_code=finished.exit_code,
             evidence=_vercel_evidence(
                 network_policy=policy,
+                resource_cleanup=resource_cleanup,
                 env_policy=env_policy,
                 credential_broker=broker_evidence,
                 remote_env_keys=sorted(exec_env),
@@ -222,6 +232,7 @@ async def execute_vercel_sandbox_command(
             timed_out=True,
             evidence=_vercel_evidence(
                 network_policy=policy,
+                resource_cleanup=resource_cleanup,
                 env_policy=env_policy,
                 credential_broker=broker_evidence,
                 remote_env_keys=sorted(exec_env),
@@ -232,6 +243,7 @@ async def execute_vercel_sandbox_command(
             error=f"❌ Vercel Sandbox execution error: {e}",
             evidence=_vercel_evidence(
                 network_policy=policy,
+                resource_cleanup=resource_cleanup,
                 env_policy=env_policy,
                 credential_broker=broker_evidence,
                 remote_env_keys=sorted(exec_env),
@@ -239,7 +251,23 @@ async def execute_vercel_sandbox_command(
         )
     finally:
         if sandbox is not None:
+            cleanup = asyncio.create_task(sandbox.stop())
+            interrupted = False
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    interrupted = True
+                except Exception:
+                    break
             try:
-                await sandbox.stop()
+                cleanup.result()
             except Exception as exc:
-                logger.debug("Suppressed vercel sandbox stop error: %s", exc)
+                resource_cleanup["status"] = "unknown"
+                record_environment_resource_state("unknown")
+                logger.debug("Vercel sandbox stop is unconfirmed (%s)", type(exc).__name__)
+            else:
+                resource_cleanup["status"] = "stopped"
+                record_environment_resource_state("stopped")
+            if interrupted:
+                raise asyncio.CancelledError

@@ -319,6 +319,7 @@ async def test_allow_once_executes_once_pairs_result_and_resumes_same_runtime_ta
             "role": "tool",
             "tool_call_id": invocation.provider_tool_use_id,
             "content": "approved file bytes",
+            "source_ref": f"session-tool-result:{invocation.id}",
         }
 
 

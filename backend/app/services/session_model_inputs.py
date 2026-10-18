@@ -343,12 +343,39 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
             .where(SessionModelResult.id == source_id, SessionModelResult.tenant_id == tenant_id,
                 ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id))
         return _model_dependencies(result)
-    if kind != "session-tool-result":
+    if kind not in {"session-tool-result", "session-tool-permission"}:
         return [], False
     invocation = await db.scalar(select(SessionToolInvocation).join(ChatSession, ChatSession.id == SessionToolInvocation.session_id)
         .where(SessionToolInvocation.id == source_id, SessionToolInvocation.tenant_id == tenant_id,
             ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id))
-    if invocation is None or invocation.result_event_id is None:
+    if invocation is None:
+        return [], False
+    if kind == "session-tool-permission":
+        model = await db.scalar(select(SessionModelResult).where(SessionModelResult.tenant_id == tenant_id,
+            SessionModelResult.session_id == invocation.session_id, SessionModelResult.run_id == invocation.run_id,
+            SessionModelResult.round_id == invocation.round_id,
+            SessionModelResult.provider_request_id == invocation.provider_request_id))
+        dependencies, complete = _model_dependencies(model)
+        waiting = await db.scalar(select(ChatTranscriptEvent).where(ChatTranscriptEvent.tenant_id == tenant_id,
+            ChatTranscriptEvent.agent_id == agent_id, ChatTranscriptEvent.session_id == invocation.session_id,
+            ChatTranscriptEvent.run_id == invocation.run_id, ChatTranscriptEvent.invocation_id == invocation.id,
+            ChatTranscriptEvent.result_id == (model.id if model else None),
+            ChatTranscriptEvent.item_id == invocation.permission_item_id, ChatTranscriptEvent.item_kind == "tool_permission",
+            ChatTranscriptEvent.lifecycle == "waiting").order_by(ChatTranscriptEvent.sequence).limit(1))
+        request = _event_payload(waiting).get("permission_request") if waiting else None
+        effective = invocation.effective_arguments_json
+        valid = bool(model and waiting and isinstance(request, dict) and isinstance(effective, dict)
+            and invocation.id == uuid.uuid5(model.id, f"tool-invocation:{invocation.provider_tool_use_id}")
+            and invocation.args_hash == _hash({"tool_name": invocation.tool_name, "arguments": invocation.provider_arguments_json})
+            and invocation.effective_args_hash == _hash({"tool_name": invocation.tool_name, "arguments": effective})
+            and invocation.permission_authority_snapshot_hash == invocation.authority_snapshot_hash
+            and request.get("permission_request_id") == str(invocation.permission_item_id)
+            and request.get("runtime_task_id") == str(invocation.run_id)
+            and request.get("session_id") == str(invocation.session_id)
+            and request.get("tool_call_id") == invocation.provider_tool_use_id
+            and request.get("tool_name") == invocation.tool_name and request.get("arguments") == effective)
+        return dependencies, complete and valid
+    if invocation.result_event_id is None:
         return [], False
     event = await db.scalar(select(ChatTranscriptEvent).where(ChatTranscriptEvent.id == invocation.result_event_id,
         ChatTranscriptEvent.tenant_id == tenant_id, ChatTranscriptEvent.agent_id == agent_id,
@@ -366,6 +393,23 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
     # The call's own audience remains a source, including empty searches and private query arguments.
     dependencies = [*dependencies, {"source_kind": "session_tool_invocation", "source_id": str(invocation.id),
         "source_version": payload["content_hash"]}]
+    if invocation.permission_state == "denied":
+        from app.models.session_v2 import SessionControlInput
+
+        try:
+            denial = json.loads(content)
+            control = await db.get(SessionControlInput, uuid.UUID(denial["control_id"]))
+            valid = (denial.get("schema") == "hive.tool_permission_result.v1" and denial.get("status") == "denied"
+                and denial.get("invocation_id") == str(invocation.id) and control is not None
+                and control.tenant_id == tenant_id and control.session_id == invocation.session_id
+                and control.expected_run_id == invocation.run_id and control.request_item_id == invocation.permission_item_id
+                and control.authority_snapshot_hash == invocation.permission_authority_snapshot_hash
+                and control.kind == "permission_response" and control.status == "applied"
+                and control.response_payload_json == {"decision": "deny"}
+                and control.response_payload_hash == _hash(control.response_payload_json))
+        except (ValueError, TypeError, KeyError):
+            valid = False
+        return _unique_dependencies(dependencies), inherited_complete and valid
     if invocation.tool_name == "ask_user_question":
         question = await db.scalar(select(ChatTranscriptEvent).where(
             ChatTranscriptEvent.tenant_id == tenant_id, ChatTranscriptEvent.session_id == invocation.session_id,

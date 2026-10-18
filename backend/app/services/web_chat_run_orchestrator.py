@@ -266,6 +266,11 @@ async def _load_web_chat_context(state: _WebChatRunState) -> None:
     state.actor_user_id = state.ports.context.actor_user_id(user)
     state.actor_external_principal_id = state.ports.context.actor_external_principal_id(user)
     state.actor_authority_bound = state.ports.context.actor_authority_bound(user)
+    if getattr(session, "audience_kind", None) == "group":
+        from app.services.shared_group_authority import group_permission_metadata
+
+        state.metadata = group_permission_metadata(runtime_metadata=runtime_task.metadata_json,
+            session_metadata=getattr(session, "transcript_metadata_json", None))
     if state.actor_external_principal_id is not None and not state.actor_authority_bound:
         state.metadata["disable_tools"] = True
         state.metadata["tool_policy"] = "disabled_for_unbound_external_principal"
@@ -594,6 +599,15 @@ class _WebChatCallbacks:
                 await events.broadcast(state.agent.id, state.session_id, envelope)
         if data.get("status") != "done":
             return
+        if getattr(getattr(state, "session", None), "audience_kind", None) == "group":
+            from app.models.runtime_task import RuntimeTask
+            from app.services.delegation_context_sources import capture_native_recovery_context
+
+            async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
+                task = await db.get(RuntimeTask, state.run_uuid)
+                await capture_native_recovery_context(db, task=task, session=state.runtime_session_context,
+                    provider_request_id=state.active_provider_request_id)
+                await db.commit()
         await self._consume_completed_tool(data)
 
     async def _consume_completed_tool(self, data: dict[str, Any]) -> None:
@@ -913,6 +927,9 @@ async def _invoke_model(state: _WebChatRunState, callbacks: _WebChatCallbacks, s
                 async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
                     await bind_shared_group_permission_source(db, task=state.runtime_task, session=state.session,
                         invocation=invocation)
+                    from app.services.delegation_context_sources import bind_native_recovery_context
+
+                    await bind_native_recovery_context(db, task=state.runtime_task, session=invocation.session_context)
             return await state.ports.runtime.invoke_agent(invocation)
         except state.ports.events.terminal_signal_type as signal:
             state.interactive_pause_summary = signal.summary

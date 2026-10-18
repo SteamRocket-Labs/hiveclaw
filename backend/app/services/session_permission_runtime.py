@@ -637,10 +637,16 @@ async def resolve_session_tool_permission(
         "control_id": str(control_id),
         "authority_snapshot_hash": invocation.permission_authority_snapshot_hash,
     }
+    if session.audience_kind == "group":
+        exact_grant.update(principal_type=authority.principal_type, principal_id=str(authority.principal_id))
+        session_grants = [grant for grant in session_grants if grant.get("principal_type") == authority.principal_type
+            and grant.get("principal_id") == str(authority.principal_id)]
     if decision == "allow_session" and exact_grant not in session_grants:
-        session_grants.append(exact_grant)
         session_metadata = dict(session.transcript_metadata_json or {})
-        session_metadata["session_permission_grants"] = session_grants
+        stored_grants = list(session_metadata.get("session_permission_grants") or [])
+        stored_grants.append(exact_grant)
+        session_grants.append(exact_grant)
+        session_metadata["session_permission_grants"] = stored_grants
         session.transcript_metadata_json = session_metadata
         await db.commit()
 
@@ -649,6 +655,9 @@ async def resolve_session_tool_permission(
         invocation_id = invocation.id
 
         async def _pre_effect(payload: dict[str, Any]) -> None:
+            from app.services.shared_group_authority import authorize_group_tool_permission
+
+            await authorize_group_tool_permission(db, authority=authority, invocation=invocation)
             await mark_tool_effect_started(
                 db,
                 tenant_id=authority.tenant_id,
@@ -671,139 +680,142 @@ async def resolve_session_tool_permission(
                 "session_grants": tuple(session_grants),
             }
         )
-        try:
-            tool_result = await execute_session_permission_tool(
-                invocation.tool_name,
-                effective_arguments,
-                agent_id=authority.agent_id,
-                user_id=authority.principal_id,
-                session_id=str(authority.session_id),
-                permission_profile=profile,
-                tool_call_id=invocation.provider_tool_use_id,
-                turn_id=(await _source_result(db, invocation)).turn_id,
-                runtime_task_id=str(invocation.run_id),
-                origin_channel=getattr(session, "source_channel", None) or "web",
-                round_state={"trace_id": f"permission:{control_id}"},
-                pre_effect_callback=_pre_effect,
-                trace_metadata_sink=trace,
-            )
-        except Exception as exc:
-            # The callback is the only path that releases effect authority and
-            # commits that fact before executor entry.  If its durable state is
-            # still prepared, an aborted matching result is provable.  Once the
-            # fence crossed, an escaped exception is effect-uncertain: never
-            # guess a failure receipt and never replay the effect.
-            await db.rollback()
-            invocation = await db.scalar(
-                select(SessionToolInvocation)
-                .where(
-                    SessionToolInvocation.id == invocation_id,
-                    SessionToolInvocation.tenant_id == authority.tenant_id,
-                    SessionToolInvocation.session_id == authority.session_id,
-                )
-                .with_for_update()
-            )
-            if invocation is None:
-                raise RuntimeError("tool_invocation_not_found") from exc
-            if invocation.effect_state == "prepared_not_started":
-                abort_ref = f"session-permission:{control_id}:effect-authority-not-released"
-                await complete_tool_invocation(
-                    db,
-                    tenant_id=authority.tenant_id,
+        from app.services.shared_group_authority import group_permission_execution
+
+        with group_permission_execution(authority=authority, invocation=invocation, control_id=control_id):
+            try:
+                tool_result = await execute_session_permission_tool(
+                    invocation.tool_name,
+                    effective_arguments,
                     agent_id=authority.agent_id,
-                    session_id=authority.session_id,
-                    invocation_id=invocation.id,
-                    provider_result_content=_typed_execution_abort(
-                        invocation=invocation,
-                        reason_code="approved_tool_execution_not_released",
-                    ),
-                    execution_evidence=_pre_effect_abort_evidence(receipt_ref=abort_ref),
-                    effective_arguments=effective_arguments,
+                    user_id=authority.principal_id,
+                    session_id=str(authority.session_id),
+                    permission_profile=profile,
+                    tool_call_id=invocation.provider_tool_use_id,
+                    turn_id=(await _source_result(db, invocation)).turn_id,
+                    runtime_task_id=str(invocation.run_id),
+                    origin_channel=getattr(session, "source_channel", None) or "web",
+                    round_state={"trace_id": f"permission:{control_id}"},
+                    pre_effect_callback=_pre_effect,
+                    trace_metadata_sink=trace,
+                )
+            except Exception as exc:
+                # The callback is the only path that releases effect authority and
+                # commits that fact before executor entry.  If its durable state is
+                # still prepared, an aborted matching result is provable.  Once the
+                # fence crossed, an escaped exception is effect-uncertain: never
+                # guess a failure receipt and never replay the effect.
+                await db.rollback()
+                invocation = await db.scalar(
+                    select(SessionToolInvocation)
+                    .where(
+                        SessionToolInvocation.id == invocation_id,
+                        SessionToolInvocation.tenant_id == authority.tenant_id,
+                        SessionToolInvocation.session_id == authority.session_id,
+                    )
+                    .with_for_update()
+                )
+                if invocation is None:
+                    raise RuntimeError("tool_invocation_not_found") from exc
+                if invocation.effect_state == "prepared_not_started":
+                    abort_ref = f"session-permission:{control_id}:effect-authority-not-released"
+                    await complete_tool_invocation(
+                        db,
+                        tenant_id=authority.tenant_id,
+                        agent_id=authority.agent_id,
+                        session_id=authority.session_id,
+                        invocation_id=invocation.id,
+                        provider_result_content=_typed_execution_abort(
+                            invocation=invocation,
+                            reason_code="approved_tool_execution_not_released",
+                        ),
+                        execution_evidence=_pre_effect_abort_evidence(receipt_ref=abort_ref),
+                        effective_arguments=effective_arguments,
+                    )
+                else:
+                    await complete_tool_invocation(
+                        db,
+                        tenant_id=authority.tenant_id,
+                        agent_id=authority.agent_id,
+                        session_id=authority.session_id,
+                        invocation_id=invocation.id,
+                        provider_result_content="",
+                        execution_evidence=None,
+                        effective_arguments=effective_arguments,
+                    )
+                logger.exception(
+                    "Session-approved tool execution interrupted: invocation_id={} effect_state={}",
+                    invocation.id,
+                    invocation.effect_state,
                 )
             else:
+                await db.refresh(invocation)
+                evidence = _execution_evidence(trace)
+                typed_decision = evidence.get("tool_decision")
+                outcome = str(typed_decision.get("outcome") or "") if isinstance(typed_decision, dict) else ""
+                # A second approval request (or an untyped stop) after the exact
+                # control was applied must not create an approval loop.  Because
+                # the durable fence still proves no effect authority was released,
+                # settle it as an explicit abort and let the model interpret that
+                # typed result in the original Run.
+                if invocation.effect_state == "prepared_not_started" and outcome not in {
+                    "deny",
+                    "unavailable",
+                }:
+                    frame = evidence.get("execution_frame")
+                    frame_status = str(frame.get("status") or "") if isinstance(frame, dict) else ""
+                    if outcome not in {"allow", "allow_prepare_only"} or frame_status not in {
+                        "completed",
+                        "failed",
+                    }:
+                        abort_ref = f"session-permission:{control_id}:approved-effect-not-released"
+                        evidence = _pre_effect_abort_evidence(receipt_ref=abort_ref)
+                        tool_result = _typed_execution_abort(
+                            invocation=invocation,
+                            reason_code="approved_permission_not_consumed",
+                        )
                 await complete_tool_invocation(
                     db,
                     tenant_id=authority.tenant_id,
                     agent_id=authority.agent_id,
                     session_id=authority.session_id,
                     invocation_id=invocation.id,
-                    provider_result_content="",
-                    execution_evidence=None,
-                    effective_arguments=effective_arguments,
+                    provider_result_content=_result_text(tool_result),
+                    execution_evidence=evidence,
+                    execution_artifacts=list(getattr(tool_result, "artifacts", ()) or ()),
+                    effective_arguments=(
+                        evidence.get("effective_arguments")
+                        if isinstance(evidence.get("effective_arguments"), dict)
+                        else effective_arguments
+                    ),
                 )
-            logger.exception(
-                "Session-approved tool execution interrupted: invocation_id={} effect_state={}",
-                invocation.id,
-                invocation.effect_state,
-            )
-        else:
-            await db.refresh(invocation)
-            evidence = _execution_evidence(trace)
-            typed_decision = evidence.get("tool_decision")
-            outcome = str(typed_decision.get("outcome") or "") if isinstance(typed_decision, dict) else ""
-            # A second approval request (or an untyped stop) after the exact
-            # control was applied must not create an approval loop.  Because
-            # the durable fence still proves no effect authority was released,
-            # settle it as an explicit abort and let the model interpret that
-            # typed result in the original Run.
-            if invocation.effect_state == "prepared_not_started" and outcome not in {
-                "deny",
-                "unavailable",
-            }:
-                frame = evidence.get("execution_frame")
-                frame_status = str(frame.get("status") or "") if isinstance(frame, dict) else ""
-                if outcome not in {"allow", "allow_prepare_only"} or frame_status not in {
-                    "completed",
-                    "failed",
-                }:
-                    abort_ref = f"session-permission:{control_id}:approved-effect-not-released"
-                    evidence = _pre_effect_abort_evidence(receipt_ref=abort_ref)
-                    tool_result = _typed_execution_abort(
-                        invocation=invocation,
-                        reason_code="approved_permission_not_consumed",
-                    )
-            await complete_tool_invocation(
-                db,
-                tenant_id=authority.tenant_id,
-                agent_id=authority.agent_id,
-                session_id=authority.session_id,
-                invocation_id=invocation.id,
-                provider_result_content=_result_text(tool_result),
-                execution_evidence=evidence,
-                execution_artifacts=list(getattr(tool_result, "artifacts", ()) or ()),
-                effective_arguments=(
-                    evidence.get("effective_arguments")
-                    if isinstance(evidence.get("effective_arguments"), dict)
-                    else effective_arguments
-                ),
-            )
-        await db.commit()
-        await db.refresh(invocation)
-
-        if invocation.result_event_id is None:
-            source_result = await _source_result(db, invocation)
-            task = await _quarantine_same_run_for_reconciliation(
-                db,
-                tenant_id=authority.tenant_id,
-                agent_id=authority.agent_id,
-                session_id=authority.session_id,
-                invocation=invocation,
-                source_result=source_result,
-                reason_code="approved_tool_effect_settlement_uncertain",
-            )
             await db.commit()
-            return SessionPermissionResolutionReceipt(
-                schema="hive.session_permission_resolution.v2",
-                status="needs_reconciliation",
-                permission_request_id=str(permission_request_id),
-                invocation_id=str(invocation.id),
-                control_id=str(control_id),
-                run_id=str(invocation.run_id),
-                run_status=str(task.status),
-                result_event_id=None,
-                retryable=False,
-                recovery_action="reconcile_tool_effect",
-            )
+            await db.refresh(invocation)
+
+            if invocation.result_event_id is None:
+                source_result = await _source_result(db, invocation)
+                task = await _quarantine_same_run_for_reconciliation(
+                    db,
+                    tenant_id=authority.tenant_id,
+                    agent_id=authority.agent_id,
+                    session_id=authority.session_id,
+                    invocation=invocation,
+                    source_result=source_result,
+                    reason_code="approved_tool_effect_settlement_uncertain",
+                )
+                await db.commit()
+                return SessionPermissionResolutionReceipt(
+                    schema="hive.session_permission_resolution.v2",
+                    status="needs_reconciliation",
+                    permission_request_id=str(permission_request_id),
+                    invocation_id=str(invocation.id),
+                    control_id=str(control_id),
+                    run_id=str(invocation.run_id),
+                    run_status=str(task.status),
+                    result_event_id=None,
+                    retryable=False,
+                    recovery_action="reconcile_tool_effect",
+                )
 
     source_result, batch_settled = await _settle_unstarted_batch_siblings(
         db,

@@ -41,7 +41,7 @@ async def group_event_access(db, *, session, events, user):
 
 async def _group_event_access(db, *, session, events, user):
     from app.models.chat_artifact import ChatArtifact
-    from app.models.session_v2 import SessionModelResult, SessionToolInvocation, SessionTurnInput
+    from app.models.session_v2 import SessionCommand, SessionControlInput, SessionModelResult, SessionToolInvocation, SessionTurnInput
     from app.services.content_input_receipts import validate_artifact_content_receipt
 
     origins, decisions, access = {}, {}, {}
@@ -62,9 +62,33 @@ async def _group_event_access(db, *, session, events, user):
             if event.item_kind == "human_input" and event.input_id is not None:
                 origin = await db.get(SessionTurnInput, event.input_id)
                 refs = [f"session-input:{event.input_id}"]
+            elif event.item_kind == "control_input" and (event.metadata_json or {}).get("v2_payload", {}).get("kind") == "permission_response":
+                control = await db.get(SessionControlInput, event.item_id)
+                command = await db.get(SessionCommand, event.command_id) if event.command_id else None
+                target = (command.target_json or {}) if command else {}
+                try:
+                    origin = await db.get(SessionToolInvocation, uuid.UUID(str(target.get("invocation_id"))))
+                except (ValueError, TypeError):
+                    origin = None
+                from app.services.session_model_inputs import _hash
+
+                if not (control and command and origin and control.command_id == command.id
+                    and control.tenant_id == session.tenant_id and control.session_id == session.id
+                    and command.tenant_id == session.tenant_id and command.session_id == session.id
+                    and command.command_kind == "permission_response"
+                    and control.kind == "permission_response" and control.expected_run_id == origin.run_id
+                    and control.request_item_id == origin.permission_item_id
+                    and control.request_version == origin.permission_request_version
+                    and control.authority_snapshot_hash == origin.permission_authority_snapshot_hash
+                    and command.request_hash == _hash({"command_kind": command.command_kind, "request": command.request_json})
+                    and command.target_hash == _hash(target)):
+                    raise ContentInputReceiptError("group_permission_source_unavailable", "The decision lacks its exact permission source.", 503)
+                refs = [f"session-tool-permission:{origin.id}"]
             elif event.item_kind in {"tool_call", "tool_result", "tool_permission", "user_question"} and event.invocation_id is not None:
                 origin = await db.get(SessionToolInvocation, event.invocation_id)
-                refs = [f"session-tool-result:{event.invocation_id}"]
+                permission = event.item_kind == "tool_permission" or (event.item_kind == "tool_call"
+                    and origin is not None and origin.permission_item_id is not None and origin.result_event_id is None)
+                refs = [f"session-tool-{'permission' if permission else 'result'}:{event.invocation_id}"]
             elif event.item_kind in {"assistant_text", "assistant_commentary", "assistant_reasoning_summary",
                 "assistant_final", "assistant_plan", "result_commit"} and event.result_id is not None:
                 origin = await db.get(SessionModelResult, event.result_id)

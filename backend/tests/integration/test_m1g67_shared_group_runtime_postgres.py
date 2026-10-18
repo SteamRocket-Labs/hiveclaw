@@ -16,7 +16,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
     reason="Native macOS context gate; Linux delivery is deferred.")]
 
 
-@pytest.mark.parametrize("mutation", [None, "forged_actor", "unlinked", "private_source", "private_recipient", "unknown_recipient", "queued_member", "same_sender", "explicit_other", "private_context", "shared_context", "web_member", "web_socket", "web_browser", "web_question", "web_question_browser", "web_cancel", "web_cancel_recovery", "web_cancel_unknown", "web_cancel_browser"])
+@pytest.mark.parametrize("mutation", [None, "forged_actor", "unlinked", "private_source", "private_recipient", "unknown_recipient", "queued_member", "same_sender", "explicit_other", "private_context", "shared_context", "web_member", "web_socket", "web_browser", "web_question", "web_question_browser", "web_cancel", "web_cancel_recovery", "web_cancel_unknown", "web_cancel_browser", "web_permission", "web_permission_session", "web_permission_deny", "web_permission_browser"])
 async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, mutation,
 ):
@@ -54,6 +54,9 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     from app.services.session_input_dispatch import recover_admitted_session_inputs_once
     from app.services.web_chat_runtime import execute_web_chat_run
 
+    permission_decision = {"web_permission": "allow_once", "web_permission_session": "allow_session", "web_permission_deny": "deny", "web_permission_browser": "allow_once"}.get(mutation)
+    permission_browser = mutation == "web_permission_browser"
+    web_permission = permission_decision is not None
     web_requester = mutation == "web_member"
     question_browser = mutation == "web_question_browser"
     web_question = mutation in {"web_question", "web_question_browser"}
@@ -61,7 +64,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     cancel_unknown = mutation == "web_cancel_unknown"
     cancel_browser = mutation == "web_cancel_browser"
     web_cancel = mutation in {"web_cancel", "web_cancel_recovery", "web_cancel_unknown", "web_cancel_browser"}
-    if web_question or web_cancel:
+    if web_question or web_cancel or web_permission:
         mutation = None
     web_browser = mutation == "web_browser"
     web_socket = mutation in {"web_socket", "web_browser"}
@@ -86,14 +89,15 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     seed["agent_root"].rmdir()
     async with owner_sessionmaker() as db:
         agent = await db.get(Agent, seed["agent_id"])
-        agent.default_session_permission_mode = "bypassPermissions"
+        agent.default_session_permission_mode = "default" if web_permission else "bypassPermissions"
         await AgentManager().initialize_agent_files(db, agent, personality="SHARED_EMPLOYEE_ROLE",
             original_author_id=seed["user_id"])
         model = await db.get(LLMModel, agent.primary_model_id)
         model.api_key_encrypted = get_secrets_provider().encrypt("synthetic-group-provider-only")
         model.max_input_tokens = 256_000
-        db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="workspace.file.write", allowed=True,
-            requires_approval=False))
+        if not web_permission:
+            db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="workspace.file.write", allowed=True,
+                requires_approval=False))
         (await db.get(RuntimeTask, seed["run_id"])).status = "completed"
         member = User(id=uuid4(), tenant_id=seed["tenant_id"], username=f"group-{uuid4().hex}",
             email=f"{uuid4().hex}@group.test", password_hash="x", display_name="Group Requester")
@@ -108,7 +112,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
         bound = await bind_authenticated_self_channel_principal(db, tenant_id=seed["tenant_id"], config=config,
             provider_subject_id="ou_group_requester", user_id=member.id, actor_user_id=member.id)
         actor = bound.actor
-        if web_question or web_cancel or mutation in {"private_recipient", "queued_member", "explicit_other", "private_context", "shared_context"}:
+        if web_question or web_cancel or web_permission or mutation in {"private_recipient", "queued_member", "explicit_other", "private_context", "shared_context"}:
             other = await bind_authenticated_self_channel_principal(db, tenant_id=seed["tenant_id"], config=config,
                 provider_subject_id="ou_group_creator", user_id=seed["user_id"], actor_user_id=seed["user_id"])
         grant.actions = ["read", "execute"]
@@ -139,7 +143,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
 
     async def members(_self, *_args, **_kwargs):
         subjects = {"ou_group_requester"}
-        if web_question or web_cancel or mutation in {"private_recipient", "unknown_recipient", "queued_member", "explicit_other", "private_context", "shared_context"}:
+        if web_question or web_cancel or web_permission or mutation in {"private_recipient", "unknown_recipient", "queued_member", "explicit_other", "private_context", "shared_context"}:
             subjects.add("ou_group_unknown" if mutation == "unknown_recipient" else "ou_group_creator")
         return subjects
     monkeypatch.setattr(FeishuService, "get_chat_member_open_ids", members)
@@ -412,6 +416,10 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
         await execute_web_chat_run(run_id)
     finally:
         reset_runtime_task_fence(fence)
+    if web_permission:
+        await _exercise_group_permission(seed, shared_id, run_id, member.id, app_user_sessionmaker, monkeypatch, tmp_path,
+            decision=permission_decision, model_client=client, submit=submit, actor=actor, other_actor=other.actor, browser_permission=permission_browser)
+        return
     (tmp_path / "shared-model-requests.json").write_text(json.dumps(client.requests, default=str, indent=2))
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, seed["tenant_id"])
@@ -1369,3 +1377,254 @@ async def _exercise_group_cancel(seed, session_id, run_id, requester_id, session
             finally:
                 if listener is not None:
                     listener.close()
+
+
+async def _exercise_group_permission(seed, session_id, run_id, requester_id, sessionmaker, monkeypatch, tmp_path,
+    *, decision, model_client, submit, actor, other_actor, browser_permission=False):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from app import database
+    from app.api import chat_sessions
+    from app.core.security import get_current_user
+    from app.database import pin_rls_tenant_context
+    from app.models.chat_session import ChatSession
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionCommand, SessionControlInput, SessionToolInvocation
+    from app.models.user import User
+    from app.services.feishu_service import FeishuService
+    from app.services.runtime_task_claim_service import RuntimeTaskClaimService
+    from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
+    from app.services.session_input_dispatch import recover_admitted_session_inputs_once
+    from app.services.web_chat_runtime import execute_web_chat_run
+
+    async with sessionmaker() as db:
+        await pin_rls_tenant_context(db, seed["tenant_id"])
+        task = await db.get(RuntimeTask, run_id)
+        assert task.status == "suspended", (task.status, task.result_summary, task.metadata_json)
+        waiting = list(await db.scalars(select(SessionToolInvocation).where(SessionToolInvocation.run_id == run_id,
+            SessionToolInvocation.permission_state == "waiting")))
+        assert len(waiting) == 1 and waiting[0].result_event_id is None and waiting[0].effect_state == "prepared_not_started"
+        invocation_id, permission_id = waiting[0].id, waiting[0].permission_item_id
+    target = seed["agent_root"] / "workspace/shared-report.md"
+    assert not target.exists() and len(model_client.requests) == 1
+    reader_id = requester_id
+    async def current_user():
+        async with sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            return await db.get(User, reader_id)
+    async def scoped_db():
+        async with sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            yield db
+    web = FastAPI()
+    web.include_router(chat_sessions.router)
+    web.dependency_overrides[get_current_user] = current_user
+    web.dependency_overrides[database.get_db] = scoped_db
+    url = f"/agents/{seed['agent_id']}/sessions/{session_id}"
+    resolve_url = url + f"/permissions/{permission_id}/resolve"
+    async with AsyncClient(transport=ASGITransport(app=web), base_url="http://group.fixture") as client:
+        for reader_id in (requester_id, seed["user_id"]):
+            history = await client.get(url + "/transcript", params={"schema_version": 2, "limit": 1000})
+            assert history.status_code == 200 and str(permission_id) in history.text and "GROUP_REPORT" in history.text, history.text
+            assert f'"requested_by_user_id":"{requester_id}"' in history.text
+        denied = await client.post(resolve_url, json={"action": decision})
+        assert denied.status_code == 409 and denied.json()["detail"]["code"] == "shared_group_requester_conflict", denied.text
+        reader_id = requester_id
+        for status, members in [(403, set()), (503, None)]:
+            async def unavailable_members(*_args, **_kwargs):
+                if members is None:
+                    raise RuntimeError("Synthetic membership outage")
+                return members
+            with monkeypatch.context() as patch:
+                patch.setattr(FeishuService, "get_chat_member_open_ids", unavailable_members)
+                unavailable = await client.post(resolve_url, json={"action": decision})
+                assert unavailable.status_code == status, unavailable.text
+            assert not target.exists()
+        # A mismatched stored effective payload cannot reveal or execute a stale request.
+        async with sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            invocation = await db.get(SessionToolInvocation, invocation_id)
+            original = invocation.effective_arguments_json
+            invocation.effective_arguments_json = {**original, "content": "MISMATCHED_PERMISSION"}
+            await db.commit()
+        unavailable = await client.post(resolve_url, json={"action": decision})
+        assert unavailable.status_code == 503, unavailable.text
+        async with sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            (await db.get(SessionToolInvocation, invocation_id)).effective_arguments_json = original
+            assert list(await db.scalars(select(SessionControlInput).where(SessionControlInput.expected_run_id == run_id))) == []
+            await db.commit()
+        if browser_permission:
+            reader_id = seed["user_id"]
+            async def requester_ready():
+                nonlocal reader_id
+                reader_id = requester_id
+            async with _group_permission_browser(web, seed, session_id, permission_id, requester_id, monkeypatch,
+                tmp_path, requester_ready) as recorded:
+                receipt = recorded
+                assert receipt["run_id"] == str(run_id)
+        else:
+            response = await client.post(resolve_url, json={"action": decision})
+            assert response.status_code == 200, response.text
+            receipt = response.json()
+        (tmp_path / "group-permission-response.json").write_text(json.dumps(receipt))
+        assert receipt["status"] == "resolved" and receipt["run_id"] == str(run_id) and receipt["run_status"] == "resumable"
+        assert receipt["result_event_id"] and receipt["recovery_action"] == "resume_same_runtime_task"
+        history = await client.get(url + "/transcript", params={"schema_version": 2, "limit": 1000})
+        assert history.status_code == 200, history.text
+        decisions = [item for item in history.json() if item.get("item_kind") == "control_input"
+            and item.get("item_id") == receipt["control_id"]]
+        assert len(decisions) == 2 and all(item["source_access_receipt"]["status"] == "allowed" for item in decisions)
+        replay = await client.post(resolve_url, json={"action": decision})
+        assert replay.status_code == 200 and replay.json()["control_id"] == receipt["control_id"], replay.text
+        conflict = await client.post(resolve_url, json={"action": "deny" if decision != "deny" else "allow_once"})
+        assert conflict.status_code == 409, conflict.text
+    assert (target.read_text() == "GROUP_REPORT") if decision != "deny" else not target.exists()
+    async with sessionmaker() as db:
+        await pin_rls_tenant_context(db, seed["tenant_id"])
+        controls = list(await db.scalars(select(SessionControlInput).where(SessionControlInput.expected_run_id == run_id)))
+        assert len(controls) == 1 and controls[0].status == "applied"
+        grants = ((await db.get(ChatSession, session_id)).transcript_metadata_json or {}).get("session_permission_grants", [])
+        assert len(grants) == (1 if decision == "allow_session" else 0)
+        if grants:
+            assert grants[0]["principal_id"] == str(requester_id) and grants[0]["principal_type"] == "user"
+    async def resume(expected_run):
+        async with sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            claims = await RuntimeTaskClaimService(db=db, worker_id="permission-worker", lease_seconds=600).claim_available()
+            claimed = next(row for row in claims if row.id == expected_run)
+        fence = set_runtime_task_fence(task_id=expected_run, worker_id="permission-worker", claim_version=claimed.claim_version)
+        try:
+            await execute_web_chat_run(expected_run)
+        finally:
+            reset_runtime_task_fence(fence)
+        async with sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            current = await db.get(RuntimeTask, expected_run)
+        if current.status == "completed":
+            from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
+            from app.services.web_terminal_boundary_processor import WebTerminalBoundaryProcessor
+
+            processor = WebTerminalBoundaryProcessor(session_factory=sessionmaker, data_root=seed["data_root"])
+            terminal = await RuntimeTerminalBoundaryOutboxService(session_factory=sessionmaker).drain_once(
+                tenant_id=seed["tenant_id"], worker_id="permission-terminal", canonical_validator=processor.validate,
+                process_callback=processor, task_types=("web_chat_turn",))
+            assert terminal["delivered"] >= 1, terminal
+        return current
+    if decision == "deny":
+        model_client.script = [{"content": "The write was denied; no file was created."}]
+    task = await resume(run_id)
+    assert task.status == "completed", (task.status, task.result_summary, task.metadata_json)
+    assert len(model_client.requests) == (2 if decision == "deny" else 3)
+    async with sessionmaker() as db:
+        await pin_rls_tenant_context(db, seed["tenant_id"])
+        writes = list(await db.scalars(select(SessionToolInvocation).where(SessionToolInvocation.run_id == run_id,
+            SessionToolInvocation.tool_name == "write_file")))
+        assert len(writes) == 1 and writes[0].id == invocation_id and writes[0].result_event_id
+        assert writes[0].permission_state == ("denied" if decision == "deny" else "approved")
+    if decision == "allow_session":
+        # The same payload is reusable by A; a later B turn must ask B independently.
+        for sender, subject, must_wait in [(actor, "ou_group_requester", False), (other_actor, "ou_group_creator", True)]:
+            if must_wait:
+                from app.core.resource_authority import workspace_resource_id
+                from app.models.security_audit import ResourcePermission
+
+                async with sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    db.add(ResourcePermission(tenant_id=seed["tenant_id"], principal_type="user", principal_id=sender.id,
+                        resource_type="workspace_file", resource_id=workspace_resource_id(seed["agent_id"], "workspace/shared-report.md"),
+                        actions=["read", "write"], effect="allow", conditions={}))
+                    await db.commit()
+            event, accepted = await submit(sender, subject, "Write the same report again.", f"grant-{subject}")
+            command_id = UUID(accepted["command_id"])
+            async with sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                await recover_admitted_session_inputs_once(db, worker_id="grant-dispatch", tenant_id=seed["tenant_id"],
+                    admission_ids=(uuid5(command_id, "input-admission:revision:1"),))
+                next_run = await db.scalar(select(RuntimeTask).where(RuntimeTask.metadata_json["session_v2_input_id"].astext == str(event.event_id)))
+                assert next_run is not None and next_run.id != run_id, accepted
+            model_client.script = [{"tool_calls": [{"id": f"grant-{subject}", "type": "function", "function": {
+                "name": "write_file", "arguments": json.dumps(original)}}], "finish_reason": "tool_calls"},
+                {"content": "The same report is ready."}]
+            next_task = await resume(next_run.id)
+            assert next_task.status == ("suspended" if must_wait else "completed"), (next_task.status, next_task.result_summary)
+            async with sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                invocation = await db.scalar(select(SessionToolInvocation).where(SessionToolInvocation.run_id == next_run.id))
+                assert invocation.permission_state == ("waiting" if must_wait else "not_required")
+                assert (invocation.result_event_id is None) is must_wait
+    (tmp_path / "group-permission-model-requests.json").write_text(json.dumps(model_client.requests, default=str, indent=2))
+
+
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def _group_permission_browser(web, seed, session_id, permission_id, requester_id, monkeypatch, tmp_path, requester_ready):
+    import asyncio
+    import socket
+    from pathlib import Path
+    import uvicorn
+    from fastapi.responses import FileResponse, JSONResponse
+    from fastapi.staticfiles import StaticFiles
+    from app.api import agents, auth, chat_sessions, websocket as socket_api
+    from app.core.security import create_access_token
+    from app.services.web_chat_broker import WebChatBroker
+    import app.services.web_chat_runtime as runtime
+
+    frontend = Path(__file__).resolve().parents[3] / "frontend"
+    assert (frontend / "dist/index.html").is_file()
+    broker = WebChatBroker()
+    monkeypatch.setattr(runtime, "web_chat_broker", broker)
+    monkeypatch.setattr(socket_api, "manager", broker)
+    for router in (chat_sessions.router, agents.router, auth.router):
+        web.include_router(router, prefix="/api")
+    web.include_router(socket_api.router)
+    web.mount("/assets", StaticFiles(directory=frontend / "dist/assets"), name="assets")
+    @web.get("/api/{path:path}")
+    async def unavailable_fixture_api(path: str):
+        return JSONResponse(status_code=404, content={"detail": "Unsupported fixture endpoint"})
+    @web.get("/{path:path}")
+    async def built_frontend(path: str):
+        return FileResponse(frontend / "dist/index.html")
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(web, host="127.0.0.1", port=port, lifespan="off", access_log=False, log_level="warning"))
+    server_task = asyncio.create_task(server.serve(sockets=[listener]))
+    process = None
+    try:
+        for _ in range(500):
+            if server.started:
+                break
+            assert not server_task.done()
+            await asyncio.sleep(0.01)
+        assert server.started
+        fixture_path = tmp_path / "permission-browser-fixture.json"
+        fixture_path.write_text(json.dumps({"origin": f"http://127.0.0.1:{port}", "tenantId": str(seed["tenant_id"]),
+            "agentId": str(seed["agent_id"]), "sessionId": str(session_id), "permissionId": str(permission_id),
+            "readerToken": create_access_token(str(seed["user_id"]), "user", str(seed["tenant_id"])),
+            "requesterToken": create_access_token(str(requester_id), "user", str(seed["tenant_id"])),
+            **{key: str(tmp_path / name) for key, name in {"readonlyScreenshot": "permission-readonly.png",
+                "unconfirmedScreenshot": "permission-unconfirmed.png", "completedScreenshot": "permission-applied.png",
+                "receiptPath": "permission-browser-receipt.json", "errorPath": "permission-browser-error.json",
+                "errorScreenshot": "permission-browser-error.png"}.items()}}))
+        process = await asyncio.create_subprocess_exec("node", str(frontend / "e2e/group-permission-native.mjs"), str(fixture_path),
+            cwd=frontend, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        line = await asyncio.wait_for(process.stdout.readline(), 60)
+        assert line and json.loads(line)["event"] == "readonly_checked", line
+        await requester_ready()
+        process.stdin.write(json.dumps({"event": "requester_ready"}).encode() + bytes([10]))
+        await process.stdin.drain()
+        line = await asyncio.wait_for(process.stdout.readline(), 60)
+        assert line and json.loads(line)["event"] == "permission_recorded", line
+        yield json.loads((tmp_path / "permission-browser-receipt.json").read_text())
+        stdout, stderr = await asyncio.wait_for(process.communicate(), 60)
+        assert process.returncode == 0, (stdout, stderr)
+    finally:
+        if process is not None and process.returncode is None:
+            process.kill()
+            await process.communicate()
+        server.should_exit = True
+        await asyncio.wait_for(server_task, 10)
+        listener.close()

@@ -64,6 +64,19 @@ export interface SessionApproval {
   can_resolve: boolean;
 }
 
+export interface SessionPermissionResolutionReceipt {
+  schema: 'hive.session_permission_resolution.v2';
+  status: 'resolved' | 'waiting_for_sibling_permissions' | 'needs_reconciliation';
+  permission_request_id: string;
+  invocation_id: string;
+  control_id: string;
+  run_id: string;
+  run_status: string;
+  result_event_id: string | null;
+  retryable: boolean;
+  recovery_action: string;
+}
+
 export type SessionReadOptions = RequestOptions & SessionOperatorOptions;
 
 export function withSessionOperatorQuery(
@@ -418,7 +431,7 @@ export const chatApi = {
     permissionRequestId: string,
     input: { action: 'allow_once' | 'allow_session' | 'deny'; feedback?: string },
   ) =>
-    post<unknown>(`/agents/${agentId}/sessions/${sessionId}/permissions/${permissionRequestId}/resolve`, input),
+    post<SessionPermissionResolutionReceipt>(`/agents/${agentId}/sessions/${sessionId}/permissions/${permissionRequestId}/resolve`, input),
   updateSessionPermissionProfile: (
     agentId: string,
     sessionId: string,

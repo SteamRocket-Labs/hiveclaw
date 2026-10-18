@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createEmptyTranscriptReplayState,
   mergePendingUserMessages,
+  normalizeRuntimeEventMessage,
   uiForPhase,
   type AgentChatMessage,
   type ChatTranscriptEventPayload,
@@ -309,6 +310,10 @@ describe('session transcript applier real consumption path (Codex REQUEST_CHANGE
     const reloaded = hydrateSessionTranscriptEvents(events);
     expect(reloaded.ui.phase).toBe('awaiting_approval');
     expect(reloaded.messages.find((message) => message.sessionPermissionRequest)?.sessionPermissionRequest).toEqual(request);
+    const selected = projectCanonicalTranscriptSnapshot({ existing: [], snapshot: events,
+      session: { id: 'session-1', agent_id: 'agent-1', title: 'Work', created_at: '', updated_at: '' },
+      parseMessage: (message) => normalizeRuntimeEventMessage(message) || message });
+    expect(selected.messages.find((message) => message.sessionPermissionRequest)?.sessionPermissionRequest).toEqual(request);
     const resolved = {
       ...permission,
       event_id: 'permission-resolved',

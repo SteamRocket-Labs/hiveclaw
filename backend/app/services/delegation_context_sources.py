@@ -52,24 +52,36 @@ class NativeRecoveryContextSource:
 
 
 async def _recovery_inputs(db, *, task, provider_request_id):
+    agent_id, session_id = _recovery_scope(task)
     model = await db.scalar(select(SessionModelResult).where(SessionModelResult.tenant_id == task.tenant_id,
-        SessionModelResult.run_id == task.id, SessionModelResult.session_id == uuid.UUID(task.child_session_id),
+        SessionModelResult.run_id == task.id, SessionModelResult.session_id == session_id,
         SessionModelResult.provider_request_id == provider_request_id, SessionModelResult.state == "round_committed"))
     sources, complete = _model_dependencies(model) if model else ([], False)
     tools = list(await db.scalars(select(SessionToolInvocation).where(SessionToolInvocation.tenant_id == task.tenant_id,
         SessionToolInvocation.run_id == task.id, SessionToolInvocation.provider_request_id == provider_request_id).order_by(SessionToolInvocation.provider_tool_use_id)))
     for tool in tools:
-        refs, bound = await _origin_dependencies(db, tenant_id=task.tenant_id, agent_id=task.child_agent_id,
-            ref=f"session-tool-result:{tool.id}")
+        permission = getattr(task, "task_type", "delegation") != "delegation" and tool.permission_item_id is not None
+        refs, bound = await _origin_dependencies(db, tenant_id=task.tenant_id, agent_id=agent_id,
+            ref=f"session-tool-{'permission' if permission else 'result'}:{tool.id}")
         sources.extend(refs)
-        complete = complete and bound and tool.effect_state == "effect_committed"
+        settled = tool.effect_state == "effect_committed" or (permission and (
+            (tool.effect_state == "prepared_not_started" and tool.permission_state == "waiting")
+            or (tool.result_event_id is not None and tool.permission_state == "denied")))
+        complete = complete and bound and settled
     return model, _unique_dependencies(sources), complete
 
 
+def _recovery_scope(task):
+    if getattr(task, "task_type", "delegation") == "delegation":
+        return task.child_agent_id, uuid.UUID(task.child_session_id)
+    return task.parent_agent_id, uuid.UUID(task.parent_session_id)
+
+
 async def capture_native_recovery_context(db, *, task, session, provider_request_id):
+    agent_id, session_id = _recovery_scope(task)
     checkpoint = (session.metadata or {}).get("_native_recovery_checkpoint")
     if (not isinstance(checkpoint, dict) or set(checkpoint) != {"authority_hash", "manifest_hash", "session_id"}
-        or checkpoint["session_id"] != str(uuid.UUID(task.child_session_id))):
+        or checkpoint["session_id"] != str(session_id)):
         return
     model, sources, complete = await _recovery_inputs(db, task=task, provider_request_id=provider_request_id)
     if model is None:
@@ -81,8 +93,8 @@ async def capture_native_recovery_context(db, *, task, session, provider_request
     source_id = uuid.uuid5(task.id, f"native-recovery-context:{digest}")
     row = await db.get(InvocationSpan, source_id)
     if row is None:
-        db.add(InvocationSpan(id=source_id, tenant_id=task.tenant_id, agent_id=task.child_agent_id,
-            user_id=task.root_user_id, session_id=str(uuid.UUID(task.child_session_id)), runtime_task_id=task.id,
+        db.add(InvocationSpan(id=source_id, tenant_id=task.tenant_id, agent_id=agent_id,
+            user_id=task.root_user_id, session_id=str(session_id), runtime_task_id=task.id,
             trace_id=f"session-run:{task.id}", span_id=f"native-recovery:{source_id}", span_type="native_recovery_context",
             name="recovery_input_sources", status="captured", duration_ms=0, started_at=datetime.now(timezone.utc),
             metadata_json={"native_recovery_context": proof}))
@@ -95,6 +107,7 @@ async def capture_native_recovery_context(db, *, task, session, provider_request
 
 
 async def bind_native_recovery_context(db, *, task, session):
+    agent_id, session_id = _recovery_scope(task)
     session.metadata.pop("_native_recovery_context_source", None)
     pointer = (task.metadata_json or {}).get("native_recovery_context_source")
     if not isinstance(pointer, dict):
@@ -105,8 +118,8 @@ async def bind_native_recovery_context(db, *, task, session):
         return
     row = await db.get(InvocationSpan, source_id, populate_existing=True)
     proof = (row.metadata_json or {}).get("native_recovery_context") if row else None
-    if (row is None or row.tenant_id != task.tenant_id or row.agent_id != task.child_agent_id
-        or row.user_id != task.root_user_id or row.session_id != str(uuid.UUID(task.child_session_id))
+    if (row is None or row.tenant_id != task.tenant_id or row.agent_id != agent_id
+        or row.user_id != task.root_user_id or row.session_id != str(session_id)
         or row.runtime_task_id != task.id or row.span_type != "native_recovery_context" or row.status != "captured"
         or not isinstance(proof, dict) or proof.get("schema") != "hive.native_recovery_context.v1"
         or _hash(proof) != pointer.get("hash") or source_id != uuid.uuid5(task.id, f"native-recovery-context:{pointer['hash']}")):

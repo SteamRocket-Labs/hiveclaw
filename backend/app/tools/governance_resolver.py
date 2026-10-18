@@ -127,6 +127,9 @@ class ToolGovernanceResolver:
         delegation_token: Any | None = None,
     ) -> ToolGovernanceContext:
         from app.services.approval_ticket import build_approval_execution_envelope
+        from app.services.shared_group_authority import apply_group_permission_grants
+
+        await apply_group_permission_grants(runtime_context)
 
         execution_envelope = build_approval_execution_envelope(
             context=runtime_context,

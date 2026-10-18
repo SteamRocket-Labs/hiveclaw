@@ -87,7 +87,9 @@ function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => stri
         { label: 'impact', value: item.item_data.destructive ? t('sessionWorkbench.threadItem.value.destructive', 'destructive') : t('sessionWorkbench.threadItem.value.reversible', 'reversible or read-only') },
       ];
     case 'approval_decision':
-      return [{ label: 'action', value: item.item_data.action }];
+      return [{ label: 'action', value: item.item_data.action === 'allow_once' ? t('agent.chat.permission.allowOnce', 'Allow once')
+        : item.item_data.action === 'allow_session' ? t('agent.chat.permission.allowSession', 'Allow for this session')
+          : item.item_data.action === 'deny' ? t('agent.chat.permission.deny', 'Deny') : item.item_data.action }];
     case 'plan':
       return [{ label: 'phase', value: item.item_data.phase }];
     case 'workflow_activity':
@@ -169,6 +171,7 @@ export function shouldRenderThreadItemInConversation(item: ThreadItem, operatorV
   if (operatorView && item.audience === 'operator') return true;
   if (item.audience === 'operator') return false;
   if (NON_BLOCKING_STATUS_EVENTS.has(item.event_type)) return false;
+  if (item.item_type === 'approval_decision' && item.event_type === 'permission_resolved') return true;
   if (USER_CONVERSATION_ITEM_TYPES.has(item.item_type)) return true;
   return Boolean(item.user_action && item.user_action.kind !== 'open_artifact');
 }

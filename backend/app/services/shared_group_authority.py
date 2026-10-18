@@ -1,6 +1,8 @@
 """Live Feishu group identity for shared input and source readers."""
 
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -9,6 +11,18 @@ from app.models.channel_config import ChannelConfig
 from app.models.external_principal import ExternalPrincipal
 from app.services.channel_ingress_inbox import channel_installation_ref
 from app.services.feishu_service import FeishuService
+
+_GROUP_PERMISSION_EXECUTION = ContextVar("group_permission_execution", default=None)
+
+
+@contextmanager
+def group_permission_execution(*, authority, invocation, control_id):
+    """Identify one applied permission effect, independently of a worker lease."""
+    token = _GROUP_PERMISSION_EXECUTION.set((authority, invocation.id, invocation.run_id, control_id))
+    try:
+        yield
+    finally:
+        _GROUP_PERMISSION_EXECUTION.reset(token)
 
 
 async def load_current_group_members(db, *, session):
@@ -55,7 +69,7 @@ async def resolve_shared_group_web_authority(db, *, session, user, action, audit
     )
     from app.services.session_v2_persistence import AuthenticatedSessionAuthority, _AUTHORITY_SEAL
 
-    if action not in {"mutate_session_input", "answer_session_question", "cancel_session_run"}:
+    if action not in {"mutate_session_input", "answer_session_question", "cancel_session_run", "respond_tool_permission"}:
         raise HTTPException(403, detail={"code": "shared_group_input_action_required"})
     await require_current_group_member(db, session=session, user=user)
     agent, access = await check_agent_access(db, user, session.agent_id)
@@ -134,13 +148,48 @@ def shared_group_command_channel(command, *, session):
 
 
 async def load_shared_group_runtime_actor(db, *, task, session):
-    """Require a live execution claim as well as the canonical requester."""
+    """Require a live worker claim or one exact applied permission effect."""
     from datetime import datetime, timezone
 
-    if (task is None or task.status not in {"pending", "running"} or task.claimed_by is None
-        or task.claim_expires_at is None or task.claim_expires_at <= datetime.now(timezone.utc)):
+    claimed = (task is not None and task.status in {"pending", "running"} and task.claimed_by is not None
+        and task.claim_expires_at is not None and task.claim_expires_at > datetime.now(timezone.utc))
+    if not claimed and not await _permission_execution_matches(db, task=task, session=session):
         raise PermissionError("shared_group_runtime_origin_mismatch")
     return await _load_shared_group_task_actor(db, task=task, session=session)
+
+
+async def _permission_execution_matches(db, *, task, session):
+    from app.models.session_v2 import SessionCommand, SessionControlInput, SessionToolInvocation
+    from app.services.session_model_inputs import _hash
+
+    scope = _GROUP_PERMISSION_EXECUTION.get()
+    if scope is None or task is None or task.status not in {"running", "suspended", "resumable"}:
+        return False
+    authority, invocation_id, run_id, control_id = scope
+    if (task.id != run_id or authority.session_id != session.id or authority.tenant_id != session.tenant_id
+        or authority.agent_id != session.agent_id or authority.principal_type != "user"
+        or authority.action != "respond_tool_permission" or task.root_user_id != authority.principal_id):
+        return False
+    control = await db.get(SessionControlInput, control_id)
+    command = await db.get(SessionCommand, control.command_id) if control else None
+    invocation = await db.get(SessionToolInvocation, invocation_id)
+    return bool(control and command and invocation and control.tenant_id == session.tenant_id
+        and control.session_id == session.id and control.expected_run_id == task.id
+        and control.kind == "permission_response" and control.status == "applied"
+        and command.tenant_id == session.tenant_id and command.session_id == session.id
+        and command.principal_type == "user" and command.principal_id == authority.principal_id
+        and command.command_kind == "permission_response" and command.status == "applied"
+        and command.request_hash == _hash({"command_kind": command.command_kind, "request": command.request_json})
+        and command.target_hash == _hash(command.target_json)
+        and (command.target_json or {}).get("invocation_id") == str(invocation.id)
+        and control.response_payload_hash == _hash(control.response_payload_json)
+        and (control.response_payload_json or {}).get("decision") in {"allow_once", "allow_session"}
+        and invocation.tenant_id == session.tenant_id and invocation.session_id == session.id
+        and invocation.run_id == task.id and invocation.permission_item_id == control.request_item_id
+        and invocation.permission_request_version == control.request_version
+        and invocation.permission_authority_snapshot_hash == control.authority_snapshot_hash
+        and invocation.permission_receipt_ref == f"session-control:{control.id}:applied"
+        and invocation.permission_state == "approved")
 
 
 async def _load_shared_group_task_actor(db, *, task, session):
@@ -236,14 +285,108 @@ async def bind_shared_group_permission_source(db, *, task, session, invocation):
     await load_shared_group_runtime_actor(db, task=task, session=session)
     command = await db.get(SessionCommand, uuid.UUID(task.metadata_json["session_v2_command_id"]))
     admitted = dict((command.target_json or {}).get("runtime_metadata") or {})
-    profile = admitted.get("permission_profile") or {}
-    exact = (profile.get("capability_policy_snapshot") or {}).get("session_exact_scope") is True
-    source = PermissionContextSource(
-        reference={"source_kind": "session_command", "source_id": str(command.id), "source_version": command.request_hash},
-        permission_inputs=_permission_inputs(admitted),
-        allowed_tool_names=tuple(profile.get("allowed_tools") or ()) if exact else ())
-    if source.matches(metadata, invocation.allowed_tool_names):
-        metadata["_session_permission_context_source"] = source
+    frames = (admitted, group_permission_metadata(runtime_metadata=admitted,
+        session_metadata=session.transcript_metadata_json))
+    for frame in frames:
+        profile = frame.get("permission_profile") or {}
+        exact = (profile.get("capability_policy_snapshot") or {}).get("session_exact_scope") is True
+        source = PermissionContextSource(
+            reference={"source_kind": "session_command", "source_id": str(command.id), "source_version": command.request_hash},
+            permission_inputs=_permission_inputs(frame),
+            allowed_tool_names=tuple(profile.get("allowed_tools") or ()) if exact else ())
+        if source.matches(metadata, invocation.allowed_tool_names):
+            metadata["_session_permission_context_source"] = source
+            return
+
+
+def group_permission_metadata(*, runtime_metadata, session_metadata):
+    """Keep grant caches at the governed tool boundary, outside model recovery state."""
+    from app.services.web_chat_runtime import _merge_runtime_permission_metadata
+
+    def without_grants(value):
+        result = dict(value or {})
+        result.pop("session_permission_grants", None)
+        if isinstance(result.get("permission_profile"), dict):
+            result["permission_profile"] = dict(result["permission_profile"])
+            result["permission_profile"].pop("session_grants", None)
+        return result
+
+    metadata = _merge_runtime_permission_metadata(runtime_metadata=without_grants(runtime_metadata),
+        session_metadata=without_grants(session_metadata))
+    profile = dict(metadata.get("permission_profile") or {})
+    profile["session_grants"] = []
+    profile["capability_policy_snapshot"] = {**(profile.get("capability_policy_snapshot") or {}), "shared_group_session": True}
+    metadata["permission_profile"] = profile
+    return metadata
+
+
+async def apply_group_permission_grants(context):
+    from dataclasses import replace
+    from app.database import tenant_scoped_session
+    from app.models.chat_session import ChatSession
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionCommand, SessionControlInput
+
+    profile = context.permission_profile
+    snapshot = profile.get("capability_policy_snapshot") if isinstance(profile, dict) else getattr(profile, "capability_policy_snapshot", None)
+    if not (snapshot or {}).get("shared_group_session"):
+        return
+    if isinstance(profile, dict):
+        from app.runtime.ccplus_contracts import build_permission_profile
+
+        profile = build_permission_profile(profile)
+    async with tenant_scoped_session(uuid.UUID(str(context.tenant_id))) as db:
+        session = await db.get(ChatSession, uuid.UUID(str(context.session_id)))
+        if session is None or session.agent_id != context.agent_id or session.audience_kind != "group":
+            raise PermissionError("shared_group_permission_scope_mismatch")
+        actor = await load_shared_group_runtime_actor(db, task=await db.get(RuntimeTask, uuid.UUID(str(context.runtime_task_id))), session=session)
+        if actor.id != context.user_id:
+            raise PermissionError("shared_group_permission_requester_mismatch")
+        grants = []
+        for grant in (session.transcript_metadata_json or {}).get("session_permission_grants", []):
+            if not isinstance(grant, dict) or grant.get("principal_type") != "user" or grant.get("principal_id") != str(actor.id):
+                continue
+            control = await db.scalar(select(SessionControlInput).join(SessionCommand, SessionCommand.id == SessionControlInput.command_id)
+                .where(SessionControlInput.id == uuid.UUID(grant["control_id"]), SessionControlInput.tenant_id == session.tenant_id,
+                    SessionControlInput.session_id == session.id, SessionControlInput.kind == "permission_response",
+                    SessionControlInput.status == "applied", SessionControlInput.authority_snapshot_hash == grant["authority_snapshot_hash"],
+                    SessionCommand.principal_type == "user", SessionCommand.principal_id == actor.id,
+                    SessionCommand.status == "applied"))
+            if control is not None and control.response_payload_json == {"decision": "allow_session"}:
+                grants.append(dict(grant))
+        context.permission_profile = replace(profile, session_grants=tuple(grants))
+
+
+async def authorize_group_tool_permission(db, *, authority, invocation):
+    """Recheck the original requester and current sources before a group effect."""
+    from app.models.chat_session import ChatSession
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.user import User
+    from app.services.shared_group_history import authorize_group_history_reader, group_event_access
+
+    session = await db.get(ChatSession, authority.session_id)
+    if session is None or session.audience_kind != "group":
+        return
+    if authority.principal_type != "user" or authority.action != "respond_tool_permission":
+        raise HTTPException(403, detail={"code": "shared_group_permission_requester_required"})
+    if not await shared_group_input_matches_run(db, session=session, authority=authority, run_id=invocation.run_id):
+        raise HTTPException(409, detail={"code": "shared_group_requester_conflict"})
+    user = await db.scalar(select(User).where(User.id == authority.principal_id, User.tenant_id == authority.tenant_id,
+        User.is_active.is_(True)).execution_options(populate_existing=True))
+    if user is None:
+        raise HTTPException(403, detail={"code": "group_membership_required"})
+    await authorize_group_history_reader(db, session=session, user=user, audit=False)
+    event = await db.scalar(select(ChatTranscriptEvent).where(ChatTranscriptEvent.tenant_id == authority.tenant_id,
+        ChatTranscriptEvent.agent_id == authority.agent_id, ChatTranscriptEvent.session_id == authority.session_id,
+        ChatTranscriptEvent.invocation_id == invocation.id, ChatTranscriptEvent.item_id == invocation.permission_item_id,
+        ChatTranscriptEvent.item_kind == "tool_permission", ChatTranscriptEvent.lifecycle == "waiting")
+        .order_by(ChatTranscriptEvent.sequence).limit(1))
+    if event is None:
+        raise HTTPException(503, detail={"code": "group_permission_source_unavailable", "retryable": True})
+    receipt = (await group_event_access(db, session=session, events=[event], user=user))[event.id]
+    if receipt is not None:
+        raise HTTPException(403 if receipt["status"] == "denied" else 503,
+            detail={"code": receipt["code"], "source_access_receipt": receipt})
 
 
 async def read_shared_group_history(db, *, session, messages, user=None, run_id=None):

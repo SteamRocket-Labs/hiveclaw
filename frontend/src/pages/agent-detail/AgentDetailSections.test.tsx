@@ -4128,11 +4128,11 @@ describe('AgentDetail extracted sections', () => {
     expect(extractPlanIdFromPlanModeMessage('普通回复，没有计划 ID')).toBeNull();
   });
 
-  it('renders in-session permission requests with resolver actions', () => {
+  it.each(['private', 'requester', 'other'] as const)('renders permission actions for %s', (reader) => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
         agent={{ id: 'agent-1', name: 'Release Bot' }}
-        currentUser={{ id: 'user-1' }}
+        currentUser={{ id: reader === 'other' ? 'user-2' : 'user-1' }}
         isAdmin={false}
         chatScope="mine"
         onSetChatScope={vi.fn()}
@@ -4142,7 +4142,9 @@ describe('AgentDetail extracted sections', () => {
         sessions={[]}
         activeSession={{
           id: 'session-1',
-          user_id: 'user-1',
+          user_id: reader === 'private' ? 'user-1' : null,
+          audience_kind: reader === 'private' ? 'private' : 'group',
+          read_only: false,
           title: 'Permission request',
           created_at: '2026-06-25T09:00:00Z',
         }}
@@ -4173,6 +4175,7 @@ describe('AgentDetail extracted sections', () => {
             sessionPermissionRequest: {
               permission_request_id: '11111111-1111-4111-8111-111111111111',
               session_id: 'session-1',
+              requested_by_user_id: 'user-1',
               tool_name: 'send_email',
               arguments: { to: 'a@example.com' },
               permission_mode: 'default',
@@ -4212,9 +4215,16 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('The agent needs permission to use send_email.');
     expect(markup).not.toContain('Tool &#x27;send_email&#x27; requires session permission');
     expect(markup).not.toContain('communication.email.send');
-    expect(markup).toContain('Allow once');
-    expect(markup).toContain('Allow for this session');
-    expect(markup).toContain('Deny');
+    if (reader === 'other') {
+      expect(markup).toContain('Waiting for the original requester to decide.');
+      expect(markup).not.toContain('Allow once');
+      expect(markup).not.toContain('Allow for this session');
+      expect(markup).not.toContain('>Deny<');
+    } else {
+      expect(markup).toContain('Allow once');
+      expect(markup).toContain('Allow for this session');
+      expect(markup).toContain('Deny');
+    }
   });
 
   it('does not render session-wide approval for destructive permission gates', () => {

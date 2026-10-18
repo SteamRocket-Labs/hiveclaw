@@ -2309,7 +2309,10 @@
         "fullAccessTitle": "为当前会话使用完全访问？",
         "fullAccessMessage": "完全访问会跳过常规会话审批提示；企业访问控制、安全规则和危险操作确认仍始终生效。",
         "fullAccessConfirm": "使用完全访问",
-        "resolveFailed": "处理权限请求失败"
+        "resolveFailed": "处理权限请求失败",
+        "waitingForRequester": "等待原请求人决定。",
+        "applying": "正在应用决定…",
+        "reconcileRequired": "需要先核对工具执行结果，才能继续此工作。"
       },
       "actions": {
         "like": "喜欢",

@@ -325,7 +325,8 @@ function projectCanonicalItem(
       id: item.id,
       transcriptEventId: item.id,
       timestamp: item.occurredAt,
-      eventType: 'permission',
+      eventType: item.lifecycle === 'waiting' ? 'permission' : 'permission_resolved',
+      eventAction: typeof item.payload.decision === 'string' ? item.payload.decision : undefined,
       eventStatus: item.lifecycle === 'waiting' ? 'session_permission_required' : 'session_permission_decision',
       sessionPermissionRequest: request?.permission_request_id
         ? request as unknown as SessionPermissionRequest

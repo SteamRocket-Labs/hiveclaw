@@ -4626,6 +4626,7 @@ async def test_first_provider_round_binds_canonical_start_input(owner_sessionmak
                 "role": "user",
                 "content": "canonical first-turn bytes",
                 "session_input_id": str(input_id),
+                "source_ref": f"session-input:{input_id}",
                 "bound_round_id": f"{run_id}:round:1",
             }
         ]

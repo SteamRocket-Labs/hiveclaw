@@ -153,6 +153,7 @@ export function agentChatMessageRunId(message?: AgentChatMessage): string | null
 
 export interface SessionPermissionRequest {
   permission_request_id: string;
+  requested_by_user_id?: string | null;
   session_id?: string | null;
   runtime_task_id?: string | null;
   turn_id?: string | null;
@@ -1831,6 +1832,7 @@ export function getRuntimeEventMessage(payload: any): AgentChatMessage | null {
 }
 
 export function normalizeRuntimeEventMessage(payload: any): AgentChatMessage | null {
+  if (payload?.sessionItem?.kind === 'tool_permission') return payload as AgentChatMessage;
   if (normalizeThreadItemPayload(payload?.threadItem)) return payload as AgentChatMessage;
   const embeddedPayload = getEmbeddedRuntimeEventPayload(payload);
   if (embeddedPayload) return getRuntimeEventMessage(embeddedPayload);

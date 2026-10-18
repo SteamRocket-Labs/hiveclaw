@@ -2157,19 +2157,20 @@ function AgentDetailInner() {
     ) => {
         if (!id || !activeSession?.id || !request.permission_request_id) return;
         const sessionId = String(activeSession.id);
-        const activeRuntimeKey = buildSessionRuntimeKey(id, sessionId);
         try {
-            const response: any = await chatApi.resolveSessionPermission(id, sessionId, request.permission_request_id, {
+            const response = await chatApi.resolveSessionPermission(id, sessionId, request.permission_request_id, {
                 action,
             });
-            if (response?.run?.run_id) {
-                setActiveRunState(activeRuntimeKey, sessionRunStateFromPayload(response.run));
-            }
             invalidateSessionRuntimeQueries(id, sessionId);
-            await selectSession(activeSession);
+            if (activeSessionIdRef.current === sessionId) await selectSession(activeSession);
+            if (response.status === 'needs_reconciliation') {
+                throw new Error(t('agent.chat.permission.reconcileRequired', 'The tool outcome needs review before this work can continue.'));
+            }
+            return response;
         } catch (err: any) {
             const msg = err?.message || t('agent.chat.permission.resolveFailed', 'Failed to resolve permission request');
             showToast(msg, 'error');
+            throw err;
         }
     };
 

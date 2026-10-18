@@ -347,6 +347,9 @@ const TOOL_TITLE_KEYS: Record<string, [string, string]> = {
 };
 
 function localizedToolTitle(step: RunStepSnapshot, t: TFunction): string {
+  if (step.kind === 'permission' && step.title === 'permission_resolved') {
+    return t('sessionWorkbench.threadItem.type.approval_decision', 'Approval decision');
+  }
   const translated = TOOL_TITLE_KEYS[step.title];
   return translated ? t(translated[0], translated[1]) : step.title;
 }

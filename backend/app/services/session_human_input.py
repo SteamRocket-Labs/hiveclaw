@@ -964,6 +964,7 @@ def input_parts_to_runtime_messages(rows: Iterable[SessionTurnInput], *, answer_
                 "role": role,
                 "content": content,
                 "session_input_id": str(row.id),
+                "source_ref": f"session-input:{row.id}",
                 "bound_round_id": row.bound_round_id,
             }
         )

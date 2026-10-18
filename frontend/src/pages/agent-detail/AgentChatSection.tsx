@@ -198,12 +198,29 @@ export function permissionOnceOnlyMessageKey(request: SessionPermissionRequest):
 function SessionPermissionActions({
   permissionRequest,
   onResolveSessionPermission,
+  readOnly = false,
   t,
 }: {
   permissionRequest: SessionPermissionRequest;
   onResolveSessionPermission?: (request: SessionPermissionRequest, action: 'allow_once' | 'allow_session' | 'deny') => void | Promise<unknown>;
+  readOnly?: boolean;
   t: (key: string, fallback: string) => string;
 }) {
+  const [pending, setPending] = React.useState(false);
+  const [error, setError] = React.useState('');
+  const resolve = async (action: 'allow_once' | 'allow_session' | 'deny') => {
+    if (pending || readOnly || !onResolveSessionPermission) return;
+    setPending(true);
+    setError('');
+    try {
+      await onResolveSessionPermission(permissionRequest, action);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('agent.chat.permission.resolveFailed', 'Failed to resolve permission request'));
+    } finally {
+      setPending(false);
+    }
+  };
+  if (readOnly) return <p role="status">{t('agent.chat.permission.waitingForRequester', 'Waiting for the original requester to decide.')}</p>;
   const allowSession =
     permissionRequest.allow_session_allowed !== false
     && permissionRequest.risk_class !== 'destructive_delete'
@@ -214,7 +231,8 @@ function SessionPermissionActions({
         <button
           type="button"
           className="btn btn-secondary"
-          onClick={() => onResolveSessionPermission?.(permissionRequest, 'allow_once')}
+          disabled={pending || !onResolveSessionPermission}
+          onClick={() => void resolve('allow_once')}
           style={{ fontSize: '12px', padding: '6px 10px' }}
         >
           {t('agent.chat.permission.allowOnce', 'Allow once')}
@@ -223,7 +241,8 @@ function SessionPermissionActions({
           <button
             type="button"
             className="btn btn-secondary"
-            onClick={() => onResolveSessionPermission?.(permissionRequest, 'allow_session')}
+            disabled={pending || !onResolveSessionPermission}
+            onClick={() => void resolve('allow_session')}
             style={{ fontSize: '12px', padding: '6px 10px' }}
           >
             {t('agent.chat.permission.allowSession', 'Allow for this session')}
@@ -232,12 +251,15 @@ function SessionPermissionActions({
         <button
           type="button"
           className="btn btn-secondary"
-          onClick={() => onResolveSessionPermission?.(permissionRequest, 'deny')}
+          disabled={pending || !onResolveSessionPermission}
+          onClick={() => void resolve('deny')}
           style={{ fontSize: '12px', padding: '6px 10px' }}
         >
           {t('agent.chat.permission.deny', 'Deny')}
         </button>
       </div>
+      {pending && <p role="status">{t('agent.chat.permission.applying', 'Applying decision…')}</p>}
+      {error && <p role="alert">{error}</p>}
       {!allowSession && (
         <div style={{ marginTop: '7px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
           {permissionOnceOnlyMessageKey(permissionRequest) === 'agent.chat.permission.deleteOnceOnly'
@@ -1384,6 +1406,7 @@ function AgentChatSection({
         eventType: msg.eventType,
         content: msg.content,
         status: msg.eventStatus,
+        action: msg.eventAction,
         title: msg.eventTitle,
         runtime_task_id: msg.eventRuntimeTaskId,
         child_session_id: msg.eventChildSessionId,
@@ -1395,6 +1418,7 @@ function AgentChatSection({
       const permissionActions = canMutateSession && permissionRequest && msg.eventStatus === 'session_permission_required' ? (
         <SessionPermissionActions
           permissionRequest={permissionRequest}
+          readOnly={activeSession?.audience_kind === 'group' && permissionRequest.requested_by_user_id !== currentUser?.id}
           onResolveSessionPermission={onResolveSessionPermission}
           t={t}
         />
@@ -1434,7 +1458,7 @@ function AgentChatSection({
         </div>
       );
     },
-    [activeSession?.operator_view, canMutateSession, onBranchMessage, onResolveSessionPermission, selectThreadItem, selectedThreadItemId, t, toolEffectRecovery.blocked, visibleTimeline],
+    [activeSession?.operator_view, activeSession?.audience_kind, currentUser?.id, canMutateSession, onBranchMessage, onResolveSessionPermission, selectThreadItem, selectedThreadItemId, t, toolEffectRecovery.blocked, visibleTimeline],
   );
 
   const renderInlinePlanToolCall = (msg: AgentChatMessage, index: number) => {
@@ -1464,6 +1488,7 @@ function AgentChatSection({
       {canMutateSession && msg.sessionPermissionRequest && (
         <SessionPermissionActions
           permissionRequest={msg.sessionPermissionRequest}
+          readOnly={activeSession?.audience_kind === 'group' && msg.sessionPermissionRequest.requested_by_user_id !== currentUser?.id}
           onResolveSessionPermission={onResolveSessionPermission}
           t={t}
         />

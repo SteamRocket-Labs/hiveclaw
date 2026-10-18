@@ -2309,7 +2309,10 @@
         "fullAccessTitle": "Use Full access for this session?",
         "fullAccessMessage": "Full access skips routine session approval prompts. Enterprise access, safety, and destructive-action rules always apply.",
         "fullAccessConfirm": "Use Full access",
-        "resolveFailed": "Failed to resolve permission request"
+        "resolveFailed": "Failed to resolve permission request",
+        "waitingForRequester": "Waiting for the original requester to decide.",
+        "applying": "Applying decision…",
+        "reconcileRequired": "The tool outcome needs review before this work can continue."
       },
       "actions": {
         "like": "Like",

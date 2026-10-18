@@ -215,6 +215,9 @@ async def _locked_permission_invocation(
     )
     if invocation is None:
         raise ValueError("tool_permission_invocation_not_found")
+    from app.services.shared_group_authority import authorize_group_tool_permission
+
+    await authorize_group_tool_permission(db, authority=authority, invocation=invocation)
     return invocation
 
 

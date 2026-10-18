@@ -1024,11 +1024,11 @@ async def _get_run_session_and_agent(
 
         authority_source = await authorize_group_history_reader(db, session=session, user=current_user)
         return session, agent, authority_source
-    if getattr(session, "audience_kind", None) == "group" and action in {"start_session_run", "answer_session_question", "cancel_session_run"}:
+    if getattr(session, "audience_kind", None) == "group" and action in {"start_session_run", "answer_session_question", "cancel_session_run", "respond_tool_permission"}:
         from app.services.shared_group_authority import resolve_shared_group_web_authority
 
         authority = await resolve_shared_group_web_authority(db, session=session, user=current_user,
-            action=action if action in {"answer_session_question", "cancel_session_run"} else "mutate_session_input", audit=False)
+            action=action if action != "start_session_run" else "mutate_session_input", audit=False)
         return session, agent, authority.authority_source
     authority_source = await _authorize_loaded_session(
         db=db,
@@ -2428,6 +2428,7 @@ async def resolve_session_permission(
         agent_id=agent_id,
         session_id=session_id,
         current_user=current_user,
+        action="respond_tool_permission",
     )
     from app.services.session_permission_runtime import resolve_session_tool_permission
     from app.services.session_v2_persistence import resolve_session_mutation_authority

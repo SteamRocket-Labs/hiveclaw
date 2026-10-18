@@ -699,6 +699,7 @@ async def complete_tool_invocation(
 
         permission_created_at = datetime.now(timezone.utc)
         permission_expires_at = permission_created_at + timedelta(minutes=30)
+        permission_task = await db.get(RuntimeTask, invocation.run_id)
         destructive = is_destructive_tool(invocation.tool_name) or bool(
             _detect_destructive_delete(invocation.tool_name, effective_payload)
         )
@@ -724,6 +725,7 @@ async def complete_tool_invocation(
                             "permission_request_id": str(permission_item_id),
                             "session_id": str(session_id),
                             "runtime_task_id": str(invocation.run_id),
+                            "requested_by_user_id": str(permission_task.root_user_id) if permission_task and permission_task.root_user_id else None,
                             "turn_id": result.turn_id,
                             "tool_call_id": invocation.provider_tool_use_id,
                             "tool_name": invocation.tool_name,

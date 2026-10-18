@@ -86,6 +86,16 @@ function item(itemType: ThreadItemType): ThreadItem {
 }
 
 describe('ThreadItemRenderer', () => {
+  it('shows a local permission decision while retaining operator-only visibility', () => {
+    const decision = { ...item('approval_decision'), audience: 'user', event_type: 'permission_resolved' } as ThreadItem;
+    expect(shouldRenderThreadItemInConversation(decision, false)).toBe(true);
+    expect(shouldRenderThreadItemInConversation({ ...decision, audience: 'operator' }, false)).toBe(false);
+    const markup = renderToStaticMarkup(<ThreadItemRenderer item={decision} />);
+    expect(markup).toContain('Approval decision');
+    expect(markup).toContain('Allow once');
+    expect(markup).not.toContain('allow_once');
+    expect(markup).not.toContain('Approval required');
+  });
   it('presents source access without claiming the task failed or rendering runtime bytes', () => {
     const notice = { ...item('warning'), event_type: 'source_access_notice', item_status: 'waiting_user',
       audience: 'user', content: 'PRIVATE_CANARY', user_summary: 'PRIVATE_CANARY' } as ThreadItem;

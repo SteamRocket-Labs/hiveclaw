@@ -383,6 +383,10 @@ def _has_exact_session_grant(context: ToolGovernanceContext) -> bool:
     for raw_grant in tuple(getattr(profile, "session_grants", ()) or ()):
         if not isinstance(raw_grant, dict):
             continue
+        if raw_grant.get("principal_id") is not None and (
+            raw_grant.get("principal_type") != "user" or raw_grant["principal_id"] != str(context.user_id)
+        ):
+            continue
         if (
             raw_grant.get("scope") == "session"
             and raw_grant.get("status", "active") == "active"

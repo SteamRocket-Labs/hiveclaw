@@ -369,7 +369,7 @@ def _resolve_session_file_path(agent_id: Any, path: str) -> tuple[Path, str] | N
     return resolved, label
 
 
-def _snapshot_session_file(agent_id: Any, path: str) -> dict[str, Any]:
+def _snapshot_session_file(agent_id: Any, path: str, *, content_hash: bool = False) -> dict[str, Any]:
     resolved = _resolve_session_file_path(agent_id, path)
     if resolved is None:
         return {
@@ -378,6 +378,24 @@ def _snapshot_session_file(agent_id: Any, path: str) -> dict[str, Any]:
             "unresolved": True,
         }
     file_path, label = resolved
+    if content_hash:
+        import os
+        from app.services.session_workspace_snapshot import MAX_WORKSPACE_SNAPSHOT_FILE_BYTES
+        from app.services.workspace_resource_authority import open_workspace_file, WorkspaceAuthorityError
+
+        try:
+            with open_workspace_file(_agent_workspace_root(agent_id), str(path)) as source:
+                info = os.fstat(source.fileno())
+                if info.st_size > MAX_WORKSPACE_SNAPSHOT_FILE_BYTES:
+                    raise ValueError("snapshot_size_unverified")
+                digest = hashlib.file_digest(source, "sha256").hexdigest()
+                after = os.fstat(source.fileno())
+                if (info.st_size, info.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                    raise ValueError("snapshot_changed_during_read")
+                return {"path": label, "exists": True, "size": info.st_size, "sha256": digest}
+        except (ValueError, OSError, WorkspaceAuthorityError) as exc:
+            return {"path": str(path), "exists": False, "error": type(exc).__name__}
+
     try:
         stat = file_path.stat()
     except FileNotFoundError:
@@ -397,6 +415,8 @@ def _snapshot_session_file(agent_id: Any, path: str) -> dict[str, Any]:
 
 
 def _file_snapshot_changed(before: dict[str, Any], current: dict[str, Any]) -> bool:
+    if isinstance(before.get("sha256"), str):
+        return any(before.get(key) != current.get(key) for key in ("exists", "size", "sha256"))
     for key in ("exists", "size", "mtime_ns"):
         if before.get(key) != current.get(key):
             return True
@@ -486,7 +506,9 @@ def _build_runtime_attachment_sections(
             # Native recovery already restores the current permission frame; retain every other manifest fact.
             manifest_text = "" if duplicate_profile else recovery_result.render_restoration_text(budget_chars=restore_budget)
             if manifest_text:
-                sections.append(f"### Recovery Manifest\n{manifest_text}")
+                section = f"### Recovery Manifest\n{manifest_text}"
+                sections.append(section)
+                _bind_recovery_attachment_source(agent_id, session_context, recovery_result, section)
         elif recovery_result is not None:
             status_payload = _recovery_status_payload_for_session(recovery_result, session_context)
             if status_payload is not None:
@@ -531,17 +553,31 @@ def _build_runtime_attachment_sections(
             before = snapshots.get(path)
             if not isinstance(before, dict):
                 continue
-            current = _snapshot_session_file(agent_id, path)
+            current = _snapshot_session_file(agent_id, path, content_hash=isinstance(before.get("sha256"), str))
             if _file_snapshot_changed(before, current):
                 readable = current.get("path") or before.get("path") or path
+                condition = ("could not be verified" if current.get("error") or current.get("unresolved")
+                    else "changed since it was last tracked")
                 changed.append(
-                    f'- {readable} changed since it was last tracked; re-read with read_file("{readable}") '
+                    f'- {readable} {condition}; re-read with read_file("{readable}") '
                     "before relying on cached contents."
                 )
         if changed:
-            sections.append("## Runtime File Change Notice\n" + "\n".join(changed))
+            section = "## Runtime File Change Notice\n" + "\n".join(changed)
+            sections.append(section)
+            _bind_recovery_attachment_source(agent_id, session_context, recovery_result, section)
 
     return sections
+
+
+def _bind_recovery_attachment_source(agent_id, session, result, content):
+    from app.runtime.context import ensure_runtime_assembly_state
+    from app.services.delegation_context_sources import NativeRecoveryContextSource
+
+    source = (getattr(session, "metadata", {}) or {}).get("_native_recovery_context_source")
+    if isinstance(source, NativeRecoveryContextSource) and source.matches(result, session):
+        ensure_runtime_assembly_state(session).record_context_sources(agent_id=agent_id, content=content,
+            sources=source.sources, unbound=source.unbound)
 
 
 def _latest_user_query(messages: list[dict[str, Any]] | None) -> str:
@@ -1610,6 +1646,8 @@ def _persist_recovery_manifest_checkpoint(
     if request.session_context is None:
         return
     metadata = request.session_context.metadata if isinstance(request.session_context.metadata, dict) else None
+    if metadata is not None:
+        metadata.pop("_native_recovery_checkpoint", None)
     authority = request.recovery_authority
     if authority is None:
         from app.runtime.recovery_manifest_store import unavailable_recovery_result
@@ -1648,6 +1686,11 @@ def _persist_recovery_manifest_checkpoint(
                 authority=authority,
             )
         if metadata is not None:
+            snapshot = request.recovery_manifest_result
+            metadata.pop("_native_recovery_checkpoint", None)
+            if snapshot.loaded and snapshot.authority is not None:
+                metadata["_native_recovery_checkpoint"] = {"authority_hash": snapshot.authority.digest,
+                    "manifest_hash": snapshot.envelope_sha256, "session_id": str(request.session_context.session_id)}
             metadata["recovery_manifest_persist"] = {
                 "schema": "hive.recovery_manifest_persist_status.v1",
                 "status": result.status,

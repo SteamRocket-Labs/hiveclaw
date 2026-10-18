@@ -61,6 +61,7 @@ async def suspend_delegation_for_question(request, *, provider_request_id):
 class DelegationSessionRuntime:
     scope: dict[str, Any]
     attempt_owner: str
+    session_context: Any
     pending_replay_round: int | None = None
     active_provider_request_id: str | None = None
     final_content: str | None = None
@@ -82,9 +83,10 @@ class DelegationSessionRuntime:
             if task is None:
                 raise RuntimeError("delegation_session_runtime_scope_unavailable")
             assert_runtime_task_fence(task)
-            from app.services.delegation_context_sources import bind_delegation_context_sources
+            from app.services.delegation_context_sources import bind_delegation_context_sources, bind_native_recovery_context
 
             await bind_delegation_context_sources(db, task=task, invocation=invocation)
+            await bind_native_recovery_context(db, task=task, session=invocation.session_context)
             from app.services.delegation_input_origin import load_delegation_instruction_origin
 
             if (task.metadata_json or {}).get("conversation_messages") == request.conversation_messages:
@@ -98,6 +100,7 @@ class DelegationSessionRuntime:
             runtime = cls(scope={"tenant_id": invocation.tenant_id, "agent_id": invocation.agent_id,
                 "session_id": session_id, "run_id": run_id, "turn_id": turn_id},
                 attempt_owner=f"{task.claimed_by}:{task.claim_version}:{task.attempt_count}",
+                session_context=invocation.session_context,
                 pending_replay_round=receipt.get("pending_tool_round") or receipt.get("pending_final_round"))
         invocation.messages.extend(history)
         invocation.initial_round_index = round_index
@@ -190,3 +193,17 @@ class DelegationSessionRuntime:
             raise ToolLifecyclePersistenceError(tool_name=str(data.get("name") or ""),
                 provider_tool_use_id=str(data.get("tool_call_id") or ""),
                 lifecycle=str(data.get("status") or "")) from exc
+        if data.get("status") in {"done", "completed"}:
+            from app.services.delegation_context_sources import capture_native_recovery_context, NativeRecoveryContextSource
+
+            try:
+                async with self.transaction() as db:
+                    task = await db.get(RuntimeTask, self.scope["run_id"])
+                    await capture_native_recovery_context(db, task=task, session=self.session_context,
+                        provider_request_id=self.active_provider_request_id)
+            except Exception:
+                checkpoint = self.session_context.metadata.get("_native_recovery_checkpoint")
+                self.session_context.metadata.pop("_native_recovery_context_source", None)
+                if isinstance(checkpoint, dict):
+                    self.session_context.metadata["_native_recovery_context_source"] = NativeRecoveryContextSource(
+                        checkpoint, (), ("native_recovery_capture_unavailable",))

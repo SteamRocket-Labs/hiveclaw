@@ -200,9 +200,10 @@ def _bind_system_prompt_suffix_sections(
     request: Any,
     session_ctx: Any,
     attachment_builder: Any,
+    source_maps: tuple[dict, dict] | None = None,
 ) -> Any:
     def build() -> list[str]:
-        return [
+        sections = [
             *protected_sections,
             *attachment_builder(
                 request.agent_id,
@@ -210,6 +211,19 @@ def _bind_system_prompt_suffix_sections(
                 request.recovery_manifest_result,
             ),
         ]
+        if source_maps is not None:
+            from app.runtime.context import ensure_runtime_assembly_state
+
+            state = ensure_runtime_assembly_state(session_ctx)
+            sources, unbound = source_maps
+            offset = int(bool((request.system_prompt_suffix or "").strip()))
+            for index, section in enumerate(sections):
+                key = f"dynamic:suffix:system_prompt_suffix:{offset + index}"
+                sources[key] = () if index < len(protected_sections) else state.context_sources_for(
+                    agent_id=request.agent_id, content=section)
+                unbound[key] = () if index < len(protected_sections) else state.context_unbound_for(
+                    agent_id=request.agent_id, content=section)
+        return sections
 
     return build
 
@@ -1222,6 +1236,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             request,
             session_ctx,
             _build_runtime_attachment_sections,
+            (dynamic_sources, dynamic_unbound),
         )
 
         # P0.4 Observability: prompt cache hit/miss

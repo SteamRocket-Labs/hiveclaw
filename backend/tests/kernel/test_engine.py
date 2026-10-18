@@ -1820,6 +1820,34 @@ def test_native_recovery_omits_only_the_duplicate_permission_profile(native, pen
         assert "Keep the unfinished comparison" in text
 
 
+def test_native_file_snapshot_hash_detects_content_change_without_mtime(tmp_path, monkeypatch):
+    import os
+    from app.config import get_settings
+    from app.kernel.engine import _snapshot_session_file, _file_snapshot_changed
+    from app.services.session_workspace_snapshot import workspace_path_state
+
+    agent_id = uuid4()
+    monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path))
+    workspace = tmp_path / str(agent_id) / "workspace"
+    workspace.mkdir(parents=True)
+    target = workspace / "report.md"
+    target.write_text("first")
+    original = target.stat()
+    before = workspace_path_state(workspace=workspace, path="workspace/report.md")
+    assert "mtime_ns" not in before
+    current = _snapshot_session_file(agent_id, "workspace/report.md", content_hash=True)
+    assert not _file_snapshot_changed(before, current)
+    target.write_text("other")
+    os.utime(target, ns=(original.st_atime_ns, original.st_mtime_ns))
+    assert _file_snapshot_changed(before, _snapshot_session_file(agent_id, "workspace/report.md", content_hash=True))
+    target.unlink()
+    outside = tmp_path / "private.md"
+    outside.write_text("never publish this")
+    target.symlink_to(outside)
+    blocked = _snapshot_session_file(agent_id, "workspace/report.md", content_hash=True)
+    assert blocked == {"path": "workspace/report.md", "exists": False, "unresolved": True}
+
+
 def test_runtime_attachment_sections_reject_another_sessions_recovery_manifest(
     tmp_path: Path,
     monkeypatch,
@@ -3505,10 +3533,11 @@ async def test_agent_kernel_handles_tool_round_and_collects_parts(with_origins):
         assert len(prepared_requests) == 2
         dynamic = [message.context_origin for message in prepared_requests[0]["messages"]
             if message.context_origin is not None and message.context_origin.kind == "dynamic_prompt"]
-        assert len(dynamic) == 1 and "dynamic_section_sources_unbound:system_prompt_suffix" in dynamic[0].unbound
+        assert len(dynamic) == 1 and not dynamic[0].sources
         suffixes = [section for section in dynamic[0].sections
             if section.get("selected") and section["name"] == "system_prompt_suffix"]
-        assert dynamic[0].unbound.count("dynamic_section_sources_unbound:system_prompt_suffix") == len(suffixes), (
+        # The fake environment and each runtime attachment lack source inventories.
+        assert suffixes and dynamic[0].unbound == ("context_source_inventory_missing",) * (len(suffixes) + 1), (
             suffixes, dynamic[0].unbound)
         assert prepared_requests[0]["messages"][1].source_ref == input_origin
         assistants = [m for m in prepared_requests[1]["messages"] if m.role == "assistant" and m.tool_calls]

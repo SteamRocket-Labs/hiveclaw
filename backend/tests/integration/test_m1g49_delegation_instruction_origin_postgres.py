@@ -13,7 +13,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
     reason="Native macOS context gate; Linux delivery is deferred.")]
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case,
 ):
@@ -32,11 +32,12 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.services.web_chat_runtime import _persist_tool_call
 
     first_task = input_case.startswith("first_task")
+    question_after_write = input_case == "first_task_question_after_write"
     saved_reopen = input_case == "first_task_saved_reopen"
-    native_creation = input_case in {"first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question"}
-    parent_model_case = input_case in {"first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question"}
+    native_creation = input_case in {"first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write"}
+    parent_model_case = input_case in {"first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write"}
     delivery_case = input_case == "first_task_delivery" or parent_model_case
-    native_refined = input_case in {"first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question"}
+    native_refined = input_case in {"first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write"}
     refined_input = input_case == "first_task_refined"
     unbound_input = input_case in {"unbound", "first_task_unbound"}
     revoked_input = input_case in {"revoked", "first_task_revoked"}
@@ -327,13 +328,18 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         return result
     monkeypatch.setattr(content_input_receipts, "record_native_workspace_receipts", observe_writer)
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
-    if input_case == "first_task_question":
+    if input_case in {"first_task_question", "first_task_question_after_write"}:
         from app.models.chat_transcript_event import ChatTranscriptEvent
 
         client = ScriptedLLMClient([{"tool_calls": [{"id": "child-question", "type": "function", "function": {
             "name": "ask_user_question", "arguments": json.dumps({"questions": [{"question": "Which audience?",
                 "header": "Audience", "options": [{"label": "Team"}, {"label": "Personal"}]}]})}}],
             "finish_reason": "tool_calls"}])
+        question_calls = 2 if question_after_write else 1
+        if question_after_write:
+            client.script.insert(0, {"tool_calls": [{"id": "before-question-write", "type": "function", "function": {
+                "name": "write_file", "arguments": json.dumps({"path": report_path, "content": "DELEGATED_REPORT"})}}],
+                "finish_reason": "tool_calls"})
         token = set_runtime_task_fence(task_id=task_id, worker_id="origin-worker", claim_version=1)
         try:
             assert await orchestrator.dispatch_persisted_async_delegation(task_id.hex, wait_for_completion=True)
@@ -347,9 +353,25 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             assert len(questions) == 1 and questions[0].lifecycle == "waiting"
             assert child.status == "suspended", (child.status, child.result_summary, child.metadata_json)
             assert child.completed_at is None
-            assert len(client.requests) == 1
+            assert len(client.requests) == question_calls
             question_id = questions[0].item_id
             question_provider_id = (await db.get(SessionModelResult, questions[0].result_id)).provider_request_id
+            if question_after_write:
+                from app.runtime.session import SessionContext
+                from app.services.delegation_context_sources import bind_native_recovery_context
+
+                restored = SessionContext(session_id=request.session_id)
+                await bind_native_recovery_context(db, task=child, session=restored)
+                assert restored.metadata.get("_native_recovery_context_source") is not None
+                for overrides in [{"root_user_id": uuid4()}, {"child_agent_id": uuid4()},
+                    {"metadata_json": {**child.metadata_json, "native_recovery_context_source": {
+                        **child.metadata_json["native_recovery_context_source"], "hash": "0" * 64}}}]:
+                    altered = SimpleNamespace(**{key: getattr(child, key) for key in (
+                        "id", "tenant_id", "child_agent_id", "root_user_id", "child_session_id", "metadata_json")})
+                    for key, value in overrides.items():
+                        setattr(altered, key, value)
+                    await bind_native_recovery_context(db, task=altered, session=restored)
+                    assert "_native_recovery_context_source" not in restored.metadata
         from fastapi import FastAPI
         from httpx import ASGITransport, AsyncClient
         from app.api.chat_sessions import router
@@ -394,7 +416,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             async with app_user_sessionmaker() as db:
                 await pin_rls_tenant_context(db, seed["tenant_id"])
                 child = await db.get(RuntimeTask, task_id)
-                assert child.status == "suspended" and len(client.requests) == 1
+                assert child.status == "suspended" and len(client.requests) == question_calls
                 question_id = UUID(child.metadata_json["delegation_waiting_question_item_id"])
             answer_id = uuid4()
             body.update(input_id=str(answer_id), idempotency_key=str(answer_id), request_item_id=str(question_id))
@@ -429,11 +451,16 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             await pin_rls_tenant_context(db, seed["tenant_id"])
             child = await db.get(RuntimeTask, task_id)
             assert child.status == "completed" and child.result_summary == "Report prepared for Team.", child.metadata_json
-            assert len(client.requests) == 2
+            assert len(client.requests) == question_calls + 1
             assert any("Audience: Team" in str(message.get("content")) for message in client.requests[-1]["messages"])
+            if question_after_write:
+                recovered_context = json.dumps(client.requests[-1]["messages"])
+                assert "### Recent Writes" in recovered_context and "Wrote workspace/delegated-report.md" in recovered_context
+                assert "Runtime File Change Notice" not in recovered_context
             from app.models.session_v2 import SessionToolInvocation
             tools = list(await db.scalars(select(SessionToolInvocation).where(SessionToolInvocation.run_id == task_id)))
-            assert len(tools) == 1 and tools[0].tool_name == "ask_user_question"
+            assert len(tools) == question_calls
+            question_tool = next(tool for tool in tools if tool.tool_name == "ask_user_question")
             assert (await db.get(SessionTurnInput, answer_id)).status == "applied"
         from app.services.direct_invocation_terminal_boundary_processor import DirectInvocationTerminalBoundaryProcessor
         from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
@@ -504,7 +531,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 for model in models)
             from app.services.content_input_receipts import ContentInputReceiptError, validate_runtime_input_dependencies
             private = [ref for ref in canonical_sources[1] if ref["source_kind"] == "session_tool_invocation"
-                and ref["source_id"] == str(tools[0].id)]
+                and ref["source_id"] == str(question_tool.id)]
             answer = await db.get(SessionTurnInput, answer_id)
             private.extend(ref for ref in canonical_sources[1] if ref["source_kind"] == "session_command"
                 and ref["source_id"] == str(answer.command_id))

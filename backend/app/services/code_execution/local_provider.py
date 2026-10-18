@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from pathlib import Path
+import signal
 
 from app.runtime.ccplus_contracts import SandboxProfile
 from app.services.code_execution.contracts import CodeExecutionResult
@@ -44,6 +46,19 @@ def _local_evidence(*, isolation: str, env_policy: dict, spec: SandboxBuildSpec)
     }
 
 
+async def _stop_local_command(launch: asyncio.Task[asyncio.subprocess.Process]) -> None:
+    proc = await launch
+    # A child can hold the pipes after the group leader has already exited.
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except ProcessLookupError:
+        pass
+    await proc.communicate()
+
+
 async def execute_local_sandboxed_command(
     command: list[str],
     *,
@@ -67,18 +82,29 @@ async def execute_local_sandboxed_command(
         return CodeExecutionResult(error=sandbox.error, evidence=evidence)
 
     try:
-        proc = await asyncio.create_subprocess_exec(
+        launch = asyncio.create_task(asyncio.create_subprocess_exec(
             *(sandbox.command or []),
             cwd=str(work_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=safe_env,
-        )
+            start_new_session=os.name == "posix",
+        ))
         try:
+            # Keep the spawn receipt reachable if cancellation races OS process creation.
+            proc = await asyncio.shield(launch)
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.communicate()
+        except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+            interruption = exc
+            cleanup = asyncio.create_task(_stop_local_command(launch))
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError as repeated:
+                    interruption = repeated
+            cleanup.result()
+            if isinstance(interruption, asyncio.CancelledError):
+                raise interruption
             return CodeExecutionResult(
                 error=f"❌ Command timed out after {timeout}s",
                 timed_out=True,

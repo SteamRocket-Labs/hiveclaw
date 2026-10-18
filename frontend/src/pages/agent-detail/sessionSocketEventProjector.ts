@@ -207,7 +207,7 @@ function runCanonicalEventSideEffects(
     // panel renders from, and reconcile the durable transcript so a lost
     // canonical tail still projects without a reload. The active-run
     // clearing itself already happened in the applier's onTerminal.
-    const terminalPhase = terminalRuntimePhaseForSessionEvent(itemKind, lifecycle);
+    const terminalPhase = terminalRuntimePhaseForSessionEvent(itemKind, lifecycle, payload);
     invalidateSessionRuntimeQueries(agentId, sessionId);
     if (terminalPhase) {
       setSessionPhase(key, terminalPhase);
@@ -217,7 +217,7 @@ function runCanonicalEventSideEffects(
     if (isActiveRuntime) dependencies.reconcileSessionTranscript(agentId, sessionId);
   }
   if (itemKind === 'run' && ['completed', 'failed', 'cancelled'].includes(lifecycle) && !staleTerminalForActiveRun(scopeRunId(event.scope))) {
-    const terminalPhase = terminalRuntimePhaseForSessionEvent(itemKind, lifecycle);
+    const terminalPhase = terminalRuntimePhaseForSessionEvent(itemKind, lifecycle, payload);
     if (terminalPhase) {
       setSessionPhase(key, terminalPhase);
       if (isActiveRuntime) syncActivePhase(terminalPhase);

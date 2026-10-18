@@ -1695,6 +1695,13 @@ async def _exercise_group_enterprise(seed, session_id, run_id, requester_id, ses
         url = f"/agents/{seed['agent_id']}/sessions/{session_id}/approvals/{ticket_id}"
         async with AsyncClient(transport=ASGITransport(app=web), base_url="http://group.fixture") as client:
             reader["id"] = requester_id
+            history = await client.get(url.rsplit("/approvals/", 1)[0] + "/transcript", params={"schema_version": 2, "limit": 1000})
+            assert history.status_code == 200, history.text
+            terminal = [event for event in history.json() if event.get("item_kind") == "run"
+                and event.get("lifecycle") == "completed" and event.get("scope", {}).get("run_id") == str(run_id)]
+            assert len(terminal) == 1, history.text
+            assert terminal[0]["payload"]["reason_code"] == "company_approval_required"
+            assert "GROUP_REPORT" not in json.dumps(terminal[0]["payload"])
             response = await client.get(url)
             assert response.status_code == 200 and response.json()["can_resolve"] is False, response.text
             response = await client.post(url + "/resolve", json={"action": "approve"})
@@ -1703,6 +1710,11 @@ async def _exercise_group_enterprise(seed, session_id, run_id, requester_id, ses
             response = await client.get(url)
             if enterprise_case == "web_enterprise_private_source":
                 assert "PRIVATE_GROUP_NOTE_CANARY" in json.dumps(model_client.requests)
+                held = await client.get(url.rsplit("/approvals/", 1)[0] + "/transcript", params={"schema_version": 2, "limit": 1000})
+                assert held.status_code == 200 and "PRIVATE_GROUP_NOTE_CANARY" not in held.text, held.text
+                assert any(event.get("item_kind") == "run" and event.get("lifecycle") == "completed"
+                    and event.get("payload", {}).get("reason_code") == "company_approval_required" for event in held.json())
+                assert any(event.get("source_access_receipt", {}).get("status") == "denied" for event in held.json())
                 assert response.status_code == 403 and "PRIVATE_GROUP_NOTE_CANARY" not in response.text, response.text
                 denied = await client.post(url + "/resolve", json={"action": "approve"})
                 assert denied.status_code == 403 and "PRIVATE_GROUP_NOTE_CANARY" not in denied.text, denied.text

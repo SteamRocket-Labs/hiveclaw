@@ -4476,9 +4476,9 @@ async def _finalize_web_chat_run_without_assistant(
             terminal_source="tool_card_finalizer",
         )
         merged_metadata = dict(getattr(task, "metadata_json", None) or {})
-        failure_envelope: dict[str, Any] | None = None
+        terminal_envelope: dict[str, Any] | None = None
         if status == "failed":
-            failure_envelope = await _append_web_chat_runtime_failure_event(
+            terminal_envelope = await _append_web_chat_runtime_failure_event(
                 db,
                 tenant_id=tenant_id,
                 agent_id=agent_id,
@@ -4488,6 +4488,18 @@ async def _finalize_web_chat_run_without_assistant(
                 status=status,
                 failure=failure or _runtime_failure_payload_from_terminal_metadata(metadata_json),
             )
+        elif status == "completed" and result_summary == "awaiting_company_approval":
+            from app.services.session_event_contract import serialize_session_event
+            from app.services.session_v2_persistence import SessionEventDraft, append_session_events
+
+            # The claimed run ended; its work is still waiting for the company ticket.
+            rows = await append_session_events(db, tenant_id=tenant_id, agent_id=agent_id,
+                session_id=session_id, drafts=[SessionEventDraft(item_id=run_uuid, item_kind="run",
+                    lifecycle="completed", scope={"level": "run", "session_id": session_id,
+                        "thread_id": session_id, "turn_id": str(merged_metadata.get("turn_id") or f"turn-{run_uuid.hex}"),
+                        "run_id": str(run_uuid)}, actor={"type": "runtime"},
+                    payload={"reason_code": "company_approval_required"})])
+            terminal_envelope = serialize_session_event(rows[0], audience="direct_user")
         await _project_agent_team_terminal_state(
             db=db,
             task=task,
@@ -4535,16 +4547,16 @@ async def _finalize_web_chat_run_without_assistant(
             status=status,
         )
         await db.commit()
-        if failure_envelope is not None:
+        if terminal_envelope is not None:
             # Live delivery of the committed canonical terminal envelope.  The
             # outbox row committed in the same transaction owns cross-instance
             # redelivery, so a local broadcast failure can never lose the
             # terminal witness (reload replays the transcript row).
             try:
-                await broadcast_web_chat_event(agent_id, session_id, failure_envelope)
+                await broadcast_web_chat_event(agent_id, session_id, terminal_envelope)
             except Exception as exc:  # noqa: BLE001 - outbox + transcript remain the recovery path.
                 logger.warning(
-                    "[WebChatRun] runtime_failure terminal broadcast failed for run {}: {}",
+                    "[WebChatRun] canonical terminal broadcast failed for run {}: {}",
                     run_uuid.hex,
                     exc,
                 )

@@ -684,8 +684,9 @@ export function canonicalRuntimeProjectionEvent(
   event: SessionEventV2,
 ): ChatTranscriptEventPayload | null {
   let eventType: string | null = null;
-  if (event.item_kind === 'run' && event.lifecycle === 'waiting'
-    && event.payload.reason_code === 'tool_permission_required') {
+  if (event.item_kind === 'run' && ((event.lifecycle === 'waiting'
+    && event.payload.reason_code === 'tool_permission_required') || (event.lifecycle === 'completed'
+    && event.payload.reason_code === 'company_approval_required'))) {
     return { id: event.event_id, sequence: event.sequence, event_type: 'phase', phase: 'awaiting_approval' };
   }
   if (event.item_kind === 'run') {

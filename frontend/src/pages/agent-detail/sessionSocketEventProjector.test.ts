@@ -188,6 +188,16 @@ function wireRealSessionApplication(
 }
 
 describe('session socket event projector', () => {
+  it('keeps the company handoff waiting when the terminal socket effects run', () => {
+    const event = { ...runTerminalEnvelope('run-1', 'company-wait', 1),
+      payload: { reason_code: 'company_approval_required' } };
+    const harness = makeHarness(event);
+    wireRealSessionApplication(harness);
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+    expect(harness.dependencies.setSessionPhase).toHaveBeenCalledWith('agent-1:session-1', 'awaiting_approval');
+    expect(harness.dependencies.syncActivePhase).not.toHaveBeenCalledWith('done');
+  });
+
   it('projects canonical SessionEventV2 without terminal array hydration', () => {
     const harness = makeHarness({
       schema: 'hive.session_event',

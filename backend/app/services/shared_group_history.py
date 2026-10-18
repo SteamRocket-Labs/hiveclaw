@@ -57,6 +57,20 @@ async def _group_event_access(db, *, session, events, user):
                 raise ContentInputReceiptError("group_history_scope_mismatch", "The event belongs to another work.", 403)
             if event.schema_version != 2:
                 raise ContentInputReceiptError("group_history_sources_unavailable", "The legacy event has no canonical source binding.", 503)
+            if event.item_kind == "run" and event.lifecycle == "completed":
+                from app.models.runtime_task import RuntimeTask
+
+                task = await db.get(RuntimeTask, event.run_id) if event.run_id else None
+                if (task is not None and (task.tenant_id, task.parent_agent_id, task.parent_session_id) == (
+                    session.tenant_id, session.agent_id, str(session.id)) and task.status == "completed"
+                    and task.result_summary == "awaiting_company_approval"
+                    and (event.metadata_json or {}).get("v2_payload", {}).get("reason_code") == "company_approval_required"
+                    and event.item_id == task.id and all((event.scope_json or {}).get(key) == value for key, value in {
+                        "level": "run", "session_id": str(session.id), "thread_id": str(session.id),
+                        "run_id": str(task.id)}.items())):
+                    access[event.id] = {"schema": "hive.source_access_receipt.v1", "status": "allowed",
+                        "code": "group_runtime_status", "reason_code": "company_approval_required"}
+                    continue
             refs = []
             origin = None
             if event.item_kind == "human_input" and event.input_id is not None:
@@ -140,6 +154,8 @@ def project_source_hold(envelope, receipt):
     payload = envelope.get("payload") or {}
     safe.update(actor={"type": "runtime"}, visibility={"audience": "direct_user"},
         payload={"source_access_receipt": receipt})
+    if receipt.get("code") == "group_runtime_status":
+        safe["payload"]["reason_code"] = receipt["reason_code"]
     if envelope.get("item_kind") == "hook":
         safe["payload"].update({key: payload[key] for key in ("boundary", "source") if key in payload})
     if safe.get("schema") == "hive.session_event_compatibility":

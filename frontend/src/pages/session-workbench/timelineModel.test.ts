@@ -2429,6 +2429,12 @@ describe('RuntimePhase in the thread projection (§3 seam 3)', () => {
       runtimePhase: 'awaiting_approval',
     });
     expect(model.header.status).toBe('waiting');
+    expect(model.cells).toEqual(expect.arrayContaining([expect.objectContaining({
+      kind: 'active_run', phase: 'awaiting_approval',
+      timeline: expect.objectContaining({ status: 'blocked' }),
+    })]));
+    const run = model.cells.find((cell) => cell.kind === 'active_run');
+    expect(run?.timeline.steps.some((step) => step.status === 'running' || step.title === 'Thinking')).toBe(false);
   });
 
   it.each(['queued', 'resuming', 'starting', 'thinking', 'tool_running', 'hook_evaluating', 'compacting', 'summarizing', 'continuation_gap'])(

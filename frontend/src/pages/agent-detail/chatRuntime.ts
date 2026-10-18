@@ -367,7 +367,11 @@ export const TERMINAL_RUNTIME_PHASES: ReadonlySet<RuntimePhase> = new Set([
   'cancelled',
 ]);
 
-export function terminalRuntimePhaseForSessionEvent(itemKind: string, lifecycle: string): RuntimePhase | null {
+export function terminalRuntimePhaseForSessionEvent(
+  itemKind: string, lifecycle: string, payload: Record<string, unknown> = {},
+): RuntimePhase | null {
+  if (itemKind === 'run' && lifecycle === 'completed'
+    && payload.reason_code === 'company_approval_required') return 'awaiting_approval';
   if (itemKind === 'runtime_failure' && lifecycle === 'recorded') return 'failed';
   if (lifecycle === 'completed') return 'done';
   if (lifecycle === 'failed' || lifecycle === 'needs_reconciliation') return 'failed';

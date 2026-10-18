@@ -1458,7 +1458,7 @@ async def test_load_runtime_context_resolves_model_inside_tenant_transaction(mon
         started_at=None,
         metadata_json={"user_id": str(user_id)},
     )
-    session_row = SimpleNamespace(id=session_id, transcript_metadata_json={})
+    session_row = SimpleNamespace(audience_kind="private", id=session_id, transcript_metadata_json={})
     agent = SimpleNamespace(
         id=agent_id,
         name="Agent",
@@ -1575,6 +1575,7 @@ async def test_load_runtime_context_uses_validated_team_member_model_override(mo
         },
     )
     session_row = SimpleNamespace(
+        audience_kind="private",
         id=session_id,
         agent_id=agent_id,
         tenant_id=tenant_id,
@@ -1738,6 +1739,7 @@ async def test_load_runtime_context_rejects_runtime_task_agent_tenant_mismatch(m
         metadata_json={"user_id": str(user_id)},
     )
     session_row = SimpleNamespace(
+        audience_kind="private",
         id=session_id, agent_id=agent_id, tenant_id=agent_tenant_id, transcript_metadata_json={}
     )
     agent = SimpleNamespace(
@@ -3805,7 +3807,7 @@ async def test_execute_web_chat_run_finalizes_blocking_clarification_without_emp
 
 
 @pytest.mark.asyncio
-async def test_execute_web_chat_run_interrupts_kernel_after_terminal_tool_card(monkeypatch):
+async def test_execute_web_chat_run_finalizes_after_terminal_tool_batch(monkeypatch):
     import json
 
     import app.services.web_chat_runtime as runtime
@@ -3854,7 +3856,10 @@ async def test_execute_web_chat_run_interrupts_kernel_after_terminal_tool_card(m
                 ),
             }
         )
-        raise AssertionError("kernel must be interrupted after a terminal tool card")
+        from app.runtime.invoker import AgentInvocationResult
+
+        assert not finalized_without_assistant
+        return AgentInvocationResult(content="", tool_terminal_signal="awaiting_user_clarification")
 
     async def fail_assistant_finalize(**kwargs):
         raise AssertionError(f"terminal tool card must not persist assistant content={kwargs.get('content')!r}")
@@ -3998,12 +4003,11 @@ async def test_execute_web_chat_run_delivers_session_permission_prompt_to_channe
 
 
 @pytest.mark.asyncio
-async def test_execute_web_chat_run_releases_active_run_inside_terminal_tool_callback(monkeypatch):
+async def test_execute_web_chat_run_releases_active_run_after_terminal_tool_batch(monkeypatch):
     """The user can answer immediately after an ask_user_question card appears.
 
-    The web-chat callback must mark the run terminal before raising its internal
-    control signal; otherwise the REST send path sees an active run and queues
-    the user's answer behind the same still-running turn.
+    The complete provider tool batch must settle before the run is released;
+    the answer must not queue behind the completed turn.
     """
     import json
 
@@ -4039,25 +4043,24 @@ async def test_execute_web_chat_run_releases_active_run_inside_terminal_tool_cal
         return runtime_task, agent, user, llm_model, None, []
 
     async def fake_invoke(request):
-        try:
-            await request.on_tool_call(
-                {
-                    "name": "ask_user_question",
-                    "args": {"questions": [{"question": "Scope?", "options": [{"label": "Mine"}]}]},
-                    "status": "done",
-                    "result": json.dumps(
-                        {
-                            "status": "awaiting_user_clarification",
-                            "blocking": True,
-                            "questions": [{"question": "Scope?", "options": [{"label": "Mine"}]}],
-                        }
-                    ),
-                }
-            )
-        except runtime._TerminalToolCardSignal:
-            assert finalized_without_assistant, "terminal card callback must release the active run before it returns"
-            raise
-        raise AssertionError("terminal tool card should interrupt invoke_agent")
+        await request.on_tool_call(
+            {
+                "name": "ask_user_question",
+                "args": {"questions": [{"question": "Scope?", "options": [{"label": "Mine"}]}]},
+                "status": "done",
+                "result": json.dumps(
+                    {
+                        "status": "awaiting_user_clarification",
+                        "blocking": True,
+                        "questions": [{"question": "Scope?", "options": [{"label": "Mine"}]}],
+                    }
+                ),
+            }
+        )
+        from app.runtime.invoker import AgentInvocationResult
+
+        assert not finalized_without_assistant
+        return AgentInvocationResult(content="", tool_terminal_signal="awaiting_user_clarification")
 
     async def fake_finalize_without_assistant(**kwargs):
         finalized_without_assistant.append(kwargs)
@@ -4085,6 +4088,7 @@ async def test_execute_web_chat_run_releases_active_run_inside_terminal_tool_cal
 
     await runtime.execute_web_chat_run(run_id)
 
+    assert finalized_without_assistant, "the completed tool batch must release the active run"
     assert len(finalized_without_assistant) == 1
     assert finalized_without_assistant[0]["result_summary"] == "awaiting_user_clarification"
     assert any(event.get("type") == "done" and event.get("content") == "" for event in broadcasts)

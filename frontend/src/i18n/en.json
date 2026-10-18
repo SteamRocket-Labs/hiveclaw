@@ -2535,7 +2535,7 @@
         "tool_running": "Running tools",
         "hook_evaluating": "Checking policy hooks",
         "compacting": "Compacting context",
-        "awaiting_approval": "Waiting for your approval",
+        "awaiting_approval": "Waiting for approval",
         "awaiting_budget": "Budget limited",
         "summarizing": "Writing the final summary",
         "continuation_gap": "Preparing the next step"

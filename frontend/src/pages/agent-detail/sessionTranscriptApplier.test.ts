@@ -281,6 +281,23 @@ function makeApplierHarness(messageStore?: SessionMessageStore) {
 }
 
 describe('session transcript applier real consumption path (Codex REQUEST_CHANGES #3)', () => {
+  it('seals the company handoff run while keeping the work waiting live and after reload', () => {
+    const harness = makeApplierHarness();
+    harness.refs.uiStates[KEY] = uiForPhase('responding');
+    const terminal = { ...canonicalRunLifecycleEvent(1),
+      payload: { reason_code: 'company_approval_required' } } as unknown as ChatTranscriptEventPayload;
+    harness.applyEvent(terminal);
+    expect(harness.deps.markActiveRunTerminal).toHaveBeenCalledWith(KEY, 'run-1');
+    expect(harness.refs.uiStates[KEY]).toEqual(uiForPhase('awaiting_approval'));
+    expect(hydrateSessionTranscriptEvents([terminal]).ui).toEqual(uiForPhase('awaiting_approval'));
+    const stale = makeApplierHarness();
+    stale.refs.uiStates[KEY] = uiForPhase('responding');
+    stale.deps.markActiveRunTerminal = vi.fn(() => false);
+    stale.applyEvent({ ...terminal, scope: { level: 'run', session_id: 'session-1', thread_id: 'session-1',
+      turn_id: 'old-turn', run_id: 'old-run' } } as unknown as ChatTranscriptEventPayload);
+    expect(stale.refs.uiStates[KEY]).toEqual(uiForPhase('responding'));
+  });
+
   it('restores the same actionable permission and waiting phase live and after reload', () => {
     const harness = makeApplierHarness();
     const request = {

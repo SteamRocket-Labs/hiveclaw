@@ -2535,7 +2535,7 @@
         "tool_running": "执行工具中",
         "hook_evaluating": "策略核验中",
         "compacting": "压缩上下文中",
-        "awaiting_approval": "等待你的审批",
+        "awaiting_approval": "等待审批",
         "awaiting_budget": "预算受限",
         "summarizing": "撰写收尾总结中",
         "continuation_gap": "准备下一步"

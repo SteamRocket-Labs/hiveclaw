@@ -254,6 +254,7 @@ export function applyTranscriptToSessionRuntime(
           canonicalRuntimePhase = terminalRuntimePhaseForSessionEvent(
             terminalEvent.item_kind,
             terminalEvent.lifecycle,
+            terminalEvent.payload,
           );
         }
         return accepted;

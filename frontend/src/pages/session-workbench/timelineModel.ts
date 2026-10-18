@@ -1846,9 +1846,10 @@ function buildPendingRunCell(
 ): Extract<ThreadTimelineCell, { kind: 'active_run' }> | null {
   const phase = liveRunPhase(input);
   if (!input.isWaiting && !input.isStreaming && !activeRunStatus && !phase && !acceptedUserTurnPending && !interruptedUserTurn) return null;
+  const waiting = Boolean(phase && WAITING_HEADER_PHASES.has(phase));
   const status: RunTimelineSnapshot['status'] = interruptedUserTurn
     ? 'interrupted'
-    : activeRunStatus === 'failed' ? 'failed' : 'running';
+    : activeRunStatus === 'failed' ? 'failed' : waiting ? 'blocked' : 'running';
   const title = phase === 'responding' || input.isStreaming ? 'Working' : 'Thinking';
   const latestInputIndex = latestUserMessageIndex(input.messages);
   const startedAt = latestInputIndex >= 0 && !hasAssistantAnswerAfterLatestUser(input.messages)
@@ -1865,7 +1866,7 @@ function buildPendingRunCell(
       id: 'active-run-pending',
       status,
       startedAt,
-      steps: interruptedUserTurn ? [] : [
+      steps: interruptedUserTurn || waiting ? [] : [
         {
           id: 'active-run-pending-step',
           kind: 'reasoning',
@@ -2332,7 +2333,11 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
       const cell = cells[index];
       if (cell.kind !== 'active_run') continue;
       if (cell.timeline.status === 'running' || cell.timeline.status === 'blocked') {
-        cells[index] = { ...cell, phase: livePhase };
+        const waiting = WAITING_HEADER_PHASES.has(livePhase);
+        cells[index] = { ...cell, phase: livePhase, timeline: waiting ? { ...cell.timeline,
+          status: 'blocked', steps: cell.timeline.steps.map((step) => step.status === 'running'
+            ? { ...step, status: 'blocked' } : step),
+        } : cell.timeline };
       }
       break;
     }

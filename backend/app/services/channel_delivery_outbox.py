@@ -84,6 +84,7 @@ class ChannelDeliveryIntent:
     artifact_ids: list[uuid.UUID | str] | None = None
     delivery_kind: DeliveryKind = "terminal_result"
     metadata: dict[str, Any] | None = None
+    prompt_item_id: uuid.UUID | str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +118,8 @@ def channel_delivery_id(intent: ChannelDeliveryIntent) -> uuid.UUID:
             target_hash,
         )
     )
+    if intent.prompt_item_id is not None:
+        identity += "|" + str(_uuid(intent.prompt_item_id, field="prompt_item_id"))
     return uuid.uuid5(_DELIVERY_NAMESPACE, identity)
 
 
@@ -130,6 +133,8 @@ def _intent_values(intent: ChannelDeliveryIntent) -> dict[str, Any]:
         raise ValueError("terminal_status is required")
     if intent.delivery_kind not in {"terminal_result", "interactive_prompt"}:
         raise ValueError(f"unsupported delivery_kind: {intent.delivery_kind}")
+    if intent.prompt_item_id is not None and intent.delivery_kind != "interactive_prompt":
+        raise ValueError("prompt_item_id requires an interactive prompt")
     artifact_ids = [str(_uuid(value, field="artifact_id")) for value in (intent.artifact_ids or [])]
     return {
         "id": channel_delivery_id(intent),
@@ -147,6 +152,7 @@ def _intent_values(intent: ChannelDeliveryIntent) -> dict[str, Any]:
         "channel": channel,
         "target_hash": target_hash,
         "delivery_kind": intent.delivery_kind,
+        "prompt_key": str(_uuid(intent.prompt_item_id, field="prompt_item_id")) if intent.prompt_item_id else "",
         "terminal_status": terminal_status,
         "delivery_target_json": target,
         "text_content": text_content,
@@ -201,8 +207,9 @@ async def enqueue_terminal_delivery_for_task(
     user_id: uuid.UUID | str | None = None,
     external_principal_id: uuid.UUID | str | None = None,
     delivery_kind: DeliveryKind = "terminal_result",
+    prompt_item_id: uuid.UUID | str | None = None,
 ) -> uuid.UUID | None:
-    """Project canonical terminal truth into one immutable external delivery intent.
+    """Project a canonical result or prompt into an immutable external delivery intent.
 
     ``ChatSession.delivery_target_json`` is the transport authority.  Runtime
     source labels are intentionally not used as a gate because legacy sessions
@@ -286,6 +293,7 @@ async def enqueue_terminal_delivery_for_task(
             artifact_ids=[value for value in artifact_ids if value is not None],
             terminal_status=terminal_status,
             delivery_kind=delivery_kind,
+            prompt_item_id=prompt_item_id,
             metadata=delivery_metadata,
         ),
     )
@@ -475,6 +483,9 @@ class ChannelDeliveryOutboxService:
                     raise ChannelDeliveryPermanentError("external channel target was revoked")
                 if item.channel_config_id is not None and principal.channel_config_id != item.channel_config_id:
                     raise ChannelDeliveryPermanentError("external channel target installation changed")
+                if (item.metadata.get("source") == "employee_first_task_question"
+                    and principal.linked_user_id != item.user_id):
+                    raise ChannelDeliveryPermanentError("first-task requester channel binding changed")
 
             if not item.artifact_ids:
                 return []

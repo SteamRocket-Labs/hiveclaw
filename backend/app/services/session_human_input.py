@@ -337,7 +337,7 @@ async def cancel_unbound_human_input(
     if row.intent == "answer_request":
         from app.services.session_user_question import reopen_cancelled_answer
 
-        await reopen_cancelled_answer(db, authority=authority, row=row)
+        reopened = await reopen_cancelled_answer(db, authority=authority, row=row)
         if delegation is not None and delegation.status == "pending":
             from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
 
@@ -346,6 +346,10 @@ async def cancel_unbound_human_input(
                 str(uuid.uuid5(row.id, f"question-after-cancel:{row.revision}"))}
             await transition_runtime_root_item_by_task(db, runtime_task_id=delegation.id,
                 requested_state="suspended", reason_code="delegation_answer_cancelled")
+            if reopened is not None:
+                from app.services.employee_first_task import enqueue_first_task_question_notice
+
+                await enqueue_first_task_question_notice(db, task=delegation, question=reopened)
     drafts = [
         SessionEventDraft(
             item_id=row.id,

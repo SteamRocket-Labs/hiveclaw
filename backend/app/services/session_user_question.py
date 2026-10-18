@@ -185,12 +185,13 @@ async def reopen_cancelled_answer(db, *, authority, row):
         return
     payload = {key: value for key, value in question_payload(event).items()
                if key not in {"answer_input_id", "answer_input_revision", "answer_status", "answer_text", "effective_answer", "legacy_request_item_id"}}
-    await append_session_events(db, tenant_id=authority.tenant_id, agent_id=authority.agent_id,
+    events = await append_session_events(db, tenant_id=authority.tenant_id, agent_id=authority.agent_id,
         session_id=authority.session_id, drafts=[SessionEventDraft(
             item_id=uuid.uuid5(row.id, f"question-after-cancel:{row.revision}"), item_kind="user_question", lifecycle="waiting",
             scope=event.scope_json, actor={"type": "runtime"}, invocation_id=event.invocation_id, result_id=event.result_id,
             payload={**payload, "supersedes_question_id": str(event.item_id), "cancelled_answer_input_id": str(row.id)},
         )])
+    return events[0]
 
 
 async def answer_projections(db, rows):

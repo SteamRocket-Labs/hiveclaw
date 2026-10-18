@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from dataclasses import replace
 from pathlib import Path
 import uuid
 
@@ -45,6 +46,7 @@ async def _seed_delivery(
     *,
     artifact_count: int = 0,
     external: bool = False,
+    channel: str = "telegram",
 ):
     tenant_id = uuid.uuid4()
     user_id = uuid.uuid4()
@@ -83,7 +85,7 @@ async def _seed_delivery(
                 id=config_id,
                 tenant_id=tenant_id,
                 agent_id=agent_id,
-                channel_type="telegram",
+                channel_type=channel,
                 app_secret="bot-token",
                 is_configured=True,
                 is_connected=True,
@@ -94,7 +96,7 @@ async def _seed_delivery(
                 ExternalPrincipal(
                     id=principal_id,
                     tenant_id=tenant_id,
-                    provider="telegram",
+                    provider=channel,
                     installation_ref=str(config_id),
                     subject_id="sender-1",
                     display_name="Telegram sender",
@@ -111,8 +113,8 @@ async def _seed_delivery(
                 user_id=None if external else user_id,
                 external_principal_id=principal_id,
                 title="Telegram delivery",
-                source_channel="telegram",
-                delivery_target_json={"channel": "telegram", "chat_id": "chat-1", "sender_id": "sender-1"},
+                source_channel=channel,
+                delivery_target_json={"channel": channel, "chat_id": "chat-1", "sender_id": "sender-1"},
                 session_kind="human_chat",
                 actor_type="external" if external else "user",
                 runtime_source="web_chat",
@@ -181,6 +183,7 @@ async def _seed_delivery(
         "config_id": config_id,
         "principal_id": principal_id,
         "artifact_ids": artifact_ids,
+        "channel": channel,
     }
 
 
@@ -193,7 +196,7 @@ def _intent(seed: dict, *, text: str = "Final answer") -> ChannelDeliveryIntent:
         user_id=None if seed["principal_id"] else seed["user_id"],
         external_principal_id=seed["principal_id"],
         channel_config_id=seed["config_id"],
-        delivery_target={"channel": "telegram", "chat_id": "chat-1", "sender_id": "sender-1"},
+        delivery_target={"channel": seed["channel"], "chat_id": "chat-1", "sender_id": "sender-1"},
         text=text,
         artifact_ids=seed["artifact_ids"],
         terminal_status="completed",
@@ -221,6 +224,57 @@ async def test_terminal_intent_is_deterministic_and_enqueued_once(owner_sessionm
     assert first == second
     assert len(rows) == 1
     assert rows[0].text_content == "Final answer"
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_distinct_prompts_share_a_task_without_replaying_any_delivery(owner_sessionmaker, tmp_path):
+    seed = await _seed_delivery(owner_sessionmaker, tmp_path)
+    prompts = [replace(_intent(seed), delivery_kind="interactive_prompt", prompt_item_id=uuid.uuid4(),
+        terminal_status="clarification_required") for _ in range(2)]
+    async with tenant_scoped_session(seed["tenant_id"], session_factory=owner_sessionmaker) as db:
+        terminal = await enqueue_channel_delivery(db, _intent(seed))
+        ids = [await enqueue_channel_delivery(db, prompt) for prompt in prompts]
+        assert ids[0] != ids[1] != terminal
+        assert await enqueue_channel_delivery(db, prompts[0]) == ids[0]
+        await db.commit()
+    calls = []
+    async def send_text(**kwargs):
+        calls.append(kwargs["idempotency_key"])
+        return DeliveryResult(True, "success", "telegram", "ok")
+    service = ChannelDeliveryOutboxService(session_factory=owner_sessionmaker, text_sender=send_text)
+    assert (await service.drain_once(worker_id="prompts"))["delivered"] == 3
+    assert (await service.drain_once(worker_id="prompts-replay"))["delivered"] == 0
+    assert set(calls) == {f"{value}:text" for value in [terminal, *ids]}
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+@pytest.mark.parametrize("changed_user", [None, uuid.UUID(int=1)])
+async def test_first_task_notice_rechecks_requester_binding_before_send(owner_sessionmaker, tmp_path, changed_user):
+    seed = await _seed_delivery(owner_sessionmaker, tmp_path, external=True, channel="feishu")
+    async with tenant_scoped_session(seed["tenant_id"], session_factory=owner_sessionmaker) as db:
+        from app.services.external_principal_service import bind_authenticated_self_channel_principal
+
+        await bind_authenticated_self_channel_principal(db, tenant_id=seed["tenant_id"],
+            config=await db.get(ChannelConfig, seed["config_id"]), provider_subject_id="sender-1",
+            user_id=seed["user_id"], actor_user_id=seed["user_id"])
+        principal = await db.get(ExternalPrincipal, seed["principal_id"])
+        await enqueue_channel_delivery(db, replace(_intent(seed), user_id=seed["user_id"],
+            delivery_kind="interactive_prompt", prompt_item_id=uuid.uuid4(), terminal_status="clarification_required",
+            metadata={"source": "employee_first_task_question"}))
+        # Rebinding may point at a different active account; never reuse the old requester's route.
+        if changed_user is not None:
+            db.add(User(id=changed_user, tenant_id=seed["tenant_id"], username=f"other-{seed['tenant_id'].hex}",
+                email=f"{seed['tenant_id'].hex}@other.test", display_name="Other requester", password_hash="x"))
+            await db.flush()
+        principal.linked_user_id = changed_user
+        await db.commit()
+    calls = []
+    async def send_text(**kwargs):
+        calls.append(kwargs)
+        return DeliveryResult(True, "success", "telegram", "ok")
+    result = await ChannelDeliveryOutboxService(session_factory=owner_sessionmaker, text_sender=send_text).drain_once(
+        worker_id="changed-binding")
+    assert result["dead_lettered"] == 1 and calls == []
 
 
 @pytest.mark.usefixtures("migrated_pg_url")

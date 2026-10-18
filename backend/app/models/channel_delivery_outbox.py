@@ -1,4 +1,4 @@
-"""Durable terminal text and artifact delivery intents for external channels."""
+"""Durable result and interactive-prompt delivery intents for external channels."""
 
 from __future__ import annotations
 
@@ -36,6 +36,7 @@ class ChannelDeliveryOutbox(Base):
             "runtime_task_id",
             "delivery_kind",
             "target_hash",
+            "prompt_key",
             name="uq_channel_delivery_outbox_runtime_target",
         ),
         Index("ix_channel_delivery_outbox_claim", "status", "available_at", "locked_at"),
@@ -69,6 +70,7 @@ class ChannelDeliveryOutbox(Base):
     delivery_kind: Mapped[str] = mapped_column(
         String(32), nullable=False, default="terminal_result", server_default=text("'terminal_result'")
     )
+    prompt_key: Mapped[str] = mapped_column(String(36), nullable=False, default="", server_default=text("''"))
     terminal_status: Mapped[str] = mapped_column(String(40), nullable=False)
     delivery_target_json: Mapped[dict] = mapped_column(
         EncryptedDeliveryTargetJSON(postgres_jsonb=True),

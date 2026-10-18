@@ -54,6 +54,10 @@ async def suspend_delegation_for_question(request, *, provider_request_id):
         task.claimed_by, task.claim_expires_at = None, None
         await transition_runtime_root_item_by_task(db, runtime_task_id=task.id,
             requested_state="queued" if answer is not None else "suspended", reason_code="delegation_question")
+        if answer is None and question.lifecycle == "waiting":
+            from app.services.employee_first_task import enqueue_first_task_question_notice
+
+            await enqueue_first_task_question_notice(db, task=task, question=question)
         await db.commit()
 
 

@@ -128,6 +128,8 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     first_task = input_case.startswith("first_task")
     question_after_write = input_case == "first_task_question_after_write"
     feishu_creation = input_case == "first_task_feishu_question"
+    if feishu_creation:
+        monkeypatch.setattr(get_settings(), "PUBLIC_BASE_URL", "https://hive.synthetic.test")
     saved_reopen = input_case == "first_task_saved_reopen"
     native_creation = feishu_creation or input_case in {"first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write"}
     parent_model_case = feishu_creation or input_case in {"first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write"}
@@ -453,6 +455,19 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             assert len(client.requests) == question_calls
             question_id = questions[0].item_id
             question_provider_id = (await db.get(SessionModelResult, questions[0].result_id)).provider_request_id
+            if feishu_creation:
+                from app.models.channel_delivery_outbox import ChannelDeliveryOutbox
+
+                notices = list(await db.scalars(select(ChannelDeliveryOutbox).where(
+                    ChannelDeliveryOutbox.runtime_task_id == task_id,
+                    ChannelDeliveryOutbox.delivery_kind == "interactive_prompt")))
+                assert len(notices) == 1, "The originating Feishu work has no durable pending-question notice"
+                assert notices[0].session_id == seed["session_id"]
+                assert notices[0].external_principal_id == seed["feishu_principal_id"]
+                assert notices[0].terminal_status == "clarification_required" and notices[0].artifact_ids_json == []
+                assert notices[0].prompt_key == str(question_id)
+                assert f"/agents/{seed['agent_id']}?session_id={seed['session_id']}#chat" in notices[0].text_content
+                assert "Which audience?" not in notices[0].text_content
             if question_after_write:
                 from app.runtime.session import SessionContext
                 from app.services.delegation_context_sources import bind_native_recovery_context
@@ -469,6 +484,26 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                         setattr(altered, key, value)
                     await bind_native_recovery_context(db, task=altered, session=restored)
                     assert "_native_recovery_context_source" not in restored.metadata
+        if feishu_creation:
+            from app.services.channel_delivery_outbox import ChannelDeliveryOutboxService
+            from app.services.feishu_service import FeishuService
+
+            sent_notices = []
+            async def send_notice(_self, _app_id, _secret, receive_id, message_type, content, **kwargs):
+                notice_text = json.loads(content)["text"]
+                if "此提示不代表任务完成" in notice_text:
+                    sent_notices.append({"target": receive_id, "target_type": kwargs["receive_id_type"],
+                        "message_type": message_type, "text": notice_text})
+                return {"data": {"message_id": "synthetic-question-notice"}}
+            monkeypatch.setattr(FeishuService, "send_message", send_notice)
+            notice_service = ChannelDeliveryOutboxService(session_factory=app_user_sessionmaker)
+            assert (await notice_service.drain_once(worker_id="question-notice"))["delivered"] >= 1
+            assert (await notice_service.drain_once(worker_id="question-notice-replay"))["delivered"] == 0
+            assert len(sent_notices) == 1 and sent_notices[0]["target"] == "ou_creation_owner"
+            assert sent_notices[0]["target_type"] == "open_id" and "Which audience?" not in sent_notices[0]["text"]
+            async with app_user_sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                assert (await db.get(RuntimeTask, task_id)).status == "suspended"
         from fastapi import FastAPI
         from httpx import ASGITransport, AsyncClient
         from app.api.chat_sessions import router
@@ -547,6 +582,17 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 question_id = UUID(child.metadata_json["delegation_waiting_question_item_id"])
             reopened = (await browser.get(draft_url)).json()["first_task_work"]
             assert reopened["question"]["item_id"] == str(question_id) != work["question"]["item_id"]
+            if feishu_creation:
+                assert (await notice_service.drain_once(worker_id="cancelled-answer-notice"))["delivered"] == 1
+                assert len(sent_notices) == 2 and all("Which audience?" not in row["text"] for row in sent_notices)
+                async with app_user_sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    notices = list(await db.scalars(select(ChannelDeliveryOutbox).where(
+                        ChannelDeliveryOutbox.runtime_task_id == task_id,
+                        ChannelDeliveryOutbox.delivery_kind == "interactive_prompt")))
+                    assert len(notices) == 2 and {row.prompt_key for row in notices} == {
+                        work["question"]["item_id"], str(question_id)}
+                    assert all(row.status == "delivered" for row in notices)
             answer_id = uuid4()
             body.update(input_id=str(answer_id), idempotency_key=str(answer_id), request_item_id=str(question_id))
             response = await browser.post(f"/api/agents/{receiver}/sessions/{request.session_id}/inputs", json=body)

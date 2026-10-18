@@ -86,6 +86,36 @@ async def load_first_task_work(db, *, draft, user):
     return work
 
 
+async def enqueue_first_task_question_notice(db, *, task, question):
+    """Return a private first-task status to its original channel, without the question body."""
+    from sqlalchemy import select
+    from app.config import get_settings
+    from app.models.hr_creation import HrCreationDraft
+    from app.services.channel_delivery_outbox import enqueue_terminal_delivery_for_task
+    from app.services.session_user_question import question_payload
+
+    draft = await db.scalar(select(HrCreationDraft).where(
+        HrCreationDraft.tenant_id == task.tenant_id, HrCreationDraft.hr_agent_id == task.parent_agent_id,
+        HrCreationDraft.session_id == uuid.UUID(task.parent_session_id),
+        HrCreationDraft.created_agent_id == task.child_agent_id,
+        HrCreationDraft.requested_by_user_id == task.root_user_id))
+    evidence = direct_creation_authorization(draft) if draft is not None else None
+    if (not evidence or not evidence.get("first_task")
+        or task.id != uuid.uuid5(draft.id, "explicit-first-task.v1")
+        or task.child_session_id != str(uuid.uuid5(task.id, "session")) or task.prompt != evidence["first_task"]
+        or question_payload(question).get("requested_by_user_id") != str(task.root_user_id)):
+        return None
+    text = "首任务有一条待答问题。请在 HiveClaw 原工作中查看最新状态并答复；此提示不代表任务完成。"
+    settings = get_settings()
+    base_url = (settings.PUBLIC_BASE_URL or settings.BASE_URL).rstrip("/")
+    if base_url:
+        text += f"\n{base_url}/agents/{draft.hr_agent_id}?session_id={draft.session_id}#chat"
+    return await enqueue_terminal_delivery_for_task(db, task=task, content=text,
+        terminal_status="clarification_required", delivery_kind="interactive_prompt", prompt_item_id=question.item_id,
+        metadata={"source": "employee_first_task_question", "draft_id": str(draft.id),
+            "question_item_id": str(question.item_id)})
+
+
 async def resume_first_task_from_tool(context, arguments) -> str:
     from fastapi import HTTPException
     from sqlalchemy import select

@@ -32,6 +32,9 @@ async function openWork(token) {
 }
 try {
   const reader = await openWork(fixture.readerToken);
+  await expect(reader.card.getByText('Waiting for requester', { exact: true })).toBeVisible();
+  await expect(reader.card.getByText('Only the original requester can answer this question.', { exact: true })).toBeVisible();
+  await expect(reader.card.getByText('Needs your input', { exact: true })).toHaveCount(0);
   await expect(reader.card.getByRole('radio').first()).toBeDisabled();
   await expect(reader.card.getByRole('button', { name: 'Submit answer', exact: true })).toHaveCount(0);
   await page.screenshot({ path: fixture.readonlyScreenshot, fullPage: true });
@@ -58,6 +61,9 @@ try {
   await page.reload();
   await expect(page.getByText('The Team report is ready.', { exact: false }).first()).toBeVisible({ timeout: 15000 });
   await expect(page.getByTestId('ask-user-question-card').getByRole('radio').first()).toBeDisabled();
+  await expect(page.getByTestId('ask-user-question-card').getByText('Answered', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('ask-user-question-card').getByText('This question has been answered.', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('ask-user-question-card').getByText('Needs your input', { exact: true })).toHaveCount(0);
   assert.deepEqual(errors, []);
   await page.screenshot({ path: fixture.completedScreenshot, fullPage: true });
   await writeFile(fixture.framesPath, JSON.stringify(frames, null, 2));

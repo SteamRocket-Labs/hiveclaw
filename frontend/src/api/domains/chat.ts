@@ -271,8 +271,22 @@ export interface SessionIndex {
   resume_health: Record<string, unknown>;
 }
 
+export interface SessionCancelReceipt {
+  schema: 'hive.control_input_receipt';
+  schema_version: 2;
+  command_id: string;
+  control_id: string;
+  run_id: string;
+  status: string;
+  accepted: boolean;
+  reason_code?: string | null;
+  recovery_action?: string | null;
+  replayed?: boolean;
+}
+
 export interface SessionRun {
   run_id: string;
+  can_cancel?: boolean;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'killed' | 'skipped' | string;
   created_at?: string | null;
   started_at?: string | null;
@@ -393,7 +407,7 @@ export const chatApi = {
     }
   },
   cancelSessionRun: (agentId: string, sessionId: string, runId: string) =>
-    post<SessionRun>(`/agents/${agentId}/sessions/${sessionId}/runs/${runId}/cancel`, {}),
+    post<SessionCancelReceipt>(`/agents/${agentId}/sessions/${sessionId}/runs/${runId}/cancel`, {}),
   getApproval: (agentId: string, sessionId: string, approvalId: string) =>
     get<SessionApproval>(`/agents/${agentId}/sessions/${sessionId}/approvals/${approvalId}`),
   resolveApproval: (agentId: string, sessionId: string, approvalId: string, action: 'approve' | 'reject') =>

@@ -589,7 +589,7 @@ async def submit_live_cancel_input(
         user=user,
         agent_id=agent.id,
         session_id=session.id,
-        action="mutate_session_control",
+        action="cancel_session_run" if getattr(session, "audience_kind", None) == "group" else "mutate_session_control",
     )
     accepted = await accept_cancel_control_input(
         db,

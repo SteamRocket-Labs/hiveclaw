@@ -16,7 +16,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
     reason="Native macOS context gate; Linux delivery is deferred.")]
 
 
-@pytest.mark.parametrize("mutation", [None, "forged_actor", "unlinked", "private_source", "private_recipient", "unknown_recipient", "queued_member", "same_sender", "explicit_other", "private_context", "shared_context", "web_member", "web_socket", "web_browser", "web_question", "web_question_browser"])
+@pytest.mark.parametrize("mutation", [None, "forged_actor", "unlinked", "private_source", "private_recipient", "unknown_recipient", "queued_member", "same_sender", "explicit_other", "private_context", "shared_context", "web_member", "web_socket", "web_browser", "web_question", "web_question_browser", "web_cancel", "web_cancel_recovery", "web_cancel_unknown", "web_cancel_browser"])
 async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, mutation,
 ):
@@ -57,7 +57,11 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     web_requester = mutation == "web_member"
     question_browser = mutation == "web_question_browser"
     web_question = mutation in {"web_question", "web_question_browser"}
-    if web_question:
+    cancel_recovery = mutation == "web_cancel_recovery"
+    cancel_unknown = mutation == "web_cancel_unknown"
+    cancel_browser = mutation == "web_cancel_browser"
+    web_cancel = mutation in {"web_cancel", "web_cancel_recovery", "web_cancel_unknown", "web_cancel_browser"}
+    if web_question or web_cancel:
         mutation = None
     web_browser = mutation == "web_browser"
     web_socket = mutation in {"web_socket", "web_browser"}
@@ -104,7 +108,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
         bound = await bind_authenticated_self_channel_principal(db, tenant_id=seed["tenant_id"], config=config,
             provider_subject_id="ou_group_requester", user_id=member.id, actor_user_id=member.id)
         actor = bound.actor
-        if web_question or mutation in {"private_recipient", "queued_member", "explicit_other", "private_context", "shared_context"}:
+        if web_question or web_cancel or mutation in {"private_recipient", "queued_member", "explicit_other", "private_context", "shared_context"}:
             other = await bind_authenticated_self_channel_principal(db, tenant_id=seed["tenant_id"], config=config,
                 provider_subject_id="ou_group_creator", user_id=seed["user_id"], actor_user_id=seed["user_id"])
         grant.actions = ["read", "execute"]
@@ -135,7 +139,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
 
     async def members(_self, *_args, **_kwargs):
         subjects = {"ou_group_requester"}
-        if web_question or mutation in {"private_recipient", "unknown_recipient", "queued_member", "explicit_other", "private_context", "shared_context"}:
+        if web_question or web_cancel or mutation in {"private_recipient", "unknown_recipient", "queued_member", "explicit_other", "private_context", "shared_context"}:
             subjects.add("ou_group_unknown" if mutation == "unknown_recipient" else "ou_group_creator")
         return subjects
     monkeypatch.setattr(FeishuService, "get_chat_member_open_ids", members)
@@ -337,6 +341,10 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
             task.status, task.claimed_by, task.claim_version, task.attempt_count = "running", "shared-worker", 1, 1
             task.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
             await db.commit()
+    if web_cancel:
+        await _exercise_group_cancel(seed, shared_id, run_id, member.id, app_user_sessionmaker, monkeypatch, tmp_path,
+            recover_cancel=cancel_recovery, unknown_cancel=cancel_unknown, browser_cancel=cancel_browser)
+        return
     responses = [
         {"tool_calls": [{"id": "shared-write", "type": "function", "function": {"name": "write_file",
             "arguments": json.dumps({"path": "workspace/shared-report.md", "content": report_content})}}], "finish_reason": "tool_calls"},
@@ -1121,3 +1129,243 @@ async def _exercise_group_question(seed, session_id, run_id, user_id, sessionmak
         finally:
             if listener is not None:
                 listener.close()
+
+
+async def _exercise_group_cancel(seed, session_id, run_id, requester_id, sessionmaker, monkeypatch, tmp_path, *, recover_cancel=False, unknown_cancel=False, browser_cancel=False):
+    import asyncio
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from app import database
+    from app.api import chat_sessions
+    from app.core.security import get_current_user
+    from app.database import pin_rls_tenant_context
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionCommand, SessionControlInput
+    from app.models.user import User
+    from app.services.feishu_service import FeishuService
+    from app.services.session_control_input import recover_stale_cancel_control_inputs_once
+    import app.services.session_control_input as controls
+    import app.services.web_chat_runtime as runtime
+    import app.runtime.invoker as invoker
+
+    reader_id = requester_id
+    async def current_user():
+        async with sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            return await db.get(User, reader_id)
+
+    async def scoped_db():
+        async with sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            yield db
+
+    web = FastAPI()
+    web.include_router(chat_sessions.router)
+    web.dependency_overrides[get_current_user] = current_user
+    web.dependency_overrides[database.get_db] = scoped_db
+    url = f"/agents/{seed['agent_id']}/sessions/{session_id}"
+    entered, release = asyncio.Event(), asyncio.Event()
+    class HoldingClient(ScriptedLLMClient):
+        async def stream(self, **kwargs):
+            entered.set()
+            await release.wait()
+            return await super().stream(**kwargs)
+    client_class = HoldingClient if unknown_cancel else ScriptedLLMClient
+    if not unknown_cancel:
+        import app.kernel.engine as engine
+        actual_tool_call = engine._execute_tool_call_with_cancel
+        async def held_before_tool(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await actual_tool_call(*args, **kwargs)
+        monkeypatch.setattr(engine, "_execute_tool_call_with_cancel", held_before_tool)
+    model = client_class([{"tool_calls": [{"id": "after-stop", "type": "function", "function": {"name": "write_file",
+        "arguments": json.dumps({"path": "workspace/after-stop.md", "content": "MUST_NOT_EXECUTE"})}}], "finish_reason": "tool_calls"}])
+    monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: model)
+    signals = []
+    actual_signal = runtime.signal_web_chat_cancel
+    async def signal(**kwargs):
+        signals.append(kwargs)
+        return await actual_signal(**kwargs)
+    monkeypatch.setattr(runtime, "signal_web_chat_cancel", signal)
+    worker = server = server_task = listener = process = None
+    if browser_cancel:
+        from app.api import websocket as socket_api
+        from app.services.web_chat_broker import WebChatBroker
+        broker = WebChatBroker()
+        monkeypatch.setattr(runtime, "web_chat_broker", broker)
+        monkeypatch.setattr(socket_api, "manager", broker)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=web), base_url="http://group.fixture") as client:
+            original = await client.get(url + "/runs/active")
+            assert original.status_code == 200 and original.json()["can_cancel"] is True, original.text
+            reader_id = seed["user_id"]
+            other = await client.get(url + "/runs/active")
+            assert other.status_code == 200 and other.json()["can_cancel"] is False, other.text
+            denied = await client.post(url + f"/runs/{run_id}/cancel")
+            assert denied.status_code == 409 and denied.json()["detail"]["code"] == "shared_group_requester_conflict", denied.text
+            reader_id = requester_id
+            wrong = await client.post(url + f"/runs/{seed['run_id']}/cancel")
+            assert wrong.status_code == 409, wrong.text
+            for expected, result in [(403, set()), (503, None)]:
+                async def unavailable_members(*_args, **_kwargs):
+                    if result is None:
+                        raise RuntimeError("Synthetic membership unavailable")
+                    return result
+                with monkeypatch.context() as patch:
+                    patch.setattr(FeishuService, "get_chat_member_open_ids", unavailable_members)
+                    response = await client.post(url + f"/runs/{run_id}/cancel")
+                    assert response.status_code == expected, response.text
+            async with sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                assert list(await db.scalars(select(SessionControlInput).where(SessionControlInput.session_id == session_id))) == []
+            assert runtime.dispatch_web_chat_run(run_id, claim_version=1, worker_id="shared-worker")
+            worker = runtime._TASKS[run_id.hex]
+            await asyncio.wait_for(entered.wait(), 30)
+            if recover_cancel:
+                async def crash_before_begin(*_args, **_kwargs):
+                    raise RuntimeError("Synthetic ingress crash after acceptance")
+                with monkeypatch.context() as patch:
+                    patch.setattr(controls, "begin_cancel_control_input", crash_before_begin)
+                    with pytest.raises(RuntimeError, match="Synthetic ingress crash"):
+                        await client.post(url + f"/runs/{run_id}/cancel")
+                assert signals == []
+                for expected, result in [("denied", set()), ("unavailable", None)]:
+                    async def unavailable_members(*_args, **_kwargs):
+                        if result is None:
+                            raise RuntimeError("Synthetic membership unavailable")
+                        return result
+                    with monkeypatch.context() as patch:
+                        patch.setattr(FeishuService, "get_chat_member_open_ids", unavailable_members)
+                        async with sessionmaker() as db:
+                            await pin_rls_tenant_context(db, seed["tenant_id"])
+                            recovered = await recover_stale_cancel_control_inputs_once(db, worker_id="group-cancel-recovery",
+                                stale_after=timedelta(0), tenant_id=seed["tenant_id"])
+                            assert recovered["unavailable"] == 1 and recovered["signalled"] == 0, recovered
+                            task = await db.get(RuntimeTask, run_id)
+                            assert task.status == "running" and task.metadata_json["cancel_signal_delivery"]["delivery_state"] == expected
+                            assert task.metadata_json["cancel_signal_delivery"]["recovery_action"] == "restore_group_access"
+                    assert signals == [] and not worker.done()
+                async with sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    recovered = await recover_stale_cancel_control_inputs_once(db, worker_id="group-cancel-recovery",
+                        stale_after=timedelta(0), tenant_id=seed["tenant_id"])
+                    assert recovered["signalled"] == 0 and recovered["local_delivered"] == 1 and recovered["unavailable"] == 1, recovered
+            else:
+                if browser_cancel:
+                    import socket as sockets
+                    from pathlib import Path
+                    import uvicorn
+                    from fastapi.responses import FileResponse, JSONResponse
+                    from fastapi.staticfiles import StaticFiles
+                    from app.api import agents, auth
+                    from app.core.security import create_access_token
+
+                    frontend = Path(__file__).resolve().parents[3] / "frontend"
+                    assert (frontend / "dist/index.html").is_file()
+                    web.include_router(chat_sessions.router, prefix="/api")
+                    web.include_router(agents.router, prefix="/api")
+                    web.include_router(auth.router, prefix="/api")
+                    web.include_router(socket_api.router)
+                    web.mount("/assets", StaticFiles(directory=frontend / "dist/assets"), name="assets")
+                    @web.get("/api/{path:path}")
+                    async def unavailable_fixture_api(path: str):
+                        return JSONResponse(status_code=404, content={"detail": "Unsupported fixture endpoint"})
+                    @web.get("/{path:path}")
+                    async def built_frontend(path: str):
+                        return FileResponse(frontend / "dist/index.html")
+                    listener = sockets.socket()
+                    listener.bind(("127.0.0.1", 0))
+                    port = listener.getsockname()[1]
+                    server = uvicorn.Server(uvicorn.Config(web, host="127.0.0.1", port=port, lifespan="off", access_log=False, log_level="warning"))
+                    server_task = asyncio.create_task(server.serve(sockets=[listener]))
+                    for _ in range(500):
+                        if server.started:
+                            break
+                        assert not server_task.done()
+                        await asyncio.sleep(0.01)
+                    assert server.started
+                    fixture_path = tmp_path / "cancel-browser-fixture.json"
+                    fixture_path.write_text(json.dumps({"origin": f"http://127.0.0.1:{port}", "tenantId": str(seed["tenant_id"]),
+                        "agentId": str(seed["agent_id"]), "sessionId": str(session_id), "runId": run_id.hex,
+                        "readerToken": create_access_token(str(seed["user_id"]), "user", str(seed["tenant_id"])),
+                        "requesterToken": create_access_token(str(requester_id), "user", str(seed["tenant_id"])),
+                        **{key: str(tmp_path / name) for key, name in {"readonlyScreenshot": "cancel-readonly.png",
+                            "unconfirmedScreenshot": "cancel-unconfirmed.png", "completedScreenshot": "cancel-completed.png",
+                            "receiptPath": "cancel-browser-receipt.json", "errorPath": "cancel-browser-error.json",
+                            "errorScreenshot": "cancel-browser-error.png"}.items()}}))
+                    reader_id = seed["user_id"]
+                    process = await asyncio.create_subprocess_exec("node", str(frontend / "e2e/group-cancel-native.mjs"), str(fixture_path),
+                        cwd=frontend, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                    line = await asyncio.wait_for(process.stdout.readline(), 60)
+                    assert line and json.loads(line)["event"] == "readonly_checked", line
+                    reader_id = requester_id
+                    process.stdin.write(json.dumps({"event": "requester_ready"}).encode() + bytes([10]))
+                    await process.stdin.drain()
+                    line = await asyncio.wait_for(process.stdout.readline(), 60)
+                    assert line and json.loads(line)["event"] == "cancel_recorded", line
+                    receipt = json.loads((tmp_path / "cancel-browser-receipt.json").read_text())
+                else:
+                    response = await client.post(url + f"/runs/{run_id}/cancel")
+                    receipt = response.json()
+                    assert response.status_code == 200, response.text
+                (tmp_path / "group-cancel-response.json").write_text(json.dumps(receipt))
+                assert receipt["status"] == "applying" and receipt["accepted"] is True, receipt
+            if unknown_cancel:
+                await asyncio.wait_for(asyncio.shield(worker), 30)
+            replay = await client.post(url + f"/runs/{run_id}/cancel", headers={"Idempotency-Key": "fresh-click-same-run"})
+            assert replay.status_code == 200 and replay.json()["replayed"], replay.text
+            assert replay.json()["status"] == ("rejected" if unknown_cancel else "applying"), replay.text
+            if unknown_cancel:
+                assert replay.json()["reason_code"] == "run_terminal_before_cancel_effect", replay.text
+            assert len(signals) == 1 and signals[0]["user_id"] == requester_id
+            async with sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                assert (await db.get(RuntimeTask, run_id)).status == ("needs_reconciliation" if unknown_cancel else "running")
+                rows = list(await db.scalars(select(SessionControlInput).where(SessionControlInput.session_id == session_id)))
+                assert len(rows) == 1 and rows[0].status == ("rejected" if unknown_cancel else "applying")
+                command = await db.get(SessionCommand, rows[0].command_id)
+                assert command.principal_id == requester_id and command.target_json["expected_run_id"] == str(run_id)
+            release.set()
+            await asyncio.wait_for(asyncio.shield(worker), 30)
+            async with sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                task = await db.get(RuntimeTask, run_id)
+                control = await db.get(SessionControlInput, rows[0].id)
+                assert task.status == ("needs_reconciliation" if unknown_cancel else "killed")
+                assert task.metadata_json["terminal_execution_fence_ref"]
+                assert control.status == ("rejected" if unknown_cancel else "applied")
+                if unknown_cancel:
+                    assert task.metadata_json["session_v2_reconciliation"]["delivery_state"] == "unknown"
+                events = list(await db.scalars(select(ChatTranscriptEvent).where(ChatTranscriptEvent.command_id == command.id)))
+                kinds = [event.event_type for event in events]
+                assert kinds.count("control_input.accepted") == kinds.count("control_input.started") == 1
+                assert kinds.count("control_input.applied") == kinds.count("run.cancelled") == (0 if unknown_cancel else 1)
+                assert kinds.count("control_input.rejected") == (1 if unknown_cancel else 0)
+                (tmp_path / "group-cancel-terminal.json").write_text(json.dumps({"run_status": task.status,
+                    "control_status": control.status, "event_kinds": kinds, "metadata": task.metadata_json}, default=str, indent=2))
+            assert not (seed["agent_root"] / "workspace/after-stop.md").exists()
+            if browser_cancel:
+                line = await asyncio.wait_for(process.stdout.readline(), 60)
+                assert line and json.loads(line)["event"] == "work_stopped", line
+                assert await asyncio.wait_for(process.wait(), 10) == 0
+    finally:
+        release.set()
+        try:
+            if worker is not None and not worker.done():
+                await asyncio.wait_for(asyncio.shield(worker), 30)
+        finally:
+            if process is not None:
+                if process.returncode is None:
+                    process.terminate()
+                    await asyncio.wait_for(process.wait(), 10)
+                (tmp_path / "cancel-browser-stderr.log").write_bytes(await process.stderr.read())
+            if server is not None:
+                server.should_exit = True
+            try:
+                if server_task is not None:
+                    await asyncio.wait_for(server_task, 10)
+            finally:
+                if listener is not None:
+                    listener.close()

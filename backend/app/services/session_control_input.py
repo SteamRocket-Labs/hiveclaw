@@ -647,6 +647,19 @@ async def apply_permission_response_control_input(
     )
 
 
+async def _authorize_cancel_requester(db, *, authority, run_id):
+    from fastapi import HTTPException
+    from app.models.chat_session import ChatSession
+    from app.services.shared_group_authority import shared_group_input_matches_run
+
+    session = await db.get(ChatSession, authority.session_id)
+    if session is not None and session.audience_kind == "group":
+        if authority.principal_type != "user" or authority.action != "cancel_session_run":
+            raise HTTPException(403, detail={"code": "shared_group_cancel_action_required"})
+        if not await shared_group_input_matches_run(db, session=session, authority=authority, run_id=run_id):
+            raise HTTPException(409, detail={"code": "shared_group_requester_conflict"})
+
+
 async def accept_cancel_control_input(
     db: AsyncSession,
     *,
@@ -661,6 +674,7 @@ async def accept_cancel_control_input(
 
     control_uuid = control_id if isinstance(control_id, uuid.UUID) else uuid.UUID(str(control_id))
     run_uuid = expected_run_id if isinstance(expected_run_id, uuid.UUID) else uuid.UUID(str(expected_run_id))
+    await _authorize_cancel_requester(db, authority=authority, run_id=run_uuid)
     authority_hash = _sha256(
         {
             "tenant_id": authority.tenant_id,
@@ -841,6 +855,7 @@ async def begin_cancel_control_input(
 
     control_uuid = control_id if isinstance(control_id, uuid.UUID) else uuid.UUID(str(control_id))
     control, command = await _locked_control(db, authority=authority, control_id=control_uuid)
+    await _authorize_cancel_requester(db, authority=authority, run_id=control.expected_run_id)
     if control.status != "accepted":
         return ControlInputReceipt(
             command.id,
@@ -1204,6 +1219,33 @@ async def recover_stale_cancel_control_inputs_once(
             continue
         if task.status not in _ACTIVE_RUN_STATUSES:
             continue
+        from app.models.chat_session import ChatSession
+
+        session = await db.get(ChatSession, control.session_id)
+        if session is not None and session.audience_kind == "group":
+            from fastapi import HTTPException
+            from app.services.session_v2_persistence import resolve_session_command_authority
+
+            try:
+                if (command.namespace != "control_input" or command.command_kind != "cancel_run"
+                    or command.request_hash != _sha256({"command_kind": command.command_kind, "request": command.request_json})
+                    or command.target_hash != _sha256(command.target_json)
+                    or (command.target_json or {}).get("expected_run_id") != str(task.id)
+                    or (command.request_json or {}).get("control_id") != str(control.id)):
+                    raise ValueError("shared_group_cancel_origin_mismatch")
+                origin = await resolve_session_command_authority(db, command=command, session=session, action="cancel_session_run")
+                await _authorize_cancel_requester(db, authority=origin.authority, run_id=task.id)
+            except (HTTPException, PermissionError, ValueError, RuntimeError, LookupError) as exc:
+                control.version = int(control.version) + 1
+                detail = exc.detail if isinstance(exc, HTTPException) and isinstance(exc.detail, dict) else {}
+                await _record_cancel_signal_delivery_attempt(db, control_id=control.id, command_id=command.id,
+                    attempt_version=control.version, worker_id=worker_id,
+                    delivery_state="unavailable" if isinstance(exc, HTTPException) and exc.status_code >= 500 else "denied",
+                    local_delivered=False, cross_process_delivered=False,
+                    retryable=isinstance(exc, HTTPException) and exc.status_code >= 500,
+                    error_class=detail.get("code") or str(exc), recovery_action="restore_group_access")
+                counts["unavailable"] += 1
+                continue
         if control.status == "accepted":
             metadata = dict(task.metadata_json or {})
             metadata.update(
@@ -1357,6 +1399,7 @@ async def _record_cancel_signal_delivery_attempt(
     cross_process_delivered: bool,
     retryable: bool,
     error_class: str | None,
+    recovery_action: str | None = None,
 ) -> None:
     """Persist transport facts without manufacturing Run terminality."""
 
@@ -1385,6 +1428,7 @@ async def _record_cancel_signal_delivery_attempt(
         "cross_process_delivered": bool(cross_process_delivered),
         "retryable": bool(retryable),
         "error_class": error_class,
+        **({"recovery_action": recovery_action} if recovery_action else {}),
     }
     metadata["cancel_signal_delivery"] = delivery_payload
     task.metadata_json = metadata
@@ -1409,7 +1453,7 @@ async def _record_cancel_signal_delivery_attempt(
                     "expected_run_id": str(task.id),
                     "worker_id": str(worker_id),
                     **delivery_payload,
-                    **({"recovery_action": "retry_after_cancel_signal_lease"} if retryable else {}),
+                    **({"recovery_action": recovery_action or "retry_after_cancel_signal_lease"} if retryable or recovery_action else {}),
                 },
                 command_id=command.id,
             )

@@ -163,6 +163,7 @@ class _WebChatRunState:
     actor_authority_bound: bool = False
     phase_emitter: RunPhaseEmitter | None = None
     terminal_phase_hint: RuntimePhase | None = None
+    provider_reconciliation: ProviderRequestNeedsReconciliation | None = None
     summary_turn_mode: bool = False
     internal_runtime_context_turn: bool = False
     channel_delivery_suffix: str = ""
@@ -210,6 +211,10 @@ async def _run_web_chat_stages(state: _WebChatRunState) -> None:
     callbacks = _WebChatCallbacks(state)
     pending_suffix = await _prepare_pending_suffix(state)
     result = await _invoke_model(state, callbacks, pending_suffix)
+    if state.provider_reconciliation is not None:
+        state.terminal_phase_hint = RuntimePhase.FAILED
+        await _handle_provider_reconciliation_required(state, state.provider_reconciliation)
+        return
     if state.terminal_tool_card_finalized:
         return
     await callbacks.flush()
@@ -1188,6 +1193,10 @@ async def _fail_session_model_request(state: _WebChatRunState, **payload: Any) -
             continuation_index=int(payload.get("continuation_index") or 0),
         )
         await db.commit()
+    if not bool(payload.get("retry_safe")):
+        state.provider_reconciliation = ProviderRequestNeedsReconciliation(
+            provider_request_id=str(payload["provider_request_id"]),
+            error_class=str(payload.get("error_class") or "provider_error"))
 
 
 def _execution_identity_type(state: _WebChatRunState) -> str:
@@ -1649,6 +1658,11 @@ async def _handle_tool_lifecycle_persistence_failure(
 
 async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> None:
     state.ports.runtime.logger.exception("[WebChatRun] Run {} failed", state.run_uuid.hex)
+    provider_reconciliation = getattr(state, "provider_reconciliation", None)
+    if provider_reconciliation is not None or isinstance(exc, ProviderRequestNeedsReconciliation):
+        state.terminal_phase_hint = RuntimePhase.FAILED
+        await _handle_provider_reconciliation_required(state, provider_reconciliation or exc)
+        return
     cancelled = state.cancel_event.is_set()
     state.terminal_phase_hint = RuntimePhase.CANCELLED if cancelled else RuntimePhase.FAILED
     if cancelled:
@@ -1656,9 +1670,6 @@ async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> N
         return
     if isinstance(exc, ToolLifecyclePersistenceError):
         await _handle_tool_lifecycle_persistence_failure(state, exc)
-        return
-    if isinstance(exc, ProviderRequestNeedsReconciliation):
-        await _handle_provider_reconciliation_required(state, exc)
         return
     if isinstance(exc, SessionRestartRecoveryRequired):
         await _handle_restart_recovery_required(state, exc)

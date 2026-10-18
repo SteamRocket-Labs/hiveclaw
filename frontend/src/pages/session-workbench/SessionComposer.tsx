@@ -51,6 +51,7 @@ export interface SessionComposerProps {
   onChange: (value: string) => void;
   onPaste: React.ClipboardEventHandler<HTMLTextAreaElement>;
   onSubmit: () => void;
+  canStop?: boolean;
   onStop: () => void;
   onAction: (action: ComposerActionKey) => void;
   onPermissionModeChange: (mode: SessionPermissionMode) => void;
@@ -82,6 +83,7 @@ export function SessionComposer({
   onChange,
   onPaste,
   onSubmit,
+  canStop = true,
   onStop,
   onAction,
   onPermissionModeChange,
@@ -238,6 +240,7 @@ export function SessionComposer({
             setPermissionMenuOpen(false);
           }}
           onCancelUpload={onCancelUpload}
+          canStop={canStop}
           onStop={onStop}
           onSubmit={onSubmit}
         />

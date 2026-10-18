@@ -1024,11 +1024,11 @@ async def _get_run_session_and_agent(
 
         authority_source = await authorize_group_history_reader(db, session=session, user=current_user)
         return session, agent, authority_source
-    if getattr(session, "audience_kind", None) == "group" and action in {"start_session_run", "answer_session_question"}:
+    if getattr(session, "audience_kind", None) == "group" and action in {"start_session_run", "answer_session_question", "cancel_session_run"}:
         from app.services.shared_group_authority import resolve_shared_group_web_authority
 
         authority = await resolve_shared_group_web_authority(db, session=session, user=current_user,
-            action="answer_session_question" if action == "answer_session_question" else "mutate_session_input", audit=False)
+            action=action if action in {"answer_session_question", "cancel_session_run"} else "mutate_session_input", audit=False)
         return session, agent, authority.authority_source
     authority_source = await _authorize_loaded_session(
         db=db,
@@ -2059,6 +2059,16 @@ async def get_active_session_run(
     if run is not None and getattr(session, "audience_kind", None) == "group":
         run = {key: run[key] for key in ("run_id", "turn_id", "status", "created_at", "started_at", "completed_at", "runtime_budget")
             if key in run}
+        from app.services.shared_group_authority import resolve_shared_group_web_authority, shared_group_input_matches_run
+
+        try:
+            authority = await resolve_shared_group_web_authority(db, session=session, user=current_user,
+                action="cancel_session_run", audit=False)
+            run["can_cancel"] = await shared_group_input_matches_run(db, session=session, authority=authority, run_id=run["run_id"])
+        except HTTPException as exc:
+            if exc.status_code >= 500:
+                raise
+            run["can_cancel"] = False
     if getattr(session, "audience_kind", None) == "group":
         await db.commit()
     return run

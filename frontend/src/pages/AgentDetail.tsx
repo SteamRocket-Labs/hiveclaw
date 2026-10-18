@@ -2444,24 +2444,32 @@ function AgentDetailInner() {
     const handleRemoveAttachedFile = React.useCallback((index: number) => {
         setAttachedFiles((prev) => prev.filter((_, i) => i !== index));
     }, []);
-    const handleAbortGeneration = React.useCallback(() => {
+    const handleAbortGeneration = React.useCallback(async () => {
         if (!id || !activeSession?.id) return;
-        const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
+        const sessionId = String(activeSession.id);
+        const activeRuntimeKey = buildSessionRuntimeKey(id, sessionId);
         const activeRun = activeRunStateRef.current[activeRuntimeKey];
         if (activeRun?.runId) {
-            chatApi.cancelSessionRun(id, String(activeSession.id), activeRun.runId).catch((err) => {
-                console.warn('Failed to cancel chat run:', err);
-            });
-            markActiveRunTerminal(activeRuntimeKey);
-            syncActivePhase('cancelled');
-            setSessionPhase(activeRuntimeKey, 'cancelled');
+            const stillCurrent = () => currentAgentIdRef.current === id && activeSessionIdRef.current === sessionId
+                && normalizeSessionRunId(activeRunStateRef.current[activeRuntimeKey]?.runId) === normalizeSessionRunId(activeRun.runId);
+            try {
+                const receipt = await chatApi.cancelSessionRun(id, sessionId, activeRun.runId);
+                if (stillCurrent()) setTransportNotice(receipt.accepted
+                    ? t('agent.chat.stopRecorded', 'Stop request recorded. Waiting for the run to settle.')
+                    : t('agent.chat.stopRejected', 'The stop request was rejected. The run may still be active.'));
+            } catch (error) {
+                if (stillCurrent()) setTransportNotice(error instanceof ApiError && [403, 404, 409].includes(error.status)
+                    ? t('agent.chat.stopRejected', 'The stop request was rejected. The run may still be active.')
+                    : t('agent.chat.stopUnconfirmed', 'The stop request could not be confirmed. Check this work or try Stop again.'));
+            }
+            invalidateSessionRuntimeQueries(id, sessionId);
             return;
         }
-        const activeSocket = getSessionSocket(id, String(activeSession.id));
+        const activeSocket = getSessionSocket(id, sessionId);
         if (activeSocket?.readyState === WebSocket.OPEN) {
             activeSocket.send(JSON.stringify({ type: 'abort' }));
         }
-    }, [activeSession?.id, id]);
+    }, [activeSession?.id, id, t]);
 
     const [deleteSessionConfirm, setDeleteSessionConfirm] = useState<{ sessionId: string; title: string } | null>(null);
     const [uploadToast, setUploadToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -2761,6 +2769,8 @@ function AgentDetailInner() {
                             onEnterPlanMode={(reason: string) => sendChatMessageText(reason, { planMode: true })}
                             isStreaming={isStreaming}
                             sessionOnly={sessionWorkbenchMode}
+                            canAbortGeneration={activeSession?.audience_kind !== 'group' || Boolean(activeSessionRun?.can_cancel
+                                && normalizeSessionRunId(activeSessionRun.run_id) === normalizeSessionRunId(currentActiveRunState?.runId))}
                             onAbortGeneration={handleAbortGeneration}
                         />
                         )

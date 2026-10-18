@@ -50,7 +50,7 @@ export type ThreadTimelineCell =
       index: number;
     };
 
-export type SessionWorkbenchStatus = 'idle' | 'running' | 'waiting' | 'streaming' | 'complete' | 'failed';
+export type SessionWorkbenchStatus = 'idle' | 'running' | 'waiting' | 'streaming' | 'complete' | 'failed' | 'cancelled';
 
 export interface SessionWorkbenchHeaderModel {
   sessionId: string | null;
@@ -1670,6 +1670,7 @@ function getHeaderStatus(
   isWaiting: boolean,
   isStreaming: boolean,
   activeRunStatus?: string | null,
+  runtimePhase?: string,
 ): SessionWorkbenchStatus {
   if (isWaiting) return 'waiting';
   if (isStreaming) return 'streaming';
@@ -1691,6 +1692,7 @@ function getHeaderStatus(
   // An interrupted trailing run is not fabricated into complete: the header
   // shows the idle session state and the run block carries the typed detail.
   if (lastRun?.timeline.status === 'interrupted') return 'idle';
+  if (runtimePhase === 'cancelled') return 'cancelled';
   if (cells.length > 0) return 'complete';
   return 'idle';
 }
@@ -2346,7 +2348,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
       ? 'running'
       : unresolvedUserTurn
         ? 'running'
-        : getHeaderStatus(cells, input.isWaiting, input.isStreaming, activeRunStatus);
+        : getHeaderStatus(cells, input.isWaiting, input.isStreaming, activeRunStatus, input.runtimePhase);
 
   return {
     cells,

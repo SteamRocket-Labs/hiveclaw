@@ -369,6 +369,7 @@
       "rejectGate": "拒绝"
     },
     "status": {
+      "cancelled": "已停止",
       "idle": "空闲",
       "running": "运行中",
       "waiting": "等待输入",
@@ -1870,6 +1871,11 @@
       "singleUse": "单次使用"
     },
     "clarification": {
+      "answeredBadge": "已回答",
+      "sentBadge": "回答已发送",
+      "waitingBadge": "等待原请求人回答",
+      "answeredNotice": "此问题已得到回答。",
+      "readonlyNotice": "只有原请求人可以回答此问题。",
       "badge": "需要你补充信息",
       "multiSelect": "可多选",
       "progress": "问题 {{current}} / {{total}}",
@@ -2558,6 +2564,9 @@
       "groupDiscoveryUnavailable": "群会话暂不可用，请稍后刷新重试。",
       "sourceAccess": "来源访问",
       "sourceUnavailable": "暂不可见",
+      "stopRecorded": "停止请求已入账，正在等待本次运行结束。",
+      "stopRejected": "停止请求被拒绝，本次运行可能仍在继续。",
+      "stopUnconfirmed": "暂时无法确认停止请求，请核对当前工作，或再次点击停止。",
       "groupSourcesUnavailable": "部分来源内容暂不可见。可申请来源权限，或刷新当前会话。",
       "inputRecorded": "补充已入账，请在原工作查看应用状态。",
       "sessionBackfillIncomplete": "最新活动已可见，较早的会话证据仍在恢复。",

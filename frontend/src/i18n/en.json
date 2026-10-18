@@ -369,6 +369,7 @@
       "rejectGate": "Reject"
     },
     "status": {
+      "cancelled": "cancelled",
       "idle": "idle",
       "running": "running",
       "waiting": "waiting",
@@ -1870,6 +1871,11 @@
       "singleUse": "single use"
     },
     "clarification": {
+      "answeredBadge": "Answered",
+      "sentBadge": "Answer sent",
+      "waitingBadge": "Waiting for requester",
+      "answeredNotice": "This question has been answered.",
+      "readonlyNotice": "Only the original requester can answer this question.",
       "badge": "Needs your input",
       "multiSelect": "Select all that apply",
       "progress": "Question {{current}} of {{total}}",
@@ -2558,6 +2564,9 @@
       "groupDiscoveryUnavailable": "Shared group conversations are unavailable. Try refreshing.",
       "sourceAccess": "Source access",
       "sourceUnavailable": "Unavailable",
+      "stopRecorded": "Stop request recorded. Waiting for the run to settle.",
+      "stopRejected": "The stop request was rejected. The run may still be active.",
+      "stopUnconfirmed": "The stop request could not be confirmed. Check this work or try Stop again.",
       "groupSourcesUnavailable": "Some source content is unavailable to you. Request access or refresh this conversation.",
       "inputRecorded": "Your input is recorded. Follow its application status in this work.",
       "sessionBackfillIncomplete": "Latest activity is visible, but older session evidence is still recovering.",

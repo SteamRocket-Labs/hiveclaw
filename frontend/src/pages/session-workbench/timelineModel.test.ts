@@ -3255,3 +3255,17 @@ describe('DAY1-A2A-LIVE-STATE-001: live A2A runtime state converges without relo
     });
   });
 });
+
+
+describe('canonical cancelled work header', () => {
+  it('retains cancellation after replay without fabricating completion', () => {
+    const timeline = buildThreadTimeline({ messages: [], isWaiting: false, isStreaming: false, runtimePhase: 'cancelled' });
+    expect(timeline.header.status).toBe('cancelled');
+  });
+
+  it('keeps a new active run ahead of an older cancelled phase', () => {
+    const timeline = buildThreadTimeline({ messages: [], isWaiting: true, isStreaming: false,
+      activeRunId: 'new-run', activeRunStatus: 'running', runtimePhase: 'cancelled' });
+    expect(timeline.header.status).not.toBe('cancelled');
+  });
+});

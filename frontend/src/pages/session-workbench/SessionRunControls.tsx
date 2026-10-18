@@ -36,6 +36,7 @@ export interface SessionRunControlsProps {
   onTogglePermissionMenu: () => void;
   onPermissionModeChange: (mode: SessionPermissionMode) => void;
   onCancelUpload: () => void;
+  canStop?: boolean;
   onStop: () => void;
   onSubmit: () => void;
 }
@@ -59,6 +60,7 @@ export function SessionRunControls({
   onTogglePermissionMenu,
   onPermissionModeChange,
   onCancelUpload,
+  canStop = true,
   onStop,
   onSubmit,
 }: SessionRunControlsProps) {
@@ -147,6 +149,7 @@ export function SessionRunControls({
           data-testid="session-composer-stop"
           className="btn btn-stop-generation session-composer-stop"
           onClick={onStop}
+          disabled={!canStop}
           aria-label={t('chat.stop', 'Stop')}
           title={t('chat.stop', 'Stop')}
         >

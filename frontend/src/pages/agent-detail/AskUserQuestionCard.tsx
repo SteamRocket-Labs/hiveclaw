@@ -224,7 +224,10 @@ export default function AskUserQuestionCard({
     >
       <div className="ask-question-topbar">
         <span className="ask-question-badge">
-          {t('agent.clarification.badge', 'Needs your input')}
+          {submitted ? t('agent.clarification.answeredBadge', 'Answered')
+            : done ? t('agent.clarification.sentBadge', 'Answer sent')
+            : readOnly ? t('agent.clarification.waitingBadge', 'Waiting for requester')
+            : t('agent.clarification.badge', 'Needs your input')}
         </span>
         <span className="ask-question-progress">{progressText}</span>
       </div>
@@ -310,9 +313,14 @@ export default function AskUserQuestionCard({
       {error && <p role="alert">{error}</p>}
       {done ? (
         <div role="status" className="ask-question-sent">
-          {t('agent.clarification.sent', 'Your answer was sent.')}
+          {submitted ? t('agent.clarification.answeredNotice', 'This question has been answered.')
+            : t('agent.clarification.sent', 'Your answer was sent.')}
         </div>
-      ) : readOnly ? null : (
+      ) : readOnly ? (
+        <div role="status" className="ask-question-sent">
+          {t('agent.clarification.readonlyNotice', 'Only the original requester can answer this question.')}
+        </div>
+      ) : (
         <div className="ask-question-footer">
           <div className="ask-question-nav">
             <button

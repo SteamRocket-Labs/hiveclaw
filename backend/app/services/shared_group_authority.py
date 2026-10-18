@@ -55,7 +55,7 @@ async def resolve_shared_group_web_authority(db, *, session, user, action, audit
     )
     from app.services.session_v2_persistence import AuthenticatedSessionAuthority, _AUTHORITY_SEAL
 
-    if action not in {"mutate_session_input", "answer_session_question"}:
+    if action not in {"mutate_session_input", "answer_session_question", "cancel_session_run"}:
         raise HTTPException(403, detail={"code": "shared_group_input_action_required"})
     await require_current_group_member(db, session=session, user=user)
     agent, access = await check_agent_access(db, user, session.agent_id)
@@ -200,7 +200,11 @@ async def shared_group_input_matches_run(db, *, session, authority, run_id):
         if original.id is not None:
             return original.id == incoming.id
         return incoming.id is None and original.external_principal_id == incoming.external_principal_id
-    except (HTTPException, PermissionError, ValueError, RuntimeError, LookupError):
+    except HTTPException as exc:
+        if exc.status_code >= 500:
+            raise
+        return False
+    except (PermissionError, ValueError, RuntimeError, LookupError):
         return False
 
 

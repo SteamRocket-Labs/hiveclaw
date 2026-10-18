@@ -189,7 +189,19 @@ describe('AskUserQuestionCard rendering', () => {
     const markup = renderToStaticMarkup(
       <AskUserQuestionCard questions={TWO_QUESTIONS} blocking submitted onSubmit={() => undefined} />,
     );
-    expect(markup).toContain('Your answer was sent.');
+    expect(markup).toContain('Answered');
+    expect(markup).toContain('This question has been answered.');
+    expect(markup).not.toContain('Needs your input');
+    expect(markup).not.toContain('Submit answer');
+  });
+
+  it('explains why a source-authorized reader cannot answer for the requester', () => {
+    const markup = renderToStaticMarkup(
+      <AskUserQuestionCard questions={TWO_QUESTIONS} blocking readOnly onSubmit={() => undefined} />,
+    );
+    expect(markup).toContain('Waiting for requester');
+    expect(markup).toContain('Only the original requester can answer this question.');
+    expect(markup).not.toContain('Needs your input');
     expect(markup).not.toContain('Submit answer');
   });
 

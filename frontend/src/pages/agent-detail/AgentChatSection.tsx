@@ -404,6 +404,7 @@ interface AgentChatSectionProps {
     action: 'allow_once' | 'allow_session' | 'deny',
   ) => void | Promise<unknown>;
   isStreaming: boolean;
+  canAbortGeneration?: boolean;
   onAbortGeneration: () => void;
   sessionOnly?: boolean;
 }
@@ -1158,6 +1159,7 @@ function AgentChatSection({
   onRunSessionCommand,
   onResolveSessionPermission,
   isStreaming: selectedIsStreaming,
+  canAbortGeneration = true,
   onAbortGeneration,
   sessionOnly = false,
 }: AgentChatSectionProps) {
@@ -2362,6 +2364,7 @@ function AgentChatSection({
                 onChange={onSetChatInput}
                 onPaste={onHandlePaste}
                 onSubmit={sendFromComposer}
+                canStop={canAbortGeneration}
                 onStop={onAbortGeneration}
                 onAction={setComposerAction}
                 onPermissionModeChange={(mode) => onSetSessionPermissionMode?.(mode)}

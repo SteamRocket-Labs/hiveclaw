@@ -4,9 +4,11 @@ Used by feishu.py, slack.py, discord_bot.py — eliminates in-process caches.
 """
 
 import uuid as _uuid
+import hashlib
 from datetime import datetime, timezone
 
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit import ChatMessage
@@ -24,6 +26,30 @@ def _apply_channel_session_contract(session: ChatSession) -> None:
     session.runtime_source = "channel_chat"
     session.visibility_scope = "direct_user"
     session.listed_surface = "chat"
+
+
+async def find_or_create_shared_group_session(
+    db: AsyncSession, *, agent_id: _uuid.UUID, tenant_id: _uuid.UUID,
+    installation_ref: str, chat_id: str, first_message_title: str,
+) -> ChatSession:
+    """Keep shared group identity independent of its current sender and installation peers."""
+    if not installation_ref or not chat_id or any("\n" in value or len(value) > 200 for value in (installation_ref, chat_id)):
+        raise ValueError("shared_group_identity_invalid")
+    key = "feishu_group_shared_" + hashlib.sha256(f"{installation_ref}\n{chat_id}".encode()).hexdigest()
+    await db.execute(insert(ChatSession).values(
+        id=_uuid.uuid4(), tenant_id=tenant_id, agent_id=agent_id, user_id=None, external_principal_id=None,
+        external_conv_id=key, title=first_message_title[:40], source_channel="feishu", session_kind="human_chat",
+        actor_type="group", runtime_source="channel_chat", visibility_scope="group", listed_surface="chat",
+        audience_kind="group", group_installation_ref=installation_ref, group_subject_id=chat_id,
+        delivery_target_json={"channel": "feishu", "receive_id": chat_id, "receive_id_type": "chat_id",
+            "chat_type": "group", "chat_id": chat_id},
+    ).on_conflict_do_nothing(constraint="uq_chat_sessions_agent_ext_conv"))
+    session = await db.scalar(select(ChatSession).where(ChatSession.agent_id == agent_id, ChatSession.external_conv_id == key))
+    if (session is None or session.tenant_id != tenant_id or session.audience_kind != "group"
+        or session.group_installation_ref != installation_ref or session.group_subject_id != chat_id
+        or session.visibility_scope != "group" or session.user_id is not None or session.external_principal_id is not None):
+        raise ValueError("shared_group_identity_mismatch")
+    return session
 
 
 async def find_or_create_channel_session(

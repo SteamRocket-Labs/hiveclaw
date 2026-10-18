@@ -79,6 +79,7 @@ SESSION_COMMAND_AUTHORITY_STAMP_KEY = "session_command_authority"
 RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE = "runtime_result_integration"
 RUNTIME_RESULT_INTEGRATION_STAMP_SCHEMA = "hive.session_command_authority.runtime_result_integration.v1"
 _A2A_OUTBOX_SOURCE_KINDS = frozenset({"delegation", "a2a_delegation", "a2a_continuation"})
+SHARED_GROUP_INGRESS_STAMP_SCHEMA = "hive.session_command_authority.shared_group_ingress.v1"
 
 
 class IdempotencyConflict(RuntimeError):
@@ -166,6 +167,14 @@ async def _resolve_external_session_mutation_authority(
     agent = await db.get(Agent, agent_id)
     if session is None or principal is None or agent is None:
         raise PermissionError("external_principal_authority_not_found")
+    if getattr(session, "audience_kind", None) == "group":
+        from app.services.channel_ingress_context import current_channel_ingress_context
+        from app.services.shared_group_authority import resolve_shared_group_input_authority
+
+        ingress = current_channel_ingress_context()
+        if ingress is None or ingress.external_principal_id != principal.id:
+            raise PermissionError("shared_group_ingress_required")
+        return await resolve_shared_group_input_authority(db, actor=actor, session=session, ingress_event_id=ingress.event_id)
     if principal.status != "active" or not bool(getattr(actor, "is_active", False)):
         raise PermissionError("external_principal_inactive")
     if (
@@ -686,6 +695,26 @@ async def resolve_session_command_authority(
         raise RuntimeError("session_command_agent_authority_mismatch")
 
     stamp = (command.target_json or {}).get(SESSION_COMMAND_AUTHORITY_STAMP_KEY)
+    if isinstance(stamp, dict) and stamp.get("schema") == SHARED_GROUP_INGRESS_STAMP_SCHEMA:
+        if action != "mutate_session_input" or command.namespace != "human_input":
+            raise PermissionError("shared_group_input_action_required")
+        from app.models.audit import ChatMessage
+        from app.services.external_principal_service import load_external_runtime_actor
+        from app.services.shared_group_authority import resolve_shared_group_input_authority
+
+        row = await db.scalar(select(SessionTurnInput).where(SessionTurnInput.command_id == command.id,
+            SessionTurnInput.tenant_id == command.tenant_id, SessionTurnInput.session_id == session.id))
+        message = await db.scalar(select(ChatMessage).where(ChatMessage.source_ingress_event_id == row.id,
+            ChatMessage.tenant_id == command.tenant_id, ChatMessage.agent_id == agent.id,
+            ChatMessage.conversation_id == str(session.id), ChatMessage.role == "user",
+            ChatMessage.external_principal_id == command.principal_id)) if row is not None else None
+        if (command.principal_type != "external_principal" or message is None
+            or stamp != {"schema": SHARED_GROUP_INGRESS_STAMP_SCHEMA, "ingress_event_id": str(row.id)}):
+            raise RuntimeError("shared_group_command_origin_mismatch")
+        actor = await load_external_runtime_actor(db, tenant_id=command.tenant_id,
+            principal_id=command.principal_id, expected_user_id=message.user_id)
+        authority = await resolve_shared_group_input_authority(db, actor=actor, session=session, ingress_event_id=row.id)
+        return SessionCommandAuthorityContext(authority=authority, actor=actor, agent=agent, session=session)
     if stamp is not None:
         # A server-minted stamp selects the durable revalidation lane; the
         # stamp itself grants nothing.  Recovery revalidates only immutable
@@ -946,7 +975,20 @@ async def register_session_command(
         # the same root user the page binds.
         if locked_session.user_id != principal_uuid or not _is_a2a_delegation_child_session(locked_session):
             raise ValueError("session_principal_mismatch")
-    if authority.principal_type == "external_principal":
+    if authority.authority_source == "shared_group_ingress":
+        from app.services.channel_ingress_context import current_channel_ingress_context
+
+        ingress = current_channel_ingress_context()
+        if (authority.principal_type != "external_principal" or namespace != "human_input"
+            or ingress is None or ingress.external_principal_id != principal_uuid
+            or ingress.tenant_id != tenant_uuid or ingress.agent_id != authority.agent_id
+            or locked_session.audience_kind != "group" or locked_session.user_id is not None
+            or locked_session.external_principal_id is not None
+            or locked_session.group_installation_ref != ingress.installation_ref):
+            raise ValueError("shared_group_ingress_mismatch")
+        target_payload = {**target_payload, SESSION_COMMAND_AUTHORITY_STAMP_KEY: {
+            "schema": SHARED_GROUP_INGRESS_STAMP_SCHEMA, "ingress_event_id": str(ingress.event_id)}}
+    elif authority.principal_type == "external_principal":
         if locked_session.external_principal_id != principal_uuid:
             raise ValueError("session_external_principal_mismatch")
     result = await db.execute(
@@ -1235,6 +1277,12 @@ async def accept_human_input(
     if str(intent.get("session_id") or "") != str(session_uuid):
         raise ValueError("intent session does not match authority")
     input_id = _uuid(intent.get("input_id"), "input_id")
+    if authority.authority_source == "shared_group_ingress":
+        from app.services.channel_ingress_context import current_channel_ingress_context
+
+        ingress = current_channel_ingress_context()
+        if ingress is None or ingress.event_id != input_id:
+            raise ValueError("shared_group_input_origin_mismatch")
     content_parts = intent.get("content_parts")
     if not isinstance(content_parts, list):
         raise ValueError("content_parts must be an array")

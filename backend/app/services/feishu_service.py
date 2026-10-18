@@ -558,6 +558,33 @@ class FeishuService:
             self._lark_clients.move_to_end(cache_key)
         return client
 
+    async def get_chat_member_open_ids(self, app_id: str, app_secret: str, chat_id: str, *, extra_config=None) -> set[str]:
+        """Read complete current membership using the installed official SDK, without a cache."""
+        from lark_oapi.api.im.v1 import GetChatMembersRequest
+
+        client = self._get_lark_client(app_id, app_secret, extra_config=extra_config)
+        members, tokens, token = set(), set(), ""
+        while True:
+            request = GetChatMembersRequest.builder().chat_id(chat_id).member_id_type("open_id").page_size(100)
+            if token:
+                request.page_token(token)
+            response = await client.im.v1.chat_members.aget(request.build())
+            data = response.data
+            if not response.success() or data is None or data.trigger_security_conf_limit is True or not isinstance(data.items, list):
+                raise RuntimeError("group_membership_unavailable")
+            for member in data.items:
+                if member.member_id_type != "open_id" or not isinstance(member.member_id, str) or not member.member_id:
+                    raise RuntimeError("group_membership_unavailable")
+                members.add(member.member_id)
+            if data.has_more is False:
+                if not isinstance(data.member_total, int) or data.member_total != len(members):
+                    raise RuntimeError("group_membership_unavailable")
+                return members
+            token = data.page_token
+            if data.has_more is not True or not isinstance(token, str) or not token or token in tokens:
+                raise RuntimeError("group_membership_unavailable")
+            tokens.add(token)
+
     async def create_card_entity(
         self,
         app_id: str,

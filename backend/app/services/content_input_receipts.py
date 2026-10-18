@@ -372,6 +372,9 @@ async def _validate_session_dependency(db, tenant_id, dependency, *, user, runti
     if row is None:
         raise ContentInputReceiptError("content_source_changed", "The exact session source is unavailable.", 403)
     source, session = row
+    if session.audience_kind == "group" and (model is not SessionCommand or source.namespace != "human_input"):
+        raise ContentInputReceiptError("content_source_unavailable",
+            "Derived group output requires its live source-disclosure reader.", 503)
     if model is SessionCommand:
         version = source.request_hash
         valid = version == _hash({"command_kind": source.command_kind, "request": source.request_json}) and source.target_hash == _hash(source.target_json)
@@ -400,6 +403,26 @@ async def _authorize_session_input_source(db, tenant_id, session, *, user, runti
     from fastapi import HTTPException
     from app.core.permissions import authorize_session_action
 
+    if session.audience_kind == "group":
+        from app.core.permissions import check_agent_access, is_scoped_business_admin
+        from app.services.shared_group_authority import require_current_group_member
+
+        try:
+            requester = (await _runtime_input_actor(db, tenant_id, runtime_request))[1] if runtime_request is not None else user
+            if is_scoped_business_admin(requester, resource_tenant_id=session.tenant_id):
+                await authorize_session_action(db, requester, agent_id=session.agent_id, session_id=session.id,
+                    action="read_content_input_source")
+                return
+            await check_agent_access(db, requester, session.agent_id)
+            await require_current_group_member(db, session=session, user=requester)
+            return
+        except HTTPException as exc:
+            raise ContentInputReceiptError("group_membership_unavailable" if exc.status_code == 503 else "content_source_access_denied",
+                "The group source requires current membership and Agent access.", exc.status_code) from exc
+        except ContentInputReceiptError:
+            raise
+        except ValueError as exc:
+            raise ContentInputReceiptError("content_source_access_denied", "The group source reader is not authorized.", 403) from exc
     if session.audience_kind not in {None, "private"}:
         raise ContentInputReceiptError("content_source_unavailable", "This session source requires its live shared-audience reader.", 503)
     try:

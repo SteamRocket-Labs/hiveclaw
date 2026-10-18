@@ -30,6 +30,9 @@ async def _get_feishu_app_credentials(agent_id: uuid.UUID) -> tuple[str, str] | 
     tid = await resolve_tenant_for_agent(agent_id)
     async with tenant_scoped_session(tid) as db:
         config = await load_feishu_channel_configuration(db, agent_id=agent_id)
+        from app.services.feishu_read_receipts import observe_feishu_connection
+
+        observe_feishu_connection(config)
         return (config.app_id, config.app_secret) if config else None
 
 

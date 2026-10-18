@@ -2709,6 +2709,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     # Shared deferred-tool expansion for sequential and parallel
                     # batches: only executed expansion-trigger tools may load schemas.
                     nonlocal tools_for_llm, full_toolset, system_prompt, dynamic_prompt_suffix, _frozen_source_refs
+                    nonlocal _frozen_source_unbound
                     if request.expand_tools and request.agent_id:
                         if executed and _should_expand_tools(trigger_tool_name, tool_args):
                             expansion_payload: ToolExpansionResult | list[dict] | None = None

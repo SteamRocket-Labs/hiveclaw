@@ -23,6 +23,7 @@ class SkillInputCapture:
     sources: list[dict[str, str]] = field(default_factory=list)
     unbound: list[str] = field(default_factory=list)
     unverified: set[str] = field(default_factory=set)
+    allow_empty: bool = False
 
     def observe_file(self, path, digest):
         selected = self.files.get(path)
@@ -51,7 +52,7 @@ class SkillInputCapture:
     def snapshot(self):
         sources = sorted({(row["source_kind"], row["source_id"], row["source_version"]) for row in self.sources})
         return {"sources": [dict(zip(("source_kind", "source_id", "source_version"), row)) for row in sources],
-            "unbound": sorted(set(self.unbound or ([] if sources else ["skill_source_not_observed"])))}
+            "unbound": sorted(set(self.unbound or ([] if sources or self.allow_empty else ["skill_source_not_observed"])))}
 
 
 async def prepare_skill_input_capture(request):
@@ -60,9 +61,9 @@ async def prepare_skill_input_capture(request):
 
     context = request.context
     scope = context.workspace_authority_scope
-    if request.tool_name not in {"load_skill", "run_skill_tool"} or not isinstance(scope, WorkspaceAuthorityScope):
+    if request.tool_name not in {"load_skill", "run_skill_tool", "tool_search"} or not isinstance(scope, WorkspaceAuthorityScope):
         return
-    capture = SkillInputCapture(context.agent_id)
+    capture = SkillInputCapture(context.agent_id, allow_empty=request.tool_name == "tool_search")
     context.workspace_authority_scope = replace(scope, skill_inputs=capture)
     if Path(context.workspace).resolve() != (Path(get_settings().AGENT_DATA_DIR) / str(context.agent_id)).resolve():
         capture.unbound.append("skill_workspace_source_unverified")

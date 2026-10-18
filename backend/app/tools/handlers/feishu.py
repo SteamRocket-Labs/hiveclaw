@@ -151,19 +151,20 @@ async def feishu_doc_read(
     tenant_id: uuid.UUID | str | None = None,
     *,
     user_id: uuid.UUID | None = None,
+    execution_context=None,
 ) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
     from app.services.agent_tools import _feishu_doc_read
 
-    if tenant_id is None and user_id is None:
-        return await _feishu_doc_read(agent_id, arguments)
-    return await _feishu_doc_read(
-        agent_id,
-        arguments,
-        tenant_id=tenant_id,
-        current_user_id=user_id,
-    )
+    from app.services.feishu_read_receipts import capture_feishu_read, settle_feishu_read
+
+    with capture_feishu_read(execution_context, "feishu_doc_read", arguments) as capture:
+        if tenant_id is None and user_id is None:
+            result = await _feishu_doc_read(agent_id, arguments)
+        else:
+            result = await _feishu_doc_read(agent_id, arguments, tenant_id=tenant_id, current_user_id=user_id)
+        return await settle_feishu_read(capture, result)
 
 
 # -- feishu_url_resolve -------------------------------------------------------
@@ -1480,12 +1481,19 @@ async def feishu_approval_definition(agent_id: uuid.UUID, arguments: dict) -> st
         governance="safe",
     )
 )
-async def feishu_approval_query(agent_id: uuid.UUID, arguments: dict) -> str:
+async def feishu_approval_query(agent_id: uuid.UUID, arguments: dict, tenant_id=None, *, user_id=None, execution_context=None) -> str:
     if not await _check_feishu_configured(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
     from app.services.agent_tools import _feishu_approval_query
 
-    return await _feishu_approval_query(agent_id, arguments)
+    from app.services.feishu_read_receipts import capture_feishu_read, settle_feishu_read
+
+    with capture_feishu_read(execution_context, "feishu_approval_query", arguments) as capture:
+        if tenant_id is None and user_id is None:
+            result = await _feishu_approval_query(agent_id, arguments)
+        else:
+            result = await _feishu_approval_query(agent_id, arguments, tenant_id=tenant_id, current_user_id=user_id)
+        return await settle_feishu_read(capture, result)
 
 
 # -- feishu_approval_get ------------------------------------------------------

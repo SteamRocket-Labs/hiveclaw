@@ -170,6 +170,7 @@ async def _feishu_doc_read_via_openapi(
     current_user_id: uuid.UUID | str | None = None,
 ) -> str:
     import httpx
+    from app.services.feishu_read_receipts import attest_feishu_api_read
 
     document_token = arguments.get("document_token", "").strip()
     if not document_token:
@@ -226,7 +227,7 @@ async def _feishu_doc_read_via_openapi(
 
     content = data.get("data", {}).get("content", "")
     if not content:
-        return with_connector_source_items(
+        return attest_feishu_api_read(with_connector_source_items(
             f"📄 Document '{document_token}' is empty.{wiki_hint}",
             _feishu_doc_source_items(
                 agent_id,
@@ -235,14 +236,14 @@ async def _feishu_doc_read_via_openapi(
                 tenant_id=tenant_id,
                 current_user_id=current_user_id,
             ),
-        )
+        ))
 
     truncated = ""
     if max_chars is not None and len(content) > max_chars:
         content = content[:max_chars]
         truncated = f"\n\n_(Truncated to {max_chars} chars)_"
 
-    return with_connector_source_items(
+    return attest_feishu_api_read(with_connector_source_items(
         f"📄 **Document content** (`{document_token}`):\n\n{content}{truncated}{wiki_hint}",
         _feishu_doc_source_items(
             agent_id,
@@ -252,7 +253,7 @@ async def _feishu_doc_read_via_openapi(
             current_user_id=current_user_id,
             protected_text=content,
         ),
-    )
+    ))
 
 
 async def _feishu_doc_read(

@@ -453,23 +453,16 @@ def _get_hr_tools() -> list[dict]:
 
 
 async def _agent_has_feishu(agent_id: uuid.UUID) -> bool:
-    """Check if agent has a configured Feishu channel."""
+    """Discover the same employee/company installation used at execution time."""
     try:
-        from app.models.channel_config import ChannelConfig
+        from app.services.agent_tool_domains.feishu_helpers import load_feishu_channel_configuration
 
-        # RLS 阶段2b: channel_configs now bears a USING-only policy. Pin the GUC
-        # to the agent's tenant so this read survives the non-owner role; a bare
-        # session would fail closed and wrongly report "no feishu".
+        # Stay tenant scoped and retain explicit original-work installation
+        # checks. Discovery only reads configuration; provider authentication
+        # and the concrete action's authority remain execution-time checks.
         tid = await resolve_tenant_for_agent(agent_id)
         async with tenant_scoped_session(tid) as db:
-            r = await db.execute(
-                select(ChannelConfig).where(
-                    ChannelConfig.agent_id == agent_id,
-                    ChannelConfig.channel_type == "feishu",
-                    ChannelConfig.is_configured,
-                )
-            )
-            return r.scalar_one_or_none() is not None
+            return await load_feishu_channel_configuration(db, agent_id=agent_id) is not None
     except Exception:
         return False
 

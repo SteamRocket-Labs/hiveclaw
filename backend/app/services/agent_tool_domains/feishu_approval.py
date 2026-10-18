@@ -253,7 +253,7 @@ async def _feishu_approval_create(agent_id: uuid.UUID, arguments: dict) -> str:
     return "\n".join(lines)
 
 
-async def _feishu_approval_query(agent_id: uuid.UUID, arguments: dict) -> str:
+async def _feishu_approval_query(agent_id: uuid.UUID, arguments: dict, *, tenant_id=None, current_user_id=None) -> str:
     approval_code = str(arguments.get("approval_code") or "").strip()
     status = str(arguments.get("status") or "").strip() or None
     if not approval_code:
@@ -270,14 +270,18 @@ async def _feishu_approval_query(agent_id: uuid.UUID, arguments: dict) -> str:
     lines = [f"📋 **Feishu approval instances** (`{approval_code}`)"]
     if not instances:
         lines.append("当前没有匹配的审批实例。")
-        return "\n".join(lines)
     for item in instances:
         if isinstance(item, dict):
             instance_id = item.get("instance_code") or item.get("instance_id") or json.dumps(item, ensure_ascii=False)
         else:
             instance_id = str(item)
         lines.append(f"- `{instance_id}`")
-    return "\n".join(lines)
+    from app.services.agent_tool_domains.feishu_acl import with_feishu_read_authority
+    from app.services.feishu_read_receipts import attest_feishu_api_read
+
+    return attest_feishu_api_read(with_feishu_read_authority("\n".join(lines),
+        sources=[(f"feishu://approval/{approval_code}", "approval_query")],
+        agent_id=agent_id, tenant_id=tenant_id, current_user_id=current_user_id))
 
 
 async def _feishu_approval_definition(agent_id: uuid.UUID, arguments: dict) -> str:

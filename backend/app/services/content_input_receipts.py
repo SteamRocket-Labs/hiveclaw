@@ -457,6 +457,16 @@ async def _validate_session_dependency(db, tenant_id, dependency, *, user, runti
             and source.principal_type == "user" and isinstance(context, ToolExecutionContext)
             and source.principal_id == context.user_id
             and SESSION_COMMAND_AUTHORITY_STAMP_KEY not in (source.target_json or {})))
+    if model is SessionToolInvocation:
+        from app.services.feishu_read_receipts import FEISHU_READ_TOOLS, load_feishu_read
+
+        if source.tool_name in FEISHU_READ_TOOLS:
+            proof = await load_feishu_read(db, tenant_id=tenant_id, agent_id=session.agent_id,
+                invocation=source, content_hash=version, current=True)
+            reader = (await _runtime_input_actor(db, tenant_id, runtime_request))[1] if runtime_request is not None else user
+            if proof is None or reader is None or proof["reader_id"] != str(reader.id):
+                raise ContentInputReceiptError("content_source_access_denied",
+                    "The original Feishu read or its connection is no longer authorized for this reader.", 403)
     if session.audience_kind == "group" and model is SessionToolInvocation:
         from app.services.session_model_inputs import _origin_dependencies
 
@@ -1116,7 +1126,7 @@ async def load_skill_input_evidence(db, *, agent_id, invocation, model_result, a
     if (not isinstance(proof, dict) or row.tenant_id != invocation.tenant_id or row.agent_id != agent_id
         or row.session_id != str(invocation.session_id) or row.runtime_task_id != invocation.run_id
         or row.span_type != "skill_input" or row.status != "captured" or row.name != invocation.tool_name
-        or invocation.tool_name not in {"load_skill", "run_skill_tool"}
+        or invocation.tool_name not in {"load_skill", "run_skill_tool", "tool_search"}
         or proof.get("schema") != "hive.skill_input_evidence.v1"
         or proof.get("invocation_id") != str(invocation.id) or proof.get("model_result_id") != str(model_result.id)
         or proof.get("model_request_hash") != model_result.model_request_hash

@@ -393,6 +393,12 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
     # The call's own audience remains a source, including empty searches and private query arguments.
     dependencies = [*dependencies, {"source_kind": "session_tool_invocation", "source_id": str(invocation.id),
         "source_version": payload["content_hash"]}]
+    from app.services.feishu_read_receipts import FEISHU_READ_TOOLS, load_feishu_read
+
+    if invocation.tool_name in FEISHU_READ_TOOLS:
+        receipt = await load_feishu_read(db, tenant_id=tenant_id, agent_id=agent_id, invocation=invocation,
+            content_hash=payload["content_hash"])
+        return _unique_dependencies(dependencies), inherited_complete and receipt is not None
     if invocation.tool_name == "read_project_resource":
         from app.services.project_context import project_failure_receipt, project_tool_receipt
 
@@ -485,7 +491,7 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
     metadata = payload.get("metadata")
     if not isinstance(metadata, dict):
         return _unique_dependencies(dependencies), False
-    if invocation.tool_name in {"load_skill", "run_skill_tool"}:
+    if invocation.tool_name in {"load_skill", "run_skill_tool", "tool_search"}:
         from app.services.content_input_receipts import load_skill_input_evidence
 
         pointer = metadata.get("skill_input_receipt")
@@ -497,7 +503,8 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
                 content_hash=payload["content_hash"], capture={"status": "captured", "receipt_ref": pointer.get("evidence_ref")})
             if bound != pointer:
                 return _unique_dependencies(dependencies), False
-            return _unique_dependencies([*dependencies, *bound["sources"]]), inherited_complete and bool(bound["sources"]) and not bound["unbound"]
+            return _unique_dependencies([*dependencies, *bound["sources"]]), inherited_complete and (
+                bool(bound["sources"]) or invocation.tool_name == "tool_search") and not bound["unbound"]
         except (ContentInputReceiptError, ValueError, TypeError):
             return _unique_dependencies(dependencies), False
     pointer = metadata.get("workspace_input_receipt")

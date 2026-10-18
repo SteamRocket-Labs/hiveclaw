@@ -284,10 +284,10 @@ async def save_skill(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> s
         adapter="agent_workspace_args",
     )
 )
-async def tool_search(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> str:
+async def tool_search(agent_id: uuid.UUID, workspace: Path, arguments: dict, *, authority_scope=None) -> str:
     from app.services.agent_tool_domains.workspace import _tool_search
 
-    return await _tool_search(workspace, arguments.get("query", ""), agent_id=agent_id)
+    return await _tool_search(workspace, arguments.get("query", ""), agent_id=agent_id, authority_scope=authority_scope)
 
 
 # -- pin_skill ----------------------------------------------------------------

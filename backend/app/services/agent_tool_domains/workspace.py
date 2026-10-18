@@ -572,10 +572,10 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, ses
     return _workspace_error(tool_name, "not_found", f"Skill not found: {skill_name}")
 
 
-def _build_skill_registry(ws: Path, *, session_id: str | None = None) -> SkillRegistry:
+def _build_skill_registry(ws: Path, *, session_id: str | None = None, source_authorizer=None) -> SkillRegistry:
     loader = WorkspaceSkillLoader()
     registry = SkillRegistry()
-    registry.register_many(loader.load_from_workspace(ws, session_id=session_id))
+    registry.register_many(loader.load_from_workspace(ws, session_id=session_id, source_authorizer=source_authorizer))
     return registry
 
 
@@ -1511,11 +1511,18 @@ def _grep_search(
     return "\n".join(lines)
 
 
-async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | None = None) -> str:
+async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | None = None, *, authority_scope=None) -> str:
     from app.services.agent_tools import discoverable_tool_names_for_query
     from app.services.tool_search_manifest import build_tool_search_manifest, render_tool_search_manifest_sections
 
-    registry = _build_skill_registry(ws)
+    def source_allowed(path):
+        try:
+            relative = path.resolve().relative_to(ws.resolve()).as_posix()
+        except ValueError:
+            return False
+        return _authority_allows_path(authority_scope, relative)
+
+    registry = _build_skill_registry(ws, source_authorizer=source_allowed) if authority_scope is not None else _build_skill_registry(ws)
     normalized = query.strip().lower()
     matching_skills = [
         skill
@@ -1525,6 +1532,15 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
         or normalized in skill.metadata.description.lower()
         or any(normalized in tool.lower() for tool in skill.metadata.declared_tools)
     ]
+    capture = getattr(authority_scope, "skill_inputs", None)
+    if capture is not None:
+        for skill in matching_skills:
+            try:
+                path = skill.file_path.resolve().relative_to(ws.resolve()).as_posix()
+            except ValueError:
+                capture.unbound.append("discovery_skill_workspace_unverified")
+                continue
+            capture.observe_file(path, skill.source_sha256)
 
     # Step 3: single source of truth — the deferred tool names listed here are
     # EXACTLY what the schema path loads. discoverable_tool_names_for_query covers
@@ -1552,6 +1568,10 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
         skills=matching_skills,
         subagents=subagent_rows,
     )
+    if capture is not None and manifest.get("subagent_candidates"):
+        # Keep discovery usable while retaining unknown provenance for metadata
+        # that does not yet have a versioned source reader.
+        capture.unbound.append("discovery_subagent_sources_unverified")
 
     lines = [
         "Tool search discovered deferred capabilities. Matching deferred tool schemas become callable in this session.",
